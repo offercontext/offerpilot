@@ -1,8 +1,16 @@
-# OfferPilot — 求职者的本地工作台
+# OfferPilot
 
 > **Open-source, self-hosted job search workbench.** Manage your entire job application lifecycle — locally.
 
-## ✨ Features
+[English](#english) | [中文](#中文)
+
+---
+
+<a id="english"></a>
+
+## 🇬🇧 English
+
+### ✨ Features
 
 - 📋 **Application Tracking** — Kanban board + calendar view for all your job applications
 - 🤖 **AI-Powered** — JD analysis, resume matching (bring your own API key)
@@ -10,9 +18,9 @@
 - 🔒 **100% Local** — Your data stays on your machine (SQLite, no cloud)
 - 🐳 **One-Command Deploy** — `docker run` or `./oc start`
 
-## 🚀 Quick Start
+### 🚀 Quick Start
 
-### Option 1: Docker (Recommended)
+#### Option 1: Docker (Recommended)
 
 ```bash
 docker run -d -p 8080:8080 -v offerpilot-data:/data offercontext/offerpilot
@@ -20,7 +28,7 @@ docker run -d -p 8080:8080 -v offerpilot-data:/data offercontext/offerpilot
 
 Open `http://localhost:8080` in your browser.
 
-### Option 2: Binary
+#### Option 2: Binary
 
 ```bash
 # Download from GitHub Releases
@@ -28,7 +36,7 @@ chmod +x oc
 ./oc start
 ```
 
-### Option 3: Build from Source
+#### Option 3: Build from Source
 
 ```bash
 git clone https://github.com/offercontext/offerpilot.git
@@ -37,7 +45,7 @@ go build -o oc ./cmd/oc
 ./oc start
 ```
 
-## 📖 CLI Usage
+### 📖 CLI Usage
 
 ```bash
 oc start                           # Start local web server
@@ -50,7 +58,7 @@ oc event --app 1 --type interview --date "2026-07-01 14:00"  # Add interview eve
 oc config                          # Configure API key
 ```
 
-## 🔧 Configuration
+### 🔧 Configuration
 
 First run: `oc config` to set your API key.
 
@@ -66,7 +74,7 @@ First run: `oc config` to set your API key.
 
 Compatible with: OpenAI, Anthropic, DeepSeek, DashScope (Aliyun Qwen), and any OpenAI-compatible API.
 
-## 🏗️ Tech Stack
+### 🏗️ Tech Stack
 
 | Component | Technology |
 |---|---|
@@ -77,7 +85,7 @@ Compatible with: OpenAI, Anthropic, DeepSeek, DashScope (Aliyun Qwen), and any O
 | AI | User-supplied API key (OpenAI-compatible) |
 | Deploy | Docker multi-stage build |
 
-## 📊 Data Model
+### 📊 Data Model
 
 All data stored in local SQLite (`~/.offerpilot/data.db`):
 
@@ -86,7 +94,7 @@ All data stored in local SQLite (`~/.offerpilot/data.db`):
 - **Interview Notes** — Questions, self-reflection, difficulty points
 - **Resume** — Parsed data (JSON, schema v5.0)
 
-## 🗂️ Project Structure
+### 🗂️ Project Structure
 
 ```
 offerpilot/
@@ -102,10 +110,124 @@ offerpilot/
 └── go.mod
 ```
 
-## 📄 License
+### 📄 License
 
 [MIT](LICENSE) — Free to use, modify, and distribute.
 
-## 🌟 Related
+### 🌟 Related
 
 - [OfferContext](https://hub.offercontext.cn) — Cloud version with community features
+
+---
+
+<a id="中文"></a>
+
+## 🇨🇳 中文
+
+### ✨ 功能特点
+
+- 📋 **投递管理** — 看板 + 日历视图，管理所有求职投递
+- 🤖 **AI 赋能** — JD 智能分析、简历匹配度检查（自带 API Key）
+- 💻 **命令行 + 网页** — 用 `oc` 命令行操作，或浏览器访问 `localhost:8080`
+- 🔒 **完全本地** — 数据保存在本地（SQLite，无需联网）
+- 🐳 **一键部署** — `docker run` 或 `./oc start`
+
+### 🚀 快速开始
+
+#### 方式一：Docker（推荐）
+
+```bash
+docker run -d -p 8080:8080 -v offerpilot-data:/data offercontext/offerpilot
+```
+
+浏览器打开 `http://localhost:8080`。
+
+#### 方式二：二进制文件
+
+```bash
+# 从 GitHub Releases 下载
+chmod +x oc
+./oc start
+```
+
+#### 方式三：源码编译
+
+```bash
+git clone https://github.com/offercontext/offerpilot.git
+cd offerpilot
+go build -o oc ./cmd/oc
+./oc start
+```
+
+### 📖 命令行用法
+
+```bash
+oc start                           # 启动本地 Web 服务
+oc add --company "字节跳动" --position "后端开发"   # 添加投递
+oc list                            # 列出所有投递
+oc list --status interview         # 按状态筛选
+oc analyze --jd "https://..."      # AI 分析 JD
+oc resume --match 1                # 简历匹配 JD #1
+oc event --app 1 --type interview --date "2026-07-01 14:00"  # 添加面试事件
+oc config                          # 配置 API Key
+```
+
+### 🔧 配置
+
+首次运行 `oc config` 设置 API Key：
+
+```json
+// ~/.offerpilot/config.json
+{
+  "api_key": "sk-xxx",
+  "base_url": "https://api.openai.com/v1",
+  "model": "gpt-4o",
+  "local_port": 8080
+}
+```
+
+兼容：OpenAI、Anthropic、DeepSeek、DashScope（阿里通义千问）等所有 OpenAI 兼容接口。
+
+### 🏗️ 技术栈
+
+| 组件 | 技术 |
+|---|---|
+| 后端 | Go 1.22+（单二进制） |
+| 数据库 | SQLite（嵌入式，零配置） |
+| 前端 | React 19 + Ant Design + Vite |
+| 命令行 | Cobra |
+| AI | 用户自带 API Key（OpenAI 兼容） |
+| 部署 | Docker 多阶段构建 |
+
+### 📊 数据模型
+
+所有数据存储在本地 SQLite（`~/.offerpilot/data.db`）：
+
+- **投递记录** — 公司、职位、状态、备注、时间线
+- **事件** — 笔试、面试、测评时间
+- **面试复盘** — 面试问题、自我反思、难点
+- **简历** — 解析后的结构化数据（JSON，schema v5.0）
+
+### 🗂️ 项目结构
+
+```
+offerpilot/
+├── cmd/oc/          # 命令行入口
+├── internal/
+│   ├── api/         # HTTP REST API
+│   ├── cli/         # CLI 命令（cobra）
+│   ├── db/          # SQLite + 迁移
+│   ├── models/      # 数据模型
+│   └── ai/          # AI 集成（多 Provider）
+├── web/             # React 前端（Vite SPA）
+├── Dockerfile       # 多阶段构建
+└── go.mod
+```
+
+### 📄 开源协议
+
+[MIT](LICENSE) — 自由使用、修改和分发。
+
+### 🌟 相关项目
+
+- [OfferContext](https://hub.offercontext.cn) — 云端版本，含社区功能
