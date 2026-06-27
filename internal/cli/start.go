@@ -38,7 +38,7 @@ func startServer(cmd *cobra.Command) error {
 
 	fmt.Printf("\n🚀 OfferPilot is running at http://localhost:%d\n", serverPort)
 	fmt.Printf("📂 Data directory: %s\n", dataDir)
-	fmt.Println("Press Ctrl+C to stop.\n")
+	fmt.Println("Press Ctrl+C to stop.")
 
 	// Try to open browser
 	go openBrowser(fmt.Sprintf("http://localhost:%d", serverPort))

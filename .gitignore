@@ -21,6 +21,8 @@ config.json
 # Frontend
 web/node_modules/
 web/dist/
+web/tsconfig.tsbuildinfo
+web/*.tsbuildinfo
 
 # IDE
 .idea/

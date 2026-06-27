@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -28,7 +27,7 @@ func newAddCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVarP(&addCompany, "company", "c", "", "company name (required)")
-	cmd.Flags().StringVarP(&addPosition, "position", "p", "", "position/job title (required)")
+	cmd.Flags().StringVarP(&addPosition, "position", "", "", "position/job title (required)")
 	cmd.Flags().StringVarP(&addURL, "url", "u", "", "job posting URL")
 	cmd.Flags().StringVarP(&addNotes, "notes", "n", "", "notes about this application")
 	cmd.MarkFlagRequired("company")
@@ -101,7 +100,7 @@ func listApplications(statusFilter string) error {
 	fmt.Println("─────────────────────────────────────────────────────────────")
 	for _, app := range apps {
 		fmt.Printf("%-4s %-20s %-20s %-12s %-12s\n",
-			strconv.Itoa(app.ID),
+			strconv.FormatInt(app.ID, 10),
 			truncate(app.CompanyName, 20),
 			truncate(app.PositionName, 20),
 			app.Status,
