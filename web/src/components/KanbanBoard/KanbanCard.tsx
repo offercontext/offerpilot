@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useDraggable } from '@dnd-kit/core';
-import { Select, message, Popconfirm } from 'antd';
-import { DeleteOutlined } from '@ant-design/icons';
+import { Select, message, Popconfirm, Button } from 'antd';
+import { DeleteOutlined, RightOutlined } from '@ant-design/icons';
 import { useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import { updateApplication, deleteApplication } from '@/services/applications';
@@ -18,9 +18,10 @@ interface KanbanCardProps {
   columnStatus?: ApplicationStatus;
   isDragging?: boolean;
   overlay?: boolean;
+  onOpenDetail?: (app: Application) => void;
 }
 
-export default function KanbanCard({ record, columnStatus, isDragging, overlay }: KanbanCardProps) {
+export default function KanbanCard({ record, columnStatus, isDragging, overlay, onOpenDetail }: KanbanCardProps) {
   const queryClient = useQueryClient();
   const [selectOpen, setSelectOpen] = useState(false);
 
@@ -90,17 +91,33 @@ export default function KanbanCard({ record, columnStatus, isDragging, overlay }
           style={{ minWidth: 90 }}
           onClick={(e) => e.stopPropagation()}
         />
-        <Popconfirm
-          title="确定删除这条投递？"
-          onConfirm={handleDelete}
-          okText="删除"
-          cancelText="取消"
-        >
-          <DeleteOutlined
-            style={{ color: '#94a3b8', marginLeft: 8, cursor: 'pointer' }}
-            onClick={(e) => e.stopPropagation()}
-          />
-        </Popconfirm>
+        <span style={{ display: 'flex', alignItems: 'center' }}>
+          {onOpenDetail && (
+            <Button
+              type="text"
+              size="small"
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenDetail(record);
+              }}
+              style={{ color: '#0284c7', marginLeft: 4, padding: '0 4px' }}
+              title="查看详情"
+            >
+              <RightOutlined />
+            </Button>
+          )}
+          <Popconfirm
+            title="确定删除这条投递？"
+            onConfirm={handleDelete}
+            okText="删除"
+            cancelText="取消"
+          >
+            <DeleteOutlined
+              style={{ color: '#94a3b8', marginLeft: 8, cursor: 'pointer' }}
+              onClick={(e) => e.stopPropagation()}
+            />
+          </Popconfirm>
+        </span>
       </div>
     </div>
   );

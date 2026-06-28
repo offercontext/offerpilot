@@ -38,7 +38,7 @@ type Event struct {
 // InterviewNote represents an interview review/retrospective
 type InterviewNote struct {
 	ID               int64     `json:"id"`
-	ApplicationID    int64     `json:"application_id"`
+	ApplicationID    *int64    `json:"application_id,omitempty"`
 	Company          string    `json:"company"`
 	Position         string    `json:"position"`
 	Round            string    `json:"round"`
@@ -119,13 +119,36 @@ func (db *Database) migrate() error {
 		)`,
 		`CREATE TABLE IF NOT EXISTS resumes (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT DEFAULT '',
 			file_path TEXT,
 			parsed_data TEXT,
 			parse_status TEXT DEFAULT 'pending',
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
+		`CREATE TABLE IF NOT EXISTS jd_analyses (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			application_id INTEGER,
+			jd_source TEXT NOT NULL DEFAULT 'text',
+			jd_text TEXT NOT NULL,
+			result TEXT NOT NULL,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS resume_matches (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			resume_id INTEGER NOT NULL,
+			application_id INTEGER,
+			jd_text TEXT NOT NULL,
+			result TEXT NOT NULL,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (resume_id) REFERENCES resumes(id) ON DELETE CASCADE,
+			FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL
+		)`,
 		`CREATE INDEX IF NOT EXISTS idx_applications_status ON applications(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_events_app ON events(application_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_jd_app ON jd_analyses(application_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_matches_resume ON resume_matches(resume_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_notes_app ON interview_notes(application_id)`,
 	}
 
 	for _, m := range migrations {

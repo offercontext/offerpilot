@@ -1,18 +1,22 @@
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Layout, Button, Typography, Spin, Statistic, Row, Col, Space } from 'antd';
-import { PlusOutlined } from '@ant-design/icons';
+import { PlusOutlined, FileTextOutlined } from '@ant-design/icons';
 import { listApplications } from '@/services/applications';
 import { KANBAN_COLUMNS, STATUS_LABELS } from '@/types/application';
-import type { ApplicationStatus } from '@/types/application';
+import type { Application, ApplicationStatus } from '@/types/application';
 import KanbanBoard from '@/components/KanbanBoard';
 import AddApplicationForm from '@/components/AddApplicationForm';
+import ApplicationDetail from '@/components/ApplicationDetail';
+import ResumeMatchModal from '@/components/ResumeMatchModal';
 
 const { Header, Content } = Layout;
 const { Title } = Typography;
 
 export default function App() {
   const [addOpen, setAddOpen] = useState(false);
+  const [resumeOpen, setResumeOpen] = useState(false);
+  const [selected, setSelected] = useState<Application | null>(null);
 
   const { data: applications = [], isLoading } = useQuery({
     queryKey: ['applications'],
@@ -27,6 +31,11 @@ export default function App() {
     });
     return counts;
   }, [applications]);
+
+  // Keep the open-drawer record in sync with latest cache data.
+  const selectedApp = selected
+    ? applications.find((a) => a.id === selected.id) ?? selected
+    : null;
 
   return (
     <Layout style={{ minHeight: '100vh', background: '#f0f4f8' }}>
@@ -44,6 +53,9 @@ export default function App() {
           🚀 OfferPilot
         </Title>
         <Space>
+          <Button icon={<FileTextOutlined />} onClick={() => setResumeOpen(true)}>
+            简历匹配
+          </Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setAddOpen(true)}>
             添加投递
           </Button>
@@ -67,11 +79,20 @@ export default function App() {
             <Spin size="large" />
           </div>
         ) : (
-          <KanbanBoard applications={applications} />
+          <KanbanBoard
+            applications={applications}
+            onOpenDetail={(app) => setSelected(app)}
+          />
         )}
       </Content>
 
       <AddApplicationForm open={addOpen} onClose={() => setAddOpen(false)} />
+      <ApplicationDetail
+        application={selectedApp}
+        open={!!selected}
+        onClose={() => setSelected(null)}
+      />
+      <ResumeMatchModal open={resumeOpen} onClose={() => setResumeOpen(false)} />
     </Layout>
   );
 }

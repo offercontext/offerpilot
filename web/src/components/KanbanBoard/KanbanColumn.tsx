@@ -10,9 +10,10 @@ interface KanbanColumnProps {
   color: string;
   cards: Application[];
   activeId: number | null;
+  onOpenDetail?: (app: Application) => void;
 }
 
-export default function KanbanColumn({ status, label, color, cards, activeId }: KanbanColumnProps) {
+export default function KanbanColumn({ status, label, color, cards, activeId, onOpenDetail }: KanbanColumnProps) {
   const { isOver, setNodeRef } = useDroppable({ id: status });
 
   return (
@@ -36,6 +37,7 @@ export default function KanbanColumn({ status, label, color, cards, activeId }: 
               record={card}
               columnStatus={status}
               isDragging={card.id === activeId}
+              onOpenDetail={onOpenDetail}
             />
           ))
         )}

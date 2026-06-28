@@ -29,6 +29,15 @@ func NewRouter(database *db.Database, dataDir string) http.Handler {
 		r.Put("/applications/{id}", updateApplication(database))
 		r.Delete("/applications/{id}", deleteApplication(database))
 		r.Get("/dashboard", getDashboard(database))
+
+		// JD analysis (AI)
+		registerJDRoutes(r, database, dataDir)
+
+		// Resumes + matching (AI)
+		registerResumeRoutes(r, database, dataDir)
+
+		// Interview retrospective notes
+		registerNoteRoutes(r, database)
 	})
 
 	// Serve React frontend (or fallback to dev proxy)

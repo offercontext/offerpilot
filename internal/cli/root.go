@@ -4,12 +4,18 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"github.com/offercontext/offerpilot/internal/config"
 	"github.com/spf13/cobra"
 )
 
 var (
 	dataDir    string
 	serverPort int
+
+	// config flags
+	cfgAPIKey  string
+	cfgBaseURL string
+	cfgModel   string
 )
 
 // Execute runs the root CLI command
@@ -31,38 +37,82 @@ func Execute(dir string) error {
 	rootCmd.AddCommand(newAddCmd())
 	rootCmd.AddCommand(newListCmd())
 	rootCmd.AddCommand(newConfigCmd())
+	rootCmd.AddCommand(newAnalyzeCmd())
+	rootCmd.AddCommand(newResumeCmd())
+	rootCmd.AddCommand(newNoteCmd())
 
 	return rootCmd.Execute()
 }
 
-// newConfigCmd creates the config subcommand
+// newConfigCmd creates the config subcommand. Supports:
+//   oc config                      (show current config)
+//   oc config --api-key sk-xxx     (set API key)
+//   oc config --base-url https://… --model gpt-4o  (set endpoint/model)
 func newConfigCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "config",
 		Short: "Configure API key and settings",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return interactiveConfig(cmd)
+			return runConfig(cmd)
 		},
 	}
+	cmd.Flags().StringVar(&cfgAPIKey, "api-key", "", "set API key for the OpenAI-compatible endpoint")
+	cmd.Flags().StringVar(&cfgBaseURL, "base-url", "", "set base_url (e.g. https://api.deepseek.com/v1)")
+	cmd.Flags().StringVar(&cfgModel, "model", "", "set model name (e.g. deepseek-chat)")
+	return cmd
 }
 
-// interactiveConfig guides the user through API key configuration
-func interactiveConfig(cmd *cobra.Command) error {
+// runConfig shows the current config, and writes changes when any --api-key /
+// --base-url / --model flag is provided.
+func runConfig(cmd *cobra.Command) error {
+	cfg, err := config.Load(dataDir)
+	if err != nil {
+		return err
+	}
+
+	changed := false
+	if cmd.Flags().Changed("api-key") {
+		cfg.APIKey = cfgAPIKey
+		changed = true
+	}
+	if cmd.Flags().Changed("base-url") {
+		cfg.BaseURL = cfgBaseURL
+		changed = true
+	}
+	if cmd.Flags().Changed("model") {
+		cfg.Model = cfgModel
+		changed = true
+	}
+
+	if changed {
+		if err := config.Save(dataDir, cfg); err != nil {
+			return err
+		}
+		fmt.Println("✅ Config saved to", filepath.Join(dataDir, "config.json"))
+	}
+
+	configPath := filepath.Join(dataDir, "config.json")
 	fmt.Println("\n🔧 OfferPilot Configuration")
 	fmt.Println("───────────────────────────")
-	fmt.Printf("Config directory: %s\n\n", dataDir)
-
-	// For now, just create a default config
-	configPath := filepath.Join(dataDir, "config.json")
 	fmt.Printf("Config file: %s\n", configPath)
-	fmt.Println("\nEdit this file to set your API key:")
-	fmt.Println(`{
-  "api_key": "your-api-key",
-  "base_url": "https://api.openai.com/v1",
-  "model": "gpt-4o",
-  "local_port": 8080
-}`)
-	fmt.Println("\nCompatible with: OpenAI, Anthropic, DeepSeek, DashScope")
-
+	fmt.Printf("  base_url : %s\n", cfg.BaseURL)
+	fmt.Printf("  model    : %s\n", cfg.Model)
+	if cfg.APIKey == "" {
+		fmt.Println("  api_key  : (not set — AI features will return an error)")
+	} else {
+		fmt.Printf("  api_key  : %s…(hidden)\n", maskKey(cfg.APIKey))
+	}
+	fmt.Printf("  local_port: %d\n", cfg.LocalPort)
+	fmt.Println("\nCompatible with: OpenAI, DeepSeek, DashScope, Ollama (any OpenAI-compatible /v1/chat/completions endpoint).")
+	if cfg.APIKey == "" {
+		fmt.Println("\nSet your key:  oc config --api-key sk-xxx")
+	}
 	return nil
+}
+
+func maskKey(k string) string {
+	if len(k) <= 6 {
+		return "******"
+	}
+	return k[:4] + "****" + k[len(k)-2:]
 }
