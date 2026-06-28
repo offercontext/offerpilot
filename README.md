@@ -12,8 +12,9 @@
 
 ### ✨ Features
 
-- 📋 **Application Tracking** — Kanban board + calendar view for all your job applications
-- 🤖 **AI-Powered** — JD analysis, resume matching (bring your own API key)
+- 📋 **Application Tracking** — Kanban board for all your job applications (drag-to-update status, statistics)
+- 🤖 **AI-Powered** — JD smart analysis + resume matching (bring your own API key)
+- 📝 **Interview Retrospective** — Capture questions, self-reflection, weak points per round
 - 💻 **CLI + Web** — Use `oc` command-line or browse to `localhost:8080`
 - 🔒 **100% Local** — Your data stays on your machine (SQLite, no cloud)
 - 🐳 **One-Command Deploy** — `docker run` or `./oc start`
@@ -45,6 +46,14 @@ go build -o oc ./cmd/oc
 ./oc start
 ```
 
+#### Option 4: One-line install script
+
+```bash
+curl -sSL https://get.offerpilot.dev | sh
+# or build from source if no prebuilt binary for your platform:
+curl -sSL https://get.offerpilot.dev | sh -s -- --from-source
+```
+
 ### 📖 CLI Usage
 
 ```bash
@@ -52,10 +61,14 @@ oc start                           # Start local web server
 oc add --company "ByteDance" --position "Backend"   # Add application
 oc list                            # List all applications
 oc list --status interview         # Filter by status
-oc analyze --jd "https://..."      # AI-analyze a JD
-oc resume --match 1                # Match resume against job #1
-oc event --app 1 --type interview --date "2026-07-01 14:00"  # Add interview event
-oc config                          # Configure API key
+oc analyze --jd "JD text…"         # AI-analyze a JD (or --jd-url https://…)
+oc resume add --file resume.txt    # Save a resume as text
+oc resume list                     # List saved resumes
+oc resume match --resume 1 --jd "JD text…"   # Match resume #1 against a JD (AI)
+oc note add --app 1 --round "Round 1" --date "2026-07-01"   # Add interview retrospective
+oc note list --app 1               # List notes for an application
+oc config --api-key sk-xxx         # Set your AI API key
+oc config                         # Show current configuration
 ```
 
 ### 🔧 Configuration
@@ -73,6 +86,10 @@ First run: `oc config` to set your API key.
 ```
 
 Compatible with: OpenAI, Anthropic, DeepSeek, DashScope (Aliyun Qwen), and any OpenAI-compatible API.
+
+Data lives in `~/.offerpilot` (SQLite database + `config.json`). Override the
+data directory with the `OFFERPILOT_DATA` env var — handy for Docker or custom
+installs.
 
 ### 🏗️ Tech Stack
 
@@ -100,12 +117,13 @@ All data stored in local SQLite (`~/.offerpilot/data.db`):
 offerpilot/
 ├── cmd/oc/          # CLI entry point
 ├── internal/
-│   ├── api/         # HTTP REST API
+│   ├── api/         # HTTP REST API (chi)
 │   ├── cli/         # CLI commands (cobra)
-│   ├── db/          # SQLite + migrations
-│   ├── models/      # Data models
-│   └── ai/          # AI integration (provider-agnostic)
+│   ├── db/          # SQLite + migrations + data models
+│   ├── config/      # config.json load / save
+│   └── ai/          # AI integration (OpenAI-compatible)
 ├── web/             # React frontend (Vite SPA)
+├── scripts/         # install.sh one-line installer
 ├── Dockerfile       # Multi-stage build
 └── go.mod
 ```
@@ -126,8 +144,9 @@ offerpilot/
 
 ### ✨ 功能特点
 
-- 📋 **投递管理** — 看板 + 日历视图，管理所有求职投递
+- 📋 **投递管理** — 看板视图，管理所有求职投递（拖拽切换状态、统计）
 - 🤖 **AI 赋能** — JD 智能分析、简历匹配度检查（自带 API Key）
+- 📝 **面试复盘** — 按轮次记录面试问题、自我反思、薄弱点
 - 💻 **命令行 + 网页** — 用 `oc` 命令行操作，或浏览器访问 `localhost:8080`
 - 🔒 **完全本地** — 数据保存在本地（SQLite，无需联网）
 - 🐳 **一键部署** — `docker run` 或 `./oc start`
@@ -159,6 +178,14 @@ go build -o oc ./cmd/oc
 ./oc start
 ```
 
+#### 方式四：一键安装脚本
+
+```bash
+curl -sSL https://get.offerpilot.dev | sh
+# 没有预编译二进制时，从源码构建：
+curl -sSL https://get.offerpilot.dev | sh -s -- --from-source
+```
+
 ### 📖 命令行用法
 
 ```bash
@@ -166,10 +193,14 @@ oc start                           # 启动本地 Web 服务
 oc add --company "字节跳动" --position "后端开发"   # 添加投递
 oc list                            # 列出所有投递
 oc list --status interview         # 按状态筛选
-oc analyze --jd "https://..."      # AI 分析 JD
-oc resume --match 1                # 简历匹配 JD #1
-oc event --app 1 --type interview --date "2026-07-01 14:00"  # 添加面试事件
-oc config                          # 配置 API Key
+oc analyze --jd "JD 文本…"         # AI 分析 JD（或 --jd-url https://…）
+oc resume add --file resume.txt    # 保存简历文本
+oc resume list                     # 列出已保存简历
+oc resume match --resume 1 --jd "JD 文本…"   # 简历 #1 对 JD 做匹配度检查（AI）
+oc note add --app 1 --round "一面" --date "2026-07-01"   # 添加面试复盘
+oc note list --app 1               # 列出某投递的复盘
+oc config --api-key sk-xxx         # 设置 AI API Key
+oc config                          # 查看当前配置
 ```
 
 ### 🔧 配置
@@ -187,6 +218,9 @@ oc config                          # 配置 API Key
 ```
 
 兼容：OpenAI、Anthropic、DeepSeek、DashScope（阿里通义千问）等所有 OpenAI 兼容接口。
+
+数据保存在 `~/.offerpilot` 目录（SQLite 数据库 + `config.json`）。可通过环境变量
+`OFFERPILOT_DATA` 指定数据目录，Docker 或自定义部署时很有用。
 
 ### 🏗️ 技术栈
 
@@ -214,12 +248,13 @@ oc config                          # 配置 API Key
 offerpilot/
 ├── cmd/oc/          # 命令行入口
 ├── internal/
-│   ├── api/         # HTTP REST API
+│   ├── api/         # HTTP REST API（chi）
 │   ├── cli/         # CLI 命令（cobra）
-│   ├── db/          # SQLite + 迁移
-│   ├── models/      # 数据模型
-│   └── ai/          # AI 集成（多 Provider）
+│   ├── db/          # SQLite + 迁移 + 数据模型
+│   ├── config/      # config.json 读写
+│   └── ai/          # AI 集成（OpenAI 兼容）
 ├── web/             # React 前端（Vite SPA）
+├── scripts/         # install.sh 一键安装脚本
 ├── Dockerfile       # 多阶段构建
 └── go.mod
 ```
