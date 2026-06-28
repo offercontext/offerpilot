@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Layout, Button, Typography, Spin, Statistic, Row, Col, Space } from 'antd';
+import { Layout, Button, Typography, Spin, Statistic, Row, Col, Space, Segmented } from 'antd';
 import { PlusOutlined, FileTextOutlined } from '@ant-design/icons';
 import { listApplications } from '@/services/applications';
 import { KANBAN_COLUMNS, STATUS_LABELS } from '@/types/application';
@@ -9,6 +9,7 @@ import KanbanBoard from '@/components/KanbanBoard';
 import AddApplicationForm from '@/components/AddApplicationForm';
 import ApplicationDetail from '@/components/ApplicationDetail';
 import ResumeMatchModal from '@/components/ResumeMatchModal';
+import CalendarView from '@/components/CalendarView';
 
 const { Header, Content } = Layout;
 const { Title } = Typography;
@@ -17,6 +18,7 @@ export default function App() {
   const [addOpen, setAddOpen] = useState(false);
   const [resumeOpen, setResumeOpen] = useState(false);
   const [selected, setSelected] = useState<Application | null>(null);
+  const [viewMode, setViewMode] = useState<'board' | 'calendar'>('board');
 
   const { data: applications = [], isLoading } = useQuery({
     queryKey: ['applications'],
@@ -74,12 +76,27 @@ export default function App() {
           ))}
         </Row>
 
+        <Segmented
+          value={viewMode}
+          onChange={(v) => setViewMode(v as 'board' | 'calendar')}
+          options={[
+            { label: '看板', value: 'board' },
+            { label: '日历', value: 'calendar' },
+          ]}
+          style={{ marginBottom: 16 }}
+        />
+
         {isLoading ? (
           <div style={{ textAlign: 'center', padding: 48 }}>
             <Spin size="large" />
           </div>
-        ) : (
+        ) : viewMode === 'board' ? (
           <KanbanBoard
+            applications={applications}
+            onOpenDetail={(app) => setSelected(app)}
+          />
+        ) : (
+          <CalendarView
             applications={applications}
             onOpenDetail={(app) => setSelected(app)}
           />
