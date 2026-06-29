@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Drawer, Input, Button, Switch, Space, Typography, List, Popconfirm, App as AntApp } from 'antd';
 import { SendOutlined, PlusOutlined, DeleteOutlined } from '@ant-design/icons';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   sendChat,
   confirmAction,
@@ -204,9 +205,15 @@ export default function ChatPanel({ open, onClose }: Props) {
           <div className={styles.messages} style={{ flex: 1, overflowY: 'auto' }}>
             {messages.map((m, i) => (
               <div key={i} className={`${styles.row} ${m.role === 'user' ? styles.rowUser : ''}`}>
-                <div className={`${styles.bubble} ${m.role === 'user' ? styles.user : styles.assistant}`}>
-                  {m.role === 'assistant' ? <ReactMarkdown>{m.content}</ReactMarkdown> : m.content}
-                </div>
+              <div className={`${styles.bubble} ${m.role === 'user' ? styles.user : styles.assistant}`}>
+                {m.role === 'assistant' ? (
+                  <div className={styles.markdown}>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                  </div>
+                ) : (
+                  m.content
+                )}
+              </div>
               </div>
             ))}
             {pending && (
