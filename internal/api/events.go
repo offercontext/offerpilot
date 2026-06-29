@@ -131,7 +131,12 @@ func updateEvent(database *db.Database) http.HandlerFunc {
 			respondError(w, http.StatusInternalServerError, "Failed to update event")
 			return
 		}
-		respondJSON(w, http.StatusOK, eventResponseFromEvent(*event))
+		updated, err := database.GetEvent(id)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "Failed to get updated event")
+			return
+		}
+		respondJSON(w, http.StatusOK, eventResponseFromEvent(*updated))
 	}
 }
 

@@ -120,6 +120,13 @@ func TestEventAPICRUD(t *testing.T) {
 	if updated["event_type"] != "written_test" || updated["duration_minutes"] != float64(90) {
 		t.Fatalf("unexpected updated event: %+v", updated)
 	}
+	updatedCreatedAt, err := time.Parse(time.RFC3339, updated["created_at"].(string))
+	if err != nil {
+		t.Fatalf("updated created_at should be RFC3339: %v", err)
+	}
+	if updatedCreatedAt.IsZero() {
+		t.Fatalf("updated created_at should be persisted timestamp, got %q", updated["created_at"])
+	}
 
 	deleteRec := eventAPIRequest(t, router, http.MethodDelete, "/api/events/"+strconv.FormatInt(eventID, 10), nil)
 	if deleteRec.Code != http.StatusOK {
