@@ -36,3 +36,26 @@
   padding-top: 8px;
   border-top: 1px solid #e2e8f0;
 }
+.sidebar {
+  width: 180px;
+  flex-shrink: 0;
+  border-right: 1px solid #e2e8f0;
+  padding-right: 8px;
+  overflow-y: auto;
+}
+.convItem {
+  cursor: pointer;
+  border-radius: 6px;
+  padding-left: 8px;
+  padding-right: 8px;
+}
+.convItem:hover {
+  background: #f1f5f9;
+}
+.convActive {
+  cursor: pointer;
+  border-radius: 6px;
+  padding-left: 8px;
+  padding-right: 8px;
+  background: #ecfdf5;
+}
