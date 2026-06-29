@@ -17,6 +17,10 @@ import (
 // ErrNotConfigured mirrors config.ErrNotConfigured so callers can import either.
 var ErrNotConfigured = config.ErrNotConfigured
 
+// ErrToolsUnsupported signals the configured model rejected a tools request,
+// so the caller should retry in no-tools (summary) mode.
+var ErrToolsUnsupported = errors.New("model does not support tool calling")
+
 // Client talks to any OpenAI-compatible /v1/chat/completions endpoint
 // (OpenAI, DeepSeek, DashScope, Ollama, etc.) by swapping base_url.
 //
@@ -54,6 +58,25 @@ func (c *Client) Chat(ctx context.Context, system, user string) (string, error) 
 		return c.chatAnthropic(ctx, system, user)
 	}
 	return c.chatOpenAI(ctx, system, user)
+}
+
+// Complete sends a multi-turn message list (with optional tools) and returns
+// one assistant turn. It dispatches by protocol like Chat does.
+func (c *Client) Complete(ctx context.Context, messages []Message, tools []Tool) (*Assistant, error) {
+	if c.anthropic {
+		return c.completeAnthropic(ctx, messages, tools)
+	}
+	return c.completeOpenAI(ctx, messages, tools)
+}
+
+// isToolsUnsupportedBody heuristically detects "model can't do tools" errors.
+func isToolsUnsupportedBody(body string) bool {
+	b := strings.ToLower(body)
+	hasTool := strings.Contains(b, "tool") || strings.Contains(b, "function")
+	hasNeg := strings.Contains(b, "not support") || strings.Contains(b, "unsupported") ||
+		strings.Contains(b, "no support") || strings.Contains(b, "not available") ||
+		strings.Contains(b, "unknown") || strings.Contains(b, "invalid")
+	return hasTool && hasNeg
 }
 
 // ---------- OpenAI-compatible (/v1/chat/completions) ----------
