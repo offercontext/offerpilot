@@ -40,7 +40,8 @@ type PendingAction struct {
 //
 // messages must already include any system prompt and full prior history plus
 // the new user message. The returned `added` slice contains only the new
-// assistant/tool messages produced this turn (caller persists them).
+// assistant/tool messages produced this turn (caller persists them). When err
+// is non-nil, callers should discard `added` rather than persist it.
 func RunTurn(ctx context.Context, model ChatModel, reg *Registry, messages []Message, autoApprove bool, maxIter int) (added []Message, reply string, pending *PendingAction, err error) {
 	if maxIter <= 0 {
 		maxIter = DefaultMaxIterations
@@ -51,6 +52,9 @@ func RunTurn(ctx context.Context, model ChatModel, reg *Registry, messages []Mes
 		asst, cerr := model.Complete(ctx, work, reg.List())
 		if cerr != nil {
 			return added, "", nil, cerr
+		}
+		if asst == nil {
+			return added, "", nil, errors.New("AI 返回了空响应")
 		}
 		if len(asst.ToolCalls) == 0 {
 			m := Message{Role: RoleAssistant, Content: asst.Content}
