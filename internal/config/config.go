@@ -26,6 +26,9 @@ type Config struct {
 	BaseURL   string `json:"base_url"`
 	Model     string `json:"model"`
 	LocalPort int    `json:"local_port"`
+	// ChatAutoApproveWrites lets the AI assistant execute write tools without
+	// asking the user to confirm each one. Defaults to false (confirm required).
+	ChatAutoApproveWrites bool `json:"chat_auto_approve_writes"`
 }
 
 // Load reads ~/.offerpilot/config.json. If the file is missing, a Config with

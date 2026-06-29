@@ -13,9 +13,10 @@ var (
 	serverPort int
 
 	// config flags
-	cfgAPIKey  string
-	cfgBaseURL string
-	cfgModel   string
+	cfgAPIKey      string
+	cfgBaseURL     string
+	cfgModel       string
+	cfgAutoApprove bool
 )
 
 // Execute runs the root CLI command
@@ -59,6 +60,7 @@ func newConfigCmd() *cobra.Command {
 	cmd.Flags().StringVar(&cfgAPIKey, "api-key", "", "set API key for the OpenAI-compatible endpoint")
 	cmd.Flags().StringVar(&cfgBaseURL, "base-url", "", "set base_url (e.g. https://api.deepseek.com/v1)")
 	cmd.Flags().StringVar(&cfgModel, "model", "", "set model name (e.g. deepseek-chat)")
+	cmd.Flags().BoolVar(&cfgAutoApprove, "auto-approve", false, "let the AI assistant run write actions without confirmation")
 	return cmd
 }
 
@@ -83,6 +85,10 @@ func runConfig(cmd *cobra.Command) error {
 		cfg.Model = cfgModel
 		changed = true
 	}
+	if cmd.Flags().Changed("auto-approve") {
+		cfg.ChatAutoApproveWrites = cfgAutoApprove
+		changed = true
+	}
 
 	if changed {
 		if err := config.Save(dataDir, cfg); err != nil {
@@ -103,6 +109,7 @@ func runConfig(cmd *cobra.Command) error {
 		fmt.Printf("  api_key  : %s…(hidden)\n", maskKey(cfg.APIKey))
 	}
 	fmt.Printf("  local_port: %d\n", cfg.LocalPort)
+	fmt.Printf("  ai_auto_approve: %v\n", cfg.ChatAutoApproveWrites)
 	fmt.Println("\nCompatible with: OpenAI, DeepSeek, DashScope, Ollama (any OpenAI-compatible /v1/chat/completions endpoint).")
 	if cfg.APIKey == "" {
 		fmt.Println("\nSet your key:  oc config --api-key sk-xxx")

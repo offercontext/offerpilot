@@ -41,6 +41,11 @@ func NewRouter(database *db.Database, dataDir string) http.Handler {
 
 		// Calendar aggregation (interviews + applied dates)
 		r.Get("/calendar", getCalendarHandler(database))
+
+		// AI chat assistant
+		registerChatRoutes(r, database, dataDir)
+		// Chat-related settings (no API key exposure)
+		registerSettingsRoutes(r, dataDir)
 	})
 
 	// Serve React frontend (or fallback to dev proxy)

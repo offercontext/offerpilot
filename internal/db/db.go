@@ -144,6 +144,23 @@ func (db *Database) migrate() error {
 			FOREIGN KEY (resume_id) REFERENCES resumes(id) ON DELETE CASCADE,
 			FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS conversations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			title TEXT NOT NULL DEFAULT '新对话',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS chat_messages (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			conversation_id INTEGER NOT NULL,
+			role TEXT NOT NULL,
+			content TEXT DEFAULT '',
+			tool_calls TEXT DEFAULT '',
+			tool_call_id TEXT DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_chat_messages_conv ON chat_messages(conversation_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_applications_status ON applications(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_events_app ON events(application_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_jd_app ON jd_analyses(application_id)`,

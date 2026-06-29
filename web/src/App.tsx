@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Layout, Button, Typography, Spin, Statistic, Row, Col, Space, Segmented } from 'antd';
-import { PlusOutlined, FileTextOutlined } from '@ant-design/icons';
+import { PlusOutlined, FileTextOutlined, RobotOutlined } from '@ant-design/icons';
 import { listApplications } from '@/services/applications';
 import { KANBAN_COLUMNS, STATUS_LABELS } from '@/types/application';
 import type { Application, ApplicationStatus } from '@/types/application';
@@ -10,6 +10,7 @@ import AddApplicationForm from '@/components/AddApplicationForm';
 import ApplicationDetail from '@/components/ApplicationDetail';
 import ResumeMatchModal from '@/components/ResumeMatchModal';
 import CalendarView from '@/components/CalendarView';
+import ChatPanel from '@/components/ChatPanel';
 
 const { Header, Content } = Layout;
 const { Title } = Typography;
@@ -17,6 +18,7 @@ const { Title } = Typography;
 export default function App() {
   const [addOpen, setAddOpen] = useState(false);
   const [resumeOpen, setResumeOpen] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
   const [selected, setSelected] = useState<Application | null>(null);
   const [viewMode, setViewMode] = useState<'board' | 'calendar'>('board');
 
@@ -55,6 +57,9 @@ export default function App() {
           🚀 OfferPilot
         </Title>
         <Space>
+          <Button icon={<RobotOutlined />} onClick={() => setChatOpen(true)}>
+            AI 助手
+          </Button>
           <Button icon={<FileTextOutlined />} onClick={() => setResumeOpen(true)}>
             简历匹配
           </Button>
@@ -110,6 +115,7 @@ export default function App() {
         onClose={() => setSelected(null)}
       />
       <ResumeMatchModal open={resumeOpen} onClose={() => setResumeOpen(false)} />
+      <ChatPanel open={chatOpen} onClose={() => setChatOpen(false)} />
     </Layout>
   );
 }
