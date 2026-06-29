@@ -136,32 +136,72 @@ func TestEventAPIValidation(t *testing.T) {
 	validTime := time.Date(2026, 6, 30, 14, 30, 0, 0, time.UTC).Format(time.RFC3339)
 
 	cases := []struct {
-		name string
-		body map[string]interface{}
+		name       string
+		body       map[string]interface{}
+		wantStatus int
 	}{
 		{
-			name: "invalid type",
-			body: map[string]interface{}{"application_id": app.ID, "event_type": "other", "scheduled_at": validTime, "duration_minutes": 60},
+			name:       "invalid type",
+			body:       map[string]interface{}{"application_id": app.ID, "event_type": "other", "scheduled_at": validTime, "duration_minutes": 60},
+			wantStatus: http.StatusBadRequest,
 		},
 		{
-			name: "missing scheduled_at",
-			body: map[string]interface{}{"application_id": app.ID, "event_type": "interview", "duration_minutes": 60},
+			name:       "missing scheduled_at",
+			body:       map[string]interface{}{"application_id": app.ID, "event_type": "interview", "duration_minutes": 60},
+			wantStatus: http.StatusBadRequest,
 		},
 		{
-			name: "duration zero",
-			body: map[string]interface{}{"application_id": app.ID, "event_type": "interview", "scheduled_at": validTime, "duration_minutes": 0},
+			name:       "duration zero",
+			body:       map[string]interface{}{"application_id": app.ID, "event_type": "interview", "scheduled_at": validTime, "duration_minutes": 0},
+			wantStatus: http.StatusBadRequest,
 		},
 		{
-			name: "missing application",
-			body: map[string]interface{}{"application_id": app.ID + 999, "event_type": "interview", "scheduled_at": validTime, "duration_minutes": 60},
+			name:       "missing application",
+			body:       map[string]interface{}{"application_id": app.ID + 999, "event_type": "interview", "scheduled_at": validTime, "duration_minutes": 60},
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "malformed scheduled_at",
+			body:       map[string]interface{}{"application_id": app.ID, "event_type": "interview", "scheduled_at": "not-a-date", "duration_minutes": 60},
+			wantStatus: http.StatusBadRequest,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := eventAPIRequest(t, router, http.MethodPost, "/api/events", tc.body)
-			if rec.Code < http.StatusBadRequest {
-				t.Fatalf("expected >=400, got %d: %s", rec.Code, rec.Body.String())
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("expected status %d, got %d: %s", tc.wantStatus, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestEventAPIListValidation(t *testing.T) {
+	_, app, router := eventTestDB(t)
+
+	cases := []struct {
+		name       string
+		path       string
+		wantStatus int
+	}{
+		{
+			name:       "bad month",
+			path:       "/api/events?month=bad-month",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "missing application",
+			path:       "/api/events?application_id=" + strconv.FormatInt(app.ID+999, 10),
+			wantStatus: http.StatusNotFound,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := eventAPIRequest(t, router, http.MethodGet, tc.path, nil)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("expected status %d, got %d: %s", tc.wantStatus, rec.Code, rec.Body.String())
 			}
 		})
 	}

@@ -51,6 +51,9 @@ func listEvents(database *db.Database) http.HandlerFunc {
 		if !ok {
 			return
 		}
+		if filter.ApplicationID > 0 && !applicationExists(w, database, filter.ApplicationID) {
+			return
+		}
 		events, err := database.ListEvents(filter)
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, "Failed to list events")
