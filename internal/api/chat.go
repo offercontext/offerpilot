@@ -134,7 +134,10 @@ func runChat(w http.ResponseWriter, r *http.Request, database *db.Database, mode
 			respondError(w, http.StatusBadGateway, ferr.Error())
 			return
 		}
-		_ = database.AppendMessage(&db.ChatMessage{ConversationID: convID, Role: "assistant", Content: text})
+		if perr := database.AppendMessage(&db.ChatMessage{ConversationID: convID, Role: "assistant", Content: text}); perr != nil {
+			respondError(w, http.StatusInternalServerError, perr.Error())
+			return
+		}
 		respondJSON(w, http.StatusOK, map[string]interface{}{"type": "message", "conversation_id": convID, "message": text, "degraded": true})
 		return
 	}
