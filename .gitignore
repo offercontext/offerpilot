@@ -36,3 +36,6 @@ Thumbs.db
 
 # Build output
 build/
+
+# Local brainstorming companion artifacts
+.superpowers/
