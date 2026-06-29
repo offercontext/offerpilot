@@ -14,8 +14,8 @@ type Application struct {
 	CompanyName  string    `json:"company_name"`
 	PositionName string    `json:"position_name"`
 	JobURL       string    `json:"job_url"`
-	Status       string    `json:"status"`      // applied | assessment | written_test | interview | offer | eliminated | rejected
-	Source       string    `json:"source"`      // cli | web | import
+	Status       string    `json:"status"` // applied | assessment | written_test | interview | offer | eliminated | rejected
+	Source       string    `json:"source"` // cli | web | import
 	Notes        string    `json:"notes"`
 	AppliedAt    time.Time `json:"applied_at"`
 	CreatedAt    time.Time `json:"created_at"`
@@ -62,6 +62,10 @@ func Init(dbPath string) (*Database, error) {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	conn.SetMaxOpenConns(1) // SQLite single-writer
+	if _, err := conn.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("enable foreign keys: %w", err)
+	}
 
 	db := &Database{conn: conn}
 	if err := db.migrate(); err != nil {
