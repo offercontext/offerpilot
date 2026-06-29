@@ -36,3 +36,6 @@ Thumbs.db
 
 # Build output
 build/
+
+# Local design/planning docs (workflow artifacts, not shipped)
+docs/
