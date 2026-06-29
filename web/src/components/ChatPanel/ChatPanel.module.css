@@ -1,0 +1,38 @@
+.messages {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 8px 4px;
+}
+.row {
+  display: flex;
+}
+.rowUser {
+  justify-content: flex-end;
+}
+.bubble {
+  max-width: 80%;
+  padding: 8px 12px;
+  border-radius: 10px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+.user {
+  background: #059669;
+  color: #fff;
+}
+.assistant {
+  background: #f1f5f9;
+  color: #1a1a1a;
+}
+.tool {
+  align-self: center;
+  font-size: 12px;
+  color: #64748b;
+}
+.inputBar {
+  display: flex;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #e2e8f0;
+}
