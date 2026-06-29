@@ -70,13 +70,26 @@ func (c *Client) Complete(ctx context.Context, messages []Message, tools []Tool)
 }
 
 // isToolsUnsupportedBody heuristically detects "model can't do tools" errors.
+// It deliberately requires an explicit negation phrase next to tool/function
+// wording so that common 4xx bodies (e.g. OpenAI's "invalid_request_error" for a
+// malformed tool schema or bad arguments) are NOT misread as "tools unsupported"
+// — which would silently and wrongly downgrade to no-tools mode.
 func isToolsUnsupportedBody(body string) bool {
 	b := strings.ToLower(body)
-	hasTool := strings.Contains(b, "tool") || strings.Contains(b, "function")
-	hasNeg := strings.Contains(b, "not support") || strings.Contains(b, "unsupported") ||
-		strings.Contains(b, "no support") || strings.Contains(b, "not available") ||
-		strings.Contains(b, "unknown") || strings.Contains(b, "invalid")
-	return hasTool && hasNeg
+	if !strings.Contains(b, "tool") && !strings.Contains(b, "function") {
+		return false
+	}
+	phrases := []string{
+		"not support", "does not support", "doesn't support", "n't support",
+		"not supported", "unsupported", "no support for", "not available",
+		"not enabled", "not implemented",
+	}
+	for _, p := range phrases {
+		if strings.Contains(b, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------- OpenAI-compatible (/v1/chat/completions) ----------

@@ -98,7 +98,7 @@ func (c *Client) completeOpenAI(ctx context.Context, messages []Message, tools [
 	raw, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode >= 400 {
-		if len(tools) > 0 && isToolsUnsupportedBody(string(raw)) {
+		if resp.StatusCode < 500 && len(tools) > 0 && isToolsUnsupportedBody(string(raw)) {
 			return nil, fmt.Errorf("%w: %s", ErrToolsUnsupported, truncate(string(raw), 200))
 		}
 		return nil, fmt.Errorf("AI API returned %d: %s", resp.StatusCode, truncate(string(raw), 200))
