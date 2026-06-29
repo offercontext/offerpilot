@@ -30,6 +30,9 @@ func NewRouter(database *db.Database, dataDir string) http.Handler {
 		r.Delete("/applications/{id}", deleteApplication(database))
 		r.Get("/dashboard", getDashboard(database))
 
+		// Schedule events
+		registerEventRoutes(r, database)
+
 		// JD analysis (AI)
 		registerJDRoutes(r, database, dataDir)
 
