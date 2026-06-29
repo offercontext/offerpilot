@@ -91,3 +91,47 @@ func errorsIsToolsUnsupported(err error) bool {
 	}
 	return false
 }
+
+func TestCompleteAnthropicParsesToolUse(t *testing.T) {
+	var gotBody map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &gotBody)
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"好的"},{"type":"tool_use","id":"toolu_1","name":"list_applications","input":{"status":"offer"}}],"stop_reason":"tool_use"}`))
+	}))
+	defer srv.Close()
+
+	c, _ := New(&config.Config{APIKey: "k", BaseURL: srv.URL + "/anthropic", Model: "claude-3"})
+	tools := []Tool{{Name: "list_applications", Description: "x", Schema: json.RawMessage(`{"type":"object"}`)}}
+	asst, err := c.Complete(context.Background(),
+		[]Message{{Role: RoleSystem, Content: "sys"}, {Role: RoleUser, Content: "hi"}}, tools)
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if len(asst.ToolCalls) != 1 || asst.ToolCalls[0].Name != "list_applications" {
+		t.Fatalf("unexpected tool calls: %+v", asst.ToolCalls)
+	}
+	if string(asst.ToolCalls[0].Args) != `{"status":"offer"}` {
+		t.Fatalf("unexpected args: %s", asst.ToolCalls[0].Args)
+	}
+	if gotBody["tools"] == nil || gotBody["system"] == nil {
+		t.Fatal("request missing tools/system")
+	}
+}
+
+func TestCompleteAnthropicParsesText(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"你好"}],"stop_reason":"end_turn"}`))
+	}))
+	defer srv.Close()
+
+	c, _ := New(&config.Config{APIKey: "k", BaseURL: srv.URL + "/anthropic", Model: "claude-3"})
+	asst, err := c.Complete(context.Background(), []Message{{Role: RoleUser, Content: "hi"}}, nil)
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if asst.Content != "你好" || len(asst.ToolCalls) != 0 {
+		t.Fatalf("unexpected: %+v", asst)
+	}
+}
+
