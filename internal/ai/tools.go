@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/offercontext/offerpilot/internal/db"
 )
@@ -215,6 +216,7 @@ func NewRegistry(database *db.Database) *Registry {
 			app := &db.Application{
 				CompanyName: p.Company, PositionName: p.Position,
 				JobURL: p.JobURL, Status: p.Status, Source: "ai",
+				AppliedAt: time.Now(),
 			}
 			if err := database.CreateApplication(app); err != nil {
 				return "", err
