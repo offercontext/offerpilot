@@ -6,6 +6,7 @@ import {
   Tag,
   Timeline,
   Button,
+  Divider,
   Form,
   Input,
   Select,
@@ -13,13 +14,18 @@ import {
   Empty,
   Spin,
   Popconfirm,
+  Space,
 } from 'antd';
-import { RobotOutlined, PlusOutlined, LinkOutlined } from '@ant-design/icons';
+import { CalendarOutlined, RobotOutlined, PlusOutlined, LinkOutlined } from '@ant-design/icons';
+import dayjs from 'dayjs';
 import type { Application } from '@/types/application';
 import { STATUS_LABELS } from '@/types/application';
 import { listNotesByApp, createNote, deleteNote as removeNote } from '@/services/notes';
+import { listEvents } from '@/services/events';
 import { analyzeJD } from '@/services/ai';
 import type { CreateNoteInput } from '@/types/note';
+import { EVENT_TYPE_LABELS } from '@/types/event';
+import ScheduleEventForm from '@/components/ScheduleEventForm';
 import JDAnalyzeModal from './JDAnalyzeModal';
 
 const { Title, Paragraph, Text } = Typography;
@@ -41,11 +47,18 @@ export default function ApplicationDetail({ application, open, onClose }: Applic
   const [form] = Form.useForm();
   const [analyzing, setAnalyzing] = useState(false);
   const [jdModalOpen, setJdModalOpen] = useState(false);
+  const [eventFormOpen, setEventFormOpen] = useState(false);
 
   const notesQuery = useQuery({
     queryKey: ['notes', application?.id],
     queryFn: () => listNotesByApp(application!.id),
     enabled: !!application,
+  });
+
+  const eventsQuery = useQuery({
+    queryKey: ['events', application?.id],
+    queryFn: () => listEvents({ application_id: application!.id }),
+    enabled: !!application && open,
   });
 
   const invalidateNotes = () => {
@@ -102,7 +115,10 @@ export default function ApplicationDetail({ application, open, onClose }: Applic
           </span>
         }
         open={open}
-        onClose={onClose}
+        onClose={() => {
+          setEventFormOpen(false);
+          onClose();
+        }}
         width={520}
         destroyOnClose
       >
@@ -128,6 +144,36 @@ export default function ApplicationDetail({ application, open, onClose }: Applic
           <Paragraph type="secondary">备注：{application.notes}</Paragraph>
         )}
 
+        <Divider />
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <Title level={5} style={{ margin: 0 }}>
+            <CalendarOutlined /> 日程
+          </Title>
+          <Button size="small" icon={<PlusOutlined />} onClick={() => setEventFormOpen(true)}>
+            安排日程
+          </Button>
+        </div>
+        {eventsQuery.isLoading ? (
+          <div style={{ textAlign: 'center', padding: 16 }}>
+            <Spin />
+          </div>
+        ) : eventsQuery.data && eventsQuery.data.length > 0 ? (
+          <Space direction="vertical" style={{ width: '100%', marginBottom: 16 }}>
+            {eventsQuery.data.map((event) => (
+              <div key={event.id} style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 12 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+                  <Text strong>{EVENT_TYPE_LABELS[event.event_type]}</Text>
+                  <Text type="secondary">{dayjs(event.scheduled_at).format('YYYY-MM-DD HH:mm')}</Text>
+                </div>
+                <div style={{ color: '#64748b', fontSize: 13, marginTop: 4 }}>
+                  时长 {event.duration_minutes} 分钟{event.location ? ` · ${event.location}` : ''}
+                </div>
+              </div>
+            ))}
+          </Space>
+        ) : (
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无笔试、面试或测评日程" style={{ marginBottom: 16 }} />
+        )}
         <Title level={5} style={{ marginTop: 8 }}>
           面试复盘
         </Title>
@@ -227,6 +273,12 @@ export default function ApplicationDetail({ application, open, onClose }: Applic
         open={jdModalOpen}
         application={application}
         onClose={() => setJdModalOpen(false)}
+      />
+      <ScheduleEventForm
+        open={eventFormOpen}
+        applications={[application]}
+        initialApplication={application}
+        onClose={() => setEventFormOpen(false)}
       />
     </>
   );
