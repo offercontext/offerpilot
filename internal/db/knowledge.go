@@ -11,6 +11,11 @@ import (
 const (
 	KnowledgeSourceManual = "manual"
 	KnowledgeSourceUpload = "upload"
+
+	defaultKnowledgeLimit = 5
+	maxKnowledgeLimit     = 10
+	maxChunkRunes         = 900
+	minChunkRunes         = 120
 )
 
 type KnowledgeBase struct {
@@ -274,10 +279,10 @@ func (db *Database) SearchKnowledge(filter KnowledgeSearchFilter) ([]KnowledgeSe
 	}
 	limit := filter.Limit
 	if limit <= 0 {
-		limit = 5
+		limit = defaultKnowledgeLimit
 	}
-	if limit > 10 {
-		limit = 10
+	if limit > maxKnowledgeLimit {
+		limit = maxKnowledgeLimit
 	}
 
 	query := `SELECT f.knowledge_base_id, b.name, f.document_id, d.title, f.chunk_id,
@@ -382,7 +387,7 @@ func chunkKnowledgeContent(content string) []string {
 
 	var chunks []string
 	for _, paragraph := range paragraphs {
-		chunks = append(chunks, splitLongKnowledgeChunk(paragraph, 900)...)
+		chunks = append(chunks, splitLongKnowledgeChunk(paragraph, maxChunkRunes)...)
 	}
 	return chunks
 }
@@ -414,7 +419,7 @@ func mergeShortKnowledgeParagraphs(paragraphs []string) []string {
 		if paragraph == "" {
 			continue
 		}
-		if len(merged) > 0 && runeLen(merged[len(merged)-1]) < 120 && runeLen(merged[len(merged)-1])+runeLen(paragraph)+2 <= 900 {
+		if len(merged) > 0 && runeLen(merged[len(merged)-1]) < minChunkRunes && runeLen(merged[len(merged)-1])+runeLen(paragraph)+2 <= maxChunkRunes {
 			merged[len(merged)-1] += "\n\n" + paragraph
 			continue
 		}
