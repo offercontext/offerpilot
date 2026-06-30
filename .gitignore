@@ -37,6 +37,9 @@ Thumbs.db
 # Build output
 build/
 
+# Local git worktrees
+.worktrees/
+
 # Local design/planning docs (workflow artifacts, not shipped)
 docs/
 
