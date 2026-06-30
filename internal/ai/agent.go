@@ -57,14 +57,14 @@ func RunTurn(ctx context.Context, model ChatModel, reg *Registry, messages []Mes
 			return added, "", nil, errors.New("AI 返回了空响应")
 		}
 		if len(asst.ToolCalls) == 0 {
-			m := Message{Role: RoleAssistant, Content: asst.Content}
+			m := Message{Role: RoleAssistant, Content: asst.Content, ProviderBlocks: asst.ProviderBlocks}
 			added = append(added, m)
 			return added, asst.Content, nil, nil
 		}
 
 		// One tool per turn: act only on the first.
 		tc := asst.ToolCalls[0]
-		asstMsg := Message{Role: RoleAssistant, Content: asst.Content, ToolCalls: []ToolCall{tc}}
+		asstMsg := Message{Role: RoleAssistant, Content: asst.Content, ToolCalls: []ToolCall{tc}, ProviderBlocks: asst.ProviderBlocks}
 		added = append(added, asstMsg)
 		work = append(work, asstMsg)
 

@@ -24,15 +24,17 @@ type ToolCall struct {
 // ToolCalls is set on assistant turns that request tools;
 // ToolCallID is set on tool-result turns.
 type Message struct {
-	Role       Role       `json:"role"`
-	Content    string     `json:"content"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Role           Role              `json:"role"`
+	Content        string            `json:"content"`
+	ToolCalls      []ToolCall        `json:"tool_calls,omitempty"`
+	ToolCallID     string            `json:"tool_call_id,omitempty"`
+	ProviderBlocks []json.RawMessage `json:"provider_blocks,omitempty"`
 }
 
 // Assistant is one assistant turn returned by a model: either free text,
 // or one-or-more tool calls (we only ever act on the first — see plan note).
 type Assistant struct {
-	Content   string
-	ToolCalls []ToolCall
+	Content        string
+	ToolCalls      []ToolCall
+	ProviderBlocks []json.RawMessage
 }

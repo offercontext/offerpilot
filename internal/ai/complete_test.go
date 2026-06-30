@@ -119,6 +119,61 @@ func TestCompleteAnthropicParsesToolUse(t *testing.T) {
 	}
 }
 
+func TestCompleteAnthropicPreservesThinkingBlocksForToolFollowup(t *testing.T) {
+	var calls int
+	var followupBody map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		calls++
+		if calls == 1 {
+			_, _ = w.Write([]byte(`{"content":[{"type":"thinking","thinking":"checking schedules","signature":"sig_1"},{"type":"tool_use","id":"toolu_1","name":"list_schedule_events","input":{"event_type":"all"}}],"stop_reason":"tool_use"}`))
+			return
+		}
+		_ = json.Unmarshal(raw, &followupBody)
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}`))
+	}))
+	defer srv.Close()
+
+	c, _ := New(&config.Config{APIKey: "k", BaseURL: srv.URL + "/anthropic", Model: "claude-3"})
+	tools := []Tool{{Name: "list_schedule_events", Description: "x", Schema: json.RawMessage(`{"type":"object"}`)}}
+	asst, err := c.Complete(context.Background(), []Message{{Role: RoleUser, Content: "hi"}}, tools)
+	if err != nil {
+		t.Fatalf("first complete: %v", err)
+	}
+	if len(asst.ToolCalls) != 1 {
+		t.Fatalf("unexpected tool calls: %+v", asst.ToolCalls)
+	}
+	if len(asst.ProviderBlocks) != 1 {
+		t.Fatalf("expected thinking provider block, got %d", len(asst.ProviderBlocks))
+	}
+
+	_, err = c.Complete(context.Background(), []Message{
+		{Role: RoleUser, Content: "hi"},
+		{Role: RoleAssistant, ToolCalls: asst.ToolCalls, ProviderBlocks: asst.ProviderBlocks},
+		{Role: RoleTool, ToolCallID: "toolu_1", Content: "[]"},
+	}, tools)
+	if err != nil {
+		t.Fatalf("followup complete: %v", err)
+	}
+
+	messages, ok := followupBody["messages"].([]interface{})
+	if !ok || len(messages) < 2 {
+		t.Fatalf("unexpected followup messages: %#v", followupBody["messages"])
+	}
+	assistantMsg, ok := messages[1].(map[string]interface{})
+	if !ok {
+		t.Fatalf("unexpected assistant message: %#v", messages[1])
+	}
+	content, ok := assistantMsg["content"].([]interface{})
+	if !ok || len(content) == 0 {
+		t.Fatalf("unexpected assistant content: %#v", assistantMsg["content"])
+	}
+	thinking, ok := content[0].(map[string]interface{})
+	if !ok || thinking["type"] != "thinking" || thinking["thinking"] != "checking schedules" || thinking["signature"] != "sig_1" {
+		t.Fatalf("thinking block not preserved: %#v", content)
+	}
+}
+
 func TestCompleteAnthropicParsesText(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"你好"}],"stop_reason":"end_turn"}`))
@@ -134,4 +189,3 @@ func TestCompleteAnthropicParsesText(t *testing.T) {
 		t.Fatalf("unexpected: %+v", asst)
 	}
 }
-

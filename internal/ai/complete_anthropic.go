@@ -26,8 +26,8 @@ type antBlock struct {
 }
 
 type antMessage struct {
-	Role    string     `json:"role"`
-	Content []antBlock `json:"content"`
+	Role    string            `json:"role"`
+	Content []json.RawMessage `json:"content"`
 }
 
 type antRequest struct {
@@ -39,10 +39,15 @@ type antRequest struct {
 }
 
 type antResponse struct {
-	Content []antBlock `json:"content"`
+	Content []json.RawMessage `json:"content"`
 	Error   *struct {
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
+}
+
+func rawAntBlock(b antBlock) json.RawMessage {
+	raw, _ := json.Marshal(b)
+	return raw
 }
 
 func (c *Client) completeAnthropic(ctx context.Context, messages []Message, tools []Tool) (*Assistant, error) {
@@ -57,26 +62,26 @@ func (c *Client) completeAnthropic(ctx context.Context, messages []Message, tool
 		case RoleUser:
 			req.Messages = append(req.Messages, antMessage{
 				Role:    "user",
-				Content: []antBlock{{Type: "text", Text: m.Content}},
+				Content: []json.RawMessage{rawAntBlock(antBlock{Type: "text", Text: m.Content})},
 			})
 		case RoleAssistant:
-			blocks := []antBlock{}
+			blocks := append([]json.RawMessage{}, m.ProviderBlocks...)
 			if m.Content != "" {
-				blocks = append(blocks, antBlock{Type: "text", Text: m.Content})
+				blocks = append(blocks, rawAntBlock(antBlock{Type: "text", Text: m.Content}))
 			}
 			for _, tc := range m.ToolCalls {
 				input := tc.Args
 				if len(input) == 0 {
 					input = json.RawMessage(`{}`)
 				}
-				blocks = append(blocks, antBlock{Type: "tool_use", ID: tc.ID, Name: tc.Name, Input: input})
+				blocks = append(blocks, rawAntBlock(antBlock{Type: "tool_use", ID: tc.ID, Name: tc.Name, Input: input}))
 			}
 			req.Messages = append(req.Messages, antMessage{Role: "assistant", Content: blocks})
 		case RoleTool:
 			// Anthropic carries tool results as a user message with a tool_result block.
 			req.Messages = append(req.Messages, antMessage{
 				Role:    "user",
-				Content: []antBlock{{Type: "tool_result", ToolUseID: m.ToolCallID, Content: m.Content}},
+				Content: []json.RawMessage{rawAntBlock(antBlock{Type: "tool_result", ToolUseID: m.ToolCallID, Content: m.Content})},
 			})
 		}
 	}
@@ -115,7 +120,11 @@ func (c *Client) completeAnthropic(ctx context.Context, messages []Message, tool
 		return nil, fmt.Errorf("parse response: %w", err)
 	}
 	asst := &Assistant{}
-	for _, b := range ar.Content {
+	for _, rawBlock := range ar.Content {
+		var b antBlock
+		if err := json.Unmarshal(rawBlock, &b); err != nil {
+			return nil, fmt.Errorf("parse response content block: %w", err)
+		}
 		switch b.Type {
 		case "text", "":
 			asst.Content += b.Text
@@ -125,6 +134,8 @@ func (c *Client) completeAnthropic(ctx context.Context, messages []Message, tool
 				input = json.RawMessage(`{}`)
 			}
 			asst.ToolCalls = append(asst.ToolCalls, ToolCall{ID: b.ID, Name: b.Name, Args: input})
+		default:
+			asst.ProviderBlocks = append(asst.ProviderBlocks, rawBlock)
 		}
 	}
 	return asst, nil

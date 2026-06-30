@@ -39,6 +39,7 @@ func TestConversationAndMessageCRUD(t *testing.T) {
 		Role:           "assistant",
 		Content:        "",
 		ToolCalls:      `[{"id":"c1","name":"list_applications","args":{}}]`,
+		ProviderBlocks: `[{"type":"thinking","thinking":"checking","signature":"sig"}]`,
 	}); err != nil {
 		t.Fatalf("append assistant: %v", err)
 	}
@@ -52,6 +53,9 @@ func TestConversationAndMessageCRUD(t *testing.T) {
 	}
 	if msgs[0].Role != "user" || msgs[1].ToolCalls == "" {
 		t.Fatalf("unexpected message ordering/content: %+v", msgs)
+	}
+	if msgs[1].ProviderBlocks == "" {
+		t.Fatalf("expected provider blocks to persist: %+v", msgs[1])
 	}
 
 	convs, err := d.ListConversations()
