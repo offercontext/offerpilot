@@ -20,6 +20,7 @@ type ChatMessage struct {
 	Content        string    `json:"content"`
 	ToolCalls      string    `json:"tool_calls,omitempty"`
 	ToolCallID     string    `json:"tool_call_id,omitempty"`
+	ProviderBlocks string    `json:"provider_blocks,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
 }
 
@@ -63,9 +64,9 @@ func (db *Database) ListConversations() ([]Conversation, error) {
 func (db *Database) AppendMessage(m *ChatMessage) error {
 	now := time.Now()
 	res, err := db.conn.Exec(
-		`INSERT INTO chat_messages (conversation_id, role, content, tool_calls, tool_call_id, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		m.ConversationID, m.Role, m.Content, m.ToolCalls, m.ToolCallID, now,
+		`INSERT INTO chat_messages (conversation_id, role, content, tool_calls, tool_call_id, provider_blocks, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		m.ConversationID, m.Role, m.Content, m.ToolCalls, m.ToolCallID, m.ProviderBlocks, now,
 	)
 	if err != nil {
 		return err
@@ -79,7 +80,7 @@ func (db *Database) AppendMessage(m *ChatMessage) error {
 // ListMessages returns all messages in a conversation, oldest first.
 func (db *Database) ListMessages(convID int64) ([]ChatMessage, error) {
 	rows, err := db.conn.Query(
-		`SELECT id, conversation_id, role, content, tool_calls, tool_call_id, created_at
+		`SELECT id, conversation_id, role, content, tool_calls, tool_call_id, provider_blocks, created_at
 		 FROM chat_messages WHERE conversation_id = ? ORDER BY id ASC`, convID)
 	if err != nil {
 		return nil, err
@@ -88,7 +89,7 @@ func (db *Database) ListMessages(convID int64) ([]ChatMessage, error) {
 	var out []ChatMessage
 	for rows.Next() {
 		var m ChatMessage
-		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.ToolCalls, &m.ToolCallID, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.ToolCalls, &m.ToolCallID, &m.ProviderBlocks, &m.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, m)

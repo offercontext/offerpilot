@@ -18,6 +18,13 @@ import styles from './ChatPanel.module.css';
 
 const { Text } = Typography;
 
+const SUGGESTED_PROMPTS = [
+  '我现在有哪些投递记录？',
+  '帮我看看最近有哪些笔试面试测评日程',
+  '哪些投递需要我跟进？',
+  '帮我总结一下当前求职进展',
+];
+
 interface UIMessage {
   role: 'user' | 'assistant' | 'tool';
   content: string;
@@ -112,14 +119,14 @@ export default function ChatPanel({ open, onClose }: Props) {
     if (isNew) refreshConversations();
   }
 
-  async function handleSend() {
-    const text = input.trim();
-    if (!text || loading) return;
-    setMessages((m) => [...m, { role: 'user', content: text }]);
+  async function sendMessage(text: string) {
+    const trimmed = text.trim();
+    if (!trimmed || loading) return;
+    setMessages((m) => [...m, { role: 'user', content: trimmed }]);
     setInput('');
     setLoading(true);
     try {
-      const resp = await sendChat(text, convID);
+      const resp = await sendChat(trimmed, convID);
       applyResponse(resp);
     } catch (e: any) {
       toast.error(e?.response?.data?.error ?? '对话失败');
@@ -128,6 +135,9 @@ export default function ChatPanel({ open, onClose }: Props) {
     }
   }
 
+  async function handleSend() {
+    await sendMessage(input);
+  }
   async function handleConfirm(approved: boolean) {
     if (!convID) return;
     setLoading(true);
@@ -203,6 +213,26 @@ export default function ChatPanel({ open, onClose }: Props) {
           )}
 
           <div className={styles.messages} style={{ flex: 1, overflowY: 'auto' }}>
+            {messages.length === 0 && !pending && (
+              <div className={styles.emptyGuide}>
+                <Text strong>可以这样开始</Text>
+                <Text type="secondary" className={styles.emptyGuideHint}>
+                  选择一个常用问题，AI 会基于你的投递、日程和复盘记录回答。
+                </Text>
+                <div className={styles.promptGrid}>
+                  {SUGGESTED_PROMPTS.map((prompt) => (
+                    <Button
+                      key={prompt}
+                      className={styles.promptButton}
+                      onClick={() => sendMessage(prompt)}
+                      disabled={loading || !hasKey}
+                    >
+                      {prompt}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+            )}
             {messages.map((m, i) => (
               <div key={i} className={`${styles.row} ${m.role === 'user' ? styles.rowUser : ''}`}>
               <div className={`${styles.bubble} ${m.role === 'user' ? styles.user : styles.assistant}`}>

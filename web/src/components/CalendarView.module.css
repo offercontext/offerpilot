@@ -10,6 +10,7 @@
   align-items: center;
   gap: 12px;
   margin-bottom: 12px;
+  flex-wrap: wrap;
 }
 
 .monthLabel {
@@ -17,6 +18,10 @@
   font-weight: 600;
   min-width: 140px;
   text-align: center;
+}
+
+.createButton {
+  margin-left: auto;
 }
 
 .weekHeader {
@@ -40,7 +45,7 @@
 }
 
 .cell {
-  min-height: 78px;
+  min-height: 112px;
   border: 1px solid #f1f5f9;
   border-radius: 8px;
   padding: 6px 8px;
@@ -48,6 +53,7 @@
   display: flex;
   flex-direction: column;
   transition: background 0.15s;
+  min-width: 0;
 }
 
 .cellActive {
@@ -76,6 +82,7 @@
   font-size: 14px;
   font-weight: 600;
   color: #0f172a;
+  line-height: 20px;
 }
 
 .cellMuted .dateNum {
@@ -87,6 +94,30 @@
   align-items: center;
   gap: 4px;
   margin-top: 6px;
+}
+
+.entries {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 6px;
+  min-width: 0;
+}
+
+.entryChip {
+  display: block;
+  width: 100%;
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid #dbeafe;
+  border-radius: 6px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 12px;
+  line-height: 18px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .dotInterview {
@@ -105,10 +136,31 @@
   display: inline-block;
 }
 
+.dotSchedule {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #2563eb;
+  display: inline-block;
+}
+
 .count {
   font-size: 11px;
   color: #64748b;
   margin-left: 2px;
+}
+
+.moreCount {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 18px;
 }
 
 .legend {
@@ -128,8 +180,93 @@
   padding: 10px 0;
   border-bottom: 1px solid #f0f0f0;
   cursor: pointer;
+  min-width: 0;
 }
 
 .entryItem:hover {
   background: #f8fafc;
+}
+
+.entryItemStatic {
+  cursor: default;
+}
+
+.entryHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.entryTitleWrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.entryTime {
+  flex: 0 0 auto;
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 22px;
+}
+
+.entryTitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.entryMeta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.entryActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.entrySubtitle,
+.entryLocation {
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.entryLocation {
+  color: #475569;
+}
+
+@media (max-width: 720px) {
+  .wrap {
+    padding: 12px;
+  }
+
+  .toolbar {
+    gap: 8px;
+  }
+
+  .createButton {
+    margin-left: 0;
+  }
+
+  .cell {
+    min-height: 96px;
+    padding: 5px;
+  }
+
+  .entryChip {
+    padding: 0 4px;
+    font-size: 11px;
+  }
 }

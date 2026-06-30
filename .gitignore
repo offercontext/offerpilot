@@ -39,3 +39,6 @@ build/
 
 # Local design/planning docs (workflow artifacts, not shipped)
 docs/
+
+# Local brainstorming companion artifacts
+.superpowers/

@@ -1,0 +1,184 @@
+import { useEffect } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { Button, DatePicker, Drawer, Form, Input, InputNumber, Select, Space, message } from 'antd';
+import dayjs from 'dayjs';
+import type { Dayjs } from 'dayjs';
+import { createEvent, updateEvent } from '@/services/events';
+import type { Application } from '@/types/application';
+import type { ScheduleEvent, ScheduleEventInput, ScheduleEventType } from '@/types/event';
+import { EVENT_TYPE_LABELS } from '@/types/event';
+
+interface ScheduleEventFormProps {
+  open: boolean;
+  applications: Application[];
+  initialApplication?: Application;
+  event?: ScheduleEvent;
+  onClose: () => void;
+}
+
+interface ScheduleEventFormValues {
+  application_id: number;
+  event_type: ScheduleEventType;
+  round?: number | null;
+  scheduled_at: Dayjs;
+  duration_minutes: number;
+  location?: string;
+  notes?: string;
+}
+
+const EVENT_TYPE_OPTIONS = (Object.entries(EVENT_TYPE_LABELS) as [ScheduleEventType, string][]).map(
+  ([value, label]) => ({ value, label })
+);
+
+function getDefaultScheduledAt() {
+  return dayjs().add(1, 'day').startOf('hour');
+}
+
+export default function ScheduleEventForm({
+  open,
+  applications,
+  initialApplication,
+  event,
+  onClose,
+}: ScheduleEventFormProps) {
+  const [form] = Form.useForm<ScheduleEventFormValues>();
+  const queryClient = useQueryClient();
+  const isEdit = !!event;
+
+  const mutation = useMutation({
+    mutationFn: (input: ScheduleEventInput) =>
+      isEdit ? updateEvent(event.id, input) : createEvent(input),
+    onSuccess: () => {
+      message.success(isEdit ? '日程已更新' : '日程已创建');
+      queryClient.invalidateQueries({ queryKey: ['calendar'] });
+      queryClient.invalidateQueries({ queryKey: ['events'] });
+      form.resetFields();
+      onClose();
+    },
+    onError: () => {
+      message.error(isEdit ? '更新日程失败' : '创建日程失败');
+    },
+  });
+
+  useEffect(() => {
+    if (!open) return;
+
+    if (event) {
+      form.setFieldsValue({
+        application_id: event.application_id,
+        event_type: event.event_type,
+        round: event.round,
+        scheduled_at: dayjs(event.scheduled_at),
+        duration_minutes: event.duration_minutes,
+        location: event.location,
+        notes: event.notes,
+      });
+      return;
+    }
+
+    form.setFieldsValue({
+      application_id: initialApplication?.id,
+      event_type: 'interview',
+      round: 0,
+      scheduled_at: getDefaultScheduledAt(),
+      duration_minutes: 60,
+      location: '',
+      notes: '',
+    });
+  }, [event, form, initialApplication, open]);
+
+  const handleClose = () => {
+    form.resetFields();
+    onClose();
+  };
+
+  const handleFinish = (values: ScheduleEventFormValues) => {
+    mutation.mutate({
+      application_id: values.application_id,
+      event_type: values.event_type,
+      round: values.round ?? 0,
+      scheduled_at: values.scheduled_at.toISOString(),
+      duration_minutes: values.duration_minutes,
+      location: values.location ?? '',
+      notes: values.notes ?? '',
+    });
+  };
+
+  return (
+    <Drawer
+      title={isEdit ? '编辑日程' : '新建日程'}
+      open={open}
+      onClose={handleClose}
+      width={460}
+      destroyOnClose
+      footer={
+        <Space style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <Button onClick={handleClose}>取消</Button>
+          <Button type="primary" loading={mutation.isPending} onClick={() => form.submit()}>
+            {isEdit ? '保存' : '创建'}
+          </Button>
+        </Space>
+      }
+    >
+      <Form form={form} layout="vertical" onFinish={handleFinish} requiredMark={false}>
+        <Form.Item
+          name="application_id"
+          label="投递"
+          rules={[{ required: true, message: '请选择投递' }]}
+        >
+          <Select
+            showSearch
+            disabled={!!initialApplication || isEdit}
+            placeholder="选择投递"
+            optionFilterProp="label"
+            options={applications.map((application) => ({
+              value: application.id,
+              label: `${application.company_name} · ${application.position_name}`,
+            }))}
+          />
+        </Form.Item>
+
+        <div style={{ display: 'flex', gap: 12 }}>
+          <Form.Item
+            name="event_type"
+            label="类型"
+            rules={[{ required: true, message: '请选择类型' }]}
+            style={{ flex: 1 }}
+          >
+            <Select options={EVENT_TYPE_OPTIONS} />
+          </Form.Item>
+          <Form.Item name="round" label="轮次" style={{ width: 120 }}>
+            <InputNumber min={0} precision={0} style={{ width: '100%' }} />
+          </Form.Item>
+        </div>
+
+        <div style={{ display: 'flex', gap: 12 }}>
+          <Form.Item
+            name="scheduled_at"
+            label="时间"
+            rules={[{ required: true, message: '请选择时间' }]}
+            style={{ flex: 1 }}
+          >
+            <DatePicker showTime style={{ width: '100%' }} format="YYYY-MM-DD HH:mm" />
+          </Form.Item>
+          <Form.Item
+            name="duration_minutes"
+            label="时长"
+            rules={[{ required: true, message: '请输入时长' }]}
+            style={{ width: 120 }}
+          >
+            <InputNumber min={1} precision={0} addonAfter="分钟" style={{ width: '100%' }} />
+          </Form.Item>
+        </div>
+
+        <Form.Item name="location" label="地点">
+          <Input placeholder="线上链接或线下地址" />
+        </Form.Item>
+
+        <Form.Item name="notes" label="备注">
+          <Input.TextArea rows={3} placeholder="准备事项、联系人等" />
+        </Form.Item>
+      </Form>
+    </Drawer>
+  );
+}

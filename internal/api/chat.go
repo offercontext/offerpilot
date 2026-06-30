@@ -44,6 +44,12 @@ func toAIMessages(stored []db.ChatMessage) []ai.Message {
 				msg.ToolCalls = tcs
 			}
 		}
+		if m.ProviderBlocks != "" {
+			var blocks []json.RawMessage
+			if json.Unmarshal([]byte(m.ProviderBlocks), &blocks) == nil {
+				msg.ProviderBlocks = blocks
+			}
+		}
 		out = append(out, msg)
 	}
 	return out
@@ -56,6 +62,10 @@ func persistAdded(database *db.Database, convID int64, added []ai.Message) error
 		if len(m.ToolCalls) > 0 {
 			b, _ := json.Marshal(m.ToolCalls)
 			cm.ToolCalls = string(b)
+		}
+		if len(m.ProviderBlocks) > 0 {
+			b, _ := json.Marshal(m.ProviderBlocks)
+			cm.ProviderBlocks = string(b)
 		}
 		if err := database.AppendMessage(cm); err != nil {
 			return err

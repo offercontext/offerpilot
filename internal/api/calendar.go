@@ -2,6 +2,8 @@ package api
 
 import (
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/offercontext/offerpilot/internal/db"
@@ -9,12 +11,18 @@ import (
 
 // CalendarEntry is a single dated anchor in the calendar view.
 type CalendarEntry struct {
-	Date     string `json:"date"`            // YYYY-MM-DD
-	Type     string `json:"type"`            // interview | applied
-	Title    string `json:"title"`
-	Subtitle string `json:"subtitle,omitempty"`
-	AppID    int64  `json:"app_id"`
-	NoteID   *int64 `json:"note_id,omitempty"`
+	Date            string `json:"date"` // YYYY-MM-DD
+	Type            string `json:"type"` // interview | applied | written_test | assessment
+	Title           string `json:"title"`
+	Subtitle        string `json:"subtitle,omitempty"`
+	AppID           int64  `json:"app_id"`
+	NoteID          *int64 `json:"note_id,omitempty"`
+	EventID         *int64 `json:"event_id,omitempty"`
+	EventType       string `json:"event_type,omitempty"`
+	ScheduledAt     string `json:"scheduled_at,omitempty"`
+	DurationMinutes int    `json:"duration_minutes,omitempty"`
+	Location        string `json:"location,omitempty"`
+	Editable        bool   `json:"editable,omitempty"`
 }
 
 // getCalendarHandler aggregates interview retrospective notes and applied_at
@@ -64,7 +72,33 @@ func getCalendarHandler(database *db.Database) http.HandlerFunc {
 			}
 		}
 
-		// 2. Applications by applied_at.
+		// 2. Formal schedule events.
+		if events, eerr := database.ListEvents(db.EventFilter{Month: month.Format("2006-01")}); eerr == nil {
+			for i := range events {
+				event := &events[i]
+				if event.ScheduledAt == nil {
+					continue
+				}
+				scheduledAt := event.ScheduledAt.UTC()
+				localDate := event.ScheduledAt.In(time.Local).Format("2006-01-02")
+				eventID := event.ID
+				entries = append(entries, CalendarEntry{
+					Date:            localDate,
+					Type:            event.EventType,
+					Title:           event.CompanyName + " · " + eventTypeLabel(event.EventType),
+					Subtitle:        event.PositionName,
+					AppID:           event.ApplicationID,
+					EventID:         &eventID,
+					EventType:       event.EventType,
+					ScheduledAt:     scheduledAt.Format(time.RFC3339),
+					DurationMinutes: calendarDurationMinutes(event.Duration),
+					Location:        event.Location,
+					Editable:        true,
+				})
+			}
+		}
+
+		// 3. Applications by applied_at.
 		if apps, aerr := database.ListApplications(""); aerr == nil {
 			for i := range apps {
 				a := &apps[i]
@@ -91,4 +125,25 @@ func appIDOrZero(p *int64) int64 {
 		return 0
 	}
 	return *p
+}
+
+func eventTypeLabel(eventType string) string {
+	switch eventType {
+	case "written_test":
+		return "\u7b14\u8bd5"
+	case "interview":
+		return "\u9762\u8bd5"
+	case "assessment":
+		return "\u6d4b\u8bc4"
+	default:
+		return eventType
+	}
+}
+
+func calendarDurationMinutes(duration string) int {
+	minutes, err := strconv.Atoi(strings.TrimSuffix(duration, "m"))
+	if err != nil {
+		return 0
+	}
+	return minutes
 }

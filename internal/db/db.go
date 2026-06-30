@@ -14,8 +14,8 @@ type Application struct {
 	CompanyName  string    `json:"company_name"`
 	PositionName string    `json:"position_name"`
 	JobURL       string    `json:"job_url"`
-	Status       string    `json:"status"`      // applied | assessment | written_test | interview | offer | eliminated | rejected
-	Source       string    `json:"source"`      // cli | web | import
+	Status       string    `json:"status"` // applied | assessment | written_test | interview | offer | eliminated | rejected
+	Source       string    `json:"source"` // cli | web | import
 	Notes        string    `json:"notes"`
 	AppliedAt    time.Time `json:"applied_at"`
 	CreatedAt    time.Time `json:"created_at"`
@@ -62,6 +62,10 @@ func Init(dbPath string) (*Database, error) {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	conn.SetMaxOpenConns(1) // SQLite single-writer
+	if _, err := conn.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("enable foreign keys: %w", err)
+	}
 
 	db := &Database{conn: conn}
 	if err := db.migrate(); err != nil {
@@ -157,6 +161,7 @@ func (db *Database) migrate() error {
 			content TEXT DEFAULT '',
 			tool_calls TEXT DEFAULT '',
 			tool_call_id TEXT DEFAULT '',
+			provider_blocks TEXT DEFAULT '',
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
 		)`,
@@ -172,6 +177,37 @@ func (db *Database) migrate() error {
 		if _, err := db.conn.Exec(m); err != nil {
 			return fmt.Errorf("migration failed: %w\nSQL: %s", err, m)
 		}
+	}
+	if err := db.ensureColumn("chat_messages", "provider_blocks", "TEXT DEFAULT ''"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (db *Database) ensureColumn(table, column, definition string) error {
+	rows, err := db.conn.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return fmt.Errorf("inspect %s columns: %w", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull int
+		var defaultValue interface{}
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return fmt.Errorf("scan %s columns: %w", table, err)
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate %s columns: %w", table, err)
+	}
+	if _, err := db.conn.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + definition); err != nil {
+		return fmt.Errorf("add %s.%s column: %w", table, column, err)
 	}
 	return nil
 }
