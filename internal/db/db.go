@@ -165,12 +165,50 @@ func (db *Database) migrate() error {
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
 		)`,
+		`CREATE TABLE IF NOT EXISTS knowledge_bases (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			description TEXT DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS knowledge_documents (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			knowledge_base_id INTEGER NOT NULL,
+			title TEXT NOT NULL,
+			content TEXT DEFAULT '',
+			tags TEXT DEFAULT '[]',
+			source_type TEXT NOT NULL DEFAULT 'manual',
+			source_name TEXT DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (knowledge_base_id) REFERENCES knowledge_bases(id) ON DELETE CASCADE
+		)`,
+		`CREATE TABLE IF NOT EXISTS knowledge_chunks (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			document_id INTEGER NOT NULL,
+			knowledge_base_id INTEGER NOT NULL,
+			chunk_index INTEGER NOT NULL DEFAULT 0,
+			content TEXT NOT NULL,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (document_id) REFERENCES knowledge_documents(id) ON DELETE CASCADE,
+			FOREIGN KEY (knowledge_base_id) REFERENCES knowledge_bases(id) ON DELETE CASCADE
+		)`,
+		`CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks_fts USING fts5(
+			chunk_id UNINDEXED,
+			document_id UNINDEXED,
+			knowledge_base_id UNINDEXED,
+			content
+		)`,
 		`CREATE INDEX IF NOT EXISTS idx_chat_messages_conv ON chat_messages(conversation_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_applications_status ON applications(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_events_app ON events(application_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_jd_app ON jd_analyses(application_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_matches_resume ON resume_matches(resume_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_notes_app ON interview_notes(application_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_knowledge_documents_base ON knowledge_documents(knowledge_base_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_document ON knowledge_chunks(document_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_base ON knowledge_chunks(knowledge_base_id)`,
 	}
 
 	for _, m := range migrations {
