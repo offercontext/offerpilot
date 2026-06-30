@@ -12,7 +12,7 @@ import dayjs from 'dayjs';
 import type { Application } from '@/types/application';
 import type { CalendarEntry } from '@/types/calendar';
 import ScheduleEventForm from '@/components/ScheduleEventForm';
-import { deleteEvent } from '@/services/events';
+import { deleteEvent, getEvent } from '@/services/events';
 import { getCalendar } from '@/services/calendar';
 import type { ScheduleEvent } from '@/types/event';
 import { EVENT_TYPE_LABELS } from '@/types/event';
@@ -30,6 +30,7 @@ export default function CalendarView({ onOpenDetail, applications }: CalendarVie
   const [currentMonth, setCurrentMonth] = useState(() => dayjs().date(1));
   const [formOpen, setFormOpen] = useState(false);
   const [editingEvent, setEditingEvent] = useState<ScheduleEvent | null>(null);
+  const [loadingEventId, setLoadingEventId] = useState<number | null>(null);
   const monthKey = currentMonth.format('YYYY-MM');
 
   const { data: entries = [], isLoading } = useQuery({
@@ -77,23 +78,19 @@ export default function CalendarView({ onOpenDetail, applications }: CalendarVie
     onError: () => message.error('删除日程失败'),
   });
 
-  const toScheduleEvent = (entry: CalendarEntry): ScheduleEvent | null => {
-    if (!entry.event_id || !entry.event_type || !entry.scheduled_at) return null;
-
-    return {
-      id: entry.event_id,
-      application_id: entry.app_id,
-      event_type: entry.event_type,
-      round: 0,
-      scheduled_at: entry.scheduled_at,
-      duration_minutes: entry.duration_minutes ?? 60,
-      location: entry.location ?? '',
-      notes: '',
-      company_name: entry.title,
-      position_name: entry.subtitle,
-      created_at: '',
-    };
-  };
+  const editMutation = useMutation({
+    mutationFn: getEvent,
+    onMutate: (eventId) => {
+      setLoadingEventId(eventId);
+      setEditingEvent(null);
+    },
+    onSuccess: (event) => {
+      setEditingEvent(event);
+      setFormOpen(true);
+    },
+    onError: () => message.error('获取日程失败'),
+    onSettled: () => setLoadingEventId(null),
+  });
 
   const getEntryLabel = (entry: CalendarEntry) => {
     if (entry.event_type) return EVENT_TYPE_LABELS[entry.event_type];
@@ -248,11 +245,9 @@ export default function CalendarView({ onOpenDetail, applications }: CalendarVie
                             size="small"
                             type="text"
                             icon={<EditOutlined />}
+                            loading={loadingEventId === e.event_id}
                             onClick={() => {
-                              const event = toScheduleEvent(e);
-                              if (!event) return;
-                              setEditingEvent(event);
-                              setFormOpen(true);
+                              if (e.event_id) editMutation.mutate(e.event_id);
                             }}
                           />
                         </Tooltip>

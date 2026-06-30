@@ -17,6 +17,11 @@ export async function listEvents(params?: ListEventsParams): Promise<ScheduleEve
   return data;
 }
 
+export async function getEvent(id: number): Promise<ScheduleEvent> {
+  const { data } = await http.get<ScheduleEvent>(`/events/${id}`);
+  return data;
+}
+
 export async function createEvent(input: ScheduleEventInput): Promise<ScheduleEvent> {
   const { data } = await http.post<ScheduleEvent>('/events', input);
   return data;
