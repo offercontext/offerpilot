@@ -80,6 +80,9 @@ func TestScheduleEventTools(t *testing.T) {
 	if !createTool.Write {
 		t.Fatal("create_event should be a write tool")
 	}
+	if !strings.Contains(string(createTool.Schema), `"duration_minutes":{"type":"integer"`) {
+		t.Fatalf("create_event duration_minutes should be an integer schema, got %s", createTool.Schema)
+	}
 	createArgs := json.RawMessage(`{"application_id":1,"event_type":"interview","scheduled_at":"2026-07-03T14:00:00Z","duration_minutes":60,"location":"腾讯会议"}`)
 	if createTool.Describe(createArgs) == "" {
 		t.Fatal("create_event should describe confirmation text")
@@ -105,6 +108,9 @@ func TestScheduleEventTools(t *testing.T) {
 	if !ok || !updateTool.Write {
 		t.Fatal("update_event should be a write tool")
 	}
+	if !strings.Contains(string(updateTool.Schema), `"duration_minutes":{"type":"integer"`) {
+		t.Fatalf("update_event duration_minutes should be an integer schema, got %s", updateTool.Schema)
+	}
 	deleteTool, ok := reg.Get("delete_event")
 	if !ok || !deleteTool.Write {
 		t.Fatal("delete_event should be a write tool")
@@ -124,5 +130,48 @@ func TestScheduleEventTools(t *testing.T) {
 	}
 	if !strings.Contains(out, `"deleted":true`) {
 		t.Fatalf("expected delete confirmation, got %s", out)
+	}
+}
+
+func TestScheduleEventToolsValidateEventType(t *testing.T) {
+	d := newToolDB(t)
+	_ = d.CreateApplication(&db.Application{
+		CompanyName: "Tencent", PositionName: "Backend", Status: "interview", Source: "test",
+		AppliedAt: time.Date(2026, 7, 1, 9, 0, 0, 0, time.UTC),
+	})
+	reg := NewRegistry(d)
+
+	_, err := reg.Execute(context.Background(), "create_event", json.RawMessage(`{"application_id":1,"event_type":"onsite","scheduled_at":"2026-07-03T14:00:00Z","duration_minutes":60}`))
+	if err == nil {
+		t.Fatal("expected invalid event_type error for create_event")
+	}
+	events, err := d.ListEvents(db.EventFilter{})
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("invalid create_event should not create rows, got %+v", events)
+	}
+
+	scheduledAt := time.Date(2026, 7, 3, 14, 0, 0, 0, time.UTC)
+	event := &db.Event{
+		ApplicationID: 1,
+		EventType:     "interview",
+		ScheduledAt:   &scheduledAt,
+		Duration:      "60m",
+	}
+	if err := d.CreateEvent(event); err != nil {
+		t.Fatalf("create event: %v", err)
+	}
+	_, err = reg.Execute(context.Background(), "update_event", json.RawMessage(`{"id":1,"application_id":1,"event_type":"onsite","scheduled_at":"2026-07-03T15:00:00Z","duration_minutes":90}`))
+	if err == nil {
+		t.Fatal("expected invalid event_type error for update_event")
+	}
+	got, err := d.GetEvent(event.ID)
+	if err != nil {
+		t.Fatalf("get event: %v", err)
+	}
+	if got.EventType != "interview" || got.Duration != "60m" {
+		t.Fatalf("invalid update_event should not change row, got %+v", got)
 	}
 }

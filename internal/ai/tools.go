@@ -84,6 +84,10 @@ func durationString(minutes int) (string, error) {
 	return fmt.Sprintf("%dm", minutes), nil
 }
 
+func validToolEventType(eventType string) bool {
+	return eventType == "written_test" || eventType == "interview" || eventType == "assessment"
+}
+
 // NewRegistry builds the tool set bound to the given database.
 func NewRegistry(database *db.Database) *Registry {
 	r := &Registry{tools: map[string]Tool{}}
@@ -349,7 +353,7 @@ func NewRegistry(database *db.Database) *Registry {
 		Name:        "create_event",
 		Description: "Create a schedule event for an application.",
 		Write:       true,
-		Schema:      json.RawMessage(`{"type":"object","properties":{"application_id":{"type":"integer"},"event_type":{"type":"string"},"round":{"type":"integer"},"scheduled_at":{"type":"string","description":"RFC3339 timestamp"},"duration_minutes":{"type":"number"},"location":{"type":"string"},"notes":{"type":"string"}},"required":["application_id","event_type","scheduled_at","duration_minutes"]}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"application_id":{"type":"integer"},"event_type":{"type":"string"},"round":{"type":"integer"},"scheduled_at":{"type":"string","description":"RFC3339 timestamp"},"duration_minutes":{"type":"integer"},"location":{"type":"string"},"notes":{"type":"string"}},"required":["application_id","event_type","scheduled_at","duration_minutes"]}`),
 		Describe: func(args json.RawMessage) string {
 			var p struct {
 				ApplicationID   int64  `json:"application_id"`
@@ -372,6 +376,9 @@ func NewRegistry(database *db.Database) *Registry {
 			}
 			if err := json.Unmarshal(args, &p); err != nil {
 				return "", err
+			}
+			if !validToolEventType(p.EventType) {
+				return "", fmt.Errorf("invalid event_type %q", p.EventType)
 			}
 			scheduledAt, err := parseToolTime(p.ScheduledAt)
 			if err != nil {
@@ -400,7 +407,7 @@ func NewRegistry(database *db.Database) *Registry {
 		Name:        "update_event",
 		Description: "Update a schedule event.",
 		Write:       true,
-		Schema:      json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer"},"application_id":{"type":"integer"},"event_type":{"type":"string"},"round":{"type":"integer"},"scheduled_at":{"type":"string","description":"RFC3339 timestamp"},"duration_minutes":{"type":"number"},"location":{"type":"string"},"notes":{"type":"string"}},"required":["id","application_id","event_type","scheduled_at","duration_minutes"]}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer"},"application_id":{"type":"integer"},"event_type":{"type":"string"},"round":{"type":"integer"},"scheduled_at":{"type":"string","description":"RFC3339 timestamp"},"duration_minutes":{"type":"integer"},"location":{"type":"string"},"notes":{"type":"string"}},"required":["id","application_id","event_type","scheduled_at","duration_minutes"]}`),
 		Describe: func(args json.RawMessage) string {
 			var p struct {
 				ID              int64  `json:"id"`
@@ -425,6 +432,9 @@ func NewRegistry(database *db.Database) *Registry {
 			}
 			if err := json.Unmarshal(args, &p); err != nil {
 				return "", err
+			}
+			if !validToolEventType(p.EventType) {
+				return "", fmt.Errorf("invalid event_type %q", p.EventType)
 			}
 			scheduledAt, err := parseToolTime(p.ScheduledAt)
 			if err != nil {

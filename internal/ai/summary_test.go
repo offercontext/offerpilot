@@ -51,3 +51,53 @@ func TestBuildDataSummaryIncludesScheduleEvents(t *testing.T) {
 		t.Fatalf("summary missing schedule event info: %s", summary)
 	}
 }
+
+func TestBuildDataSummaryLimitsScheduleEventsAndFormatsDuration(t *testing.T) {
+	d, err := db.Init(t.TempDir() + "/s.db")
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	defer d.Close()
+	app := &db.Application{
+		CompanyName: "Tencent", PositionName: "Backend", Status: "applied", Source: "test",
+		AppliedAt: time.Date(2026, 7, 1, 9, 0, 0, 0, time.UTC),
+	}
+	if err := d.CreateApplication(app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	for i := 0; i < 31; i++ {
+		scheduledAt := time.Date(2026, 7, i+1, 14, 0, 0, 0, time.UTC)
+		duration := "60m"
+		if i == 0 {
+			duration = "60"
+		}
+		if i == 2 {
+			duration = ""
+		}
+		if err := d.CreateEvent(&db.Event{
+			ApplicationID: app.ID,
+			EventType:     "interview",
+			ScheduledAt:   &scheduledAt,
+			Duration:      duration,
+		}); err != nil {
+			t.Fatalf("create event %d: %v", i, err)
+		}
+	}
+
+	summary := BuildDataSummary(d)
+	if strings.Count(summary, "interview") != 30 {
+		t.Fatalf("summary should include first 30 events, got %d in %s", strings.Count(summary, "interview"), summary)
+	}
+	if !strings.Contains(summary, "其余 1") {
+		t.Fatalf("summary missing event truncation line: %s", summary)
+	}
+	if !strings.Contains(summary, "时长60分钟") {
+		t.Fatalf("summary should render numeric duration in minutes: %s", summary)
+	}
+	if strings.Contains(summary, "60m分钟") {
+		t.Fatalf("summary should not duplicate duration units: %s", summary)
+	}
+	if strings.Contains(summary, "2026-07-03 14:00 时长") {
+		t.Fatalf("summary should omit empty durations: %s", summary)
+	}
+}

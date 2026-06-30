@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/offercontext/offerpilot/internal/db"
@@ -39,15 +40,33 @@ func BuildDataSummary(database *db.Database) string {
 	}
 	if events, err := database.ListEvents(db.EventFilter{}); err == nil && len(events) > 0 {
 		sb.WriteString("\n日程事件:\n")
-		for _, e := range events {
+		max := len(events)
+		if max > 30 {
+			max = 30
+		}
+		for _, e := range events[:max] {
 			when := ""
 			if e.ScheduledAt != nil {
 				when = e.ScheduledAt.Format("2006-01-02 15:04")
 			}
-			sb.WriteString(fmt.Sprintf("- #%d %s %s %s %s 时长%s分钟\n", e.ID, e.CompanyName, e.PositionName, e.EventType, when, e.Duration))
+			sb.WriteString(fmt.Sprintf("- #%d %s %s %s %s%s\n", e.ID, e.CompanyName, e.PositionName, e.EventType, when, summaryDuration(e.Duration)))
+		}
+		if len(events) > max {
+			sb.WriteString(fmt.Sprintf("…（其余 %d 条省略）\n", len(events)-max))
 		}
 	}
 	return sb.String()
+}
+
+func summaryDuration(duration string) string {
+	duration = strings.TrimSpace(duration)
+	if duration == "" {
+		return ""
+	}
+	if _, err := strconv.Atoi(duration); err == nil {
+		return fmt.Sprintf(" 时长%s分钟", duration)
+	}
+	return fmt.Sprintf(" 时长%s", duration)
 }
 
 // RunSummaryFallback handles a single user turn without tools by injecting a
