@@ -111,17 +111,20 @@ func TestNoteAPIStandaloneCreateBackfillsApplication(t *testing.T) {
 func TestNoteAPIStandaloneCreateValidation(t *testing.T) {
 	_, app, router := noteTestDB(t)
 	cases := []struct {
-		name string
-		body map[string]interface{}
+		name       string
+		body       map[string]interface{}
+		wantStatus int
 	}{
-		{name: "missing company", body: map[string]interface{}{"round": "Round 1"}},
-		{name: "missing application and no company", body: map[string]interface{}{"application_id": app.ID + 999}},
+		{name: "missing company", body: map[string]interface{}{"round": "Round 1"}, wantStatus: http.StatusBadRequest},
+		{name: "missing application and no company", body: map[string]interface{}{"application_id": app.ID + 999}, wantStatus: http.StatusNotFound},
+		{name: "missing application with company", body: map[string]interface{}{"application_id": app.ID + 999, "company": "x", "position": "y"}, wantStatus: http.StatusNotFound},
+		{name: "zero application", body: map[string]interface{}{"application_id": 0, "company": "x", "position": "y"}, wantStatus: http.StatusBadRequest},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := noteAPIRequest(t, router, http.MethodPost, "/api/notes", tc.body)
-			if rec.Code != http.StatusBadRequest {
-				t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("expected %d, got %d: %s", tc.wantStatus, rec.Code, rec.Body.String())
 			}
 		})
 	}
