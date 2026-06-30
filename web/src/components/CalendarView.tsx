@@ -127,6 +127,18 @@ export default function CalendarView({ onOpenDetail, applications }: CalendarVie
     return 'green';
   };
 
+  const getEntryChipText = (entry: CalendarEntry) => {
+    const time = entry.scheduled_at ? `${dayjs(entry.scheduled_at).format('HH:mm')} ` : '';
+    const label = getEntryLabel(entry);
+    if (entry.event_type) {
+      const company = entry.title.replace(` · ${label}`, '');
+      const position = entry.subtitle ? ` · ${entry.subtitle}` : '';
+      return `${time}${label} ${company}${position}`;
+    }
+    const position = entry.subtitle ? ` · ${entry.subtitle}` : '';
+    return `${time}${label} ${entry.title}${position}`;
+  };
+
   const getEntryKey = (entry: CalendarEntry, index: number) =>
     `${entry.type}-${entry.event_id ?? entry.note_id ?? entry.app_id}-${entry.scheduled_at ?? entry.date}-${index}`;
 
@@ -209,12 +221,9 @@ export default function CalendarView({ onOpenDetail, applications }: CalendarVie
                       {dayEntries.slice(0, 3).map((entry, index) => (
                         <Tooltip
                           key={getEntryKey(entry, index)}
-                          title={`${entry.scheduled_at ? `${dayjs(entry.scheduled_at).format('HH:mm')} ` : ''}${entry.title}`}
+                          title={getEntryChipText(entry)}
                         >
-                          <span className={styles.entryChip}>
-                            {entry.scheduled_at ? `${dayjs(entry.scheduled_at).format('HH:mm')} ` : ''}
-                            {getEntryLabel(entry)}
-                          </span>
+                          <span className={styles.entryChip}>{getEntryChipText(entry)}</span>
                         </Tooltip>
                       ))}
                       {dayEntries.length > 3 && (
