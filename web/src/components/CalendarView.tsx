@@ -78,6 +78,8 @@ export default function CalendarView({ onOpenDetail, applications }: CalendarVie
     mutationFn: deleteEvent,
     onSuccess: (_data, deletedId) => {
       cancelPendingEdit();
+      setFormOpen(false);
+      setEditingEvent(null);
       message.success('日程已删除');
       queryClient.invalidateQueries({ queryKey: ['calendar'] });
       if (selectedEntries.filter((entry) => entry.event_id !== deletedId).length === 0) {
@@ -289,6 +291,7 @@ export default function CalendarView({ onOpenDetail, applications }: CalendarVie
                           cancelText="取消"
                           okButtonProps={{ danger: true, loading: deleteMutation.isPending }}
                           onConfirm={() => {
+                            cancelPendingEdit();
                             if (e.event_id) deleteMutation.mutate(e.event_id);
                           }}
                         >
