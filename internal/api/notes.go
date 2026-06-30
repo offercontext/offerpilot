@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -23,12 +24,15 @@ type createNoteRequest struct {
 
 type updateNoteRequest = createNoteRequest
 
+var errBadNoteCompany = errors.New("company is required")
+
 func registerNoteRoutes(r chi.Router, database *db.Database) {
 	r.Get("/applications/{id}/notes", listNotesByAppHandler(database))
 	r.Post("/applications/{id}/notes", createNoteForAppHandler(database))
 	r.Put("/notes/{id}", updateNoteHandler(database))
 	r.Delete("/notes/{id}", deleteNoteHandler(database))
 	r.Get("/notes", listNotesHandler(database))
+	r.Post("/notes", createStandaloneNoteHandler(database))
 }
 
 // listNotesByAppHandler returns notes linked to a given application (newest first).
@@ -62,9 +66,35 @@ func createNoteForAppHandler(database *db.Database) http.HandlerFunc {
 			respondError(w, http.StatusBadRequest, "Invalid request body")
 			return
 		}
-		// Backfill company/position from the application when omitted.
+		n, err := resolveNoteRequest(database, req, &appID)
+		if errors.Is(err, errBadNoteCompany) {
+			respondError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if err := database.CreateInterviewNote(n); err != nil {
+			respondError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		respondJSON(w, http.StatusCreated, n)
+	}
+}
+
+func resolveNoteRequest(database *db.Database, req createNoteRequest, fallbackAppID *int64) (*db.InterviewNote, error) {
+	appID := req.ApplicationID
+	if fallbackAppID != nil {
+		appID = fallbackAppID
+	}
+
+	var noteAppID *int64
+	if appID != nil {
+		id := *appID
+		noteAppID = &id
 		if req.Company == "" || req.Position == "" {
-			if app, aerr := database.GetApplication(appID); aerr == nil {
+			if app, err := database.GetApplication(id); err == nil {
 				if req.Company == "" {
 					req.Company = app.CompanyName
 				}
@@ -73,20 +103,38 @@ func createNoteForAppHandler(database *db.Database) http.HandlerFunc {
 				}
 			}
 		}
-		if req.Company == "" {
-			respondError(w, http.StatusBadRequest, "company is required")
+	}
+	if req.Company == "" {
+		return nil, errBadNoteCompany
+	}
+	return &db.InterviewNote{
+		ApplicationID:    noteAppID,
+		Company:          req.Company,
+		Position:         req.Position,
+		Round:            req.Round,
+		Date:             req.Date,
+		Questions:        req.Questions,
+		SelfReflection:   req.SelfReflection,
+		DifficultyPoints: req.DifficultyPoints,
+		Mood:             req.Mood,
+	}, nil
+}
+
+func createStandaloneNoteHandler(database *db.Database) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req createNoteRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			respondError(w, http.StatusBadRequest, "Invalid request body")
 			return
 		}
-		n := &db.InterviewNote{
-			ApplicationID:    &appID,
-			Company:          req.Company,
-			Position:         req.Position,
-			Round:            req.Round,
-			Date:             req.Date,
-			Questions:        req.Questions,
-			SelfReflection:   req.SelfReflection,
-			DifficultyPoints: req.DifficultyPoints,
-			Mood:             req.Mood,
+		n, err := resolveNoteRequest(database, req, nil)
+		if errors.Is(err, errBadNoteCompany) {
+			respondError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, err.Error())
+			return
 		}
 		if err := database.CreateInterviewNote(n); err != nil {
 			respondError(w, http.StatusInternalServerError, err.Error())
