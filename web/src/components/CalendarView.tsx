@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   DeleteOutlined,
@@ -31,6 +31,7 @@ export default function CalendarView({ onOpenDetail, applications }: CalendarVie
   const [formOpen, setFormOpen] = useState(false);
   const [editingEvent, setEditingEvent] = useState<ScheduleEvent | null>(null);
   const [loadingEventId, setLoadingEventId] = useState<number | null>(null);
+  const latestEditEventId = useRef<number | null>(null);
   const monthKey = currentMonth.format('YYYY-MM');
 
   const { data: entries = [], isLoading } = useQuery({
@@ -81,15 +82,24 @@ export default function CalendarView({ onOpenDetail, applications }: CalendarVie
   const editMutation = useMutation({
     mutationFn: getEvent,
     onMutate: (eventId) => {
+      latestEditEventId.current = eventId;
       setLoadingEventId(eventId);
       setEditingEvent(null);
     },
     onSuccess: (event) => {
+      if (event.id !== latestEditEventId.current) return;
       setEditingEvent(event);
       setFormOpen(true);
     },
-    onError: () => message.error('获取日程失败'),
-    onSettled: () => setLoadingEventId(null),
+    onError: (_error, eventId) => {
+      if (eventId !== latestEditEventId.current) return;
+      message.error('获取日程失败');
+    },
+    onSettled: (_data, _error, eventId) => {
+      if (eventId !== latestEditEventId.current) return;
+      setLoadingEventId(null);
+      latestEditEventId.current = null;
+    },
   });
 
   const getEntryLabel = (entry: CalendarEntry) => {
@@ -245,6 +255,7 @@ export default function CalendarView({ onOpenDetail, applications }: CalendarVie
                             size="small"
                             type="text"
                             icon={<EditOutlined />}
+                            disabled={editMutation.isPending}
                             loading={loadingEventId === e.event_id}
                             onClick={() => {
                               if (e.event_id) editMutation.mutate(e.event_id);
