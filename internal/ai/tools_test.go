@@ -175,3 +175,61 @@ func TestScheduleEventToolsValidateEventType(t *testing.T) {
 		t.Fatalf("invalid update_event should not change row, got %+v", got)
 	}
 }
+
+func TestInterviewNoteToolsCRUD(t *testing.T) {
+	d := newToolDB(t)
+	_ = d.CreateApplication(&db.Application{
+		CompanyName: "ByteDance", PositionName: "Backend", Status: "interview", Source: "test",
+		AppliedAt: time.Date(2026, 7, 1, 9, 0, 0, 0, time.UTC),
+	})
+	reg := NewRegistry(d)
+
+	addTool, ok := reg.Get("add_note")
+	if !ok || !addTool.Write {
+		t.Fatal("add_note should be a write tool")
+	}
+	if !strings.Contains(string(addTool.Schema), `"difficulty_points"`) {
+		t.Fatalf("add_note schema should include difficulty_points, got %s", addTool.Schema)
+	}
+
+	createArgs := json.RawMessage(`{"application_id":1,"round":"Round 1","date":"2026-07-01","questions":"Go scheduler","self_reflection":"Clear structure","difficulty_points":"Runtime internals","mood":"good"}`)
+	out, err := reg.Execute(context.Background(), "add_note", createArgs)
+	if err != nil {
+		t.Fatalf("execute add_note: %v", err)
+	}
+	if !strings.Contains(out, `"company":"ByteDance"`) || !strings.Contains(out, `"difficulty_points":"Runtime internals"`) {
+		t.Fatalf("expected backfilled note output, got %s", out)
+	}
+
+	updateTool, ok := reg.Get("update_note")
+	if !ok || !updateTool.Write {
+		t.Fatal("update_note should be a write tool")
+	}
+	out, err = reg.Execute(context.Background(), "update_note", json.RawMessage(`{"id":1,"self_reflection":"Need deeper runtime examples","mood":"normal"}`))
+	if err != nil {
+		t.Fatalf("execute update_note: %v", err)
+	}
+	if !strings.Contains(out, `"round":"Round 1"`) || !strings.Contains(out, `"self_reflection":"Need deeper runtime examples"`) {
+		t.Fatalf("expected partial update preserving existing fields, got %s", out)
+	}
+
+	deleteTool, ok := reg.Get("delete_note")
+	if !ok || !deleteTool.Write {
+		t.Fatal("delete_note should be a write tool")
+	}
+	out, err = reg.Execute(context.Background(), "delete_note", json.RawMessage(`{"id":1}`))
+	if err != nil {
+		t.Fatalf("execute delete_note: %v", err)
+	}
+	if !strings.Contains(out, `"deleted":true`) {
+		t.Fatalf("expected delete confirmation, got %s", out)
+	}
+}
+
+func TestInterviewNoteToolsValidateMissingCompany(t *testing.T) {
+	reg := NewRegistry(newToolDB(t))
+	_, err := reg.Execute(context.Background(), "add_note", json.RawMessage(`{"round":"Round 1"}`))
+	if err == nil {
+		t.Fatal("expected missing company error")
+	}
+}

@@ -1,7 +1,9 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -23,12 +25,19 @@ type createNoteRequest struct {
 
 type updateNoteRequest = createNoteRequest
 
+var (
+	errBadNoteApplicationID    = errors.New("Invalid application_id")
+	errBadNoteCompany          = errors.New("company is required")
+	errNoteApplicationNotFound = errors.New("Application not found")
+)
+
 func registerNoteRoutes(r chi.Router, database *db.Database) {
 	r.Get("/applications/{id}/notes", listNotesByAppHandler(database))
 	r.Post("/applications/{id}/notes", createNoteForAppHandler(database))
 	r.Put("/notes/{id}", updateNoteHandler(database))
 	r.Delete("/notes/{id}", deleteNoteHandler(database))
 	r.Get("/notes", listNotesHandler(database))
+	r.Post("/notes", createStandaloneNoteHandler(database))
 }
 
 // listNotesByAppHandler returns notes linked to a given application (newest first).
@@ -62,31 +71,9 @@ func createNoteForAppHandler(database *db.Database) http.HandlerFunc {
 			respondError(w, http.StatusBadRequest, "Invalid request body")
 			return
 		}
-		// Backfill company/position from the application when omitted.
-		if req.Company == "" || req.Position == "" {
-			if app, aerr := database.GetApplication(appID); aerr == nil {
-				if req.Company == "" {
-					req.Company = app.CompanyName
-				}
-				if req.Position == "" {
-					req.Position = app.PositionName
-				}
-			}
-		}
-		if req.Company == "" {
-			respondError(w, http.StatusBadRequest, "company is required")
+		n, err := resolveNoteRequest(database, req, &appID)
+		if respondNoteRequestError(w, err) {
 			return
-		}
-		n := &db.InterviewNote{
-			ApplicationID:    &appID,
-			Company:          req.Company,
-			Position:         req.Position,
-			Round:            req.Round,
-			Date:             req.Date,
-			Questions:        req.Questions,
-			SelfReflection:   req.SelfReflection,
-			DifficultyPoints: req.DifficultyPoints,
-			Mood:             req.Mood,
 		}
 		if err := database.CreateInterviewNote(n); err != nil {
 			respondError(w, http.StatusInternalServerError, err.Error())
@@ -94,6 +81,84 @@ func createNoteForAppHandler(database *db.Database) http.HandlerFunc {
 		}
 		respondJSON(w, http.StatusCreated, n)
 	}
+}
+
+func resolveNoteRequest(database *db.Database, req createNoteRequest, fallbackAppID *int64) (*db.InterviewNote, error) {
+	appID := req.ApplicationID
+	if fallbackAppID != nil {
+		appID = fallbackAppID
+	}
+
+	var noteAppID *int64
+	if appID != nil {
+		id := *appID
+		if id <= 0 {
+			return nil, errBadNoteApplicationID
+		}
+		noteAppID = &id
+		app, err := database.GetApplication(id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, errNoteApplicationNotFound
+		}
+		if err != nil {
+			return nil, err
+		}
+		if req.Company == "" {
+			req.Company = app.CompanyName
+		}
+		if req.Position == "" {
+			req.Position = app.PositionName
+		}
+	}
+	if req.Company == "" {
+		return nil, errBadNoteCompany
+	}
+	return &db.InterviewNote{
+		ApplicationID:    noteAppID,
+		Company:          req.Company,
+		Position:         req.Position,
+		Round:            req.Round,
+		Date:             req.Date,
+		Questions:        req.Questions,
+		SelfReflection:   req.SelfReflection,
+		DifficultyPoints: req.DifficultyPoints,
+		Mood:             req.Mood,
+	}, nil
+}
+
+func createStandaloneNoteHandler(database *db.Database) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req createNoteRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			respondError(w, http.StatusBadRequest, "Invalid request body")
+			return
+		}
+		n, err := resolveNoteRequest(database, req, nil)
+		if respondNoteRequestError(w, err) {
+			return
+		}
+		if err := database.CreateInterviewNote(n); err != nil {
+			respondError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		respondJSON(w, http.StatusCreated, n)
+	}
+}
+
+func respondNoteRequestError(w http.ResponseWriter, err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, errBadNoteApplicationID) || errors.Is(err, errBadNoteCompany) {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return true
+	}
+	if errors.Is(err, errNoteApplicationNotFound) {
+		respondError(w, http.StatusNotFound, err.Error())
+		return true
+	}
+	respondError(w, http.StatusInternalServerError, err.Error())
+	return true
 }
 
 func listNotesHandler(database *db.Database) http.HandlerFunc {

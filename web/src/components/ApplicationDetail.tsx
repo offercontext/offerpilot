@@ -20,20 +20,21 @@ import { CalendarOutlined, RobotOutlined, PlusOutlined, LinkOutlined } from '@an
 import dayjs from 'dayjs';
 import type { Application } from '@/types/application';
 import { STATUS_LABELS } from '@/types/application';
-import { listNotesByApp, createNote, deleteNote as removeNote } from '@/services/notes';
+import { listNotesByApp, createNote, deleteNote as removeNote, updateNote } from '@/services/notes';
 import { listEvents } from '@/services/events';
 import { analyzeJD } from '@/services/ai';
-import type { CreateNoteInput } from '@/types/note';
+import type { CreateNoteInput, InterviewNote } from '@/types/note';
 import { EVENT_TYPE_LABELS } from '@/types/event';
 import ScheduleEventForm from '@/components/ScheduleEventForm';
 import JDAnalyzeModal from './JDAnalyzeModal';
+import ReviewFormDrawer from './ReviewFormDrawer';
 
 const { Title, Paragraph, Text } = Typography;
 
 const MOOD_OPTIONS = [
-  { value: '好', label: '好' },
-  { value: '一般', label: '一般' },
-  { value: '差', label: '差' },
+  { value: 'good', label: '好' },
+  { value: 'normal', label: '一般' },
+  { value: 'bad', label: '差' },
 ];
 
 interface ApplicationDetailProps {
@@ -48,6 +49,7 @@ export default function ApplicationDetail({ application, open, onClose }: Applic
   const [analyzing, setAnalyzing] = useState(false);
   const [jdModalOpen, setJdModalOpen] = useState(false);
   const [eventFormOpen, setEventFormOpen] = useState(false);
+  const [editingNote, setEditingNote] = useState<InterviewNote | null>(null);
 
   const notesQuery = useQuery({
     queryKey: ['notes', application?.id],
@@ -63,6 +65,7 @@ export default function ApplicationDetail({ application, open, onClose }: Applic
 
   const invalidateNotes = () => {
     if (application) queryClient.invalidateQueries({ queryKey: ['notes', application.id] });
+    queryClient.invalidateQueries({ queryKey: ['notes', 'all'] });
   };
 
   const addNote = useMutation({
@@ -82,6 +85,16 @@ export default function ApplicationDetail({ application, open, onClose }: Applic
       invalidateNotes();
     },
     onError: () => message.error('删除失败'),
+  });
+
+  const updateNoteMut = useMutation({
+    mutationFn: ({ id, input }: { id: number; input: CreateNoteInput }) => updateNote(id, input),
+    onSuccess: () => {
+      message.success('已更新面试复盘');
+      setEditingNote(null);
+      invalidateNotes();
+    },
+    onError: () => message.error('更新失败'),
   });
 
   const handleAnalyze = async () => {
@@ -117,6 +130,7 @@ export default function ApplicationDetail({ application, open, onClose }: Applic
         open={open}
         onClose={() => {
           setEventFormOpen(false);
+          setEditingNote(null);
           onClose();
         }}
         width={520}
@@ -231,16 +245,21 @@ export default function ApplicationDetail({ application, open, onClose }: Applic
                     <Text strong>
                       {n.round || '未标注轮次'} · {n.date} · 心情 {n.mood || '—'}
                     </Text>
-                    <Popconfirm
-                      title="删除这条复盘？"
-                      onConfirm={() => removeNoteMut.mutate(n.id)}
-                      okText="删除"
-                      cancelText="取消"
-                    >
-                      <Button type="text" size="small" danger>
-                        删除
+                    <Space size={4}>
+                      <Button type="text" size="small" onClick={() => setEditingNote(n)}>
+                        编辑
                       </Button>
-                    </Popconfirm>
+                      <Popconfirm
+                        title="删除这条复盘？"
+                        onConfirm={() => removeNoteMut.mutate(n.id)}
+                        okText="删除"
+                        cancelText="取消"
+                      >
+                        <Button type="text" size="small" danger>
+                          删除
+                        </Button>
+                      </Popconfirm>
+                    </Space>
                   </div>
                   {n.questions && (
                     <div style={{ marginTop: 4 }}>
@@ -279,6 +298,17 @@ export default function ApplicationDetail({ application, open, onClose }: Applic
         applications={[application]}
         initialApplication={application}
         onClose={() => setEventFormOpen(false)}
+      />
+      <ReviewFormDrawer
+        open={!!editingNote}
+        applications={[application]}
+        initialApplication={application}
+        note={editingNote}
+        saving={updateNoteMut.isPending}
+        onSubmit={(input) => {
+          if (editingNote) updateNoteMut.mutate({ id: editingNote.id, input });
+        }}
+        onClose={() => setEditingNote(null)}
       />
     </>
   );

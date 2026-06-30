@@ -1,7 +1,12 @@
 import axios from 'axios';
-import type { CreateNoteInput, InterviewNote } from '@/types/note';
+import type { CreateNoteInput, InterviewNote, UpdateNoteInput } from '@/types/note';
 
 const http = axios.create({ baseURL: '/api', timeout: 10000 });
+
+export async function listNotes(): Promise<InterviewNote[]> {
+  const { data } = await http.get<InterviewNote[]>('/notes');
+  return data;
+}
 
 export async function listNotesByApp(appID: number): Promise<InterviewNote[]> {
   const { data } = await http.get<InterviewNote[]>(`/applications/${appID}/notes`);
@@ -10,6 +15,16 @@ export async function listNotesByApp(appID: number): Promise<InterviewNote[]> {
 
 export async function createNote(appID: number, input: CreateNoteInput): Promise<InterviewNote> {
   const { data } = await http.post<InterviewNote>(`/applications/${appID}/notes`, input);
+  return data;
+}
+
+export async function createStandaloneNote(input: CreateNoteInput): Promise<InterviewNote> {
+  const { data } = await http.post<InterviewNote>('/notes', input);
+  return data;
+}
+
+export async function updateNote(id: number, input: UpdateNoteInput): Promise<InterviewNote> {
+  const { data } = await http.put<InterviewNote>(`/notes/${id}`, input);
   return data;
 }
 
