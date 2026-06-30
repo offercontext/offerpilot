@@ -14,6 +14,7 @@ export interface InterviewNote {
 }
 
 export interface CreateNoteInput {
+  application_id?: number;
   company?: string;
   position?: string;
   round?: string;
@@ -23,3 +24,5 @@ export interface CreateNoteInput {
   difficulty_points?: string;
   mood?: string;
 }
+
+export type UpdateNoteInput = CreateNoteInput;
