@@ -42,6 +42,9 @@ func NewRouter(database *db.Database, dataDir string) http.Handler {
 		// Interview retrospective notes
 		registerNoteRoutes(r, database)
 
+		// Knowledge bases, documents, imports, and search
+		registerKnowledgeRoutes(r, database)
+
 		// Calendar aggregation (interviews + applied dates)
 		r.Get("/calendar", getCalendarHandler(database))
 
