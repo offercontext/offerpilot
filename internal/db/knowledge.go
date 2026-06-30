@@ -34,14 +34,14 @@ type KnowledgeDocument struct {
 }
 
 type KnowledgeDocumentFilter struct {
-	KnowledgeBaseID int64
-	Query           string
+	KnowledgeBaseID int64  `json:"knowledge_base_id"`
+	Query           string `json:"query"`
 }
 
 type KnowledgeSearchFilter struct {
-	Query           string
-	KnowledgeBaseID int64
-	Limit           int
+	Query           string `json:"query"`
+	KnowledgeBaseID int64  `json:"knowledge_base_id"`
+	Limit           int    `json:"limit"`
 }
 
 type KnowledgeSearchResult struct {
