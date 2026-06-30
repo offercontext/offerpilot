@@ -66,6 +66,24 @@ func jsonResult(v interface{}) (string, error) {
 	return string(b), nil
 }
 
+func parseToolTime(value string) (*time.Time, error) {
+	if value == "" {
+		return nil, fmt.Errorf("scheduled_at is required")
+	}
+	t, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return nil, fmt.Errorf("scheduled_at must be RFC3339: %w", err)
+	}
+	return &t, nil
+}
+
+func durationString(minutes int) (string, error) {
+	if minutes <= 0 {
+		return "", fmt.Errorf("duration_minutes must be greater than 0")
+	}
+	return fmt.Sprintf("%dm", minutes), nil
+}
+
 // NewRegistry builds the tool set bound to the given database.
 func NewRegistry(database *db.Database) *Registry {
 	r := &Registry{tools: map[string]Tool{}}
@@ -185,6 +203,42 @@ func NewRegistry(database *db.Database) *Registry {
 			return jsonResult(items)
 		},
 	})
+	r.add(Tool{
+		Name:        "list_events",
+		Description: "List schedule events by month, application_id, or event_type.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"month":{"type":"string","description":"Month in YYYY-MM format"},"application_id":{"type":"integer"},"event_type":{"type":"string"}}}`),
+		Handler: func(ctx context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				Month         string `json:"month"`
+				ApplicationID int64  `json:"application_id"`
+				EventType     string `json:"event_type"`
+			}
+			_ = json.Unmarshal(args, &p)
+			items, err := database.ListEvents(db.EventFilter{Month: p.Month, ApplicationID: p.ApplicationID, EventType: p.EventType})
+			if err != nil {
+				return "", err
+			}
+			return jsonResult(items)
+		},
+	})
+	r.add(Tool{
+		Name:        "get_event",
+		Description: "Get a single schedule event by ID.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}`),
+		Handler: func(ctx context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				ID int64 `json:"id"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return "", err
+			}
+			event, err := database.GetEvent(p.ID)
+			if err != nil {
+				return "", err
+			}
+			return jsonResult(event)
+		},
+	})
 
 	// ---- write tools ----
 	r.add(Tool{
@@ -289,6 +343,136 @@ func NewRegistry(database *db.Database) *Registry {
 				return "", err
 			}
 			return jsonResult(note)
+		},
+	})
+	r.add(Tool{
+		Name:        "create_event",
+		Description: "Create a schedule event for an application.",
+		Write:       true,
+		Schema:      json.RawMessage(`{"type":"object","properties":{"application_id":{"type":"integer"},"event_type":{"type":"string"},"round":{"type":"integer"},"scheduled_at":{"type":"string","description":"RFC3339 timestamp"},"duration_minutes":{"type":"number"},"location":{"type":"string"},"notes":{"type":"string"}},"required":["application_id","event_type","scheduled_at","duration_minutes"]}`),
+		Describe: func(args json.RawMessage) string {
+			var p struct {
+				ApplicationID   int64  `json:"application_id"`
+				EventType       string `json:"event_type"`
+				ScheduledAt     string `json:"scheduled_at"`
+				DurationMinutes int    `json:"duration_minutes"`
+			}
+			_ = json.Unmarshal(args, &p)
+			return fmt.Sprintf("Create %s event for application #%d at %s for %d minutes", p.EventType, p.ApplicationID, p.ScheduledAt, p.DurationMinutes)
+		},
+		Handler: func(ctx context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				ApplicationID   int64  `json:"application_id"`
+				EventType       string `json:"event_type"`
+				Round           int    `json:"round"`
+				ScheduledAt     string `json:"scheduled_at"`
+				DurationMinutes int    `json:"duration_minutes"`
+				Location        string `json:"location"`
+				Notes           string `json:"notes"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return "", err
+			}
+			scheduledAt, err := parseToolTime(p.ScheduledAt)
+			if err != nil {
+				return "", err
+			}
+			duration, err := durationString(p.DurationMinutes)
+			if err != nil {
+				return "", err
+			}
+			event := &db.Event{
+				ApplicationID: p.ApplicationID,
+				EventType:     p.EventType,
+				Round:         p.Round,
+				ScheduledAt:   scheduledAt,
+				Duration:      duration,
+				Location:      p.Location,
+				Notes:         p.Notes,
+			}
+			if err := database.CreateEvent(event); err != nil {
+				return "", err
+			}
+			return jsonResult(event)
+		},
+	})
+	r.add(Tool{
+		Name:        "update_event",
+		Description: "Update a schedule event.",
+		Write:       true,
+		Schema:      json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer"},"application_id":{"type":"integer"},"event_type":{"type":"string"},"round":{"type":"integer"},"scheduled_at":{"type":"string","description":"RFC3339 timestamp"},"duration_minutes":{"type":"number"},"location":{"type":"string"},"notes":{"type":"string"}},"required":["id","application_id","event_type","scheduled_at","duration_minutes"]}`),
+		Describe: func(args json.RawMessage) string {
+			var p struct {
+				ID              int64  `json:"id"`
+				ApplicationID   int64  `json:"application_id"`
+				EventType       string `json:"event_type"`
+				ScheduledAt     string `json:"scheduled_at"`
+				DurationMinutes int    `json:"duration_minutes"`
+			}
+			_ = json.Unmarshal(args, &p)
+			return fmt.Sprintf("Update event #%d for application #%d to %s at %s for %d minutes", p.ID, p.ApplicationID, p.EventType, p.ScheduledAt, p.DurationMinutes)
+		},
+		Handler: func(ctx context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				ID              int64  `json:"id"`
+				ApplicationID   int64  `json:"application_id"`
+				EventType       string `json:"event_type"`
+				Round           int    `json:"round"`
+				ScheduledAt     string `json:"scheduled_at"`
+				DurationMinutes int    `json:"duration_minutes"`
+				Location        string `json:"location"`
+				Notes           string `json:"notes"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return "", err
+			}
+			scheduledAt, err := parseToolTime(p.ScheduledAt)
+			if err != nil {
+				return "", err
+			}
+			duration, err := durationString(p.DurationMinutes)
+			if err != nil {
+				return "", err
+			}
+			event := &db.Event{
+				ID:            p.ID,
+				ApplicationID: p.ApplicationID,
+				EventType:     p.EventType,
+				Round:         p.Round,
+				ScheduledAt:   scheduledAt,
+				Duration:      duration,
+				Location:      p.Location,
+				Notes:         p.Notes,
+			}
+			if err := database.UpdateEvent(event); err != nil {
+				return "", err
+			}
+			return jsonResult(event)
+		},
+	})
+	r.add(Tool{
+		Name:        "delete_event",
+		Description: "Delete a schedule event.",
+		Write:       true,
+		Schema:      json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}`),
+		Describe: func(args json.RawMessage) string {
+			var p struct {
+				ID int64 `json:"id"`
+			}
+			_ = json.Unmarshal(args, &p)
+			return fmt.Sprintf("Delete schedule event #%d", p.ID)
+		},
+		Handler: func(ctx context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				ID int64 `json:"id"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return "", err
+			}
+			if err := database.DeleteEvent(p.ID); err != nil {
+				return "", err
+			}
+			return jsonResult(map[string]interface{}{"deleted": true, "id": p.ID})
 		},
 	})
 

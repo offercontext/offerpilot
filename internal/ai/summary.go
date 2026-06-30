@@ -37,6 +37,16 @@ func BuildDataSummary(database *db.Database) string {
 	if err == nil && len(resumes) > 0 {
 		sb.WriteString(fmt.Sprintf("简历共 %d 份。\n", len(resumes)))
 	}
+	if events, err := database.ListEvents(db.EventFilter{}); err == nil && len(events) > 0 {
+		sb.WriteString("\n日程事件:\n")
+		for _, e := range events {
+			when := ""
+			if e.ScheduledAt != nil {
+				when = e.ScheduledAt.Format("2006-01-02 15:04")
+			}
+			sb.WriteString(fmt.Sprintf("- #%d %s %s %s %s 时长%s分钟\n", e.ID, e.CompanyName, e.PositionName, e.EventType, when, e.Duration))
+		}
+	}
 	return sb.String()
 }
 
