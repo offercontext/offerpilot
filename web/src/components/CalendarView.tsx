@@ -1,11 +1,21 @@
 import { useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { LeftOutlined, RightOutlined } from '@ant-design/icons';
-import { Button, Spin, Empty, Tag, Drawer, Tooltip } from 'antd';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  DeleteOutlined,
+  EditOutlined,
+  LeftOutlined,
+  PlusOutlined,
+  RightOutlined,
+} from '@ant-design/icons';
+import { Button, Spin, Empty, Tag, Drawer, Popconfirm, Tooltip, message } from 'antd';
 import dayjs from 'dayjs';
 import type { Application } from '@/types/application';
 import type { CalendarEntry } from '@/types/calendar';
+import ScheduleEventForm from '@/components/ScheduleEventForm';
+import { deleteEvent } from '@/services/events';
 import { getCalendar } from '@/services/calendar';
+import type { ScheduleEvent } from '@/types/event';
+import { EVENT_TYPE_LABELS } from '@/types/event';
 import styles from './CalendarView.module.css';
 
 const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日'];
@@ -16,7 +26,10 @@ interface CalendarViewProps {
 }
 
 export default function CalendarView({ onOpenDetail, applications }: CalendarViewProps) {
+  const queryClient = useQueryClient();
   const [currentMonth, setCurrentMonth] = useState(() => dayjs().date(1));
+  const [formOpen, setFormOpen] = useState(false);
+  const [editingEvent, setEditingEvent] = useState<ScheduleEvent | null>(null);
   const monthKey = currentMonth.format('YYYY-MM');
 
   const { data: entries = [], isLoading } = useQuery({
@@ -52,6 +65,53 @@ export default function CalendarView({ onOpenDetail, applications }: CalendarVie
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const selectedEntries = selectedDate ? byDate.get(selectedDate) ?? [] : [];
 
+  const deleteMutation = useMutation({
+    mutationFn: deleteEvent,
+    onSuccess: (_data, deletedId) => {
+      message.success('日程已删除');
+      queryClient.invalidateQueries({ queryKey: ['calendar'] });
+      if (selectedEntries.filter((entry) => entry.event_id !== deletedId).length === 0) {
+        setSelectedDate(null);
+      }
+    },
+    onError: () => message.error('删除日程失败'),
+  });
+
+  const toScheduleEvent = (entry: CalendarEntry): ScheduleEvent | null => {
+    if (!entry.event_id || !entry.event_type || !entry.scheduled_at) return null;
+
+    return {
+      id: entry.event_id,
+      application_id: entry.app_id,
+      event_type: entry.event_type,
+      round: 0,
+      scheduled_at: entry.scheduled_at,
+      duration_minutes: entry.duration_minutes ?? 60,
+      location: entry.location ?? '',
+      notes: '',
+      company_name: entry.title,
+      position_name: entry.subtitle,
+      created_at: '',
+    };
+  };
+
+  const getEntryLabel = (entry: CalendarEntry) => {
+    if (entry.event_type) return EVENT_TYPE_LABELS[entry.event_type];
+    if (entry.type === 'applied') return '投递';
+    if (entry.note_id) return '复盘';
+    return entry.type === 'interview' ? '复盘' : EVENT_TYPE_LABELS[entry.type];
+  };
+
+  const getEntryTagColor = (entry: CalendarEntry) => {
+    if (entry.event_type === 'written_test' || entry.type === 'written_test') return 'blue';
+    if (entry.event_type === 'assessment' || entry.type === 'assessment') return 'purple';
+    if (entry.type === 'applied') return 'default';
+    return 'green';
+  };
+
+  const getEntryKey = (entry: CalendarEntry, index: number) =>
+    `${entry.type}-${entry.event_id ?? entry.note_id ?? entry.app_id}-${entry.scheduled_at ?? entry.date}-${index}`;
+
   const openEntry = (e: CalendarEntry) => {
     setSelectedDate(null);
     const app = applications.find((a) => a.id === e.app_id);
@@ -79,6 +139,18 @@ export default function CalendarView({ onOpenDetail, applications }: CalendarVie
         >
           今天
         </Button>
+        <Button
+          type="primary"
+          size="small"
+          icon={<PlusOutlined />}
+          className={styles.createButton}
+          onClick={() => {
+            setEditingEvent(null);
+            setFormOpen(true);
+          }}
+        >
+          新建日程
+        </Button>
       </div>
 
       {isLoading ? (
@@ -100,8 +172,6 @@ export default function CalendarView({ onOpenDetail, applications }: CalendarVie
               const dayEntries = byDate.get(ds) ?? [];
               const inMonth = d.month() === currentMonth.month();
               const isToday = d.isSame(today, 'day');
-              const hasInterview = dayEntries.some((e) => e.type === 'interview');
-              const hasApplied = dayEntries.some((e) => e.type === 'applied');
               return (
                 <div
                   key={ds}
@@ -115,13 +185,20 @@ export default function CalendarView({ onOpenDetail, applications }: CalendarVie
                 >
                   <div className={styles.dateNum}>{d.date()}</div>
                   {dayEntries.length > 0 && (
-                    <div className={styles.dots}>
-                      {hasInterview && <span className={styles.dotInterview} />}
-                      {hasApplied && <span className={styles.dotApplied} />}
-                      {dayEntries.length > 1 && (
-                        <Tooltip title={`${dayEntries.length} 条记录`}>
-                          <span className={styles.count}>{dayEntries.length}</span>
+                    <div className={styles.entries}>
+                      {dayEntries.slice(0, 3).map((entry, index) => (
+                        <Tooltip
+                          key={getEntryKey(entry, index)}
+                          title={`${entry.scheduled_at ? `${dayjs(entry.scheduled_at).format('HH:mm')} ` : ''}${entry.title}`}
+                        >
+                          <span className={styles.entryChip}>
+                            {entry.scheduled_at ? `${dayjs(entry.scheduled_at).format('HH:mm')} ` : ''}
+                            {getEntryLabel(entry)}
+                          </span>
                         </Tooltip>
+                      ))}
+                      {dayEntries.length > 3 && (
+                        <span className={styles.moreCount}>+{dayEntries.length - 3}</span>
                       )}
                     </div>
                   )}
@@ -131,8 +208,9 @@ export default function CalendarView({ onOpenDetail, applications }: CalendarVie
           </div>
 
           <div className={styles.legend}>
-            <span className={styles.legendDot + ' ' + styles.dotInterview} /> 面试复盘
-            <span className={styles.legendDot + ' ' + styles.dotApplied} style={{ marginLeft: 16 }} /> 投递记录
+            <span className={styles.legendDot + ' ' + styles.dotSchedule} /> 日程
+            <span className={styles.legendDot + ' ' + styles.dotInterview} style={{ marginLeft: 16 }} /> 复盘
+            <span className={styles.legendDot + ' ' + styles.dotApplied} style={{ marginLeft: 16 }} /> 投递
           </div>
         </>
       )}
@@ -150,25 +228,76 @@ export default function CalendarView({ onOpenDetail, applications }: CalendarVie
           <div>
             {selectedEntries.map((e, i) => (
               <div
-                key={i}
-                className={styles.entryItem}
-                onClick={() => openEntry(e)}
+                key={getEntryKey(e, i)}
+                className={[styles.entryItem, e.editable ? styles.entryItemStatic : ''].join(' ')}
+                onClick={() => !e.editable && openEntry(e)}
               >
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <strong>{e.title}</strong>
-                  <Tag color={e.type === 'interview' ? 'green' : 'default'}>
-                    {e.type === 'interview' ? '面试' : '投递'}
-                  </Tag>
+                <div className={styles.entryHeader}>
+                  <div className={styles.entryTitleWrap}>
+                    {e.scheduled_at && (
+                      <span className={styles.entryTime}>{dayjs(e.scheduled_at).format('HH:mm')}</span>
+                    )}
+                    <strong className={styles.entryTitle}>{e.title}</strong>
+                  </div>
+                  <div className={styles.entryMeta}>
+                    <Tag color={getEntryTagColor(e)}>{getEntryLabel(e)}</Tag>
+                    {e.editable && (
+                      <div className={styles.entryActions} onClick={(event) => event.stopPropagation()}>
+                        <Tooltip title="编辑日程">
+                          <Button
+                            size="small"
+                            type="text"
+                            icon={<EditOutlined />}
+                            onClick={() => {
+                              const event = toScheduleEvent(e);
+                              if (!event) return;
+                              setEditingEvent(event);
+                              setFormOpen(true);
+                            }}
+                          />
+                        </Tooltip>
+                        <Popconfirm
+                          title="删除日程"
+                          description="确定删除这个日程吗？"
+                          okText="删除"
+                          cancelText="取消"
+                          okButtonProps={{ danger: true, loading: deleteMutation.isPending }}
+                          onConfirm={() => {
+                            if (e.event_id) deleteMutation.mutate(e.event_id);
+                          }}
+                        >
+                          <Tooltip title="删除日程">
+                            <Button
+                              size="small"
+                              type="text"
+                              danger
+                              icon={<DeleteOutlined />}
+                            />
+                          </Tooltip>
+                        </Popconfirm>
+                      </div>
+                    )}
+                  </div>
                 </div>
-                {e.subtitle && <div style={{ color: '#64748b', fontSize: 13 }}>{e.subtitle}</div>}
+                {e.subtitle && <div className={styles.entrySubtitle}>{e.subtitle}</div>}
+                {e.location && <div className={styles.entryLocation}>{e.location}</div>}
               </div>
             ))}
             <p style={{ marginTop: 12, color: '#94a3b8', fontSize: 12 }}>
-              点击任意条目可打开对应投递详情。
+              点击投递或复盘记录可打开对应投递详情。
             </p>
           </div>
         )}
       </Drawer>
+      <ScheduleEventForm
+        open={formOpen}
+        applications={applications}
+        event={editingEvent ?? undefined}
+        onClose={() => {
+          setFormOpen(false);
+          setEditingEvent(null);
+        }}
+      />
     </div>
   );
 }

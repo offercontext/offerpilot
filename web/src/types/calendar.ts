@@ -1,11 +1,19 @@
 // Mirrors Go api.CalendarEntry JSON tags.
-export type CalendarEntryType = 'interview' | 'applied';
+import type { ScheduleEventType } from '@/types/event';
+
+export type CalendarEntryType = 'interview' | 'applied' | 'written_test' | 'assessment';
 
 export interface CalendarEntry {
-  date: string;        // YYYY-MM-DD
+  date: string;
   type: CalendarEntryType;
   title: string;
   subtitle?: string;
   app_id: number;
   note_id?: number;
+  event_id?: number;
+  event_type?: ScheduleEventType;
+  scheduled_at?: string;
+  duration_minutes?: number;
+  location?: string;
+  editable?: boolean;
 }
