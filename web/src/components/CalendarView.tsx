@@ -32,6 +32,7 @@ export default function CalendarView({ onOpenDetail, applications }: CalendarVie
   const [editingEvent, setEditingEvent] = useState<ScheduleEvent | null>(null);
   const [loadingEventId, setLoadingEventId] = useState<number | null>(null);
   const latestEditEventId = useRef<number | null>(null);
+  const editRequestToken = useRef(0);
   const monthKey = currentMonth.format('YYYY-MM');
 
   const { data: entries = [], isLoading } = useQuery({
@@ -67,9 +68,16 @@ export default function CalendarView({ onOpenDetail, applications }: CalendarVie
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const selectedEntries = selectedDate ? byDate.get(selectedDate) ?? [] : [];
 
+  const cancelPendingEdit = () => {
+    editRequestToken.current += 1;
+    latestEditEventId.current = null;
+    setLoadingEventId(null);
+  };
+
   const deleteMutation = useMutation({
     mutationFn: deleteEvent,
     onSuccess: (_data, deletedId) => {
+      cancelPendingEdit();
       message.success('日程已删除');
       queryClient.invalidateQueries({ queryKey: ['calendar'] });
       if (selectedEntries.filter((entry) => entry.event_id !== deletedId).length === 0) {
@@ -80,23 +88,24 @@ export default function CalendarView({ onOpenDetail, applications }: CalendarVie
   });
 
   const editMutation = useMutation({
-    mutationFn: getEvent,
-    onMutate: (eventId) => {
+    mutationFn: ({ eventId }: { eventId: number; token: number }) => getEvent(eventId),
+    onMutate: ({ eventId, token }) => {
+      editRequestToken.current = token;
       latestEditEventId.current = eventId;
       setLoadingEventId(eventId);
       setEditingEvent(null);
     },
-    onSuccess: (event) => {
-      if (event.id !== latestEditEventId.current) return;
+    onSuccess: (event, { token }) => {
+      if (token !== editRequestToken.current || event.id !== latestEditEventId.current) return;
       setEditingEvent(event);
       setFormOpen(true);
     },
-    onError: (_error, eventId) => {
-      if (eventId !== latestEditEventId.current) return;
+    onError: (_error, { eventId, token }) => {
+      if (token !== editRequestToken.current || eventId !== latestEditEventId.current) return;
       message.error('获取日程失败');
     },
-    onSettled: (_data, _error, eventId) => {
-      if (eventId !== latestEditEventId.current) return;
+    onSettled: (_data, _error, { eventId, token }) => {
+      if (token !== editRequestToken.current || eventId !== latestEditEventId.current) return;
       setLoadingEventId(null);
       latestEditEventId.current = null;
     },
@@ -120,6 +129,7 @@ export default function CalendarView({ onOpenDetail, applications }: CalendarVie
     `${entry.type}-${entry.event_id ?? entry.note_id ?? entry.app_id}-${entry.scheduled_at ?? entry.date}-${index}`;
 
   const openEntry = (e: CalendarEntry) => {
+    cancelPendingEdit();
     setSelectedDate(null);
     const app = applications.find((a) => a.id === e.app_id);
     if (app) onOpenDetail(app);
@@ -152,6 +162,7 @@ export default function CalendarView({ onOpenDetail, applications }: CalendarVie
           icon={<PlusOutlined />}
           className={styles.createButton}
           onClick={() => {
+            cancelPendingEdit();
             setEditingEvent(null);
             setFormOpen(true);
           }}
@@ -225,7 +236,10 @@ export default function CalendarView({ onOpenDetail, applications }: CalendarVie
       <Drawer
         title={selectedDate ? dayjs(selectedDate).format('M月D日 记录') : ''}
         open={!!selectedDate}
-        onClose={() => setSelectedDate(null)}
+        onClose={() => {
+          cancelPendingEdit();
+          setSelectedDate(null);
+        }}
         width={360}
         destroyOnClose
       >
@@ -258,7 +272,13 @@ export default function CalendarView({ onOpenDetail, applications }: CalendarVie
                             disabled={editMutation.isPending}
                             loading={loadingEventId === e.event_id}
                             onClick={() => {
-                              if (e.event_id) editMutation.mutate(e.event_id);
+                              if (!e.event_id || editMutation.isPending) return;
+                              const token = editRequestToken.current + 1;
+                              editRequestToken.current = token;
+                              editMutation.mutate({
+                                eventId: e.event_id,
+                                token,
+                              });
                             }}
                           />
                         </Tooltip>
@@ -300,6 +320,7 @@ export default function CalendarView({ onOpenDetail, applications }: CalendarVie
         applications={applications}
         event={editingEvent ?? undefined}
         onClose={() => {
+          cancelPendingEdit();
           setFormOpen(false);
           setEditingEvent(null);
         }}
