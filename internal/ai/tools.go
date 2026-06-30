@@ -88,6 +88,25 @@ func validToolEventType(eventType string) bool {
 	return eventType == "written_test" || eventType == "interview" || eventType == "assessment"
 }
 
+func resolveToolNote(database *db.Database, appID *int64, company, position string) (*int64, string, string, error) {
+	if appID != nil && (company == "" || position == "") {
+		app, err := database.GetApplication(*appID)
+		if err != nil {
+			return appID, company, position, err
+		}
+		if company == "" {
+			company = app.CompanyName
+		}
+		if position == "" {
+			position = app.PositionName
+		}
+	}
+	if company == "" {
+		return appID, company, position, fmt.Errorf("company is required")
+	}
+	return appID, company, position, nil
+}
+
 // NewRegistry builds the tool set bound to the given database.
 func NewRegistry(database *db.Database) *Registry {
 	r := &Registry{tools: map[string]Tool{}}
@@ -316,37 +335,149 @@ func NewRegistry(database *db.Database) *Registry {
 	})
 	r.add(Tool{
 		Name:        "add_note",
-		Description: "为某次面试追加一条复盘笔记。",
+		Description: "Add an interview review note. If application_id is provided, missing company and position are filled from the application.",
 		Write:       true,
-		Schema:      json.RawMessage(`{"type":"object","properties":{"company":{"type":"string"},"position":{"type":"string"},"round":{"type":"string"},"questions":{"type":"string"},"self_reflection":{"type":"string"},"application_id":{"type":"integer"}},"required":["company","position"]}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"application_id":{"type":"integer"},"company":{"type":"string"},"position":{"type":"string"},"round":{"type":"string"},"date":{"type":"string"},"questions":{"type":"string"},"self_reflection":{"type":"string"},"difficulty_points":{"type":"string"},"mood":{"type":"string"}}}`),
 		Describe: func(args json.RawMessage) string {
 			var p struct {
-				Company  string `json:"company"`
-				Position string `json:"position"`
+				ApplicationID *int64 `json:"application_id"`
+				Company       string `json:"company"`
+				Position      string `json:"position"`
+				Round         string `json:"round"`
 			}
 			_ = json.Unmarshal(args, &p)
-			return fmt.Sprintf("新增面试复盘笔记：%s - %s", p.Company, p.Position)
+			if p.Company == "" && p.ApplicationID != nil {
+				return fmt.Sprintf("Add interview review for application #%d (%s)", *p.ApplicationID, p.Round)
+			}
+			return fmt.Sprintf("Add interview review: %s - %s (%s)", p.Company, p.Position, p.Round)
 		},
 		Handler: func(ctx context.Context, args json.RawMessage) (string, error) {
 			var p struct {
-				Company        string `json:"company"`
-				Position       string `json:"position"`
-				Round          string `json:"round"`
-				Questions      string `json:"questions"`
-				SelfReflection string `json:"self_reflection"`
-				ApplicationID  *int64 `json:"application_id"`
+				ApplicationID    *int64 `json:"application_id"`
+				Company          string `json:"company"`
+				Position         string `json:"position"`
+				Round            string `json:"round"`
+				Date             string `json:"date"`
+				Questions        string `json:"questions"`
+				SelfReflection   string `json:"self_reflection"`
+				DifficultyPoints string `json:"difficulty_points"`
+				Mood             string `json:"mood"`
 			}
 			if err := json.Unmarshal(args, &p); err != nil {
 				return "", err
 			}
+			appID, company, position, err := resolveToolNote(database, p.ApplicationID, p.Company, p.Position)
+			if err != nil {
+				return "", err
+			}
 			note := &db.InterviewNote{
-				ApplicationID: p.ApplicationID, Company: p.Company, Position: p.Position,
-				Round: p.Round, Questions: p.Questions, SelfReflection: p.SelfReflection,
+				ApplicationID:    appID,
+				Company:          company,
+				Position:         position,
+				Round:            p.Round,
+				Date:             p.Date,
+				Questions:        p.Questions,
+				SelfReflection:   p.SelfReflection,
+				DifficultyPoints: p.DifficultyPoints,
+				Mood:             p.Mood,
 			}
 			if err := database.CreateInterviewNote(note); err != nil {
 				return "", err
 			}
 			return jsonResult(note)
+		},
+	})
+	r.add(Tool{
+		Name:        "update_note",
+		Description: "Update an existing interview review note by id. Omitted fields keep their current values.",
+		Write:       true,
+		Schema:      json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer"},"application_id":{"type":"integer"},"company":{"type":"string"},"position":{"type":"string"},"round":{"type":"string"},"date":{"type":"string"},"questions":{"type":"string"},"self_reflection":{"type":"string"},"difficulty_points":{"type":"string"},"mood":{"type":"string"}},"required":["id"]}`),
+		Describe: func(args json.RawMessage) string {
+			var p struct {
+				ID int64 `json:"id"`
+			}
+			_ = json.Unmarshal(args, &p)
+			return fmt.Sprintf("Update interview review note #%d", p.ID)
+		},
+		Handler: func(ctx context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				ID               int64  `json:"id"`
+				ApplicationID    *int64 `json:"application_id"`
+				Company          string `json:"company"`
+				Position         string `json:"position"`
+				Round            string `json:"round"`
+				Date             string `json:"date"`
+				Questions        string `json:"questions"`
+				SelfReflection   string `json:"self_reflection"`
+				DifficultyPoints string `json:"difficulty_points"`
+				Mood             string `json:"mood"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return "", err
+			}
+			note, err := database.GetInterviewNote(p.ID)
+			if err != nil {
+				return "", err
+			}
+			if p.ApplicationID != nil {
+				note.ApplicationID = p.ApplicationID
+			}
+			if p.Company != "" {
+				note.Company = p.Company
+			}
+			if p.Position != "" {
+				note.Position = p.Position
+			}
+			if p.Round != "" {
+				note.Round = p.Round
+			}
+			if p.Date != "" {
+				note.Date = p.Date
+			}
+			if p.Questions != "" {
+				note.Questions = p.Questions
+			}
+			if p.SelfReflection != "" {
+				note.SelfReflection = p.SelfReflection
+			}
+			if p.DifficultyPoints != "" {
+				note.DifficultyPoints = p.DifficultyPoints
+			}
+			if p.Mood != "" {
+				note.Mood = p.Mood
+			}
+			if err := database.UpdateInterviewNote(note); err != nil {
+				return "", err
+			}
+			return jsonResult(note)
+		},
+	})
+	r.add(Tool{
+		Name:        "delete_note",
+		Description: "Delete an interview review note by id.",
+		Write:       true,
+		Schema:      json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}`),
+		Describe: func(args json.RawMessage) string {
+			var p struct {
+				ID int64 `json:"id"`
+			}
+			_ = json.Unmarshal(args, &p)
+			return fmt.Sprintf("Delete interview review note #%d", p.ID)
+		},
+		Handler: func(ctx context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				ID int64 `json:"id"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return "", err
+			}
+			if _, err := database.GetInterviewNote(p.ID); err != nil {
+				return "", err
+			}
+			if err := database.DeleteInterviewNote(p.ID); err != nil {
+				return "", err
+			}
+			return jsonResult(map[string]interface{}{"deleted": true, "id": p.ID})
 		},
 	})
 	r.add(Tool{
