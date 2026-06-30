@@ -80,9 +80,10 @@ func getCalendarHandler(database *db.Database) http.HandlerFunc {
 					continue
 				}
 				scheduledAt := event.ScheduledAt.UTC()
+				localDate := event.ScheduledAt.In(time.Local).Format("2006-01-02")
 				eventID := event.ID
 				entries = append(entries, CalendarEntry{
-					Date:            scheduledAt.Format("2006-01-02"),
+					Date:            localDate,
 					Type:            event.EventType,
 					Title:           event.CompanyName + " · " + eventTypeLabel(event.EventType),
 					Subtitle:        event.PositionName,

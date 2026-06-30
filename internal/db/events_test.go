@@ -131,6 +131,44 @@ func TestListEventsByMonthAndType(t *testing.T) {
 	}
 }
 
+func TestListEventsByMonthUsesLocalCalendarBounds(t *testing.T) {
+	originalLocal := time.Local
+	time.Local = time.FixedZone("CST", 8*3600)
+	t.Cleanup(func() { time.Local = originalLocal })
+
+	d := newTestDB(t)
+	app := createEventTestApplication(t, d)
+	scheduledAt := time.Date(2026, 7, 1, 0, 30, 0, 0, time.Local)
+	event := Event{
+		ApplicationID: app.ID,
+		EventType:     "written_test",
+		ScheduledAt:   &scheduledAt,
+	}
+	if err := d.CreateEvent(&event); err != nil {
+		t.Fatalf("create event: %v", err)
+	}
+	augustLocal := time.Date(2026, 8, 1, 0, 30, 0, 0, time.Local)
+	augustEvent := Event{
+		ApplicationID: app.ID,
+		EventType:     "interview",
+		ScheduledAt:   &augustLocal,
+	}
+	if err := d.CreateEvent(&augustEvent); err != nil {
+		t.Fatalf("create august event: %v", err)
+	}
+
+	events, err := d.ListEvents(EventFilter{Month: "2026-07"})
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("want local July event included, got %d: %+v", len(events), events)
+	}
+	if events[0].ID != event.ID {
+		t.Fatalf("unexpected event: %+v", events[0])
+	}
+}
+
 func TestApplicationDeleteCascadesEvents(t *testing.T) {
 	d := newTestDB(t)
 	app := createEventTestApplication(t, d)

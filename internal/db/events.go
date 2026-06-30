@@ -58,7 +58,7 @@ func (db *Database) ListEvents(filter EventFilter) ([]EventWithApplication, erro
 	var where []string
 
 	if filter.Month != "" {
-		start, err := time.Parse("2006-01", filter.Month)
+		start, err := time.ParseInLocation("2006-01", filter.Month, time.Local)
 		if err != nil {
 			return nil, err
 		}

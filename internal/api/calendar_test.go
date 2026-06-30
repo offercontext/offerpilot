@@ -55,3 +55,42 @@ func TestCalendarIncludesEditableScheduleEvents(t *testing.T) {
 
 	t.Fatalf("expected written_test calendar entry, got %+v", entries)
 }
+
+func TestCalendarUsesLocalDateForScheduleEvents(t *testing.T) {
+	originalLocal := time.Local
+	time.Local = time.FixedZone("CST", 8*3600)
+	t.Cleanup(func() { time.Local = originalLocal })
+
+	d, app, router := eventTestDB(t)
+	scheduledAt := time.Date(2026, 7, 1, 0, 30, 0, 0, time.Local)
+	event := db.Event{
+		ApplicationID: app.ID,
+		EventType:     "written_test",
+		ScheduledAt:   &scheduledAt,
+		Duration:      "120",
+	}
+	if err := d.CreateEvent(&event); err != nil {
+		t.Fatalf("create event: %v", err)
+	}
+
+	rec := eventAPIRequest(t, router, http.MethodGet, "/api/calendar?month=2026-07", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("calendar status %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var entries []CalendarEntry
+	if err := json.Unmarshal(rec.Body.Bytes(), &entries); err != nil {
+		t.Fatalf("decode calendar entries: %v", err)
+	}
+
+	for _, entry := range entries {
+		if entry.EventID != nil && *entry.EventID == event.ID {
+			if entry.Date != "2026-07-01" {
+				t.Fatalf("expected local calendar date 2026-07-01, got %q: %+v", entry.Date, entry)
+			}
+			return
+		}
+	}
+
+	t.Fatalf("expected local July schedule event, got %+v", entries)
+}
