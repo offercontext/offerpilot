@@ -20,9 +20,9 @@ const { Text } = Typography;
 
 const SUGGESTED_PROMPTS = [
   '我现在有哪些投递记录？',
+  '帮我记录刚才的面试复盘',
+  '总结最近复盘里的薄弱点',
   '帮我看看最近有哪些笔试面试测评日程',
-  '哪些投递需要我跟进？',
-  '帮我总结一下当前求职进展',
 ];
 
 interface UIMessage {
