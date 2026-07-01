@@ -11,16 +11,16 @@ import (
 )
 
 var (
-	offerCompany  string
-	offerPosition string
-	offerAppID    int64
-	offerBase     int64
-	offerMonths   int64
-	offerSigning  int64
-	offerEquity   string
-	offerPerks    string
-	offerDeadline string
-	offerNotes    string
+	offerCompany   string
+	offerPosition  string
+	offerAppID     int64
+	offerBase      int64
+	offerMonths    int64
+	offerSigning   int64
+	offerEquity    string
+	offerPerks     string
+	offerDeadline  string
+	offerNotes     string
 	offerStatusSet string
 )
 
@@ -52,9 +52,6 @@ func newOfferAddCmd() *cobra.Command {
 			}
 			defer database.Close()
 
-			if offerMonths == 0 {
-				offerMonths = 12
-			}
 			if offerBase < 0 || offerSigning < 0 {
 				return fmt.Errorf("--base and --signing must be non-negative")
 			}
