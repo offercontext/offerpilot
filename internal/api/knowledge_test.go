@@ -145,6 +145,48 @@ func TestKnowledgeAPIImportRejectsLargeFileBeforeMultipartSpill(t *testing.T) {
 	}
 }
 
+func TestKnowledgeAPIImportRejectsDuplicateFiles(t *testing.T) {
+	_, router := knowledgeTestRouter(t)
+	baseRec := knowledgeAPIRequest(t, router, http.MethodPost, "/api/knowledge-bases", map[string]interface{}{"name": "Duplicate imports"})
+	var base db.KnowledgeBase
+	if err := json.Unmarshal(baseRec.Body.Bytes(), &base); err != nil {
+		t.Fatalf("decode base: %v", err)
+	}
+
+	rec := multipartKnowledgeImportCustom(t, router, func(writer *multipart.Writer) {
+		_ = writer.WriteField("knowledge_base_id", strconv.FormatInt(base.ID, 10))
+		writeMultipartFile(t, writer, "one.txt", []byte("first"))
+		writeMultipartFile(t, writer, "two.txt", []byte("second"))
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected duplicate file status 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "only one file is supported") {
+		t.Fatalf("expected duplicate file error, got %s", rec.Body.String())
+	}
+}
+
+func TestKnowledgeAPIImportRejectsOversizedRequest(t *testing.T) {
+	_, router := knowledgeTestRouter(t)
+	baseRec := knowledgeAPIRequest(t, router, http.MethodPost, "/api/knowledge-bases", map[string]interface{}{"name": "Bounded imports"})
+	var base db.KnowledgeBase
+	if err := json.Unmarshal(baseRec.Body.Bytes(), &base); err != nil {
+		t.Fatalf("decode base: %v", err)
+	}
+
+	rec := multipartKnowledgeImportCustom(t, router, func(writer *multipart.Writer) {
+		_ = writer.WriteField("knowledge_base_id", strconv.FormatInt(base.ID, 10))
+		_ = writer.WriteField("padding", string(bytes.Repeat([]byte("x"), maxKnowledgeImportBytes+64*1024)))
+		writeMultipartFile(t, writer, "small.txt", []byte("small"))
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected oversized request status 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "request is too large") {
+		t.Fatalf("expected oversized request error, got %s", rec.Body.String())
+	}
+}
+
 func multipartKnowledgeImport(t *testing.T, router http.Handler, baseID int64, filename, content string) *httptest.ResponseRecorder {
 	t.Helper()
 	rec, _ := multipartKnowledgeImportBytes(t, router, baseID, filename, []byte(content))
@@ -156,13 +198,7 @@ func multipartKnowledgeImportBytes(t *testing.T, router http.Handler, baseID int
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	_ = writer.WriteField("knowledge_base_id", strconv.FormatInt(baseID, 10))
-	part, err := writer.CreateFormFile("file", filename)
-	if err != nil {
-		t.Fatalf("create form file: %v", err)
-	}
-	if _, err := part.Write(content); err != nil {
-		t.Fatalf("write form file: %v", err)
-	}
+	writeMultipartFile(t, writer, filename, content)
 	if err := writer.Close(); err != nil {
 		t.Fatalf("close writer: %v", err)
 	}
@@ -171,6 +207,32 @@ func multipartKnowledgeImportBytes(t *testing.T, router http.Handler, baseID int
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	return rec, req
+}
+
+func multipartKnowledgeImportCustom(t *testing.T, router http.Handler, build func(*multipart.Writer)) *httptest.ResponseRecorder {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	build(writer)
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/knowledge-documents/import", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	return rec
+}
+
+func writeMultipartFile(t *testing.T, writer *multipart.Writer, filename string, content []byte) {
+	t.Helper()
+	part, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	if _, err := part.Write(content); err != nil {
+		t.Fatalf("write form file: %v", err)
+	}
 }
 
 func TestKnowledgeAPISearchValidation(t *testing.T) {

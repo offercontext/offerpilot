@@ -14,7 +14,10 @@ import (
 	"github.com/offercontext/offerpilot/internal/db"
 )
 
-const maxKnowledgeImportBytes = 1 << 20
+const (
+	maxKnowledgeImportBytes        = 1 << 20
+	maxKnowledgeImportRequestBytes = maxKnowledgeImportBytes + 64*1024
+)
 
 type knowledgeBaseRequest struct {
 	Name        string `json:"name"`
@@ -137,6 +140,7 @@ func createKnowledgeDocument(database *db.Database) http.HandlerFunc {
 
 func importKnowledgeDocument(database *db.Database) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxKnowledgeImportRequestBytes)
 		reader, err := r.MultipartReader()
 		if err != nil {
 			respondError(w, http.StatusBadRequest, "Invalid multipart form")
@@ -146,10 +150,15 @@ func importKnowledgeDocument(database *db.Database) http.HandlerFunc {
 		var baseIDValue string
 		var filename string
 		var data []byte
+		var fileSeen bool
 		for {
 			part, err := reader.NextPart()
 			if errors.Is(err, io.EOF) {
 				break
+			}
+			if knowledgeImportRequestTooLarge(err) {
+				respondError(w, http.StatusBadRequest, "request is too large")
+				return
 			}
 			if err != nil {
 				respondError(w, http.StatusBadRequest, "Invalid multipart form")
@@ -159,13 +168,24 @@ func importKnowledgeDocument(database *db.Database) http.HandlerFunc {
 			switch part.FormName() {
 			case "knowledge_base_id":
 				fieldData, err := io.ReadAll(io.LimitReader(part, 65))
-				part.Close()
+				if closeErr := part.Close(); err == nil {
+					err = closeErr
+				}
+				if knowledgeImportRequestTooLarge(err) {
+					respondError(w, http.StatusBadRequest, "request is too large")
+					return
+				}
 				if err != nil {
 					respondError(w, http.StatusBadRequest, "Invalid multipart form")
 					return
 				}
 				baseIDValue = strings.TrimSpace(string(fieldData))
 			case "file":
+				if fileSeen {
+					respondError(w, http.StatusBadRequest, "only one file is supported")
+					return
+				}
+				fileSeen = true
 				filename = part.FileName()
 				if filename == "" {
 					part.Close()
@@ -179,7 +199,13 @@ func importKnowledgeDocument(database *db.Database) http.HandlerFunc {
 					return
 				}
 				data, err = io.ReadAll(io.LimitReader(part, maxKnowledgeImportBytes+1))
-				part.Close()
+				if closeErr := part.Close(); err == nil {
+					err = closeErr
+				}
+				if knowledgeImportRequestTooLarge(err) {
+					respondError(w, http.StatusBadRequest, "request is too large")
+					return
+				}
 				if err != nil {
 					respondError(w, http.StatusInternalServerError, err.Error())
 					return
@@ -189,7 +215,10 @@ func importKnowledgeDocument(database *db.Database) http.HandlerFunc {
 					return
 				}
 			default:
-				part.Close()
+				if err := part.Close(); knowledgeImportRequestTooLarge(err) {
+					respondError(w, http.StatusBadRequest, "request is too large")
+					return
+				}
 			}
 		}
 
@@ -221,6 +250,11 @@ func importKnowledgeDocument(database *db.Database) http.HandlerFunc {
 		}
 		respondJSON(w, http.StatusCreated, doc)
 	}
+}
+
+func knowledgeImportRequestTooLarge(err error) bool {
+	var maxBytesErr *http.MaxBytesError
+	return errors.As(err, &maxBytesErr)
 }
 
 func getKnowledgeDocument(database *db.Database) http.HandlerFunc {
