@@ -11,6 +11,8 @@ import (
 
 const summaryFallbackReadOnlyNotice = "\n\n\uff08\u6ce8\u610f\uff1a\u5f53\u524d\u6a21\u578b\u4e0d\u652f\u6301\u5de5\u5177\u8c03\u7528\uff0c\u4ee5\u4e0b\u4e3a\u53ea\u8bfb\u6570\u636e\u6458\u8981\uff0c\u4f60\u65e0\u6cd5\u4fee\u6539\u6570\u636e\u3002\uff09\n"
 
+const maxFallbackKnowledgeTerms = 8
+
 // BuildDataSummary produces a compact, token-light overview of the user's job
 // data for injection into the system prompt when tool calling is unavailable.
 func BuildDataSummary(database *db.Database) string {
@@ -116,7 +118,7 @@ func searchKnowledgeForFallback(database *db.Database, userMessage string) []db.
 	for _, result := range results {
 		seen[result.ChunkID] = true
 	}
-	for _, term := range strings.Fields(userMessage) {
+	for _, term := range fallbackKnowledgeTerms(userMessage) {
 		if len(results) >= limit {
 			break
 		}
@@ -136,6 +138,22 @@ func searchKnowledgeForFallback(database *db.Database, userMessage string) []db.
 		}
 	}
 	return results
+}
+
+func fallbackKnowledgeTerms(userMessage string) []string {
+	seen := make(map[string]bool)
+	terms := make([]string, 0, maxFallbackKnowledgeTerms)
+	for _, term := range strings.Fields(userMessage) {
+		if len([]rune(term)) < 3 || seen[term] {
+			continue
+		}
+		terms = append(terms, term)
+		seen[term] = true
+		if len(terms) >= maxFallbackKnowledgeTerms {
+			break
+		}
+	}
+	return terms
 }
 
 // RunSummaryFallback handles a single user turn without tools by injecting a

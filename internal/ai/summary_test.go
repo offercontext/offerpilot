@@ -38,6 +38,15 @@ func TestSummaryFallbackIncludesKnowledgeSearchContext(t *testing.T) {
 	}
 }
 
+func TestFallbackKnowledgeTermsDedupesSkipsShortTermsAndCaps(t *testing.T) {
+	terms := fallbackKnowledgeTerms("go ai java java redis Go postgres kubernetes monitor distributed cache resume interview offerpilot extra")
+
+	want := []string{"java", "redis", "postgres", "kubernetes", "monitor", "distributed", "cache", "resume"}
+	if strings.Join(terms, "|") != strings.Join(want, "|") {
+		t.Fatalf("terms = %#v, want %#v", terms, want)
+	}
+}
+
 func TestBuildDataSummaryIncludesApplications(t *testing.T) {
 	d, err := db.Init(t.TempDir() + "/s.db")
 	if err != nil {
