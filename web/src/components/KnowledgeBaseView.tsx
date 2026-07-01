@@ -5,6 +5,7 @@ import {
   Card,
   Empty,
   Form,
+  Grid,
   Input,
   List,
   Modal,
@@ -52,6 +53,7 @@ type BaseFormValues = {
 
 export default function KnowledgeBaseView() {
   const queryClient = useQueryClient();
+  const screens = Grid.useBreakpoint();
   const [selectedBaseId, setSelectedBaseId] = useState<number | undefined>();
   const [search, setSearch] = useState('');
   const [baseModalOpen, setBaseModalOpen] = useState(false);
@@ -77,6 +79,7 @@ export default function KnowledgeBaseView() {
 
   const bases = basesQuery.data ?? [];
   const documents = documentsQuery.data ?? [];
+  const isNarrow = !screens.md;
   const selectedBase = useMemo(
     () => bases.find((base) => base.id === selectedBaseId),
     [bases, selectedBaseId],
@@ -122,10 +125,18 @@ export default function KnowledgeBaseView() {
   const deleteBaseMut = useMutation({
     mutationFn: deleteKnowledgeBase,
     onSuccess: (_, id) => {
+      const cachedBases = queryClient.getQueryData<KnowledgeBase[]>(['knowledge-bases']) ?? bases;
+      const nextBases = cachedBases.filter((base) => base.id !== id);
+
+      queryClient.setQueryData<KnowledgeBase[]>(['knowledge-bases'], nextBases);
       message.success('Knowledge base deleted');
       if (selectedBaseId === id) {
-        setSelectedBaseId(undefined);
+        setSelectedBaseId(nextBases[0]?.id);
+        setEditingDocument(null);
+        setEditorOpen(false);
+        setImportOpen(false);
       }
+      queryClient.removeQueries({ queryKey: ['knowledge-documents', id] });
       invalidateBases();
       invalidateDocs();
     },
@@ -226,7 +237,13 @@ export default function KnowledgeBaseView() {
   }
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '300px minmax(0, 1fr)', gap: 16 }}>
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: isNarrow ? 'minmax(0, 1fr)' : '300px minmax(0, 1fr)',
+        gap: 16,
+      }}
+    >
       <section
         style={{
           background: '#fff',
@@ -330,9 +347,10 @@ export default function KnowledgeBaseView() {
         <Space
           style={{ width: '100%', justifyContent: 'space-between', marginBottom: 16 }}
           align="start"
+          direction={isNarrow ? 'vertical' : 'horizontal'}
           wrap
         >
-          <div>
+          <div style={{ minWidth: 0, width: isNarrow ? '100%' : undefined }}>
             <Text strong>{selectedBase?.name ?? 'Select a knowledge base'}</Text>
             {selectedBase?.description && (
               <Paragraph type="secondary" style={{ marginBottom: 0, maxWidth: 680 }}>
@@ -340,20 +358,25 @@ export default function KnowledgeBaseView() {
               </Paragraph>
             )}
           </div>
-          <Space wrap>
+          <Space
+            wrap
+            style={{ width: isNarrow ? '100%' : undefined }}
+            direction={isNarrow ? 'vertical' : 'horizontal'}
+          >
             <Input.Search
               allowClear
               placeholder="Search documents"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               onSearch={(value) => setSearch(value)}
-              style={{ width: 260 }}
+              style={{ width: isNarrow ? '100%' : 260 }}
               disabled={!selectedBaseId}
             />
             <Button
               icon={<InboxOutlined />}
               disabled={!selectedBaseId}
               onClick={() => setImportOpen(true)}
+              style={{ width: isNarrow ? '100%' : undefined }}
             >
               Import
             </Button>
@@ -362,6 +385,7 @@ export default function KnowledgeBaseView() {
               icon={<FileAddOutlined />}
               disabled={!selectedBaseId}
               onClick={openCreateDocument}
+              style={{ width: isNarrow ? '100%' : undefined }}
             >
               New document
             </Button>
