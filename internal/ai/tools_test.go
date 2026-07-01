@@ -299,6 +299,110 @@ func TestKnowledgeToolsCRUDAndSearch(t *testing.T) {
 	}
 }
 
+func TestKnowledgeToolsReadAndPartialUpdates(t *testing.T) {
+	d := newToolDB(t)
+	reg := NewRegistry(d)
+
+	_, err := reg.Execute(context.Background(), "create_knowledge_base", json.RawMessage(`{"name":"Java interview prep","description":"core notes"}`))
+	if err != nil {
+		t.Fatalf("create first base: %v", err)
+	}
+	_, err = reg.Execute(context.Background(), "create_knowledge_base", json.RawMessage(`{"name":"System design","description":"distributed notes"}`))
+	if err != nil {
+		t.Fatalf("create second base: %v", err)
+	}
+
+	out, err := reg.Execute(context.Background(), "list_knowledge_bases", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("list bases: %v", err)
+	}
+	if !strings.Contains(out, `"name":"Java interview prep"`) || !strings.Contains(out, `"name":"System design"`) {
+		t.Fatalf("unexpected bases output: %s", out)
+	}
+
+	_, err = reg.Execute(context.Background(), "create_knowledge_document", json.RawMessage(`{"knowledge_base_id":1,"title":"Synchronized","content":"monitor lock and happens-before","tags":["java","concurrency"]}`))
+	if err != nil {
+		t.Fatalf("create first doc: %v", err)
+	}
+	_, err = reg.Execute(context.Background(), "create_knowledge_document", json.RawMessage(`{"knowledge_base_id":2,"title":"Consistent hashing","content":"ring vnode scaling","tags":["system"]}`))
+	if err != nil {
+		t.Fatalf("create second doc: %v", err)
+	}
+
+	out, err = reg.Execute(context.Background(), "list_knowledge_documents", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("list docs: %v", err)
+	}
+	if !strings.Contains(out, `"title":"Synchronized"`) || !strings.Contains(out, `"title":"Consistent hashing"`) {
+		t.Fatalf("unexpected docs output: %s", out)
+	}
+
+	out, err = reg.Execute(context.Background(), "list_knowledge_documents", json.RawMessage(`{"knowledge_base_id":1}`))
+	if err != nil {
+		t.Fatalf("list docs by base: %v", err)
+	}
+	if !strings.Contains(out, `"title":"Synchronized"`) || strings.Contains(out, `"title":"Consistent hashing"`) {
+		t.Fatalf("knowledge_base_id filter not respected: %s", out)
+	}
+
+	out, err = reg.Execute(context.Background(), "list_knowledge_documents", json.RawMessage(`{"query":"vnode"}`))
+	if err != nil {
+		t.Fatalf("list docs by query: %v", err)
+	}
+	if !strings.Contains(out, `"title":"Consistent hashing"`) || strings.Contains(out, `"title":"Synchronized"`) {
+		t.Fatalf("query filter not respected: %s", out)
+	}
+
+	out, err = reg.Execute(context.Background(), "get_knowledge_document", json.RawMessage(`{"id":1}`))
+	if err != nil {
+		t.Fatalf("get doc: %v", err)
+	}
+	if !strings.Contains(out, `"content":"monitor lock and happens-before"`) || !strings.Contains(out, `"tags":["java","concurrency"]`) {
+		t.Fatalf("unexpected get doc output: %s", out)
+	}
+
+	updateBase, ok := reg.Get("update_knowledge_base")
+	if !ok || !updateBase.Write {
+		t.Fatal("update_knowledge_base should be a write tool")
+	}
+	if updateBase.Describe(json.RawMessage(`{"id":1,"name":"Java notes"}`)) == "" {
+		t.Fatal("update_knowledge_base should describe confirmation text")
+	}
+	out, err = reg.Execute(context.Background(), "update_knowledge_base", json.RawMessage(`{"id":1,"name":"Java notes"}`))
+	if err != nil {
+		t.Fatalf("partial update base: %v", err)
+	}
+	if !strings.Contains(out, `"name":"Java notes"`) || !strings.Contains(out, `"description":"core notes"`) {
+		t.Fatalf("base partial update should preserve omitted fields, got %s", out)
+	}
+
+	out, err = reg.Execute(context.Background(), "update_knowledge_document", json.RawMessage(`{"id":1,"title":"Monitor locks"}`))
+	if err != nil {
+		t.Fatalf("partial update doc: %v", err)
+	}
+	if !strings.Contains(out, `"title":"Monitor locks"`) ||
+		!strings.Contains(out, `"knowledge_base_id":1`) ||
+		!strings.Contains(out, `"content":"monitor lock and happens-before"`) ||
+		!strings.Contains(out, `"tags":["java","concurrency"]`) {
+		t.Fatalf("doc partial update should preserve omitted fields, got %s", out)
+	}
+
+	deleteBase, ok := reg.Get("delete_knowledge_base")
+	if !ok || !deleteBase.Write {
+		t.Fatal("delete_knowledge_base should be a write tool")
+	}
+	if deleteBase.Describe(json.RawMessage(`{"id":2}`)) == "" {
+		t.Fatal("delete_knowledge_base should describe confirmation text")
+	}
+	out, err = reg.Execute(context.Background(), "delete_knowledge_base", json.RawMessage(`{"id":2}`))
+	if err != nil {
+		t.Fatalf("delete base: %v", err)
+	}
+	if !strings.Contains(out, `"deleted":true`) {
+		t.Fatalf("unexpected delete base output: %s", out)
+	}
+}
+
 func TestChatSystemPromptMentionsKnowledgeRules(t *testing.T) {
 	for _, phrase := range []string{"search_knowledge", "do not use the knowledge base", "specific knowledge base"} {
 		if !strings.Contains(ChatSystemPrompt, phrase) {
