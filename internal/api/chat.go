@@ -1,10 +1,12 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
@@ -24,6 +26,7 @@ func registerChatRoutes(r chi.Router, database *db.Database, dataDir string) {
 
 type chatRequestBody struct {
 	ConversationID int64  `json:"conversation_id"`
+	OfferID        *int64 `json:"offer_id,omitempty"`
 	Message        string `json:"message"`
 }
 
@@ -34,8 +37,8 @@ type confirmRequestBody struct {
 
 // toAIMessages converts stored messages into the protocol-agnostic form,
 // prepending the system prompt.
-func toAIMessages(stored []db.ChatMessage) []ai.Message {
-	out := []ai.Message{{Role: ai.RoleSystem, Content: ai.ChatSystemPrompt}}
+func toAIMessages(stored []db.ChatMessage, systemPrompt string) []ai.Message {
+	out := []ai.Message{{Role: ai.RoleSystem, Content: systemPrompt}}
 	for _, m := range stored {
 		msg := ai.Message{Role: ai.Role(m.Role), Content: m.Content, ToolCallID: m.ToolCallID}
 		if m.ToolCalls != "" {
@@ -53,6 +56,45 @@ func toAIMessages(stored []db.ChatMessage) []ai.Message {
 		out = append(out, msg)
 	}
 	return out
+}
+
+// systemPromptFor picks the system prompt for a conversation. For nego_coach
+// mode it embeds the bound offer snapshot plus related context (application
+// notes + interview reviews). Falls back to the general assistant prompt.
+func systemPromptFor(database *db.Database, conv *db.Conversation) string {
+	if conv == nil || conv.Mode != "nego_coach" || conv.OfferID == nil {
+		return ai.ChatSystemPrompt
+	}
+	offer, err := database.GetOffer(*conv.OfferID)
+	if err != nil {
+		return ai.ChatSystemPrompt
+	}
+	related := buildOfferContext(database, offer)
+	return ai.NegoCoachPrompt(offer, related)
+}
+
+// buildOfferContext gathers a lightweight text summary of data related to the
+// offer's application (notes + interview reviews) for prompt injection.
+func buildOfferContext(database *db.Database, offer *db.Offer) string {
+	if offer.ApplicationID == nil {
+		return ""
+	}
+	var b strings.Builder
+	app, err := database.GetApplication(*offer.ApplicationID)
+	if err == nil && app != nil {
+		if app.Notes != "" {
+			b.WriteString("投递备注：" + app.Notes + "\n")
+		}
+	}
+	notes, err := database.ListInterviewNotes(*offer.ApplicationID)
+	if err == nil {
+		for _, n := range notes {
+			if n.DifficultyPoints != "" || n.SelfReflection != "" {
+				b.WriteString("面试复盘（" + n.Round + "）：" + n.SelfReflection + " " + n.DifficultyPoints + "\n")
+			}
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // persistAdded stores loop-produced messages into the conversation.
@@ -117,13 +159,36 @@ func runChat(w http.ResponseWriter, r *http.Request, database *db.Database, mode
 	}
 
 	convID := body.ConversationID
+	var conv *db.Conversation
 	if convID == 0 {
-		conv, err := database.CreateConversation(titleFrom(body.Message))
+		mode := "general"
+		if body.OfferID != nil {
+			mode = "nego_coach"
+		}
+		title := titleFrom(body.Message)
+		if body.OfferID != nil {
+			if o, err := database.GetOffer(*body.OfferID); err == nil {
+				title = o.CompanyName + " 谈薪"
+			}
+		}
+		created, err := database.CreateConversationWithMode(title, mode, body.OfferID)
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		convID = conv.ID
+		convID = created.ID
+		conv = created
+	} else {
+		c, err := database.GetConversation(convID)
+		if errors.Is(err, sql.ErrNoRows) {
+			respondError(w, http.StatusNotFound, "conversation not found")
+			return
+		}
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		conv = c
 	}
 	if err := database.AppendMessage(&db.ChatMessage{ConversationID: convID, Role: "user", Content: body.Message}); err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
@@ -136,7 +201,8 @@ func runChat(w http.ResponseWriter, r *http.Request, database *db.Database, mode
 		return
 	}
 	reg := ai.NewRegistry(database)
-	added, reply, pending, err := ai.RunTurn(r.Context(), model, reg, toAIMessages(stored), autoApprove, ai.DefaultMaxIterations)
+	systemPrompt := systemPromptFor(database, conv)
+	added, reply, pending, err := ai.RunTurn(r.Context(), model, reg, toAIMessages(stored, systemPrompt), autoApprove, ai.DefaultMaxIterations)
 
 	if errors.Is(err, ai.ErrToolsUnsupported) && fallbackClient != nil {
 		text, ferr := ai.RunSummaryFallback(r.Context(), fallbackClient, database, body.Message)
@@ -212,7 +278,17 @@ func runConfirm(w http.ResponseWriter, r *http.Request, database *db.Database, m
 	pending := &ai.PendingAction{ToolCallID: tcs[0].ID, ToolName: tcs[0].Name, Args: tcs[0].Args}
 
 	reg := ai.NewRegistry(database)
-	added, reply, newPending, err := ai.ResumeAfterConfirm(r.Context(), model, reg, toAIMessages(stored), pending, body.Approved, autoApprove, ai.DefaultMaxIterations)
+	conv, cerr := database.GetConversation(body.ConversationID)
+	if errors.Is(cerr, sql.ErrNoRows) {
+		respondError(w, http.StatusNotFound, "conversation not found")
+		return
+	}
+	if cerr != nil {
+		respondError(w, http.StatusInternalServerError, cerr.Error())
+		return
+	}
+	systemPrompt := systemPromptFor(database, conv)
+	added, reply, newPending, err := ai.ResumeAfterConfirm(r.Context(), model, reg, toAIMessages(stored, systemPrompt), pending, body.Approved, autoApprove, ai.DefaultMaxIterations)
 	if err != nil {
 		respondError(w, http.StatusBadGateway, err.Error())
 		return

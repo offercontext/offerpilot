@@ -1006,5 +1006,7 @@ func NewRegistry(database *db.Database) *Registry {
 		},
 	})
 
+	registerOfferTools(r, database)
+
 	return r
 }

@@ -25,6 +25,13 @@ const SUGGESTED_PROMPTS = [
   '帮我看看最近有哪些笔试面试测评日程',
 ];
 
+const NEGO_PROMPTS = [
+  '帮我分析这个 offer 值不值得接受',
+  '模拟 HR 说预算有限，我该怎么回应',
+  '帮我准备争取更高签字费的话术',
+  '对比我手上的几个 offer',
+];
+
 interface UIMessage {
   role: 'user' | 'assistant' | 'tool';
   content: string;
@@ -33,9 +40,10 @@ interface UIMessage {
 interface Props {
   open: boolean;
   onClose: () => void;
+  offerId?: number;
 }
 
-export default function ChatPanel({ open, onClose }: Props) {
+export default function ChatPanel({ open, onClose, offerId }: Props) {
   const { message: toast } = AntApp.useApp();
   const [messages, setMessages] = useState<UIMessage[]>([]);
   const [input, setInput] = useState('');
@@ -46,6 +54,7 @@ export default function ChatPanel({ open, onClose }: Props) {
   const [hasKey, setHasKey] = useState(true);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const endRef = useRef<HTMLDivElement>(null);
+  const threadOfferId = useRef<number | undefined>(undefined);
 
   function refreshConversations() {
     listConversations()
@@ -55,6 +64,14 @@ export default function ChatPanel({ open, onClose }: Props) {
 
   useEffect(() => {
     if (!open) return;
+    // Start a fresh thread when the panel opens bound to a different offer
+    // context, so coach(offer) and general threads never bleed into each other.
+    if (offerId !== threadOfferId.current) {
+      setConvID(undefined);
+      setMessages([]);
+      setPending(null);
+      threadOfferId.current = offerId;
+    }
     getSettings()
       .then((s) => {
         setAutoApprove(s.chat_auto_approve_writes);
@@ -62,7 +79,7 @@ export default function ChatPanel({ open, onClose }: Props) {
       })
       .catch(() => undefined);
     refreshConversations();
-  }, [open]);
+  }, [open, offerId]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -126,7 +143,7 @@ export default function ChatPanel({ open, onClose }: Props) {
     setInput('');
     setLoading(true);
     try {
-      const resp = await sendChat(trimmed, convID);
+      const resp = await sendChat(trimmed, convID, convID ? undefined : offerId);
       applyResponse(resp);
     } catch (e: any) {
       toast.error(e?.response?.data?.error ?? '对话失败');
@@ -160,6 +177,8 @@ export default function ChatPanel({ open, onClose }: Props) {
       toast.error('设置保存失败');
     }
   }
+
+  const prompts = offerId ? NEGO_PROMPTS : SUGGESTED_PROMPTS;
 
   return (
     <Drawer title="AI 助手" placement="right" width={680} open={open} onClose={onClose}>
@@ -220,7 +239,7 @@ export default function ChatPanel({ open, onClose }: Props) {
                   选择一个常用问题，AI 会基于你的投递、日程和复盘记录回答。
                 </Text>
                 <div className={styles.promptGrid}>
-                  {SUGGESTED_PROMPTS.map((prompt) => (
+                  {prompts.map((prompt) => (
                     <Button
                       key={prompt}
                       className={styles.promptButton}

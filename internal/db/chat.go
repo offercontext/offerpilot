@@ -1,11 +1,16 @@
 package db
 
-import "time"
+import (
+	"database/sql"
+	"time"
+)
 
 // Conversation is a chat session with the AI assistant.
 type Conversation struct {
 	ID        int64     `json:"id"`
 	Title     string    `json:"title"`
+	OfferID   *int64    `json:"offer_id,omitempty"`
+	Mode      string    `json:"mode"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -41,10 +46,48 @@ func (db *Database) CreateConversation(title string) (*Conversation, error) {
 	return &Conversation{ID: id, Title: title, CreatedAt: now, UpdatedAt: now}, nil
 }
 
+// CreateConversationWithMode inserts a conversation with an explicit mode and
+// optional bound offer. mode defaults to "general" when empty.
+func (db *Database) CreateConversationWithMode(title, mode string, offerID *int64) (*Conversation, error) {
+	if title == "" {
+		title = "新对话"
+	}
+	if mode == "" {
+		mode = "general"
+	}
+	now := time.Now()
+	res, err := db.conn.Exec(
+		`INSERT INTO conversations (title, mode, offer_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+		title, mode, nullableInt64(offerID), now, now,
+	)
+	if err != nil {
+		return nil, err
+	}
+	id, _ := res.LastInsertId()
+	return &Conversation{ID: id, Title: title, Mode: mode, OfferID: offerID, CreatedAt: now, UpdatedAt: now}, nil
+}
+
+// GetConversation returns a single conversation with its mode/offer binding.
+func (db *Database) GetConversation(id int64) (*Conversation, error) {
+	var c Conversation
+	var offerID sql.NullInt64
+	err := db.conn.QueryRow(
+		`SELECT id, title, COALESCE(mode,'general'), offer_id, created_at, updated_at FROM conversations WHERE id = ?`, id,
+	).Scan(&c.ID, &c.Title, &c.Mode, &offerID, &c.CreatedAt, &c.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	if offerID.Valid {
+		v := offerID.Int64
+		c.OfferID = &v
+	}
+	return &c, nil
+}
+
 // ListConversations returns all conversations, most recently updated first.
 func (db *Database) ListConversations() ([]Conversation, error) {
 	rows, err := db.conn.Query(
-		`SELECT id, title, created_at, updated_at FROM conversations ORDER BY updated_at DESC`)
+		`SELECT id, title, COALESCE(mode,'general'), offer_id, created_at, updated_at FROM conversations ORDER BY updated_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -52,8 +95,13 @@ func (db *Database) ListConversations() ([]Conversation, error) {
 	var out []Conversation
 	for rows.Next() {
 		var c Conversation
-		if err := rows.Scan(&c.ID, &c.Title, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		var offerID sql.NullInt64
+		if err := rows.Scan(&c.ID, &c.Title, &c.Mode, &offerID, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, err
+		}
+		if offerID.Valid {
+			v := offerID.Int64
+			c.OfferID = &v
 		}
 		out = append(out, c)
 	}

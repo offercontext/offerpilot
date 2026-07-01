@@ -50,6 +50,26 @@ type InterviewNote struct {
 	CreatedAt        time.Time `json:"created_at"`
 }
 
+// Offer represents a compensation offer, optionally linked to an application.
+type Offer struct {
+	ID            int64     `json:"id"`
+	ApplicationID *int64    `json:"application_id,omitempty"`
+	CompanyName   string    `json:"company_name"`
+	PositionName  string    `json:"position_name"`
+	Status        string    `json:"status"` // pending|negotiating|accepted|declined|expired
+	BaseMonthly   int64     `json:"base_monthly"`
+	MonthsPerYear int64     `json:"months_per_year"`
+	SigningBonus  int64     `json:"signing_bonus"`
+	Equity        string    `json:"equity"`
+	Perks         string    `json:"perks"`
+	Deadline      string    `json:"deadline"`
+	Notes         string    `json:"notes"`
+	Assessment    string    `json:"assessment"`
+	TotalCash     int64     `json:"total_cash"` // derived: base*months+signing, not stored
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
 // Database wraps the SQL connection
 type Database struct {
 	conn *sql.DB
@@ -148,6 +168,24 @@ func (db *Database) migrate() error {
 			FOREIGN KEY (resume_id) REFERENCES resumes(id) ON DELETE CASCADE,
 			FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS offers (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			application_id INTEGER,
+			company_name TEXT NOT NULL,
+			position_name TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'pending',
+			base_monthly INTEGER NOT NULL DEFAULT 0,
+			months_per_year INTEGER NOT NULL DEFAULT 12,
+			signing_bonus INTEGER NOT NULL DEFAULT 0,
+			equity TEXT DEFAULT '',
+			perks TEXT DEFAULT '',
+			deadline TEXT DEFAULT '',
+			notes TEXT DEFAULT '',
+			assessment TEXT DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS conversations (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			title TEXT NOT NULL DEFAULT '新对话',
@@ -209,6 +247,8 @@ func (db *Database) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_knowledge_documents_base ON knowledge_documents(knowledge_base_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_document ON knowledge_chunks(document_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_base ON knowledge_chunks(knowledge_base_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_offers_app ON offers(application_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_offers_status ON offers(status)`,
 	}
 
 	for _, m := range migrations {
@@ -217,6 +257,12 @@ func (db *Database) migrate() error {
 		}
 	}
 	if err := db.ensureColumn("chat_messages", "provider_blocks", "TEXT DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := db.ensureColumn("conversations", "offer_id", "INTEGER"); err != nil {
+		return err
+	}
+	if err := db.ensureColumn("conversations", "mode", "TEXT DEFAULT 'general'"); err != nil {
 		return err
 	}
 	return nil
