@@ -435,6 +435,33 @@ func TestKnowledgeToolsListDocumentsUsesBoundedMetadata(t *testing.T) {
 	if !strings.Contains(out, `"content_length":1400`) || !strings.Contains(out, `"preview":"`) {
 		t.Fatalf("list_knowledge_documents should include content_length and preview metadata, got %s", out)
 	}
+
+	for i := 0; i < 11; i++ {
+		_, err = reg.Execute(context.Background(), "create_knowledge_document",
+			json.RawMessage(`{"knowledge_base_id":1,"title":"Extra doc","content":"body","tags":["large"]}`))
+		if err != nil {
+			t.Fatalf("create extra doc %d: %v", i, err)
+		}
+	}
+	out, err = reg.Execute(context.Background(), "list_knowledge_documents", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("list docs with default limit: %v", err)
+	}
+	if count := strings.Count(out, `"title":`); count > 10 {
+		t.Fatalf("list_knowledge_documents should default to at most 10 docs, got %d in %s", count, out)
+	}
+
+	out, err = reg.Execute(context.Background(), "list_knowledge_documents", json.RawMessage(`{"limit":100}`))
+	if err != nil {
+		t.Fatalf("list docs with capped limit: %v", err)
+	}
+	if count := strings.Count(out, `"title":`); count > 20 {
+		t.Fatalf("list_knowledge_documents should cap limit at 20 docs, got %d in %s", count, out)
+	}
+
+	if _, err := reg.Execute(context.Background(), "list_knowledge_documents", json.RawMessage(`{"knowledge_base_id":"bad"}`)); err == nil {
+		t.Fatal("expected list_knowledge_documents to reject wrong-typed knowledge_base_id")
+	}
 }
 
 func TestKnowledgeToolsValidateRequiredFields(t *testing.T) {

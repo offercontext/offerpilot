@@ -30,6 +30,8 @@ type Registry struct {
 }
 
 const knowledgeDocumentPreviewRunes = 240
+const defaultKnowledgeDocumentListLimit = 10
+const maxKnowledgeDocumentListLimit = 20
 
 type knowledgeDocumentSummary struct {
 	ID              int64     `json:"id"`
@@ -137,6 +139,26 @@ func previewRunes(value string, limit int) string {
 		return value
 	}
 	return string(runes[:limit])
+}
+
+func paginateKnowledgeDocuments(docs []db.KnowledgeDocument, limit, offset int) []db.KnowledgeDocument {
+	if limit <= 0 {
+		limit = defaultKnowledgeDocumentListLimit
+	}
+	if limit > maxKnowledgeDocumentListLimit {
+		limit = maxKnowledgeDocumentListLimit
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(docs) {
+		return []db.KnowledgeDocument{}
+	}
+	end := offset + limit
+	if end > len(docs) {
+		end = len(docs)
+	}
+	return docs[offset:end]
 }
 
 func resolveToolNote(database *db.Database, appID *int64, company, position string) (*int64, string, string, error) {
@@ -328,18 +350,22 @@ func NewRegistry(database *db.Database) *Registry {
 	r.add(Tool{
 		Name:        "list_knowledge_documents",
 		Description: "List personal knowledge documents, optionally filtered by knowledge_base_id or query.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"knowledge_base_id":{"type":"integer"},"query":{"type":"string"}}}`),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"knowledge_base_id":{"type":"integer"},"query":{"type":"string"},"limit":{"type":"integer"},"offset":{"type":"integer"}}}`),
 		Handler: func(ctx context.Context, args json.RawMessage) (string, error) {
 			var p struct {
 				KnowledgeBaseID int64  `json:"knowledge_base_id"`
 				Query           string `json:"query"`
+				Limit           int    `json:"limit"`
+				Offset          int    `json:"offset"`
 			}
-			_ = json.Unmarshal(args, &p)
+			if err := json.Unmarshal(args, &p); err != nil {
+				return "", err
+			}
 			items, err := database.ListKnowledgeDocuments(db.KnowledgeDocumentFilter{KnowledgeBaseID: p.KnowledgeBaseID, Query: p.Query})
 			if err != nil {
 				return "", err
 			}
-			return jsonResult(summarizeKnowledgeDocuments(items))
+			return jsonResult(summarizeKnowledgeDocuments(paginateKnowledgeDocuments(items, p.Limit, p.Offset)))
 		},
 	})
 	r.add(Tool{
