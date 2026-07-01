@@ -51,6 +51,11 @@ type BaseFormValues = {
   description?: string;
 };
 
+const SOURCE_TYPE_LABELS: Record<string, string> = {
+  manual: '手动',
+  upload: '导入',
+};
+
 export default function KnowledgeBaseView() {
   const queryClient = useQueryClient();
   const screens = Grid.useBreakpoint();
@@ -99,27 +104,27 @@ export default function KnowledgeBaseView() {
   const createBaseMut = useMutation({
     mutationFn: createKnowledgeBase,
     onSuccess: (base) => {
-      message.success('Knowledge base created');
+      message.success('知识库已创建');
       setBaseModalOpen(false);
       setEditingBase(null);
       baseForm.resetFields();
       setSelectedBaseId(base.id);
       invalidateBases();
     },
-    onError: () => message.error('Failed to create knowledge base'),
+    onError: () => message.error('创建知识库失败'),
   });
 
   const updateBaseMut = useMutation({
     mutationFn: ({ id, input }: { id: number; input: KnowledgeBaseInput }) =>
       updateKnowledgeBase(id, input),
     onSuccess: () => {
-      message.success('Knowledge base updated');
+      message.success('知识库已更新');
       setBaseModalOpen(false);
       setEditingBase(null);
       baseForm.resetFields();
       invalidateBases();
     },
-    onError: () => message.error('Failed to update knowledge base'),
+    onError: () => message.error('更新知识库失败'),
   });
 
   const deleteBaseMut = useMutation({
@@ -129,7 +134,7 @@ export default function KnowledgeBaseView() {
       const nextBases = cachedBases.filter((base) => base.id !== id);
 
       queryClient.setQueryData<KnowledgeBase[]>(['knowledge-bases'], nextBases);
-      message.success('Knowledge base deleted');
+      message.success('知识库已删除');
       if (selectedBaseId === id) {
         setSelectedBaseId(nextBases[0]?.id);
         setEditingDocument(null);
@@ -140,52 +145,52 @@ export default function KnowledgeBaseView() {
       invalidateBases();
       invalidateDocs();
     },
-    onError: () => message.error('Failed to delete knowledge base'),
+    onError: () => message.error('删除知识库失败'),
   });
 
   const createDocumentMut = useMutation({
     mutationFn: createKnowledgeDocument,
     onSuccess: () => {
-      message.success('Document created');
+      message.success('文档已创建');
       closeEditor();
       invalidateBases();
       invalidateDocs();
     },
-    onError: () => message.error('Failed to create document'),
+    onError: () => message.error('创建文档失败'),
   });
 
   const updateDocumentMut = useMutation({
     mutationFn: ({ id, input }: { id: number; input: KnowledgeDocumentInput }) =>
       updateKnowledgeDocument(id, input),
     onSuccess: () => {
-      message.success('Document updated');
+      message.success('文档已更新');
       closeEditor();
       invalidateBases();
       invalidateDocs();
     },
-    onError: () => message.error('Failed to update document'),
+    onError: () => message.error('更新文档失败'),
   });
 
   const deleteDocumentMut = useMutation({
     mutationFn: deleteKnowledgeDocument,
     onSuccess: () => {
-      message.success('Document deleted');
+      message.success('文档已删除');
       invalidateBases();
       invalidateDocs();
     },
-    onError: () => message.error('Failed to delete document'),
+    onError: () => message.error('删除文档失败'),
   });
 
   const importDocumentMut = useMutation({
     mutationFn: ({ knowledgeBaseId, file }: { knowledgeBaseId: number; file: File }) =>
       importKnowledgeDocument(knowledgeBaseId, file),
     onSuccess: () => {
-      message.success('Document imported');
+      message.success('文档已导入');
       setImportOpen(false);
       invalidateBases();
       invalidateDocs();
     },
-    onError: () => message.error('Failed to import document'),
+    onError: () => message.error('导入文档失败'),
   });
 
   function openCreateBase() {
@@ -254,9 +259,9 @@ export default function KnowledgeBaseView() {
         }}
       >
         <Space style={{ width: '100%', justifyContent: 'space-between', marginBottom: 12 }}>
-          <Text strong>Knowledge Bases</Text>
+          <Text strong>知识库</Text>
           <Button size="small" type="primary" icon={<PlusOutlined />} onClick={openCreateBase}>
-            New
+            新建
           </Button>
         </Space>
 
@@ -265,7 +270,7 @@ export default function KnowledgeBaseView() {
             <Spin />
           </div>
         ) : bases.length === 0 ? (
-          <Empty description="No knowledge bases yet" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+          <Empty description="还没有知识库" image={Empty.PRESENTED_IMAGE_SIMPLE} />
         ) : (
           <List
             dataSource={bases}
@@ -283,7 +288,7 @@ export default function KnowledgeBaseView() {
                   }}
                   onClick={() => setSelectedBaseId(base.id)}
                   actions={[
-                    <Tooltip key="edit" title="Rename">
+                    <Tooltip key="edit" title="重命名">
                       <Button
                         type="text"
                         size="small"
@@ -294,12 +299,12 @@ export default function KnowledgeBaseView() {
                         }}
                       />
                     </Tooltip>,
-                    <Tooltip key="delete" title="Delete">
+                    <Tooltip key="delete" title="删除">
                       <Popconfirm
-                        title="Delete this knowledge base?"
-                        description="All documents in this base will be deleted."
-                        okText="Delete"
-                        cancelText="Cancel"
+                        title="删除这个知识库？"
+                        description="知识库中的所有文档都会被删除。"
+                        okText="删除"
+                        cancelText="取消"
                         onConfirm={(event) => {
                           event?.stopPropagation();
                           deleteBaseMut.mutate(base.id);
@@ -324,7 +329,7 @@ export default function KnowledgeBaseView() {
                           {base.description}
                         </Paragraph>
                       ) : (
-                        <Text type="secondary">No description</Text>
+                        <Text type="secondary">暂无描述</Text>
                       )
                     }
                   />
@@ -351,7 +356,7 @@ export default function KnowledgeBaseView() {
           wrap
         >
           <div style={{ minWidth: 0, width: isNarrow ? '100%' : undefined }}>
-            <Text strong>{selectedBase?.name ?? 'Select a knowledge base'}</Text>
+            <Text strong>{selectedBase?.name ?? '请选择知识库'}</Text>
             {selectedBase?.description && (
               <Paragraph type="secondary" style={{ marginBottom: 0, maxWidth: 680 }}>
                 {selectedBase.description}
@@ -365,7 +370,7 @@ export default function KnowledgeBaseView() {
           >
             <Input.Search
               allowClear
-              placeholder="Search documents"
+              placeholder="搜索文档"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               onSearch={(value) => setSearch(value)}
@@ -378,7 +383,7 @@ export default function KnowledgeBaseView() {
               onClick={() => setImportOpen(true)}
               style={{ width: isNarrow ? '100%' : undefined }}
             >
-              Import
+              导入
             </Button>
             <Button
               type="primary"
@@ -387,19 +392,19 @@ export default function KnowledgeBaseView() {
               onClick={openCreateDocument}
               style={{ width: isNarrow ? '100%' : undefined }}
             >
-              New document
+              新建文档
             </Button>
           </Space>
         </Space>
 
         {!selectedBaseId ? (
-          <Empty description="Create or select a knowledge base" />
+          <Empty description="请先创建或选择知识库" />
         ) : documentsQuery.isLoading ? (
           <div style={{ textAlign: 'center', padding: 48 }}>
             <Spin size="large" />
           </div>
         ) : documents.length === 0 ? (
-          <Empty description={search.trim() ? 'No matching documents' : 'No documents yet'} />
+          <Empty description={search.trim() ? '没有匹配的文档' : '还没有文档'} />
         ) : (
           <Space direction="vertical" style={{ width: '100%' }} size={12}>
             {documents.map((document) => (
@@ -410,20 +415,20 @@ export default function KnowledgeBaseView() {
                 extra={
                   <Space>
                     <Tag color={document.source_type === 'upload' ? 'blue' : 'green'}>
-                      {document.source_type}
+                      {SOURCE_TYPE_LABELS[document.source_type] ?? document.source_type}
                     </Tag>
-                    <Tooltip title="Edit">
+                    <Tooltip title="编辑">
                       <Button
                         type="text"
                         icon={<EditOutlined />}
                         onClick={() => openEditDocument(document)}
                       />
                     </Tooltip>
-                    <Tooltip title="Delete">
+                    <Tooltip title="删除">
                       <Popconfirm
-                        title="Delete this document?"
-                        okText="Delete"
-                        cancelText="Cancel"
+                        title="删除这个文档？"
+                        okText="删除"
+                        cancelText="取消"
                         onConfirm={() => deleteDocumentMut.mutate(document.id)}
                       >
                         <Button type="text" danger icon={<DeleteOutlined />} />
@@ -442,7 +447,7 @@ export default function KnowledgeBaseView() {
                     </Space>
                   )}
                   <Paragraph ellipsis={{ rows: 3 }} style={{ marginBottom: 0 }}>
-                    {document.content || <Text type="secondary">No content</Text>}
+                    {document.content || <Text type="secondary">暂无内容</Text>}
                   </Paragraph>
                 </Space>
               </Card>
@@ -452,7 +457,7 @@ export default function KnowledgeBaseView() {
       </main>
 
       <Modal
-        title={editingBase ? 'Rename knowledge base' : 'New knowledge base'}
+        title={editingBase ? '重命名知识库' : '新建知识库'}
         open={baseModalOpen}
         onCancel={() => {
           setBaseModalOpen(false);
@@ -460,18 +465,20 @@ export default function KnowledgeBaseView() {
           baseForm.resetFields();
         }}
         onOk={() => baseForm.submit()}
+        okText={editingBase ? '保存' : '创建'}
+        cancelText="取消"
         confirmLoading={createBaseMut.isPending || updateBaseMut.isPending}
       >
         <Form form={baseForm} layout="vertical" onFinish={submitBase}>
           <Form.Item
             name="name"
-            label="Name"
-            rules={[{ required: true, message: 'Please enter a name' }]}
+            label="名称"
+            rules={[{ required: true, message: '请输入知识库名称' }]}
           >
-            <Input placeholder="Knowledge base name" />
+            <Input placeholder="例如：Java 八股文" />
           </Form.Item>
-          <Form.Item name="description" label="Description">
-            <Input.TextArea rows={3} placeholder="Optional description" />
+          <Form.Item name="description" label="描述">
+            <Input.TextArea rows={3} placeholder="可选，用来说明这个知识库的用途" />
           </Form.Item>
         </Form>
       </Modal>

@@ -95,7 +95,7 @@ export default function App() {
             { label: '日历', value: 'calendar' },
             { label: '复盘', value: 'reviews' },
             { label: '谈薪', value: 'offers' },
-            { label: 'Knowledge', value: 'knowledge' },
+            { label: '知识库', value: 'knowledge' },
           ]}
           style={{ marginBottom: 16 }}
         />

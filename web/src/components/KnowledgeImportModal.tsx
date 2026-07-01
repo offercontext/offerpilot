@@ -30,12 +30,12 @@ export default function KnowledgeImportModal({
 
   return (
     <Modal
-      title="Import knowledge document"
+      title="导入知识文档"
       open={open}
       onCancel={onClose}
       footer={[
         <Button key="cancel" onClick={onClose}>
-          Cancel
+          取消
         </Button>,
         <Button
           key="submit"
@@ -46,7 +46,7 @@ export default function KnowledgeImportModal({
             if (file) onSubmit(file);
           }}
         >
-          Import
+          导入
         </Button>,
       ]}
     >
@@ -67,8 +67,8 @@ export default function KnowledgeImportModal({
         <p className="ant-upload-drag-icon">
           <InboxOutlined />
         </p>
-        <p className="ant-upload-text">Drop a Markdown or text file here</p>
-        <p className="ant-upload-hint">Only .md and .txt files are supported.</p>
+        <p className="ant-upload-text">将 Markdown 或文本文件拖到这里</p>
+        <p className="ant-upload-hint">仅支持 .md 和 .txt 文件。</p>
       </Upload.Dragger>
     </Modal>
   );

@@ -55,7 +55,7 @@ export default function KnowledgeDocumentEditor({
 
   return (
     <Drawer
-      title={editing ? 'Edit knowledge document' : 'New knowledge document'}
+      title={editing ? '编辑知识文档' : '新建知识文档'}
       open={open}
       onClose={onClose}
       width={screens.md ? 640 : '100%'}
@@ -64,22 +64,22 @@ export default function KnowledgeDocumentEditor({
       <Form form={form} layout="vertical" onFinish={handleFinish}>
         <Form.Item
           name="title"
-          label="Title"
-          rules={[{ required: true, message: 'Please enter a title' }]}
+          label="标题"
+          rules={[{ required: true, message: '请输入文档标题' }]}
         >
-          <Input placeholder="Document title" />
+          <Input placeholder="例如：JVM 内存模型" />
         </Form.Item>
 
-        <Form.Item name="tags" label="Tags">
-          <Select mode="tags" placeholder="Add tags" tokenSeparators={[',']} />
+        <Form.Item name="tags" label="标签">
+          <Select mode="tags" placeholder="添加标签" tokenSeparators={[',']} />
         </Form.Item>
 
-        <Form.Item name="content" label="Content">
-          <Input.TextArea rows={16} placeholder="Write or paste knowledge content" />
+        <Form.Item name="content" label="内容">
+          <Input.TextArea rows={16} placeholder="在这里编写或粘贴学习资料、八股文、面试笔记等内容" />
         </Form.Item>
 
         <Button type="primary" htmlType="submit" loading={saving}>
-          Save document
+          保存文档
         </Button>
       </Form>
     </Drawer>
