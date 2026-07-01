@@ -394,12 +394,80 @@ func TestKnowledgeToolsReadAndPartialUpdates(t *testing.T) {
 	if deleteBase.Describe(json.RawMessage(`{"id":2}`)) == "" {
 		t.Fatal("delete_knowledge_base should describe confirmation text")
 	}
+	if !strings.Contains(deleteBase.Describe(json.RawMessage(`{"id":2}`)), "documents") ||
+		!strings.Contains(deleteBase.Describe(json.RawMessage(`{"id":2}`)), "chunks") {
+		t.Fatal("delete_knowledge_base should warn that documents and chunks are deleted")
+	}
 	out, err = reg.Execute(context.Background(), "delete_knowledge_base", json.RawMessage(`{"id":2}`))
 	if err != nil {
 		t.Fatalf("delete base: %v", err)
 	}
 	if !strings.Contains(out, `"deleted":true`) {
 		t.Fatalf("unexpected delete base output: %s", out)
+	}
+}
+
+func TestKnowledgeToolsListDocumentsUsesBoundedMetadata(t *testing.T) {
+	d := newToolDB(t)
+	reg := NewRegistry(d)
+
+	_, err := reg.Execute(context.Background(), "create_knowledge_base", json.RawMessage(`{"name":"Large docs"}`))
+	if err != nil {
+		t.Fatalf("create base: %v", err)
+	}
+	largeContent := strings.Repeat("large-content-", 100)
+	out, err := reg.Execute(context.Background(), "create_knowledge_document",
+		json.RawMessage(`{"knowledge_base_id":1,"title":"Large doc","content":"`+largeContent+`","tags":["large"]}`))
+	if err != nil {
+		t.Fatalf("create large doc: %v", err)
+	}
+	if !strings.Contains(out, largeContent) {
+		t.Fatalf("create output should still include full content, got %s", out)
+	}
+
+	out, err = reg.Execute(context.Background(), "list_knowledge_documents", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("list docs: %v", err)
+	}
+	if strings.Contains(out, largeContent) || strings.Contains(out, `"content":"`) {
+		t.Fatalf("list_knowledge_documents should not include full content, got %s", out)
+	}
+	if !strings.Contains(out, `"content_length":1400`) || !strings.Contains(out, `"preview":"`) {
+		t.Fatalf("list_knowledge_documents should include content_length and preview metadata, got %s", out)
+	}
+}
+
+func TestKnowledgeToolsValidateRequiredFields(t *testing.T) {
+	d := newToolDB(t)
+	reg := NewRegistry(d)
+
+	if _, err := reg.Execute(context.Background(), "create_knowledge_base", json.RawMessage(`{"name":"   "}`)); err == nil {
+		t.Fatal("expected create_knowledge_base to reject whitespace name")
+	}
+	if _, err := reg.Execute(context.Background(), "create_knowledge_document", json.RawMessage(`{"knowledge_base_id":0,"title":"Doc","content":"body"}`)); err == nil {
+		t.Fatal("expected create_knowledge_document to reject knowledge_base_id <= 0")
+	}
+
+	_, err := reg.Execute(context.Background(), "create_knowledge_base", json.RawMessage(`{"name":"Valid base"}`))
+	if err != nil {
+		t.Fatalf("create valid base: %v", err)
+	}
+	if _, err := reg.Execute(context.Background(), "create_knowledge_document", json.RawMessage(`{"knowledge_base_id":1,"title":"   ","content":"body"}`)); err == nil {
+		t.Fatal("expected create_knowledge_document to reject whitespace title")
+	}
+
+	_, err = reg.Execute(context.Background(), "create_knowledge_document", json.RawMessage(`{"knowledge_base_id":1,"title":"Valid doc","content":"body"}`))
+	if err != nil {
+		t.Fatalf("create valid doc: %v", err)
+	}
+	if _, err := reg.Execute(context.Background(), "update_knowledge_base", json.RawMessage(`{"id":1,"name":"   "}`)); err == nil {
+		t.Fatal("expected update_knowledge_base to reject blank final name")
+	}
+	if _, err := reg.Execute(context.Background(), "update_knowledge_document", json.RawMessage(`{"id":1,"title":"   "}`)); err == nil {
+		t.Fatal("expected update_knowledge_document to reject blank final title")
+	}
+	if _, err := reg.Execute(context.Background(), "update_knowledge_document", json.RawMessage(`{"id":1,"knowledge_base_id":0}`)); err == nil {
+		t.Fatal("expected update_knowledge_document to reject knowledge_base_id <= 0")
 	}
 }
 
