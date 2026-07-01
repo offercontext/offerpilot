@@ -74,3 +74,32 @@ func TestConversationAndMessageCRUD(t *testing.T) {
 		t.Fatalf("expected cascade delete of messages, got %d", len(after))
 	}
 }
+
+func TestConversationWithMode(t *testing.T) {
+	d := newTestDB(t)
+	o := &Offer{CompanyName: "字节", PositionName: "后端", BaseMonthly: 35000, MonthsPerYear: 16}
+	if err := d.CreateOffer(o); err != nil {
+		t.Fatalf("create offer: %v", err)
+	}
+	conv, err := d.CreateConversationWithMode("字节 谈薪", "nego_coach", &o.ID)
+	if err != nil {
+		t.Fatalf("create conv: %v", err)
+	}
+	got, err := d.GetConversation(conv.ID)
+	if err != nil {
+		t.Fatalf("get conv: %v", err)
+	}
+	if got.Mode != "nego_coach" {
+		t.Fatalf("expected mode nego_coach, got %q", got.Mode)
+	}
+	if got.OfferID == nil || *got.OfferID != o.ID {
+		t.Fatalf("expected offer_id %d, got %v", o.ID, got.OfferID)
+	}
+
+	// A plain conversation defaults to general with no offer.
+	plain, _ := d.CreateConversation("普通对话")
+	pg, _ := d.GetConversation(plain.ID)
+	if pg.Mode != "general" || pg.OfferID != nil {
+		t.Fatalf("expected general/no-offer, got mode=%q offer=%v", pg.Mode, pg.OfferID)
+	}
+}
