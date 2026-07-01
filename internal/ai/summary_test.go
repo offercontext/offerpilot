@@ -8,6 +8,36 @@ import (
 	"github.com/offercontext/offerpilot/internal/db"
 )
 
+func summaryTestDB(t *testing.T) *db.Database {
+	t.Helper()
+	d, err := db.Init(t.TempDir() + "/summary.db")
+	if err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	t.Cleanup(func() { d.Close() })
+	return d
+}
+
+func TestSummaryFallbackIncludesKnowledgeSearchContext(t *testing.T) {
+	d := summaryTestDB(t)
+	base := &db.KnowledgeBase{Name: "Java interview prep"}
+	if err := d.CreateKnowledgeBase(base); err != nil {
+		t.Fatalf("create base: %v", err)
+	}
+	doc := &db.KnowledgeDocument{KnowledgeBaseID: base.ID, Title: "Synchronized", Content: "synchronized uses monitor locks", SourceType: db.KnowledgeSourceManual}
+	if err := d.CreateKnowledgeDocument(doc); err != nil {
+		t.Fatalf("create doc: %v", err)
+	}
+
+	system, user := BuildSummaryFallbackPrompt(d, "Explain synchronized")
+	if !strings.Contains(system, "OfferPilot") {
+		t.Fatalf("expected existing system prompt context, got %s", system)
+	}
+	if !strings.Contains(user, "Knowledge snippets") || !strings.Contains(user, "Synchronized") || !strings.Contains(user, "monitor locks") {
+		t.Fatalf("expected knowledge context in fallback prompt, got %s", user)
+	}
+}
+
 func TestBuildDataSummaryIncludesApplications(t *testing.T) {
 	d, err := db.Init(t.TempDir() + "/s.db")
 	if err != nil {
