@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { Button, Drawer, Form, Input, Select } from 'antd';
+import { Button, Drawer, Form, Grid, Input, Select } from 'antd';
 import type { KnowledgeDocument, KnowledgeDocumentInput } from '@/types/knowledge';
 
 interface Props {
@@ -25,6 +25,7 @@ export default function KnowledgeDocumentEditor({
   onSubmit,
   onClose,
 }: Props) {
+  const screens = Grid.useBreakpoint();
   const [form] = Form.useForm<FormValues>();
   const editing = !!document;
 
@@ -57,7 +58,7 @@ export default function KnowledgeDocumentEditor({
       title={editing ? 'Edit knowledge document' : 'New knowledge document'}
       open={open}
       onClose={onClose}
-      width={640}
+      width={screens.md ? 640 : '100%'}
       destroyOnClose
     >
       <Form form={form} layout="vertical" onFinish={handleFinish}>
