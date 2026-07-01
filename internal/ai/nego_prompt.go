@@ -22,7 +22,7 @@ const negoCoachBase = "你是 OfferPilot 的谈薪教练，帮助求职者在拿
 	"提供选项而非替用户拍板；涉及修改 offer 数据时调用相应写工具（系统会在必要时向用户确认）。"
 
 // NegoCoachPrompt builds the coach system prompt, embedding a snapshot of the
-// bound offer plus any related context (application notes / JD / resume / review).
+// bound offer plus any related context (caller-provided; see buildOfferContext).
 // offer may be nil (coach without a bound offer); relatedContext may be empty.
 func NegoCoachPrompt(offer *db.Offer, relatedContext string) string {
 	prompt := negoCoachBase
