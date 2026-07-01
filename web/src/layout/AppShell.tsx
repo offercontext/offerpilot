@@ -54,7 +54,7 @@ export default function AppShell() {
   const [coachOfferId, setCoachOfferId] = useState<number | undefined>(undefined);
   const [paletteOpen, setPaletteOpen] = useState(false);
 
-  const { data: applications = [], isLoading } = useQuery({
+  const { data: applications = [], isLoading, isError: appsError } = useQuery({
     queryKey: ['applications'],
     queryFn: () => listApplications(),
   });
@@ -108,6 +108,10 @@ export default function AppShell() {
           {isLoading ? (
             <div style={{ textAlign: 'center', padding: 48 }}>
               <Spin size="large" />
+            </div>
+          ) : appsError ? (
+            <div style={{ textAlign: 'center', padding: 48, color: 'var(--op-muted)' }}>
+              加载失败，请稍后重试
             </div>
           ) : (
             <div className="op-view-enter" key={view}>

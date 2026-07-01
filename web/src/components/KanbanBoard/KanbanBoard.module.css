@@ -11,9 +11,9 @@
   flex: 1;
   display: flex;
   flex-direction: column;
-  background: #f8fafc;
+  background: var(--op-layout-bg);
   border-radius: 18px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--op-border);
   overflow: hidden;
   transition: border-color 0.2s, background 0.2s, box-shadow 0.2s;
 }
@@ -36,11 +36,11 @@
   align-items: center;
   gap: 8px;
   padding: 14px 14px 12px;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid var(--op-border);
   font-weight: 700;
   font-size: 13px;
-  color: #0f172a;
-  background: #ffffff;
+  color: var(--op-ink);
+  background: var(--op-surface);
 }
 
 .columnDot {
@@ -81,28 +81,28 @@
   align-items: center;
   justify-content: center;
   height: 88px;
-  border: 1px dashed #cbd5e1;
+  border: 1px dashed var(--op-border);
   border-radius: 14px;
-  color: #94a3b8;
+  color: var(--op-muted);
   font-size: 12px;
-  background: #ffffff;
+  background: var(--op-surface);
 }
 
 /* Card */
 .card {
-  background: #ffffff;
+  background: var(--op-surface);
   border-radius: 14px;
   padding: 13px;
   cursor: grab;
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
-  border: 1px solid rgba(226, 232, 240, 0.9);
+  box-shadow: var(--op-shadow-md);
+  border: 1px solid var(--op-border);
   position: relative;
   transition: box-shadow 0.2s, transform 0.2s, border-color 0.2s;
 }
 
 .card:hover {
-  border-color: rgba(148, 163, 184, 0.55);
-  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.1);
+  border-color: var(--op-muted);
+  box-shadow: var(--op-shadow-lg);
   transform: translateY(-1px);
 }
 
@@ -127,7 +127,7 @@
 .cardCompany {
   font-size: 12px;
   font-weight: 700;
-  color: #475569;
+  color: var(--op-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   margin-bottom: 4px;
@@ -136,20 +136,20 @@
 .cardName {
   font-size: 13px;
   font-weight: 600;
-  color: #0f172a;
+  color: var(--op-ink);
   margin-bottom: 6px;
   line-height: 1.4;
 }
 
 .cardDate {
   font-size: 12px;
-  color: #94a3b8;
+  color: var(--op-muted);
   margin-bottom: 4px;
 }
 
 .cardNotes {
   font-size: 12px;
-  color: #94a3b8;
+  color: var(--op-muted);
   font-style: italic;
   display: -webkit-box;
   -webkit-line-clamp: 2;
