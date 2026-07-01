@@ -39,7 +39,7 @@ func TestSummaryFallbackIncludesKnowledgeSearchContext(t *testing.T) {
 }
 
 func TestFallbackKnowledgeTermsDedupesSkipsShortTermsAndCaps(t *testing.T) {
-	terms := fallbackKnowledgeTerms("go ai java java redis Go postgres kubernetes monitor distributed cache resume interview offerpilot extra")
+	terms := fallbackKnowledgeTerms(strings.Repeat("go ai ", 20) + "java java redis Go postgres kubernetes monitor distributed cache resume interview offerpilot extra")
 
 	want := []string{"java", "redis", "postgres", "kubernetes", "monitor", "distributed", "cache", "resume"}
 	if strings.Join(terms, "|") != strings.Join(want, "|") {

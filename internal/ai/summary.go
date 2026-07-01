@@ -106,9 +106,14 @@ func buildKnowledgeSnippets(database *db.Database, userMessage string) string {
 func searchKnowledgeForFallback(database *db.Database, userMessage string) []db.KnowledgeSearchResult {
 	const limit = 3
 
-	results, err := database.SearchKnowledge(db.KnowledgeSearchFilter{Query: userMessage, Limit: limit})
-	if err != nil {
-		return nil
+	terms := fallbackKnowledgeTerms(userMessage)
+	var results []db.KnowledgeSearchResult
+	if initialQuery := strings.Join(terms, " "); initialQuery != "" {
+		var err error
+		results, err = database.SearchKnowledge(db.KnowledgeSearchFilter{Query: initialQuery, Limit: limit})
+		if err != nil {
+			results = nil
+		}
 	}
 	if len(results) >= limit {
 		return results[:limit]
@@ -118,7 +123,7 @@ func searchKnowledgeForFallback(database *db.Database, userMessage string) []db.
 	for _, result := range results {
 		seen[result.ChunkID] = true
 	}
-	for _, term := range fallbackKnowledgeTerms(userMessage) {
+	for _, term := range terms {
 		if len(results) >= limit {
 			break
 		}
