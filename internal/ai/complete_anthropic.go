@@ -18,6 +18,7 @@ type antTool struct {
 type antBlock struct {
 	Type      string          `json:"type"`
 	Text      string          `json:"text,omitempty"`
+	Thinking  string          `json:"thinking,omitempty"`
 	ID        string          `json:"id,omitempty"`
 	Name      string          `json:"name,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
@@ -120,6 +121,7 @@ func (c *Client) completeAnthropic(ctx context.Context, messages []Message, tool
 		return nil, fmt.Errorf("parse response: %w", err)
 	}
 	asst := &Assistant{}
+	var thinkingFallback string
 	for _, rawBlock := range ar.Content {
 		var b antBlock
 		if err := json.Unmarshal(rawBlock, &b); err != nil {
@@ -135,8 +137,14 @@ func (c *Client) completeAnthropic(ctx context.Context, messages []Message, tool
 			}
 			asst.ToolCalls = append(asst.ToolCalls, ToolCall{ID: b.ID, Name: b.Name, Args: input})
 		default:
+			if b.Type == "thinking" && b.Text == "" && b.Content == "" && b.Input == nil && b.Name == "" && b.ID == "" {
+				thinkingFallback += b.Thinking
+			}
 			asst.ProviderBlocks = append(asst.ProviderBlocks, rawBlock)
 		}
+	}
+	if asst.Content == "" && len(asst.ToolCalls) == 0 {
+		asst.Content = thinkingFallback
 	}
 	return asst, nil
 }

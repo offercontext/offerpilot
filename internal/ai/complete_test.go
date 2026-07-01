@@ -189,3 +189,22 @@ func TestCompleteAnthropicParsesText(t *testing.T) {
 		t.Fatalf("unexpected: %+v", asst)
 	}
 }
+
+func TestCompleteAnthropicUsesThinkingWhenTextIsMissing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"content":[{"type":"thinking","thinking":"fallback answer","signature":"sig_1"}],"stop_reason":"end_turn"}`))
+	}))
+	defer srv.Close()
+
+	c, _ := New(&config.Config{APIKey: "k", BaseURL: srv.URL + "/anthropic", Model: "deepseek-v4-flash"})
+	asst, err := c.Complete(context.Background(), []Message{{Role: RoleUser, Content: "hi"}}, nil)
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if asst.Content != "fallback answer" {
+		t.Fatalf("expected thinking fallback content, got %+v", asst)
+	}
+	if len(asst.ProviderBlocks) != 1 {
+		t.Fatalf("expected thinking block to remain preserved, got %d", len(asst.ProviderBlocks))
+	}
+}
