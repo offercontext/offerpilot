@@ -35,6 +35,13 @@ func TestOfferCRUD(t *testing.T) {
 	if got.TotalCash != 38000*16+50000 {
 		t.Fatalf("total_cash not recomputed: %d", got.TotalCash)
 	}
+	reloaded, err := d.GetOffer(got.ID)
+	if err != nil {
+		t.Fatalf("reload offer: %v", err)
+	}
+	if reloaded.BaseMonthly != 38000 || reloaded.Status != "accepted" || reloaded.TotalCash != 38000*16+50000 {
+		t.Fatalf("update not persisted: %+v", reloaded)
+	}
 
 	all, err := d.ListOffers("")
 	if err != nil || len(all) != 1 {

@@ -10,14 +10,19 @@ func computeTotalCash(o *Offer) {
 	o.TotalCash = o.BaseMonthly*o.MonthsPerYear + o.SigningBonus
 }
 
-// CreateOffer inserts a new offer.
-func (db *Database) CreateOffer(o *Offer) error {
+// normalizeOffer applies default values for optional fields.
+func normalizeOffer(o *Offer) {
 	if o.MonthsPerYear == 0 {
 		o.MonthsPerYear = 12
 	}
 	if o.Status == "" {
 		o.Status = "pending"
 	}
+}
+
+// CreateOffer inserts a new offer.
+func (db *Database) CreateOffer(o *Offer) error {
+	normalizeOffer(o)
 	now := time.Now()
 	res, err := db.conn.Exec(
 		`INSERT INTO offers (application_id, company_name, position_name, status, base_monthly, months_per_year, signing_bonus, equity, perks, deadline, notes, assessment, created_at, updated_at)
@@ -87,6 +92,7 @@ func (db *Database) ListOffers(status string) ([]Offer, error) {
 
 // UpdateOffer updates mutable fields (never id/application_id).
 func (db *Database) UpdateOffer(o *Offer) error {
+	normalizeOffer(o)
 	now := time.Now()
 	_, err := db.conn.Exec(
 		`UPDATE offers SET company_name = ?, position_name = ?, status = ?, base_monthly = ?, months_per_year = ?, signing_bonus = ?, equity = ?, perks = ?, deadline = ?, notes = ?, assessment = ?, updated_at = ? WHERE id = ?`,
