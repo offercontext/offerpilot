@@ -1,0 +1,71 @@
+:root {
+  /* 品牌色 */
+  --op-primary: #6366f1;
+  --op-accent: #a855f7;
+  --op-success: #059669;
+  --op-warning: #d97706;
+  --op-error: #ef4444;
+  --op-ink: #23213a;
+  --op-muted: #8b87b3;
+  --op-layout-bg: #f6f6fb;
+  --op-surface: #ffffff;
+  --op-border: #ecebf5;
+
+  /* 渐变 */
+  --op-gradient-brand: linear-gradient(135deg, #6366f1, #a855f7);
+
+  /* 阴影（柔和彩色低透明度） */
+  --op-shadow-sm: 0 1px 4px rgba(31, 29, 58, 0.05);
+  --op-shadow-md: 0 2px 10px rgba(99, 102, 241, 0.08);
+  --op-shadow-lg: 0 8px 28px rgba(99, 102, 241, 0.14);
+
+  /* 缓动 */
+  --op-ease: cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* 字体栈（离线系统栈） */
+  --op-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "HarmonyOS Sans SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+}
+
+:root[data-theme="dark"] {
+  --op-ink: #e7e5f2;
+  --op-muted: #9a95bf;
+  --op-layout-bg: #141322;
+  --op-surface: #1c1a2e;
+  --op-border: #2a2740;
+  --op-shadow-sm: 0 1px 4px rgba(0, 0, 0, 0.3);
+  --op-shadow-md: 0 2px 12px rgba(0, 0, 0, 0.35);
+  --op-shadow-lg: 0 8px 30px rgba(0, 0, 0, 0.45);
+}
+
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  font-family: var(--op-font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: var(--op-layout-bg);
+}
+
+/* 数字对齐 */
+.op-tnum { font-variant-numeric: tabular-nums; }
+
+/* 品牌渐变文字 */
+.op-gradient-text {
+  background: var(--op-gradient-brand);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* 视图切换入场 */
+.op-view-enter { animation: opViewIn 0.22s var(--op-ease); }
+@keyframes opViewIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .op-view-enter { animation: none; }
+  * { scroll-behavior: auto !important; }
+}
