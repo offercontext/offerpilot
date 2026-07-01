@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -179,8 +180,12 @@ func runChat(w http.ResponseWriter, r *http.Request, database *db.Database, mode
 		conv = created
 	} else {
 		c, err := database.GetConversation(convID)
-		if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
 			respondError(w, http.StatusNotFound, "conversation not found")
+			return
+		}
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		conv = c
@@ -274,8 +279,12 @@ func runConfirm(w http.ResponseWriter, r *http.Request, database *db.Database, m
 
 	reg := ai.NewRegistry(database)
 	conv, cerr := database.GetConversation(body.ConversationID)
-	if cerr != nil {
+	if errors.Is(cerr, sql.ErrNoRows) {
 		respondError(w, http.StatusNotFound, "conversation not found")
+		return
+	}
+	if cerr != nil {
+		respondError(w, http.StatusInternalServerError, cerr.Error())
 		return
 	}
 	systemPrompt := systemPromptFor(database, conv)
