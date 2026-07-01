@@ -108,6 +108,31 @@ func TestKnowledgeSearchAndChunkRefresh(t *testing.T) {
 	}
 }
 
+func TestKnowledgeSearchFindsChinesePhrase(t *testing.T) {
+	d := newTestDB(t)
+	base := &KnowledgeBase{Name: "Chinese notes"}
+	if err := d.CreateKnowledgeBase(base); err != nil {
+		t.Fatalf("create base: %v", err)
+	}
+	doc := &KnowledgeDocument{
+		KnowledgeBaseID: base.ID,
+		Title:           "人之力",
+		Content:         "人之力指的是凡人之力",
+		SourceType:      "manual",
+	}
+	if err := d.CreateKnowledgeDocument(doc); err != nil {
+		t.Fatalf("create doc: %v", err)
+	}
+
+	results, err := d.SearchKnowledge(KnowledgeSearchFilter{Query: "人之力", Limit: 5})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(results) != 1 || results[0].DocumentTitle != "人之力" || !strings.Contains(results[0].Snippet, "人之力") {
+		t.Fatalf("expected Chinese phrase match, got %+v", results)
+	}
+}
+
 func TestKnowledgeBaseDeleteCascadesDocumentsAndChunks(t *testing.T) {
 	d := newTestDB(t)
 	base := &KnowledgeBase{Name: "Project material"}

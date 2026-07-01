@@ -313,7 +313,13 @@ func (db *Database) SearchKnowledge(filter KnowledgeSearchFilter) ([]KnowledgeSe
 		}
 		results = append(results, result)
 	}
-	return results, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(results) > 0 {
+		return results, nil
+	}
+	return db.searchKnowledgeByText(filter, queryText, limit)
 }
 
 type knowledgeDocumentScanner interface {
@@ -471,4 +477,104 @@ func buildKnowledgeFTSQuery(query string) string {
 		return `""`
 	}
 	return strings.Join(terms, " ")
+}
+
+func (db *Database) searchKnowledgeByText(filter KnowledgeSearchFilter, queryText string, limit int) ([]KnowledgeSearchResult, error) {
+	patterns := buildKnowledgeLikePatterns(queryText)
+	if len(patterns) == 0 {
+		return []KnowledgeSearchResult{}, nil
+	}
+
+	var clauses []string
+	var args []interface{}
+	for _, pattern := range patterns {
+		clauses = append(clauses, "(c.content LIKE ? OR d.title LIKE ?)")
+		like := "%" + pattern + "%"
+		args = append(args, like, like)
+	}
+
+	query := `SELECT c.knowledge_base_id, b.name, c.document_id, d.title, c.id, c.content, 0.0 AS score
+		FROM knowledge_chunks c
+		JOIN knowledge_documents d ON d.id = c.document_id
+		JOIN knowledge_bases b ON b.id = c.knowledge_base_id
+		WHERE (` + strings.Join(clauses, " OR ") + `)`
+	if filter.KnowledgeBaseID > 0 {
+		query += ` AND c.knowledge_base_id = ?`
+		args = append(args, filter.KnowledgeBaseID)
+	}
+	query += ` ORDER BY d.updated_at DESC, c.chunk_index ASC LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := db.conn.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []KnowledgeSearchResult
+	for rows.Next() {
+		var result KnowledgeSearchResult
+		if err := rows.Scan(&result.KnowledgeBaseID, &result.KnowledgeBaseName, &result.DocumentID, &result.DocumentTitle, &result.ChunkID, &result.Snippet, &result.Score); err != nil {
+			return nil, err
+		}
+		results = append(results, result)
+	}
+	return results, rows.Err()
+}
+
+func buildKnowledgeLikePatterns(query string) []string {
+	seen := map[string]bool{}
+	var patterns []string
+	add := func(pattern string) {
+		pattern = strings.TrimSpace(pattern)
+		if pattern == "" || seen[pattern] {
+			return
+		}
+		seen[pattern] = true
+		patterns = append(patterns, pattern)
+	}
+
+	add(query)
+	for _, field := range strings.Fields(query) {
+		add(field)
+	}
+	for _, segment := range cjkSegments(query) {
+		runes := []rune(segment)
+		for width := minInt(8, len(runes)); width >= 2; width-- {
+			for start := 0; start+width <= len(runes); start++ {
+				add(string(runes[start : start+width]))
+				if len(patterns) >= 24 {
+					return patterns
+				}
+			}
+		}
+	}
+	return patterns
+}
+
+func cjkSegments(s string) []string {
+	var segments []string
+	var current []rune
+	flush := func() {
+		if len(current) > 0 {
+			segments = append(segments, string(current))
+			current = nil
+		}
+	}
+	for _, r := range s {
+		if unicode.Is(unicode.Han, r) {
+			current = append(current, r)
+			continue
+		}
+		flush()
+	}
+	flush()
+	return segments
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
