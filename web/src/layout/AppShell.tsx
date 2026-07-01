@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Layout, Spin } from 'antd';
 import { listApplications } from '@/services/applications';
 import { listEvents } from '@/services/events';
+import { listOffers } from '@/services/offers';
 import type { Application } from '@/types/application';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
@@ -62,6 +63,10 @@ export default function AppShell() {
     queryKey: ['events'],
     queryFn: () => listEvents(),
   });
+  const { data: offers = [] } = useQuery({
+    queryKey: ['offers'],
+    queryFn: () => listOffers(),
+  });
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -75,8 +80,8 @@ export default function AppShell() {
   }, []);
 
   const reminders = useMemo(
-    () => deriveReminders(applications, events, [], dayjs()),
-    [applications, events]
+    () => deriveReminders(applications, events, offers, dayjs()),
+    [applications, events, offers]
   );
   const streak = useMemo(() => computeStreak(applications), [applications]);
 
@@ -116,7 +121,11 @@ export default function AppShell() {
           ) : (
             <div className="op-view-enter" key={view}>
               {view === 'dashboard' && (
-                <DashboardView onNavigate={setView} onOpenDetailById={goDetailById} />
+                <DashboardView
+                  onNavigate={setView}
+                  onOpenDetailById={goDetailById}
+                  onAddApplication={() => setAddOpen(true)}
+                />
               )}
               {view === 'board' && (
                 <KanbanBoard applications={applications} onOpenDetail={(a) => setSelected(a)} />

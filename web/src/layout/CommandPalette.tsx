@@ -32,10 +32,15 @@ export default function CommandPalette({
   onOpenChat,
 }: Props) {
   const [q, setQ] = useState('');
+  const [activeIndex, setActiveIndex] = useState(0);
 
   useEffect(() => {
     if (!open) setQ('');
   }, [open]);
+
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [open, q]);
 
   const actions: Command[] = useMemo(
     () => [
@@ -44,7 +49,9 @@ export default function CommandPalette({
       { key: 'chat', label: '打开 AI 助手', hint: '动作', run: () => { onOpenChat(); onClose(); } },
       { key: 'nav-dashboard', label: '前往 驾驶舱', hint: '导航', run: () => { onNavigate('dashboard'); onClose(); } },
       { key: 'nav-board', label: '前往 看板', hint: '导航', run: () => { onNavigate('board'); onClose(); } },
+      { key: 'nav-calendar', label: '前往 日历', hint: '导航', run: () => { onNavigate('calendar'); onClose(); } },
       { key: 'nav-reminders', label: '前往 提醒', hint: '导航', run: () => { onNavigate('reminders'); onClose(); } },
+      { key: 'nav-reviews', label: '前往 复盘', hint: '导航', run: () => { onNavigate('reviews'); onClose(); } },
       { key: 'nav-offers', label: '前往 谈薪', hint: '导航', run: () => { onNavigate('offers'); onClose(); } },
       { key: 'nav-knowledge', label: '前往 知识库', hint: '导航', run: () => { onNavigate('knowledge'); onClose(); } },
     ],
@@ -74,6 +81,19 @@ export default function CommandPalette({
 
   const items = [...appMatches, ...actionMatches];
 
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setActiveIndex((i) => Math.min(i + 1, items.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setActiveIndex((i) => Math.max(i - 1, 0));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      items[activeIndex]?.run();
+    }
+  };
+
   return (
     <Modal open={open} onCancel={onClose} footer={null} closable={false} width={520} styles={{ body: { padding: 0 } }}>
       <Input
@@ -83,16 +103,22 @@ export default function CommandPalette({
         placeholder="搜索投递、跳转页面、执行动作…"
         value={q}
         onChange={(e) => setQ(e.target.value)}
+        onKeyDown={onKeyDown}
         style={{ padding: '14px 16px' }}
       />
       <div style={{ maxHeight: 360, overflowY: 'auto', borderTop: '1px solid var(--op-border)' }}>
         <List
           dataSource={items}
           locale={{ emptyText: '无匹配结果' }}
-          renderItem={(c) => (
+          renderItem={(c, index) => (
             <List.Item
               onClick={c.run}
-              style={{ padding: '10px 16px', cursor: 'pointer' }}
+              onMouseEnter={() => setActiveIndex(index)}
+              style={{
+                padding: '10px 16px',
+                cursor: 'pointer',
+                background: index === activeIndex ? 'var(--op-layout-bg)' : undefined,
+              }}
             >
               <span style={{ color: 'var(--op-ink)' }}>{c.label}</span>
               {c.hint && <span style={{ fontSize: 11, color: 'var(--op-muted)' }}>{c.hint}</span>}

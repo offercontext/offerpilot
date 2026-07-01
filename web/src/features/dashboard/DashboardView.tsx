@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Skeleton } from 'antd';
+import { Skeleton, Button } from 'antd';
 import dayjs from 'dayjs';
 import { listApplications } from '@/services/applications';
 import { listEvents } from '@/services/events';
@@ -22,9 +22,10 @@ import styles from './dashboard.module.css';
 interface Props {
   onNavigate: (v: ViewMode) => void;
   onOpenDetailById: (id: number) => void;
+  onAddApplication: () => void;
 }
 
-export default function DashboardView({ onNavigate }: Props) {
+export default function DashboardView({ onNavigate, onAddApplication }: Props) {
   const appsQ = useQuery({ queryKey: ['applications'], queryFn: () => listApplications() });
   const eventsQ = useQuery({ queryKey: ['events'], queryFn: () => listEvents() });
   const offersQ = useQuery({ queryKey: ['offers'], queryFn: () => listOffers() });
@@ -40,6 +41,19 @@ export default function DashboardView({ onNavigate }: Props) {
 
   if (appsQ.isLoading) {
     return <Skeleton active paragraph={{ rows: 8 }} />;
+  }
+
+  if (apps.length === 0) {
+    return (
+      <div className={styles.grid}>
+        <div className={styles.card} style={{ textAlign: 'center', padding: 48 }}>
+          <div style={{ color: 'var(--op-muted)', marginBottom: 16 }}>还没有投递记录</div>
+          <Button type="primary" onClick={onAddApplication}>
+            添加第一个投递
+          </Button>
+        </div>
+      </div>
+    );
   }
 
   return (
