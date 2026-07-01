@@ -33,3 +33,14 @@ func TestNegoCoachPromptNilOffer(t *testing.T) {
 		t.Fatal("should not include offer snapshot when offer is nil")
 	}
 }
+
+func TestNegoCoachPromptIncludesScriptGuide(t *testing.T) {
+	// The script skeletons must be present even without a bound offer, so the
+	// coach always has concrete phrasing to adapt from.
+	p := NegoCoachPrompt(nil, "")
+	for _, want := range []string{"话术骨架", "反问询价", "STAR", "Offer 锚定", "替代补偿", "预算有限", "锚定陷阱", "压价试探", "时间压力", "职级压低"} {
+		if !strings.Contains(p, want) {
+			t.Fatalf("script guide missing %q", want)
+		}
+	}
+}
