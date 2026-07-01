@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Layout, Spin } from 'antd';
 import { listApplications } from '@/services/applications';
@@ -17,6 +17,7 @@ import KnowledgeBaseView from '@/components/KnowledgeBaseView';
 import OfferCenterView from '@/components/OfferCenterView';
 import DashboardView from '@/features/dashboard/DashboardView';
 import RemindersView from '@/features/reminders/RemindersView';
+import CommandPalette from './CommandPalette';
 import { deriveReminders, reminderBadgeCount } from '@/lib/insights';
 import dayjs from 'dayjs';
 
@@ -51,6 +52,7 @@ export default function AppShell() {
   const [chatOpen, setChatOpen] = useState(false);
   const [selected, setSelected] = useState<Application | null>(null);
   const [coachOfferId, setCoachOfferId] = useState<number | undefined>(undefined);
+  const [paletteOpen, setPaletteOpen] = useState(false);
 
   const { data: applications = [], isLoading } = useQuery({
     queryKey: ['applications'],
@@ -60,6 +62,17 @@ export default function AppShell() {
     queryKey: ['events'],
     queryFn: () => listEvents(),
   });
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setPaletteOpen((v) => !v);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   const reminders = useMemo(
     () => deriveReminders(applications, events, [], dayjs()),
@@ -90,7 +103,7 @@ export default function AppShell() {
         onOpenChat={() => openChat(undefined)}
       />
       <Layout style={{ background: 'var(--op-layout-bg)' }}>
-        <TopBar streakDays={streak} onAdd={() => setAddOpen(true)} onSearch={() => setResumeOpen(true)} />
+        <TopBar streakDays={streak} onAdd={() => setAddOpen(true)} onSearch={() => setPaletteOpen(true)} />
         <Content style={{ padding: '0 24px 24px' }}>
           {isLoading ? (
             <div style={{ textAlign: 'center', padding: 48 }}>
@@ -123,6 +136,16 @@ export default function AppShell() {
       <AddApplicationForm open={addOpen} onClose={() => setAddOpen(false)} />
       <ApplicationDetail application={selectedApp} open={!!selected} onClose={() => setSelected(null)} />
       <ResumeMatchModal open={resumeOpen} onClose={() => setResumeOpen(false)} />
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        applications={applications}
+        onNavigate={setView}
+        onOpenDetail={(app) => setSelected(app)}
+        onAddApplication={() => setAddOpen(true)}
+        onOpenResume={() => setResumeOpen(true)}
+        onOpenChat={() => openChat(undefined)}
+      />
       <ChatPanel
         open={chatOpen}
         onClose={() => {
