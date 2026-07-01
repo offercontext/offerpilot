@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/offercontext/offerpilot/internal/ai"
@@ -24,11 +25,13 @@ func chatTestDB(t *testing.T) *db.Database {
 
 // fakeModel scripts assistant turns for the loop.
 type fakeModel struct {
-	turns []ai.Assistant
-	i     int
+	turns    []ai.Assistant
+	i        int
+	lastMsgs []ai.Message // captures the messages passed to the most recent Complete call
 }
 
-func (m *fakeModel) Complete(_ context.Context, _ []ai.Message, _ []ai.Tool) (*ai.Assistant, error) {
+func (m *fakeModel) Complete(_ context.Context, msgs []ai.Message, _ []ai.Tool) (*ai.Assistant, error) {
+	m.lastMsgs = msgs
 	a := m.turns[m.i]
 	m.i++
 	return &a, nil
@@ -80,5 +83,47 @@ func TestChatWriteRequiresConfirmation(t *testing.T) {
 	app, _ := d.GetApplication(1)
 	if app.Status == "offer" {
 		t.Fatal("write should not execute before confirm")
+	}
+}
+
+func TestChatBindsOfferAndUsesCoachPrompt(t *testing.T) {
+	d := chatTestDB(t)
+
+	offer := &db.Offer{CompanyName: "字节", PositionName: "后端", BaseMonthly: 35000, MonthsPerYear: 16}
+	if err := d.CreateOffer(offer); err != nil {
+		t.Fatalf("seed offer: %v", err)
+	}
+
+	model := &fakeModel{turns: []ai.Assistant{{Content: "好的"}}}
+	h := chatHandlerWithModel(d, model, false)
+
+	body, _ := json.Marshal(map[string]interface{}{"offer_id": offer.ID, "message": "帮我谈签字费"})
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("chat status %d: %s", rec.Code, rec.Body.String())
+	}
+
+	if len(model.lastMsgs) == 0 {
+		t.Fatal("model received no messages")
+	}
+	capturedSystem := model.lastMsgs[0].Content
+	if !strings.Contains(capturedSystem, "谈薪教练") || !strings.Contains(capturedSystem, "字节") {
+		t.Fatalf("coach prompt not injected, got system: %s", capturedSystem)
+	}
+
+	var resp struct {
+		ConversationID int64 `json:"conversation_id"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	conv, err := d.GetConversation(resp.ConversationID)
+	if err != nil {
+		t.Fatalf("get conversation: %v", err)
+	}
+	if conv.Mode != "nego_coach" || conv.OfferID == nil || *conv.OfferID != offer.ID {
+		t.Fatalf("conversation not bound: %+v", conv)
 	}
 }
