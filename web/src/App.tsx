@@ -12,6 +12,7 @@ import ResumeMatchModal from '@/components/ResumeMatchModal';
 import CalendarView from '@/components/CalendarView';
 import ChatPanel from '@/components/ChatPanel';
 import ReviewManagementView from '@/components/ReviewManagementView';
+import OfferCenterView from '@/components/OfferCenterView';
 
 const { Header, Content } = Layout;
 const { Title } = Typography;
@@ -21,7 +22,8 @@ export default function App() {
   const [resumeOpen, setResumeOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [selected, setSelected] = useState<Application | null>(null);
-  const [viewMode, setViewMode] = useState<'board' | 'calendar' | 'reviews'>('board');
+  const [viewMode, setViewMode] = useState<'board' | 'calendar' | 'reviews' | 'offers'>('board');
+  const [coachOfferId, setCoachOfferId] = useState<number | undefined>(undefined);
 
   const { data: applications = [], isLoading } = useQuery({
     queryKey: ['applications'],
@@ -84,11 +86,12 @@ export default function App() {
 
         <Segmented
           value={viewMode}
-          onChange={(v) => setViewMode(v as 'board' | 'calendar' | 'reviews')}
+          onChange={(v) => setViewMode(v as 'board' | 'calendar' | 'reviews' | 'offers')}
           options={[
             { label: '看板', value: 'board' },
             { label: '日历', value: 'calendar' },
             { label: '复盘', value: 'reviews' },
+            { label: '谈薪', value: 'offers' },
           ]}
           style={{ marginBottom: 16 }}
         />
@@ -107,8 +110,16 @@ export default function App() {
             applications={applications}
             onOpenDetail={(app) => setSelected(app)}
           />
-        ) : (
+        ) : viewMode === 'reviews' ? (
           <ReviewManagementView applications={applications} />
+        ) : (
+          <OfferCenterView
+            applications={applications}
+            onCoach={(offer) => {
+              setCoachOfferId(offer.id);
+              setChatOpen(true);
+            }}
+          />
         )}
       </Content>
 
@@ -119,7 +130,14 @@ export default function App() {
         onClose={() => setSelected(null)}
       />
       <ResumeMatchModal open={resumeOpen} onClose={() => setResumeOpen(false)} />
-      <ChatPanel open={chatOpen} onClose={() => setChatOpen(false)} />
+      <ChatPanel
+        open={chatOpen}
+        onClose={() => {
+          setChatOpen(false);
+          setCoachOfferId(undefined);
+        }}
+        offerId={coachOfferId}
+      />
     </Layout>
   );
 }
