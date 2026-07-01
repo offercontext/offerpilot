@@ -233,3 +233,76 @@ func TestInterviewNoteToolsValidateMissingCompany(t *testing.T) {
 		t.Fatal("expected missing company error")
 	}
 }
+
+func TestKnowledgeToolsCRUDAndSearch(t *testing.T) {
+	d := newToolDB(t)
+	reg := NewRegistry(d)
+
+	createBase, ok := reg.Get("create_knowledge_base")
+	if !ok || !createBase.Write {
+		t.Fatal("create_knowledge_base should be a write tool")
+	}
+	if createBase.Describe(json.RawMessage(`{"name":"Java interview prep"}`)) == "" {
+		t.Fatal("create_knowledge_base should describe confirmation text")
+	}
+
+	out, err := reg.Execute(context.Background(), "create_knowledge_base", json.RawMessage(`{"name":"Java interview prep","description":"core notes"}`))
+	if err != nil {
+		t.Fatalf("create base: %v", err)
+	}
+	if !strings.Contains(out, `"name":"Java interview prep"`) {
+		t.Fatalf("unexpected base output: %s", out)
+	}
+
+	createDoc, ok := reg.Get("create_knowledge_document")
+	if !ok || !createDoc.Write {
+		t.Fatal("create_knowledge_document should be a write tool")
+	}
+	out, err = reg.Execute(context.Background(), "create_knowledge_document", json.RawMessage(`{"knowledge_base_id":1,"title":"Synchronized","content":"monitor lock and happens-before","tags":["java"]}`))
+	if err != nil {
+		t.Fatalf("create doc: %v", err)
+	}
+	if !strings.Contains(out, `"title":"Synchronized"`) {
+		t.Fatalf("unexpected doc output: %s", out)
+	}
+
+	out, err = reg.Execute(context.Background(), "search_knowledge", json.RawMessage(`{"query":"monitor","limit":5}`))
+	if err != nil {
+		t.Fatalf("search knowledge: %v", err)
+	}
+	if !strings.Contains(out, `"document_title":"Synchronized"`) || !strings.Contains(out, `"snippet"`) {
+		t.Fatalf("unexpected search output: %s", out)
+	}
+
+	updateDoc, ok := reg.Get("update_knowledge_document")
+	if !ok || !updateDoc.Write {
+		t.Fatal("update_knowledge_document should be a write tool")
+	}
+	out, err = reg.Execute(context.Background(), "update_knowledge_document", json.RawMessage(`{"id":1,"knowledge_base_id":1,"title":"Synchronized updated","content":"biased locking was removed","tags":["jvm"]}`))
+	if err != nil {
+		t.Fatalf("update doc: %v", err)
+	}
+	if !strings.Contains(out, `"title":"Synchronized updated"`) {
+		t.Fatalf("unexpected update output: %s", out)
+	}
+
+	deleteDoc, ok := reg.Get("delete_knowledge_document")
+	if !ok || !deleteDoc.Write {
+		t.Fatal("delete_knowledge_document should be a write tool")
+	}
+	out, err = reg.Execute(context.Background(), "delete_knowledge_document", json.RawMessage(`{"id":1}`))
+	if err != nil {
+		t.Fatalf("delete doc: %v", err)
+	}
+	if !strings.Contains(out, `"deleted":true`) {
+		t.Fatalf("unexpected delete output: %s", out)
+	}
+}
+
+func TestChatSystemPromptMentionsKnowledgeRules(t *testing.T) {
+	for _, phrase := range []string{"search_knowledge", "do not use the knowledge base", "specific knowledge base"} {
+		if !strings.Contains(ChatSystemPrompt, phrase) {
+			t.Fatalf("system prompt should contain %q, got %s", phrase, ChatSystemPrompt)
+		}
+	}
+}
