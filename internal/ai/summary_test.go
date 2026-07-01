@@ -8,6 +8,78 @@ import (
 	"github.com/offercontext/offerpilot/internal/db"
 )
 
+func summaryTestDB(t *testing.T) *db.Database {
+	t.Helper()
+	d, err := db.Init(t.TempDir() + "/summary.db")
+	if err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	t.Cleanup(func() { d.Close() })
+	return d
+}
+
+func TestSummaryFallbackIncludesKnowledgeSearchContext(t *testing.T) {
+	d := summaryTestDB(t)
+	base := &db.KnowledgeBase{Name: "Java interview prep"}
+	if err := d.CreateKnowledgeBase(base); err != nil {
+		t.Fatalf("create base: %v", err)
+	}
+	doc := &db.KnowledgeDocument{KnowledgeBaseID: base.ID, Title: "Synchronized", Content: "synchronized uses monitor locks", SourceType: db.KnowledgeSourceManual}
+	if err := d.CreateKnowledgeDocument(doc); err != nil {
+		t.Fatalf("create doc: %v", err)
+	}
+
+	system, user := BuildSummaryFallbackPrompt(d, "Explain synchronized")
+	if !strings.Contains(system, "OfferPilot") {
+		t.Fatalf("expected existing system prompt context, got %s", system)
+	}
+	if !strings.Contains(user, "Knowledge snippets") || !strings.Contains(user, "Synchronized") || !strings.Contains(user, "monitor locks") {
+		t.Fatalf("expected knowledge context in fallback prompt, got %s", user)
+	}
+}
+
+func TestFallbackKnowledgeTermsDedupesSkipsShortTermsAndCaps(t *testing.T) {
+	terms := fallbackKnowledgeTerms(strings.Repeat("go ai ", 20) + "java java redis Go postgres kubernetes monitor distributed cache resume interview offerpilot extra")
+
+	want := []string{"java", "redis", "postgres", "kubernetes", "monitor", "distributed", "cache", "resume"}
+	if strings.Join(terms, "|") != strings.Join(want, "|") {
+		t.Fatalf("terms = %#v, want %#v", terms, want)
+	}
+}
+
+func TestFallbackKnowledgeTermsCapsSingleLongToken(t *testing.T) {
+	terms := fallbackKnowledgeTerms(strings.Repeat("知", 10000))
+	if len(terms) != 1 {
+		t.Fatalf("expected one capped term, got %#v", terms)
+	}
+	if got := len([]rune(terms[0])); got != maxFallbackKnowledgeTermRunes {
+		t.Fatalf("term rune length = %d, want %d", got, maxFallbackKnowledgeTermRunes)
+	}
+}
+
+func TestSummaryFallbackTruncatesLongKnowledgeFields(t *testing.T) {
+	d := summaryTestDB(t)
+	longBase := strings.Repeat("BaseName", 80)
+	longTitle := strings.Repeat("TitleName", 80)
+	longContent := "needle " + strings.Repeat("long snippet content ", 80)
+	base := &db.KnowledgeBase{Name: longBase}
+	if err := d.CreateKnowledgeBase(base); err != nil {
+		t.Fatalf("create base: %v", err)
+	}
+	doc := &db.KnowledgeDocument{KnowledgeBaseID: base.ID, Title: longTitle, Content: longContent, SourceType: db.KnowledgeSourceManual}
+	if err := d.CreateKnowledgeDocument(doc); err != nil {
+		t.Fatalf("create doc: %v", err)
+	}
+
+	_, user := BuildSummaryFallbackPrompt(d, "needle")
+	if !strings.Contains(user, "Knowledge snippets") {
+		t.Fatalf("expected knowledge snippets in fallback prompt, got %s", user)
+	}
+	if strings.Contains(user, longBase) || strings.Contains(user, longTitle) || strings.Contains(user, longContent) {
+		t.Fatalf("expected long knowledge fields to be truncated, got %s", user)
+	}
+}
+
 func TestBuildDataSummaryIncludesApplications(t *testing.T) {
 	d, err := db.Init(t.TempDir() + "/s.db")
 	if err != nil {

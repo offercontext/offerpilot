@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/offercontext/offerpilot/internal/db"
@@ -26,6 +27,23 @@ type Tool struct {
 type Registry struct {
 	tools map[string]Tool
 	order []string
+}
+
+const knowledgeDocumentPreviewRunes = 240
+const defaultKnowledgeDocumentListLimit = 10
+const maxKnowledgeDocumentListLimit = 20
+
+type knowledgeDocumentSummary struct {
+	ID              int64     `json:"id"`
+	KnowledgeBaseID int64     `json:"knowledge_base_id"`
+	Title           string    `json:"title"`
+	Tags            []string  `json:"tags"`
+	SourceType      string    `json:"source_type"`
+	SourceName      string    `json:"source_name"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+	ContentLength   int       `json:"content_length"`
+	Preview         string    `json:"preview"`
 }
 
 // List returns tools in registration order.
@@ -86,6 +104,61 @@ func durationString(minutes int) (string, error) {
 
 func validToolEventType(eventType string) bool {
 	return eventType == "written_test" || eventType == "interview" || eventType == "assessment"
+}
+
+func requireTrimmedToolString(name, value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("%s is required", name)
+	}
+	return value, nil
+}
+
+func summarizeKnowledgeDocuments(docs []db.KnowledgeDocument) []knowledgeDocumentSummary {
+	out := make([]knowledgeDocumentSummary, 0, len(docs))
+	for _, doc := range docs {
+		out = append(out, knowledgeDocumentSummary{
+			ID:              doc.ID,
+			KnowledgeBaseID: doc.KnowledgeBaseID,
+			Title:           doc.Title,
+			Tags:            doc.Tags,
+			SourceType:      doc.SourceType,
+			SourceName:      doc.SourceName,
+			CreatedAt:       doc.CreatedAt,
+			UpdatedAt:       doc.UpdatedAt,
+			ContentLength:   len([]rune(doc.Content)),
+			Preview:         previewRunes(doc.Content, knowledgeDocumentPreviewRunes),
+		})
+	}
+	return out
+}
+
+func previewRunes(value string, limit int) string {
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit])
+}
+
+func paginateKnowledgeDocuments(docs []db.KnowledgeDocument, limit, offset int) []db.KnowledgeDocument {
+	if limit <= 0 {
+		limit = defaultKnowledgeDocumentListLimit
+	}
+	if limit > maxKnowledgeDocumentListLimit {
+		limit = maxKnowledgeDocumentListLimit
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(docs) {
+		return []db.KnowledgeDocument{}
+	}
+	end := offset + limit
+	if end > len(docs) {
+		end = len(docs)
+	}
+	return docs[offset:end]
 }
 
 func resolveToolNote(database *db.Database, appID *int64, company, position string) (*int64, string, string, error) {
@@ -260,6 +333,77 @@ func NewRegistry(database *db.Database) *Registry {
 				return "", err
 			}
 			return jsonResult(event)
+		},
+	})
+	r.add(Tool{
+		Name:        "list_knowledge_bases",
+		Description: "List all personal knowledge bases.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{}}`),
+		Handler: func(ctx context.Context, args json.RawMessage) (string, error) {
+			items, err := database.ListKnowledgeBases()
+			if err != nil {
+				return "", err
+			}
+			return jsonResult(items)
+		},
+	})
+	r.add(Tool{
+		Name:        "list_knowledge_documents",
+		Description: "List personal knowledge documents, optionally filtered by knowledge_base_id or query.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"knowledge_base_id":{"type":"integer"},"query":{"type":"string"},"limit":{"type":"integer"},"offset":{"type":"integer"}}}`),
+		Handler: func(ctx context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				KnowledgeBaseID int64  `json:"knowledge_base_id"`
+				Query           string `json:"query"`
+				Limit           int    `json:"limit"`
+				Offset          int    `json:"offset"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return "", err
+			}
+			items, err := database.ListKnowledgeDocuments(db.KnowledgeDocumentFilter{KnowledgeBaseID: p.KnowledgeBaseID, Query: p.Query})
+			if err != nil {
+				return "", err
+			}
+			return jsonResult(summarizeKnowledgeDocuments(paginateKnowledgeDocuments(items, p.Limit, p.Offset)))
+		},
+	})
+	r.add(Tool{
+		Name:        "get_knowledge_document",
+		Description: "Get a single personal knowledge document by ID.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}`),
+		Handler: func(ctx context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				ID int64 `json:"id"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return "", err
+			}
+			doc, err := database.GetKnowledgeDocument(p.ID)
+			if err != nil {
+				return "", err
+			}
+			return jsonResult(doc)
+		},
+	})
+	r.add(Tool{
+		Name:        "search_knowledge",
+		Description: "Search personal knowledge base chunks by query, optionally scoped to a knowledge_base_id.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"knowledge_base_id":{"type":"integer"},"limit":{"type":"integer"}},"required":["query"]}`),
+		Handler: func(ctx context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				Query           string `json:"query"`
+				KnowledgeBaseID int64  `json:"knowledge_base_id"`
+				Limit           int    `json:"limit"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return "", err
+			}
+			items, err := database.SearchKnowledge(db.KnowledgeSearchFilter{Query: p.Query, KnowledgeBaseID: p.KnowledgeBaseID, Limit: p.Limit})
+			if err != nil {
+				return "", err
+			}
+			return jsonResult(items)
 		},
 	})
 
@@ -475,6 +619,251 @@ func NewRegistry(database *db.Database) *Registry {
 				return "", err
 			}
 			if err := database.DeleteInterviewNote(p.ID); err != nil {
+				return "", err
+			}
+			return jsonResult(map[string]interface{}{"deleted": true, "id": p.ID})
+		},
+	})
+	r.add(Tool{
+		Name:        "create_knowledge_base",
+		Description: "Create a personal knowledge base.",
+		Write:       true,
+		Schema:      json.RawMessage(`{"type":"object","properties":{"name":{"type":"string","minLength":1},"description":{"type":"string"}},"required":["name"]}`),
+		Describe: func(args json.RawMessage) string {
+			var p struct {
+				Name string `json:"name"`
+			}
+			_ = json.Unmarshal(args, &p)
+			return fmt.Sprintf("Create knowledge base: %s", strings.TrimSpace(p.Name))
+		},
+		Handler: func(ctx context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				Name        string `json:"name"`
+				Description string `json:"description"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return "", err
+			}
+			name, err := requireTrimmedToolString("name", p.Name)
+			if err != nil {
+				return "", err
+			}
+			base := &db.KnowledgeBase{Name: name, Description: p.Description}
+			if err := database.CreateKnowledgeBase(base); err != nil {
+				return "", err
+			}
+			return jsonResult(base)
+		},
+	})
+	r.add(Tool{
+		Name:        "update_knowledge_base",
+		Description: "Update a personal knowledge base by id. Omitted fields keep their current values.",
+		Write:       true,
+		Schema:      json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer"},"name":{"type":"string","minLength":1},"description":{"type":"string"}},"required":["id"]}`),
+		Describe: func(args json.RawMessage) string {
+			var p struct {
+				ID int64 `json:"id"`
+			}
+			_ = json.Unmarshal(args, &p)
+			return fmt.Sprintf("Update knowledge base #%d", p.ID)
+		},
+		Handler: func(ctx context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				ID          int64   `json:"id"`
+				Name        *string `json:"name"`
+				Description *string `json:"description"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return "", err
+			}
+			base, err := database.GetKnowledgeBase(p.ID)
+			if err != nil {
+				return "", err
+			}
+			if p.Name != nil {
+				name, err := requireTrimmedToolString("name", *p.Name)
+				if err != nil {
+					return "", err
+				}
+				base.Name = name
+			}
+			if p.Description != nil {
+				base.Description = *p.Description
+			}
+			name, err := requireTrimmedToolString("name", base.Name)
+			if err != nil {
+				return "", err
+			}
+			base.Name = name
+			if err := database.UpdateKnowledgeBase(base); err != nil {
+				return "", err
+			}
+			return jsonResult(base)
+		},
+	})
+	r.add(Tool{
+		Name:        "delete_knowledge_base",
+		Description: "Delete a personal knowledge base by id. This also deletes all documents and searchable chunks in it.",
+		Write:       true,
+		Schema:      json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}`),
+		Describe: func(args json.RawMessage) string {
+			var p struct {
+				ID int64 `json:"id"`
+			}
+			_ = json.Unmarshal(args, &p)
+			docs, err := database.ListKnowledgeDocuments(db.KnowledgeDocumentFilter{KnowledgeBaseID: p.ID})
+			if err != nil {
+				return fmt.Sprintf("Delete knowledge base #%d and all documents/chunks in it", p.ID)
+			}
+			return fmt.Sprintf("Delete knowledge base #%d and all %d documents/chunks in it", p.ID, len(docs))
+		},
+		Handler: func(ctx context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				ID int64 `json:"id"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return "", err
+			}
+			if _, err := database.GetKnowledgeBase(p.ID); err != nil {
+				return "", err
+			}
+			if err := database.DeleteKnowledgeBase(p.ID); err != nil {
+				return "", err
+			}
+			return jsonResult(map[string]interface{}{"deleted": true, "id": p.ID})
+		},
+	})
+	r.add(Tool{
+		Name:        "create_knowledge_document",
+		Description: "Create a personal knowledge document.",
+		Write:       true,
+		Schema:      json.RawMessage(`{"type":"object","properties":{"knowledge_base_id":{"type":"integer"},"title":{"type":"string","minLength":1},"content":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}}},"required":["knowledge_base_id","title","content"]}`),
+		Describe: func(args json.RawMessage) string {
+			var p struct {
+				KnowledgeBaseID int64  `json:"knowledge_base_id"`
+				Title           string `json:"title"`
+			}
+			_ = json.Unmarshal(args, &p)
+			return fmt.Sprintf("Create knowledge document in base #%d: %s", p.KnowledgeBaseID, p.Title)
+		},
+		Handler: func(ctx context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				KnowledgeBaseID int64    `json:"knowledge_base_id"`
+				Title           string   `json:"title"`
+				Content         string   `json:"content"`
+				Tags            []string `json:"tags"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return "", err
+			}
+			if p.KnowledgeBaseID <= 0 {
+				return "", fmt.Errorf("knowledge_base_id must be greater than 0")
+			}
+			title, err := requireTrimmedToolString("title", p.Title)
+			if err != nil {
+				return "", err
+			}
+			if _, err := database.GetKnowledgeBase(p.KnowledgeBaseID); err != nil {
+				return "", err
+			}
+			doc := &db.KnowledgeDocument{
+				KnowledgeBaseID: p.KnowledgeBaseID,
+				Title:           title,
+				Content:         p.Content,
+				Tags:            p.Tags,
+			}
+			if err := database.CreateKnowledgeDocument(doc); err != nil {
+				return "", err
+			}
+			return jsonResult(doc)
+		},
+	})
+	r.add(Tool{
+		Name:        "update_knowledge_document",
+		Description: "Update a personal knowledge document by id. Omitted fields keep their current values.",
+		Write:       true,
+		Schema:      json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer"},"knowledge_base_id":{"type":"integer"},"title":{"type":"string","minLength":1},"content":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}}},"required":["id"]}`),
+		Describe: func(args json.RawMessage) string {
+			var p struct {
+				ID int64 `json:"id"`
+			}
+			_ = json.Unmarshal(args, &p)
+			return fmt.Sprintf("Update knowledge document #%d", p.ID)
+		},
+		Handler: func(ctx context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				ID              int64     `json:"id"`
+				KnowledgeBaseID *int64    `json:"knowledge_base_id"`
+				Title           *string   `json:"title"`
+				Content         *string   `json:"content"`
+				Tags            *[]string `json:"tags"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return "", err
+			}
+			doc, err := database.GetKnowledgeDocument(p.ID)
+			if err != nil {
+				return "", err
+			}
+			if p.KnowledgeBaseID != nil {
+				if *p.KnowledgeBaseID <= 0 {
+					return "", fmt.Errorf("knowledge_base_id must be greater than 0")
+				}
+				if _, err := database.GetKnowledgeBase(*p.KnowledgeBaseID); err != nil {
+					return "", err
+				}
+				doc.KnowledgeBaseID = *p.KnowledgeBaseID
+			}
+			if p.Title != nil {
+				title, err := requireTrimmedToolString("title", *p.Title)
+				if err != nil {
+					return "", err
+				}
+				doc.Title = title
+			}
+			if p.Content != nil {
+				doc.Content = *p.Content
+			}
+			if p.Tags != nil {
+				doc.Tags = *p.Tags
+			}
+			if doc.KnowledgeBaseID <= 0 {
+				return "", fmt.Errorf("knowledge_base_id must be greater than 0")
+			}
+			title, err := requireTrimmedToolString("title", doc.Title)
+			if err != nil {
+				return "", err
+			}
+			doc.Title = title
+			if err := database.UpdateKnowledgeDocument(doc); err != nil {
+				return "", err
+			}
+			return jsonResult(doc)
+		},
+	})
+	r.add(Tool{
+		Name:        "delete_knowledge_document",
+		Description: "Delete a personal knowledge document by id.",
+		Write:       true,
+		Schema:      json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}`),
+		Describe: func(args json.RawMessage) string {
+			var p struct {
+				ID int64 `json:"id"`
+			}
+			_ = json.Unmarshal(args, &p)
+			return fmt.Sprintf("Delete knowledge document #%d", p.ID)
+		},
+		Handler: func(ctx context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				ID int64 `json:"id"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return "", err
+			}
+			if _, err := database.GetKnowledgeDocument(p.ID); err != nil {
+				return "", err
+			}
+			if err := database.DeleteKnowledgeDocument(p.ID); err != nil {
 				return "", err
 			}
 			return jsonResult(map[string]interface{}{"deleted": true, "id": p.ID})

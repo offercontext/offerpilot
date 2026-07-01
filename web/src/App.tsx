@@ -12,17 +12,20 @@ import ResumeMatchModal from '@/components/ResumeMatchModal';
 import CalendarView from '@/components/CalendarView';
 import ChatPanel from '@/components/ChatPanel';
 import ReviewManagementView from '@/components/ReviewManagementView';
+import KnowledgeBaseView from '@/components/KnowledgeBaseView';
 import OfferCenterView from '@/components/OfferCenterView';
 
 const { Header, Content } = Layout;
 const { Title } = Typography;
+
+type ViewMode = 'board' | 'calendar' | 'reviews' | 'offers' | 'knowledge';
 
 export default function App() {
   const [addOpen, setAddOpen] = useState(false);
   const [resumeOpen, setResumeOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [selected, setSelected] = useState<Application | null>(null);
-  const [viewMode, setViewMode] = useState<'board' | 'calendar' | 'reviews' | 'offers'>('board');
+  const [viewMode, setViewMode] = useState<ViewMode>('board');
   const [coachOfferId, setCoachOfferId] = useState<number | undefined>(undefined);
 
   const { data: applications = [], isLoading } = useQuery({
@@ -86,12 +89,13 @@ export default function App() {
 
         <Segmented
           value={viewMode}
-          onChange={(v) => setViewMode(v as 'board' | 'calendar' | 'reviews' | 'offers')}
+          onChange={(v) => setViewMode(v as ViewMode)}
           options={[
             { label: '看板', value: 'board' },
             { label: '日历', value: 'calendar' },
             { label: '复盘', value: 'reviews' },
             { label: '谈薪', value: 'offers' },
+            { label: '知识库', value: 'knowledge' },
           ]}
           style={{ marginBottom: 16 }}
         />
@@ -112,7 +116,7 @@ export default function App() {
           />
         ) : viewMode === 'reviews' ? (
           <ReviewManagementView applications={applications} />
-        ) : (
+        ) : viewMode === 'offers' ? (
           <OfferCenterView
             applications={applications}
             onCoach={(offer) => {
@@ -120,6 +124,8 @@ export default function App() {
               setChatOpen(true);
             }}
           />
+        ) : (
+          <KnowledgeBaseView />
         )}
       </Content>
 

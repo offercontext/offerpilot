@@ -233,3 +233,275 @@ func TestInterviewNoteToolsValidateMissingCompany(t *testing.T) {
 		t.Fatal("expected missing company error")
 	}
 }
+
+func TestKnowledgeToolsCRUDAndSearch(t *testing.T) {
+	d := newToolDB(t)
+	reg := NewRegistry(d)
+
+	createBase, ok := reg.Get("create_knowledge_base")
+	if !ok || !createBase.Write {
+		t.Fatal("create_knowledge_base should be a write tool")
+	}
+	if createBase.Describe(json.RawMessage(`{"name":"Java interview prep"}`)) == "" {
+		t.Fatal("create_knowledge_base should describe confirmation text")
+	}
+
+	out, err := reg.Execute(context.Background(), "create_knowledge_base", json.RawMessage(`{"name":"Java interview prep","description":"core notes"}`))
+	if err != nil {
+		t.Fatalf("create base: %v", err)
+	}
+	if !strings.Contains(out, `"name":"Java interview prep"`) {
+		t.Fatalf("unexpected base output: %s", out)
+	}
+
+	createDoc, ok := reg.Get("create_knowledge_document")
+	if !ok || !createDoc.Write {
+		t.Fatal("create_knowledge_document should be a write tool")
+	}
+	out, err = reg.Execute(context.Background(), "create_knowledge_document", json.RawMessage(`{"knowledge_base_id":1,"title":"Synchronized","content":"monitor lock and happens-before","tags":["java"]}`))
+	if err != nil {
+		t.Fatalf("create doc: %v", err)
+	}
+	if !strings.Contains(out, `"title":"Synchronized"`) {
+		t.Fatalf("unexpected doc output: %s", out)
+	}
+
+	out, err = reg.Execute(context.Background(), "search_knowledge", json.RawMessage(`{"query":"monitor","limit":5}`))
+	if err != nil {
+		t.Fatalf("search knowledge: %v", err)
+	}
+	if !strings.Contains(out, `"document_title":"Synchronized"`) || !strings.Contains(out, `"snippet"`) {
+		t.Fatalf("unexpected search output: %s", out)
+	}
+
+	updateDoc, ok := reg.Get("update_knowledge_document")
+	if !ok || !updateDoc.Write {
+		t.Fatal("update_knowledge_document should be a write tool")
+	}
+	out, err = reg.Execute(context.Background(), "update_knowledge_document", json.RawMessage(`{"id":1,"knowledge_base_id":1,"title":"Synchronized updated","content":"biased locking was removed","tags":["jvm"]}`))
+	if err != nil {
+		t.Fatalf("update doc: %v", err)
+	}
+	if !strings.Contains(out, `"title":"Synchronized updated"`) {
+		t.Fatalf("unexpected update output: %s", out)
+	}
+
+	deleteDoc, ok := reg.Get("delete_knowledge_document")
+	if !ok || !deleteDoc.Write {
+		t.Fatal("delete_knowledge_document should be a write tool")
+	}
+	out, err = reg.Execute(context.Background(), "delete_knowledge_document", json.RawMessage(`{"id":1}`))
+	if err != nil {
+		t.Fatalf("delete doc: %v", err)
+	}
+	if !strings.Contains(out, `"deleted":true`) {
+		t.Fatalf("unexpected delete output: %s", out)
+	}
+}
+
+func TestKnowledgeToolsReadAndPartialUpdates(t *testing.T) {
+	d := newToolDB(t)
+	reg := NewRegistry(d)
+
+	_, err := reg.Execute(context.Background(), "create_knowledge_base", json.RawMessage(`{"name":"Java interview prep","description":"core notes"}`))
+	if err != nil {
+		t.Fatalf("create first base: %v", err)
+	}
+	_, err = reg.Execute(context.Background(), "create_knowledge_base", json.RawMessage(`{"name":"System design","description":"distributed notes"}`))
+	if err != nil {
+		t.Fatalf("create second base: %v", err)
+	}
+
+	out, err := reg.Execute(context.Background(), "list_knowledge_bases", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("list bases: %v", err)
+	}
+	if !strings.Contains(out, `"name":"Java interview prep"`) || !strings.Contains(out, `"name":"System design"`) {
+		t.Fatalf("unexpected bases output: %s", out)
+	}
+
+	_, err = reg.Execute(context.Background(), "create_knowledge_document", json.RawMessage(`{"knowledge_base_id":1,"title":"Synchronized","content":"monitor lock and happens-before","tags":["java","concurrency"]}`))
+	if err != nil {
+		t.Fatalf("create first doc: %v", err)
+	}
+	_, err = reg.Execute(context.Background(), "create_knowledge_document", json.RawMessage(`{"knowledge_base_id":2,"title":"Consistent hashing","content":"ring vnode scaling","tags":["system"]}`))
+	if err != nil {
+		t.Fatalf("create second doc: %v", err)
+	}
+
+	out, err = reg.Execute(context.Background(), "list_knowledge_documents", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("list docs: %v", err)
+	}
+	if !strings.Contains(out, `"title":"Synchronized"`) || !strings.Contains(out, `"title":"Consistent hashing"`) {
+		t.Fatalf("unexpected docs output: %s", out)
+	}
+
+	out, err = reg.Execute(context.Background(), "list_knowledge_documents", json.RawMessage(`{"knowledge_base_id":1}`))
+	if err != nil {
+		t.Fatalf("list docs by base: %v", err)
+	}
+	if !strings.Contains(out, `"title":"Synchronized"`) || strings.Contains(out, `"title":"Consistent hashing"`) {
+		t.Fatalf("knowledge_base_id filter not respected: %s", out)
+	}
+
+	out, err = reg.Execute(context.Background(), "list_knowledge_documents", json.RawMessage(`{"query":"vnode"}`))
+	if err != nil {
+		t.Fatalf("list docs by query: %v", err)
+	}
+	if !strings.Contains(out, `"title":"Consistent hashing"`) || strings.Contains(out, `"title":"Synchronized"`) {
+		t.Fatalf("query filter not respected: %s", out)
+	}
+
+	out, err = reg.Execute(context.Background(), "get_knowledge_document", json.RawMessage(`{"id":1}`))
+	if err != nil {
+		t.Fatalf("get doc: %v", err)
+	}
+	if !strings.Contains(out, `"content":"monitor lock and happens-before"`) || !strings.Contains(out, `"tags":["java","concurrency"]`) {
+		t.Fatalf("unexpected get doc output: %s", out)
+	}
+
+	updateBase, ok := reg.Get("update_knowledge_base")
+	if !ok || !updateBase.Write {
+		t.Fatal("update_knowledge_base should be a write tool")
+	}
+	if updateBase.Describe(json.RawMessage(`{"id":1,"name":"Java notes"}`)) == "" {
+		t.Fatal("update_knowledge_base should describe confirmation text")
+	}
+	out, err = reg.Execute(context.Background(), "update_knowledge_base", json.RawMessage(`{"id":1,"name":"Java notes"}`))
+	if err != nil {
+		t.Fatalf("partial update base: %v", err)
+	}
+	if !strings.Contains(out, `"name":"Java notes"`) || !strings.Contains(out, `"description":"core notes"`) {
+		t.Fatalf("base partial update should preserve omitted fields, got %s", out)
+	}
+
+	out, err = reg.Execute(context.Background(), "update_knowledge_document", json.RawMessage(`{"id":1,"title":"Monitor locks"}`))
+	if err != nil {
+		t.Fatalf("partial update doc: %v", err)
+	}
+	if !strings.Contains(out, `"title":"Monitor locks"`) ||
+		!strings.Contains(out, `"knowledge_base_id":1`) ||
+		!strings.Contains(out, `"content":"monitor lock and happens-before"`) ||
+		!strings.Contains(out, `"tags":["java","concurrency"]`) {
+		t.Fatalf("doc partial update should preserve omitted fields, got %s", out)
+	}
+
+	deleteBase, ok := reg.Get("delete_knowledge_base")
+	if !ok || !deleteBase.Write {
+		t.Fatal("delete_knowledge_base should be a write tool")
+	}
+	if deleteBase.Describe(json.RawMessage(`{"id":2}`)) == "" {
+		t.Fatal("delete_knowledge_base should describe confirmation text")
+	}
+	if !strings.Contains(deleteBase.Describe(json.RawMessage(`{"id":2}`)), "documents") ||
+		!strings.Contains(deleteBase.Describe(json.RawMessage(`{"id":2}`)), "chunks") {
+		t.Fatal("delete_knowledge_base should warn that documents and chunks are deleted")
+	}
+	out, err = reg.Execute(context.Background(), "delete_knowledge_base", json.RawMessage(`{"id":2}`))
+	if err != nil {
+		t.Fatalf("delete base: %v", err)
+	}
+	if !strings.Contains(out, `"deleted":true`) {
+		t.Fatalf("unexpected delete base output: %s", out)
+	}
+}
+
+func TestKnowledgeToolsListDocumentsUsesBoundedMetadata(t *testing.T) {
+	d := newToolDB(t)
+	reg := NewRegistry(d)
+
+	_, err := reg.Execute(context.Background(), "create_knowledge_base", json.RawMessage(`{"name":"Large docs"}`))
+	if err != nil {
+		t.Fatalf("create base: %v", err)
+	}
+	largeContent := strings.Repeat("large-content-", 100)
+	out, err := reg.Execute(context.Background(), "create_knowledge_document",
+		json.RawMessage(`{"knowledge_base_id":1,"title":"Large doc","content":"`+largeContent+`","tags":["large"]}`))
+	if err != nil {
+		t.Fatalf("create large doc: %v", err)
+	}
+	if !strings.Contains(out, largeContent) {
+		t.Fatalf("create output should still include full content, got %s", out)
+	}
+
+	out, err = reg.Execute(context.Background(), "list_knowledge_documents", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("list docs: %v", err)
+	}
+	if strings.Contains(out, largeContent) || strings.Contains(out, `"content":"`) {
+		t.Fatalf("list_knowledge_documents should not include full content, got %s", out)
+	}
+	if !strings.Contains(out, `"content_length":1400`) || !strings.Contains(out, `"preview":"`) {
+		t.Fatalf("list_knowledge_documents should include content_length and preview metadata, got %s", out)
+	}
+
+	for i := 0; i < 11; i++ {
+		_, err = reg.Execute(context.Background(), "create_knowledge_document",
+			json.RawMessage(`{"knowledge_base_id":1,"title":"Extra doc","content":"body","tags":["large"]}`))
+		if err != nil {
+			t.Fatalf("create extra doc %d: %v", i, err)
+		}
+	}
+	out, err = reg.Execute(context.Background(), "list_knowledge_documents", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("list docs with default limit: %v", err)
+	}
+	if count := strings.Count(out, `"title":`); count > 10 {
+		t.Fatalf("list_knowledge_documents should default to at most 10 docs, got %d in %s", count, out)
+	}
+
+	out, err = reg.Execute(context.Background(), "list_knowledge_documents", json.RawMessage(`{"limit":100}`))
+	if err != nil {
+		t.Fatalf("list docs with capped limit: %v", err)
+	}
+	if count := strings.Count(out, `"title":`); count > 20 {
+		t.Fatalf("list_knowledge_documents should cap limit at 20 docs, got %d in %s", count, out)
+	}
+
+	if _, err := reg.Execute(context.Background(), "list_knowledge_documents", json.RawMessage(`{"knowledge_base_id":"bad"}`)); err == nil {
+		t.Fatal("expected list_knowledge_documents to reject wrong-typed knowledge_base_id")
+	}
+}
+
+func TestKnowledgeToolsValidateRequiredFields(t *testing.T) {
+	d := newToolDB(t)
+	reg := NewRegistry(d)
+
+	if _, err := reg.Execute(context.Background(), "create_knowledge_base", json.RawMessage(`{"name":"   "}`)); err == nil {
+		t.Fatal("expected create_knowledge_base to reject whitespace name")
+	}
+	if _, err := reg.Execute(context.Background(), "create_knowledge_document", json.RawMessage(`{"knowledge_base_id":0,"title":"Doc","content":"body"}`)); err == nil {
+		t.Fatal("expected create_knowledge_document to reject knowledge_base_id <= 0")
+	}
+
+	_, err := reg.Execute(context.Background(), "create_knowledge_base", json.RawMessage(`{"name":"Valid base"}`))
+	if err != nil {
+		t.Fatalf("create valid base: %v", err)
+	}
+	if _, err := reg.Execute(context.Background(), "create_knowledge_document", json.RawMessage(`{"knowledge_base_id":1,"title":"   ","content":"body"}`)); err == nil {
+		t.Fatal("expected create_knowledge_document to reject whitespace title")
+	}
+
+	_, err = reg.Execute(context.Background(), "create_knowledge_document", json.RawMessage(`{"knowledge_base_id":1,"title":"Valid doc","content":"body"}`))
+	if err != nil {
+		t.Fatalf("create valid doc: %v", err)
+	}
+	if _, err := reg.Execute(context.Background(), "update_knowledge_base", json.RawMessage(`{"id":1,"name":"   "}`)); err == nil {
+		t.Fatal("expected update_knowledge_base to reject blank final name")
+	}
+	if _, err := reg.Execute(context.Background(), "update_knowledge_document", json.RawMessage(`{"id":1,"title":"   "}`)); err == nil {
+		t.Fatal("expected update_knowledge_document to reject blank final title")
+	}
+	if _, err := reg.Execute(context.Background(), "update_knowledge_document", json.RawMessage(`{"id":1,"knowledge_base_id":0}`)); err == nil {
+		t.Fatal("expected update_knowledge_document to reject knowledge_base_id <= 0")
+	}
+}
+
+func TestChatSystemPromptMentionsKnowledgeRules(t *testing.T) {
+	for _, phrase := range []string{"search_knowledge", "do not use the knowledge base", "specific knowledge base"} {
+		if !strings.Contains(ChatSystemPrompt, phrase) {
+			t.Fatalf("system prompt should contain %q, got %s", phrase, ChatSystemPrompt)
+		}
+	}
+}
