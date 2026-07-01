@@ -108,7 +108,7 @@ export default function AppShell() {
         onOpenChat={() => openChat(undefined)}
       />
       <Layout style={{ background: 'var(--op-layout-bg)' }}>
-        <TopBar streakDays={streak} onAdd={() => setAddOpen(true)} onSearch={() => setPaletteOpen(true)} />
+        <TopBar streakDays={streak} onAdd={() => setAddOpen(true)} onSearch={() => setPaletteOpen(true)} onOpenChat={() => openChat(undefined)} />
         <Content style={{ padding: '0 24px 24px' }}>
           {isLoading ? (
             <div style={{ textAlign: 'center', padding: 48 }}>

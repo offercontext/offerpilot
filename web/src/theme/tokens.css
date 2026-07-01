@@ -58,9 +58,26 @@ body {
   color: transparent;
 }
 
+/* AI 助手渐变高亮按钮（覆盖 antd primary，并保留 hover/focus 反馈） */
+.op-ai-btn.op-ai-btn {
+  background: var(--op-gradient-brand) !important;
+  border: none !important;
+  transition: filter 0.2s var(--op-ease), box-shadow 0.2s var(--op-ease),
+    transform 0.2s var(--op-ease) !important;
+}
+.op-ai-btn.op-ai-btn:hover,
+.op-ai-btn.op-ai-btn:focus-visible {
+  filter: brightness(1.08);
+  box-shadow: var(--op-shadow-lg);
+  transform: translateY(-1px);
+}
+.op-ai-btn.op-ai-btn:active {
+  filter: brightness(0.95);
+  transform: translateY(0);
+}
+
 /* 视图切换入场 */
-.op-view-enter { animation: opViewIn 0.22s var(--op-ease); }
-@keyframes opViewIn {
+.op-view-enter { animation: opViewIn 0.22s var(--op-ease); }@keyframes opViewIn {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }
 }

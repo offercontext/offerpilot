@@ -20,7 +20,7 @@ export default function RemindersSummary({ reminders, onSeeAll }: Props) {
         style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}
       >
         <span className={styles.cardTitle} style={{ margin: 0 }}>待跟进</span>
-        <a onClick={onSeeAll} style={{ fontSize: 12, cursor: 'pointer', color: 'var(--op-primary)' }}>
+        <a onClick={onSeeAll} style={{ fontSize: 14, cursor: 'pointer', color: 'var(--op-primary)' }}>
           全部 →
         </a>
       </div>
@@ -31,8 +31,8 @@ export default function RemindersSummary({ reminders, onSeeAll }: Props) {
           <div key={r.id} style={{ display: 'flex', gap: 9, alignItems: 'center', marginBottom: 9 }}>
             <span style={{ width: 7, height: 7, borderRadius: '50%', background: DOT[r.severity], flexShrink: 0 }} />
             <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 12, color: 'var(--op-ink)' }}>{r.title}</div>
-              <div style={{ fontSize: 10, color: 'var(--op-muted)' }}>{r.detail}</div>
+              <div style={{ fontSize: 14, color: 'var(--op-ink)' }}>{r.title}</div>
+              <div style={{ fontSize: 12, color: 'var(--op-muted)' }}>{r.detail}</div>
             </div>
           </div>
         ))

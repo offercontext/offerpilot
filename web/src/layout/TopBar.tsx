@@ -1,11 +1,12 @@
 import { Button } from 'antd';
-import { PlusOutlined, SearchOutlined } from '@ant-design/icons';
+import { PlusOutlined, SearchOutlined, RobotOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 
 interface Props {
   streakDays: number;
   onAdd: () => void;
   onSearch: () => void;
+  onOpenChat: () => void;
 }
 
 function greeting(): string {
@@ -16,7 +17,7 @@ function greeting(): string {
   return '晚上好，今天辛苦了';
 }
 
-export default function TopBar({ streakDays, onAdd, onSearch }: Props) {
+export default function TopBar({ streakDays, onAdd, onSearch, onOpenChat }: Props) {
   return (
     <header
       style={{
@@ -38,6 +39,15 @@ export default function TopBar({ streakDays, onAdd, onSearch }: Props) {
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
         <Button icon={<SearchOutlined />} onClick={onSearch}>
           搜索 <span style={{ opacity: 0.6, marginLeft: 4 }}>⌘K</span>
+        </Button>
+        <Button
+          type="primary"
+          className="op-ai-btn"
+          icon={<RobotOutlined />}
+          onClick={onOpenChat}
+          style={{ fontWeight: 600 }}
+        >
+          AI 助手
         </Button>
         <Button type="primary" icon={<PlusOutlined />} onClick={onAdd}>
           添加投递

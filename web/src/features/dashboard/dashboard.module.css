@@ -8,29 +8,29 @@
   padding: 15px;
   box-shadow: var(--op-shadow-md);
 }
-.cardTitle { font-size: 13px; font-weight: 600; color: var(--op-ink); margin-bottom: 12px; }
-.kpiLabel { font-size: 11px; color: var(--op-muted); }
-.kpiValue { font-size: 26px; font-weight: 700; color: var(--op-ink); }
-.kpiHint { font-size: 10px; margin-top: 2px; }
+.cardTitle { font-size: 15px; font-weight: 600; color: var(--op-ink); margin-bottom: 12px; }
+.kpiLabel { font-size: 13px; color: var(--op-muted); }
+.kpiValue { font-size: 30px; font-weight: 700; color: var(--op-ink); }
+.kpiHint { font-size: 12px; margin-top: 2px; }
 .up { color: var(--op-success); }
 .muted { color: var(--op-muted); }
 
 .funnelRow { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.funnelLabel { font-size: 11px; color: var(--op-muted); width: 44px; flex-shrink: 0; }
+.funnelLabel { font-size: 13px; color: var(--op-muted); width: 44px; flex-shrink: 0; }
 .funnelBarWrap { flex: 1; height: 20px; background: var(--op-layout-bg); border-radius: 6px; overflow: hidden; }
 .funnelBar { height: 100%; border-radius: 6px; transition: width 0.4s var(--op-ease); }
-.funnelCount { font-size: 12px; width: 28px; text-align: right; flex-shrink: 0; }
+.funnelCount { font-size: 14px; width: 28px; text-align: right; flex-shrink: 0; }
 
 .bars { display: flex; gap: 6px; align-items: flex-end; height: 60px; }
 .bar { flex: 1; border-radius: 5px 5px 0 0; background: var(--op-gradient-brand); min-height: 4px; transition: height 0.4s var(--op-ease); }
-.barLabel { font-size: 9px; color: var(--op-muted); text-align: center; margin-top: 4px; }
+.barLabel { font-size: 11px; color: var(--op-muted); text-align: center; margin-top: 4px; }
 
 .schedItem { display: flex; gap: 10px; margin-bottom: 10px; }
 .schedDate { text-align: center; flex-shrink: 0; }
-.schedMon { font-size: 9px; color: var(--op-muted); }
-.schedDay { font-size: 16px; font-weight: 700; color: var(--op-primary); }
-.schedText { font-size: 12px; color: var(--op-ink); padding-top: 4px; }
-.empty { color: var(--op-muted); font-size: 12px; }
+.schedMon { font-size: 11px; color: var(--op-muted); }
+.schedDay { font-size: 18px; font-weight: 700; color: var(--op-primary); }
+.schedText { font-size: 14px; color: var(--op-ink); padding-top: 4px; }
+.empty { color: var(--op-muted); font-size: 14px; }
 
 @media (max-width: 900px) {
   .kpiRow { grid-template-columns: repeat(2, 1fr); }
