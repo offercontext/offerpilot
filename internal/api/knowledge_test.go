@@ -6,6 +6,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -112,7 +113,45 @@ func TestKnowledgeAPIImportValidation(t *testing.T) {
 	}
 }
 
+func TestKnowledgeAPIImportRejectsLargeFileBeforeMultipartSpill(t *testing.T) {
+	_, router := knowledgeTestRouter(t)
+	baseRec := knowledgeAPIRequest(t, router, http.MethodPost, "/api/knowledge-bases", map[string]interface{}{"name": "Large imports"})
+	var base db.KnowledgeBase
+	if err := json.Unmarshal(baseRec.Body.Bytes(), &base); err != nil {
+		t.Fatalf("decode base: %v", err)
+	}
+
+	tmpDir := t.TempDir()
+	t.Setenv("TMP", tmpDir)
+	t.Setenv("TEMP", tmpDir)
+	t.Setenv("TMPDIR", tmpDir)
+
+	rec, req := multipartKnowledgeImportBytes(t, router, base.ID, "large.txt", bytes.Repeat([]byte("a"), maxKnowledgeImportBytes+1))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected large file status 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "file is too large") {
+		t.Fatalf("expected large file error, got %s", rec.Body.String())
+	}
+	if req.MultipartForm != nil {
+		t.Fatalf("expected streaming multipart reader without parsed multipart form")
+	}
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("read temp dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected no multipart temp files, got %d", len(entries))
+	}
+}
+
 func multipartKnowledgeImport(t *testing.T, router http.Handler, baseID int64, filename, content string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec, _ := multipartKnowledgeImportBytes(t, router, baseID, filename, []byte(content))
+	return rec
+}
+
+func multipartKnowledgeImportBytes(t *testing.T, router http.Handler, baseID int64, filename string, content []byte) (*httptest.ResponseRecorder, *http.Request) {
 	t.Helper()
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -121,7 +160,7 @@ func multipartKnowledgeImport(t *testing.T, router http.Handler, baseID int64, f
 	if err != nil {
 		t.Fatalf("create form file: %v", err)
 	}
-	if _, err := part.Write([]byte(content)); err != nil {
+	if _, err := part.Write(content); err != nil {
 		t.Fatalf("write form file: %v", err)
 	}
 	if err := writer.Close(); err != nil {
@@ -131,7 +170,7 @@ func multipartKnowledgeImport(t *testing.T, router http.Handler, baseID int64, f
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
-	return rec
+	return rec, req
 }
 
 func TestKnowledgeAPISearchValidation(t *testing.T) {

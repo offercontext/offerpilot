@@ -137,11 +137,63 @@ func createKnowledgeDocument(database *db.Database) http.HandlerFunc {
 
 func importKnowledgeDocument(database *db.Database) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if err := r.ParseMultipartForm(maxKnowledgeImportBytes); err != nil {
+		reader, err := r.MultipartReader()
+		if err != nil {
 			respondError(w, http.StatusBadRequest, "Invalid multipart form")
 			return
 		}
-		baseID, err := strconv.ParseInt(r.FormValue("knowledge_base_id"), 10, 64)
+
+		var baseIDValue string
+		var filename string
+		var data []byte
+		for {
+			part, err := reader.NextPart()
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				respondError(w, http.StatusBadRequest, "Invalid multipart form")
+				return
+			}
+
+			switch part.FormName() {
+			case "knowledge_base_id":
+				fieldData, err := io.ReadAll(io.LimitReader(part, 65))
+				part.Close()
+				if err != nil {
+					respondError(w, http.StatusBadRequest, "Invalid multipart form")
+					return
+				}
+				baseIDValue = strings.TrimSpace(string(fieldData))
+			case "file":
+				filename = part.FileName()
+				if filename == "" {
+					part.Close()
+					respondError(w, http.StatusBadRequest, "file is required")
+					return
+				}
+				ext := strings.ToLower(filepath.Ext(filename))
+				if ext != ".md" && ext != ".txt" {
+					part.Close()
+					respondError(w, http.StatusBadRequest, "only .md and .txt files are supported")
+					return
+				}
+				data, err = io.ReadAll(io.LimitReader(part, maxKnowledgeImportBytes+1))
+				part.Close()
+				if err != nil {
+					respondError(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+				if len(data) > maxKnowledgeImportBytes {
+					respondError(w, http.StatusBadRequest, "file is too large")
+					return
+				}
+			default:
+				part.Close()
+			}
+		}
+
+		baseID, err := strconv.ParseInt(baseIDValue, 10, 64)
 		if err != nil || baseID <= 0 {
 			respondError(w, http.StatusBadRequest, "knowledge_base_id is required")
 			return
@@ -149,27 +201,8 @@ func importKnowledgeDocument(database *db.Database) http.HandlerFunc {
 		if !knowledgeBaseExists(w, database, baseID) {
 			return
 		}
-
-		file, header, err := r.FormFile("file")
-		if err != nil {
+		if filename == "" {
 			respondError(w, http.StatusBadRequest, "file is required")
-			return
-		}
-		defer file.Close()
-
-		filename := header.Filename
-		ext := strings.ToLower(filepath.Ext(filename))
-		if ext != ".md" && ext != ".txt" {
-			respondError(w, http.StatusBadRequest, "only .md and .txt files are supported")
-			return
-		}
-		data, err := io.ReadAll(io.LimitReader(file, maxKnowledgeImportBytes+1))
-		if err != nil {
-			respondError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		if len(data) > maxKnowledgeImportBytes {
-			respondError(w, http.StatusBadRequest, "file is too large")
 			return
 		}
 
