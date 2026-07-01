@@ -54,6 +54,7 @@ export default function ChatPanel({ open, onClose, offerId }: Props) {
   const [hasKey, setHasKey] = useState(true);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const endRef = useRef<HTMLDivElement>(null);
+  const threadOfferId = useRef<number | undefined>(undefined);
 
   function refreshConversations() {
     listConversations()
@@ -63,6 +64,14 @@ export default function ChatPanel({ open, onClose, offerId }: Props) {
 
   useEffect(() => {
     if (!open) return;
+    // Start a fresh thread when the panel opens bound to a different offer
+    // context, so coach(offer) and general threads never bleed into each other.
+    if (offerId !== threadOfferId.current) {
+      setConvID(undefined);
+      setMessages([]);
+      setPending(null);
+      threadOfferId.current = offerId;
+    }
     getSettings()
       .then((s) => {
         setAutoApprove(s.chat_auto_approve_writes);
@@ -70,7 +79,7 @@ export default function ChatPanel({ open, onClose, offerId }: Props) {
       })
       .catch(() => undefined);
     refreshConversations();
-  }, [open]);
+  }, [open, offerId]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });

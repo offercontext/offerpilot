@@ -60,7 +60,7 @@ export default function App() {
           🚀 OfferPilot
         </Title>
         <Space>
-          <Button icon={<RobotOutlined />} onClick={() => setChatOpen(true)}>
+          <Button icon={<RobotOutlined />} onClick={() => { setCoachOfferId(undefined); setChatOpen(true); }}>
             AI 助手
           </Button>
           <Button icon={<FileTextOutlined />} onClick={() => setResumeOpen(true)}>
