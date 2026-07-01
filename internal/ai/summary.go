@@ -12,6 +12,9 @@ import (
 const summaryFallbackReadOnlyNotice = "\n\n\uff08\u6ce8\u610f\uff1a\u5f53\u524d\u6a21\u578b\u4e0d\u652f\u6301\u5de5\u5177\u8c03\u7528\uff0c\u4ee5\u4e0b\u4e3a\u53ea\u8bfb\u6570\u636e\u6458\u8981\uff0c\u4f60\u65e0\u6cd5\u4fee\u6539\u6570\u636e\u3002\uff09\n"
 
 const maxFallbackKnowledgeTerms = 8
+const maxFallbackKnowledgeTermRunes = 80
+const maxFallbackKnowledgeNameRunes = 120
+const maxFallbackKnowledgeSnippetRunes = 500
 
 // BuildDataSummary produces a compact, token-light overview of the user's job
 // data for injection into the system prompt when tool calling is unavailable.
@@ -98,7 +101,10 @@ func buildKnowledgeSnippets(database *db.Database, userMessage string) string {
 		if snippet == "" {
 			continue
 		}
-		sb.WriteString(fmt.Sprintf("- %s / %s: %s\n", result.KnowledgeBaseName, result.DocumentTitle, snippet))
+		baseName := truncateFallbackField(result.KnowledgeBaseName, maxFallbackKnowledgeNameRunes)
+		title := truncateFallbackField(result.DocumentTitle, maxFallbackKnowledgeNameRunes)
+		snippet = truncateFallbackField(snippet, maxFallbackKnowledgeSnippetRunes)
+		sb.WriteString(fmt.Sprintf("- %s / %s: %s\n", baseName, title, snippet))
 	}
 	return strings.TrimRight(sb.String(), "\n")
 }
@@ -149,6 +155,7 @@ func fallbackKnowledgeTerms(userMessage string) []string {
 	seen := make(map[string]bool)
 	terms := make([]string, 0, maxFallbackKnowledgeTerms)
 	for _, term := range strings.Fields(userMessage) {
+		term = truncateFallbackField(term, maxFallbackKnowledgeTermRunes)
 		if len([]rune(term)) < 3 || seen[term] {
 			continue
 		}
@@ -159,6 +166,18 @@ func fallbackKnowledgeTerms(userMessage string) []string {
 		}
 	}
 	return terms
+}
+
+func truncateFallbackField(value string, maxRunes int) string {
+	value = strings.TrimSpace(value)
+	if maxRunes <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= maxRunes {
+		return value
+	}
+	return string(runes[:maxRunes])
 }
 
 // RunSummaryFallback handles a single user turn without tools by injecting a
