@@ -12,6 +12,7 @@ import ResumeMatchModal from '@/components/ResumeMatchModal';
 import CalendarView from '@/components/CalendarView';
 import ChatPanel from '@/components/ChatPanel';
 import ReviewManagementView from '@/components/ReviewManagementView';
+import KnowledgeBaseView from '@/components/KnowledgeBaseView';
 
 const { Header, Content } = Layout;
 const { Title } = Typography;
@@ -21,7 +22,7 @@ export default function App() {
   const [resumeOpen, setResumeOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [selected, setSelected] = useState<Application | null>(null);
-  const [viewMode, setViewMode] = useState<'board' | 'calendar' | 'reviews'>('board');
+  const [viewMode, setViewMode] = useState<'board' | 'calendar' | 'reviews' | 'knowledge'>('board');
 
   const { data: applications = [], isLoading } = useQuery({
     queryKey: ['applications'],
@@ -84,11 +85,12 @@ export default function App() {
 
         <Segmented
           value={viewMode}
-          onChange={(v) => setViewMode(v as 'board' | 'calendar' | 'reviews')}
+          onChange={(v) => setViewMode(v as 'board' | 'calendar' | 'reviews' | 'knowledge')}
           options={[
             { label: '看板', value: 'board' },
             { label: '日历', value: 'calendar' },
             { label: '复盘', value: 'reviews' },
+            { label: 'Knowledge', value: 'knowledge' },
           ]}
           style={{ marginBottom: 16 }}
         />
@@ -107,8 +109,10 @@ export default function App() {
             applications={applications}
             onOpenDetail={(app) => setSelected(app)}
           />
-        ) : (
+        ) : viewMode === 'reviews' ? (
           <ReviewManagementView applications={applications} />
+        ) : (
+          <KnowledgeBaseView />
         )}
       </Content>
 
