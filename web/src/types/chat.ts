@@ -1,6 +1,8 @@
 export interface Conversation {
   id: number;
   title: string;
+  offer_id?: number;
+  mode?: string;
   created_at: string;
   updated_at: string;
 }

@@ -3,10 +3,15 @@ import type { ChatMessage, ChatResponse, Conversation } from '@/types/chat';
 
 const http = axios.create({ baseURL: '/api', timeout: 130000 });
 
-export async function sendChat(message: string, conversationId?: number): Promise<ChatResponse> {
+export async function sendChat(
+  message: string,
+  conversationId?: number,
+  offerId?: number,
+): Promise<ChatResponse> {
   const { data } = await http.post<ChatResponse>('/chat', {
     message,
     conversation_id: conversationId ?? 0,
+    ...(offerId ? { offer_id: offerId } : {}),
   });
   return data;
 }
