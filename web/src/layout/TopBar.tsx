@@ -1,5 +1,5 @@
 import { Button } from 'antd';
-import { PlusOutlined, SearchOutlined, RobotOutlined, UploadOutlined } from '@ant-design/icons';
+import { PlusOutlined, SearchOutlined, RobotOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 
 interface Props {
@@ -7,7 +7,7 @@ interface Props {
   onAdd: () => void;
   onSearch: () => void;
   onOpenChat: () => void;
-  onUploadResume: () => void;
+  onUploadResume?: () => void;
 }
 
 function greeting(): string {
@@ -18,7 +18,7 @@ function greeting(): string {
   return '晚上好，今天辛苦了';
 }
 
-export default function TopBar({ streakDays, onAdd, onSearch, onOpenChat, onUploadResume }: Props) {
+export default function TopBar({ streakDays, onAdd, onSearch, onOpenChat }: Props) {
   return (
     <header
       style={{
@@ -52,9 +52,6 @@ export default function TopBar({ streakDays, onAdd, onSearch, onOpenChat, onUplo
         </Button>
         <Button type="primary" icon={<PlusOutlined />} onClick={onAdd}>
           添加投递
-        </Button>
-        <Button icon={<UploadOutlined />} onClick={onUploadResume}>
-          上传简历
         </Button>
       </div>
     </header>

@@ -75,6 +75,13 @@ export default function AppShell() {
     queryFn: () => listOffers(),
   });
 
+  // Backend serializes an empty []T slice as JSON `null` (Go encoding/json).
+  // React Query's `= []` default only applies when data is `undefined`, so an
+  // explicit null-coalesce is needed to keep downstream iterators safe.
+  const apps = applications ?? [];
+  const evs = events ?? [];
+  const ofrs = offers ?? [];
+
   const qc = useQueryClient();
   const uploadResumeMut = useMutation({
     mutationFn: (f: File) => uploadResume(f),
@@ -98,13 +105,13 @@ export default function AppShell() {
   }, []);
 
   const reminders = useMemo(
-    () => deriveReminders(applications, events, offers, dayjs()),
-    [applications, events, offers]
+    () => deriveReminders(apps, evs, ofrs, dayjs()),
+    [apps, evs, ofrs]
   );
-  const streak = useMemo(() => computeStreak(applications), [applications]);
+  const streak = useMemo(() => computeStreak(apps), [apps]);
 
   const selectedApp = selected
-    ? applications.find((a) => a.id === selected.id) ?? selected
+    ? apps.find((a) => a.id === selected.id) ?? selected
     : null;
 
   const openChat = (offerId?: number) => {
@@ -113,7 +120,7 @@ export default function AppShell() {
   };
 
   const goDetailById = (appId: number) => {
-    const app = applications.find((a) => a.id === appId);
+    const app = apps.find((a) => a.id === appId);
     if (app) setSelected(app);
   };
 
@@ -126,7 +133,7 @@ export default function AppShell() {
         onOpenChat={() => openChat(undefined)}
       />
       <Layout style={{ background: 'var(--op-layout-bg)' }}>
-        <TopBar streakDays={streak} onAdd={() => setAddOpen(true)} onSearch={() => setPaletteOpen(true)} onOpenChat={() => openChat(undefined)} onUploadResume={() => setResumeUploadOpen(true)} />
+        <TopBar streakDays={streak} onAdd={() => setAddOpen(true)} onSearch={() => setPaletteOpen(true)} onOpenChat={() => openChat(undefined)} />
         <Content style={{ padding: '0 24px 24px' }}>
           {isLoading ? (
             <div style={{ textAlign: 'center', padding: 48 }}>
@@ -146,17 +153,17 @@ export default function AppShell() {
                 />
               )}
               {view === 'board' && (
-                <KanbanBoard applications={applications} onOpenDetail={(a) => setSelected(a)} />
+                <KanbanBoard applications={apps} onOpenDetail={(a) => setSelected(a)} />
               )}
               {view === 'calendar' && (
-                <CalendarView applications={applications} onOpenDetail={(a) => setSelected(a)} />
+                <CalendarView applications={apps} onOpenDetail={(a) => setSelected(a)} />
               )}
               {view === 'reminders' && (
                 <RemindersView onNavigate={setView} onOpenDetailById={goDetailById} />
               )}
-              {view === 'reviews' && <ReviewManagementView applications={applications} />}
+              {view === 'reviews' && <ReviewManagementView applications={apps} />}
               {view === 'offers' && (
-                <OfferCenterView applications={applications} onCoach={(offer) => openChat(offer.id)} />
+                <OfferCenterView applications={apps} onCoach={(offer) => openChat(offer.id)} />
               )}
               {view === 'knowledge' && <KnowledgeBaseView />}
               {view === 'questions' && <QuestionBankView />}
@@ -178,7 +185,7 @@ export default function AppShell() {
       <CommandPalette
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
-        applications={applications}
+        applications={apps}
         onNavigate={setView}
         onOpenDetail={(app) => setSelected(app)}
         onAddApplication={() => setAddOpen(true)}
