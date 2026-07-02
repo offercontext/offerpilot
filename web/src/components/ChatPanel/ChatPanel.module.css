@@ -16,6 +16,34 @@
   --chat-tint-soft: rgba(99, 102, 241, 0.12);
 }
 
+/* 左边缘拖拽调宽 */
+.resizeHandle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 8px;
+  cursor: col-resize;
+  z-index: 2;
+}
+.resizeHandle::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 3px;
+  width: 2px;
+  height: 56px;
+  border-radius: 999px;
+  background: var(--op-border);
+  transform: translateY(-50%);
+  opacity: 0;
+  transition: opacity 0.18s var(--op-ease), background 0.18s var(--op-ease);
+}
+.resizeHandle:hover::after {
+  opacity: 1;
+  background: var(--op-primary);
+}
+
 /* ---------- 头部 ---------- */
 .header {
   display: flex;

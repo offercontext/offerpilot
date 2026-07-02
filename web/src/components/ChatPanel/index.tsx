@@ -29,6 +29,18 @@ interface Props {
   offerId?: number;
 }
 
+const CHAT_WIDTH_STORAGE_KEY = 'offerpilot.chatPanelWidth';
+const DEFAULT_CHAT_WIDTH = 920;
+const MIN_CHAT_WIDTH = 720;
+
+function maxChatWidth() {
+  return Math.max(MIN_CHAT_WIDTH, Math.min(window.innerWidth - 32, 1440));
+}
+
+function clampChatWidth(width: number) {
+  return Math.max(MIN_CHAT_WIDTH, Math.min(width, maxChatWidth()));
+}
+
 export default function ChatPanel({ open, onClose, offerId }: Props) {
   const { message: toast } = AntApp.useApp();
   const [turns, setTurns] = useState<UITurn[]>([]);
@@ -41,6 +53,10 @@ export default function ChatPanel({ open, onClose, offerId }: Props) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [offer, setOffer] = useState<Offer | null>(null);
   const [panelOpen, setPanelOpen] = useState(false);
+  const [drawerWidth, setDrawerWidth] = useState(() => {
+    const stored = Number(localStorage.getItem(CHAT_WIDTH_STORAGE_KEY));
+    return Number.isFinite(stored) && stored > 0 ? clampChatWidth(stored) : DEFAULT_CHAT_WIDTH;
+  });
   const endRef = useRef<HTMLDivElement>(null);
   const threadOfferId = useRef<number | undefined>(undefined);
 
@@ -87,6 +103,37 @@ export default function ChatPanel({ open, onClose, offerId }: Props) {
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [turns, pending, loading]);
+
+  useEffect(() => {
+    const onResize = () => setDrawerWidth((w) => clampChatWidth(w));
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem(CHAT_WIDTH_STORAGE_KEY, String(drawerWidth));
+  }, [drawerWidth]);
+
+  function startResize(e: React.PointerEvent<HTMLDivElement>) {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = drawerWidth;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    const onMove = (move: PointerEvent) => {
+      // Drawer is right-aligned: dragging the left edge left increases width.
+      setDrawerWidth(clampChatWidth(startWidth + startX - move.clientX));
+    };
+    const onUp = () => {
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  }
 
   function startNewChat() {
     setConvID(undefined);
@@ -207,14 +254,21 @@ export default function ChatPanel({ open, onClose, offerId }: Props) {
   return (
     <Drawer
       placement="right"
-      width={920}
+      width={drawerWidth}
       style={{ maxWidth: '100vw' }}
       open={open}
       onClose={onClose}
       title={null}
       closable={false}
-      styles={{ body: { padding: 16, height: '100%', overflow: 'hidden' } }}
+      styles={{ body: { padding: 16, height: '100%', overflow: 'hidden', position: 'relative' } }}
     >
+      <div
+        className={styles.resizeHandle}
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="调整 AI 助手宽度"
+        onPointerDown={startResize}
+      />
       <div className={styles.workspace}>
         {/* header */}
         <header className={styles.header}>
