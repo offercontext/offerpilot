@@ -55,6 +55,8 @@ export default function ResumeCard({ resume, onMatch, onEdit, onDownload, onDele
             <CardAction label="编辑" icon={<EditOutlined />} onClick={() => onEdit(resume.id)} />
             <VDivider />
             <CardAction label="下载" icon={<DownloadOutlined />} onClick={() => onDownload(resume.id)} />
+            <VDivider />
+            <CardAction label="删除" icon={<DeleteOutlined />} onClick={() => onDelete(resume.id)} />
           </>
         )}
       </div>
