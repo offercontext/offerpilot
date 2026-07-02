@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { Layout, Spin } from 'antd';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Layout, Spin, message } from 'antd';
 import { listApplications } from '@/services/applications';
 import { listEvents } from '@/services/events';
 import { listOffers } from '@/services/offers';
+import { uploadResume } from '@/services/resumes';
 import type { Application } from '@/types/application';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
@@ -11,6 +12,8 @@ import KanbanBoard from '@/components/KanbanBoard';
 import AddApplicationForm from '@/components/AddApplicationForm';
 import ApplicationDetail from '@/components/ApplicationDetail';
 import ResumeMatchModal from '@/components/ResumeMatchModal';
+import ResumeLibraryView from '@/components/ResumeLibraryView';
+import ResumeUploadModal from '@/components/ResumeUploadModal';
 import CalendarView from '@/components/CalendarView';
 import ChatPanel from '@/components/ChatPanel';
 import ReviewManagementView from '@/components/ReviewManagementView';
@@ -33,7 +36,8 @@ export type ViewMode =
   | 'reviews'
   | 'offers'
   | 'knowledge'
-  | 'questions';
+  | 'questions'
+  | 'resumes';
 
 function computeStreak(apps: Application[], now = dayjs()): number {
   const days = new Set(
@@ -52,6 +56,7 @@ export default function AppShell() {
   const [view, setView] = useState<ViewMode>('dashboard');
   const [addOpen, setAddOpen] = useState(false);
   const [resumeOpen, setResumeOpen] = useState(false);
+  const [resumeUploadOpen, setResumeUploadOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [selected, setSelected] = useState<Application | null>(null);
   const [coachOfferId, setCoachOfferId] = useState<number | undefined>(undefined);
@@ -70,6 +75,24 @@ export default function AppShell() {
     queryFn: () => listOffers(),
   });
 
+  // Backend serializes an empty []T slice as JSON `null` (Go encoding/json).
+  // React Query's `= []` default only applies when data is `undefined`, so an
+  // explicit null-coalesce is needed to keep downstream iterators safe.
+  const apps = applications ?? [];
+  const evs = events ?? [];
+  const ofrs = offers ?? [];
+
+  const qc = useQueryClient();
+  const uploadResumeMut = useMutation({
+    mutationFn: (f: File) => uploadResume(f),
+    onSuccess: (res) => {
+      message.success(res.parse_status === 'text-ready' ? '上传成功' : '已上传，文本提取失败，请到简历库校正');
+      qc.invalidateQueries({ queryKey: ['resumes'] });
+      setResumeUploadOpen(false);
+    },
+    onError: () => message.error('上传失败'),
+  });
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
@@ -82,13 +105,13 @@ export default function AppShell() {
   }, []);
 
   const reminders = useMemo(
-    () => deriveReminders(applications, events, offers, dayjs()),
-    [applications, events, offers]
+    () => deriveReminders(apps, evs, ofrs, dayjs()),
+    [apps, evs, ofrs]
   );
-  const streak = useMemo(() => computeStreak(applications), [applications]);
+  const streak = useMemo(() => computeStreak(apps), [apps]);
 
   const selectedApp = selected
-    ? applications.find((a) => a.id === selected.id) ?? selected
+    ? apps.find((a) => a.id === selected.id) ?? selected
     : null;
 
   const openChat = (offerId?: number) => {
@@ -97,7 +120,7 @@ export default function AppShell() {
   };
 
   const goDetailById = (appId: number) => {
-    const app = applications.find((a) => a.id === appId);
+    const app = apps.find((a) => a.id === appId);
     if (app) setSelected(app);
   };
 
@@ -130,20 +153,21 @@ export default function AppShell() {
                 />
               )}
               {view === 'board' && (
-                <KanbanBoard applications={applications} onOpenDetail={(a) => setSelected(a)} />
+                <KanbanBoard applications={apps} onOpenDetail={(a) => setSelected(a)} />
               )}
               {view === 'calendar' && (
-                <CalendarView applications={applications} onOpenDetail={(a) => setSelected(a)} />
+                <CalendarView applications={apps} onOpenDetail={(a) => setSelected(a)} />
               )}
               {view === 'reminders' && (
                 <RemindersView onNavigate={setView} onOpenDetailById={goDetailById} />
               )}
-              {view === 'reviews' && <ReviewManagementView applications={applications} />}
+              {view === 'reviews' && <ReviewManagementView applications={apps} />}
               {view === 'offers' && (
-                <OfferCenterView applications={applications} onCoach={(offer) => openChat(offer.id)} />
+                <OfferCenterView applications={apps} onCoach={(offer) => openChat(offer.id)} />
               )}
               {view === 'knowledge' && <KnowledgeBaseView />}
               {view === 'questions' && <QuestionBankView />}
+              {view === 'resumes' && <ResumeLibraryView />}
             </div>
           )}
         </Content>
@@ -152,14 +176,21 @@ export default function AppShell() {
       <AddApplicationForm open={addOpen} onClose={() => setAddOpen(false)} />
       <ApplicationDetail application={selectedApp} open={!!selected} onClose={() => setSelected(null)} />
       <ResumeMatchModal open={resumeOpen} onClose={() => setResumeOpen(false)} />
+      <ResumeUploadModal
+        open={resumeUploadOpen}
+        uploading={uploadResumeMut.isPending}
+        onSubmit={(f) => uploadResumeMut.mutate(f)}
+        onClose={() => setResumeUploadOpen(false)}
+      />
       <CommandPalette
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
-        applications={applications}
+        applications={apps}
         onNavigate={setView}
         onOpenDetail={(app) => setSelected(app)}
         onAddApplication={() => setAddOpen(true)}
         onOpenResume={() => setResumeOpen(true)}
+        onUploadResume={() => setResumeUploadOpen(true)}
         onOpenChat={() => openChat(undefined)}
       />
       <ChatPanel

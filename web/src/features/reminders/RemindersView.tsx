@@ -20,9 +20,13 @@ const GROUPS: { key: ReminderSeverity; label: string }[] = [
 ];
 
 export default function RemindersView({ onNavigate, onOpenDetailById }: Props) {
-  const { data: apps = [] } = useQuery({ queryKey: ['applications'], queryFn: () => listApplications() });
-  const { data: events = [] } = useQuery({ queryKey: ['events'], queryFn: () => listEvents() });
-  const { data: offers = [] } = useQuery({ queryKey: ['offers'], queryFn: () => listOffers() });
+  const { data: rawApps = [] } = useQuery({ queryKey: ['applications'], queryFn: () => listApplications() });
+  const { data: rawEvents = [] } = useQuery({ queryKey: ['events'], queryFn: () => listEvents() });
+  const { data: rawOffers = [] } = useQuery({ queryKey: ['offers'], queryFn: () => listOffers() });
+  // Backend serializes empty []T as JSON `null`; coalesce to [] for safe iteration.
+  const apps = rawApps ?? [];
+  const events = rawEvents ?? [];
+  const offers = rawOffers ?? [];
 
   const reminders = useMemo(
     () => deriveReminders(apps, events, offers, dayjs()),

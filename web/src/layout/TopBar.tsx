@@ -7,6 +7,7 @@ interface Props {
   onAdd: () => void;
   onSearch: () => void;
   onOpenChat: () => void;
+  onUploadResume?: () => void;
 }
 
 function greeting(): string {

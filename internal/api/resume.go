@@ -1,14 +1,21 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/offercontext/offerpilot/internal/ai"
 	"github.com/offercontext/offerpilot/internal/config"
 	"github.com/offercontext/offerpilot/internal/db"
+	"github.com/offercontext/offerpilot/internal/resume"
 )
 
 // createResumeRequest — POST /api/resumes (paste text).
@@ -31,6 +38,9 @@ func registerResumeRoutes(r chi.Router, database *db.Database, dataDir string) {
 	r.Delete("/resumes/{id}", deleteResumeHandler(database))
 	r.Post("/resumes/{id}/match", matchResumeHandler(database, dataDir))
 	r.Get("/resumes/{id}/matches", listResumeMatchesHandler(database))
+	r.Post("/resumes/upload", uploadResumeHandler(database, dataDir))
+	r.Put("/resumes/{id}/text", updateResumeTextHandler(database))
+	r.Get("/resumes/{id}/file", downloadResumeFileHandler(database, dataDir))
 }
 
 func createResumeHandler(database *db.Database) http.HandlerFunc {
@@ -183,4 +193,175 @@ func listResumeMatchesHandler(database *db.Database) http.HandlerFunc {
 		}
 		respondJSON(w, http.StatusOK, matches)
 	}
+}
+
+const (
+	maxResumeUploadBytes        = 10 << 20 // 10 MB
+	maxResumeUploadRequestBytes = maxResumeUploadBytes + 64*1024
+)
+
+func uploadResumeHandler(database *db.Database, dataDir string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxResumeUploadRequestBytes)
+		reader, err := r.MultipartReader()
+		if err != nil {
+			respondError(w, http.StatusBadRequest, "Invalid multipart form")
+			return
+		}
+		var filename string
+		var data []byte
+		var fileSeen bool
+		for {
+			part, err := reader.NextPart()
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if isMaxBytesError(err) {
+				respondError(w, http.StatusBadRequest, "request is too large")
+				return
+			}
+			if err != nil {
+				respondError(w, http.StatusBadRequest, "Invalid multipart form")
+				return
+			}
+			if part.FormName() != "file" {
+				part.Close()
+				continue
+			}
+			if fileSeen {
+				respondError(w, http.StatusBadRequest, "only one file is supported")
+				return
+			}
+			fileSeen = true
+			filename = part.FileName()
+			if filename == "" {
+				part.Close()
+				respondError(w, http.StatusBadRequest, "file is required")
+				return
+			}
+			if strings.ToLower(filepath.Ext(filename)) != ".pdf" {
+				part.Close()
+				respondError(w, http.StatusBadRequest, "only .pdf files are supported")
+				return
+			}
+			data, err = io.ReadAll(io.LimitReader(part, maxResumeUploadBytes+1))
+			if closeErr := part.Close(); err == nil {
+				err = closeErr
+			}
+			if isMaxBytesError(err) {
+				respondError(w, http.StatusBadRequest, "request is too large")
+				return
+			}
+			if err != nil {
+				respondError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+		}
+		if !fileSeen {
+			respondError(w, http.StatusBadRequest, "file is required")
+			return
+		}
+		if len(data) > maxResumeUploadBytes {
+			respondError(w, http.StatusBadRequest, "file is too large")
+			return
+		}
+
+		baseName := strings.TrimSuffix(filepath.Base(filename), filepath.Ext(filename))
+		status := "parse-failed"
+		parsed, _ := resume.ExtractPDFText(data)
+		if strings.TrimSpace(parsed) != "" {
+			status = "text-ready"
+		}
+
+		res := &db.Resume{
+			Name:        baseName,
+			ParsedData:  parsed,
+			ParseStatus: status,
+		}
+		if err := database.CreateResume(res); err != nil {
+			respondError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+
+		// Persist original file (best-effort). If it fails the resume is still
+		// usable via parsed_data; the download endpoint will 404 then.
+		relPath := "resumes/" + strconv.FormatInt(res.ID, 10) + "_" + filepath.Base(filename)
+		absPath := filepath.Join(dataDir, relPath)
+		if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err == nil {
+			if werr := os.WriteFile(absPath, data, 0o644); werr == nil {
+				_ = database.UpdateResumeFile(res.ID, relPath)
+				res.FilePath = relPath
+			}
+		}
+
+		respondJSON(w, http.StatusCreated, res)
+	}
+}
+
+func updateResumeTextHandler(database *db.Database) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := resumeIDParam(w, r)
+		if !ok {
+			return
+		}
+		var req struct {
+			Text string `json:"text"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			respondError(w, http.StatusBadRequest, "Invalid request body")
+			return
+		}
+		status := "parse-failed"
+		if strings.TrimSpace(req.Text) != "" {
+			status = "text-ready"
+		}
+		if err := database.UpdateResumeText(id, req.Text, status); errors.Is(err, sql.ErrNoRows) {
+			respondError(w, http.StatusNotFound, "Resume not found")
+			return
+		} else if err != nil {
+			respondError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		respondJSON(w, http.StatusOK, map[string]string{"message": "Updated"})
+	}
+}
+
+func downloadResumeFileHandler(database *db.Database, dataDir string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := resumeIDParam(w, r)
+		if !ok {
+			return
+		}
+		res, err := database.GetResume(id)
+		if err != nil {
+			respondError(w, http.StatusNotFound, "Resume not found")
+			return
+		}
+		if res.FilePath == "" {
+			respondError(w, http.StatusNotFound, "resume has no original file")
+			return
+		}
+		absPath := filepath.Join(dataDir, res.FilePath)
+		if _, err := os.Stat(absPath); err != nil {
+			respondError(w, http.StatusNotFound, "file not found on disk")
+			return
+		}
+		w.Header().Set("Content-Disposition", `attachment; filename="`+filepath.Base(res.FilePath)+`"`)
+		w.Header().Set("Content-Type", "application/pdf")
+		http.ServeFile(w, r, absPath)
+	}
+}
+
+func resumeIDParam(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil || id <= 0 {
+		respondError(w, http.StatusBadRequest, "Invalid ID")
+		return 0, false
+	}
+	return id, true
+}
+
+func isMaxBytesError(err error) bool {
+	var maxBytesErr *http.MaxBytesError
+	return errors.As(err, &maxBytesErr)
 }

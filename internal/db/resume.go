@@ -138,3 +138,24 @@ func (db *Database) ListResumeMatches(resumeID int64) ([]ResumeMatch, error) {
 	}
 	return out, nil
 }
+
+// UpdateResumeText overwrites the extracted text and parse status for a resume.
+func (db *Database) UpdateResumeText(id int64, text, status string) error {
+	res, err := db.conn.Exec(
+		`UPDATE resumes SET parsed_data = ?, parse_status = ? WHERE id = ?`,
+		text, status, id,
+	)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// UpdateResumeFile records the relative on-disk path for an uploaded resume.
+func (db *Database) UpdateResumeFile(id int64, path string) error {
+	_, err := db.conn.Exec(`UPDATE resumes SET file_path = ? WHERE id = ?`, path, id)
+	return err
+}

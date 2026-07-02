@@ -35,10 +35,12 @@ export default function CalendarView({ onOpenDetail, applications }: CalendarVie
   const editRequestToken = useRef(0);
   const monthKey = currentMonth.format('YYYY-MM');
 
-  const { data: entries = [], isLoading } = useQuery({
+  const { data: rawEntries, isLoading } = useQuery({
     queryKey: ['calendar', monthKey],
     queryFn: () => getCalendar(monthKey),
   });
+  // Backend serializes an empty []T as JSON `null`; coalesce so iteration is safe.
+  const entries = rawEntries ?? [];
 
   // Group entries by date string for O(1) lookup per cell.
   const byDate = useMemo(() => {

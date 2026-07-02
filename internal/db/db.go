@@ -328,6 +328,20 @@ func (db *Database) migrate() error {
 	if err := db.ensureColumn("conversations", "mode", "TEXT DEFAULT 'general'"); err != nil {
 		return err
 	}
+	// Resumes table evolved across versions; ensure columns exist for older DBs
+	// whose CREATE TABLE IF NOT EXISTS no-op'd on the current schema.
+	if err := db.ensureColumn("resumes", "name", "TEXT DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := db.ensureColumn("resumes", "file_path", "TEXT"); err != nil {
+		return err
+	}
+	if err := db.ensureColumn("resumes", "parsed_data", "TEXT"); err != nil {
+		return err
+	}
+	if err := db.ensureColumn("resumes", "parse_status", "TEXT DEFAULT 'pending'"); err != nil {
+		return err
+	}
 	return nil
 }
 

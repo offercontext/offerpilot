@@ -9,6 +9,7 @@ import {
   ReadOutlined,
   RobotOutlined,
   BulbOutlined,
+  FileTextOutlined,
 } from '@ant-design/icons';
 import { Badge } from 'antd';
 import { useThemeMode } from '@/theme/ThemeContext';
@@ -23,6 +24,7 @@ const NAV: { key: ViewMode; label: string; icon: React.ReactNode }[] = [
   { key: 'offers', label: '谈薪', icon: <DollarOutlined /> },
   { key: 'knowledge', label: '知识库', icon: <BookOutlined /> },
   { key: 'questions', label: '题库刷题', icon: <ReadOutlined /> },
+  { key: 'resumes', label: '简历库', icon: <FileTextOutlined /> },
 ];
 
 interface Props {
