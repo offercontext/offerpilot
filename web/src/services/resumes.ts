@@ -24,3 +24,22 @@ export async function matchResume(
   const { data } = await http.post<MatchResumeResponse>(`/resumes/${resumeID}/match`, payload);
   return data;
 }
+
+export async function uploadResume(file: File): Promise<Resume> {
+  const formData = new FormData();
+  formData.append('file', file);
+  const { data } = await http.post<Resume>('/resumes/upload', formData, {
+    timeout: 30000,
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return data;
+}
+
+export async function updateResumeText(id: number, text: string): Promise<void> {
+  await http.put(`/resumes/${id}/text`, { text });
+}
+
+export async function downloadResumeFile(id: number): Promise<Blob> {
+  const { data } = await http.get(`/resumes/${id}/file`, { responseType: 'blob' });
+  return data;
+}

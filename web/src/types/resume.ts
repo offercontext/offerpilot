@@ -21,3 +21,5 @@ export interface MatchResumeResponse {
   application_id?: number;
   result: MatchResult;
 }
+
+export type ResumeStatus = 'text-ready' | 'parse-failed';
