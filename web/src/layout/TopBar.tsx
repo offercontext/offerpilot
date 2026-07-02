@@ -1,5 +1,5 @@
-import { Button } from 'antd';
-import { PlusOutlined, SearchOutlined, RobotOutlined } from '@ant-design/icons';
+import { Button, Dropdown } from 'antd';
+import { PlusOutlined, SearchOutlined, RobotOutlined, UploadOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 
 interface Props {
@@ -7,6 +7,7 @@ interface Props {
   onAdd: () => void;
   onSearch: () => void;
   onOpenChat: () => void;
+  onUploadResume: () => void;
 }
 
 function greeting(): string {
@@ -17,7 +18,7 @@ function greeting(): string {
   return '晚上好，今天辛苦了';
 }
 
-export default function TopBar({ streakDays, onAdd, onSearch, onOpenChat }: Props) {
+export default function TopBar({ streakDays, onAdd, onSearch, onOpenChat, onUploadResume }: Props) {
   return (
     <header
       style={{
@@ -49,9 +50,23 @@ export default function TopBar({ streakDays, onAdd, onSearch, onOpenChat }: Prop
         >
           AI 助手
         </Button>
-        <Button type="primary" icon={<PlusOutlined />} onClick={onAdd}>
-          添加投递
-        </Button>
+        <Dropdown
+          menu={{
+            items: [
+              { key: 'add', label: '添加投递', icon: <PlusOutlined /> },
+              { key: 'uploadResume', label: '上传简历', icon: <UploadOutlined /> },
+            ],
+            onClick: ({ key }) => {
+              if (key === 'add') onAdd();
+              else if (key === 'uploadResume') onUploadResume();
+            },
+          }}
+          placement="bottomRight"
+        >
+          <Button type="primary" icon={<PlusOutlined />}>
+            添加投递
+          </Button>
+        </Dropdown>
       </div>
     </header>
   );

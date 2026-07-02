@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { Layout, Spin } from 'antd';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Layout, Spin, message } from 'antd';
 import { listApplications } from '@/services/applications';
 import { listEvents } from '@/services/events';
 import { listOffers } from '@/services/offers';
+import { uploadResume } from '@/services/resumes';
 import type { Application } from '@/types/application';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
@@ -11,6 +12,8 @@ import KanbanBoard from '@/components/KanbanBoard';
 import AddApplicationForm from '@/components/AddApplicationForm';
 import ApplicationDetail from '@/components/ApplicationDetail';
 import ResumeMatchModal from '@/components/ResumeMatchModal';
+import ResumeLibraryView from '@/components/ResumeLibraryView';
+import ResumeUploadModal from '@/components/ResumeUploadModal';
 import CalendarView from '@/components/CalendarView';
 import ChatPanel from '@/components/ChatPanel';
 import ReviewManagementView from '@/components/ReviewManagementView';
@@ -33,7 +36,8 @@ export type ViewMode =
   | 'reviews'
   | 'offers'
   | 'knowledge'
-  | 'questions';
+  | 'questions'
+  | 'resumes';
 
 function computeStreak(apps: Application[], now = dayjs()): number {
   const days = new Set(
@@ -52,6 +56,7 @@ export default function AppShell() {
   const [view, setView] = useState<ViewMode>('dashboard');
   const [addOpen, setAddOpen] = useState(false);
   const [resumeOpen, setResumeOpen] = useState(false);
+  const [resumeUploadOpen, setResumeUploadOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [selected, setSelected] = useState<Application | null>(null);
   const [coachOfferId, setCoachOfferId] = useState<number | undefined>(undefined);
@@ -68,6 +73,17 @@ export default function AppShell() {
   const { data: offers = [] } = useQuery({
     queryKey: ['offers'],
     queryFn: () => listOffers(),
+  });
+
+  const qc = useQueryClient();
+  const uploadResumeMut = useMutation({
+    mutationFn: (f: File) => uploadResume(f),
+    onSuccess: (res) => {
+      message.success(res.parse_status === 'text-ready' ? '上传成功' : '已上传，文本提取失败，请到简历库校正');
+      qc.invalidateQueries({ queryKey: ['resumes'] });
+      setResumeUploadOpen(false);
+    },
+    onError: () => message.error('上传失败'),
   });
 
   useEffect(() => {
@@ -110,7 +126,7 @@ export default function AppShell() {
         onOpenChat={() => openChat(undefined)}
       />
       <Layout style={{ background: 'var(--op-layout-bg)' }}>
-        <TopBar streakDays={streak} onAdd={() => setAddOpen(true)} onSearch={() => setPaletteOpen(true)} onOpenChat={() => openChat(undefined)} />
+        <TopBar streakDays={streak} onAdd={() => setAddOpen(true)} onSearch={() => setPaletteOpen(true)} onOpenChat={() => openChat(undefined)} onUploadResume={() => setResumeUploadOpen(true)} />
         <Content style={{ padding: '0 24px 24px' }}>
           {isLoading ? (
             <div style={{ textAlign: 'center', padding: 48 }}>
@@ -144,6 +160,7 @@ export default function AppShell() {
               )}
               {view === 'knowledge' && <KnowledgeBaseView />}
               {view === 'questions' && <QuestionBankView />}
+              {view === 'resumes' && <ResumeLibraryView />}
             </div>
           )}
         </Content>
@@ -152,6 +169,12 @@ export default function AppShell() {
       <AddApplicationForm open={addOpen} onClose={() => setAddOpen(false)} />
       <ApplicationDetail application={selectedApp} open={!!selected} onClose={() => setSelected(null)} />
       <ResumeMatchModal open={resumeOpen} onClose={() => setResumeOpen(false)} />
+      <ResumeUploadModal
+        open={resumeUploadOpen}
+        uploading={uploadResumeMut.isPending}
+        onSubmit={(f) => uploadResumeMut.mutate(f)}
+        onClose={() => setResumeUploadOpen(false)}
+      />
       <CommandPalette
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
@@ -160,6 +183,7 @@ export default function AppShell() {
         onOpenDetail={(app) => setSelected(app)}
         onAddApplication={() => setAddOpen(true)}
         onOpenResume={() => setResumeOpen(true)}
+        onUploadResume={() => setResumeUploadOpen(true)}
         onOpenChat={() => openChat(undefined)}
       />
       <ChatPanel

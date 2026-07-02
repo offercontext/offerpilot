@@ -18,6 +18,7 @@ interface Props {
   onOpenDetail: (app: Application) => void;
   onAddApplication: () => void;
   onOpenResume: () => void;
+  onUploadResume?: () => void;
   onOpenChat: () => void;
 }
 
@@ -29,6 +30,7 @@ export default function CommandPalette({
   onOpenDetail,
   onAddApplication,
   onOpenResume,
+  onUploadResume,
   onOpenChat,
 }: Props) {
   const [q, setQ] = useState('');
@@ -46,6 +48,7 @@ export default function CommandPalette({
     () => [
       { key: 'add', label: '添加投递', hint: '动作', run: () => { onAddApplication(); onClose(); } },
       { key: 'resume', label: '简历匹配', hint: '动作', run: () => { onOpenResume(); onClose(); } },
+      { key: 'uploadResume', label: '上传简历', hint: 'PDF → 简历库', run: () => { onUploadResume?.(); onClose(); } },
       { key: 'chat', label: '打开 AI 助手', hint: '动作', run: () => { onOpenChat(); onClose(); } },
       { key: 'nav-dashboard', label: '前往 驾驶舱', hint: '导航', run: () => { onNavigate('dashboard'); onClose(); } },
       { key: 'nav-board', label: '前往 看板', hint: '导航', run: () => { onNavigate('board'); onClose(); } },
@@ -55,8 +58,9 @@ export default function CommandPalette({
       { key: 'nav-offers', label: '前往 谈薪', hint: '导航', run: () => { onNavigate('offers'); onClose(); } },
       { key: 'nav-knowledge', label: '前往 知识库', hint: '导航', run: () => { onNavigate('knowledge'); onClose(); } },
       { key: 'nav-questions', label: '前往 题库刷题', hint: '导航', run: () => { onNavigate('questions'); onClose(); } },
+      { key: 'nav-resumes', label: '打开简历库', hint: '侧边导航', run: () => { onNavigate('resumes'); onClose(); } },
     ],
-    [onAddApplication, onOpenResume, onOpenChat, onNavigate, onClose]
+    [onAddApplication, onOpenResume, onUploadResume, onOpenChat, onNavigate, onClose]
   );
 
   const kw = q.trim().toLowerCase();
