@@ -5,33 +5,68 @@ import (
 	"bytes"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 
 	"rsc.io/pdf"
 )
 
-// pdftotext is the name of the poppler CLI we prefer when available.
-const pdftotextBin = "pdftotext"
+const (
+	pdftotextBin = "pdftotext"
+	python3Bin   = "python3"
+	// pdfTextScript is a helper that uses PyMuPDF to extract PDF text. We pass
+	// it via argv to avoid having to resolve a path on disk at runtime.
+	pdfTextScript = "import sys,fitz; d=fitz.open(stream=sys.stdin.buffer.read(),filetype='pdf'); sys.stdout.write('\\n'.join(p.get_text() for p in d))"
+)
 
 // ExtractPDFText reads plain text from a PDF byte slice.
 //
-// Strategy: try the system `pdftotext` (poppler) first — it has full CID/Type0
-// (Chinese/Japanese/Korean) font support. If the binary is missing, fall back
-// to the pure-Go rsc.io/pdf reader, which handles Latin text but is weak on
-// CJK fonts.
+// Strategy (most-accurate first):
+//  1. PyMuPDF (`python3 -c ...`) — best for subsetted Type0/CID CJK fonts,
+//     which are common in Chinese resumes but where pdftotext fails.
+//  2. Poppler `pdftotext <tmpfile> -` — solid fallback for Latin + many CJK.
+//  3. Pure-Go `rsc.io/pdf` — works without system deps, weak on CJK.
 //
-// Returns "" without error when the PDF has no extractable text layer
-// (e.g. scanned/image-only PDFs); callers decide whether to mark parse-failed.
-// Corrupt or non-PDF input returns an error.
+// Returns "" without error when no text layer is extractable (scanned PDFs);
+// callers decide whether to mark parse-failed. Corrupt / non-PDF → error.
 func ExtractPDFText(data []byte) (string, error) {
 	if len(data) == 0 {
 		return "", nil
+	}
+	if txt, ok := tryPyMuPDF(data); ok {
+		return txt, nil
 	}
 	if txt, ok := tryPdftotext(data); ok {
 		return txt, nil
 	}
 	return extractWithRscPDF(data)
+}
+
+// tryPyMuPDF runs `python3 -c <helper>` feeding the PDF via stdin and reading
+// extracted text from stdout. Returns (txt, true) on success, (buf, false)
+// when python3 is missing or extraction failed.
+func tryPyMuPDF(data []byte) (string, bool) {
+	if _, err := exec.LookPath(python3Bin); err != nil {
+		// On Windows, `python3` may not be on PATH while `python` is.
+		if _, err2 := exec.LookPath("python"); err2 != nil {
+			return "", false
+		}
+		cmd := exec.Command("python", "-c", pdfTextScript)
+		cmd.Stdin = bytes.NewReader(data)
+		var out bytes.Buffer
+		cmd.Stdout = &out
+		if err := cmd.Run(); err != nil {
+			return "", false
+		}
+		return strings.TrimSpace(out.String()), true
+	}
+	cmd := exec.Command(python3Bin, "-c", pdfTextScript)
+	cmd.Stdin = bytes.NewReader(data)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(out.String()), true
 }
 
 // tryPdftotext writes the PDF bytes to a temp file and runs
@@ -62,7 +97,6 @@ func tryPdftotext(data []byte) (string, bool) {
 	if err := cmd.Run(); err != nil {
 		return "", false
 	}
-	_ = filepath.Base(tmpPath) // keep filepath import used even if tmp dir logic expands
 	return strings.TrimSpace(out.String()), true
 }
 
