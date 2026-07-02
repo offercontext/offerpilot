@@ -8,7 +8,7 @@ export default function ThinkingIndicator() {
         <i />
         <i />
       </span>
-      <span>副驾正在思考并查阅你的资料…</span>
+      <span>领航员正在思考并查阅你的资料…</span>
     </div>
   );
 }

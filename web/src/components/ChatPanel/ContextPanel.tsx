@@ -102,7 +102,7 @@ export default function ContextPanel({
         </div>
       )}
       <div className={styles.notice}>
-        副驾可读取并（经确认后）修改你的投递、日程、复盘与 Offer。所有写操作默认需你点确认。
+        领航员可读取并（经确认后）修改你的投递、日程、复盘与 Offer。所有写操作默认需你点确认。
       </div>
     </aside>
   );

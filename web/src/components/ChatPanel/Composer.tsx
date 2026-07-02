@@ -87,7 +87,7 @@ export default function Composer({ capabilities, disabled, placeholder, onSend }
               submit();
             }
           }}
-          placeholder={placeholder ?? '问问副驾，或输入 / 唤起能力…'}
+          placeholder={placeholder ?? '问问领航员，或输入 / 唤起能力…'}
           autoSize={{ minRows: 1, maxRows: 4 }}
           variant="borderless"
           disabled={disabled}

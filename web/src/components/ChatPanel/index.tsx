@@ -222,7 +222,7 @@ export default function ChatPanel({ open, onClose, offerId }: Props) {
             <RobotOutlined />
           </div>
           <div style={{ minWidth: 0 }}>
-            <div className={`${styles.headTitle} op-gradient-text`}>OfferPilot 副驾</div>
+            <div className={`${styles.headTitle} op-gradient-text`}>OfferPilot 领航员</div>
             <div className={styles.headSub}>基于你的投递 · 日程 · 复盘 · Offer 实时作答</div>
           </div>
           <span className={styles.modeBadge}>{isNego ? '🎯 谈薪教练' : '💡 通用助手'}</span>
@@ -255,7 +255,7 @@ export default function ChatPanel({ open, onClose, offerId }: Props) {
               {showEmpty ? (
                 <div className={styles.empty}>
                   <div className={styles.emptyTitle}>
-                    {isNego ? '开始谈薪辅导' : '你好，我是 OfferPilot 副驾'}
+                    {isNego ? '开始谈薪辅导' : '你好，我是 OfferPilot 领航员'}
                   </div>
                   <div className={styles.emptyHint}>
                     {isNego
