@@ -1,4 +1,4 @@
-import { Button, Dropdown } from 'antd';
+import { Button } from 'antd';
 import { PlusOutlined, SearchOutlined, RobotOutlined, UploadOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 
@@ -50,23 +50,12 @@ export default function TopBar({ streakDays, onAdd, onSearch, onOpenChat, onUplo
         >
           AI 助手
         </Button>
-        <Dropdown
-          menu={{
-            items: [
-              { key: 'add', label: '添加投递', icon: <PlusOutlined /> },
-              { key: 'uploadResume', label: '上传简历', icon: <UploadOutlined /> },
-            ],
-            onClick: ({ key }) => {
-              if (key === 'add') onAdd();
-              else if (key === 'uploadResume') onUploadResume();
-            },
-          }}
-          placement="bottomRight"
-        >
-          <Button type="primary" icon={<PlusOutlined />}>
-            添加投递
-          </Button>
-        </Dropdown>
+        <Button type="primary" icon={<PlusOutlined />} onClick={onAdd}>
+          添加投递
+        </Button>
+        <Button icon={<UploadOutlined />} onClick={onUploadResume}>
+          上传简历
+        </Button>
       </div>
     </header>
   );
