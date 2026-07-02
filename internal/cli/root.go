@@ -42,6 +42,7 @@ func Execute(dir string) error {
 	rootCmd.AddCommand(newResumeCmd())
 	rootCmd.AddCommand(newNoteCmd())
 	rootCmd.AddCommand(newOfferCmd())
+	rootCmd.AddCommand(newQuestionCmd())
 
 	return rootCmd.Execute()
 }

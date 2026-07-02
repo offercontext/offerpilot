@@ -15,6 +15,7 @@
 - 📋 **Application Tracking** — Kanban board for all your job applications (drag-to-update status, statistics)
 - 🤖 **AI-Powered** — JD smart analysis + resume matching (bring your own API key)
 - 📝 **Interview Retrospective** — Capture questions, self-reflection, weak points per round
+- 🧠 **Question Bank & Practice** — AI-generate an interview question bank from your knowledge base or past retrospectives, then drill with spaced-repetition check-ins (done / due / mastered). Auto-dedupes so re-generating never repeats existing questions.
 - 💰 **Offer & Salary Negotiation** — Track multiple offers, compare them side-by-side, and get an AI negotiation coach grounded in your own application data
 - 💻 **CLI + Web** — Use `oc` command-line or browse to `localhost:8080`
 - 🔒 **100% Local** — Your data stays on your machine (SQLite, no cloud)
@@ -71,6 +72,9 @@ oc note list --app 1               # List notes for an application
 oc offer add --company "ByteDance" --position "Backend" --base 35000 --months 16 --signing 50000   # Record an offer
 oc offer list                      # List all offers
 oc offer compare 1,2               # Compare offers side-by-side
+oc question generate --kb 1 --count 10       # AI-generate 10 questions from knowledge base #1
+oc question generate --source notes          # Generate from your interview retrospectives
+oc question list --status new                # List questions (filter by practice status)
 oc config --api-key sk-xxx         # Set your AI API key
 oc config                         # Show current configuration
 ```
@@ -113,6 +117,8 @@ All data stored in local SQLite (`~/.offerpilot/data.db`):
 - **Applications** — Company, position, status, notes, timeline
 - **Events** — Written test, interview, assessment dates
 - **Interview Notes** — Questions, self-reflection, difficulty points
+- **Questions** — AI-generated/manual interview questions (category, difficulty, reference answer, tags, practice status, next-review schedule)
+- **Question Reviews** — Practice check-in log (self-rating) driving spaced repetition
 - **Offers** — Base salary, months/year, signing bonus, equity, perks, deadline, negotiation status
 - **Resume** — Parsed data (JSON, schema v5.0)
 
@@ -156,6 +162,7 @@ The Offer & Salary-Negotiation coach feature is inspired by [Ssupercoder/Salary-
 - 📋 **投递管理** — 看板视图，管理所有求职投递（拖拽切换状态、统计）
 - 🤖 **AI 赋能** — JD 智能分析、简历匹配度检查（自带 API Key）
 - 📝 **面试复盘** — 按轮次记录面试问题、自我反思、薄弱点
+- 🧠 **题库刷题** — 基于知识库或历史面试复盘用 AI 生成面试题库，配合间隔重复打卡（已刷 / 待复习 / 已掌握）。自动去重，重复生成不会产生重复题目。
 - 💰 **Offer 谈薪** — 记录多个 offer、横向对比，并获得基于你自身求职数据的 AI 谈薪教练
 - 💻 **命令行 + 网页** — 用 `oc` 命令行操作，或浏览器访问 `localhost:8080`
 - 🔒 **完全本地** — 数据保存在本地（SQLite，无需联网）
@@ -212,6 +219,9 @@ oc note list --app 1               # 列出某投递的复盘
 oc offer add --company "字节跳动" --position "后端开发" --base 35000 --months 16 --signing 50000   # 记录一个 offer
 oc offer list                      # 列出所有 offer
 oc offer compare 1,2               # 横向对比多个 offer
+oc question generate --kb 1 --count 10       # 基于知识库 #1 用 AI 生成 10 道题
+oc question generate --source notes          # 从面试复盘真题生成题目
+oc question list --status new                # 列出题目（按刷题状态筛选）
 oc config --api-key sk-xxx         # 设置 AI API Key
 oc config                          # 查看当前配置
 ```

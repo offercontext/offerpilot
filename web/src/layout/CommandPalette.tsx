@@ -54,6 +54,7 @@ export default function CommandPalette({
       { key: 'nav-reviews', label: '前往 复盘', hint: '导航', run: () => { onNavigate('reviews'); onClose(); } },
       { key: 'nav-offers', label: '前往 谈薪', hint: '导航', run: () => { onNavigate('offers'); onClose(); } },
       { key: 'nav-knowledge', label: '前往 知识库', hint: '导航', run: () => { onNavigate('knowledge'); onClose(); } },
+      { key: 'nav-questions', label: '前往 题库刷题', hint: '导航', run: () => { onNavigate('questions'); onClose(); } },
     ],
     [onAddApplication, onOpenResume, onOpenChat, onNavigate, onClose]
   );

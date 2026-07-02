@@ -70,6 +70,36 @@ type Offer struct {
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
+// Question represents an interview practice question, usually AI-generated
+// from a knowledge base or interview retrospectives.
+type Question struct {
+	ID              int64      `json:"id"`
+	KnowledgeBaseID *int64     `json:"knowledge_base_id,omitempty"`
+	ApplicationID   *int64     `json:"application_id,omitempty"`
+	Category        string     `json:"category"`
+	Difficulty      string     `json:"difficulty"` // easy | medium | hard
+	Question        string     `json:"question"`
+	ReferenceAnswer string     `json:"reference_answer"`
+	Tags            []string   `json:"tags"`
+	SourceType      string     `json:"source_type"` // ai_knowledge | ai_notes | manual
+	Status          string     `json:"status"`      // new | practicing | mastered
+	PracticeCount   int        `json:"practice_count"`
+	LastPracticedAt *time.Time `json:"last_practiced_at,omitempty"`
+	NextReviewAt    *time.Time `json:"next_review_at,omitempty"`
+	QuestionHash    string     `json:"-"` // sha256 of normalized question text, for dedup
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+}
+
+// QuestionReview is a single practice check-in for a question.
+type QuestionReview struct {
+	ID         int64     `json:"id"`
+	QuestionID int64     `json:"question_id"`
+	Rating     int       `json:"rating"` // 1 = again | 2 = hard | 3 = good
+	Note       string    `json:"note"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
 // Database wraps the SQL connection
 type Database struct {
 	conn *sql.DB
@@ -238,6 +268,34 @@ func (db *Database) migrate() error {
 			knowledge_base_id UNINDEXED,
 			content
 		)`,
+		`CREATE TABLE IF NOT EXISTS questions (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			knowledge_base_id INTEGER,
+			application_id INTEGER,
+			category TEXT DEFAULT '',
+			difficulty TEXT NOT NULL DEFAULT 'medium',
+			question TEXT NOT NULL,
+			reference_answer TEXT DEFAULT '',
+			tags TEXT NOT NULL DEFAULT '[]',
+			source_type TEXT NOT NULL DEFAULT 'ai_knowledge',
+			status TEXT NOT NULL DEFAULT 'new',
+			practice_count INTEGER NOT NULL DEFAULT 0,
+			last_practiced_at DATETIME,
+			next_review_at DATETIME,
+			question_hash TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (knowledge_base_id) REFERENCES knowledge_bases(id) ON DELETE SET NULL,
+			FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS question_reviews (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			question_id INTEGER NOT NULL,
+			rating INTEGER NOT NULL DEFAULT 0,
+			note TEXT DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (question_id) REFERENCES questions(id) ON DELETE CASCADE
+		)`,
 		`CREATE INDEX IF NOT EXISTS idx_chat_messages_conv ON chat_messages(conversation_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_applications_status ON applications(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_events_app ON events(application_id)`,
@@ -249,6 +307,11 @@ func (db *Database) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_base ON knowledge_chunks(knowledge_base_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_offers_app ON offers(application_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_offers_status ON offers(status)`,
+		`CREATE INDEX IF NOT EXISTS idx_questions_status ON questions(status)`,
+		`CREATE INDEX IF NOT EXISTS idx_questions_kb ON questions(knowledge_base_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_questions_next_review ON questions(next_review_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_questions_hash ON questions(question_hash)`,
+		`CREATE INDEX IF NOT EXISTS idx_question_reviews_question ON question_reviews(question_id)`,
 	}
 
 	for _, m := range migrations {

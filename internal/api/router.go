@@ -45,6 +45,9 @@ func NewRouter(database *db.Database, dataDir string) http.Handler {
 		// Knowledge bases, documents, imports, and search
 		registerKnowledgeRoutes(r, database)
 
+		// Interview question bank + practice check-in (AI-generated)
+		registerQuestionRoutes(r, database, dataDir)
+
 		// Offer negotiation
 		registerOfferRoutes(r, database)
 

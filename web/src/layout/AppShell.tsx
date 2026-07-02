@@ -15,6 +15,7 @@ import CalendarView from '@/components/CalendarView';
 import ChatPanel from '@/components/ChatPanel';
 import ReviewManagementView from '@/components/ReviewManagementView';
 import KnowledgeBaseView from '@/components/KnowledgeBaseView';
+import QuestionBankView from '@/components/QuestionBankView';
 import OfferCenterView from '@/components/OfferCenterView';
 import DashboardView from '@/features/dashboard/DashboardView';
 import RemindersView from '@/features/reminders/RemindersView';
@@ -31,7 +32,8 @@ export type ViewMode =
   | 'reminders'
   | 'reviews'
   | 'offers'
-  | 'knowledge';
+  | 'knowledge'
+  | 'questions';
 
 function computeStreak(apps: Application[], now = dayjs()): number {
   const days = new Set(
@@ -141,6 +143,7 @@ export default function AppShell() {
                 <OfferCenterView applications={applications} onCoach={(offer) => openChat(offer.id)} />
               )}
               {view === 'knowledge' && <KnowledgeBaseView />}
+              {view === 'questions' && <QuestionBankView />}
             </div>
           )}
         </Content>

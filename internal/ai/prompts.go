@@ -1,6 +1,9 @@
 package ai
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // rawSystem is the shared system prompt enforcing strict JSON output so
 // downstream code can unmarshal without regex cleanup. Kept as a raw string
@@ -71,5 +74,72 @@ func PromptResumeMatch(resumeText, jdText string) (system, user string) {
 
 JD 内容：
 %s`, resumeText, jdText)
+	return
+}
+
+// GeneratedQuestion is one interview question produced by the question-bank model.
+type GeneratedQuestion struct {
+	Category        string   `json:"category"`
+	Difficulty      string   `json:"difficulty"` // easy | medium | hard
+	Question        string   `json:"question"`
+	ReferenceAnswer string   `json:"reference_answer"`
+	Tags            []string `json:"tags"`
+}
+
+// GeneratedQuestions is the JSON envelope returned by the question-bank model.
+type GeneratedQuestions struct {
+	Questions []GeneratedQuestion `json:"questions"`
+}
+
+// PromptGenerateQuestions builds the prompts for generating an interview question
+// bank from supplied context (knowledge base content or interview retrospectives).
+// sourceLabel describes the material (e.g. "知识库资料" or "面试复盘真题") and
+// contextText is the raw material to ground the questions in. existing lists
+// already-stored question stems the model should avoid repeating.
+func PromptGenerateQuestions(sourceLabel, contextText string, count int, existing []string) (system, user string) {
+	system = buildSystem()
+	avoidBlock := ""
+	if len(existing) > 0 {
+		// Cap the exclusion list so a large bank can't blow the token budget.
+		// This is only a soft nudge; hard dedup happens when persisting.
+		const maxExclusions = 80
+		if len(existing) > maxExclusions {
+			existing = existing[len(existing)-maxExclusions:]
+		}
+		var b strings.Builder
+		b.WriteString("\n\n以下题目题库中已存在，请勿重复，也不要出与它们语义相近、仅换措辞的题：\n")
+		for _, q := range existing {
+			q = strings.TrimSpace(q)
+			if q == "" {
+				continue
+			}
+			b.WriteString("- ")
+			b.WriteString(q)
+			b.WriteString("\n")
+		}
+		avoidBlock = b.String()
+	}
+	user = fmt.Sprintf(`你是一名资深技术面试官。请基于以下【%s】设计 %d 道高质量的面试题，用于求职者刷题准备。要求：
+- 题目紧扣所给材料的知识点，避免脱离材料的空泛题目。
+- 覆盖不同难度（easy/medium/hard）并尽量分散到不同分类。
+- reference_answer 给出简洁但要点完整的参考答案（要点式，可含关键结论）。
+- category 用简短中文分类词（如「Go并发」「系统设计」「行为面试」）。
+- tags 为该题相关的关键词数组，可为空数组 []。
+
+严格输出如下 JSON（不要输出多余文字）：
+{
+  "questions": [
+    {
+      "category": "分类",
+      "difficulty": "easy|medium|hard",
+      "question": "题目",
+      "reference_answer": "参考答案要点",
+      "tags": ["关键词"]
+    }
+  ]
+}%s
+
+材料内容：
+%s`, sourceLabel, count, avoidBlock, contextText)
 	return
 }

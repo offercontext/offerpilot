@@ -6,6 +6,7 @@ import {
   FileSearchOutlined,
   DollarOutlined,
   BookOutlined,
+  ReadOutlined,
   RobotOutlined,
   BulbOutlined,
 } from '@ant-design/icons';
@@ -21,6 +22,7 @@ const NAV: { key: ViewMode; label: string; icon: React.ReactNode }[] = [
   { key: 'reviews', label: '复盘', icon: <FileSearchOutlined /> },
   { key: 'offers', label: '谈薪', icon: <DollarOutlined /> },
   { key: 'knowledge', label: '知识库', icon: <BookOutlined /> },
+  { key: 'questions', label: '题库刷题', icon: <ReadOutlined /> },
 ];
 
 interface Props {
