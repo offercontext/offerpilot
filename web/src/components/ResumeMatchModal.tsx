@@ -11,9 +11,10 @@ import {
   Divider,
   Empty,
 } from 'antd';
-import { RobotOutlined, PlusOutlined } from '@ant-design/icons';
-import { listResumes, createResume, matchResume } from '@/services/resumes';
+import { RobotOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons';
+import { listResumes, createResume, matchResume, uploadResume } from '@/services/resumes';
 import type { MatchResumeResponse } from '@/types/resume';
+import ResumeUploadModal from './ResumeUploadModal';
 
 interface ResumeMatchModalProps {
   open: boolean;
@@ -31,11 +32,22 @@ export default function ResumeMatchModal({ open, onClose }: ResumeMatchModalProp
   const [showAdd, setShowAdd] = useState(false);
   const [newName, setNewName] = useState('');
   const [newText, setNewText] = useState('');
+  const [uploadOpen, setUploadOpen] = useState(false);
 
   const resumesQuery = useQuery({
     queryKey: ['resumes'],
     queryFn: listResumes,
     enabled: open,
+  });
+
+  const useUploadMut = useMutation({
+    mutationFn: (file: File) => uploadResume(file),
+    onSuccess: (res) => {
+      message.success(res.parse_status === 'text-ready' ? '简历已上传' : '已上传，文本提取失败，请到简历库校正');
+      resumesQuery.refetch();
+      setUploadOpen(false);
+    },
+    onError: () => message.error('上传失败'),
   });
 
   const addResumeMut = useMutation({
@@ -73,6 +85,7 @@ export default function ResumeMatchModal({ open, onClose }: ResumeMatchModalProp
   }));
 
   return (
+    <>
     <Modal
       title="简历匹配度检查"
       open={open}
@@ -114,7 +127,15 @@ export default function ResumeMatchModal({ open, onClose }: ResumeMatchModalProp
               icon={<PlusOutlined />}
               onClick={() => setShowAdd((v) => !v)}
             >
-              {showAdd ? '取消' : '添加简历'}
+              {showAdd ? '取消' : '粘贴文本'}
+            </Button>
+            <Button
+              size="small"
+              type="link"
+              icon={<UploadOutlined />}
+              onClick={() => setUploadOpen(true)}
+            >
+              上传 PDF
             </Button>
           </div>
           <Select
@@ -165,6 +186,13 @@ export default function ResumeMatchModal({ open, onClose }: ResumeMatchModalProp
         </>
       )}
     </Modal>
+    <ResumeUploadModal
+      open={uploadOpen}
+      uploading={useUploadMut.isPending}
+      onSubmit={(f) => useUploadMut.mutate(f)}
+      onClose={() => setUploadOpen(false)}
+    />
+    </>
   );
 }
 
