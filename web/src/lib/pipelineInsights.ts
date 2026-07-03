@@ -41,6 +41,9 @@ export interface PipelineInsight {
 }
 
 export interface PipelineHealth {
+  score: number;
+  label: 'healthy' | 'watch' | 'critical';
+  bottleneck: string;
   total: number;
   active: number;
   p0: number;
@@ -335,20 +338,34 @@ export function summarizePipelineHealth(
     return Boolean(appliedAt && current.diff(appliedAt, 'day') < 7);
   }).length;
   const dueQuestions = insights.reduce((total, insight) => total + (insight.questionCount ?? 0), 0);
+  const p0 = insights.filter((insight) => insight.priority === 'p0').length;
+  const p1 = insights.filter((insight) => insight.priority === 'p1').length;
+  const p2 = insights.filter((insight) => insight.priority === 'p2').length;
+  const stale = insights.filter((insight) => insight.kind === 'stale_application').length;
+  const weeklyGap = Math.max(0, weeklyTarget - weeklyApplications);
+  const score = Math.max(0, 100 - p0 * 35 - p1 * 18 - p2 * 8 - Math.min(dueQuestions, 10) * 2 - weeklyGap * 3);
+  const label: PipelineHealth['label'] = score < 40 ? 'critical' : score < 85 ? 'watch' : 'healthy';
+  const bottleneck =
+    insights.find((insight) => insight.priority === 'p0')?.title ??
+    insights.find((insight) => insight.priority === 'p1')?.title ??
+    (weeklyGap > 0 ? 'Weekly application pace' : 'No active bottleneck');
 
   return {
+    score,
+    label,
+    bottleneck,
     total: apps.length,
     active: apps.filter((app) => ACTIVE_STATUSES.includes(app.status)).length,
-    p0: insights.filter((insight) => insight.priority === 'p0').length,
-    p1: insights.filter((insight) => insight.priority === 'p1').length,
-    p2: insights.filter((insight) => insight.priority === 'p2').length,
+    p0,
+    p1,
+    p2,
     offers: apps.filter((app) => app.status === 'offer').length,
     interviews: apps.filter((app) => app.status === 'interview').length,
-    stale: insights.filter((insight) => insight.kind === 'stale_application').length,
+    stale,
     dueQuestions,
     weeklyTarget,
     weeklyApplications,
-    weeklyGap: Math.max(0, weeklyTarget - weeklyApplications),
+    weeklyGap,
   };
 }
 

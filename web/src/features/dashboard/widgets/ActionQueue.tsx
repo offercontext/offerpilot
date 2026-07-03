@@ -1,16 +1,16 @@
 import { Button } from 'antd';
-import type { ActionItem } from '@/lib/actionItems';
+import type { PipelineInsight } from '@/lib/pipelineInsights';
 import styles from '../dashboard.module.css';
 
 interface Props {
-  items: ActionItem[];
-  onAction: (item: ActionItem) => void;
+  items: PipelineInsight[];
+  onAction: (item: PipelineInsight) => void;
   onAddApplication: () => void;
   onOpenQuestions: () => void;
   onSeeAll: () => void;
 }
 
-const PRIORITY_LABEL: Record<ActionItem['priority'], string> = {
+const PRIORITY_LABEL: Record<PipelineInsight['priority'], string> = {
   p0: 'P0',
   p1: 'P1',
   p2: 'P2',
@@ -53,9 +53,9 @@ export default function ActionQueue({
           <span className={styles.actionPriority}>{PRIORITY_LABEL[item.priority]}</span>
           <span className={styles.actionBody}>
             <span className={styles.actionTitle}>{item.title}</span>
-            <span className={styles.actionDetail}>{item.detail}</span>
+            <span className={styles.actionDetail}>{item.reason}</span>
           </span>
-          <span className={styles.actionButtonText}>{item.primaryActionLabel}</span>
+          <span className={styles.actionButtonText}>{item.primaryAction.label}</span>
         </button>
       ))}
       {items.length > topItems.length && (

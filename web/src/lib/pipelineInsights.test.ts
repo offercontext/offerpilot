@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { derivePipelineInsights } from './pipelineInsights';
+import { derivePipelineInsights, summarizePipelineHealth } from './pipelineInsights';
 import type { Application } from '@/types/application';
 import type { Offer } from '@/types/offer';
 import type { PracticeStats } from '@/types/question';
@@ -118,5 +118,20 @@ describe('derivePipelineInsights', () => {
         }),
       }),
     );
+  });
+
+  it('summarizes offer deadline pressure as watch health with the configured weekly target', () => {
+    const insights = derivePipelineInsights({
+      apps: [],
+      events: [],
+      offers: [makeOffer()],
+      now,
+    });
+
+    const health = summarizePipelineHealth([], insights, 6, now);
+
+    expect(health.score).toBeLessThan(100);
+    expect(health.label).toBe('watch');
+    expect(health.weeklyTarget).toBe(6);
   });
 });

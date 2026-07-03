@@ -6,7 +6,7 @@ import { listApplications } from '@/services/applications';
 import { listEvents } from '@/services/events';
 import { listOffers } from '@/services/offers';
 import { getPracticeStats } from '@/services/questions';
-import { deriveActionItems, summarizeActionItems, type ActionItem } from '@/lib/actionItems';
+import { derivePipelineInsights, summarizePipelineHealth, type PipelineInsight } from '@/lib/pipelineInsights';
 import { computeKpis, computeFunnel, computeMomentum } from '@/lib/insights';
 import type { ViewMode } from '@/layout/AppShell';
 import KpiCards from './widgets/KpiCards';
@@ -46,18 +46,18 @@ export default function DashboardView({ onNavigate, onOpenDetailById, onAddAppli
   const kpis = useMemo(() => computeKpis(apps, now), [apps, now]);
   const funnel = useMemo(() => computeFunnel(apps), [apps]);
   const momentum = useMemo(() => computeMomentum(apps, 4, now), [apps, now]);
-  const actions = useMemo(
-    () => deriveActionItems({ apps, events, offers, practiceStats: practiceStatsQ.data, now }),
+  const insights = useMemo(
+    () => derivePipelineInsights({ apps, events, offers, practiceStats: practiceStatsQ.data, weeklyTarget: 6, now }),
     [apps, events, offers, practiceStatsQ.data, now],
   );
-  const actionSummary = useMemo(() => summarizeActionItems(actions), [actions]);
+  const health = useMemo(() => summarizePipelineHealth(apps, insights, 6, now), [apps, insights, now]);
 
-  const handleAction = (item: ActionItem) => {
-    if (item.target === 'board' && item.appId) {
+  const handleAction = (item: PipelineInsight) => {
+    if (item.primaryAction.target === 'board' && item.appId) {
       onOpenDetailById(item.appId);
       return;
     }
-    onNavigate(item.target);
+    onNavigate(item.primaryAction.target);
   };
 
   if (appsQ.isLoading) {
@@ -85,8 +85,8 @@ export default function DashboardView({ onNavigate, onOpenDetailById, onAddAppli
   return (
     <div className={styles.grid}>
       <CommandCenter
-        items={actions}
-        summary={actionSummary}
+        items={insights}
+        health={health}
         kpis={kpis}
         onAction={handleAction}
         onAddApplication={onAddApplication}
