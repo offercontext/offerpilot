@@ -9,13 +9,16 @@ import type {
 
 const http = axios.create({ baseURL: '/api', timeout: 130000 });
 
-const emptyContent: MaterialKitContent = {
-  resume_advice: { summary: '', highlights: [], rewrite_bullets: [], gaps: [], notes: '' },
-  messages: [],
-  checklist: [],
-};
+function createEmptyContent(): MaterialKitContent {
+  return {
+    resume_advice: { summary: '', highlights: [], rewrite_bullets: [], gaps: [], notes: '' },
+    messages: [],
+    checklist: [],
+  };
+}
 
 function normalizeContent(value: unknown): MaterialKitContent {
+  const emptyContent = createEmptyContent();
   if (!value || typeof value !== 'object') return emptyContent;
 
   const content = value as Partial<MaterialKitContent>;
@@ -33,7 +36,7 @@ export function parseMaterialKit(raw: ApplicationMaterialKit): MaterialKitViewMo
   try {
     return { ...raw, content: normalizeContent(JSON.parse(raw.content_json || '{}')) };
   } catch {
-    return { ...raw, content: emptyContent };
+    return { ...raw, content: createEmptyContent() };
   }
 }
 
@@ -64,7 +67,7 @@ export async function updateMaterialKit(
 ): Promise<MaterialKitViewModel> {
   const { data } = await http.put<ApplicationMaterialKit>(`/material-kits/${kitID}`, {
     ...input,
-    content_json: JSON.stringify(input.content_json),
+    content_json: input.content_json,
   });
   return parseMaterialKit(data);
 }
