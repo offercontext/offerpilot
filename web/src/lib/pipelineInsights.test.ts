@@ -58,7 +58,7 @@ function makePracticeStats(overrides: Partial<PracticeStats> = {}): PracticeStat
 }
 
 describe('derivePipelineInsights', () => {
-  it('promotes an offer deadline within 48 hours to P0 with deadline evidence and offer action', () => {
+  it('promotes an offer deadline within 48 hours to P0 with localized deadline evidence and offer action', () => {
     const insights = derivePipelineInsights({
       apps: [],
       events: [],
@@ -70,9 +70,9 @@ describe('derivePipelineInsights', () => {
       expect.objectContaining({
         kind: 'offer_deadline',
         priority: 'p0',
-        evidence: expect.arrayContaining(['Deadline: 2026-07-04']),
+        evidence: expect.arrayContaining(['截止日：2026-07-04']),
         primaryAction: expect.objectContaining({
-          label: 'Open offer center',
+          label: '打开谈薪中心',
           target: 'offers',
         }),
       }),
@@ -91,7 +91,7 @@ describe('derivePipelineInsights', () => {
       expect.objectContaining({
         kind: 'stale_application',
         priority: 'p1',
-        reason: expect.stringContaining('15 days without updates'),
+        reason: expect.stringContaining('已 15 天没有更新'),
         primaryAction: expect.objectContaining({
           target: 'board',
         }),

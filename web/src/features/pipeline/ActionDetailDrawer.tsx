@@ -39,7 +39,7 @@ export default function ActionDetailDrawer({ insight, open, onClose, onRunAction
       <Typography.Text strong>{detail.title}</Typography.Text>
     </Space>
   ) : (
-    'Pipeline action'
+    '流程行动'
   );
 
   return (
@@ -47,7 +47,7 @@ export default function ActionDetailDrawer({ insight, open, onClose, onRunAction
       {detail && primaryAction ? (
         <div className={styles.drawerBody}>
           <section className={styles.section}>
-            <Typography.Title level={5}>Why this appears</Typography.Title>
+            <Typography.Title level={5}>为什么出现</Typography.Title>
             <Typography.Paragraph>{detail.reason}</Typography.Paragraph>
             {detail.evidence.length > 0 && (
               <List
@@ -60,13 +60,13 @@ export default function ActionDetailDrawer({ insight, open, onClose, onRunAction
 
           {detail.impact && (
             <section className={styles.section}>
-              <Typography.Title level={5}>Impact</Typography.Title>
+              <Typography.Title level={5}>影响</Typography.Title>
               <Typography.Paragraph>{detail.impact}</Typography.Paragraph>
             </section>
           )}
 
           <section className={styles.section}>
-            <Typography.Title level={5}>Recommended next step</Typography.Title>
+            <Typography.Title level={5}>建议下一步</Typography.Title>
             <Space direction="vertical" size={12}>
               <Button type="primary" onClick={() => onRunAction(detail, getActionId(detail, primaryAction, 'primary'))}>
                 {primaryAction.label}

@@ -23,9 +23,9 @@ interface Props {
 }
 
 const GROUPS: { key: PipelinePriority; label: string }[] = [
-  { key: 'p0', label: 'Today urgent' },
-  { key: 'p1', label: 'This week focus' },
-  { key: 'p2', label: 'Follow-up queue' },
+  { key: 'p0', label: '今日紧急' },
+  { key: 'p1', label: '本周重点' },
+  { key: 'p2', label: '跟进队列' },
 ];
 
 function defineKindFilterOptions<const Options extends readonly { value: PipelineInsightKind | 'all'; label: string }[]>(
@@ -36,15 +36,15 @@ function defineKindFilterOptions<const Options extends readonly { value: Pipelin
 }
 
 const KIND_FILTER_OPTIONS = defineKindFilterOptions([
-  { value: 'all', label: 'All actions' },
-  { value: 'offer_deadline', label: 'Offer deadline' },
-  { value: 'interview_soon', label: 'Interview soon' },
-  { value: 'stale_application', label: 'Stale application' },
-  { value: 'no_next_event', label: 'No next event' },
-  { value: 'material_kit_incomplete', label: 'Material kit incomplete' },
-  { value: 'question_due', label: 'Question due' },
-  { value: 'pipeline_bottleneck', label: 'Pipeline bottlenecks' },
-  { value: 'weekly_goal_gap', label: 'Weekly goal gap' },
+  { value: 'all', label: '全部行动' },
+  { value: 'offer_deadline', label: 'Offer 截止' },
+  { value: 'interview_soon', label: '面试临近' },
+  { value: 'stale_application', label: '投递待跟进' },
+  { value: 'no_next_event', label: '缺少下一步' },
+  { value: 'material_kit_incomplete', label: '材料待完善' },
+  { value: 'question_due', label: '题目待复习' },
+  { value: 'pipeline_bottleneck', label: '流程瓶颈' },
+  { value: 'weekly_goal_gap', label: '本周目标差距' },
 ] satisfies { value: PipelineInsightKind | 'all'; label: string }[]);
 
 type DetailAction = ActionCommand & { id?: string };
@@ -143,18 +143,17 @@ export default function RemindersView({ onNavigate, onOpenDetailById }: Props) {
         <div className={styles.toolbar}>
           <Input.Search
             allowClear
-            placeholder="Search pipeline actions"
+            placeholder="搜索流程行动"
             value={keyword}
             onChange={(event) => setKeyword(event.target.value)}
             onSearch={setKeyword}
           />
-          <Select value={kind} options={KIND_FILTER_OPTIONS} onChange={setKind} aria-label="Filter action kind" />
+          <Select value={kind} options={KIND_FILTER_OPTIONS} onChange={setKind} aria-label="筛选行动类型" />
         </div>
 
         {filteredInsights.length === 0 ? (
           <div className={styles.empty}>
-            No matching pipeline actions. Add an application, practice due questions, or write a retrospective to keep
-            momentum.
+            暂无匹配的流程行动。可以新增投递、复习到期题目，或整理一次复盘来保持节奏。
           </div>
         ) : (
           GROUPS.map(({ key, label }) => {

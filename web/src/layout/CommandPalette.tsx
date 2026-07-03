@@ -14,7 +14,7 @@ export interface Command {
 function pipelineInsightMatches(item: PipelineInsight, keyword: string): boolean {
   if (!keyword) return true;
 
-  const hint = `Pipeline - ${item.priority.toUpperCase()}`;
+  const hint = `流程提醒 - ${item.priority.toUpperCase()}`;
   return [
     item.title,
     hint,
@@ -94,7 +94,7 @@ export default function CommandPalette({
         .map((item) => ({
           key: `pipeline-${item.id}`,
           label: item.title,
-          hint: `Pipeline - ${item.priority.toUpperCase()}`,
+          hint: `流程提醒 - ${item.priority.toUpperCase()}`,
           run: () => {
             onRunPipelineAction(item);
             onClose();

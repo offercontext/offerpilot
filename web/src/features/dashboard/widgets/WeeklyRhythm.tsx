@@ -1,4 +1,4 @@
-import type { PipelineHealth } from '@/lib/pipelineInsights';
+import { formatPipelineHealthLabel, type PipelineHealth } from '@/lib/pipelineInsights';
 import styles from '../dashboard.module.css';
 
 interface Props {
@@ -20,9 +20,9 @@ export default function WeeklyRhythm({ health }: Props) {
       </div>
       <div className={styles.rhythmMeta}>
         <span className="op-tnum">
-          {health.weeklyApplications}/{health.weeklyTarget} applications
+          本周 {health.weeklyApplications}/{health.weeklyTarget} 个投递
         </span>
-        <span>{health.label}</span>
+        <span>{formatPipelineHealthLabel(health.label)}</span>
       </div>
       <p className={styles.rhythmText}>{rhythmCopy(health)}</p>
     </div>

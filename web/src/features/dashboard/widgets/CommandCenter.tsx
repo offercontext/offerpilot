@@ -1,5 +1,5 @@
 import { Button } from 'antd';
-import type { PipelineHealth, PipelineInsight } from '@/lib/pipelineInsights';
+import { formatPipelineHealthLabel, type PipelineHealth, type PipelineInsight } from '@/lib/pipelineInsights';
 import ActionQueue from './ActionQueue';
 import WeeklyRhythm from './WeeklyRhythm';
 import styles from '../dashboard.module.css';
@@ -21,35 +21,32 @@ export default function CommandCenter({
   onOpenQuestions,
   onSeeAll,
 }: Props) {
-  const actionLabel = items.length === 1 ? 'action' : 'actions';
-
   return (
     <section className={styles.commandCenter} aria-labelledby="command-center-title">
       <div className={styles.commandMain}>
         <div className={styles.commandHeader}>
           <div>
-            <div className={styles.commandEyebrow}>Pipeline Intelligence</div>
+            <div className={styles.commandEyebrow}>流程智能提醒</div>
             <h2 id="command-center-title" className={styles.commandTitle}>
-              Today has {items.length} recommended {actionLabel}
+              今天有 {items.length} 个推荐行动
             </h2>
             <p className={styles.commandSubtitle}>
-              Ranked by deadline, pipeline risk, and preparation leverage. Each recommendation explains why it
-              matters.
+              按截止时间、流程风险和准备收益排序，每条提醒都会说明为什么现在值得处理。
             </p>
           </div>
           <Button onClick={onSeeAll}>查看全部提醒</Button>
         </div>
         <div className={styles.pipelineHealthStrip}>
           <div>
-            <div className={styles.healthLabel}>Health score</div>
+            <div className={styles.healthLabel}>健康分</div>
             <div className={`${styles.healthText} op-tnum`}>{health.score}</div>
           </div>
           <div>
-            <div className={styles.healthLabel}>State</div>
-            <div className={styles.healthText}>{health.label}</div>
+            <div className={styles.healthLabel}>状态</div>
+            <div className={styles.healthText}>{formatPipelineHealthLabel(health.label)}</div>
           </div>
           <div>
-            <div className={styles.healthLabel}>Bottleneck</div>
+            <div className={styles.healthLabel}>瓶颈</div>
             <div className={styles.healthText}>{health.bottleneck}</div>
           </div>
         </div>

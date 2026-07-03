@@ -141,6 +141,12 @@ function makeAction(label: string, target: ActionCommandTarget, refs: Omit<Actio
   return { label, target, ...refs };
 }
 
+export function formatPipelineHealthLabel(label: PipelineHealth['label']): string {
+  if (label === 'critical') return '高风险';
+  if (label === 'watch') return '需关注';
+  return '健康';
+}
+
 export function derivePipelineInsights({
   apps,
   events,
@@ -168,13 +174,13 @@ export function derivePipelineInsights({
       id: `offer-${offer.id}`,
       kind: 'offer_deadline',
       priority,
-      title: `${offer.company_name} offer deadline`,
+      title: `${offer.company_name} offer 答复截止`,
       reason:
         priority === 'p0'
-          ? 'Offer response deadline is within 48 hours.'
-          : 'Offer response deadline is coming up this week.',
-      evidence: [`Deadline: ${deadlineLabel}`],
-      primaryAction: makeAction('Open offer center', 'offers', {
+          ? 'Offer 答复截止时间已进入 48 小时内。'
+          : 'Offer 答复截止时间将在本周到来。',
+      evidence: [`截止日：${deadlineLabel}`],
+      primaryAction: makeAction('打开谈薪中心', 'offers', {
         appId: offer.application_id,
         offerId: offer.id,
       }),
@@ -191,16 +197,16 @@ export function derivePipelineInsights({
     const hours = scheduledAt.diff(current, 'hour', true);
     if (!Number.isFinite(hours) || hours < 0 || hours > 72) continue;
 
-    const label = formatCompanyPosition(event.company_name, event.position_name) || 'Scheduled event';
+    const label = formatCompanyPosition(event.company_name, event.position_name) || '已安排日程';
     const priority: PipelinePriority = hours <= 24 ? 'p0' : 'p1';
     insights.push({
       id: `interview-${event.id}`,
       kind: 'interview_soon',
       priority,
-      title: `${label} is soon`,
-      reason: `${event.event_type} starts in ${Math.max(1, Math.ceil(hours))} hours.`,
-      evidence: [`Scheduled: ${scheduledAt.format('YYYY-MM-DD HH:mm')}`],
-      primaryAction: makeAction('Open calendar', 'calendar', {
+      title: `${label} 即将开始`,
+      reason: `${event.event_type} 将在 ${Math.max(1, Math.ceil(hours))} 小时后开始。`,
+      evidence: [`日程时间：${scheduledAt.format('YYYY-MM-DD HH:mm')}`],
+      primaryAction: makeAction('打开日历', 'calendar', {
         appId: event.application_id,
         eventId: event.id,
       }),
@@ -229,10 +235,10 @@ export function derivePipelineInsights({
             id: `stale-${app.id}`,
             kind: 'stale_application',
             priority: days >= 14 ? 'p1' : 'p2',
-            title: `${app.company_name} needs follow-up`,
-            reason: `${days} days without updates.`,
-            evidence: [`Last update: ${baseDate.format('YYYY-MM-DD')}`],
-            primaryAction: makeAction('Open pipeline board', 'board', { appId: app.id }),
+            title: `${app.company_name} 需要跟进`,
+            reason: `已 ${days} 天没有更新。`,
+            evidence: [`最近更新：${baseDate.format('YYYY-MM-DD')}`],
+            primaryAction: makeAction('打开投递看板', 'board', { appId: app.id }),
             appId: app.id,
             sortKey: 1000 - days,
           });
@@ -245,10 +251,10 @@ export function derivePipelineInsights({
         id: `no-next-${app.id}`,
         kind: 'no_next_event',
         priority: 'p2',
-        title: `${app.company_name} has no next event`,
-        reason: 'Application is in interview stage without a scheduled next event.',
-        evidence: [`Stage: ${app.status}`],
-        primaryAction: makeAction('Open calendar', 'calendar', { appId: app.id }),
+        title: `${app.company_name} 缺少下一步日程`,
+        reason: '投递已进入面试阶段，但还没有安排下一次日程。',
+        evidence: [`当前阶段：${app.status}`],
+        primaryAction: makeAction('打开日历', 'calendar', { appId: app.id }),
         appId: app.id,
         sortKey: 2500,
       });
@@ -267,10 +273,10 @@ export function derivePipelineInsights({
         id: `material-kit-${app.id}`,
         kind: 'material_kit_incomplete',
         priority: 'p2',
-        title: `${app.company_name} material kit is incomplete`,
-        reason: 'Resume, outreach notes, or application materials still need review.',
-        evidence: ['Material kit: incomplete'],
-        primaryAction: makeAction('Open pipeline board', 'board', { appId: app.id }),
+        title: `${app.company_name} 申请材料待完善`,
+        reason: '简历、沟通记录或申请材料仍需要复核。',
+        evidence: ['材料包：未完成'],
+        primaryAction: makeAction('打开投递看板', 'board', { appId: app.id }),
         appId: app.id,
         sortKey: 2700,
       });
@@ -283,10 +289,10 @@ export function derivePipelineInsights({
       id: 'questions-due',
       kind: 'question_due',
       priority: due >= 10 ? 'p1' : 'p2',
-      title: `${due} questions due for review`,
-      reason: `${due} practice questions are due today.`,
-      evidence: [`Due questions: ${due}`],
-      primaryAction: makeAction('Open question practice', 'questions'),
+      title: `${due} 道题待复习`,
+      reason: `今天有 ${due} 道练习题到期需要复习。`,
+      evidence: [`待复习题目：${due}`],
+      primaryAction: makeAction('打开题库练习', 'questions'),
       questionCount: due,
       sortKey: 3000 - Math.min(due, 50),
     });
@@ -298,10 +304,10 @@ export function derivePipelineInsights({
       id: 'weekly-goal-gap',
       kind: 'weekly_goal_gap',
       priority: 'p2',
-      title: 'Weekly application goal needs attention',
-      reason: `${weeklyHealth.weeklyGap} applications remaining to reach this week\'s target.`,
-      evidence: [`Weekly applications: ${weeklyHealth.weeklyApplications}/${weeklyHealth.weeklyTarget}`],
-      primaryAction: makeAction('Open pipeline board', 'board'),
+      title: '本周投递目标需要关注',
+      reason: `距离本周目标还差 ${weeklyHealth.weeklyGap} 个投递。`,
+      evidence: [`本周投递：${weeklyHealth.weeklyApplications}/${weeklyHealth.weeklyTarget}`],
+      primaryAction: makeAction('打开投递看板', 'board'),
       sortKey: 4000,
     });
   }
@@ -313,10 +319,10 @@ export function derivePipelineInsights({
       id: 'pipeline-bottleneck-applied',
       kind: 'pipeline_bottleneck',
       priority: 'p2',
-      title: 'Pipeline is concentrated in applied stage',
-      reason: 'Most active applications have not moved beyond the applied stage.',
-      evidence: [`Applied: ${appliedCount}/${activeApps.length}`],
-      primaryAction: makeAction('Open pipeline board', 'board'),
+      title: '投递集中在已申请阶段',
+      reason: '大多数活跃投递还没有推进到后续阶段。',
+      evidence: [`已申请：${appliedCount}/${activeApps.length}`],
+      primaryAction: makeAction('打开投递看板', 'board'),
       sortKey: 4100,
     });
   }
@@ -348,7 +354,7 @@ export function summarizePipelineHealth(
   const bottleneck =
     insights.find((insight) => insight.priority === 'p0')?.title ??
     insights.find((insight) => insight.priority === 'p1')?.title ??
-    (weeklyGap > 0 ? 'Weekly application pace' : 'No active bottleneck');
+    (weeklyGap > 0 ? '本周投递节奏' : '暂无明显瓶颈');
 
   return {
     score,
