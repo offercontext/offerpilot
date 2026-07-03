@@ -39,6 +39,9 @@ func NewRouter(database *db.Database, dataDir string) http.Handler {
 		// Resumes + matching (AI)
 		registerResumeRoutes(r, database, dataDir)
 
+		// Application material kits (AI)
+		registerMaterialKitRoutes(r, database, dataDir)
+
 		// Interview retrospective notes
 		registerNoteRoutes(r, database)
 
