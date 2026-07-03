@@ -325,6 +325,22 @@ func (db *Database) migrate() error {
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			FOREIGN KEY (question_id) REFERENCES questions(id) ON DELETE CASCADE
 		)`,
+		`CREATE TABLE IF NOT EXISTS application_material_kits (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			application_id INTEGER NOT NULL UNIQUE,
+			resume_id INTEGER,
+			jd_analysis_id INTEGER,
+			jd_snapshot TEXT DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'draft',
+			content_json TEXT NOT NULL DEFAULT '{}',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE,
+			FOREIGN KEY (resume_id) REFERENCES resumes(id) ON DELETE SET NULL,
+			FOREIGN KEY (jd_analysis_id) REFERENCES jd_analyses(id) ON DELETE SET NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_material_kits_app ON application_material_kits(application_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_material_kits_status ON application_material_kits(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_chat_messages_conv ON chat_messages(conversation_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_applications_status ON applications(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_events_app ON events(application_id)`,
