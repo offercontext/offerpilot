@@ -22,8 +22,8 @@ const PRIORITY_LABEL: Record<PipelineInsight['priority'], string> = {
   p2: 'P2',
 };
 
-function getActionId(action: DetailAction, fallback: string) {
-  return action.id ?? fallback;
+function getActionId(insight: PipelineInsight, action: DetailAction, kind: 'primary' | 'secondary') {
+  return action.id ?? `${insight.id}:${kind}:${action.label}`;
 }
 
 export default function ActionDetailDrawer({ insight, open, onClose, onRunAction }: Props) {
@@ -68,15 +68,15 @@ export default function ActionDetailDrawer({ insight, open, onClose, onRunAction
           <section className={styles.section}>
             <Typography.Title level={5}>Recommended next step</Typography.Title>
             <Space direction="vertical" size={12}>
-              <Button type="primary" onClick={() => onRunAction(detail, getActionId(primaryAction, 'primary'))}>
+              <Button type="primary" onClick={() => onRunAction(detail, getActionId(detail, primaryAction, 'primary'))}>
                 {primaryAction.label}
               </Button>
               {secondaryActions.length > 0 && (
                 <div className={styles.secondaryActions}>
                   {secondaryActions.map((action, index) => (
                     <Button
-                      key={getActionId(action, `secondary-${index}`)}
-                      onClick={() => onRunAction(detail, getActionId(action, `secondary-${index}`))}
+                      key={`${getActionId(detail, action, 'secondary')}:${index}`}
+                      onClick={() => onRunAction(detail, getActionId(detail, action, 'secondary'))}
                     >
                       {action.label}
                     </Button>

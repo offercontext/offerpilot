@@ -28,15 +28,15 @@ type DetailInsight = PipelineInsight & {
   secondaryActions?: DetailAction[];
 };
 
-function getActionId(action: DetailAction, fallback: string) {
-  return action.id ?? fallback;
+function getActionId(insight: PipelineInsight, action: DetailAction, kind: 'primary' | 'secondary') {
+  return action.id ?? `${insight.id}:${kind}:${action.label}`;
 }
 
 function findInsightAction(item: PipelineInsight, actionId: string): DetailAction {
   const detail = item as DetailInsight;
   const actions = [detail.primaryAction, ...(detail.secondaryActions ?? [])];
   return (
-    actions.find((action, index) => getActionId(action, index === 0 ? 'primary' : `secondary-${index - 1}`) === actionId) ??
+    actions.find((action, index) => getActionId(item, action, index === 0 ? 'primary' : 'secondary') === actionId) ??
     detail.primaryAction
   );
 }
@@ -49,7 +49,7 @@ interface Props {
 
 export default function DashboardView({ onNavigate, onOpenDetailById, onAddApplication }: Props) {
   const [now, setNow] = useState(() => dayjs());
-  const [selectedInsight, setSelectedInsight] = useState<PipelineInsight | null>(null);
+  const [selectedInsightId, setSelectedInsightId] = useState<string | null>(null);
 
   useEffect(() => {
     const id = window.setInterval(() => setNow(dayjs()), 60_000);
@@ -77,16 +77,26 @@ export default function DashboardView({ onNavigate, onOpenDetailById, onAddAppli
     [apps, events, offers, practiceStatsQ.data, now],
   );
   const health = useMemo(() => summarizePipelineHealth(apps, insights, 6, now), [apps, insights, now]);
+  const selectedInsight = useMemo(
+    () => insights.find((item) => item.id === selectedInsightId) ?? null,
+    [insights, selectedInsightId],
+  );
+
+  useEffect(() => {
+    if (selectedInsightId && !selectedInsight) {
+      setSelectedInsightId(null);
+    }
+  }, [selectedInsight, selectedInsightId]);
 
   const handleAction = (item: PipelineInsight) => {
-    setSelectedInsight(item);
+    setSelectedInsightId(item.id);
   };
 
   const runInsightAction = (item: PipelineInsight, actionId: string) => {
     const action = findInsightAction(item, actionId);
     const appId = action.appId ?? item.appId;
 
-    setSelectedInsight(null);
+    setSelectedInsightId(null);
     if (action.target === 'board' && appId) {
       onOpenDetailById(appId);
       return;
@@ -145,8 +155,8 @@ export default function DashboardView({ onNavigate, onOpenDetailById, onAddAppli
       </div>
       <ActionDetailDrawer
         insight={selectedInsight}
-        open={Boolean(selectedInsight)}
-        onClose={() => setSelectedInsight(null)}
+        open={!!selectedInsight}
+        onClose={() => setSelectedInsightId(null)}
         onRunAction={runInsightAction}
       />
     </>
