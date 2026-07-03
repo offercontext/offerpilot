@@ -1,6 +1,6 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
+import { Component, lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Layout, Spin, message } from 'antd';
+import { Button, Layout, Spin, message } from 'antd';
 import { listApplications } from '@/services/applications';
 import { listEvents } from '@/services/events';
 import { listOffers } from '@/services/offers';
@@ -35,6 +35,27 @@ const DashboardView = lazy(() => import('@/features/dashboard/DashboardView'));
 const RemindersView = lazy(() => import('@/features/reminders/RemindersView'));
 const MockStudioView = lazy(() => import('@/components/MockStudio/MockStudioView'));
 const ResumeLibraryView = lazy(() => import('@/components/ResumeLibraryView'));
+
+class ViewErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
+  state = { hasError: false };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ textAlign: 'center', padding: 48, color: 'var(--op-muted)' }}>
+          <div style={{ marginBottom: 16 }}>View failed to load.</div>
+          <Button onClick={() => window.location.reload()}>Reload</Button>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
 
 export type ViewMode =
   | 'dashboard'
@@ -176,49 +197,51 @@ export default function AppShell() {
               加载失败，请稍后重试
             </div>
           ) : (
-            <Suspense
-              fallback={
-                <div style={{ textAlign: 'center', padding: 48 }}>
-                  <Spin size="large" />
+            <ViewErrorBoundary key={view}>
+              <Suspense
+                fallback={
+                  <div style={{ textAlign: 'center', padding: 48 }}>
+                    <Spin size="large" />
+                  </div>
+                }
+              >
+                <div className="op-view-enter">
+                  {view === 'dashboard' && (
+                    <DashboardView
+                      onNavigate={setView}
+                      onOpenDetailById={goDetailById}
+                      onAddApplication={() => setAddOpen(true)}
+                    />
+                  )}
+                  {view === 'board' && (
+                    <KanbanBoard applications={apps} onOpenDetail={(a) => setSelected(a)} />
+                  )}
+                  {view === 'calendar' && (
+                    <CalendarView applications={apps} onOpenDetail={(a) => setSelected(a)} />
+                  )}
+                  {view === 'reminders' && (
+                    <RemindersView onNavigate={setView} onOpenDetailById={goDetailById} />
+                  )}
+                  {view === 'reviews' && <ReviewManagementView applications={apps} />}
+                  {view === 'offers' && (
+                    <OfferCenterView applications={apps} onCoach={(offer) => openChat(offer.id)} />
+                  )}
+                  {view === 'knowledge' && <KnowledgeBaseView />}
+                  {view === 'questions' && <QuestionBankView focusId={questionFocusId ?? undefined} />}
+                  {view === 'mock' && (
+                    <MockStudioView
+                      prefill={mockPrefill}
+                      onJumpQuestion={(id) => {
+                        setQuestionFocusId(id);
+                        setView('questions');
+                      }}
+                      onConsumePrefill={() => setMockPrefill(null)}
+                    />
+                  )}
+                  {view === 'resumes' && <ResumeLibraryView />}
                 </div>
-              }
-            >
-              <div className="op-view-enter" key={view}>
-                {view === 'dashboard' && (
-                  <DashboardView
-                    onNavigate={setView}
-                    onOpenDetailById={goDetailById}
-                    onAddApplication={() => setAddOpen(true)}
-                  />
-                )}
-                {view === 'board' && (
-                  <KanbanBoard applications={apps} onOpenDetail={(a) => setSelected(a)} />
-                )}
-                {view === 'calendar' && (
-                  <CalendarView applications={apps} onOpenDetail={(a) => setSelected(a)} />
-                )}
-                {view === 'reminders' && (
-                  <RemindersView onNavigate={setView} onOpenDetailById={goDetailById} />
-                )}
-                {view === 'reviews' && <ReviewManagementView applications={apps} />}
-                {view === 'offers' && (
-                  <OfferCenterView applications={apps} onCoach={(offer) => openChat(offer.id)} />
-                )}
-                {view === 'knowledge' && <KnowledgeBaseView />}
-                {view === 'questions' && <QuestionBankView focusId={questionFocusId ?? undefined} />}
-                {view === 'mock' && (
-                  <MockStudioView
-                    prefill={mockPrefill}
-                    onJumpQuestion={(id) => {
-                      setQuestionFocusId(id);
-                      setView('questions');
-                    }}
-                    onConsumePrefill={() => setMockPrefill(null)}
-                  />
-                )}
-                {view === 'resumes' && <ResumeLibraryView />}
-              </div>
-            </Suspense>
+              </Suspense>
+            </ViewErrorBoundary>
           )}
         </Content>
       </Layout>
