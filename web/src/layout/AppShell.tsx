@@ -23,7 +23,8 @@ import OfferCenterView from '@/components/OfferCenterView';
 import DashboardView from '@/features/dashboard/DashboardView';
 import RemindersView from '@/features/reminders/RemindersView';
 import CommandPalette from './CommandPalette';
-import { deriveReminders, reminderBadgeCount } from '@/lib/insights';
+import { deriveActionItems } from '@/lib/actionItems';
+import { getPracticeStats } from '@/services/questions';
 import dayjs from 'dayjs';
 
 const { Content } = Layout;
@@ -61,6 +62,7 @@ export default function AppShell() {
   const [selected, setSelected] = useState<Application | null>(null);
   const [coachOfferId, setCoachOfferId] = useState<number | undefined>(undefined);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [now, setNow] = useState(() => dayjs());
 
   const { data: applications = [], isLoading, isError: appsError } = useQuery({
     queryKey: ['applications'],
@@ -73,6 +75,11 @@ export default function AppShell() {
   const { data: offers = [] } = useQuery({
     queryKey: ['offers'],
     queryFn: () => listOffers(),
+  });
+  const { data: practiceStats } = useQuery({
+    queryKey: ['questions', 'stats'],
+    queryFn: () => getPracticeStats(),
+    retry: false,
   });
 
   // Backend serializes an empty []T slice as JSON `null` (Go encoding/json).
@@ -94,6 +101,11 @@ export default function AppShell() {
   });
 
   useEffect(() => {
+    const id = window.setInterval(() => setNow(dayjs()), 60_000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
@@ -104,11 +116,11 @@ export default function AppShell() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const reminders = useMemo(
-    () => deriveReminders(apps, evs, ofrs, dayjs()),
-    [apps, evs, ofrs]
+  const actions = useMemo(
+    () => deriveActionItems({ apps, events: evs, offers: ofrs, practiceStats, now }),
+    [apps, evs, ofrs, practiceStats, now]
   );
-  const streak = useMemo(() => computeStreak(apps), [apps]);
+  const streak = useMemo(() => computeStreak(apps, now), [apps, now]);
 
   const selectedApp = selected
     ? apps.find((a) => a.id === selected.id) ?? selected
@@ -129,7 +141,7 @@ export default function AppShell() {
       <Sidebar
         view={view}
         onChange={setView}
-        reminderCount={reminderBadgeCount(reminders)}
+        reminderCount={actions.length}
         onOpenChat={() => openChat(undefined)}
       />
       <Layout style={{ background: 'var(--op-layout-bg)' }}>
