@@ -18,6 +18,10 @@ import {
   AimOutlined,
   FlagOutlined,
   SolutionOutlined,
+  AudioOutlined,
+  ThunderboltOutlined,
+  ReloadOutlined,
+  RightOutlined,
 } from '@ant-design/icons';
 
 export type ToolKind = 'read' | 'write';
@@ -173,6 +177,48 @@ export const NEGO_CAPABILITIES: Capability[] = [
   },
 ];
 
+/** Capabilities offered during an in-progress mock-interview session. */
+export const MOCK_CAPABILITIES: Capability[] = [
+  {
+    id: 'mock-change-direction',
+    group: '控制',
+    label: '换个方向',
+    hint: '请面试官切换到另一个能力点',
+    prompt: '我们换个方向吧，请问我其他能力点。',
+    icon: ReloadOutlined,
+  },
+  {
+    id: 'mock-go-deeper',
+    group: '控制',
+    label: '再问深一点',
+    hint: '请面试官就当前题目继续深挖',
+    prompt: '针对刚才这个点，请继续深问。',
+    icon: ThunderboltOutlined,
+  },
+  {
+    id: 'mock-skip-question',
+    group: '控制',
+    label: '我要换题',
+    hint: '跳过当前题目进入下一题',
+    prompt: '这一题我先不展开了，请进入下一题。',
+    icon: RightOutlined,
+  },
+  {
+    id: 'mock-progress',
+    group: '控制',
+    label: '查看进度',
+    hint: '问面试官当前进度如何',
+    prompt: '我们现在进行到哪个环节了？还有哪些方向没覆盖？',
+    icon: CompassOutlined,
+  },
+];
+
 export function capabilitiesForMode(isNego: boolean): Capability[] {
   return isNego ? NEGO_CAPABILITIES : GENERAL_CAPABILITIES;
 }
+
+export function capabilitiesForMock(): Capability[] {
+  return MOCK_CAPABILITIES;
+}
+
+export { AudioOutlined };

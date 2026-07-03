@@ -16,7 +16,7 @@ import {
   Popconfirm,
   Space,
 } from 'antd';
-import { CalendarOutlined, RobotOutlined, PlusOutlined, LinkOutlined } from '@ant-design/icons';
+import { CalendarOutlined, RobotOutlined, PlusOutlined, LinkOutlined, AudioOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import type { Application } from '@/types/application';
 import { STATUS_LABELS } from '@/types/application';
@@ -41,9 +41,10 @@ interface ApplicationDetailProps {
   application: Application | null;
   open: boolean;
   onClose: () => void;
+  onMockInterview?: (app: Application) => void;
 }
 
-export default function ApplicationDetail({ application, open, onClose }: ApplicationDetailProps) {
+export default function ApplicationDetail({ application, open, onClose, onMockInterview }: ApplicationDetailProps) {
   const queryClient = useQueryClient();
   const [form] = Form.useForm();
   const [analyzing, setAnalyzing] = useState(false);
@@ -152,6 +153,15 @@ export default function ApplicationDetail({ application, open, onClose }: Applic
           >
             分析 JD
           </Button>
+          {onMockInterview && (
+            <Button
+              icon={<AudioOutlined />}
+              onClick={() => onMockInterview(application)}
+              style={{ marginLeft: 8 }}
+            >
+              模拟面试
+            </Button>
+          )}
         </div>
 
         {application.notes && (

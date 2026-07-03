@@ -10,6 +10,7 @@ import {
   RobotOutlined,
   BulbOutlined,
   FileTextOutlined,
+  AudioOutlined,
 } from '@ant-design/icons';
 import { Badge } from 'antd';
 import { useThemeMode } from '@/theme/ThemeContext';
@@ -21,6 +22,7 @@ const NAV: { key: ViewMode; label: string; icon: React.ReactNode }[] = [
   { key: 'calendar', label: '日历', icon: <CalendarOutlined /> },
   { key: 'reminders', label: '提醒', icon: <BellOutlined /> },
   { key: 'reviews', label: '复盘', icon: <FileSearchOutlined /> },
+  { key: 'mock', label: '模拟面试', icon: <AudioOutlined /> },
   { key: 'offers', label: '谈薪', icon: <DollarOutlined /> },
   { key: 'knowledge', label: '知识库', icon: <BookOutlined /> },
   { key: 'questions', label: '题库刷题', icon: <ReadOutlined /> },

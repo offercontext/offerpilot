@@ -91,6 +91,35 @@ type Question struct {
 	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
+// MockSession is an AI mock-interview practice session. The live dialogue is
+// stored in the bound Conversation (mode='mock_interview'); this table holds
+// the immutable session config, progress and final AI scoring/feedback.
+type MockSession struct {
+	ID                 int64      `json:"id"`
+	ConversationID     int64      `json:"conversation_id"`
+	ApplicationID      *int64     `json:"application_id,omitempty"`
+	Title              string     `json:"title"`
+	Role               string     `json:"role"`                 // target role, e.g. "后端开发"
+	Company            string     `json:"company"`              // optional target company
+	RoundType          string     `json:"round_type"`           // technical | behavioral | coding | hr | mixed
+	Difficulty         string     `json:"difficulty"`           // easy | medium | hard
+	QuestionCount      int        `json:"question_count"`        // 0 = unlimited
+	DurationMin        int        `json:"duration_min"`          // 0 = unlimited
+	QuestionSource     string     `json:"question_source"`      // bank | knowledge | notes | mixed
+	KnowledgeBaseID    *int64     `json:"knowledge_base_id,omitempty"`
+	Status             string     `json:"status"`               // in_progress | completed | aborted
+	QuestionIndex      int        `json:"question_index"`
+	StartedAt          time.Time  `json:"started_at"`
+	EndedAt            *time.Time `json:"ended_at,omitempty"`
+	ScoreOverall       *int       `json:"score_overall,omitempty"`
+	ScoreCommunication *int       `json:"score_communication,omitempty"`
+	ScoreDepth         *int       `json:"score_depth,omitempty"`
+	ScoreStructure     *int       `json:"score_structure,omitempty"`
+	ScoreConfidence    *int       `json:"score_confidence,omitempty"`
+	Feedback           string     `json:"feedback,omitempty"`   // JSON string
+	CreatedAt          time.Time  `json:"created_at"`
+}
+
 // QuestionReview is a single practice check-in for a question.
 type QuestionReview struct {
 	ID         int64     `json:"id"`
@@ -312,6 +341,36 @@ func (db *Database) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_questions_next_review ON questions(next_review_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_questions_hash ON questions(question_hash)`,
 		`CREATE INDEX IF NOT EXISTS idx_question_reviews_question ON question_reviews(question_id)`,
+		`CREATE TABLE IF NOT EXISTS mock_sessions (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			conversation_id INTEGER NOT NULL,
+			application_id INTEGER,
+			title TEXT NOT NULL DEFAULT '模拟面试',
+			role TEXT NOT NULL DEFAULT '',
+			company TEXT NOT NULL DEFAULT '',
+			round_type TEXT NOT NULL DEFAULT 'technical',
+			difficulty TEXT NOT NULL DEFAULT 'medium',
+			question_count INTEGER NOT NULL DEFAULT 5,
+			duration_min INTEGER NOT NULL DEFAULT 30,
+			question_source TEXT NOT NULL DEFAULT 'mixed',
+			knowledge_base_id INTEGER,
+			status TEXT NOT NULL DEFAULT 'in_progress',
+			question_index INTEGER NOT NULL DEFAULT 0,
+			started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			ended_at DATETIME,
+			score_overall INTEGER,
+			score_communication INTEGER,
+			score_depth INTEGER,
+			score_structure INTEGER,
+			score_confidence INTEGER,
+			feedback TEXT DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+			FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE SET NULL,
+			FOREIGN KEY (knowledge_base_id) REFERENCES knowledge_bases(id) ON DELETE SET NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_mock_sessions_conv ON mock_sessions(conversation_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_mock_sessions_status ON mock_sessions(status)`,
 	}
 
 	for _, m := range migrations {

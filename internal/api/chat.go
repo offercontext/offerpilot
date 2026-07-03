@@ -60,17 +60,33 @@ func toAIMessages(stored []db.ChatMessage, systemPrompt string) []ai.Message {
 
 // systemPromptFor picks the system prompt for a conversation. For nego_coach
 // mode it embeds the bound offer snapshot plus related context (application
-// notes + interview reviews). Falls back to the general assistant prompt.
+// notes + interview reviews). For mock_interview mode it embeds the bound mock
+// session config plus assembled question/knowledge/weak-point context. Falls
+// back to the general assistant prompt otherwise.
 func systemPromptFor(database *db.Database, conv *db.Conversation) string {
-	if conv == nil || conv.Mode != "nego_coach" || conv.OfferID == nil {
+	if conv == nil {
 		return ai.ChatSystemPrompt
 	}
-	offer, err := database.GetOffer(*conv.OfferID)
-	if err != nil {
+	switch conv.Mode {
+	case "nego_coach":
+		if conv.OfferID == nil {
+			return ai.ChatSystemPrompt
+		}
+		offer, err := database.GetOffer(*conv.OfferID)
+		if err != nil {
+			return ai.ChatSystemPrompt
+		}
+		related := buildOfferContext(database, offer)
+		return ai.NegoCoachPrompt(offer, related)
+	case "mock_interview":
+		sess, err := database.GetMockSessionByConversation(conv.ID)
+		if err != nil || sess == nil {
+			return ai.MockInterviewerPromptFallback
+		}
+		return ai.MockInterviewerPrompt(sess, loadMockContext(database, sess))
+	default:
 		return ai.ChatSystemPrompt
 	}
-	related := buildOfferContext(database, offer)
-	return ai.NegoCoachPrompt(offer, related)
 }
 
 // buildOfferContext gathers a lightweight text summary of data related to the
