@@ -189,7 +189,7 @@ func generateApplicationMaterialKitHandler(database *db.Database, dataDir string
 		kit.ResumeID = req.ResumeID
 		kit.JDAnalysisID = req.JDAnalysisID
 		kit.JDSnapshot = req.JDText
-		kit.Status = "ready"
+		kit.Status = "draft"
 		kit.ContentJSON = ai.MarshalMaterialKit(result)
 		if kit.ID == 0 {
 			if err := database.CreateApplicationMaterialKit(kit); err != nil {

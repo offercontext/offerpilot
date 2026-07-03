@@ -9,10 +9,17 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/offercontext/offerpilot/internal/config"
 	"github.com/offercontext/offerpilot/internal/db"
 )
 
 func materialKitTestDB(t *testing.T) (*db.Database, http.Handler) {
+	t.Helper()
+	d, router, _ := materialKitTestDBWithDir(t)
+	return d, router
+}
+
+func materialKitTestDBWithDir(t *testing.T) (*db.Database, http.Handler, string) {
 	t.Helper()
 	dir := t.TempDir()
 	d, err := db.Init(dir + "/material_kit_api.db")
@@ -20,7 +27,7 @@ func materialKitTestDB(t *testing.T) (*db.Database, http.Handler) {
 		t.Fatalf("init db: %v", err)
 	}
 	t.Cleanup(func() { d.Close() })
-	return d, NewRouter(d, dir)
+	return d, NewRouter(d, dir), dir
 }
 
 func TestGetApplicationMaterialKitMissing(t *testing.T) {
@@ -78,5 +85,49 @@ func TestGenerateMaterialKitRequiresResume(t *testing.T) {
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGenerateMaterialKitCreatesDraft(t *testing.T) {
+	aiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"resume_advice\":{\"summary\":\"Strong Go fit\",\"highlights\":[\"Go\"],\"rewrite_bullets\":[\"Built APIs\"],\"gaps\":[],\"notes\":\"\"},\"messages\":[{\"type\":\"recruiter_email\",\"title\":\"Intro\",\"body\":\"Hello\",\"notes\":\"\"}],\"checklist\":[{\"id\":\"select_resume\",\"label\":\"Select resume\",\"done\":false}]}"}}]}`))
+	}))
+	defer aiServer.Close()
+
+	d, router, dir := materialKitTestDBWithDir(t)
+	if err := config.Save(dir, &config.Config{APIKey: "test-key", BaseURL: aiServer.URL, Model: "test-model"}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	app := &db.Application{CompanyName: "Acme", PositionName: "Backend", Status: "applied", Source: "test"}
+	if err := d.CreateApplication(app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	resume := &db.Resume{Name: "Backend", ParsedData: "Built Go APIs", ParseStatus: "text-ready"}
+	if err := d.CreateResume(resume); err != nil {
+		t.Fatalf("create resume: %v", err)
+	}
+
+	body := bytes.NewReader([]byte(`{"resume_id":` + strconv.FormatInt(resume.ID, 10) + `,"jd_text":"Go backend JD"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/applications/"+strconv.FormatInt(app.ID, 10)+"/material-kit/generate", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var got db.ApplicationMaterialKit
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Status != "draft" {
+		t.Fatalf("expected generated kit to stay draft, got %+v", got)
+	}
+	stored, err := d.GetApplicationMaterialKitByApplication(app.ID)
+	if err != nil {
+		t.Fatalf("get stored kit: %v", err)
+	}
+	if stored.Status != "draft" {
+		t.Fatalf("expected stored kit to stay draft, got %+v", stored)
 	}
 }
