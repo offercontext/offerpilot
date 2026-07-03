@@ -61,8 +61,15 @@ const STATUS_META: Record<QuestionStatus, { label: string; color: string }> = {
   mastered: { label: '已掌握', color: 'green' },
 };
 
-export default function QuestionBankView() {
+export default function QuestionBankView({ focusId }: { focusId?: number }) {
   const [tab, setTab] = useState<'bank' | 'practice'>('bank');
+
+  // When launched from a mock-interview drill link, surface the target id.
+  useEffect(() => {
+    if (focusId) {
+      message.info(`正在定位题目 #${focusId}，可在题库中按 ID 查找`);
+    }
+  }, [focusId]);
 
   return (
     <div className={styles.page}>

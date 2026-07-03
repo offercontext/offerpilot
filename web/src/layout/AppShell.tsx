@@ -6,6 +6,7 @@ import { listEvents } from '@/services/events';
 import { listOffers } from '@/services/offers';
 import { uploadResume } from '@/services/resumes';
 import type { Application } from '@/types/application';
+import type { MockConfig } from '@/types/mock';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
 import KanbanBoard from '@/components/KanbanBoard';
@@ -22,6 +23,7 @@ import QuestionBankView from '@/components/QuestionBankView';
 import OfferCenterView from '@/components/OfferCenterView';
 import DashboardView from '@/features/dashboard/DashboardView';
 import RemindersView from '@/features/reminders/RemindersView';
+import MockStudioView from '@/components/MockStudio/MockStudioView';
 import CommandPalette from './CommandPalette';
 import { deriveActionItems } from '@/lib/actionItems';
 import { getPracticeStats } from '@/services/questions';
@@ -35,6 +37,7 @@ export type ViewMode =
   | 'calendar'
   | 'reminders'
   | 'reviews'
+  | 'mock'
   | 'offers'
   | 'knowledge'
   | 'questions'
@@ -62,6 +65,8 @@ export default function AppShell() {
   const [selected, setSelected] = useState<Application | null>(null);
   const [coachOfferId, setCoachOfferId] = useState<number | undefined>(undefined);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [mockPrefill, setMockPrefill] = useState<Partial<MockConfig> | null>(null);
+  const [questionFocusId, setQuestionFocusId] = useState<number | null>(null);
   const [now, setNow] = useState(() => dayjs());
 
   const { data: applications = [], isLoading, isError: appsError } = useQuery({
@@ -178,7 +183,17 @@ export default function AppShell() {
                 <OfferCenterView applications={apps} onCoach={(offer) => openChat(offer.id)} />
               )}
               {view === 'knowledge' && <KnowledgeBaseView />}
-              {view === 'questions' && <QuestionBankView />}
+              {view === 'questions' && <QuestionBankView focusId={questionFocusId ?? undefined} />}
+              {view === 'mock' && (
+                <MockStudioView
+                  prefill={mockPrefill}
+                  onJumpQuestion={(id) => {
+                    setQuestionFocusId(id);
+                    setView('questions');
+                  }}
+                  onConsumePrefill={() => setMockPrefill(null)}
+                />
+              )}
               {view === 'resumes' && <ResumeLibraryView />}
             </div>
           )}
@@ -186,7 +201,22 @@ export default function AppShell() {
       </Layout>
 
       <AddApplicationForm open={addOpen} onClose={() => setAddOpen(false)} />
-      <ApplicationDetail application={selectedApp} open={!!selected} onClose={() => setSelected(null)} />
+      <ApplicationDetail
+        application={selectedApp}
+        open={!!selected}
+        onClose={() => setSelected(null)}
+        onMockInterview={(app) => {
+          setSelected(null);
+          setMockPrefill({
+            application_id: app.id,
+            role: app.position_name,
+            company: app.company_name,
+            round_type: 'technical',
+            question_source: 'mixed',
+          });
+          setView('mock');
+        }}
+      />
       <ResumeMatchModal open={resumeOpen} onClose={() => setResumeOpen(false)} />
       <ResumeUploadModal
         open={resumeUploadOpen}

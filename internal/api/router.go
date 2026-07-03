@@ -58,6 +58,9 @@ func NewRouter(database *db.Database, dataDir string) http.Handler {
 		registerChatRoutes(r, database, dataDir)
 		// Chat-related settings (no API key exposure)
 		registerSettingsRoutes(r, dataDir)
+
+		// AI mock-interview studio
+		registerMockRoutes(r, database, dataDir)
 	})
 
 	// Serve React frontend (or fallback to dev proxy)
