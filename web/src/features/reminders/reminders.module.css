@@ -1,4 +1,10 @@
 .wrap { display: flex; flex-direction: column; gap: 20px; }
+.toolbar {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 240px;
+  gap: 12px;
+  align-items: center;
+}
 .group { display: flex; flex-direction: column; gap: 10px; }
 .groupTitle {
   font-size: 13px;
@@ -8,6 +14,7 @@
 }
 .item {
   width: 100%;
+  min-height: 64px;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -30,6 +37,7 @@
 .item:focus-visible {
   outline: 2px solid var(--op-primary);
   outline-offset: 2px;
+  border-color: var(--op-primary);
 }
 .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .p0 { background: var(--op-error); }
@@ -58,5 +66,10 @@
   .item {
     animation: none;
     transition: none;
+  }
+}
+@media (max-width: 700px) {
+  .toolbar {
+    grid-template-columns: 1fr;
   }
 }
