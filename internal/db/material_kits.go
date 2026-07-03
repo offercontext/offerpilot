@@ -91,13 +91,16 @@ func (db *Database) GetApplicationMaterialKitByApplication(applicationID int64) 
 func (db *Database) UpdateApplicationMaterialKit(k *ApplicationMaterialKit) error {
 	normalizeApplicationMaterialKit(k)
 	now := time.Now()
-	_, err := db.conn.Exec(
+	res, err := db.conn.Exec(
 		`UPDATE application_material_kits
 		 SET resume_id = ?, jd_analysis_id = ?, jd_snapshot = ?, status = ?, content_json = ?, updated_at = ?
 		 WHERE id = ?`,
 		nullableInt64(k.ResumeID), nullableInt64(k.JDAnalysisID), k.JDSnapshot, k.Status, k.ContentJSON, now, k.ID,
 	)
 	if err != nil {
+		return err
+	}
+	if err := errNoRowsWhenUnchanged(res); err != nil {
 		return err
 	}
 	k.UpdatedAt = now

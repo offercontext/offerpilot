@@ -90,3 +90,19 @@ func TestGetApplicationMaterialKitMissingReturnsNoRows(t *testing.T) {
 		t.Fatalf("expected sql.ErrNoRows, got %v", err)
 	}
 }
+
+func TestUpdateApplicationMaterialKitMissingReturnsNoRows(t *testing.T) {
+	d, err := Init(t.TempDir() + "/kits_update_missing.db")
+	if err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	t.Cleanup(func() { d.Close() })
+
+	kit := &ApplicationMaterialKit{ID: 999, ApplicationID: 999, Status: "draft", ContentJSON: `{}`}
+	if err := d.UpdateApplicationMaterialKit(kit); err != sql.ErrNoRows {
+		t.Fatalf("expected sql.ErrNoRows, got %v", err)
+	}
+	if !kit.UpdatedAt.IsZero() {
+		t.Fatalf("expected UpdatedAt to remain zero on failed update, got %v", kit.UpdatedAt)
+	}
+}
