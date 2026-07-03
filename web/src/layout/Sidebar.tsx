@@ -40,6 +40,7 @@ export default function Sidebar({ view, onChange, reminderCount, onOpenChat }: P
   const { mode, toggle } = useThemeMode();
   return (
     <nav
+      className="op-sidebar"
       aria-label="主导航"
       style={{
         width: 200,

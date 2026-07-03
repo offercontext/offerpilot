@@ -1,5 +1,4 @@
 import { Button } from 'antd';
-import type { Kpis } from '@/lib/insights';
 import type { PipelineHealth, PipelineInsight } from '@/lib/pipelineInsights';
 import ActionQueue from './ActionQueue';
 import WeeklyRhythm from './WeeklyRhythm';
@@ -8,7 +7,6 @@ import styles from '../dashboard.module.css';
 interface Props {
   items: PipelineInsight[];
   health: PipelineHealth;
-  kpis: Kpis;
   onAction: (item: PipelineInsight) => void;
   onAddApplication: () => void;
   onOpenQuestions: () => void;

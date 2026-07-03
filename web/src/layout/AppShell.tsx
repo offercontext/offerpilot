@@ -178,16 +178,20 @@ export default function AppShell() {
   };
 
   return (
-    <Layout style={{ minHeight: '100vh', background: 'var(--op-layout-bg)' }} hasSider>
+    <Layout
+      className="op-app-shell"
+      style={{ minHeight: '100vh', background: 'var(--op-layout-bg)' }}
+      hasSider
+    >
       <Sidebar
         view={view}
         onChange={setView}
         reminderCount={actions.length}
         onOpenChat={() => openChat(undefined)}
       />
-      <Layout style={{ background: 'var(--op-layout-bg)' }}>
+      <Layout className="op-app-main" style={{ background: 'var(--op-layout-bg)', minWidth: 0, width: '100%' }}>
         <TopBar streakDays={streak} onAdd={() => setAddOpen(true)} onSearch={() => setPaletteOpen(true)} onOpenChat={() => openChat(undefined)} />
-        <Content style={{ padding: '0 24px 24px' }}>
+        <Content className="op-app-content" style={{ padding: '0 24px 24px' }}>
           {isLoading ? (
             <div style={{ textAlign: 'center', padding: 48 }}>
               <Spin size="large" />

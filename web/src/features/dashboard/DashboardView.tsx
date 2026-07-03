@@ -132,7 +132,6 @@ export default function DashboardView({ onNavigate, onOpenDetailById, onAddAppli
       <CommandCenter
         items={insights}
         health={health}
-        kpis={kpis}
         onAction={handleAction}
         onAddApplication={onAddApplication}
         onOpenQuestions={() => onNavigate('questions')}

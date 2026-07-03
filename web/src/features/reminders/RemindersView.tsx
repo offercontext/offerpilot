@@ -102,7 +102,14 @@ export default function RemindersView({ onNavigate, onOpenDetailById }: Props) {
       if (kind !== 'all' && item.kind !== kind) return false;
       if (!normalizedKeyword) return true;
 
-      const searchable = [item.title, item.reason, ...(item.evidence ?? [])].join(' ').toLowerCase();
+      const searchable = [
+        item.title,
+        item.reason,
+        item.primaryAction.label,
+        ...(item.evidence ?? []),
+      ]
+        .join(' ')
+        .toLowerCase();
       return searchable.includes(normalizedKeyword);
     });
   }, [insights, keyword, kind]);

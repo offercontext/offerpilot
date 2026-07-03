@@ -69,6 +69,12 @@ body {
   background: var(--op-layout-bg);
 }
 
+.op-app-shell,
+.op-app-main,
+.op-app-content {
+  min-width: 0;
+}
+
 /* 数字对齐 */
 .op-tnum { font-variant-numeric: tabular-nums; }
 
@@ -107,4 +113,69 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .op-view-enter { animation: none; }
   * { scroll-behavior: auto !important; }
+}
+
+@media (max-width: 700px) {
+  .op-app-shell {
+    flex-direction: column !important;
+  }
+
+  .op-sidebar {
+    width: 100% !important;
+    min-height: auto;
+    max-width: 100%;
+    flex-direction: row !important;
+    align-items: center;
+    gap: 6px !important;
+    overflow-x: auto;
+    padding: 10px 12px !important;
+    border-right: none !important;
+    border-bottom: 1px solid var(--op-border);
+    scrollbar-width: none;
+  }
+
+  .op-sidebar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .op-sidebar > div:first-child {
+    flex: 0 0 auto;
+    padding: 0 10px 0 0 !important;
+  }
+
+  .op-sidebar > button {
+    flex: 0 0 auto;
+    min-height: 40px;
+    white-space: nowrap;
+  }
+
+  .op-sidebar > div:last-child {
+    flex: 0 0 auto;
+    flex-direction: row !important;
+    margin-top: 0 !important;
+  }
+
+  .op-app-main {
+    width: 100% !important;
+  }
+
+  .op-topbar {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 12px;
+    padding: 14px 16px !important;
+  }
+
+  .op-topbar-actions {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  .op-topbar-actions .ant-btn {
+    min-width: 0;
+  }
+
+  .op-app-content {
+    padding: 0 16px 16px !important;
+  }
 }

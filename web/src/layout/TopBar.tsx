@@ -21,6 +21,7 @@ function greeting(): string {
 export default function TopBar({ streakDays, onAdd, onSearch, onOpenChat }: Props) {
   return (
     <header
+      className="op-topbar"
       style={{
         display: 'flex',
         justifyContent: 'space-between',
@@ -37,7 +38,7 @@ export default function TopBar({ streakDays, onAdd, onSearch, onOpenChat }: Prop
           {streakDays > 0 && ` · 已连续投递 ${streakDays} 天`}
         </div>
       </div>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+      <div className="op-topbar-actions" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
         <Button icon={<SearchOutlined />} onClick={onSearch}>
           搜索 <span style={{ opacity: 0.6, marginLeft: 4 }}>⌘K</span>
         </Button>
