@@ -28,7 +28,14 @@ const GROUPS: { key: PipelinePriority; label: string }[] = [
   { key: 'p2', label: 'Follow-up queue' },
 ];
 
-const KIND_OPTIONS: { value: PipelineInsightKind | 'all'; label: string }[] = [
+function defineKindFilterOptions<const Options extends readonly { value: PipelineInsightKind | 'all'; label: string }[]>(
+  options: Options &
+    (Exclude<PipelineInsightKind, Exclude<Options[number]['value'], 'all'>> extends never ? unknown : never),
+) {
+  return options;
+}
+
+const KIND_FILTER_OPTIONS = defineKindFilterOptions([
   { value: 'all', label: 'All actions' },
   { value: 'offer_deadline', label: 'Offer deadline' },
   { value: 'interview_soon', label: 'Interview soon' },
@@ -36,8 +43,9 @@ const KIND_OPTIONS: { value: PipelineInsightKind | 'all'; label: string }[] = [
   { value: 'no_next_event', label: 'No next event' },
   { value: 'material_kit_incomplete', label: 'Material kit incomplete' },
   { value: 'question_due', label: 'Question due' },
+  { value: 'pipeline_bottleneck', label: 'Pipeline bottlenecks' },
   { value: 'weekly_goal_gap', label: 'Weekly goal gap' },
-];
+] satisfies { value: PipelineInsightKind | 'all'; label: string }[]);
 
 type DetailAction = ActionCommand & { id?: string };
 type DetailInsight = PipelineInsight & {
@@ -133,7 +141,7 @@ export default function RemindersView({ onNavigate, onOpenDetailById }: Props) {
             onChange={(event) => setKeyword(event.target.value)}
             onSearch={setKeyword}
           />
-          <Select value={kind} options={KIND_OPTIONS} onChange={setKind} aria-label="Filter action kind" />
+          <Select value={kind} options={KIND_FILTER_OPTIONS} onChange={setKind} aria-label="Filter action kind" />
         </div>
 
         {filteredInsights.length === 0 ? (
