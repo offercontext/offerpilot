@@ -16,7 +16,14 @@ import {
   Popconfirm,
   Space,
 } from 'antd';
-import { CalendarOutlined, RobotOutlined, PlusOutlined, LinkOutlined, AudioOutlined } from '@ant-design/icons';
+import {
+  CalendarOutlined,
+  RobotOutlined,
+  PlusOutlined,
+  LinkOutlined,
+  AudioOutlined,
+  FileTextOutlined,
+} from '@ant-design/icons';
 import dayjs from 'dayjs';
 import type { Application } from '@/types/application';
 import { STATUS_LABELS } from '@/types/application';
@@ -28,6 +35,7 @@ import { EVENT_TYPE_LABELS } from '@/types/event';
 import ScheduleEventForm from '@/components/ScheduleEventForm';
 import JDAnalyzeModal from './JDAnalyzeModal';
 import ReviewFormDrawer from './ReviewFormDrawer';
+import MaterialKitDrawer from './MaterialKitDrawer';
 
 const { Title, Paragraph, Text } = Typography;
 
@@ -50,6 +58,7 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
   const [analyzing, setAnalyzing] = useState(false);
   const [jdModalOpen, setJdModalOpen] = useState(false);
   const [eventFormOpen, setEventFormOpen] = useState(false);
+  const [materialKitOpen, setMaterialKitOpen] = useState(false);
   const [editingNote, setEditingNote] = useState<InterviewNote | null>(null);
 
   const notesQuery = useQuery({
@@ -131,6 +140,7 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
         open={open}
         onClose={() => {
           setEventFormOpen(false);
+          setMaterialKitOpen(false);
           setEditingNote(null);
           onClose();
         }}
@@ -152,6 +162,13 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
             style={{ marginLeft: 12 }}
           >
             分析 JD
+          </Button>
+          <Button
+            icon={<FileTextOutlined />}
+            onClick={() => setMaterialKitOpen(true)}
+            style={{ marginLeft: 8 }}
+          >
+            材料包
           </Button>
           {onMockInterview && (
             <Button
@@ -319,6 +336,11 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
           if (editingNote) updateNoteMut.mutate({ id: editingNote.id, input });
         }}
         onClose={() => setEditingNote(null)}
+      />
+      <MaterialKitDrawer
+        application={application}
+        open={materialKitOpen}
+        onClose={() => setMaterialKitOpen(false)}
       />
     </>
   );
