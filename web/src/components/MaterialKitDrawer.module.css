@@ -156,7 +156,6 @@
   border-radius: 8px;
   padding: 4px 10px;
   background: var(--op-layout-bg);
-  cursor: pointer;
   transition: border-color 0.16s var(--op-ease), background 0.16s var(--op-ease);
 }
 

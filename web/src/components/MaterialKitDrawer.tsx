@@ -40,6 +40,22 @@ interface Props {
   onClose: () => void;
 }
 
+interface GenerateVariables {
+  applicationID: number;
+  resumeID: number;
+  jdText: string;
+  overwrite: boolean;
+}
+
+interface SaveVariables {
+  applicationID: number;
+  kitID: number;
+  resumeID: number | undefined;
+  jdSnapshot: string;
+  status: MaterialKitStatus;
+  content: MaterialKitContent;
+}
+
 const STATUS_OPTIONS: Array<{ label: string; value: MaterialKitStatus }> = [
   { label: '草稿', value: 'draft' },
   { label: '已准备', value: 'ready' },
@@ -113,6 +129,24 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
   const [content, setContent] = useState<MaterialKitContent>(() => createDefaultContent());
   const [actionError, setActionError] = useState<string | null>(null);
 
+  const resetEditor = (nextApplication: Application | null) => {
+    setExistingKit(null);
+    setResumeID(undefined);
+    setJdSnapshot(nextApplication?.notes || '');
+    setStatus('draft');
+    setContent(createDefaultContent());
+    setActionError(null);
+  };
+
+  const applyKitToEditor = (kit: MaterialKitViewModel) => {
+    setExistingKit(kit);
+    setResumeID(kit.resume_id);
+    setJdSnapshot(kit.jd_snapshot);
+    setStatus(kit.status);
+    setContent(cloneContent(kit.content));
+    setActionError(null);
+  };
+
   const kitQuery = useQuery({
     queryKey: ['application-material-kit', applicationID],
     queryFn: () => getApplicationMaterialKit(applicationID!),
@@ -126,27 +160,32 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
   });
 
   useEffect(() => {
-    if (!open) {
-      setActionError(null);
+    resetEditor(open ? application : null);
+  }, [applicationID, application?.notes, open]);
+
+  useEffect(() => {
+    if (!open || !applicationID || !kitQuery.isSuccess) return;
+
+    const kit = kitQuery.data;
+    if (!kit) {
+      resetEditor(application);
       return;
     }
 
-    if (kitQuery.isSuccess) {
-      const kit = kitQuery.data;
-      setActionError(null);
-      setExistingKit(kit ?? null);
-      setResumeID(kit?.resume_id);
-      setJdSnapshot(kit?.jd_snapshot ?? application?.notes ?? '');
-      setStatus(kit?.status ?? 'draft');
-      setContent(kit ? cloneContent(kit.content) : createDefaultContent());
-    }
-  }, [application?.notes, kitQuery.data, kitQuery.isSuccess, open]);
+    if (kit.application_id !== applicationID) return;
+    applyKitToEditor(kit);
+  }, [application, applicationID, kitQuery.data, kitQuery.isSuccess, open]);
 
   useEffect(() => {
-    if (kitQuery.isError) {
-      setActionError(getErrorMessage(kitQuery.error));
-    }
-  }, [kitQuery.error, kitQuery.isError]);
+    if (!kitQuery.isError) return;
+
+    setExistingKit(null);
+    setResumeID(undefined);
+    setJdSnapshot(application?.notes || '');
+    setStatus('draft');
+    setContent(createDefaultContent());
+    setActionError(getErrorMessage(kitQuery.error));
+  }, [application?.notes, kitQuery.error, kitQuery.isError]);
 
   const completion = useMemo(() => {
     const checklist = content.checklist || [];
@@ -156,44 +195,48 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
   }, [content.checklist]);
 
   const generateMutation = useMutation({
-    mutationFn: () =>
-      generateApplicationMaterialKit(applicationID!, {
-        resume_id: resumeID!,
-        jd_text: jdSnapshot.trim(),
-        overwrite: Boolean(existingKit),
+    mutationFn: ({ applicationID: requestedApplicationID, resumeID: requestedResumeID, jdText, overwrite }: GenerateVariables) =>
+      generateApplicationMaterialKit(requestedApplicationID, {
+        resume_id: requestedResumeID,
+        jd_text: jdText,
+        overwrite,
       }),
-    onSuccess: (kit) => {
-      setExistingKit(kit);
-      setResumeID(kit.resume_id);
-      setJdSnapshot(kit.jd_snapshot);
-      setStatus(kit.status);
-      setContent(cloneContent(kit.content));
-      setActionError(null);
-      queryClient.setQueryData(['application-material-kit', applicationID], kit);
+    onSuccess: (kit, variables) => {
+      queryClient.setQueryData(['application-material-kit', kit.application_id], kit);
+
+      if (kit.application_id !== applicationID || variables.applicationID !== applicationID) return;
+
+      applyKitToEditor(kit);
       message.success('材料包已生成');
     },
-    onError: (error) => setActionError(getErrorMessage(error)),
+    onError: (error, variables) => {
+      if (variables.applicationID === applicationID) {
+        setActionError(getErrorMessage(error));
+      }
+    },
   });
 
   const saveMutation = useMutation({
-    mutationFn: () =>
-      updateMaterialKit(existingKit!.id, {
-        resume_id: resumeID,
+    mutationFn: ({ kitID, resumeID: requestedResumeID, jdSnapshot, status, content }: SaveVariables) =>
+      updateMaterialKit(kitID, {
+        resume_id: requestedResumeID,
         jd_snapshot: jdSnapshot,
         status,
         content_json: content,
       }),
-    onSuccess: (kit) => {
-      setExistingKit(kit);
-      setResumeID(kit.resume_id);
-      setJdSnapshot(kit.jd_snapshot);
-      setStatus(kit.status);
-      setContent(cloneContent(kit.content));
-      setActionError(null);
-      queryClient.setQueryData(['application-material-kit', applicationID], kit);
+    onSuccess: (kit, variables) => {
+      queryClient.setQueryData(['application-material-kit', kit.application_id], kit);
+
+      if (kit.application_id !== applicationID || variables.applicationID !== applicationID) return;
+
+      applyKitToEditor(kit);
       message.success('材料包已保存');
     },
-    onError: (error) => setActionError(getErrorMessage(error)),
+    onError: (error, variables) => {
+      if (variables.applicationID === applicationID) {
+        setActionError(getErrorMessage(error));
+      }
+    },
   });
 
   const resumeOptions = (resumesQuery.data || []).map((resume: Resume) => ({
@@ -201,8 +244,33 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
     value: resume.id,
   }));
 
+  const canSave = Boolean(existingKit && applicationID && existingKit.application_id === applicationID);
   const generateDisabled = !applicationID || !resumeID || !jdSnapshot.trim();
   const busy = kitQuery.isFetching || generateMutation.isPending || saveMutation.isPending;
+
+  const handleGenerate = () => {
+    if (!applicationID || !resumeID || !jdSnapshot.trim()) return;
+
+    generateMutation.mutate({
+      applicationID,
+      resumeID,
+      jdText: jdSnapshot.trim(),
+      overwrite: Boolean(existingKit && existingKit.application_id === applicationID),
+    });
+  };
+
+  const handleSave = () => {
+    if (!existingKit || !applicationID || existingKit.application_id !== applicationID) return;
+
+    saveMutation.mutate({
+      applicationID,
+      kitID: existingKit.id,
+      resumeID,
+      jdSnapshot,
+      status,
+      content: cloneContent(content),
+    });
+  };
 
   const updateAdvice = <K extends keyof MaterialKitContent['resume_advice']>(
     key: K,
@@ -276,7 +344,6 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
                   options={resumeOptions}
                   loading={resumesQuery.isFetching}
                   disabled={!open || resumesQuery.isFetching}
-                  allowClear
                   showSearch
                   optionFilterProp="label"
                 />
@@ -293,7 +360,7 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
               </Form.Item>
 
               <Form.Item label="材料状态">
-                <Select value={status} onChange={setStatus} options={STATUS_OPTIONS} disabled={!existingKit} />
+                <Select value={status} onChange={setStatus} options={STATUS_OPTIONS} disabled={!canSave} />
               </Form.Item>
             </Form>
 
@@ -313,7 +380,7 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
               <Button
                 type="primary"
                 icon={<ReloadOutlined />}
-                onClick={() => generateMutation.mutate()}
+                onClick={handleGenerate}
                 loading={generateMutation.isPending}
                 disabled={generateDisabled || busy}
               >
@@ -321,9 +388,9 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
               </Button>
               <Button
                 icon={<SaveOutlined />}
-                onClick={() => saveMutation.mutate()}
+                onClick={handleSave}
                 loading={saveMutation.isPending}
-                disabled={!existingKit || busy}
+                disabled={!canSave || busy}
               >
                 保存
               </Button>
@@ -331,7 +398,7 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
           </aside>
 
           <main className={styles.editorPanel}>
-            {!existingKit ? (
+            {!canSave ? (
               <Empty
                 className={styles.empty}
                 description="选择简历并填写 JD 后，生成材料包即可编辑简历建议、沟通话术和检查清单"
@@ -437,9 +504,10 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
                   </Typography.Title>
                   <div className={styles.checklist}>
                     {content.checklist.map((item) => (
-                      <label className={styles.checkRow} key={item.id}>
+                      <div className={styles.checkRow} key={item.id}>
                         <Checkbox
                           checked={item.done}
+                          aria-label={`${item.done ? '取消完成' : '标记完成'}：${item.label}`}
                           onChange={(event) => updateChecklist(item.id, { done: event.target.checked })}
                         />
                         <Input
@@ -447,7 +515,7 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
                           onChange={(event) => updateChecklist(item.id, { label: event.target.value })}
                           bordered={false}
                         />
-                      </label>
+                      </div>
                     ))}
                   </div>
                 </section>
