@@ -6,15 +6,40 @@ import { listApplications } from '@/services/applications';
 import { listEvents } from '@/services/events';
 import { listOffers } from '@/services/offers';
 import { getPracticeStats } from '@/services/questions';
-import { derivePipelineInsights, summarizePipelineHealth, type PipelineInsight } from '@/lib/pipelineInsights';
+import {
+  derivePipelineInsights,
+  summarizePipelineHealth,
+  type ActionCommand,
+  type PipelineInsight,
+} from '@/lib/pipelineInsights';
 import { computeKpis, computeFunnel, computeMomentum } from '@/lib/insights';
 import type { ViewMode } from '@/layout/AppShell';
+import ActionDetailDrawer from '@/features/pipeline/ActionDetailDrawer';
 import KpiCards from './widgets/KpiCards';
 import ConversionFunnel from './widgets/ConversionFunnel';
 import MomentumChart from './widgets/MomentumChart';
 import UpcomingSchedule from './widgets/UpcomingSchedule';
 import CommandCenter from './widgets/CommandCenter';
 import styles from './dashboard.module.css';
+
+type DetailAction = ActionCommand & { id?: string };
+type DetailInsight = PipelineInsight & {
+  primaryAction: DetailAction;
+  secondaryActions?: DetailAction[];
+};
+
+function getActionId(action: DetailAction, fallback: string) {
+  return action.id ?? fallback;
+}
+
+function findInsightAction(item: PipelineInsight, actionId: string): DetailAction {
+  const detail = item as DetailInsight;
+  const actions = [detail.primaryAction, ...(detail.secondaryActions ?? [])];
+  return (
+    actions.find((action, index) => getActionId(action, index === 0 ? 'primary' : `secondary-${index - 1}`) === actionId) ??
+    detail.primaryAction
+  );
+}
 
 interface Props {
   onNavigate: (v: ViewMode) => void;
@@ -24,6 +49,7 @@ interface Props {
 
 export default function DashboardView({ onNavigate, onOpenDetailById, onAddApplication }: Props) {
   const [now, setNow] = useState(() => dayjs());
+  const [selectedInsight, setSelectedInsight] = useState<PipelineInsight | null>(null);
 
   useEffect(() => {
     const id = window.setInterval(() => setNow(dayjs()), 60_000);
@@ -53,11 +79,19 @@ export default function DashboardView({ onNavigate, onOpenDetailById, onAddAppli
   const health = useMemo(() => summarizePipelineHealth(apps, insights, 6, now), [apps, insights, now]);
 
   const handleAction = (item: PipelineInsight) => {
-    if (item.primaryAction.target === 'board' && item.appId) {
-      onOpenDetailById(item.appId);
+    setSelectedInsight(item);
+  };
+
+  const runInsightAction = (item: PipelineInsight, actionId: string) => {
+    const action = findInsightAction(item, actionId);
+    const appId = action.appId ?? item.appId;
+
+    setSelectedInsight(null);
+    if (action.target === 'board' && appId) {
+      onOpenDetailById(appId);
       return;
     }
-    onNavigate(item.primaryAction.target);
+    onNavigate(action.target);
   };
 
   if (appsQ.isLoading) {
@@ -83,7 +117,8 @@ export default function DashboardView({ onNavigate, onOpenDetailById, onAddAppli
   }
 
   return (
-    <div className={styles.grid}>
+    <>
+      <div className={styles.grid}>
       <CommandCenter
         items={insights}
         health={health}
@@ -107,6 +142,13 @@ export default function DashboardView({ onNavigate, onOpenDetailById, onAddAppli
           </div>
         </div>
       </div>
-    </div>
+      </div>
+      <ActionDetailDrawer
+        insight={selectedInsight}
+        open={Boolean(selectedInsight)}
+        onClose={() => setSelectedInsight(null)}
+        onRunAction={runInsightAction}
+      />
+    </>
   );
 }

@@ -1,0 +1,29 @@
+.drawerBody {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.section {
+  padding: 0 0 20px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.section:not(:first-child) {
+  padding-top: 20px;
+}
+
+.section:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.secondaryActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.drawerBody :global(.ant-btn) {
+  min-height: 40px;
+}
