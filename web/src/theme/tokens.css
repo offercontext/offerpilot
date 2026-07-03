@@ -3,6 +3,11 @@
   --op-primary: #6366f1;
   --op-primary-strong: #4f46e5;
   --op-accent: #a855f7;
+  --op-action: #f97316;
+  --op-action-strong: #ea580c;
+  --op-action-soft: #fff4e8;
+  --op-info: #0d9488;
+  --op-info-soft: #ecfdf5;
   --op-success: #059669;
   --op-warning: #d97706;
   --op-warning-strong: #b45309;
@@ -36,6 +41,11 @@
 
 :root[data-theme="dark"] {
   --op-primary-strong: #a5b4fc;
+  --op-action: #fb923c;
+  --op-action-strong: #fdba74;
+  --op-action-soft: #3a2416;
+  --op-info: #5eead4;
+  --op-info-soft: #173a35;
   --op-warning-strong: #fbbf24;
   --op-ink: #e7e5f2;
   --op-muted: #9a95bf;
