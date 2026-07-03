@@ -82,11 +82,18 @@ const PREPARE_KINDS: PipelineInsightKind[] = [
 ];
 const DEFAULT_WEEKLY_TARGET = 6;
 const FOLLOWUP_TARGET = 3;
+const DATE_ONLY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 function parseDate(value?: string): dayjs.Dayjs | null {
   if (!value) return null;
   const parsed = dayjs(value);
   return parsed.isValid() ? parsed : null;
+}
+
+function parseDeadline(value?: string): dayjs.Dayjs | null {
+  if (!value) return null;
+  if (DATE_ONLY_PATTERN.test(value)) return dayjs(value).endOf('day');
+  return parseDate(value);
 }
 
 function isActiveApplication(app: Application): boolean {
@@ -167,7 +174,7 @@ function buildMetrics(
       : activeApps.filter((app) => isReadyMaterial(getMaterialStatus(app.id, materialKits))).length;
   const pendingOffers = offers.filter((offer) => ['pending', 'negotiating'].includes(offer.status));
   const urgentOffers = pendingOffers.filter((offer) => {
-    const deadline = parseDate(offer.deadline);
+    const deadline = parseDeadline(offer.deadline);
     return Boolean(deadline && deadline.diff(now, 'hour', true) >= 0 && deadline.diff(now, 'hour', true) <= 48);
   }).length;
 

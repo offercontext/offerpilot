@@ -45,28 +45,6 @@ function event(patch: Partial<ScheduleEvent> & Pick<ScheduleEvent, 'id' | 'appli
   };
 }
 
-function offer(patch: Partial<Offer> & Pick<Offer, 'id'>): Offer {
-  return {
-    id: patch.id,
-    application_id: patch.application_id ?? 1,
-    company_name: patch.company_name ?? 'Company 1',
-    position_name: patch.position_name ?? 'Backend Engineer',
-    base_salary: patch.base_salary ?? 30000,
-    months: patch.months ?? 16,
-    signing_bonus: patch.signing_bonus ?? 0,
-    annual_bonus: patch.annual_bonus ?? 0,
-    equity_value: patch.equity_value ?? 0,
-    perks: patch.perks ?? '',
-    location: patch.location ?? '',
-    deadline: patch.deadline ?? '',
-    status: patch.status ?? 'pending',
-    notes: patch.notes ?? '',
-    total_cash: patch.total_cash ?? 480000,
-    created_at: patch.created_at ?? '2026-07-01T09:00:00+08:00',
-    updated_at: patch.updated_at ?? '2026-07-01T09:00:00+08:00',
-  };
-}
-
 function kit(applicationId: number, status: MaterialKitViewModel['status']): MaterialKitViewModel {
   return {
     id: applicationId,
@@ -158,6 +136,45 @@ describe('deriveMissionControl', () => {
       hasUpcomingEvent: true,
     });
     expect(summary.readiness[0].evidence.join(' ')).toContain('24 小时');
+  });
+
+  it('counts same-day date-only pending offer deadlines as urgent', () => {
+    const summary = deriveMissionControl({
+      apps: [],
+      events: [],
+      offers: [
+        {
+          id: 1,
+          application_id: 1,
+          company_name: 'Deadline Co',
+          position_name: 'Backend Engineer',
+          status: 'pending',
+          base_monthly: 30000,
+          months_per_year: 16,
+          signing_bonus: 0,
+          equity: '',
+          perks: '',
+          deadline: '2026-07-04',
+          notes: '',
+          assessment: '',
+          total_cash: 480000,
+          created_at: '2026-07-01T09:00:00+08:00',
+          updated_at: '2026-07-01T09:00:00+08:00',
+        } satisfies Offer,
+      ],
+      materialKits: [],
+      practiceStats: null,
+      insights: [],
+      healthLabel: 'watch',
+      weeklyTarget: 6,
+      now,
+    });
+
+    expect(summary.metrics.find((metric) => metric.kind === 'offers')).toMatchObject({
+      current: 1,
+      state: 'blocked',
+      targetView: 'offers',
+    });
   });
 
   it('groups actions into urgent prepare and momentum buckets', () => {
