@@ -10,6 +10,7 @@ export type ActionItemKind =
   | 'interview_soon'
   | 'stale_application'
   | 'no_next_event'
+  | 'material_kit_incomplete'
   | 'question_due';
 export type ActionItemTarget = 'board' | 'calendar' | 'offers' | 'questions';
 
@@ -35,10 +36,16 @@ export interface ActionItemSummary {
   dueQuestions: number;
 }
 
+interface MaterialKitActionState {
+  application_id: number;
+  complete: boolean;
+}
+
 interface DeriveActionItemsInput {
   apps: Application[];
   events: ScheduleEvent[];
   offers: Offer[];
+  materialKits?: MaterialKitActionState[];
   practiceStats?: PracticeStats | null;
   now?: ConfigType;
 }
@@ -129,6 +136,7 @@ export function deriveActionItems({
   apps,
   events,
   offers,
+  materialKits,
   practiceStats,
   now = dayjs(),
 }: DeriveActionItemsInput): ActionItem[] {
@@ -235,6 +243,27 @@ export function deriveActionItems({
       appId: application.id,
       sortKey: 2500,
     });
+  }
+
+  if (materialKits) {
+    const materialKitByApp = new Map(materialKits.map((kit) => [kit.application_id, kit]));
+    for (const application of apps) {
+      if (!WAITING_STATUSES.includes(application.status)) continue;
+      const kit = materialKitByApp.get(application.id);
+      if (kit?.complete) continue;
+
+      items.push({
+        id: `material-kit-${application.id}`,
+        kind: 'material_kit_incomplete',
+        priority: 'p2',
+        title: `${application.company_name} · ${application.position_name} 投递材料包待完善`,
+        detail: '简历建议、沟通话术或投递清单尚未完成。',
+        primaryActionLabel: '打开材料包',
+        target: 'board',
+        appId: application.id,
+        sortKey: 2200,
+      });
+    }
   }
 
   const due = practiceStats?.due ?? 0;

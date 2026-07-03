@@ -340,6 +340,28 @@ describe('deriveActionItems', () => {
     });
   });
 
+  it('creates material kit actions for active waiting applications without a completed kit', () => {
+    const items = deriveActionItems({
+      apps: [app({ id: 30, status: 'applied', company_name: 'Acme', position_name: 'Backend' })],
+      events: [],
+      offers: [],
+      materialKits: [{ application_id: 30, complete: false }],
+      practiceStats: stats({ due: 0 }),
+      now,
+    });
+
+    expect(items).toContainEqual(
+      expect.objectContaining({
+        id: 'material-kit-30',
+        kind: 'material_kit_incomplete',
+        priority: 'p2',
+        target: 'board',
+        appId: 30,
+        primaryActionLabel: '打开材料包',
+      }),
+    );
+  });
+
   it('does not let an invalid future-shaped event suppress no-next-event actions', () => {
     const items = deriveActionItems({
       apps: [app({ id: 19, status: 'interview', company_name: '阿里', position_name: 'Go 开发' })],
