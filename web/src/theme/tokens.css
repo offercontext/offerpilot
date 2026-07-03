@@ -52,6 +52,14 @@
   --op-shadow-lg: 0 8px 30px rgba(0, 0, 0, 0.45);
 }
 
+* { box-sizing: border-box; }
+
+button,
+[role="button"],
+.ant-btn {
+  touch-action: manipulation;
+}
+
 html, body, #root { height: 100%; }
 body {
   margin: 0;

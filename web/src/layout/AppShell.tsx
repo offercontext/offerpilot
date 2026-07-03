@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Layout, Spin, message } from 'antd';
 import { listApplications } from '@/services/applications';
@@ -9,21 +9,11 @@ import type { Application } from '@/types/application';
 import type { MockConfig } from '@/types/mock';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
-import KanbanBoard from '@/components/KanbanBoard';
 import AddApplicationForm from '@/components/AddApplicationForm';
 import ApplicationDetail from '@/components/ApplicationDetail';
 import ResumeMatchModal from '@/components/ResumeMatchModal';
-import ResumeLibraryView from '@/components/ResumeLibraryView';
 import ResumeUploadModal from '@/components/ResumeUploadModal';
-import CalendarView from '@/components/CalendarView';
 import ChatPanel from '@/components/ChatPanel';
-import ReviewManagementView from '@/components/ReviewManagementView';
-import KnowledgeBaseView from '@/components/KnowledgeBaseView';
-import QuestionBankView from '@/components/QuestionBankView';
-import OfferCenterView from '@/components/OfferCenterView';
-import DashboardView from '@/features/dashboard/DashboardView';
-import RemindersView from '@/features/reminders/RemindersView';
-import MockStudioView from '@/components/MockStudio/MockStudioView';
 import CommandPalette from './CommandPalette';
 import {
   derivePipelineInsights,
@@ -34,6 +24,17 @@ import { getPracticeStats } from '@/services/questions';
 import dayjs from 'dayjs';
 
 const { Content } = Layout;
+
+const KanbanBoard = lazy(() => import('@/components/KanbanBoard'));
+const CalendarView = lazy(() => import('@/components/CalendarView'));
+const ReviewManagementView = lazy(() => import('@/components/ReviewManagementView'));
+const KnowledgeBaseView = lazy(() => import('@/components/KnowledgeBaseView'));
+const QuestionBankView = lazy(() => import('@/components/QuestionBankView'));
+const OfferCenterView = lazy(() => import('@/components/OfferCenterView'));
+const DashboardView = lazy(() => import('@/features/dashboard/DashboardView'));
+const RemindersView = lazy(() => import('@/features/reminders/RemindersView'));
+const MockStudioView = lazy(() => import('@/components/MockStudio/MockStudioView'));
+const ResumeLibraryView = lazy(() => import('@/components/ResumeLibraryView'));
 
 export type ViewMode =
   | 'dashboard'
@@ -175,41 +176,49 @@ export default function AppShell() {
               加载失败，请稍后重试
             </div>
           ) : (
-            <div className="op-view-enter" key={view}>
-              {view === 'dashboard' && (
-                <DashboardView
-                  onNavigate={setView}
-                  onOpenDetailById={goDetailById}
-                  onAddApplication={() => setAddOpen(true)}
-                />
-              )}
-              {view === 'board' && (
-                <KanbanBoard applications={apps} onOpenDetail={(a) => setSelected(a)} />
-              )}
-              {view === 'calendar' && (
-                <CalendarView applications={apps} onOpenDetail={(a) => setSelected(a)} />
-              )}
-              {view === 'reminders' && (
-                <RemindersView onNavigate={setView} onOpenDetailById={goDetailById} />
-              )}
-              {view === 'reviews' && <ReviewManagementView applications={apps} />}
-              {view === 'offers' && (
-                <OfferCenterView applications={apps} onCoach={(offer) => openChat(offer.id)} />
-              )}
-              {view === 'knowledge' && <KnowledgeBaseView />}
-              {view === 'questions' && <QuestionBankView focusId={questionFocusId ?? undefined} />}
-              {view === 'mock' && (
-                <MockStudioView
-                  prefill={mockPrefill}
-                  onJumpQuestion={(id) => {
-                    setQuestionFocusId(id);
-                    setView('questions');
-                  }}
-                  onConsumePrefill={() => setMockPrefill(null)}
-                />
-              )}
-              {view === 'resumes' && <ResumeLibraryView />}
-            </div>
+            <Suspense
+              fallback={
+                <div style={{ textAlign: 'center', padding: 48 }}>
+                  <Spin size="large" />
+                </div>
+              }
+            >
+              <div className="op-view-enter" key={view}>
+                {view === 'dashboard' && (
+                  <DashboardView
+                    onNavigate={setView}
+                    onOpenDetailById={goDetailById}
+                    onAddApplication={() => setAddOpen(true)}
+                  />
+                )}
+                {view === 'board' && (
+                  <KanbanBoard applications={apps} onOpenDetail={(a) => setSelected(a)} />
+                )}
+                {view === 'calendar' && (
+                  <CalendarView applications={apps} onOpenDetail={(a) => setSelected(a)} />
+                )}
+                {view === 'reminders' && (
+                  <RemindersView onNavigate={setView} onOpenDetailById={goDetailById} />
+                )}
+                {view === 'reviews' && <ReviewManagementView applications={apps} />}
+                {view === 'offers' && (
+                  <OfferCenterView applications={apps} onCoach={(offer) => openChat(offer.id)} />
+                )}
+                {view === 'knowledge' && <KnowledgeBaseView />}
+                {view === 'questions' && <QuestionBankView focusId={questionFocusId ?? undefined} />}
+                {view === 'mock' && (
+                  <MockStudioView
+                    prefill={mockPrefill}
+                    onJumpQuestion={(id) => {
+                      setQuestionFocusId(id);
+                      setView('questions');
+                    }}
+                    onConsumePrefill={() => setMockPrefill(null)}
+                  />
+                )}
+                {view === 'resumes' && <ResumeLibraryView />}
+              </div>
+            </Suspense>
           )}
         </Content>
       </Layout>
