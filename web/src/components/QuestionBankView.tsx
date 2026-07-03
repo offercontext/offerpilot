@@ -127,7 +127,6 @@ function BankTab() {
     onSuccess: () => {
       message.success('已删除');
       qc.invalidateQueries({ queryKey: ['questions'] });
-      qc.invalidateQueries({ queryKey: ['question-stats'] });
     },
     onError: () => message.error('删除失败'),
   });
@@ -317,7 +316,6 @@ function GenerateDrawer({ open, onClose }: { open: boolean; onClose: () => void 
       const extra = res.skipped > 0 ? `，跳过 ${res.skipped} 道重复` : '';
       message.success(`已生成 ${res.count} 道题${extra}`);
       qc.invalidateQueries({ queryKey: ['questions'] });
-      qc.invalidateQueries({ queryKey: ['question-stats'] });
       qc.invalidateQueries({ queryKey: ['questions-due'] });
       onClose();
     },
@@ -424,7 +422,6 @@ function QuestionFormModal({
     onSuccess: () => {
       message.success(isEdit ? '已保存' : '已添加');
       qc.invalidateQueries({ queryKey: ['questions'] });
-      qc.invalidateQueries({ queryKey: ['question-stats'] });
       onClose();
     },
     onError: () => message.error('保存失败'),
@@ -487,7 +484,7 @@ function PracticeTab() {
   const [doneToday, setDoneToday] = useState(0);
 
   const { data: stats } = useQuery({
-    queryKey: ['question-stats'],
+    queryKey: ['questions', 'stats'],
     queryFn: () => getPracticeStats(),
   });
   const { data: due = [], isLoading } = useQuery({
@@ -503,7 +500,6 @@ function PracticeTab() {
       setRevealed(false);
       setDoneToday((n) => n + 1);
       qc.invalidateQueries({ queryKey: ['questions-due'] });
-      qc.invalidateQueries({ queryKey: ['question-stats'] });
       qc.invalidateQueries({ queryKey: ['questions'] });
     },
     onError: () => message.error('打卡失败'),

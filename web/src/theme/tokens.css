@@ -1,12 +1,19 @@
 :root {
   /* 品牌色 */
   --op-primary: #6366f1;
+  --op-primary-strong: #4f46e5;
   --op-accent: #a855f7;
   --op-success: #059669;
   --op-warning: #d97706;
+  --op-warning-strong: #b45309;
   --op-error: #ef4444;
+  --op-on-accent: #ffffff;
+  --op-on-danger: #111827;
+  --op-on-primary: #000000;
+  --op-on-warning: #23213a;
   --op-ink: #23213a;
   --op-muted: #8b87b3;
+  --op-muted-strong: #5b587a;
   --op-layout-bg: #f6f6fb;
   --op-surface: #ffffff;
   --op-border: #ecebf5;
@@ -28,11 +35,18 @@
 }
 
 :root[data-theme="dark"] {
+  --op-primary-strong: #a5b4fc;
+  --op-warning-strong: #fbbf24;
   --op-ink: #e7e5f2;
   --op-muted: #9a95bf;
+  --op-muted-strong: #c4c0e6;
   --op-layout-bg: #141322;
   --op-surface: #1c1a2e;
   --op-border: #2a2740;
+  --op-on-accent: #ffffff;
+  --op-on-danger: #111827;
+  --op-on-primary: #000000;
+  --op-on-warning: #23213a;
   --op-shadow-sm: 0 1px 4px rgba(0, 0, 0, 0.3);
   --op-shadow-md: 0 2px 12px rgba(0, 0, 0, 0.35);
   --op-shadow-lg: 0 8px 30px rgba(0, 0, 0, 0.45);
