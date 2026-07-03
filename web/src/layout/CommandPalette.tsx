@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Modal, Input, List } from 'antd';
 import type { Application } from '@/types/application';
+import type { PipelineInsight } from '@/lib/pipelineInsights';
 import type { ViewMode } from './AppShell';
 
 export interface Command {
@@ -20,6 +21,8 @@ interface Props {
   onOpenResume: () => void;
   onUploadResume?: () => void;
   onOpenChat: () => void;
+  pipelineActions: PipelineInsight[];
+  onRunPipelineAction: (item: PipelineInsight) => void;
 }
 
 export default function CommandPalette({
@@ -32,6 +35,8 @@ export default function CommandPalette({
   onOpenResume,
   onUploadResume,
   onOpenChat,
+  pipelineActions,
+  onRunPipelineAction,
 }: Props) {
   const [q, setQ] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
@@ -63,6 +68,53 @@ export default function CommandPalette({
     [onAddApplication, onOpenResume, onUploadResume, onOpenChat, onNavigate, onClose]
   );
 
+  const verbActions: Command[] = useMemo(
+    () => [
+      {
+        key: 'follow-up-stale',
+        label: 'Follow up stale applications',
+        hint: 'Action',
+        run: () => {
+          onNavigate('reminders');
+          onClose();
+        },
+      },
+      {
+        key: 'prepare-interviews',
+        label: 'Prepare upcoming interviews',
+        hint: 'Action',
+        run: () => {
+          onNavigate('reminders');
+          onClose();
+        },
+      },
+      {
+        key: 'review-week-strategy',
+        label: 'Review this week strategy',
+        hint: 'Action',
+        run: () => {
+          onNavigate('dashboard');
+          onClose();
+        },
+      },
+    ],
+    [onNavigate, onClose]
+  );
+
+  const pipelineCommands: Command[] = useMemo(
+    () =>
+      pipelineActions.slice(0, 5).map((item) => ({
+        key: `pipeline-${item.id}`,
+        label: item.title,
+        hint: `Pipeline - ${item.priority.toUpperCase()}`,
+        run: () => {
+          onRunPipelineAction(item);
+          onClose();
+        },
+      })),
+    [pipelineActions, onRunPipelineAction, onClose]
+  );
+
   const kw = q.trim().toLowerCase();
   const appMatches: Command[] = kw
     ? applications
@@ -80,11 +132,12 @@ export default function CommandPalette({
         }))
     : [];
 
+  const allActions = [...verbActions, ...actions];
   const actionMatches = kw
-    ? actions.filter((c) => c.label.toLowerCase().includes(kw))
-    : actions;
+    ? allActions.filter((c) => c.label.toLowerCase().includes(kw))
+    : allActions;
 
-  const items = [...appMatches, ...actionMatches];
+  const items = [...appMatches, ...pipelineCommands, ...actionMatches];
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') {

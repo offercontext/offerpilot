@@ -25,7 +25,11 @@ import DashboardView from '@/features/dashboard/DashboardView';
 import RemindersView from '@/features/reminders/RemindersView';
 import MockStudioView from '@/components/MockStudio/MockStudioView';
 import CommandPalette from './CommandPalette';
-import { deriveActionItems } from '@/lib/actionItems';
+import {
+  derivePipelineInsights,
+  toLegacyActionItems,
+  type PipelineInsight,
+} from '@/lib/pipelineInsights';
 import { getPracticeStats } from '@/services/questions';
 import dayjs from 'dayjs';
 
@@ -121,10 +125,11 @@ export default function AppShell() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const actions = useMemo(
-    () => deriveActionItems({ apps, events: evs, offers: ofrs, practiceStats, now }),
+  const pipelineActions = useMemo(
+    () => derivePipelineInsights({ apps, events: evs, offers: ofrs, practiceStats, now }),
     [apps, evs, ofrs, practiceStats, now]
   );
+  const actions = useMemo(() => toLegacyActionItems(pipelineActions), [pipelineActions]);
   const streak = useMemo(() => computeStreak(apps, now), [apps, now]);
 
   const selectedApp = selected
@@ -139,6 +144,15 @@ export default function AppShell() {
   const goDetailById = (appId: number) => {
     const app = apps.find((a) => a.id === appId);
     if (app) setSelected(app);
+  };
+
+  const runPipelineAction = (item: PipelineInsight) => {
+    if (item.primaryAction.target === 'board' && item.appId) {
+      goDetailById(item.appId);
+      return;
+    }
+
+    setView(item.primaryAction.target);
   };
 
   return (
@@ -234,6 +248,8 @@ export default function AppShell() {
         onOpenResume={() => setResumeOpen(true)}
         onUploadResume={() => setResumeUploadOpen(true)}
         onOpenChat={() => openChat(undefined)}
+        pipelineActions={pipelineActions}
+        onRunPipelineAction={runPipelineAction}
       />
       <ChatPanel
         open={chatOpen}
