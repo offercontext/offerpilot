@@ -126,7 +126,7 @@ export default function AppShell() {
   }, []);
 
   const pipelineActions = useMemo(
-    () => derivePipelineInsights({ apps, events: evs, offers: ofrs, practiceStats, now }),
+    () => derivePipelineInsights({ apps, events: evs, offers: ofrs, practiceStats, weeklyTarget: 6, now }),
     [apps, evs, ofrs, practiceStats, now]
   );
   const actions = useMemo(() => toLegacyActionItems(pipelineActions), [pipelineActions]);

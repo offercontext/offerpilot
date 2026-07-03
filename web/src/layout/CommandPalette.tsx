@@ -11,6 +11,23 @@ export interface Command {
   run: () => void;
 }
 
+function pipelineInsightMatches(item: PipelineInsight, keyword: string): boolean {
+  if (!keyword) return true;
+
+  const hint = `Pipeline - ${item.priority.toUpperCase()}`;
+  return [
+    item.title,
+    hint,
+    item.kind,
+    item.reason,
+    item.primaryAction.label,
+    ...item.evidence,
+  ]
+    .join(' ')
+    .toLowerCase()
+    .includes(keyword);
+}
+
 interface Props {
   open: boolean;
   onClose: () => void;
@@ -68,54 +85,23 @@ export default function CommandPalette({
     [onAddApplication, onOpenResume, onUploadResume, onOpenChat, onNavigate, onClose]
   );
 
-  const verbActions: Command[] = useMemo(
-    () => [
-      {
-        key: 'follow-up-stale',
-        label: 'Follow up stale applications',
-        hint: 'Action',
-        run: () => {
-          onNavigate('reminders');
-          onClose();
-        },
-      },
-      {
-        key: 'prepare-interviews',
-        label: 'Prepare upcoming interviews',
-        hint: 'Action',
-        run: () => {
-          onNavigate('reminders');
-          onClose();
-        },
-      },
-      {
-        key: 'review-week-strategy',
-        label: 'Review this week strategy',
-        hint: 'Action',
-        run: () => {
-          onNavigate('dashboard');
-          onClose();
-        },
-      },
-    ],
-    [onNavigate, onClose]
-  );
-
+  const kw = q.trim().toLowerCase();
   const pipelineCommands: Command[] = useMemo(
     () =>
-      pipelineActions.slice(0, 5).map((item) => ({
-        key: `pipeline-${item.id}`,
-        label: item.title,
-        hint: `Pipeline - ${item.priority.toUpperCase()}`,
-        run: () => {
-          onRunPipelineAction(item);
-          onClose();
-        },
-      })),
-    [pipelineActions, onRunPipelineAction, onClose]
+      pipelineActions
+        .filter((item) => pipelineInsightMatches(item, kw))
+        .slice(0, 5)
+        .map((item) => ({
+          key: `pipeline-${item.id}`,
+          label: item.title,
+          hint: `Pipeline - ${item.priority.toUpperCase()}`,
+          run: () => {
+            onRunPipelineAction(item);
+            onClose();
+          },
+        })),
+    [pipelineActions, kw, onRunPipelineAction, onClose]
   );
-
-  const kw = q.trim().toLowerCase();
   const appMatches: Command[] = kw
     ? applications
         .filter(
@@ -132,10 +118,9 @@ export default function CommandPalette({
         }))
     : [];
 
-  const allActions = [...verbActions, ...actions];
   const actionMatches = kw
-    ? allActions.filter((c) => c.label.toLowerCase().includes(kw))
-    : allActions;
+    ? actions.filter((c) => c.label.toLowerCase().includes(kw))
+    : actions;
 
   const items = [...appMatches, ...pipelineCommands, ...actionMatches];
 
