@@ -92,25 +92,6 @@ func buildOfferContext(database *db.Database, offer *db.Offer) string {
 	return strings.TrimSpace(b.String())
 }
 
-// persistAdded stores loop-produced messages into the conversation.
-func persistAdded(database *db.Database, convID int64, added []ai.Message) error {
-	for _, m := range added {
-		cm := &db.ChatMessage{ConversationID: convID, Role: string(m.Role), Content: m.Content, ToolCallID: m.ToolCallID}
-		if len(m.ToolCalls) > 0 {
-			b, _ := json.Marshal(m.ToolCalls)
-			cm.ToolCalls = string(b)
-		}
-		if len(m.ProviderBlocks) > 0 {
-			b, _ := json.Marshal(m.ProviderBlocks)
-			cm.ProviderBlocks = string(b)
-		}
-		if err := database.AppendMessage(cm); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func titleFrom(msg string) string {
 	const max = 20
 	if utf8.RuneCountInString(msg) <= max {
@@ -216,7 +197,7 @@ func runChat(w http.ResponseWriter, r *http.Request, database *db.Database, mode
 		respondError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	if perr := persistAdded(database, convID, added); perr != nil {
+	if perr := chatapp.PersistAdded(database, convID, added); perr != nil {
 		respondError(w, http.StatusInternalServerError, perr.Error())
 		return
 	}
@@ -288,7 +269,7 @@ func runConfirm(w http.ResponseWriter, r *http.Request, database *db.Database, m
 		respondError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	if perr := persistAdded(database, body.ConversationID, added); perr != nil {
+	if perr := chatapp.PersistAdded(database, body.ConversationID, added); perr != nil {
 		respondError(w, http.StatusInternalServerError, perr.Error())
 		return
 	}
