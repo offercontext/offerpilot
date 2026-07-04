@@ -5,7 +5,12 @@ import {
   WarningOutlined,
 } from '@ant-design/icons';
 import type { ReactNode } from 'react';
-import type { ApplicationReadiness, ApplicationReadinessState } from '@/lib/missionControl';
+import {
+  READINESS_MATERIAL_STATUS_LABELS,
+  READINESS_STATE_LABELS,
+  type ApplicationReadiness,
+  type ApplicationReadinessState,
+} from '@/lib/missionControl';
 import styles from '../dashboard.module.css';
 
 interface Props {
@@ -13,12 +18,6 @@ interface Props {
   focusApplicationId?: number;
   onFocus: (applicationId: number) => void;
 }
-
-const STATE_LABELS: Record<ApplicationReadinessState, string> = {
-  ready: '就绪',
-  watch: '关注',
-  blocked: '阻塞',
-};
 
 const STATE_ICONS: Record<ApplicationReadinessState, ReactNode> = {
   ready: <CheckCircleOutlined />,
@@ -39,7 +38,7 @@ export default function ApplicationReadinessStrip({ items, focusApplicationId, o
     <section className={styles.readinessStrip} aria-label="投递准备度">
       <div className={styles.sectionHeaderLine}>
         <div>
-          <div className={styles.commandEyebrow}>Readiness</div>
+          <div className={styles.commandEyebrow}>准备度</div>
           <h2 className={styles.sectionHeading}>重点投递准备度</h2>
         </div>
       </div>
@@ -62,8 +61,8 @@ export default function ApplicationReadinessStrip({ items, focusApplicationId, o
               <span className={styles.readinessEvidence}>{item.evidence[0] ?? '暂无准备风险'}</span>
             </span>
             <span className={styles.readinessTags}>
-              <Tag>{STATE_LABELS[item.readiness]}</Tag>
-              <Tag>{item.materialStatus}</Tag>
+              <Tag>{READINESS_STATE_LABELS[item.readiness]}</Tag>
+              <Tag>{READINESS_MATERIAL_STATUS_LABELS[item.materialStatus]}</Tag>
             </span>
           </button>
         ))}

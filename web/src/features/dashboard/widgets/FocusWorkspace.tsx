@@ -6,8 +6,13 @@ import {
   ReadOutlined,
   RocketOutlined,
 } from '@ant-design/icons';
+import { STATUS_LABELS } from '@/types/application';
 import type { Application } from '@/types/application';
-import type { ApplicationReadiness } from '@/lib/missionControl';
+import {
+  READINESS_MATERIAL_STATUS_LABELS,
+  READINESS_STATE_LABELS,
+  type ApplicationReadiness,
+} from '@/lib/missionControl';
 import type { ViewMode } from '@/layout/AppShell';
 import styles from '../dashboard.module.css';
 
@@ -29,16 +34,16 @@ export default function FocusWorkspace({ application, readiness, onOpenDetail, o
 
   return (
     <aside className={styles.focusWorkspace} aria-labelledby="focus-workspace-title">
-      <div className={styles.commandEyebrow}>Focus</div>
+      <div className={styles.commandEyebrow}>当前焦点</div>
       <h2 id="focus-workspace-title" className={styles.sectionHeading}>
         {application.company_name}
       </h2>
       <p className={styles.focusPosition}>{application.position_name}</p>
 
       <div className={styles.focusTags}>
-        <Tag>{application.status}</Tag>
-        <Tag>{readiness.readiness}</Tag>
-        <Tag>材料：{readiness.materialStatus}</Tag>
+        <Tag>{STATUS_LABELS[application.status]}</Tag>
+        <Tag>{READINESS_STATE_LABELS[readiness.readiness]}</Tag>
+        <Tag>材料：{READINESS_MATERIAL_STATUS_LABELS[readiness.materialStatus]}</Tag>
       </div>
 
       <div className={styles.focusEvidence}>

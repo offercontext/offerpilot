@@ -19,6 +19,20 @@ export type MissionMetricState = 'on_track' | 'watch' | 'behind' | 'blocked';
 export type ApplicationReadinessState = 'ready' | 'watch' | 'blocked';
 export type ReadinessMaterialStatus = MaterialKitStatus | 'missing' | 'unknown';
 
+export const READINESS_STATE_LABELS: Record<ApplicationReadinessState, string> = {
+  ready: '就绪',
+  watch: '关注',
+  blocked: '阻塞',
+};
+
+export const READINESS_MATERIAL_STATUS_LABELS: Record<ReadinessMaterialStatus, string> = {
+  draft: '草稿',
+  ready: '就绪',
+  submitted: '已提交',
+  missing: '缺失',
+  unknown: '未知',
+};
+
 export interface MissionMetric {
   kind: MissionMetricKind;
   label: string;
@@ -267,7 +281,7 @@ function buildReadiness(
 
       if (nextEvent) evidence.push(`下一场日程：${dayjs(nextEvent.scheduled_at).format('MM-DD HH:mm')}`);
       if (materialStatus === 'unknown') evidence.push('材料状态暂不可用');
-      else evidence.push(`材料状态：${materialStatus}`);
+      else evidence.push(`材料状态：${READINESS_MATERIAL_STATUS_LABELS[materialStatus]}`);
       if (staleDays) evidence.push(`已 ${staleDays} 天未更新`);
       if (dueQuestionCount > 0) evidence.push(`${dueQuestionCount} 道题到期`);
 

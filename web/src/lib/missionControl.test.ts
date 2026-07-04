@@ -7,6 +7,8 @@ import type { MaterialKitViewModel } from '@/types/materialKit';
 import type { PracticeStats } from '@/types/question';
 import type { PipelineInsight } from './pipelineInsights';
 import {
+  READINESS_MATERIAL_STATUS_LABELS,
+  READINESS_STATE_LABELS,
   deriveMissionControl,
   groupMissionActions,
   selectDefaultFocusApplicationId,
@@ -136,6 +138,28 @@ describe('deriveMissionControl', () => {
       hasUpcomingEvent: true,
     });
     expect(summary.readiness[0].evidence.join(' ')).toContain('24 小时');
+  });
+
+  it('provides localized labels for readiness and material statuses', () => {
+    const summary = deriveMissionControl({
+      apps: [app({ id: 1, status: 'written_test', company_name: 'ByteDance' })],
+      events: [],
+      offers: [],
+      materialKits: [],
+      practiceStats: null,
+      insights: [],
+      healthLabel: 'watch',
+      weeklyTarget: 6,
+      now,
+    });
+
+    expect(READINESS_STATE_LABELS.watch).toBe('关注');
+    expect(READINESS_MATERIAL_STATUS_LABELS.missing).toBe('缺失');
+    expect(summary.readiness[0]).toMatchObject({
+      readiness: 'watch',
+      materialStatus: 'missing',
+    });
+    expect(summary.readiness[0].evidence).toContain('材料状态：缺失');
   });
 
   it('counts same-day date-only pending offer deadlines as urgent', () => {
