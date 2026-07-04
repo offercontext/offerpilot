@@ -738,3 +738,165 @@
     transition: none;
   }
 }
+
+.readinessStrip {
+  padding: 18px;
+  border-radius: 20px;
+  background: var(--op-surface);
+  box-shadow: var(--op-shadow-md);
+}
+
+.readinessList {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.readinessCard {
+  min-height: 116px;
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  border: none;
+  border-radius: 16px;
+  padding: 12px;
+  background: var(--op-layout-bg);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: 0 0 0 1px rgba(31, 29, 58, 0.05);
+  transition-property: transform, box-shadow, background-color;
+  transition-duration: 0.18s;
+  transition-timing-function: var(--op-ease);
+}
+
+.readinessCard:hover,
+.readinessCard:focus-visible,
+.readinessActive {
+  outline: none;
+  transform: translateY(-1px);
+  box-shadow: var(--op-shadow-lg);
+}
+
+.readinessCard:active {
+  transform: scale(0.96);
+}
+
+.readinessIcon {
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 13px;
+  background: var(--op-info-soft);
+  color: var(--op-info);
+}
+
+.readiness-blocked .readinessIcon {
+  background: rgba(239, 68, 68, 0.14);
+  color: var(--op-error);
+}
+
+.readiness-watch .readinessIcon {
+  background: var(--op-action-soft);
+  color: var(--op-action-strong);
+}
+
+.readinessBody {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.readinessTitle {
+  color: var(--op-ink);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.readinessPosition,
+.readinessEvidence {
+  color: var(--op-muted-strong);
+  font-size: 12px;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+.readinessTags {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.readinessEmpty {
+  min-height: 92px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--op-muted-strong);
+  text-align: center;
+}
+
+.focusWorkspace {
+  min-width: 0;
+  padding: 18px;
+  border-radius: 20px;
+  background: var(--op-surface);
+  box-shadow: var(--op-shadow-md);
+}
+
+.focusPosition {
+  margin: 6px 0 0;
+  color: var(--op-muted-strong);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.focusTags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 12px 0;
+}
+
+.focusEvidence {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 14px 0;
+}
+
+.focusEvidenceRow {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--op-layout-bg);
+  color: var(--op-muted-strong);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.focusActions {
+  width: 100%;
+}
+
+@media (max-width: 900px) {
+  .readinessList {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 700px) {
+  .readinessList {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .readinessCard {
+    transition: none;
+  }
+}
