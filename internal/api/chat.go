@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/offercontext/offerpilot/internal/ai"
+	chatapp "github.com/offercontext/offerpilot/internal/app/chat"
 	mockapp "github.com/offercontext/offerpilot/internal/app/mock"
 	"github.com/offercontext/offerpilot/internal/config"
 	"github.com/offercontext/offerpilot/internal/db"
@@ -34,29 +35,6 @@ type chatRequestBody struct {
 type confirmRequestBody struct {
 	ConversationID int64 `json:"conversation_id"`
 	Approved       bool  `json:"approved"`
-}
-
-// toAIMessages converts stored messages into the protocol-agnostic form,
-// prepending the system prompt.
-func toAIMessages(stored []db.ChatMessage, systemPrompt string) []ai.Message {
-	out := []ai.Message{{Role: ai.RoleSystem, Content: systemPrompt}}
-	for _, m := range stored {
-		msg := ai.Message{Role: ai.Role(m.Role), Content: m.Content, ToolCallID: m.ToolCallID}
-		if m.ToolCalls != "" {
-			var tcs []ai.ToolCall
-			if json.Unmarshal([]byte(m.ToolCalls), &tcs) == nil {
-				msg.ToolCalls = tcs
-			}
-		}
-		if m.ProviderBlocks != "" {
-			var blocks []json.RawMessage
-			if json.Unmarshal([]byte(m.ProviderBlocks), &blocks) == nil {
-				msg.ProviderBlocks = blocks
-			}
-		}
-		out = append(out, msg)
-	}
-	return out
 }
 
 // systemPromptFor picks the system prompt for a conversation. For nego_coach
@@ -182,7 +160,7 @@ func runChat(w http.ResponseWriter, r *http.Request, database *db.Database, mode
 		if body.OfferID != nil {
 			mode = "nego_coach"
 		}
-		title := titleFrom(body.Message)
+		title := chatapp.TitleFromMessage(body.Message)
 		if body.OfferID != nil {
 			if o, err := database.GetOffer(*body.OfferID); err == nil {
 				title = o.CompanyName + " 谈薪"
@@ -219,7 +197,7 @@ func runChat(w http.ResponseWriter, r *http.Request, database *db.Database, mode
 	}
 	reg := ai.NewRegistry(database)
 	systemPrompt := systemPromptFor(database, conv)
-	added, reply, pending, err := ai.RunTurn(r.Context(), model, reg, toAIMessages(stored, systemPrompt), autoApprove, ai.DefaultMaxIterations)
+	added, reply, pending, err := ai.RunTurn(r.Context(), model, reg, chatapp.ToAIMessages(stored, systemPrompt), autoApprove, ai.DefaultMaxIterations)
 
 	if errors.Is(err, ai.ErrToolsUnsupported) && fallbackClient != nil {
 		text, ferr := ai.RunSummaryFallback(r.Context(), fallbackClient, database, body.Message)
@@ -305,7 +283,7 @@ func runConfirm(w http.ResponseWriter, r *http.Request, database *db.Database, m
 		return
 	}
 	systemPrompt := systemPromptFor(database, conv)
-	added, reply, newPending, err := ai.ResumeAfterConfirm(r.Context(), model, reg, toAIMessages(stored, systemPrompt), pending, body.Approved, autoApprove, ai.DefaultMaxIterations)
+	added, reply, newPending, err := ai.ResumeAfterConfirm(r.Context(), model, reg, chatapp.ToAIMessages(stored, systemPrompt), pending, body.Approved, autoApprove, ai.DefaultMaxIterations)
 	if err != nil {
 		respondError(w, http.StatusBadGateway, err.Error())
 		return
