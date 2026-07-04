@@ -794,6 +794,11 @@
   color: var(--op-info);
 }
 
+.readiness-ready .readinessIcon {
+  background: var(--op-info-soft);
+  color: var(--op-info);
+}
+
 .readiness-blocked .readinessIcon {
   background: rgba(239, 68, 68, 0.14);
   color: var(--op-error);
@@ -898,5 +903,12 @@
 @media (prefers-reduced-motion: reduce) {
   .readinessCard {
     transition: none;
+  }
+
+  .readinessCard:hover,
+  .readinessCard:focus-visible,
+  .readinessActive,
+  .readinessCard:active {
+    transform: none;
   }
 }
