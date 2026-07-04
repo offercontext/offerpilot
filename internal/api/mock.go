@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/offercontext/offerpilot/internal/ai"
+	mockapp "github.com/offercontext/offerpilot/internal/app/mock"
 	"github.com/offercontext/offerpilot/internal/config"
 	"github.com/offercontext/offerpilot/internal/db"
 )
@@ -94,21 +95,6 @@ func loadMockContext(database *db.Database, sess *db.MockSession) ai.MockContext
 	return ctx
 }
 
-// mockTitleFor derives a session title from config (used when title empty).
-func mockTitleFor(s *db.MockSession) string {
-	if s.Title != "" {
-		return s.Title
-	}
-	name := s.Role
-	if name == "" {
-		name = "模拟面试"
-	}
-	if s.Company != "" {
-		name = s.Company + " · " + name
-	}
-	return name
-}
-
 func createMockSessionHandler(database *db.Database) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body mockSessionRequestBody
@@ -121,9 +107,12 @@ func createMockSessionHandler(database *db.Database) http.HandlerFunc {
 			return
 		}
 
-		conv, err := database.CreateConversationWithMode(mockTitleFor(&db.MockSession{
-			Title: body.Title, Role: body.Role, Company: body.Company,
-		}), "mock_interview", nil)
+		title := mockapp.TitleForSessionConfig(mockapp.SessionConfig{
+			Title:   body.Title,
+			Role:    body.Role,
+			Company: body.Company,
+		})
+		conv, err := database.CreateConversationWithMode(title, "mock_interview", nil)
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -150,9 +139,9 @@ func createMockSessionHandler(database *db.Database) http.HandlerFunc {
 			return
 		}
 		respondJSON(w, http.StatusCreated, map[string]interface{}{
-			"session":          sess,
-			"conversation_id":  conv.ID,
-			"conversation":     conv,
+			"session":         sess,
+			"conversation_id": conv.ID,
+			"conversation":    conv,
 		})
 	}
 }
@@ -194,8 +183,8 @@ func getMockSessionHandler(database *db.Database) http.HandlerFunc {
 			msgs = []db.ChatMessage{}
 		}
 		respondJSON(w, http.StatusOK, map[string]interface{}{
-			"session":     sess,
-			"messages":    msgs,
+			"session":  sess,
+			"messages": msgs,
 		})
 	}
 }
@@ -256,8 +245,8 @@ func endMockSessionHandlerWithScorer(database *db.Database, scorer scorerFunc) h
 				return
 			}
 			respondJSON(w, http.StatusOK, map[string]interface{}{
-				"session":      sess,
-				"feedback":     parseStoredFeedback(sess.Feedback),
+				"session":       sess,
+				"feedback":      parseStoredFeedback(sess.Feedback),
 				"saved_note_id": noteID,
 			})
 			return
