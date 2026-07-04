@@ -77,14 +77,11 @@ export default function DashboardView({ onNavigate, onOpenDetailById, onAddAppli
   const events = eventsQ.data ?? [];
   const offers = offersQ.data ?? [];
 
-  const activeApplicationIds = useMemo(
-    () =>
-      apps
-        .filter((app) => ['applied', 'assessment', 'written_test', 'interview', 'offer'].includes(app.status))
-        .slice(0, 8)
-        .map((app) => app.id),
+  const activeApplications = useMemo(
+    () => apps.filter((app) => ['applied', 'assessment', 'written_test', 'interview', 'offer'].includes(app.status)),
     [apps],
   );
+  const activeApplicationIds = useMemo(() => activeApplications.slice(0, 8).map((app) => app.id), [activeApplications]);
 
   const materialKitsQ = useQuery({
     queryKey: ['mission-control', 'material-kits', activeApplicationIds],
@@ -95,6 +92,8 @@ export default function DashboardView({ onNavigate, onOpenDetailById, onAddAppli
     enabled: activeApplicationIds.length > 0,
     retry: false,
   });
+  const hasPartialMaterialKitCoverage = activeApplications.length > activeApplicationIds.length;
+  const missionMaterialKits = hasPartialMaterialKitCoverage ? undefined : materialKitsQ.data;
 
   const kpis = useMemo(() => computeKpis(apps, now), [apps, now]);
   const funnel = useMemo(() => computeFunnel(apps), [apps]);
@@ -110,14 +109,14 @@ export default function DashboardView({ onNavigate, onOpenDetailById, onAddAppli
         apps,
         events,
         offers,
-        materialKits: materialKitsQ.data,
+        materialKits: missionMaterialKits,
         practiceStats: practiceStatsQ.data,
         insights,
         healthLabel: health.label,
         weeklyTarget: 6,
         now,
       }),
-    [apps, events, offers, materialKitsQ.data, practiceStatsQ.data, insights, health.label, now],
+    [apps, events, offers, missionMaterialKits, practiceStatsQ.data, insights, health.label, now],
   );
 
   const effectiveFocusApplicationId = focusApplicationId ?? mission.focusApplicationId;
@@ -140,10 +139,10 @@ export default function DashboardView({ onNavigate, onOpenDetailById, onAddAppli
   }, [selectedInsight, selectedInsightId]);
 
   useEffect(() => {
-    if (focusApplicationId && !apps.some((app) => app.id === focusApplicationId)) {
+    if (focusApplicationId && !mission.readiness.some((item) => item.applicationId === focusApplicationId)) {
       setFocusApplicationId(undefined);
     }
-  }, [apps, focusApplicationId]);
+  }, [focusApplicationId, mission.readiness]);
 
   const handleAction = (item: PipelineInsight) => {
     setSelectedInsightId(item.id);
