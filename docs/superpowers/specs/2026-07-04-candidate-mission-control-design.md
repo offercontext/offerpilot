@@ -346,6 +346,6 @@ During research, several non-feature improvements stood out:
 - Chinese copy appears garbled in multiple source files and should be repaired before large copy-heavy work.
 - Vite still reports large chunks after lazy-loading major views; manual chunking or further lazy modal loading should be considered.
 - `npm install` reports 5 audit vulnerabilities; dependency upgrades need a separate risk-managed pass.
-- README says React 19 while `package.json` currently uses React 18.3.1; documentation should be corrected or dependency intent clarified.
+- README now aligns the frontend stack with `package.json` by documenting React 18.
 
 These items should not block Mission Control, but they are likely to affect perceived quality and maintainability.
