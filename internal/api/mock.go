@@ -281,18 +281,7 @@ func buildTranscript(database *db.Database, convID int64) string {
 	if err != nil {
 		return ""
 	}
-	var b strings.Builder
-	for _, m := range msgs {
-		if m.Content == "" || m.Role == "tool" {
-			continue
-		}
-		who := "候选人"
-		if m.Role == "assistant" {
-			who = "面试官"
-		}
-		b.WriteString(who + "：" + m.Content + "\n")
-	}
-	return strings.TrimSpace(b.String())
+	return mockapp.BuildTranscript(msgs)
 }
 
 func todayString() string {
