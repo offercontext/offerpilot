@@ -354,13 +354,6 @@ func todayString() string {
 	return time.Now().Format("2006-01-02")
 }
 
-func joinWeaknesses(ws []string) string {
-	if len(ws) == 0 {
-		return ""
-	}
-	return "待加强：" + strings.Join(ws, "；")
-}
-
 func defaultIfEmpty(s, def string) string {
 	if s == "" {
 		return def
@@ -375,33 +368,17 @@ func defaultIfEmpty(s, def string) string {
 // (interview_notes.application_id is nullable). Returns (nil, nil) only if no
 // noteable content exists.
 func createMockNote(database *db.Database, sess *db.MockSession, summary string, weaknesses []string) (*db.InterviewNote, error) {
-	company := sess.Company
-	position := sess.Role
-	// When bound to an application, fill any missing company/position from it.
-	if sess.ApplicationID != nil && (company == "" || position == "") {
-		if app, aerr := database.GetApplication(*sess.ApplicationID); aerr == nil && app != nil {
-			if company == "" {
-				company = app.CompanyName
-			}
-			if position == "" {
-				position = app.PositionName
-			}
-		}
+	var app *db.Application
+	if sess.ApplicationID != nil {
+		app, _ = database.GetApplication(*sess.ApplicationID)
 	}
-	// Without an application, fall back to the round type as position so the
-	// note still has a meaningful identity in the review list.
-	if position == "" {
-		position = "模拟面试"
-	}
-	n := &db.InterviewNote{
-		ApplicationID:    sess.ApplicationID, // may be nil → NULL column
-		Company:          company,
-		Position:         position,
-		Round:            "模拟面试·" + sess.RoundType,
-		Date:             todayString(),
-		SelfReflection:   summary,
-		DifficultyPoints: joinWeaknesses(weaknesses),
-	}
+	n := mockapp.BuildReviewNote(mockapp.ReviewNoteInput{
+		Session:     *sess,
+		Application: app,
+		Summary:     summary,
+		Weaknesses:  weaknesses,
+		Today:       todayString(),
+	})
 	if err := database.CreateInterviewNote(n); err != nil {
 		return nil, err
 	}

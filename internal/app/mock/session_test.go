@@ -1,6 +1,10 @@
 package mock
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/offercontext/offerpilot/internal/db"
+)
 
 func TestTitleForSessionConfig(t *testing.T) {
 	tests := []struct {
@@ -36,5 +40,59 @@ func TestTitleForSessionConfig(t *testing.T) {
 				t.Fatalf("TitleForSessionConfig() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestBuildReviewNoteFillsApplicationIdentity(t *testing.T) {
+	appID := int64(42)
+	note := BuildReviewNote(ReviewNoteInput{
+		Session: db.MockSession{
+			ApplicationID: &appID,
+			RoundType:     "technical",
+		},
+		Application: &db.Application{
+			CompanyName:  "ByteDance",
+			PositionName: "Backend",
+		},
+		Summary:    "Solid basics",
+		Weaknesses: []string{"system design", "follow-up depth"},
+		Today:      "2026-07-04",
+	})
+
+	if note.ApplicationID == nil || *note.ApplicationID != appID {
+		t.Fatalf("ApplicationID = %v, want %d", note.ApplicationID, appID)
+	}
+	if note.Company != "ByteDance" || note.Position != "Backend" {
+		t.Fatalf("identity = %q/%q, want ByteDance/Backend", note.Company, note.Position)
+	}
+	if note.Round != DefaultSessionTitle+"·technical" {
+		t.Fatalf("Round = %q", note.Round)
+	}
+	if note.Date != "2026-07-04" || note.SelfReflection != "Solid basics" {
+		t.Fatalf("note content wrong: %+v", note)
+	}
+	if note.DifficultyPoints != "待加强：system design；follow-up depth" {
+		t.Fatalf("DifficultyPoints = %q", note.DifficultyPoints)
+	}
+}
+
+func TestBuildReviewNoteSupportsUnboundSession(t *testing.T) {
+	note := BuildReviewNote(ReviewNoteInput{
+		Session: db.MockSession{RoundType: "hr"},
+		Summary: "Needs practice",
+		Today:   "2026-07-04",
+	})
+
+	if note.ApplicationID != nil {
+		t.Fatalf("ApplicationID = %v, want nil", note.ApplicationID)
+	}
+	if note.Position != DefaultSessionTitle {
+		t.Fatalf("Position = %q, want %q", note.Position, DefaultSessionTitle)
+	}
+	if note.Round != DefaultSessionTitle+"·hr" {
+		t.Fatalf("Round = %q", note.Round)
+	}
+	if note.DifficultyPoints != "" {
+		t.Fatalf("DifficultyPoints = %q, want empty", note.DifficultyPoints)
 	}
 }
