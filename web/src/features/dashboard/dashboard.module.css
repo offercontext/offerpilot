@@ -545,3 +545,166 @@
     grid-template-columns: 1fr;
   }
 }
+
+.todayActionPlan {
+  min-width: 0;
+  padding: 18px;
+  border-radius: 20px;
+  background: var(--op-surface);
+  box-shadow: var(--op-shadow-md);
+}
+
+.sectionHeaderLine {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.sectionHeading {
+  margin: 4px 0 0;
+  color: var(--op-ink);
+  font-size: 18px;
+  line-height: 1.25;
+  text-wrap: balance;
+}
+
+.textButton {
+  min-height: 40px;
+  border: none;
+  padding: 0 8px;
+  background: transparent;
+  color: var(--op-primary-strong);
+  font-weight: 700;
+  cursor: pointer;
+  transition-property: color, opacity;
+  transition-duration: 0.18s;
+  transition-timing-function: var(--op-ease);
+}
+
+.textButton:hover,
+.textButton:focus-visible {
+  color: var(--op-primary);
+  outline: none;
+}
+
+.compactEmpty {
+  padding: 24px 8px;
+}
+
+.actionPlanGroups {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.actionPlanGroupTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: var(--op-ink);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.actionPlanList {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.planActionRow {
+  width: 100%;
+  min-height: 76px;
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  border: none;
+  border-radius: 16px;
+  padding: 12px;
+  background: var(--op-layout-bg);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  animation: actionIn 0.24s var(--op-ease) both;
+  box-shadow: 0 0 0 1px rgba(31, 29, 58, 0.05);
+  transition-property: transform, box-shadow, background-color;
+  transition-duration: 0.18s;
+  transition-timing-function: var(--op-ease);
+}
+
+.planActionRow:hover,
+.planActionRow:focus-visible {
+  outline: none;
+  transform: translateY(-1px);
+  background: var(--op-action-soft);
+  box-shadow: var(--op-shadow-lg);
+}
+
+.planActionRow:active {
+  transform: scale(0.96);
+}
+
+.planPriority {
+  width: 42px;
+  height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 14px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.p0 .planPriority {
+  background: var(--op-error);
+  color: var(--op-on-danger);
+}
+
+.p1 .planPriority {
+  background: var(--op-warning);
+  color: var(--op-on-warning);
+}
+
+.p2 .planPriority {
+  background: var(--op-primary);
+  color: var(--op-on-primary);
+}
+
+.planActionBody {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.planActionTitle {
+  color: var(--op-ink);
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.4;
+}
+
+.planActionReason,
+.planActionEvidence {
+  color: var(--op-muted-strong);
+  font-size: 12px;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+.planActionEvidence {
+  color: var(--op-muted);
+}
+
+.planActionCta {
+  max-width: 124px;
+  color: var(--op-primary-strong);
+  font-size: 12px;
+  font-weight: 800;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
