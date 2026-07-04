@@ -6,13 +6,10 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
-	"strings"
-	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/offercontext/offerpilot/internal/ai"
 	chatapp "github.com/offercontext/offerpilot/internal/app/chat"
-	mockapp "github.com/offercontext/offerpilot/internal/app/mock"
 	"github.com/offercontext/offerpilot/internal/config"
 	"github.com/offercontext/offerpilot/internal/db"
 )
@@ -35,70 +32,6 @@ type chatRequestBody struct {
 type confirmRequestBody struct {
 	ConversationID int64 `json:"conversation_id"`
 	Approved       bool  `json:"approved"`
-}
-
-// systemPromptFor picks the system prompt for a conversation. For nego_coach
-// mode it embeds the bound offer snapshot plus related context (application
-// notes + interview reviews). For mock_interview mode it embeds the bound mock
-// session config plus assembled question/knowledge/weak-point context. Falls
-// back to the general assistant prompt otherwise.
-func systemPromptFor(database *db.Database, conv *db.Conversation) string {
-	if conv == nil {
-		return ai.ChatSystemPrompt
-	}
-	switch conv.Mode {
-	case "nego_coach":
-		if conv.OfferID == nil {
-			return ai.ChatSystemPrompt
-		}
-		offer, err := database.GetOffer(*conv.OfferID)
-		if err != nil {
-			return ai.ChatSystemPrompt
-		}
-		related := buildOfferContext(database, offer)
-		return ai.NegoCoachPrompt(offer, related)
-	case "mock_interview":
-		sess, err := database.GetMockSessionByConversation(conv.ID)
-		if err != nil || sess == nil {
-			return ai.MockInterviewerPromptFallback
-		}
-		return ai.MockInterviewerPrompt(sess, mockapp.BuildContext(database, sess))
-	default:
-		return ai.ChatSystemPrompt
-	}
-}
-
-// buildOfferContext gathers a lightweight text summary of data related to the
-// offer's application (notes + interview reviews) for prompt injection.
-func buildOfferContext(database *db.Database, offer *db.Offer) string {
-	if offer.ApplicationID == nil {
-		return ""
-	}
-	var b strings.Builder
-	app, err := database.GetApplication(*offer.ApplicationID)
-	if err == nil && app != nil {
-		if app.Notes != "" {
-			b.WriteString("投递备注：" + app.Notes + "\n")
-		}
-	}
-	notes, err := database.ListInterviewNotes(*offer.ApplicationID)
-	if err == nil {
-		for _, n := range notes {
-			if n.DifficultyPoints != "" || n.SelfReflection != "" {
-				b.WriteString("面试复盘（" + n.Round + "）：" + n.SelfReflection + " " + n.DifficultyPoints + "\n")
-			}
-		}
-	}
-	return strings.TrimSpace(b.String())
-}
-
-func titleFrom(msg string) string {
-	const max = 20
-	if utf8.RuneCountInString(msg) <= max {
-		return msg
-	}
-	rs := []rune(msg)
-	return string(rs[:max]) + "…"
 }
 
 // chatHandler is the production handler; it builds a real AI client from config.
@@ -177,7 +110,7 @@ func runChat(w http.ResponseWriter, r *http.Request, database *db.Database, mode
 		return
 	}
 	reg := ai.NewRegistry(database)
-	systemPrompt := systemPromptFor(database, conv)
+	systemPrompt := chatapp.SystemPromptFor(database, conv)
 	added, reply, pending, err := ai.RunTurn(r.Context(), model, reg, chatapp.ToAIMessages(stored, systemPrompt), autoApprove, ai.DefaultMaxIterations)
 
 	if errors.Is(err, ai.ErrToolsUnsupported) && fallbackClient != nil {
@@ -263,7 +196,7 @@ func runConfirm(w http.ResponseWriter, r *http.Request, database *db.Database, m
 		respondError(w, http.StatusInternalServerError, cerr.Error())
 		return
 	}
-	systemPrompt := systemPromptFor(database, conv)
+	systemPrompt := chatapp.SystemPromptFor(database, conv)
 	added, reply, newPending, err := ai.ResumeAfterConfirm(r.Context(), model, reg, chatapp.ToAIMessages(stored, systemPrompt), pending, body.Approved, autoApprove, ai.DefaultMaxIterations)
 	if err != nil {
 		respondError(w, http.StatusBadGateway, err.Error())
