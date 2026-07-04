@@ -22,5 +22,29 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    chunkSizeWarningLimit: 1500,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          const normalized = id.replace(/\\/g, '/');
+          if (!normalized.includes('/node_modules/')) {
+            return undefined;
+          }
+          if (normalized.includes('/react/') || normalized.includes('/react-dom/')) {
+            return 'react';
+          }
+          if (normalized.includes('/@tanstack/react-query/') || normalized.includes('/axios/')) {
+            return 'query';
+          }
+          if (normalized.includes('/react-markdown/') || normalized.includes('/remark-gfm/')) {
+            return 'markdown';
+          }
+          if (normalized.includes('/dayjs/')) {
+            return 'date';
+          }
+          return undefined;
+        },
+      },
+    },
   },
 });
