@@ -419,6 +419,12 @@
   gap: 12px;
 }
 
+@media (max-width: 900px) {
+  .weeklyMissionPanel {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .missionMetric {
   min-height: 112px;
   display: grid;
@@ -519,4 +525,23 @@
 .metric-on_track .metricState {
   background: var(--op-info-soft);
   color: var(--op-info);
+}
+
+@media (max-width: 700px) {
+  .missionHeader {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .missionHeaderAction {
+    width: 100%;
+  }
+
+  .missionHeaderAction :global(.ant-btn) {
+    width: 100%;
+  }
+
+  .weeklyMissionPanel {
+    grid-template-columns: 1fr;
+  }
 }
