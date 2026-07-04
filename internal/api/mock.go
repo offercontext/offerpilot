@@ -118,22 +118,19 @@ func createMockSessionHandler(database *db.Database) http.HandlerFunc {
 			return
 		}
 
-		sess := &db.MockSession{
+		sess := mockapp.BuildSessionDraft(mockapp.SessionDraftInput{
 			ConversationID:  conv.ID,
 			ApplicationID:   body.ApplicationID,
 			Title:           conv.Title,
 			Role:            body.Role,
 			Company:         body.Company,
-			RoundType:       defaultIfEmpty(body.RoundType, "technical"),
-			Difficulty:      defaultIfEmpty(body.Difficulty, "medium"),
+			RoundType:       body.RoundType,
+			Difficulty:      body.Difficulty,
 			QuestionCount:   body.QuestionCount,
 			DurationMin:     body.DurationMin,
-			QuestionSource:  defaultIfEmpty(body.QuestionSource, "mixed"),
+			QuestionSource:  body.QuestionSource,
 			KnowledgeBaseID: body.KnowledgeBaseID,
-		}
-		if sess.QuestionCount == 0 {
-			sess.QuestionCount = 5
-		}
+		})
 		if err := database.CreateMockSession(sess); err != nil {
 			respondError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -352,13 +349,6 @@ func buildTranscript(database *db.Database, convID int64) string {
 
 func todayString() string {
 	return time.Now().Format("2006-01-02")
-}
-
-func defaultIfEmpty(s, def string) string {
-	if s == "" {
-		return def
-	}
-	return s
 }
 
 // createMockNote builds and persists an interview-retrospective note from a

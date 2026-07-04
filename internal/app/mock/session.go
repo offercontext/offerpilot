@@ -14,6 +14,20 @@ type SessionConfig struct {
 	Company string
 }
 
+type SessionDraftInput struct {
+	ConversationID  int64
+	ApplicationID   *int64
+	Title           string
+	Role            string
+	Company         string
+	RoundType       string
+	Difficulty      string
+	QuestionCount   int
+	DurationMin     int
+	QuestionSource  string
+	KnowledgeBaseID *int64
+}
+
 type ReviewNoteInput struct {
 	Session     db.MockSession
 	Application *db.Application
@@ -34,6 +48,26 @@ func TitleForSessionConfig(cfg SessionConfig) string {
 		name = cfg.Company + " · " + name
 	}
 	return name
+}
+
+func BuildSessionDraft(input SessionDraftInput) *db.MockSession {
+	questionCount := input.QuestionCount
+	if questionCount == 0 {
+		questionCount = 5
+	}
+	return &db.MockSession{
+		ConversationID:  input.ConversationID,
+		ApplicationID:   input.ApplicationID,
+		Title:           input.Title,
+		Role:            input.Role,
+		Company:         input.Company,
+		RoundType:       defaultString(input.RoundType, "technical"),
+		Difficulty:      defaultString(input.Difficulty, "medium"),
+		QuestionCount:   questionCount,
+		DurationMin:     input.DurationMin,
+		QuestionSource:  defaultString(input.QuestionSource, "mixed"),
+		KnowledgeBaseID: input.KnowledgeBaseID,
+	}
 }
 
 func BuildReviewNote(input ReviewNoteInput) *db.InterviewNote {
@@ -59,6 +93,13 @@ func BuildReviewNote(input ReviewNoteInput) *db.InterviewNote {
 		SelfReflection:   input.Summary,
 		DifficultyPoints: joinWeaknesses(input.Weaknesses),
 	}
+}
+
+func defaultString(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
 }
 
 func joinWeaknesses(ws []string) string {

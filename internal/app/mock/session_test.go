@@ -43,6 +43,62 @@ func TestTitleForSessionConfig(t *testing.T) {
 	}
 }
 
+func TestBuildSessionDraftAppliesDefaults(t *testing.T) {
+	appID := int64(7)
+	kbID := int64(11)
+
+	session := BuildSessionDraft(SessionDraftInput{
+		ConversationID:  99,
+		ApplicationID:   &appID,
+		Title:           "ByteDance · Backend",
+		Role:            "Backend",
+		Company:         "ByteDance",
+		KnowledgeBaseID: &kbID,
+	})
+
+	if session.ConversationID != 99 || session.ApplicationID == nil || *session.ApplicationID != appID {
+		t.Fatalf("conversation/application binding wrong: %+v", session)
+	}
+	if session.Title != "ByteDance · Backend" || session.Role != "Backend" || session.Company != "ByteDance" {
+		t.Fatalf("identity wrong: %+v", session)
+	}
+	if session.RoundType != "technical" {
+		t.Fatalf("RoundType = %q, want technical", session.RoundType)
+	}
+	if session.Difficulty != "medium" {
+		t.Fatalf("Difficulty = %q, want medium", session.Difficulty)
+	}
+	if session.QuestionCount != 5 {
+		t.Fatalf("QuestionCount = %d, want 5", session.QuestionCount)
+	}
+	if session.QuestionSource != "mixed" {
+		t.Fatalf("QuestionSource = %q, want mixed", session.QuestionSource)
+	}
+	if session.DurationMin != 0 || session.KnowledgeBaseID == nil || *session.KnowledgeBaseID != kbID {
+		t.Fatalf("duration/knowledge base wrong: %+v", session)
+	}
+}
+
+func TestBuildSessionDraftPreservesExplicitValues(t *testing.T) {
+	session := BuildSessionDraft(SessionDraftInput{
+		ConversationID: 77,
+		Title:          "Custom",
+		Role:           "Staff Engineer",
+		RoundType:      "behavioral",
+		Difficulty:     "hard",
+		QuestionCount:  9,
+		DurationMin:    45,
+		QuestionSource: "bank",
+	})
+
+	if session.RoundType != "behavioral" || session.Difficulty != "hard" {
+		t.Fatalf("explicit round/difficulty not preserved: %+v", session)
+	}
+	if session.QuestionCount != 9 || session.DurationMin != 45 || session.QuestionSource != "bank" {
+		t.Fatalf("explicit numeric/source values not preserved: %+v", session)
+	}
+}
+
 func TestBuildReviewNoteFillsApplicationIdentity(t *testing.T) {
 	appID := int64(42)
 	note := BuildReviewNote(ReviewNoteInput{
