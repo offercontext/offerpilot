@@ -214,16 +214,8 @@ func endMockSessionHandlerWithScorer(database *db.Database, scorer scorerFunc) h
 			return
 		}
 
-		fb, parseErr := ai.ParseScoringResult(raw)
-		scores := db.MockScores{
-			ScoreOverall:       fb.ScoreOverall,
-			ScoreCommunication: fb.ScoreCommunication,
-			ScoreDepth:         fb.ScoreDepth,
-			ScoreStructure:     fb.ScoreStructure,
-			ScoreConfidence:    fb.ScoreConfidence,
-		}
-		feedbackJSON, _ := json.Marshal(fb)
-		if err := database.FinishMockSession(id, scores, string(feedbackJSON)); err != nil {
+		outcome := mockapp.BuildScoringOutcome(raw)
+		if err := database.FinishMockSession(id, outcome.Scores, outcome.FeedbackJSON); err != nil {
 			respondError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -232,7 +224,7 @@ func endMockSessionHandlerWithScorer(database *db.Database, scorer scorerFunc) h
 		// unbound sessions; interview_notes.application_id is nullable).
 		noteID := int64(0)
 		if body.AutoSaveNote {
-			if n, _ := createMockNote(database, sess, fb.Summary, fb.Weaknesses); n != nil {
+			if n, _ := createMockNote(database, sess, outcome.Feedback.Summary, outcome.Feedback.Weaknesses); n != nil {
 				noteID = n.ID
 			}
 		}
@@ -240,8 +232,8 @@ func endMockSessionHandlerWithScorer(database *db.Database, scorer scorerFunc) h
 		done, _ := database.GetMockSession(id)
 		resp := map[string]interface{}{
 			"session":     done,
-			"feedback":    fb,
-			"parse_error": parseErr != nil,
+			"feedback":    outcome.Feedback,
+			"parse_error": outcome.ParseError,
 		}
 		if noteID > 0 {
 			resp["saved_note_id"] = noteID
