@@ -5,6 +5,7 @@ import dayjs from 'dayjs';
 import { listApplications } from '@/services/applications';
 import { listEvents } from '@/services/events';
 import { listOffers } from '@/services/offers';
+import { getApplicationMaterialKit } from '@/services/materialKits';
 import { getPracticeStats } from '@/services/questions';
 import {
   derivePipelineInsights,
@@ -12,14 +13,20 @@ import {
   type ActionCommand,
   type PipelineInsight,
 } from '@/lib/pipelineInsights';
+import { deriveMissionControl } from '@/lib/missionControl';
 import { computeKpis, computeFunnel, computeMomentum } from '@/lib/insights';
 import type { ViewMode } from '@/layout/AppShell';
+import type { MaterialKitViewModel } from '@/types/materialKit';
 import ActionDetailDrawer from '@/features/pipeline/ActionDetailDrawer';
 import KpiCards from './widgets/KpiCards';
 import ConversionFunnel from './widgets/ConversionFunnel';
 import MomentumChart from './widgets/MomentumChart';
 import UpcomingSchedule from './widgets/UpcomingSchedule';
-import CommandCenter from './widgets/CommandCenter';
+import MissionHeader from './widgets/MissionHeader';
+import WeeklyMissionPanel from './widgets/WeeklyMissionPanel';
+import TodayActionPlan from './widgets/TodayActionPlan';
+import ApplicationReadinessStrip from './widgets/ApplicationReadinessStrip';
+import FocusWorkspace from './widgets/FocusWorkspace';
 import styles from './dashboard.module.css';
 
 type DetailAction = ActionCommand & { id?: string };
@@ -50,6 +57,7 @@ interface Props {
 export default function DashboardView({ onNavigate, onOpenDetailById, onAddApplication }: Props) {
   const [now, setNow] = useState(() => dayjs());
   const [selectedInsightId, setSelectedInsightId] = useState<string | null>(null);
+  const [focusApplicationId, setFocusApplicationId] = useState<number | undefined>(undefined);
 
   useEffect(() => {
     const id = window.setInterval(() => setNow(dayjs()), 60_000);
@@ -69,6 +77,25 @@ export default function DashboardView({ onNavigate, onOpenDetailById, onAddAppli
   const events = eventsQ.data ?? [];
   const offers = offersQ.data ?? [];
 
+  const activeApplicationIds = useMemo(
+    () =>
+      apps
+        .filter((app) => ['applied', 'assessment', 'written_test', 'interview', 'offer'].includes(app.status))
+        .slice(0, 8)
+        .map((app) => app.id),
+    [apps],
+  );
+
+  const materialKitsQ = useQuery({
+    queryKey: ['mission-control', 'material-kits', activeApplicationIds],
+    queryFn: async () => {
+      const kits = await Promise.all(activeApplicationIds.map((id) => getApplicationMaterialKit(id)));
+      return kits.filter((kit): kit is MaterialKitViewModel => Boolean(kit));
+    },
+    enabled: activeApplicationIds.length > 0,
+    retry: false,
+  });
+
   const kpis = useMemo(() => computeKpis(apps, now), [apps, now]);
   const funnel = useMemo(() => computeFunnel(apps), [apps]);
   const momentum = useMemo(() => computeMomentum(apps, 4, now), [apps, now]);
@@ -77,6 +104,30 @@ export default function DashboardView({ onNavigate, onOpenDetailById, onAddAppli
     [apps, events, offers, practiceStatsQ.data, now],
   );
   const health = useMemo(() => summarizePipelineHealth(apps, insights, 6, now), [apps, insights, now]);
+  const mission = useMemo(
+    () =>
+      deriveMissionControl({
+        apps,
+        events,
+        offers,
+        materialKits: materialKitsQ.data,
+        practiceStats: practiceStatsQ.data,
+        insights,
+        healthLabel: health.label,
+        weeklyTarget: 6,
+        now,
+      }),
+    [apps, events, offers, materialKitsQ.data, practiceStatsQ.data, insights, health.label, now],
+  );
+
+  const effectiveFocusApplicationId = focusApplicationId ?? mission.focusApplicationId;
+  const focusApplication = effectiveFocusApplicationId
+    ? apps.find((app) => app.id === effectiveFocusApplicationId)
+    : undefined;
+  const focusReadiness = effectiveFocusApplicationId
+    ? mission.readiness.find((item) => item.applicationId === effectiveFocusApplicationId)
+    : undefined;
+  const nextMissionAction = mission.actions[0];
   const selectedInsight = useMemo(
     () => insights.find((item) => item.id === selectedInsightId) ?? null,
     [insights, selectedInsightId],
@@ -87,6 +138,12 @@ export default function DashboardView({ onNavigate, onOpenDetailById, onAddAppli
       setSelectedInsightId(null);
     }
   }, [selectedInsight, selectedInsightId]);
+
+  useEffect(() => {
+    if (focusApplicationId && !apps.some((app) => app.id === focusApplicationId)) {
+      setFocusApplicationId(undefined);
+    }
+  }, [apps, focusApplicationId]);
 
   const handleAction = (item: PipelineInsight) => {
     setSelectedInsightId(item.id);
@@ -129,28 +186,45 @@ export default function DashboardView({ onNavigate, onOpenDetailById, onAddAppli
   return (
     <>
       <div className={styles.grid}>
-      <CommandCenter
-        items={insights}
-        health={health}
-        onAction={handleAction}
-        onAddApplication={onAddApplication}
-        onOpenQuestions={() => onNavigate('questions')}
-        onSeeAll={() => onNavigate('reminders')}
-      />
-      <KpiCards kpis={kpis} />
-      <div className={styles.row2b}>
-        <ConversionFunnel stages={funnel} />
-        <MomentumChart buckets={momentum} />
-      </div>
-      <div className={styles.row2b}>
-        <UpcomingSchedule events={events} />
-        <div className={styles.card}>
-          <div className={styles.cardTitle}>行动说明</div>
-          <div className={styles.empty}>
-            今日行动由投递停滞、即将到来的面试、Offer 截止期和到期题目自动推导。
+        <MissionHeader
+          summary={mission}
+          nextAction={nextMissionAction}
+          onRunAction={handleAction}
+          onAddApplication={onAddApplication}
+        />
+        <WeeklyMissionPanel metrics={mission.metrics} onNavigate={onNavigate} />
+        <div className={styles.missionWorkspaceGrid}>
+          <TodayActionPlan
+            groups={mission.actionGroups}
+            onAction={handleAction}
+            onSeeAll={() => onNavigate('reminders')}
+          />
+          <FocusWorkspace
+            application={focusApplication}
+            readiness={focusReadiness}
+            onOpenDetail={onOpenDetailById}
+            onNavigate={onNavigate}
+          />
+        </div>
+        <ApplicationReadinessStrip
+          items={mission.readiness}
+          focusApplicationId={effectiveFocusApplicationId}
+          onFocus={setFocusApplicationId}
+        />
+        <KpiCards kpis={kpis} />
+        <div className={styles.row2b}>
+          <ConversionFunnel stages={funnel} />
+          <MomentumChart buckets={momentum} />
+        </div>
+        <div className={styles.row2b}>
+          <UpcomingSchedule events={events} />
+          <div className={styles.card}>
+            <div className={styles.cardTitle}>行动说明</div>
+            <div className={styles.empty}>
+              今日行动由投递停滞、即将到来的面试、Offer 截止期和到期题目自动推导。
+            </div>
           </div>
         </div>
-      </div>
       </div>
       <ActionDetailDrawer
         insight={selectedInsight}
