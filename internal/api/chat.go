@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/offercontext/offerpilot/internal/ai"
+	mockapp "github.com/offercontext/offerpilot/internal/app/mock"
 	"github.com/offercontext/offerpilot/internal/config"
 	"github.com/offercontext/offerpilot/internal/db"
 )
@@ -83,7 +84,7 @@ func systemPromptFor(database *db.Database, conv *db.Conversation) string {
 		if err != nil || sess == nil {
 			return ai.MockInterviewerPromptFallback
 		}
-		return ai.MockInterviewerPrompt(sess, loadMockContext(database, sess))
+		return ai.MockInterviewerPrompt(sess, mockapp.BuildContext(database, sess))
 	default:
 		return ai.ChatSystemPrompt
 	}

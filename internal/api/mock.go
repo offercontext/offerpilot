@@ -43,58 +43,6 @@ type mockSessionRequestBody struct {
 	KnowledgeBaseID *int64 `json:"knowledge_base_id,omitempty"`
 }
 
-// loadMockContext assembles runtime context for the interviewer prompt:
-// picked question-bank questions (by difficulty/KB), knowledge-base chunks,
-// and weak points mined from the bound application's past interview notes.
-func loadMockContext(database *db.Database, sess *db.MockSession) ai.MockContext {
-	ctx := ai.MockContext{}
-
-	// Question bank: when the source uses the bank, pull matching questions.
-	if sess.QuestionSource == "bank" || sess.QuestionSource == "mixed" {
-		f := db.QuestionFilter{Difficulty: sess.Difficulty}
-		if sess.KnowledgeBaseID != nil {
-			f.KnowledgeBaseID = *sess.KnowledgeBaseID
-		}
-		qs, err := database.ListQuestions(f)
-		if err == nil {
-			// Cap to a reasonable pick pool (the model chooses from these).
-			if len(qs) > 12 {
-				qs = qs[:12]
-			}
-			ctx.PickedQuestions = qs
-		}
-	}
-
-	// Knowledge chunks: when the source uses knowledge, pull a few chunks via FTS.
-	if (sess.QuestionSource == "knowledge" || sess.QuestionSource == "mixed") && sess.KnowledgeBaseID != nil {
-		results, err := database.SearchKnowledge(db.KnowledgeSearchFilter{
-			KnowledgeBaseID: *sess.KnowledgeBaseID,
-			Limit:           6,
-		})
-		if err == nil {
-			for _, r := range results {
-				ctx.KnowledgeChunks = append(ctx.KnowledgeChunks, r.Snippet)
-			}
-		}
-	}
-
-	// Weak points from past interview notes on the bound application.
-	if sess.ApplicationID != nil {
-		notes, err := database.ListInterviewNotes(*sess.ApplicationID)
-		if err == nil {
-			for _, n := range notes {
-				if strings.TrimSpace(n.DifficultyPoints) != "" {
-					ctx.WeakPoints = append(ctx.WeakPoints, n.DifficultyPoints)
-					if len(ctx.WeakPoints) >= 6 {
-						break
-					}
-				}
-			}
-		}
-	}
-	return ctx
-}
-
 func createMockSessionHandler(database *db.Database) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body mockSessionRequestBody
