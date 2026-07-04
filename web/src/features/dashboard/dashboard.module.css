@@ -583,10 +583,22 @@
   transition-timing-function: var(--op-ease);
 }
 
-.textButton:hover,
+.textButton:hover {
+  color: var(--op-primary);
+}
+
 .textButton:focus-visible {
   color: var(--op-primary);
-  outline: none;
+  border-radius: 10px;
+  outline: 2px solid var(--op-primary);
+  outline-offset: 3px;
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 4px;
+}
+
+.actionPlanGroup {
+  min-width: 0;
 }
 
 .compactEmpty {
@@ -707,4 +719,22 @@
   font-weight: 800;
   text-align: right;
   overflow-wrap: anywhere;
+}
+
+@media (max-width: 700px) {
+  .planActionRow {
+    grid-template-columns: 42px minmax(0, 1fr);
+  }
+
+  .planActionCta {
+    grid-column: 2;
+    text-align: left;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .planActionRow {
+    animation: none;
+    transition: none;
+  }
 }
