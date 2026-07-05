@@ -99,15 +99,15 @@ type MockSession struct {
 	ConversationID     int64      `json:"conversation_id"`
 	ApplicationID      *int64     `json:"application_id,omitempty"`
 	Title              string     `json:"title"`
-	Role               string     `json:"role"`                 // target role, e.g. "后端开发"
-	Company            string     `json:"company"`              // optional target company
-	RoundType          string     `json:"round_type"`           // technical | behavioral | coding | hr | mixed
-	Difficulty         string     `json:"difficulty"`           // easy | medium | hard
-	QuestionCount      int        `json:"question_count"`        // 0 = unlimited
-	DurationMin        int        `json:"duration_min"`          // 0 = unlimited
-	QuestionSource     string     `json:"question_source"`      // bank | knowledge | notes | mixed
+	Role               string     `json:"role"`            // target role, e.g. "后端开发"
+	Company            string     `json:"company"`         // optional target company
+	RoundType          string     `json:"round_type"`      // technical | behavioral | coding | hr | mixed
+	Difficulty         string     `json:"difficulty"`      // easy | medium | hard
+	QuestionCount      int        `json:"question_count"`  // 0 = unlimited
+	DurationMin        int        `json:"duration_min"`    // 0 = unlimited
+	QuestionSource     string     `json:"question_source"` // bank | knowledge | notes | mixed
 	KnowledgeBaseID    *int64     `json:"knowledge_base_id,omitempty"`
-	Status             string     `json:"status"`               // in_progress | completed | aborted
+	Status             string     `json:"status"` // in_progress | completed | aborted
 	QuestionIndex      int        `json:"question_index"`
 	StartedAt          time.Time  `json:"started_at"`
 	EndedAt            *time.Time `json:"ended_at,omitempty"`
@@ -116,7 +116,7 @@ type MockSession struct {
 	ScoreDepth         *int       `json:"score_depth,omitempty"`
 	ScoreStructure     *int       `json:"score_structure,omitempty"`
 	ScoreConfidence    *int       `json:"score_confidence,omitempty"`
-	Feedback           string     `json:"feedback,omitempty"`   // JSON string
+	Feedback           string     `json:"feedback,omitempty"` // JSON string
 	CreatedAt          time.Time  `json:"created_at"`
 }
 
@@ -354,8 +354,6 @@ func (db *Database) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_offers_status ON offers(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_questions_status ON questions(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_questions_kb ON questions(knowledge_base_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_questions_next_review ON questions(next_review_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_questions_hash ON questions(question_hash)`,
 		`CREATE INDEX IF NOT EXISTS idx_question_reviews_question ON question_reviews(question_id)`,
 		`CREATE TABLE IF NOT EXISTS mock_sessions (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -416,6 +414,26 @@ func (db *Database) migrate() error {
 	}
 	if err := db.ensureColumn("resumes", "parse_status", "TEXT DEFAULT 'pending'"); err != nil {
 		return err
+	}
+	if err := db.ensureColumn("questions", "practice_count", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := db.ensureColumn("questions", "last_practiced_at", "DATETIME"); err != nil {
+		return err
+	}
+	if err := db.ensureColumn("questions", "next_review_at", "DATETIME"); err != nil {
+		return err
+	}
+	if err := db.ensureColumn("questions", "question_hash", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	for _, m := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_questions_next_review ON questions(next_review_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_questions_hash ON questions(question_hash)`,
+	} {
+		if _, err := db.conn.Exec(m); err != nil {
+			return fmt.Errorf("migration failed: %w\nSQL: %s", err, m)
+		}
 	}
 	return nil
 }

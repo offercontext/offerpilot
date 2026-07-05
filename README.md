@@ -105,7 +105,7 @@ installs.
 |---|---|
 | Backend | Go 1.22+ (single binary) |
 | Database | SQLite (embedded, zero config) |
-| Frontend | React 19 + Ant Design + Vite |
+| Frontend | React 18 + Ant Design + Vite |
 | CLI | Cobra |
 | AI | User-supplied API key (OpenAI-compatible) |
 | Deploy | Docker multi-stage build |
@@ -251,7 +251,7 @@ oc config                          # 查看当前配置
 |---|---|
 | 后端 | Go 1.22+（单二进制） |
 | 数据库 | SQLite（嵌入式，零配置） |
-| 前端 | React 19 + Ant Design + Vite |
+| 前端 | React 18 + Ant Design + Vite |
 | 命令行 | Cobra |
 | AI | 用户自带 API Key（OpenAI 兼容） |
 | 部署 | Docker 多阶段构建 |

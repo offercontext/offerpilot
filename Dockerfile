@@ -28,7 +28,7 @@ RUN apk add --no-cache ca-certificates tzdata && \
     adduser -D -h /app -s /bin/sh offerpilot
 WORKDIR /app
 COPY --from=backend /out/oc /app/oc
-COPY web/dist /app/web/dist
+COPY --from=web /web/dist /app/web/dist
 
 # Data directory: mounted volume persists SQLite + config.json.
 ENV OFFERPILOT_DATA=/data

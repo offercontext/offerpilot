@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/offercontext/offerpilot/internal/ai"
+	mockapp "github.com/offercontext/offerpilot/internal/app/mock"
 	"github.com/offercontext/offerpilot/internal/config"
 	"github.com/offercontext/offerpilot/internal/db"
 )
@@ -42,73 +43,6 @@ type mockSessionRequestBody struct {
 	KnowledgeBaseID *int64 `json:"knowledge_base_id,omitempty"`
 }
 
-// loadMockContext assembles runtime context for the interviewer prompt:
-// picked question-bank questions (by difficulty/KB), knowledge-base chunks,
-// and weak points mined from the bound application's past interview notes.
-func loadMockContext(database *db.Database, sess *db.MockSession) ai.MockContext {
-	ctx := ai.MockContext{}
-
-	// Question bank: when the source uses the bank, pull matching questions.
-	if sess.QuestionSource == "bank" || sess.QuestionSource == "mixed" {
-		f := db.QuestionFilter{Difficulty: sess.Difficulty}
-		if sess.KnowledgeBaseID != nil {
-			f.KnowledgeBaseID = *sess.KnowledgeBaseID
-		}
-		qs, err := database.ListQuestions(f)
-		if err == nil {
-			// Cap to a reasonable pick pool (the model chooses from these).
-			if len(qs) > 12 {
-				qs = qs[:12]
-			}
-			ctx.PickedQuestions = qs
-		}
-	}
-
-	// Knowledge chunks: when the source uses knowledge, pull a few chunks via FTS.
-	if (sess.QuestionSource == "knowledge" || sess.QuestionSource == "mixed") && sess.KnowledgeBaseID != nil {
-		results, err := database.SearchKnowledge(db.KnowledgeSearchFilter{
-			KnowledgeBaseID: *sess.KnowledgeBaseID,
-			Limit:           6,
-		})
-		if err == nil {
-			for _, r := range results {
-				ctx.KnowledgeChunks = append(ctx.KnowledgeChunks, r.Snippet)
-			}
-		}
-	}
-
-	// Weak points from past interview notes on the bound application.
-	if sess.ApplicationID != nil {
-		notes, err := database.ListInterviewNotes(*sess.ApplicationID)
-		if err == nil {
-			for _, n := range notes {
-				if strings.TrimSpace(n.DifficultyPoints) != "" {
-					ctx.WeakPoints = append(ctx.WeakPoints, n.DifficultyPoints)
-					if len(ctx.WeakPoints) >= 6 {
-						break
-					}
-				}
-			}
-		}
-	}
-	return ctx
-}
-
-// mockTitleFor derives a session title from config (used when title empty).
-func mockTitleFor(s *db.MockSession) string {
-	if s.Title != "" {
-		return s.Title
-	}
-	name := s.Role
-	if name == "" {
-		name = "模拟面试"
-	}
-	if s.Company != "" {
-		name = s.Company + " · " + name
-	}
-	return name
-}
-
 func createMockSessionHandler(database *db.Database) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body mockSessionRequestBody
@@ -121,38 +55,38 @@ func createMockSessionHandler(database *db.Database) http.HandlerFunc {
 			return
 		}
 
-		conv, err := database.CreateConversationWithMode(mockTitleFor(&db.MockSession{
-			Title: body.Title, Role: body.Role, Company: body.Company,
-		}), "mock_interview", nil)
+		title := mockapp.TitleForSessionConfig(mockapp.SessionConfig{
+			Title:   body.Title,
+			Role:    body.Role,
+			Company: body.Company,
+		})
+		conv, err := database.CreateConversationWithMode(title, "mock_interview", nil)
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
-		sess := &db.MockSession{
+		sess := mockapp.BuildSessionDraft(mockapp.SessionDraftInput{
 			ConversationID:  conv.ID,
 			ApplicationID:   body.ApplicationID,
 			Title:           conv.Title,
 			Role:            body.Role,
 			Company:         body.Company,
-			RoundType:       defaultIfEmpty(body.RoundType, "technical"),
-			Difficulty:      defaultIfEmpty(body.Difficulty, "medium"),
+			RoundType:       body.RoundType,
+			Difficulty:      body.Difficulty,
 			QuestionCount:   body.QuestionCount,
 			DurationMin:     body.DurationMin,
-			QuestionSource:  defaultIfEmpty(body.QuestionSource, "mixed"),
+			QuestionSource:  body.QuestionSource,
 			KnowledgeBaseID: body.KnowledgeBaseID,
-		}
-		if sess.QuestionCount == 0 {
-			sess.QuestionCount = 5
-		}
+		})
 		if err := database.CreateMockSession(sess); err != nil {
 			respondError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		respondJSON(w, http.StatusCreated, map[string]interface{}{
-			"session":          sess,
-			"conversation_id":  conv.ID,
-			"conversation":     conv,
+			"session":         sess,
+			"conversation_id": conv.ID,
+			"conversation":    conv,
 		})
 	}
 }
@@ -194,8 +128,8 @@ func getMockSessionHandler(database *db.Database) http.HandlerFunc {
 			msgs = []db.ChatMessage{}
 		}
 		respondJSON(w, http.StatusOK, map[string]interface{}{
-			"session":     sess,
-			"messages":    msgs,
+			"session":  sess,
+			"messages": msgs,
 		})
 	}
 }
@@ -256,8 +190,8 @@ func endMockSessionHandlerWithScorer(database *db.Database, scorer scorerFunc) h
 				return
 			}
 			respondJSON(w, http.StatusOK, map[string]interface{}{
-				"session":      sess,
-				"feedback":     parseStoredFeedback(sess.Feedback),
+				"session":       sess,
+				"feedback":      parseStoredFeedback(sess.Feedback),
 				"saved_note_id": noteID,
 			})
 			return
@@ -280,16 +214,8 @@ func endMockSessionHandlerWithScorer(database *db.Database, scorer scorerFunc) h
 			return
 		}
 
-		fb, parseErr := ai.ParseScoringResult(raw)
-		scores := db.MockScores{
-			ScoreOverall:       fb.ScoreOverall,
-			ScoreCommunication: fb.ScoreCommunication,
-			ScoreDepth:         fb.ScoreDepth,
-			ScoreStructure:     fb.ScoreStructure,
-			ScoreConfidence:    fb.ScoreConfidence,
-		}
-		feedbackJSON, _ := json.Marshal(fb)
-		if err := database.FinishMockSession(id, scores, string(feedbackJSON)); err != nil {
+		outcome := mockapp.BuildScoringOutcome(raw)
+		if err := database.FinishMockSession(id, outcome.Scores, outcome.FeedbackJSON); err != nil {
 			respondError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -298,7 +224,7 @@ func endMockSessionHandlerWithScorer(database *db.Database, scorer scorerFunc) h
 		// unbound sessions; interview_notes.application_id is nullable).
 		noteID := int64(0)
 		if body.AutoSaveNote {
-			if n, _ := createMockNote(database, sess, fb.Summary, fb.Weaknesses); n != nil {
+			if n, _ := createMockNote(database, sess, outcome.Feedback.Summary, outcome.Feedback.Weaknesses); n != nil {
 				noteID = n.ID
 			}
 		}
@@ -306,8 +232,8 @@ func endMockSessionHandlerWithScorer(database *db.Database, scorer scorerFunc) h
 		done, _ := database.GetMockSession(id)
 		resp := map[string]interface{}{
 			"session":     done,
-			"feedback":    fb,
-			"parse_error": parseErr != nil,
+			"feedback":    outcome.Feedback,
+			"parse_error": outcome.ParseError,
 		}
 		if noteID > 0 {
 			resp["saved_note_id"] = noteID
@@ -347,36 +273,11 @@ func buildTranscript(database *db.Database, convID int64) string {
 	if err != nil {
 		return ""
 	}
-	var b strings.Builder
-	for _, m := range msgs {
-		if m.Content == "" || m.Role == "tool" {
-			continue
-		}
-		who := "候选人"
-		if m.Role == "assistant" {
-			who = "面试官"
-		}
-		b.WriteString(who + "：" + m.Content + "\n")
-	}
-	return strings.TrimSpace(b.String())
+	return mockapp.BuildTranscript(msgs)
 }
 
 func todayString() string {
 	return time.Now().Format("2006-01-02")
-}
-
-func joinWeaknesses(ws []string) string {
-	if len(ws) == 0 {
-		return ""
-	}
-	return "待加强：" + strings.Join(ws, "；")
-}
-
-func defaultIfEmpty(s, def string) string {
-	if s == "" {
-		return def
-	}
-	return s
 }
 
 // createMockNote builds and persists an interview-retrospective note from a
@@ -386,33 +287,17 @@ func defaultIfEmpty(s, def string) string {
 // (interview_notes.application_id is nullable). Returns (nil, nil) only if no
 // noteable content exists.
 func createMockNote(database *db.Database, sess *db.MockSession, summary string, weaknesses []string) (*db.InterviewNote, error) {
-	company := sess.Company
-	position := sess.Role
-	// When bound to an application, fill any missing company/position from it.
-	if sess.ApplicationID != nil && (company == "" || position == "") {
-		if app, aerr := database.GetApplication(*sess.ApplicationID); aerr == nil && app != nil {
-			if company == "" {
-				company = app.CompanyName
-			}
-			if position == "" {
-				position = app.PositionName
-			}
-		}
+	var app *db.Application
+	if sess.ApplicationID != nil {
+		app, _ = database.GetApplication(*sess.ApplicationID)
 	}
-	// Without an application, fall back to the round type as position so the
-	// note still has a meaningful identity in the review list.
-	if position == "" {
-		position = "模拟面试"
-	}
-	n := &db.InterviewNote{
-		ApplicationID:    sess.ApplicationID, // may be nil → NULL column
-		Company:          company,
-		Position:         position,
-		Round:            "模拟面试·" + sess.RoundType,
-		Date:             todayString(),
-		SelfReflection:   summary,
-		DifficultyPoints: joinWeaknesses(weaknesses),
-	}
+	n := mockapp.BuildReviewNote(mockapp.ReviewNoteInput{
+		Session:     *sess,
+		Application: app,
+		Summary:     summary,
+		Weaknesses:  weaknesses,
+		Today:       todayString(),
+	})
 	if err := database.CreateInterviewNote(n); err != nil {
 		return nil, err
 	}

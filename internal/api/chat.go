@@ -6,11 +6,10 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
-	"strings"
-	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/offercontext/offerpilot/internal/ai"
+	chatapp "github.com/offercontext/offerpilot/internal/app/chat"
 	"github.com/offercontext/offerpilot/internal/config"
 	"github.com/offercontext/offerpilot/internal/db"
 )
@@ -33,112 +32,6 @@ type chatRequestBody struct {
 type confirmRequestBody struct {
 	ConversationID int64 `json:"conversation_id"`
 	Approved       bool  `json:"approved"`
-}
-
-// toAIMessages converts stored messages into the protocol-agnostic form,
-// prepending the system prompt.
-func toAIMessages(stored []db.ChatMessage, systemPrompt string) []ai.Message {
-	out := []ai.Message{{Role: ai.RoleSystem, Content: systemPrompt}}
-	for _, m := range stored {
-		msg := ai.Message{Role: ai.Role(m.Role), Content: m.Content, ToolCallID: m.ToolCallID}
-		if m.ToolCalls != "" {
-			var tcs []ai.ToolCall
-			if json.Unmarshal([]byte(m.ToolCalls), &tcs) == nil {
-				msg.ToolCalls = tcs
-			}
-		}
-		if m.ProviderBlocks != "" {
-			var blocks []json.RawMessage
-			if json.Unmarshal([]byte(m.ProviderBlocks), &blocks) == nil {
-				msg.ProviderBlocks = blocks
-			}
-		}
-		out = append(out, msg)
-	}
-	return out
-}
-
-// systemPromptFor picks the system prompt for a conversation. For nego_coach
-// mode it embeds the bound offer snapshot plus related context (application
-// notes + interview reviews). For mock_interview mode it embeds the bound mock
-// session config plus assembled question/knowledge/weak-point context. Falls
-// back to the general assistant prompt otherwise.
-func systemPromptFor(database *db.Database, conv *db.Conversation) string {
-	if conv == nil {
-		return ai.ChatSystemPrompt
-	}
-	switch conv.Mode {
-	case "nego_coach":
-		if conv.OfferID == nil {
-			return ai.ChatSystemPrompt
-		}
-		offer, err := database.GetOffer(*conv.OfferID)
-		if err != nil {
-			return ai.ChatSystemPrompt
-		}
-		related := buildOfferContext(database, offer)
-		return ai.NegoCoachPrompt(offer, related)
-	case "mock_interview":
-		sess, err := database.GetMockSessionByConversation(conv.ID)
-		if err != nil || sess == nil {
-			return ai.MockInterviewerPromptFallback
-		}
-		return ai.MockInterviewerPrompt(sess, loadMockContext(database, sess))
-	default:
-		return ai.ChatSystemPrompt
-	}
-}
-
-// buildOfferContext gathers a lightweight text summary of data related to the
-// offer's application (notes + interview reviews) for prompt injection.
-func buildOfferContext(database *db.Database, offer *db.Offer) string {
-	if offer.ApplicationID == nil {
-		return ""
-	}
-	var b strings.Builder
-	app, err := database.GetApplication(*offer.ApplicationID)
-	if err == nil && app != nil {
-		if app.Notes != "" {
-			b.WriteString("投递备注：" + app.Notes + "\n")
-		}
-	}
-	notes, err := database.ListInterviewNotes(*offer.ApplicationID)
-	if err == nil {
-		for _, n := range notes {
-			if n.DifficultyPoints != "" || n.SelfReflection != "" {
-				b.WriteString("面试复盘（" + n.Round + "）：" + n.SelfReflection + " " + n.DifficultyPoints + "\n")
-			}
-		}
-	}
-	return strings.TrimSpace(b.String())
-}
-
-// persistAdded stores loop-produced messages into the conversation.
-func persistAdded(database *db.Database, convID int64, added []ai.Message) error {
-	for _, m := range added {
-		cm := &db.ChatMessage{ConversationID: convID, Role: string(m.Role), Content: m.Content, ToolCallID: m.ToolCallID}
-		if len(m.ToolCalls) > 0 {
-			b, _ := json.Marshal(m.ToolCalls)
-			cm.ToolCalls = string(b)
-		}
-		if len(m.ProviderBlocks) > 0 {
-			b, _ := json.Marshal(m.ProviderBlocks)
-			cm.ProviderBlocks = string(b)
-		}
-		if err := database.AppendMessage(cm); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func titleFrom(msg string) string {
-	const max = 20
-	if utf8.RuneCountInString(msg) <= max {
-		return msg
-	}
-	rs := []rune(msg)
-	return string(rs[:max]) + "…"
 }
 
 // chatHandler is the production handler; it builds a real AI client from config.
@@ -181,7 +74,7 @@ func runChat(w http.ResponseWriter, r *http.Request, database *db.Database, mode
 		if body.OfferID != nil {
 			mode = "nego_coach"
 		}
-		title := titleFrom(body.Message)
+		title := chatapp.TitleFromMessage(body.Message)
 		if body.OfferID != nil {
 			if o, err := database.GetOffer(*body.OfferID); err == nil {
 				title = o.CompanyName + " 谈薪"
@@ -217,8 +110,8 @@ func runChat(w http.ResponseWriter, r *http.Request, database *db.Database, mode
 		return
 	}
 	reg := ai.NewRegistry(database)
-	systemPrompt := systemPromptFor(database, conv)
-	added, reply, pending, err := ai.RunTurn(r.Context(), model, reg, toAIMessages(stored, systemPrompt), autoApprove, ai.DefaultMaxIterations)
+	systemPrompt := chatapp.SystemPromptFor(database, conv)
+	added, reply, pending, err := ai.RunTurn(r.Context(), model, reg, chatapp.ToAIMessages(stored, systemPrompt), autoApprove, ai.DefaultMaxIterations)
 
 	if errors.Is(err, ai.ErrToolsUnsupported) && fallbackClient != nil {
 		text, ferr := ai.RunSummaryFallback(r.Context(), fallbackClient, database, body.Message)
@@ -237,7 +130,7 @@ func runChat(w http.ResponseWriter, r *http.Request, database *db.Database, mode
 		respondError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	if perr := persistAdded(database, convID, added); perr != nil {
+	if perr := chatapp.PersistAdded(database, convID, added); perr != nil {
 		respondError(w, http.StatusInternalServerError, perr.Error())
 		return
 	}
@@ -303,13 +196,13 @@ func runConfirm(w http.ResponseWriter, r *http.Request, database *db.Database, m
 		respondError(w, http.StatusInternalServerError, cerr.Error())
 		return
 	}
-	systemPrompt := systemPromptFor(database, conv)
-	added, reply, newPending, err := ai.ResumeAfterConfirm(r.Context(), model, reg, toAIMessages(stored, systemPrompt), pending, body.Approved, autoApprove, ai.DefaultMaxIterations)
+	systemPrompt := chatapp.SystemPromptFor(database, conv)
+	added, reply, newPending, err := ai.ResumeAfterConfirm(r.Context(), model, reg, chatapp.ToAIMessages(stored, systemPrompt), pending, body.Approved, autoApprove, ai.DefaultMaxIterations)
 	if err != nil {
 		respondError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	if perr := persistAdded(database, body.ConversationID, added); perr != nil {
+	if perr := chatapp.PersistAdded(database, body.ConversationID, added); perr != nil {
 		respondError(w, http.StatusInternalServerError, perr.Error())
 		return
 	}
