@@ -824,6 +824,17 @@
   background: rgba(217, 119, 6, 0.08);
   border-color: rgba(217, 119, 6, 0.25);
 }
+.noticeAction {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 8px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--op-primary);
+  font-weight: 700;
+  cursor: pointer;
+}
 
 /* ---------- 响应式折叠 ---------- */
 .panelToggle {

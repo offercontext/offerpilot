@@ -1,5 +1,5 @@
 import { Button } from 'antd';
-import { PlusOutlined, SearchOutlined, RobotOutlined } from '@ant-design/icons';
+import { PlusOutlined, SearchOutlined, RobotOutlined, SettingOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 
 interface Props {
@@ -7,6 +7,7 @@ interface Props {
   onAdd: () => void;
   onSearch: () => void;
   onOpenChat: () => void;
+  onOpenSettings: () => void;
   onUploadResume?: () => void;
 }
 
@@ -18,7 +19,7 @@ function greeting(): string {
   return '晚上好，今天辛苦了';
 }
 
-export default function TopBar({ streakDays, onAdd, onSearch, onOpenChat }: Props) {
+export default function TopBar({ streakDays, onAdd, onSearch, onOpenChat, onOpenSettings }: Props) {
   return (
     <header
       className="op-topbar"
@@ -42,6 +43,7 @@ export default function TopBar({ streakDays, onAdd, onSearch, onOpenChat }: Prop
         <Button icon={<SearchOutlined />} onClick={onSearch}>
           搜索 <span style={{ opacity: 0.6, marginLeft: 4 }}>⌘K</span>
         </Button>
+        <Button icon={<SettingOutlined />} onClick={onOpenSettings} aria-label="AI 设置" />
         <Button
           type="primary"
           className="op-ai-btn"

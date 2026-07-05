@@ -2,6 +2,7 @@ import axios from 'axios';
 import type { ChatMessage, ChatResponse, Conversation } from '@/types/chat';
 
 const http = axios.create({ baseURL: '/api', timeout: 130000 });
+export const SETTINGS_QUERY_KEY = ['settings'] as const;
 
 export async function sendChat(
   message: string,
@@ -40,8 +41,16 @@ export async function deleteConversation(id: number): Promise<void> {
 
 export interface Settings {
   chat_auto_approve_writes: boolean;
+  base_url: string;
   model: string;
   has_api_key: boolean;
+}
+
+export interface UpdateSettingsPayload {
+  chat_auto_approve_writes: boolean;
+  base_url: string;
+  model: string;
+  api_key?: string;
 }
 
 export async function getSettings(): Promise<Settings> {
@@ -49,7 +58,16 @@ export async function getSettings(): Promise<Settings> {
   return data;
 }
 
-export async function updateAutoApprove(value: boolean): Promise<Settings> {
-  const { data } = await http.put<Settings>('/settings', { chat_auto_approve_writes: value });
+export async function updateSettings(payload: UpdateSettingsPayload): Promise<Settings> {
+  const { data } = await http.put<Settings>('/settings', payload);
   return data;
+}
+
+export async function updateAutoApprove(value: boolean): Promise<Settings> {
+  const current = await getSettings();
+  return updateSettings({
+    chat_auto_approve_writes: value,
+    base_url: current.base_url,
+    model: current.model,
+  });
 }

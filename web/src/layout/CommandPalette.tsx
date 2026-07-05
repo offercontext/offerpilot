@@ -38,6 +38,7 @@ interface Props {
   onOpenResume: () => void;
   onUploadResume?: () => void;
   onOpenChat: () => void;
+  onOpenSettings: () => void;
   pipelineActions: PipelineInsight[];
   onRunPipelineAction: (item: PipelineInsight) => void;
 }
@@ -52,6 +53,7 @@ export default function CommandPalette({
   onOpenResume,
   onUploadResume,
   onOpenChat,
+  onOpenSettings,
   pipelineActions,
   onRunPipelineAction,
 }: Props) {
@@ -72,6 +74,7 @@ export default function CommandPalette({
       { key: 'resume', label: '简历匹配', hint: '动作', run: () => { onOpenResume(); onClose(); } },
       { key: 'uploadResume', label: '上传简历', hint: 'PDF → 简历库', run: () => { onUploadResume?.(); onClose(); } },
       { key: 'chat', label: '打开 AI 助手', hint: '动作', run: () => { onOpenChat(); onClose(); } },
+      { key: 'settings-ai', label: '打开 AI 设置', hint: '设置', run: () => { onOpenSettings(); onClose(); } },
       { key: 'nav-dashboard', label: '前往 驾驶舱', hint: '导航', run: () => { onNavigate('dashboard'); onClose(); } },
       { key: 'nav-board', label: '前往 看板', hint: '导航', run: () => { onNavigate('board'); onClose(); } },
       { key: 'nav-calendar', label: '前往 日历', hint: '导航', run: () => { onNavigate('calendar'); onClose(); } },
@@ -82,7 +85,7 @@ export default function CommandPalette({
       { key: 'nav-questions', label: '前往 题库刷题', hint: '导航', run: () => { onNavigate('questions'); onClose(); } },
       { key: 'nav-resumes', label: '打开简历库', hint: '侧边导航', run: () => { onNavigate('resumes'); onClose(); } },
     ],
-    [onAddApplication, onOpenResume, onUploadResume, onOpenChat, onNavigate, onClose]
+    [onAddApplication, onOpenResume, onUploadResume, onOpenChat, onOpenSettings, onNavigate, onClose]
   );
 
   const kw = q.trim().toLowerCase();

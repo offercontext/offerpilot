@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState, createElement } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Drawer, App as AntApp } from 'antd';
 import { CloseOutlined, RobotOutlined, AppstoreOutlined } from '@ant-design/icons';
 import {
   sendChat,
   confirmAction,
   getSettings,
+  SETTINGS_QUERY_KEY,
   updateAutoApprove,
   listConversations,
   getConversation,
@@ -27,6 +29,7 @@ interface Props {
   open: boolean;
   onClose: () => void;
   offerId?: number;
+  onOpenSettings?: () => void;
 }
 
 const CHAT_WIDTH_STORAGE_KEY = 'offerpilot.chatPanelWidth';
@@ -41,7 +44,7 @@ function clampChatWidth(width: number) {
   return Math.max(MIN_CHAT_WIDTH, Math.min(width, maxChatWidth()));
 }
 
-export default function ChatPanel({ open, onClose, offerId }: Props) {
+export default function ChatPanel({ open, onClose, offerId, onOpenSettings }: Props) {
   const { message: toast } = AntApp.useApp();
   const [turns, setTurns] = useState<UITurn[]>([]);
   const [convID, setConvID] = useState<number | undefined>(undefined);
@@ -63,6 +66,11 @@ export default function ChatPanel({ open, onClose, offerId }: Props) {
   const activeConv = conversations.find((c) => c.id === convID);
   const isNego = activeConv ? activeConv.mode === 'nego_coach' : offerId !== undefined;
   const capabilities = capabilitiesForMode(isNego);
+  const settingsQuery = useQuery({
+    queryKey: SETTINGS_QUERY_KEY,
+    queryFn: getSettings,
+    enabled: open,
+  });
 
   function refreshConversations() {
     listConversations()
@@ -81,14 +89,14 @@ export default function ChatPanel({ open, onClose, offerId }: Props) {
       setDegraded(false);
       threadOfferId.current = offerId;
     }
-    getSettings()
-      .then((s) => {
-        setAutoApprove(s.chat_auto_approve_writes);
-        setHasKey(s.has_api_key);
-      })
-      .catch(() => undefined);
     refreshConversations();
   }, [open, offerId]);
+
+  useEffect(() => {
+    if (!settingsQuery.data) return;
+    setAutoApprove(settingsQuery.data.chat_auto_approve_writes);
+    setHasKey(settingsQuery.data.has_api_key);
+  }, [settingsQuery.data]);
 
   useEffect(() => {
     if (offerId === undefined) {
@@ -225,7 +233,9 @@ export default function ChatPanel({ open, onClose, offerId }: Props) {
   async function toggleAutoApprove(value: boolean) {
     setAutoApprove(value);
     try {
-      await updateAutoApprove(value);
+      const settings = await updateAutoApprove(value);
+      setAutoApprove(settings.chat_auto_approve_writes);
+      setHasKey(settings.has_api_key);
     } catch {
       setAutoApprove(!value);
       toast.error('设置保存失败');
@@ -363,6 +373,7 @@ export default function ChatPanel({ open, onClose, offerId }: Props) {
             disabled={composerDisabled}
             onCapability={handleCapability}
             onToggleAutoApprove={toggleAutoApprove}
+            onOpenSettings={onOpenSettings}
           />
         </div>
       </div>
