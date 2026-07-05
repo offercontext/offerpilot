@@ -20,6 +20,7 @@ import {
 } from '@ant-design/icons';
 import {
   getSettings,
+  SETTINGS_QUERY_KEY,
   updateSettings,
   type Settings,
   type UpdateSettingsPayload,
@@ -37,8 +38,6 @@ interface FormValues {
   chat_auto_approve_writes: boolean;
 }
 
-export const settingsQueryKey = ['settings'];
-
 function toFormValues(settings?: Settings): FormValues {
   return {
     api_key: '',
@@ -53,7 +52,7 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
   const qc = useQueryClient();
 
   const settingsQuery = useQuery({
-    queryKey: settingsQueryKey,
+    queryKey: SETTINGS_QUERY_KEY,
     queryFn: getSettings,
     enabled: open,
   });
@@ -76,8 +75,8 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
       return updateSettings(payload);
     },
     onSuccess: (settings) => {
-      qc.setQueryData(settingsQueryKey, settings);
-      qc.invalidateQueries({ queryKey: settingsQueryKey });
+      qc.setQueryData(SETTINGS_QUERY_KEY, settings);
+      qc.invalidateQueries({ queryKey: SETTINGS_QUERY_KEY });
       message.success('AI settings saved');
       form.setFieldValue('api_key', '');
       onClose();

@@ -14,6 +14,7 @@ import ApplicationDetail from '@/components/ApplicationDetail';
 import ResumeMatchModal from '@/components/ResumeMatchModal';
 import ResumeUploadModal from '@/components/ResumeUploadModal';
 import ChatPanel from '@/components/ChatPanel';
+import AISettingsDrawer from '@/components/AISettingsDrawer';
 import CommandPalette from './CommandPalette';
 import {
   derivePipelineInsights,
@@ -88,6 +89,7 @@ export default function AppShell() {
   const [resumeOpen, setResumeOpen] = useState(false);
   const [resumeUploadOpen, setResumeUploadOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
+  const [aiSettingsOpen, setAISettingsOpen] = useState(false);
   const [selected, setSelected] = useState<Application | null>(null);
   const [coachOfferId, setCoachOfferId] = useState<number | undefined>(undefined);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -190,7 +192,13 @@ export default function AppShell() {
         onOpenChat={() => openChat(undefined)}
       />
       <Layout className="op-app-main" style={{ background: 'var(--op-layout-bg)', minWidth: 0, width: '100%' }}>
-        <TopBar streakDays={streak} onAdd={() => setAddOpen(true)} onSearch={() => setPaletteOpen(true)} onOpenChat={() => openChat(undefined)} />
+        <TopBar
+          streakDays={streak}
+          onAdd={() => setAddOpen(true)}
+          onSearch={() => setPaletteOpen(true)}
+          onOpenChat={() => openChat(undefined)}
+          onOpenSettings={() => setAISettingsOpen(true)}
+        />
         <Content className="op-app-content" style={{ padding: '0 24px 24px' }}>
           {isLoading ? (
             <div style={{ textAlign: 'center', padding: 48 }}>
@@ -284,6 +292,7 @@ export default function AppShell() {
         onOpenResume={() => setResumeOpen(true)}
         onUploadResume={() => setResumeUploadOpen(true)}
         onOpenChat={() => openChat(undefined)}
+        onOpenSettings={() => setAISettingsOpen(true)}
         pipelineActions={pipelineActions}
         onRunPipelineAction={runPipelineAction}
       />
@@ -294,7 +303,9 @@ export default function AppShell() {
           setCoachOfferId(undefined);
         }}
         offerId={coachOfferId}
+        onOpenSettings={() => setAISettingsOpen(true)}
       />
+      <AISettingsDrawer open={aiSettingsOpen} onClose={() => setAISettingsOpen(false)} />
     </Layout>
   );
 }

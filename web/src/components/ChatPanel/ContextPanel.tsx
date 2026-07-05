@@ -16,6 +16,7 @@ interface Props {
   disabled: boolean;
   onCapability: (cap: Capability) => void;
   onToggleAutoApprove: (v: boolean) => void;
+  onOpenSettings?: () => void;
 }
 
 function formatTotal(total: number): string {
@@ -34,6 +35,7 @@ export default function ContextPanel({
   disabled,
   onCapability,
   onToggleAutoApprove,
+  onOpenSettings,
 }: Props) {
   return (
     <aside className={`${styles.context} ${floating ? styles.contextFloating : ''}`}>
@@ -93,7 +95,12 @@ export default function ContextPanel({
 
       {!hasKey && (
         <div className={`${styles.notice} ${styles.noticeWarn}`}>
-          尚未配置 API key，请先运行 <code>oc config --api-key sk-xxx</code>。
+          API key is not configured.
+          {onOpenSettings && (
+            <button type="button" className={styles.noticeAction} onClick={onOpenSettings}>
+              Open AI settings
+            </button>
+          )}
         </div>
       )}
       {degraded && (
