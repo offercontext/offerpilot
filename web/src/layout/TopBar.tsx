@@ -43,7 +43,7 @@ export default function TopBar({ streakDays, onAdd, onSearch, onOpenChat, onOpen
         <Button icon={<SearchOutlined />} onClick={onSearch}>
           搜索 <span style={{ opacity: 0.6, marginLeft: 4 }}>⌘K</span>
         </Button>
-        <Button icon={<SettingOutlined />} onClick={onOpenSettings} aria-label="AI settings" />
+        <Button icon={<SettingOutlined />} onClick={onOpenSettings} aria-label="AI 设置" />
         <Button
           type="primary"
           className="op-ai-btn"

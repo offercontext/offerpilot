@@ -77,12 +77,12 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
     onSuccess: (settings) => {
       qc.setQueryData(SETTINGS_QUERY_KEY, settings);
       qc.invalidateQueries({ queryKey: SETTINGS_QUERY_KEY });
-      message.success('AI settings saved');
+      message.success('AI 设置已保存');
       form.setFieldValue('api_key', '');
       onClose();
     },
     onError: () => {
-      message.error('Failed to save AI settings');
+      message.error('AI 设置保存失败');
     },
   });
 
@@ -93,7 +93,7 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
       title={
         <Space>
           <ApiOutlined />
-          AI settings
+          AI 设置
         </Space>
       }
       open={open}
@@ -102,7 +102,7 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
       destroyOnClose
       extra={
         <Button type="primary" loading={saveMutation.isPending} onClick={() => form.submit()}>
-          Save
+          保存
         </Button>
       }
     >
@@ -111,11 +111,11 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
           type={hasKey ? 'success' : 'warning'}
           showIcon
           icon={hasKey ? <CheckCircleOutlined /> : <WarningOutlined />}
-          message={hasKey ? 'API key configured' : 'API key not configured'}
+          message={hasKey ? 'API key 已配置' : '尚未配置 API key'}
           description={
             hasKey
-              ? 'Leave the API key field blank to keep the saved key.'
-              : 'Add a provider API key to enable AI analysis, matching, generation, and assistant features.'
+              ? 'API key 留空保存时会保留当前密钥。'
+              : '配置供应商 API key 后，即可使用 AI 分析、匹配、生成和助手功能。'
           }
         />
 
@@ -129,24 +129,24 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
             <Input.Password
               prefix={<KeyOutlined />}
               autoComplete="off"
-              placeholder={hasKey ? 'Leave blank to keep saved key' : 'sk-...'}
+              placeholder={hasKey ? '留空则保留当前密钥' : 'sk-...'}
             />
           </Form.Item>
 
           <Form.Item
-            label="Base URL"
+            label="接口地址 Base URL"
             name="base_url"
-            tooltip="OpenAI-compatible endpoint base URL"
+            tooltip="OpenAI 兼容接口的 Base URL"
           >
             <Input placeholder="https://api.openai.com/v1" />
           </Form.Item>
 
-          <Form.Item label="Model" name="model">
+          <Form.Item label="模型" name="model">
             <Input placeholder="gpt-4o" />
           </Form.Item>
 
           <Form.Item
-            label="Write auto-approve"
+            label="写操作免确认"
             name="chat_auto_approve_writes"
             valuePropName="checked"
           >
@@ -154,12 +154,12 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
           </Form.Item>
 
           <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-            Settings are stored locally in OfferPilot config. The API key is never returned by the settings API.
+            设置会保存在本地 OfferPilot 配置中。设置接口只返回是否已配置密钥，不会返回 API key 明文。
           </Typography.Paragraph>
 
           <div style={{ marginTop: 14 }}>
-            <Tag color="blue">OpenAI-compatible</Tag>
-            <Tag color="default">Local config</Tag>
+            <Tag color="blue">OpenAI 兼容</Tag>
+            <Tag color="default">本地配置</Tag>
           </div>
         </Form>
       </Space>
