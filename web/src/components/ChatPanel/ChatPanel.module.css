@@ -580,6 +580,36 @@
   color: var(--op-muted);
   margin-top: 9px;
 }
+.prFacts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+.prFacts div {
+  min-width: 0;
+  padding: 9px 10px;
+  border-radius: 9px;
+  background: var(--chat-tint-soft);
+}
+.prFacts span {
+  display: block;
+  color: var(--op-muted);
+  font-size: 11px;
+  margin-bottom: 2px;
+}
+.prFacts b {
+  display: block;
+  color: var(--op-ink);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+.prAlert {
+  margin-top: 12px;
+}
+.prEvidence {
+  margin-top: 12px;
+}
 .prActions {
   display: flex;
   gap: 8px;

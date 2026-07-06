@@ -15,7 +15,7 @@ import {
 import { getOffer } from '@/services/offers';
 import type { ChatResponse, Conversation, PendingAction } from '@/types/chat';
 import type { Offer } from '@/types/offer';
-import { buildTurns, type UITurn } from './model';
+import { buildTurns, collectEvidence, type UITurn } from './model';
 import { capabilitiesForMode, type Capability } from './capabilities';
 import ThreadRail from './ThreadRail';
 import MessageBubble from './MessageBubble';
@@ -249,6 +249,7 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings }: Pr
 
   const composerDisabled = loading || !!pending || !hasKey;
   const showEmpty = turns.length === 0 && !pending && !loading;
+  const threadEvidence = collectEvidence(turns);
 
   const iconBtnStyle: React.CSSProperties = {
     border: '1px solid var(--op-border)',
@@ -351,6 +352,7 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings }: Pr
                 <ProposalCard
                   action={pending}
                   loading={loading}
+                  evidence={threadEvidence}
                   onConfirm={() => handleConfirm(true)}
                   onCancel={() => handleConfirm(false)}
                 />

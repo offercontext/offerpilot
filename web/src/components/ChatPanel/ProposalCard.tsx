@@ -1,12 +1,15 @@
 import { createElement } from 'react';
-import { Button } from 'antd';
+import { Alert, Button } from 'antd';
 import type { PendingAction } from '@/types/chat';
+import type { EvidenceItem } from './model';
 import { toolMeta } from './capabilities';
+import EvidenceList from './EvidenceList';
 import styles from './ChatPanel.module.css';
 
 interface Props {
   action: PendingAction;
   loading: boolean;
+  evidence: EvidenceItem[];
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -20,9 +23,30 @@ function parseDiff(human: string): { was: string; now: string } | null {
   return { was: m[1].trim(), now: m[2].trim() };
 }
 
-export default function ProposalCard({ action, loading, onConfirm, onCancel }: Props) {
+function actionTarget(action: PendingAction): string | null {
+  const id = action.args?.id;
+  if (typeof id === 'number' || typeof id === 'string') return `Record #${id}`;
+  const company = action.args?.company_name;
+  const role = action.args?.position_name;
+  if (typeof company === 'string' && typeof role === 'string') return `${company} · ${role}`;
+  if (typeof company === 'string') return company;
+  return null;
+}
+
+function proposedValue(action: PendingAction): string | null {
+  const status = action.args?.status;
+  if (typeof status === 'string' && status.trim()) return `Status -> ${status}`;
+  const title = action.args?.title;
+  if (typeof title === 'string' && title.trim()) return `Title -> ${title}`;
+  return null;
+}
+
+export default function ProposalCard({ action, loading, evidence, onConfirm, onCancel }: Props) {
   const meta = toolMeta(action.tool_name);
   const diff = parseDiff(action.human);
+  const target = actionTarget(action);
+  const proposed = proposedValue(action);
+  const thinEvidence = evidence.length === 0;
 
   return (
     <div className={styles.proposal} role="group" aria-label="AI 修改提议">
@@ -46,6 +70,33 @@ export default function ProposalCard({ action, loading, onConfirm, onCancel }: P
           </>
         ) : (
           <div className={styles.prDesc}>{action.human}</div>
+        )}
+        <div className={styles.prFacts}>
+          {target ? (
+            <div>
+              <span>Target</span>
+              <b>{target}</b>
+            </div>
+          ) : null}
+          {proposed ? (
+            <div>
+              <span>Proposed</span>
+              <b>{proposed}</b>
+            </div>
+          ) : null}
+        </div>
+        {thinEvidence ? (
+          <Alert
+            className={styles.prAlert}
+            type="warning"
+            showIcon
+            message="Evidence is limited. Review this change carefully before confirming."
+          />
+        ) : (
+          <div className={styles.prEvidence}>
+            <div className={styles.panelLabel}>Evidence used</div>
+            <EvidenceList items={evidence.slice(0, 3)} compact />
+          </div>
         )}
       </div>
       <div className={styles.prActions}>
