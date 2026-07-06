@@ -53,6 +53,8 @@ docs/*
 docs/superpowers/*
 !docs/superpowers/plans/
 !docs/superpowers/plans/*.md
+!docs/superpowers/specs/
+!docs/superpowers/specs/*.md
 
 # Local brainstorming companion artifacts
 .superpowers/
