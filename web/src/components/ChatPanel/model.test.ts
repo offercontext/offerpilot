@@ -169,6 +169,38 @@ describe('buildTurns evidence normalization', () => {
     });
   });
 
+  it('does not overwrite id-matched empty evidence results with later fallback results', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([
+          { id: 'call-note', name: 'search_knowledge', args: { query: 'missing source' } },
+          { id: 'call-apps', name: 'list_applications', args: {} },
+        ]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-note',
+        content: JSON.stringify({ ok: true }),
+      }),
+      msg({
+        role: 'tool',
+        content: JSON.stringify([{ id: 7, company_name: 'ByteDance', position_name: 'Backend Engineer' }]),
+      }),
+      msg({ role: 'assistant', content: 'I found one application.' }),
+    ]);
+
+    expect(turns[0].steps?.map((step) => [step.name, step.detail])).toEqual([
+      ['search_knowledge', 'missing source'],
+      ['list_applications', 'ByteDance'],
+    ]);
+    expect(turns[0].steps?.[0].evidence).toBeUndefined();
+    expect(turns[0].steps?.[1].evidence?.[0]).toMatchObject({
+      id: 'application-7',
+      title: 'ByteDance',
+    });
+  });
+
   it('aggregates newest evidence first across visible turns', () => {
     const turns = buildTurns([
       msg({

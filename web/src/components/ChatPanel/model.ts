@@ -170,11 +170,13 @@ export function buildTurns(stored: ChatMessage[]): UITurn[] {
   const turns: UITurn[] = [];
   let pending: ToolStep[] = [];
   let nextFallbackToolIndex = 0;
+  let assignedToolIndexes = new Set<number>();
   for (const m of stored) {
     if (m.role === 'user') {
       turns.push({ role: 'user', content: m.content });
       pending = [];
       nextFallbackToolIndex = 0;
+      assignedToolIndexes = new Set();
     } else if (m.role === 'assistant') {
       const steps = parseToolCalls(m.tool_calls);
       if (steps.length) pending = pending.concat(steps);
@@ -182,12 +184,14 @@ export function buildTurns(stored: ChatMessage[]): UITurn[] {
         turns.push({ role: 'assistant', content: m.content, steps: pending.length ? pending : undefined });
         pending = [];
         nextFallbackToolIndex = 0;
+        assignedToolIndexes = new Set();
       }
     } else if (m.role === 'tool') {
-      const toolIndex = resolveToolResultIndex(pending, m.tool_call_id, nextFallbackToolIndex);
+      const toolIndex = resolveToolResultIndex(pending, assignedToolIndexes, m.tool_call_id, nextFallbackToolIndex);
       const step = pending[toolIndex];
       if (step) {
         if (!m.tool_call_id) nextFallbackToolIndex = toolIndex + 1;
+        assignedToolIndexes.add(toolIndex);
         const parsed = parseToolResult(m.content, step.name);
         pending[toolIndex] = {
           ...step,
@@ -201,18 +205,19 @@ export function buildTurns(stored: ChatMessage[]): UITurn[] {
   return turns;
 }
 
-function resolveToolResultIndex(pending: ToolStep[], toolCallId: string | undefined, fallbackIndex: number): number {
+function resolveToolResultIndex(
+  pending: ToolStep[],
+  assignedIndexes: Set<number>,
+  toolCallId: string | undefined,
+  fallbackIndex: number,
+): number {
   if (toolCallId) {
     const match = pending.findIndex((step) => step.toolCallId === toolCallId);
     if (match >= 0) return match;
   }
-  const unfilled = pending.findIndex((step, index) => index >= fallbackIndex && !hasToolResult(step));
+  const unfilled = pending.findIndex((_step, index) => index >= fallbackIndex && !assignedIndexes.has(index));
   if (unfilled >= 0) return unfilled;
-  return pending.findIndex((step) => !hasToolResult(step));
-}
-
-function hasToolResult(step: ToolStep): boolean {
-  return Boolean(step.evidence?.length || step.evidenceUnavailable);
+  return pending.findIndex((_step, index) => !assignedIndexes.has(index));
 }
 
 export function collectEvidence(turns: UITurn[], limit = 8): EvidenceItem[] {
