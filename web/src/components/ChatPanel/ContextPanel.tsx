@@ -3,6 +3,8 @@ import { Switch } from 'antd';
 import type { Offer } from '@/types/offer';
 import { OFFER_STATUS_LABELS, OFFER_STATUS_COLORS } from '@/types/offer';
 import type { Capability } from './capabilities';
+import type { EvidenceItem } from './model';
+import EvidenceList from './EvidenceList';
 import styles from './ChatPanel.module.css';
 
 interface Props {
@@ -10,6 +12,7 @@ interface Props {
   isNego: boolean;
   offer: Offer | null;
   capabilities: Capability[];
+  evidence: EvidenceItem[];
   autoApprove: boolean;
   hasKey: boolean;
   degraded: boolean;
@@ -29,6 +32,7 @@ export default function ContextPanel({
   isNego,
   offer,
   capabilities,
+  evidence,
   autoApprove,
   hasKey,
   degraded,
@@ -61,6 +65,17 @@ export default function ContextPanel({
           </div>
         </div>
       )}
+
+      <div>
+        <div className={styles.panelLabel}>Current evidence</div>
+        {evidence.length ? (
+          <EvidenceList items={evidence.slice(0, 5)} />
+        ) : (
+          <div className={styles.evidenceEmpty}>
+            No evidence collected yet. Ask a question or choose a capability to let the assistant inspect your local data.
+          </div>
+        )}
+      </div>
 
       <div>
         <div className={styles.panelLabel}>{isNego ? '谈薪教练能力' : '常用能力'}</div>

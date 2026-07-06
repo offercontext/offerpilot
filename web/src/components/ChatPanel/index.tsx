@@ -398,6 +398,7 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings }: Pr
             isNego={isNego}
             offer={offer}
             capabilities={capabilities}
+            evidence={threadEvidence}
             autoApprove={autoApprove}
             hasKey={hasKey}
             degraded={degraded}
