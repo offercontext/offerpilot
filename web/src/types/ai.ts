@@ -1,4 +1,4 @@
-// AI analysis result — mirrors internal/ai.JDAnalysisResult JSON tags.
+// AI analysis result returned by the Python API.
 export interface JDAnalysisResult {
   summary: string;
   requirements: string[];
@@ -9,7 +9,7 @@ export interface JDAnalysisResult {
   suggestions: string[];
 }
 
-// Resume match result — mirrors internal/ai.MatchResult JSON tags.
+// Resume match result returned by the Python API.
 export interface MatchResult {
   match_score: number;
   matched: string[];
@@ -18,7 +18,7 @@ export interface MatchResult {
   summary: string;
 }
 
-// Stored JD analysis row (fields match Go db.JDAnalysis JSON tags);
+// Stored JD analysis row.
 // `result` is either a parsed object (newly created) or a JSON string (list endpoint).
 export interface JDAnalysis {
   id: number;

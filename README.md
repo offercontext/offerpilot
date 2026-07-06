@@ -19,7 +19,7 @@
 - 💰 **Offer & Salary Negotiation** — Track multiple offers, compare them side-by-side, and get an AI negotiation coach grounded in your own application data
 - 💻 **CLI + Web** — Use `oc` command-line or browse to `localhost:8080`
 - 🔒 **100% Local** — Your data stays on your machine (SQLite, no cloud)
-- 🐳 **One-Command Deploy** — `docker run` or `./oc start`
+- 🐳 **One-Command Deploy** — `docker run` or `uv run oc start`
 
 ### 🚀 Quick Start
 
@@ -31,29 +31,30 @@ docker run -d -p 8080:8080 -v offerpilot-data:/data offercontext/offerpilot
 
 Open `http://localhost:8080` in your browser.
 
-#### Option 2: Binary
-
-```bash
-# Download from GitHub Releases
-chmod +x oc
-./oc start
-```
-
-#### Option 3: Build from Source
+#### Option 2: Python source checkout
 
 ```bash
 git clone https://github.com/offercontext/offerpilot.git
 cd offerpilot
-go build -o oc ./cmd/oc
-./oc start
+uv sync
+uv run oc start
+```
+
+#### Option 3: Install the `oc` CLI from source
+
+```bash
+git clone https://github.com/offercontext/offerpilot.git
+cd offerpilot
+uv tool install --force .
+oc start
 ```
 
 #### Option 4: One-line install script
 
 ```bash
 curl -sSL https://get.offerpilot.dev | sh
-# or build from source if no prebuilt binary for your platform:
-curl -sSL https://get.offerpilot.dev | sh -s -- --from-source
+# or install from a local checkout:
+curl -sSL https://get.offerpilot.dev | sh -s -- --source .
 ```
 
 ### 📖 CLI Usage
@@ -103,11 +104,11 @@ installs.
 
 | Component | Technology |
 |---|---|
-| Backend | Go 1.22+ (single binary) |
+| Backend | Python 3.10+ + FastAPI |
 | Database | SQLite (embedded, zero config) |
 | Frontend | React 18 + Ant Design + Vite |
-| CLI | Cobra |
-| AI | User-supplied API key (OpenAI-compatible) |
+| CLI | Typer (`oc`) |
+| AI | User-supplied API key (OpenAI-compatible + Anthropic) |
 | Deploy | Docker multi-stage build |
 
 ### 📊 Data Model
@@ -126,17 +127,13 @@ All data stored in local SQLite (`~/.offerpilot/data.db`):
 
 ```
 offerpilot/
-├── cmd/oc/          # CLI entry point
-├── internal/
-│   ├── api/         # HTTP REST API (chi)
-│   ├── cli/         # CLI commands (cobra)
-│   ├── db/          # SQLite + migrations + data models
-│   ├── config/      # config.json load / save
-│   └── ai/          # AI integration (OpenAI-compatible)
+├── src/offerpilot/  # Python backend, CLI, repositories, AI workflows
+├── tests/           # pytest contract tests
 ├── web/             # React frontend (Vite SPA)
 ├── scripts/         # install.sh one-line installer
 ├── Dockerfile       # Multi-stage build
-└── go.mod
+├── pyproject.toml   # Python package metadata
+└── uv.lock
 ```
 
 ### 📄 License
@@ -166,7 +163,7 @@ The Offer & Salary-Negotiation coach feature is inspired by [Ssupercoder/Salary-
 - 💰 **Offer 谈薪** — 记录多个 offer、横向对比，并获得基于你自身求职数据的 AI 谈薪教练
 - 💻 **命令行 + 网页** — 用 `oc` 命令行操作，或浏览器访问 `localhost:8080`
 - 🔒 **完全本地** — 数据保存在本地（SQLite，无需联网）
-- 🐳 **一键部署** — `docker run` 或 `./oc start`
+- 🐳 **一键部署** — `docker run` 或 `uv run oc start`
 
 ### 🚀 快速开始
 
@@ -178,29 +175,30 @@ docker run -d -p 8080:8080 -v offerpilot-data:/data offercontext/offerpilot
 
 浏览器打开 `http://localhost:8080`。
 
-#### 方式二：二进制文件
-
-```bash
-# 从 GitHub Releases 下载
-chmod +x oc
-./oc start
-```
-
-#### 方式三：源码编译
+#### 方式二：Python 源码运行
 
 ```bash
 git clone https://github.com/offercontext/offerpilot.git
 cd offerpilot
-go build -o oc ./cmd/oc
-./oc start
+uv sync
+uv run oc start
+```
+
+#### 方式三：从源码安装 `oc` 命令
+
+```bash
+git clone https://github.com/offercontext/offerpilot.git
+cd offerpilot
+uv tool install --force .
+oc start
 ```
 
 #### 方式四：一键安装脚本
 
 ```bash
 curl -sSL https://get.offerpilot.dev | sh
-# 没有预编译二进制时，从源码构建：
-curl -sSL https://get.offerpilot.dev | sh -s -- --from-source
+# 或从本地源码安装：
+curl -sSL https://get.offerpilot.dev | sh -s -- --source .
 ```
 
 ### 📖 命令行用法
@@ -249,11 +247,11 @@ oc config                          # 查看当前配置
 
 | 组件 | 技术 |
 |---|---|
-| 后端 | Go 1.22+（单二进制） |
+| 后端 | Python 3.10+ + FastAPI |
 | 数据库 | SQLite（嵌入式，零配置） |
 | 前端 | React 18 + Ant Design + Vite |
-| 命令行 | Cobra |
-| AI | 用户自带 API Key（OpenAI 兼容） |
+| 命令行 | Typer（`oc`） |
+| AI | 用户自带 API Key（OpenAI 兼容 + Anthropic） |
 | 部署 | Docker 多阶段构建 |
 
 ### 📊 数据模型
@@ -270,17 +268,13 @@ oc config                          # 查看当前配置
 
 ```
 offerpilot/
-├── cmd/oc/          # 命令行入口
-├── internal/
-│   ├── api/         # HTTP REST API（chi）
-│   ├── cli/         # CLI 命令（cobra）
-│   ├── db/          # SQLite + 迁移 + 数据模型
-│   ├── config/      # config.json 读写
-│   └── ai/          # AI 集成（OpenAI 兼容）
+├── src/offerpilot/  # Python 后端、CLI、仓储、AI workflow
+├── tests/           # pytest 契约测试
 ├── web/             # React 前端（Vite SPA）
 ├── scripts/         # install.sh 一键安装脚本
 ├── Dockerfile       # 多阶段构建
-└── go.mod
+├── pyproject.toml   # Python 包配置
+└── uv.lock
 ```
 
 ### 📄 开源协议

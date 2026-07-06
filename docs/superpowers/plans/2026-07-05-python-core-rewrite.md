@@ -364,5 +364,5 @@ Expected: PASS.
 - [ ] Run `uv run pytest -q`.
 - [ ] Run `uv run ruff check .`.
 - [ ] Run `uv run mypy src`.
-- [ ] Run Go baseline again with `go test ./...`.
 - [ ] Run frontend baseline again with `npm test` and `npm run build` in `web/`.
+- [ ] Run Python backend + React frontend smoke against `http://127.0.0.1:8080`.

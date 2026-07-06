@@ -1,6 +1,25 @@
 from typer.testing import CliRunner
 
+from offerpilot.ai.types import Assistant
 from offerpilot.cli import app
+from offerpilot.config import Config, save_config
+from offerpilot.db import session_factory_for_data_dir
+from offerpilot.repositories.jd import JDAnalysesRepository
+from offerpilot.repositories.knowledge import KnowledgeBaseCreate, KnowledgeDocumentCreate, KnowledgeRepository
+from offerpilot.repositories.questions import QuestionsRepository
+from offerpilot.repositories.resumes import ResumeCreate, ResumesRepository
+
+
+class JSONModel:
+    def __init__(self, payloads: list[str]):
+        self.payloads = list(payloads)
+
+    def complete(self, messages, tools):  # type: ignore[no-untyped-def]
+        return Assistant(content=self.payloads.pop(0))
+
+
+def _write_ai_config(data_dir):
+    save_config(data_dir, Config(api_key="sk-test"))
 
 
 def test_add_and_list_application(monkeypatch, tmp_path):
@@ -112,3 +131,77 @@ def test_question_list_empty(monkeypatch, tmp_path):
 
     assert result.exit_code == 0
     assert "No questions yet" in result.output
+
+
+def test_analyze_jd_cli_persists_result(monkeypatch, tmp_path):
+    monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
+    _write_ai_config(tmp_path)
+    monkeypatch.setattr(
+        "offerpilot.cli._build_ai_model",
+        lambda: JSONModel(['{"summary":"Backend role","requirements":["Python"]}']),
+    )
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["analyze", "--jd", "Python backend JD"])
+
+    assert result.exit_code == 0
+    assert "JD analysis saved" in result.output
+    rows = JDAnalysesRepository(session_factory_for_data_dir(tmp_path)).list()
+    assert len(rows) == 1
+    assert rows[0].jd_text == "Python backend JD"
+    assert "Backend role" in rows[0].result
+
+
+def test_resume_match_cli_persists_match(monkeypatch, tmp_path):
+    monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
+    _write_ai_config(tmp_path)
+    resumes = ResumesRepository(session_factory_for_data_dir(tmp_path))
+    resume = resumes.create(ResumeCreate(name="Backend", parsed_data="Python FastAPI"))
+    monkeypatch.setattr(
+        "offerpilot.cli._build_ai_model",
+        lambda: JSONModel(['{"match_score":88,"summary":"strong fit"}']),
+    )
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["resume", "match", "--resume", str(resume.id), "--jd", "Python JD"])
+
+    assert result.exit_code == 0
+    assert "Resume match saved" in result.output
+    matches = resumes.list_matches(resume.id)
+    assert len(matches) == 1
+    assert "strong fit" in matches[0].result
+
+
+def test_question_generate_cli_from_knowledge(monkeypatch, tmp_path):
+    monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
+    _write_ai_config(tmp_path)
+    knowledge = KnowledgeRepository(session_factory_for_data_dir(tmp_path))
+    base = knowledge.create_base(KnowledgeBaseCreate(name="System design"))
+    knowledge.create_document(
+        KnowledgeDocumentCreate(
+            knowledge_base_id=base.id,
+            title="Cache",
+            content="Redis cache invalidation",
+        )
+    )
+    monkeypatch.setattr(
+        "offerpilot.cli._build_ai_model",
+        lambda: JSONModel(
+            [
+                (
+                    '{"questions":[{"category":"系统设计","difficulty":"hard",'
+                    '"question":"如何设计缓存失效？","reference_answer":"TTL + 主动失效",'
+                    '"tags":["cache"]}]}'
+                )
+            ]
+        ),
+    )
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["question", "generate", "--kb", str(base.id), "--count", "1"])
+
+    assert result.exit_code == 0
+    assert "Generated 1 questions" in result.output
+    rows = QuestionsRepository(session_factory_for_data_dir(tmp_path)).list(knowledge_base_id=base.id)
+    assert len(rows) == 1
+    assert rows[0].question == "如何设计缓存失效？"

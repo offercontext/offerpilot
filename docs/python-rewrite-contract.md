@@ -1,6 +1,7 @@
 # OfferPilot Python Rewrite Contract
 
-> Status: stage 0 inventory, stage 1 migration contract draft.
+> Status: final Python cutover in progress; legacy Go references below are the
+> historical source baseline used to prove compatibility.
 > Baseline branch: `feature/20260705-python-rewrite`.
 > Source baseline: Go backend at `443c933` from `main`.
 
@@ -15,7 +16,7 @@ Run from the worktree root unless noted:
 
 | Command | Current result | Migration use |
 |---|---|---|
-| `go test ./...` | Passed | Go behavior reference for backend, DB, CLI-adjacent packages, AI loop |
+| `go test ./...` | Historical baseline passed before cutover | Go behavior reference used before deleting the legacy implementation |
 | `npm test` in `web/` | Passed, 29 tests | Frontend utility baseline |
 | `npm run build` in `web/` | Passed | React API compatibility smoke baseline |
 | `npm ci` in `web/` | Passed with 5 audit findings | Dependency audit is tracked as a risk, not part of this rewrite |
@@ -314,7 +315,7 @@ The agent loop lives in `internal/ai/agent.go`.
 - Do not replace SQLite with another database.
 - Do not introduce LangChain/LangGraph before the Phase 4 minimum AI loop is green.
 - Do not upgrade frontend dependencies as part of backend migration.
-- Do not delete or archive the Go implementation until final cutover is separately approved.
+- Legacy Go implementation may be removed after the user-approved final Python cutover.
 
 ## Current Risk Register
 

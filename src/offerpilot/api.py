@@ -9,7 +9,7 @@ from typing import Any, Optional
 import httpx
 from fastapi import Body, FastAPI, File, Form, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from pypdf import PdfReader
 
 from offerpilot.ai.agent import ChatModel, PendingAction, resume_after_confirm, run_turn
@@ -52,8 +52,13 @@ from offerpilot.schemas import (
 )
 
 
-def create_app(data_dir: Optional[Path] = None, chat_model: Optional[ChatModel] = None) -> FastAPI:
+def create_app(
+    data_dir: Optional[Path] = None,
+    chat_model: Optional[ChatModel] = None,
+    static_dir: Optional[Path] = None,
+) -> FastAPI:
     resolved_data_dir = data_dir or resolve_data_dir()
+    resolved_static_dir = static_dir or _find_static_dir()
     session_factory = session_factory_for_data_dir(resolved_data_dir)
     applications = ApplicationsRepository(session_factory)
     chat = ChatRepository(session_factory)
@@ -1165,6 +1170,22 @@ def create_app(data_dir: Optional[Path] = None, chat_model: Optional[ChatModel] 
         save_config(resolved_data_dir, next_config)
         return _settings_payload(next_config)
 
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def serve_frontend(full_path: str) -> Response:
+        if full_path == "favicon.ico":
+            return Response(status_code=204)
+        if full_path == "api" or full_path.startswith("api/"):
+            return error_response(404, "not found")
+        if resolved_static_dir is not None:
+            root = resolved_static_dir.resolve()
+            requested = (root / full_path).resolve()
+            if _is_relative_to(requested, root) and requested.is_file():
+                return FileResponse(requested)
+            index = root / "index.html"
+            if index.is_file():
+                return FileResponse(index)
+        return HTMLResponse(_dev_placeholder_html(), status_code=200)
+
     return app
 
 
@@ -1240,6 +1261,38 @@ def _chat_model(injected: Optional[ChatModel], data_dir: Path) -> ChatModel | JS
         return ConfiguredAIClient(load_config(data_dir))
     except ValueError as exc:
         return error_response(503, str(exc))
+
+
+def _find_static_dir() -> Path | None:
+    candidates = [
+        Path.cwd() / "web" / "dist",
+        Path(__file__).resolve().parents[2] / "web" / "dist",
+        Path(__file__).resolve().parents[3] / "web" / "dist",
+        Path("/app/web/dist"),
+    ]
+    for candidate in candidates:
+        if (candidate / "index.html").is_file():
+            return candidate
+    return None
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _dev_placeholder_html() -> str:
+    return """<!doctype html>
+<html lang="zh-CN">
+  <head><meta charset="utf-8"><title>OfferPilot</title></head>
+  <body>
+    <h1>OfferPilot API is running</h1>
+    <p>Build the frontend with <code>cd web && npm run build</code>, or run Vite dev server with API proxy.</p>
+  </body>
+</html>"""
 
 
 def _settings_payload(cfg: Config) -> dict[str, Any]:

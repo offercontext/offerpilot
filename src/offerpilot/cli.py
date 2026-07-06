@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 from typing import Optional
 
 import typer
 import uvicorn
 
+from offerpilot.ai.client import ConfiguredAIClient
+from offerpilot.ai.workflows import analyze_jd, generate_questions, match_resume
 from offerpilot.api import create_app
 from offerpilot.config import Config, load_config, resolve_data_dir, save_config
 from offerpilot.db import session_factory_for_data_dir
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
+from offerpilot.repositories.jd import JDAnalysesRepository
+from offerpilot.repositories.knowledge import KnowledgeRepository
 from offerpilot.repositories.notes import NoteCreate, NotesRepository
 from offerpilot.repositories.offers import OfferCreate, OffersRepository
 from offerpilot.repositories.questions import QuestionsRepository
@@ -109,6 +114,31 @@ def config(
     _print_config(data_dir, next_config)
 
 
+@app.command("analyze")
+def analyze_command(
+    jd: str = typer.Option("", "--jd", "-j", help="JD text to analyze (use '-' to read stdin)"),
+    jd_url: str = typer.Option("", "--jd-url", "-u", help="JD page URL to fetch then analyze"),
+    app_id: int = typer.Option(0, "--app", "-a", help="linked application ID"),
+) -> None:
+    jd_text = _read_dash_stdin(jd)
+    if bool(jd_text) == bool(jd_url):
+        raise typer.BadParameter("provide exactly one of --jd or --jd-url")
+    try:
+        result = analyze_jd(
+            _build_ai_model(),
+            _jd_repo(),
+            jd_text=jd_text,
+            jd_url=jd_url,
+            application_id=app_id if app_id > 0 else None,
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    summary = str(result.result.get("summary") or "")
+    typer.echo(f"\nJD analysis saved  (id: {result.id}, source: {result.jd_source})")
+    if summary:
+        typer.echo(f"Summary: {summary}")
+
+
 @app.command()
 def start(
     port: int = typer.Option(8080, "--port", "-p", help="local server port"),
@@ -148,6 +178,36 @@ def resume_list() -> None:
     for row in rows:
         name = row.name or "(unnamed)"
         typer.echo(f"{row.id:<4} {_truncate(name, 20):<20} {row.parse_status:<12} {len(row.parsed_data):<12}")
+
+
+@resume_app.command("match")
+def resume_match(
+    resume_id: int = typer.Option(..., "--resume", "-r", help="resume ID"),
+    jd: str = typer.Option("", "--jd", "-j", help="JD text to match (use '-' to read stdin)"),
+    jd_url: str = typer.Option("", "--jd-url", "-u", help="JD page URL to fetch then match"),
+    app_id: int = typer.Option(0, "--app", "-a", help="linked application ID"),
+) -> None:
+    jd_text = _read_dash_stdin(jd)
+    if bool(jd_text) == bool(jd_url):
+        raise typer.BadParameter("provide exactly one of --jd or --jd-url")
+    try:
+        result = match_resume(
+            _build_ai_model(),
+            _resumes_repo(),
+            resume_id=resume_id,
+            jd_text=jd_text,
+            jd_url=jd_url,
+            application_id=app_id if app_id > 0 else None,
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    score = result.result.get("match_score")
+    typer.echo(f"\nResume match saved  (id: {result.id}, resume: {result.resume_id})")
+    if score is not None:
+        typer.echo(f"Score: {score}")
+    summary = str(result.result.get("summary") or "")
+    if summary:
+        typer.echo(f"Summary: {summary}")
 
 
 @note_app.command("add")
@@ -346,12 +406,45 @@ def question_list(
         )
 
 
+@question_app.command("generate")
+def question_generate(
+    source: str = typer.Option("knowledge", "--source", "-s", help="knowledge or notes"),
+    kb: int = typer.Option(0, "--kb", help="knowledge base ID"),
+    app_id: int = typer.Option(0, "--app", "-a", help="application ID for notes source"),
+    count: int = typer.Option(8, "--count", "-n", help="number of questions to generate"),
+) -> None:
+    try:
+        result = generate_questions(
+            _build_ai_model(),
+            _questions_repo(),
+            _knowledge_repo(),
+            _notes_repo(),
+            source=source,
+            knowledge_base_id=kb,
+            application_id=app_id,
+            count=count,
+        )
+    except (RuntimeError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(f"\nGenerated {result.count} questions  (skipped duplicates: {result.skipped})")
+    for question in result.questions:
+        typer.echo(f"#{question.id} [{question.category}/{question.difficulty}] {question.question}")
+
+
 def main() -> None:
     app()
 
 
 def _applications_repo() -> ApplicationsRepository:
     return ApplicationsRepository(session_factory_for_data_dir(resolve_data_dir()))
+
+
+def _jd_repo() -> JDAnalysesRepository:
+    return JDAnalysesRepository(session_factory_for_data_dir(resolve_data_dir()))
+
+
+def _knowledge_repo() -> KnowledgeRepository:
+    return KnowledgeRepository(session_factory_for_data_dir(resolve_data_dir()))
 
 
 def _resumes_repo() -> ResumesRepository:
@@ -368,6 +461,16 @@ def _offers_repo() -> OffersRepository:
 
 def _questions_repo() -> QuestionsRepository:
     return QuestionsRepository(session_factory_for_data_dir(resolve_data_dir()))
+
+
+def _build_ai_model() -> ConfiguredAIClient:
+    return ConfiguredAIClient(load_config(resolve_data_dir()))
+
+
+def _read_dash_stdin(value: str) -> str:
+    if value == "-":
+        return sys.stdin.read()
+    return value
 
 
 def _print_config(data_dir: Path, cfg: Config) -> None:
