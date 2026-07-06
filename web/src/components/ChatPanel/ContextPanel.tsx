@@ -69,7 +69,7 @@ export default function ContextPanel({
       <div>
         <div className={styles.panelLabel}>Current evidence</div>
         {evidence.length ? (
-          <EvidenceList items={evidence.slice(0, 5)} />
+          <EvidenceList items={evidence.slice(0, 5)} clamped />
         ) : (
           <div className={styles.evidenceEmpty}>
             No evidence collected yet. Ask a question or choose a capability to let the assistant inspect your local data.

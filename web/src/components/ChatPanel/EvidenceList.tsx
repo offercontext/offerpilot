@@ -12,6 +12,7 @@ import styles from './ChatPanel.module.css';
 interface Props {
   items: EvidenceItem[];
   compact?: boolean;
+  clamped?: boolean;
 }
 
 const ICONS = {
@@ -24,10 +25,14 @@ const ICONS = {
   unknown: FileTextOutlined,
 } satisfies Record<EvidenceItem['kind'], typeof FileTextOutlined>;
 
-export default function EvidenceList({ items, compact }: Props) {
+export default function EvidenceList({ items, compact, clamped }: Props) {
   if (!items.length) return null;
   return (
-    <ul className={`${styles.evidenceList} ${compact ? styles.evidenceListCompact : ''}`}>
+    <ul
+      className={`${styles.evidenceList} ${compact ? styles.evidenceListCompact : ''} ${
+        clamped ? styles.evidenceListClamped : ''
+      }`}
+    >
       {items.map((item, index) => {
         const icon = ICONS[item.kind] ?? ICONS.unknown;
         return (
