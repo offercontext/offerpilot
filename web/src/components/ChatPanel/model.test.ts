@@ -70,6 +70,70 @@ describe('buildTurns evidence normalization', () => {
     });
   });
 
+  it('matches multiple tool results to the correct tool call id', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([
+          { id: 'call-apps', name: 'list_applications', args: {} },
+          { id: 'call-knowledge', name: 'search_knowledge', args: { query: 'system design' } },
+        ]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-knowledge',
+        content: JSON.stringify([{ id: 10, title: 'System Design', summary: 'Patterns' }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-apps',
+        content: JSON.stringify([{ id: 7, company_name: 'ByteDance', position_name: 'Backend Engineer' }]),
+      }),
+      msg({ role: 'assistant', content: 'I found both.' }),
+    ]);
+
+    expect(turns[0].steps?.map((step) => [step.name, step.detail])).toEqual([
+      ['list_applications', 'ByteDance'],
+      ['search_knowledge', 'System Design'],
+    ]);
+    expect(turns[0].steps?.[0].evidence?.[0]).toMatchObject({
+      id: 'application-7',
+      source: 'list_applications',
+      title: 'ByteDance',
+    });
+    expect(turns[0].steps?.[1].evidence?.[0]).toMatchObject({
+      id: 'search_knowledge-10',
+      source: 'search_knowledge',
+      title: 'System Design',
+    });
+  });
+
+  it('maps legacy tool results to pending steps in result order when ids are missing', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([
+          { name: 'list_applications', args: {} },
+          { name: 'search_knowledge', args: { query: 'system design' } },
+        ]),
+      }),
+      msg({
+        role: 'tool',
+        content: JSON.stringify([{ id: 7, company_name: 'ByteDance', position_name: 'Backend Engineer' }]),
+      }),
+      msg({
+        role: 'tool',
+        content: JSON.stringify([{ id: 10, title: 'System Design', summary: 'Patterns' }]),
+      }),
+      msg({ role: 'assistant', content: 'I found both.' }),
+    ]);
+
+    expect(turns[0].steps?.map((step) => [step.name, step.detail])).toEqual([
+      ['list_applications', 'ByteDance'],
+      ['search_knowledge', 'System Design'],
+    ]);
+  });
+
   it('aggregates newest evidence first across visible turns', () => {
     const turns = buildTurns([
       msg({
@@ -93,5 +157,24 @@ describe('buildTurns evidence normalization', () => {
     ]);
 
     expect(collectEvidence(turns).map((item) => item.title)).toEqual(['Anthropic', 'OpenAI']);
+  });
+
+  it('preserves backend evidence order within a single tool result', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([{ name: 'list_applications', args: {} }]),
+      }),
+      msg({
+        role: 'tool',
+        content: JSON.stringify([
+          { id: 5, company_name: 'OpenAI', position_name: 'PM', status: 'interview' },
+          { id: 4, company_name: 'Anthropic', position_name: 'PM', status: 'applied' },
+        ]),
+      }),
+      msg({ role: 'assistant', content: 'Applications found.' }),
+    ]);
+
+    expect(collectEvidence(turns).map((item) => item.title)).toEqual(['OpenAI', 'Anthropic']);
   });
 });

@@ -22,6 +22,8 @@ export interface EvidenceItem {
 export interface ToolStep {
   /** Backend tool name, e.g. list_offers. */
   name: string;
+  /** Backend tool call id used to associate result messages. */
+  toolCallId?: string;
   /** Optional short detail extracted from the call arguments or result. */
   detail?: string;
   /** Verifiable records returned by the tool. */
@@ -38,6 +40,7 @@ export interface UITurn {
 }
 
 interface RawToolCall {
+  id?: string;
   function?: { name?: string; arguments?: string };
   name?: string;
   arguments?: string;
@@ -59,7 +62,7 @@ function parseToolCalls(raw?: string): ToolStep[] {
     const name = c?.function?.name ?? c?.name;
     if (!name) continue;
     const argsStr = c?.function?.arguments ?? c?.arguments ?? stringifyArgs(c?.args);
-    steps.push({ name, detail: extractDetail(argsStr) });
+    steps.push({ name, toolCallId: c?.id, detail: extractDetail(argsStr) });
   }
   return steps;
 }
@@ -166,24 +169,29 @@ function compact(values: Array<string | undefined>): string[] {
 export function buildTurns(stored: ChatMessage[]): UITurn[] {
   const turns: UITurn[] = [];
   let pending: ToolStep[] = [];
+  let nextFallbackToolIndex = 0;
   for (const m of stored) {
     if (m.role === 'user') {
       turns.push({ role: 'user', content: m.content });
       pending = [];
+      nextFallbackToolIndex = 0;
     } else if (m.role === 'assistant') {
       const steps = parseToolCalls(m.tool_calls);
       if (steps.length) pending = pending.concat(steps);
       if (m.content.trim()) {
         turns.push({ role: 'assistant', content: m.content, steps: pending.length ? pending : undefined });
         pending = [];
+        nextFallbackToolIndex = 0;
       }
     } else if (m.role === 'tool') {
-      const last = pending[pending.length - 1];
-      if (last) {
-        const parsed = parseToolResult(m.content, last.name);
-        pending[pending.length - 1] = {
-          ...last,
-          detail: parsed.detail ?? last.detail,
+      const toolIndex = resolveToolResultIndex(pending, m.tool_call_id, nextFallbackToolIndex);
+      const step = pending[toolIndex];
+      if (step) {
+        if (!m.tool_call_id) nextFallbackToolIndex = toolIndex + 1;
+        const parsed = parseToolResult(m.content, step.name);
+        pending[toolIndex] = {
+          ...step,
+          detail: parsed.detail ?? step.detail,
           evidence: parsed.evidence,
           evidenceUnavailable: parsed.evidenceUnavailable,
         };
@@ -193,12 +201,20 @@ export function buildTurns(stored: ChatMessage[]): UITurn[] {
   return turns;
 }
 
+function resolveToolResultIndex(pending: ToolStep[], toolCallId: string | undefined, fallbackIndex: number): number {
+  if (toolCallId) {
+    const match = pending.findIndex((step) => step.toolCallId === toolCallId);
+    if (match >= 0) return match;
+  }
+  return fallbackIndex;
+}
+
 export function collectEvidence(turns: UITurn[], limit = 8): EvidenceItem[] {
   const seen = new Set<string>();
   const out: EvidenceItem[] = [];
   for (const turn of [...turns].reverse()) {
     for (const step of [...(turn.steps ?? [])].reverse()) {
-      for (const item of [...(step.evidence ?? [])].reverse()) {
+      for (const item of step.evidence ?? []) {
         if (seen.has(item.id)) continue;
         seen.add(item.id);
         out.push(item);
