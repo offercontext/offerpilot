@@ -1,0 +1,306 @@
+src/offerpilot/api.py
+  s_7722ac42992678::t_097873dfe029df 1173-1188
+  s_7722ac42992678::t_9c3ad43ce3361d 1266-1297
+  s_7722ac42992678::t_6d230fe68116e2 12,55-59,61
+src/offerpilot/cli.py
+  s_7722ac42992678::t_5dc8a823c28c2e 4,10-11,16-17,117-141,183-212,409-433,442-449,466-473
+scripts/install.sh
+  s_7722ac42992678::t_5a2b500852e737 7,14,19-22,28-29,31-39,47,54-55,60
+  s_7722ac42992678::t_5d1b0047d00230 30
+tests/test_static_frontend.py
+  s_7722ac42992678::t_cca9c1769a1bcd 1-25
+web/src/types/ai.ts
+  s_7722ac42992678::t_2d02637440155c 1,12,21,37
+docs/superpowers/plans/2026-07-05-python-core-rewrite.md
+  s_7722ac42992678::t_2d02637440155c 368
+docs/python-cutover-verification.md
+  s_7722ac42992678::t_0e7a0515c14b2f 1-58
+Dockerfile
+  s_7722ac42992678::t_5a2b500852e737 11-19,22-26,32
+README.md
+  s_7722ac42992678::t_9ce0ecba46c31f 22,34,37-40,43,48-49,56-57,107,110-111,130-131,135-136,166,178,181-184,187,192-193,200-201,250,253-254,271-272,276-277
+docs/python-rewrite-contract.md
+  s_7722ac42992678::t_3f3dbd621d4217 3-4,19,318
+ARCHITECTURE_REVIEW.md
+  s_7722ac42992678::t_2d02637440155c 1,3-4,8-9,11-16,20-31,33,35,37-40,42,44-47,49,51-54,56,58,60-65,67,69-70
+src/offerpilot/ai/workflows.py
+  s_7722ac42992678::t_5dc8a823c28c2e 1-340
+tests/test_cutover_files.py
+  s_7722ac42992678::t_c8433f0c589bf7 1-24
+  s_7722ac42992678::t_3b1c21d4c79448 25-34
+  s_7722ac42992678::t_307456189df3d3 35-46
+tests/test_cli.py
+  s_7722ac42992678::t_16ebeff1fa31b9 3,5-22,134-207
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.9",
+  "base_commit_sha": "6ea2e19cfda1e3a460956ee2d7af380212370624",
+  "prompts": {
+    "s_7722ac42992678::t_097873dfe029df": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f32da-c55b-78d0-a5ed-3523e70d19fd",
+        "model": "gpt-5.5"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>",
+      "total_additions": 16,
+      "total_deletions": 0,
+      "accepted_lines": 16,
+      "overriden_lines": 0,
+      "custom_attributes": {
+        "tool_use_id": "call_84nkOwLL6x6IwMbLgoXm97HH",
+        "edit_kind": "file_edit",
+        "transcript_path": "/Users/wuboxin/.codex/sessions/2026/07/05/rollout-2026-07-05T23-17-06-019f32da-c55b-78d0-a5ed-3523e70d19fd.jsonl"
+      }
+    },
+    "s_7722ac42992678::t_0e7a0515c14b2f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f32da-c55b-78d0-a5ed-3523e70d19fd",
+        "model": "gpt-5.5"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>",
+      "total_additions": 58,
+      "total_deletions": 0,
+      "accepted_lines": 58,
+      "overriden_lines": 0,
+      "custom_attributes": {
+        "transcript_path": "/Users/wuboxin/.codex/sessions/2026/07/05/rollout-2026-07-05T23-17-06-019f32da-c55b-78d0-a5ed-3523e70d19fd.jsonl",
+        "tool_use_id": "call_ApQQfNKnpjnxEHN2cKhU6fDn",
+        "edit_kind": "file_edit"
+      }
+    },
+    "s_7722ac42992678::t_16ebeff1fa31b9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f32da-c55b-78d0-a5ed-3523e70d19fd",
+        "model": "gpt-5.5"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>",
+      "total_additions": 93,
+      "total_deletions": 0,
+      "accepted_lines": 93,
+      "overriden_lines": 0,
+      "custom_attributes": {
+        "transcript_path": "/Users/wuboxin/.codex/sessions/2026/07/05/rollout-2026-07-05T23-17-06-019f32da-c55b-78d0-a5ed-3523e70d19fd.jsonl",
+        "edit_kind": "file_edit",
+        "tool_use_id": "call_L9ber9WtLkYNlRqQv4lSTQV4"
+      }
+    },
+    "s_7722ac42992678::t_2d02637440155c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f32da-c55b-78d0-a5ed-3523e70d19fd",
+        "model": "gpt-5.5"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>",
+      "total_additions": 56,
+      "total_deletions": 173,
+      "accepted_lines": 56,
+      "overriden_lines": 0,
+      "custom_attributes": {
+        "edit_kind": "file_edit",
+        "transcript_path": "/Users/wuboxin/.codex/sessions/2026/07/05/rollout-2026-07-05T23-17-06-019f32da-c55b-78d0-a5ed-3523e70d19fd.jsonl",
+        "tool_use_id": "call_vPlk610kxYHMW9uFTb9u87nI"
+      }
+    },
+    "s_7722ac42992678::t_307456189df3d3": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f32da-c55b-78d0-a5ed-3523e70d19fd",
+        "model": "gpt-5.5"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>",
+      "total_additions": 12,
+      "total_deletions": 0,
+      "accepted_lines": 12,
+      "overriden_lines": 0,
+      "custom_attributes": {
+        "edit_kind": "file_edit",
+        "tool_use_id": "call_wSJQPwXgRvSpwuCTVbKfEad8",
+        "transcript_path": "/Users/wuboxin/.codex/sessions/2026/07/05/rollout-2026-07-05T23-17-06-019f32da-c55b-78d0-a5ed-3523e70d19fd.jsonl"
+      }
+    },
+    "s_7722ac42992678::t_3b1c21d4c79448": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f32da-c55b-78d0-a5ed-3523e70d19fd",
+        "model": "gpt-5.5"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>",
+      "total_additions": 10,
+      "total_deletions": 0,
+      "accepted_lines": 10,
+      "overriden_lines": 0,
+      "custom_attributes": {
+        "edit_kind": "file_edit",
+        "transcript_path": "/Users/wuboxin/.codex/sessions/2026/07/05/rollout-2026-07-05T23-17-06-019f32da-c55b-78d0-a5ed-3523e70d19fd.jsonl",
+        "tool_use_id": "call_2ZX1Izn8j55OCZXTsRTnDyPv"
+      }
+    },
+    "s_7722ac42992678::t_3f3dbd621d4217": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f32da-c55b-78d0-a5ed-3523e70d19fd",
+        "model": "gpt-5.5"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>",
+      "total_additions": 4,
+      "total_deletions": 3,
+      "accepted_lines": 4,
+      "overriden_lines": 0,
+      "custom_attributes": {
+        "edit_kind": "file_edit",
+        "tool_use_id": "call_qWQ8aqnFQ5s17HbQxexdaSRr",
+        "transcript_path": "/Users/wuboxin/.codex/sessions/2026/07/05/rollout-2026-07-05T23-17-06-019f32da-c55b-78d0-a5ed-3523e70d19fd.jsonl"
+      }
+    },
+    "s_7722ac42992678::t_5a2b500852e737": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f32da-c55b-78d0-a5ed-3523e70d19fd",
+        "model": "gpt-5.5"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>",
+      "total_additions": 48,
+      "total_deletions": 81,
+      "accepted_lines": 37,
+      "overriden_lines": 0,
+      "custom_attributes": {
+        "edit_kind": "file_edit",
+        "transcript_path": "/Users/wuboxin/.codex/sessions/2026/07/05/rollout-2026-07-05T23-17-06-019f32da-c55b-78d0-a5ed-3523e70d19fd.jsonl",
+        "tool_use_id": "call_DZekxaRR1s1cPBcsd2OipG6A"
+      }
+    },
+    "s_7722ac42992678::t_5d1b0047d00230": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f32da-c55b-78d0-a5ed-3523e70d19fd",
+        "model": "gpt-5.5"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>",
+      "total_additions": 1,
+      "total_deletions": 13,
+      "accepted_lines": 1,
+      "overriden_lines": 0,
+      "custom_attributes": {
+        "transcript_path": "/Users/wuboxin/.codex/sessions/2026/07/05/rollout-2026-07-05T23-17-06-019f32da-c55b-78d0-a5ed-3523e70d19fd.jsonl",
+        "tool_use_id": "call_Syw3LExRv3SAOhw2PrWXsBGP",
+        "edit_kind": "file_edit"
+      }
+    },
+    "s_7722ac42992678::t_5dc8a823c28c2e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f32da-c55b-78d0-a5ed-3523e70d19fd",
+        "model": "gpt-5.5"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>",
+      "total_additions": 443,
+      "total_deletions": 0,
+      "accepted_lines": 443,
+      "overriden_lines": 0,
+      "custom_attributes": {
+        "tool_use_id": "call_4i4lGpYrJC0VwPcs1zjAA0fq",
+        "transcript_path": "/Users/wuboxin/.codex/sessions/2026/07/05/rollout-2026-07-05T23-17-06-019f32da-c55b-78d0-a5ed-3523e70d19fd.jsonl",
+        "edit_kind": "file_edit"
+      }
+    },
+    "s_7722ac42992678::t_6d230fe68116e2": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f32da-c55b-78d0-a5ed-3523e70d19fd",
+        "model": "gpt-5.5"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>",
+      "total_additions": 7,
+      "total_deletions": 2,
+      "accepted_lines": 7,
+      "overriden_lines": 0,
+      "custom_attributes": {
+        "edit_kind": "file_edit",
+        "transcript_path": "/Users/wuboxin/.codex/sessions/2026/07/05/rollout-2026-07-05T23-17-06-019f32da-c55b-78d0-a5ed-3523e70d19fd.jsonl",
+        "tool_use_id": "call_NOHeNOL9TSiLmMOeTgMnWxcO"
+      }
+    },
+    "s_7722ac42992678::t_9c3ad43ce3361d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f32da-c55b-78d0-a5ed-3523e70d19fd",
+        "model": "gpt-5.5"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>",
+      "total_additions": 32,
+      "total_deletions": 0,
+      "accepted_lines": 32,
+      "overriden_lines": 0,
+      "custom_attributes": {
+        "transcript_path": "/Users/wuboxin/.codex/sessions/2026/07/05/rollout-2026-07-05T23-17-06-019f32da-c55b-78d0-a5ed-3523e70d19fd.jsonl",
+        "edit_kind": "file_edit",
+        "tool_use_id": "call_77Qx5rnK6GxsuFVPQy40GpOh"
+      }
+    },
+    "s_7722ac42992678::t_9ce0ecba46c31f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f32da-c55b-78d0-a5ed-3523e70d19fd",
+        "model": "gpt-5.5"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>",
+      "total_additions": 36,
+      "total_deletions": 42,
+      "accepted_lines": 36,
+      "overriden_lines": 0,
+      "custom_attributes": {
+        "tool_use_id": "call_BmxlDt02e1I5mXEZ7VSFIYIq",
+        "edit_kind": "file_edit",
+        "transcript_path": "/Users/wuboxin/.codex/sessions/2026/07/05/rollout-2026-07-05T23-17-06-019f32da-c55b-78d0-a5ed-3523e70d19fd.jsonl"
+      }
+    },
+    "s_7722ac42992678::t_c8433f0c589bf7": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f32da-c55b-78d0-a5ed-3523e70d19fd",
+        "model": "gpt-5.5"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>",
+      "total_additions": 24,
+      "total_deletions": 0,
+      "accepted_lines": 24,
+      "overriden_lines": 0,
+      "custom_attributes": {
+        "edit_kind": "file_edit",
+        "transcript_path": "/Users/wuboxin/.codex/sessions/2026/07/05/rollout-2026-07-05T23-17-06-019f32da-c55b-78d0-a5ed-3523e70d19fd.jsonl",
+        "tool_use_id": "call_4ePdHeJGVSYnk9gw95Nn4Fpn"
+      }
+    },
+    "s_7722ac42992678::t_cca9c1769a1bcd": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f32da-c55b-78d0-a5ed-3523e70d19fd",
+        "model": "gpt-5.5"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>",
+      "total_additions": 25,
+      "total_deletions": 0,
+      "accepted_lines": 25,
+      "overriden_lines": 0,
+      "custom_attributes": {
+        "tool_use_id": "call_OSLvm9eEHsRSJfTvtt5G0Spz",
+        "edit_kind": "file_edit",
+        "transcript_path": "/Users/wuboxin/.codex/sessions/2026/07/05/rollout-2026-07-05T23-17-06-019f32da-c55b-78d0-a5ed-3523e70d19fd.jsonl"
+      }
+    }
+  },
+  "sessions": {
+    "s_7722ac42992678": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f32da-c55b-78d0-a5ed-3523e70d19fd",
+        "model": "gpt-5.5"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    }
+  }
+}
