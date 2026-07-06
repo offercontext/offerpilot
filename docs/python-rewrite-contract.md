@@ -1,0 +1,329 @@
+# OfferPilot Python Rewrite Contract
+
+> Status: stage 0 inventory, stage 1 migration contract draft.
+> Baseline branch: `feature/20260705-python-rewrite`.
+> Source baseline: Go backend at `443c933` from `main`.
+
+This document freezes the compatibility surface for rewriting OfferPilot from Go
+to Python. The Python backend may improve internal structure, but it must keep
+the REST API, SQLite data, CLI behavior, and AI write-confirmation semantics
+listed here unless a later contract revision explicitly says otherwise.
+
+## Baseline Verification
+
+Run from the worktree root unless noted:
+
+| Command | Current result | Migration use |
+|---|---|---|
+| `go test ./...` | Passed | Go behavior reference for backend, DB, CLI-adjacent packages, AI loop |
+| `npm test` in `web/` | Passed, 29 tests | Frontend utility baseline |
+| `npm run build` in `web/` | Passed | React API compatibility smoke baseline |
+| `npm ci` in `web/` | Passed with 5 audit findings | Dependency audit is tracked as a risk, not part of this rewrite |
+
+## Global Runtime Contract
+
+| Surface | Current behavior | Python rewrite requirement |
+|---|---|---|
+| Data directory | `cmd/oc/main.go` uses `OFFERPILOT_DATA`; otherwise `~/.offerpilot`; creates directory `0755` | Keep the same environment variable and default directory |
+| Database path | CLI and server use `data.db` under the data directory | Keep `data.db`; never create a parallel default path |
+| Config path | `config.json` under the data directory | Keep JSON field names and defaults |
+| Config defaults | `base_url=https://api.openai.com/v1`, `model=gpt-4o`, `local_port=8080`, `chat_auto_approve_writes=false` | Preserve defaults and missing-file behavior |
+| Docker data | Docker image sets `OFFERPILOT_DATA=/data` and declares `/data` as a volume | Keep a first-class Docker data path in the final cutover image |
+| HTTP prefix | All JSON APIs live under `/api`; frontend assets are served from root | Keep `/api` prefix so current React services work |
+| JSON casing | API and DB structs expose snake_case JSON fields | Keep snake_case field names |
+| CORS | Allows all origins, methods `GET, POST, PUT, DELETE, OPTIONS`, headers `Content-Type, Authorization` | Preserve for local frontend development |
+| Time format | Go `time.Time` encodes as RFC3339-like JSON strings; SQLite stores DATETIME text/current timestamp | Python must serialize datetime fields as frontend-compatible strings |
+| API errors | `respondError` returns JSON object `{"error": string}` | Preserve error shape for all Python routes |
+| HTTP methods | CORS allows `GET, POST, PUT, DELETE, OPTIONS`; no `PATCH` is advertised | Keep compatibility methods first; add PATCH only after frontend contract revision |
+
+## REST API Contract
+
+Route registration lives in `internal/api/router.go`. The React frontend calls
+these endpoints through `web/src/services/*` with `baseURL: /api`.
+
+API invariants:
+
+- All API routes are mounted under `/api`; React SPA fallback is outside this prefix.
+- JSON responses set `Content-Type: application/json`.
+- `OPTIONS` returns `200`.
+- Delete endpoints often do not detect no-row deletes today; preserve this unless a test-backed contract revision changes it.
+
+### Applications And Dashboard
+
+| Endpoint | Request | Response | Compatibility notes | Tests to preserve |
+|---|---|---|---|---|
+| `GET /api/applications?status=` | Optional `status` query | `Application[]`, ordered by `applied_at DESC` | Empty status returns all. Fields match `db.Application` and `web/src/types/application.ts`. | List all, filter by status, empty list |
+| `POST /api/applications` | `ApplicationInput`: `company_name`, `position_name`, optional `job_url`, `status`, `notes` | `201 Application` | Requires `company_name` and `position_name`; default `status=applied`, `source=web`, `applied_at=now`. | Required-field 400, default fields, created response |
+| `GET /api/applications/{id}` | Path integer `id` | `200 Application` | Bad ID gives 400; missing row gives 404. | Bad id, not found, found |
+| `PUT /api/applications/{id}` | Full desired application object, not merge | `200 Application` | Frontend currently sends complete desired state. Python must not silently turn this into partial merge unless frontend is changed. | Full update preserves expected fields |
+| `DELETE /api/applications/{id}` | Path integer `id` | `200 {"message":"Deleted"}` | Current handler does not 404 when no row was deleted. | Delete existing and repeated delete behavior |
+| `GET /api/dashboard` | None | `{"total": number, "board": Record<string, Application[]>}` | Board groups applications by `status`; missing statuses may be absent. | Status grouping and total |
+
+### Schedule, Calendar, Notes, Offers
+
+| Endpoint | Request | Response | Source | Migration priority |
+|---|---|---|---|---|
+| `GET /api/events` | Optional month/application/status-style filters from service | `Event[]` | `internal/api/events.go`, `web/src/services/events.ts` | Phase 5 |
+| `POST /api/events` | Event request body | `201 eventResponse` | `internal/api/events.go` | Phase 5 |
+| `GET /api/events/{id}` | Path id | `eventResponse` | `internal/api/events.go` | Phase 5 |
+| `PUT /api/events/{id}` | Event request body | `eventResponse` | `internal/api/events.go` | Phase 5 |
+| `DELETE /api/events/{id}` | Path id | status JSON | `internal/api/events.go` | Phase 5 |
+| `GET /api/calendar` | Query filters | `CalendarEntry[]` | `internal/api/calendar.go`, `web/src/services/calendar.ts` | Phase 5 |
+| `GET /api/applications/{id}/notes` | Path app id | `InterviewNote[]` | `internal/api/notes.go` | Phase 5 |
+| `POST /api/applications/{id}/notes` | Note body | `InterviewNote` | `internal/api/notes.go` | Phase 5 |
+| `GET /api/notes` | Optional filters | `InterviewNote[]` | `internal/api/notes.go` | Phase 5 |
+| `POST /api/notes` | Standalone note body | `InterviewNote` | `internal/api/notes.go` | Phase 5 |
+| `PUT /api/notes/{id}` | Note body | `InterviewNote` | `internal/api/notes.go` | Phase 5 |
+| `DELETE /api/notes/{id}` | Path id | status JSON | `internal/api/notes.go` | Phase 5 |
+| `GET /api/offers` | Optional `status` | `Offer[]` | `internal/api/offers.go`, `web/src/services/offers.ts` | Phase 5 |
+| `POST /api/offers` | Offer body | `Offer` | `internal/api/offers.go` | Phase 5 |
+| `GET /api/offers/compare?ids=` | Comma-separated IDs | Comparison data | `internal/api/offers.go` | Phase 5 |
+| `GET /api/offers/{id}` | Path id | `Offer` | `internal/api/offers.go` | Phase 5 |
+| `PUT /api/offers/{id}` | Offer body | `Offer` | `internal/api/offers.go` | Phase 5 |
+| `DELETE /api/offers/{id}` | Path id | status JSON | `internal/api/offers.go` | Phase 5 |
+
+Compatibility footnotes:
+
+- Events store duration as strings such as `30m`, but the API exposes `duration_minutes`.
+- Event type validation allows `written_test`, `interview`, and `assessment`.
+- Calendar `month` parsing falls back to the current month instead of returning 400.
+- Offers use `422` for semantic validation errors such as bad status, missing company/position, negative money, or invalid application.
+- Offer update currently keeps `application_id` immutable even if the request body contains one.
+
+### AI Analysis, Resume, Knowledge, Questions, Material Kits, Mock
+
+| Endpoint | Request | Response | Source | Migration priority |
+|---|---|---|---|---|
+| `POST /api/jd/analyze` | `jd_text` or `jd_url`, optional `application_id` | JD analysis result and saved row | `internal/api/jd.go`, `web/src/services/ai.ts` | Phase 5 after AI minimum |
+| `GET /api/jd/analyses` | Optional `application_id` | `JDAnalysis[]` | `internal/api/jd.go` | Phase 5 |
+| `GET /api/jd/analyses/{id}` | Path id | `JDAnalysis` | `internal/api/jd.go` | Phase 5 |
+| `POST /api/resumes` | Text resume body | `Resume` | `internal/api/resume.go` | Phase 5 |
+| `GET /api/resumes` | None | `Resume[]` | `internal/api/resume.go` | Phase 5 |
+| `GET /api/resumes/{id}` | Path id | `Resume` | `internal/api/resume.go` | Phase 5 |
+| `DELETE /api/resumes/{id}` | Path id | status JSON | `internal/api/resume.go` | Phase 5 |
+| `POST /api/resumes/{id}/match` | JD text/url and optional app id | Match result | `internal/api/resume.go` | Phase 5 after AI minimum |
+| `GET /api/resumes/{id}/matches` | Path id | `ResumeMatch[]` | `internal/api/resume.go` | Phase 5 |
+| `POST /api/resumes/upload` | Multipart upload | Resume row | `internal/api/resume.go` | Phase 5 |
+| `PUT /api/resumes/{id}/text` | Text body | Resume row | `internal/api/resume.go` | Phase 5 |
+| `GET /api/resumes/{id}/file` | Path id | File download | `internal/api/resume.go` | Phase 5 |
+| `GET /api/knowledge-bases` | None | `KnowledgeBase[]` | `internal/api/knowledge.go` | Phase 5 |
+| `POST /api/knowledge-bases` | name/description | `KnowledgeBase` | `internal/api/knowledge.go` | Phase 5 |
+| `PUT /api/knowledge-bases/{id}` | name/description | `KnowledgeBase` | `internal/api/knowledge.go` | Phase 5 |
+| `DELETE /api/knowledge-bases/{id}` | Path id | status JSON | `internal/api/knowledge.go` | Phase 5 |
+| `GET /api/knowledge-documents` | Optional base/query filters | `KnowledgeDocument[]` | `internal/api/knowledge.go` | Phase 5 |
+| `POST /api/knowledge-documents` | Document body | `KnowledgeDocument` | `internal/api/knowledge.go` | Phase 5 |
+| `POST /api/knowledge-documents/import` | Import body | `KnowledgeDocument` | `internal/api/knowledge.go` | Phase 5 |
+| `GET /api/knowledge-documents/{id}` | Path id | `KnowledgeDocument` | `internal/api/knowledge.go` | Phase 5 |
+| `PUT /api/knowledge-documents/{id}` | Document body | `KnowledgeDocument` | `internal/api/knowledge.go` | Phase 5 |
+| `DELETE /api/knowledge-documents/{id}` | Path id | status JSON | `internal/api/knowledge.go` | Phase 5 |
+| `GET /api/knowledge/search` | Query text, optional base/limit | `KnowledgeSearchResult[]` | `internal/api/knowledge.go` | Phase 5 |
+| `GET /api/questions` | Optional filters | `Question[]` | `internal/api/questions.go` | Phase 5 |
+| `POST /api/questions` | Manual question body | `Question` | `internal/api/questions.go` | Phase 5 |
+| `POST /api/questions/generate` | Source/kb/app/count | Generated result | `internal/api/questions.go` | Phase 5 after AI minimum |
+| `GET /api/questions/due` | None | `Question[]` | `internal/api/questions.go` | Phase 5 |
+| `GET /api/questions/stats` | None | Practice stats | `internal/api/questions.go` | Phase 5 |
+| `GET /api/questions/{id}` | Path id | `Question` | `internal/api/questions.go` | Phase 5 |
+| `PUT /api/questions/{id}` | Question body | `Question` | `internal/api/questions.go` | Phase 5 |
+| `DELETE /api/questions/{id}` | Path id | status JSON | `internal/api/questions.go` | Phase 5 |
+| `POST /api/questions/{id}/reviews` | Rating/note | Review result | `internal/api/questions.go` | Phase 5 |
+| `GET /api/applications/{id}/material-kit` | Path app id | Material kit | `internal/api/material_kits.go` | Phase 5 |
+| `POST /api/applications/{id}/material-kit/generate` | Resume/JD inputs | Material kit | `internal/api/material_kits.go` | Phase 5 after AI minimum |
+| `PUT /api/material-kits/{id}` | Status/content body | Material kit | `internal/api/material_kits.go` | Phase 5 |
+| `GET /api/mock/sessions` | Optional filters | `MockSession[]` | `internal/api/mock.go` | Phase 5 |
+| `POST /api/mock/sessions` | Mock config | Create response | `internal/api/mock.go` | Phase 5 after AI minimum |
+| `GET /api/mock/sessions/{id}` | Path id | Detail response | `internal/api/mock.go` | Phase 5 |
+| `POST /api/mock/sessions/{id}/end` | End body | Feedback response | `internal/api/mock.go` | Phase 5 after AI minimum |
+| `DELETE /api/mock/sessions/{id}` | Path id | status JSON | `internal/api/mock.go` | Phase 5 |
+
+Compatibility footnotes:
+
+- JD analyze returns a parsed result object, while list/get analysis endpoints expose `result` as a raw JSON string.
+- Resume upload accepts one PDF up to 10 MB; `parse-failed` resumes may still return `201`.
+- Material-kit `GET` returns `404` for missing kit; the frontend maps that to `null`.
+- Knowledge document import accepts `.md` or `.txt` up to 1 MB and uses `source_type=upload`.
+- Question delete returns `204 No Content`, unlike most delete endpoints.
+- Question generation clamps count in the AI layer to default 8 and max 20.
+- Search/default limits differ by endpoint: knowledge search default is 5 and max is 10; AI tool document listing default is 10 and max is 20.
+- Mock interview frontend calls `/api/mock/*`; create returns session plus conversation details.
+- Mock interview end can save a note for an already completed session when `auto_save_note` is true.
+
+### Chat And Settings
+
+| Endpoint | Request | Response | Compatibility notes | Tests to preserve |
+|---|---|---|---|---|
+| `POST /api/chat` | `{"message": string, "conversation_id": number, "offer_id"?: number}` | Either `{"type":"message","conversation_id":id,"message":text,"degraded"?:true}` or `{"type":"confirmation_required","conversation_id":id,"pending_action":{"tool_name":name,"human":text}}` | `conversation_id=0` creates a new conversation. If `offer_id` exists, conversation mode is `nego_coach`. Missing message returns 400. | New conversation, existing conversation, tools-unsupported fallback, pending write |
+| `POST /api/chat/confirm` | `{"conversation_id": number, "approved": boolean}` | Same `ChatResponse` union | Last stored message must be assistant with `tool_calls`; approve executes, reject records refusal tool result. | Approve, reject, no pending action |
+| `GET /api/chat/conversations` | None | `Conversation[]` | Includes `mode` and `offer_id` after migration columns are present. | List order/update time |
+| `GET /api/chat/conversations/{id}` | Path id | `ChatMessage[]` | `tool_calls` remains a JSON string in DB/API model. | Preserve tool metadata |
+| `DELETE /api/chat/conversations/{id}` | Path id | `{"status":"deleted"}` | Deletes messages first, then conversation. | Cascade/delete behavior |
+| `GET /api/settings` | None | `{"chat_auto_approve_writes": bool, "base_url": string, "model": string, "has_api_key": bool}` | Never returns raw API key. | No secret exposure |
+| `PUT /api/settings` | `chat_auto_approve_writes`, `base_url`, `model`, optional `api_key` | Same as GET | Blank/missing API key must not erase existing key unless current Go behavior says so. | Update fields, preserve/replace secret |
+
+Chat/settings compatibility footnotes:
+
+- `GET /api/chat/conversations/{id}` does not currently 404 just because the message list is empty.
+- `PUT /api/settings` preserves the existing API key when `api_key` is blank or omitted.
+- New chat with `offer_id` creates a conversation in `nego_coach` mode and uses an offer-derived title when the offer exists.
+
+## SQLite Schema Contract
+
+`internal/db/db.go` is the canonical current migration source. It uses
+`CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`, and a small
+`ensureColumn` mechanism for older databases.
+
+There is currently no `schema_migrations` table. Python may introduce Alembic
+for new migrations, but startup must remain compatible with databases produced
+by this idempotent Go migrator.
+
+| Table | Columns and constraints | Indexes / compatibility notes |
+|---|---|---|
+| `applications` | `id` PK autoincrement; `company_name` not null; `position_name` not null; `job_url` default empty; `status` not null default `applied`; `source` not null default `cli`; `notes` default empty; `applied_at`, `created_at`, `updated_at` not null default current timestamp | `idx_applications_status`; first Python milestone must fully support this table |
+| `events` | `id`; `application_id` not null FK cascade; `event_type` not null; `round` default 0; nullable `scheduled_at`; `duration`, `location`, `notes`; `created_at` | `idx_events_app` |
+| `interview_notes` | `id`; nullable `application_id` FK set null; `company`, `position` not null; `round`, `date`, `questions`, `self_reflection`, `difficulty_points`, `mood`; `created_at` | `idx_notes_app` |
+| `resumes` | `id`; `name`; nullable `file_path`; nullable `parsed_data`; `parse_status` default `pending`; `created_at` | `ensureColumn` maintains all four non-id content columns for legacy DBs |
+| `jd_analyses` | `id`; nullable `application_id` FK set null; `jd_source` default `text`; `jd_text` not null; `result` not null; `created_at` | `idx_jd_app` |
+| `resume_matches` | `id`; `resume_id` not null FK cascade; nullable `application_id` FK set null; `jd_text` not null; `result` not null; `created_at` | `idx_matches_resume` |
+| `offers` | `id`; nullable `application_id` FK set null; `company_name`, `position_name` not null; `status` default `pending`; `base_monthly`, `months_per_year`, `signing_bonus`; `equity`, `perks`, `deadline`, `notes`, `assessment`; timestamps | `idx_offers_app`, `idx_offers_status`; `total_cash` is derived, not stored |
+| `conversations` | `id`; `title` default `新对话`; `created_at`, `updated_at`; migration columns `offer_id INTEGER`, `mode TEXT DEFAULT 'general'` | `ensureColumn` adds `offer_id` and `mode` |
+| `chat_messages` | `id`; `conversation_id` FK cascade; `role`; `content`; `tool_calls`; `tool_call_id`; `provider_blocks`; `created_at` | `idx_chat_messages_conv`; `provider_blocks` migration column must be retained |
+| `knowledge_bases` | `id`; `name`; `description`; timestamps | Used by knowledge tools and FTS chunk maintenance |
+| `knowledge_documents` | `id`; `knowledge_base_id` FK cascade; `title`; `content`; `tags` JSON text default `[]`; `source_type`; `source_name`; timestamps | `idx_knowledge_documents_base` |
+| `knowledge_chunks` | `id`; `document_id` FK cascade; `knowledge_base_id` FK cascade; `chunk_index`; `content`; `created_at` | `idx_knowledge_chunks_document`, `idx_knowledge_chunks_base` |
+| `knowledge_chunks_fts` | FTS5 virtual table with `chunk_id`, `document_id`, `knowledge_base_id`, `content` | Python must verify SQLite FTS5 availability or provide an explicit fallback before enabling knowledge search |
+| `questions` | `id`; nullable `knowledge_base_id` and `application_id`; `category`; `difficulty` default `medium`; `question` not null; `reference_answer`; `tags`; `source_type`; `status`; practice fields; `question_hash`; timestamps | `idx_questions_status`, `idx_questions_kb`, `idx_questions_next_review`, `idx_questions_hash`; `ensureColumn` handles practice fields |
+| `question_reviews` | `id`; `question_id` FK cascade; `rating`; `note`; `created_at` | `idx_question_reviews_question` |
+| `application_material_kits` | `id`; `application_id` not null unique FK cascade; nullable `resume_id`, `jd_analysis_id`; `jd_snapshot`; `status` default `draft`; `content_json`; timestamps | `idx_material_kits_app`, `idx_material_kits_status` |
+| `mock_sessions` | `id`; `conversation_id` FK cascade; nullable app/kb FKs; title/config/progress/status fields; scoring fields; feedback; timestamps | `idx_mock_sessions_conv`, `idx_mock_sessions_status` |
+
+Python schema rules:
+
+- Enable foreign keys for every SQLite connection.
+- Keep a single writer connection policy equivalent to Go's `SetMaxOpenConns(1)`.
+- Preserve existing table and column names exactly.
+- First Python migration must be additive and idempotent against existing Go-created databases.
+- Do not rewrite or vacuum user databases during startup.
+- Add explicit tests that create a legacy-style database and run Python migration on it.
+- Do not add a foreign key to `conversations.offer_id` during the compatibility pass; Go currently leaves it unconstrained.
+- Resume upload compatibility must keep relative DB paths like `resumes/<id>_<basename>.pdf`; note that current file write plus DB update is best-effort rather than transactional.
+
+## CLI Contract
+
+Root command is `oc`, currently implemented with Cobra in `internal/cli`.
+Python should use Typer, but command names, flags, required inputs, outputs, and
+database/config side effects should remain compatible.
+
+| Command | Flags / args | Current behavior | Python priority |
+|---|---|---|---|
+| `oc --port, -p` | global port, default 8080 | Used by `start` | Phase 2 |
+| `oc start` | global port | Initializes `data.db`, starts local HTTP server and frontend/static fallback | Phase 2 |
+| `oc add` | `--company/-c` required, `--position` required, `--url/-u`, `--notes/-n` | Creates application with `status=applied`, `source=cli`, prints ID/status | Phase 3 |
+| `oc list` | `--status/-s` exact filter | Prints compact table or empty message; orders by `applied_at DESC` | Phase 3 |
+| `oc config` | `--api-key`, `--base-url`, `--model`, `--auto-approve[=bool]` | Loads/saves `config.json`, masks API key as first 4 plus last 2 chars, prints config | Phase 3 minimum, full in Phase 4 |
+| `oc analyze` | `--jd/-j`, `--jd-url/-u`, `--app/-a` | Requires exactly one JD source; `--jd -` reads stdin; AI JD analysis saves result | Phase 5 |
+| `oc resume add` | `--file/-f` required, `--name/-n` | Saves resume text/file; no extension validation despite help text | Phase 5 |
+| `oc resume list` | none | Prints resumes; unnamed rows display `(unnamed)` | Phase 5 |
+| `oc resume match` | `--resume/-r`, `--jd/-j`, `--jd-url/-u`, `--app/-a` | Requires resume and JD source; if both JD text and URL are non-empty, current code lets text win | Phase 5 |
+| `oc note add` | `--app/-a`, `--company`, `--position`, `--round/-r`, `--date`, `--questions/-q`, `--reflection/-f`, `--difficulty`, `--mood` | Requires positive app id today; `--questions -` reads stdin; company/position can backfill from app | Phase 5 |
+| `oc note list` | `--app/-a` | Prints notes; `--app 0` means all notes | Phase 5 |
+| `oc offer add` | company/position/app/base/months/signing/equity/perks/deadline/notes flags | Creates offer; company/position may backfill from `--app`; validates non-negative base/signing and months >= 1 | Phase 5 |
+| `oc offer list` | `--status/-s` exact filter | Prints offers; no enum validation for status | Phase 5 |
+| `oc offer update [id]` | status/base/months/signing | Updates selected fields; no-op update still rewrites and prints success | Phase 5 |
+| `oc offer delete [id]` | id arg | Deletes offer; missing row currently still prints deleted because affected rows are not checked | Phase 5 |
+| `oc offer compare [id1,id2,...]` | comma list arg | Invalid numeric token errors; missing IDs are skipped; all-missing exits success with no-match message | Phase 5 |
+| `oc question generate` | `--source/-s`, `--kb`, `--app/-a`, `--count/-n` | Source `knowledge` requires `--kb`; AI layer clamps count but CLI prints requested count first | Phase 5 |
+| `oc question list` | `--status`, `--kb` | Prints questions; status has no CLI enum validation | Phase 5 |
+
+CLI compatibility details:
+
+- Root and parent commands should preserve useful help/usage behavior. The Go
+  version does not set Cobra `SilenceUsage` or `SilenceErrors`.
+- Commands return non-zero by printing `Error: ...` from `cmd/oc/main.go`.
+- Python should add CLI golden tests around stdout, stderr, exit codes, and
+  temp `OFFERPILOT_DATA`; the Go tree currently has no `internal/cli/*_test.go`.
+
+## AI Tool Contract
+
+The registry lives in `internal/ai/tools.go` and `internal/ai/offer_tools.go`.
+The agent loop lives in `internal/ai/agent.go`.
+
+### AI Loop Rules
+
+| Rule | Current behavior | Python requirement |
+|---|---|---|
+| Provider abstraction | `ai.Client` supports OpenAI-compatible and Anthropic-style tool calls | Keep provider interface behind one app-level AI client |
+| Provider selection | `base_url` containing `anthropic` uses Anthropic Messages API; other URLs use OpenAI-compatible `/chat/completions` | Preserve this heuristic unless config contract is revised |
+| Tool loop | Max 8 iterations; model sees full history plus tools; only first tool call is executed per assistant turn | Preserve max iteration and one-tool-per-turn semantics |
+| Unknown tool | Converts to a tool result string `错误：未知工具 "name"` and continues | Preserve non-crashing behavior |
+| Write gate | If `tool.Write` and auto-approve is false, return pending action before executing handler | Mandatory |
+| Pending persistence | Pending write is persisted as an assistant message with `tool_calls`; no tool result is stored until confirm/reject | Mandatory |
+| Confirm approve | Executes the pending tool, stores tool result, continues model loop | Mandatory |
+| Confirm reject | Stores refusal text as tool result, continues model loop | Mandatory |
+| Auto approve | `chat_auto_approve_writes=true` lets write tools execute immediately | Preserve config behavior, default false |
+| Tools unsupported | If provider rejects tools, chat endpoint may run summary fallback and return `degraded:true` | Preserve or explicitly mark as deferred before AI phase |
+| Persistence risk | Tool execution and chat persistence are not one DB transaction today | Add tests for current behavior before considering transactional improvements |
+
+### Registered Tools
+
+| Tool | Kind | Params | Data dependency | Migration priority |
+|---|---|---|---|---|
+| `list_applications` | read | optional `status` | `applications` | Phase 4 |
+| `get_application` | read | `id` | `applications` | Phase 4 |
+| `list_jd_analyses` | read | optional `application_id` | `jd_analyses` | Phase 5 |
+| `get_jd_analysis` | read | `id` | `jd_analyses` | Phase 5 |
+| `list_resumes` | read | none | `resumes` | Phase 5 |
+| `get_resume` | read | `id` | `resumes` | Phase 5 |
+| `list_notes` | read | optional `application_id` | `interview_notes` | Phase 5 |
+| `list_events` | read | optional `month`, `application_id`, `event_type` | `events` | Phase 5 |
+| `get_event` | read | `id` | `events` | Phase 5 |
+| `list_knowledge_bases` | read | none | `knowledge_bases` | Phase 5 |
+| `list_knowledge_documents` | read | `knowledge_base_id`, `query`, `limit`, `offset` | `knowledge_documents` | Phase 5 |
+| `get_knowledge_document` | read | `id` | `knowledge_documents` | Phase 5 |
+| `search_knowledge` | read | `query`, optional `knowledge_base_id`, `limit` | `knowledge_chunks_fts` | Phase 5 |
+| `list_offers` | read | optional `status` | `offers` | Phase 5 |
+| `get_offer` | read | `id` | `offers` | Phase 5 |
+| `compare_offers` | read | `ids[]` | `offers` | Phase 5 |
+| `create_application` | write | `company_name`, `position_name`, optional `job_url`, `status` | `applications` | Phase 4 |
+| `update_application_status` | write | `id`, `status` | `applications` | Phase 4 |
+| `add_note` | write | app/company/position/round/date/questions/reflection/difficulty/mood | `interview_notes`, optional `applications` | Phase 5 |
+| `update_note` | write | `id` plus note fields | `interview_notes` | Phase 5 |
+| `delete_note` | write | `id` | `interview_notes` | Phase 5 |
+| `create_knowledge_base` | write | `name`, optional `description` | `knowledge_bases` | Phase 5 |
+| `update_knowledge_base` | write | `id`, optional name/description | `knowledge_bases` | Phase 5 |
+| `delete_knowledge_base` | write | `id` | `knowledge_bases`, documents/chunks cascade | Phase 5 |
+| `create_knowledge_document` | write | base id, title, content, tags | `knowledge_documents`, chunks | Phase 5 |
+| `update_knowledge_document` | write | `id` plus optional fields | `knowledge_documents`, chunks | Phase 5 |
+| `delete_knowledge_document` | write | `id` | `knowledge_documents`, chunks | Phase 5 |
+| `create_event` | write | app id, event type, RFC3339 time, duration minutes | `events` | Phase 5 |
+| `update_event` | write | id, app id, event type, RFC3339 time, duration minutes | `events` | Phase 5 |
+| `delete_event` | write | `id` | `events` | Phase 5 |
+| `update_offer` | write | id plus offer fields | `offers` | Phase 5 |
+| `save_offer_assessment` | write | `id`, `assessment` string | `offers.assessment` | Phase 5 |
+
+## Phased Migration Scope
+
+| Phase | Scope | Exit criteria |
+|---|---|---|
+| Phase 2: Python skeleton | `pyproject.toml`, app package, config, SQLite session, FastAPI app, health route, Typer `start`, test/lint/type commands | Python service starts; health endpoint passes; config path and data dir tests pass |
+| Phase 3: Applications vertical | `applications` model/repository/service/API, dashboard API, `oc add/list/config`, frontend smoke against existing React | Existing React dashboard and application CRUD work against Python backend |
+| Phase 4: AI minimum | AI client abstraction, chat persistence, `list_applications`, `get_application`, `create_application`, `update_application_status`, pending confirm/reject | Write tool cannot mutate data before confirm unless auto-approve is true |
+| Phase 5: Module migration | Events, calendar, resumes, JD, notes, offers, knowledge, questions, material kits, mock interview, Docker/docs | Each module has compatibility tests and smoke coverage before moving on |
+
+## Deferred Or Explicitly Non-Goals For First Python Cut
+
+- Do not change React API calls unless a compatibility test proves Go behavior is broken and the contract is revised.
+- Do not replace SQLite with another database.
+- Do not introduce LangChain/LangGraph before the Phase 4 minimum AI loop is green.
+- Do not upgrade frontend dependencies as part of backend migration.
+- Do not delete or archive the Go implementation until final cutover is separately approved.
+
+## Current Risk Register
+
+| Risk | Why it matters | Mitigation |
+|---|---|---|
+| Existing user SQLite data can be damaged by non-idempotent migrations | Local database is user-owned product data | Add migration tests against Go-created and legacy-style schemas before any Python startup writes |
+| FTS5 support may vary by Python SQLite build | Knowledge search depends on `knowledge_chunks_fts` | Verify FTS5 in tests; provide clear startup error or fallback |
+| Chat pending action is stateful across DB messages | A small persistence mismatch can execute or lose writes | Port `agent.go` semantics with tests before adding broad tools |
+| Tool execution and message persistence can diverge | Current Go flow executes a confirmed write before persisting follow-up chat messages | Preserve behavior first; consider transactional hardening only after compatibility tests |
+| Frontend expects some full-object updates | `PUT /api/applications/{id}` is not a patch today | Preserve current behavior for Applications; document any future partial update separately |
+| `npm audit` reports vulnerabilities | Frontend dependency risk exists but is not migration behavior | Track separately; do not mix dependency upgrade into backend rewrite |
+| AI providers differ in tool-call payload shape | OpenAI-compatible and Anthropic paths are both present | Keep provider adapters isolated behind one interface and test both payload parsers |

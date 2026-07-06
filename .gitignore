@@ -9,6 +9,11 @@
 bin/
 /oc
 
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
 # SQLite
 *.db
 *.db-journal
@@ -41,7 +46,13 @@ build/
 .worktrees/
 
 # Local design/planning docs (workflow artifacts, not shipped)
-docs/
+docs/*
+!docs/
+!docs/python-rewrite-contract.md
+!docs/superpowers/
+docs/superpowers/*
+!docs/superpowers/plans/
+!docs/superpowers/plans/*.md
 
 # Local brainstorming companion artifacts
 .superpowers/

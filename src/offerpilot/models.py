@@ -1,0 +1,462 @@
+from __future__ import annotations
+
+import json
+from datetime import datetime
+
+from sqlalchemy import DateTime, ForeignKey, Index, String, func
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class Application(Base):
+    __tablename__ = "applications"
+    __table_args__ = (Index("idx_applications_status", "status"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    company_name: Mapped[str] = mapped_column(String, nullable=False)
+    position_name: Mapped[str] = mapped_column(String, nullable=False)
+    job_url: Mapped[str] = mapped_column(String, default="", server_default="")
+    status: Mapped[str] = mapped_column(String, nullable=False, default="applied", server_default="applied")
+    source: Mapped[str] = mapped_column(String, nullable=False, default="cli", server_default="cli")
+    notes: Mapped[str] = mapped_column(String, default="", server_default="")
+    applied_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+        onupdate=func.current_timestamp(),
+    )
+
+
+class Event(Base):
+    __tablename__ = "events"
+    __table_args__ = (Index("idx_events_app", "application_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    application_id: Mapped[int] = mapped_column(
+        ForeignKey("applications.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    event_type: Mapped[str] = mapped_column(String, nullable=False)
+    round: Mapped[int] = mapped_column(default=0, server_default="0")
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration: Mapped[str] = mapped_column(String, default="", server_default="")
+    location: Mapped[str] = mapped_column(String, default="", server_default="")
+    notes: Mapped[str] = mapped_column(String, default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+
+
+class InterviewNote(Base):
+    __tablename__ = "interview_notes"
+    __table_args__ = (Index("idx_notes_app", "application_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    application_id: Mapped[int | None] = mapped_column(
+        ForeignKey("applications.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    company: Mapped[str] = mapped_column(String, nullable=False)
+    position: Mapped[str] = mapped_column(String, nullable=False)
+    round: Mapped[str] = mapped_column(String, default="", server_default="")
+    date: Mapped[str] = mapped_column(String, default="", server_default="")
+    questions: Mapped[str] = mapped_column(String, default="", server_default="")
+    self_reflection: Mapped[str] = mapped_column(String, default="", server_default="")
+    difficulty_points: Mapped[str] = mapped_column(String, default="", server_default="")
+    mood: Mapped[str] = mapped_column(String, default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+
+
+class Offer(Base):
+    __tablename__ = "offers"
+    __table_args__ = (
+        Index("idx_offers_app", "application_id"),
+        Index("idx_offers_status", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    application_id: Mapped[int | None] = mapped_column(
+        ForeignKey("applications.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    company_name: Mapped[str] = mapped_column(String, nullable=False)
+    position_name: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, default="pending", server_default="pending")
+    base_monthly: Mapped[int] = mapped_column(default=0, server_default="0")
+    months_per_year: Mapped[int] = mapped_column(default=12, server_default="12")
+    signing_bonus: Mapped[int] = mapped_column(default=0, server_default="0")
+    equity: Mapped[str] = mapped_column(String, default="", server_default="")
+    perks: Mapped[str] = mapped_column(String, default="", server_default="")
+    deadline: Mapped[str] = mapped_column(String, default="", server_default="")
+    notes: Mapped[str] = mapped_column(String, default="", server_default="")
+    assessment: Mapped[str] = mapped_column(String, default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+        onupdate=func.current_timestamp(),
+    )
+
+    @property
+    def total_cash(self) -> int:
+        return self.base_monthly * self.months_per_year + self.signing_bonus
+
+
+class Resume(Base):
+    __tablename__ = "resumes"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String, default="", server_default="")
+    file_path: Mapped[str] = mapped_column(String, default="", server_default="")
+    parsed_data: Mapped[str] = mapped_column(String, default="", server_default="")
+    parse_status: Mapped[str] = mapped_column(String, default="pending", server_default="pending")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+
+
+class ResumeMatch(Base):
+    __tablename__ = "resume_matches"
+    __table_args__ = (Index("idx_matches_resume", "resume_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    resume_id: Mapped[int] = mapped_column(
+        ForeignKey("resumes.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    application_id: Mapped[int | None] = mapped_column(
+        ForeignKey("applications.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    jd_text: Mapped[str] = mapped_column(String, nullable=False)
+    result: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+
+
+class JDAnalysis(Base):
+    __tablename__ = "jd_analyses"
+    __table_args__ = (Index("idx_jd_app", "application_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    application_id: Mapped[int | None] = mapped_column(
+        ForeignKey("applications.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    jd_source: Mapped[str] = mapped_column(String, default="text", server_default="text")
+    jd_text: Mapped[str] = mapped_column(String, nullable=False)
+    result: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+
+
+class ApplicationMaterialKit(Base):
+    __tablename__ = "application_material_kits"
+    __table_args__ = (
+        Index("idx_material_kits_app", "application_id"),
+        Index("idx_material_kits_status", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    application_id: Mapped[int] = mapped_column(
+        ForeignKey("applications.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    resume_id: Mapped[int | None] = mapped_column(
+        ForeignKey("resumes.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    jd_analysis_id: Mapped[int | None] = mapped_column(
+        ForeignKey("jd_analyses.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    jd_snapshot: Mapped[str] = mapped_column(String, default="", server_default="")
+    status: Mapped[str] = mapped_column(String, default="draft", server_default="draft")
+    content_json: Mapped[str] = mapped_column(String, default="{}", server_default="{}")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+        onupdate=func.current_timestamp(),
+    )
+
+
+class KnowledgeBase(Base):
+    __tablename__ = "knowledge_bases"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[str] = mapped_column(String, default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+        onupdate=func.current_timestamp(),
+    )
+
+
+class KnowledgeDocument(Base):
+    __tablename__ = "knowledge_documents"
+    __table_args__ = (Index("idx_knowledge_documents_base", "knowledge_base_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    knowledge_base_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_bases.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    content: Mapped[str] = mapped_column(String, default="", server_default="")
+    _tags: Mapped[str] = mapped_column("tags", String, default="[]", server_default="[]")
+    source_type: Mapped[str] = mapped_column(String, default="manual", server_default="manual")
+    source_name: Mapped[str] = mapped_column(String, default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+        onupdate=func.current_timestamp(),
+    )
+
+    @property
+    def tags(self) -> list[str]:
+        if not self._tags:
+            return []
+        value = json.loads(self._tags)
+        return value if isinstance(value, list) else []
+
+    @tags.setter
+    def tags(self, value: list[str]) -> None:
+        self._tags = json.dumps(value or [], ensure_ascii=False)
+
+
+class KnowledgeChunk(Base):
+    __tablename__ = "knowledge_chunks"
+    __table_args__ = (
+        Index("idx_knowledge_chunks_document", "document_id"),
+        Index("idx_knowledge_chunks_base", "knowledge_base_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_documents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    knowledge_base_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_bases.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    chunk_index: Mapped[int] = mapped_column(default=0, server_default="0")
+    content: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+
+
+class Question(Base):
+    __tablename__ = "questions"
+    __table_args__ = (
+        Index("idx_questions_status", "status"),
+        Index("idx_questions_kb", "knowledge_base_id"),
+        Index("idx_questions_next_review", "next_review_at"),
+        Index("idx_questions_hash", "question_hash"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    knowledge_base_id: Mapped[int | None] = mapped_column(
+        ForeignKey("knowledge_bases.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    application_id: Mapped[int | None] = mapped_column(
+        ForeignKey("applications.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    category: Mapped[str] = mapped_column(String, default="", server_default="")
+    difficulty: Mapped[str] = mapped_column(String, default="medium", server_default="medium")
+    question: Mapped[str] = mapped_column(String, nullable=False)
+    reference_answer: Mapped[str] = mapped_column(String, default="", server_default="")
+    _tags: Mapped[str] = mapped_column("tags", String, default="[]", server_default="[]")
+    source_type: Mapped[str] = mapped_column(String, default="manual", server_default="manual")
+    status: Mapped[str] = mapped_column(String, default="new", server_default="new")
+    practice_count: Mapped[int] = mapped_column(default=0, server_default="0")
+    last_practiced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_review_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    question_hash: Mapped[str] = mapped_column(String, default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+        onupdate=func.current_timestamp(),
+    )
+
+    @property
+    def tags(self) -> list[str]:
+        if not self._tags:
+            return []
+        value = json.loads(self._tags)
+        return value if isinstance(value, list) else []
+
+    @tags.setter
+    def tags(self, value: list[str]) -> None:
+        self._tags = json.dumps(value or [], ensure_ascii=False)
+
+
+class QuestionReview(Base):
+    __tablename__ = "question_reviews"
+    __table_args__ = (Index("idx_question_reviews_question", "question_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    question_id: Mapped[int] = mapped_column(
+        ForeignKey("questions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    rating: Mapped[int] = mapped_column(nullable=False)
+    note: Mapped[str] = mapped_column(String, default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+
+
+class MockSession(Base):
+    __tablename__ = "mock_sessions"
+    __table_args__ = (
+        Index("idx_mock_sessions_conv", "conversation_id"),
+        Index("idx_mock_sessions_status", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    application_id: Mapped[int | None] = mapped_column(
+        ForeignKey("applications.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    role: Mapped[str] = mapped_column(String, nullable=False)
+    company: Mapped[str] = mapped_column(String, default="", server_default="")
+    round_type: Mapped[str] = mapped_column(String, default="technical", server_default="technical")
+    difficulty: Mapped[str] = mapped_column(String, default="medium", server_default="medium")
+    question_count: Mapped[int] = mapped_column(default=5, server_default="5")
+    duration_min: Mapped[int] = mapped_column(default=0, server_default="0")
+    question_source: Mapped[str] = mapped_column(String, default="mixed", server_default="mixed")
+    knowledge_base_id: Mapped[int | None] = mapped_column(
+        ForeignKey("knowledge_bases.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    status: Mapped[str] = mapped_column(String, default="in_progress", server_default="in_progress")
+    question_index: Mapped[int] = mapped_column(default=0, server_default="0")
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    score_overall: Mapped[int | None] = mapped_column(nullable=True)
+    score_communication: Mapped[int | None] = mapped_column(nullable=True)
+    score_depth: Mapped[int | None] = mapped_column(nullable=True)
+    score_structure: Mapped[int | None] = mapped_column(nullable=True)
+    score_confidence: Mapped[int | None] = mapped_column(nullable=True)
+    feedback: Mapped[str] = mapped_column(String, default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+
+
+class Conversation(Base):
+    __tablename__ = "conversations"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    title: Mapped[str] = mapped_column(String, nullable=False, default="新对话", server_default="新对话")
+    offer_id: Mapped[int | None] = mapped_column(nullable=True)
+    mode: Mapped[str] = mapped_column(String, default="general", server_default="general")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+        onupdate=func.current_timestamp(),
+    )
+
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+    __table_args__ = (Index("idx_chat_messages_conv", "conversation_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    role: Mapped[str] = mapped_column(String, nullable=False)
+    content: Mapped[str] = mapped_column(String, default="", server_default="")
+    tool_calls: Mapped[str] = mapped_column(String, default="", server_default="")
+    tool_call_id: Mapped[str] = mapped_column(String, default="", server_default="")
+    provider_blocks: Mapped[str] = mapped_column(String, default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )

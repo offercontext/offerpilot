@@ -1,0 +1,114 @@
+from typer.testing import CliRunner
+
+from offerpilot.cli import app
+
+
+def test_add_and_list_application(monkeypatch, tmp_path):
+    monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
+    runner = CliRunner()
+
+    add_result = runner.invoke(app, ["add", "--company", "ByteDance", "--position", "Backend"])
+    list_result = runner.invoke(app, ["list"])
+
+    assert add_result.exit_code == 0
+    assert "Added: ByteDance" in add_result.output
+    assert "Status: applied" in add_result.output
+    assert list_result.exit_code == 0
+    assert "ByteDance" in list_result.output
+    assert "Backend" in list_result.output
+
+
+def test_list_empty_applications(monkeypatch, tmp_path):
+    monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["list"])
+
+    assert result.exit_code == 0
+    assert "No applications found" in result.output
+
+
+def test_config_masks_api_key(monkeypatch, tmp_path):
+    monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["config", "--api-key", "sk-abcdef"])
+
+    assert result.exit_code == 0
+    assert "sk-a****ef" in result.output
+    assert "ai_auto_approve: false" in result.output
+
+
+def test_resume_add_and_list(monkeypatch, tmp_path):
+    monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path / "data"))
+    resume_file = tmp_path / "resume.txt"
+    resume_file.write_text("Built Python APIs", encoding="utf-8")
+    runner = CliRunner()
+
+    add_result = runner.invoke(app, ["resume", "add", "--file", str(resume_file), "--name", "Backend"])
+    list_result = runner.invoke(app, ["resume", "list"])
+
+    assert add_result.exit_code == 0
+    assert "Resume saved" in add_result.output
+    assert list_result.exit_code == 0
+    assert "Backend" in list_result.output
+
+
+def test_note_add_and_list_backfills_application(monkeypatch, tmp_path):
+    monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
+    runner = CliRunner()
+    runner.invoke(app, ["add", "--company", "ByteDance", "--position", "Backend"])
+
+    add_note = runner.invoke(app, ["note", "add", "--app", "1", "--round", "一面", "--questions", "Go GMP"])
+    list_notes = runner.invoke(app, ["note", "list", "--app", "1"])
+
+    assert add_note.exit_code == 0
+    assert "Note saved" in add_note.output
+    assert list_notes.exit_code == 0
+    assert "ByteDance" in list_notes.output
+    assert "Go GMP" in list_notes.output
+
+
+def test_offer_add_update_compare_delete(monkeypatch, tmp_path):
+    monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
+    runner = CliRunner()
+
+    add_result = runner.invoke(
+        app,
+        [
+            "offer",
+            "add",
+            "--company",
+            "Acme",
+            "--position",
+            "Backend",
+            "--base",
+            "30000",
+            "--months",
+            "16",
+            "--signing",
+            "50000",
+        ],
+    )
+    update_result = runner.invoke(app, ["offer", "update", "1", "--status", "accepted"])
+    compare_result = runner.invoke(app, ["offer", "compare", "1"])
+    delete_result = runner.invoke(app, ["offer", "delete", "1"])
+
+    assert add_result.exit_code == 0
+    assert "Offer added" in add_result.output
+    assert update_result.exit_code == 0
+    assert "updated" in update_result.output
+    assert compare_result.exit_code == 0
+    assert "Acme" in compare_result.output
+    assert delete_result.exit_code == 0
+    assert "deleted" in delete_result.output
+
+
+def test_question_list_empty(monkeypatch, tmp_path):
+    monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["question", "list"])
+
+    assert result.exit_code == 0
+    assert "No questions yet" in result.output
