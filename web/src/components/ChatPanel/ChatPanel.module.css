@@ -955,6 +955,11 @@
   font-weight: 700;
   cursor: pointer;
 }
+.tlHead:active,
+.capItem:active,
+.noticeAction:active {
+  transform: scale(0.96);
+}
 
 /* ---------- 响应式折叠 ---------- */
 .panelToggle {
@@ -991,11 +996,23 @@
   .body {
     grid-template-columns: minmax(0, 1fr);
   }
+  .msg {
+    max-width: 100%;
+  }
+  .stream {
+    padding: 16px 14px;
+  }
   .rail {
     display: none;
   }
   .emptyPrompts {
     grid-template-columns: 1fr;
+  }
+  .prFacts {
+    grid-template-columns: 1fr;
+  }
+  .evidenceListCompact {
+    margin-left: 0;
   }
 }
 

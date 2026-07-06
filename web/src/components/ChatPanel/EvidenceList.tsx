@@ -32,6 +32,7 @@ export default function EvidenceList({ items, compact, clamped }: Props) {
       className={`${styles.evidenceList} ${compact ? styles.evidenceListCompact : ''} ${
         clamped ? styles.evidenceListClamped : ''
       }`}
+      aria-label="Evidence sources"
     >
       {items.map((item, index) => {
         const icon = ICONS[item.kind] ?? ICONS.unknown;

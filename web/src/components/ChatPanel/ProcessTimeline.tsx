@@ -14,7 +14,7 @@ export default function ProcessTimeline({ steps }: Props) {
   if (!steps.length) return null;
 
   return (
-    <div className={`${styles.timeline} ${open ? styles.timelineOpen : ''}`}>
+    <div className={`${styles.timeline} ${open ? styles.timelineOpen : ''}`} aria-label="AI work summary">
       <div
         className={styles.tlHead}
         role="button"
