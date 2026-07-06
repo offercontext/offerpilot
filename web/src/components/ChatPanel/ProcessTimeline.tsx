@@ -2,6 +2,7 @@ import { useState, createElement } from 'react';
 import { RightOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import type { ToolStep } from './model';
 import { toolMeta } from './capabilities';
+import EvidenceList from './EvidenceList';
 import styles from './ChatPanel.module.css';
 
 interface Props {
@@ -38,13 +39,18 @@ export default function ProcessTimeline({ steps }: Props) {
               const meta = toolMeta(s.name);
               return (
                 <li key={i} className={`${styles.step} ${meta.kind === 'write' ? styles.stepWrite : styles.stepRead}`}>
-                  <span className={styles.stepIcon} aria-hidden="true">
-                    {createElement(meta.icon)}
-                  </span>
-                  <span>
-                    <b>{meta.label}</b>
-                    {s.detail ? ` · ${s.detail}` : ''}
-                  </span>
+                  <div className={styles.stepLine}>
+                    <span className={styles.stepIcon} aria-hidden="true">
+                      {createElement(meta.icon)}
+                    </span>
+                    <span className={styles.stepText}>
+                      <b>{meta.label}</b>
+                      {s.detail ? <span className={styles.stepDetail}> · {s.detail}</span> : null}
+                    </span>
+                    {s.evidence?.length ? <span className={styles.stepCount}>{s.evidence.length} sources</span> : null}
+                  </div>
+                  {s.evidence?.length ? <EvidenceList items={s.evidence} compact /> : null}
+                  {s.evidenceUnavailable ? <div className={styles.stepFallback}>Details unavailable for this step.</div> : null}
                 </li>
               );
             })}

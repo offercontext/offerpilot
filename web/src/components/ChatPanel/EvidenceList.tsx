@@ -1,0 +1,48 @@
+import {
+  BookOutlined,
+  CalendarOutlined,
+  DollarOutlined,
+  FileTextOutlined,
+  ProfileOutlined,
+} from '@ant-design/icons';
+import { createElement } from 'react';
+import type { EvidenceItem } from './model';
+import styles from './ChatPanel.module.css';
+
+interface Props {
+  items: EvidenceItem[];
+  compact?: boolean;
+}
+
+const ICONS = {
+  application: ProfileOutlined,
+  event: CalendarOutlined,
+  note: FileTextOutlined,
+  knowledge: BookOutlined,
+  offer: DollarOutlined,
+  resume: FileTextOutlined,
+  unknown: FileTextOutlined,
+} satisfies Record<EvidenceItem['kind'], typeof FileTextOutlined>;
+
+export default function EvidenceList({ items, compact }: Props) {
+  if (!items.length) return null;
+  return (
+    <ul className={`${styles.evidenceList} ${compact ? styles.evidenceListCompact : ''}`}>
+      {items.map((item) => {
+        const icon = ICONS[item.kind] ?? ICONS.unknown;
+        return (
+          <li key={`${item.source}-${item.id}`} className={styles.evidenceItem}>
+            <span className={styles.evidenceIcon} aria-hidden="true">
+              {createElement(icon)}
+            </span>
+            <span className={styles.evidenceMain}>
+              <span className={styles.evidenceTitle}>{item.title}</span>
+              {item.meta ? <span className={styles.evidenceMeta}>{item.meta}</span> : null}
+              {item.snippet ? <span className={styles.evidenceSnippet}>{item.snippet}</span> : null}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}

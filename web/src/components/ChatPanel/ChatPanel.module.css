@@ -398,7 +398,8 @@
 }
 .step {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   gap: 10px;
   padding: 7px 0;
   position: relative;
@@ -413,6 +414,12 @@
   bottom: -7px;
   width: 1.5px;
   background: var(--op-border);
+}
+.stepLine {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 28px;
 }
 .stepIcon {
   width: 20px;
@@ -432,9 +439,74 @@
   background: var(--chat-tint);
   color: var(--op-primary);
 }
+.stepText {
+  min-width: 0;
+  flex: 1;
+}
+.stepDetail {
+  color: var(--op-muted);
+}
+.stepCount {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--op-muted);
+  font-variant-numeric: tabular-nums;
+}
+.stepFallback {
+  margin-left: 30px;
+  font-size: 12px;
+  color: var(--op-muted);
+}
 .step b {
   font-weight: 600;
   color: var(--op-ink);
+}
+.evidenceList {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.evidenceListCompact {
+  margin-left: 30px;
+}
+.evidenceItem {
+  display: flex;
+  gap: 9px;
+  padding: 9px 10px;
+  border-radius: 9px;
+  background: var(--chat-tint-soft);
+}
+.evidenceIcon {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  background: var(--op-surface);
+  color: var(--op-primary);
+  font-size: 11px;
+}
+.evidenceMain {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.evidenceTitle {
+  color: var(--op-ink);
+  font-weight: 600;
+  font-size: 12.5px;
+}
+.evidenceMeta,
+.evidenceSnippet {
+  color: var(--op-muted);
+  font-size: 12px;
+  line-height: 1.45;
+  text-wrap: pretty;
 }
 
 /* ---------- 提议卡（写确认） ---------- */
