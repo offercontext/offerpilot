@@ -1226,7 +1226,7 @@ def _dump_tool_calls(tool_calls: list[ToolCall]) -> str:
             {
                 "id": tool_call.id,
                 "name": tool_call.name,
-                "args": json.loads(tool_call.args) if tool_call.args else {},
+                "args": _safe_tool_args(tool_call.args),
             }
             for tool_call in tool_calls
         ],
@@ -1235,17 +1235,21 @@ def _dump_tool_calls(tool_calls: list[ToolCall]) -> str:
 
 
 def _pending_action_json(pending: PendingAction) -> dict[str, Any]:
-    try:
-        args = json.loads(pending.args) if pending.args else {}
-    except json.JSONDecodeError:
-        args = {}
-    if not isinstance(args, dict):
-        args = {}
     return {
         "tool_name": pending.tool_name,
         "human": pending.human,
-        "args": args,
+        "args": _safe_tool_args(pending.args),
     }
+
+
+def _safe_tool_args(raw: str) -> dict[str, Any]:
+    try:
+        args = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(args, dict):
+        return {}
+    return args
 
 
 def _load_tool_calls(raw: str) -> list[ToolCall]:

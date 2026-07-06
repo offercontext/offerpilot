@@ -1,5 +1,6 @@
 import json
 
+import pytest
 from fastapi.testclient import TestClient
 
 from offerpilot.ai.types import Assistant, ToolCall
@@ -13,6 +14,37 @@ class ScriptedModel:
 
     def complete(self, messages, tools):
         return self.turns.pop(0)
+
+
+@pytest.mark.parametrize("args", ["{bad", "[]"])
+def test_chat_pending_write_tolerates_invalid_args(tmp_path, args):
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="w1",
+                        name="update_application_status",
+                        args=args,
+                    )
+                ]
+            )
+        ]
+    )
+    client = TestClient(
+        create_app(data_dir=tmp_path, chat_model=model),
+        raise_server_exceptions=False,
+    )
+
+    response = client.post("/api/chat", json={"message": "update", "conversation_id": 0})
+
+    assert response.status_code == 200
+    assert response.json()["type"] == "confirmation_required"
+    assert response.json()["pending_action"] == {
+        "tool_name": "update_application_status",
+        "human": "update_application_status",
+        "args": {},
+    }
 
 
 def test_chat_write_tool_requires_confirmation_before_mutating(tmp_path):
