@@ -28,10 +28,10 @@ export default function EvidenceList({ items, compact }: Props) {
   if (!items.length) return null;
   return (
     <ul className={`${styles.evidenceList} ${compact ? styles.evidenceListCompact : ''}`}>
-      {items.map((item) => {
+      {items.map((item, index) => {
         const icon = ICONS[item.kind] ?? ICONS.unknown;
         return (
-          <li key={`${item.source}-${item.id}`} className={styles.evidenceItem}>
+          <li key={`${item.source}-${item.id}-${index}`} className={styles.evidenceItem}>
             <span className={styles.evidenceIcon} aria-hidden="true">
               {createElement(icon)}
             </span>

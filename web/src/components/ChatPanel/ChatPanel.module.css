@@ -442,6 +442,7 @@
 .stepText {
   min-width: 0;
   flex: 1;
+  overflow-wrap: anywhere;
 }
 .stepDetail {
   color: var(--op-muted);
@@ -500,6 +501,7 @@
   color: var(--op-ink);
   font-weight: 600;
   font-size: 12.5px;
+  overflow-wrap: anywhere;
 }
 .evidenceMeta,
 .evidenceSnippet {
@@ -507,6 +509,7 @@
   font-size: 12px;
   line-height: 1.45;
   text-wrap: pretty;
+  overflow-wrap: anywhere;
 }
 
 /* ---------- 提议卡（写确认） ---------- */
