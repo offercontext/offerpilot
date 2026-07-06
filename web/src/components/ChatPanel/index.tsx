@@ -15,7 +15,7 @@ import {
 import { getOffer } from '@/services/offers';
 import type { ChatResponse, Conversation, PendingAction } from '@/types/chat';
 import type { Offer } from '@/types/offer';
-import { buildTurns, collectEvidence, type UITurn } from './model';
+import { buildTurns, collectEvidence, type EvidenceItem, type UITurn } from './model';
 import { capabilitiesForMode, type Capability } from './capabilities';
 import ThreadRail from './ThreadRail';
 import MessageBubble from './MessageBubble';
@@ -42,6 +42,34 @@ function maxChatWidth() {
 
 function clampChatWidth(width: number) {
   return Math.max(MIN_CHAT_WIDTH, Math.min(width, maxChatWidth()));
+}
+
+function textArg(args: Record<string, unknown> | undefined, key: string): string | null {
+  const value = args?.[key];
+  return typeof value === 'string' && value.trim() ? value.trim().toLowerCase() : null;
+}
+
+function evidenceMatchesPendingAction(item: EvidenceItem, action: PendingAction): boolean {
+  const id = action.args?.id;
+  if (typeof id === 'number' || typeof id === 'string') {
+    const needle = String(id);
+    return item.id === needle || item.id.endsWith(`-${needle}`);
+  }
+
+  const company = textArg(action.args, 'company_name');
+  const position = textArg(action.args, 'position_name');
+  const title = textArg(action.args, 'title');
+  const itemTitle = item.title.toLowerCase();
+  const itemMeta = item.meta?.toLowerCase() ?? '';
+
+  if (company && position) return itemTitle === company && itemMeta.includes(position);
+  if (company) return itemTitle === company;
+  if (title) return itemTitle === title;
+  return false;
+}
+
+function pendingActionEvidence(evidence: EvidenceItem[], action: PendingAction): EvidenceItem[] {
+  return evidence.filter((item) => evidenceMatchesPendingAction(item, action));
 }
 
 export default function ChatPanel({ open, onClose, offerId, onOpenSettings }: Props) {
@@ -250,6 +278,7 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings }: Pr
   const composerDisabled = loading || !!pending || !hasKey;
   const showEmpty = turns.length === 0 && !pending && !loading;
   const threadEvidence = collectEvidence(turns);
+  const confirmationEvidence = pending ? pendingActionEvidence(threadEvidence, pending) : [];
 
   const iconBtnStyle: React.CSSProperties = {
     border: '1px solid var(--op-border)',
@@ -352,7 +381,7 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings }: Pr
                 <ProposalCard
                   action={pending}
                   loading={loading}
-                  evidence={threadEvidence}
+                  evidence={confirmationEvidence}
                   onConfirm={() => handleConfirm(true)}
                   onCancel={() => handleConfirm(false)}
                 />

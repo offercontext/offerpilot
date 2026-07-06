@@ -71,20 +71,22 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
         ) : (
           <div className={styles.prDesc}>{action.human}</div>
         )}
-        <div className={styles.prFacts}>
-          {target ? (
-            <div>
-              <span>Target</span>
-              <b>{target}</b>
-            </div>
-          ) : null}
-          {proposed ? (
-            <div>
-              <span>Proposed</span>
-              <b>{proposed}</b>
-            </div>
-          ) : null}
-        </div>
+        {target || proposed ? (
+          <div className={styles.prFacts}>
+            {target ? (
+              <div>
+                <span>Target</span>
+                <b>{target}</b>
+              </div>
+            ) : null}
+            {proposed ? (
+              <div>
+                <span>Proposed</span>
+                <b>{proposed}</b>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         {thinEvidence ? (
           <Alert
             className={styles.prAlert}
