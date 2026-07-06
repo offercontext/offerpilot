@@ -20,6 +20,7 @@ export interface ChatMessage {
 export interface PendingAction {
   tool_name: string;
   human: string;
+  args?: Record<string, unknown>;
 }
 
 export type ChatResponse =

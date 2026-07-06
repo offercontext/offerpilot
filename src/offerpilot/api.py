@@ -965,7 +965,7 @@ def create_app(
                 {
                     "type": "confirmation_required",
                     "conversation_id": conversation_id,
-                    "pending_action": {"tool_name": pending.tool_name, "human": pending.human},
+                    "pending_action": _pending_action_json(pending),
                 }
             )
         return JSONResponse({"type": "message", "conversation_id": conversation_id, "message": reply})
@@ -1009,10 +1009,7 @@ def create_app(
                 {
                     "type": "confirmation_required",
                     "conversation_id": conversation_id,
-                    "pending_action": {
-                        "tool_name": new_pending.tool_name,
-                        "human": new_pending.human,
-                    },
+                    "pending_action": _pending_action_json(new_pending),
                 }
             )
         return JSONResponse({"type": "message", "conversation_id": conversation_id, "message": reply})
@@ -1235,6 +1232,20 @@ def _dump_tool_calls(tool_calls: list[ToolCall]) -> str:
         ],
         ensure_ascii=False,
     )
+
+
+def _pending_action_json(pending: PendingAction) -> dict[str, Any]:
+    try:
+        args = json.loads(pending.args) if pending.args else {}
+    except json.JSONDecodeError:
+        args = {}
+    if not isinstance(args, dict):
+        args = {}
+    return {
+        "tool_name": pending.tool_name,
+        "human": pending.human,
+        "args": args,
+    }
 
 
 def _load_tool_calls(raw: str) -> list[ToolCall]:
