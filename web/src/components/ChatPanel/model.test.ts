@@ -134,6 +134,41 @@ describe('buildTurns evidence normalization', () => {
     ]);
   });
 
+  it('maps missing-id results to the next unfilled step after id-based results', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([
+          { id: 'call-apps', name: 'list_applications', args: {} },
+          { id: 'call-knowledge', name: 'search_knowledge', args: { query: 'system design' } },
+        ]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-apps',
+        content: JSON.stringify([{ id: 7, company_name: 'ByteDance', position_name: 'Backend Engineer' }]),
+      }),
+      msg({
+        role: 'tool',
+        content: JSON.stringify([{ id: 10, title: 'System Design', summary: 'Patterns' }]),
+      }),
+      msg({ role: 'assistant', content: 'I found both.' }),
+    ]);
+
+    expect(turns[0].steps?.map((step) => [step.name, step.detail])).toEqual([
+      ['list_applications', 'ByteDance'],
+      ['search_knowledge', 'System Design'],
+    ]);
+    expect(turns[0].steps?.[0].evidence?.[0]).toMatchObject({
+      id: 'application-7',
+      title: 'ByteDance',
+    });
+    expect(turns[0].steps?.[1].evidence?.[0]).toMatchObject({
+      id: 'search_knowledge-10',
+      title: 'System Design',
+    });
+  });
+
   it('aggregates newest evidence first across visible turns', () => {
     const turns = buildTurns([
       msg({

@@ -206,7 +206,13 @@ function resolveToolResultIndex(pending: ToolStep[], toolCallId: string | undefi
     const match = pending.findIndex((step) => step.toolCallId === toolCallId);
     if (match >= 0) return match;
   }
-  return fallbackIndex;
+  const unfilled = pending.findIndex((step, index) => index >= fallbackIndex && !hasToolResult(step));
+  if (unfilled >= 0) return unfilled;
+  return pending.findIndex((step) => !hasToolResult(step));
+}
+
+function hasToolResult(step: ToolStep): boolean {
+  return Boolean(step.evidence?.length || step.evidenceUnavailable);
 }
 
 export function collectEvidence(turns: UITurn[], limit = 8): EvidenceItem[] {
