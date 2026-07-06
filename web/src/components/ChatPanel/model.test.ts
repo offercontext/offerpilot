@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ChatMessage } from '@/types/chat';
-import { buildTurns, collectEvidence } from './model';
+import { buildTurns, collectEvidence, reloadConversationTurns } from './model';
 
 function msg(patch: Partial<ChatMessage> & Pick<ChatMessage, 'role'>): ChatMessage {
   return {
@@ -15,6 +15,43 @@ function msg(patch: Partial<ChatMessage> & Pick<ChatMessage, 'role'>): ChatMessa
 }
 
 describe('buildTurns evidence normalization', () => {
+  it('reloads stored turns for pending confirmations so current-turn evidence is available', async () => {
+    const turns = await reloadConversationTurns(42, async (id) => {
+      expect(id).toBe(42);
+      return [
+        { id: 1, conversation_id: 42, role: 'user', content: 'Update my OpenAI offer', created_at: '2026-01-01T00:00:00Z' },
+        {
+          id: 2,
+          conversation_id: 42,
+          role: 'assistant',
+          content: '',
+          tool_calls: JSON.stringify([{ id: 'call_1', function: { name: 'list_offers', arguments: '{"company_name":"OpenAI"}' } }]),
+          created_at: '2026-01-01T00:00:01Z',
+        },
+        {
+          id: 3,
+          conversation_id: 42,
+          role: 'tool',
+          content: JSON.stringify([{ id: 7, company_name: 'OpenAI', position_name: 'Research Engineer', total_cash: 1000000 }]),
+          tool_call_id: 'call_1',
+          created_at: '2026-01-01T00:00:02Z',
+        },
+        { id: 4, conversation_id: 42, role: 'assistant', content: 'I found the offer and need confirmation.', created_at: '2026-01-01T00:00:03Z' },
+      ];
+    });
+
+    expect(turns).not.toBeNull();
+    expect(collectEvidence(turns ?? []).map((item) => item.title)).toEqual(['OpenAI']);
+  });
+
+  it('keeps pending confirmation fallback available if stored turns cannot reload', async () => {
+    const turns = await reloadConversationTurns(42, async () => {
+      throw new Error('offline');
+    });
+
+    expect(turns).toBeNull();
+  });
+
   it('attaches application evidence from tool results to the assistant turn', () => {
     const turns = buildTurns([
       msg({ role: 'user', content: 'show apps' }),

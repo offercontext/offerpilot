@@ -236,4 +236,15 @@ export function collectEvidence(turns: UITurn[], limit = 8): EvidenceItem[] {
   return out;
 }
 
+export async function reloadConversationTurns(
+  conversationId: number,
+  loadConversation: (id: number) => Promise<ChatMessage[]>,
+): Promise<UITurn[] | null> {
+  try {
+    return buildTurns(await loadConversation(conversationId));
+  } catch {
+    return null;
+  }
+}
+
 export { toolMeta };

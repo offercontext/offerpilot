@@ -15,7 +15,7 @@ import {
 import { getOffer } from '@/services/offers';
 import type { ChatResponse, Conversation, PendingAction } from '@/types/chat';
 import type { Offer } from '@/types/offer';
-import { buildTurns, collectEvidence, type EvidenceItem, type UITurn } from './model';
+import { buildTurns, collectEvidence, reloadConversationTurns, type EvidenceItem, type UITurn } from './model';
 import { capabilitiesForMode, type Capability } from './capabilities';
 import ThreadRail from './ThreadRail';
 import MessageBubble from './MessageBubble';
@@ -228,6 +228,8 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings }: Pr
       const resp = await sendChat(trimmed, convID, convID ? undefined : offerId);
       if (resp.type === 'confirmation_required') {
         setConvID(resp.conversation_id);
+        const storedTurns = await reloadConversationTurns(resp.conversation_id, getConversation);
+        if (storedTurns) setTurns(storedTurns);
         setPending(resp.pending_action);
       } else {
         await finishMessage(resp);
@@ -247,6 +249,9 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings }: Pr
     try {
       const resp = await confirmAction(convID, approved);
       if (resp.type === 'confirmation_required') {
+        setConvID(resp.conversation_id);
+        const storedTurns = await reloadConversationTurns(resp.conversation_id, getConversation);
+        if (storedTurns) setTurns(storedTurns);
         setPending(resp.pending_action);
       } else {
         await finishMessage(resp);
