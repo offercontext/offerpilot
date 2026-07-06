@@ -38,7 +38,10 @@ def test_go_backend_sources_removed_after_python_cutover():
     go_sources = [
         path
         for path in ROOT.rglob("*.go")
-        if ".git" not in path.parts and ".venv" not in path.parts and "web" not in path.parts
+        if ".git" not in path.parts
+        and ".venv" not in path.parts
+        and ".worktrees" not in path.parts
+        and "web" not in path.parts
     ]
 
     assert go_sources == []
