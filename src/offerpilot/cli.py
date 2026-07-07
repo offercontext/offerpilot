@@ -184,13 +184,15 @@ def analyze_command(
 
 @app.command()
 def start(
-    port: int = typer.Option(8080, "--port", "-p", help="local server port"),
+    port: Optional[int] = typer.Option(None, "--port", "-p", help="local server port"),
 ) -> None:
     data_dir = resolve_data_dir()
+    cfg = load_config(data_dir)
+    resolved_port = port if port is not None else cfg.local_port
     session_factory_for_data_dir(data_dir)
-    append_log_entry(data_dir, "INFO", f"server starting on port {port}")
-    typer.echo(f"OfferPilot running at http://localhost:{port}")
-    uvicorn.run(create_app(data_dir=data_dir), host="127.0.0.1", port=port)
+    append_log_entry(data_dir, "INFO", f"server starting on port {resolved_port}")
+    typer.echo(f"OfferPilot running at http://localhost:{resolved_port}")
+    uvicorn.run(create_app(data_dir=data_dir), host="127.0.0.1", port=resolved_port)
 
 
 @resume_app.command("add")

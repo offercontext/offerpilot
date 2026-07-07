@@ -108,6 +108,24 @@ def test_config_updates_runtime_and_log_options(monkeypatch, tmp_path):
     assert cfg.log_level == "DEBUG"
 
 
+def test_start_uses_configured_port_by_default(monkeypatch, tmp_path):
+    monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
+    save_config(tmp_path, Config(local_port=9099))
+    captured = {}
+
+    def fake_run(app, host, port):  # type: ignore[no-untyped-def]
+        captured["host"] = host
+        captured["port"] = port
+
+    monkeypatch.setattr("offerpilot.cli.uvicorn.run", fake_run)
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["start"])
+
+    assert result.exit_code == 0
+    assert captured == {"host": "127.0.0.1", "port": 9099}
+
+
 def test_resume_add_and_list(monkeypatch, tmp_path):
     monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path / "data"))
     resume_file = tmp_path / "resume.txt"
