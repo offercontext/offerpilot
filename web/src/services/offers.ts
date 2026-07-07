@@ -1,7 +1,7 @@
-import axios from 'axios';
 import type { Offer, OfferInput } from '@/types/offer';
+import { createApiClient } from './http';
 
-const http = axios.create({ baseURL: '/api', timeout: 10000 });
+const http = createApiClient({ baseURL: '/api', timeout: 10000 });
 
 export async function listOffers(status?: string): Promise<Offer[]> {
   const { data } = await http.get<Offer[]>('/offers', { params: status ? { status } : {} });

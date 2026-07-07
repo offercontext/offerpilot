@@ -1,4 +1,3 @@
-import axios from 'axios';
 import type {
   GenerateQuestionsInput,
   GenerateQuestionsResult,
@@ -8,10 +7,11 @@ import type {
   QuestionInput,
   ReviewRating,
 } from '@/types/question';
+import { createApiClient } from './http';
 
 // Generation can invoke the AI provider, which may be slow — use a longer timeout.
-const http = axios.create({ baseURL: '/api', timeout: 10000 });
-const aiHttp = axios.create({ baseURL: '/api', timeout: 120000 });
+const http = createApiClient({ baseURL: '/api', timeout: 10000 });
+const aiHttp = createApiClient({ baseURL: '/api', timeout: 120000 });
 
 export async function listQuestions(filter: QuestionFilter = {}): Promise<Question[]> {
   const { data } = await http.get<Question[]>('/questions', {

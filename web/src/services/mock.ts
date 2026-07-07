@@ -1,4 +1,3 @@
-import axios from 'axios';
 import type {
   MockSession,
   MockSessionCreateResponse,
@@ -6,8 +5,9 @@ import type {
   MockEndResponse,
   MockConfig,
 } from '@/types/mock';
+import { createApiClient } from './http';
 
-const http = axios.create({ baseURL: '/api/mock', timeout: 180000 });
+const http = createApiClient({ baseURL: '/api/mock', timeout: 180000 });
 
 export async function listMockSessions(status?: string): Promise<MockSession[]> {
   const { data } = await http.get<MockSession[]>('/sessions', {

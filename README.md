@@ -214,6 +214,7 @@ oc question generate --kb 1 --count 10
 ### Configuration
 
 Config lives at `~/.offerpilot/config.json` by default. Override the data directory with `OFFERPILOT_DATA`.
+When API auth is enabled in the browser, the frontend sends `X-OfferPilot-Token` from local storage key `offerpilot.auth_token`.
 
 ```json
 {

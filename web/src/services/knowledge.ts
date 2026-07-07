@@ -1,4 +1,3 @@
-import axios from 'axios';
 import type {
   KnowledgeBase,
   KnowledgeBaseInput,
@@ -6,8 +5,9 @@ import type {
   KnowledgeDocumentInput,
   KnowledgeSearchResult,
 } from '@/types/knowledge';
+import { createApiClient } from './http';
 
-const http = axios.create({ baseURL: '/api', timeout: 10000 });
+const http = createApiClient({ baseURL: '/api', timeout: 10000 });
 
 export async function listKnowledgeBases(): Promise<KnowledgeBase[]> {
   const { data } = await http.get<KnowledgeBase[]>('/knowledge-bases');

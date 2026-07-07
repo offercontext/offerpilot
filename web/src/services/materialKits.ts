@@ -1,4 +1,4 @@
-import axios from 'axios';
+import { isAxiosError } from 'axios';
 import type {
   ApplicationMaterialKit,
   GenerateMaterialKitInput,
@@ -6,8 +6,9 @@ import type {
   MaterialKitViewModel,
   UpdateMaterialKitInput,
 } from '@/types/materialKit';
+import { createApiClient } from './http';
 
-const http = axios.create({ baseURL: '/api', timeout: 130000 });
+const http = createApiClient({ baseURL: '/api', timeout: 130000 });
 
 function createEmptyContent(): MaterialKitContent {
   return {
@@ -45,7 +46,7 @@ export async function getApplicationMaterialKit(applicationID: number): Promise<
     const { data } = await http.get<ApplicationMaterialKit>(`/applications/${applicationID}/material-kit`);
     return parseMaterialKit(data);
   } catch (error) {
-    if (axios.isAxiosError(error) && error.response?.status === 404) return null;
+    if (isAxiosError(error) && error.response?.status === 404) return null;
     throw error;
   }
 }

@@ -1,7 +1,7 @@
-import axios from 'axios';
 import type { CreateResumeInput, Resume, MatchResumeResponse } from '@/types/resume';
+import { createApiClient } from './http';
 
-const http = axios.create({ baseURL: '/api', timeout: 130000 });
+const http = createApiClient({ baseURL: '/api', timeout: 130000 });
 
 export async function createResume(input: CreateResumeInput): Promise<Resume> {
   const { data } = await http.post<Resume>('/resumes', input);

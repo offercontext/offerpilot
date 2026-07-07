@@ -1,7 +1,7 @@
-import axios from 'axios';
 import type { AnalyzeJDResponse, JDAnalysis } from '@/types/ai';
+import { createApiClient } from './http';
 
-const http = axios.create({ baseURL: '/api', timeout: 130000 });
+const http = createApiClient({ baseURL: '/api', timeout: 130000 });
 
 export async function analyzeJD(payload: {
   jd_text?: string;

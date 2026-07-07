@@ -1,7 +1,7 @@
-import axios from 'axios';
 import type { CalendarEntry } from '@/types/calendar';
+import { createApiClient } from './http';
 
-const http = axios.create({ baseURL: '/api', timeout: 10000 });
+const http = createApiClient({ baseURL: '/api', timeout: 10000 });
 
 // month param format: "YYYY-MM"
 export async function getCalendar(month: string): Promise<CalendarEntry[]> {

@@ -1,7 +1,7 @@
-import axios from 'axios';
 import type { ChatMessage, ChatResponse, Conversation } from '@/types/chat';
+import { createApiClient } from './http';
 
-const http = axios.create({ baseURL: '/api', timeout: 130000 });
+const http = createApiClient({ baseURL: '/api', timeout: 130000 });
 export const SETTINGS_QUERY_KEY = ['settings'] as const;
 
 export async function sendChat(

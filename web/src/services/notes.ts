@@ -1,7 +1,7 @@
-import axios from 'axios';
 import type { CreateNoteInput, InterviewNote, UpdateNoteInput } from '@/types/note';
+import { createApiClient } from './http';
 
-const http = axios.create({ baseURL: '/api', timeout: 10000 });
+const http = createApiClient({ baseURL: '/api', timeout: 10000 });
 
 export async function listNotes(): Promise<InterviewNote[]> {
   const { data } = await http.get<InterviewNote[]>('/notes');

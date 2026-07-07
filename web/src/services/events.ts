@@ -1,7 +1,7 @@
-import axios from 'axios';
 import type { ScheduleEvent, ScheduleEventInput, ScheduleEventType } from '@/types/event';
+import { createApiClient } from './http';
 
-const http = axios.create({
+const http = createApiClient({
   baseURL: '/api',
   timeout: 10000,
 });
