@@ -1358,6 +1358,7 @@ def _persist_ai_messages(repo: ChatRepository, conversation_id: int, messages: l
             content=message.content,
             tool_calls=_dump_tool_calls(message.tool_calls),
             tool_call_id=message.tool_call_id,
+            provider_blocks=_dump_provider_blocks(message.provider_blocks),
         )
 
 
@@ -1368,6 +1369,7 @@ def _stored_messages_to_ai(messages: list[Any]) -> list[Message]:
             content=message.content,
             tool_calls=_load_tool_calls(message.tool_calls),
             tool_call_id=message.tool_call_id,
+            provider_blocks=_load_provider_blocks(message.provider_blocks),
         )
         for message in messages
     ]
@@ -1387,6 +1389,19 @@ def _dump_tool_calls(tool_calls: list[ToolCall]) -> str:
         ],
         ensure_ascii=False,
     )
+
+
+def _dump_provider_blocks(provider_blocks: dict[str, Any]) -> str:
+    if not provider_blocks:
+        return ""
+    allowed = {
+        key: value
+        for key, value in provider_blocks.items()
+        if key == "reasoning_content" and value is not None
+    }
+    if not allowed:
+        return ""
+    return json.dumps(allowed, ensure_ascii=False)
 
 
 def _pending_action_json(pending: PendingAction) -> dict[str, Any]:
@@ -1440,6 +1455,21 @@ def _load_tool_calls(raw: str) -> list[ToolCall]:
             )
         )
     return calls
+
+
+def _load_provider_blocks(raw: str) -> dict[str, Any]:
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    reasoning_content = value.get("reasoning_content")
+    if reasoning_content is None:
+        return {}
+    return {"reasoning_content": reasoning_content}
 
 
 def _chat_model(injected: Optional[ChatModel], data_dir: Path) -> ChatModel | JSONResponse:

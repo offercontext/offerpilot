@@ -35,7 +35,11 @@ def run_turn(
     for _ in range(max_iter or DEFAULT_MAX_ITERATIONS):
         assistant = model.complete(work, tools)
         if not assistant.tool_calls:
-            message = Message(role="assistant", content=assistant.content)
+            message = Message(
+                role="assistant",
+                content=assistant.content,
+                provider_blocks=assistant.provider_blocks,
+            )
             added.append(message)
             return added, assistant.content, None
 
@@ -44,6 +48,7 @@ def run_turn(
             role="assistant",
             content=assistant.content,
             tool_calls=[tool_call],
+            provider_blocks=assistant.provider_blocks,
         )
         added.append(assistant_message)
         work.append(assistant_message)

@@ -37,6 +37,7 @@ class ChatRepository:
         content: str = "",
         tool_calls: str = "",
         tool_call_id: str = "",
+        provider_blocks: str = "",
     ) -> ChatMessage:
         message = ChatMessage(
             conversation_id=conversation_id,
@@ -44,6 +45,7 @@ class ChatRepository:
             content=content,
             tool_calls=tool_calls,
             tool_call_id=tool_call_id,
+            provider_blocks=provider_blocks,
         )
         with self._session_factory() as session:
             session.add(message)

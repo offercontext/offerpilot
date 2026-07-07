@@ -40,7 +40,11 @@ class ConfiguredAIClient:
                     args=str(_get(function, "arguments") or "{}"),
                 )
             )
-        return Assistant(content=str(_get(message, "content") or ""), tool_calls=calls)
+        return Assistant(
+            content=str(_get(message, "content") or ""),
+            tool_calls=calls,
+            provider_blocks=_provider_blocks(message),
+        )
 
 
 def _litellm_model(provider: AIProviderProfile) -> str:
@@ -74,6 +78,10 @@ def _get(value: Any, key: str) -> Any:
 
 def _openai_message(message: Message) -> dict[str, Any]:
     out: dict[str, Any] = {"role": message.role, "content": message.content}
+    if message.role == "assistant":
+        reasoning_content = message.provider_blocks.get("reasoning_content")
+        if reasoning_content is not None:
+            out["reasoning_content"] = reasoning_content
     if message.tool_call_id:
         out["tool_call_id"] = message.tool_call_id
     if message.tool_calls:
@@ -86,6 +94,14 @@ def _openai_message(message: Message) -> dict[str, Any]:
             for call in message.tool_calls
         ]
     return out
+
+
+def _provider_blocks(message: Any) -> dict[str, Any]:
+    blocks: dict[str, Any] = {}
+    reasoning_content = _get(message, "reasoning_content")
+    if reasoning_content is not None:
+        blocks["reasoning_content"] = reasoning_content
+    return blocks
 
 
 def _openai_tool(tool: dict[str, Any]) -> dict[str, Any]:

@@ -16,6 +16,16 @@ class ScriptedModel:
         return self.turns.pop(0)
 
 
+class CapturingScriptedModel(ScriptedModel):
+    def __init__(self, turns):
+        super().__init__(turns)
+        self.calls = []
+
+    def complete(self, messages, tools):
+        self.calls.append(messages)
+        return super().complete(messages, tools)
+
+
 class FailingModel:
     def complete(self, messages, tools):
         raise RuntimeError("provider unavailable")
@@ -132,6 +142,44 @@ def test_chat_confirm_executes_pending_write(tmp_path):
         "message": "已更新",
     }
     assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
+
+
+def test_chat_confirm_replays_reasoning_content_for_pending_tool(tmp_path):
+    app_client = TestClient(create_app(data_dir=tmp_path))
+    application = app_client.post(
+        "/api/applications",
+        json={"company_name": "ByteDance", "position_name": "Backend", "status": "interview"},
+    ).json()
+    model = CapturingScriptedModel(
+        [
+            Assistant(
+                provider_blocks={"reasoning_content": "selected target application"},
+                tool_calls=[
+                    ToolCall(
+                        id="w1",
+                        name="update_application_status",
+                        args=json.dumps({"id": application["id"], "status": "offer"}),
+                    )
+                ],
+            ),
+            Assistant(content="updated"),
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    pending = client.post("/api/chat", json={"message": "move it to offer", "conversation_id": 0}).json()
+
+    response = client.post(
+        "/api/chat/confirm",
+        json={"conversation_id": pending["conversation_id"], "approved": True},
+    )
+
+    assert response.status_code == 200
+    replayed_assistant = next(
+        message for message in model.calls[1] if message.role == "assistant" and message.tool_calls
+    )
+    assert replayed_assistant.provider_blocks == {
+        "reasoning_content": "selected target application"
+    }
 
 
 def test_chat_conversation_exposes_pending_action_for_reload(tmp_path):
