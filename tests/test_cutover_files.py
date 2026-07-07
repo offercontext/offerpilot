@@ -45,6 +45,28 @@ def test_readme_documents_current_v01_contract():
     assert "auth_enabled" in readme
 
 
+def test_docker_smoke_scripts_document_container_smoke_path():
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    shell_script = (ROOT / "scripts" / "docker-smoke.sh").read_text(encoding="utf-8")
+    powershell_script = (ROOT / "scripts" / "docker-smoke.ps1").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "COPY --from=web /web/dist /app/web/dist" in dockerfile
+
+    assert "docker build" in shell_script
+    assert "docker run" in shell_script
+    assert "oc smoke" in shell_script
+    assert "/app/web/dist" in shell_script
+
+    assert "docker build" in powershell_script
+    assert "docker run" in powershell_script
+    assert "oc smoke" in powershell_script
+    assert "/app/web/dist" in powershell_script
+
+    assert "scripts/docker-smoke.sh" in readme
+    assert "scripts/docker-smoke.ps1" in readme
+
+
 def test_go_backend_sources_removed_after_python_cutover():
     go_sources = [
         path

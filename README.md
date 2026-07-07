@@ -153,6 +153,20 @@ docker run -d -p 8080:8080 -v offerpilot-data:/data offercontext/offerpilot
 
 Open `http://localhost:8080`.
 
+#### Docker Smoke
+
+```bash
+scripts/docker-smoke.sh
+```
+
+On Windows PowerShell:
+
+```powershell
+.\scripts\docker-smoke.ps1
+```
+
+Both `scripts/docker-smoke.sh` and `scripts/docker-smoke.ps1` build a local image and run `oc smoke --static-dir /app/web/dist` inside the container.
+
 #### Source Checkout
 
 ```bash
