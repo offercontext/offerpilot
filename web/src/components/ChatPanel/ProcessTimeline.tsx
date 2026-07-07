@@ -14,7 +14,7 @@ export default function ProcessTimeline({ steps }: Props) {
   if (!steps.length) return null;
 
   return (
-    <div className={`${styles.timeline} ${open ? styles.timelineOpen : ''}`} aria-label="AI work summary">
+    <div className={`${styles.timeline} ${open ? styles.timelineOpen : ''}`} aria-label="AI 操作摘要">
       <div
         className={styles.tlHead}
         role="button"
@@ -47,10 +47,11 @@ export default function ProcessTimeline({ steps }: Props) {
                       <b>{meta.label}</b>
                       {s.detail ? <span className={styles.stepDetail}> · {s.detail}</span> : null}
                     </span>
-                    {s.evidence?.length ? <span className={styles.stepCount}>{s.evidence.length} sources</span> : null}
+                    {s.evidence?.length ? <span className={styles.stepCount}>{s.evidence.length} 条来源</span> : null}
                   </div>
                   {s.evidence?.length ? <EvidenceList items={s.evidence} compact /> : null}
-                  {s.evidenceUnavailable ? <div className={styles.stepFallback}>Details unavailable for this step.</div> : null}
+                  {s.resultText ? <div className={styles.stepFallback}>工具返回：{s.resultText}</div> : null}
+                  {s.evidenceUnavailable ? <div className={styles.stepFallback}>暂时无法展示这一步的明细。</div> : null}
                 </li>
               );
             })}

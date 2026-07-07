@@ -313,6 +313,23 @@ describe('buildTurns evidence normalization', () => {
     expect(collectEvidence(turns).map((item) => item.title)).toEqual(['OpenAI', 'Anthropic']);
   });
 
+  it('keeps plain-text tool errors visible in the process timeline data', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([{ id: 'call-app', name: 'get_application', args: {} }]),
+      }),
+      msg({ role: 'tool', tool_call_id: 'call-app', content: "错误：'id'" }),
+      msg({ role: 'assistant', content: 'I could not load it.' }),
+    ]);
+
+    expect(turns[0].steps?.[0]).toMatchObject({
+      name: 'get_application',
+      resultText: "错误：'id'",
+    });
+    expect(turns[0].steps?.[0].evidenceUnavailable).toBeFalsy();
+  });
+
   it('returns the persisted pending action for a selected conversation', () => {
     const pending = pendingActionForConversation(
       [

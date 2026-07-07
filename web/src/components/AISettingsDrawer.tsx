@@ -42,7 +42,7 @@ interface FormValues {
 
 const PROVIDER_LABELS: Record<string, string> = {
   openai: 'OpenAI',
-  openai_compatible: 'OpenAI Compatible',
+  openai_compatible: 'OpenAI 兼容',
   anthropic: 'Anthropic',
   openrouter: 'OpenRouter',
 };
@@ -142,8 +142,8 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
           type={hasKey ? 'success' : 'warning'}
           showIcon
           icon={hasKey ? <CheckCircleOutlined /> : <WarningOutlined />}
-          message={hasKey ? 'API key 已配置' : '尚未配置 API key'}
-          description={hasKey ? 'API key 留空保存会保留当前密钥。' : '配置模型提供商 API key 后即可使用 AI 能力。'}
+          message={hasKey ? '密钥已配置' : '尚未配置密钥'}
+          description={hasKey ? '密钥留空保存会保留当前密钥。' : '配置模型供应商密钥后即可使用 AI 能力。'}
         />
 
         <Form<FormValues>
@@ -152,7 +152,7 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
           initialValues={toFormValues(settingsQuery.data)}
           onFinish={(values) => saveMutation.mutate(values)}
         >
-          <Form.Item label="API key" name="api_key">
+          <Form.Item label="API 密钥" name="api_key">
             <Input.Password
               prefix={<KeyOutlined />}
               autoComplete="off"
@@ -160,18 +160,18 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
             />
           </Form.Item>
 
-          <Form.Item label="Provider" name="provider">
+          <Form.Item label="模型供应商" name="provider">
             <Select
               options={[
                 { value: 'openai', label: 'OpenAI' },
-                { value: 'openai_compatible', label: 'OpenAI Compatible' },
+                { value: 'openai_compatible', label: 'OpenAI 兼容' },
                 { value: 'anthropic', label: 'Anthropic' },
                 { value: 'openrouter', label: 'OpenRouter' },
               ]}
             />
           </Form.Item>
 
-          <Form.Item label="Base URL" name="base_url" tooltip="OpenAI-compatible API base">
+          <Form.Item label="接口地址" name="base_url" tooltip="OpenAI 兼容接口地址">
             <Input placeholder="https://api.openai.com/v1" />
           </Form.Item>
 
@@ -179,7 +179,7 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
             <Input placeholder="gpt-4o" />
           </Form.Item>
 
-          <Form.Item label="写操作免确认" name="chat_auto_approve_writes" valuePropName="checked">
+          <Form.Item label="写操作自动确认" name="chat_auto_approve_writes" valuePropName="checked">
             <Switch />
           </Form.Item>
 

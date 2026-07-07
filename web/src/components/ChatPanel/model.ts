@@ -28,6 +28,8 @@ export interface ToolStep {
   detail?: string;
   /** Verifiable records returned by the tool. */
   evidence?: EvidenceItem[];
+  /** Plain text returned by the tool when it is not structured evidence. */
+  resultText?: string;
   /** True when the tool returned a result that could not be parsed for evidence. */
   evidenceUnavailable?: boolean;
 }
@@ -90,19 +92,29 @@ function stringifyArgs(args?: string | Record<string, unknown>): string | undefi
   return JSON.stringify(args);
 }
 
-function parseToolResult(content: string, source: string): Pick<ToolStep, 'detail' | 'evidence' | 'evidenceUnavailable'> {
-  if (!content.trim()) return {};
+function parseToolResult(
+  content: string,
+  source: string,
+): Pick<ToolStep, 'detail' | 'evidence' | 'resultText' | 'evidenceUnavailable'> {
+  const trimmed = content.trim();
+  if (!trimmed) return {};
   let parsed: unknown;
   try {
-    parsed = JSON.parse(content);
+    parsed = JSON.parse(trimmed);
   } catch {
-    return { evidenceUnavailable: true };
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      return { evidenceUnavailable: true };
+    }
+    return { resultText: trimmed.slice(0, 160) };
   }
   const rows = Array.isArray(parsed) ? parsed : [parsed];
   const evidence = rows.flatMap((row, index) => evidenceFromRecord(row, source, index));
+  const resultText = evidence.length ? undefined : plainResultText(parsed);
   return {
     detail: evidence[0]?.title,
     evidence: evidence.length ? evidence : undefined,
+    resultText,
+    evidenceUnavailable: evidence.length || resultText ? undefined : true,
   };
 }
 
@@ -161,6 +173,13 @@ function compact(values: Array<string | undefined>): string[] {
   return values.filter((value): value is string => Boolean(value));
 }
 
+function plainResultText(value: unknown): string | undefined {
+  if (typeof value === 'string' && value.trim()) return value.trim().slice(0, 160);
+  if (!value || typeof value !== 'object') return undefined;
+  const record = value as Record<string, unknown>;
+  return text(record.error) || text(record.message);
+}
+
 /**
  * Rebuild displayable turns from the full stored message list, attaching the
  * tool steps that preceded each assistant answer so ProcessTimeline can render
@@ -204,6 +223,7 @@ export function buildTurns(stored: ChatMessage[]): UITurn[] {
           ...step,
           detail: parsed.detail ?? step.detail,
           evidence: parsed.evidence,
+          resultText: parsed.resultText,
           evidenceUnavailable: parsed.evidenceUnavailable,
         };
       }

@@ -30,7 +30,7 @@ export default function SettingsView({ onOpenAISettings }: Props) {
     >
       <div>
         <Typography.Title level={2} style={{ margin: 0, color: 'var(--op-ink)' }}>
-          Settings
+          设置
         </Typography.Title>
       </div>
 
@@ -41,10 +41,10 @@ export default function SettingsView({ onOpenAISettings }: Props) {
           </span>
           <div>
             <Typography.Title level={4} style={panelTitleStyle}>
-              AI runtime
+              AI 运行时
             </Typography.Title>
             <Typography.Text style={{ color: 'var(--op-muted)' }}>
-              Provider, model, API key, and write confirmation policy
+              管理模型供应商、模型、密钥与写入确认策略。
             </Typography.Text>
           </div>
         </Space>
@@ -56,14 +56,14 @@ export default function SettingsView({ onOpenAISettings }: Props) {
             gap: 12,
           }}
         >
-          <RuntimeField label="Mode" value={settings?.runtime_mode ?? '-'} />
-          <RuntimeField label="Log level" value={settings?.log_level ?? '-'} />
-          <RuntimeField label="Auth" value={settings?.auth_enabled ? 'enabled' : 'disabled'} />
-          <RuntimeField label="API key" value={settings?.has_api_key ? 'set' : 'missing'} />
+          <RuntimeField label="运行模式" value={formatRuntimeMode(settings?.runtime_mode)} />
+          <RuntimeField label="日志级别" value={settings?.log_level ?? '-'} />
+          <RuntimeField label="访问控制" value={settings?.auth_enabled ? '已开启' : '未开启'} />
+          <RuntimeField label="密钥状态" value={settings?.has_api_key ? '已配置' : '未配置'} />
         </div>
         <div>
           <Button type="primary" icon={<SettingOutlined />} onClick={onOpenAISettings}>
-            Configure AI
+            配置 AI
           </Button>
         </div>
       </section>
@@ -75,17 +75,17 @@ export default function SettingsView({ onOpenAISettings }: Props) {
           </span>
           <div style={{ flex: 1 }}>
             <Typography.Title level={4} style={panelTitleStyle}>
-              Runtime diagnostics
+              运行诊断
             </Typography.Title>
             <Typography.Text style={{ color: 'var(--op-muted)' }}>
-              Recent local runtime log entries
+              最近的本地运行日志。
             </Typography.Text>
           </div>
           <Button
             icon={<ReloadOutlined />}
             onClick={() => logsQuery.refetch()}
             loading={logsQuery.isFetching}
-            aria-label="Refresh logs"
+            aria-label="刷新日志"
           />
         </Space>
         <Divider style={{ margin: 0 }} />
@@ -139,7 +139,7 @@ function RuntimeField({ label, value }: { label: string; value: string }) {
 
 function LogList({ entries }: { entries: LogEntry[] }) {
   if (!entries.length) {
-    return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No logs yet" />;
+    return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无日志" />;
   }
   return (
     <div style={{ display: 'grid', gap: 8 }}>
@@ -179,4 +179,10 @@ function levelColor(level: string) {
     default:
       return 'blue';
   }
+}
+
+function formatRuntimeMode(value: string | undefined) {
+  if (value === 'local') return '本地模式';
+  if (value === 'server') return '服务器模式';
+  return '-';
 }
