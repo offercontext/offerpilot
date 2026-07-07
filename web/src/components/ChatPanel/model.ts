@@ -154,6 +154,20 @@ function evidenceFromRecord(row: unknown, source: string, index: number): Eviden
       },
     ];
   }
+  const isEvent = source.includes('event') || recordType === 'event';
+  if (isEvent) {
+    const title = text(record.company_name) || text(record.title) || `日程 #${id}`;
+    return [
+      {
+        id: `${source}-${id}`,
+        kind: 'event',
+        title,
+        meta: compact([text(record.position_name), text(record.event_type), text(record.scheduled_at)]).join(' \u00b7 '),
+        snippet: text(record.notes),
+        source,
+      },
+    ];
+  }
   const company = text(record.company_name);
   const position = text(record.position_name);
   if (company) {

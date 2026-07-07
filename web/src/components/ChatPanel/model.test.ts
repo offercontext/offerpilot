@@ -97,6 +97,49 @@ describe('buildTurns evidence normalization', () => {
     });
   });
 
+  it('classifies event tool results as event evidence even when company is present', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([{ id: 'call-events', name: 'list_events', args: {} }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-events',
+        content: JSON.stringify([
+          {
+            record_type: 'event',
+            event_id: 1,
+            id: 1,
+            application_id: 7,
+            company_name: '拼多多',
+            position_name: 'agent开发',
+            event_type: 'interview',
+            scheduled_at: '2026-07-01T07:00:00Z',
+            duration_minutes: 60,
+            notes: '一面',
+          },
+        ]),
+      }),
+      msg({ role: 'assistant', content: 'I found one interview.' }),
+    ]);
+
+    expect(turns[0].steps?.[0]).toMatchObject({
+      name: 'list_events',
+      detail: '拼多多',
+      evidence: [
+        {
+          id: 'list_events-1',
+          kind: 'event',
+          title: '拼多多',
+          meta: 'agent开发 · interview · 2026-07-01T07:00:00Z',
+          snippet: '一面',
+          source: 'list_events',
+        },
+      ],
+    });
+  });
+
   it('attaches evidence to the final answer when a tool-calling assistant includes preamble content', () => {
     const turns = buildTurns([
       msg({ role: 'user', content: 'show apps' }),
