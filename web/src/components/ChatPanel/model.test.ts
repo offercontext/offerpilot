@@ -90,6 +90,37 @@ describe('buildTurns evidence normalization', () => {
     });
   });
 
+  it('attaches evidence to the final answer when a tool-calling assistant includes preamble content', () => {
+    const turns = buildTurns([
+      msg({ role: 'user', content: 'show apps' }),
+      msg({
+        role: 'assistant',
+        content: 'I can look that up.',
+        tool_calls: JSON.stringify([{ id: 'call-apps', name: 'list_applications', args: {} }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-apps',
+        content: JSON.stringify([
+          {
+            id: 7,
+            company_name: 'ByteDance',
+            position_name: 'Backend Engineer',
+            status: 'interview',
+          },
+        ]),
+      }),
+      msg({ role: 'assistant', content: 'You have one active interview.' }),
+    ]);
+
+    expect(turns.map((turn) => [turn.role, turn.content, turn.steps?.length ?? 0])).toEqual([
+      ['user', 'show apps', 0],
+      ['assistant', 'I can look that up.', 0],
+      ['assistant', 'You have one active interview.', 1],
+    ]);
+    expect(collectEvidence(turns).map((item) => item.title)).toEqual(['ByteDance']);
+  });
+
   it('keeps malformed tool results as an unavailable detail instead of throwing', () => {
     const turns = buildTurns([
       msg({

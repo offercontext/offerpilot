@@ -181,10 +181,17 @@ export function buildTurns(stored: ChatMessage[]): UITurn[] {
       const steps = parseToolCalls(m.tool_calls);
       if (steps.length) pending = pending.concat(steps);
       if (m.content.trim()) {
-        turns.push({ role: 'assistant', content: m.content, steps: pending.length ? pending : undefined });
-        pending = [];
-        nextFallbackToolIndex = 0;
-        assignedToolIndexes = new Set();
+        const hasPendingToolResults = pending.length > 0 && steps.length === 0;
+        turns.push({
+          role: 'assistant',
+          content: m.content,
+          steps: hasPendingToolResults ? pending : undefined,
+        });
+        if (hasPendingToolResults) {
+          pending = [];
+          nextFallbackToolIndex = 0;
+          assignedToolIndexes = new Set();
+        }
       }
     } else if (m.role === 'tool') {
       const toolIndex = resolveToolResultIndex(pending, assignedToolIndexes, m.tool_call_id, nextFallbackToolIndex);
