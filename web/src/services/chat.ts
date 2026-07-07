@@ -41,13 +41,27 @@ export async function deleteConversation(id: number): Promise<void> {
 
 export interface Settings {
   chat_auto_approve_writes: boolean;
+  active_provider_id: string;
+  providers: AIProviderProfile[];
   base_url: string;
   model: string;
   has_api_key: boolean;
 }
 
+export interface AIProviderProfile {
+  id: string;
+  label: string;
+  provider: string;
+  base_url: string;
+  model: string;
+  enabled: boolean;
+  has_api_key: boolean;
+}
+
 export interface UpdateSettingsPayload {
   chat_auto_approve_writes: boolean;
+  active_provider_id?: string;
+  providers?: Array<Omit<AIProviderProfile, 'has_api_key'> & { api_key?: string }>;
   base_url: string;
   model: string;
   api_key?: string;

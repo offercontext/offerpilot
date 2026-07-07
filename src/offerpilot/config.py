@@ -3,11 +3,22 @@ import os
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MODEL = "gpt-4o"
 DEFAULT_PORT = 8080
+DEFAULT_PROVIDER_ID = "default"
+
+
+class AIProviderProfile(BaseModel):
+    id: str = DEFAULT_PROVIDER_ID
+    label: str = "Default"
+    provider: str = "openai"
+    api_key: str = ""
+    base_url: str = DEFAULT_BASE_URL
+    model: str = DEFAULT_MODEL
+    enabled: bool = True
 
 
 class Config(BaseModel):
@@ -16,6 +27,31 @@ class Config(BaseModel):
     model: str = DEFAULT_MODEL
     local_port: int = DEFAULT_PORT
     chat_auto_approve_writes: bool = False
+    active_provider_id: str = DEFAULT_PROVIDER_ID
+    providers: list[AIProviderProfile] = Field(default_factory=list)
+
+    def provider_profiles(self) -> list[AIProviderProfile]:
+        if self.providers:
+            return self.providers
+        return [self.legacy_provider_profile()]
+
+    def legacy_provider_profile(self) -> AIProviderProfile:
+        return AIProviderProfile(
+            id=DEFAULT_PROVIDER_ID,
+            label="Default",
+            provider=_infer_provider(self.base_url),
+            api_key=self.api_key,
+            base_url=self.base_url,
+            model=self.model,
+            enabled=True,
+        )
+
+    def active_provider(self) -> AIProviderProfile:
+        profiles = self.provider_profiles()
+        for profile in profiles:
+            if profile.id == self.active_provider_id:
+                return profile
+        return profiles[0]
 
 
 def resolve_data_dir() -> Path:
@@ -46,4 +82,13 @@ def save_config(data_dir: Path, config: Config) -> None:
     path = data_dir / "config.json"
     path.write_text(config.model_dump_json(indent=2) + "\n", encoding="utf-8")
     path.chmod(0o600)
+
+
+def _infer_provider(base_url: str) -> str:
+    lowered = base_url.lower()
+    if "anthropic" in lowered:
+        return "anthropic"
+    if "localhost" in lowered or "127.0.0.1" in lowered or "0.0.0.0" in lowered:
+        return "openai_compatible"
+    return "openai"
 

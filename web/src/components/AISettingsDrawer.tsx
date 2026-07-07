@@ -6,6 +6,7 @@ import {
   Drawer,
   Form,
   Input,
+  Select,
   Space,
   Switch,
   Tag,
@@ -33,14 +34,28 @@ interface Props {
 
 interface FormValues {
   api_key?: string;
+  provider: string;
   base_url: string;
   model: string;
   chat_auto_approve_writes: boolean;
 }
 
+const PROVIDER_LABELS: Record<string, string> = {
+  openai: 'OpenAI',
+  openai_compatible: 'OpenAI Compatible',
+  anthropic: 'Anthropic',
+  openrouter: 'OpenRouter',
+};
+
+function activeProvider(settings?: Settings) {
+  return settings?.providers?.find((item) => item.id === settings.active_provider_id);
+}
+
 function toFormValues(settings?: Settings): FormValues {
+  const provider = activeProvider(settings);
   return {
     api_key: '',
+    provider: provider?.provider || 'openai',
     base_url: settings?.base_url || 'https://api.openai.com/v1',
     model: settings?.model || 'gpt-4o',
     chat_auto_approve_writes: settings?.chat_auto_approve_writes ?? false,
@@ -65,13 +80,29 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
 
   const saveMutation = useMutation({
     mutationFn: (values: FormValues) => {
+      const providerId = settingsQuery.data?.active_provider_id || 'default';
+      const providerLabel = PROVIDER_LABELS[values.provider] || values.provider;
       const payload: UpdateSettingsPayload = {
         chat_auto_approve_writes: values.chat_auto_approve_writes,
+        active_provider_id: providerId,
         base_url: values.base_url,
         model: values.model,
+        providers: [
+          {
+            id: providerId,
+            label: providerLabel,
+            provider: values.provider,
+            base_url: values.base_url,
+            model: values.model,
+            enabled: true,
+          },
+        ],
       };
       const apiKey = values.api_key?.trim();
-      if (apiKey) payload.api_key = apiKey;
+      if (apiKey) {
+        payload.api_key = apiKey;
+        payload.providers![0].api_key = apiKey;
+      }
       return updateSettings(payload);
     },
     onSuccess: (settings) => {
@@ -112,11 +143,7 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
           showIcon
           icon={hasKey ? <CheckCircleOutlined /> : <WarningOutlined />}
           message={hasKey ? 'API key 已配置' : '尚未配置 API key'}
-          description={
-            hasKey
-              ? 'API key 留空保存时会保留当前密钥。'
-              : '配置供应商 API key 后，即可使用 AI 分析、匹配、生成和助手功能。'
-          }
+          description={hasKey ? 'API key 留空保存会保留当前密钥。' : '配置模型提供商 API key 后即可使用 AI 能力。'}
         />
 
         <Form<FormValues>
@@ -133,11 +160,18 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
             />
           </Form.Item>
 
-          <Form.Item
-            label="接口地址 Base URL"
-            name="base_url"
-            tooltip="OpenAI 兼容接口的 Base URL"
-          >
+          <Form.Item label="Provider" name="provider">
+            <Select
+              options={[
+                { value: 'openai', label: 'OpenAI' },
+                { value: 'openai_compatible', label: 'OpenAI Compatible' },
+                { value: 'anthropic', label: 'Anthropic' },
+                { value: 'openrouter', label: 'OpenRouter' },
+              ]}
+            />
+          </Form.Item>
+
+          <Form.Item label="Base URL" name="base_url" tooltip="OpenAI-compatible API base">
             <Input placeholder="https://api.openai.com/v1" />
           </Form.Item>
 
@@ -145,20 +179,16 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
             <Input placeholder="gpt-4o" />
           </Form.Item>
 
-          <Form.Item
-            label="写操作免确认"
-            name="chat_auto_approve_writes"
-            valuePropName="checked"
-          >
+          <Form.Item label="写操作免确认" name="chat_auto_approve_writes" valuePropName="checked">
             <Switch />
           </Form.Item>
 
           <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-            设置会保存在本地 OfferPilot 配置中。设置接口只返回是否已配置密钥，不会返回 API key 明文。
+            设置保存在本地 OfferPilot 配置中；接口只返回密钥是否存在。
           </Typography.Paragraph>
 
           <div style={{ marginTop: 14 }}>
-            <Tag color="blue">OpenAI 兼容</Tag>
+            <Tag color="blue">LiteLLM</Tag>
             <Tag color="default">本地配置</Tag>
           </div>
         </Form>

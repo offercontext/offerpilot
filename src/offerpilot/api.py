@@ -17,7 +17,7 @@ from offerpilot.ai.client import ConfiguredAIClient
 from offerpilot.ai.tools import application_tool_registry
 from offerpilot.ai.types import Message, ToolCall
 from offerpilot.application_status import application_status_options, normalize_application_status
-from offerpilot.config import Config, load_config, resolve_data_dir, save_config
+from offerpilot.config import AIProviderProfile, Config, load_config, resolve_data_dir, save_config
 from offerpilot.db import session_factory_for_data_dir
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
 from offerpilot.repositories.chat import ChatRepository
@@ -1170,16 +1170,27 @@ def create_app(
     @app.put("/api/settings")
     def update_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         current = load_config(resolved_data_dir)
+        providers = _settings_providers_from_payload(payload, current)
+        active_provider_id = str(payload.get("active_provider_id") or current.active_provider_id)
+        active = _active_provider_from(providers, active_provider_id)
         next_config = Config(
-            api_key=current.api_key,
-            base_url=str(payload.get("base_url") or current.base_url),
-            model=str(payload.get("model") or current.model),
+            api_key=active.api_key,
+            base_url=active.base_url,
+            model=active.model,
             local_port=current.local_port,
             chat_auto_approve_writes=bool(payload.get("chat_auto_approve_writes")),
+            active_provider_id=active.id,
+            providers=providers,
         )
         api_key = payload.get("api_key")
         if api_key:
             next_config.api_key = str(api_key)
+            next_config.providers = [
+                profile.model_copy(update={"api_key": str(api_key)})
+                if profile.id == next_config.active_provider_id
+                else profile
+                for profile in next_config.providers
+            ]
         save_config(resolved_data_dir, next_config)
         return _settings_payload(next_config)
 
@@ -1336,11 +1347,78 @@ def _dev_placeholder_html() -> str:
 
 
 def _settings_payload(cfg: Config) -> dict[str, Any]:
+    active = cfg.active_provider()
     return {
         "chat_auto_approve_writes": cfg.chat_auto_approve_writes,
-        "base_url": cfg.base_url,
-        "model": cfg.model,
-        "has_api_key": bool(cfg.api_key),
+        "active_provider_id": active.id,
+        "providers": [_provider_payload(profile) for profile in cfg.provider_profiles()],
+        "base_url": active.base_url,
+        "model": active.model,
+        "has_api_key": bool(active.api_key),
+    }
+
+
+def _settings_providers_from_payload(payload: dict[str, Any], current: Config) -> list[AIProviderProfile]:
+    raw_providers = payload.get("providers")
+    if isinstance(raw_providers, list) and raw_providers:
+        current_by_id = {profile.id: profile for profile in current.provider_profiles()}
+        providers = [
+            _provider_from_payload(item, current_by_id.get(str(item.get("id", ""))))
+            for item in raw_providers
+            if isinstance(item, dict)
+        ]
+        if providers:
+            return providers
+
+    active = current.active_provider()
+    api_key = str(payload.get("api_key") or active.api_key)
+    return [
+        AIProviderProfile(
+            id=active.id,
+            label=active.label,
+            provider=active.provider,
+            api_key=api_key,
+            base_url=str(payload.get("base_url") or active.base_url),
+            model=str(payload.get("model") or active.model),
+            enabled=active.enabled,
+        )
+    ]
+
+
+def _provider_from_payload(
+    payload: dict[str, Any], current: AIProviderProfile | None
+) -> AIProviderProfile:
+    api_key = payload.get("api_key")
+    preserved_key = current.api_key if current is not None else ""
+    return AIProviderProfile(
+        id=str(payload.get("id") or (current.id if current is not None else "default")),
+        label=str(payload.get("label") or (current.label if current is not None else "Default")),
+        provider=str(payload.get("provider") or (current.provider if current is not None else "openai")),
+        api_key=str(api_key or preserved_key),
+        base_url=str(payload.get("base_url") or (current.base_url if current is not None else "")),
+        model=str(payload.get("model") or (current.model if current is not None else "")),
+        enabled=bool(payload.get("enabled", current.enabled if current is not None else True)),
+    )
+
+
+def _active_provider_from(
+    providers: list[AIProviderProfile], active_provider_id: str
+) -> AIProviderProfile:
+    for profile in providers:
+        if profile.id == active_provider_id:
+            return profile
+    return providers[0]
+
+
+def _provider_payload(profile: AIProviderProfile) -> dict[str, Any]:
+    return {
+        "id": profile.id,
+        "label": profile.label,
+        "provider": profile.provider,
+        "base_url": profile.base_url,
+        "model": profile.model,
+        "enabled": profile.enabled,
+        "has_api_key": bool(profile.api_key),
     }
 
 

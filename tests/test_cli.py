@@ -2,7 +2,7 @@ from typer.testing import CliRunner
 
 from offerpilot.ai.types import Assistant
 from offerpilot.cli import app
-from offerpilot.config import Config, save_config
+from offerpilot.config import AIProviderProfile, Config, load_config, save_config
 from offerpilot.db import session_factory_for_data_dir
 from offerpilot.repositories.jd import JDAnalysesRepository
 from offerpilot.repositories.knowledge import KnowledgeBaseCreate, KnowledgeDocumentCreate, KnowledgeRepository
@@ -66,6 +66,30 @@ def test_config_masks_api_key(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert "sk-a****ef" in result.output
     assert "ai_auto_approve: false" in result.output
+
+
+def test_config_updates_active_provider_profile(monkeypatch, tmp_path):
+    monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
+    save_config(
+        tmp_path,
+        Config(
+            active_provider_id="default",
+            providers=[
+                AIProviderProfile(
+                    id="default",
+                    api_key="sk-old",
+                    base_url="https://api.openai.com/v1",
+                    model="gpt-4o",
+                )
+            ],
+        ),
+    )
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["config", "--model", "gpt-4o-mini"])
+
+    assert result.exit_code == 0
+    assert load_config(tmp_path).active_provider().model == "gpt-4o-mini"
 
 
 def test_resume_add_and_list(monkeypatch, tmp_path):

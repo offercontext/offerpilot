@@ -11,7 +11,7 @@ from offerpilot.ai.client import ConfiguredAIClient
 from offerpilot.ai.workflows import analyze_jd, generate_questions, match_resume
 from offerpilot.application_status import APPLICATION_STATUS_IDS, normalize_application_status
 from offerpilot.api import create_app
-from offerpilot.config import Config, load_config, resolve_data_dir, save_config
+from offerpilot.config import AIProviderProfile, Config, load_config, resolve_data_dir, save_config
 from offerpilot.db import session_factory_for_data_dir
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
 from offerpilot.repositories.jd import JDAnalysesRepository
@@ -106,12 +106,15 @@ def config(
 
     if api_key is not None:
         next_config.api_key = api_key
+        next_config = _sync_active_provider_config(next_config, api_key=api_key)
         changed = True
     if base_url is not None:
         next_config.base_url = base_url
+        next_config = _sync_active_provider_config(next_config, base_url=base_url)
         changed = True
     if model is not None:
         next_config.model = model
+        next_config = _sync_active_provider_config(next_config, model=model)
         changed = True
     if auto_approve is not None:
         next_config.chat_auto_approve_writes = auto_approve
@@ -484,17 +487,56 @@ def _read_dash_stdin(value: str) -> str:
 
 
 def _print_config(data_dir: Path, cfg: Config) -> None:
+    active = cfg.active_provider()
     typer.echo("\nOfferPilot Configuration")
     typer.echo("---------------------------")
     typer.echo(f"Config file: {data_dir / 'config.json'}")
-    typer.echo(f"  base_url : {cfg.base_url}")
-    typer.echo(f"  model    : {cfg.model}")
-    if cfg.api_key:
-        typer.echo(f"  api_key  : {_mask_key(cfg.api_key)}")
+    typer.echo(f"  provider : {active.provider}")
+    typer.echo(f"  base_url : {active.base_url}")
+    typer.echo(f"  model    : {active.model}")
+    if active.api_key:
+        typer.echo(f"  api_key  : {_mask_key(active.api_key)}")
     else:
         typer.echo("  api_key  : (not set - AI features will return an error)")
     typer.echo(f"  local_port: {cfg.local_port}")
     typer.echo(f"  ai_auto_approve: {_format_bool(cfg.chat_auto_approve_writes)}")
+
+
+def _sync_active_provider_config(
+    cfg: Config,
+    *,
+    api_key: str | None = None,
+    base_url: str | None = None,
+    model: str | None = None,
+) -> Config:
+    active = cfg.active_provider()
+    providers = []
+    for profile in cfg.provider_profiles():
+        if profile.id == active.id:
+            providers.append(
+                profile.model_copy(
+                    update={
+                        "api_key": api_key if api_key is not None else profile.api_key,
+                        "base_url": base_url if base_url is not None else profile.base_url,
+                        "model": model if model is not None else profile.model,
+                    }
+                )
+            )
+        else:
+            providers.append(profile)
+    if not providers:
+        providers = [
+            AIProviderProfile(
+                id=active.id,
+                label=active.label,
+                provider=active.provider,
+                api_key=api_key if api_key is not None else active.api_key,
+                base_url=base_url if base_url is not None else active.base_url,
+                model=model if model is not None else active.model,
+                enabled=active.enabled,
+            )
+        ]
+    return cfg.model_copy(update={"providers": providers})
 
 
 def _mask_key(value: str) -> str:
