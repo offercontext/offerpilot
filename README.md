@@ -144,6 +144,7 @@ oc question generate --kb 1 --count 10
 - Runtime basics: `runtime_mode`, `auth_enabled`, `log_level`, `local_port`, and `oc smoke`.
 - Skill registry: packages are registered untrusted by default and load only after explicit trust and enablement.
 - Knowledge RAG base: SQLite FTS5 chunk retrieval with lexical fallback, reciprocal-rank scoring, and source citations.
+- Runtime diagnostics are visible in the settings module.
 
 ### Quick Start
 
@@ -262,7 +263,7 @@ Config lives at `~/.offerpilot/config.json` by default. Override the data direct
 - Skill execution sandbox, manifest validation, and package provenance.
 - Embedding rerankers for knowledge search.
 - LangGraph checkpoint / interrupt / scheduled wakeups.
-- Logs UI panel and real auth middleware.
+- Real auth middleware.
 - Screenshot-level responsive UI QA.
 
 ### License

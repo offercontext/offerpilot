@@ -51,6 +51,15 @@ export interface Settings {
   log_level: 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR';
 }
 
+export interface LogEntry {
+  level: string;
+  message: string;
+}
+
+export interface LogsResponse {
+  entries: LogEntry[];
+}
+
 export interface AIProviderProfile {
   id: string;
   label: string;
@@ -78,6 +87,11 @@ export async function getSettings(): Promise<Settings> {
 export async function updateSettings(payload: UpdateSettingsPayload): Promise<Settings> {
   const { data } = await http.put<Settings>('/settings', payload);
   return data;
+}
+
+export async function getLogs(limit = 20): Promise<LogEntry[]> {
+  const { data } = await http.get<LogsResponse>('/logs', { params: { limit } });
+  return data.entries ?? [];
 }
 
 export async function updateAutoApprove(value: boolean): Promise<Settings> {
