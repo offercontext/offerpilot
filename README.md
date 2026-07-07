@@ -186,6 +186,8 @@ scripts/local-smoke.sh
 
 Both `scripts/local-smoke.sh` and `scripts/local-smoke.ps1` build `web/dist`, start `uv run oc start` on a temporary data directory, verify `/api/health` and the SPA fallback route, then run the core `oc smoke` flow.
 
+The current non-Docker P0 gate is tracked in [`docs/p0-release-checklist.md`](docs/p0-release-checklist.md).
+
 #### Source Checkout
 
 ```bash

@@ -52,6 +52,7 @@ def test_readme_documents_current_v01_contract():
     assert "Browser auth gate" in readme
     assert "oc wakeup dispatch-due" in readme
     assert "schema_migrations" in readme
+    assert "docs/p0-release-checklist.md" in readme
 
 
 def test_docker_smoke_scripts_document_container_smoke_path():
@@ -93,6 +94,25 @@ def test_local_smoke_scripts_exercise_oc_start_with_built_spa():
 
     assert "scripts/local-smoke.sh" in readme
     assert "scripts/local-smoke.ps1" in readme
+
+
+def test_p0_release_checklist_documents_non_docker_release_gate():
+    gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+    checklist = (ROOT / "docs" / "p0-release-checklist.md").read_text(encoding="utf-8")
+
+    assert "!docs/p0-release-checklist.md" in gitignore
+    assert "P0 Release Checklist" in checklist
+    assert "Docker: deferred" in checklist
+    assert "uv run pytest -q" in checklist
+    assert "uv run ruff check ." in checklist
+    assert "uv run mypy src" in checklist
+    assert "npm.cmd test" in checklist
+    assert "npm.cmd run build" in checklist
+    assert "scripts/local-smoke.ps1" in checklist
+    assert "AGPLv3" in checklist
+    assert "schema_migrations" in checklist
+    assert "pending actions" in checklist
+    assert "LiteLLM" in checklist
 
 
 def test_go_backend_sources_removed_after_python_cutover():
