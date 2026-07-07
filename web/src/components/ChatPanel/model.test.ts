@@ -289,6 +289,46 @@ describe('buildTurns evidence normalization', () => {
     });
   });
 
+  it('classifies resume match results as match evidence instead of generic resume evidence', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([{ id: 'call-match', name: 'list_resume_matches', args: { resume_id: 6 } }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-match',
+        content: JSON.stringify([
+          {
+            record_type: 'resume_match',
+            resume_match_id: 9,
+            id: 9,
+            resume_id: 6,
+            application_id: 7,
+            jd_text: '后端开发工程师，负责高并发交易系统',
+            result: '{"summary":"匹配度较高，后端项目经验契合"}',
+          },
+        ]),
+      }),
+      msg({ role: 'assistant', content: 'I found a resume match.' }),
+    ]);
+
+    expect(turns[0].steps?.[0]).toMatchObject({
+      name: 'list_resume_matches',
+      detail: '简历匹配 #9',
+      evidence: [
+        {
+          id: 'list_resume_matches-9',
+          kind: 'resume',
+          title: '简历匹配 #9',
+          meta: '简历 #6 · 投递 #7',
+          snippet: '匹配度较高，后端项目经验契合',
+          source: 'list_resume_matches',
+        },
+      ],
+    });
+  });
+
   it('attaches evidence from JD analysis payloads', () => {
     const turns = buildTurns([
       msg({

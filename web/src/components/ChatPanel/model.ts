@@ -125,8 +125,23 @@ function parseToolResult(
 function evidenceFromRecord(row: unknown, source: string, index: number): EvidenceItem[] {
   if (!row || typeof row !== 'object') return [];
   const record = row as Record<string, unknown>;
-  const id = String(record.id ?? record.search_result_id ?? record.chunk_id ?? record.document_id ?? `${source}-${index}`);
+  const id = String(
+    record.id ?? record.resume_match_id ?? record.search_result_id ?? record.chunk_id ?? record.document_id ?? `${source}-${index}`,
+  );
   const recordType = text(record.record_type);
+  const isResumeMatch = source.includes('resume_match') || recordType === 'resume_match';
+  if (isResumeMatch) {
+    return [
+      {
+        id: `${source}-${id}`,
+        kind: 'resume',
+        title: `简历匹配 #${id}`,
+        meta: compact([numericMeta(record.resume_id, '简历'), numericMeta(record.application_id, '投递')]).join(' · '),
+        snippet: jdSummary(record.result) || text(record.jd_text),
+        source,
+      },
+    ];
+  }
   const isResume = source.includes('resume') || recordType === 'resume';
   if (isResume) {
     const title = text(record.name) || `简历 #${id}`;
