@@ -3,6 +3,7 @@ export interface Conversation {
   title: string;
   offer_id?: number;
   mode?: string;
+  pending_action?: PendingAction | null;
   created_at: string;
   updated_at: string;
 }

@@ -1,4 +1,4 @@
-import type { ChatMessage } from '@/types/chat';
+import type { ChatMessage, Conversation, PendingAction } from '@/types/chat';
 import { toolMeta } from './capabilities';
 
 export type EvidenceKind =
@@ -252,6 +252,13 @@ export async function reloadConversationTurns(
   } catch {
     return null;
   }
+}
+
+export function pendingActionForConversation(
+  conversations: Conversation[],
+  conversationId: number,
+): PendingAction | null {
+  return conversations.find((conversation) => conversation.id === conversationId)?.pending_action ?? null;
 }
 
 export { toolMeta };

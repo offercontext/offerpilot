@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
+from offerpilot.ai.agent import PendingAction
 from offerpilot.models import ChatMessage, Conversation
 
 
@@ -63,6 +64,48 @@ class ChatRepository:
         )
         with self._session_factory() as session:
             return list(session.scalars(statement))
+
+    def get_pending_action(self, conversation_id: int) -> PendingAction | None:
+        with self._session_factory() as session:
+            conversation = session.get(Conversation, conversation_id)
+            if conversation is None or not conversation.pending_tool_name:
+                return None
+            return PendingAction(
+                tool_call_id=conversation.pending_tool_call_id,
+                tool_name=conversation.pending_tool_name,
+                args=conversation.pending_args,
+                human=conversation.pending_human or conversation.pending_tool_name,
+            )
+
+    def set_pending_action(self, conversation_id: int, pending: PendingAction) -> None:
+        with self._session_factory() as session:
+            session.execute(
+                update(Conversation)
+                .where(Conversation.id == conversation_id)
+                .values(
+                    pending_tool_call_id=pending.tool_call_id,
+                    pending_tool_name=pending.tool_name,
+                    pending_args=pending.args,
+                    pending_human=pending.human,
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            session.commit()
+
+    def clear_pending_action(self, conversation_id: int) -> None:
+        with self._session_factory() as session:
+            session.execute(
+                update(Conversation)
+                .where(Conversation.id == conversation_id)
+                .values(
+                    pending_tool_call_id="",
+                    pending_tool_name="",
+                    pending_args="",
+                    pending_human="",
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            session.commit()
 
     def delete_conversation(self, conversation_id: int) -> None:
         with self._session_factory() as session:

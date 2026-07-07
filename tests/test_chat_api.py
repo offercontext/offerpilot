@@ -117,6 +117,66 @@ def test_chat_confirm_executes_pending_write(tmp_path):
     assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
 
 
+def test_chat_conversation_exposes_pending_action_for_reload(tmp_path):
+    app_client = TestClient(create_app(data_dir=tmp_path))
+    application = app_client.post(
+        "/api/applications",
+        json={"company_name": "ByteDance", "position_name": "Backend", "status": "interview"},
+    ).json()
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="w1",
+                        name="update_application_status",
+                        args=json.dumps({"id": application["id"], "status": "offer"}),
+                    )
+                ]
+            )
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    pending = client.post("/api/chat", json={"message": "改成 offer", "conversation_id": 0}).json()
+
+    conversations = client.get("/api/chat/conversations").json()
+
+    assert conversations[0]["id"] == pending["conversation_id"]
+    assert conversations[0]["pending_action"] == pending["pending_action"]
+
+
+def test_chat_confirm_clears_persisted_pending_action(tmp_path):
+    app_client = TestClient(create_app(data_dir=tmp_path))
+    application = app_client.post(
+        "/api/applications",
+        json={"company_name": "ByteDance", "position_name": "Backend", "status": "interview"},
+    ).json()
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="w1",
+                        name="update_application_status",
+                        args=json.dumps({"id": application["id"], "status": "offer"}),
+                    )
+                ]
+            ),
+            Assistant(content="已更新"),
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    pending = client.post("/api/chat", json={"message": "改成 offer", "conversation_id": 0}).json()
+
+    response = client.post(
+        "/api/chat/confirm",
+        json={"conversation_id": pending["conversation_id"], "approved": True},
+    )
+
+    assert response.status_code == 200
+    assert client.get("/api/chat/conversations").json()[0]["pending_action"] is None
+
+
 def test_chat_confirm_returns_args_for_chained_pending_write(tmp_path):
     app_client = TestClient(create_app(data_dir=tmp_path))
     first = app_client.post(

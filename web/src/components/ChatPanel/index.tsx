@@ -15,7 +15,14 @@ import {
 import { getOffer } from '@/services/offers';
 import type { ChatResponse, Conversation, PendingAction } from '@/types/chat';
 import type { Offer } from '@/types/offer';
-import { buildTurns, collectEvidence, reloadConversationTurns, type EvidenceItem, type UITurn } from './model';
+import {
+  buildTurns,
+  collectEvidence,
+  pendingActionForConversation,
+  reloadConversationTurns,
+  type EvidenceItem,
+  type UITurn,
+} from './model';
 import { capabilitiesForMode, type Capability } from './capabilities';
 import ThreadRail from './ThreadRail';
 import MessageBubble from './MessageBubble';
@@ -185,7 +192,7 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings, vari
       const stored = await getConversation(id);
       setConvID(id);
       setTurns(buildTurns(stored));
-      setPending(null);
+      setPending(pendingActionForConversation(conversations, id));
       setDegraded(false);
     } catch (e: any) {
       toast.error(e?.response?.data?.error ?? '加载对话失败');
@@ -214,6 +221,7 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings, vari
     } catch {
       setTurns((t) => [...t, { role: 'assistant', content: resp.message }]);
     }
+    refreshConversations();
   }
 
   async function sendMessage(text: string) {
@@ -229,6 +237,7 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings, vari
         const storedTurns = await reloadConversationTurns(resp.conversation_id, getConversation);
         if (storedTurns) setTurns(storedTurns);
         setPending(resp.pending_action);
+        refreshConversations();
       } else {
         await finishMessage(resp);
         if (resp.degraded) toast.info('当前模型不支持工具调用，已切换为只读摘要模式');
@@ -251,6 +260,7 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings, vari
         const storedTurns = await reloadConversationTurns(resp.conversation_id, getConversation);
         if (storedTurns) setTurns(storedTurns);
         setPending(resp.pending_action);
+        refreshConversations();
       } else {
         await finishMessage(resp);
       }

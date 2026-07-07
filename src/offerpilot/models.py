@@ -428,6 +428,10 @@ class Conversation(Base):
     title: Mapped[str] = mapped_column(String, nullable=False, default="新对话", server_default="新对话")
     offer_id: Mapped[int | None] = mapped_column(nullable=True)
     mode: Mapped[str] = mapped_column(String, default="general", server_default="general")
+    pending_tool_call_id: Mapped[str] = mapped_column(String, default="", server_default="")
+    pending_tool_name: Mapped[str] = mapped_column(String, default="", server_default="")
+    pending_args: Mapped[str] = mapped_column(String, default="", server_default="")
+    pending_human: Mapped[str] = mapped_column(String, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -439,6 +443,22 @@ class Conversation(Base):
         server_default=func.current_timestamp(),
         onupdate=func.current_timestamp(),
     )
+
+    @property
+    def pending_action(self) -> dict[str, object] | None:
+        if not self.pending_tool_name:
+            return None
+        try:
+            args = json.loads(self.pending_args) if self.pending_args else {}
+        except json.JSONDecodeError:
+            args = {}
+        if not isinstance(args, dict):
+            args = {}
+        return {
+            "tool_name": self.pending_tool_name,
+            "human": self.pending_human or self.pending_tool_name,
+            "args": args,
+        }
 
 
 class ChatMessage(Base):

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ChatMessage } from '@/types/chat';
-import { buildTurns, collectEvidence, reloadConversationTurns } from './model';
+import { buildTurns, collectEvidence, pendingActionForConversation, reloadConversationTurns } from './model';
 
 function msg(patch: Partial<ChatMessage> & Pick<ChatMessage, 'role'>): ChatMessage {
   return {
@@ -311,5 +311,30 @@ describe('buildTurns evidence normalization', () => {
     ]);
 
     expect(collectEvidence(turns).map((item) => item.title)).toEqual(['OpenAI', 'Anthropic']);
+  });
+
+  it('returns the persisted pending action for a selected conversation', () => {
+    const pending = pendingActionForConversation(
+      [
+        {
+          id: 42,
+          title: 'Offer',
+          created_at: '2026-01-01T00:00:00Z',
+          updated_at: '2026-01-01T00:00:00Z',
+          pending_action: {
+            tool_name: 'update_application_status',
+            human: '更新状态',
+            args: { id: 1, status: 'offer' },
+          },
+        },
+      ],
+      42,
+    );
+
+    expect(pending).toEqual({
+      tool_name: 'update_application_status',
+      human: '更新状态',
+      args: { id: 1, status: 'offer' },
+    });
   });
 });

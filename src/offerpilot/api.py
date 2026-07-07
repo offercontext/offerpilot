@@ -977,6 +977,7 @@ def create_app(
         )
         _persist_ai_messages(chat, conversation_id, added)
         if pending is not None:
+            chat.set_pending_action(conversation_id, pending)
             return JSONResponse(
                 {
                     "type": "confirmation_required",
@@ -984,6 +985,7 @@ def create_app(
                     "pending_action": _pending_action_json(pending),
                 }
             )
+        chat.clear_pending_action(conversation_id)
         return JSONResponse({"type": "message", "conversation_id": conversation_id, "message": reply})
 
     @app.post("/api/chat/confirm")
@@ -997,19 +999,9 @@ def create_app(
         stored = chat.list_messages(conversation_id)
         if not stored:
             return error_response(404, "conversation not found")
-        last = stored[-1]
-        if last.role != "assistant" or not last.tool_calls:
+        pending = chat.get_pending_action(conversation_id) or _pending_action_from_stored_messages(stored)
+        if pending is None:
             return error_response(400, "no pending action to confirm")
-        tool_calls = _load_tool_calls(last.tool_calls)
-        if not tool_calls:
-            return error_response(400, "malformed pending action")
-        tool_call = tool_calls[0]
-        pending = PendingAction(
-            tool_call_id=tool_call.id,
-            tool_name=tool_call.name,
-            args=tool_call.args,
-            human=tool_call.name,
-        )
         added, reply, new_pending = resume_after_confirm(
             model,
             application_tool_registry(applications),
@@ -1021,6 +1013,7 @@ def create_app(
         )
         _persist_ai_messages(chat, conversation_id, added)
         if new_pending is not None:
+            chat.set_pending_action(conversation_id, new_pending)
             return JSONResponse(
                 {
                     "type": "confirmation_required",
@@ -1028,6 +1021,7 @@ def create_app(
                     "pending_action": _pending_action_json(new_pending),
                 }
             )
+        chat.clear_pending_action(conversation_id)
         return JSONResponse({"type": "message", "conversation_id": conversation_id, "message": reply})
 
     @app.get("/api/chat/conversations")
@@ -1276,6 +1270,24 @@ def _pending_action_json(pending: PendingAction) -> dict[str, Any]:
         "human": pending.human,
         "args": _safe_tool_args(pending.args),
     }
+
+
+def _pending_action_from_stored_messages(messages: list[Any]) -> PendingAction | None:
+    if not messages:
+        return None
+    last = messages[-1]
+    if last.role != "assistant" or not last.tool_calls:
+        return None
+    tool_calls = _load_tool_calls(last.tool_calls)
+    if not tool_calls:
+        return None
+    tool_call = tool_calls[0]
+    return PendingAction(
+        tool_call_id=tool_call.id,
+        tool_name=tool_call.name,
+        args=tool_call.args,
+        human=tool_call.name,
+    )
 
 
 def _safe_tool_args(raw: str) -> dict[str, Any]:

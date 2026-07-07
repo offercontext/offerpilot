@@ -27,6 +27,7 @@ class ConversationOut(BaseModel):
     title: str
     offer_id: int | None = None
     mode: str = "general"
+    pending_action: dict[str, object] | None = None
     created_at: datetime
     updated_at: datetime
 
