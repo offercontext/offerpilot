@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, createElement } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Drawer, App as AntApp } from 'antd';
-import { CloseOutlined, RobotOutlined, AppstoreOutlined } from '@ant-design/icons';
+import { CloseOutlined, RobotOutlined, AppstoreOutlined, PlusOutlined } from '@ant-design/icons';
 import {
   sendChat,
   confirmAction,
@@ -327,6 +327,18 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings, vari
             <div className={styles.headSub}>基于投递、日程、复盘与 Offer 实时作答</div>
           </div>
           <span className={styles.modeBadge}>{isNego ? '谈薪教练' : '通用助手'}</span>
+          {docked && (
+            <button
+              type="button"
+              className={styles.dockedNewChat}
+              aria-label="新建对话"
+              title="新建对话"
+              onClick={startNewChat}
+              style={{ ...iconBtnStyle, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+            >
+              {createElement(PlusOutlined)}
+            </button>
+          )}
           <button
             type="button"
             className={styles.panelToggle}
