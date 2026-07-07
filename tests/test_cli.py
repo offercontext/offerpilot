@@ -108,6 +108,42 @@ def test_config_updates_runtime_and_log_options(monkeypatch, tmp_path):
     assert cfg.log_level == "DEBUG"
 
 
+def test_skill_cli_registers_trusts_and_enables_package(monkeypatch, tmp_path):
+    monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
+    runner = CliRunner()
+
+    add_result = runner.invoke(
+        app,
+        [
+            "skill",
+            "add",
+            "--id",
+            "resume-coach",
+            "--label",
+            "Resume Coach",
+            "--source",
+            "file:///skills/resume-coach",
+        ],
+    )
+    enable_before_trust = runner.invoke(app, ["skill", "enable", "resume-coach"])
+    trust_result = runner.invoke(app, ["skill", "trust", "resume-coach"])
+    enable_result = runner.invoke(app, ["skill", "enable", "resume-coach"])
+    list_result = runner.invoke(app, ["skill", "list"])
+
+    assert add_result.exit_code == 0
+    assert "registered" in add_result.output
+    assert enable_before_trust.exit_code != 0
+    assert "trusted before enabling" in enable_before_trust.output
+    assert trust_result.exit_code == 0
+    assert enable_result.exit_code == 0
+    assert "loaded" in list_result.output
+
+    cfg = load_config(tmp_path)
+    assert cfg.skills[0].id == "resume-coach"
+    assert cfg.skills[0].trusted is True
+    assert cfg.skills[0].enabled is True
+
+
 def test_start_uses_configured_port_by_default(monkeypatch, tmp_path):
     monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
     save_config(tmp_path, Config(local_port=9099))

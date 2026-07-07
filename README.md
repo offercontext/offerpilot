@@ -142,6 +142,7 @@ oc question generate --kb 1 --count 10
 - Multi-provider AI: LiteLLM routes OpenAI, Anthropic, DeepSeek, DashScope, OpenRouter, and OpenAI-compatible providers.
 - Local-first storage: SQLite data, config, and diagnostics logs under `~/.offerpilot` by default.
 - Runtime basics: `runtime_mode`, `auth_enabled`, `log_level`, `local_port`, and `oc smoke`.
+- Skill registry: packages are registered untrusted by default and load only after explicit trust and enablement.
 
 ### Quick Start
 
@@ -194,6 +195,10 @@ oc config --api-key sk-xxx
 oc config --model gpt-4o
 oc config --runtime-mode local
 oc config --auth --log-level debug
+oc skill add --id resume-coach --label "Resume Coach" --source file:///skills/resume-coach
+oc skill trust resume-coach
+oc skill enable resume-coach
+oc skill list
 
 oc add --company "ByteDance" --position "Backend"
 oc list --status interview
@@ -216,6 +221,16 @@ Config lives at `~/.offerpilot/config.json` by default. Override the data direct
   "runtime_mode": "local",
   "auth_enabled": false,
   "log_level": "INFO",
+  "skills": [
+    {
+      "id": "resume-coach",
+      "label": "Resume Coach",
+      "version": "0.1.0",
+      "source": "file:///skills/resume-coach",
+      "trusted": true,
+      "enabled": true
+    }
+  ],
   "active_provider_id": "default",
   "providers": [
     {
@@ -243,8 +258,7 @@ Config lives at `~/.offerpilot/config.json` by default. Override the data direct
 
 ### Roadmap
 
-- Docker build/run smoke automation.
-- Skill package install, trust, and loading model.
+- Skill execution sandbox, manifest validation, and package provenance.
 - Knowledge RAG with FTS5, embeddings, RRF, and source chunk citations.
 - LangGraph checkpoint / interrupt / scheduled wakeups.
 - Logs UI panel and real auth middleware.

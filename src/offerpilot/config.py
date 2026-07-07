@@ -22,6 +22,15 @@ class AIProviderProfile(BaseModel):
     enabled: bool = True
 
 
+class SkillPackage(BaseModel):
+    id: str
+    label: str = ""
+    version: str = ""
+    source: str = ""
+    trusted: bool = False
+    enabled: bool = False
+
+
 class Config(BaseModel):
     api_key: str = ""
     base_url: str = DEFAULT_BASE_URL
@@ -33,6 +42,7 @@ class Config(BaseModel):
     runtime_mode: RuntimeMode = "local"
     auth_enabled: bool = False
     log_level: str = "INFO"
+    skills: list[SkillPackage] = Field(default_factory=list)
 
     def provider_profiles(self) -> list[AIProviderProfile]:
         if self.providers:

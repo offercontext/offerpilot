@@ -59,6 +59,7 @@ from offerpilot.schemas import (
     ResumeMatchOut,
     ResumeOut,
 )
+from offerpilot.skills import SkillRegistryError, register_skill, skills_payload, update_skill
 
 
 def create_app(
@@ -1172,6 +1173,32 @@ def create_app(
     @app.get("/api/logs")
     def get_logs(limit: int = 100) -> dict[str, Any]:
         return {"entries": read_recent_log_entries(resolved_data_dir, limit=limit)}
+
+    @app.get("/api/skills")
+    def list_skills() -> dict[str, Any]:
+        return skills_payload(load_config(resolved_data_dir))
+
+    @app.post("/api/skills", status_code=201)
+    def register_skill_package(payload: dict[str, Any] = Body(...)) -> JSONResponse:
+        current = load_config(resolved_data_dir)
+        try:
+            next_config = register_skill(current, payload)
+        except SkillRegistryError as exc:
+            return error_response(400, str(exc))
+        save_config(resolved_data_dir, next_config)
+        return JSONResponse(skills_payload(next_config), status_code=201)
+
+    @app.put("/api/skills/{skill_id}")
+    def update_skill_package(skill_id: str, payload: dict[str, Any] = Body(...)) -> JSONResponse:
+        current = load_config(resolved_data_dir)
+        try:
+            next_config = update_skill(current, skill_id, payload)
+        except KeyError:
+            return error_response(404, "skill not found")
+        except SkillRegistryError as exc:
+            return error_response(400, str(exc))
+        save_config(resolved_data_dir, next_config)
+        return JSONResponse(skills_payload(next_config))
 
     @app.put("/api/settings")
     def update_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:

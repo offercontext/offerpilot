@@ -29,17 +29,20 @@ from offerpilot.repositories.offers import OfferCreate, OffersRepository
 from offerpilot.repositories.questions import QuestionsRepository
 from offerpilot.repositories.resumes import ResumeCreate, ResumesRepository
 from offerpilot.smoke import run_core_smoke
+from offerpilot.skills import SkillRegistryError, register_skill, skills_payload, update_skill
 
 app = typer.Typer(help="OfferPilot - your local job search workbench")
 resume_app = typer.Typer(help="Manage resumes")
 note_app = typer.Typer(help="Manage interview notes")
 offer_app = typer.Typer(help="Manage offers")
 question_app = typer.Typer(help="Manage interview questions")
+skill_app = typer.Typer(help="Manage trusted skill packages")
 
 app.add_typer(resume_app, name="resume")
 app.add_typer(note_app, name="note")
 app.add_typer(offer_app, name="offer")
 app.add_typer(question_app, name="question")
+app.add_typer(skill_app, name="skill")
 
 
 @app.command()
@@ -204,6 +207,67 @@ def smoke(
     for step in report.steps:
         typer.echo(f"ok {step.name}: {step.detail}")
     typer.echo("Smoke passed")
+
+
+@skill_app.command("list")
+def skill_list() -> None:
+    cfg = load_config(resolve_data_dir())
+    payload = skills_payload(cfg)
+    packages = payload["packages"]
+    if not packages:
+        typer.echo("\nNo skill packages registered.")
+        return
+    typer.echo("\nSkill Packages")
+    typer.echo("-------------------------------------------------------------")
+    typer.echo(f"{'ID':<24} {'Trusted':<8} {'Enabled':<8} {'State':<8} Source")
+    for package in packages:
+        state = "loaded" if package["loaded"] else "inactive"
+        typer.echo(
+            f"{package['id']:<24} {_format_bool(package['trusted']):<8} "
+            f"{_format_bool(package['enabled']):<8} {state:<8} {package['source']}"
+        )
+
+
+@skill_app.command("add")
+def skill_add(
+    skill_id: str = typer.Option(..., "--id", help="stable skill id"),
+    label: str = typer.Option("", "--label", help="display label"),
+    source: str = typer.Option("", "--source", help="local path, package URL, or registry source"),
+    version: str = typer.Option("", "--version", help="skill version"),
+) -> None:
+    cfg = load_config(resolve_data_dir())
+    try:
+        next_config = register_skill(
+            cfg,
+            {
+                "id": skill_id,
+                "label": label,
+                "source": source,
+                "version": version,
+            },
+        )
+    except SkillRegistryError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    save_config(resolve_data_dir(), next_config)
+    typer.echo(f"Skill registered: {skill_id}")
+
+
+@skill_app.command("trust")
+def skill_trust(skill_id: str = typer.Argument(...)) -> None:
+    _set_skill_state(skill_id, trusted=True)
+    typer.echo(f"Skill trusted: {skill_id}")
+
+
+@skill_app.command("enable")
+def skill_enable(skill_id: str = typer.Argument(...)) -> None:
+    _set_skill_state(skill_id, enabled=True)
+    typer.echo(f"Skill enabled: {skill_id}")
+
+
+@skill_app.command("disable")
+def skill_disable(skill_id: str = typer.Argument(...)) -> None:
+    _set_skill_state(skill_id, enabled=False)
+    typer.echo(f"Skill disabled: {skill_id}")
 
 
 @resume_app.command("add")
@@ -584,6 +648,27 @@ def _sync_active_provider_config(
             )
         ]
     return cfg.model_copy(update={"providers": providers})
+
+
+def _set_skill_state(
+    skill_id: str,
+    *,
+    trusted: bool | None = None,
+    enabled: bool | None = None,
+) -> None:
+    data_dir = resolve_data_dir()
+    payload = {}
+    if trusted is not None:
+        payload["trusted"] = trusted
+    if enabled is not None:
+        payload["enabled"] = enabled
+    try:
+        next_config = update_skill(load_config(data_dir), skill_id, payload)
+    except KeyError as exc:
+        raise typer.BadParameter("skill not found") from exc
+    except SkillRegistryError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    save_config(data_dir, next_config)
 
 
 def _mask_key(value: str) -> str:
