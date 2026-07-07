@@ -5,7 +5,7 @@ from typing import Any, Protocol
 
 from offerpilot.ai.types import Assistant, Message
 
-DEFAULT_MAX_ITERATIONS = 8
+DEFAULT_MAX_ITERATIONS = 20
 
 
 class ChatModel(Protocol):

@@ -59,6 +59,36 @@ def test_chat_exposes_module_tools_to_model(tmp_path):
     )
 
 
+def test_chat_allows_wide_read_only_tool_summaries(tmp_path):
+    model = ScriptedModel(
+        [
+            Assistant(tool_calls=[ToolCall(id="r1", name="list_applications", args="{}")]),
+            Assistant(tool_calls=[ToolCall(id="r2", name="list_offers", args="{}")]),
+            Assistant(tool_calls=[ToolCall(id="r3", name="list_notes", args="{}")]),
+            Assistant(tool_calls=[ToolCall(id="r4", name="list_events", args="{}")]),
+            Assistant(tool_calls=[ToolCall(id="r5", name="list_resumes", args="{}")]),
+            Assistant(tool_calls=[ToolCall(id="r6", name="list_jd_analyses", args="{}")]),
+            Assistant(tool_calls=[ToolCall(id="r7", name="list_knowledge_bases", args="{}")]),
+            Assistant(tool_calls=[ToolCall(id="r8", name="search_knowledge", args=json.dumps({"query": "Java"}))]),
+            Assistant(tool_calls=[ToolCall(id="r9", name="compare_offers", args=json.dumps({"ids": []}))]),
+            Assistant(tool_calls=[ToolCall(id="r10", name="list_resume_matches", args=json.dumps({"resume_id": 1}))]),
+            Assistant(tool_calls=[ToolCall(id="r11", name="list_knowledge_documents", args="{}")]),
+            Assistant(tool_calls=[ToolCall(id="r12", name="get_knowledge_document", args=json.dumps({"id": 1}))]),
+            Assistant(content="summary complete"),
+        ]
+    )
+    client = TestClient(
+        create_app(data_dir=tmp_path, chat_model=model),
+        raise_server_exceptions=False,
+    )
+
+    response = client.post("/api/chat", json={"message": "summarize everything", "conversation_id": 0})
+
+    assert response.status_code == 200
+    assert response.json()["type"] == "message"
+    assert response.json()["message"] == "summary complete"
+
+
 @pytest.mark.parametrize("args", ["{bad", "[]"])
 def test_chat_pending_write_tolerates_invalid_args(tmp_path, args):
     model = ScriptedModel(

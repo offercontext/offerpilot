@@ -13,7 +13,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from pypdf import PdfReader
 
-from offerpilot.ai.agent import ChatModel, PendingAction, resume_after_confirm, run_turn
+from offerpilot.ai.agent import DEFAULT_MAX_ITERATIONS, ChatModel, PendingAction, resume_after_confirm, run_turn
 from offerpilot.ai.client import ConfiguredAIClient
 from offerpilot.ai.tools import offerpilot_tool_registry
 from offerpilot.ai.types import Message, ToolCall
@@ -1024,7 +1024,7 @@ def create_app(
                 ),
                 history,
                 auto_approve=load_config(resolved_data_dir).chat_auto_approve_writes,
-                max_iter=8,
+                max_iter=DEFAULT_MAX_ITERATIONS,
             )
         except Exception as exc:
             return _ai_provider_error(exc)
@@ -1071,7 +1071,7 @@ def create_app(
                 pending,
                 approved=bool(payload.get("approved")),
                 auto_approve=load_config(resolved_data_dir).chat_auto_approve_writes,
-                max_iter=8,
+                max_iter=DEFAULT_MAX_ITERATIONS,
             )
         except Exception as exc:
             return _ai_provider_error(exc)
