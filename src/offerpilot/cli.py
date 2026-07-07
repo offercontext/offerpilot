@@ -11,8 +11,16 @@ from offerpilot.ai.client import ConfiguredAIClient
 from offerpilot.ai.workflows import analyze_jd, generate_questions, match_resume
 from offerpilot.application_status import APPLICATION_STATUS_IDS, normalize_application_status
 from offerpilot.api import create_app
-from offerpilot.config import AIProviderProfile, Config, load_config, resolve_data_dir, save_config
+from offerpilot.config import (
+    AIProviderProfile,
+    Config,
+    load_config,
+    normalize_runtime_mode,
+    resolve_data_dir,
+    save_config,
+)
 from offerpilot.db import session_factory_for_data_dir
+from offerpilot.diagnostics import append_log_entry
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
 from offerpilot.repositories.jd import JDAnalysesRepository
 from offerpilot.repositories.knowledge import KnowledgeRepository
@@ -93,6 +101,13 @@ def config(
     api_key: Optional[str] = typer.Option(None, "--api-key", help="set API key"),
     base_url: Optional[str] = typer.Option(None, "--base-url", help="set base_url"),
     model: Optional[str] = typer.Option(None, "--model", help="set model name"),
+    runtime_mode: Optional[str] = typer.Option(None, "--runtime-mode", help="local or server"),
+    auth_enabled: Optional[bool] = typer.Option(
+        None,
+        "--auth/--no-auth",
+        help="enable auth guard for server mode",
+    ),
+    log_level: Optional[str] = typer.Option(None, "--log-level", help="DEBUG, INFO, WARNING, ERROR"),
     auto_approve: Optional[bool] = typer.Option(
         None,
         "--auto-approve/--no-auto-approve",
@@ -118,6 +133,21 @@ def config(
         changed = True
     if auto_approve is not None:
         next_config.chat_auto_approve_writes = auto_approve
+        changed = True
+    if runtime_mode is not None:
+        parsed_runtime_mode = normalize_runtime_mode(runtime_mode, next_config.runtime_mode)
+        if parsed_runtime_mode != runtime_mode:
+            raise typer.BadParameter("--runtime-mode must be local or server")
+        next_config.runtime_mode = parsed_runtime_mode
+        changed = True
+    if auth_enabled is not None:
+        next_config.auth_enabled = auth_enabled
+        changed = True
+    if log_level is not None:
+        parsed_level = log_level.upper()
+        if parsed_level not in {"DEBUG", "INFO", "WARNING", "ERROR"}:
+            raise typer.BadParameter("--log-level must be DEBUG, INFO, WARNING, or ERROR")
+        next_config.log_level = parsed_level
         changed = True
 
     if changed:
@@ -158,6 +188,7 @@ def start(
 ) -> None:
     data_dir = resolve_data_dir()
     session_factory_for_data_dir(data_dir)
+    append_log_entry(data_dir, "INFO", f"server starting on port {port}")
     typer.echo(f"OfferPilot running at http://localhost:{port}")
     uvicorn.run(create_app(data_dir=data_dir), host="127.0.0.1", port=port)
 
@@ -499,6 +530,9 @@ def _print_config(data_dir: Path, cfg: Config) -> None:
     else:
         typer.echo("  api_key  : (not set - AI features will return an error)")
     typer.echo(f"  local_port: {cfg.local_port}")
+    typer.echo(f"  runtime_mode: {cfg.runtime_mode}")
+    typer.echo(f"  auth_enabled: {_format_bool(cfg.auth_enabled)}")
+    typer.echo(f"  log_level: {cfg.log_level}")
     typer.echo(f"  ai_auto_approve: {_format_bool(cfg.chat_auto_approve_writes)}")
 
 

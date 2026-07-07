@@ -17,8 +17,16 @@ from offerpilot.ai.client import ConfiguredAIClient
 from offerpilot.ai.tools import application_tool_registry
 from offerpilot.ai.types import Message, ToolCall
 from offerpilot.application_status import application_status_options, normalize_application_status
-from offerpilot.config import AIProviderProfile, Config, load_config, resolve_data_dir, save_config
+from offerpilot.config import (
+    AIProviderProfile,
+    Config,
+    load_config,
+    normalize_runtime_mode,
+    resolve_data_dir,
+    save_config,
+)
 from offerpilot.db import session_factory_for_data_dir
+from offerpilot.diagnostics import read_recent_log_entries
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
 from offerpilot.repositories.chat import ChatRepository
 from offerpilot.repositories.events import EventCreate, EventsRepository, duration_minutes
@@ -1161,6 +1169,10 @@ def create_app(
         cfg = load_config(resolved_data_dir)
         return _settings_payload(cfg)
 
+    @app.get("/api/logs")
+    def get_logs(limit: int = 100) -> dict[str, Any]:
+        return {"entries": read_recent_log_entries(resolved_data_dir, limit=limit)}
+
     @app.put("/api/settings")
     def update_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         current = load_config(resolved_data_dir)
@@ -1175,6 +1187,12 @@ def create_app(
             chat_auto_approve_writes=bool(payload.get("chat_auto_approve_writes")),
             active_provider_id=active.id,
             providers=providers,
+            runtime_mode=normalize_runtime_mode(
+                str(payload.get("runtime_mode") or current.runtime_mode),
+                current.runtime_mode,
+            ),
+            auth_enabled=bool(payload.get("auth_enabled", current.auth_enabled)),
+            log_level=str(payload.get("log_level") or current.log_level).upper(),
         )
         api_key = payload.get("api_key")
         if api_key:
@@ -1367,6 +1385,9 @@ def _settings_payload(cfg: Config) -> dict[str, Any]:
         "base_url": active.base_url,
         "model": active.model,
         "has_api_key": bool(active.api_key),
+        "runtime_mode": cfg.runtime_mode,
+        "auth_enabled": cfg.auth_enabled,
+        "log_level": cfg.log_level,
     }
 
 

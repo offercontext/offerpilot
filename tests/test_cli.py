@@ -92,6 +92,22 @@ def test_config_updates_active_provider_profile(monkeypatch, tmp_path):
     assert load_config(tmp_path).active_provider().model == "gpt-4o-mini"
 
 
+def test_config_updates_runtime_and_log_options(monkeypatch, tmp_path):
+    monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
+    runner = CliRunner()
+
+    result = runner.invoke(
+        app,
+        ["config", "--runtime-mode", "server", "--auth", "--log-level", "debug"],
+    )
+
+    cfg = load_config(tmp_path)
+    assert result.exit_code == 0
+    assert cfg.runtime_mode == "server"
+    assert cfg.auth_enabled is True
+    assert cfg.log_level == "DEBUG"
+
+
 def test_resume_add_and_list(monkeypatch, tmp_path):
     monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path / "data"))
     resume_file = tmp_path / "resume.txt"

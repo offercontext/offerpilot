@@ -1,7 +1,7 @@
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -9,6 +9,7 @@ DEFAULT_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MODEL = "gpt-4o"
 DEFAULT_PORT = 8080
 DEFAULT_PROVIDER_ID = "default"
+RuntimeMode = Literal["local", "server"]
 
 
 class AIProviderProfile(BaseModel):
@@ -29,6 +30,9 @@ class Config(BaseModel):
     chat_auto_approve_writes: bool = False
     active_provider_id: str = DEFAULT_PROVIDER_ID
     providers: list[AIProviderProfile] = Field(default_factory=list)
+    runtime_mode: RuntimeMode = "local"
+    auth_enabled: bool = False
+    log_level: str = "INFO"
 
     def provider_profiles(self) -> list[AIProviderProfile]:
         if self.providers:
@@ -74,6 +78,8 @@ def load_config(data_dir: Path) -> Config:
         cfg.model = DEFAULT_MODEL
     if cfg.local_port == 0:
         cfg.local_port = DEFAULT_PORT
+    cfg.runtime_mode = normalize_runtime_mode(cfg.runtime_mode)
+    cfg.log_level = _normalize_log_level(cfg.log_level)
     return cfg
 
 
@@ -91,4 +97,17 @@ def _infer_provider(base_url: str) -> str:
     if "localhost" in lowered or "127.0.0.1" in lowered or "0.0.0.0" in lowered:
         return "openai_compatible"
     return "openai"
+
+
+def _normalize_log_level(value: str) -> str:
+    normalized = (value or "INFO").upper()
+    return normalized if normalized in {"DEBUG", "INFO", "WARNING", "ERROR"} else "INFO"
+
+
+def normalize_runtime_mode(value: str, fallback: RuntimeMode = "local") -> RuntimeMode:
+    if value == "local":
+        return "local"
+    if value == "server":
+        return "server"
+    return fallback
 

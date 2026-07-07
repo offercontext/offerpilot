@@ -46,6 +46,9 @@ export interface Settings {
   base_url: string;
   model: string;
   has_api_key: boolean;
+  runtime_mode: 'local' | 'server';
+  auth_enabled: boolean;
+  log_level: 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR';
 }
 
 export interface AIProviderProfile {
