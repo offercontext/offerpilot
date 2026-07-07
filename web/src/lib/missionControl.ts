@@ -4,7 +4,7 @@ import type { ScheduleEvent } from '@/types/event';
 import type { MaterialKitStatus, MaterialKitViewModel } from '@/types/materialKit';
 import type { Offer } from '@/types/offer';
 import type { PracticeStats } from '@/types/question';
-import type { ViewMode } from '@/layout/AppShell';
+import type { ViewMode } from '@/layout/navigation';
 import type { PipelineHealth, PipelineInsight, PipelineInsightKind } from './pipelineInsights';
 
 export type MissionMetricKind =

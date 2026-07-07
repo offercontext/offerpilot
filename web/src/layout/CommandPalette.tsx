@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Modal, Input, List } from 'antd';
 import type { Application } from '@/types/application';
 import type { PipelineInsight } from '@/lib/pipelineInsights';
-import type { ViewMode } from './AppShell';
+import { MODULE_NAV, type ViewMode } from './navigation';
 
 export interface Command {
   key: string;
@@ -72,18 +72,18 @@ export default function CommandPalette({
     () => [
       { key: 'add', label: '添加投递', hint: '动作', run: () => { onAddApplication(); onClose(); } },
       { key: 'resume', label: '简历匹配', hint: '动作', run: () => { onOpenResume(); onClose(); } },
-      { key: 'uploadResume', label: '上传简历', hint: 'PDF → 简历库', run: () => { onUploadResume?.(); onClose(); } },
-      { key: 'chat', label: '打开 AI 助手', hint: '动作', run: () => { onOpenChat(); onClose(); } },
+      { key: 'uploadResume', label: '上传简历', hint: 'PDF 到简历库', run: () => { onUploadResume?.(); onClose(); } },
+      { key: 'chat', label: '打开 Pilot', hint: '动作', run: () => { onOpenChat(); onClose(); } },
       { key: 'settings-ai', label: '打开 AI 设置', hint: '设置', run: () => { onOpenSettings(); onClose(); } },
-      { key: 'nav-dashboard', label: '前往 驾驶舱', hint: '导航', run: () => { onNavigate('dashboard'); onClose(); } },
-      { key: 'nav-board', label: '前往 看板', hint: '导航', run: () => { onNavigate('board'); onClose(); } },
-      { key: 'nav-calendar', label: '前往 日历', hint: '导航', run: () => { onNavigate('calendar'); onClose(); } },
-      { key: 'nav-reminders', label: '前往 提醒', hint: '导航', run: () => { onNavigate('reminders'); onClose(); } },
-      { key: 'nav-reviews', label: '前往 复盘', hint: '导航', run: () => { onNavigate('reviews'); onClose(); } },
-      { key: 'nav-offers', label: '前往 谈薪', hint: '导航', run: () => { onNavigate('offers'); onClose(); } },
-      { key: 'nav-knowledge', label: '前往 知识库', hint: '导航', run: () => { onNavigate('knowledge'); onClose(); } },
-      { key: 'nav-questions', label: '前往 题库刷题', hint: '导航', run: () => { onNavigate('questions'); onClose(); } },
-      { key: 'nav-resumes', label: '打开简历库', hint: '侧边导航', run: () => { onNavigate('resumes'); onClose(); } },
+      ...MODULE_NAV.map((item) => ({
+        key: `nav-${item.key}`,
+        label: `前往 ${item.label}`,
+        hint: '导航',
+        run: () => {
+          onNavigate(item.defaultView);
+          onClose();
+        },
+      })),
     ],
     [onAddApplication, onOpenResume, onUploadResume, onOpenChat, onOpenSettings, onNavigate, onClose]
   );

@@ -1,6 +1,6 @@
 import { Component, lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Button, Layout, Spin, message } from 'antd';
+import { Button, Layout, Spin, Tabs, message } from 'antd';
 import { listApplications } from '@/services/applications';
 import { listEvents } from '@/services/events';
 import { listOffers } from '@/services/offers';
@@ -16,6 +16,7 @@ import ResumeUploadModal from '@/components/ResumeUploadModal';
 import ChatPanel from '@/components/ChatPanel';
 import AISettingsDrawer from '@/components/AISettingsDrawer';
 import CommandPalette from './CommandPalette';
+import { moduleTabsForView, type ViewMode } from './navigation';
 import {
   derivePipelineInsights,
   toLegacyActionItems,
@@ -36,6 +37,7 @@ const DashboardView = lazy(() => import('@/features/dashboard/DashboardView'));
 const RemindersView = lazy(() => import('@/features/reminders/RemindersView'));
 const MockStudioView = lazy(() => import('@/components/MockStudio/MockStudioView'));
 const ResumeLibraryView = lazy(() => import('@/components/ResumeLibraryView'));
+const SettingsView = lazy(() => import('@/components/SettingsView'));
 
 class ViewErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
   state = { hasError: false };
@@ -57,18 +59,6 @@ class ViewErrorBoundary extends Component<{ children: ReactNode }, { hasError: b
     return this.props.children;
   }
 }
-
-export type ViewMode =
-  | 'dashboard'
-  | 'board'
-  | 'calendar'
-  | 'reminders'
-  | 'reviews'
-  | 'mock'
-  | 'offers'
-  | 'knowledge'
-  | 'questions'
-  | 'resumes';
 
 function computeStreak(apps: Application[], now = dayjs()): number {
   const days = new Set(
@@ -159,6 +149,7 @@ export default function AppShell() {
   const selectedApp = selected
     ? apps.find((a) => a.id === selected.id) ?? selected
     : null;
+  const moduleTabs = moduleTabsForView(view);
 
   const openChat = (offerId?: number) => {
     setCoachOfferId(offerId);
@@ -210,6 +201,14 @@ export default function AppShell() {
             </div>
           ) : (
             <ViewErrorBoundary key={view}>
+              {moduleTabs.length > 1 && (
+                <Tabs
+                  className="op-module-tabs"
+                  activeKey={view}
+                  onChange={(key) => setView(key as ViewMode)}
+                  items={moduleTabs.map((item) => ({ key: item.view, label: item.label }))}
+                />
+              )}
               <Suspense
                 fallback={
                   <div style={{ textAlign: 'center', padding: 48 }}>
@@ -251,6 +250,7 @@ export default function AppShell() {
                     />
                   )}
                   {view === 'resumes' && <ResumeLibraryView />}
+                  {view === 'settings' && <SettingsView onOpenAISettings={() => setAISettingsOpen(true)} />}
                 </div>
               </Suspense>
             </ViewErrorBoundary>

@@ -120,6 +120,18 @@ body {
   to { opacity: 1; transform: translateY(0); }
 }
 
+.op-module-tabs {
+  margin-bottom: 16px;
+}
+
+.op-module-tabs .ant-tabs-nav {
+  margin-bottom: 0;
+}
+
+.op-module-tabs .ant-tabs-tab {
+  min-height: 40px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .op-view-enter { animation: none; }
   * { scroll-behavior: auto !important; }

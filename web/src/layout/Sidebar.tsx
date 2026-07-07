@@ -1,33 +1,32 @@
 import {
-  DashboardOutlined,
   AppstoreOutlined,
-  CalendarOutlined,
-  BellOutlined,
-  FileSearchOutlined,
-  DollarOutlined,
   BookOutlined,
+  BulbOutlined,
+  DashboardOutlined,
+  FileTextOutlined,
   ReadOutlined,
   RobotOutlined,
-  BulbOutlined,
-  FileTextOutlined,
+  SettingOutlined,
   AudioOutlined,
 } from '@ant-design/icons';
 import { Badge } from 'antd';
 import { useThemeMode } from '@/theme/ThemeContext';
-import type { ViewMode } from './AppShell';
+import {
+  MODULE_NAV,
+  resolveModuleForView,
+  type ModuleKey,
+  type ViewMode,
+} from './navigation';
 
-const NAV: { key: ViewMode; label: string; icon: React.ReactNode }[] = [
-  { key: 'dashboard', label: '驾驶舱', icon: <DashboardOutlined /> },
-  { key: 'board', label: '看板', icon: <AppstoreOutlined /> },
-  { key: 'calendar', label: '日历', icon: <CalendarOutlined /> },
-  { key: 'reminders', label: '提醒', icon: <BellOutlined /> },
-  { key: 'reviews', label: '复盘', icon: <FileSearchOutlined /> },
-  { key: 'mock', label: '模拟面试', icon: <AudioOutlined /> },
-  { key: 'offers', label: '谈薪', icon: <DollarOutlined /> },
-  { key: 'knowledge', label: '知识库', icon: <BookOutlined /> },
-  { key: 'questions', label: '题库刷题', icon: <ReadOutlined /> },
-  { key: 'resumes', label: '简历库', icon: <FileTextOutlined /> },
-];
+const MODULE_ICONS: Record<ModuleKey, React.ReactNode> = {
+  workspace: <DashboardOutlined />,
+  resume: <FileTextOutlined />,
+  practice: <ReadOutlined />,
+  pipeline: <AppstoreOutlined />,
+  interview: <AudioOutlined />,
+  knowledge: <BookOutlined />,
+  settings: <SettingOutlined />,
+};
 
 interface Props {
   view: ViewMode;
@@ -38,6 +37,8 @@ interface Props {
 
 export default function Sidebar({ view, onChange, reminderCount, onOpenChat }: Props) {
   const { mode, toggle } = useThemeMode();
+  const activeModule = resolveModuleForView(view);
+
   return (
     <nav
       className="op-sidebar"
@@ -63,18 +64,18 @@ export default function Sidebar({ view, onChange, reminderCount, onOpenChat }: P
             display: 'inline-block',
           }}
         />
-        <span className="op-gradient-text" style={{ fontSize: 16, fontWeight: 700, letterSpacing: '-0.02em' }}>
+        <span className="op-gradient-text" style={{ fontSize: 16, fontWeight: 700 }}>
           OfferPilot
         </span>
       </div>
 
-      {NAV.map((item) => {
-        const active = view === item.key;
+      {MODULE_NAV.map((item) => {
+        const active = activeModule === item.key;
         return (
           <button
             key={item.key}
             aria-current={active ? 'page' : undefined}
-            onClick={() => onChange(item.key)}
+            onClick={() => onChange(item.defaultView)}
             style={{
               display: 'flex',
               alignItems: 'center',
@@ -82,19 +83,19 @@ export default function Sidebar({ view, onChange, reminderCount, onOpenChat }: P
               padding: '9px 11px',
               border: 'none',
               cursor: 'pointer',
-              borderRadius: 11,
+              borderRadius: 8,
               fontSize: 14,
               textAlign: 'left',
               fontWeight: active ? 600 : 400,
               color: active ? 'var(--op-primary)' : 'var(--op-muted)',
               background: active ? 'var(--op-layout-bg)' : 'transparent',
               boxShadow: active ? 'var(--op-shadow-sm)' : 'none',
-              transition: 'background 0.2s var(--op-ease)',
+              transition: 'background 0.2s var(--op-ease), color 0.2s var(--op-ease)',
             }}
           >
-            <span style={{ fontSize: 16, display: 'inline-flex' }}>{item.icon}</span>
+            <span style={{ fontSize: 16, display: 'inline-flex' }}>{MODULE_ICONS[item.key]}</span>
             <span style={{ flex: 1 }}>{item.label}</span>
-            {item.key === 'reminders' && reminderCount > 0 && (
+            {item.key === 'pipeline' && reminderCount > 0 && (
               <Badge count={reminderCount} size="small" />
             )}
           </button>
@@ -109,7 +110,7 @@ export default function Sidebar({ view, onChange, reminderCount, onOpenChat }: P
             cursor: 'pointer',
             textAlign: 'left',
             background: 'var(--op-layout-bg)',
-            borderRadius: 12,
+            borderRadius: 8,
             padding: 11,
             color: 'var(--op-primary)',
             fontSize: 13,
@@ -118,7 +119,7 @@ export default function Sidebar({ view, onChange, reminderCount, onOpenChat }: P
             alignItems: 'center',
           }}
         >
-          <RobotOutlined /> AI 助手
+          <RobotOutlined /> Pilot
         </button>
         <button
           onClick={toggle}
@@ -128,7 +129,7 @@ export default function Sidebar({ view, onChange, reminderCount, onOpenChat }: P
             cursor: 'pointer',
             textAlign: 'left',
             background: 'transparent',
-            borderRadius: 12,
+            borderRadius: 8,
             padding: '9px 11px',
             color: 'var(--op-muted)',
             fontSize: 13,

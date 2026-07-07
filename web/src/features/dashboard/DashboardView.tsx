@@ -15,7 +15,7 @@ import {
 } from '@/lib/pipelineInsights';
 import { deriveMissionControl } from '@/lib/missionControl';
 import { computeKpis, computeFunnel, computeMomentum } from '@/lib/insights';
-import type { ViewMode } from '@/layout/AppShell';
+import type { ViewMode } from '@/layout/navigation';
 import type { MaterialKitViewModel } from '@/types/materialKit';
 import ActionDetailDrawer from '@/features/pipeline/ActionDetailDrawer';
 import KpiCards from './widgets/KpiCards';

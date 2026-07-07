@@ -13,7 +13,7 @@ import {
   READINESS_STATE_LABELS,
   type ApplicationReadiness,
 } from '@/lib/missionControl';
-import type { ViewMode } from '@/layout/AppShell';
+import type { ViewMode } from '@/layout/navigation';
 import styles from '../dashboard.module.css';
 
 interface Props {

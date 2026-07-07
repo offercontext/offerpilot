@@ -14,7 +14,7 @@ import {
   type PipelinePriority,
 } from '@/lib/pipelineInsights';
 import ActionDetailDrawer from '@/features/pipeline/ActionDetailDrawer';
-import type { ViewMode } from '@/layout/AppShell';
+import type { ViewMode } from '@/layout/navigation';
 import styles from './reminders.module.css';
 
 interface Props {
