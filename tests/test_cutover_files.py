@@ -41,6 +41,7 @@ def test_readme_documents_current_v01_contract():
     assert "LiteLLM" in readme
     assert "oc smoke" in readme
     assert "oc skill trust" in readme
+    assert "SQLite FTS5 chunk retrieval" in readme
     assert "pending -> applied -> written_test -> interview -> offer -> closed" in readme
     assert "runtime_mode" in readme
     assert "auth_enabled" in readme

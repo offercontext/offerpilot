@@ -143,6 +143,7 @@ oc question generate --kb 1 --count 10
 - Local-first storage: SQLite data, config, and diagnostics logs under `~/.offerpilot` by default.
 - Runtime basics: `runtime_mode`, `auth_enabled`, `log_level`, `local_port`, and `oc smoke`.
 - Skill registry: packages are registered untrusted by default and load only after explicit trust and enablement.
+- Knowledge RAG base: SQLite FTS5 chunk retrieval with lexical fallback, reciprocal-rank scoring, and source citations.
 
 ### Quick Start
 
@@ -259,7 +260,7 @@ Config lives at `~/.offerpilot/config.json` by default. Override the data direct
 ### Roadmap
 
 - Skill execution sandbox, manifest validation, and package provenance.
-- Knowledge RAG with FTS5, embeddings, RRF, and source chunk citations.
+- Embedding rerankers for knowledge search.
 - LangGraph checkpoint / interrupt / scheduled wakeups.
 - Logs UI panel and real auth middleware.
 - Screenshot-level responsive UI QA.

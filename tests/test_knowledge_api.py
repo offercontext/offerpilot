@@ -51,6 +51,74 @@ def test_knowledge_base_document_crud_and_search(tmp_path):
     assert delete_response.json() == {"message": "Deleted"}
 
 
+def test_knowledge_search_returns_ranked_source_chunks(tmp_path):
+    client = TestClient(create_app(data_dir=tmp_path))
+    base = client.post("/api/knowledge-bases", json={"name": "RAG notes"}).json()
+
+    client.post(
+        "/api/knowledge-documents",
+        json={
+            "knowledge_base_id": base["id"],
+            "title": "General notes",
+            "content": "network latency\n\ncache invalidation",
+            "tags": ["systems"],
+        },
+    )
+    client.post(
+        "/api/knowledge-documents",
+        json={
+            "knowledge_base_id": base["id"],
+            "title": "Backpressure",
+            "content": "reactive streams\n\nbackpressure demand signal",
+            "tags": ["systems"],
+        },
+    )
+
+    response = client.get(f"/api/knowledge/search?q=backpressure signal&knowledge_base_id={base['id']}")
+
+    assert response.status_code == 200
+    results = response.json()
+    assert results[0]["document_title"] == "Backpressure"
+    assert results[0]["chunk_index"] == 1
+    assert results[0]["score"] > 0
+    assert results[0]["source_name"] == ""
+    assert "backpressure demand signal" in results[0]["snippet"]
+
+
+def test_knowledge_search_index_tracks_updates_and_deletes(tmp_path):
+    client = TestClient(create_app(data_dir=tmp_path))
+    base = client.post("/api/knowledge-bases", json={"name": "Mutable notes"}).json()
+    doc = client.post(
+        "/api/knowledge-documents",
+        json={
+            "knowledge_base_id": base["id"],
+            "title": "Mutable",
+            "content": "stale token",
+            "tags": [],
+        },
+    ).json()
+
+    update_response = client.put(
+        f"/api/knowledge-documents/{doc['id']}",
+        json={
+            "knowledge_base_id": base["id"],
+            "title": "Mutable",
+            "content": "fresh token",
+            "tags": [],
+        },
+    )
+    old_search = client.get(f"/api/knowledge/search?q=stale&knowledge_base_id={base['id']}")
+    fresh_search = client.get(f"/api/knowledge/search?q=fresh&knowledge_base_id={base['id']}")
+    delete_response = client.delete(f"/api/knowledge-documents/{doc['id']}")
+    deleted_search = client.get(f"/api/knowledge/search?q=fresh&knowledge_base_id={base['id']}")
+
+    assert update_response.status_code == 200
+    assert old_search.json() == []
+    assert fresh_search.json()[0]["document_id"] == doc["id"]
+    assert delete_response.status_code == 200
+    assert deleted_search.json() == []
+
+
 def test_knowledge_import_validation(tmp_path):
     client = TestClient(create_app(data_dir=tmp_path))
     base = client.post("/api/knowledge-bases", json={"name": "Go notes"}).json()
