@@ -133,9 +133,9 @@ offerpilot/
 └── uv.lock
 ```
 
-### 📄 开源协议
+### 📜 开源协议
 
-[MIT](LICENSE) — 自由使用、修改和分发。
+[AGPLv3](LICENSE) — OfferPilot 是本地优先、自托管的开源求职工作台。你可以使用、修改和分发本项目；如果将修改后的版本通过网络提供给用户，也需要按 AGPLv3 向这些用户提供对应源码。
 
 ### 🙏 致谢
 
@@ -277,9 +277,9 @@ offerpilot/
 └── uv.lock
 ```
 
-### 📄 License
+### 📜 License
 
-[MIT](LICENSE) — Free to use, modify, and distribute.
+[AGPLv3](LICENSE) — OfferPilot is a local-first, self-hosted open-source job-search workbench. You may use, modify, and distribute it; if you provide a modified version over a network, AGPLv3 requires making the corresponding source available to those users.
 
 ### 🙏 Acknowledgements
 
