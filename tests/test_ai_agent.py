@@ -1,6 +1,6 @@
 import json
 
-from offerpilot.ai.agent import PendingAction, resume_after_confirm, run_turn
+from offerpilot.ai.agent import LangGraphAgentRunner, PendingAction, resume_after_confirm, run_turn
 from offerpilot.ai.types import Assistant, ToolCall
 
 
@@ -106,5 +106,65 @@ def test_reject_does_not_execute_pending_write():
     assert calls == []
     assert "用户拒绝了该操作" in added[0].content
     assert reply == "cancelled"
+    assert new_pending is None
+
+
+def test_langgraph_runner_resumes_pending_write_from_sqlite_checkpoint(tmp_path):
+    calls = []
+    registry = {
+        "update_application_status": {
+            "write": True,
+            "describe": lambda args: "change status",
+            "handler": lambda args: calls.append(args) or '{"ok":true}',
+        }
+    }
+    checkpoint_path = tmp_path / "agent_checkpoints.sqlite"
+    thread_id = "conversation:1"
+
+    first_runner = LangGraphAgentRunner(
+        ScriptedModel(
+            [
+                Assistant(
+                    tool_calls=[
+                        ToolCall(
+                            id="w1",
+                            name="update_application_status",
+                            args=json.dumps({"id": 1, "status": "offer"}),
+                        )
+                    ]
+                )
+            ]
+        ),
+        registry,
+        checkpoint_path=checkpoint_path,
+        thread_id=thread_id,
+    )
+
+    added, reply, pending = first_runner.run_turn([], auto_approve=False, max_iter=8)
+
+    assert reply == ""
+    assert isinstance(pending, PendingAction)
+    assert pending.tool_call_id == "w1"
+    assert calls == []
+    assert checkpoint_path.exists()
+
+    second_runner = LangGraphAgentRunner(
+        ScriptedModel([Assistant(content="done")]),
+        registry,
+        checkpoint_path=checkpoint_path,
+        thread_id=thread_id,
+    )
+
+    added_after_confirm, reply_after_confirm, new_pending = second_runner.resume_after_confirm(
+        [],
+        pending,
+        approved=True,
+        auto_approve=False,
+        max_iter=8,
+    )
+
+    assert calls == [json.dumps({"id": 1, "status": "offer"})]
+    assert added_after_confirm[0].role == "tool"
+    assert reply_after_confirm == "done"
     assert new_pending is None
 

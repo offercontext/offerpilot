@@ -1025,6 +1025,8 @@ def create_app(
                 history,
                 auto_approve=load_config(resolved_data_dir).chat_auto_approve_writes,
                 max_iter=DEFAULT_MAX_ITERATIONS,
+                checkpoint_path=_agent_checkpoint_path(resolved_data_dir),
+                thread_id=_agent_thread_id(conversation_id),
             )
         except Exception as exc:
             return _ai_provider_error(exc)
@@ -1072,6 +1074,8 @@ def create_app(
                 approved=bool(payload.get("approved")),
                 auto_approve=load_config(resolved_data_dir).chat_auto_approve_writes,
                 max_iter=DEFAULT_MAX_ITERATIONS,
+                checkpoint_path=_agent_checkpoint_path(resolved_data_dir),
+                thread_id=_agent_thread_id(conversation_id),
             )
         except Exception as exc:
             return _ai_provider_error(exc)
@@ -1364,6 +1368,14 @@ def _payload_text(payload: dict[str, Any], key: str, fallback: str) -> str:
 def _title_from_message(message: str) -> str:
     trimmed = message.strip()
     return trimmed[:30] or "新对话"
+
+
+def _agent_checkpoint_path(data_dir: Path) -> Path:
+    return data_dir / "agent_checkpoints.sqlite"
+
+
+def _agent_thread_id(conversation_id: int) -> str:
+    return f"conversation:{conversation_id}"
 
 
 def _persist_ai_messages(repo: ChatRepository, conversation_id: int, messages: list[Message]) -> None:

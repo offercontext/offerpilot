@@ -228,6 +228,44 @@ def test_chat_confirm_replays_reasoning_content_for_pending_tool(tmp_path):
     }
 
 
+def test_chat_confirm_resumes_pending_write_from_langgraph_checkpoint(tmp_path):
+    app_client = TestClient(create_app(data_dir=tmp_path))
+    application = app_client.post(
+        "/api/applications",
+        json={"company_name": "ByteDance", "position_name": "Backend", "status": "interview"},
+    ).json()
+    first_model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="w1",
+                        name="update_application_status",
+                        args=json.dumps({"id": application["id"], "status": "offer"}),
+                    )
+                ]
+            )
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=first_model))
+
+    pending = client.post("/api/chat", json={"message": "move it to offer", "conversation_id": 0}).json()
+
+    assert pending["type"] == "confirmation_required"
+    assert (tmp_path / "agent_checkpoints.sqlite").exists()
+
+    second_model = ScriptedModel([Assistant(content="updated")])
+    reloaded_client = TestClient(create_app(data_dir=tmp_path, chat_model=second_model))
+    response = reloaded_client.post(
+        "/api/chat/confirm",
+        json={"conversation_id": pending["conversation_id"], "approved": True},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["message"] == "updated"
+    assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
+
+
 def test_chat_conversation_exposes_pending_action_for_reload(tmp_path):
     app_client = TestClient(create_app(data_dir=tmp_path))
     application = app_client.post(
