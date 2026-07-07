@@ -16,6 +16,23 @@ class ScriptedModel:
         return self.turns.pop(0)
 
 
+class FailingModel:
+    def complete(self, messages, tools):
+        raise RuntimeError("provider unavailable")
+
+
+def test_chat_returns_bad_gateway_when_model_fails(tmp_path):
+    client = TestClient(
+        create_app(data_dir=tmp_path, chat_model=FailingModel()),
+        raise_server_exceptions=False,
+    )
+
+    response = client.post("/api/chat", json={"message": "hello", "conversation_id": 0})
+
+    assert response.status_code == 502
+    assert response.json() == {"error": "AI provider request failed: provider unavailable"}
+
+
 @pytest.mark.parametrize("args", ["{bad", "[]"])
 def test_chat_pending_write_tolerates_invalid_args(tmp_path, args):
     model = ScriptedModel(

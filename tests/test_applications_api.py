@@ -113,6 +113,32 @@ def test_update_application_full_object(tmp_path):
     assert response.json()["notes"] == "second"
 
 
+def test_update_application_status_preserves_existing_fields(tmp_path):
+    client = TestClient(create_app(data_dir=tmp_path))
+    created = client.post(
+        "/api/applications",
+        json={
+            "company_name": "ByteDance",
+            "position_name": "Backend",
+            "job_url": "https://example.test/job",
+            "status": "applied",
+            "notes": "keep me",
+        },
+    ).json()
+
+    response = client.put(
+        f"/api/applications/{created['id']}",
+        json={"status": "interview"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "interview"
+    assert response.json()["company_name"] == "ByteDance"
+    assert response.json()["position_name"] == "Backend"
+    assert response.json()["job_url"] == "https://example.test/job"
+    assert response.json()["notes"] == "keep me"
+
+
 def test_update_application_preserves_existing_source(tmp_path):
     repo = ApplicationsRepository(init_database(tmp_path / "data.db"))
     created = repo.create(

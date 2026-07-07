@@ -164,19 +164,19 @@ def create_app(
         existing = applications.get(app_id)
         if existing is None:
             return error_response(500, "Failed to update application")
-        parsed_status = _parse_application_status(str(payload.get("status") or "applied"))
+        parsed_status = _parse_application_status(str(payload.get("status") or existing.status))
         if isinstance(parsed_status, JSONResponse):
             return parsed_status
 
         app_model = applications.update_full(
             app_id,
             ApplicationCreate(
-                company_name=str(payload.get("company_name") or ""),
-                position_name=str(payload.get("position_name") or ""),
-                job_url=str(payload.get("job_url") or ""),
+                company_name=_payload_text(payload, "company_name", existing.company_name),
+                position_name=_payload_text(payload, "position_name", existing.position_name),
+                job_url=_payload_text(payload, "job_url", existing.job_url),
                 status=parsed_status,
                 source=existing.source,
-                notes=str(payload.get("notes") or ""),
+                notes=_payload_text(payload, "notes", existing.notes),
                 applied_at=existing.applied_at,
             ),
         )
@@ -1010,13 +1010,16 @@ def create_app(
 
         chat.append_message(conversation_id, "user", content=message)
         history = _stored_messages_to_ai(chat.list_messages(conversation_id))
-        added, reply, pending = run_turn(
-            model,
-            application_tool_registry(applications),
-            history,
-            auto_approve=load_config(resolved_data_dir).chat_auto_approve_writes,
-            max_iter=8,
-        )
+        try:
+            added, reply, pending = run_turn(
+                model,
+                application_tool_registry(applications),
+                history,
+                auto_approve=load_config(resolved_data_dir).chat_auto_approve_writes,
+                max_iter=8,
+            )
+        except Exception as exc:
+            return _ai_provider_error(exc)
         _persist_ai_messages(chat, conversation_id, added)
         if pending is not None:
             chat.set_pending_action(conversation_id, pending)
@@ -1044,15 +1047,18 @@ def create_app(
         pending = chat.get_pending_action(conversation_id) or _pending_action_from_stored_messages(stored)
         if pending is None:
             return error_response(400, "no pending action to confirm")
-        added, reply, new_pending = resume_after_confirm(
-            model,
-            application_tool_registry(applications),
-            _stored_messages_to_ai(stored),
-            pending,
-            approved=bool(payload.get("approved")),
-            auto_approve=load_config(resolved_data_dir).chat_auto_approve_writes,
-            max_iter=8,
-        )
+        try:
+            added, reply, new_pending = resume_after_confirm(
+                model,
+                application_tool_registry(applications),
+                _stored_messages_to_ai(stored),
+                pending,
+                approved=bool(payload.get("approved")),
+                auto_approve=load_config(resolved_data_dir).chat_auto_approve_writes,
+                max_iter=8,
+            )
+        except Exception as exc:
+            return _ai_provider_error(exc)
         _persist_ai_messages(chat, conversation_id, added)
         if new_pending is not None:
             chat.set_pending_action(conversation_id, new_pending)
@@ -1293,6 +1299,14 @@ def error_response(status_code: int, message: str) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status_code)
 
 
+def _ai_provider_error(exc: Exception) -> JSONResponse:
+    detail = str(exc).strip()
+    message = "AI provider request failed"
+    if detail:
+        message = f"{message}: {detail}"
+    return error_response(502, message)
+
+
 def _auth_guard_response(request: Request, data_dir: Path) -> JSONResponse | None:
     path = request.url.path
     if not path.startswith("/api/") or path in {"/api/health", "/api/auth/status"}:
@@ -1323,6 +1337,12 @@ def _parse_application_status(raw: str) -> str | JSONResponse:
         return normalize_application_status(raw)
     except ValueError as exc:
         return error_response(422, str(exc))
+
+
+def _payload_text(payload: dict[str, Any], key: str, fallback: str) -> str:
+    if key not in payload:
+        return fallback
+    return str(payload.get(key) or "")
 
 
 def _title_from_message(message: str) -> str:
