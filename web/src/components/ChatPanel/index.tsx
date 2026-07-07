@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, createElement } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Drawer, App as AntApp } from 'antd';
-import { CloseOutlined, RobotOutlined, AppstoreOutlined, PlusOutlined } from '@ant-design/icons';
+import { CloseOutlined, RobotOutlined, AppstoreOutlined, PlusOutlined, ExpandAltOutlined } from '@ant-design/icons';
 import {
   sendChat,
   confirmAction,
@@ -38,6 +38,7 @@ interface Props {
   offerId?: number;
   onOpenSettings?: () => void;
   variant?: 'drawer' | 'rail';
+  onExpand?: () => void;
 }
 
 const CHAT_WIDTH_STORAGE_KEY = 'offerpilot.chatPanelWidth';
@@ -80,7 +81,7 @@ function pendingActionEvidence(evidence: EvidenceItem[], action: PendingAction):
   return evidence.filter((item) => evidenceMatchesPendingAction(item, action));
 }
 
-export default function ChatPanel({ open, onClose, offerId, onOpenSettings, variant = 'drawer' }: Props) {
+export default function ChatPanel({ open, onClose, offerId, onOpenSettings, variant = 'drawer', onExpand }: Props) {
   const { message: toast } = AntApp.useApp();
   const [turns, setTurns] = useState<UITurn[]>([]);
   const [convID, setConvID] = useState<number | undefined>(undefined);
@@ -337,6 +338,18 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings, vari
               style={{ ...iconBtnStyle, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
             >
               {createElement(PlusOutlined)}
+            </button>
+          )}
+          {docked && onExpand && (
+            <button
+              type="button"
+              className={styles.dockedExpand}
+              aria-label="展开完整助手"
+              title="展开完整助手"
+              onClick={onExpand}
+              style={{ ...iconBtnStyle, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+            >
+              {createElement(ExpandAltOutlined)}
             </button>
           )}
           <button

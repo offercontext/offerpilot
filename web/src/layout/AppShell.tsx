@@ -79,6 +79,7 @@ export default function AppShell() {
   const [resumeOpen, setResumeOpen] = useState(false);
   const [resumeUploadOpen, setResumeUploadOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
+  const [pilotDrawerOpen, setPilotDrawerOpen] = useState(false);
   const [aiSettingsOpen, setAISettingsOpen] = useState(false);
   const [selected, setSelected] = useState<Application | null>(null);
   const [coachOfferId, setCoachOfferId] = useState<number | undefined>(undefined);
@@ -164,7 +165,11 @@ export default function AppShell() {
 
   const openChat = (offerId?: number) => {
     setCoachOfferId(offerId);
-    setChatOpen(!pilotRailAvailable);
+    if (pilotRailAvailable) {
+      setPilotDrawerOpen(true);
+      return;
+    }
+    setChatOpen(true);
   };
 
   const goDetailById = (appId: number) => {
@@ -268,7 +273,7 @@ export default function AppShell() {
           )}
         </Content>
       </Layout>
-      {pilotRailAvailable && (
+      {pilotRailAvailable && !pilotDrawerOpen && (
         <aside className="op-pilot-rail" aria-label="Pilot">
           <ChatPanel
             variant="rail"
@@ -276,6 +281,7 @@ export default function AppShell() {
             onClose={() => setCoachOfferId(undefined)}
             offerId={coachOfferId}
             onOpenSettings={() => setAISettingsOpen(true)}
+            onExpand={() => setPilotDrawerOpen(true)}
           />
         </aside>
       )}
@@ -318,11 +324,12 @@ export default function AppShell() {
         pipelineActions={pipelineActions}
         onRunPipelineAction={runPipelineAction}
       />
-      {!pilotRailAvailable && (
+      {(!pilotRailAvailable || pilotDrawerOpen) && (
         <ChatPanel
-          open={chatOpen}
+          open={pilotRailAvailable ? pilotDrawerOpen : chatOpen}
           onClose={() => {
             setChatOpen(false);
+            setPilotDrawerOpen(false);
             setCoachOfferId(undefined);
           }}
           offerId={coachOfferId}

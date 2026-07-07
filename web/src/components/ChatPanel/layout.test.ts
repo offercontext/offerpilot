@@ -9,4 +9,10 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('aria-label="新建对话"');
     expect(component).toContain('docked &&');
   });
+
+  it('lets the docked Pilot expand into the full assistant drawer', () => {
+    expect(component).toContain('onExpand');
+    expect(component).toContain('ExpandAltOutlined');
+    expect(component).toContain('aria-label="展开完整助手"');
+  });
 });
