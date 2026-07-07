@@ -207,6 +207,86 @@ describe('buildTurns evidence normalization', () => {
     expect(turns[0].steps?.[0].evidenceUnavailable).toBeFalsy();
   });
 
+  it('classifies resume tool results as resume evidence', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([{ id: 'call-resume', name: 'list_resumes', args: {} }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-resume',
+        content: JSON.stringify([
+          {
+            record_type: 'resume',
+            resume_id: 6,
+            id: 6,
+            name: '后端简历',
+            parse_status: 'text-ready',
+            parsed_data: 'Java Spring Boot 高并发项目经验',
+          },
+        ]),
+      }),
+      msg({ role: 'assistant', content: 'I found a resume.' }),
+    ]);
+
+    expect(turns[0].steps?.[0]).toMatchObject({
+      name: 'list_resumes',
+      detail: '后端简历',
+      evidence: [
+        {
+          id: 'list_resumes-6',
+          kind: 'resume',
+          title: '后端简历',
+          meta: 'text-ready',
+          snippet: 'Java Spring Boot 高并发项目经验',
+          source: 'list_resumes',
+        },
+      ],
+    });
+  });
+
+  it('attaches evidence from JD analysis payloads', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([{ id: 'call-jd', name: 'list_jd_analyses', args: {} }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-jd',
+        content: JSON.stringify([
+          {
+            record_type: 'jd_analysis',
+            jd_analysis_id: 2,
+            id: 2,
+            application_id: 7,
+            jd_source: 'text',
+            jd_text: '后端开发工程师，负责高并发交易系统',
+            result: '{"summary":"高并发后端岗位，重点关注 Java、缓存和分布式系统"}',
+          },
+        ]),
+      }),
+      msg({ role: 'assistant', content: 'I found a JD analysis.' }),
+    ]);
+
+    expect(turns[0].steps?.[0]).toMatchObject({
+      name: 'list_jd_analyses',
+      detail: 'JD 分析 #2',
+      evidence: [
+        {
+          id: 'list_jd_analyses-2',
+          kind: 'jd',
+          title: 'JD 分析 #2',
+          meta: 'text · 投递 #7',
+          snippet: '高并发后端岗位，重点关注 Java、缓存和分布式系统',
+          source: 'list_jd_analyses',
+        },
+      ],
+    });
+    expect(turns[0].steps?.[0].evidenceUnavailable).toBeFalsy();
+  });
+
   it('matches multiple tool results to the correct tool call id', () => {
     const turns = buildTurns([
       msg({

@@ -4,6 +4,7 @@ import { toolMeta } from './capabilities';
 export type EvidenceKind =
   | 'application'
   | 'event'
+  | 'jd'
   | 'note'
   | 'knowledge'
   | 'offer'
@@ -125,6 +126,34 @@ function evidenceFromRecord(row: unknown, source: string, index: number): Eviden
   if (!row || typeof row !== 'object') return [];
   const record = row as Record<string, unknown>;
   const id = String(record.id ?? record.search_result_id ?? record.chunk_id ?? record.document_id ?? `${source}-${index}`);
+  const recordType = text(record.record_type);
+  const isResume = source.includes('resume') || recordType === 'resume';
+  if (isResume) {
+    const title = text(record.name) || `简历 #${id}`;
+    return [
+      {
+        id: `${source}-${id}`,
+        kind: 'resume',
+        title,
+        meta: text(record.parse_status),
+        snippet: text(record.parsed_data),
+        source,
+      },
+    ];
+  }
+  const isJD = source.includes('jd') || recordType === 'jd_analysis';
+  if (isJD) {
+    return [
+      {
+        id: `${source}-${id}`,
+        kind: 'jd',
+        title: `JD 分析 #${id}`,
+        meta: compact([text(record.jd_source), numericMeta(record.application_id, '投递')]).join(' \u00b7 '),
+        snippet: jdSummary(record.result) || text(record.jd_text),
+        source,
+      },
+    ];
+  }
   const company = text(record.company_name);
   const position = text(record.position_name);
   if (company) {
@@ -154,7 +183,7 @@ function evidenceFromRecord(row: unknown, source: string, index: number): Eviden
   }
   const title = text(record.title) || text(record.document_title) || text(record.round) || text(record.name);
   if (title) {
-    const isKnowledge = source.includes('knowledge') || text(record.record_type)?.startsWith('knowledge');
+    const isKnowledge = source.includes('knowledge') || recordType?.startsWith('knowledge');
     return [
       {
         id: `${source}-${id}`,
@@ -177,6 +206,21 @@ function evidenceFromRecord(row: unknown, source: string, index: number): Eviden
 
 function text(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function numericMeta(value: unknown, label: string): string | undefined {
+  return typeof value === 'number' && value > 0 ? `${label} #${value}` : undefined;
+}
+
+function jdSummary(value: unknown): string | undefined {
+  const raw = text(value);
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return text(parsed.summary);
+  } catch {
+    return raw.slice(0, 160);
+  }
 }
 
 function compact(values: Array<string | undefined>): string[] {

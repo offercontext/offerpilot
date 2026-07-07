@@ -18,6 +18,7 @@ interface Props {
 const ICONS = {
   application: ProfileOutlined,
   event: CalendarOutlined,
+  jd: FileTextOutlined,
   note: FileTextOutlined,
   knowledge: BookOutlined,
   offer: DollarOutlined,
