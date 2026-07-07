@@ -248,6 +248,34 @@ def test_offerpilot_write_tools_mutate_notes_events_and_offers(tmp_path):
     assert registry["delete_event"]["handler"](json.dumps({"id": event["id"]})) == '{"deleted":true}'
 
 
+def test_offer_tools_distinguish_offer_ids_from_application_ids(tmp_path):
+    session_factory = init_database(tmp_path / "data.db")
+    applications = ApplicationsRepository(session_factory)
+    notes = NotesRepository(session_factory)
+    events = EventsRepository(session_factory)
+    offers = OffersRepository(session_factory)
+    offer = offers.create(
+        OfferCreate(
+            company_name="Alibaba",
+            position_name="Java Backend P6",
+            base_monthly=32000,
+            months_per_year=16,
+        )
+    )
+    registry = offerpilot_tool_registry(applications, events, notes, offers)
+
+    listed = json.loads(registry["list_offers"]["handler"](json.dumps({})))
+    detail = json.loads(registry["get_offer"]["handler"](json.dumps({"id": offer.id})))
+
+    assert "not an application id" in registry["list_offers"]["description"]
+    assert listed[0]["record_type"] == "offer"
+    assert listed[0]["offer_id"] == offer.id
+    assert listed[0]["id"] == offer.id
+    assert "application_id" in listed[0]
+    assert listed[0]["application_id"] is None
+    assert detail["offer_id"] == offer.id
+
+
 def test_offerpilot_tool_registry_covers_resumes_jd_and_knowledge(tmp_path):
     session_factory = init_database(tmp_path / "data.db")
     applications = ApplicationsRepository(session_factory)

@@ -211,7 +211,10 @@ def offer_tool_registry(repo: OffersRepository) -> dict[str, dict[str, Any]]:
     return {
         "list_offers": {
             "write": False,
-            "description": "List offers. Optionally filter by offer status.",
+            "description": (
+                "List offers. The returned id is an offer id, not an application id; "
+                "use application_id only when it is present."
+            ),
             "schema": {
                 "type": "object",
                 "properties": {"status": {"type": "string", "enum": list(OFFER_STATUSES)}},
@@ -220,13 +223,13 @@ def offer_tool_registry(repo: OffersRepository) -> dict[str, dict[str, Any]]:
         },
         "get_offer": {
             "write": False,
-            "description": "Get one offer by id.",
+            "description": "Get one offer by offer id. Offer id is not an application id.",
             "schema": _id_schema("Offer id."),
             "handler": lambda args: _get_offer(repo, args),
         },
         "compare_offers": {
             "write": False,
-            "description": "Compare offers by ids. Missing ids are skipped.",
+            "description": "Compare offers by offer ids. Missing ids are skipped.",
             "schema": {
                 "type": "object",
                 "properties": {"ids": {"type": "array", "items": {"type": "integer"}}},
@@ -700,7 +703,10 @@ def _note_json(note: Any) -> dict[str, Any]:
 
 
 def _offer_json(offer: Any) -> dict[str, Any]:
-    return OfferOut.model_validate(offer).model_dump(mode="json", exclude_none=True)
+    payload = OfferOut.model_validate(offer).model_dump(mode="json", exclude_none=False)
+    payload["record_type"] = "offer"
+    payload["offer_id"] = offer.id
+    return payload
 
 
 def _resume_json(resume: Any) -> dict[str, Any]:

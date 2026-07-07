@@ -108,6 +108,9 @@ function parseToolResult(
     return { resultText: trimmed.slice(0, 160) };
   }
   const rows = Array.isArray(parsed) ? parsed : [parsed];
+  if (Array.isArray(parsed) && parsed.length === 0) {
+    return { resultText: '没有匹配结果' };
+  }
   const evidence = rows.flatMap((row, index) => evidenceFromRecord(row, source, index));
   const resultText = evidence.length ? undefined : plainResultText(parsed);
   return {

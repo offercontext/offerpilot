@@ -138,6 +138,24 @@ describe('buildTurns evidence normalization', () => {
     });
   });
 
+  it('shows empty array tool results as no matching records instead of unavailable evidence', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([{ name: 'search_knowledge', args: { query: 'negotiation' } }]),
+      }),
+      msg({ role: 'tool', content: '[]' }),
+      msg({ role: 'assistant', content: 'No knowledge matched.' }),
+    ]);
+
+    expect(turns[0].steps?.[0]).toMatchObject({
+      name: 'search_knowledge',
+      detail: 'negotiation',
+      resultText: '没有匹配结果',
+    });
+    expect(turns[0].steps?.[0].evidenceUnavailable).toBeFalsy();
+  });
+
   it('matches multiple tool results to the correct tool call id', () => {
     const turns = buildTurns([
       msg({
