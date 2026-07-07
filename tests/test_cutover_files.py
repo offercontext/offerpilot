@@ -49,6 +49,7 @@ def test_readme_documents_current_v01_contract():
     assert "auth_token" in readme
     assert "offerpilot.auth_token" in readme
     assert "Browser auth gate" in readme
+    assert "oc wakeup dispatch-due" in readme
 
 
 def test_docker_smoke_scripts_document_container_smoke_path():

@@ -146,6 +146,7 @@ oc question generate --kb 1 --count 10
 - Knowledge RAG base: SQLite FTS5 chunk retrieval with lexical fallback, reciprocal-rank scoring, and source citations.
 - Runtime diagnostics are visible in the settings module.
 - Browser auth gate verifies `offerpilot.auth_token` before loading the app shell.
+- Scheduled wakeups: durable SQLite queue with API and CLI dispatch for due follow-ups.
 
 ### Quick Start
 
@@ -203,6 +204,8 @@ oc skill add --id resume-coach --label "Resume Coach" --source file:///skills/re
 oc skill trust resume-coach
 oc skill enable resume-coach
 oc skill list
+oc wakeup add --kind follow_up --due-at 2026-07-08T09:30:00Z --payload-json '{"application_id":7}'
+oc wakeup dispatch-due
 
 oc add --company "ByteDance" --position "Backend"
 oc list --status interview
@@ -266,7 +269,8 @@ When API auth is enabled in the browser, the frontend sends `X-OfferPilot-Token`
 
 - Skill execution sandbox, manifest validation, and package provenance.
 - Embedding rerankers for knowledge search.
-- LangGraph checkpoint / interrupt / scheduled wakeups.
+- LangGraph checkpoint / interrupt workflows.
+- Background wakeup scheduler.
 - Auth token rotation.
 - Screenshot-level responsive UI QA.
 

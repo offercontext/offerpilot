@@ -155,6 +155,43 @@ def test_skill_cli_registers_trusts_and_enables_package(monkeypatch, tmp_path):
     assert cfg.skills[0].enabled is True
 
 
+def test_wakeup_cli_add_list_and_dispatch_due(monkeypatch, tmp_path):
+    monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
+    runner = CliRunner()
+
+    add_result = runner.invoke(
+        app,
+        [
+            "wakeup",
+            "add",
+            "--kind",
+            "follow_up",
+            "--due-at",
+            "2026-07-08T09:30:00Z",
+            "--payload-json",
+            '{"application_id":7}',
+        ],
+    )
+    list_result = runner.invoke(app, ["wakeup", "list"])
+    dispatch_result = runner.invoke(
+        app,
+        ["wakeup", "dispatch-due", "--now", "2026-07-08T10:00:00Z"],
+    )
+    repeated = runner.invoke(
+        app,
+        ["wakeup", "dispatch-due", "--now", "2026-07-08T10:00:00Z"],
+    )
+
+    assert add_result.exit_code == 0
+    assert "Wakeup scheduled" in add_result.output
+    assert list_result.exit_code == 0
+    assert "follow_up" in list_result.output
+    assert dispatch_result.exit_code == 0
+    assert "Dispatched 1 wakeup" in dispatch_result.output
+    assert repeated.exit_code == 0
+    assert "Dispatched 0 wakeups" in repeated.output
+
+
 def test_start_uses_configured_port_by_default(monkeypatch, tmp_path):
     monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
     save_config(tmp_path, Config(local_port=9099))

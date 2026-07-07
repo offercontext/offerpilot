@@ -43,6 +43,7 @@ from offerpilot.repositories.notes import NoteCreate, NotesRepository
 from offerpilot.repositories.offers import OfferCreate, OffersRepository
 from offerpilot.repositories.questions import QuestionCreate, QuestionsRepository, question_hash
 from offerpilot.repositories.resumes import ResumeCreate, ResumeMatchCreate, ResumesRepository
+from offerpilot.repositories.wakeups import WakeupCreate, WakeupsRepository, wakeup_payload
 from offerpilot.schemas import (
     ApplicationOut,
     ChatMessageOut,
@@ -82,6 +83,7 @@ def create_app(
     questions = QuestionsRepository(session_factory)
     material_kits = MaterialKitsRepository(session_factory)
     mock_sessions = MockSessionsRepository(session_factory)
+    wakeups = WakeupsRepository(session_factory)
     app = FastAPI(title="OfferPilot")
 
     @app.middleware("http")
@@ -342,6 +344,27 @@ def create_app(
         if not events.delete(event_id):
             return error_response(404, "Event not found")
         return JSONResponse({"message": "Deleted"})
+
+    @app.get("/api/wakeups")
+    def list_wakeups(status: str = "") -> list[dict[str, Any]]:
+        return [wakeup_payload(wakeup) for wakeup in wakeups.list_wakeups(status=status)]
+
+    @app.post("/api/wakeups", status_code=201)
+    def create_wakeup(payload: dict[str, Any] = Body(...)) -> JSONResponse:
+        parsed = _wakeup_create_from_payload(payload)
+        if isinstance(parsed, JSONResponse):
+            return parsed
+        wakeup = wakeups.create(parsed)
+        return JSONResponse(wakeup_payload(wakeup), status_code=201)
+
+    @app.post("/api/wakeups/dispatch-due")
+    def dispatch_due_wakeups(payload: dict[str, Any] = Body(default={})) -> JSONResponse:
+        now = _parse_rfc3339(str(payload.get("now") or datetime.now(timezone.utc).isoformat()))
+        if isinstance(now, JSONResponse):
+            return now
+        limit = int(payload.get("limit") or 25)
+        dispatched = wakeups.dispatch_due(now, limit=limit)
+        return JSONResponse({"dispatched": [wakeup_payload(wakeup) for wakeup in dispatched]})
 
     @app.get("/api/applications/{app_id}/notes")
     def list_notes_by_app(app_id: int) -> list[dict[str, Any]]:
@@ -1578,6 +1601,31 @@ def _event_create_from_payload(payload: dict[str, Any]) -> EventCreate | JSONRes
         location=str(payload.get("location") or ""),
         notes=str(payload.get("notes") or ""),
     )
+
+
+def _wakeup_create_from_payload(payload: dict[str, Any]) -> WakeupCreate | JSONResponse:
+    kind = str(payload.get("kind") or "").strip()
+    if not kind:
+        return error_response(400, "kind is required")
+    due_at = _parse_rfc3339(str(payload.get("due_at") or ""))
+    if isinstance(due_at, JSONResponse):
+        return due_at
+    payload_value = payload.get("payload") or {}
+    if not isinstance(payload_value, dict):
+        return error_response(400, "payload must be an object")
+    return WakeupCreate(kind=kind, due_at=due_at, payload=payload_value)
+
+
+def _parse_rfc3339(value: str) -> datetime | JSONResponse:
+    if not value:
+        return error_response(400, "due_at must be RFC3339")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return error_response(400, "due_at must be RFC3339")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _event_json(event: Any) -> dict[str, Any]:

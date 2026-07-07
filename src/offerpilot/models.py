@@ -421,6 +421,26 @@ class MockSession(Base):
     )
 
 
+class Wakeup(Base):
+    __tablename__ = "wakeups"
+    __table_args__ = (
+        Index("idx_wakeups_status_due", "status", "due_at"),
+        Index("idx_wakeups_kind", "kind"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    payload_json: Mapped[str] = mapped_column(String, default="{}", server_default="{}")
+    status: Mapped[str] = mapped_column(String, default="pending", server_default="pending")
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+
+
 class Conversation(Base):
     __tablename__ = "conversations"
 

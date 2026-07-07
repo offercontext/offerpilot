@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 from typing import Optional
@@ -28,6 +30,7 @@ from offerpilot.repositories.notes import NoteCreate, NotesRepository
 from offerpilot.repositories.offers import OfferCreate, OffersRepository
 from offerpilot.repositories.questions import QuestionsRepository
 from offerpilot.repositories.resumes import ResumeCreate, ResumesRepository
+from offerpilot.repositories.wakeups import WakeupCreate, WakeupsRepository
 from offerpilot.smoke import run_core_smoke
 from offerpilot.skills import SkillRegistryError, register_skill, skills_payload, update_skill
 
@@ -37,12 +40,14 @@ note_app = typer.Typer(help="Manage interview notes")
 offer_app = typer.Typer(help="Manage offers")
 question_app = typer.Typer(help="Manage interview questions")
 skill_app = typer.Typer(help="Manage trusted skill packages")
+wakeup_app = typer.Typer(help="Manage scheduled wakeups")
 
 app.add_typer(resume_app, name="resume")
 app.add_typer(note_app, name="note")
 app.add_typer(offer_app, name="offer")
 app.add_typer(question_app, name="question")
 app.add_typer(skill_app, name="skill")
+app.add_typer(wakeup_app, name="wakeup")
 
 
 @app.command()
@@ -272,6 +277,41 @@ def skill_enable(skill_id: str = typer.Argument(...)) -> None:
 def skill_disable(skill_id: str = typer.Argument(...)) -> None:
     _set_skill_state(skill_id, enabled=False)
     typer.echo(f"Skill disabled: {skill_id}")
+
+
+@wakeup_app.command("add")
+def wakeup_add(
+    kind: str = typer.Option(..., "--kind", help="wakeup kind"),
+    due_at: str = typer.Option(..., "--due-at", help="RFC3339 due time"),
+    payload_json: str = typer.Option("{}", "--payload-json", help="JSON object payload"),
+) -> None:
+    parsed_due_at = _parse_cli_datetime(due_at)
+    payload = _parse_cli_payload(payload_json)
+    wakeup = _wakeups_repo().create(WakeupCreate(kind=kind, due_at=parsed_due_at, payload=payload))
+    typer.echo(f"Wakeup scheduled #{wakeup.id}: {wakeup.kind} at {wakeup.due_at.isoformat()}")
+
+
+@wakeup_app.command("list")
+def wakeup_list(status: str = typer.Option("", "--status", help="filter by status")) -> None:
+    rows = _wakeups_repo().list_wakeups(status=status)
+    if not rows:
+        typer.echo("\nNo wakeups scheduled.")
+        return
+    typer.echo("\nWakeups")
+    typer.echo("-------------------------------------------------------------")
+    typer.echo(f"{'ID':<4} {'Kind':<16} {'Status':<12} Due")
+    for row in rows:
+        typer.echo(f"{row.id:<4} {_truncate(row.kind, 16):<16} {row.status:<12} {row.due_at.isoformat()}")
+
+
+@wakeup_app.command("dispatch-due")
+def wakeup_dispatch_due(
+    now: Optional[str] = typer.Option(None, "--now", help="RFC3339 clock override"),
+    limit: int = typer.Option(25, "--limit", help="maximum wakeups to dispatch"),
+) -> None:
+    now_dt = _parse_cli_datetime(now) if now else datetime.now(timezone.utc)
+    rows = _wakeups_repo().dispatch_due(now_dt, limit=limit)
+    typer.echo(f"Dispatched {len(rows)} wakeup{'s' if len(rows) != 1 else ''}")
 
 
 @resume_app.command("add")
@@ -588,6 +628,10 @@ def _questions_repo() -> QuestionsRepository:
     return QuestionsRepository(session_factory_for_data_dir(resolve_data_dir()))
 
 
+def _wakeups_repo() -> WakeupsRepository:
+    return WakeupsRepository(session_factory_for_data_dir(resolve_data_dir()))
+
+
 def _build_ai_model() -> ConfiguredAIClient:
     return ConfiguredAIClient(load_config(resolve_data_dir()))
 
@@ -677,6 +721,26 @@ def _set_skill_state(
     except SkillRegistryError as exc:
         raise typer.BadParameter(str(exc)) from exc
     save_config(data_dir, next_config)
+
+
+def _parse_cli_datetime(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise typer.BadParameter("must be RFC3339") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _parse_cli_payload(value: str) -> dict[str, object]:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise typer.BadParameter("--payload-json must be valid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise typer.BadParameter("--payload-json must be a JSON object")
+    return parsed
 
 
 def _mask_key(value: str) -> str:
