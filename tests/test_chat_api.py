@@ -1,5 +1,6 @@
 import json
 
+import pytest
 from fastapi.testclient import TestClient
 
 from offerpilot.ai.types import Assistant, ToolCall
@@ -13,6 +14,37 @@ class ScriptedModel:
 
     def complete(self, messages, tools):
         return self.turns.pop(0)
+
+
+@pytest.mark.parametrize("args", ["{bad", "[]"])
+def test_chat_pending_write_tolerates_invalid_args(tmp_path, args):
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="w1",
+                        name="update_application_status",
+                        args=args,
+                    )
+                ]
+            )
+        ]
+    )
+    client = TestClient(
+        create_app(data_dir=tmp_path, chat_model=model),
+        raise_server_exceptions=False,
+    )
+
+    response = client.post("/api/chat", json={"message": "update", "conversation_id": 0})
+
+    assert response.status_code == 200
+    assert response.json()["type"] == "confirmation_required"
+    assert response.json()["pending_action"] == {
+        "tool_name": "update_application_status",
+        "human": "update_application_status",
+        "args": {},
+    }
 
 
 def test_chat_write_tool_requires_confirmation_before_mutating(tmp_path):
@@ -41,6 +73,10 @@ def test_chat_write_tool_requires_confirmation_before_mutating(tmp_path):
     assert response.status_code == 200
     assert response.json()["type"] == "confirmation_required"
     assert response.json()["pending_action"]["tool_name"] == "update_application_status"
+    assert response.json()["pending_action"]["args"] == {
+        "id": application["id"],
+        "status": "offer",
+    }
     assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "interview"
 
 
@@ -79,6 +115,55 @@ def test_chat_confirm_executes_pending_write(tmp_path):
         "message": "已更新",
     }
     assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
+
+
+def test_chat_confirm_returns_args_for_chained_pending_write(tmp_path):
+    app_client = TestClient(create_app(data_dir=tmp_path))
+    first = app_client.post(
+        "/api/applications",
+        json={"company_name": "ByteDance", "position_name": "Backend", "status": "interview"},
+    ).json()
+    second = app_client.post(
+        "/api/applications",
+        json={"company_name": "OpenAI", "position_name": "Product", "status": "applied"},
+    ).json()
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="w1",
+                        name="update_application_status",
+                        args=json.dumps({"id": first["id"], "status": "offer"}),
+                    )
+                ]
+            ),
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="w2",
+                        name="update_application_status",
+                        args=json.dumps({"id": second["id"], "status": "interview"}),
+                    )
+                ]
+            ),
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    pending = client.post("/api/chat", json={"message": "update two", "conversation_id": 0}).json()
+
+    response = client.post(
+        "/api/chat/confirm",
+        json={"conversation_id": pending["conversation_id"], "approved": True},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["type"] == "confirmation_required"
+    assert response.json()["pending_action"]["tool_name"] == "update_application_status"
+    assert response.json()["pending_action"]["args"] == {
+        "id": second["id"],
+        "status": "interview",
+    }
 
 
 def test_chat_auto_approve_executes_write_without_pending(tmp_path):

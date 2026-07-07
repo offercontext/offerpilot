@@ -15,7 +15,7 @@ import {
 import { getOffer } from '@/services/offers';
 import type { ChatResponse, Conversation, PendingAction } from '@/types/chat';
 import type { Offer } from '@/types/offer';
-import { buildTurns, type UITurn } from './model';
+import { buildTurns, collectEvidence, reloadConversationTurns, type EvidenceItem, type UITurn } from './model';
 import { capabilitiesForMode, type Capability } from './capabilities';
 import ThreadRail from './ThreadRail';
 import MessageBubble from './MessageBubble';
@@ -42,6 +42,34 @@ function maxChatWidth() {
 
 function clampChatWidth(width: number) {
   return Math.max(MIN_CHAT_WIDTH, Math.min(width, maxChatWidth()));
+}
+
+function textArg(args: Record<string, unknown> | undefined, key: string): string | null {
+  const value = args?.[key];
+  return typeof value === 'string' && value.trim() ? value.trim().toLowerCase() : null;
+}
+
+function evidenceMatchesPendingAction(item: EvidenceItem, action: PendingAction): boolean {
+  const id = action.args?.id;
+  if (typeof id === 'number' || typeof id === 'string') {
+    const needle = String(id);
+    return item.id === needle || item.id.endsWith(`-${needle}`);
+  }
+
+  const company = textArg(action.args, 'company_name');
+  const position = textArg(action.args, 'position_name');
+  const title = textArg(action.args, 'title');
+  const itemTitle = item.title.toLowerCase();
+  const itemMeta = item.meta?.toLowerCase() ?? '';
+
+  if (company && position) return itemTitle === company && itemMeta.includes(position);
+  if (company) return itemTitle === company;
+  if (title) return itemTitle === title;
+  return false;
+}
+
+function pendingActionEvidence(evidence: EvidenceItem[], action: PendingAction): EvidenceItem[] {
+  return evidence.filter((item) => evidenceMatchesPendingAction(item, action));
 }
 
 export default function ChatPanel({ open, onClose, offerId, onOpenSettings }: Props) {
@@ -200,6 +228,8 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings }: Pr
       const resp = await sendChat(trimmed, convID, convID ? undefined : offerId);
       if (resp.type === 'confirmation_required') {
         setConvID(resp.conversation_id);
+        const storedTurns = await reloadConversationTurns(resp.conversation_id, getConversation);
+        if (storedTurns) setTurns(storedTurns);
         setPending(resp.pending_action);
       } else {
         await finishMessage(resp);
@@ -219,6 +249,9 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings }: Pr
     try {
       const resp = await confirmAction(convID, approved);
       if (resp.type === 'confirmation_required') {
+        setConvID(resp.conversation_id);
+        const storedTurns = await reloadConversationTurns(resp.conversation_id, getConversation);
+        if (storedTurns) setTurns(storedTurns);
         setPending(resp.pending_action);
       } else {
         await finishMessage(resp);
@@ -249,6 +282,8 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings }: Pr
 
   const composerDisabled = loading || !!pending || !hasKey;
   const showEmpty = turns.length === 0 && !pending && !loading;
+  const threadEvidence = collectEvidence(turns);
+  const confirmationEvidence = pending ? pendingActionEvidence(threadEvidence, pending) : [];
 
   const iconBtnStyle: React.CSSProperties = {
     border: '1px solid var(--op-border)',
@@ -351,6 +386,7 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings }: Pr
                 <ProposalCard
                   action={pending}
                   loading={loading}
+                  evidence={confirmationEvidence}
                   onConfirm={() => handleConfirm(true)}
                   onCancel={() => handleConfirm(false)}
                 />
@@ -367,6 +403,7 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings }: Pr
             isNego={isNego}
             offer={offer}
             capabilities={capabilities}
+            evidence={threadEvidence}
             autoApprove={autoApprove}
             hasKey={hasKey}
             degraded={degraded}

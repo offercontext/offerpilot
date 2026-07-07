@@ -965,7 +965,7 @@ def create_app(
                 {
                     "type": "confirmation_required",
                     "conversation_id": conversation_id,
-                    "pending_action": {"tool_name": pending.tool_name, "human": pending.human},
+                    "pending_action": _pending_action_json(pending),
                 }
             )
         return JSONResponse({"type": "message", "conversation_id": conversation_id, "message": reply})
@@ -1009,10 +1009,7 @@ def create_app(
                 {
                     "type": "confirmation_required",
                     "conversation_id": conversation_id,
-                    "pending_action": {
-                        "tool_name": new_pending.tool_name,
-                        "human": new_pending.human,
-                    },
+                    "pending_action": _pending_action_json(new_pending),
                 }
             )
         return JSONResponse({"type": "message", "conversation_id": conversation_id, "message": reply})
@@ -1229,12 +1226,30 @@ def _dump_tool_calls(tool_calls: list[ToolCall]) -> str:
             {
                 "id": tool_call.id,
                 "name": tool_call.name,
-                "args": json.loads(tool_call.args) if tool_call.args else {},
+                "args": _safe_tool_args(tool_call.args),
             }
             for tool_call in tool_calls
         ],
         ensure_ascii=False,
     )
+
+
+def _pending_action_json(pending: PendingAction) -> dict[str, Any]:
+    return {
+        "tool_name": pending.tool_name,
+        "human": pending.human,
+        "args": _safe_tool_args(pending.args),
+    }
+
+
+def _safe_tool_args(raw: str) -> dict[str, Any]:
+    try:
+        args = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(args, dict):
+        return {}
+    return args
 
 
 def _load_tool_calls(raw: str) -> list[ToolCall]:

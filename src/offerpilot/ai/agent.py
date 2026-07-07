@@ -58,7 +58,7 @@ def run_turn(
 
         if bool(tool.get("write")) and not auto_approve:
             describe = tool.get("describe")
-            human = describe(tool_call.args) if callable(describe) else tool_call.name
+            human = _describe_pending_action(describe, tool_call.args, tool_call.name)
             return added, "", PendingAction(
                 tool_call_id=tool_call.id,
                 tool_name=tool_call.name,
@@ -99,6 +99,16 @@ def resume_after_confirm(
     )
     added.extend(more)
     return added, reply, new_pending
+
+
+def _describe_pending_action(describe: Any, args: str, fallback: str) -> str:
+    if not callable(describe):
+        return fallback
+    try:
+        human = describe(args)
+    except Exception:
+        return fallback
+    return str(human or fallback)
 
 
 def _execute_tool(tool: dict[str, Any], args: str) -> str:
