@@ -155,6 +155,31 @@ def test_skill_cli_registers_trusts_and_enables_package(monkeypatch, tmp_path):
     assert cfg.skills[0].enabled is True
 
 
+def test_skill_cli_registers_manifest_file(monkeypatch, tmp_path):
+    monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path / "data"))
+    manifest = tmp_path / "skill.json"
+    manifest.write_text(
+        (
+            '{"id":"resume-coach","label":"Resume Coach","version":"0.1.0",'
+            '"description":"Resume review assistant","entrypoint":"SKILL.md"}'
+        ),
+        encoding="utf-8",
+    )
+    runner = CliRunner()
+
+    result = runner.invoke(
+        app,
+        ["skill", "add", "--manifest", str(manifest), "--source", "file:///skills/resume-coach"],
+    )
+
+    cfg = load_config(tmp_path / "data")
+    assert result.exit_code == 0
+    assert cfg.skills[0].id == "resume-coach"
+    assert cfg.skills[0].description == "Resume review assistant"
+    assert cfg.skills[0].entrypoint == "SKILL.md"
+    assert len(cfg.skills[0].manifest_digest) == 64
+
+
 def test_wakeup_cli_add_list_and_dispatch_due(monkeypatch, tmp_path):
     monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
     runner = CliRunner()

@@ -143,6 +143,7 @@ oc question generate --kb 1 --count 10
 - Local-first storage: SQLite data, config, and diagnostics logs under `~/.offerpilot` by default.
 - Runtime basics: `runtime_mode`, `auth_enabled`, `log_level`, `local_port`, and `oc smoke`.
 - Skill registry: packages are registered untrusted by default and load only after explicit trust and enablement.
+- Skill manifests: registry records manifest digest, entrypoint, source type, and provenance without executing package code.
 - Knowledge RAG base: SQLite FTS5 chunk retrieval with lexical fallback, reciprocal-rank scoring, and source citations.
 - Runtime diagnostics are visible in the settings module.
 - Browser auth gate verifies `offerpilot.auth_token` before loading the app shell.
@@ -200,6 +201,7 @@ oc config --model gpt-4o
 oc config --runtime-mode local
 oc config --auth --log-level debug
 oc config --auth-token local-secret
+oc skill add --manifest ./skill.json --source file:///skills/resume-coach
 oc skill add --id resume-coach --label "Resume Coach" --source file:///skills/resume-coach
 oc skill trust resume-coach
 oc skill enable resume-coach
@@ -268,6 +270,7 @@ When API auth is enabled in the browser, the frontend sends `X-OfferPilot-Token`
 ### Roadmap
 
 - Skill execution sandbox, manifest validation, and package provenance.
+- Skill execution sandbox and trust policy enforcement.
 - Embedding rerankers for knowledge search.
 - LangGraph checkpoint / interrupt workflows.
 - Background wakeup scheduler.

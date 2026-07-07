@@ -26,7 +26,11 @@ class SkillPackage(BaseModel):
     id: str
     label: str = ""
     version: str = ""
+    description: str = ""
     source: str = ""
+    source_type: str = ""
+    entrypoint: str = ""
+    manifest_digest: str = ""
     trusted: bool = False
     enabled: bool = False
 

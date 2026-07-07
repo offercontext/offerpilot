@@ -239,26 +239,32 @@ def skill_list() -> None:
 
 @skill_app.command("add")
 def skill_add(
-    skill_id: str = typer.Option(..., "--id", help="stable skill id"),
+    skill_id: Optional[str] = typer.Option(None, "--id", help="stable skill id"),
     label: str = typer.Option("", "--label", help="display label"),
     source: str = typer.Option("", "--source", help="local path, package URL, or registry source"),
     version: str = typer.Option("", "--version", help="skill version"),
+    description: str = typer.Option("", "--description", help="skill description"),
+    entrypoint: str = typer.Option("", "--entrypoint", help="manifest entrypoint"),
+    manifest: Optional[Path] = typer.Option(None, "--manifest", help="skill manifest JSON file"),
 ) -> None:
     cfg = load_config(resolve_data_dir())
+    payload: dict[str, object] = {
+        "id": skill_id or "",
+        "label": label,
+        "source": source,
+        "version": version,
+        "description": description,
+        "entrypoint": entrypoint,
+    }
+    if manifest is not None:
+        payload["manifest"] = _read_json_object(manifest, "--manifest")
     try:
-        next_config = register_skill(
-            cfg,
-            {
-                "id": skill_id,
-                "label": label,
-                "source": source,
-                "version": version,
-            },
-        )
+        next_config = register_skill(cfg, payload)
     except SkillRegistryError as exc:
         raise typer.BadParameter(str(exc)) from exc
     save_config(resolve_data_dir(), next_config)
-    typer.echo(f"Skill registered: {skill_id}")
+    registered = next_config.skills[-1]
+    typer.echo(f"Skill registered: {registered.id}")
 
 
 @skill_app.command("trust")
@@ -740,6 +746,18 @@ def _parse_cli_payload(value: str) -> dict[str, object]:
         raise typer.BadParameter("--payload-json must be valid JSON") from exc
     if not isinstance(parsed, dict):
         raise typer.BadParameter("--payload-json must be a JSON object")
+    return parsed
+
+
+def _read_json_object(path: Path, label: str) -> dict[str, object]:
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise typer.BadParameter(f"{label} cannot be read") from exc
+    except json.JSONDecodeError as exc:
+        raise typer.BadParameter(f"{label} must be valid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise typer.BadParameter(f"{label} must be a JSON object")
     return parsed
 
 
