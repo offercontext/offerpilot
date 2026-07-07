@@ -20,9 +20,11 @@ class CapturingScriptedModel(ScriptedModel):
     def __init__(self, turns):
         super().__init__(turns)
         self.calls = []
+        self.tools = []
 
     def complete(self, messages, tools):
         self.calls.append(messages)
+        self.tools.append(tools)
         return super().complete(messages, tools)
 
 
@@ -41,6 +43,17 @@ def test_chat_returns_bad_gateway_when_model_fails(tmp_path):
 
     assert response.status_code == 502
     assert response.json() == {"error": "AI provider request failed: provider unavailable"}
+
+
+def test_chat_exposes_module_tools_to_model(tmp_path):
+    model = CapturingScriptedModel([Assistant(content="ok")])
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+
+    response = client.post("/api/chat", json={"message": "what context can you inspect?", "conversation_id": 0})
+
+    assert response.status_code == 200
+    captured_tools = {tool["name"] for tool in model.tools[0]}
+    assert {"list_applications", "list_notes", "list_events", "list_offers"}.issubset(captured_tools)
 
 
 @pytest.mark.parametrize("args", ["{bad", "[]"])

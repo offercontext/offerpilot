@@ -15,7 +15,7 @@ from pypdf import PdfReader
 
 from offerpilot.ai.agent import ChatModel, PendingAction, resume_after_confirm, run_turn
 from offerpilot.ai.client import ConfiguredAIClient
-from offerpilot.ai.tools import application_tool_registry
+from offerpilot.ai.tools import offerpilot_tool_registry
 from offerpilot.ai.types import Message, ToolCall
 from offerpilot.application_status import application_status_options, normalize_application_status
 from offerpilot.config import (
@@ -1013,7 +1013,7 @@ def create_app(
         try:
             added, reply, pending = run_turn(
                 model,
-                application_tool_registry(applications),
+                offerpilot_tool_registry(applications, events, notes, offers),
                 history,
                 auto_approve=load_config(resolved_data_dir).chat_auto_approve_writes,
                 max_iter=8,
@@ -1050,7 +1050,7 @@ def create_app(
         try:
             added, reply, new_pending = resume_after_confirm(
                 model,
-                application_tool_registry(applications),
+                offerpilot_tool_registry(applications, events, notes, offers),
                 _stored_messages_to_ai(stored),
                 pending,
                 approved=bool(payload.get("approved")),

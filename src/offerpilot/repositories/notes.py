@@ -52,6 +52,10 @@ class NotesRepository:
         with self._session_factory() as session:
             return list(session.scalars(statement))
 
+    def get(self, note_id: int) -> Optional[InterviewNote]:
+        with self._session_factory() as session:
+            return session.get(InterviewNote, note_id)
+
     def update(self, note_id: int, data: NoteCreate) -> Optional[InterviewNote]:
         with self._session_factory() as session:
             note = session.get(InterviewNote, note_id)

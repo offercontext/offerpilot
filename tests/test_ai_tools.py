@@ -1,8 +1,12 @@
 import json
+from datetime import datetime, timezone
 
-from offerpilot.ai.tools import application_tool_registry
+from offerpilot.ai.tools import application_tool_registry, offerpilot_tool_registry
 from offerpilot.db import init_database
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
+from offerpilot.repositories.events import EventCreate, EventsRepository
+from offerpilot.repositories.notes import NoteCreate, NotesRepository
+from offerpilot.repositories.offers import OfferCreate, OffersRepository
 
 
 def test_application_read_tools_return_json(tmp_path):
@@ -90,4 +94,149 @@ def test_application_status_tool_rejects_invalid_status(tmp_path):
         assert str(exc) == "invalid application status: onsite"
     else:
         raise AssertionError("invalid status should raise")
+
+
+def test_offerpilot_tool_registry_covers_notes_events_and_offers(tmp_path):
+    session_factory = init_database(tmp_path / "data.db")
+    applications = ApplicationsRepository(session_factory)
+    notes = NotesRepository(session_factory)
+    events = EventsRepository(session_factory)
+    offers = OffersRepository(session_factory)
+    app = applications.create(ApplicationCreate(company_name="ByteDance", position_name="Backend"))
+    note = notes.create(
+        NoteCreate(
+            application_id=app.id,
+            company=app.company_name,
+            position=app.position_name,
+            round="screen",
+            questions="Explain Python GIL",
+            self_reflection="Concurrency basics need practice",
+        )
+    )
+    event = events.create(
+        EventCreate(
+            application_id=app.id,
+            event_type="interview",
+            scheduled_at=datetime(2026, 7, 10, 10, tzinfo=timezone.utc),
+            duration_minutes=45,
+            round=2,
+        )
+    )
+    offer = offers.create(
+        OfferCreate(
+            application_id=app.id,
+            company_name=app.company_name,
+            position_name=app.position_name,
+            status="pending",
+            base_monthly=30000,
+            months_per_year=15,
+            signing_bonus=50000,
+        )
+    )
+    registry = offerpilot_tool_registry(applications, events, notes, offers)
+
+    listed_notes = json.loads(registry["list_notes"]["handler"](json.dumps({"application_id": app.id})))
+    listed_events = json.loads(registry["list_events"]["handler"](json.dumps({"application_id": app.id})))
+    listed_offers = json.loads(registry["list_offers"]["handler"](json.dumps({"status": "pending"})))
+    offer_detail = json.loads(registry["get_offer"]["handler"](json.dumps({"id": offer.id})))
+    compared = json.loads(registry["compare_offers"]["handler"](json.dumps({"ids": [999, offer.id]})))
+
+    assert registry["create_event"]["write"] is True
+    assert registry["add_note"]["schema"]["required"] == []
+    assert "application_id" in registry["add_note"]["schema"]["properties"]
+    assert listed_notes[0]["id"] == note.id
+    assert listed_events[0]["id"] == event.id
+    assert listed_events[0]["duration_minutes"] == 45
+    assert listed_offers[0]["id"] == offer.id
+    assert offer_detail["total_cash"] == 30000 * 15 + 50000
+    assert [item["id"] for item in compared] == [offer.id]
+
+
+def test_offerpilot_write_tools_mutate_notes_events_and_offers(tmp_path):
+    session_factory = init_database(tmp_path / "data.db")
+    applications = ApplicationsRepository(session_factory)
+    notes = NotesRepository(session_factory)
+    events = EventsRepository(session_factory)
+    offers = OffersRepository(session_factory)
+    app = applications.create(ApplicationCreate(company_name="ByteDance", position_name="Backend"))
+    offer = offers.create(
+        OfferCreate(
+            application_id=app.id,
+            company_name=app.company_name,
+            position_name=app.position_name,
+        )
+    )
+    registry = offerpilot_tool_registry(applications, events, notes, offers)
+
+    note = json.loads(
+        registry["add_note"]["handler"](
+            json.dumps(
+                {
+                    "application_id": app.id,
+                    "company": "",
+                    "position": "",
+                    "round": "onsite",
+                    "questions": "System design",
+                }
+            )
+        )
+    )
+    updated_note = json.loads(
+        registry["update_note"]["handler"](
+            json.dumps({"id": note["id"], "company": "Tencent", "position": "Frontend"})
+        )
+    )
+    event = json.loads(
+        registry["create_event"]["handler"](
+            json.dumps(
+                {
+                    "application_id": app.id,
+                    "event_type": "interview",
+                    "scheduled_at": "2026-07-10T10:00:00Z",
+                    "duration_minutes": 30,
+                }
+            )
+        )
+    )
+    updated_event = json.loads(
+        registry["update_event"]["handler"](
+            json.dumps(
+                {
+                    "id": event["id"],
+                    "application_id": app.id,
+                    "event_type": "written_test",
+                    "scheduled_at": "2026-07-11T10:00:00Z",
+                    "duration_minutes": 60,
+                }
+            )
+        )
+    )
+    updated_offer = json.loads(
+        registry["update_offer"]["handler"](
+            json.dumps(
+                {
+                    "id": offer.id,
+                    "company_name": app.company_name,
+                    "position_name": app.position_name,
+                    "status": "accepted",
+                    "base_monthly": 32000,
+                    "months_per_year": 16,
+                }
+            )
+        )
+    )
+    assessed = json.loads(
+        registry["save_offer_assessment"]["handler"](
+            json.dumps({"id": offer.id, "assessment": "Strong upside"})
+        )
+    )
+
+    assert note["company"] == "ByteDance"
+    assert updated_note["company"] == "Tencent"
+    assert updated_event["event_type"] == "written_test"
+    assert updated_event["duration_minutes"] == 60
+    assert updated_offer["status"] == "accepted"
+    assert assessed["assessment"] == "Strong upside"
+    assert registry["delete_note"]["handler"](json.dumps({"id": note["id"]})) == '{"deleted":true}'
+    assert registry["delete_event"]["handler"](json.dumps({"id": event["id"]})) == '{"deleted":true}'
 
