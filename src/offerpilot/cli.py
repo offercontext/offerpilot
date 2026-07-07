@@ -28,6 +28,7 @@ from offerpilot.repositories.notes import NoteCreate, NotesRepository
 from offerpilot.repositories.offers import OfferCreate, OffersRepository
 from offerpilot.repositories.questions import QuestionsRepository
 from offerpilot.repositories.resumes import ResumeCreate, ResumesRepository
+from offerpilot.smoke import run_core_smoke
 
 app = typer.Typer(help="OfferPilot - your local job search workbench")
 resume_app = typer.Typer(help="Manage resumes")
@@ -193,6 +194,16 @@ def start(
     append_log_entry(data_dir, "INFO", f"server starting on port {resolved_port}")
     typer.echo(f"OfferPilot running at http://localhost:{resolved_port}")
     uvicorn.run(create_app(data_dir=data_dir), host="127.0.0.1", port=resolved_port)
+
+
+@app.command()
+def smoke(
+    static_dir: Optional[Path] = typer.Option(None, "--static-dir", help="built frontend dist directory"),
+) -> None:
+    report = run_core_smoke(resolve_data_dir(), static_dir=static_dir)
+    for step in report.steps:
+        typer.echo(f"ok {step.name}: {step.detail}")
+    typer.echo("Smoke passed")
 
 
 @resume_app.command("add")
