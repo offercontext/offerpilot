@@ -197,6 +197,7 @@ oc config --api-key sk-xxx
 oc config --model gpt-4o
 oc config --runtime-mode local
 oc config --auth --log-level debug
+oc config --auth-token local-secret
 oc skill add --id resume-coach --label "Resume Coach" --source file:///skills/resume-coach
 oc skill trust resume-coach
 oc skill enable resume-coach
@@ -222,6 +223,7 @@ Config lives at `~/.offerpilot/config.json` by default. Override the data direct
   "local_port": 8080,
   "runtime_mode": "local",
   "auth_enabled": false,
+  "auth_token": "local-secret",
   "log_level": "INFO",
   "skills": [
     {
@@ -263,7 +265,7 @@ Config lives at `~/.offerpilot/config.json` by default. Override the data direct
 - Skill execution sandbox, manifest validation, and package provenance.
 - Embedding rerankers for knowledge search.
 - LangGraph checkpoint / interrupt / scheduled wakeups.
-- Real auth middleware.
+- Auth session UI and token rotation.
 - Screenshot-level responsive UI QA.
 
 ### License

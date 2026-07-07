@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from html import unescape
 from io import BytesIO
 from pathlib import Path
+from secrets import compare_digest
 from typing import Any, Optional
 
 import httpx
@@ -88,10 +89,11 @@ def create_app(
         if request.method == "OPTIONS":
             response = Response(status_code=200)
         else:
-            response = await call_next(request)
+            auth_response = _auth_guard_response(request, resolved_data_dir)
+            response = auth_response if auth_response is not None else await call_next(request)
         response.headers["Access-Control-Allow-Origin"] = "*"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-OfferPilot-Token"
         return response
 
     @app.exception_handler(RequestValidationError)
@@ -1219,6 +1221,7 @@ def create_app(
                 current.runtime_mode,
             ),
             auth_enabled=bool(payload.get("auth_enabled", current.auth_enabled)),
+            auth_token=current.auth_token,
             log_level=str(payload.get("log_level") or current.log_level).upper(),
         )
         api_key = payload.get("api_key")
@@ -1230,6 +1233,9 @@ def create_app(
                 else profile
                 for profile in next_config.providers
             ]
+        auth_token = payload.get("auth_token")
+        if auth_token:
+            next_config.auth_token = str(auth_token)
         save_config(resolved_data_dir, next_config)
         return _settings_payload(next_config)
 
@@ -1254,6 +1260,29 @@ def create_app(
 
 def error_response(status_code: int, message: str) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status_code)
+
+
+def _auth_guard_response(request: Request, data_dir: Path) -> JSONResponse | None:
+    path = request.url.path
+    if not path.startswith("/api/") or path == "/api/health":
+        return None
+    cfg = load_config(data_dir)
+    if not cfg.auth_enabled:
+        return None
+    if not cfg.auth_token:
+        return error_response(503, "auth token is not configured")
+    if _request_has_valid_auth_token(request, cfg.auth_token):
+        return None
+    return error_response(401, "unauthorized")
+
+
+def _request_has_valid_auth_token(request: Request, expected_token: str) -> bool:
+    authorization = request.headers.get("authorization", "")
+    token = ""
+    if authorization.lower().startswith("bearer "):
+        token = authorization[7:].strip()
+    token = token or request.headers.get("x-offerpilot-token", "")
+    return bool(token) and compare_digest(token, expected_token)
 
 
 def _parse_application_status(raw: str) -> str | JSONResponse:
@@ -1414,6 +1443,7 @@ def _settings_payload(cfg: Config) -> dict[str, Any]:
         "has_api_key": bool(active.api_key),
         "runtime_mode": cfg.runtime_mode,
         "auth_enabled": cfg.auth_enabled,
+        "has_auth_token": bool(cfg.auth_token),
         "log_level": cfg.log_level,
     }
 

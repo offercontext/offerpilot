@@ -108,6 +108,17 @@ def test_config_updates_runtime_and_log_options(monkeypatch, tmp_path):
     assert cfg.log_level == "DEBUG"
 
 
+def test_config_sets_auth_token(monkeypatch, tmp_path):
+    monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["config", "--auth-token", "local-secret"])
+
+    assert result.exit_code == 0
+    assert "auth_token: loca****et" in result.output
+    assert load_config(tmp_path).auth_token == "local-secret"
+
+
 def test_skill_cli_registers_trusts_and_enables_package(monkeypatch, tmp_path):
     monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
     runner = CliRunner()

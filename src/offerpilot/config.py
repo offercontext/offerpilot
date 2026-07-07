@@ -41,6 +41,7 @@ class Config(BaseModel):
     providers: list[AIProviderProfile] = Field(default_factory=list)
     runtime_mode: RuntimeMode = "local"
     auth_enabled: bool = False
+    auth_token: str = ""
     log_level: str = "INFO"
     skills: list[SkillPackage] = Field(default_factory=list)
 

@@ -48,6 +48,7 @@ export interface Settings {
   has_api_key: boolean;
   runtime_mode: 'local' | 'server';
   auth_enabled: boolean;
+  has_auth_token: boolean;
   log_level: 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR';
 }
 

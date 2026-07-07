@@ -111,6 +111,7 @@ def config(
         "--auth/--no-auth",
         help="enable auth guard for server mode",
     ),
+    auth_token: Optional[str] = typer.Option(None, "--auth-token", help="set local UI/API auth token"),
     log_level: Optional[str] = typer.Option(None, "--log-level", help="DEBUG, INFO, WARNING, ERROR"),
     auto_approve: Optional[bool] = typer.Option(
         None,
@@ -146,6 +147,9 @@ def config(
         changed = True
     if auth_enabled is not None:
         next_config.auth_enabled = auth_enabled
+        changed = True
+    if auth_token is not None:
+        next_config.auth_token = auth_token
         changed = True
     if log_level is not None:
         parsed_level = log_level.upper()
@@ -609,6 +613,10 @@ def _print_config(data_dir: Path, cfg: Config) -> None:
     typer.echo(f"  local_port: {cfg.local_port}")
     typer.echo(f"  runtime_mode: {cfg.runtime_mode}")
     typer.echo(f"  auth_enabled: {_format_bool(cfg.auth_enabled)}")
+    if cfg.auth_token:
+        typer.echo(f"  auth_token: {_mask_key(cfg.auth_token)}")
+    else:
+        typer.echo("  auth_token: (not set)")
     typer.echo(f"  log_level: {cfg.log_level}")
     typer.echo(f"  ai_auto_approve: {_format_bool(cfg.chat_auto_approve_writes)}")
 
