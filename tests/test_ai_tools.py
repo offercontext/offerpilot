@@ -338,12 +338,82 @@ def test_offerpilot_tool_registry_covers_resumes_jd_and_knowledge(tmp_path):
     search_results = json.loads(registry["search_knowledge"]["handler"](json.dumps({"query": "FastAPI"})))
 
     assert listed_resumes[0]["id"] == resume.id
+    assert listed_resumes[0]["record_type"] == "resume"
+    assert listed_resumes[0]["resume_id"] == resume.id
     assert resume_detail["parsed_data"] == "Python FastAPI SQLAlchemy"
+    assert resume_detail["resume_id"] == resume.id
     assert resume_matches[0]["application_id"] == app.id
+    assert resume_matches[0]["record_type"] == "resume_match"
+    assert resume_matches[0]["resume_match_id"] == resume_matches[0]["id"]
+    assert resume_matches[0]["resume_id"] == resume.id
     assert listed_jds[0]["id"] == jd.id
+    assert listed_jds[0]["record_type"] == "jd_analysis"
+    assert listed_jds[0]["jd_analysis_id"] == jd.id
+    assert listed_jds[0]["application_id"] == app.id
     assert jd_detail["result"] == '{"summary":"Backend role"}'
+    assert jd_detail["jd_analysis_id"] == jd.id
     assert bases[0]["id"] == base.id
+    assert bases[0]["record_type"] == "knowledge_base"
+    assert bases[0]["knowledge_base_id"] == base.id
     assert documents[0]["id"] == doc.id
+    assert documents[0]["record_type"] == "knowledge_document"
+    assert documents[0]["knowledge_document_id"] == doc.id
+    assert documents[0]["knowledge_base_id"] == base.id
     assert document_detail["title"] == "FastAPI Review"
+    assert document_detail["knowledge_document_id"] == doc.id
     assert search_results[0]["document_id"] == doc.id
+    assert search_results[0]["record_type"] == "knowledge_search_result"
+    assert search_results[0]["search_result_id"] == search_results[0]["chunk_id"]
+    assert search_results[0]["knowledge_base_id"] == base.id
+
+
+def test_ai_tool_read_results_include_record_type_and_specific_ids(tmp_path):
+    session_factory = init_database(tmp_path / "data.db")
+    applications = ApplicationsRepository(session_factory)
+    notes = NotesRepository(session_factory)
+    events = EventsRepository(session_factory)
+    offers = OffersRepository(session_factory)
+    app = applications.create(ApplicationCreate(company_name="PDD", position_name="Agent Dev"))
+    event = events.create(
+        EventCreate(
+            application_id=app.id,
+            event_type="interview",
+            scheduled_at=datetime(2026, 7, 15, 14, tzinfo=timezone.utc),
+            duration_minutes=45,
+        )
+    )
+    note = notes.create(
+        NoteCreate(
+            application_id=app.id,
+            company=app.company_name,
+            position=app.position_name,
+            round="tech",
+            questions="Agent memory design",
+        )
+    )
+    offer = offers.create(
+        OfferCreate(
+            application_id=app.id,
+            company_name=app.company_name,
+            position_name=app.position_name,
+        )
+    )
+    registry = offerpilot_tool_registry(applications, events, notes, offers)
+
+    application_result = json.loads(registry["get_application"]["handler"](json.dumps({"id": app.id})))
+    event_result = json.loads(registry["get_event"]["handler"](json.dumps({"id": event.id})))
+    note_result = json.loads(registry["list_notes"]["handler"](json.dumps({"application_id": app.id})))[0]
+    offer_result = json.loads(registry["get_offer"]["handler"](json.dumps({"id": offer.id})))
+
+    assert application_result["record_type"] == "application"
+    assert application_result["application_id"] == app.id
+    assert event_result["record_type"] == "event"
+    assert event_result["event_id"] == event.id
+    assert event_result["application_id"] == app.id
+    assert note_result["record_type"] == "note"
+    assert note_result["note_id"] == note.id
+    assert note_result["application_id"] == app.id
+    assert offer_result["record_type"] == "offer"
+    assert offer_result["offer_id"] == offer.id
+    assert offer_result["application_id"] == app.id
 

@@ -605,13 +605,12 @@ def _search_knowledge(repo: KnowledgeRepository, args: str) -> str:
     query = str(payload.get("query") or "").strip()
     if not query:
         raise ValueError("search_knowledge requires query")
-    return _json(
-        repo.search(
-            query,
-            knowledge_base_id=_optional_int(payload, "knowledge_base_id"),
-            limit=_optional_int(payload, "limit") or 5,
-        )
+    rows = repo.search(
+        query,
+        knowledge_base_id=_optional_int(payload, "knowledge_base_id"),
+        limit=_optional_int(payload, "limit") or 5,
     )
+    return _json([_knowledge_search_result_json(row) for row in rows])
 
 
 def _describe_create_application(args: str) -> str:
@@ -658,7 +657,10 @@ def _required_int(payload: dict[str, Any], key: str, tool_name: str) -> int:
 
 
 def _application_json(app: Any) -> dict[str, Any]:
-    return ApplicationOut.model_validate(app).model_dump(mode="json")
+    payload = ApplicationOut.model_validate(app).model_dump(mode="json")
+    payload["record_type"] = "application"
+    payload["application_id"] = app.id
+    return payload
 
 
 def _optional_int(payload: dict[str, Any], key: str) -> int:
@@ -678,7 +680,7 @@ def _payload_or_existing(payload: dict[str, Any], key: str, existing: str) -> st
 
 
 def _event_json(event: Any) -> dict[str, Any]:
-    return EventOut(
+    payload = EventOut(
         id=event.id,
         application_id=event.application_id,
         event_type=event.event_type,
@@ -689,6 +691,9 @@ def _event_json(event: Any) -> dict[str, Any]:
         notes=event.notes,
         created_at=event.created_at,
     ).model_dump(mode="json", exclude_none=True)
+    payload["record_type"] = "event"
+    payload["event_id"] = event.id
+    return payload
 
 
 def _event_with_application_json(item: Any) -> dict[str, Any]:
@@ -699,7 +704,10 @@ def _event_with_application_json(item: Any) -> dict[str, Any]:
 
 
 def _note_json(note: Any) -> dict[str, Any]:
-    return InterviewNoteOut.model_validate(note).model_dump(mode="json", exclude_none=True)
+    payload = InterviewNoteOut.model_validate(note).model_dump(mode="json", exclude_none=False)
+    payload["record_type"] = "note"
+    payload["note_id"] = note.id
+    return payload
 
 
 def _offer_json(offer: Any) -> dict[str, Any]:
@@ -710,23 +718,45 @@ def _offer_json(offer: Any) -> dict[str, Any]:
 
 
 def _resume_json(resume: Any) -> dict[str, Any]:
-    return ResumeOut.model_validate(resume).model_dump(mode="json")
+    payload = ResumeOut.model_validate(resume).model_dump(mode="json")
+    payload["record_type"] = "resume"
+    payload["resume_id"] = resume.id
+    return payload
 
 
 def _resume_match_json(match: Any) -> dict[str, Any]:
-    return ResumeMatchOut.model_validate(match).model_dump(mode="json", exclude_none=True)
+    payload = ResumeMatchOut.model_validate(match).model_dump(mode="json", exclude_none=False)
+    payload["record_type"] = "resume_match"
+    payload["resume_match_id"] = match.id
+    return payload
 
 
 def _jd_analysis_json(analysis: Any) -> dict[str, Any]:
-    return JDAnalysisOut.model_validate(analysis).model_dump(mode="json", exclude_none=True)
+    payload = JDAnalysisOut.model_validate(analysis).model_dump(mode="json", exclude_none=False)
+    payload["record_type"] = "jd_analysis"
+    payload["jd_analysis_id"] = analysis.id
+    return payload
 
 
 def _knowledge_base_json(base: Any) -> dict[str, Any]:
-    return KnowledgeBaseOut.model_validate(base).model_dump(mode="json")
+    payload = KnowledgeBaseOut.model_validate(base).model_dump(mode="json")
+    payload["record_type"] = "knowledge_base"
+    payload["knowledge_base_id"] = base.id
+    return payload
 
 
 def _knowledge_document_json(document: Any) -> dict[str, Any]:
-    return KnowledgeDocumentOut.model_validate(document).model_dump(mode="json")
+    payload = KnowledgeDocumentOut.model_validate(document).model_dump(mode="json")
+    payload["record_type"] = "knowledge_document"
+    payload["knowledge_document_id"] = document.id
+    return payload
+
+
+def _knowledge_search_result_json(row: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(row)
+    payload["record_type"] = "knowledge_search_result"
+    payload["search_result_id"] = row["chunk_id"]
+    return payload
 
 
 def _event_create_from_payload(
