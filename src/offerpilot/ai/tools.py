@@ -7,9 +7,22 @@ from typing import Any
 from offerpilot.application_status import APPLICATION_STATUS_IDS, normalize_application_status
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
 from offerpilot.repositories.events import EventCreate, EventsRepository, duration_minutes
+from offerpilot.repositories.jd import JDAnalysesRepository
+from offerpilot.repositories.knowledge import KnowledgeRepository
 from offerpilot.repositories.notes import NoteCreate, NotesRepository
 from offerpilot.repositories.offers import OfferCreate, OffersRepository
-from offerpilot.schemas import ApplicationOut, EventOut, InterviewNoteOut, OfferOut
+from offerpilot.repositories.resumes import ResumesRepository
+from offerpilot.schemas import (
+    ApplicationOut,
+    EventOut,
+    InterviewNoteOut,
+    JDAnalysisOut,
+    KnowledgeBaseOut,
+    KnowledgeDocumentOut,
+    OfferOut,
+    ResumeMatchOut,
+    ResumeOut,
+)
 
 
 EVENT_TYPES = ("written_test", "interview", "assessment")
@@ -21,12 +34,22 @@ def offerpilot_tool_registry(
     events: EventsRepository,
     notes: NotesRepository,
     offers: OffersRepository,
+    *,
+    resumes: ResumesRepository | None = None,
+    jd_analyses: JDAnalysesRepository | None = None,
+    knowledge: KnowledgeRepository | None = None,
 ) -> dict[str, dict[str, Any]]:
     registry: dict[str, dict[str, Any]] = {}
     registry.update(application_tool_registry(applications))
     registry.update(event_tool_registry(applications, events))
     registry.update(note_tool_registry(applications, notes))
     registry.update(offer_tool_registry(offers))
+    if resumes is not None:
+        registry.update(resume_tool_registry(resumes))
+    if jd_analyses is not None:
+        registry.update(jd_tool_registry(jd_analyses))
+    if knowledge is not None:
+        registry.update(knowledge_tool_registry(knowledge))
     return registry
 
 
@@ -235,6 +258,96 @@ def offer_tool_registry(repo: OffersRepository) -> dict[str, dict[str, Any]]:
     }
 
 
+def resume_tool_registry(repo: ResumesRepository) -> dict[str, dict[str, Any]]:
+    return {
+        "list_resumes": {
+            "write": False,
+            "description": "List resumes and their parse status.",
+            "schema": {"type": "object", "properties": {}},
+            "handler": lambda args: _list_resumes(repo, args),
+        },
+        "get_resume": {
+            "write": False,
+            "description": "Get one resume including parsed text by id.",
+            "schema": _id_schema("Resume id."),
+            "handler": lambda args: _get_resume(repo, args),
+        },
+        "list_resume_matches": {
+            "write": False,
+            "description": "List saved JD match results for a resume.",
+            "schema": {
+                "type": "object",
+                "properties": {"resume_id": {"type": "integer"}},
+                "required": ["resume_id"],
+            },
+            "handler": lambda args: _list_resume_matches(repo, args),
+        },
+    }
+
+
+def jd_tool_registry(repo: JDAnalysesRepository) -> dict[str, dict[str, Any]]:
+    return {
+        "list_jd_analyses": {
+            "write": False,
+            "description": "List saved JD analyses. Optionally filter by application id.",
+            "schema": {
+                "type": "object",
+                "properties": {"application_id": {"type": "integer"}},
+            },
+            "handler": lambda args: _list_jd_analyses(repo, args),
+        },
+        "get_jd_analysis": {
+            "write": False,
+            "description": "Get one saved JD analysis by id.",
+            "schema": _id_schema("JD analysis id."),
+            "handler": lambda args: _get_jd_analysis(repo, args),
+        },
+    }
+
+
+def knowledge_tool_registry(repo: KnowledgeRepository) -> dict[str, dict[str, Any]]:
+    return {
+        "list_knowledge_bases": {
+            "write": False,
+            "description": "List knowledge bases.",
+            "schema": {"type": "object", "properties": {}},
+            "handler": lambda args: _list_knowledge_bases(repo, args),
+        },
+        "list_knowledge_documents": {
+            "write": False,
+            "description": "List knowledge documents, optionally filtered by base or query.",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "knowledge_base_id": {"type": "integer"},
+                    "query": {"type": "string"},
+                },
+            },
+            "handler": lambda args: _list_knowledge_documents(repo, args),
+        },
+        "get_knowledge_document": {
+            "write": False,
+            "description": "Get one knowledge document by id.",
+            "schema": _id_schema("Knowledge document id."),
+            "handler": lambda args: _get_knowledge_document(repo, args),
+        },
+        "search_knowledge": {
+            "write": False,
+            "description": "Search knowledge content and return matching snippets.",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "knowledge_base_id": {"type": "integer"},
+                    "limit": {"type": "integer"},
+                },
+                "required": ["query"],
+            },
+            "handler": lambda args: _search_knowledge(repo, args),
+        },
+    }
+
+
 def _list_applications(repo: ApplicationsRepository, args: str) -> str:
     payload = _payload(args)
     apps = repo.list(status=str(payload.get("status") or ""))
@@ -429,6 +542,75 @@ def _save_offer_assessment(repo: OffersRepository, args: str) -> str:
     return _json(_offer_json(updated))
 
 
+def _list_resumes(repo: ResumesRepository, args: str) -> str:
+    _payload(args)
+    return _json([_resume_json(resume) for resume in repo.list()])
+
+
+def _get_resume(repo: ResumesRepository, args: str) -> str:
+    payload = _payload(args)
+    resume = repo.get(_required_int(payload, "id", "get_resume"))
+    if resume is None:
+        raise ValueError("resume not found")
+    return _json(_resume_json(resume))
+
+
+def _list_resume_matches(repo: ResumesRepository, args: str) -> str:
+    payload = _payload(args)
+    resume_id = _required_int(payload, "resume_id", "list_resume_matches")
+    return _json([_resume_match_json(match) for match in repo.list_matches(resume_id)])
+
+
+def _list_jd_analyses(repo: JDAnalysesRepository, args: str) -> str:
+    payload = _payload(args)
+    rows = repo.list(application_id=_optional_int(payload, "application_id"))
+    return _json([_jd_analysis_json(row) for row in rows])
+
+
+def _get_jd_analysis(repo: JDAnalysesRepository, args: str) -> str:
+    payload = _payload(args)
+    analysis = repo.get(_required_int(payload, "id", "get_jd_analysis"))
+    if analysis is None:
+        raise ValueError("jd analysis not found")
+    return _json(_jd_analysis_json(analysis))
+
+
+def _list_knowledge_bases(repo: KnowledgeRepository, args: str) -> str:
+    _payload(args)
+    return _json([_knowledge_base_json(base) for base in repo.list_bases()])
+
+
+def _list_knowledge_documents(repo: KnowledgeRepository, args: str) -> str:
+    payload = _payload(args)
+    rows = repo.list_documents(
+        knowledge_base_id=_optional_int(payload, "knowledge_base_id"),
+        query=str(payload.get("query") or ""),
+    )
+    return _json([_knowledge_document_json(row) for row in rows])
+
+
+def _get_knowledge_document(repo: KnowledgeRepository, args: str) -> str:
+    payload = _payload(args)
+    document = repo.get_document(_required_int(payload, "id", "get_knowledge_document"))
+    if document is None:
+        raise ValueError("knowledge document not found")
+    return _json(_knowledge_document_json(document))
+
+
+def _search_knowledge(repo: KnowledgeRepository, args: str) -> str:
+    payload = _payload(args)
+    query = str(payload.get("query") or "").strip()
+    if not query:
+        raise ValueError("search_knowledge requires query")
+    return _json(
+        repo.search(
+            query,
+            knowledge_base_id=_optional_int(payload, "knowledge_base_id"),
+            limit=_optional_int(payload, "limit") or 5,
+        )
+    )
+
+
 def _describe_create_application(args: str) -> str:
     payload = _payload(args)
     return f"新建投递：{payload.get('company_name', '')} - {payload.get('position_name', '')}"
@@ -519,6 +701,26 @@ def _note_json(note: Any) -> dict[str, Any]:
 
 def _offer_json(offer: Any) -> dict[str, Any]:
     return OfferOut.model_validate(offer).model_dump(mode="json", exclude_none=True)
+
+
+def _resume_json(resume: Any) -> dict[str, Any]:
+    return ResumeOut.model_validate(resume).model_dump(mode="json")
+
+
+def _resume_match_json(match: Any) -> dict[str, Any]:
+    return ResumeMatchOut.model_validate(match).model_dump(mode="json", exclude_none=True)
+
+
+def _jd_analysis_json(analysis: Any) -> dict[str, Any]:
+    return JDAnalysisOut.model_validate(analysis).model_dump(mode="json", exclude_none=True)
+
+
+def _knowledge_base_json(base: Any) -> dict[str, Any]:
+    return KnowledgeBaseOut.model_validate(base).model_dump(mode="json")
+
+
+def _knowledge_document_json(document: Any) -> dict[str, Any]:
+    return KnowledgeDocumentOut.model_validate(document).model_dump(mode="json")
 
 
 def _event_create_from_payload(

@@ -5,8 +5,15 @@ from offerpilot.ai.tools import application_tool_registry, offerpilot_tool_regis
 from offerpilot.db import init_database
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
 from offerpilot.repositories.events import EventCreate, EventsRepository
+from offerpilot.repositories.jd import JDAnalysesRepository, JDAnalysisCreate
+from offerpilot.repositories.knowledge import (
+    KnowledgeBaseCreate,
+    KnowledgeDocumentCreate,
+    KnowledgeRepository,
+)
 from offerpilot.repositories.notes import NoteCreate, NotesRepository
 from offerpilot.repositories.offers import OfferCreate, OffersRepository
+from offerpilot.repositories.resumes import ResumeCreate, ResumeMatchCreate, ResumesRepository
 
 
 def test_application_read_tools_return_json(tmp_path):
@@ -239,4 +246,76 @@ def test_offerpilot_write_tools_mutate_notes_events_and_offers(tmp_path):
     assert assessed["assessment"] == "Strong upside"
     assert registry["delete_note"]["handler"](json.dumps({"id": note["id"]})) == '{"deleted":true}'
     assert registry["delete_event"]["handler"](json.dumps({"id": event["id"]})) == '{"deleted":true}'
+
+
+def test_offerpilot_tool_registry_covers_resumes_jd_and_knowledge(tmp_path):
+    session_factory = init_database(tmp_path / "data.db")
+    applications = ApplicationsRepository(session_factory)
+    events = EventsRepository(session_factory)
+    notes = NotesRepository(session_factory)
+    offers = OffersRepository(session_factory)
+    resumes = ResumesRepository(session_factory)
+    jd_analyses = JDAnalysesRepository(session_factory)
+    knowledge = KnowledgeRepository(session_factory)
+    app = applications.create(ApplicationCreate(company_name="ByteDance", position_name="Backend"))
+    resume = resumes.create(
+        ResumeCreate(name="Backend Resume", parsed_data="Python FastAPI SQLAlchemy", parse_status="text-ready")
+    )
+    resumes.create_match(
+        ResumeMatchCreate(
+            resume_id=resume.id,
+            application_id=app.id,
+            jd_text="Backend API",
+            result='{"match_score":88}',
+        )
+    )
+    jd = jd_analyses.create(
+        JDAnalysisCreate(
+            application_id=app.id,
+            jd_source="manual",
+            jd_text="Python backend engineer",
+            result='{"summary":"Backend role"}',
+        )
+    )
+    base = knowledge.create_base(KnowledgeBaseCreate(name="Interview Notes", description="Backend prep"))
+    doc = knowledge.create_document(
+        KnowledgeDocumentCreate(
+            knowledge_base_id=base.id,
+            title="FastAPI Review",
+            content="FastAPI dependency injection and SQLAlchemy sessions",
+            tags=["python"],
+        )
+    )
+
+    registry = offerpilot_tool_registry(
+        applications,
+        events,
+        notes,
+        offers,
+        resumes=resumes,
+        jd_analyses=jd_analyses,
+        knowledge=knowledge,
+    )
+
+    listed_resumes = json.loads(registry["list_resumes"]["handler"](json.dumps({})))
+    resume_detail = json.loads(registry["get_resume"]["handler"](json.dumps({"id": resume.id})))
+    resume_matches = json.loads(registry["list_resume_matches"]["handler"](json.dumps({"resume_id": resume.id})))
+    listed_jds = json.loads(registry["list_jd_analyses"]["handler"](json.dumps({"application_id": app.id})))
+    jd_detail = json.loads(registry["get_jd_analysis"]["handler"](json.dumps({"id": jd.id})))
+    bases = json.loads(registry["list_knowledge_bases"]["handler"](json.dumps({})))
+    documents = json.loads(
+        registry["list_knowledge_documents"]["handler"](json.dumps({"knowledge_base_id": base.id}))
+    )
+    document_detail = json.loads(registry["get_knowledge_document"]["handler"](json.dumps({"id": doc.id})))
+    search_results = json.loads(registry["search_knowledge"]["handler"](json.dumps({"query": "FastAPI"})))
+
+    assert listed_resumes[0]["id"] == resume.id
+    assert resume_detail["parsed_data"] == "Python FastAPI SQLAlchemy"
+    assert resume_matches[0]["application_id"] == app.id
+    assert listed_jds[0]["id"] == jd.id
+    assert jd_detail["result"] == '{"summary":"Backend role"}'
+    assert bases[0]["id"] == base.id
+    assert documents[0]["id"] == doc.id
+    assert document_detail["title"] == "FastAPI Review"
+    assert search_results[0]["document_id"] == doc.id
 

@@ -1013,7 +1013,15 @@ def create_app(
         try:
             added, reply, pending = run_turn(
                 model,
-                offerpilot_tool_registry(applications, events, notes, offers),
+                offerpilot_tool_registry(
+                    applications,
+                    events,
+                    notes,
+                    offers,
+                    resumes=resumes,
+                    jd_analyses=jd_analyses,
+                    knowledge=knowledge,
+                ),
                 history,
                 auto_approve=load_config(resolved_data_dir).chat_auto_approve_writes,
                 max_iter=8,
@@ -1050,7 +1058,15 @@ def create_app(
         try:
             added, reply, new_pending = resume_after_confirm(
                 model,
-                offerpilot_tool_registry(applications, events, notes, offers),
+                offerpilot_tool_registry(
+                    applications,
+                    events,
+                    notes,
+                    offers,
+                    resumes=resumes,
+                    jd_analyses=jd_analyses,
+                    knowledge=knowledge,
+                ),
                 _stored_messages_to_ai(stored),
                 pending,
                 approved=bool(payload.get("approved")),

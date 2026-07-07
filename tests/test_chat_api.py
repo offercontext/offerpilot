@@ -54,6 +54,9 @@ def test_chat_exposes_module_tools_to_model(tmp_path):
     assert response.status_code == 200
     captured_tools = {tool["name"] for tool in model.tools[0]}
     assert {"list_applications", "list_notes", "list_events", "list_offers"}.issubset(captured_tools)
+    assert {"list_resumes", "list_jd_analyses", "list_knowledge_bases", "search_knowledge"}.issubset(
+        captured_tools
+    )
 
 
 @pytest.mark.parametrize("args", ["{bad", "[]"])
