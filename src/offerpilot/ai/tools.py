@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from offerpilot.application_status import normalize_application_status
+from offerpilot.application_status import APPLICATION_STATUS_IDS, normalize_application_status
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
 from offerpilot.schemas import ApplicationOut
 
@@ -12,19 +12,64 @@ def application_tool_registry(repo: ApplicationsRepository) -> dict[str, dict[st
     return {
         "list_applications": {
             "write": False,
+            "description": "List job applications. Optionally filter by canonical application status.",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "enum": list(APPLICATION_STATUS_IDS),
+                        "description": "Optional status filter.",
+                    }
+                },
+            },
             "handler": lambda args: _list_applications(repo, args),
         },
         "get_application": {
             "write": False,
+            "description": "Get one job application by id. Use an id returned by list_applications.",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "integer",
+                        "description": "Application id returned by list_applications.",
+                    }
+                },
+                "required": ["id"],
+            },
             "handler": lambda args: _get_application(repo, args),
         },
         "create_application": {
             "write": True,
+            "description": "Create a job application record.",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "company_name": {"type": "string"},
+                    "position_name": {"type": "string"},
+                    "job_url": {"type": "string"},
+                    "status": {"type": "string", "enum": list(APPLICATION_STATUS_IDS)},
+                },
+                "required": ["company_name", "position_name"],
+            },
             "describe": _describe_create_application,
             "handler": lambda args: _create_application(repo, args),
         },
         "update_application_status": {
             "write": True,
+            "description": "Update one job application's status. Use an id returned by list_applications.",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "integer",
+                        "description": "Application id returned by list_applications.",
+                    },
+                    "status": {"type": "string", "enum": list(APPLICATION_STATUS_IDS)},
+                },
+                "required": ["id", "status"],
+            },
             "describe": _describe_update_application_status,
             "handler": lambda args: _update_application_status(repo, args),
         },
@@ -39,7 +84,8 @@ def _list_applications(repo: ApplicationsRepository, args: str) -> str:
 
 def _get_application(repo: ApplicationsRepository, args: str) -> str:
     payload = _payload(args)
-    app = repo.get(int(payload["id"]))
+    app_id = _required_int(payload, "id", "get_application")
+    app = repo.get(app_id)
     if app is None:
         raise ValueError("application not found")
     return json.dumps(_application_json(app), ensure_ascii=False)
@@ -61,7 +107,8 @@ def _create_application(repo: ApplicationsRepository, args: str) -> str:
 
 def _update_application_status(repo: ApplicationsRepository, args: str) -> str:
     payload = _payload(args)
-    app = repo.get(int(payload["id"]))
+    app_id = _required_int(payload, "id", "update_application_status")
+    app = repo.get(app_id)
     if app is None:
         raise ValueError("application not found")
     updated = repo.update_full(
@@ -98,6 +145,16 @@ def _payload(args: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("tool args must be an object")
     return value
+
+
+def _required_int(payload: dict[str, Any], key: str, tool_name: str) -> int:
+    raw = payload.get(key)
+    if raw is None or raw == "":
+        raise ValueError(f"{tool_name} requires {key}")
+    try:
+        return int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{tool_name} requires numeric {key}") from exc
 
 
 def _application_json(app: Any) -> dict[str, Any]:
