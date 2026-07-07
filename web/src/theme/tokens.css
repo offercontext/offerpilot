@@ -132,6 +132,18 @@ body {
   min-height: 40px;
 }
 
+.op-pilot-rail {
+  width: 380px;
+  flex: 0 0 380px;
+  height: 100vh;
+  position: sticky;
+  top: 0;
+  padding: 12px;
+  background: var(--op-surface);
+  border-left: 1px solid var(--op-border);
+  overflow: hidden;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .op-view-enter { animation: none; }
   * { scroll-behavior: auto !important; }
@@ -199,5 +211,11 @@ body {
 
   .op-app-content {
     padding: 0 16px 16px !important;
+  }
+}
+
+@media (max-width: 1179px) {
+  .op-pilot-rail {
+    display: none;
   }
 }

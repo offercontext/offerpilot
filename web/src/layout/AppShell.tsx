@@ -86,6 +86,9 @@ export default function AppShell() {
   const [mockPrefill, setMockPrefill] = useState<Partial<MockConfig> | null>(null);
   const [questionFocusId, setQuestionFocusId] = useState<number | null>(null);
   const [now, setNow] = useState(() => dayjs());
+  const [pilotRailAvailable, setPilotRailAvailable] = useState(() =>
+    typeof window === 'undefined' ? false : window.matchMedia('(min-width: 1180px)').matches
+  );
 
   const { data: applications = [], isLoading, isError: appsError } = useQuery({
     queryKey: ['applications'],
@@ -129,6 +132,14 @@ export default function AppShell() {
   }, []);
 
   useEffect(() => {
+    const media = window.matchMedia('(min-width: 1180px)');
+    const sync = () => setPilotRailAvailable(media.matches);
+    sync();
+    media.addEventListener('change', sync);
+    return () => media.removeEventListener('change', sync);
+  }, []);
+
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
@@ -153,7 +164,7 @@ export default function AppShell() {
 
   const openChat = (offerId?: number) => {
     setCoachOfferId(offerId);
-    setChatOpen(true);
+    setChatOpen(!pilotRailAvailable);
   };
 
   const goDetailById = (appId: number) => {
@@ -257,6 +268,17 @@ export default function AppShell() {
           )}
         </Content>
       </Layout>
+      {pilotRailAvailable && (
+        <aside className="op-pilot-rail" aria-label="Pilot">
+          <ChatPanel
+            variant="rail"
+            open
+            onClose={() => setCoachOfferId(undefined)}
+            offerId={coachOfferId}
+            onOpenSettings={() => setAISettingsOpen(true)}
+          />
+        </aside>
+      )}
 
       <AddApplicationForm open={addOpen} onClose={() => setAddOpen(false)} />
       <ApplicationDetail
@@ -296,15 +318,17 @@ export default function AppShell() {
         pipelineActions={pipelineActions}
         onRunPipelineAction={runPipelineAction}
       />
-      <ChatPanel
-        open={chatOpen}
-        onClose={() => {
-          setChatOpen(false);
-          setCoachOfferId(undefined);
-        }}
-        offerId={coachOfferId}
-        onOpenSettings={() => setAISettingsOpen(true)}
-      />
+      {!pilotRailAvailable && (
+        <ChatPanel
+          open={chatOpen}
+          onClose={() => {
+            setChatOpen(false);
+            setCoachOfferId(undefined);
+          }}
+          offerId={coachOfferId}
+          onOpenSettings={() => setAISettingsOpen(true)}
+        />
+      )}
       <AISettingsDrawer open={aiSettingsOpen} onClose={() => setAISettingsOpen(false)} />
     </Layout>
   );

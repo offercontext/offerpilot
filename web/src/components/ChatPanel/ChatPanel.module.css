@@ -11,6 +11,9 @@
   height: 100%;
   min-height: 0;
 }
+.workspaceDocked {
+  height: 100%;
+}
 :global([data-theme='dark']) .workspace {
   --chat-tint: rgba(99, 102, 241, 0.2);
   --chat-tint-soft: rgba(99, 102, 241, 0.12);
@@ -964,6 +967,39 @@
 /* ---------- 响应式折叠 ---------- */
 .panelToggle {
   display: none;
+}
+.workspaceDocked .body {
+  grid-template-columns: minmax(0, 1fr);
+}
+.workspaceDocked .rail,
+.workspaceDocked .context {
+  display: none;
+}
+.workspaceDocked .center {
+  border: 1px solid var(--op-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.workspaceDocked .header {
+  padding: 0 0 12px;
+}
+.workspaceDocked .headSub,
+.workspaceDocked .modeBadge {
+  display: none;
+}
+.workspaceDocked .stream {
+  padding: 16px 14px;
+}
+.workspaceDocked .msg {
+  max-width: 100%;
+}
+.workspaceDocked .emptyPrompts {
+  grid-template-columns: 1fr;
+}
+.workspaceDocked .panelToggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 @media (max-width: 980px) {
   .body {

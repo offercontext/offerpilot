@@ -30,6 +30,7 @@ interface Props {
   onClose: () => void;
   offerId?: number;
   onOpenSettings?: () => void;
+  variant?: 'drawer' | 'rail';
 }
 
 const CHAT_WIDTH_STORAGE_KEY = 'offerpilot.chatPanelWidth';
@@ -72,7 +73,7 @@ function pendingActionEvidence(evidence: EvidenceItem[], action: PendingAction):
   return evidence.filter((item) => evidenceMatchesPendingAction(item, action));
 }
 
-export default function ChatPanel({ open, onClose, offerId, onOpenSettings }: Props) {
+export default function ChatPanel({ open, onClose, offerId, onOpenSettings, variant = 'drawer' }: Props) {
   const { message: toast } = AntApp.useApp();
   const [turns, setTurns] = useState<UITurn[]>([]);
   const [convID, setConvID] = useState<number | undefined>(undefined);
@@ -90,6 +91,7 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings }: Pr
   });
   const endRef = useRef<HTMLDivElement>(null);
   const threadOfferId = useRef<number | undefined>(undefined);
+  const docked = variant === 'rail';
 
   const activeConv = conversations.find((c) => c.id === convID);
   const isNego = activeConv ? activeConv.mode === 'nego_coach' : offerId !== undefined;
@@ -108,8 +110,6 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings }: Pr
 
   useEffect(() => {
     if (!open) return;
-    // Start a fresh thread when the panel opens bound to a different offer
-    // context, so coach(offer) and general threads never bleed together.
     if (offerId !== threadOfferId.current) {
       setConvID(undefined);
       setTurns([]);
@@ -158,7 +158,6 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings }: Pr
     document.body.style.userSelect = 'none';
 
     const onMove = (move: PointerEvent) => {
-      // Drawer is right-aligned: dragging the left edge left increases width.
       setDrawerWidth(clampChatWidth(startWidth + startX - move.clientX));
     };
     const onUp = () => {
@@ -205,7 +204,6 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings }: Pr
     }
   }
 
-  /** Reload authoritative turns (with tool steps) from the server. */
   async function finishMessage(resp: Extract<ChatResponse, { type: 'message' }>) {
     setConvID(resp.conversation_id);
     setPending(null);
@@ -289,42 +287,36 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings }: Pr
     border: '1px solid var(--op-border)',
     background: 'var(--op-surface)',
     color: 'var(--op-muted)',
-    borderRadius: 9,
+    borderRadius: 8,
     width: 32,
     height: 32,
     cursor: 'pointer',
     marginLeft: 8,
   };
 
-  return (
-    <Drawer
-      placement="right"
-      width={drawerWidth}
-      style={{ maxWidth: '100vw' }}
-      open={open}
-      onClose={onClose}
-      title={null}
-      closable={false}
-      styles={{ body: { padding: 16, height: '100%', overflow: 'hidden', position: 'relative' } }}
-    >
-      <div
-        className={styles.resizeHandle}
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="调整 AI 助手宽度"
-        onPointerDown={startResize}
-      />
-      <div className={styles.workspace}>
-        {/* header */}
+  if (!open) return null;
+
+  const workspace = (
+    <>
+      {!docked && (
+        <div
+          className={styles.resizeHandle}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="调整 Pilot 宽度"
+          onPointerDown={startResize}
+        />
+      )}
+      <div className={`${styles.workspace} ${docked ? styles.workspaceDocked : ''}`}>
         <header className={styles.header}>
           <div className={styles.avatar} aria-hidden="true">
             <RobotOutlined />
           </div>
           <div style={{ minWidth: 0 }}>
             <div className={`${styles.headTitle} op-gradient-text`}>OfferPilot 领航员</div>
-            <div className={styles.headSub}>基于你的投递 · 日程 · 复盘 · Offer 实时作答</div>
+            <div className={styles.headSub}>基于投递、日程、复盘与 Offer 实时作答</div>
           </div>
-          <span className={styles.modeBadge}>{isNego ? '🎯 谈薪教练' : '💡 通用助手'}</span>
+          <span className={styles.modeBadge}>{isNego ? '谈薪教练' : '通用助手'}</span>
           <button
             type="button"
             className={styles.panelToggle}
@@ -334,12 +326,18 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings }: Pr
           >
             {createElement(AppstoreOutlined)}
           </button>
-          <button type="button" aria-label="关闭" onClick={onClose} style={{ ...iconBtnStyle, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
-            {createElement(CloseOutlined)}
-          </button>
+          {(!docked || offerId !== undefined) && (
+            <button
+              type="button"
+              aria-label={docked ? '退出 Offer 上下文' : '关闭'}
+              onClick={onClose}
+              style={{ ...iconBtnStyle, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+            >
+              {createElement(CloseOutlined)}
+            </button>
+          )}
         </header>
 
-        {/* three-pane body */}
         <div className={styles.body}>
           <ThreadRail
             conversations={conversations}
@@ -358,8 +356,8 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings }: Pr
                   </div>
                   <div className={styles.emptyHint}>
                     {isNego
-                      ? '我会结合这份 offer 和你的复盘，帮你评估、准备话术、模拟谈判。挑一个开始：'
-                      : '我能查询并（经你确认后）修改你的投递、日程、复盘与知识库。挑一个常用问题开始：'}
+                      ? '我会结合这份 Offer 与你的复盘，帮你评估、准备话术、模拟谈判。'
+                      : '我能查询投递、日程、复盘与知识库，并在写入前向你确认。'}
                   </div>
                   <div className={styles.emptyPrompts}>
                     {capabilities.map((cap) => (
@@ -414,6 +412,23 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings }: Pr
           />
         </div>
       </div>
+    </>
+  );
+
+  if (docked) return workspace;
+
+  return (
+    <Drawer
+      placement="right"
+      width={drawerWidth}
+      style={{ maxWidth: '100vw' }}
+      open={open}
+      onClose={onClose}
+      title={null}
+      closable={false}
+      styles={{ body: { padding: 16, height: '100%', overflow: 'hidden', position: 'relative' } }}
+    >
+      {workspace}
     </Drawer>
   );
 }
