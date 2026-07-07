@@ -145,6 +145,7 @@ oc question generate --kb 1 --count 10
 - Skill registry: packages are registered untrusted by default and load only after explicit trust and enablement.
 - Knowledge RAG base: SQLite FTS5 chunk retrieval with lexical fallback, reciprocal-rank scoring, and source citations.
 - Runtime diagnostics are visible in the settings module.
+- Browser auth gate verifies `offerpilot.auth_token` before loading the app shell.
 
 ### Quick Start
 
@@ -266,7 +267,7 @@ When API auth is enabled in the browser, the frontend sends `X-OfferPilot-Token`
 - Skill execution sandbox, manifest validation, and package provenance.
 - Embedding rerankers for knowledge search.
 - LangGraph checkpoint / interrupt / scheduled wakeups.
-- Auth session UI and token rotation.
+- Auth token rotation.
 - Screenshot-level responsive UI QA.
 
 ### License

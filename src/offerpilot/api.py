@@ -107,6 +107,14 @@ def create_app(
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    @app.get("/api/auth/status")
+    def auth_status(request: Request) -> dict[str, bool]:
+        cfg = load_config(resolved_data_dir)
+        return {
+            "auth_enabled": cfg.auth_enabled,
+            "authenticated": (not cfg.auth_enabled) or _request_has_valid_auth_token(request, cfg.auth_token),
+        }
+
     @app.get("/api/application-statuses")
     def list_application_statuses() -> list[dict[str, str]]:
         return application_status_options()
@@ -1264,7 +1272,7 @@ def error_response(status_code: int, message: str) -> JSONResponse:
 
 def _auth_guard_response(request: Request, data_dir: Path) -> JSONResponse | None:
     path = request.url.path
-    if not path.startswith("/api/") or path == "/api/health":
+    if not path.startswith("/api/") or path in {"/api/health", "/api/auth/status"}:
         return None
     cfg = load_config(data_dir)
     if not cfg.auth_enabled:
