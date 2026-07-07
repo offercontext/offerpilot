@@ -174,6 +174,18 @@ On Windows PowerShell:
 
 Both `scripts/docker-smoke.sh` and `scripts/docker-smoke.ps1` build a local image and run `oc smoke --static-dir /app/web/dist` inside the container.
 
+#### Local Release Smoke
+
+```bash
+scripts/local-smoke.sh
+```
+
+```powershell
+.\scripts\local-smoke.ps1
+```
+
+Both `scripts/local-smoke.sh` and `scripts/local-smoke.ps1` build `web/dist`, start `uv run oc start` on a temporary data directory, verify `/api/health` and the SPA fallback route, then run the core `oc smoke` flow.
+
 #### Source Checkout
 
 ```bash

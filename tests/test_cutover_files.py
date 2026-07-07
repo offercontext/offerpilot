@@ -76,6 +76,25 @@ def test_docker_smoke_scripts_document_container_smoke_path():
     assert "scripts/docker-smoke.ps1" in readme
 
 
+def test_local_smoke_scripts_exercise_oc_start_with_built_spa():
+    shell_script = (ROOT / "scripts" / "local-smoke.sh").read_text(encoding="utf-8")
+    powershell_script = (ROOT / "scripts" / "local-smoke.ps1").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "npm run build" in shell_script
+    assert "uv run oc start" in shell_script
+    assert "/api/health" in shell_script
+    assert "/applications/smoke" in shell_script
+
+    assert "npm.cmd run build" in powershell_script
+    assert "uv run oc start" in powershell_script
+    assert "/api/health" in powershell_script
+    assert "/applications/smoke" in powershell_script
+
+    assert "scripts/local-smoke.sh" in readme
+    assert "scripts/local-smoke.ps1" in readme
+
+
 def test_go_backend_sources_removed_after_python_cutover():
     go_sources = [
         path
