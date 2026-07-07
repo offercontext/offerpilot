@@ -34,6 +34,17 @@ def test_readme_describes_python_first_runtime():
     assert "Go 1.22" not in readme
 
 
+def test_readme_documents_current_v01_contract():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "AGPLv3" in readme
+    assert "LiteLLM" in readme
+    assert "oc smoke" in readme
+    assert "pending -> applied -> written_test -> interview -> offer -> closed" in readme
+    assert "runtime_mode" in readme
+    assert "auth_enabled" in readme
+
+
 def test_go_backend_sources_removed_after_python_cutover():
     go_sources = [
         path
