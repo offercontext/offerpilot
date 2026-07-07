@@ -24,17 +24,29 @@ def init_database(db_path: Path) -> SessionFactory:
         cursor.close()
 
     Base.metadata.create_all(engine)
-    _ensure_column(engine, "conversations", "offer_id", "INTEGER")
-    _ensure_column(engine, "conversations", "mode", "TEXT DEFAULT 'general'")
-    _ensure_column(engine, "conversations", "pending_tool_call_id", "TEXT DEFAULT ''")
-    _ensure_column(engine, "conversations", "pending_tool_name", "TEXT DEFAULT ''")
-    _ensure_column(engine, "conversations", "pending_args", "TEXT DEFAULT ''")
-    _ensure_column(engine, "conversations", "pending_human", "TEXT DEFAULT ''")
-    _ensure_column(engine, "chat_messages", "provider_blocks", "TEXT DEFAULT ''")
-    _ensure_column(engine, "resumes", "name", "TEXT DEFAULT ''")
-    _ensure_column(engine, "resumes", "file_path", "TEXT DEFAULT ''")
-    _ensure_column(engine, "resumes", "parsed_data", "TEXT DEFAULT ''")
-    _ensure_column(engine, "resumes", "parse_status", "TEXT DEFAULT 'pending'")
+    _ensure_schema_migrations(engine)
+    _record_migration(engine, "0001_base_schema", "Create current application tables")
+
+    chat_migrations = [
+        _ensure_column(engine, "conversations", "offer_id", "INTEGER"),
+        _ensure_column(engine, "conversations", "mode", "TEXT DEFAULT 'general'"),
+        _ensure_column(engine, "conversations", "pending_tool_call_id", "TEXT DEFAULT ''"),
+        _ensure_column(engine, "conversations", "pending_tool_name", "TEXT DEFAULT ''"),
+        _ensure_column(engine, "conversations", "pending_args", "TEXT DEFAULT ''"),
+        _ensure_column(engine, "conversations", "pending_human", "TEXT DEFAULT ''"),
+        _ensure_column(engine, "chat_messages", "provider_blocks", "TEXT DEFAULT ''"),
+    ]
+    if any(chat_migrations):
+        _record_migration(engine, "0002_chat_state_columns", "Add durable chat state columns")
+
+    resume_migrations = [
+        _ensure_column(engine, "resumes", "name", "TEXT DEFAULT ''"),
+        _ensure_column(engine, "resumes", "file_path", "TEXT DEFAULT ''"),
+        _ensure_column(engine, "resumes", "parsed_data", "TEXT DEFAULT ''"),
+        _ensure_column(engine, "resumes", "parse_status", "TEXT DEFAULT 'pending'"),
+    ]
+    if any(resume_migrations):
+        _record_migration(engine, "0003_resume_content_columns", "Add resume content columns")
     _ensure_knowledge_fts(engine)
     return sessionmaker(bind=engine, expire_on_commit=False)
 
@@ -43,12 +55,41 @@ def session_factory_for_data_dir(data_dir: Path) -> SessionFactory:
     return init_database(data_dir / "data.db")
 
 
-def _ensure_column(engine, table: str, column: str, definition: str) -> None:  # type: ignore[no-untyped-def]
+def _ensure_schema_migrations(engine) -> None:  # type: ignore[no-untyped-def]
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version TEXT PRIMARY KEY,
+                    description TEXT NOT NULL,
+                    applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        )
+
+
+def _record_migration(engine, version: str, description: str) -> None:  # type: ignore[no-untyped-def]
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT OR IGNORE INTO schema_migrations (version, description)
+                VALUES (:version, :description)
+                """
+            ),
+            {"version": version, "description": description},
+        )
+
+
+def _ensure_column(engine, table: str, column: str, definition: str) -> bool:  # type: ignore[no-untyped-def]
     with engine.begin() as conn:
         rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
         if any(row[1] == column for row in rows):
-            return
+            return False
         conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {definition}"))
+        return True
 
 
 def _ensure_knowledge_fts(engine) -> None:  # type: ignore[no-untyped-def]

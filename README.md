@@ -148,6 +148,7 @@ oc question generate --kb 1 --count 10
 - Runtime diagnostics are visible in the settings module.
 - Browser auth gate verifies `offerpilot.auth_token` before loading the app shell.
 - Scheduled wakeups: durable SQLite queue with API and CLI dispatch for due follow-ups.
+- Schema changes are tracked in `schema_migrations` before additive startup repairs run.
 
 ### Quick Start
 

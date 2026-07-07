@@ -67,3 +67,52 @@ def test_init_database_adds_legacy_chat_columns(tmp_path):
 
     assert {"offer_id", "mode"}.issubset(conversation_columns)
     assert "provider_blocks" in message_columns
+
+
+def test_init_database_creates_idempotent_schema_migration_log(tmp_path):
+    db_path = tmp_path / "data.db"
+
+    init_database(db_path)
+    init_database(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(schema_migrations)")}
+        rows = conn.execute(
+            "SELECT version, description FROM schema_migrations ORDER BY version"
+        ).fetchall()
+
+    assert {"version", "description", "applied_at"}.issubset(columns)
+    assert rows.count(("0001_base_schema", "Create current application tables")) == 1
+
+
+def test_legacy_additive_chat_migration_is_recorded(tmp_path):
+    db_path = tmp_path / "data.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE conversations ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "title TEXT NOT NULL DEFAULT 'legacy',"
+            "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+            "updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
+            ")"
+        )
+        conn.execute(
+            "CREATE TABLE chat_messages ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "conversation_id INTEGER NOT NULL,"
+            "role TEXT NOT NULL,"
+            "content TEXT DEFAULT '',"
+            "tool_calls TEXT DEFAULT '',"
+            "tool_call_id TEXT DEFAULT '',"
+            "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
+            ")"
+        )
+
+    init_database(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        versions = {
+            row[0] for row in conn.execute("SELECT version FROM schema_migrations").fetchall()
+        }
+
+    assert "0002_chat_state_columns" in versions
