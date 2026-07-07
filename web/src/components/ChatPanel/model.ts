@@ -124,7 +124,7 @@ function parseToolResult(
 function evidenceFromRecord(row: unknown, source: string, index: number): EvidenceItem[] {
   if (!row || typeof row !== 'object') return [];
   const record = row as Record<string, unknown>;
-  const id = String(record.id ?? `${source}-${index}`);
+  const id = String(record.id ?? record.search_result_id ?? record.chunk_id ?? record.document_id ?? `${source}-${index}`);
   const company = text(record.company_name);
   const position = text(record.position_name);
   if (company) {
@@ -152,15 +152,22 @@ function evidenceFromRecord(row: unknown, source: string, index: number): Eviden
       },
     ];
   }
-  const title = text(record.title) || text(record.round) || text(record.name);
+  const title = text(record.title) || text(record.document_title) || text(record.round) || text(record.name);
   if (title) {
+    const isKnowledge = source.includes('knowledge') || text(record.record_type)?.startsWith('knowledge');
     return [
       {
         id: `${source}-${id}`,
-        kind: source.includes('knowledge') ? 'knowledge' : source.includes('event') ? 'event' : 'note',
+        kind: isKnowledge ? 'knowledge' : source.includes('event') ? 'event' : 'note',
         title,
-        meta: compact([text(record.event_type), text(record.scheduled_at), text(record.date)]).join(' \u00b7 '),
-        snippet: text(record.content) || text(record.summary) || text(record.weak_points),
+        meta: compact([
+          text(record.knowledge_base_name),
+          text(record.source_name),
+          text(record.event_type),
+          text(record.scheduled_at),
+          text(record.date),
+        ]).join(' \u00b7 '),
+        snippet: text(record.snippet) || text(record.content) || text(record.summary) || text(record.weak_points),
         source,
       },
     ];

@@ -156,6 +156,50 @@ describe('buildTurns evidence normalization', () => {
     expect(turns[0].steps?.[0].evidenceUnavailable).toBeFalsy();
   });
 
+  it('attaches evidence from knowledge search result payloads', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([{ id: 'call-knowledge', name: 'search_knowledge', args: { query: 'JVM' } }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-knowledge',
+        content: JSON.stringify([
+          {
+            record_type: 'knowledge_search_result',
+            search_result_id: 12,
+            knowledge_base_id: 1,
+            knowledge_base_name: 'Java八股',
+            document_id: 3,
+            document_title: 'JVM内存模型',
+            source_name: 'manual',
+            chunk_id: 12,
+            chunk_index: 0,
+            snippet: '堆、栈、方法区和程序计数器是常见考点。',
+          },
+        ]),
+      }),
+      msg({ role: 'assistant', content: 'I found JVM notes.' }),
+    ]);
+
+    expect(turns[0].steps?.[0]).toMatchObject({
+      name: 'search_knowledge',
+      detail: 'JVM内存模型',
+      evidence: [
+        {
+          id: 'search_knowledge-12',
+          kind: 'knowledge',
+          title: 'JVM内存模型',
+          meta: 'Java八股 · manual',
+          snippet: '堆、栈、方法区和程序计数器是常见考点。',
+          source: 'search_knowledge',
+        },
+      ],
+    });
+    expect(turns[0].steps?.[0].evidenceUnavailable).toBeFalsy();
+  });
+
   it('matches multiple tool results to the correct tool call id', () => {
     const turns = buildTurns([
       msg({
