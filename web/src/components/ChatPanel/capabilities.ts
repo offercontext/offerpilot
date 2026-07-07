@@ -34,7 +34,7 @@ export interface ToolMeta {
 }
 
 /**
- * Metadata for every backend agent tool (16 read + 16 write), keyed by the
+ * Metadata for backend agent tools keyed by the
  * tool name the model emits. Used by ProcessTimeline to render each step and
  * by ProposalCard to pick an icon for write confirmations.
  */
@@ -46,6 +46,7 @@ export const TOOL_META: Record<string, ToolMeta> = {
   get_jd_analysis: { label: '查看 JD 分析详情', kind: 'read', icon: FileSearchOutlined },
   list_resumes: { label: '查看简历', kind: 'read', icon: SolutionOutlined },
   get_resume: { label: '读取简历', kind: 'read', icon: SolutionOutlined },
+  list_resume_matches: { label: '查看简历匹配记录', kind: 'read', icon: SolutionOutlined },
   list_notes: { label: '查看复盘记录', kind: 'read', icon: FileTextOutlined },
   list_events: { label: '查看日程', kind: 'read', icon: CalendarOutlined },
   get_event: { label: '查看日程详情', kind: 'read', icon: CalendarOutlined },

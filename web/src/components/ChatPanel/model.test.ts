@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ChatMessage } from '@/types/chat';
-import { buildTurns, collectEvidence, pendingActionForConversation, reloadConversationTurns } from './model';
+import { buildTurns, collectEvidence, pendingActionForConversation, reloadConversationTurns, toolMeta } from './model';
 
 function msg(patch: Partial<ChatMessage> & Pick<ChatMessage, 'role'>): ChatMessage {
   return {
@@ -15,6 +15,13 @@ function msg(patch: Partial<ChatMessage> & Pick<ChatMessage, 'role'>): ChatMessa
 }
 
 describe('buildTurns evidence normalization', () => {
+  it('has localized metadata for resume match read tools', () => {
+    const meta = toolMeta('list_resume_matches');
+
+    expect(meta.kind).toBe('read');
+    expect(meta.label).toBe('查看简历匹配记录');
+  });
+
   it('reloads stored turns for pending confirmations so current-turn evidence is available', async () => {
     const turns = await reloadConversationTurns(42, async (id) => {
       expect(id).toBe(42);
