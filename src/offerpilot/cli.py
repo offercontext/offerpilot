@@ -9,6 +9,7 @@ import uvicorn
 
 from offerpilot.ai.client import ConfiguredAIClient
 from offerpilot.ai.workflows import analyze_jd, generate_questions, match_resume
+from offerpilot.application_status import APPLICATION_STATUS_IDS, normalize_application_status
 from offerpilot.api import create_app
 from offerpilot.config import Config, load_config, resolve_data_dir, save_config
 from offerpilot.db import session_factory_for_data_dir
@@ -57,10 +58,19 @@ def add(
 
 @app.command(name="list")
 def list_applications(
-    status: str = typer.Option("", "--status", "-s", help="filter by status"),
+    status: str = typer.Option(
+        "",
+        "--status",
+        "-s",
+        help=f"filter by status ({', '.join(APPLICATION_STATUS_IDS)})",
+    ),
 ) -> None:
     repo = _applications_repo()
-    applications = repo.list(status=status)
+    try:
+        parsed_status = normalize_application_status(status) if status else ""
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    applications = repo.list(status=parsed_status)
     if not applications:
         typer.echo("\nNo applications found. Use 'oc add' to add one.")
         return

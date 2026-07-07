@@ -305,9 +305,9 @@ describe('deriveActionItems', () => {
     const items = deriveActionItems({
       apps: [
         app({ id: 1, status: 'applied', updated_at: '2026-06-24T09:00:00+08:00' }),
-        app({ id: 2, status: 'assessment', updated_at: '2026-06-17T09:00:00+08:00' }),
+        app({ id: 2, status: 'written_test', updated_at: '2026-06-17T09:00:00+08:00' }),
         app({ id: 3, status: 'interview', updated_at: '2026-06-10T09:00:00+08:00' }),
-        app({ id: 4, status: 'rejected', updated_at: '2026-06-01T09:00:00+08:00' }),
+        app({ id: 4, status: 'closed', updated_at: '2026-06-01T09:00:00+08:00' }),
       ],
       events: [event({ id: 9, application_id: 3, scheduled_at: '2026-07-05T09:01:00+08:00' })],
       offers: [],

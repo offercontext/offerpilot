@@ -50,7 +50,7 @@ interface DeriveActionItemsInput {
   now?: ConfigType;
 }
 
-const WAITING_STATUSES: ApplicationStatus[] = ['applied', 'assessment', 'written_test'];
+const WAITING_STATUSES: ApplicationStatus[] = ['pending', 'applied', 'written_test'];
 const PRIORITY_RANK: Record<ActionItemPriority, number> = { p0: 0, p1: 1, p2: 2 };
 
 const DATE_ONLY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;

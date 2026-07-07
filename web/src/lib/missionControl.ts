@@ -86,8 +86,8 @@ interface DeriveMissionControlInput {
   now?: ConfigType;
 }
 
-const ACTIVE_STATUSES: ApplicationStatus[] = ['applied', 'assessment', 'written_test', 'interview', 'offer'];
-const WAITING_STATUSES: ApplicationStatus[] = ['applied', 'assessment', 'written_test'];
+const ACTIVE_STATUSES: ApplicationStatus[] = ['pending', 'applied', 'written_test', 'interview', 'offer'];
+const WAITING_STATUSES: ApplicationStatus[] = ['pending', 'applied', 'written_test'];
 const PREPARE_KINDS: PipelineInsightKind[] = [
   'offer_deadline',
   'interview_soon',

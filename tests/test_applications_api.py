@@ -22,6 +22,23 @@ def test_create_application_defaults_and_list(tmp_path):
     assert listed[0]["company_name"] == "ByteDance"
 
 
+def test_application_status_options_are_exposed_from_backend(tmp_path):
+    client = TestClient(create_app(data_dir=tmp_path))
+
+    response = client.get("/api/application-statuses")
+
+    assert response.status_code == 200
+    assert [item["value"] for item in response.json()] == [
+        "pending",
+        "applied",
+        "written_test",
+        "interview",
+        "offer",
+        "closed",
+    ]
+    assert response.json()[0]["label"] == "待投递"
+
+
 def test_create_application_requires_company_and_position(tmp_path):
     client = TestClient(create_app(data_dir=tmp_path))
 
@@ -29,6 +46,39 @@ def test_create_application_requires_company_and_position(tmp_path):
 
     assert response.status_code == 400
     assert response.json() == {"error": "company_name and position_name are required"}
+
+
+def test_create_application_normalizes_legacy_status(tmp_path):
+    client = TestClient(create_app(data_dir=tmp_path))
+
+    response = client.post(
+        "/api/applications",
+        json={"company_name": "ByteDance", "position_name": "Backend", "status": "assessment"},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "written_test"
+
+
+def test_create_application_rejects_invalid_status(tmp_path):
+    client = TestClient(create_app(data_dir=tmp_path))
+
+    response = client.post(
+        "/api/applications",
+        json={"company_name": "ByteDance", "position_name": "Backend", "status": "onsite"},
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {"error": "invalid application status: onsite"}
+
+
+def test_list_applications_rejects_invalid_status_filter(tmp_path):
+    client = TestClient(create_app(data_dir=tmp_path))
+
+    response = client.get("/api/applications", params={"status": "onsite"})
+
+    assert response.status_code == 422
+    assert response.json() == {"error": "invalid application status: onsite"}
 
 
 def test_get_application_not_found(tmp_path):

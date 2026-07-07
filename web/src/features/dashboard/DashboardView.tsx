@@ -78,7 +78,7 @@ export default function DashboardView({ onNavigate, onOpenDetailById, onAddAppli
   const offers = offersQ.data ?? [];
 
   const activeApplications = useMemo(
-    () => apps.filter((app) => ['applied', 'assessment', 'written_test', 'interview', 'offer'].includes(app.status)),
+    () => apps.filter((app) => ['pending', 'applied', 'written_test', 'interview', 'offer'].includes(app.status)),
     [apps],
   );
   const activeApplicationIds = useMemo(() => activeApplications.slice(0, 8).map((app) => app.id), [activeApplications]);

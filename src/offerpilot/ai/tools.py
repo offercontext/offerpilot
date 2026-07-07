@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from offerpilot.application_status import normalize_application_status
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
 from offerpilot.schemas import ApplicationOut
 
@@ -51,7 +52,7 @@ def _create_application(repo: ApplicationsRepository, args: str) -> str:
             company_name=str(payload["company_name"]),
             position_name=str(payload["position_name"]),
             job_url=str(payload.get("job_url") or ""),
-            status=str(payload.get("status") or "applied"),
+            status=normalize_application_status(str(payload.get("status") or "applied")),
             source="ai",
         )
     )
@@ -69,7 +70,7 @@ def _update_application_status(repo: ApplicationsRepository, args: str) -> str:
             company_name=app.company_name,
             position_name=app.position_name,
             job_url=app.job_url,
-            status=str(payload["status"]),
+            status=normalize_application_status(str(payload["status"])),
             source=app.source,
             notes=app.notes,
             applied_at=app.applied_at,

@@ -36,3 +36,33 @@ def test_application_write_tools_are_marked_and_mutate_when_executed(tmp_path):
     assert updated["status"] == "offer"
     assert repo.get(created.id).status == "offer"  # type: ignore[union-attr]
 
+
+def test_application_status_tool_normalizes_legacy_status(tmp_path):
+    repo = ApplicationsRepository(init_database(tmp_path / "data.db"))
+    created = repo.create(ApplicationCreate(company_name="ByteDance", position_name="Backend"))
+    registry = application_tool_registry(repo)
+
+    updated = json.loads(
+        registry["update_application_status"]["handler"](
+            json.dumps({"id": created.id, "status": "assessment"})
+        )
+    )
+
+    assert updated["status"] == "written_test"
+    assert repo.get(created.id).status == "written_test"  # type: ignore[union-attr]
+
+
+def test_application_status_tool_rejects_invalid_status(tmp_path):
+    repo = ApplicationsRepository(init_database(tmp_path / "data.db"))
+    created = repo.create(ApplicationCreate(company_name="ByteDance", position_name="Backend"))
+    registry = application_tool_registry(repo)
+
+    try:
+        registry["update_application_status"]["handler"](
+            json.dumps({"id": created.id, "status": "onsite"})
+        )
+    except ValueError as exc:
+        assert str(exc) == "invalid application status: onsite"
+    else:
+        raise AssertionError("invalid status should raise")
+

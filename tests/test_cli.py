@@ -47,6 +47,16 @@ def test_list_empty_applications(monkeypatch, tmp_path):
     assert "No applications found" in result.output
 
 
+def test_list_rejects_invalid_application_status(monkeypatch, tmp_path):
+    monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["list", "--status", "onsite"])
+
+    assert result.exit_code != 0
+    assert "invalid application status: onsite" in result.output
+
+
 def test_config_masks_api_key(monkeypatch, tmp_path):
     monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
     runner = CliRunner()

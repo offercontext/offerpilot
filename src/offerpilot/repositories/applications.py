@@ -7,6 +7,7 @@ from typing import Any, Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from offerpilot.application_status import normalize_application_status
 from offerpilot.models import Application
 
 
@@ -31,7 +32,7 @@ class ApplicationsRepository:
             company_name=data.company_name,
             position_name=data.position_name,
             job_url=data.job_url,
-            status=data.status or "applied",
+            status=normalize_application_status(data.status),
             source=data.source or "cli",
             notes=data.notes,
             applied_at=applied_at,
@@ -45,10 +46,10 @@ class ApplicationsRepository:
     def list(self, status: str = "") -> list[Application]:
         statement = select(Application)
         if status:
-            statement = statement.where(Application.status == status)
+            statement = statement.where(Application.status == normalize_application_status(status))
         statement = statement.order_by(Application.applied_at.desc())
         with self._session_factory() as session:
-            return list(session.scalars(statement))
+            return [_normalize_model_status(item) for item in session.scalars(statement)]
 
     def get(self, app_id: int) -> Optional[Application]:
         with self._session_factory() as session:
@@ -62,7 +63,7 @@ class ApplicationsRepository:
             app.company_name = data.company_name
             app.position_name = data.position_name
             app.job_url = data.job_url
-            app.status = data.status or "applied"
+            app.status = normalize_application_status(data.status)
             app.source = data.source or app.source
             app.notes = data.notes
             session.commit()
@@ -82,4 +83,9 @@ class ApplicationsRepository:
         for app in apps:
             board.setdefault(app.status, []).append(app)
         return {"total": len(apps), "board": board}
+
+
+def _normalize_model_status(app: Application) -> Application:
+    app.status = normalize_application_status(app.status)
+    return app
 

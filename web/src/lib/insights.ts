@@ -46,16 +46,10 @@ export const STALE_RED_DAYS = 14;
 export const INTERVIEW_SOON_HOURS = 72;
 export const OFFER_SOON_DAYS = 7;
 
-// 表示"已收到回音"的状态（eliminated 视为无回音/静默）
-const RESPONDED: ApplicationStatus[] = [
-  'assessment',
-  'written_test',
-  'interview',
-  'offer',
-  'rejected',
-];
+// 表示"已收到回音"的状态。
+const RESPONDED: ApplicationStatus[] = ['written_test', 'interview', 'offer', 'closed'];
 // 仍在等待对方回复的状态（用于停滞检测）
-const WAITING: ApplicationStatus[] = ['applied', 'assessment', 'written_test'];
+const WAITING: ApplicationStatus[] = ['pending', 'applied', 'written_test'];
 
 export function computeKpis(apps: Application[], now = dayjs()): Kpis {
   const total = apps.length;
@@ -77,7 +71,7 @@ export function computeKpis(apps: Application[], now = dayjs()): Kpis {
 export function computeFunnel(apps: Application[]): FunnelStage[] {
   const total = apps.length;
   const inScreen = apps.filter((a) =>
-    ['assessment', 'written_test', 'interview', 'offer'].includes(a.status)
+    ['written_test', 'interview', 'offer'].includes(a.status)
   ).length;
   const inInterview = apps.filter((a) => ['interview', 'offer'].includes(a.status)).length;
   const inOffer = apps.filter((a) => a.status === 'offer').length;

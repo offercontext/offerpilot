@@ -16,6 +16,7 @@ from offerpilot.ai.agent import ChatModel, PendingAction, resume_after_confirm, 
 from offerpilot.ai.client import ConfiguredAIClient
 from offerpilot.ai.tools import application_tool_registry
 from offerpilot.ai.types import Message, ToolCall
+from offerpilot.application_status import application_status_options, normalize_application_status
 from offerpilot.config import Config, load_config, resolve_data_dir, save_config
 from offerpilot.db import session_factory_for_data_dir
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
@@ -95,9 +96,16 @@ def create_app(
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    @app.get("/api/application-statuses")
+    def list_application_statuses() -> list[dict[str, str]]:
+        return application_status_options()
+
     @app.get("/api/applications")
-    def list_applications(status: str = "") -> list[dict[str, Any]]:
-        apps = applications.list(status=status)
+    def list_applications(status: str = "") -> Any:
+        parsed_status = _parse_application_status(status)
+        if isinstance(parsed_status, JSONResponse):
+            return parsed_status
+        apps = applications.list(status=parsed_status)
         return [ApplicationOut.model_validate(item).model_dump(mode="json") for item in apps]
 
     @app.post("/api/applications", status_code=201)
@@ -107,12 +115,16 @@ def create_app(
         if not company_name or not position_name:
             return error_response(400, "company_name and position_name are required")
 
+        parsed_status = _parse_application_status(str(payload.get("status") or "applied"))
+        if isinstance(parsed_status, JSONResponse):
+            return parsed_status
+
         app_model = applications.create(
             ApplicationCreate(
                 company_name=company_name,
                 position_name=position_name,
                 job_url=str(payload.get("job_url") or ""),
-                status=str(payload.get("status") or "applied"),
+                status=parsed_status,
                 source="web",
                 notes=str(payload.get("notes") or ""),
             )
@@ -131,13 +143,17 @@ def create_app(
         existing = applications.get(app_id)
         if existing is None:
             return error_response(500, "Failed to update application")
+        parsed_status = _parse_application_status(str(payload.get("status") or "applied"))
+        if isinstance(parsed_status, JSONResponse):
+            return parsed_status
+
         app_model = applications.update_full(
             app_id,
             ApplicationCreate(
                 company_name=str(payload.get("company_name") or ""),
                 position_name=str(payload.get("position_name") or ""),
                 job_url=str(payload.get("job_url") or ""),
-                status=str(payload.get("status") or "applied"),
+                status=parsed_status,
                 source=existing.source,
                 notes=str(payload.get("notes") or ""),
                 applied_at=existing.applied_at,
@@ -1188,6 +1204,15 @@ def create_app(
 
 def error_response(status_code: int, message: str) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status_code)
+
+
+def _parse_application_status(raw: str) -> str | JSONResponse:
+    if not raw:
+        return ""
+    try:
+        return normalize_application_status(raw)
+    except ValueError as exc:
+        return error_response(422, str(exc))
 
 
 def _title_from_message(message: str) -> str:

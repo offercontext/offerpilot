@@ -1,12 +1,11 @@
 // Application status lifecycle. Mirrors the Go db.Application.Status values.
 export type ApplicationStatus =
+  | 'pending'
   | 'applied'
-  | 'assessment'
   | 'written_test'
   | 'interview'
   | 'offer'
-  | 'eliminated'
-  | 'rejected';
+  | 'closed';
 
 // Application record — fields match the Go JSON tags (snake_case).
 export interface Application {
@@ -38,31 +37,28 @@ export interface DashboardSummary {
 
 // Column definitions for the kanban board, in lifecycle order.
 export const STATUS_LABELS: Record<ApplicationStatus, string> = {
+  pending: '待投递',
   applied: '已投递',
-  assessment: '测评',
   written_test: '笔试',
   interview: '面试',
   offer: 'Offer',
-  eliminated: '挂了',
-  rejected: '被拒',
+  closed: '结束',
 };
 
 export const STATUS_COLORS: Record<ApplicationStatus, string> = {
+  pending: '#64748b',
   applied: '#0284c7',
-  assessment: '#7c3aed',
   written_test: '#ea580c',
   interview: '#059669',
   offer: '#16a34a',
-  eliminated: '#94a3b8',
-  rejected: '#dc2626',
+  closed: '#475569',
 };
 
 export const KANBAN_COLUMNS: ApplicationStatus[] = [
+  'pending',
   'applied',
-  'assessment',
   'written_test',
   'interview',
   'offer',
-  'eliminated',
-  'rejected',
+  'closed',
 ];
