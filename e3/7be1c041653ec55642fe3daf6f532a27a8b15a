@@ -1,0 +1,29 @@
+web/src/layout/navigation.ts
+  s_7f2bc75bf7c269::t_6400a127c1ac17 6,20,40,55,68
+web/src/layout/Sidebar.tsx
+  s_7f2bc75bf7c269::t_976cef188df944 10,26
+web/src/layout/navigation.test.ts
+  s_7f2bc75bf7c269::t_702a52cc1e3638 16,22,26,33,44
+web/src/components/InterviewV01View.tsx
+  s_7f2bc75bf7c269::t_4b443d15892a3a 1-41
+web/src/layout/AppShell.tsx
+  s_7f2bc75bf7c269::t_9e8489f16eb7ac 36,253
+web/src/components/InterviewV01View.test.tsx
+  s_7f2bc75bf7c269::t_38a45016378857 1-15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "e37be1c041653ec55642fe3daf6f532a27a8b15a",
+  "prompts": {},
+  "sessions": {
+    "s_7f2bc75bf7c269": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3fc9-102a-7c12-bd59-7b0c567c26b6",
+        "model": "gpt-5.5"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    }
+  }
+}
