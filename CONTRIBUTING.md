@@ -1,6 +1,8 @@
 # Contributing to OfferPilot
 
-Thanks for helping improve OfferPilot.
+Thanks for helping improve OfferPilot. This file is the public contributor
+entry point; detailed agent workflow rules live in [AGENTS.md](AGENTS.md), and
+historical design notes live under [docs/](docs/).
 
 ## License
 
@@ -10,24 +12,33 @@ Before the project broadly accepts external contributions, the maintainers shoul
 
 ## Development
 
-Use a feature branch or worktree for changes. Keep commits small and use the repository commit convention:
+Use a feature branch or worktree for changes. Branch names should follow the
+repository convention:
 
 ```text
-<type>: AI <subject>
+<type>/<yyyymmdd>-<name>
 ```
 
-Valid types are `build`, `chore`, `ci`, `docs`, `feat`, `fix`, `perf`, `refactor`, `revert`, `style`, and `test`.
+Common types are `feat`, `fix`, `docs`, `chore`, `refactor`, and `test`.
+Keep commits focused and describe the user-facing or developer-facing change.
 
 ## Quality Gates
 
 Run the relevant checks before opening a pull request:
 
 ```bash
-uv run pytest -q
+uv run pytest
 uv run ruff check .
 uv run mypy src
-cd web && npm test
+cd web && npm test -- --run
 cd web && npm run build
 ```
 
-For user-facing behavior changes, also run a local smoke check with `uv run oc start`.
+For user-facing behavior changes, also run a local smoke check:
+
+```bash
+scripts/local-smoke.sh
+```
+
+If a check cannot run in your environment, include the command, failure reason,
+and residual risk in the pull request or handoff note.
