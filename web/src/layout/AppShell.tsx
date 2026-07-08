@@ -112,6 +112,13 @@ export default function AppShell() {
   const ofrs = offers ?? [];
 
   const qc = useQueryClient();
+  const refreshWorkspaceData = () => {
+    void qc.invalidateQueries({ queryKey: ['applications'] });
+    void qc.invalidateQueries({ queryKey: ['events'] });
+    void qc.invalidateQueries({ queryKey: ['offers'] });
+    void qc.invalidateQueries({ queryKey: ['questions', 'stats'] });
+  };
+
   const uploadResumeMut = useMutation({
     mutationFn: (f: File) => uploadResume(f),
     onSuccess: (res) => {
@@ -280,6 +287,7 @@ export default function AppShell() {
             offerId={coachOfferId}
             onOpenSettings={() => setAISettingsOpen(true)}
             onExpand={() => setPilotDrawerOpen(true)}
+            onDataChanged={refreshWorkspaceData}
           />
         </aside>
       )}
@@ -320,6 +328,7 @@ export default function AppShell() {
           }}
           offerId={coachOfferId}
           onOpenSettings={() => setAISettingsOpen(true)}
+          onDataChanged={refreshWorkspaceData}
         />
       )}
       <AISettingsDrawer open={aiSettingsOpen} onClose={() => setAISettingsOpen(false)} />

@@ -34,4 +34,10 @@ describe('ChatPanel docked layout contract', () => {
     expect(thinking).toContain('正在理解你的问题');
     expect(thinking).toContain('正在整理结论和下一步建议');
   });
+
+  it('notifies owners after Pilot write flows can change application data', () => {
+    expect(component).toContain('onDataChanged?: () => void');
+    expect(component).toContain('if (autoApprove) onDataChanged?.();');
+    expect(component).toContain('if (approved) onDataChanged?.();');
+  });
 });

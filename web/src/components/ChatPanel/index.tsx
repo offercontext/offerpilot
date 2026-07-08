@@ -39,6 +39,7 @@ interface Props {
   onOpenSettings?: () => void;
   variant?: 'drawer' | 'rail';
   onExpand?: () => void;
+  onDataChanged?: () => void;
 }
 
 const CHAT_WIDTH_STORAGE_KEY = 'offerpilot.chatPanelWidth';
@@ -81,7 +82,15 @@ function pendingActionEvidence(evidence: EvidenceItem[], action: PendingAction):
   return evidence.filter((item) => evidenceMatchesPendingAction(item, action));
 }
 
-export default function ChatPanel({ open, onClose, offerId, onOpenSettings, variant = 'drawer', onExpand }: Props) {
+export default function ChatPanel({
+  open,
+  onClose,
+  offerId,
+  onOpenSettings,
+  variant = 'drawer',
+  onExpand,
+  onDataChanged,
+}: Props) {
   const { message: toast } = AntApp.useApp();
   const [turns, setTurns] = useState<UITurn[]>([]);
   const [convID, setConvID] = useState<number | undefined>(undefined);
@@ -253,6 +262,7 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings, vari
         refreshConversations();
       } else {
         await finishMessage(resp);
+        if (autoApprove) onDataChanged?.();
         if (resp.degraded) toast.info('当前模型不支持工具调用，已切换为只读摘要模式');
       }
       if (isNew) refreshConversations();
@@ -290,6 +300,7 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings, vari
         refreshConversations();
       } else {
         await finishMessage(resp);
+        if (approved) onDataChanged?.();
       }
     } catch (e: any) {
       toast.error(e?.response?.data?.error ?? '确认失败');
