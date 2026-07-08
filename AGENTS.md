@@ -200,3 +200,17 @@ Node 也一样：使用 `NODE_ID["中文标签"]`，style 写 `NODE_ID`。
 - 验证结果。
 
 如果有测试没跑或跑不了，要说明原因。如果更新了飞书文档，要给出链接以及 revision 或回读验证结果。
+
+## 11. 文档规范
+
+写/改任何 `.md` 文档前,先读 [`.claude/rules/documentation.md`](.claude/rules/documentation.md)。
+
+核心约定:
+
+- **决策树**:架构决策 → ADR(`docs/architecture/decisions/00NN-*.md`);bug 修复 → `docs/BUGS.md`;显式约束 → `docs/architecture/rules.md`。
+- **SSOT**:同一事实只在一处定义,其他位置写指针。领域红线的事实源是本文件 §6,不要在多个文档重复。
+- **长度软上限**:`AGENTS.md` 与 `docs/` 下文档 ≤ 300 行,ADR ≤ 800 行。契约文档超限时在文档头注明原因。
+- **完成迭代收敛**:把 `docs/superpowers/specs|plans/` 浓缩为 ADR 并同 commit 删除原文件。**v0.1 收尾前为历史快照保留期,不强制激活**。
+- **禁止**:placeholder(`TODO`/`待补充`)、在多文档重复事实、新建 `docs/<random>/` 目录、把"为什么选 A 不选 B"只写进 commit message。
+
+`git commit` 触发的文档自检清单由 `.claude/hooks/pre-commit-doc-check.sh` 提供(注册在 `.claude/settings.json`)。仅当 staged 改动含 `.md` 文件时输出提醒,不阻塞 commit。

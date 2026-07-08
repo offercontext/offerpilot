@@ -50,6 +50,12 @@ docs/*
 !docs/
 !docs/python-rewrite-contract.md
 !docs/p0-release-checklist.md
+!docs/BUGS.md
+!docs/architecture/
+docs/architecture/*
+!docs/architecture/decisions/
+!docs/architecture/decisions/*.md
+!docs/architecture/*.md
 !docs/superpowers/
 docs/superpowers/*
 !docs/superpowers/plans/
@@ -59,3 +65,6 @@ docs/superpowers/*
 
 # Local brainstorming companion artifacts
 .superpowers/
+
+# Other tools' local state
+.omc/
