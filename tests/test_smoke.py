@@ -43,11 +43,14 @@ def test_http_smoke_uses_real_http_and_cleans_test_application(tmp_path):
 
     assert report.ok is True
     assert [step.name for step in report.steps] == [
+        "http_unconfigured_chat",
         "http_health",
         "http_settings",
         "http_spa",
         "http_create_application",
         "http_list_applications",
+        "http_resume_crud",
+        "http_application_event_crud",
         "http_chat_pending",
         "http_confirm_action",
         "http_pending_cleared",
@@ -63,5 +66,8 @@ def test_cli_verify_local_runs_http_smoke(monkeypatch, tmp_path):
 
     assert result.exit_code == 0
     assert "Verify local passed" in result.output
+    assert "http_unconfigured_chat" in result.output
+    assert "http_resume_crud" in result.output
+    assert "http_application_event_crud" in result.output
     assert "http_health" in result.output
     assert "http_confirm_action" in result.output

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import gc
 import json
 from dataclasses import dataclass
 from pathlib import Path
 import socket
+import tempfile
 import threading
 import time
 from typing import Any
@@ -142,6 +144,8 @@ def run_http_smoke(
     steps: list[SmokeStep] = []
     data_dir.mkdir(parents=True, exist_ok=True)
 
+    _run_unconfigured_chat_smoke(static_dir, steps)
+
     local_model = None if real_ai else _MutableSmokeChatModel()
     app = create_app(data_dir=data_dir, static_dir=static_dir, chat_model=local_model)
     with _running_server(app) as base_url:
@@ -188,6 +192,9 @@ def run_http_smoke(
                     raise RuntimeError("created application was not returned by list endpoint")
                 steps.append(SmokeStep("http_list_applications", "GET /api/applications returned created record"))
 
+                _run_resume_http_smoke(client, steps)
+                _run_application_event_http_smoke(client, steps, application_id)
+
                 if real_ai:
                     _run_real_ai_write_smoke(client, steps, company, application_id)
                 else:
@@ -198,6 +205,101 @@ def run_http_smoke(
                 steps.append(SmokeStep("http_cleanup", f"deleted smoke application #{application_id}"))
 
     return SmokeReport(ok=True, steps=steps)
+
+
+def _run_unconfigured_chat_smoke(static_dir: Path | None, steps: list[SmokeStep]) -> None:
+    with tempfile.TemporaryDirectory(prefix="offerpilot-smoke-unconfigured-", ignore_cleanup_errors=True) as temp_dir:
+        app = create_app(data_dir=Path(temp_dir), static_dir=static_dir)
+        with _running_server(app) as base_url:
+            with httpx.Client(base_url=base_url, timeout=30.0) as client:
+                response = client.post("/api/chat", json={"message": "hello", "conversation_id": 0})
+                _assert_status(response.status_code, 503, "http_unconfigured_chat")
+                if "AI is not configured" not in response.json().get("error", ""):
+                    raise RuntimeError("unconfigured chat did not return a clear AI setup error")
+                steps.append(SmokeStep("http_unconfigured_chat", "POST /api/chat returned setup guidance without API key"))
+        del app
+        gc.collect()
+
+
+def _run_resume_http_smoke(client: httpx.Client, steps: list[SmokeStep]) -> None:
+    empty_content = {
+        "career_intent": {"target_roles": [], "target_locations": []},
+        "contact": {},
+        "education": [],
+        "experience": [],
+        "projects": [],
+        "skills": [],
+        "raw_text": "",
+    }
+    created = client.post(
+        "/api/resumes",
+        json={"title": "HTTP Smoke Resume Draft", "source": "dialog", "content_json": empty_content},
+    )
+    _assert_status(created.status_code, 201, "http_resume_crud")
+    resume_id = int(created.json()["id"])
+    try:
+        updated = client.patch(f"/api/resumes/{resume_id}", json={"title": "HTTP Smoke Resume Draft Updated"})
+        _assert_status(updated.status_code, 200, "http_resume_crud")
+        fetched = client.get(f"/api/resumes/{resume_id}")
+        _assert_status(fetched.status_code, 200, "http_resume_crud")
+        if fetched.json()["title"] != "HTTP Smoke Resume Draft Updated":
+            raise RuntimeError("resume update was not reflected by get endpoint")
+        listed = client.get("/api/resumes")
+        _assert_status(listed.status_code, 200, "http_resume_crud")
+        if not any(item.get("id") == resume_id for item in listed.json()):
+            raise RuntimeError("created resume was not returned by list endpoint")
+    finally:
+        deleted = client.delete(f"/api/resumes/{resume_id}")
+        _assert_status(deleted.status_code, 200, "http_resume_crud")
+    steps.append(SmokeStep("http_resume_crud", "resume create, update, read, list, and delete endpoints worked"))
+
+
+def _run_application_event_http_smoke(
+    client: httpx.Client,
+    steps: list[SmokeStep],
+    application_id: int,
+) -> None:
+    created = client.post(
+        "/api/application-events",
+        json={
+            "application_id": application_id,
+            "event_type": "interview",
+            "scheduled_at": "2026-07-10T10:00:00Z",
+            "duration_minutes": 30,
+            "notes": "http smoke",
+        },
+    )
+    _assert_status(created.status_code, 201, "http_application_event_crud")
+    event_id = int(created.json()["id"])
+    try:
+        updated = client.put(
+            f"/api/application-events/{event_id}",
+            json={
+                "application_id": application_id,
+                "event_type": "interview",
+                "scheduled_at": "2026-07-11T10:00:00Z",
+                "duration_minutes": 45,
+                "notes": "http smoke updated",
+            },
+        )
+        _assert_status(updated.status_code, 200, "http_application_event_crud")
+        fetched = client.get(f"/api/application-events/{event_id}")
+        _assert_status(fetched.status_code, 200, "http_application_event_crud")
+        if fetched.json()["duration_minutes"] != 45:
+            raise RuntimeError("application event update was not reflected by get endpoint")
+        listed = client.get("/api/application-events", params={"application_id": application_id})
+        _assert_status(listed.status_code, 200, "http_application_event_crud")
+        if not any(item.get("id") == event_id for item in listed.json()):
+            raise RuntimeError("created application event was not returned by list endpoint")
+    finally:
+        deleted = client.delete(f"/api/application-events/{event_id}")
+        _assert_status(deleted.status_code, 200, "http_application_event_crud")
+    steps.append(
+        SmokeStep(
+            "http_application_event_crud",
+            "application event create, update, read, list, and delete endpoints worked",
+        )
+    )
 
 
 def _run_deterministic_chat_smoke(
