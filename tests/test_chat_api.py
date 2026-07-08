@@ -33,6 +33,11 @@ class FailingModel:
         raise RuntimeError("provider unavailable")
 
 
+class SecretLeakingModel:
+    def complete(self, messages, tools):
+        raise RuntimeError("provider rejected API key sk-secret-value")
+
+
 def test_chat_returns_bad_gateway_when_model_fails(tmp_path):
     client = TestClient(
         create_app(data_dir=tmp_path, chat_model=FailingModel()),
@@ -43,6 +48,20 @@ def test_chat_returns_bad_gateway_when_model_fails(tmp_path):
 
     assert response.status_code == 502
     assert response.json() == {"error": "AI provider request failed: provider unavailable"}
+
+
+def test_chat_provider_error_masks_configured_api_key(tmp_path):
+    save_config(tmp_path, Config(api_key="sk-secret-value"))
+    client = TestClient(
+        create_app(data_dir=tmp_path, chat_model=SecretLeakingModel()),
+        raise_server_exceptions=False,
+    )
+
+    response = client.post("/api/chat", json={"message": "hello", "conversation_id": 0})
+
+    assert response.status_code == 502
+    assert "sk-secret-value" not in response.text
+    assert response.json() == {"error": "AI provider request failed: provider rejected API key ***"}
 
 
 def test_chat_exposes_module_tools_to_model(tmp_path):

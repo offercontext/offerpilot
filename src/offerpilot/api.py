@@ -5,6 +5,7 @@ from html import unescape
 from io import BytesIO
 from pathlib import Path
 from secrets import compare_digest
+from time import perf_counter
 from typing import Any, Optional
 
 import httpx
@@ -27,7 +28,7 @@ from offerpilot.config import (
     save_config,
 )
 from offerpilot.db import session_factory_for_data_dir
-from offerpilot.diagnostics import read_recent_log_entries
+from offerpilot.diagnostics import append_log_entry, read_recent_log_entries
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
 from offerpilot.repositories.chat import ChatRepository
 from offerpilot.repositories.application_events import (
@@ -1078,7 +1079,7 @@ def create_app(
                 thread_id=_agent_thread_id(conversation_id),
             )
         except Exception as exc:
-            return _ai_provider_error(exc)
+            return _ai_provider_error(exc, resolved_data_dir)
         _persist_ai_messages(chat, conversation_id, added)
         if pending is not None:
             chat.set_pending_action(conversation_id, pending)
@@ -1135,7 +1136,7 @@ def create_app(
                 thread_id=_agent_thread_id(conversation_id),
             )
         except Exception as exc:
-            return _ai_provider_error(exc)
+            return _ai_provider_error(exc, resolved_data_dir)
         _persist_ai_messages(chat, conversation_id, added)
         if new_pending is not None:
             chat.set_pending_action(conversation_id, new_pending)
@@ -1275,11 +1276,6 @@ def create_app(
         chat.delete_conversation(session_model.conversation_id)
         return JSONResponse({"status": "deleted"})
 
-    @app.get("/api/settings")
-    def get_settings() -> dict[str, Any]:
-        cfg = load_config(resolved_data_dir)
-        return _settings_payload(cfg)
-
     @app.get("/api/logs")
     def get_logs(limit: int = 100) -> dict[str, Any]:
         return {"entries": read_recent_log_entries(resolved_data_dir, limit=limit)}
@@ -1310,19 +1306,65 @@ def create_app(
         save_config(resolved_data_dir, next_config)
         return JSONResponse(skills_payload(next_config))
 
+    @app.get("/api/settings")
+    def get_settings() -> dict[str, Any]:
+        cfg = load_config(resolved_data_dir)
+        return _settings_payload(cfg)
+
+    @app.post("/api/settings/providers/test")
+    def test_settings_provider(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        cfg = load_config(resolved_data_dir)
+        provider, error = _provider_for_connection_test(payload, cfg)
+        if error is not None:
+            append_log_entry(resolved_data_dir, "ERROR", error)
+            return {"ok": False, "error": error}
+        assert provider is not None
+
+        started = perf_counter()
+        try:
+            ConfiguredAIClient(
+                Config(active_provider_id=provider.id, providers=[provider]),
+            ).complete([Message(role="user", content="Reply with OK.")], [])
+        except Exception as exc:
+            message = _safe_provider_error(exc, [provider])
+            append_log_entry(resolved_data_dir, "ERROR", f"Provider test failed for {provider.id}: {message}")
+            return {"ok": False, "error": message}
+
+        latency_ms = max(0, int((perf_counter() - started) * 1000))
+        return {
+            "ok": True,
+            "provider_id": provider.id,
+            "model": provider.model,
+            "latency_ms": latency_ms,
+            "message": "连接成功",
+        }
+
+    @app.get("/api/settings/backup")
+    def get_settings_backup() -> dict[str, Any]:
+        cfg = load_config(resolved_data_dir)
+        return _settings_backup_payload(cfg)
+
     @app.put("/api/settings")
     def update_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         current = load_config(resolved_data_dir)
         providers = _settings_providers_from_payload(payload, current)
         active_provider_id = str(payload.get("active_provider_id") or current.active_provider_id)
         active = _active_provider_from(providers, active_provider_id)
+        fallback_provider_id = _settings_fallback_provider_id(
+            payload.get("fallback_provider_id", current.fallback_provider_id),
+            providers,
+            active.id,
+        )
         next_config = Config(
             api_key=active.api_key,
             base_url=active.base_url,
             model=active.model,
             local_port=current.local_port,
-            chat_auto_approve_writes=bool(payload.get("chat_auto_approve_writes")),
+            chat_auto_approve_writes=bool(
+                payload.get("chat_auto_approve_writes", current.chat_auto_approve_writes)
+            ),
             active_provider_id=active.id,
+            fallback_provider_id=fallback_provider_id,
             providers=providers,
             runtime_mode=normalize_runtime_mode(
                 str(payload.get("runtime_mode") or current.runtime_mode),
@@ -1331,6 +1373,7 @@ def create_app(
             auth_enabled=bool(payload.get("auth_enabled", current.auth_enabled)),
             auth_token=current.auth_token,
             log_level=str(payload.get("log_level") or current.log_level).upper(),
+            skills=current.skills,
         )
         api_key = payload.get("api_key")
         if api_key:
@@ -1370,8 +1413,11 @@ def error_response(status_code: int, message: str) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status_code)
 
 
-def _ai_provider_error(exc: Exception) -> JSONResponse:
-    detail = str(exc).strip()
+def _ai_provider_error(exc: Exception, data_dir: Path) -> JSONResponse:
+    cfg = load_config(data_dir)
+    detail = _safe_provider_error(exc, cfg.provider_profiles()).strip()
+    if cfg.auth_token:
+        detail = detail.replace(cfg.auth_token, "***")
     message = "AI provider request failed"
     if detail:
         message = f"{message}: {detail}"
@@ -1666,7 +1712,10 @@ def _chat_model(injected: Optional[ChatModel], data_dir: Path) -> ChatModel | JS
     if injected is not None:
         return injected
     try:
-        return ConfiguredAIClient(load_config(data_dir))
+        return ConfiguredAIClient(
+            load_config(data_dir),
+            on_provider_event=lambda level, message: append_log_entry(data_dir, level, message),
+        )
     except ValueError as exc:
         return error_response(503, str(exc))
 
@@ -1708,6 +1757,7 @@ def _settings_payload(cfg: Config) -> dict[str, Any]:
     return {
         "chat_auto_approve_writes": cfg.chat_auto_approve_writes,
         "active_provider_id": active.id,
+        "fallback_provider_id": cfg.fallback_provider_id,
         "providers": [_provider_payload(profile) for profile in cfg.provider_profiles()],
         "base_url": active.base_url,
         "model": active.model,
@@ -1716,6 +1766,21 @@ def _settings_payload(cfg: Config) -> dict[str, Any]:
         "auth_enabled": cfg.auth_enabled,
         "has_auth_token": bool(cfg.auth_token),
         "log_level": cfg.log_level,
+    }
+
+
+def _settings_backup_payload(cfg: Config) -> dict[str, Any]:
+    return {
+        "version": 1,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "runtime_mode": cfg.runtime_mode,
+        "auth_enabled": cfg.auth_enabled,
+        "has_auth_token": bool(cfg.auth_token),
+        "log_level": cfg.log_level,
+        "chat_auto_approve_writes": cfg.chat_auto_approve_writes,
+        "active_provider_id": cfg.active_provider().id,
+        "fallback_provider_id": cfg.fallback_provider_id,
+        "providers": [_provider_payload(profile) for profile in cfg.provider_profiles()],
     }
 
 
@@ -1732,19 +1797,22 @@ def _settings_providers_from_payload(payload: dict[str, Any], current: Config) -
             return providers
 
     active = current.active_provider()
-    api_key = str(payload.get("api_key") or active.api_key)
-    return [
-        profile.model_copy(
-            update={
-                "api_key": api_key,
-                "base_url": str(payload.get("base_url") or active.base_url),
-                "model": str(payload.get("model") or active.model),
-            }
+    api_key = payload.get("api_key")
+    providers = []
+    for profile in current.provider_profiles():
+        if profile.id != active.id:
+            providers.append(profile)
+            continue
+        providers.append(
+            profile.model_copy(
+                update={
+                    "api_key": str(api_key) if api_key else profile.api_key,
+                    "base_url": str(payload.get("base_url") or profile.base_url),
+                    "model": str(payload.get("model") or profile.model),
+                }
+            )
         )
-        if profile.id == active.id
-        else profile
-        for profile in current.provider_profiles()
-    ]
+    return providers
 
 
 def _provider_from_payload(
@@ -1772,6 +1840,18 @@ def _active_provider_from(
     return providers[0]
 
 
+def _settings_fallback_provider_id(
+    value: Any,
+    providers: list[AIProviderProfile],
+    active_provider_id: str,
+) -> str:
+    requested = str(value or "")
+    if not requested or requested == active_provider_id:
+        return ""
+    provider_ids = {profile.id for profile in providers}
+    return requested if requested in provider_ids else ""
+
+
 def _provider_payload(profile: AIProviderProfile) -> dict[str, Any]:
     return {
         "id": profile.id,
@@ -1782,6 +1862,36 @@ def _provider_payload(profile: AIProviderProfile) -> dict[str, Any]:
         "enabled": profile.enabled,
         "has_api_key": bool(profile.api_key),
     }
+
+
+def _provider_for_connection_test(
+    payload: dict[str, Any],
+    cfg: Config,
+) -> tuple[AIProviderProfile, None] | tuple[None, str]:
+    provider_id = str(payload.get("provider_id") or "")
+    if provider_id:
+        provider = cfg.provider_by_id(provider_id)
+        if provider is None:
+            return None, "未找到模型供应商配置"
+        if not provider.api_key:
+            return None, "模型供应商尚未配置 API Key"
+        return provider, None
+
+    raw_provider = payload.get("provider")
+    if not isinstance(raw_provider, dict):
+        return None, "请提供 provider_id 或临时供应商配置"
+    provider = _provider_from_payload(raw_provider, cfg.provider_by_id(str(raw_provider.get("id") or "")))
+    if not provider.api_key:
+        return None, "模型供应商尚未配置 API Key"
+    return provider, None
+
+
+def _safe_provider_error(error: Exception, providers: list[AIProviderProfile]) -> str:
+    message = str(error) or "模型供应商连接失败"
+    for provider in providers:
+        if provider.api_key:
+            message = message.replace(provider.api_key, "***")
+    return message or "模型供应商连接失败"
 
 
 def _valid_event_type(event_type: str) -> bool:

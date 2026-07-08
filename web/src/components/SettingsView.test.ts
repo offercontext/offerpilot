@@ -7,6 +7,9 @@ describe('SettingsView localization', () => {
     expect(source).toContain('AI 运行时');
     expect(source).toContain('运行诊断');
     expect(source).toContain('配置 AI');
+    expect(source).toContain('导出备份');
+    expect(source).toContain('多供应商');
+    expect(source).toContain('Fallback');
     expect(source).not.toContain('>Settings<');
     expect(source).not.toContain('AI runtime');
     expect(source).not.toContain('Runtime diagnostics');

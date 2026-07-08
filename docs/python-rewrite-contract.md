@@ -28,7 +28,7 @@ Run from the worktree root unless noted:
 | Data directory | `cmd/oc/main.go` uses `OFFERPILOT_DATA`; otherwise `~/.offerpilot`; creates directory `0755` | Keep the same environment variable and default directory |
 | Database path | CLI and server use `data.db` under the data directory | Keep `data.db`; never create a parallel default path |
 | Config path | `config.json` under the data directory | Keep JSON field names and defaults |
-| Config defaults | `base_url=https://api.openai.com/v1`, `model=gpt-4o`, `local_port=8080`, `chat_auto_approve_writes=false` | Preserve defaults and missing-file behavior |
+| Config defaults | `base_url=https://api.openai.com/v1`, `model=gpt-4o`, `local_port=8080`, `chat_auto_approve_writes=false`, `fallback_provider_id=""` | Preserve defaults and missing-file behavior |
 | Docker data | Docker image sets `OFFERPILOT_DATA=/data` and declares `/data` as a volume | Keep a first-class Docker data path in the final cutover image |
 | HTTP prefix | All JSON APIs live under `/api`; frontend assets are served from root | Keep `/api` prefix so current React services work |
 | JSON casing | API and DB structs expose snake_case JSON fields | Keep snake_case field names |
@@ -156,13 +156,16 @@ Compatibility footnotes:
 | `GET /api/chat/conversations` | None | `Conversation[]` | Includes `mode`, `context_type`, and `context_ref`; `offer_id` is not part of the v0.1 conversation contract. | List order/update time |
 | `GET /api/chat/conversations/{id}` | Path id | `ChatMessage[]` | `tool_calls` remains a JSON string in DB/API model. | Preserve tool metadata |
 | `DELETE /api/chat/conversations/{id}` | Path id | `{"status":"deleted"}` | Deletes messages first, then conversation. | Cascade/delete behavior |
-| `GET /api/settings` | None | `{"chat_auto_approve_writes": bool, "base_url": string, "model": string, "has_api_key": bool}` | Never returns raw API key. | No secret exposure |
-| `PUT /api/settings` | `chat_auto_approve_writes`, `base_url`, `model`, optional `api_key` | Same as GET | Blank/missing API key must not erase existing key unless current Go behavior says so. | Update fields, preserve/replace secret |
+| `GET /api/settings` | None | `{"chat_auto_approve_writes": bool, "active_provider_id": string, "fallback_provider_id": string, "providers": ProviderProfile[], "base_url": string, "model": string, "has_api_key": bool, "runtime_mode": string, "auth_enabled": bool, "has_auth_token": bool, "log_level": string}` | Never returns raw API key; provider profiles expose `has_api_key` only. | No secret exposure, multi-provider summary |
+| `PUT /api/settings` | `chat_auto_approve_writes`, optional `active_provider_id`, optional `fallback_provider_id`, optional `providers`, optional `base_url`, optional `model`, optional `api_key`, runtime/auth/log fields | Same as GET | Blank/missing API key must not erase existing key; omitted provider list preserves existing profiles. Invalid fallback clears to empty. | Update fields, preserve/replace secret, preserve provider list |
+| `POST /api/settings/providers/test` | Either `{"provider_id": string}` or `{"provider": ProviderProfile + optional api_key}` | `{"ok": true, "provider_id": string, "model": string, "latency_ms": number, "message": "连接成功"}` or `{"ok": false, "error": string}` | Runs a minimal non-tool model call; errors are readable and sanitized. | Saved provider test, draft provider test, no key leakage |
+| `GET /api/settings/backup` | None | Safe JSON backup with runtime/auth/log flags, active/fallback ids, provider profiles with `has_api_key` only | v0.1 export only; no restore/import. | Backup excludes plaintext `api_key` |
 
 Chat/settings compatibility footnotes:
 
 - `GET /api/chat/conversations/{id}` does not currently 404 just because the message list is empty.
 - `PUT /api/settings` preserves the existing API key when `api_key` is blank or omitted.
+- AI calls try `active_provider_id` first; if it fails and `fallback_provider_id` is valid, enabled, and keyed, the fallback provider is attempted and the provider event is written to diagnostics logs.
 - New chat without explicit context creates a workspace conversation. Offer-specific UI may set `mode=nego_coach`, but persistent conversation context is still `context_type/context_ref`.
 
 ## SQLite Schema Contract
@@ -249,7 +252,7 @@ The agent loop lives in `internal/ai/agent.go`.
 | Rule | Current behavior | Python requirement |
 |---|---|---|
 | Provider abstraction | `ai.Client` supports OpenAI-compatible and Anthropic-style tool calls | Keep provider interface behind one app-level AI client |
-| Provider selection | `base_url` containing `anthropic` uses Anthropic Messages API; other URLs use OpenAI-compatible `/chat/completions` | Preserve this heuristic unless config contract is revised |
+| Provider selection | Config supports an active provider profile plus an optional fallback provider profile. LiteLLM model routing prefixes provider names unless the model already includes a provider prefix. | Preserve active-first/fallback-second behavior and keep provider adapters isolated behind one interface |
 | Tool loop | Max 8 iterations; model sees full history plus tools; only first tool call is executed per assistant turn | Preserve max iteration and one-tool-per-turn semantics |
 | Unknown tool | Converts to a tool result string `错误：未知工具 "name"` and continues | Preserve non-crashing behavior |
 | Write gate | If `tool.Write` and auto-approve is false, return pending action before executing handler | Mandatory |
