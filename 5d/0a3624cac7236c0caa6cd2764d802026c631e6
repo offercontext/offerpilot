@@ -1,0 +1,101 @@
+src/offerpilot/repositories/resumes.py
+  s_1fea66e1b84b8e::t_32776f62c941aa 3,5-6,20-25,41-45,47-48,51-56,59-65,72-76,100,112-114,116-162,171,181,209-239
+  s_1fea66e1b84b8e::t_c265c8d7bc1649 99,101-109,202,204
+  s_1fea66e1b84b8e::t_342c5bd976d908 82-93,98,115,167,178
+  s_1fea66e1b84b8e::t_a8f916aa5a7380 163
+src/offerpilot/ai/tools.py
+  s_1fea66e1b84b8e::t_a5ed79c1a2e43c 821
+  s_1fea66e1b84b8e::t_78f875d2ba3372 596-621,626-653
+  s_1fea66e1b84b8e::t_50c30ccf8077d0 27-28
+  s_1fea66e1b84b8e::t_c0cbf4ead6eb6e 282-312
+  s_1fea66e1b84b8e::t_5a1577020256ef 622-625
+  s_1fea66e1b84b8e::t_4bb8cd39b4c714 657-658
+web/src/types/resume.ts
+  s_1fea66e1b84b8e::t_2fc74649098e74 3-24,31-37,39-41,45-49,51-69,79
+src/offerpilot/models.py
+  s_1fea66e1b84b8e::t_4cb0995ed50fb5 6,155-164
+src/offerpilot/db.py
+  s_1fea66e1b84b8e::t_8090544cb63ab6 1,63,185-265,267-272,274-275,278-294,310
+  s_1fea66e1b84b8e::t_7f480bfb227474 58,62
+  s_1fea66e1b84b8e::t_810b4846cd4d73 50-56,61
+  s_1fea66e1b84b8e::t_8dbc38830c9107 266,273,276-277,295-309
+  s_7f2bc75bf7c269::t_8bdc934b72cf0f 311-312
+web/src/components/ResumeLibraryView.module.css
+  s_1fea66e1b84b8e::t_c53ee366bbe8a2 4,6,19-25,31-36,38-86,101-103,130-257
+web/src/services/resumes.test.ts
+  s_1fea66e1b84b8e::t_adfaeb9c015611 1-13
+web/src/components/ResumeCard.tsx
+  s_1fea66e1b84b8e::t_0c3cd69c47077a 1-2,10-11,15-38,41-47,50-57,59-68,70,72,74,76-77,80,83-92,102-116,118,120-122,124-125,130,133,146-163
+web/src/components/ResumeLibraryView.tsx
+  s_1fea66e1b84b8e::t_4e12d49a7a967f 3-8,11-19,22-23,26-35,46-71,83-102,106-109,112-119,125,128-138,152,160-175,181-200,203-204,213-214,222-223,225,234,237,241,245
+web/src/components/ChatPanel/capabilities.ts
+  s_1fea66e1b84b8e::t_aef9882f8de13b 73-74
+tests/test_schema_compatibility.py
+  s_1fea66e1b84b8e::t_81ca9f87d06a3f 235,282,285-317
+  s_1fea66e1b84b8e::t_3968fd622ef514 1,151-234,236-281,283-284
+tests/test_jd_resume_ai_api.py
+  s_1fea66e1b84b8e::t_18ebb65ef9e309 19-44,140
+src/offerpilot/schemas.py
+  s_1fea66e1b84b8e::t_e743fc5ba0238a 3,5,7,109-119,122-125
+  s_1fea66e1b84b8e::t_48a393d9fc7355 239-309
+  s_1fea66e1b84b8e::t_ba607526b1bf55 126
+src/offerpilot/api.py
+  s_1fea66e1b84b8e::t_899fbd8d324496 923,926-931
+  s_1fea66e1b84b8e::t_74f18c2ac1aa01 844-847
+  s_1fea66e1b84b8e::t_5edf2e653dd8c0 64-65
+  s_1fea66e1b84b8e::t_16d21c8880f87d 740-742,745-750,777,781-782,792-810,818-830,835-843,848-861,863-866,868,870
+  s_1fea66e1b84b8e::t_efcae49a4b9809 11
+  s_1fea66e1b84b8e::t_cb6922a96b8329 770-773,867,924,1948-1950,1977-1981,1984-1991,2039-2040
+  s_1fea66e1b84b8e::t_7ea05605701116 831-834
+  s_1fea66e1b84b8e::t_a040778a38b6c9 925
+  s_1fea66e1b84b8e::t_fdf7223d27a5d5 1931-1947,1951-1976,1982-1983,1992-2033
+web/src/components/ResumeCard.test.tsx
+  s_1fea66e1b84b8e::t_adfaeb9c015611 1-85
+web/src/layout/CommandPalette.test.ts
+  s_1fea66e1b84b8e::t_adfaeb9c015611 1-11
+web/src/services/resumes.ts
+  s_1fea66e1b84b8e::t_2fc74649098e74 1-8,23-37
+web/src/layout/CommandPalette.tsx
+  s_1fea66e1b84b8e::t_349d411d148654 74-75
+tests/test_ai_tools.py
+  s_1fea66e1b84b8e::t_341372bc0f4e93 470-476,498-499
+  s_1fea66e1b84b8e::t_29f93935cacc95 4-5,442-468,477-497,500-523
+  s_1fea66e1b84b8e::t_f004de82fca4bc 383-441,469,524-525
+web/src/layout/AppShell.tsx
+  s_1fea66e1b84b8e::t_349d411d148654 292
+web/src/components/ResumeTextEditorDrawer.tsx
+  s_1fea66e1b84b8e::t_86ae1e38510bd7 1
+web/src/components/ChatPanel/model.test.ts
+  s_1fea66e1b84b8e::t_1791b47aa9c2c5 25-35
+web/src/components/ResumeEditorDrawer.tsx
+  s_1fea66e1b84b8e::t_86ae1e38510bd7 1-292,294-312,314-327
+  s_1fea66e1b84b8e::t_b48948d009b8b4 293,313
+tests/test_resumes_api.py
+  s_1fea66e1b84b8e::t_8037b1985b0094 4-5,109-112,114-116,213-243,301-308,321-322,351-370,372-373,375,377-378
+  s_1fea66e1b84b8e::t_28c815bf2a726a 156-182,244-268,292-300,309-320,323-324
+  s_1fea66e1b84b8e::t_b22d93eb126dbe 43,48-59,64-91,98,101,106-107,118-119,124-126,128-130,133,141-155,183,187-191,194-212,269-291,325-350
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "5d0a3624cac7236c0caa6cd2764d802026c631e6",
+  "prompts": {},
+  "sessions": {
+    "s_1fea66e1b84b8e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3fc1-daa4-77d1-9e1e-a46e0f1580f8",
+        "model": "gpt-5.5"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    },
+    "s_7f2bc75bf7c269": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3fc9-102a-7c12-bd59-7b0c567c26b6",
+        "model": "gpt-5.5"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    }
+  }
+}
