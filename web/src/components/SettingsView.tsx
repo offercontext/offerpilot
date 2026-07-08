@@ -1,7 +1,7 @@
-import { ApiOutlined, FileSearchOutlined, ReloadOutlined, SettingOutlined } from '@ant-design/icons';
+import { ApiOutlined, DownloadOutlined, FileSearchOutlined, ReloadOutlined, SettingOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import { Button, Divider, Empty, Skeleton, Space, Tag, Typography } from 'antd';
-import { getLogs, getSettings, type LogEntry } from '@/services/chat';
+import { exportBackup, getLogs, getSettings, type LogEntry } from '@/services/chat';
 
 interface Props {
   onOpenAISettings: () => void;
@@ -19,6 +19,7 @@ export default function SettingsView({ onOpenAISettings }: Props) {
   });
   const settings = settingsQuery.data;
   const logs = logsQuery.data ?? [];
+  const backupPath = '/backups/export';
 
   return (
     <section
@@ -61,11 +62,14 @@ export default function SettingsView({ onOpenAISettings }: Props) {
           <RuntimeField label="访问控制" value={settings?.auth_enabled ? '已开启' : '未开启'} />
           <RuntimeField label="密钥状态" value={settings?.has_api_key ? '已配置' : '未配置'} />
         </div>
-        <div>
+        <Space wrap>
           <Button type="primary" icon={<SettingOutlined />} onClick={onOpenAISettings}>
             配置 AI
           </Button>
-        </div>
+          <Button icon={<DownloadOutlined />} onClick={() => exportBackup(backupPath)}>
+            导出备份
+          </Button>
+        </Space>
       </section>
 
       <section style={panelStyle}>

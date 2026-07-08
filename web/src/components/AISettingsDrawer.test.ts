@@ -12,4 +12,13 @@ describe('AISettingsDrawer localization', () => {
     expect(source).not.toContain('label="Base URL"');
     expect(source).not.toContain('OpenAI-compatible API base');
   });
+
+  it('exposes multi-provider management, fallback order, and connectivity testing', () => {
+    expect(source).toContain('ProviderList');
+    expect(source).toContain('fallback_provider_ids');
+    expect(source).toContain('testProviderConnection');
+    expect(source).toContain('测试连接');
+    expect(source).toContain('设为默认');
+    expect(source).toContain('备用顺序');
+  });
 });

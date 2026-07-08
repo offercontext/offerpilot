@@ -1,10 +1,12 @@
 import json
 import re
+import zipfile
 from datetime import datetime, timezone
 from html import unescape
 from io import BytesIO
 from pathlib import Path
 from secrets import compare_digest
+from time import perf_counter
 from typing import Any, Optional
 
 import httpx
@@ -1267,9 +1269,58 @@ def create_app(
         cfg = load_config(resolved_data_dir)
         return _settings_payload(cfg)
 
+    @app.post("/api/settings/providers/test")
+    def test_settings_provider(payload: dict[str, Any] = Body(default={})) -> JSONResponse:
+        cfg = load_config(resolved_data_dir)
+        profile = _provider_for_test_payload(payload, cfg)
+        if isinstance(profile, JSONResponse):
+            return profile
+        if not profile.api_key:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "provider_id": profile.id,
+                    "error": "provider API key is not configured",
+                    "latency_ms": 0,
+                }
+            )
+        started = perf_counter()
+        try:
+            ConfiguredAIClient(
+                Config(active_provider_id=profile.id, providers=[profile])
+            ).complete([Message(role="user", content="Reply with ok.")], [])
+        except Exception as exc:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "provider_id": profile.id,
+                    "error": str(exc),
+                    "latency_ms": int((perf_counter() - started) * 1000),
+                }
+            )
+        return JSONResponse(
+            {
+                "ok": True,
+                "provider_id": profile.id,
+                "error": "",
+                "latency_ms": int((perf_counter() - started) * 1000),
+            }
+        )
+
     @app.get("/api/logs")
     def get_logs(limit: int = 100) -> dict[str, Any]:
         return {"entries": read_recent_log_entries(resolved_data_dir, limit=limit)}
+
+    @app.get("/api/backups/export")
+    def export_backup() -> Response:
+        archive = _build_backup_archive(resolved_data_dir)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        filename = f"offerpilot-backup-{stamp}.zip"
+        return Response(
+            content=archive,
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
     @app.get("/api/skills")
     def list_skills() -> dict[str, Any]:
@@ -1311,6 +1362,12 @@ def create_app(
             chat_auto_approve_writes=bool(payload.get("chat_auto_approve_writes")),
             active_provider_id=active.id,
             providers=providers,
+            fallback_provider_ids=_settings_fallback_provider_ids_from_payload(
+                payload,
+                current,
+                providers,
+                active.id,
+            ),
             runtime_mode=normalize_runtime_mode(
                 str(payload.get("runtime_mode") or current.runtime_mode),
                 current.runtime_mode,
@@ -1596,6 +1653,11 @@ def _settings_payload(cfg: Config) -> dict[str, Any]:
     return {
         "chat_auto_approve_writes": cfg.chat_auto_approve_writes,
         "active_provider_id": active.id,
+        "fallback_provider_ids": _valid_fallback_provider_ids(
+            cfg.fallback_provider_ids,
+            cfg.provider_profiles(),
+            active.id,
+        ),
         "providers": [_provider_payload(profile) for profile in cfg.provider_profiles()],
         "base_url": active.base_url,
         "model": active.model,
@@ -1605,6 +1667,33 @@ def _settings_payload(cfg: Config) -> dict[str, Any]:
         "has_auth_token": bool(cfg.auth_token),
         "log_level": cfg.log_level,
     }
+
+
+def _settings_fallback_provider_ids_from_payload(
+    payload: dict[str, Any],
+    current: Config,
+    providers: list[AIProviderProfile],
+    active_provider_id: str,
+) -> list[str]:
+    raw = payload.get("fallback_provider_ids", current.fallback_provider_ids)
+    return _valid_fallback_provider_ids(raw if isinstance(raw, list) else [], providers, active_provider_id)
+
+
+def _valid_fallback_provider_ids(
+    raw_ids: list[Any],
+    providers: list[AIProviderProfile],
+    active_provider_id: str,
+) -> list[str]:
+    provider_ids = {profile.id for profile in providers}
+    valid: list[str] = []
+    seen: set[str] = set()
+    for raw_id in raw_ids:
+        provider_id = str(raw_id)
+        if provider_id == active_provider_id or provider_id not in provider_ids or provider_id in seen:
+            continue
+        valid.append(provider_id)
+        seen.add(provider_id)
+    return valid
 
 
 def _settings_providers_from_payload(payload: dict[str, Any], current: Config) -> list[AIProviderProfile]:
@@ -1659,6 +1748,26 @@ def _active_provider_from(
     return providers[0]
 
 
+def _provider_for_test_payload(payload: dict[str, Any], current: Config) -> AIProviderProfile | JSONResponse:
+    provider_id = str(payload.get("provider_id") or "")
+    profiles = current.provider_profiles()
+    if provider_id:
+        for profile in profiles:
+            if profile.id == provider_id:
+                return profile
+        return error_response(404, "provider not found")
+
+    raw_provider = payload.get("provider")
+    if isinstance(raw_provider, dict):
+        current_by_id = {profile.id: profile for profile in profiles}
+        return _provider_from_payload(raw_provider, current_by_id.get(str(raw_provider.get("id", ""))))
+
+    if payload:
+        active = current.active_provider()
+        return _provider_from_payload(payload, active)
+    return current.active_provider()
+
+
 def _provider_payload(profile: AIProviderProfile) -> dict[str, Any]:
     return {
         "id": profile.id,
@@ -1669,6 +1778,17 @@ def _provider_payload(profile: AIProviderProfile) -> dict[str, Any]:
         "enabled": profile.enabled,
         "has_api_key": bool(profile.api_key),
     }
+
+
+def _build_backup_archive(data_dir: Path) -> bytes:
+    buffer = BytesIO()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path in sorted(data_dir.rglob("*")):
+            if not path.is_file():
+                continue
+            archive.write(path, path.relative_to(data_dir).as_posix())
+    return buffer.getvalue()
 
 
 def _valid_event_type(event_type: str) -> bool:

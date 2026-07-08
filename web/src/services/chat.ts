@@ -50,6 +50,7 @@ export async function deleteConversation(id: number): Promise<void> {
 export interface Settings {
   chat_auto_approve_writes: boolean;
   active_provider_id: string;
+  fallback_provider_ids: string[];
   providers: AIProviderProfile[];
   base_url: string;
   model: string;
@@ -82,10 +83,23 @@ export interface AIProviderProfile {
 export interface UpdateSettingsPayload {
   chat_auto_approve_writes: boolean;
   active_provider_id?: string;
+  fallback_provider_ids?: string[];
   providers?: Array<Omit<AIProviderProfile, 'has_api_key'> & { api_key?: string }>;
-  base_url: string;
-  model: string;
+  base_url?: string;
+  model?: string;
   api_key?: string;
+}
+
+export interface ProviderTestPayload {
+  provider_id?: string;
+  provider?: Omit<AIProviderProfile, 'has_api_key'> & { api_key?: string };
+}
+
+export interface ProviderTestResult {
+  ok: boolean;
+  provider_id: string;
+  error: string;
+  latency_ms: number;
 }
 
 export async function getSettings(): Promise<Settings> {
@@ -96,6 +110,15 @@ export async function getSettings(): Promise<Settings> {
 export async function updateSettings(payload: UpdateSettingsPayload): Promise<Settings> {
   const { data } = await http.put<Settings>('/settings', payload);
   return data;
+}
+
+export async function testProviderConnection(payload: ProviderTestPayload): Promise<ProviderTestResult> {
+  const { data } = await http.post<ProviderTestResult>('/settings/providers/test', payload);
+  return data;
+}
+
+export function exportBackup(path = '/backups/export'): void {
+  window.location.href = `/api${path}`;
 }
 
 export async function getLogs(limit = 20): Promise<LogEntry[]> {

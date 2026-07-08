@@ -11,40 +11,71 @@ from offerpilot.config import AIProviderProfile, Config
 
 class ConfiguredAIClient:
     def __init__(self, config: Config):
-        self._provider = config.active_provider()
-        if not self._provider.api_key:
+        self._providers = _ordered_providers(config)
+        if not self._providers:
             raise ValueError("AI is not configured: run `oc config` to set your API key")
 
     def complete(self, messages: list[Message], tools: list[dict[str, Any]]) -> Assistant:
-        payload: dict[str, Any] = {
-            "model": _litellm_model(self._provider),
-            "messages": [_openai_message(message) for message in messages],
-            "api_key": self._provider.api_key,
-        }
-        api_base = _litellm_api_base(self._provider)
-        if api_base:
-            payload["api_base"] = api_base
-        if tools:
-            payload["tools"] = [_openai_tool(tool) for tool in tools]
-            payload["tool_choice"] = "auto"
+        last_error: Exception | None = None
+        for provider in self._providers:
+            try:
+                return _complete_with_provider(provider, messages, tools)
+            except Exception as exc:
+                last_error = exc
+        if last_error is not None:
+            raise last_error
+        raise ValueError("AI is not configured: run `oc config` to set your API key")
 
-        response = completion(**payload)
-        message = _first_choice_message(response)
-        calls = []
-        for call in _get(message, "tool_calls") or []:
-            function = _get(call, "function") or {}
-            calls.append(
-                ToolCall(
-                    id=str(_get(call, "id") or ""),
-                    name=str(_get(function, "name") or ""),
-                    args=str(_get(function, "arguments") or "{}"),
-                )
+
+def _ordered_providers(config: Config) -> list[AIProviderProfile]:
+    profiles = config.provider_profiles()
+    by_id = {profile.id: profile for profile in profiles}
+    ordered_ids = [config.active_provider().id, *config.fallback_provider_ids]
+    ordered: list[AIProviderProfile] = []
+    seen: set[str] = set()
+    for provider_id in ordered_ids:
+        profile = by_id.get(provider_id)
+        if profile is None or profile.id in seen or not profile.enabled or not profile.api_key:
+            continue
+        ordered.append(profile)
+        seen.add(profile.id)
+    return ordered
+
+
+def _complete_with_provider(
+    provider: AIProviderProfile,
+    messages: list[Message],
+    tools: list[dict[str, Any]],
+) -> Assistant:
+    payload: dict[str, Any] = {
+        "model": _litellm_model(provider),
+        "messages": [_openai_message(message) for message in messages],
+        "api_key": provider.api_key,
+    }
+    api_base = _litellm_api_base(provider)
+    if api_base:
+        payload["api_base"] = api_base
+    if tools:
+        payload["tools"] = [_openai_tool(tool) for tool in tools]
+        payload["tool_choice"] = "auto"
+
+    response = completion(**payload)
+    message = _first_choice_message(response)
+    calls = []
+    for call in _get(message, "tool_calls") or []:
+        function = _get(call, "function") or {}
+        calls.append(
+            ToolCall(
+                id=str(_get(call, "id") or ""),
+                name=str(_get(function, "name") or ""),
+                args=str(_get(function, "arguments") or "{}"),
             )
-        return Assistant(
-            content=str(_get(message, "content") or ""),
-            tool_calls=calls,
-            provider_blocks=_provider_blocks(message),
         )
+    return Assistant(
+        content=str(_get(message, "content") or ""),
+        tool_calls=calls,
+        provider_blocks=_provider_blocks(message),
+    )
 
 
 def _litellm_model(provider: AIProviderProfile) -> str:

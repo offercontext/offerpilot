@@ -96,3 +96,45 @@ def test_client_uses_active_provider_profile(monkeypatch):
 def test_client_requires_active_provider_key():
     with pytest.raises(ValueError, match="AI is not configured"):
         ConfiguredAIClient(Config(providers=[AIProviderProfile(id="default", api_key="")]))
+
+
+def test_client_falls_back_to_configured_provider_order(monkeypatch):
+    calls: list[dict[str, Any]] = []
+
+    def fake_completion(**kwargs: Any) -> Any:
+        calls.append(kwargs)
+        if kwargs["api_key"] == "sk-openai":
+            raise RuntimeError("primary down")
+        return {"choices": [{"message": {"content": "fallback ok"}}]}
+
+    monkeypatch.setattr(ai_client, "completion", fake_completion)
+    client = ConfiguredAIClient(
+        Config(
+            active_provider_id="openai",
+            fallback_provider_ids=["deepseek"],
+            providers=[
+                AIProviderProfile(
+                    id="openai",
+                    label="OpenAI",
+                    provider="openai",
+                    api_key="sk-openai",
+                    model="gpt-4o",
+                ),
+                AIProviderProfile(
+                    id="deepseek",
+                    label="DeepSeek",
+                    provider="openai_compatible",
+                    api_key="sk-deepseek",
+                    base_url="https://api.deepseek.com/v1",
+                    model="deepseek-chat",
+                ),
+            ],
+        )
+    )
+
+    assistant = client.complete([Message(role="user", content="hello")], [])
+
+    assert assistant.content == "fallback ok"
+    assert [call["api_key"] for call in calls] == ["sk-openai", "sk-deepseek"]
+    assert calls[1]["model"] == "openai/deepseek-chat"
+    assert calls[1]["api_base"] == "https://api.deepseek.com/v1"

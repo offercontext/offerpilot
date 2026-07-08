@@ -43,6 +43,7 @@ class Config(BaseModel):
     chat_auto_approve_writes: bool = False
     active_provider_id: str = DEFAULT_PROVIDER_ID
     providers: list[AIProviderProfile] = Field(default_factory=list)
+    fallback_provider_ids: list[str] = Field(default_factory=list)
     runtime_mode: RuntimeMode = "local"
     auth_enabled: bool = False
     auth_token: str = ""
