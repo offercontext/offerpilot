@@ -21,6 +21,7 @@ describe('module navigation contract', () => {
     expect(MODULE_NAV.some((item) => item.label.includes('Pilot'))).toBe(false);
     expect(MODULE_NAV.some((item) => item.label === '面试')).toBe(true);
     expect(resolveModuleForView('board')).toBe('pipeline');
+    expect(resolveModuleForView('applications-list')).toBe('pipeline');
     expect(resolveModuleForView('calendar')).toBe('pipeline');
     expect(resolveModuleForView('questions')).toBe('practice');
     expect(resolveModuleForView('interview')).toBe('interview');
@@ -37,6 +38,7 @@ describe('module navigation contract', () => {
   it('exposes in-module tabs for secondary workflows', () => {
     expect(moduleTabsForView('calendar')).toEqual([
       { view: 'board', label: '看板' },
+      { view: 'applications-list', label: '列表' },
       { view: 'calendar', label: '日历' },
       { view: 'offers', label: 'Offer' },
       { view: 'reminders', label: '提醒' },

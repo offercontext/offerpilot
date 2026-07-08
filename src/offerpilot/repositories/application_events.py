@@ -65,6 +65,7 @@ class ApplicationEventsRepository:
         statement = (
             select(ApplicationEvent, Application.company_name, Application.position_name)
             .join(Application, Application.id == ApplicationEvent.application_id)
+            .where(Application.deleted_at.is_(None))
             .order_by(ApplicationEvent.scheduled_at.asc(), ApplicationEvent.id.asc())
         )
         if month:
@@ -87,11 +88,11 @@ class ApplicationEventsRepository:
 
     def get(self, event_id: int) -> Optional[ApplicationEvent]:
         with self._session_factory() as session:
-            return session.get(ApplicationEvent, event_id)
+            return _get_visible_event(session, event_id)
 
     def update(self, event_id: int, data: ApplicationEventCreate) -> Optional[ApplicationEvent]:
         with self._session_factory() as session:
-            event = session.get(ApplicationEvent, event_id)
+            event = _get_visible_event(session, event_id)
             if event is None:
                 return None
             event.application_id = data.application_id
@@ -111,12 +112,22 @@ class ApplicationEventsRepository:
 
     def delete(self, event_id: int) -> bool:
         with self._session_factory() as session:
-            event = session.get(ApplicationEvent, event_id)
+            event = _get_visible_event(session, event_id)
             if event is None:
                 return False
             session.delete(event)
             session.commit()
             return True
+
+
+def _get_visible_event(session: Session, event_id: int) -> Optional[ApplicationEvent]:
+    event = session.scalar(
+        select(ApplicationEvent)
+        .join(Application, Application.id == ApplicationEvent.application_id)
+        .where(ApplicationEvent.id == event_id)
+        .where(Application.deleted_at.is_(None))
+    )
+    return event
 
 def duration_minutes(duration: str | int) -> int:
     if isinstance(duration, int):

@@ -1,24 +1,29 @@
 import { useMemo, useState } from 'react';
 import {
   DndContext,
+  DragOverlay,
   PointerSensor,
+  type DragEndEvent,
+  type DragStartEvent,
   useSensor,
   useSensors,
-  DragOverlay,
-  type DragStartEvent,
-  type DragEndEvent,
 } from '@dnd-kit/core';
 import { useQueryClient } from '@tanstack/react-query';
-import { message } from 'antd';
+import { Input, Modal, Typography, message } from 'antd';
 import { updateApplication } from '@/services/applications';
 import {
   KANBAN_COLUMNS,
-  STATUS_LABELS,
   STATUS_COLORS,
+  STATUS_LABELS,
 } from '@/types/application';
 import type { Application, ApplicationStatus } from '@/types/application';
 import KanbanColumn from './KanbanColumn';
 import KanbanCard from './KanbanCard';
+import {
+  buildApplicationStatusPayload,
+  requiresClosedReason,
+  willRecordFirstStatusTimestamp,
+} from './applicationLifecycle';
 import styles from './KanbanBoard.module.css';
 
 interface KanbanBoardProps {
@@ -29,6 +34,9 @@ interface KanbanBoardProps {
 export default function KanbanBoard({ applications, onOpenDetail }: KanbanBoardProps) {
   const queryClient = useQueryClient();
   const [activeId, setActiveId] = useState<number | null>(null);
+  const [pendingMove, setPendingMove] = useState<{ app: Application; status: ApplicationStatus } | null>(null);
+  const [closedReason, setClosedReason] = useState('');
+  const [saving, setSaving] = useState(false);
 
   const columns = useMemo(() => {
     const grouped = {} as Record<ApplicationStatus, Application[]>;
@@ -54,7 +62,13 @@ export default function KanbanBoard({ applications, onOpenDetail }: KanbanBoardP
     setActiveId(event.active.id as number);
   };
 
-  const handleDragEnd = async (event: DragEndEvent) => {
+  const requestStatusChange = (app: Application, newStatus: ApplicationStatus) => {
+    if (newStatus === app.status) return;
+    setPendingMove({ app, status: newStatus });
+    setClosedReason('');
+  };
+
+  const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
     setActiveId(null);
     if (!over) return;
@@ -64,63 +78,31 @@ export default function KanbanBoard({ applications, onOpenDetail }: KanbanBoardP
     if (currentStatus === newStatus) return;
 
     const appId = active.id as number;
-    const newLabel = STATUS_LABELS[newStatus];
-    const appsKey = ['applications'];
-    const previousApps = queryClient.getQueryData<Application[]>(appsKey);
+    const app = applications.find((item) => item.id === appId);
+    if (app) requestStatusChange(app, newStatus);
+  };
 
-    // Optimistic update
-    queryClient.setQueryData<Application[]>(appsKey, (old = []) =>
-      old.map((app) => (app.id === appId ? { ...app, status: newStatus } : app))
-    );
-
-    const revert = async () => {
-      queryClient.setQueryData(appsKey, previousApps);
-      const app = previousApps?.find((a) => a.id === appId);
-      if (app) {
-        try {
-          await updateApplication(appId, {
-            company_name: app.company_name,
-            position_name: app.position_name,
-            job_url: app.job_url,
-            status: app.status,
-            notes: app.notes,
-          });
-        } catch {
-          queryClient.invalidateQueries({ queryKey: ['applications'] });
-        }
-      }
-    };
-
+  const confirmStatusChange = async () => {
+    if (!pendingMove) return;
+    if (requiresClosedReason(pendingMove.app.status, pendingMove.status) && !closedReason.trim()) {
+      message.error('请填写关闭原因');
+      return;
+    }
+    setSaving(true);
     try {
-      const app = previousApps?.find((a) => a.id === appId);
-      await updateApplication(appId, {
-        company_name: app?.company_name ?? '',
-        position_name: app?.position_name ?? '',
-        job_url: app?.job_url ?? '',
-        status: newStatus,
-        notes: app?.notes ?? '',
-      });
-      message.success({
-        content: (
-          <span>
-            已移至「{newLabel}」
-            <a
-              style={{ marginLeft: 12, fontWeight: 600 }}
-              onClick={() => {
-                message.destroy('kanban-move');
-                revert();
-              }}
-            >
-              撤销
-            </a>
-          </span>
-        ),
-        key: 'kanban-move',
-        duration: 4,
-      });
+      await updateApplication(
+        pendingMove.app.id,
+        buildApplicationStatusPayload(pendingMove.app, pendingMove.status, closedReason)
+      );
+      queryClient.invalidateQueries({ queryKey: ['applications'] });
+      queryClient.invalidateQueries({ queryKey: ['events'] });
+      message.success(`已移至「${STATUS_LABELS[pendingMove.status]}」`);
+      setPendingMove(null);
+      setClosedReason('');
     } catch {
-      queryClient.setQueryData(appsKey, previousApps);
       message.error('状态更新失败，请重试');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -145,12 +127,47 @@ export default function KanbanBoard({ applications, onOpenDetail }: KanbanBoardP
             cards={columns[status]}
             activeId={activeId}
             onOpenDetail={onOpenDetail}
+            onRequestStatusChange={requestStatusChange}
           />
         ))}
       </div>
       <DragOverlay dropAnimation={null}>
         {activeRecord ? <KanbanCard record={activeRecord} overlay /> : null}
       </DragOverlay>
+      <Modal
+        title="确认更新投递状态"
+        open={!!pendingMove}
+        okText="确认更新"
+        cancelText="取消"
+        confirmLoading={saving}
+        onOk={confirmStatusChange}
+        onCancel={() => {
+          setPendingMove(null);
+          setClosedReason('');
+        }}
+      >
+        {pendingMove && (
+          <div className={styles.confirmBody}>
+            <Typography.Paragraph>
+              {pendingMove.app.company_name} · {pendingMove.app.position_name}
+            </Typography.Paragraph>
+            <Typography.Paragraph type="secondary">
+              从「{STATUS_LABELS[pendingMove.app.status]}」移动到「{STATUS_LABELS[pendingMove.status]}」。
+              {willRecordFirstStatusTimestamp(pendingMove.app, pendingMove.status)
+                ? '首次进入该状态，将记录对应时间。'
+                : '该状态已有首次时间记录，本次不会覆盖。'}
+            </Typography.Paragraph>
+            {requiresClosedReason(pendingMove.app.status, pendingMove.status) && (
+              <Input.TextArea
+                rows={3}
+                value={closedReason}
+                onChange={(event) => setClosedReason(event.target.value)}
+                placeholder="填写关闭原因，例如：岗位关闭、主动放弃、已接受其他 offer"
+              />
+            )}
+          </div>
+        )}
+      </Modal>
     </DndContext>
   );
 }

@@ -64,6 +64,67 @@ def test_list_application_events_month_stays_within_requested_month(tmp_path):
     ]
 
 
+def test_application_events_hide_soft_deleted_applications(tmp_path):
+    client = TestClient(create_app(data_dir=tmp_path))
+    app = client.post(
+        "/api/applications",
+        json={"company_name": "ByteDance", "position_name": "Backend"},
+    ).json()
+    event = client.post(
+        "/api/application-events",
+        json={
+            "application_id": app["id"],
+            "event_type": "interview",
+            "scheduled_at": "2026-07-10T10:00:00Z",
+            "duration_minutes": 45,
+        },
+    ).json()
+
+    client.delete(f"/api/applications/{app['id']}")
+    response = client.get("/api/application-events")
+
+    assert response.status_code == 200
+    assert all(item["id"] != event["id"] for item in response.json())
+
+
+def test_application_events_for_soft_deleted_applications_are_not_addressable(tmp_path):
+    client = TestClient(create_app(data_dir=tmp_path))
+    app = client.post(
+        "/api/applications",
+        json={"company_name": "ByteDance", "position_name": "Backend"},
+    ).json()
+    other = client.post(
+        "/api/applications",
+        json={"company_name": "OpenAI", "position_name": "Product"},
+    ).json()
+    event = client.post(
+        "/api/application-events",
+        json={
+            "application_id": app["id"],
+            "event_type": "interview",
+            "scheduled_at": "2026-07-10T10:00:00Z",
+            "duration_minutes": 45,
+        },
+    ).json()
+
+    client.delete(f"/api/applications/{app['id']}")
+
+    assert client.get(f"/api/application-events/{event['id']}").status_code == 404
+    assert (
+        client.put(
+            f"/api/application-events/{event['id']}",
+            json={
+                "application_id": other["id"],
+                "event_type": "interview",
+                "scheduled_at": "2026-07-11T10:00:00Z",
+                "duration_minutes": 45,
+            },
+        ).status_code
+        == 404
+    )
+    assert client.delete(f"/api/application-events/{event['id']}").status_code == 404
+
+
 def test_create_event_rejects_missing_application(tmp_path):
     client = TestClient(create_app(data_dir=tmp_path))
 

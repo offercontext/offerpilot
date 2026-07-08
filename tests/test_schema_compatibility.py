@@ -32,6 +32,102 @@ def test_application_events_have_application_foreign_key_and_event_columns(tmp_p
     assert legacy_events == []
 
 
+def test_applications_have_v01_lifecycle_columns(tmp_path):
+    db_path = tmp_path / "data.db"
+    init_database(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(applications)")}
+
+    assert {
+        "closed_reason",
+        "closed_at",
+        "deleted_at",
+        "first_pending_at",
+        "first_applied_at",
+        "first_written_test_at",
+        "first_interview_at",
+        "first_offer_at",
+    }.issubset(columns)
+
+
+def test_init_database_backfills_legacy_application_lifecycle_columns(tmp_path):
+    db_path = tmp_path / "data.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE applications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_name TEXT NOT NULL,
+                position_name TEXT NOT NULL,
+                job_url TEXT DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'applied',
+                source TEXT NOT NULL DEFAULT 'cli',
+                notes TEXT DEFAULT '',
+                applied_at DATETIME NOT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO applications (
+                company_name, position_name, status, applied_at, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "ByteDance",
+                "Backend",
+                "interview",
+                "2026-07-01 09:00:00",
+                "2026-07-01 09:00:00",
+                "2026-07-03 10:00:00",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO applications (
+                company_name, position_name, status, applied_at, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "OpenAI",
+                "Product",
+                "closed",
+                "2026-07-02 09:00:00",
+                "2026-07-02 09:00:00",
+                "2026-07-04 10:00:00",
+            ),
+        )
+
+    init_database(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                status,
+                first_interview_at,
+                closed_at,
+                first_applied_at,
+                closed_reason,
+                deleted_at
+            FROM applications
+            ORDER BY id
+            """
+        ).fetchall()
+        versions = {
+            row[0] for row in conn.execute("SELECT version FROM schema_migrations").fetchall()
+        }
+
+    assert rows[0] == ("interview", "2026-07-03 10:00:00", None, None, "", None)
+    assert rows[1] == ("closed", None, "2026-07-04 10:00:00", None, "", None)
+    assert "0005_application_lifecycle_columns" in versions
+
+
 def test_interview_notes_application_foreign_key_sets_null(tmp_path):
     db_path = tmp_path / "data.db"
     init_database(db_path)

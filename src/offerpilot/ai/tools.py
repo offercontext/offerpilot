@@ -99,6 +99,10 @@ def application_tool_registry(repo: ApplicationsRepository) -> dict[str, dict[st
                     "position_name": {"type": "string"},
                     "job_url": {"type": "string"},
                     "status": {"type": "string", "enum": list(APPLICATION_STATUS_IDS)},
+                    "closed_reason": {
+                        "type": "string",
+                        "description": "Required when status is closed.",
+                    },
                 },
                 "required": ["company_name", "position_name"],
             },
@@ -116,6 +120,10 @@ def application_tool_registry(repo: ApplicationsRepository) -> dict[str, dict[st
                         "description": "Application id returned by list_applications.",
                     },
                     "status": {"type": "string", "enum": list(APPLICATION_STATUS_IDS)},
+                    "closed_reason": {
+                        "type": "string",
+                        "description": "Required when status is closed.",
+                    },
                 },
                 "required": ["id", "status"],
             },
@@ -402,6 +410,7 @@ def _create_application(repo: ApplicationsRepository, args: str) -> str:
             job_url=str(payload.get("job_url") or ""),
             status=normalize_application_status(str(payload.get("status") or "applied")),
             source="ai",
+            closed_reason=str(payload.get("closed_reason") or ""),
         )
     )
     return json.dumps(_application_json(app), ensure_ascii=False)
@@ -423,6 +432,7 @@ def _update_application_status(repo: ApplicationsRepository, args: str) -> str:
             source=app.source,
             notes=app.notes,
             applied_at=app.applied_at,
+            closed_reason=str(payload.get("closed_reason") or ""),
         ),
     )
     if updated is None:

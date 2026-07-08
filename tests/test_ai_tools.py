@@ -42,6 +42,7 @@ def test_application_tool_schemas_require_detail_ids(tmp_path):
     assert update_schema["required"] == ["id", "status"]
     assert "id" in get_schema["properties"]
     assert "id" in update_schema["properties"]
+    assert "closed_reason" in update_schema["properties"]
 
 
 def test_get_application_requires_id_with_readable_error(tmp_path):
@@ -104,6 +105,53 @@ def test_application_status_tool_rejects_invalid_status(tmp_path):
         raise AssertionError("invalid status should raise")
 
 
+def test_application_status_tool_requires_and_saves_closed_reason(tmp_path):
+    repo = ApplicationsRepository(init_database(tmp_path / "data.db"))
+    created = repo.create(ApplicationCreate(company_name="ByteDance", position_name="Backend", status="interview"))
+    registry = application_tool_registry(repo)
+
+    try:
+        registry["update_application_status"]["handler"](
+            json.dumps({"id": created.id, "status": "closed"})
+        )
+    except ValueError as exc:
+        assert str(exc) == "closed_reason is required when closing an application"
+    else:
+        raise AssertionError("closing without closed_reason should raise")
+
+    closed = json.loads(
+        registry["update_application_status"]["handler"](
+            json.dumps({"id": created.id, "status": "closed", "closed_reason": "已接受其他 offer"})
+        )
+    )
+
+    assert closed["status"] == "closed"
+    assert closed["closed_reason"] == "已接受其他 offer"
+    assert closed["closed_at"] is not None
+
+
+def test_application_status_tool_rejects_reopening_closed_application(tmp_path):
+    repo = ApplicationsRepository(init_database(tmp_path / "data.db"))
+    created = repo.create(
+        ApplicationCreate(
+            company_name="ByteDance",
+            position_name="Backend",
+            status="closed",
+            closed_reason="岗位关闭",
+        )
+    )
+    registry = application_tool_registry(repo)
+
+    try:
+        registry["update_application_status"]["handler"](
+            json.dumps({"id": created.id, "status": "interview"})
+        )
+    except ValueError as exc:
+        assert str(exc) == "closed application cannot be reopened"
+    else:
+        raise AssertionError("reopening a closed application should raise")
+
+
 def test_offerpilot_tool_registry_covers_notes_events_and_offers(tmp_path):
     session_factory = init_database(tmp_path / "data.db")
     applications = ApplicationsRepository(session_factory)
@@ -160,6 +208,53 @@ def test_offerpilot_tool_registry_covers_notes_events_and_offers(tmp_path):
     assert listed_offers[0]["id"] == offer.id
     assert offer_detail["total_cash"] == 30000 * 15 + 50000
     assert [item["id"] for item in compared] == [offer.id]
+
+
+def test_offerpilot_event_tools_hide_soft_deleted_applications(tmp_path):
+    session_factory = init_database(tmp_path / "data.db")
+    applications = ApplicationsRepository(session_factory)
+    notes = NotesRepository(session_factory)
+    events = ApplicationEventsRepository(session_factory)
+    offers = OffersRepository(session_factory)
+    app = applications.create(ApplicationCreate(company_name="ByteDance", position_name="Backend"))
+    event = events.create(
+        ApplicationEventCreate(
+            application_id=app.id,
+            event_type="interview",
+            scheduled_at=datetime(2026, 7, 10, 10, tzinfo=timezone.utc),
+            duration_minutes=45,
+        )
+    )
+    registry = offerpilot_tool_registry(applications, events, notes, offers)
+
+    applications.delete(app.id)
+
+    assert json.loads(registry["list_application_events"]["handler"](json.dumps({}))) == []
+    try:
+        registry["get_application_event"]["handler"](json.dumps({"id": event.id}))
+    except ValueError as exc:
+        assert str(exc) == "application event not found"
+    else:
+        raise AssertionError("event for soft-deleted application should not be readable")
+
+    try:
+        registry["update_application_event"]["handler"](
+            json.dumps(
+                {
+                    "id": event.id,
+                    "application_id": app.id,
+                    "event_type": "interview",
+                    "scheduled_at": "2026-07-11T10:00:00Z",
+                    "duration_minutes": 45,
+                }
+            )
+        )
+    except ValueError as exc:
+        assert str(exc) == "application event not found"
+    else:
+        raise AssertionError("event for soft-deleted application should not be writable")
+
+    assert registry["delete_application_event"]["handler"](json.dumps({"id": event.id})) == '{"deleted":false}'
 
 
 def test_offerpilot_write_tools_mutate_notes_events_and_offers(tmp_path):

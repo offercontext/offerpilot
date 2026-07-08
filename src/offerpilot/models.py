@@ -27,6 +27,14 @@ class Application(Base):
         nullable=False,
         server_default=func.current_timestamp(),
     )
+    first_pending_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    first_applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    first_written_test_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    first_interview_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    first_offer_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    closed_reason: Mapped[str] = mapped_column(String, default="", server_default="")
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
