@@ -790,6 +790,33 @@
   font-weight: 700;
   cursor: pointer;
 }
+.retryNotice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 16px 10px;
+  padding: 9px 11px;
+  border: 1px solid rgba(239, 68, 68, 0.24);
+  border-radius: 9px;
+  background: rgba(239, 68, 68, 0.07);
+  color: var(--op-error);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.retryNotice button {
+  flex-shrink: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--op-primary);
+  font-weight: 700;
+  cursor: pointer;
+}
+.retryNotice button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 
 /* ---------- 斜杠命令浮层 ---------- */
 .slash {

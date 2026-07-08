@@ -59,6 +59,20 @@ def test_chat_exposes_module_tools_to_model(tmp_path):
     )
 
 
+def test_chat_injects_response_structure_prompt(tmp_path):
+    model = CapturingScriptedModel([Assistant(content="ok")])
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+
+    response = client.post("/api/chat", json={"message": "what should I do next?", "conversation_id": 0})
+
+    assert response.status_code == 200
+    system = model.calls[0][0]
+    assert system.role == "system"
+    assert "Conclusion" in system.content
+    assert "Evidence" in system.content
+    assert "Next steps" in system.content
+
+
 def test_chat_allows_wide_read_only_tool_summaries(tmp_path):
     model = ScriptedModel(
         [

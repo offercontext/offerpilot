@@ -93,6 +93,8 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings, vari
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [offer, setOffer] = useState<Offer | null>(null);
   const [panelOpen, setPanelOpen] = useState(false);
+  const [lastError, setLastError] = useState<string | null>(null);
+  const [lastFailedText, setLastFailedText] = useState('');
   const [drawerWidth, setDrawerWidth] = useState(() => {
     const stored = Number(localStorage.getItem(CHAT_WIDTH_STORAGE_KEY));
     return Number.isFinite(stored) && stored > 0 ? clampChatWidth(stored) : DEFAULT_CHAT_WIDTH;
@@ -184,6 +186,8 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings, vari
     setPending(null);
     setDegraded(false);
     setPanelOpen(false);
+    setLastError(null);
+    setLastFailedText('');
   }
 
   async function selectConversation(id: number) {
@@ -225,9 +229,11 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings, vari
     refreshConversations();
   }
 
-  async function sendMessage(text: string) {
+  async function sendMessage(text: string): Promise<boolean> {
     const trimmed = text.trim();
-    if (!trimmed || loading || pending) return;
+    if (!trimmed || loading || pending) return false;
+    setLastError(null);
+    setLastFailedText('');
     setTurns((t) => [...t, { role: 'user', content: trimmed }]);
     setLoading(true);
     try {
@@ -250,11 +256,25 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings, vari
         if (resp.degraded) toast.info('当前模型不支持工具调用，已切换为只读摘要模式');
       }
       if (isNew) refreshConversations();
+      return true;
     } catch (e: any) {
-      toast.error(e?.response?.data?.error ?? '对话失败');
+      const error = e?.response?.data?.error ?? '对话失败，请稍后重试';
+      setTurns((items) => {
+        const last = items[items.length - 1];
+        return last?.role === 'user' && last.content === trimmed ? items.slice(0, -1) : items;
+      });
+      setLastError(error);
+      setLastFailedText(trimmed);
+      toast.error(error);
+      return false;
     } finally {
       setLoading(false);
     }
+  }
+
+  function retryLastMessage() {
+    if (!lastFailedText || loading || pending) return;
+    void sendMessage(lastFailedText);
   }
 
   async function handleConfirm(approved: boolean) {
@@ -292,10 +312,17 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings, vari
 
   function handleCapability(cap: Capability) {
     setPanelOpen(false);
-    sendMessage(cap.prompt);
+    void sendMessage(cap.prompt);
   }
 
   const composerDisabled = loading || !!pending || !hasKey;
+  const composerDisabledReason = !hasKey
+    ? '先配置 API key 后即可对话'
+    : pending
+      ? '请先确认或取消上面的写入操作'
+      : loading
+        ? '正在等待 AI 回复'
+        : undefined;
   const showEmpty = turns.length === 0 && !pending && !loading;
   const threadEvidence = collectEvidence(turns);
   const confirmationEvidence = pending ? pendingActionEvidence(threadEvidence, pending) : [];
@@ -444,7 +471,20 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings, vari
                 )}
               </div>
             )}
-            <Composer capabilities={capabilities} disabled={composerDisabled} onSend={sendMessage} />
+            {lastError && lastFailedText ? (
+              <div className={styles.retryNotice}>
+                <span>{lastError}</span>
+                <button type="button" onClick={retryLastMessage} disabled={composerDisabled}>
+                  重新发送
+                </button>
+              </div>
+            ) : null}
+            <Composer
+              capabilities={capabilities}
+              disabled={composerDisabled}
+              disabledReason={composerDisabledReason}
+              onSend={sendMessage}
+            />
           </section>
 
           <ContextPanel

@@ -1042,7 +1042,7 @@ def create_app(
             return error_response(404, "conversation not found")
 
         chat.append_message(conversation_id, "user", content=message)
-        history = _stored_messages_to_ai(chat.list_messages(conversation_id))
+        history = [_chat_response_system_message(), *_stored_messages_to_ai(chat.list_messages(conversation_id))]
         try:
             added, reply, pending = run_turn(
                 model,
@@ -1102,7 +1102,7 @@ def create_app(
                     jd_analyses=jd_analyses,
                     knowledge=knowledge,
                 ),
-                _stored_messages_to_ai(stored),
+                [_chat_response_system_message(), *_stored_messages_to_ai(stored)],
                 pending,
                 approved=bool(payload.get("approved")),
                 auto_approve=load_config(resolved_data_dir).chat_auto_approve_writes,
@@ -1418,6 +1418,18 @@ def _persist_ai_messages(repo: ChatRepository, conversation_id: int, messages: l
             tool_call_id=message.tool_call_id,
             provider_blocks=_dump_provider_blocks(message.provider_blocks),
         )
+
+
+def _chat_response_system_message() -> Message:
+    return Message(
+        role="system",
+        content=(
+            "You are OfferPilot, a job-search copilot. Use the user's language. "
+            "For substantive answers, keep the reply concise and structure it as: "
+            "Conclusion, Evidence, Next steps. When local tool evidence is thin, say so clearly. "
+            "Do not expose hidden reasoning."
+        ),
+    )
 
 
 def _stored_messages_to_ai(messages: list[Any]) -> list[Message]:
