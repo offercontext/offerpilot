@@ -1,0 +1,19 @@
+CLAUDE.md
+  s_7f2bc75bf7c269::t_add38daeb7fc26 1-15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "26204a49c528a16f84562769caaf590ea5850e3b",
+  "prompts": {},
+  "sessions": {
+    "s_7f2bc75bf7c269": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3fc9-102a-7c12-bd59-7b0c567c26b6",
+        "model": "gpt-5.5"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    }
+  }
+}
