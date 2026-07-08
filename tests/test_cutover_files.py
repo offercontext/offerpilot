@@ -40,6 +40,8 @@ def test_readme_documents_current_v01_contract():
     assert "AGPLv3" in readme
     assert "LiteLLM" in readme
     assert "oc smoke" in readme
+    assert "oc verify --profile local" in readme
+    assert "oc verify --profile real-ai" in readme
     assert "oc skill trust" in readme
     assert "oc skill add --manifest" in readme
     assert "SQLite FTS5 chunk retrieval" in readme
@@ -109,6 +111,8 @@ def test_p0_release_checklist_documents_non_docker_release_gate():
     assert "npm.cmd test" in checklist
     assert "npm.cmd run build" in checklist
     assert "scripts/local-smoke.ps1" in checklist
+    assert "oc verify --profile local" in checklist
+    assert "oc verify --profile real-ai" in checklist
     assert "AGPLv3" in checklist
     assert "schema_migrations" in checklist
     assert "pending actions" in checklist
