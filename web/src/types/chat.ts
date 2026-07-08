@@ -23,7 +23,27 @@ export interface PendingAction {
   tool_name: string;
   human: string;
   args?: Record<string, unknown>;
+  target?: PendingActionTarget;
+  proposed_changes?: PendingActionChange[];
+  evidence?: PendingActionEvidence[];
 }
+
+export interface PendingActionTarget {
+  id: string;
+  kind: string;
+  title: string;
+  meta?: string;
+  snippet?: string;
+  source: string;
+}
+
+export interface PendingActionChange {
+  field: string;
+  before?: string | number | boolean | null;
+  after?: string | number | boolean | null;
+}
+
+export interface PendingActionEvidence extends PendingActionTarget {}
 
 export type ChatResponse =
   | { type: 'message'; conversation_id: number; message: string; degraded?: boolean }

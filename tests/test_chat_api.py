@@ -164,6 +164,25 @@ def test_chat_write_tool_requires_confirmation_before_mutating(tmp_path):
         "id": application["id"],
         "status": "offer",
     }
+    assert response.json()["pending_action"]["target"] == {
+        "id": f"application-{application['id']}",
+        "kind": "application",
+        "title": "ByteDance",
+        "meta": "Backend · interview",
+        "source": "pending_action",
+    }
+    assert response.json()["pending_action"]["proposed_changes"] == [
+        {"field": "status", "before": "interview", "after": "offer"}
+    ]
+    assert response.json()["pending_action"]["evidence"] == [
+        {
+            "id": f"application-{application['id']}",
+            "kind": "application",
+            "title": "ByteDance",
+            "meta": "Backend · interview",
+            "source": "pending_action",
+        }
+    ]
     assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "interview"
 
 
@@ -349,6 +368,7 @@ def test_chat_conversation_exposes_pending_action_for_reload(tmp_path):
 
     assert conversations[0]["id"] == pending["conversation_id"]
     assert conversations[0]["pending_action"] == pending["pending_action"]
+    assert conversations[0]["pending_action"]["target"]["title"] == "ByteDance"
 
 
 def test_chat_confirm_clears_persisted_pending_action(tmp_path):

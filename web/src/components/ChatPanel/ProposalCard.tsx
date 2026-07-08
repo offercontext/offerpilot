@@ -41,12 +41,28 @@ function proposedValue(action: PendingAction): string | null {
   return null;
 }
 
+function valueLabel(value: unknown): string {
+  if (value === null || value === undefined || value === '') return 'Empty';
+  return String(value);
+}
+
 export default function ProposalCard({ action, loading, evidence, onConfirm, onCancel }: Props) {
   const meta = toolMeta(action.tool_name);
   const diff = parseDiff(action.human);
-  const target = actionTarget(action);
+  const target = action.target?.title ?? actionTarget(action);
+  const targetMeta = action.target?.meta;
   const proposed = proposedValue(action);
-  const thinEvidence = evidence.length === 0;
+  const actionEvidence = action.evidence?.map((item) => ({
+    id: item.id,
+    kind: item.kind as EvidenceItem['kind'],
+    title: item.title,
+    meta: item.meta,
+    snippet: item.snippet,
+    source: item.source,
+  })) ?? [];
+  const visibleEvidence = evidence.length ? evidence : actionEvidence;
+  const changes = action.proposed_changes ?? [];
+  const thinEvidence = visibleEvidence.length === 0;
 
   return (
     <div className={styles.proposal} role="group" aria-label="AI 修改提议">
@@ -76,7 +92,7 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
             {target ? (
               <div>
                 <span>Target</span>
-                <b>{target}</b>
+                <b>{targetMeta ? `${target} · ${targetMeta}` : target}</b>
               </div>
             ) : null}
             {proposed ? (
@@ -85,6 +101,18 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
                 <b>{proposed}</b>
               </div>
             ) : null}
+          </div>
+        ) : null}
+        {changes.length ? (
+          <div className={styles.changeList}>
+            {changes.map((change) => (
+              <div key={change.field} className={styles.changeRow}>
+                <span>{change.field}</span>
+                <b>{valueLabel(change.before)}</b>
+                <i aria-hidden="true">→</i>
+                <b>{valueLabel(change.after)}</b>
+              </div>
+            ))}
           </div>
         ) : null}
         {thinEvidence ? (
@@ -97,7 +125,7 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
         ) : (
           <div className={styles.prEvidence}>
             <div className={styles.panelLabel}>Evidence used</div>
-            <EvidenceList items={evidence.slice(0, 3)} compact />
+            <EvidenceList items={visibleEvidence.slice(0, 3)} compact />
           </div>
         )}
       </div>

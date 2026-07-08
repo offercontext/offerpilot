@@ -1086,7 +1086,7 @@ def create_app(
                 {
                     "type": "confirmation_required",
                     "conversation_id": conversation_id,
-                    "pending_action": _pending_action_json(pending),
+                    "pending_action": _pending_action_json(pending, applications),
                 }
             )
         chat.clear_pending_action(conversation_id)
@@ -1143,7 +1143,7 @@ def create_app(
                 {
                     "type": "confirmation_required",
                     "conversation_id": conversation_id,
-                    "pending_action": _pending_action_json(new_pending),
+                    "pending_action": _pending_action_json(new_pending, applications),
                 }
             )
         chat.clear_pending_action(conversation_id)
@@ -1151,10 +1151,7 @@ def create_app(
 
     @app.get("/api/chat/conversations")
     def list_conversations() -> list[dict[str, Any]]:
-        return [
-            ConversationOut.model_validate(item).model_dump(mode="json")
-            for item in chat.list_conversations()
-        ]
+        return [_conversation_json(item, applications) for item in chat.list_conversations()]
 
     @app.get("/api/chat/conversations/{conversation_id}")
     def get_conversation(conversation_id: int) -> list[dict[str, Any]]:
@@ -1527,12 +1524,82 @@ def _dump_provider_blocks(provider_blocks: dict[str, Any]) -> str:
     return json.dumps(allowed, ensure_ascii=False)
 
 
-def _pending_action_json(pending: PendingAction) -> dict[str, Any]:
-    return {
+def _conversation_json(conversation: Any, applications: ApplicationsRepository) -> dict[str, Any]:
+    payload = ConversationOut.model_validate(conversation).model_dump(mode="json")
+    if conversation.pending_tool_name:
+        payload["pending_action"] = _pending_action_json(
+            PendingAction(
+                tool_call_id=conversation.pending_tool_call_id,
+                tool_name=conversation.pending_tool_name,
+                args=conversation.pending_args,
+                human=conversation.pending_human or conversation.pending_tool_name,
+            ),
+            applications,
+        )
+    return payload
+
+
+def _pending_action_json(
+    pending: PendingAction,
+    applications: ApplicationsRepository | None = None,
+) -> dict[str, Any]:
+    args = _safe_tool_args(pending.args)
+    payload: dict[str, Any] = {
         "tool_name": pending.tool_name,
         "human": pending.human,
-        "args": _safe_tool_args(pending.args),
+        "args": args,
     }
+    if applications is not None:
+        payload.update(_pending_action_details(pending.tool_name, args, applications))
+    return payload
+
+
+def _pending_action_details(
+    tool_name: str,
+    args: dict[str, Any],
+    applications: ApplicationsRepository,
+) -> dict[str, Any]:
+    if tool_name != "update_application_status":
+        return {}
+    app_id = args.get("id")
+    if not isinstance(app_id, (int, str)):
+        return {}
+    try:
+        resolved_id = int(app_id)
+    except ValueError:
+        return {}
+    application = applications.get(resolved_id)
+    if application is None:
+        return {}
+    target = {
+        "id": f"application-{application.id}",
+        "kind": "application",
+        "title": application.company_name,
+        "meta": " · ".join(
+            value for value in [application.position_name, application.status] if value
+        ),
+        "source": "pending_action",
+    }
+    if application.notes:
+        target["snippet"] = _short_preview(application.notes)
+    proposed_status = args.get("status")
+    proposed_changes = []
+    if isinstance(proposed_status, str) and proposed_status:
+        proposed_changes.append(
+            {"field": "status", "before": application.status, "after": proposed_status}
+        )
+    return {
+        "target": target,
+        "proposed_changes": proposed_changes,
+        "evidence": [target],
+    }
+
+
+def _short_preview(value: str, max_length: int = 180) -> str:
+    normalized = " ".join(value.split())
+    if len(normalized) <= max_length:
+        return normalized
+    return normalized[: max_length - 3].rstrip() + "..."
 
 
 def _pending_action_from_stored_messages(messages: list[Any]) -> PendingAction | None:
