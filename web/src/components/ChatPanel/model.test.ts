@@ -70,6 +70,39 @@ describe('buildTurns evidence normalization', () => {
     expect(turns).toBeNull();
   });
 
+  it('keeps read evidence visible when the latest assistant turn is a pending write', () => {
+    const turns = buildTurns([
+      msg({ role: 'user', content: 'move OpenAI to offer' }),
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([{ id: 'read-app', name: 'get_application', args: { id: 7 } }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'read-app',
+        content: JSON.stringify({
+          id: 7,
+          company_name: 'OpenAI',
+          position_name: 'Research Engineer',
+          status: 'interview',
+          notes: 'Final round finished.',
+        }),
+      }),
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([
+          { id: 'write-app', name: 'update_application_status', args: { id: 7, status: 'offer' } },
+        ]),
+      }),
+    ]);
+
+    expect(collectEvidence(turns).map((item) => item.title)).toEqual(['OpenAI']);
+    expect(turns[turns.length - 1]?.steps?.map((step) => step.name)).toEqual([
+      'get_application',
+      'update_application_status',
+    ]);
+  });
+
   it('attaches application evidence from tool results to the assistant turn', () => {
     const turns = buildTurns([
       msg({ role: 'user', content: 'show apps' }),

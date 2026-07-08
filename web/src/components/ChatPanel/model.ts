@@ -330,6 +330,9 @@ export function buildTurns(stored: ChatMessage[]): UITurn[] {
       }
     }
   }
+  if (pending.length) {
+    turns.push({ role: 'assistant', content: '', steps: pending });
+  }
   return turns;
 }
 

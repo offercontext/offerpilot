@@ -85,7 +85,8 @@ class LangGraphAgentRunner:
         auto_approve: bool,
         max_iter: int = DEFAULT_MAX_ITERATIONS,
     ) -> tuple[list[Message], str, PendingAction | None]:
-        if self._checkpoint_path is None and not self._has_pending_checkpoint:
+        checkpoint_missing = self._checkpoint_path is None or not self._checkpoint_path.exists()
+        if checkpoint_missing and not self._has_pending_checkpoint:
             return self._resume_without_checkpoint(messages, pending, approved, auto_approve, max_iter)
 
         with self._checkpointer() as checkpointer:

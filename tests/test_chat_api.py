@@ -242,6 +242,49 @@ def test_chat_confirm_replays_reasoning_content_for_pending_tool(tmp_path):
     }
 
 
+def test_chat_confirm_keeps_application_context_for_model(tmp_path):
+    app_client = TestClient(create_app(data_dir=tmp_path))
+    application = app_client.post(
+        "/api/applications",
+        json={"company_name": "OpenAI", "position_name": "Research Engineer", "status": "interview"},
+    ).json()
+    model = CapturingScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="w1",
+                        name="update_application_status",
+                        args=json.dumps({"id": application["id"], "status": "offer"}),
+                    )
+                ]
+            ),
+            Assistant(content="Updated with context."),
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    pending = client.post(
+        "/api/chat",
+        json={
+            "message": "Move this to offer",
+            "conversation_id": 0,
+            "context_type": "application",
+            "context_ref": str(application["id"]),
+        },
+    ).json()
+    (tmp_path / "agent_checkpoints.sqlite").unlink()
+
+    response = client.post(
+        "/api/chat/confirm",
+        json={"conversation_id": pending["conversation_id"], "approved": True},
+    )
+
+    assert response.status_code == 200
+    assert model.calls[1][1].role == "system"
+    assert "Current conversation context" in model.calls[1][1].content
+    assert "OpenAI" in model.calls[1][1].content
+
+
 def test_chat_confirm_resumes_pending_write_from_langgraph_checkpoint(tmp_path):
     app_client = TestClient(create_app(data_dir=tmp_path))
     application = app_client.post(
@@ -454,6 +497,40 @@ def test_chat_context_creates_application_scoped_conversation(tmp_path):
     assert conversation["context_type"] == "application"
     assert conversation["context_ref"] == "42"
     assert "offer_id" not in conversation
+
+
+def test_chat_injects_application_context_for_model(tmp_path):
+    app_client = TestClient(create_app(data_dir=tmp_path))
+    application = app_client.post(
+        "/api/applications",
+        json={
+            "company_name": "OpenAI",
+            "position_name": "Research Engineer",
+            "status": "interview",
+            "notes": "Focus on agent evals.",
+        },
+    ).json()
+    model = CapturingScriptedModel([Assistant(content="I have the application context.")])
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "message": "What should I prepare?",
+            "conversation_id": 0,
+            "context_type": "application",
+            "context_ref": str(application["id"]),
+        },
+    )
+
+    assert response.status_code == 200
+    injected = model.calls[0][1]
+    assert injected.role == "system"
+    assert "Current conversation context" in injected.content
+    assert "OpenAI" in injected.content
+    assert "Research Engineer" in injected.content
+    assert "interview" in injected.content
+    assert "Focus on agent evals." in injected.content
 
 
 def test_chat_without_context_defaults_to_workspace(tmp_path):

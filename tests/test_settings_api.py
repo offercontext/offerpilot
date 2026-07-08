@@ -147,3 +147,50 @@ def test_put_settings_accepts_new_provider_profile(tmp_path):
     assert cfg.active_provider().id == "openrouter"
     assert cfg.active_provider().api_key == "sk-openrouter"
 
+
+def test_put_settings_without_providers_preserves_existing_provider_profiles(tmp_path):
+    save_config(
+        tmp_path,
+        Config(
+            chat_auto_approve_writes=False,
+            active_provider_id="deepseek",
+            providers=[
+                AIProviderProfile(
+                    id="openai",
+                    label="OpenAI",
+                    provider="openai",
+                    api_key="sk-openai",
+                    base_url="https://api.openai.com/v1",
+                    model="gpt-4o",
+                ),
+                AIProviderProfile(
+                    id="deepseek",
+                    label="DeepSeek",
+                    provider="openai_compatible",
+                    api_key="sk-deepseek",
+                    base_url="https://api.deepseek.com/v1",
+                    model="deepseek-chat",
+                ),
+            ],
+        ),
+    )
+    client = TestClient(create_app(data_dir=tmp_path))
+
+    response = client.put(
+        "/api/settings",
+        json={
+            "chat_auto_approve_writes": True,
+            "base_url": "https://api.deepseek.com/v1",
+            "model": "deepseek-chat",
+        },
+    )
+
+    assert response.status_code == 200
+    cfg = load_config(tmp_path)
+    assert cfg.chat_auto_approve_writes is True
+    assert cfg.active_provider_id == "deepseek"
+    assert [(profile.id, profile.api_key) for profile in cfg.providers] == [
+        ("openai", "sk-openai"),
+        ("deepseek", "sk-deepseek"),
+    ]
+

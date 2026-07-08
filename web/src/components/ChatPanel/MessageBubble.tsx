@@ -40,6 +40,7 @@ interface Props {
 
 export default function MessageBubble({ turn, index }: Props) {
   const isUser = turn.role === 'user';
+  const hasContent = turn.content.trim().length > 0;
   return (
     <div
       className={`${styles.msg} ${isUser ? styles.msgUser : ''}`}
@@ -52,17 +53,19 @@ export default function MessageBubble({ turn, index }: Props) {
         {isUser ? '我' : '✦'}
       </div>
       <div className={styles.msgCol}>
-        <div className={`${styles.bubble} ${isUser ? styles.bubbleUser : styles.bubbleAssistant}`}>
-          {isUser ? (
-            turn.content
-          ) : (
-            <div className={styles.markdown}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ pre: Pre }}>
-                {turn.content}
-              </ReactMarkdown>
-            </div>
-          )}
-        </div>
+        {hasContent ? (
+          <div className={`${styles.bubble} ${isUser ? styles.bubbleUser : styles.bubbleAssistant}`}>
+            {isUser ? (
+              turn.content
+            ) : (
+              <div className={styles.markdown}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ pre: Pre }}>
+                  {turn.content}
+                </ReactMarkdown>
+              </div>
+            )}
+          </div>
+        ) : null}
         {!isUser && turn.steps ? <ProcessTimeline steps={turn.steps} /> : null}
       </div>
     </div>
