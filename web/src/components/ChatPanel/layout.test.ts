@@ -15,4 +15,10 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('ExpandAltOutlined');
     expect(component).toContain('aria-label="展开完整助手"');
   });
+
+  it('shows an inline API-key setup notice when the docked context panel is hidden', () => {
+    expect(component).toContain('styles.inlineKeyNotice');
+    expect(component).toContain('!hasKey &&');
+    expect(component).toContain('onOpenSettings');
+  });
 });

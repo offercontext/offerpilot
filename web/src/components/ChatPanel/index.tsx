@@ -434,6 +434,16 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings, vari
               <div ref={endRef} />
             </div>
 
+            {!hasKey && (
+              <div className={styles.inlineKeyNotice}>
+                <span>尚未配置 API key，配置后即可使用 Pilot 对话和工具调用。</span>
+                {onOpenSettings && (
+                  <button type="button" onClick={onOpenSettings}>
+                    打开 AI 设置
+                  </button>
+                )}
+              </div>
+            )}
             <Composer capabilities={capabilities} disabled={composerDisabled} onSend={sendMessage} />
           </section>
 
