@@ -19,6 +19,16 @@ def test_calendar_includes_applications_and_events(tmp_path):
             "location": "online",
         },
     )
+    client.post(
+        "/api/application-events",
+        json={
+            "application_id": app["id"],
+            "event_type": "interview",
+            "scheduled_at": "2026-08-01T10:00:00Z",
+            "duration_minutes": 45,
+            "location": "online",
+        },
+    )
 
     response = client.get("/api/calendar", params={"month": "2026-07"})
 
@@ -30,6 +40,11 @@ def test_calendar_includes_applications_and_events(tmp_path):
     assert event_entry["event_type"] == "written_test"
     assert event_entry["duration_minutes"] == 60
     assert event_entry["editable"] is True
+    assert not any(
+        entry.get("event_type") == "interview"
+        and entry.get("scheduled_at") == "2026-08-01T10:00:00Z"
+        for entry in entries
+    )
 
 
 def test_calendar_bad_month_defaults_to_current_month(tmp_path):

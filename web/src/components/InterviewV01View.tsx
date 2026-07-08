@@ -1,15 +1,15 @@
 import { useState } from 'react';
-import { Button, Empty, Input, Space, Typography, message } from 'antd';
+import { App as AntApp, Button, Empty, Input, Space, Typography } from 'antd';
 import { SaveOutlined } from '@ant-design/icons';
 
 const { Paragraph, Title } = Typography;
 
 export default function InterviewV01View() {
   const [draft, setDraft] = useState('');
+  const { message } = AntApp.useApp();
 
   function saveDraft() {
-    setDraft('');
-    message.success('已保存');
+    message.info('操作完成');
   }
 
   return (

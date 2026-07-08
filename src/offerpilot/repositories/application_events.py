@@ -68,7 +68,11 @@ class ApplicationEventsRepository:
             .order_by(ApplicationEvent.scheduled_at.asc(), ApplicationEvent.id.asc())
         )
         if month:
-            statement = statement.where(ApplicationEvent.scheduled_at >= f"{month}-01")
+            bounds = _month_bounds(month)
+            if bounds is not None:
+                start, end = bounds
+                statement = statement.where(ApplicationEvent.scheduled_at >= start)
+                statement = statement.where(ApplicationEvent.scheduled_at < end)
         if application_id > 0:
             statement = statement.where(ApplicationEvent.application_id == application_id)
         if event_type:
@@ -118,3 +122,15 @@ def duration_minutes(duration: str | int) -> int:
     if isinstance(duration, int):
         return duration
     return int(str(duration).removesuffix("m") or "0")
+
+
+def _month_bounds(month: str) -> tuple[datetime, datetime] | None:
+    try:
+        start = datetime.strptime(month, "%Y-%m")
+    except ValueError:
+        return None
+    if start.month == 12:
+        end = start.replace(year=start.year + 1, month=1)
+    else:
+        end = start.replace(month=start.month + 1)
+    return start, end

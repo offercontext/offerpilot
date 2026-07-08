@@ -39,6 +39,31 @@ def test_create_and_list_application_events_with_application_fields(tmp_path):
     assert listed.json()[0]["position_name"] == "Backend"
 
 
+def test_list_application_events_month_stays_within_requested_month(tmp_path):
+    client = TestClient(create_app(data_dir=tmp_path))
+    app = client.post(
+        "/api/applications",
+        json={"company_name": "ByteDance", "position_name": "Backend"},
+    ).json()
+    for scheduled_at in ["2026-07-10T10:00:00Z", "2026-08-01T10:00:00Z"]:
+        client.post(
+            "/api/application-events",
+            json={
+                "application_id": app["id"],
+                "event_type": "interview",
+                "scheduled_at": scheduled_at,
+                "duration_minutes": 45,
+            },
+        )
+
+    response = client.get("/api/application-events", params={"month": "2026-07"})
+
+    assert response.status_code == 200
+    assert [item["scheduled_at"] for item in response.json()] == [
+        "2026-07-10T10:00:00Z"
+    ]
+
+
 def test_create_event_rejects_missing_application(tmp_path):
     client = TestClient(create_app(data_dir=tmp_path))
 
