@@ -52,8 +52,7 @@ docs/*
 !docs/p0-release-checklist.md
 !docs/superpowers/
 docs/superpowers/*
-!docs/superpowers/plans/
-!docs/superpowers/plans/*.md
+docs/superpowers/plans/
 !docs/superpowers/specs/
 !docs/superpowers/specs/*.md
 
