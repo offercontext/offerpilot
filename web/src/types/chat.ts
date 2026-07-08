@@ -1,8 +1,9 @@
 export interface Conversation {
   id: number;
   title: string;
-  offer_id?: number;
   mode?: string;
+  context_type: string;
+  context_ref: string;
   pending_action?: PendingAction | null;
   created_at: string;
   updated_at: string;

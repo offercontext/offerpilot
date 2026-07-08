@@ -10,7 +10,6 @@ export interface MockSession {
   question_count: number; // 0 = unlimited
   duration_min: number; // 0 = unlimited
   question_source: string; // bank | knowledge | notes | mixed
-  knowledge_base_id?: number;
   status: string; // in_progress | completed | aborted
   question_index: number;
   started_at: string;
@@ -34,7 +33,6 @@ export interface MockConfig {
   question_count?: number;
   duration_min?: number;
   question_source?: string;
-  knowledge_base_id?: number;
 }
 
 export interface MockDrill {

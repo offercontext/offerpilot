@@ -37,7 +37,6 @@ import {
   submitReview,
   updateQuestion,
 } from '@/services/questions';
-import { listKnowledgeBases } from '@/services/knowledge';
 import type {
   Question,
   QuestionDifficulty,
@@ -303,20 +302,12 @@ function BankTab() {
 function GenerateDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
   const qc = useQueryClient();
   const [source, setSource] = useState<'knowledge' | 'notes'>('knowledge');
-  const [kbId, setKbId] = useState<number | undefined>(undefined);
   const [count, setCount] = useState(8);
-
-  const { data: bases = [] } = useQuery({
-    queryKey: ['knowledge-bases'],
-    queryFn: () => listKnowledgeBases(),
-    enabled: open,
-  });
 
   const genMutation = useMutation({
     mutationFn: () =>
       generateQuestions({
         source,
-        ...(source === 'knowledge' ? { knowledge_base_id: kbId } : {}),
         count,
       }),
     onSuccess: (res) => {
@@ -333,8 +324,6 @@ function GenerateDrawer({ open, onClose }: { open: boolean; onClose: () => void 
       message.error(msg);
     },
   });
-
-  const canSubmit = source === 'notes' || (source === 'knowledge' && !!kbId);
 
   return (
     <Drawer title="AI 生成题目" open={open} onClose={onClose} width={420} destroyOnClose>
@@ -353,17 +342,9 @@ function GenerateDrawer({ open, onClose }: { open: boolean; onClose: () => void 
         </div>
 
         {source === 'knowledge' && (
-          <div>
-            <div style={{ marginBottom: 8, fontWeight: 600 }}>选择知识库</div>
-            <Select
-              placeholder="选择一个知识库"
-              style={{ width: '100%' }}
-              value={kbId}
-              onChange={setKbId}
-              options={bases.map((b) => ({ label: b.name, value: b.id }))}
-              notFoundContent="还没有知识库，请先在知识库中创建"
-            />
-          </div>
+          <Paragraph type="secondary" style={{ margin: 0 }}>
+            将从知识库文档中提炼题目。
+          </Paragraph>
         )}
 
         {source === 'notes' && (
@@ -383,7 +364,6 @@ function GenerateDrawer({ open, onClose }: { open: boolean; onClose: () => void 
           className="op-ai-btn"
           icon={<ThunderboltOutlined />}
           loading={genMutation.isPending}
-          disabled={!canSubmit}
           onClick={() => genMutation.mutate()}
         >
           {genMutation.isPending ? 'AI 正在出题…' : '开始生成'}

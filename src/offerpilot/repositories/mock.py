@@ -22,7 +22,6 @@ class MockSessionCreate:
     question_count: int = 5
     duration_min: int = 0
     question_source: str = "mixed"
-    knowledge_base_id: Optional[int] = None
 
 
 class MockSessionsRepository:
@@ -41,7 +40,6 @@ class MockSessionsRepository:
             question_count=data.question_count or 5,
             duration_min=data.duration_min,
             question_source=data.question_source or "mixed",
-            knowledge_base_id=data.knowledge_base_id,
             status="in_progress",
         )
         with self._session_factory() as session:

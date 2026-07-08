@@ -171,7 +171,7 @@ function evidenceFromRecord(row: unknown, source: string, index: number): Eviden
       },
     ];
   }
-  const isEvent = source.includes('event') || recordType === 'event';
+  const isEvent = source.includes('event') || recordType === 'event' || recordType === 'application_event';
   if (isEvent) {
     const title = text(record.company_name) || text(record.title) || `日程 #${id}`;
     return [
@@ -179,7 +179,12 @@ function evidenceFromRecord(row: unknown, source: string, index: number): Eviden
         id: `${source}-${id}`,
         kind: 'event',
         title,
-        meta: compact([text(record.position_name), text(record.event_type), text(record.scheduled_at)]).join(' \u00b7 '),
+        meta: compact([
+          text(record.position_name),
+          text(record.event_type),
+          text(record.subtype),
+          text(record.scheduled_at),
+        ]).join(' \u00b7 '),
         snippet: previewText(record.notes),
         source,
       },
@@ -224,9 +229,9 @@ function evidenceFromRecord(row: unknown, source: string, index: number): Eviden
         kind: isKnowledge ? 'knowledge' : source.includes('event') ? 'event' : 'note',
         title,
         meta: compact([
-          text(record.knowledge_base_name),
           text(record.source_name),
           text(record.event_type),
+          text(record.subtype),
           text(record.scheduled_at),
           text(record.date),
         ]).join(' \u00b7 '),

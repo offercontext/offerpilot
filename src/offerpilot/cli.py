@@ -562,11 +562,11 @@ def offer_compare(ids: str = typer.Argument(...)) -> None:
 @question_app.command("list")
 def question_list(
     status: str = typer.Option("", "--status", help="filter by status"),
-    kb: int = typer.Option(0, "--kb", help="filter by knowledge base ID"),
+    topic: str = typer.Option("", "--topic", help="filter by topic"),
 ) -> None:
-    rows = _questions_repo().list(status=status, knowledge_base_id=kb)
+    rows = _questions_repo().list(status=status, topic=topic)
     if not rows:
-        typer.echo("\nNo questions yet. Try: oc question generate --kb <id>")
+        typer.echo("\nNo questions yet. Try: oc question generate --topic system-design")
         return
     typer.echo("\nQuestion Bank")
     typer.echo("-------------------------------------------------------------")
@@ -580,7 +580,7 @@ def question_list(
 @question_app.command("generate")
 def question_generate(
     source: str = typer.Option("knowledge", "--source", "-s", help="knowledge or notes"),
-    kb: int = typer.Option(0, "--kb", help="knowledge base ID"),
+    topic: str = typer.Option("", "--topic", help="topic label for generated questions"),
     app_id: int = typer.Option(0, "--app", "-a", help="application ID for notes source"),
     count: int = typer.Option(8, "--count", "-n", help="number of questions to generate"),
 ) -> None:
@@ -591,7 +591,7 @@ def question_generate(
             _knowledge_repo(),
             _notes_repo(),
             source=source,
-            knowledge_base_id=kb,
+            topic=topic,
             application_id=app_id,
             count=count,
         )

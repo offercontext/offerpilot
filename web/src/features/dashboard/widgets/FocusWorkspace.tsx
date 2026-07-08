@@ -4,7 +4,6 @@ import {
   FileTextOutlined,
   FolderOpenOutlined,
   ReadOutlined,
-  RocketOutlined,
 } from '@ant-design/icons';
 import { STATUS_LABELS } from '@/types/application';
 import type { Application } from '@/types/application';
@@ -66,9 +65,6 @@ export default function FocusWorkspace({ application, readiness, onOpenDetail, o
         </Button>
         <Button icon={<ReadOutlined />} onClick={() => onNavigate('questions')} block>
           练习题目
-        </Button>
-        <Button type="primary" icon={<RocketOutlined />} onClick={() => onNavigate('mock')} block>
-          进入模拟面试
         </Button>
       </Space>
     </aside>

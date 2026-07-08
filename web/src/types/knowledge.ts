@@ -1,26 +1,22 @@
-export interface KnowledgeBase {
-  id: number;
-  name: string;
-  description: string;
-  created_at: string;
-  updated_at: string;
-}
-
 export interface KnowledgeDocument {
   id: number;
-  knowledge_base_id: number;
   title: string;
   content: string;
   tags: string[];
-  source_type: 'manual' | 'upload';
+  doc_kind: 'wiki' | 'ai_summary' | string;
+  status: 'confirmed' | 'pending' | 'rejected' | string;
+  source_type: 'manual' | 'markdown' | 'paste' | 'upload' | string;
   source_name: string;
+  source_refs: string;
+  summary_type: string;
+  generation_meta: string;
+  superseded_by?: number | null;
+  confirmed_at?: string | null;
   created_at: string;
   updated_at: string;
 }
 
 export interface KnowledgeSearchResult {
-  knowledge_base_id: number;
-  knowledge_base_name: string;
   document_id: number;
   document_title: string;
   chunk_id: number;
@@ -28,13 +24,7 @@ export interface KnowledgeSearchResult {
   score: number;
 }
 
-export interface KnowledgeBaseInput {
-  name: string;
-  description?: string;
-}
-
 export interface KnowledgeDocumentInput {
-  knowledge_base_id: number;
   title: string;
   content: string;
   tags?: string[];

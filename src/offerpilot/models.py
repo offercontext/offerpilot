@@ -40,9 +40,12 @@ class Application(Base):
     )
 
 
-class Event(Base):
-    __tablename__ = "events"
-    __table_args__ = (Index("idx_events_app", "application_id"),)
+class ApplicationEvent(Base):
+    __tablename__ = "application_events"
+    __table_args__ = (
+        Index("idx_application_events_app", "application_id"),
+        Index("idx_application_events_type", "event_type"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     application_id: Mapped[int] = mapped_column(
@@ -50,16 +53,31 @@ class Event(Base):
         nullable=False,
     )
     event_type: Mapped[str] = mapped_column(String, nullable=False)
+    subtype: Mapped[str] = mapped_column(String, default="", server_default="")
+    _tags: Mapped[str] = mapped_column("tags", String, default="[]", server_default="[]")
     round: Mapped[int] = mapped_column(default=0, server_default="0")
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    duration: Mapped[str] = mapped_column(String, default="", server_default="")
+    duration_minutes: Mapped[int] = mapped_column(default=0, server_default="0")
     location: Mapped[str] = mapped_column(String, default="", server_default="")
     notes: Mapped[str] = mapped_column(String, default="", server_default="")
+    remind_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String, default="todo", server_default="todo")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
         server_default=func.current_timestamp(),
     )
+
+    @property
+    def tags(self) -> list[str]:
+        if not self._tags:
+            return []
+        value = json.loads(self._tags)
+        return value if isinstance(value, list) else []
+
+    @tags.setter
+    def tags(self, value: list[str]) -> None:
+        self._tags = json.dumps(value or [], ensure_ascii=False)
 
 
 class InterviewNote(Base):
@@ -219,39 +237,26 @@ class ApplicationMaterialKit(Base):
     )
 
 
-class KnowledgeBase(Base):
-    __tablename__ = "knowledge_bases"
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String, nullable=False)
-    description: Mapped[str] = mapped_column(String, default="", server_default="")
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.current_timestamp(),
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.current_timestamp(),
-        onupdate=func.current_timestamp(),
-    )
-
-
 class KnowledgeDocument(Base):
     __tablename__ = "knowledge_documents"
-    __table_args__ = (Index("idx_knowledge_documents_base", "knowledge_base_id"),)
+    __table_args__ = (
+        Index("idx_knowledge_documents_kind", "doc_kind"),
+        Index("idx_knowledge_documents_status", "status"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    knowledge_base_id: Mapped[int] = mapped_column(
-        ForeignKey("knowledge_bases.id", ondelete="CASCADE"),
-        nullable=False,
-    )
     title: Mapped[str] = mapped_column(String, nullable=False)
     content: Mapped[str] = mapped_column(String, default="", server_default="")
     _tags: Mapped[str] = mapped_column("tags", String, default="[]", server_default="[]")
+    doc_kind: Mapped[str] = mapped_column(String, default="wiki", server_default="wiki")
+    status: Mapped[str] = mapped_column(String, default="confirmed", server_default="confirmed")
     source_type: Mapped[str] = mapped_column(String, default="manual", server_default="manual")
     source_name: Mapped[str] = mapped_column(String, default="", server_default="")
+    source_refs: Mapped[str] = mapped_column(String, default="[]", server_default="[]")
+    summary_type: Mapped[str] = mapped_column(String, default="", server_default="")
+    generation_meta: Mapped[str] = mapped_column(String, default="{}", server_default="{}")
+    superseded_by: Mapped[int | None] = mapped_column(nullable=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -280,7 +285,6 @@ class KnowledgeChunk(Base):
     __tablename__ = "knowledge_chunks"
     __table_args__ = (
         Index("idx_knowledge_chunks_document", "document_id"),
-        Index("idx_knowledge_chunks_base", "knowledge_base_id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -288,12 +292,10 @@ class KnowledgeChunk(Base):
         ForeignKey("knowledge_documents.id", ondelete="CASCADE"),
         nullable=False,
     )
-    knowledge_base_id: Mapped[int] = mapped_column(
-        ForeignKey("knowledge_bases.id", ondelete="CASCADE"),
-        nullable=False,
-    )
     chunk_index: Mapped[int] = mapped_column(default=0, server_default="0")
     content: Mapped[str] = mapped_column(String, nullable=False)
+    embedding: Mapped[str] = mapped_column(String, default="", server_default="")
+    embedding_model: Mapped[str] = mapped_column(String, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -304,21 +306,18 @@ class KnowledgeChunk(Base):
 class Question(Base):
     __tablename__ = "questions"
     __table_args__ = (
+        Index("idx_questions_topic", "topic"),
         Index("idx_questions_status", "status"),
-        Index("idx_questions_kb", "knowledge_base_id"),
         Index("idx_questions_next_review", "next_review_at"),
         Index("idx_questions_hash", "question_hash"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    knowledge_base_id: Mapped[int | None] = mapped_column(
-        ForeignKey("knowledge_bases.id", ondelete="SET NULL"),
-        nullable=True,
-    )
     application_id: Mapped[int | None] = mapped_column(
         ForeignKey("applications.id", ondelete="SET NULL"),
         nullable=True,
     )
+    topic: Mapped[str] = mapped_column(String, default="", server_default="")
     category: Mapped[str] = mapped_column(String, default="", server_default="")
     difficulty: Mapped[str] = mapped_column(String, default="medium", server_default="medium")
     question: Mapped[str] = mapped_column(String, nullable=False)
@@ -396,10 +395,6 @@ class MockSession(Base):
     question_count: Mapped[int] = mapped_column(default=5, server_default="5")
     duration_min: Mapped[int] = mapped_column(default=0, server_default="0")
     question_source: Mapped[str] = mapped_column(String, default="mixed", server_default="mixed")
-    knowledge_base_id: Mapped[int | None] = mapped_column(
-        ForeignKey("knowledge_bases.id", ondelete="SET NULL"),
-        nullable=True,
-    )
     status: Mapped[str] = mapped_column(String, default="in_progress", server_default="in_progress")
     question_index: Mapped[int] = mapped_column(default=0, server_default="0")
     started_at: Mapped[datetime] = mapped_column(
@@ -446,8 +441,9 @@ class Conversation(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     title: Mapped[str] = mapped_column(String, nullable=False, default="新对话", server_default="新对话")
-    offer_id: Mapped[int | None] = mapped_column(nullable=True)
     mode: Mapped[str] = mapped_column(String, default="general", server_default="general")
+    context_type: Mapped[str] = mapped_column(String, default="workspace", server_default="workspace")
+    context_ref: Mapped[str] = mapped_column(String, default="", server_default="")
     pending_tool_call_id: Mapped[str] = mapped_column(String, default="", server_default="")
     pending_tool_name: Mapped[str] = mapped_column(String, default="", server_default="")
     pending_args: Mapped[str] = mapped_column(String, default="", server_default="")

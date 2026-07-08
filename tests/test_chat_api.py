@@ -53,8 +53,8 @@ def test_chat_exposes_module_tools_to_model(tmp_path):
 
     assert response.status_code == 200
     captured_tools = {tool["name"] for tool in model.tools[0]}
-    assert {"list_applications", "list_notes", "list_events", "list_offers"}.issubset(captured_tools)
-    assert {"list_resumes", "list_jd_analyses", "list_knowledge_bases", "search_knowledge"}.issubset(
+    assert {"list_applications", "list_notes", "list_application_events", "list_offers"}.issubset(captured_tools)
+    assert {"list_resumes", "list_jd_analyses", "list_knowledge_documents", "search_knowledge"}.issubset(
         captured_tools
     )
 
@@ -65,14 +65,14 @@ def test_chat_allows_wide_read_only_tool_summaries(tmp_path):
             Assistant(tool_calls=[ToolCall(id="r1", name="list_applications", args="{}")]),
             Assistant(tool_calls=[ToolCall(id="r2", name="list_offers", args="{}")]),
             Assistant(tool_calls=[ToolCall(id="r3", name="list_notes", args="{}")]),
-            Assistant(tool_calls=[ToolCall(id="r4", name="list_events", args="{}")]),
+            Assistant(tool_calls=[ToolCall(id="r4", name="list_application_events", args="{}")]),
             Assistant(tool_calls=[ToolCall(id="r5", name="list_resumes", args="{}")]),
             Assistant(tool_calls=[ToolCall(id="r6", name="list_jd_analyses", args="{}")]),
-            Assistant(tool_calls=[ToolCall(id="r7", name="list_knowledge_bases", args="{}")]),
+            Assistant(tool_calls=[ToolCall(id="r7", name="list_knowledge_documents", args="{}")]),
             Assistant(tool_calls=[ToolCall(id="r8", name="search_knowledge", args=json.dumps({"query": "Java"}))]),
             Assistant(tool_calls=[ToolCall(id="r9", name="compare_offers", args=json.dumps({"ids": []}))]),
             Assistant(tool_calls=[ToolCall(id="r10", name="list_resume_matches", args=json.dumps({"resume_id": 1}))]),
-            Assistant(tool_calls=[ToolCall(id="r11", name="list_knowledge_documents", args="{}")]),
+            Assistant(tool_calls=[ToolCall(id="r11", name="get_application_event", args=json.dumps({"id": 1}))]),
             Assistant(tool_calls=[ToolCall(id="r12", name="get_knowledge_document", args=json.dumps({"id": 1}))]),
             Assistant(content="summary complete"),
         ]
@@ -420,19 +420,38 @@ def test_chat_conversations_detail_and_delete(tmp_path):
     assert client.get("/api/chat/conversations").json() == []
 
 
-def test_chat_offer_id_creates_nego_conversation(tmp_path):
-    model = ScriptedModel([Assistant(content="开始谈薪")])
+def test_chat_context_creates_application_scoped_conversation(tmp_path):
+    model = ScriptedModel([Assistant(content="已读取投递上下文")])
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
 
     created = client.post(
         "/api/chat",
-        json={"message": "帮我谈这个 offer", "conversation_id": 0, "offer_id": 42},
+        json={
+            "message": "看看这条投递",
+            "conversation_id": 0,
+            "context_type": "application",
+            "context_ref": "42",
+        },
     ).json()
     conversation = client.get("/api/chat/conversations").json()[0]
 
     assert conversation["id"] == created["conversation_id"]
-    assert conversation["mode"] == "nego_coach"
-    assert conversation["offer_id"] == 42
+    assert conversation["mode"] == "general"
+    assert conversation["context_type"] == "application"
+    assert conversation["context_ref"] == "42"
+    assert "offer_id" not in conversation
+
+
+def test_chat_without_context_defaults_to_workspace(tmp_path):
+    model = ScriptedModel([Assistant(content="你好")])
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+
+    created = client.post("/api/chat", json={"message": "hello", "conversation_id": 0}).json()
+    conversation = client.get("/api/chat/conversations").json()[0]
+
+    assert conversation["id"] == created["conversation_id"]
+    assert conversation["context_type"] == "workspace"
+    assert conversation["context_ref"] == ""
 
 
 def test_chat_without_configured_ai_returns_503(tmp_path):

@@ -64,11 +64,11 @@ API invariants:
 
 | Endpoint | Request | Response | Source | Migration priority |
 |---|---|---|---|---|
-| `GET /api/events` | Optional month/application/status-style filters from service | `Event[]` | `internal/api/events.go`, `web/src/services/events.ts` | Phase 5 |
-| `POST /api/events` | Event request body | `201 eventResponse` | `internal/api/events.go` | Phase 5 |
-| `GET /api/events/{id}` | Path id | `eventResponse` | `internal/api/events.go` | Phase 5 |
-| `PUT /api/events/{id}` | Event request body | `eventResponse` | `internal/api/events.go` | Phase 5 |
-| `DELETE /api/events/{id}` | Path id | status JSON | `internal/api/events.go` | Phase 5 |
+| `GET /api/application-events` | Optional month/application/event_type filters | `ApplicationEvent[]` | `src/offerpilot/api.py`, `web/src/services/events.ts` | v0.1 |
+| `POST /api/application-events` | Application event request body | `201 ApplicationEvent` | `src/offerpilot/api.py` | v0.1 |
+| `GET /api/application-events/{id}` | Path id | `ApplicationEvent` | `src/offerpilot/api.py` | v0.1 |
+| `PUT /api/application-events/{id}` | Application event request body | `ApplicationEvent` | `src/offerpilot/api.py` | v0.1 |
+| `DELETE /api/application-events/{id}` | Path id | status JSON | `src/offerpilot/api.py` | v0.1 |
 | `GET /api/calendar` | Query filters | `CalendarEntry[]` | `internal/api/calendar.go`, `web/src/services/calendar.ts` | Phase 5 |
 | `GET /api/applications/{id}/notes` | Path app id | `InterviewNote[]` | `internal/api/notes.go` | Phase 5 |
 | `POST /api/applications/{id}/notes` | Note body | `InterviewNote` | `internal/api/notes.go` | Phase 5 |
@@ -107,12 +107,8 @@ Compatibility footnotes:
 | `POST /api/resumes/upload` | Multipart upload | Resume row | `internal/api/resume.go` | Phase 5 |
 | `PUT /api/resumes/{id}/text` | Text body | Resume row | `internal/api/resume.go` | Phase 5 |
 | `GET /api/resumes/{id}/file` | Path id | File download | `internal/api/resume.go` | Phase 5 |
-| `GET /api/knowledge-bases` | None | `KnowledgeBase[]` | `internal/api/knowledge.go` | Phase 5 |
-| `POST /api/knowledge-bases` | name/description | `KnowledgeBase` | `internal/api/knowledge.go` | Phase 5 |
-| `PUT /api/knowledge-bases/{id}` | name/description | `KnowledgeBase` | `internal/api/knowledge.go` | Phase 5 |
-| `DELETE /api/knowledge-bases/{id}` | Path id | status JSON | `internal/api/knowledge.go` | Phase 5 |
-| `GET /api/knowledge-documents` | Optional base/query filters | `KnowledgeDocument[]` | `internal/api/knowledge.go` | Phase 5 |
-| `POST /api/knowledge-documents` | Document body | `KnowledgeDocument` | `internal/api/knowledge.go` | Phase 5 |
+| `GET /api/knowledge-documents` | Optional query filter | `KnowledgeDocument[]` | `src/offerpilot/api.py` | v0.1 |
+| `POST /api/knowledge-documents` | Document body, no knowledge base id | `KnowledgeDocument` | `src/offerpilot/api.py` | v0.1 |
 | `POST /api/knowledge-documents/import` | Import body | `KnowledgeDocument` | `internal/api/knowledge.go` | Phase 5 |
 | `GET /api/knowledge-documents/{id}` | Path id | `KnowledgeDocument` | `internal/api/knowledge.go` | Phase 5 |
 | `PUT /api/knowledge-documents/{id}` | Document body | `KnowledgeDocument` | `internal/api/knowledge.go` | Phase 5 |
@@ -152,9 +148,9 @@ Compatibility footnotes:
 
 | Endpoint | Request | Response | Compatibility notes | Tests to preserve |
 |---|---|---|---|---|
-| `POST /api/chat` | `{"message": string, "conversation_id": number, "offer_id"?: number}` | Either `{"type":"message","conversation_id":id,"message":text,"degraded"?:true}` or `{"type":"confirmation_required","conversation_id":id,"pending_action":{"tool_name":name,"human":text}}` | `conversation_id=0` creates a new conversation. If `offer_id` exists, conversation mode is `nego_coach`. Missing message returns 400. | New conversation, existing conversation, tools-unsupported fallback, pending write |
+| `POST /api/chat` | `{"message": string, "conversation_id": number, "context_type"?: string, "context_ref"?: string, "mode"?: string}` | Either `{"type":"message","conversation_id":id,"message":text,"degraded"?:true}` or `{"type":"confirmation_required","conversation_id":id,"pending_action":{"tool_name":name,"human":text}}` | `conversation_id=0` creates a new conversation. Application-scoped threads use `context_type=application`, `context_ref=<application_id>`. Missing context defaults to workspace. | New conversation, existing conversation, tools-unsupported fallback, pending write |
 | `POST /api/chat/confirm` | `{"conversation_id": number, "approved": boolean}` | Same `ChatResponse` union | Last stored message must be assistant with `tool_calls`; approve executes, reject records refusal tool result. | Approve, reject, no pending action |
-| `GET /api/chat/conversations` | None | `Conversation[]` | Includes `mode` and `offer_id` after migration columns are present. | List order/update time |
+| `GET /api/chat/conversations` | None | `Conversation[]` | Includes `mode`, `context_type`, and `context_ref`; `offer_id` is not part of the v0.1 conversation contract. | List order/update time |
 | `GET /api/chat/conversations/{id}` | Path id | `ChatMessage[]` | `tool_calls` remains a JSON string in DB/API model. | Preserve tool metadata |
 | `DELETE /api/chat/conversations/{id}` | Path id | `{"status":"deleted"}` | Deletes messages first, then conversation. | Cascade/delete behavior |
 | `GET /api/settings` | None | `{"chat_auto_approve_writes": bool, "base_url": string, "model": string, "has_api_key": bool}` | Never returns raw API key. | No secret exposure |
@@ -164,7 +160,7 @@ Chat/settings compatibility footnotes:
 
 - `GET /api/chat/conversations/{id}` does not currently 404 just because the message list is empty.
 - `PUT /api/settings` preserves the existing API key when `api_key` is blank or omitted.
-- New chat with `offer_id` creates a conversation in `nego_coach` mode and uses an offer-derived title when the offer exists.
+- New chat without explicit context creates a workspace conversation. Offer-specific UI may set `mode=nego_coach`, but persistent conversation context is still `context_type/context_ref`.
 
 ## SQLite Schema Contract
 
@@ -179,19 +175,18 @@ by this idempotent Go migrator.
 | Table | Columns and constraints | Indexes / compatibility notes |
 |---|---|---|
 | `applications` | `id` PK autoincrement; `company_name` not null; `position_name` not null; `job_url` default empty; `status` not null default `applied`; `source` not null default `cli`; `notes` default empty; `applied_at`, `created_at`, `updated_at` not null default current timestamp | `idx_applications_status`; first Python milestone must fully support this table |
-| `events` | `id`; `application_id` not null FK cascade; `event_type` not null; `round` default 0; nullable `scheduled_at`; `duration`, `location`, `notes`; `created_at` | `idx_events_app` |
+| `application_events` | `id`; `application_id` not null FK cascade; `event_type` in `written_test/interview/offer_step/deadline/custom`; `subtype`; `tags` JSON text default `[]`; `round` default 0; nullable `scheduled_at`; `duration_minutes`; `location`; `notes`; nullable `remind_at`; `status`; `created_at` | `idx_application_events_app`, `idx_application_events_type`; old `events` is dropped, not kept compatible |
 | `interview_notes` | `id`; nullable `application_id` FK set null; `company`, `position` not null; `round`, `date`, `questions`, `self_reflection`, `difficulty_points`, `mood`; `created_at` | `idx_notes_app` |
 | `resumes` | `id`; `name`; nullable `file_path`; nullable `parsed_data`; `parse_status` default `pending`; `created_at` | `ensureColumn` maintains all four non-id content columns for legacy DBs |
 | `jd_analyses` | `id`; nullable `application_id` FK set null; `jd_source` default `text`; `jd_text` not null; `result` not null; `created_at` | `idx_jd_app` |
 | `resume_matches` | `id`; `resume_id` not null FK cascade; nullable `application_id` FK set null; `jd_text` not null; `result` not null; `created_at` | `idx_matches_resume` |
 | `offers` | `id`; nullable `application_id` FK set null; `company_name`, `position_name` not null; `status` default `pending`; `base_monthly`, `months_per_year`, `signing_bonus`; `equity`, `perks`, `deadline`, `notes`, `assessment`; timestamps | `idx_offers_app`, `idx_offers_status`; `total_cash` is derived, not stored |
-| `conversations` | `id`; `title` default `新对话`; `created_at`, `updated_at`; migration columns `offer_id INTEGER`, `mode TEXT DEFAULT 'general'` | `ensureColumn` adds `offer_id` and `mode` |
+| `conversations` | `id`; `title` default `新对话`; `mode`; `context_type` default `workspace`; `context_ref` default empty; pending action fields; `created_at`, `updated_at` | Existing local tables with `offer_id` are reset during v0.1 convergence |
 | `chat_messages` | `id`; `conversation_id` FK cascade; `role`; `content`; `tool_calls`; `tool_call_id`; `provider_blocks`; `created_at` | `idx_chat_messages_conv`; `provider_blocks` migration column must be retained |
-| `knowledge_bases` | `id`; `name`; `description`; timestamps | Used by knowledge tools and FTS chunk maintenance |
-| `knowledge_documents` | `id`; `knowledge_base_id` FK cascade; `title`; `content`; `tags` JSON text default `[]`; `source_type`; `source_name`; timestamps | `idx_knowledge_documents_base` |
-| `knowledge_chunks` | `id`; `document_id` FK cascade; `knowledge_base_id` FK cascade; `chunk_index`; `content`; `created_at` | `idx_knowledge_chunks_document`, `idx_knowledge_chunks_base` |
-| `knowledge_chunks_fts` | FTS5 virtual table with `chunk_id`, `document_id`, `knowledge_base_id`, `content` | Python must verify SQLite FTS5 availability or provide an explicit fallback before enabling knowledge search |
-| `questions` | `id`; nullable `knowledge_base_id` and `application_id`; `category`; `difficulty` default `medium`; `question` not null; `reference_answer`; `tags`; `source_type`; `status`; practice fields; `question_hash`; timestamps | `idx_questions_status`, `idx_questions_kb`, `idx_questions_next_review`, `idx_questions_hash`; `ensureColumn` handles practice fields |
+| `knowledge_documents` | `id`; `title`; `content`; `tags` JSON text default `[]`; `doc_kind`; `status`; `source_type`; `source_name`; `source_refs`; `summary_type`; `generation_meta`; `superseded_by`; `confirmed_at`; timestamps | Single library + tags; old `knowledge_bases` multi-library model is dropped |
+| `knowledge_chunks` | `id`; `document_id` FK cascade; `chunk_index`; `content`; `embedding`; `embedding_model`; `created_at` | `idx_knowledge_chunks_document` |
+| `knowledge_chunks_fts` | FTS5 virtual table with `chunk_id`, `document_id`, `content` | v0.1 keeps keyword search foundation; embedding fields are present for later hybrid retrieval |
+| `questions` | `id`; nullable `application_id`; `topic`; `category`; `difficulty` default `medium`; `question` not null; `reference_answer`; `tags`; `source_type`; `status`; practice fields; `question_hash`; timestamps | `idx_questions_topic`, `idx_questions_status`, `idx_questions_next_review`, `idx_questions_hash`; old `knowledge_base_id` tables are reset |
 | `question_reviews` | `id`; `question_id` FK cascade; `rating`; `note`; `created_at` | `idx_question_reviews_question` |
 | `application_material_kits` | `id`; `application_id` not null unique FK cascade; nullable `resume_id`, `jd_analysis_id`; `jd_snapshot`; `status` default `draft`; `content_json`; timestamps | `idx_material_kits_app`, `idx_material_kits_status` |
 | `mock_sessions` | `id`; `conversation_id` FK cascade; nullable app/kb FKs; title/config/progress/status fields; scoring fields; feedback; timestamps | `idx_mock_sessions_conv`, `idx_mock_sessions_status` |
@@ -204,7 +199,6 @@ Python schema rules:
 - First Python migration must be additive and idempotent against existing Go-created databases.
 - Do not rewrite or vacuum user databases during startup.
 - Add explicit tests that create a legacy-style database and run Python migration on it.
-- Do not add a foreign key to `conversations.offer_id` during the compatibility pass; Go currently leaves it unconstrained.
 - Resume upload compatibility must keep relative DB paths like `resumes/<id>_<basename>.pdf`; note that current file write plus DB update is best-effort rather than transactional.
 
 ## CLI Contract
@@ -274,12 +268,11 @@ The agent loop lives in `internal/ai/agent.go`.
 | `list_resumes` | read | none | `resumes` | Phase 5 |
 | `get_resume` | read | `id` | `resumes` | Phase 5 |
 | `list_notes` | read | optional `application_id` | `interview_notes` | Phase 5 |
-| `list_events` | read | optional `month`, `application_id`, `event_type` | `events` | Phase 5 |
-| `get_event` | read | `id` | `events` | Phase 5 |
-| `list_knowledge_bases` | read | none | `knowledge_bases` | Phase 5 |
-| `list_knowledge_documents` | read | `knowledge_base_id`, `query`, `limit`, `offset` | `knowledge_documents` | Phase 5 |
+| `list_application_events` | read | optional `month`, `application_id`, `event_type` | `application_events` | v0.1 |
+| `get_application_event` | read | `id` | `application_events` | v0.1 |
+| `list_knowledge_documents` | read | optional `query` | `knowledge_documents` | v0.1 |
 | `get_knowledge_document` | read | `id` | `knowledge_documents` | Phase 5 |
-| `search_knowledge` | read | `query`, optional `knowledge_base_id`, `limit` | `knowledge_chunks_fts` | Phase 5 |
+| `search_knowledge` | read | `query`, optional `limit` | `knowledge_chunks_fts` | v0.1 |
 | `list_offers` | read | optional `status` | `offers` | Phase 5 |
 | `get_offer` | read | `id` | `offers` | Phase 5 |
 | `compare_offers` | read | `ids[]` | `offers` | Phase 5 |
@@ -288,15 +281,12 @@ The agent loop lives in `internal/ai/agent.go`.
 | `add_note` | write | app/company/position/round/date/questions/reflection/difficulty/mood | `interview_notes`, optional `applications` | Phase 5 |
 | `update_note` | write | `id` plus note fields | `interview_notes` | Phase 5 |
 | `delete_note` | write | `id` | `interview_notes` | Phase 5 |
-| `create_knowledge_base` | write | `name`, optional `description` | `knowledge_bases` | Phase 5 |
-| `update_knowledge_base` | write | `id`, optional name/description | `knowledge_bases` | Phase 5 |
-| `delete_knowledge_base` | write | `id` | `knowledge_bases`, documents/chunks cascade | Phase 5 |
-| `create_knowledge_document` | write | base id, title, content, tags | `knowledge_documents`, chunks | Phase 5 |
+| `create_knowledge_document` | write | title, content, tags | `knowledge_documents`, chunks | v0.1 |
 | `update_knowledge_document` | write | `id` plus optional fields | `knowledge_documents`, chunks | Phase 5 |
 | `delete_knowledge_document` | write | `id` | `knowledge_documents`, chunks | Phase 5 |
-| `create_event` | write | app id, event type, RFC3339 time, duration minutes | `events` | Phase 5 |
-| `update_event` | write | id, app id, event type, RFC3339 time, duration minutes | `events` | Phase 5 |
-| `delete_event` | write | `id` | `events` | Phase 5 |
+| `create_application_event` | write | app id, event_type, subtype, tags, round, scheduled_at, duration_minutes, remind_at | `application_events` | v0.1 |
+| `update_application_event` | write | id plus application event fields | `application_events` | v0.1 |
+| `delete_application_event` | write | `id` | `application_events` | v0.1 |
 | `update_offer` | write | id plus offer fields | `offers` | Phase 5 |
 | `save_offer_assessment` | write | `id`, `assessment` string | `offers.assessment` | Phase 5 |
 

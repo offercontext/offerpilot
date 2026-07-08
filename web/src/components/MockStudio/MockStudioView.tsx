@@ -8,7 +8,6 @@ import {
   createMockSession,
   endMockSession,
 } from '@/services/mock';
-import { listKnowledgeBases } from '@/services/knowledge';
 import type { MockSession, MockConfig, MockFeedback } from '@/types/mock';
 import MockChat from './MockChat';
 import MockResultCard from './MockResultCard';
@@ -36,10 +35,8 @@ export default function MockStudioView({ prefill, onJumpQuestion, onConsumePrefi
   const [savedNoteId, setSavedNoteId] = useState<number | null>(null);
 
   const sessionsQ = useQuery({ queryKey: ['mock-sessions'], queryFn: () => listMockSessions() });
-  const kbQ = useQuery({ queryKey: ['knowledge-bases'], queryFn: () => listKnowledgeBases(), retry: false });
 
   const sessions = sessionsQ.data ?? [];
-  const knowledgeBases = kbQ.data ?? [];
 
   const inProgress = useMemo(() => sessions.filter((s) => s.status === 'in_progress'), [sessions]);
   const completed = useMemo(() => sessions.filter((s) => s.status === 'completed'), [sessions]);
@@ -117,7 +114,6 @@ export default function MockStudioView({ prefill, onJumpQuestion, onConsumePrefi
       question_count: values.question_count,
       duration_min: values.duration_min,
       question_source: values.question_source,
-      knowledge_base_id: values.knowledge_base_id,
     });
   }
 
@@ -159,7 +155,6 @@ export default function MockStudioView({ prefill, onJumpQuestion, onConsumePrefi
       question_count: prev.question_count,
       duration_min: prev.duration_min,
       question_source: prev.question_source,
-      knowledge_base_id: prev.knowledge_base_id,
     });
     setResult(null);
     setActiveId(null);
@@ -295,17 +290,6 @@ export default function MockStudioView({ prefill, onJumpQuestion, onConsumePrefi
                       { value: 'knowledge', label: '知识库' },
                       { value: 'notes', label: '历史复盘薄弱点' },
                     ]}
-                  />
-                </Form.Item>
-                <Form.Item
-                  name="knowledge_base_id"
-                  label="关联知识库（可选）"
-                  tooltip="出题来源为「知识库」或「混合」时使用"
-                >
-                  <Select
-                    allowClear
-                    placeholder="选择知识库"
-                    options={knowledgeBases.map((kb) => ({ value: kb.id, label: kb.name }))}
                   />
                 </Form.Item>
               </div>

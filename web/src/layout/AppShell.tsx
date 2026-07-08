@@ -6,7 +6,6 @@ import { listEvents } from '@/services/events';
 import { listOffers } from '@/services/offers';
 import { uploadResume } from '@/services/resumes';
 import type { Application } from '@/types/application';
-import type { MockConfig } from '@/types/mock';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
 import AddApplicationForm from '@/components/AddApplicationForm';
@@ -29,13 +28,11 @@ const { Content } = Layout;
 
 const KanbanBoard = lazy(() => import('@/components/KanbanBoard'));
 const CalendarView = lazy(() => import('@/components/CalendarView'));
-const ReviewManagementView = lazy(() => import('@/components/ReviewManagementView'));
-const KnowledgeBaseView = lazy(() => import('@/components/KnowledgeBaseView'));
+const KnowledgeLibraryView = lazy(() => import('@/components/KnowledgeLibraryView'));
 const QuestionBankView = lazy(() => import('@/components/QuestionBankView'));
 const OfferCenterView = lazy(() => import('@/components/OfferCenterView'));
 const DashboardView = lazy(() => import('@/features/dashboard/DashboardView'));
 const RemindersView = lazy(() => import('@/features/reminders/RemindersView'));
-const MockStudioView = lazy(() => import('@/components/MockStudio/MockStudioView'));
 const ResumeLibraryView = lazy(() => import('@/components/ResumeLibraryView'));
 const SettingsView = lazy(() => import('@/components/SettingsView'));
 
@@ -84,8 +81,6 @@ export default function AppShell() {
   const [selected, setSelected] = useState<Application | null>(null);
   const [coachOfferId, setCoachOfferId] = useState<number | undefined>(undefined);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [mockPrefill, setMockPrefill] = useState<Partial<MockConfig> | null>(null);
-  const [questionFocusId, setQuestionFocusId] = useState<number | null>(null);
   const [now, setNow] = useState(() => dayjs());
   const [pilotRailAvailable, setPilotRailAvailable] = useState(() =>
     typeof window === 'undefined' ? false : window.matchMedia('(min-width: 1180px)').matches
@@ -249,22 +244,11 @@ export default function AppShell() {
                   {view === 'reminders' && (
                     <RemindersView onNavigate={setView} onOpenDetailById={goDetailById} />
                   )}
-                  {view === 'reviews' && <ReviewManagementView applications={apps} />}
                   {view === 'offers' && (
                     <OfferCenterView applications={apps} onCoach={(offer) => openChat(offer.id)} />
                   )}
-                  {view === 'knowledge' && <KnowledgeBaseView />}
-                  {view === 'questions' && <QuestionBankView focusId={questionFocusId ?? undefined} />}
-                  {view === 'mock' && (
-                    <MockStudioView
-                      prefill={mockPrefill}
-                      onJumpQuestion={(id) => {
-                        setQuestionFocusId(id);
-                        setView('questions');
-                      }}
-                      onConsumePrefill={() => setMockPrefill(null)}
-                    />
-                  )}
+                  {view === 'knowledge' && <KnowledgeLibraryView />}
+                  {view === 'questions' && <QuestionBankView />}
                   {view === 'resumes' && <ResumeLibraryView />}
                   {view === 'settings' && <SettingsView onOpenAISettings={() => setAISettingsOpen(true)} />}
                 </div>
@@ -291,17 +275,6 @@ export default function AppShell() {
         application={selectedApp}
         open={!!selected}
         onClose={() => setSelected(null)}
-        onMockInterview={(app) => {
-          setSelected(null);
-          setMockPrefill({
-            application_id: app.id,
-            role: app.position_name,
-            company: app.company_name,
-            round_type: 'technical',
-            question_source: 'mixed',
-          });
-          setView('mock');
-        }}
       />
       <ResumeMatchModal open={resumeOpen} onClose={() => setResumeOpen(false)} />
       <ResumeUploadModal

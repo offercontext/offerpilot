@@ -1,7 +1,7 @@
 // Mirrors Go api.CalendarEntry JSON tags.
 import type { ScheduleEventType } from '@/types/event';
 
-export type CalendarEntryType = 'interview' | 'applied' | 'written_test' | 'assessment';
+export type CalendarEntryType = 'interview' | 'applied' | ScheduleEventType;
 
 export interface CalendarEntry {
   date: string;

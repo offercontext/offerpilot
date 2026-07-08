@@ -25,8 +25,9 @@ class ConversationOut(BaseModel):
 
     id: int
     title: str
-    offer_id: int | None = None
     mode: str = "general"
+    context_type: str = "workspace"
+    context_ref: str = ""
     pending_action: dict[str, object] | None = None
     created_at: datetime
     updated_at: datetime
@@ -44,15 +45,19 @@ class ChatMessageOut(BaseModel):
     created_at: datetime
 
 
-class EventOut(BaseModel):
+class ApplicationEventOut(BaseModel):
     id: int
     application_id: int
     event_type: str
+    subtype: str = ""
+    tags: list[str] = []
     round: int
     scheduled_at: str
     duration_minutes: int
     location: str
     notes: str
+    remind_at: str | None = None
+    status: str = "todo"
     created_at: datetime
     company_name: str | None = None
     position_name: str | None = None
@@ -128,26 +133,22 @@ class JDAnalysisOut(BaseModel):
     created_at: datetime
 
 
-class KnowledgeBaseOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    name: str
-    description: str
-    created_at: datetime
-    updated_at: datetime
-
-
 class KnowledgeDocumentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
-    knowledge_base_id: int
     title: str
     content: str
     tags: list[str]
+    doc_kind: str = "wiki"
+    status: str = "confirmed"
     source_type: str
     source_name: str
+    source_refs: str = "[]"
+    summary_type: str = ""
+    generation_meta: str = "{}"
+    superseded_by: int | None = None
+    confirmed_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -156,8 +157,8 @@ class QuestionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
-    knowledge_base_id: int | None = None
     application_id: int | None = None
+    topic: str = ""
     category: str
     difficulty: str
     question: str
@@ -210,7 +211,6 @@ class MockSessionOut(BaseModel):
     question_count: int
     duration_min: int
     question_source: str
-    knowledge_base_id: int | None = None
     status: str
     question_index: int
     started_at: datetime

@@ -4,8 +4,8 @@ export type QuestionSource = 'ai_knowledge' | 'ai_notes' | 'manual';
 
 export interface Question {
   id: number;
-  knowledge_base_id?: number | null;
   application_id?: number | null;
+  topic?: string;
   category: string;
   difficulty: QuestionDifficulty;
   question: string;
@@ -30,7 +30,7 @@ export interface QuestionInput {
 }
 
 export interface QuestionFilter {
-  knowledge_base_id?: number;
+  topic?: string;
   category?: string;
   difficulty?: QuestionDifficulty;
   status?: QuestionStatus;
@@ -38,7 +38,7 @@ export interface QuestionFilter {
 
 export interface GenerateQuestionsInput {
   source: 'knowledge' | 'notes';
-  knowledge_base_id?: number;
+  topic?: string;
   application_id?: number;
   count?: number;
 }

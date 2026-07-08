@@ -13,15 +13,14 @@ describe('module navigation contract', () => {
       '简历',
       '练习',
       '投递',
-      '面试',
       '知识库',
       '设置',
     ]);
 
     expect(MODULE_NAV.some((item) => item.label.includes('Pilot'))).toBe(false);
+    expect(MODULE_NAV.some((item) => item.label === '面试')).toBe(false);
     expect(resolveModuleForView('board')).toBe('pipeline');
     expect(resolveModuleForView('calendar')).toBe('pipeline');
-    expect(resolveModuleForView('mock')).toBe('interview');
     expect(resolveModuleForView('questions')).toBe('practice');
   });
 
@@ -39,9 +38,6 @@ describe('module navigation contract', () => {
       { view: 'offers', label: 'Offer' },
       { view: 'reminders', label: '提醒' },
     ]);
-    expect(moduleTabsForView('mock')).toEqual([
-      { view: 'reviews', label: '复盘' },
-      { view: 'mock', label: '模拟面试' },
-    ]);
+    expect(() => resolveModuleForView('mock')).toThrow('View mock is not part of v0.1 navigation');
   });
 });

@@ -30,10 +30,13 @@ from offerpilot.db import session_factory_for_data_dir
 from offerpilot.diagnostics import read_recent_log_entries
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
 from offerpilot.repositories.chat import ChatRepository
-from offerpilot.repositories.events import EventCreate, EventsRepository, duration_minutes
+from offerpilot.repositories.application_events import (
+    ApplicationEventCreate,
+    ApplicationEventsRepository,
+    duration_minutes,
+)
 from offerpilot.repositories.jd import JDAnalysesRepository, JDAnalysisCreate
 from offerpilot.repositories.knowledge import (
-    KnowledgeBaseCreate,
     KnowledgeDocumentCreate,
     KnowledgeRepository,
 )
@@ -48,10 +51,9 @@ from offerpilot.schemas import (
     ApplicationOut,
     ChatMessageOut,
     ConversationOut,
-    EventOut,
+    ApplicationEventOut,
     InterviewNoteOut,
     JDAnalysisOut,
-    KnowledgeBaseOut,
     KnowledgeDocumentOut,
     MaterialKitOut,
     MockSessionOut,
@@ -74,7 +76,7 @@ def create_app(
     session_factory = session_factory_for_data_dir(resolved_data_dir)
     applications = ApplicationsRepository(session_factory)
     chat = ChatRepository(session_factory)
-    events = EventsRepository(session_factory)
+    events = ApplicationEventsRepository(session_factory)
     notes = NotesRepository(session_factory)
     offers = OffersRepository(session_factory)
     resumes = ResumesRepository(session_factory)
@@ -291,25 +293,25 @@ def create_app(
             return error_response(404, "Material kit not found")
         return JSONResponse(_material_kit_json(kit))
 
-    @app.get("/api/events")
-    def list_events(
+    @app.get("/api/application-events")
+    def list_application_events(
         month: str = "",
         application_id: int = 0,
-        type: str = "",
+        event_type: str = "",
     ) -> JSONResponse:
         if month and not _valid_month(month):
             return error_response(400, "Invalid month")
-        if type and not _valid_event_type(type):
+        if event_type and not _valid_event_type(event_type):
             return error_response(400, "Invalid event type")
         if application_id < 0:
             return error_response(400, "Invalid application_id")
         if application_id > 0 and applications.get(application_id) is None:
             return error_response(404, "Application not found")
-        rows = events.list(month=month, application_id=application_id, event_type=type)
+        rows = events.list(month=month, application_id=application_id, event_type=event_type)
         return JSONResponse([_event_with_application_json(item) for item in rows])
 
-    @app.post("/api/events", status_code=201)
-    def create_event(payload: dict[str, Any] = Body(...)) -> JSONResponse:
+    @app.post("/api/application-events", status_code=201)
+    def create_application_event(payload: dict[str, Any] = Body(...)) -> JSONResponse:
         parsed = _event_create_from_payload(payload)
         if isinstance(parsed, JSONResponse):
             return parsed
@@ -318,17 +320,17 @@ def create_app(
         event = events.create(parsed)
         return JSONResponse(_event_json(event), status_code=201)
 
-    @app.get("/api/events/{event_id}")
-    def get_event(event_id: int) -> JSONResponse:
+    @app.get("/api/application-events/{event_id}")
+    def get_application_event(event_id: int) -> JSONResponse:
         event = events.get(event_id)
         if event is None:
-            return error_response(404, "Event not found")
+            return error_response(404, "Application event not found")
         return JSONResponse(_event_json(event))
 
-    @app.put("/api/events/{event_id}")
-    def update_event(event_id: int, payload: dict[str, Any] = Body(...)) -> JSONResponse:
+    @app.put("/api/application-events/{event_id}")
+    def update_application_event(event_id: int, payload: dict[str, Any] = Body(...)) -> JSONResponse:
         if events.get(event_id) is None:
-            return error_response(404, "Event not found")
+            return error_response(404, "Application event not found")
         parsed = _event_create_from_payload(payload)
         if isinstance(parsed, JSONResponse):
             return parsed
@@ -336,13 +338,13 @@ def create_app(
             return error_response(404, "Application not found")
         event = events.update(event_id, parsed)
         if event is None:
-            return error_response(404, "Event not found")
+            return error_response(404, "Application event not found")
         return JSONResponse(_event_json(event))
 
-    @app.delete("/api/events/{event_id}")
-    def delete_event(event_id: int) -> JSONResponse:
+    @app.delete("/api/application-events/{event_id}")
+    def delete_application_event(event_id: int) -> JSONResponse:
         if not events.delete(event_id):
-            return error_response(404, "Event not found")
+            return error_response(404, "Application event not found")
         return JSONResponse({"message": "Deleted"})
 
     @app.get("/api/wakeups")
@@ -534,42 +536,13 @@ def create_app(
             return error_response(404, "JD analysis not found")
         return JSONResponse(_jd_analysis_json(analysis))
 
-    @app.get("/api/knowledge-bases")
-    def list_knowledge_bases() -> list[dict[str, Any]]:
-        return [_knowledge_base_json(base) for base in knowledge.list_bases()]
-
-    @app.post("/api/knowledge-bases", status_code=201)
-    def create_knowledge_base(payload: dict[str, Any] = Body(...)) -> JSONResponse:
-        parsed = _knowledge_base_from_payload(payload)
-        if isinstance(parsed, JSONResponse):
-            return parsed
-        base = knowledge.create_base(parsed)
-        return JSONResponse(_knowledge_base_json(base), status_code=201)
-
-    @app.put("/api/knowledge-bases/{base_id}")
-    def update_knowledge_base(base_id: int, payload: dict[str, Any] = Body(...)) -> JSONResponse:
-        parsed = _knowledge_base_from_payload(payload)
-        if isinstance(parsed, JSONResponse):
-            return parsed
-        base = knowledge.update_base(base_id, parsed)
-        if base is None:
-            return error_response(404, "Knowledge base not found")
-        return JSONResponse(_knowledge_base_json(base))
-
-    @app.delete("/api/knowledge-bases/{base_id}")
-    def delete_knowledge_base(base_id: int) -> JSONResponse:
-        if not knowledge.delete_base(base_id):
-            return error_response(404, "Knowledge base not found")
-        return JSONResponse({"message": "Deleted"})
-
     @app.get("/api/knowledge-documents")
     def list_knowledge_documents(
-        knowledge_base_id: int = 0,
         q: str = "",
     ) -> list[dict[str, Any]]:
         return [
             _knowledge_document_json(doc)
-            for doc in knowledge.list_documents(knowledge_base_id=knowledge_base_id, query=q)
+            for doc in knowledge.list_documents(query=q)
         ]
 
     @app.post("/api/knowledge-documents", status_code=201)
@@ -577,24 +550,13 @@ def create_app(
         parsed = _knowledge_document_from_payload(payload)
         if isinstance(parsed, JSONResponse):
             return parsed
-        if knowledge.get_base(parsed.knowledge_base_id) is None:
-            return error_response(404, "Knowledge base not found")
         doc = knowledge.create_document(parsed)
         return JSONResponse(_knowledge_document_json(doc), status_code=201)
 
     @app.post("/api/knowledge-documents/import", status_code=201)
     async def import_knowledge_document(
-        knowledge_base_id: str = Form(default=""),
         file: UploadFile | None = File(default=None),
     ) -> JSONResponse:
-        try:
-            base_id = int(knowledge_base_id)
-        except ValueError:
-            base_id = 0
-        if base_id <= 0:
-            return error_response(400, "knowledge_base_id is required")
-        if knowledge.get_base(base_id) is None:
-            return error_response(404, "Knowledge base not found")
         if file is None or not file.filename:
             return error_response(400, "file is required")
         filename = Path(file.filename).name
@@ -605,11 +567,10 @@ def create_app(
             return error_response(400, "file is too large")
         doc = knowledge.create_document(
             KnowledgeDocumentCreate(
-                knowledge_base_id=base_id,
                 title=Path(filename).stem,
                 content=data.decode("utf-8", errors="replace"),
                 tags=[],
-                source_type="upload",
+                source_type="markdown" if Path(filename).suffix.lower() == ".md" else "paste",
                 source_name=filename,
             )
         )
@@ -630,8 +591,6 @@ def create_app(
         parsed = _knowledge_document_from_payload(payload)
         if isinstance(parsed, JSONResponse):
             return parsed
-        if knowledge.get_base(parsed.knowledge_base_id) is None:
-            return error_response(404, "Knowledge base not found")
         parsed.source_type = existing.source_type
         parsed.source_name = existing.source_name
         doc = knowledge.update_document(document_id, parsed)
@@ -646,19 +605,17 @@ def create_app(
         return JSONResponse({"message": "Deleted"})
 
     @app.get("/api/knowledge/search")
-    def search_knowledge(q: str = "", knowledge_base_id: int = 0, limit: int = 5) -> JSONResponse:
+    def search_knowledge(q: str = "", limit: int = 5) -> JSONResponse:
         query = q.strip()
         if not query:
             return error_response(400, "query is required")
-        if knowledge_base_id < 0:
-            return error_response(400, "Invalid knowledge_base_id")
         if limit <= 0:
             return error_response(400, "Invalid limit")
-        return JSONResponse(knowledge.search(query, knowledge_base_id=knowledge_base_id, limit=limit))
+        return JSONResponse(knowledge.search(query, limit=limit))
 
     @app.get("/api/questions")
     def list_questions(
-        knowledge_base_id: int = 0,
+        topic: str = "",
         category: str = "",
         difficulty: str = "",
         status: str = "",
@@ -666,7 +623,7 @@ def create_app(
         return [
             _question_json(question)
             for question in questions.list(
-                knowledge_base_id=knowledge_base_id,
+                topic=topic,
                 category=category,
                 difficulty=difficulty,
                 status=status,
@@ -684,24 +641,16 @@ def create_app(
     @app.post("/api/questions/generate", status_code=201)
     def generate_questions(payload: dict[str, Any] = Body(...)) -> JSONResponse:
         source = str(payload.get("source") or "knowledge").strip() or "knowledge"
-        knowledge_base_id: int | None = None
         application_id: int | None = None
         if source == "knowledge":
-            raw_kb = int(payload.get("knowledge_base_id") or 0)
-            if raw_kb <= 0:
-                return error_response(400, "请选择知识库")
-            base = knowledge.get_base(raw_kb)
-            if base is None:
-                return error_response(500, "加载知识库失败: not found")
-            documents = knowledge.list_documents(knowledge_base_id=raw_kb)
-            label = f"知识库「{base.name}」资料"
+            documents = knowledge.list_documents()
+            label = "知识库资料"
             context_text = "\n\n".join(
                 f"## {doc.title}\n{doc.content.strip()}"
                 for doc in documents
                 if doc.content.strip()
             )
             source_type = "ai_knowledge"
-            knowledge_base_id = raw_kb
         elif source == "notes":
             raw_app = int(payload.get("application_id") or 0)
             note_rows = notes.list(application_id=raw_app) if raw_app > 0 else notes.list()
@@ -729,8 +678,8 @@ def create_app(
             questions,
             result.get("questions", []),
             source_type=source_type,
-            knowledge_base_id=knowledge_base_id,
             application_id=application_id,
+            topic=str(payload.get("topic") or ""),
         )
         return JSONResponse(
             {"count": len(saved), "skipped": skipped, "questions": [_question_json(q) for q in saved]},
@@ -963,7 +912,7 @@ def create_app(
                     "scheduled_at": scheduled_at.astimezone(timezone.utc)
                     .isoformat()
                     .replace("+00:00", "Z"),
-                    "duration_minutes": duration_minutes(item.event.duration),
+                    "duration_minutes": duration_minutes(item.event.duration_minutes),
                     "location": item.event.location,
                     "editable": True,
                 }
@@ -996,13 +945,15 @@ def create_app(
 
         conversation_id = int(payload.get("conversation_id") or 0)
         if conversation_id == 0:
-            offer_id = payload.get("offer_id")
-            mode = "nego_coach" if offer_id else "general"
-            title = f"Offer #{offer_id} 谈薪" if offer_id else _title_from_message(message)
+            context_type = str(payload.get("context_type") or "workspace").strip() or "workspace"
+            context_ref = str(payload.get("context_ref") or "").strip()
+            mode = str(payload.get("mode") or "general").strip() or "general"
+            title = _title_from_message(message)
             conversation = chat.create_conversation(
                 title,
                 mode=mode,
-                offer_id=int(offer_id) if offer_id else None,
+                context_type=context_type,
+                context_ref=context_ref,
             )
             conversation_id = conversation.id
         elif chat.get_conversation(conversation_id) is None:
@@ -1137,9 +1088,6 @@ def create_app(
                 question_count=int(payload.get("question_count") or 5),
                 duration_min=int(payload.get("duration_min") or 0),
                 question_source=str(payload.get("question_source") or "mixed"),
-                knowledge_base_id=int(payload["knowledge_base_id"])
-                if payload.get("knowledge_base_id") is not None
-                else None,
             )
         )
         return JSONResponse(
@@ -1622,7 +1570,7 @@ def _provider_payload(profile: AIProviderProfile) -> dict[str, Any]:
 
 
 def _valid_event_type(event_type: str) -> bool:
-    return event_type in {"written_test", "interview", "assessment"}
+    return event_type in {"written_test", "interview", "offer_step", "deadline", "custom"}
 
 
 def _valid_month(month: str) -> bool:
@@ -1652,11 +1600,13 @@ def _event_type_label(event_type: str) -> str:
     return {
         "written_test": "笔试",
         "interview": "面试",
-        "assessment": "测评",
+        "offer_step": "Offer",
+        "deadline": "截止",
+        "custom": "自定义",
     }.get(event_type, event_type)
 
 
-def _event_create_from_payload(payload: dict[str, Any]) -> EventCreate | JSONResponse:
+def _event_create_from_payload(payload: dict[str, Any]) -> ApplicationEventCreate | JSONResponse:
     event_type = str(payload.get("event_type") or "")
     if not _valid_event_type(event_type):
         return error_response(400, "Invalid event type")
@@ -1670,14 +1620,28 @@ def _event_create_from_payload(payload: dict[str, Any]) -> EventCreate | JSONRes
         scheduled_at = datetime.fromisoformat(scheduled_at_raw.replace("Z", "+00:00"))
     except ValueError:
         return error_response(400, "scheduled_at must be RFC3339")
-    return EventCreate(
+    remind_at_raw = str(payload.get("remind_at") or "")
+    remind_at: datetime | None = None
+    if remind_at_raw:
+        try:
+            remind_at = datetime.fromisoformat(remind_at_raw.replace("Z", "+00:00"))
+        except ValueError:
+            return error_response(400, "remind_at must be RFC3339")
+    tags_value = payload.get("tags") or []
+    if not isinstance(tags_value, list):
+        return error_response(400, "tags must be an array")
+    return ApplicationEventCreate(
         application_id=int(payload.get("application_id") or 0),
         event_type=event_type,
+        subtype=str(payload.get("subtype") or ""),
+        tags=[str(item) for item in tags_value],
         round=int(payload.get("round") or 0),
         scheduled_at=scheduled_at,
         duration_minutes=duration,
         location=str(payload.get("location") or ""),
         notes=str(payload.get("notes") or ""),
+        remind_at=remind_at,
+        status=str(payload.get("status") or "todo"),
     )
 
 
@@ -1707,19 +1671,29 @@ def _parse_rfc3339(value: str) -> datetime | JSONResponse:
 
 
 def _event_json(event: Any) -> dict[str, Any]:
-    return EventOut(
+    return ApplicationEventOut(
         id=event.id,
         application_id=event.application_id,
         event_type=event.event_type,
+        subtype=event.subtype,
+        tags=event.tags,
         round=event.round,
-        scheduled_at=event.scheduled_at.isoformat().replace("+00:00", "Z")
-        if event.scheduled_at
-        else "",
-        duration_minutes=duration_minutes(event.duration),
+        scheduled_at=_format_rfc3339(event.scheduled_at),
+        duration_minutes=duration_minutes(event.duration_minutes),
         location=event.location,
         notes=event.notes,
+        remind_at=_format_rfc3339(event.remind_at) if event.remind_at else None,
+        status=event.status,
         created_at=event.created_at,
     ).model_dump(mode="json", exclude_none=True)
+
+
+def _format_rfc3339(value: datetime | None) -> str:
+    if value is None:
+        return ""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.isoformat().replace("+00:00", "Z")
 
 
 def _event_with_application_json(item: Any) -> dict[str, Any]:
@@ -1818,34 +1792,21 @@ def _jd_analysis_json(analysis: Any) -> dict[str, Any]:
     return JDAnalysisOut.model_validate(analysis).model_dump(mode="json", exclude_none=True)
 
 
-def _knowledge_base_from_payload(payload: dict[str, Any]) -> KnowledgeBaseCreate | JSONResponse:
-    name = str(payload.get("name") or "").strip()
-    if not name:
-        return error_response(400, "name is required")
-    return KnowledgeBaseCreate(name=name, description=str(payload.get("description") or ""))
-
-
 def _knowledge_document_from_payload(
     payload: dict[str, Any],
 ) -> KnowledgeDocumentCreate | JSONResponse:
-    knowledge_base_id = int(payload.get("knowledge_base_id") or 0)
-    if knowledge_base_id <= 0:
-        return error_response(400, "knowledge_base_id is required")
     title = str(payload.get("title") or "").strip()
     if not title:
         return error_response(400, "title is required")
     tags_value = payload.get("tags") or []
     tags = [str(item) for item in tags_value] if isinstance(tags_value, list) else []
     return KnowledgeDocumentCreate(
-        knowledge_base_id=knowledge_base_id,
         title=title,
         content=str(payload.get("content") or ""),
         tags=tags,
+        source_type=str(payload.get("source_type") or "manual"),
+        source_name=str(payload.get("source_name") or ""),
     )
-
-
-def _knowledge_base_json(base: Any) -> dict[str, Any]:
-    return KnowledgeBaseOut.model_validate(base).model_dump(mode="json")
 
 
 def _knowledge_document_json(document: Any) -> dict[str, Any]:
@@ -2069,8 +2030,8 @@ def _persist_generated_questions(
     repo: QuestionsRepository,
     generated: Any,
     source_type: str,
-    knowledge_base_id: int | None,
     application_id: int | None,
+    topic: str = "",
 ) -> tuple[list[Any], int]:
     if not isinstance(generated, list):
         return [], 0
@@ -2093,8 +2054,8 @@ def _persist_generated_questions(
         tags = [str(tag) for tag in tags_value] if isinstance(tags_value, list) else []
         to_create.append(
             QuestionCreate(
-                knowledge_base_id=knowledge_base_id,
                 application_id=application_id,
+                topic=topic,
                 category=str(item.get("category") or "").strip(),
                 difficulty=_normalize_difficulty(str(item.get("difficulty") or "medium")),
                 question=text,

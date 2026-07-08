@@ -4,15 +4,23 @@ import { createApiClient } from './http';
 const http = createApiClient({ baseURL: '/api', timeout: 130000 });
 export const SETTINGS_QUERY_KEY = ['settings'] as const;
 
+export interface ChatContextInput {
+  context_type?: 'workspace' | 'application' | 'global' | string;
+  context_ref?: string | number;
+  mode?: string;
+}
+
 export async function sendChat(
   message: string,
   conversationId?: number,
-  offerId?: number,
+  context?: ChatContextInput,
 ): Promise<ChatResponse> {
   const { data } = await http.post<ChatResponse>('/chat', {
     message,
     conversation_id: conversationId ?? 0,
-    ...(offerId ? { offer_id: offerId } : {}),
+    ...(context?.context_type ? { context_type: context.context_type } : {}),
+    ...(context?.context_ref !== undefined ? { context_ref: String(context.context_ref) } : {}),
+    ...(context?.mode ? { mode: context.mode } : {}),
   });
   return data;
 }

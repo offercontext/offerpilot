@@ -13,14 +13,22 @@ def test_chat_messages_have_conversation_foreign_key(tmp_path):
     assert any(row[2] == "conversations" and row[3] == "conversation_id" for row in foreign_keys)
 
 
-def test_events_have_application_foreign_key(tmp_path):
+def test_application_events_have_application_foreign_key_and_event_columns(tmp_path):
     db_path = tmp_path / "data.db"
     init_database(db_path)
 
     with sqlite3.connect(db_path) as conn:
-        foreign_keys = conn.execute("PRAGMA foreign_key_list(events)").fetchall()
+        foreign_keys = conn.execute("PRAGMA foreign_key_list(application_events)").fetchall()
+        event_columns = {row[1] for row in conn.execute("PRAGMA table_info(application_events)")}
+        legacy_events = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='events'"
+        ).fetchall()
 
     assert any(row[2] == "applications" and row[3] == "application_id" for row in foreign_keys)
+    assert {"event_type", "subtype", "tags", "round", "scheduled_at", "remind_at"}.issubset(
+        event_columns
+    )
+    assert legacy_events == []
 
 
 def test_interview_notes_application_foreign_key_sets_null(tmp_path):
@@ -36,7 +44,26 @@ def test_interview_notes_application_foreign_key_sets_null(tmp_path):
     )
 
 
-def test_init_database_adds_legacy_chat_columns(tmp_path):
+def test_knowledge_uses_single_library_documents_without_knowledge_bases(tmp_path):
+    db_path = tmp_path / "data.db"
+    init_database(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        tables = {
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+        document_columns = {row[1] for row in conn.execute("PRAGMA table_info(knowledge_documents)")}
+        chunk_columns = {row[1] for row in conn.execute("PRAGMA table_info(knowledge_chunks)")}
+
+    assert "knowledge_bases" not in tables
+    assert {"doc_kind", "status", "source_refs", "summary_type", "generation_meta"}.issubset(
+        document_columns
+    )
+    assert "knowledge_base_id" not in document_columns
+    assert "knowledge_base_id" not in chunk_columns
+
+
+def test_init_database_adds_current_chat_context_columns(tmp_path):
     db_path = tmp_path / "data.db"
     with sqlite3.connect(db_path) as conn:
         conn.execute(
@@ -65,7 +92,8 @@ def test_init_database_adds_legacy_chat_columns(tmp_path):
         conversation_columns = {row[1] for row in conn.execute("PRAGMA table_info(conversations)")}
         message_columns = {row[1] for row in conn.execute("PRAGMA table_info(chat_messages)")}
 
-    assert {"offer_id", "mode"}.issubset(conversation_columns)
+    assert {"mode", "context_type", "context_ref"}.issubset(conversation_columns)
+    assert "offer_id" not in conversation_columns
     assert "provider_blocks" in message_columns
 
 
@@ -85,7 +113,7 @@ def test_init_database_creates_idempotent_schema_migration_log(tmp_path):
     assert rows.count(("0001_base_schema", "Create current application tables")) == 1
 
 
-def test_legacy_additive_chat_migration_is_recorded(tmp_path):
+def test_current_chat_context_migration_is_recorded(tmp_path):
     db_path = tmp_path / "data.db"
     with sqlite3.connect(db_path) as conn:
         conn.execute(
@@ -114,5 +142,8 @@ def test_legacy_additive_chat_migration_is_recorded(tmp_path):
         versions = {
             row[0] for row in conn.execute("SELECT version FROM schema_migrations").fetchall()
         }
+        conversation_columns = {row[1] for row in conn.execute("PRAGMA table_info(conversations)")}
 
     assert "0002_chat_state_columns" in versions
+    assert {"context_type", "context_ref"}.issubset(conversation_columns)
+    assert "offer_id" not in conversation_columns

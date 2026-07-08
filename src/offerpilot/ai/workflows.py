@@ -119,26 +119,19 @@ def generate_questions(
     knowledge: KnowledgeRepository,
     notes: NotesRepository,
     source: str = "knowledge",
-    knowledge_base_id: int = 0,
+    topic: str = "",
     application_id: int = 0,
     count: int = 8,
 ) -> GeneratedQuestionsResult:
     source = source.strip() or "knowledge"
-    saved_knowledge_base_id: int | None = None
     saved_application_id: int | None = None
     if source == "knowledge":
-        if knowledge_base_id <= 0:
-            raise ValueError("请选择知识库")
-        base = knowledge.get_base(knowledge_base_id)
-        if base is None:
-            raise ValueError("加载知识库失败: not found")
-        docs = knowledge.list_documents(knowledge_base_id=knowledge_base_id)
-        label = f"知识库「{base.name}」资料"
+        docs = knowledge.list_documents()
+        label = "知识库资料"
         context_text = "\n\n".join(
             f"## {doc.title}\n{doc.content.strip()}" for doc in docs if doc.content.strip()
         )
         source_type = "ai_knowledge"
-        saved_knowledge_base_id = knowledge_base_id
     elif source == "notes":
         note_rows = notes.list(application_id=application_id) if application_id > 0 else notes.list()
         label = "面试复盘真题"
@@ -159,8 +152,8 @@ def generate_questions(
         questions,
         result.get("questions", []),
         source_type=source_type,
-        knowledge_base_id=saved_knowledge_base_id,
         application_id=saved_application_id,
+        topic=topic,
     )
     return GeneratedQuestionsResult(count=len(saved), skipped=skipped, questions=saved)
 
@@ -254,8 +247,8 @@ def persist_generated_questions(
     repo: QuestionsRepository,
     generated: Any,
     source_type: str,
-    knowledge_base_id: int | None,
     application_id: int | None,
+    topic: str = "",
 ) -> tuple[list[Any], int]:
     if not isinstance(generated, list):
         return [], 0
@@ -277,8 +270,8 @@ def persist_generated_questions(
         tags = [str(tag) for tag in tags_value] if isinstance(tags_value, list) else []
         to_create.append(
             QuestionCreate(
-                knowledge_base_id=knowledge_base_id,
                 application_id=application_id,
+                topic=topic,
                 category=str(item.get("category") or "").strip(),
                 difficulty=normalize_difficulty(str(item.get("difficulty") or "medium")),
                 question=text,

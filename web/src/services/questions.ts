@@ -16,7 +16,7 @@ const aiHttp = createApiClient({ baseURL: '/api', timeout: 120000 });
 export async function listQuestions(filter: QuestionFilter = {}): Promise<Question[]> {
   const { data } = await http.get<Question[]>('/questions', {
     params: {
-      ...(filter.knowledge_base_id ? { knowledge_base_id: filter.knowledge_base_id } : {}),
+      ...(filter.topic ? { topic: filter.topic } : {}),
       ...(filter.category ? { category: filter.category } : {}),
       ...(filter.difficulty ? { difficulty: filter.difficulty } : {}),
       ...(filter.status ? { status: filter.status } : {}),

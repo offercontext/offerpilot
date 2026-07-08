@@ -101,20 +101,21 @@ describe('buildTurns evidence normalization', () => {
     const turns = buildTurns([
       msg({
         role: 'assistant',
-        tool_calls: JSON.stringify([{ id: 'call-events', name: 'list_events', args: {} }]),
+        tool_calls: JSON.stringify([{ id: 'call-events', name: 'list_application_events', args: {} }]),
       }),
       msg({
         role: 'tool',
         tool_call_id: 'call-events',
         content: JSON.stringify([
           {
-            record_type: 'event',
-            event_id: 1,
+            record_type: 'application_event',
+            application_event_id: 1,
             id: 1,
             application_id: 7,
             company_name: '拼多多',
             position_name: 'agent开发',
             event_type: 'interview',
+            subtype: 'technical',
             scheduled_at: '2026-07-01T07:00:00Z',
             duration_minutes: 60,
             notes: '一面',
@@ -125,16 +126,16 @@ describe('buildTurns evidence normalization', () => {
     ]);
 
     expect(turns[0].steps?.[0]).toMatchObject({
-      name: 'list_events',
+      name: 'list_application_events',
       detail: '拼多多',
       evidence: [
         {
-          id: 'list_events-1',
+          id: 'list_application_events-1',
           kind: 'event',
           title: '拼多多',
-          meta: 'agent开发 · interview · 2026-07-01T07:00:00Z',
+          meta: 'agent开发 · interview · technical · 2026-07-01T07:00:00Z',
           snippet: '一面',
-          source: 'list_events',
+          source: 'list_application_events',
         },
       ],
     });
@@ -219,8 +220,6 @@ describe('buildTurns evidence normalization', () => {
           {
             record_type: 'knowledge_search_result',
             search_result_id: 12,
-            knowledge_base_id: 1,
-            knowledge_base_name: 'Java八股',
             document_id: 3,
             document_title: 'JVM内存模型',
             source_name: 'manual',
@@ -241,7 +240,7 @@ describe('buildTurns evidence normalization', () => {
           id: 'search_knowledge-12',
           kind: 'knowledge',
           title: 'JVM内存模型',
-          meta: 'Java八股 · manual',
+          meta: 'manual',
           snippet: '堆、栈、方法区和程序计数器是常见考点。',
           source: 'search_knowledge',
         },
@@ -270,7 +269,6 @@ describe('buildTurns evidence normalization', () => {
           record_type: 'knowledge_document',
           knowledge_document_id: 8,
           id: 8,
-          knowledge_base_name: 'Interview KB',
           title: 'Java Threads',
           content: longContent,
         }),
@@ -602,6 +600,8 @@ describe('buildTurns evidence normalization', () => {
         {
           id: 42,
           title: 'Offer',
+          context_type: 'workspace',
+          context_ref: '',
           created_at: '2026-01-01T00:00:00Z',
           updated_at: '2026-01-01T00:00:00Z',
           pending_action: {

@@ -13,8 +13,19 @@ class ChatRepository:
     def __init__(self, session_factory: sessionmaker[Session]):
         self._session_factory = session_factory
 
-    def create_conversation(self, title: str, mode: str = "general", offer_id: int | None = None) -> Conversation:
-        conversation = Conversation(title=title, mode=mode, offer_id=offer_id)
+    def create_conversation(
+        self,
+        title: str,
+        mode: str = "general",
+        context_type: str = "workspace",
+        context_ref: str = "",
+    ) -> Conversation:
+        conversation = Conversation(
+            title=title,
+            mode=mode,
+            context_type=context_type or "workspace",
+            context_ref=context_ref or "",
+        )
         with self._session_factory() as session:
             session.add(conversation)
             session.commit()

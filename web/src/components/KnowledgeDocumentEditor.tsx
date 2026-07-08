@@ -5,7 +5,6 @@ import type { KnowledgeDocument, KnowledgeDocumentInput } from '@/types/knowledg
 interface Props {
   open: boolean;
   document: KnowledgeDocument | null;
-  knowledgeBaseId: number;
   saving?: boolean;
   onSubmit: (input: KnowledgeDocumentInput) => void;
   onClose: () => void;
@@ -20,7 +19,6 @@ type FormValues = {
 export default function KnowledgeDocumentEditor({
   open,
   document,
-  knowledgeBaseId,
   saving = false,
   onSubmit,
   onClose,
@@ -46,7 +44,6 @@ export default function KnowledgeDocumentEditor({
 
   function handleFinish(values: FormValues) {
     onSubmit({
-      knowledge_base_id: knowledgeBaseId,
       title: values.title,
       content: values.content ?? '',
       tags: values.tags ?? [],

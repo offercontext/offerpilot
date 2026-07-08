@@ -7,41 +7,49 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from offerpilot.models import Application, Event
+from offerpilot.models import Application, ApplicationEvent
 
 
 @dataclass
-class EventCreate:
+class ApplicationEventCreate:
     application_id: int
     event_type: str
     scheduled_at: datetime
     duration_minutes: int
+    subtype: str = ""
+    tags: list[str] | None = None
     round: int = 0
     location: str = ""
     notes: str = ""
+    remind_at: datetime | None = None
+    status: str = "todo"
 
 
 @dataclass
-class EventWithApplication:
-    event: Event
+class ApplicationEventWithApplication:
+    event: ApplicationEvent
     company_name: str
     position_name: str
 
 
-class EventsRepository:
+class ApplicationEventsRepository:
     def __init__(self, session_factory: sessionmaker[Session]):
         self._session_factory = session_factory
 
-    def create(self, data: EventCreate) -> Event:
-        event = Event(
+    def create(self, data: ApplicationEventCreate) -> ApplicationEvent:
+        event = ApplicationEvent(
             application_id=data.application_id,
             event_type=data.event_type,
+            subtype=data.subtype,
             round=data.round,
             scheduled_at=data.scheduled_at,
-            duration=_duration_string(data.duration_minutes),
+            duration_minutes=data.duration_minutes,
             location=data.location,
             notes=data.notes,
+            remind_at=data.remind_at,
+            status=data.status or "todo",
         )
+        event.tags = data.tags or []
         with self._session_factory() as session:
             session.add(event)
             session.commit()
@@ -53,60 +61,60 @@ class EventsRepository:
         month: str = "",
         application_id: int = 0,
         event_type: str = "",
-    ) -> list[EventWithApplication]:
+    ) -> list[ApplicationEventWithApplication]:
         statement = (
-            select(Event, Application.company_name, Application.position_name)
-            .join(Application, Application.id == Event.application_id)
-            .order_by(Event.scheduled_at.asc(), Event.id.asc())
+            select(ApplicationEvent, Application.company_name, Application.position_name)
+            .join(Application, Application.id == ApplicationEvent.application_id)
+            .order_by(ApplicationEvent.scheduled_at.asc(), ApplicationEvent.id.asc())
         )
         if month:
-            statement = statement.where(Event.scheduled_at >= f"{month}-01")
+            statement = statement.where(ApplicationEvent.scheduled_at >= f"{month}-01")
         if application_id > 0:
-            statement = statement.where(Event.application_id == application_id)
+            statement = statement.where(ApplicationEvent.application_id == application_id)
         if event_type:
-            statement = statement.where(Event.event_type == event_type)
+            statement = statement.where(ApplicationEvent.event_type == event_type)
 
         with self._session_factory() as session:
             rows = session.execute(statement).all()
             return [
-                EventWithApplication(event=row[0], company_name=row[1], position_name=row[2])
+                ApplicationEventWithApplication(event=row[0], company_name=row[1], position_name=row[2])
                 for row in rows
             ]
 
-    def get(self, event_id: int) -> Optional[Event]:
+    def get(self, event_id: int) -> Optional[ApplicationEvent]:
         with self._session_factory() as session:
-            return session.get(Event, event_id)
+            return session.get(ApplicationEvent, event_id)
 
-    def update(self, event_id: int, data: EventCreate) -> Optional[Event]:
+    def update(self, event_id: int, data: ApplicationEventCreate) -> Optional[ApplicationEvent]:
         with self._session_factory() as session:
-            event = session.get(Event, event_id)
+            event = session.get(ApplicationEvent, event_id)
             if event is None:
                 return None
             event.application_id = data.application_id
             event.event_type = data.event_type
+            event.subtype = data.subtype
+            event.tags = data.tags or []
             event.round = data.round
             event.scheduled_at = data.scheduled_at
-            event.duration = _duration_string(data.duration_minutes)
+            event.duration_minutes = data.duration_minutes
             event.location = data.location
             event.notes = data.notes
+            event.remind_at = data.remind_at
+            event.status = data.status or event.status
             session.commit()
             session.refresh(event)
             return event
 
     def delete(self, event_id: int) -> bool:
         with self._session_factory() as session:
-            event = session.get(Event, event_id)
+            event = session.get(ApplicationEvent, event_id)
             if event is None:
                 return False
             session.delete(event)
             session.commit()
             return True
 
-
-def _duration_string(minutes: int) -> str:
-    return f"{minutes}m"
-
-
-def duration_minutes(duration: str) -> int:
-    return int(duration.removesuffix("m") or "0")
-
+def duration_minutes(duration: str | int) -> int:
+    if isinstance(duration, int):
+        return duration
+    return int(str(duration).removesuffix("m") or "0")

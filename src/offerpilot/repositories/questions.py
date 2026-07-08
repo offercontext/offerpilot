@@ -15,13 +15,13 @@ from offerpilot.models import Question, QuestionReview
 @dataclass
 class QuestionCreate:
     question: str
+    topic: str = ""
     category: str = ""
     difficulty: str = "medium"
     reference_answer: str = ""
     tags: list[str] | None = None
     source_type: str = "manual"
     status: str = "new"
-    knowledge_base_id: Optional[int] = None
     application_id: Optional[int] = None
 
 
@@ -48,14 +48,14 @@ class QuestionsRepository:
 
     def list(
         self,
-        knowledge_base_id: int = 0,
+        topic: str = "",
         category: str = "",
         difficulty: str = "",
         status: str = "",
     ) -> list[Question]:
         statement = select(Question)
-        if knowledge_base_id > 0:
-            statement = statement.where(Question.knowledge_base_id == knowledge_base_id)
+        if topic:
+            statement = statement.where(Question.topic == topic)
         if category:
             statement = statement.where(Question.category == category)
         if difficulty:
@@ -153,8 +153,8 @@ class QuestionsRepository:
 
 def _question_from_create(data: QuestionCreate) -> Question:
     question = Question(
-        knowledge_base_id=data.knowledge_base_id,
         application_id=data.application_id,
+        topic=data.topic,
         category=data.category,
         difficulty=data.difficulty or "medium",
         question=data.question,

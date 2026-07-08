@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from offerpilot.application_status import APPLICATION_STATUS_IDS, normalize_application_status
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
-from offerpilot.repositories.events import EventCreate, EventsRepository, duration_minutes
+from offerpilot.repositories.application_events import (
+    ApplicationEventCreate,
+    ApplicationEventsRepository,
+    duration_minutes,
+)
 from offerpilot.repositories.jd import JDAnalysesRepository
 from offerpilot.repositories.knowledge import KnowledgeRepository
 from offerpilot.repositories.notes import NoteCreate, NotesRepository
@@ -14,10 +18,9 @@ from offerpilot.repositories.offers import OfferCreate, OffersRepository
 from offerpilot.repositories.resumes import ResumesRepository
 from offerpilot.schemas import (
     ApplicationOut,
-    EventOut,
+    ApplicationEventOut,
     InterviewNoteOut,
     JDAnalysisOut,
-    KnowledgeBaseOut,
     KnowledgeDocumentOut,
     OfferOut,
     ResumeMatchOut,
@@ -25,13 +28,13 @@ from offerpilot.schemas import (
 )
 
 
-EVENT_TYPES = ("written_test", "interview", "assessment")
+EVENT_TYPES = ("written_test", "interview", "offer_step", "deadline", "custom")
 OFFER_STATUSES = ("pending", "negotiating", "accepted", "declined", "expired")
 
 
 def offerpilot_tool_registry(
     applications: ApplicationsRepository,
-    events: EventsRepository,
+    events: ApplicationEventsRepository,
     notes: NotesRepository,
     offers: OffersRepository,
     *,
@@ -123,12 +126,12 @@ def application_tool_registry(repo: ApplicationsRepository) -> dict[str, dict[st
 
 def event_tool_registry(
     applications: ApplicationsRepository,
-    repo: EventsRepository,
+    repo: ApplicationEventsRepository,
 ) -> dict[str, dict[str, Any]]:
     return {
-        "list_events": {
+        "list_application_events": {
             "write": False,
-            "description": "List interview, written test, or assessment events.",
+            "description": "List application events such as written tests, interviews, offer steps, deadlines, or custom events.",
             "schema": {
                 "type": "object",
                 "properties": {
@@ -137,34 +140,34 @@ def event_tool_registry(
                     "event_type": {"type": "string", "enum": list(EVENT_TYPES)},
                 },
             },
-            "handler": lambda args: _list_events(repo, args),
+            "handler": lambda args: _list_application_events(repo, args),
         },
-        "get_event": {
+        "get_application_event": {
             "write": False,
-            "description": "Get one event by id.",
-            "schema": _id_schema("Event id."),
-            "handler": lambda args: _get_event(repo, args),
+            "description": "Get one application event by id.",
+            "schema": _id_schema("Application event id."),
+            "handler": lambda args: _get_application_event(repo, args),
         },
-        "create_event": {
+        "create_application_event": {
             "write": True,
-            "description": "Create an interview, written test, or assessment event.",
+            "description": "Create an application event. Use written_test.subtype=assessment for assessments.",
             "schema": _event_schema(["application_id", "event_type", "scheduled_at", "duration_minutes"]),
             "describe": lambda args: _describe_id_action(args, "新建日程"),
-            "handler": lambda args: _create_event(applications, repo, args),
+            "handler": lambda args: _create_application_event(applications, repo, args),
         },
-        "update_event": {
+        "update_application_event": {
             "write": True,
-            "description": "Update an existing event.",
+            "description": "Update an existing application event.",
             "schema": _event_schema(["id", "application_id", "event_type", "scheduled_at", "duration_minutes"]),
             "describe": lambda args: _describe_id_action(args, "更新日程"),
-            "handler": lambda args: _update_event(applications, repo, args),
+            "handler": lambda args: _update_application_event(applications, repo, args),
         },
-        "delete_event": {
+        "delete_application_event": {
             "write": True,
-            "description": "Delete an event by id.",
-            "schema": _id_schema("Event id."),
+            "description": "Delete an application event by id.",
+            "schema": _id_schema("Application event id."),
             "describe": lambda args: _describe_id_action(args, "删除日程"),
-            "handler": lambda args: _delete_event(repo, args),
+            "handler": lambda args: _delete_application_event(repo, args),
         },
     }
 
@@ -310,19 +313,12 @@ def jd_tool_registry(repo: JDAnalysesRepository) -> dict[str, dict[str, Any]]:
 
 def knowledge_tool_registry(repo: KnowledgeRepository) -> dict[str, dict[str, Any]]:
     return {
-        "list_knowledge_bases": {
-            "write": False,
-            "description": "List knowledge bases.",
-            "schema": {"type": "object", "properties": {}},
-            "handler": lambda args: _list_knowledge_bases(repo, args),
-        },
         "list_knowledge_documents": {
             "write": False,
-            "description": "List knowledge documents, optionally filtered by base or query.",
+            "description": "List documents in the single v0.1 knowledge library, optionally filtered by query.",
             "schema": {
                 "type": "object",
                 "properties": {
-                    "knowledge_base_id": {"type": "integer"},
                     "query": {"type": "string"},
                 },
             },
@@ -341,7 +337,6 @@ def knowledge_tool_registry(repo: KnowledgeRepository) -> dict[str, dict[str, An
                 "type": "object",
                 "properties": {
                     "query": {"type": "string"},
-                    "knowledge_base_id": {"type": "integer"},
                     "limit": {"type": "integer"},
                 },
                 "required": ["query"],
@@ -403,7 +398,7 @@ def _update_application_status(repo: ApplicationsRepository, args: str) -> str:
     return json.dumps(_application_json(updated), ensure_ascii=False)
 
 
-def _list_events(repo: EventsRepository, args: str) -> str:
+def _list_application_events(repo: ApplicationEventsRepository, args: str) -> str:
     payload = _payload(args)
     rows = repo.list(
         month=str(payload.get("month") or ""),
@@ -413,34 +408,42 @@ def _list_events(repo: EventsRepository, args: str) -> str:
     return _json([_event_with_application_json(item) for item in rows])
 
 
-def _get_event(repo: EventsRepository, args: str) -> str:
+def _get_application_event(repo: ApplicationEventsRepository, args: str) -> str:
     payload = _payload(args)
-    event = repo.get(_required_int(payload, "id", "get_event"))
+    event = repo.get(_required_int(payload, "id", "get_application_event"))
     if event is None:
-        raise ValueError("event not found")
+        raise ValueError("application event not found")
     return _json(_event_json(event))
 
 
-def _create_event(applications: ApplicationsRepository, repo: EventsRepository, args: str) -> str:
+def _create_application_event(
+    applications: ApplicationsRepository,
+    repo: ApplicationEventsRepository,
+    args: str,
+) -> str:
     payload = _payload(args)
-    event = repo.create(_event_create_from_payload(applications, payload, "create_event"))
+    event = repo.create(_event_create_from_payload(applications, payload, "create_application_event"))
     return _json(_event_json(event))
 
 
-def _update_event(applications: ApplicationsRepository, repo: EventsRepository, args: str) -> str:
+def _update_application_event(
+    applications: ApplicationsRepository,
+    repo: ApplicationEventsRepository,
+    args: str,
+) -> str:
     payload = _payload(args)
-    event_id = _required_int(payload, "id", "update_event")
+    event_id = _required_int(payload, "id", "update_application_event")
     if repo.get(event_id) is None:
-        raise ValueError("event not found")
-    event = repo.update(event_id, _event_create_from_payload(applications, payload, "update_event"))
+        raise ValueError("application event not found")
+    event = repo.update(event_id, _event_create_from_payload(applications, payload, "update_application_event"))
     if event is None:
-        raise ValueError("event not found")
+        raise ValueError("application event not found")
     return _json(_event_json(event))
 
 
-def _delete_event(repo: EventsRepository, args: str) -> str:
+def _delete_application_event(repo: ApplicationEventsRepository, args: str) -> str:
     payload = _payload(args)
-    event_id = _required_int(payload, "id", "delete_event")
+    event_id = _required_int(payload, "id", "delete_application_event")
     return _json({"deleted": repo.delete(event_id)})
 
 
@@ -578,15 +581,9 @@ def _get_jd_analysis(repo: JDAnalysesRepository, args: str) -> str:
     return _json(_jd_analysis_json(analysis))
 
 
-def _list_knowledge_bases(repo: KnowledgeRepository, args: str) -> str:
-    _payload(args)
-    return _json([_knowledge_base_json(base) for base in repo.list_bases()])
-
-
 def _list_knowledge_documents(repo: KnowledgeRepository, args: str) -> str:
     payload = _payload(args)
     rows = repo.list_documents(
-        knowledge_base_id=_optional_int(payload, "knowledge_base_id"),
         query=str(payload.get("query") or ""),
     )
     return _json([_knowledge_document_json(row) for row in rows])
@@ -607,7 +604,6 @@ def _search_knowledge(repo: KnowledgeRepository, args: str) -> str:
         raise ValueError("search_knowledge requires query")
     rows = repo.search(
         query,
-        knowledge_base_id=_optional_int(payload, "knowledge_base_id"),
         limit=_optional_int(payload, "limit") or 5,
     )
     return _json([_knowledge_search_result_json(row) for row in rows])
@@ -680,20 +676,32 @@ def _payload_or_existing(payload: dict[str, Any], key: str, existing: str) -> st
 
 
 def _event_json(event: Any) -> dict[str, Any]:
-    payload = EventOut(
+    payload = ApplicationEventOut(
         id=event.id,
         application_id=event.application_id,
         event_type=event.event_type,
+        subtype=event.subtype,
+        tags=event.tags,
         round=event.round,
-        scheduled_at=event.scheduled_at.isoformat().replace("+00:00", "Z") if event.scheduled_at else "",
-        duration_minutes=duration_minutes(event.duration),
+        scheduled_at=_format_rfc3339(event.scheduled_at),
+        duration_minutes=duration_minutes(event.duration_minutes),
         location=event.location,
         notes=event.notes,
+        remind_at=_format_rfc3339(event.remind_at) if event.remind_at else None,
+        status=event.status,
         created_at=event.created_at,
     ).model_dump(mode="json", exclude_none=True)
-    payload["record_type"] = "event"
-    payload["event_id"] = event.id
+    payload["record_type"] = "application_event"
+    payload["application_event_id"] = event.id
     return payload
+
+
+def _format_rfc3339(value: datetime | None) -> str:
+    if value is None:
+        return ""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.isoformat().replace("+00:00", "Z")
 
 
 def _event_with_application_json(item: Any) -> dict[str, Any]:
@@ -738,13 +746,6 @@ def _jd_analysis_json(analysis: Any) -> dict[str, Any]:
     return payload
 
 
-def _knowledge_base_json(base: Any) -> dict[str, Any]:
-    payload = KnowledgeBaseOut.model_validate(base).model_dump(mode="json")
-    payload["record_type"] = "knowledge_base"
-    payload["knowledge_base_id"] = base.id
-    return payload
-
-
 def _knowledge_document_json(document: Any) -> dict[str, Any]:
     payload = KnowledgeDocumentOut.model_validate(document).model_dump(mode="json")
     payload["record_type"] = "knowledge_document"
@@ -763,7 +764,7 @@ def _event_create_from_payload(
     applications: ApplicationsRepository,
     payload: dict[str, Any],
     tool_name: str,
-) -> EventCreate:
+) -> ApplicationEventCreate:
     application_id = _required_int(payload, "application_id", tool_name)
     if applications.get(application_id) is None:
         raise ValueError("application not found")
@@ -777,17 +778,28 @@ def _event_create_from_payload(
         scheduled_at = datetime.fromisoformat(scheduled_at_raw.replace("Z", "+00:00"))
     except ValueError as exc:
         raise ValueError("scheduled_at must be RFC3339") from exc
+    remind_at = None
+    remind_at_raw = str(payload.get("remind_at") or "")
+    if remind_at_raw:
+        try:
+            remind_at = datetime.fromisoformat(remind_at_raw.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("remind_at must be RFC3339") from exc
     duration = _required_int(payload, "duration_minutes", tool_name)
     if duration <= 0:
         raise ValueError("duration_minutes must be greater than 0")
-    return EventCreate(
+    return ApplicationEventCreate(
         application_id=application_id,
         event_type=event_type,
+        subtype=str(payload.get("subtype") or ""),
+        tags=_optional_str_list(payload, "tags"),
         scheduled_at=scheduled_at,
         duration_minutes=duration,
         round=_optional_int(payload, "round"),
         location=str(payload.get("location") or ""),
         notes=str(payload.get("notes") or ""),
+        remind_at=remind_at,
+        status=str(payload.get("status") or "todo"),
     )
 
 
@@ -866,6 +878,15 @@ def _int_or_existing(payload: dict[str, Any], key: str, existing: int) -> int:
         raise ValueError(f"{key} must be numeric") from exc
 
 
+def _optional_str_list(payload: dict[str, Any], key: str) -> list[str]:
+    raw = payload.get(key)
+    if raw is None or raw == "":
+        return []
+    if not isinstance(raw, list):
+        raise ValueError(f"{key} must be an array")
+    return [str(item).strip() for item in raw if str(item).strip()]
+
+
 def _id_schema(description: str) -> dict[str, Any]:
     return {
         "type": "object",
@@ -881,11 +902,18 @@ def _event_schema(required: list[str]) -> dict[str, Any]:
             "id": {"type": "integer"},
             "application_id": {"type": "integer"},
             "event_type": {"type": "string", "enum": list(EVENT_TYPES)},
+            "subtype": {
+                "type": "string",
+                "description": "Mutually exclusive detail under event_type, e.g. written_test.subtype=assessment.",
+            },
+            "tags": {"type": "array", "items": {"type": "string"}},
             "scheduled_at": {"type": "string", "description": "RFC3339 datetime."},
+            "remind_at": {"type": "string", "description": "Optional RFC3339 reminder datetime."},
             "duration_minutes": {"type": "integer"},
             "round": {"type": "integer"},
             "location": {"type": "string"},
             "notes": {"type": "string"},
+            "status": {"type": "string"},
         },
         "required": required,
     }

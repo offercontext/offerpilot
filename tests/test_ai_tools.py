@@ -4,10 +4,9 @@ from datetime import datetime, timezone
 from offerpilot.ai.tools import application_tool_registry, offerpilot_tool_registry
 from offerpilot.db import init_database
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
-from offerpilot.repositories.events import EventCreate, EventsRepository
+from offerpilot.repositories.application_events import ApplicationEventCreate, ApplicationEventsRepository
 from offerpilot.repositories.jd import JDAnalysesRepository, JDAnalysisCreate
 from offerpilot.repositories.knowledge import (
-    KnowledgeBaseCreate,
     KnowledgeDocumentCreate,
     KnowledgeRepository,
 )
@@ -107,7 +106,7 @@ def test_offerpilot_tool_registry_covers_notes_events_and_offers(tmp_path):
     session_factory = init_database(tmp_path / "data.db")
     applications = ApplicationsRepository(session_factory)
     notes = NotesRepository(session_factory)
-    events = EventsRepository(session_factory)
+    events = ApplicationEventsRepository(session_factory)
     offers = OffersRepository(session_factory)
     app = applications.create(ApplicationCreate(company_name="ByteDance", position_name="Backend"))
     note = notes.create(
@@ -121,7 +120,7 @@ def test_offerpilot_tool_registry_covers_notes_events_and_offers(tmp_path):
         )
     )
     event = events.create(
-        EventCreate(
+        ApplicationEventCreate(
             application_id=app.id,
             event_type="interview",
             scheduled_at=datetime(2026, 7, 10, 10, tzinfo=timezone.utc),
@@ -143,12 +142,14 @@ def test_offerpilot_tool_registry_covers_notes_events_and_offers(tmp_path):
     registry = offerpilot_tool_registry(applications, events, notes, offers)
 
     listed_notes = json.loads(registry["list_notes"]["handler"](json.dumps({"application_id": app.id})))
-    listed_events = json.loads(registry["list_events"]["handler"](json.dumps({"application_id": app.id})))
+    listed_events = json.loads(
+        registry["list_application_events"]["handler"](json.dumps({"application_id": app.id}))
+    )
     listed_offers = json.loads(registry["list_offers"]["handler"](json.dumps({"status": "pending"})))
     offer_detail = json.loads(registry["get_offer"]["handler"](json.dumps({"id": offer.id})))
     compared = json.loads(registry["compare_offers"]["handler"](json.dumps({"ids": [999, offer.id]})))
 
-    assert registry["create_event"]["write"] is True
+    assert registry["create_application_event"]["write"] is True
     assert registry["add_note"]["schema"]["required"] == []
     assert "application_id" in registry["add_note"]["schema"]["properties"]
     assert listed_notes[0]["id"] == note.id
@@ -163,7 +164,7 @@ def test_offerpilot_write_tools_mutate_notes_events_and_offers(tmp_path):
     session_factory = init_database(tmp_path / "data.db")
     applications = ApplicationsRepository(session_factory)
     notes = NotesRepository(session_factory)
-    events = EventsRepository(session_factory)
+    events = ApplicationEventsRepository(session_factory)
     offers = OffersRepository(session_factory)
     app = applications.create(ApplicationCreate(company_name="ByteDance", position_name="Backend"))
     offer = offers.create(
@@ -193,25 +194,41 @@ def test_offerpilot_write_tools_mutate_notes_events_and_offers(tmp_path):
             json.dumps({"id": note["id"], "company": "Tencent", "position": "Frontend"})
         )
     )
+    event_schema = registry["create_application_event"]["schema"]["properties"]
+    assert registry["create_application_event"]["schema"]["properties"]["event_type"]["enum"] == [
+        "written_test",
+        "interview",
+        "offer_step",
+        "deadline",
+        "custom",
+    ]
+    assert {"subtype", "tags", "round", "scheduled_at", "remind_at"}.issubset(event_schema)
+    assert "create_event" not in registry
+
     event = json.loads(
-        registry["create_event"]["handler"](
+        registry["create_application_event"]["handler"](
             json.dumps(
                 {
                     "application_id": app.id,
                     "event_type": "interview",
+                    "subtype": "technical",
+                    "tags": ["backend"],
                     "scheduled_at": "2026-07-10T10:00:00Z",
                     "duration_minutes": 30,
+                    "remind_at": "2026-07-10T09:30:00Z",
                 }
             )
         )
     )
     updated_event = json.loads(
-        registry["update_event"]["handler"](
+        registry["update_application_event"]["handler"](
             json.dumps(
                 {
                     "id": event["id"],
                     "application_id": app.id,
                     "event_type": "written_test",
+                    "subtype": "assessment",
+                    "tags": ["campus"],
                     "scheduled_at": "2026-07-11T10:00:00Z",
                     "duration_minutes": 60,
                 }
@@ -241,18 +258,20 @@ def test_offerpilot_write_tools_mutate_notes_events_and_offers(tmp_path):
     assert note["company"] == "ByteDance"
     assert updated_note["company"] == "Tencent"
     assert updated_event["event_type"] == "written_test"
+    assert updated_event["subtype"] == "assessment"
+    assert updated_event["tags"] == ["campus"]
     assert updated_event["duration_minutes"] == 60
     assert updated_offer["status"] == "accepted"
     assert assessed["assessment"] == "Strong upside"
     assert registry["delete_note"]["handler"](json.dumps({"id": note["id"]})) == '{"deleted":true}'
-    assert registry["delete_event"]["handler"](json.dumps({"id": event["id"]})) == '{"deleted":true}'
+    assert registry["delete_application_event"]["handler"](json.dumps({"id": event["id"]})) == '{"deleted":true}'
 
 
 def test_offer_tools_distinguish_offer_ids_from_application_ids(tmp_path):
     session_factory = init_database(tmp_path / "data.db")
     applications = ApplicationsRepository(session_factory)
     notes = NotesRepository(session_factory)
-    events = EventsRepository(session_factory)
+    events = ApplicationEventsRepository(session_factory)
     offers = OffersRepository(session_factory)
     offer = offers.create(
         OfferCreate(
@@ -279,7 +298,7 @@ def test_offer_tools_distinguish_offer_ids_from_application_ids(tmp_path):
 def test_offerpilot_tool_registry_covers_resumes_jd_and_knowledge(tmp_path):
     session_factory = init_database(tmp_path / "data.db")
     applications = ApplicationsRepository(session_factory)
-    events = EventsRepository(session_factory)
+    events = ApplicationEventsRepository(session_factory)
     notes = NotesRepository(session_factory)
     offers = OffersRepository(session_factory)
     resumes = ResumesRepository(session_factory)
@@ -305,10 +324,8 @@ def test_offerpilot_tool_registry_covers_resumes_jd_and_knowledge(tmp_path):
             result='{"summary":"Backend role"}',
         )
     )
-    base = knowledge.create_base(KnowledgeBaseCreate(name="Interview Notes", description="Backend prep"))
     doc = knowledge.create_document(
         KnowledgeDocumentCreate(
-            knowledge_base_id=base.id,
             title="FastAPI Review",
             content="FastAPI dependency injection and SQLAlchemy sessions",
             tags=["python"],
@@ -330,10 +347,7 @@ def test_offerpilot_tool_registry_covers_resumes_jd_and_knowledge(tmp_path):
     resume_matches = json.loads(registry["list_resume_matches"]["handler"](json.dumps({"resume_id": resume.id})))
     listed_jds = json.loads(registry["list_jd_analyses"]["handler"](json.dumps({"application_id": app.id})))
     jd_detail = json.loads(registry["get_jd_analysis"]["handler"](json.dumps({"id": jd.id})))
-    bases = json.loads(registry["list_knowledge_bases"]["handler"](json.dumps({})))
-    documents = json.loads(
-        registry["list_knowledge_documents"]["handler"](json.dumps({"knowledge_base_id": base.id}))
-    )
+    documents = json.loads(registry["list_knowledge_documents"]["handler"](json.dumps({})))
     document_detail = json.loads(registry["get_knowledge_document"]["handler"](json.dumps({"id": doc.id})))
     search_results = json.loads(registry["search_knowledge"]["handler"](json.dumps({"query": "FastAPI"})))
 
@@ -352,30 +366,27 @@ def test_offerpilot_tool_registry_covers_resumes_jd_and_knowledge(tmp_path):
     assert listed_jds[0]["application_id"] == app.id
     assert jd_detail["result"] == '{"summary":"Backend role"}'
     assert jd_detail["jd_analysis_id"] == jd.id
-    assert bases[0]["id"] == base.id
-    assert bases[0]["record_type"] == "knowledge_base"
-    assert bases[0]["knowledge_base_id"] == base.id
     assert documents[0]["id"] == doc.id
     assert documents[0]["record_type"] == "knowledge_document"
     assert documents[0]["knowledge_document_id"] == doc.id
-    assert documents[0]["knowledge_base_id"] == base.id
+    assert "knowledge_base_id" not in documents[0]
     assert document_detail["title"] == "FastAPI Review"
     assert document_detail["knowledge_document_id"] == doc.id
     assert search_results[0]["document_id"] == doc.id
     assert search_results[0]["record_type"] == "knowledge_search_result"
     assert search_results[0]["search_result_id"] == search_results[0]["chunk_id"]
-    assert search_results[0]["knowledge_base_id"] == base.id
+    assert "knowledge_base_id" not in search_results[0]
 
 
 def test_ai_tool_read_results_include_record_type_and_specific_ids(tmp_path):
     session_factory = init_database(tmp_path / "data.db")
     applications = ApplicationsRepository(session_factory)
     notes = NotesRepository(session_factory)
-    events = EventsRepository(session_factory)
+    events = ApplicationEventsRepository(session_factory)
     offers = OffersRepository(session_factory)
     app = applications.create(ApplicationCreate(company_name="PDD", position_name="Agent Dev"))
     event = events.create(
-        EventCreate(
+        ApplicationEventCreate(
             application_id=app.id,
             event_type="interview",
             scheduled_at=datetime(2026, 7, 15, 14, tzinfo=timezone.utc),
@@ -401,14 +412,14 @@ def test_ai_tool_read_results_include_record_type_and_specific_ids(tmp_path):
     registry = offerpilot_tool_registry(applications, events, notes, offers)
 
     application_result = json.loads(registry["get_application"]["handler"](json.dumps({"id": app.id})))
-    event_result = json.loads(registry["get_event"]["handler"](json.dumps({"id": event.id})))
+    event_result = json.loads(registry["get_application_event"]["handler"](json.dumps({"id": event.id})))
     note_result = json.loads(registry["list_notes"]["handler"](json.dumps({"application_id": app.id})))[0]
     offer_result = json.loads(registry["get_offer"]["handler"](json.dumps({"id": offer.id})))
 
     assert application_result["record_type"] == "application"
     assert application_result["application_id"] == app.id
-    assert event_result["record_type"] == "event"
-    assert event_result["event_id"] == event.id
+    assert event_result["record_type"] == "application_event"
+    assert event_result["application_event_id"] == event.id
     assert event_result["application_id"] == app.id
     assert note_result["record_type"] == "note"
     assert note_result["note_id"] == note.id
@@ -416,4 +427,3 @@ def test_ai_tool_read_results_include_record_type_and_specific_ids(tmp_path):
     assert offer_result["record_type"] == "offer"
     assert offer_result["offer_id"] == offer.id
     assert offer_result["application_id"] == app.id
-

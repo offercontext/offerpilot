@@ -7,18 +7,11 @@ from typing import Any, Optional
 from sqlalchemy import delete, or_, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from offerpilot.models import KnowledgeBase, KnowledgeChunk, KnowledgeDocument
-
-
-@dataclass
-class KnowledgeBaseCreate:
-    name: str
-    description: str = ""
+from offerpilot.models import KnowledgeChunk, KnowledgeDocument
 
 
 @dataclass
 class KnowledgeDocumentCreate:
-    knowledge_base_id: int
     title: str
     content: str = ""
     tags: list[str] | None = None
@@ -30,47 +23,8 @@ class KnowledgeRepository:
     def __init__(self, session_factory: sessionmaker[Session]):
         self._session_factory = session_factory
 
-    def create_base(self, data: KnowledgeBaseCreate) -> KnowledgeBase:
-        base = KnowledgeBase(name=data.name, description=data.description)
-        with self._session_factory() as session:
-            session.add(base)
-            session.commit()
-            session.refresh(base)
-            return base
-
-    def list_bases(self) -> list[KnowledgeBase]:
-        statement = select(KnowledgeBase).order_by(KnowledgeBase.updated_at.desc(), KnowledgeBase.id.desc())
-        with self._session_factory() as session:
-            return list(session.scalars(statement))
-
-    def get_base(self, base_id: int) -> Optional[KnowledgeBase]:
-        with self._session_factory() as session:
-            return session.get(KnowledgeBase, base_id)
-
-    def update_base(self, base_id: int, data: KnowledgeBaseCreate) -> Optional[KnowledgeBase]:
-        with self._session_factory() as session:
-            base = session.get(KnowledgeBase, base_id)
-            if base is None:
-                return None
-            base.name = data.name
-            base.description = data.description
-            session.commit()
-            session.refresh(base)
-            return base
-
-    def delete_base(self, base_id: int) -> bool:
-        with self._session_factory() as session:
-            base = session.get(KnowledgeBase, base_id)
-            if base is None:
-                return False
-            _delete_fts_for_base(session, base_id)
-            session.delete(base)
-            session.commit()
-            return True
-
     def create_document(self, data: KnowledgeDocumentCreate) -> KnowledgeDocument:
         doc = KnowledgeDocument(
-            knowledge_base_id=data.knowledge_base_id,
             title=data.title,
             content=data.content,
             source_type=data.source_type or "manual",
@@ -80,15 +34,13 @@ class KnowledgeRepository:
         with self._session_factory() as session:
             session.add(doc)
             session.flush()
-            _refresh_chunks(session, doc.id, doc.knowledge_base_id, doc.content)
+            _refresh_chunks(session, doc.id, doc.content)
             session.commit()
             session.refresh(doc)
             return doc
 
-    def list_documents(self, knowledge_base_id: int = 0, query: str = "") -> list[KnowledgeDocument]:
+    def list_documents(self, query: str = "") -> list[KnowledgeDocument]:
         statement = select(KnowledgeDocument)
-        if knowledge_base_id > 0:
-            statement = statement.where(KnowledgeDocument.knowledge_base_id == knowledge_base_id)
         if query.strip():
             like = f"%{query.strip()}%"
             statement = statement.where(
@@ -115,13 +67,12 @@ class KnowledgeRepository:
             doc = session.get(KnowledgeDocument, document_id)
             if doc is None:
                 return None
-            doc.knowledge_base_id = data.knowledge_base_id
             doc.title = data.title
             doc.content = data.content
             doc.tags = data.tags or []
             doc.source_type = data.source_type or doc.source_type
             doc.source_name = data.source_name
-            _refresh_chunks(session, doc.id, doc.knowledge_base_id, doc.content)
+            _refresh_chunks(session, doc.id, doc.content)
             session.commit()
             session.refresh(doc)
             return doc
@@ -136,30 +87,26 @@ class KnowledgeRepository:
             session.commit()
             return True
 
-    def search(self, query: str, knowledge_base_id: int = 0, limit: int = 5) -> list[dict[str, Any]]:
+    def search(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
         limit = min(max(limit or 5, 1), 10)
         terms = _search_patterns(query)
         if not terms:
             return []
         with self._session_factory() as session:
-            fts_rows = _search_fts(session, query, knowledge_base_id, limit * 3)
-            lexical_rows = _search_lexical(session, terms, knowledge_base_id, limit * 3)
+            fts_rows = _search_fts(session, query, limit * 3)
+            lexical_rows = _search_lexical(session, terms, limit * 3)
         return _merge_ranked_results([fts_rows, lexical_rows], limit)
 
 
 def _search_lexical(
     session: Session,
     terms: list[str],
-    knowledge_base_id: int,
     limit: int,
 ) -> list[dict[str, Any]]:
     statement = (
-        select(KnowledgeChunk, KnowledgeDocument, KnowledgeBase)
+        select(KnowledgeChunk, KnowledgeDocument)
         .join(KnowledgeDocument, KnowledgeDocument.id == KnowledgeChunk.document_id)
-        .join(KnowledgeBase, KnowledgeBase.id == KnowledgeChunk.knowledge_base_id)
     )
-    if knowledge_base_id > 0:
-        statement = statement.where(KnowledgeChunk.knowledge_base_id == knowledge_base_id)
     statement = statement.where(
         or_(
             *[
@@ -173,13 +120,12 @@ def _search_lexical(
     )
     statement = statement.order_by(KnowledgeDocument.updated_at.desc(), KnowledgeChunk.chunk_index.asc()).limit(limit)
     rows = session.execute(statement).all()
-    return [_search_payload(chunk, doc, base) for chunk, doc, base in rows]
+    return [_search_payload(chunk, doc) for chunk, doc in rows]
 
 
 def _search_fts(
     session: Session,
     query: str,
-    knowledge_base_id: int,
     limit: int,
 ) -> list[dict[str, Any]]:
     fts_query = _fts_query(query)
@@ -187,9 +133,6 @@ def _search_fts(
         return []
     where = "knowledge_chunks_fts MATCH :query"
     params: dict[str, Any] = {"query": fts_query, "limit": limit}
-    if knowledge_base_id > 0:
-        where += " AND c.knowledge_base_id = :knowledge_base_id"
-        params["knowledge_base_id"] = knowledge_base_id
     try:
         rows = session.execute(
             text(
@@ -201,13 +144,10 @@ def _search_fts(
                     d.id AS document_id,
                     d.title AS document_title,
                     d.source_name AS source_name,
-                    b.id AS knowledge_base_id,
-                    b.name AS knowledge_base_name,
                     bm25(knowledge_chunks_fts) AS rank
                 FROM knowledge_chunks_fts
                 JOIN knowledge_chunks c ON c.id = knowledge_chunks_fts.chunk_id
                 JOIN knowledge_documents d ON d.id = c.document_id
-                JOIN knowledge_bases b ON b.id = c.knowledge_base_id
                 WHERE {where}
                 ORDER BY rank ASC
                 LIMIT :limit
@@ -219,8 +159,6 @@ def _search_fts(
         return []
     return [
         {
-            "knowledge_base_id": int(row["knowledge_base_id"]),
-            "knowledge_base_name": str(row["knowledge_base_name"]),
             "document_id": int(row["document_id"]),
             "document_title": str(row["document_title"]),
             "source_name": str(row["source_name"] or ""),
@@ -253,11 +191,8 @@ def _merge_ranked_results(result_sets: list[list[dict[str, Any]]], limit: int) -
 def _search_payload(
     chunk: KnowledgeChunk,
     doc: KnowledgeDocument,
-    base: KnowledgeBase,
 ) -> dict[str, Any]:
     return {
-        "knowledge_base_id": base.id,
-        "knowledge_base_name": base.name,
         "document_id": doc.id,
         "document_title": doc.title,
         "source_name": doc.source_name,
@@ -268,7 +203,7 @@ def _search_payload(
     }
 
 
-def _refresh_chunks(session: Session, document_id: int, knowledge_base_id: int, content: str) -> None:
+def _refresh_chunks(session: Session, document_id: int, content: str) -> None:
     session.execute(delete(KnowledgeChunk).where(KnowledgeChunk.document_id == document_id))
     _delete_fts_for_document(session, document_id)
     chunks: list[KnowledgeChunk] = []
@@ -276,7 +211,6 @@ def _refresh_chunks(session: Session, document_id: int, knowledge_base_id: int, 
         chunks.append(
             KnowledgeChunk(
                 document_id=document_id,
-                knowledge_base_id=knowledge_base_id,
                 chunk_index=index,
                 content=chunk,
             )
@@ -295,14 +229,13 @@ def _insert_fts_chunks(session: Session, chunks: list[KnowledgeChunk]) -> None:
                 text(
                     """
                     INSERT INTO knowledge_chunks_fts
-                        (chunk_id, document_id, knowledge_base_id, content)
-                    VALUES (:chunk_id, :document_id, :knowledge_base_id, :content)
+                        (chunk_id, document_id, content)
+                    VALUES (:chunk_id, :document_id, :content)
                     """
                 ),
                 {
                     "chunk_id": chunk.id,
                     "document_id": chunk.document_id,
-                    "knowledge_base_id": chunk.knowledge_base_id,
                     "content": chunk.content,
                 },
             )
@@ -318,17 +251,6 @@ def _delete_fts_for_document(session: Session, document_id: int) -> None:
         )
     except Exception:
         return
-
-
-def _delete_fts_for_base(session: Session, knowledge_base_id: int) -> None:
-    try:
-        session.execute(
-            text("DELETE FROM knowledge_chunks_fts WHERE knowledge_base_id = :knowledge_base_id"),
-            {"knowledge_base_id": knowledge_base_id},
-        )
-    except Exception:
-        return
-
 
 def _chunk_content(content: str) -> list[str]:
     stripped = content.strip()

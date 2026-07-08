@@ -5,7 +5,7 @@ from offerpilot.cli import app
 from offerpilot.config import AIProviderProfile, Config, load_config, save_config
 from offerpilot.db import session_factory_for_data_dir
 from offerpilot.repositories.jd import JDAnalysesRepository
-from offerpilot.repositories.knowledge import KnowledgeBaseCreate, KnowledgeDocumentCreate, KnowledgeRepository
+from offerpilot.repositories.knowledge import KnowledgeDocumentCreate, KnowledgeRepository
 from offerpilot.repositories.questions import QuestionsRepository
 from offerpilot.repositories.resumes import ResumeCreate, ResumesRepository
 
@@ -353,10 +353,8 @@ def test_question_generate_cli_from_knowledge(monkeypatch, tmp_path):
     monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
     _write_ai_config(tmp_path)
     knowledge = KnowledgeRepository(session_factory_for_data_dir(tmp_path))
-    base = knowledge.create_base(KnowledgeBaseCreate(name="System design"))
     knowledge.create_document(
         KnowledgeDocumentCreate(
-            knowledge_base_id=base.id,
             title="Cache",
             content="Redis cache invalidation",
         )
@@ -375,10 +373,10 @@ def test_question_generate_cli_from_knowledge(monkeypatch, tmp_path):
     )
     runner = CliRunner()
 
-    result = runner.invoke(app, ["question", "generate", "--kb", str(base.id), "--count", "1"])
+    result = runner.invoke(app, ["question", "generate", "--topic", "system-design", "--count", "1"])
 
     assert result.exit_code == 0
     assert "Generated 1 questions" in result.output
-    rows = QuestionsRepository(session_factory_for_data_dir(tmp_path)).list(knowledge_base_id=base.id)
+    rows = QuestionsRepository(session_factory_for_data_dir(tmp_path)).list(topic="system-design")
     assert len(rows) == 1
     assert rows[0].question == "如何设计缓存失效？"

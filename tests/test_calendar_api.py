@@ -10,7 +10,7 @@ def test_calendar_includes_applications_and_events(tmp_path):
         json={"company_name": "ByteDance", "position_name": "Backend"},
     ).json()
     client.post(
-        "/api/events",
+        "/api/application-events",
         json={
             "application_id": app["id"],
             "event_type": "written_test",
@@ -27,6 +27,7 @@ def test_calendar_includes_applications_and_events(tmp_path):
     assert any(entry["type"] == "applied" and entry["app_id"] == app["id"] for entry in entries)
     event_entry = next(entry for entry in entries if entry["type"] == "written_test")
     assert event_entry["title"] == "ByteDance · 笔试"
+    assert event_entry["event_type"] == "written_test"
     assert event_entry["duration_minutes"] == 60
     assert event_entry["editable"] is True
 

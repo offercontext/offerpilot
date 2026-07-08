@@ -68,7 +68,7 @@ def test_question_validation_and_generate_missing_source(tmp_path):
 
     missing_kb = client.post("/api/questions/generate", json={"source": "knowledge"})
     assert missing_kb.status_code == 400
-    assert missing_kb.json() == {"error": "请选择知识库"}
+    assert missing_kb.json() == {"error": "所选来源没有可用于生成题目的内容"}
 
 
 def test_question_generate_from_knowledge_persists_questions(tmp_path):
@@ -93,11 +93,9 @@ def test_question_generate_from_knowledge_persists_questions(tmp_path):
         }
     )
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
-    base = client.post("/api/knowledge-bases", json={"name": "Go notes"}).json()
     client.post(
         "/api/knowledge-documents",
         json={
-            "knowledge_base_id": base["id"],
             "title": "Scheduler",
             "content": "goroutine scheduler GMP",
             "tags": [],
@@ -106,7 +104,7 @@ def test_question_generate_from_knowledge_persists_questions(tmp_path):
 
     response = client.post(
         "/api/questions/generate",
-        json={"source": "knowledge", "knowledge_base_id": base["id"], "count": 2},
+        json={"source": "knowledge", "topic": "go-runtime", "count": 2},
     )
 
     assert response.status_code == 201
@@ -115,6 +113,4 @@ def test_question_generate_from_knowledge_persists_questions(tmp_path):
     assert generated["skipped"] == 1
     assert generated["questions"][0]["source_type"] == "ai_knowledge"
     assert generated["questions"][0]["difficulty"] == "hard"
-    assert client.get("/api/questions?knowledge_base_id=" + str(base["id"])).json()[0][
-        "question"
-    ] == "如何解释 goroutine 调度？"
+    assert client.get("/api/questions?topic=go-runtime").json()[0]["question"] == "如何解释 goroutine 调度？"

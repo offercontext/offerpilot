@@ -19,11 +19,15 @@ interface ScheduleEventFormProps {
 interface ScheduleEventFormValues {
   application_id: number;
   event_type: ScheduleEventType;
+  subtype?: string;
+  tags?: string[];
   round?: number | null;
   scheduled_at: Dayjs;
+  remind_at?: Dayjs | null;
   duration_minutes: number;
   location?: string;
   notes?: string;
+  status?: string;
 }
 
 const EVENT_TYPE_OPTIONS = (Object.entries(EVENT_TYPE_LABELS) as [ScheduleEventType, string][]).map(
@@ -67,11 +71,15 @@ export default function ScheduleEventForm({
       form.setFieldsValue({
         application_id: event.application_id,
         event_type: event.event_type,
+        subtype: event.subtype,
+        tags: event.tags,
         round: event.round,
         scheduled_at: dayjs(event.scheduled_at),
+        remind_at: event.remind_at ? dayjs(event.remind_at) : null,
         duration_minutes: event.duration_minutes,
         location: event.location,
         notes: event.notes,
+        status: event.status,
       });
       return;
     }
@@ -79,11 +87,15 @@ export default function ScheduleEventForm({
     form.setFieldsValue({
       application_id: initialApplication?.id,
       event_type: 'interview',
+      subtype: '',
+      tags: [],
       round: 0,
       scheduled_at: getDefaultScheduledAt(),
+      remind_at: null,
       duration_minutes: 60,
       location: '',
       notes: '',
+      status: 'todo',
     });
   }, [event, form, initialApplication, open]);
 
@@ -96,11 +108,15 @@ export default function ScheduleEventForm({
     mutation.mutate({
       application_id: values.application_id,
       event_type: values.event_type,
+      subtype: values.subtype ?? '',
+      tags: values.tags ?? [],
       round: values.round ?? 0,
       scheduled_at: values.scheduled_at.toISOString(),
+      remind_at: values.remind_at ? values.remind_at.toISOString() : null,
       duration_minutes: values.duration_minutes,
       location: values.location ?? '',
       notes: values.notes ?? '',
+      status: values.status ?? 'todo',
     });
   };
 
@@ -152,6 +168,14 @@ export default function ScheduleEventForm({
           </Form.Item>
         </div>
 
+        <Form.Item name="subtype" label="子类型">
+          <Input placeholder="例如 assessment / technical / negotiation" />
+        </Form.Item>
+
+        <Form.Item name="tags" label="标签">
+          <Select mode="tags" placeholder="输入后回车添加标签" tokenSeparators={[',', '，']} />
+        </Form.Item>
+
         <div style={{ display: 'flex', gap: 12 }}>
           <Form.Item
             name="scheduled_at"
@@ -168,6 +192,21 @@ export default function ScheduleEventForm({
             style={{ width: 120 }}
           >
             <InputNumber min={1} precision={0} addonAfter="分钟" style={{ width: '100%' }} />
+          </Form.Item>
+        </div>
+
+        <div style={{ display: 'flex', gap: 12 }}>
+          <Form.Item name="remind_at" label="提醒时间" style={{ flex: 1 }}>
+            <DatePicker showTime style={{ width: '100%' }} format="YYYY-MM-DD HH:mm" />
+          </Form.Item>
+          <Form.Item name="status" label="状态" style={{ width: 140 }}>
+            <Select
+              options={[
+                { value: 'todo', label: '待处理' },
+                { value: 'done', label: '已完成' },
+                { value: 'cancelled', label: '已取消' },
+              ]}
+            />
           </Form.Item>
         </div>
 

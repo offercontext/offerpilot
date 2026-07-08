@@ -232,7 +232,13 @@ export default function ChatPanel({ open, onClose, offerId, onOpenSettings, vari
     setLoading(true);
     try {
       const isNew = convID === undefined;
-      const resp = await sendChat(trimmed, convID, convID ? undefined : offerId);
+      const context =
+        isNew && offer?.application_id
+          ? { context_type: 'application', context_ref: offer.application_id, mode: 'nego_coach' }
+          : isNew && offerId !== undefined
+            ? { context_type: 'workspace', context_ref: '', mode: 'nego_coach' }
+            : undefined;
+      const resp = await sendChat(trimmed, convID, context);
       if (resp.type === 'confirmation_required') {
         setConvID(resp.conversation_id);
         const storedTurns = await reloadConversationTurns(resp.conversation_id, getConversation);

@@ -124,7 +124,9 @@ export default function CalendarView({ onOpenDetail, applications }: CalendarVie
 
   const getEntryTagColor = (entry: CalendarEntry) => {
     if (entry.event_type === 'written_test' || entry.type === 'written_test') return 'blue';
-    if (entry.event_type === 'assessment' || entry.type === 'assessment') return 'purple';
+    if (entry.event_type === 'offer_step' || entry.type === 'offer_step') return 'orange';
+    if (entry.event_type === 'deadline' || entry.type === 'deadline') return 'red';
+    if (entry.event_type === 'custom' || entry.type === 'custom') return 'purple';
     if (entry.type === 'applied') return 'default';
     return 'green';
   };
