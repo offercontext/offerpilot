@@ -1,6 +1,16 @@
+import { useEffect, useState } from 'react';
 import styles from './ChatPanel.module.css';
 
+const WAITING_STEPS = ['正在理解你的问题', '正在读取本地求职上下文', '正在整理结论和下一步建议'];
+
 export default function ThinkingIndicator() {
+  const [step, setStep] = useState(0);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setStep((value) => (value + 1) % WAITING_STEPS.length), 1800);
+    return () => window.clearInterval(timer);
+  }, []);
+
   return (
     <div className={styles.thinking} role="status" aria-live="polite">
       <span className={styles.dots} aria-hidden="true">
@@ -8,7 +18,7 @@ export default function ThinkingIndicator() {
         <i />
         <i />
       </span>
-      <span>领航员正在思考并查阅你的资料…</span>
+      <span>{WAITING_STEPS[step]}...</span>
     </div>
   );
 }

@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 from dataclasses import dataclass
 from pathlib import Path
+import socket
+import threading
+import time
 from typing import Any
 
-from fastapi.testclient import TestClient
+import httpx
+import uvicorn
 
 from offerpilot.ai.agent import ChatModel
 from offerpilot.ai.types import Assistant, Message, ToolCall
@@ -44,7 +49,31 @@ class _SmokeChatModel(ChatModel):
         return Assistant(content="smoke complete")
 
 
+class _MutableSmokeChatModel(ChatModel):
+    def __init__(self) -> None:
+        self.application_id: int | None = None
+        self._turn = 0
+
+    def complete(self, messages: list[Message], tools: list[dict[str, Any]]) -> Assistant:
+        self._turn += 1
+        if self._turn == 1:
+            if self.application_id is None:
+                raise RuntimeError("smoke application id was not initialized")
+            return Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="http-smoke-write-1",
+                        name="update_application_status",
+                        args=json.dumps({"id": self.application_id, "status": "offer"}),
+                    )
+                ]
+            )
+        return Assistant(content="http smoke complete")
+
+
 def run_core_smoke(data_dir: Path, static_dir: Path | None = None) -> SmokeReport:
+    from fastapi.testclient import TestClient
+
     steps: list[SmokeStep] = []
     data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -102,6 +131,181 @@ def run_core_smoke(data_dir: Path, static_dir: Path | None = None) -> SmokeRepor
     steps.append(SmokeStep("pending_cleared", "pending action cleared after confirmation"))
 
     return SmokeReport(ok=True, steps=steps)
+
+
+def run_http_smoke(
+    data_dir: Path,
+    static_dir: Path | None = None,
+    *,
+    real_ai: bool = False,
+) -> SmokeReport:
+    steps: list[SmokeStep] = []
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    local_model = None if real_ai else _MutableSmokeChatModel()
+    app = create_app(data_dir=data_dir, static_dir=static_dir, chat_model=local_model)
+    with _running_server(app) as base_url:
+        with httpx.Client(base_url=base_url, timeout=60.0) as client:
+            health = client.get("/api/health")
+            _assert_status(health.status_code, 200, "http_health")
+            steps.append(SmokeStep("http_health", "GET /api/health returned ok"))
+
+            settings = client.get("/api/settings")
+            _assert_status(settings.status_code, 200, "http_settings")
+            settings_body = settings.json()
+            if real_ai and not bool(settings_body.get("has_api_key")):
+                raise RuntimeError("real-ai profile requires a configured API key")
+            steps.append(SmokeStep("http_settings", "GET /api/settings returned current AI settings"))
+
+            if static_dir is not None:
+                spa = client.get("/applications/smoke")
+                _assert_status(spa.status_code, 200, "http_spa")
+                if "root" not in spa.text:
+                    raise RuntimeError("http_spa did not serve index.html")
+                steps.append(SmokeStep("http_spa", "GET /applications/smoke served the SPA fallback"))
+
+            marker = str(int(time.time() * 1000))
+            company = f"AI HTTP Smoke {marker}"
+            created = client.post(
+                "/api/applications",
+                json={
+                    "company_name": company,
+                    "position_name": "Verification Engineer",
+                    "status": "applied",
+                    "source": "smoke",
+                },
+            )
+            _assert_status(created.status_code, 201, "http_create_application")
+            application_id = int(created.json()["id"])
+            if local_model is not None:
+                local_model.application_id = application_id
+            steps.append(SmokeStep("http_create_application", f"POST /api/applications created #{application_id}"))
+
+            try:
+                listed = client.get("/api/applications", params={"status": "applied"})
+                _assert_status(listed.status_code, 200, "http_list_applications")
+                if not any(item.get("id") == application_id for item in listed.json()):
+                    raise RuntimeError("created application was not returned by list endpoint")
+                steps.append(SmokeStep("http_list_applications", "GET /api/applications returned created record"))
+
+                if real_ai:
+                    _run_real_ai_write_smoke(client, steps, company, application_id)
+                else:
+                    _run_deterministic_chat_smoke(client, steps, application_id)
+            finally:
+                cleanup = client.delete(f"/api/applications/{application_id}")
+                _assert_status(cleanup.status_code, 200, "http_cleanup")
+                steps.append(SmokeStep("http_cleanup", f"deleted smoke application #{application_id}"))
+
+    return SmokeReport(ok=True, steps=steps)
+
+
+def _run_deterministic_chat_smoke(
+    client: httpx.Client,
+    steps: list[SmokeStep],
+    application_id: int,
+) -> None:
+    pending = client.post("/api/chat", json={"message": "move to offer", "conversation_id": 0})
+    _assert_status(pending.status_code, 200, "http_chat_pending")
+    pending_body = pending.json()
+    if pending_body.get("type") != "confirmation_required":
+        raise RuntimeError("http chat did not request confirmation")
+    before_confirm = client.get(f"/api/applications/{application_id}").json()
+    if before_confirm["status"] != "applied":
+        raise RuntimeError("http write tool mutated before confirmation")
+    steps.append(SmokeStep("http_chat_pending", "POST /api/chat paused write action for confirmation"))
+
+    confirmed = client.post(
+        "/api/chat/confirm",
+        json={"conversation_id": pending_body["conversation_id"], "approved": True},
+    )
+    _assert_status(confirmed.status_code, 200, "http_confirm_action")
+    after_confirm = client.get(f"/api/applications/{application_id}").json()
+    if after_confirm["status"] != "offer":
+        raise RuntimeError("http confirmed write did not update application")
+    steps.append(SmokeStep("http_confirm_action", "POST /api/chat/confirm updated application"))
+
+    conversations = client.get("/api/chat/conversations")
+    _assert_status(conversations.status_code, 200, "http_pending_cleared")
+    if conversations.json()[0]["pending_action"] is not None:
+        raise RuntimeError("http pending action was not cleared")
+    steps.append(SmokeStep("http_pending_cleared", "pending action cleared after confirmation"))
+
+
+def _run_real_ai_write_smoke(
+    client: httpx.Client,
+    steps: list[SmokeStep],
+    company: str,
+    application_id: int,
+) -> None:
+    prompt = (
+        "Verification smoke: use the update_application_status tool to change the existing "
+        f"application for {company} with id {application_id} to status offer. "
+        "Do not create any other records."
+    )
+    pending = client.post("/api/chat", json={"message": prompt, "conversation_id": 0})
+    _assert_status(pending.status_code, 200, "http_chat_pending")
+    pending_body = pending.json()
+    conversation_id = int(pending_body["conversation_id"])
+    if pending_body.get("type") == "confirmation_required":
+        if pending_body.get("pending_action", {}).get("tool_name") != "update_application_status":
+            raise RuntimeError("real-ai smoke requested an unexpected pending tool")
+        steps.append(SmokeStep("http_chat_pending", "real AI requested write confirmation"))
+        confirmed = client.post(
+            "/api/chat/confirm",
+            json={"conversation_id": conversation_id, "approved": True},
+        )
+        _assert_status(confirmed.status_code, 200, "http_confirm_action")
+    else:
+        steps.append(SmokeStep("http_chat_pending", "real AI completed without pending confirmation"))
+
+    updated = client.get(f"/api/applications/{application_id}")
+    _assert_status(updated.status_code, 200, "http_confirm_action")
+    if updated.json()["status"] != "offer":
+        raise RuntimeError("real-ai smoke did not update the application to offer")
+    steps.append(SmokeStep("http_confirm_action", "real AI write updated application"))
+
+    conversations = client.get("/api/chat/conversations")
+    _assert_status(conversations.status_code, 200, "http_pending_cleared")
+    match = next((item for item in conversations.json() if item["id"] == conversation_id), None)
+    if match is None:
+        raise RuntimeError("real-ai smoke conversation was not listed")
+    if match["pending_action"] is not None:
+        raise RuntimeError("real-ai smoke pending action was not cleared")
+    steps.append(SmokeStep("http_pending_cleared", "real AI conversation has no pending action"))
+
+
+@contextmanager
+def _running_server(app: Any) -> Any:
+    port = _free_port()
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", access_log=False)
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{port}"
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        try:
+            response = httpx.get(f"{base_url}/api/health", timeout=1.0)
+            if response.status_code == 200:
+                break
+        except httpx.HTTPError:
+            time.sleep(0.1)
+    else:
+        server.should_exit = True
+        thread.join(timeout=5)
+        raise RuntimeError("http smoke server did not become ready")
+    try:
+        yield base_url
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
 
 
 def _assert_status(actual: int, expected: int, step: str) -> None:

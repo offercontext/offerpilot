@@ -8,11 +8,12 @@ import styles from './ChatPanel.module.css';
 interface Props {
   capabilities: Capability[];
   disabled?: boolean;
+  disabledReason?: string;
   placeholder?: string;
-  onSend: (text: string) => void;
+  onSend: (text: string) => void | boolean | Promise<void | boolean>;
 }
 
-export default function Composer({ capabilities, disabled, placeholder, onSend }: Props) {
+export default function Composer({ capabilities, disabled, disabledReason, placeholder, onSend }: Props) {
   const [value, setValue] = useState('');
   const [sel, setSel] = useState(0);
 
@@ -27,24 +28,29 @@ export default function Composer({ capabilities, disabled, placeholder, onSend }
     );
   }, [slashQuery, capabilities]);
 
-  function pickCapability(cap: Capability) {
+  async function pickCapability(cap: Capability) {
     const needsMore = /[：:]$/.test(cap.prompt.trim());
     if (needsMore) {
       setValue(cap.prompt);
       setSel(0);
-    } else {
-      onSend(cap.prompt);
+      return;
+    }
+
+    const sent = await onSend(cap.prompt);
+    if (sent !== false) {
       setValue('');
       setSel(0);
     }
   }
 
-  function submit() {
+  async function submit() {
     const text = value.trim();
     if (!text || disabled) return;
-    onSend(text);
-    setValue('');
-    setSel(0);
+    const sent = await onSend(text);
+    if (sent !== false) {
+      setValue('');
+      setSel(0);
+    }
   }
 
   return (
@@ -73,7 +79,7 @@ export default function Composer({ capabilities, disabled, placeholder, onSend }
               }
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
-                pickCapability(items[sel]);
+                void pickCapability(items[sel]);
                 return;
               }
               if (e.key === 'Escape') {
@@ -84,10 +90,10 @@ export default function Composer({ capabilities, disabled, placeholder, onSend }
             }
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
-              submit();
+              void submit();
             }
           }}
-          placeholder={placeholder ?? '问问领航员，或输入 / 唤起能力…'}
+          placeholder={placeholder ?? '问问领航员，或输入 / 唤起能力'}
           autoSize={{ minRows: 1, maxRows: 4 }}
           variant="borderless"
           disabled={disabled}
@@ -97,12 +103,18 @@ export default function Composer({ capabilities, disabled, placeholder, onSend }
           className="op-ai-btn"
           icon={<SendOutlined />}
           disabled={disabled || !value.trim()}
-          onClick={submit}
+          onClick={() => void submit()}
           aria-label="发送"
         />
       </div>
       <div className={styles.hint}>
-        输入 <kbd>/</kbd> 唤起能力 · <kbd>Enter</kbd> 发送 · <kbd>Shift+Enter</kbd> 换行
+        {disabledReason ? (
+          <span>{disabledReason}</span>
+        ) : (
+          <span>
+            输入 <kbd>/</kbd> 唤起能力 · <kbd>Enter</kbd> 发送 · <kbd>Shift+Enter</kbd> 换行
+          </span>
+        )}
       </div>
     </div>
   );

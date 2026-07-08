@@ -54,6 +54,8 @@ oc start
 ```bash
 oc start                                  # 启动本地 Web 服务
 oc smoke                                  # 运行核心 smoke：health、SPA、投递、Pilot 确认流
+oc verify --profile local                 # 启动真实 HTTP 服务并跑本地确定性接口验收
+oc verify --profile real-ai               # 使用现有 AI 配置跑真实模型读写验收
 oc config --api-key sk-xxx               # 设置 AI API key
 oc config --model gpt-4o                 # 设置当前 provider 模型
 oc config --runtime-mode local           # local 或 server
@@ -185,6 +187,18 @@ scripts/local-smoke.sh
 ```
 
 Both `scripts/local-smoke.sh` and `scripts/local-smoke.ps1` build `web/dist`, start `uv run oc start` on a temporary data directory, verify `/api/health` and the SPA fallback route, then run the core `oc smoke` flow.
+
+For an API-level release check that exercises a real localhost HTTP server, run:
+
+```bash
+uv run oc verify --profile local --static-dir web/dist
+```
+
+To verify the configured provider with an actual AI write-confirmation loop, run:
+
+```bash
+uv run oc verify --profile real-ai --static-dir web/dist
+```
 
 The current non-Docker P0 gate is tracked in [`docs/p0-release-checklist.md`](docs/p0-release-checklist.md).
 

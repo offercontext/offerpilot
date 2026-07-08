@@ -31,7 +31,7 @@ from offerpilot.repositories.offers import OfferCreate, OffersRepository
 from offerpilot.repositories.questions import QuestionsRepository
 from offerpilot.repositories.resumes import ResumeCreate, ResumesRepository
 from offerpilot.repositories.wakeups import WakeupCreate, WakeupsRepository
-from offerpilot.smoke import run_core_smoke
+from offerpilot.smoke import run_core_smoke, run_http_smoke
 from offerpilot.skills import SkillRegistryError, register_skill, skills_payload, update_skill
 
 app = typer.Typer(help="OfferPilot - your local job search workbench")
@@ -216,6 +216,19 @@ def smoke(
     for step in report.steps:
         typer.echo(f"ok {step.name}: {step.detail}")
     typer.echo("Smoke passed")
+
+
+@app.command()
+def verify(
+    profile: str = typer.Option("local", "--profile", help="local or real-ai"),
+    static_dir: Optional[Path] = typer.Option(None, "--static-dir", help="built frontend dist directory"),
+) -> None:
+    if profile not in {"local", "real-ai"}:
+        raise typer.BadParameter("--profile must be local or real-ai")
+    report = run_http_smoke(resolve_data_dir(), static_dir=static_dir, real_ai=profile == "real-ai")
+    for step in report.steps:
+        typer.echo(f"ok {step.name}: {step.detail}")
+    typer.echo(f"Verify {profile} passed")
 
 
 @skill_app.command("list")
