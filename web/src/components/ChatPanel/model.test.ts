@@ -37,29 +37,29 @@ describe('buildTurns evidence normalization', () => {
     const turns = await reloadConversationTurns(42, async (id) => {
       expect(id).toBe(42);
       return [
-        { id: 1, conversation_id: 42, role: 'user', content: 'Update my OpenAI offer', created_at: '2026-01-01T00:00:00Z' },
+        { id: 1, conversation_id: 42, role: 'user', content: '更新启明智能 offer', created_at: '2026-01-01T00:00:00Z' },
         {
           id: 2,
           conversation_id: 42,
           role: 'assistant',
           content: '',
-          tool_calls: JSON.stringify([{ id: 'call_1', function: { name: 'list_offers', arguments: '{"company_name":"OpenAI"}' } }]),
+          tool_calls: JSON.stringify([{ id: 'call_1', function: { name: 'list_offers', arguments: '{"company_name":"启明智能"}' } }]),
           created_at: '2026-01-01T00:00:01Z',
         },
         {
           id: 3,
           conversation_id: 42,
           role: 'tool',
-          content: JSON.stringify([{ id: 7, company_name: 'OpenAI', position_name: 'Research Engineer', total_cash: 1000000 }]),
+          content: JSON.stringify([{ id: 7, company_name: '启明智能', position_name: '算法工程师', total_cash: 1000000 }]),
           tool_call_id: 'call_1',
           created_at: '2026-01-01T00:00:02Z',
         },
-        { id: 4, conversation_id: 42, role: 'assistant', content: 'I found the offer and need confirmation.', created_at: '2026-01-01T00:00:03Z' },
+        { id: 4, conversation_id: 42, role: 'assistant', content: '已找到 offer，需要确认。', created_at: '2026-01-01T00:00:03Z' },
       ];
     });
 
     expect(turns).not.toBeNull();
-    expect(collectEvidence(turns ?? []).map((item) => item.title)).toEqual(['OpenAI']);
+    expect(collectEvidence(turns ?? []).map((item) => item.title)).toEqual(['启明智能']);
   });
 
   it('keeps pending confirmation fallback available if stored turns cannot reload', async () => {
@@ -72,7 +72,7 @@ describe('buildTurns evidence normalization', () => {
 
   it('keeps read evidence visible when the latest assistant turn is a pending write', () => {
     const turns = buildTurns([
-      msg({ role: 'user', content: 'move OpenAI to offer' }),
+      msg({ role: 'user', content: '把启明智能改成 offer' }),
       msg({
         role: 'assistant',
         tool_calls: JSON.stringify([{ id: 'read-app', name: 'get_application', args: { id: 7 } }]),
@@ -82,10 +82,10 @@ describe('buildTurns evidence normalization', () => {
         tool_call_id: 'read-app',
         content: JSON.stringify({
           id: 7,
-          company_name: 'OpenAI',
-          position_name: 'Research Engineer',
+          company_name: '启明智能',
+          position_name: '算法工程师',
           status: 'interview',
-          notes: 'Final round finished.',
+          notes: '终面已结束。',
         }),
       }),
       msg({
@@ -96,7 +96,7 @@ describe('buildTurns evidence normalization', () => {
       }),
     ]);
 
-    expect(collectEvidence(turns).map((item) => item.title)).toEqual(['OpenAI']);
+    expect(collectEvidence(turns).map((item) => item.title)).toEqual(['启明智能']);
     expect(turns[turns.length - 1]?.steps?.map((step) => step.name)).toEqual([
       'get_application',
       'update_application_status',
@@ -105,7 +105,7 @@ describe('buildTurns evidence normalization', () => {
 
   it('attaches application evidence from tool results to the assistant turn', () => {
     const turns = buildTurns([
-      msg({ role: 'user', content: 'show apps' }),
+      msg({ role: 'user', content: '查看投递' }),
       msg({
         role: 'assistant',
         tool_calls: JSON.stringify([{ name: 'list_applications', args: {} }]),
@@ -115,26 +115,26 @@ describe('buildTurns evidence normalization', () => {
         content: JSON.stringify([
           {
             id: 7,
-            company_name: 'ByteDance',
-            position_name: 'Backend Engineer',
+            company_name: '字节跳动',
+            position_name: '后端工程师',
             status: 'interview',
             source: 'manual',
             applied_at: '2026-07-01',
           },
         ]),
       }),
-      msg({ role: 'assistant', content: 'You have one active interview.' }),
+      msg({ role: 'assistant', content: '你有 1 条进行中的面试。' }),
     ]);
 
     expect(turns[1].steps?.[0]).toMatchObject({
       name: 'list_applications',
-      detail: 'ByteDance',
+      detail: '字节跳动',
       evidence: [
         {
           id: 'application-7',
           kind: 'application',
-          title: 'ByteDance',
-          meta: 'Backend Engineer \u00b7 interview \u00b7 2026-07-01',
+          title: '字节跳动',
+          meta: '后端工程师 \u00b7 interview \u00b7 2026-07-01',
           source: 'list_applications',
         },
       ],
@@ -166,7 +166,7 @@ describe('buildTurns evidence normalization', () => {
           },
         ]),
       }),
-      msg({ role: 'assistant', content: 'I found one interview.' }),
+      msg({ role: 'assistant', content: '找到 1 场面试。' }),
     ]);
 
     expect(turns[0].steps?.[0]).toMatchObject({
@@ -187,10 +187,10 @@ describe('buildTurns evidence normalization', () => {
 
   it('attaches evidence to the final answer when a tool-calling assistant includes preamble content', () => {
     const turns = buildTurns([
-      msg({ role: 'user', content: 'show apps' }),
+      msg({ role: 'user', content: '查看投递' }),
       msg({
         role: 'assistant',
-        content: 'I can look that up.',
+        content: '我来查一下。',
         tool_calls: JSON.stringify([{ id: 'call-apps', name: 'list_applications', args: {} }]),
       }),
       msg({
@@ -199,36 +199,36 @@ describe('buildTurns evidence normalization', () => {
         content: JSON.stringify([
           {
             id: 7,
-            company_name: 'ByteDance',
-            position_name: 'Backend Engineer',
+            company_name: '字节跳动',
+            position_name: '后端工程师',
             status: 'interview',
           },
         ]),
       }),
-      msg({ role: 'assistant', content: 'You have one active interview.' }),
+      msg({ role: 'assistant', content: '你有 1 条进行中的面试。' }),
     ]);
 
     expect(turns.map((turn) => [turn.role, turn.content, turn.steps?.length ?? 0])).toEqual([
-      ['user', 'show apps', 0],
-      ['assistant', 'I can look that up.', 0],
-      ['assistant', 'You have one active interview.', 1],
+      ['user', '查看投递', 0],
+      ['assistant', '我来查一下。', 0],
+      ['assistant', '你有 1 条进行中的面试。', 1],
     ]);
-    expect(collectEvidence(turns).map((item) => item.title)).toEqual(['ByteDance']);
+    expect(collectEvidence(turns).map((item) => item.title)).toEqual(['字节跳动']);
   });
 
   it('keeps malformed tool results as an unavailable detail instead of throwing', () => {
     const turns = buildTurns([
       msg({
         role: 'assistant',
-        tool_calls: JSON.stringify([{ name: 'search_knowledge', args: { query: 'system design' } }]),
+        tool_calls: JSON.stringify([{ name: 'search_knowledge', args: { query: '系统设计' } }]),
       }),
       msg({ role: 'tool', content: '{bad json' }),
-      msg({ role: 'assistant', content: 'I searched.' }),
+      msg({ role: 'assistant', content: '已搜索。' }),
     ]);
 
     expect(turns[0].steps?.[0]).toMatchObject({
       name: 'search_knowledge',
-      detail: 'system design',
+      detail: '系统设计',
       evidenceUnavailable: true,
     });
   });
@@ -273,7 +273,7 @@ describe('buildTurns evidence normalization', () => {
           },
         ]),
       }),
-      msg({ role: 'assistant', content: 'I found JVM notes.' }),
+      msg({ role: 'assistant', content: '找到了 JVM 笔记。' }),
     ]);
 
     expect(turns[0].steps?.[0]).toMatchObject({
@@ -346,7 +346,7 @@ describe('buildTurns evidence normalization', () => {
           },
         ]),
       }),
-      msg({ role: 'assistant', content: 'I found a resume.' }),
+      msg({ role: 'assistant', content: '找到了简历。' }),
     ]);
 
     expect(turns[0].steps?.[0]).toMatchObject({
@@ -386,7 +386,7 @@ describe('buildTurns evidence normalization', () => {
           },
         ]),
       }),
-      msg({ role: 'assistant', content: 'I found a resume match.' }),
+      msg({ role: 'assistant', content: '找到了简历匹配结果。' }),
     ]);
 
     expect(turns[0].steps?.[0]).toMatchObject({
@@ -426,7 +426,7 @@ describe('buildTurns evidence normalization', () => {
           },
         ]),
       }),
-      msg({ role: 'assistant', content: 'I found a JD analysis.' }),
+      msg({ role: 'assistant', content: '找到了 JD 分析。' }),
     ]);
 
     expect(turns[0].steps?.[0]).toMatchObject({
@@ -452,35 +452,35 @@ describe('buildTurns evidence normalization', () => {
         role: 'assistant',
         tool_calls: JSON.stringify([
           { id: 'call-apps', name: 'list_applications', args: {} },
-          { id: 'call-knowledge', name: 'search_knowledge', args: { query: 'system design' } },
+          { id: 'call-knowledge', name: 'search_knowledge', args: { query: '系统设计' } },
         ]),
       }),
       msg({
         role: 'tool',
         tool_call_id: 'call-knowledge',
-        content: JSON.stringify([{ id: 10, title: 'System Design', summary: 'Patterns' }]),
+        content: JSON.stringify([{ id: 10, title: '系统设计', summary: '模式' }]),
       }),
       msg({
         role: 'tool',
         tool_call_id: 'call-apps',
-        content: JSON.stringify([{ id: 7, company_name: 'ByteDance', position_name: 'Backend Engineer' }]),
+        content: JSON.stringify([{ id: 7, company_name: '字节跳动', position_name: '后端工程师' }]),
       }),
-      msg({ role: 'assistant', content: 'I found both.' }),
+      msg({ role: 'assistant', content: '都找到了。' }),
     ]);
 
     expect(turns[0].steps?.map((step) => [step.name, step.detail])).toEqual([
-      ['list_applications', 'ByteDance'],
-      ['search_knowledge', 'System Design'],
+      ['list_applications', '字节跳动'],
+      ['search_knowledge', '系统设计'],
     ]);
     expect(turns[0].steps?.[0].evidence?.[0]).toMatchObject({
       id: 'application-7',
       source: 'list_applications',
-      title: 'ByteDance',
+      title: '字节跳动',
     });
     expect(turns[0].steps?.[1].evidence?.[0]).toMatchObject({
       id: 'search_knowledge-10',
       source: 'search_knowledge',
-      title: 'System Design',
+      title: '系统设计',
     });
   });
 
@@ -490,23 +490,23 @@ describe('buildTurns evidence normalization', () => {
         role: 'assistant',
         tool_calls: JSON.stringify([
           { name: 'list_applications', args: {} },
-          { name: 'search_knowledge', args: { query: 'system design' } },
+          { name: 'search_knowledge', args: { query: '系统设计' } },
         ]),
       }),
       msg({
         role: 'tool',
-        content: JSON.stringify([{ id: 7, company_name: 'ByteDance', position_name: 'Backend Engineer' }]),
+        content: JSON.stringify([{ id: 7, company_name: '字节跳动', position_name: '后端工程师' }]),
       }),
       msg({
         role: 'tool',
-        content: JSON.stringify([{ id: 10, title: 'System Design', summary: 'Patterns' }]),
+        content: JSON.stringify([{ id: 10, title: '系统设计', summary: '模式' }]),
       }),
-      msg({ role: 'assistant', content: 'I found both.' }),
+      msg({ role: 'assistant', content: '都找到了。' }),
     ]);
 
     expect(turns[0].steps?.map((step) => [step.name, step.detail])).toEqual([
-      ['list_applications', 'ByteDance'],
-      ['search_knowledge', 'System Design'],
+      ['list_applications', '字节跳动'],
+      ['search_knowledge', '系统设计'],
     ]);
   });
 
@@ -516,32 +516,32 @@ describe('buildTurns evidence normalization', () => {
         role: 'assistant',
         tool_calls: JSON.stringify([
           { id: 'call-apps', name: 'list_applications', args: {} },
-          { id: 'call-knowledge', name: 'search_knowledge', args: { query: 'system design' } },
+          { id: 'call-knowledge', name: 'search_knowledge', args: { query: '系统设计' } },
         ]),
       }),
       msg({
         role: 'tool',
         tool_call_id: 'call-apps',
-        content: JSON.stringify([{ id: 7, company_name: 'ByteDance', position_name: 'Backend Engineer' }]),
+        content: JSON.stringify([{ id: 7, company_name: '字节跳动', position_name: '后端工程师' }]),
       }),
       msg({
         role: 'tool',
-        content: JSON.stringify([{ id: 10, title: 'System Design', summary: 'Patterns' }]),
+        content: JSON.stringify([{ id: 10, title: '系统设计', summary: '模式' }]),
       }),
-      msg({ role: 'assistant', content: 'I found both.' }),
+      msg({ role: 'assistant', content: '都找到了。' }),
     ]);
 
     expect(turns[0].steps?.map((step) => [step.name, step.detail])).toEqual([
-      ['list_applications', 'ByteDance'],
-      ['search_knowledge', 'System Design'],
+      ['list_applications', '字节跳动'],
+      ['search_knowledge', '系统设计'],
     ]);
     expect(turns[0].steps?.[0].evidence?.[0]).toMatchObject({
       id: 'application-7',
-      title: 'ByteDance',
+      title: '字节跳动',
     });
     expect(turns[0].steps?.[1].evidence?.[0]).toMatchObject({
       id: 'search_knowledge-10',
-      title: 'System Design',
+      title: '系统设计',
     });
   });
 
@@ -550,7 +550,7 @@ describe('buildTurns evidence normalization', () => {
       msg({
         role: 'assistant',
         tool_calls: JSON.stringify([
-          { id: 'call-note', name: 'search_knowledge', args: { query: 'missing source' } },
+          { id: 'call-note', name: 'search_knowledge', args: { query: '缺失来源' } },
           { id: 'call-apps', name: 'list_applications', args: {} },
         ]),
       }),
@@ -561,19 +561,19 @@ describe('buildTurns evidence normalization', () => {
       }),
       msg({
         role: 'tool',
-        content: JSON.stringify([{ id: 7, company_name: 'ByteDance', position_name: 'Backend Engineer' }]),
+        content: JSON.stringify([{ id: 7, company_name: '字节跳动', position_name: '后端工程师' }]),
       }),
-      msg({ role: 'assistant', content: 'I found one application.' }),
+      msg({ role: 'assistant', content: '找到 1 条投递。' }),
     ]);
 
     expect(turns[0].steps?.map((step) => [step.name, step.detail])).toEqual([
-      ['search_knowledge', 'missing source'],
-      ['list_applications', 'ByteDance'],
+      ['search_knowledge', '缺失来源'],
+      ['list_applications', '字节跳动'],
     ]);
     expect(turns[0].steps?.[0].evidence).toBeUndefined();
     expect(turns[0].steps?.[1].evidence?.[0]).toMatchObject({
       id: 'application-7',
-      title: 'ByteDance',
+      title: '字节跳动',
     });
   });
 
@@ -585,21 +585,21 @@ describe('buildTurns evidence normalization', () => {
       }),
       msg({
         role: 'tool',
-        content: JSON.stringify([{ id: 3, company_name: 'OpenAI', position_name: 'PM', total_cash: 600000 }]),
+        content: JSON.stringify([{ id: 3, company_name: '启明智能', position_name: '产品经理', total_cash: 600000 }]),
       }),
-      msg({ role: 'assistant', content: 'Offer found.' }),
+      msg({ role: 'assistant', content: '找到了 offer。' }),
       msg({
         role: 'assistant',
         tool_calls: JSON.stringify([{ name: 'list_applications', args: {} }]),
       }),
       msg({
         role: 'tool',
-        content: JSON.stringify([{ id: 4, company_name: 'Anthropic', position_name: 'PM', status: 'applied' }]),
+        content: JSON.stringify([{ id: 4, company_name: '星河智能', position_name: '产品经理', status: 'applied' }]),
       }),
-      msg({ role: 'assistant', content: 'Application found.' }),
+      msg({ role: 'assistant', content: '找到了投递。' }),
     ]);
 
-    expect(collectEvidence(turns).map((item) => item.title)).toEqual(['Anthropic', 'OpenAI']);
+    expect(collectEvidence(turns).map((item) => item.title)).toEqual(['星河智能', '启明智能']);
   });
 
   it('preserves backend evidence order within a single tool result', () => {
@@ -611,14 +611,14 @@ describe('buildTurns evidence normalization', () => {
       msg({
         role: 'tool',
         content: JSON.stringify([
-          { id: 5, company_name: 'OpenAI', position_name: 'PM', status: 'interview' },
-          { id: 4, company_name: 'Anthropic', position_name: 'PM', status: 'applied' },
+          { id: 5, company_name: '启明智能', position_name: '产品经理', status: 'interview' },
+          { id: 4, company_name: '星河智能', position_name: '产品经理', status: 'applied' },
         ]),
       }),
-      msg({ role: 'assistant', content: 'Applications found.' }),
+      msg({ role: 'assistant', content: '找到了多条投递。' }),
     ]);
 
-    expect(collectEvidence(turns).map((item) => item.title)).toEqual(['OpenAI', 'Anthropic']);
+    expect(collectEvidence(turns).map((item) => item.title)).toEqual(['启明智能', '星河智能']);
   });
 
   it('keeps plain-text tool errors visible in the process timeline data', () => {

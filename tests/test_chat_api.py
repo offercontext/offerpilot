@@ -44,7 +44,7 @@ def test_chat_returns_bad_gateway_when_model_fails(tmp_path):
         raise_server_exceptions=False,
     )
 
-    response = client.post("/api/chat", json={"message": "hello", "conversation_id": 0})
+    response = client.post("/api/chat", json={"message": "你好", "conversation_id": 0})
 
     assert response.status_code == 502
     assert response.json() == {"error": "AI provider request failed: provider unavailable"}
@@ -57,7 +57,7 @@ def test_chat_provider_error_masks_configured_api_key(tmp_path):
         raise_server_exceptions=False,
     )
 
-    response = client.post("/api/chat", json={"message": "hello", "conversation_id": 0})
+    response = client.post("/api/chat", json={"message": "你好", "conversation_id": 0})
 
     assert response.status_code == 502
     assert "sk-secret-value" not in response.text
@@ -157,7 +157,7 @@ def test_chat_write_tool_requires_confirmation_before_mutating(tmp_path):
     app_client = TestClient(create_app(data_dir=tmp_path))
     application = app_client.post(
         "/api/applications",
-        json={"company_name": "ByteDance", "position_name": "Backend", "status": "interview"},
+        json={"company_name": "字节跳动", "position_name": "后端工程师", "status": "interview"},
     ).json()
     model = ScriptedModel(
         [
@@ -186,8 +186,8 @@ def test_chat_write_tool_requires_confirmation_before_mutating(tmp_path):
     assert response.json()["pending_action"]["target"] == {
         "id": f"application-{application['id']}",
         "kind": "application",
-        "title": "ByteDance",
-        "meta": "Backend · interview",
+        "title": "字节跳动",
+        "meta": "后端工程师 · interview",
         "source": "pending_action",
     }
     assert response.json()["pending_action"]["proposed_changes"] == [
@@ -197,8 +197,8 @@ def test_chat_write_tool_requires_confirmation_before_mutating(tmp_path):
         {
             "id": f"application-{application['id']}",
             "kind": "application",
-            "title": "ByteDance",
-            "meta": "Backend · interview",
+            "title": "字节跳动",
+            "meta": "后端工程师 · interview",
             "source": "pending_action",
         }
     ]
@@ -209,7 +209,7 @@ def test_chat_confirm_executes_pending_write(tmp_path):
     app_client = TestClient(create_app(data_dir=tmp_path))
     application = app_client.post(
         "/api/applications",
-        json={"company_name": "ByteDance", "position_name": "Backend", "status": "interview"},
+        json={"company_name": "字节跳动", "position_name": "后端工程师", "status": "interview"},
     ).json()
     model = ScriptedModel(
         [
@@ -246,12 +246,12 @@ def test_chat_confirm_replays_reasoning_content_for_pending_tool(tmp_path):
     app_client = TestClient(create_app(data_dir=tmp_path))
     application = app_client.post(
         "/api/applications",
-        json={"company_name": "ByteDance", "position_name": "Backend", "status": "interview"},
+        json={"company_name": "字节跳动", "position_name": "后端工程师", "status": "interview"},
     ).json()
     model = CapturingScriptedModel(
         [
             Assistant(
-                provider_blocks={"reasoning_content": "selected target application"},
+                provider_blocks={"reasoning_content": "已选择目标投递"},
                 tool_calls=[
                     ToolCall(
                         id="w1",
@@ -260,11 +260,11 @@ def test_chat_confirm_replays_reasoning_content_for_pending_tool(tmp_path):
                     )
                 ],
             ),
-            Assistant(content="updated"),
+            Assistant(content="已更新"),
         ]
     )
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
-    pending = client.post("/api/chat", json={"message": "move it to offer", "conversation_id": 0}).json()
+    pending = client.post("/api/chat", json={"message": "改成 offer", "conversation_id": 0}).json()
 
     response = client.post(
         "/api/chat/confirm",
@@ -276,7 +276,7 @@ def test_chat_confirm_replays_reasoning_content_for_pending_tool(tmp_path):
         message for message in model.calls[1] if message.role == "assistant" and message.tool_calls
     )
     assert replayed_assistant.provider_blocks == {
-        "reasoning_content": "selected target application"
+        "reasoning_content": "已选择目标投递"
     }
 
 
@@ -284,7 +284,7 @@ def test_chat_confirm_keeps_application_context_for_model(tmp_path):
     app_client = TestClient(create_app(data_dir=tmp_path))
     application = app_client.post(
         "/api/applications",
-        json={"company_name": "OpenAI", "position_name": "Research Engineer", "status": "interview"},
+        json={"company_name": "启明智能", "position_name": "算法工程师", "status": "interview"},
     ).json()
     model = CapturingScriptedModel(
         [
@@ -297,14 +297,14 @@ def test_chat_confirm_keeps_application_context_for_model(tmp_path):
                     )
                 ]
             ),
-            Assistant(content="Updated with context."),
+            Assistant(content="已结合上下文更新。"),
         ]
     )
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
     pending = client.post(
         "/api/chat",
         json={
-            "message": "Move this to offer",
+            "message": "把这条投递改成 offer",
             "conversation_id": 0,
             "context_type": "application",
             "context_ref": str(application["id"]),
@@ -320,14 +320,14 @@ def test_chat_confirm_keeps_application_context_for_model(tmp_path):
     assert response.status_code == 200
     assert model.calls[1][1].role == "system"
     assert "Current conversation context" in model.calls[1][1].content
-    assert "OpenAI" in model.calls[1][1].content
+    assert "启明智能" in model.calls[1][1].content
 
 
 def test_chat_confirm_resumes_pending_write_from_langgraph_checkpoint(tmp_path):
     app_client = TestClient(create_app(data_dir=tmp_path))
     application = app_client.post(
         "/api/applications",
-        json={"company_name": "ByteDance", "position_name": "Backend", "status": "interview"},
+        json={"company_name": "字节跳动", "position_name": "后端工程师", "status": "interview"},
     ).json()
     first_model = ScriptedModel(
         [
@@ -344,12 +344,12 @@ def test_chat_confirm_resumes_pending_write_from_langgraph_checkpoint(tmp_path):
     )
     client = TestClient(create_app(data_dir=tmp_path, chat_model=first_model))
 
-    pending = client.post("/api/chat", json={"message": "move it to offer", "conversation_id": 0}).json()
+    pending = client.post("/api/chat", json={"message": "改成 offer", "conversation_id": 0}).json()
 
     assert pending["type"] == "confirmation_required"
     assert (tmp_path / "agent_checkpoints.sqlite").exists()
 
-    second_model = ScriptedModel([Assistant(content="updated")])
+    second_model = ScriptedModel([Assistant(content="已更新")])
     reloaded_client = TestClient(create_app(data_dir=tmp_path, chat_model=second_model))
     response = reloaded_client.post(
         "/api/chat/confirm",
@@ -357,7 +357,7 @@ def test_chat_confirm_resumes_pending_write_from_langgraph_checkpoint(tmp_path):
     )
 
     assert response.status_code == 200
-    assert response.json()["message"] == "updated"
+    assert response.json()["message"] == "已更新"
     assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
 
 
@@ -365,7 +365,7 @@ def test_chat_conversation_exposes_pending_action_for_reload(tmp_path):
     app_client = TestClient(create_app(data_dir=tmp_path))
     application = app_client.post(
         "/api/applications",
-        json={"company_name": "ByteDance", "position_name": "Backend", "status": "interview"},
+        json={"company_name": "字节跳动", "position_name": "后端工程师", "status": "interview"},
     ).json()
     model = ScriptedModel(
         [
@@ -387,14 +387,14 @@ def test_chat_conversation_exposes_pending_action_for_reload(tmp_path):
 
     assert conversations[0]["id"] == pending["conversation_id"]
     assert conversations[0]["pending_action"] == pending["pending_action"]
-    assert conversations[0]["pending_action"]["target"]["title"] == "ByteDance"
+    assert conversations[0]["pending_action"]["target"]["title"] == "字节跳动"
 
 
 def test_chat_confirm_clears_persisted_pending_action(tmp_path):
     app_client = TestClient(create_app(data_dir=tmp_path))
     application = app_client.post(
         "/api/applications",
-        json={"company_name": "ByteDance", "position_name": "Backend", "status": "interview"},
+        json={"company_name": "字节跳动", "position_name": "后端工程师", "status": "interview"},
     ).json()
     model = ScriptedModel(
         [
@@ -426,11 +426,11 @@ def test_chat_confirm_returns_args_for_chained_pending_write(tmp_path):
     app_client = TestClient(create_app(data_dir=tmp_path))
     first = app_client.post(
         "/api/applications",
-        json={"company_name": "ByteDance", "position_name": "Backend", "status": "interview"},
+        json={"company_name": "字节跳动", "position_name": "后端工程师", "status": "interview"},
     ).json()
     second = app_client.post(
         "/api/applications",
-        json={"company_name": "OpenAI", "position_name": "Product", "status": "applied"},
+        json={"company_name": "启明智能", "position_name": "产品经理", "status": "applied"},
     ).json()
     model = ScriptedModel(
         [
@@ -476,7 +476,7 @@ def test_chat_auto_approve_executes_write_without_pending(tmp_path):
     app_client = TestClient(create_app(data_dir=tmp_path))
     application = app_client.post(
         "/api/applications",
-        json={"company_name": "ByteDance", "position_name": "Backend", "status": "interview"},
+        json={"company_name": "字节跳动", "position_name": "后端工程师", "status": "interview"},
     ).json()
     model = ScriptedModel(
         [
@@ -504,7 +504,7 @@ def test_chat_auto_approve_executes_write_without_pending(tmp_path):
 def test_chat_conversations_detail_and_delete(tmp_path):
     model = ScriptedModel([Assistant(content="你好")])
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
-    created = client.post("/api/chat", json={"message": "hello", "conversation_id": 0}).json()
+    created = client.post("/api/chat", json={"message": "你好", "conversation_id": 0}).json()
 
     conversations = client.get("/api/chat/conversations").json()
     messages = client.get(f"/api/chat/conversations/{created['conversation_id']}").json()
@@ -543,19 +543,19 @@ def test_chat_injects_application_context_for_model(tmp_path):
     application = app_client.post(
         "/api/applications",
         json={
-            "company_name": "OpenAI",
-            "position_name": "Research Engineer",
+            "company_name": "启明智能",
+            "position_name": "算法工程师",
             "status": "interview",
-            "notes": "Focus on agent evals.",
+            "notes": "重点准备智能体评测。",
         },
     ).json()
-    model = CapturingScriptedModel([Assistant(content="I have the application context.")])
+    model = CapturingScriptedModel([Assistant(content="我已读取投递上下文。")])
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
 
     response = client.post(
         "/api/chat",
         json={
-            "message": "What should I prepare?",
+            "message": "我应该准备什么？",
             "conversation_id": 0,
             "context_type": "application",
             "context_ref": str(application["id"]),
@@ -566,17 +566,17 @@ def test_chat_injects_application_context_for_model(tmp_path):
     injected = model.calls[0][1]
     assert injected.role == "system"
     assert "Current conversation context" in injected.content
-    assert "OpenAI" in injected.content
-    assert "Research Engineer" in injected.content
+    assert "启明智能" in injected.content
+    assert "算法工程师" in injected.content
     assert "interview" in injected.content
-    assert "Focus on agent evals." in injected.content
+    assert "重点准备智能体评测。" in injected.content
 
 
 def test_chat_without_context_defaults_to_workspace(tmp_path):
     model = ScriptedModel([Assistant(content="你好")])
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
 
-    created = client.post("/api/chat", json={"message": "hello", "conversation_id": 0}).json()
+    created = client.post("/api/chat", json={"message": "你好", "conversation_id": 0}).json()
     conversation = client.get("/api/chat/conversations").json()[0]
 
     assert conversation["id"] == created["conversation_id"]
@@ -587,7 +587,7 @@ def test_chat_without_context_defaults_to_workspace(tmp_path):
 def test_chat_without_configured_ai_returns_503(tmp_path):
     client = TestClient(create_app(data_dir=tmp_path))
 
-    response = client.post("/api/chat", json={"message": "hello", "conversation_id": 0})
+    response = client.post("/api/chat", json={"message": "你好", "conversation_id": 0})
 
     assert response.status_code == 503
     assert response.json() == {"error": "AI is not configured: run `oc config` to set your API key"}
