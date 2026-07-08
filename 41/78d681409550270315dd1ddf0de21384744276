@@ -1,0 +1,133 @@
+web/src/types/calendar.ts
+  s_7f2bc75bf7c269::t_5c32de1c7ce624 4
+tests/test_events_api.py
+  s_7f2bc75bf7c269::t_70a4e7bc0d6cd8 6,14,17-19,25,28,31-34,36,46,59,67,78-79,86-98,100,104,106-112
+web/src/components/ChatPanel/capabilities.ts
+  s_7f2bc75bf7c269::t_98791c3f0e6047 51-52,68-70,119-120
+tests/test_cli.py
+  s_7f2bc75bf7c269::t_a22fa54f58bfdf 8,376,380
+tests/test_chat_api.py
+  s_7f2bc75bf7c269::t_0fe466834f02eb 56-57,68,71,75
+  s_7f2bc75bf7c269::t_5d2aeed894b6ef 423-424,429-434,439-454
+src/offerpilot/cli.py
+  s_7f2bc75bf7c269::t_6e1b424f8a42e3 565,567,569,583,594
+web/src/types/event.ts
+  s_7f2bc75bf7c269::t_6e9a9f973ed858 1,6-8,15-16,22-23,32-33,39-40
+web/src/components/ChatPanel/index.tsx
+  s_7f2bc75bf7c269::t_74b36593cb165e 235-241
+web/src/types/knowledge.ts
+  s_7f2bc75bf7c269::t_91a232f68d34e8 6-8,10-14
+src/offerpilot/repositories/questions.py
+  s_7f2bc75bf7c269::t_c236190d066893 18,51,57-58,157
+web/src/types/mock.ts
+  s_7f2bc75bf7c269::t_374204ef5d7c5f 72
+web/src/components/ChatPanel/model.ts
+  s_7f2bc75bf7c269::t_e24315bf74cba9 174,182-187,234
+tests/test_schema_compatibility.py
+  s_7f2bc75bf7c269::t_c29cb5f4e46341 47-65
+  s_7f2bc75bf7c269::t_f74ab9f80b7e1a 16,21-25,28-31,66,95-96,116,145,148-149
+src/offerpilot/db.py
+  s_7f2bc75bf7c269::t_e2910ac97b8485 26,33-34,56-68,89-91,101,104-106,109-117,124-131,180
+  s_7f2bc75bf7c269::t_59eb6e07278e46 69-88,92-100,102-103,107-108,118-123
+src/offerpilot/repositories/application_events.py
+  s_7f2bc75bf7c269::t_924fece52e2ce6 1-120
+web/src/types/question.ts
+  s_7f2bc75bf7c269::t_e6f5e3aa569c34 8,33,41
+web/src/components/QuestionBankView.tsx
+  s_7f2bc75bf7c269::t_e96fb323e5ddce 345-347
+src/offerpilot/repositories/knowledge.py
+  s_7f2bc75bf7c269::t_b171252c213d2e 10,37,42,75,90,96-97,107,123,206,232-233
+src/offerpilot/ai/workflows.py
+  s_7f2bc75bf7c269::t_64caf485ccc1ea 129-130
+  s_7f2bc75bf7c269::t_9714b506c8ed63 122,156,251,274
+web/src/services/chat.ts
+  s_7f2bc75bf7c269::t_499f1a1098fe9d 7-12,16,21-23
+tests/test_knowledge_api.py
+  s_7f2bc75bf7c269::t_3de406120adccb 6,9,23-25,38,44,69,77,100-101,103,122,143,145-146
+web/src/components/MockStudio/MockStudioView.tsx
+  s_7f2bc75bf7c269::t_a0bd9c042ec2e0 407
+src/offerpilot/repositories/chat.py
+  s_7f2bc75bf7c269::t_83865ffa6f9063 16-28
+web/src/types/chat.ts
+  s_7f2bc75bf7c269::t_0e9b0823f7fd92 5-6
+web/src/services/knowledge.ts
+  s_7f2bc75bf7c269::t_89ad8c53372de2 10,41,49,51
+src/offerpilot/models.py
+  s_7f2bc75bf7c269::t_b812f53346fd3d 43-48,56-57,60,63-64,71-81,242-245,251-252,255-259,297-298,445-446
+  s_7f2bc75bf7c269::t_0713e12a31824d 309,320
+web/src/lib/missionControl.test.ts
+  s_7f2bc75bf7c269::t_495890e9fa8561 39-40,46-47
+web/src/components/KnowledgeLibraryView.tsx
+  s_7f2bc75bf7c269::t_012c542c2b8df3 1,22,37-38,42-48,56-57,62,66,72,77-78,84,93-94,113,115-116,118,121-123,125-140,143-175,177-190,192-205,208-215,217-224,226-232
+web/src/layout/navigation.ts
+  s_7f2bc75bf7c269::t_e2076dbae2fbce 56,77-79
+tests/test_calendar_api.py
+  s_7f2bc75bf7c269::t_86807b67489185 13,30
+web/src/components/ScheduleEventForm.tsx
+  s_7f2bc75bf7c269::t_897fc6fef41337 22-23,26,30,74-75,78,82,90-91,94,98,111-112,115,119,171-178,198-210
+  s_7f2bc75bf7c269::t_00aaf442fb29a0 211-212
+web/src/components/CalendarView.tsx
+  s_7f2bc75bf7c269::t_1b1335ea6c0d69 127-129
+tests/test_questions_api.py
+  s_7f2bc75bf7c269::t_e260f6ec2d9c22 107,116
+  s_7f2bc75bf7c269::t_baec155299365a 71
+src/offerpilot/ai/tools.py
+  s_7f2bc75bf7c269::t_d076dc1e6e04a8 318,413,415,425,435,437-438,440,446,679,683-684,687,691,694-695,767,781-787,791,794-795,801-802,881-889,905-909,911,916
+  s_7f2bc75bf7c269::t_2eebecb09fa87d 4,686,690,699-704
+  s_7f2bc75bf7c269::t_cdc434f9a26baf 143,149,156,163,170,401,411,419-423,429-433,444
+  s_7f2bc75bf7c269::t_0882a595fd6bdf 9-13,21,31,37,129,132,134,145,147-148,151,153,158,160,165,167-168
+  s_7f2bc75bf7c269::t_edb984b2f3db72 705-706
+web/src/services/questions.ts
+  s_7f2bc75bf7c269::t_ed1c3fc69f7926 19
+web/src/components/ChatPanel/model.test.ts
+  s_7f2bc75bf7c269::t_762f195b7bec06 243
+  s_7f2bc75bf7c269::t_9306669517afc7 603-604
+  s_7f2bc75bf7c269::t_dec90ac67d6035 104,111-112,118,129,133,136,138
+tests/test_ai_tools.py
+  s_7f2bc75bf7c269::t_a0e9a7ce14fe18 7,109,123,145-147,152,167,274,301,350,372,378,385,389
+  s_7f2bc75bf7c269::t_4c28caf1554d4c 197-207,209,214-215,218,224,230-231,261-262,267,415,421-422
+web/src/services/events.ts
+  s_7f2bc75bf7c269::t_600a24738c1724 12,16,21,26,34,39
+web/src/lib/actionItems.test.ts
+  s_7f2bc75bf7c269::t_a2c91e0c63f7eb 31-32,38-39
+src/offerpilot/api.py
+  s_7f2bc75bf7c269::t_de3203dca27a35 1681,1685,1691-1696
+  s_7f2bc75bf7c269::t_a2f9959ac3e1b6 646-647
+  s_7f2bc75bf7c269::t_3e72fb29b7bdf6 618,626,682
+  s_7f2bc75bf7c269::t_52d8a9988c55c0 2034,2058
+  s_7f2bc75bf7c269::t_10f3f4e733ceed 948-951,955-956
+  s_7f2bc75bf7c269::t_dca2cbee81a214 296-297,300,304,310,313-314,323-324,327,330-331,333,341,344-345,347
+  s_7f2bc75bf7c269::t_a5816f86a8d8af 545,573,608,614
+  s_7f2bc75bf7c269::t_f015e17f3b9a44 33-37,54,79
+  s_7f2bc75bf7c269::t_9bb4a62d1f48d4 915
+  s_7f2bc75bf7c269::t_4f42d2fd77023e 1573,1603-1605,1609,1623-1633,1636-1637,1643-1644,1674,1678-1679,1682,1686
+  s_7f2bc75bf7c269::t_ee3c88772d0666 1807-1808
+  s_7f2bc75bf7c269::t_c0c829fcf52dd4 1697-1698
+web/src/layout/navigation.test.ts
+  s_7f2bc75bf7c269::t_571f308fe520e1 21,41
+web/src/layout/AppShell.tsx
+  s_7f2bc75bf7c269::t_a0c4ca7813f709 31,250
+  s_7f2bc75bf7c269::t_64d1a0cba82b3e 251
+docs/python-rewrite-contract.md
+  s_7f2bc75bf7c269::t_e3c9109dc2c5df 67-71,110-111,151,153,163,178,184,186-189,271-273,275,284,287-289
+src/offerpilot/schemas.py
+  s_7f2bc75bf7c269::t_91c98b2d0f3ebe 59
+  s_7f2bc75bf7c269::t_01304ddfe1e4e4 161
+  s_7f2bc75bf7c269::t_a97047943621a7 29-30,48,52-53,60,143-144,147-151
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "4178d681409550270315dd1ddf0de21384744276",
+  "prompts": {},
+  "sessions": {
+    "s_7f2bc75bf7c269": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3fc9-102a-7c12-bd59-7b0c567c26b6",
+        "model": "gpt-5.5"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    }
+  }
+}
