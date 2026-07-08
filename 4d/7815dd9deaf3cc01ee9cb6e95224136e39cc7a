@@ -1,0 +1,60 @@
+web/src/components/AISettingsDrawer.tsx
+  s_1fea66e1b84b8e::t_af07800d59e6bb 1,6,10-11,22-23,25-27,33,35-36,46-50,52-53,58,69-74,76-77,82-86,94-98,100-108,112-125,128-132,140-142,151-153,161-200,203-229,241,244,258-317,321,323-334,339,344,348,352-368,375-396,409-471,481-491
+  s_1fea66e1b84b8e::t_0d737babbbf168 154-160,201-202,472-480
+docs/python-rewrite-contract.md
+  s_1fea66e1b84b8e::t_047c9ec0fb6f61 31,159-162,168,255
+web/src/components/AISettingsDrawer.test.ts
+  s_1fea66e1b84b8e::t_f8c5f7249c8fc6 7-13
+  s_1fea66e1b84b8e::t_82d3023743820a 14
+src/offerpilot/api.py
+  s_1fea66e1b84b8e::t_54c05f251949fe 1406-1407
+  s_1fea66e1b84b8e::t_8a524b2323eb41 1074,1123,1403-1405
+  s_1fea66e1b84b8e::t_fba45603372c4d 1603-1606
+  s_1fea66e1b84b8e::t_043f43524fdf4a 1296-1307,1309-1333,1340-1344,1350-1352,1354,1363
+  s_1fea66e1b84b8e::t_6fd2eeb547571d 1771
+  s_1fea66e1b84b8e::t_d06cbbec7a9edf 1308
+  s_1fea66e1b84b8e::t_bcdb438294d94e 1648,1660-1674,1688-1701,1703,1731-1742,1755-1770,1772-1782
+  s_1fea66e1b84b8e::t_acc0cb9e3301f6 8,31
+  s_1fea66e1b84b8e::t_4671c2b11a6c90 1783-1784
+web/src/services/chat.ts
+  s_1fea66e1b84b8e::t_daa2602a3ab914 53,86,88-89,93-119,130-140
+  s_1fea66e1b84b8e::t_4496cb1eec0fc3 141
+web/src/services/chat.test.ts
+  s_1fea66e1b84b8e::t_89c3e5032bcfac 1-13
+src/offerpilot/config.py
+  s_1fea66e1b84b8e::t_b900f8b3a52570 45,76-88
+  s_1fea66e1b84b8e::t_83cafbd195f6c3 89
+web/src/components/SettingsView.test.ts
+  s_1fea66e1b84b8e::t_33a2b460702164 10-12
+tests/test_chat_api.py
+  s_1fea66e1b84b8e::t_e6596eb01292ef 36-40,53-64
+  s_1fea66e1b84b8e::t_21ab5461bf824d 65-66
+src/offerpilot/ai/client.py
+  s_1fea66e1b84b8e::t_ba045a939cd1d5 4,14-18,22-27,32-56,58,60,62,87-89
+  s_1fea66e1b84b8e::t_a720a0e6650d61 28-31
+  s_1fea66e1b84b8e::t_1b48ed971ff717 90
+web/src/components/SettingsView.tsx
+  s_1fea66e1b84b8e::t_c317d5627e9ca4 1-4,20-35,76-77,83-94,216-220
+  s_1fea66e1b84b8e::t_fa691b47c41134 221
+tests/test_settings_api.py
+  s_1fea66e1b84b8e::t_59b9cfa1ed2331 266-311
+  s_1fea66e1b84b8e::t_b81450c7cc0971 3,6,152-265,312-339
+tests/test_litellm_client.py
+  s_1fea66e1b84b8e::t_b7c97df47ff7e9 99-138
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "4d7815dd9deaf3cc01ee9cb6e95224136e39cc7a",
+  "prompts": {},
+  "sessions": {
+    "s_1fea66e1b84b8e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3fc1-daa4-77d1-9e1e-a46e0f1580f8",
+        "model": "gpt-5.5"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    }
+  }
+}
