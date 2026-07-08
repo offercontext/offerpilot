@@ -61,6 +61,24 @@ def init_database(db_path: Path) -> SessionFactory:
         _record_migration(engine, "0004_resume_v01_columns", "Add resume v0.1 columns")
     elif resume_backfilled:
         _record_migration(engine, "0004_resume_v01_columns", "Add resume v0.1 columns")
+
+    application_migrations = [
+        _ensure_column(engine, "applications", "first_pending_at", "DATETIME"),
+        _ensure_column(engine, "applications", "first_applied_at", "DATETIME"),
+        _ensure_column(engine, "applications", "first_written_test_at", "DATETIME"),
+        _ensure_column(engine, "applications", "first_interview_at", "DATETIME"),
+        _ensure_column(engine, "applications", "first_offer_at", "DATETIME"),
+        _ensure_column(engine, "applications", "closed_reason", "TEXT DEFAULT ''"),
+        _ensure_column(engine, "applications", "closed_at", "DATETIME"),
+        _ensure_column(engine, "applications", "deleted_at", "DATETIME"),
+    ]
+    application_backfilled = _backfill_application_lifecycle(engine)
+    if any(application_migrations) or application_backfilled:
+        _record_migration(
+            engine,
+            "0005_application_lifecycle_columns",
+            "Add application lifecycle and soft-delete columns",
+        )
     _ensure_knowledge_fts(engine)
     return sessionmaker(bind=engine, expire_on_commit=False)
 
@@ -305,6 +323,54 @@ def _backfill_resume_v01(engine) -> bool:  # type: ignore[no-untyped-def]
                     """
                 ),
                 {"keep_id": keep_id},
+            )
+            changed = changed or bool(result.rowcount)
+    return changed
+
+
+def _backfill_application_lifecycle(engine) -> bool:  # type: ignore[no-untyped-def]
+    changed = False
+    field_by_status = {
+        "pending": "first_pending_at",
+        "applied": "first_applied_at",
+        "written_test": "first_written_test_at",
+        "interview": "first_interview_at",
+        "offer": "first_offer_at",
+        "closed": "closed_at",
+    }
+    with engine.begin() as conn:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            ).fetchall()
+        }
+        if "applications" not in tables:
+            return False
+        columns = {row[1] for row in conn.execute(text("PRAGMA table_info(applications)")).fetchall()}
+        required = {
+            "status",
+            "applied_at",
+            "created_at",
+            "updated_at",
+            "deleted_at",
+            *field_by_status.values(),
+        }
+        if not required.issubset(columns):
+            return False
+
+        for status, field in field_by_status.items():
+            result = conn.execute(
+                text(
+                    f"""
+                    UPDATE applications
+                    SET {field} = COALESCE(updated_at, applied_at, created_at, CURRENT_TIMESTAMP)
+                    WHERE deleted_at IS NULL
+                      AND status = :status
+                      AND {field} IS NULL
+                    """
+                ),
+                {"status": status},
             )
             changed = changed or bool(result.rowcount)
     return changed

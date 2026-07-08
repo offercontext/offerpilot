@@ -26,6 +26,7 @@ import dayjs from 'dayjs';
 const { Content } = Layout;
 
 const KanbanBoard = lazy(() => import('@/components/KanbanBoard'));
+const ApplicationListView = lazy(() => import('@/components/ApplicationListView'));
 const CalendarView = lazy(() => import('@/components/CalendarView'));
 const KnowledgeLibraryView = lazy(() => import('@/components/KnowledgeLibraryView'));
 const QuestionBankView = lazy(() => import('@/components/QuestionBankView'));
@@ -153,9 +154,15 @@ export default function AppShell() {
   const streak = useMemo(() => computeStreak(apps, now), [apps, now]);
 
   const selectedApp = selected
-    ? apps.find((a) => a.id === selected.id) ?? selected
+    ? apps.find((a) => a.id === selected.id) ?? null
     : null;
   const moduleTabs = moduleTabsForView(view);
+
+  useEffect(() => {
+    if (selected && !apps.some((app) => app.id === selected.id)) {
+      setSelected(null);
+    }
+  }, [apps, selected]);
 
   const openChat = (offerId?: number) => {
     setCoachOfferId(offerId);
@@ -236,6 +243,13 @@ export default function AppShell() {
                   )}
                   {view === 'board' && (
                     <KanbanBoard applications={apps} onOpenDetail={(a) => setSelected(a)} />
+                  )}
+                  {view === 'applications-list' && (
+                    <ApplicationListView
+                      applications={apps}
+                      events={evs}
+                      onOpenDetail={(a) => setSelected(a)}
+                    />
                   )}
                   {view === 'calendar' && (
                     <CalendarView applications={apps} onOpenDetail={(a) => setSelected(a)} />

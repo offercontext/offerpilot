@@ -18,6 +18,14 @@ class ApplicationOut(BaseModel):
     source: str
     notes: str
     applied_at: datetime
+    first_pending_at: datetime | None = None
+    first_applied_at: datetime | None = None
+    first_written_test_at: datetime | None = None
+    first_interview_at: datetime | None = None
+    first_offer_at: datetime | None = None
+    closed_reason: str = ""
+    closed_at: datetime | None = None
+    deleted_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 

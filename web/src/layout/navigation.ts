@@ -1,6 +1,7 @@
 export type ViewMode =
   | 'dashboard'
   | 'board'
+  | 'applications-list'
   | 'calendar'
   | 'reminders'
   | 'interview'
@@ -48,6 +49,7 @@ export const MODULE_TABS: Record<ModuleKey, ModuleTabItem[]> = {
   practice: [{ view: 'questions', label: '题库' }],
   pipeline: [
     { view: 'board', label: '看板' },
+    { view: 'applications-list', label: '列表' },
     { view: 'calendar', label: '日历' },
     { view: 'offers', label: 'Offer' },
     { view: 'reminders', label: '提醒' },
@@ -62,6 +64,7 @@ const VIEW_TO_MODULE: Partial<Record<ViewMode, ModuleKey>> = {
   resumes: 'resume',
   questions: 'practice',
   board: 'pipeline',
+  'applications-list': 'pipeline',
   calendar: 'pipeline',
   reminders: 'pipeline',
   offers: 'pipeline',

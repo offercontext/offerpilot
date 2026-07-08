@@ -18,6 +18,7 @@ export default function AddApplicationForm({ open, onClose }: AddApplicationForm
   const queryClient = useQueryClient();
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
+  const status = Form.useWatch('status', form) as ApplicationStatus | undefined;
 
   const handleOk = async () => {
     try {
@@ -29,6 +30,7 @@ export default function AddApplicationForm({ open, onClose }: AddApplicationForm
         job_url: values.job_url ?? '',
         status: values.status ?? 'applied',
         notes: values.notes ?? '',
+        closed_reason: values.closed_reason ?? '',
       });
       queryClient.invalidateQueries({ queryKey: ['applications'] });
       message.success('已添加投递');
@@ -77,6 +79,15 @@ export default function AddApplicationForm({ open, onClose }: AddApplicationForm
         <Form.Item name="status" label="状态">
           <Select options={STATUS_OPTIONS} />
         </Form.Item>
+        {status === 'closed' && (
+          <Form.Item
+            name="closed_reason"
+            label="关闭原因"
+            rules={[{ required: true, message: '请输入关闭原因' }]}
+          >
+            <Input.TextArea rows={2} placeholder="例如：岗位关闭、主动放弃、已接受其他 offer" />
+          </Form.Item>
+        )}
         <Form.Item name="notes" label="备注">
           <Input.TextArea rows={2} placeholder="内推人、岗位亮点等" />
         </Form.Item>

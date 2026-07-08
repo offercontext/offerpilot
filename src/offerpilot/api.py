@@ -143,16 +143,20 @@ def create_app(
         if isinstance(parsed_status, JSONResponse):
             return parsed_status
 
-        app_model = applications.create(
-            ApplicationCreate(
-                company_name=company_name,
-                position_name=position_name,
-                job_url=str(payload.get("job_url") or ""),
-                status=parsed_status,
-                source="web",
-                notes=str(payload.get("notes") or ""),
+        try:
+            app_model = applications.create(
+                ApplicationCreate(
+                    company_name=company_name,
+                    position_name=position_name,
+                    job_url=str(payload.get("job_url") or ""),
+                    status=parsed_status,
+                    source="web",
+                    notes=str(payload.get("notes") or ""),
+                    closed_reason=str(payload.get("closed_reason") or ""),
+                )
             )
-        )
+        except ValueError as exc:
+            return error_response(400, str(exc))
         return JSONResponse(ApplicationOut.model_validate(app_model).model_dump(mode="json"), status_code=201)
 
     @app.get("/api/applications/{app_id}")
@@ -166,25 +170,29 @@ def create_app(
     def update_application(app_id: int, payload: dict[str, Any] = Body(...)) -> JSONResponse:
         existing = applications.get(app_id)
         if existing is None:
-            return error_response(500, "Failed to update application")
+            return error_response(404, "Application not found")
         parsed_status = _parse_application_status(str(payload.get("status") or existing.status))
         if isinstance(parsed_status, JSONResponse):
             return parsed_status
 
-        app_model = applications.update_full(
-            app_id,
-            ApplicationCreate(
-                company_name=_payload_text(payload, "company_name", existing.company_name),
-                position_name=_payload_text(payload, "position_name", existing.position_name),
-                job_url=_payload_text(payload, "job_url", existing.job_url),
-                status=parsed_status,
-                source=existing.source,
-                notes=_payload_text(payload, "notes", existing.notes),
-                applied_at=existing.applied_at,
-            ),
-        )
+        try:
+            app_model = applications.update_full(
+                app_id,
+                ApplicationCreate(
+                    company_name=_payload_text(payload, "company_name", existing.company_name),
+                    position_name=_payload_text(payload, "position_name", existing.position_name),
+                    job_url=_payload_text(payload, "job_url", existing.job_url),
+                    status=parsed_status,
+                    source=existing.source,
+                    notes=_payload_text(payload, "notes", existing.notes),
+                    applied_at=existing.applied_at,
+                    closed_reason=str(payload.get("closed_reason") or ""),
+                ),
+            )
+        except ValueError as exc:
+            return error_response(400, str(exc))
         if app_model is None:
-            return error_response(500, "Failed to update application")
+            return error_response(404, "Application not found")
         return JSONResponse(ApplicationOut.model_validate(app_model).model_dump(mode="json"))
 
     @app.delete("/api/applications/{app_id}")
