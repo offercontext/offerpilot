@@ -1,0 +1,19 @@
+AGENTS.md
+  s_909507785a24a3::t_bfd3e3835681c0 1-50
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "c61e1bf1fdf5efaabfbf3d5154f46484831eac91",
+  "prompts": {},
+  "sessions": {
+    "s_909507785a24a3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0d60e652-187e-4053-bc8a-e6fd9de8bae3",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    }
+  }
+}
