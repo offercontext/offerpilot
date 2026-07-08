@@ -50,6 +50,7 @@ export async function deleteConversation(id: number): Promise<void> {
 export interface Settings {
   chat_auto_approve_writes: boolean;
   active_provider_id: string;
+  fallback_provider_id: string;
   providers: AIProviderProfile[];
   base_url: string;
   model: string;
@@ -82,10 +83,38 @@ export interface AIProviderProfile {
 export interface UpdateSettingsPayload {
   chat_auto_approve_writes: boolean;
   active_provider_id?: string;
+  fallback_provider_id?: string;
   providers?: Array<Omit<AIProviderProfile, 'has_api_key'> & { api_key?: string }>;
-  base_url: string;
-  model: string;
+  base_url?: string;
+  model?: string;
   api_key?: string;
+}
+
+export interface ProviderConnectionTestPayload {
+  provider_id?: string;
+  provider?: Omit<AIProviderProfile, 'has_api_key'> & { api_key?: string };
+}
+
+export interface ProviderConnectionTestResult {
+  ok: boolean;
+  provider_id?: string;
+  model?: string;
+  latency_ms?: number;
+  message?: string;
+  error?: string;
+}
+
+export interface SettingsBackup {
+  version: number;
+  exported_at: string;
+  runtime_mode: Settings['runtime_mode'];
+  auth_enabled: boolean;
+  has_auth_token: boolean;
+  log_level: Settings['log_level'];
+  chat_auto_approve_writes: boolean;
+  active_provider_id: string;
+  fallback_provider_id: string;
+  providers: AIProviderProfile[];
 }
 
 export async function getSettings(): Promise<Settings> {
@@ -95,6 +124,18 @@ export async function getSettings(): Promise<Settings> {
 
 export async function updateSettings(payload: UpdateSettingsPayload): Promise<Settings> {
   const { data } = await http.put<Settings>('/settings', payload);
+  return data;
+}
+
+export async function testProviderConnection(
+  payload: ProviderConnectionTestPayload,
+): Promise<ProviderConnectionTestResult> {
+  const { data } = await http.post<ProviderConnectionTestResult>('/settings/providers/test', payload);
+  return data;
+}
+
+export async function getSettingsBackup(): Promise<SettingsBackup> {
+  const { data } = await http.get<SettingsBackup>('/settings/backup');
   return data;
 }
 

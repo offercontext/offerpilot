@@ -1,7 +1,7 @@
-import { ApiOutlined, FileSearchOutlined, ReloadOutlined, SettingOutlined } from '@ant-design/icons';
-import { useQuery } from '@tanstack/react-query';
-import { Button, Divider, Empty, Skeleton, Space, Tag, Typography } from 'antd';
-import { getLogs, getSettings, type LogEntry } from '@/services/chat';
+import { ApiOutlined, DownloadOutlined, FileSearchOutlined, ReloadOutlined, SettingOutlined } from '@ant-design/icons';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import { Button, Divider, Empty, Skeleton, Space, Tag, Typography, message } from 'antd';
+import { getLogs, getSettings, getSettingsBackup, type LogEntry, type Settings } from '@/services/chat';
 
 interface Props {
   onOpenAISettings: () => void;
@@ -16,6 +16,22 @@ export default function SettingsView({ onOpenAISettings }: Props) {
     queryKey: ['runtime-logs', 20],
     queryFn: () => getLogs(20),
     refetchInterval: 15000,
+  });
+  const backupMutation = useMutation({
+    mutationFn: getSettingsBackup,
+    onSuccess: (backup) => {
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `offerpilot-settings-backup-v${backup.version}.json`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      message.success('设置备份已导出');
+    },
+    onError: () => {
+      message.error('设置备份导出失败');
+    },
   });
   const settings = settingsQuery.data;
   const logs = logsQuery.data ?? [];
@@ -57,14 +73,25 @@ export default function SettingsView({ onOpenAISettings }: Props) {
           }}
         >
           <RuntimeField label="运行模式" value={formatRuntimeMode(settings?.runtime_mode)} />
+          <RuntimeField label="多供应商" value={`${settings?.providers.length ?? 0} 个`} />
+          <RuntimeField label="Fallback" value={fallbackLabel(settings)} />
           <RuntimeField label="日志级别" value={settings?.log_level ?? '-'} />
           <RuntimeField label="访问控制" value={settings?.auth_enabled ? '已开启' : '未开启'} />
           <RuntimeField label="密钥状态" value={settings?.has_api_key ? '已配置' : '未配置'} />
         </div>
         <div>
-          <Button type="primary" icon={<SettingOutlined />} onClick={onOpenAISettings}>
-            配置 AI
-          </Button>
+          <Space wrap>
+            <Button type="primary" icon={<SettingOutlined />} onClick={onOpenAISettings}>
+              配置 AI
+            </Button>
+            <Button
+              icon={<DownloadOutlined />}
+              loading={backupMutation.isPending}
+              onClick={() => backupMutation.mutate()}
+            >
+              导出备份
+            </Button>
+          </Space>
         </div>
       </section>
 
@@ -185,4 +212,10 @@ function formatRuntimeMode(value: string | undefined) {
   if (value === 'local') return '本地模式';
   if (value === 'server') return '服务器模式';
   return '-';
+}
+
+function fallbackLabel(settings?: Settings) {
+  if (!settings?.fallback_provider_id) return '未启用';
+  const provider = settings.providers.find((item) => item.id === settings.fallback_provider_id);
+  return provider?.label || settings.fallback_provider_id;
 }
