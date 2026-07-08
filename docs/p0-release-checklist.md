@@ -3,7 +3,7 @@
 Date: 2026-07-07
 Branch: `codex/feat/project-adjustments-review`
 
-This checklist is the non-Docker v0.1 release gate for the project-adjustments worktree. Docker is intentionally excluded from this local gate because the current machine does not have Docker available.
+This checklist is the v0.1 release gate. The local default gate is automated by `scripts/release-gate.ps1` and `scripts/release-gate.sh`; Docker remains an explicit opt-in step because some development machines do not have Docker available.
 
 ## Scope Status
 
@@ -17,12 +17,22 @@ This checklist is the non-Docker v0.1 release gate for the project-adjustments w
 | AI provider routing | Complete | LiteLLM backs configured provider profiles and preserves provider-specific blocks such as reasoning content. |
 | HITL durability | Complete | Pending actions survive reloads via persisted conversation pending fields. |
 | Schema safety | Complete | Additive startup repairs are tracked in `schema_migrations`. |
-| Local release smoke | Complete | `scripts/local-smoke.ps1` and `scripts/local-smoke.sh` build the SPA, start `oc start`, check health and SPA fallback, then run `oc smoke`. `oc verify --profile local` starts a real HTTP app and exercises API/chat write confirmation over localhost. |
+| Local release smoke | Complete | `scripts/local-smoke.ps1` and `scripts/local-smoke.sh` build the SPA, start `oc start`, check health and SPA fallback, then run `oc smoke`. `oc verify --profile local` starts a real HTTP app and exercises API/chat write confirmation, unconfigured AI handling, resume CRUD, and application event CRUD over localhost. |
 | Docker: deferred | Deferred | Docker build/run smoke is covered by scripts and static tests, but not executed locally because Docker is unavailable. |
 
 ## Required Non-Docker Gate
 
-Run these before treating the branch as locally releasable:
+Run one of these before treating the branch as locally releasable:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release-gate.ps1
+```
+
+```bash
+scripts/release-gate.sh
+```
+
+The scripts wrap the following checks:
 
 ```powershell
 uv run pytest -q
@@ -36,30 +46,24 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\local-smoke.ps1
 uv run oc verify --profile local --static-dir web/dist
 ```
 
-When existing AI credentials are available and real provider calls are allowed, also run:
+When existing AI credentials are available and real provider calls are allowed, run the real provider gate. This includes `uv run oc verify --profile real-ai --static-dir web/dist`.
 
 ```powershell
-uv run oc verify --profile real-ai --static-dir web/dist
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release-gate.ps1 -RealAi
 ```
 
-On Unix-like shells:
-
 ```bash
-uv run pytest -q
-uv run ruff check .
-uv run mypy src
-cd web
-npm test
-npm run build
-cd ..
-scripts/local-smoke.sh
-uv run oc verify --profile local --static-dir web/dist
+scripts/release-gate.sh --real-ai
 ```
 
-When existing AI credentials are available and real provider calls are allowed, also run:
+On a machine with Docker, run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release-gate.ps1 -Docker
+```
 
 ```bash
-uv run oc verify --profile real-ai --static-dir web/dist
+scripts/release-gate.sh --docker
 ```
 
 ## Deferred After P0

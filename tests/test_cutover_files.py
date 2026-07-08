@@ -98,6 +98,35 @@ def test_local_smoke_scripts_exercise_oc_start_with_built_spa():
     assert "scripts/local-smoke.ps1" in readme
 
 
+def test_release_gate_scripts_wrap_required_v01_checks():
+    powershell_script = (ROOT / "scripts" / "release-gate.ps1").read_text(encoding="utf-8")
+    shell_script = (ROOT / "scripts" / "release-gate.sh").read_text(encoding="utf-8")
+    checklist = (ROOT / "docs" / "p0-release-checklist.md").read_text(encoding="utf-8")
+
+    for command in [
+        "uv run pytest -q",
+        "uv run ruff check .",
+        "uv run mypy src",
+        "oc verify --profile local",
+        "oc verify --profile real-ai",
+    ]:
+        assert command in powershell_script
+        assert command in shell_script
+
+    assert "npm.cmd test" in powershell_script
+    assert "npm.cmd run build" in powershell_script
+    assert "scripts\\local-smoke.ps1" in powershell_script
+    assert "scripts\\docker-smoke.ps1" in powershell_script
+
+    assert "npm test" in shell_script
+    assert "npm run build" in shell_script
+    assert "scripts/local-smoke.sh" in shell_script
+    assert "scripts/docker-smoke.sh" in shell_script
+
+    assert "release-gate.ps1" in checklist
+    assert "release-gate.sh" in checklist
+
+
 def test_p0_release_checklist_documents_non_docker_release_gate():
     gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
     checklist = (ROOT / "docs" / "p0-release-checklist.md").read_text(encoding="utf-8")
