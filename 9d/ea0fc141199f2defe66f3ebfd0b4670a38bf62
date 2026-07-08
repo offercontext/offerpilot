@@ -1,0 +1,19 @@
+docs/python-rewrite-contract.md
+  s_1fea66e1b84b8e::t_4d62f5e29d9e96 101-112,141,183
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "9dea0fc141199f2defe66f3ebfd0b4670a38bf62",
+  "prompts": {},
+  "sessions": {
+    "s_1fea66e1b84b8e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3fc1-daa4-77d1-9e1e-a46e0f1580f8",
+        "model": "gpt-5.5"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    }
+  }
+}
