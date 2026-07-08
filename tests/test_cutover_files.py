@@ -127,6 +127,44 @@ def test_release_gate_scripts_wrap_required_v01_checks():
     assert "release-gate.sh" in checklist
 
 
+def test_install_gate_scripts_cover_source_and_tool_install_paths():
+    powershell_script = (ROOT / "scripts" / "install-gate.ps1").read_text(encoding="utf-8")
+    shell_script = (ROOT / "scripts" / "install-gate.sh").read_text(encoding="utf-8")
+    release_powershell = (ROOT / "scripts" / "release-gate.ps1").read_text(encoding="utf-8")
+    release_shell = (ROOT / "scripts" / "release-gate.sh").read_text(encoding="utf-8")
+    checklist = (ROOT / "docs" / "p0-release-checklist.md").read_text(encoding="utf-8")
+
+    assert "uv run oc --help" in powershell_script
+    assert "uv tool install --force ." in powershell_script
+    assert "UV_TOOL_BIN_DIR" in powershell_script
+
+    assert "uv run oc --help" in shell_script
+    assert "uv tool install --force ." in shell_script
+    assert "scripts/install.sh --source" in shell_script
+    assert "UV_TOOL_BIN_DIR" in shell_script
+
+    assert "install-gate.ps1" in release_powershell
+    assert "install-gate.sh" in release_shell
+    assert "install-gate.ps1" in checklist
+    assert "install-gate.sh" in checklist
+
+
+def test_p0_release_checklist_documents_browser_product_walkthrough():
+    checklist = (ROOT / "docs" / "p0-release-checklist.md").read_text(encoding="utf-8")
+
+    assert "Browser Product Walkthrough" in checklist
+    for required_area in [
+        "Dashboard",
+        "Resumes",
+        "Applications",
+        "Application events",
+        "Pilot",
+        "Settings",
+        "Interview empty state",
+    ]:
+        assert required_area in checklist
+
+
 def test_p0_release_checklist_documents_non_docker_release_gate():
     gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
     checklist = (ROOT / "docs" / "p0-release-checklist.md").read_text(encoding="utf-8")

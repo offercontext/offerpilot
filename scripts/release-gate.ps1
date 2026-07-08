@@ -1,6 +1,7 @@
 param(
     [switch]$RealAi,
     [switch]$Docker,
+    [switch]$Install,
     [int]$Port = 18765
 )
 
@@ -27,6 +28,10 @@ try {
 
     if ($RealAi) {
         uv run oc verify --profile real-ai --static-dir web/dist
+    }
+
+    if ($Install) {
+        powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-gate.ps1
     }
 
     if ($Docker) {

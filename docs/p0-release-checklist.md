@@ -66,6 +66,30 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release-gate.ps1 -
 scripts/release-gate.sh --docker
 ```
 
+For install-path verification, run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release-gate.ps1 -Install
+```
+
+```bash
+scripts/release-gate.sh --install
+```
+
+This calls `scripts/install-gate.ps1` or `scripts/install-gate.sh` to verify the source checkout CLI and isolated `uv tool install` path. The shell gate also verifies `scripts/install.sh --source` against the local checkout.
+
+## Browser Product Walkthrough
+
+Run this once against a built local app before tagging v0.1. Use the default local mode unless the test explicitly checks auth.
+
+1. Dashboard: load the app shell, confirm the dashboard summary, 7-day events, quick actions, and Pilot entry are visible.
+2. Resumes: create or open a resume, verify master resume state, completion sections, sample/PDF/manual entry points, and edit drawer behavior.
+3. Applications: create an application, edit it, move it across board statuses, confirm closed status requires a reason, and verify list search/filter/sort.
+4. Application events: create an application event, confirm it appears in application context and calendar/list surfaces, then update and delete it.
+5. Pilot: send a workspace message, send an application-scoped message, verify context display, trigger a write action, reject once, then approve once.
+6. Settings: verify provider config status, runtime mode, auth toggle/state, diagnostics logs, and missing API key guidance.
+7. Interview empty state: open the interview module, verify the v0.1 empty state and placeholder save behavior does not create formal interview records.
+
 ## Deferred After P0
 
 - Docker image build/run verification on a machine with Docker.
