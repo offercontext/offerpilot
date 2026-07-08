@@ -50,12 +50,7 @@ docs/*
 !docs/
 !docs/python-rewrite-contract.md
 !docs/p0-release-checklist.md
-!docs/superpowers/
-docs/superpowers/*
-!docs/superpowers/plans/
-!docs/superpowers/plans/*.md
-!docs/superpowers/specs/
-!docs/superpowers/specs/*.md
+docs/superpowers/
 
 # Local brainstorming companion artifacts
 .superpowers/
