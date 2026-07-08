@@ -1,11 +1,13 @@
 # Bugs
 
 > Bug 复盘注册表。每条记录现象/根因/修复/教训四段式。
-> 触发与使用指南见 [`.claude/rules/documentation.md`](../.claude/rules/documentation.md) §1。
+> 触发与使用指南见 [`architecture/documentation-rules.md`](architecture/documentation-rules.md) §1。
 
-## 现有记录
+## 当前记录
 
-_(暂无。首次添加时按下方模板,从 BUG-1 起编号。)_
+_(intentional empty registry — 当前无记录。首次新增时按下方模板,从 BUG-1 起编号。)_
+
+> **不是 placeholder**:这是真实的"暂无记录"状态,与"禁止 TODO/待补充"规范不冲突。当首条 BUG 落地后,本段会被具体条目替换。
 
 ## BUG 模板
 

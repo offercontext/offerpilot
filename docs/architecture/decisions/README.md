@@ -1,11 +1,13 @@
 # Architecture Decision Records
 
 > 本目录存放所有架构决策记录(ADR)。每条 ADR 编号 `00NN-<slug>.md`,slug 为动词性短描述。
-> 模板与字段要求见 [`.claude/rules/documentation.md`](../../.claude/rules/documentation.md) §4。
+> 模板与字段要求见 [`../documentation-rules.md`](../documentation-rules.md) §4。
 
-## 现有 ADR
+## 当前记录
 
-_(暂无。首次添加时从 ADR-0001 起编号。)_
+_(intentional empty registry — 当前无 ADR。首次新增时从 ADR-0001 起编号。)_
+
+> **不是 placeholder**:这是真实的"暂无记录"状态。当首条 ADR 落地后,本段会被具体条目替换。
 
 ## 命名约定
 

@@ -203,7 +203,7 @@ Node 也一样：使用 `NODE_ID["中文标签"]`，style 写 `NODE_ID`。
 
 ## 11. 文档规范
 
-写/改任何 `.md` 文档前,先读 [`.claude/rules/documentation.md`](.claude/rules/documentation.md)。
+写/改任何 `.md` 文档前,先读 [`docs/architecture/documentation-rules.md`](docs/architecture/documentation-rules.md)。该规范跨 Codex / Claude / Cursor 适用;Claude 通过 `.claude/rules/documentation.md` 入口加载,但事实源在 `docs/architecture/`。
 
 核心约定:
 
@@ -213,4 +213,4 @@ Node 也一样：使用 `NODE_ID["中文标签"]`，style 写 `NODE_ID`。
 - **完成迭代收敛**:把 `docs/superpowers/specs|plans/` 浓缩为 ADR 并同 commit 删除原文件。**v0.1 收尾前为历史快照保留期,不强制激活**。
 - **禁止**:placeholder(`TODO`/`待补充`)、在多文档重复事实、新建 `docs/<random>/` 目录、把"为什么选 A 不选 B"只写进 commit message。
 
-`git commit` 触发的文档自检清单由 `.claude/hooks/pre-commit-doc-check.sh` 提供(注册在 `.claude/settings.json`)。仅当 staged 改动含 `.md` 文件时输出提醒,不阻塞 commit。
+`git commit` 文档自检清单由 `.claude/hooks/pre-commit-doc-check.sh` 提供(hook 脚本已入库,是否注册到 `.claude/settings.json` 由团队决定)。注册后仅当 staged 改动含 `.md` 文件时输出非阻塞提醒。

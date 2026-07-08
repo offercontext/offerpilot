@@ -2,6 +2,7 @@
 # PreToolUse hook: git commit 前提醒文档自检
 # 触发条件: Bash 工具 + 命令含 "git commit" + staged 改动含 .md 文件
 # 行为: 输出清单到 stderr, exit 0 (不阻塞)
+# 启用方式: 由 .claude/settings.json 注册(本 PR 暂未带 settings.json,是否启用由团队决定)
 
 set -euo pipefail
 
@@ -28,7 +29,7 @@ cat <<'EOF' >&2
 
 [1] 架构决策改动(新增/修改接口、模块、协议、跨包约定、领域红线)?
     → 写/更新 ADR: docs/architecture/decisions/00NN-xxx.md
-    → 模板: .claude/rules/documentation.md §4
+    → 模板: docs/architecture/documentation-rules.md §4
     → 必填 Alternatives Considered 段(≥2 个备选 + 为什么没选)
 
 [2] Bug 修复?
@@ -51,7 +52,7 @@ cat <<'EOF' >&2
     → 必须写进 ADR 的 Alternatives 段,不要只写在 commit message
 
 如全部不适用,直接 commit。如适用但未做,先补文档。
-规范详见 .claude/rules/documentation.md
+规范详见 docs/architecture/documentation-rules.md
 
 EOF
 

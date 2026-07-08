@@ -1,11 +1,13 @@
 # Architecture Rules
 
 > 显式约束注册表。每条 RULE 描述"绕过代价极大"或"被破坏过 ≥1 次"的规则。
-> 触发与使用指南见 [`.claude/rules/documentation.md`](../../.claude/rules/documentation.md) §8。
+> 触发与使用指南见 [`documentation-rules.md`](./documentation-rules.md) §8。
 
-## 现有规则
+## 当前记录
 
-_(暂无。首次添加时按下方模板,从 RULE-1 起编号。)_
+_(intentional empty registry — 当前无记录。首次新增时按下方模板,从 RULE-1 起编号。)_
+
+> **不是 placeholder**:这是真实的"暂无记录"状态,与"禁止 TODO/待补充"规范不冲突。当首条 RULE 落地后,本段会被具体条目替换。
 
 ## RULE 模板
 
