@@ -24,7 +24,8 @@ from offerpilot.schemas import (
     KnowledgeDocumentOut,
     OfferOut,
     ResumeMatchOut,
-    ResumeOut,
+    normalize_resume_content,
+    resume_payload,
 )
 
 
@@ -277,6 +278,37 @@ def resume_tool_registry(repo: ResumesRepository) -> dict[str, dict[str, Any]]:
             "description": "Get one resume including parsed text by id.",
             "schema": _id_schema("Resume id."),
             "handler": lambda args: _get_resume(repo, args),
+        },
+        "resume_update_career_intent": {
+            "write": True,
+            "description": "Update a resume's career_intent block. Requires user confirmation.",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer"},
+                    "career_intent": {"type": "object"},
+                },
+                "required": ["id", "career_intent"],
+            },
+            "describe": lambda args: _describe_id_action(args, "更新简历求职意向"),
+            "handler": lambda args: _resume_update_career_intent(repo, args),
+        },
+        "resume_rewrite_highlight": {
+            "write": True,
+            "description": "Rewrite one highlight in a structured resume section. Requires user confirmation.",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer"},
+                    "section": {"type": "string"},
+                    "item_index": {"type": "integer"},
+                    "highlight_index": {"type": "integer"},
+                    "text": {"type": "string"},
+                },
+                "required": ["id", "section", "item_index", "highlight_index", "text"],
+            },
+            "describe": lambda args: _describe_id_action(args, "改写简历亮点"),
+            "handler": lambda args: _resume_rewrite_highlight(repo, args),
         },
         "list_resume_matches": {
             "write": False,
@@ -561,9 +593,69 @@ def _get_resume(repo: ResumesRepository, args: str) -> str:
     return _json(_resume_json(resume))
 
 
+def _resume_update_career_intent(repo: ResumesRepository, args: str) -> str:
+    payload = _payload(args)
+    resume_id = _required_int(payload, "id", "resume_update_career_intent")
+    career_intent = payload.get("career_intent")
+    if not isinstance(career_intent, dict):
+        raise ValueError("resume_update_career_intent requires career_intent object")
+    resume = repo.get(resume_id)
+    if resume is None or resume.deleted_at is not None:
+        raise ValueError("resume not found")
+    content = normalize_resume_content(resume.content_json)
+    content["career_intent"] = career_intent
+    updated = repo.update(resume_id, {"content_json": content})
+    if updated is None:
+        raise ValueError("resume not found")
+    return _json(_resume_json(updated))
+
+
+def _resume_rewrite_highlight(repo: ResumesRepository, args: str) -> str:
+    payload = _payload(args)
+    resume_id = _required_int(payload, "id", "resume_rewrite_highlight")
+    section = str(payload.get("section") or "").strip()
+    item_index = _required_int(payload, "item_index", "resume_rewrite_highlight")
+    highlight_index = _required_int(payload, "highlight_index", "resume_rewrite_highlight")
+    text = str(payload.get("text") or "").strip()
+    if not section:
+        raise ValueError("resume_rewrite_highlight requires section")
+    if item_index < 0:
+        raise ValueError("item_index must be non-negative")
+    if highlight_index < 0:
+        raise ValueError("highlight_index must be non-negative")
+    if not text:
+        raise ValueError("resume_rewrite_highlight requires text")
+    resume = repo.get(resume_id)
+    if resume is None or resume.deleted_at is not None:
+        raise ValueError("resume not found")
+    content = normalize_resume_content(resume.content_json)
+    section_items = content.get(section)
+    if not isinstance(section_items, list):
+        raise ValueError(f"resume section not found: {section}")
+    try:
+        item = section_items[item_index]
+    except IndexError as exc:
+        raise ValueError("resume_rewrite_highlight item_index out of range") from exc
+    if not isinstance(item, dict):
+        raise ValueError("resume_rewrite_highlight item must be an object")
+    highlights = item.get("highlights")
+    if not isinstance(highlights, list):
+        raise ValueError("resume_rewrite_highlight requires highlights list")
+    try:
+        highlights[highlight_index] = text
+    except IndexError as exc:
+        raise ValueError("resume_rewrite_highlight highlight_index out of range") from exc
+    updated = repo.update(resume_id, {"content_json": content})
+    if updated is None:
+        raise ValueError("resume not found")
+    return _json(_resume_json(updated))
+
+
 def _list_resume_matches(repo: ResumesRepository, args: str) -> str:
     payload = _payload(args)
     resume_id = _required_int(payload, "resume_id", "list_resume_matches")
+    if repo.get(resume_id) is None:
+        raise ValueError("resume not found")
     return _json([_resume_match_json(match) for match in repo.list_matches(resume_id)])
 
 
@@ -726,7 +818,7 @@ def _offer_json(offer: Any) -> dict[str, Any]:
 
 
 def _resume_json(resume: Any) -> dict[str, Any]:
-    payload = ResumeOut.model_validate(resume).model_dump(mode="json")
+    payload = resume_payload(resume)
     payload["record_type"] = "resume"
     payload["resume_id"] = resume.id
     return payload

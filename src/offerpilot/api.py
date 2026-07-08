@@ -8,7 +8,7 @@ from secrets import compare_digest
 from typing import Any, Optional
 
 import httpx
-from fastapi import Body, FastAPI, File, Form, Request, UploadFile
+from fastapi import Body, FastAPI, File, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from pypdf import PdfReader
@@ -61,7 +61,8 @@ from offerpilot.schemas import (
     QuestionOut,
     QuestionReviewOut,
     ResumeMatchOut,
-    ResumeOut,
+    normalize_resume_content,
+    resume_payload,
 )
 from offerpilot.skills import SkillRegistryError, register_skill, skills_payload, update_skill
 
@@ -736,14 +737,17 @@ def create_app(
 
     @app.post("/api/resumes", status_code=201)
     def create_resume(payload: dict[str, Any] = Body(...)) -> JSONResponse:
-        text = str(payload.get("text") or "")
-        if text == "":
-            return error_response(400, "text is required")
+        parsed = _resume_create_from_payload(payload)
+        if isinstance(parsed, JSONResponse):
+            return parsed
         resume = resumes.create(
             ResumeCreate(
-                name=str(payload.get("name") or ""),
-                parsed_data=text,
-                parse_status="text-ready",
+                title=parsed["title"],
+                name=parsed["title"],
+                parsed_data=parsed["parsed_data"],
+                parse_status=parsed["parse_status"],
+                source=parsed["source"],
+                content_json=parsed["content_json"],
             )
         )
         return JSONResponse(_resume_json(resume), status_code=201)
@@ -763,13 +767,19 @@ def create_app(
         if len(data) > 10 * 1024 * 1024:
             return error_response(400, "file is too large")
 
-        parsed = _extract_pdf_text(data)
+        try:
+            parsed = _extract_pdf_text(data)
+        except ValueError:
+            return error_response(400, "invalid PDF file")
         parse_status = "text-ready" if parsed.strip() else "parse-failed"
         resume = resumes.create(
             ResumeCreate(
+                title=Path(filename).stem,
                 name=Path(filename).stem,
                 parsed_data=parsed,
                 parse_status=parse_status,
+                source="upload",
+                content_json={"raw_text": parsed},
             )
         )
         relative_path = f"resumes/{resume.id}_{filename}"
@@ -779,6 +789,25 @@ def create_app(
         updated = resumes.update_file(resume.id, relative_path) or resume
         return JSONResponse(_resume_json(updated), status_code=201)
 
+    @app.post("/api/resumes/from-sample", status_code=201)
+    def create_resume_from_sample(payload: dict[str, Any] = Body(default={})) -> JSONResponse:
+        sample_id = str(payload.get("sample_id") or "backend")
+        sample = _resume_sample(sample_id)
+        if sample is None:
+            return error_response(404, "sample resume not found")
+        title = str(payload.get("title") or sample["title"])
+        resume = resumes.create(
+            ResumeCreate(
+                title=title,
+                name=title,
+                source="sample",
+                parse_status="text-ready",
+                parsed_data=str(sample.get("raw_text") or ""),
+                content_json=sample["content_json"],
+            )
+        )
+        return JSONResponse(_resume_json(resume), status_code=201)
+
     @app.get("/api/resumes/{resume_id}")
     def get_resume(resume_id: int) -> JSONResponse:
         resume = resumes.get(resume_id)
@@ -786,10 +815,59 @@ def create_app(
             return error_response(404, "Resume not found")
         return JSONResponse(_resume_json(resume))
 
+    @app.patch("/api/resumes/{resume_id}")
+    def patch_resume(resume_id: int, payload: dict[str, Any] = Body(...)) -> JSONResponse:
+        resume = resumes.get(resume_id)
+        if resume is None or resume.deleted_at is not None:
+            return error_response(404, "Resume not found")
+        changes: dict[str, Any] = {}
+        if "title" in payload:
+            changes["title"] = str(payload.get("title") or "")
+        if "content_json" in payload:
+            content = _content_json_from_payload(payload["content_json"])
+            if isinstance(content, JSONResponse):
+                return content
+            changes["content_json"] = content
+            if isinstance(content.get("raw_text"), str):
+                raw_text = str(content["raw_text"])
+                changes["parsed_data"] = raw_text
+                changes["parse_status"] = "text-ready" if raw_text.strip() else "structured-ready"
+        else:
+            content = normalize_resume_content(resume.content_json)
+        if "career_intent" in payload:
+            career_intent = payload["career_intent"]
+            if not isinstance(career_intent, dict):
+                return error_response(400, "career_intent must be an object")
+            content = {**content, "career_intent": career_intent}
+            changes["content_json"] = content
+        if "is_master" in payload:
+            is_master = bool(payload["is_master"])
+            if not is_master and resume.is_master and resumes.count_active_masters() <= 1:
+                return error_response(400, "at least one master resume is required")
+            changes["is_master"] = is_master
+        if "source" in payload:
+            changes["source"] = str(payload.get("source") or "manual")
+        updated = resumes.update(resume_id, changes)
+        if updated is None:
+            return error_response(404, "Resume not found")
+        return JSONResponse(_resume_json(updated))
+
+    @app.post("/api/resumes/{resume_id}/copy", status_code=201)
+    def copy_resume(resume_id: int, payload: dict[str, Any] = Body(default={})) -> JSONResponse:
+        copied = resumes.copy(resume_id, title=str(payload.get("title") or ""))
+        if copied is None:
+            return error_response(404, "Resume not found")
+        return JSONResponse(_resume_json(copied), status_code=201)
+
     @app.delete("/api/resumes/{resume_id}")
-    def delete_resume(resume_id: int) -> dict[str, str]:
+    def delete_resume(resume_id: int) -> JSONResponse:
+        resume = resumes.get(resume_id)
+        if resume is None or resume.deleted_at is not None:
+            return error_response(404, "Resume not found")
+        if resume.is_master and not _resume_is_empty_draft(resume):
+            return error_response(400, "master resume cannot be deleted")
         resumes.delete(resume_id)
-        return {"message": "Deleted"}
+        return JSONResponse({"message": "Deleted"})
 
     @app.post("/api/resumes/{resume_id}/match", status_code=201)
     def match_resume(resume_id: int, payload: dict[str, Any] = Body(...)) -> JSONResponse:
@@ -842,11 +920,15 @@ def create_app(
         )
 
     @app.get("/api/resumes/{resume_id}/matches")
-    def list_resume_matches(resume_id: int) -> list[dict[str, Any]]:
-        return [
-            ResumeMatchOut.model_validate(match).model_dump(mode="json", exclude_none=True)
-            for match in resumes.list_matches(resume_id)
-        ]
+    def list_resume_matches(resume_id: int) -> JSONResponse:
+        if resumes.get(resume_id) is None:
+            return error_response(404, "Resume not found")
+        return JSONResponse(
+            [
+                ResumeMatchOut.model_validate(match).model_dump(mode="json", exclude_none=True)
+                for match in resumes.list_matches(resume_id)
+            ]
+        )
 
     @app.put("/api/resumes/{resume_id}/text")
     def update_resume_text(resume_id: int, payload: dict[str, Any] = Body(...)) -> JSONResponse:
@@ -1846,14 +1928,116 @@ def _question_json(question: Any) -> dict[str, Any]:
 
 
 def _resume_json(resume: Any) -> dict[str, Any]:
-    return ResumeOut.model_validate(resume).model_dump(mode="json")
+    return resume_payload(resume)
+
+
+def _resume_create_from_payload(payload: dict[str, Any]) -> dict[str, Any] | JSONResponse:
+    source = str(payload.get("source") or "manual").strip() or "manual"
+    if source not in {"manual", "dialog"}:
+        return error_response(400, "source must be manual or dialog")
+    content = _content_json_from_payload(payload.get("content_json") or {})
+    if isinstance(content, JSONResponse):
+        return content
+    if "career_intent" in payload:
+        career_intent = payload["career_intent"]
+        if not isinstance(career_intent, dict):
+            return error_response(400, "career_intent must be an object")
+        content["career_intent"] = career_intent
+    text = str(payload.get("text") or payload.get("parsed_data") or "")
+    if text:
+        content["raw_text"] = text
+    elif isinstance(content.get("raw_text"), str):
+        text = str(content["raw_text"])
+    title = str(payload.get("title") or payload.get("name") or "").strip()
+    if not title:
+        title = "未命名简历"
+    parse_status = str(payload.get("parse_status") or "")
+    if not parse_status:
+        parse_status = "text-ready" if text.strip() else "structured-ready"
+    return {
+        "title": title,
+        "source": source,
+        "content_json": content,
+        "parsed_data": text,
+        "parse_status": parse_status,
+    }
+
+
+def _content_json_from_payload(value: Any) -> dict[str, Any] | JSONResponse:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return error_response(400, "content_json must be valid JSON")
+        if isinstance(parsed, dict):
+            return parsed
+    return error_response(400, "content_json must be an object")
+
+
+def _resume_is_empty_draft(resume: Any) -> bool:
+    content = normalize_resume_content(resume.content_json)
+    return not str(resume.parsed_data or "").strip() and not _resume_content_has_value(content)
+
+
+def _resume_content_has_value(value: Any) -> bool:
+    if isinstance(value, dict):
+        return any(_resume_content_has_value(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_resume_content_has_value(item) for item in value)
+    return bool(str(value or "").strip())
+
+
+def _resume_sample(sample_id: str) -> dict[str, Any] | None:
+    samples: dict[str, dict[str, Any]] = {
+        "backend": {
+            "title": "后端工程师样例简历",
+            "raw_text": "Backend Engineer sample resume with Python, FastAPI, and SQL systems.",
+            "content_json": {
+                "career_intent": {"target_roles": ["Backend Engineer"]},
+                "contact": {"name": "OfferPilot Sample"},
+                "education": [{"school": "Sample University", "degree": "B.S. Computer Science"}],
+                "experience": [
+                    {"company": "Sample Tech", "title": "Backend Intern", "highlights": ["Built APIs"]}
+                ],
+                "projects": [{"name": "Resume Builder", "highlights": ["Designed resume CRUD"]}],
+                "skills": ["Python", "FastAPI", "SQLAlchemy"],
+            },
+        },
+        "frontend": {
+            "title": "前端工程师样例简历",
+            "raw_text": "Frontend Engineer sample resume with React and TypeScript.",
+            "content_json": {
+                "career_intent": {"target_roles": ["Frontend Engineer"]},
+                "contact": {"name": "OfferPilot Sample"},
+                "education": [{"school": "Sample University"}],
+                "experience": [{"company": "Sample Studio", "title": "Frontend Intern"}],
+                "projects": [{"name": "Campus Hub"}],
+                "skills": ["React", "TypeScript", "CSS"],
+            },
+        },
+        "product": {
+            "title": "产品经理样例简历",
+            "raw_text": "Product Manager sample resume with user research and roadmap planning.",
+            "content_json": {
+                "career_intent": {"target_roles": ["Product Manager"]},
+                "contact": {"name": "OfferPilot Sample"},
+                "education": [{"school": "Sample University"}],
+                "experience": [{"company": "Sample Lab", "title": "Product Intern"}],
+                "projects": [{"name": "Job Search Workflow"}],
+                "skills": ["User Research", "Roadmap", "Metrics"],
+            },
+        },
+    }
+    return samples.get(sample_id)
 
 
 def _extract_pdf_text(data: bytes) -> str:
     try:
         reader = PdfReader(BytesIO(data))
-    except Exception:
-        return ""
+    except Exception as exc:
+        raise ValueError("invalid PDF file") from exc
 
     page_text: list[str] = []
     for page in reader.pages:

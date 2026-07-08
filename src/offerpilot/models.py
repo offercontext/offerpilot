@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -152,6 +152,16 @@ class Resume(Base):
     file_path: Mapped[str] = mapped_column(String, default="", server_default="")
     parsed_data: Mapped[str] = mapped_column(String, default="", server_default="")
     parse_status: Mapped[str] = mapped_column(String, default="pending", server_default="pending")
+    title: Mapped[str] = mapped_column(String, default="", server_default="")
+    is_master: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    parent_resume_id: Mapped[int | None] = mapped_column(
+        ForeignKey("resumes.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    source: Mapped[str] = mapped_column(String, default="manual", server_default="manual")
+    source_file_path: Mapped[str] = mapped_column(String, default="", server_default="")
+    content_json: Mapped[str] = mapped_column(String, default="{}", server_default="{}")
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

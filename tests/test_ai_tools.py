@@ -1,6 +1,8 @@
 import json
 from datetime import datetime, timezone
 
+import pytest
+
 from offerpilot.ai.tools import application_tool_registry, offerpilot_tool_registry
 from offerpilot.db import init_database
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
@@ -376,6 +378,149 @@ def test_offerpilot_tool_registry_covers_resumes_jd_and_knowledge(tmp_path):
     assert search_results[0]["record_type"] == "knowledge_search_result"
     assert search_results[0]["search_result_id"] == search_results[0]["chunk_id"]
     assert "knowledge_base_id" not in search_results[0]
+
+
+def test_resume_write_tools_are_marked_and_update_structured_content(tmp_path):
+    session_factory = init_database(tmp_path / "data.db")
+    applications = ApplicationsRepository(session_factory)
+    events = ApplicationEventsRepository(session_factory)
+    notes = NotesRepository(session_factory)
+    offers = OffersRepository(session_factory)
+    resumes = ResumesRepository(session_factory)
+    resume = resumes.create(
+        ResumeCreate(
+            title="Backend Resume",
+            source="manual",
+            content_json={
+                "career_intent": {"target_roles": []},
+                "experience": [{"company": "OfferPilot", "highlights": ["Built APIs"]}],
+            },
+        )
+    )
+    registry = offerpilot_tool_registry(applications, events, notes, offers, resumes=resumes)
+
+    assert registry["resume_update_career_intent"]["write"] is True
+    assert registry["resume_rewrite_highlight"]["write"] is True
+    assert "describe" in registry["resume_update_career_intent"]
+    assert "describe" in registry["resume_rewrite_highlight"]
+
+    updated = json.loads(
+        registry["resume_update_career_intent"]["handler"](
+            json.dumps(
+                {
+                    "id": resume.id,
+                    "career_intent": {
+                        "target_roles": ["Backend Engineer"],
+                        "target_locations": ["Shanghai"],
+                    },
+                }
+            )
+        )
+    )
+    rewritten = json.loads(
+        registry["resume_rewrite_highlight"]["handler"](
+            json.dumps(
+                {
+                    "id": resume.id,
+                    "section": "experience",
+                    "item_index": 0,
+                    "highlight_index": 0,
+                    "text": "Built FastAPI resume APIs with structured persistence.",
+                }
+            )
+        )
+    )
+
+    assert updated["content_json"]["career_intent"]["target_roles"] == ["Backend Engineer"]
+    assert rewritten["content_json"]["experience"][0]["highlights"] == [
+        "Built FastAPI resume APIs with structured persistence."
+    ]
+    assert resumes.get(resume.id).content_json == json.dumps(  # type: ignore[union-attr]
+        rewritten["content_json"],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def test_resume_tools_reject_deleted_resume_and_negative_highlight_indexes(tmp_path):
+    session_factory = init_database(tmp_path / "data.db")
+    applications = ApplicationsRepository(session_factory)
+    events = ApplicationEventsRepository(session_factory)
+    notes = NotesRepository(session_factory)
+    offers = OffersRepository(session_factory)
+    resumes = ResumesRepository(session_factory)
+    active = resumes.create(
+        ResumeCreate(
+            title="Active Resume",
+            source="manual",
+            content_json={
+                "career_intent": {"target_roles": ["Backend Engineer"]},
+                "experience": [{"company": "OfferPilot", "highlights": ["Built APIs"]}],
+            },
+        )
+    )
+    deleted = resumes.create(
+        ResumeCreate(
+            title="Deleted Resume",
+            source="manual",
+            is_master=False,
+            content_json={"experience": [{"highlights": ["Old"]}]},
+        )
+    )
+    resumes.create_match(
+        ResumeMatchCreate(
+            resume_id=deleted.id,
+            jd_text="Backend API engineer",
+            result='{"summary":"legacy match"}',
+        )
+    )
+    resumes.delete(deleted.id)
+    registry = offerpilot_tool_registry(applications, events, notes, offers, resumes=resumes)
+
+    with pytest.raises(ValueError, match="resume not found"):
+        registry["get_resume"]["handler"](json.dumps({"id": deleted.id}))
+    with pytest.raises(ValueError, match="resume not found"):
+        registry["resume_update_career_intent"]["handler"](
+            json.dumps({"id": deleted.id, "career_intent": {"target_roles": ["Backend"]}})
+        )
+    with pytest.raises(ValueError, match="resume not found"):
+        registry["resume_rewrite_highlight"]["handler"](
+            json.dumps(
+                {
+                    "id": deleted.id,
+                    "section": "experience",
+                    "item_index": 0,
+                    "highlight_index": 0,
+                    "text": "new",
+                }
+            )
+        )
+    with pytest.raises(ValueError, match="resume not found"):
+        registry["list_resume_matches"]["handler"](json.dumps({"resume_id": deleted.id}))
+    with pytest.raises(ValueError, match="item_index must be non-negative"):
+        registry["resume_rewrite_highlight"]["handler"](
+            json.dumps(
+                {
+                    "id": active.id,
+                    "section": "experience",
+                    "item_index": -1,
+                    "highlight_index": 0,
+                    "text": "new",
+                }
+            )
+        )
+    with pytest.raises(ValueError, match="highlight_index must be non-negative"):
+        registry["resume_rewrite_highlight"]["handler"](
+            json.dumps(
+                {
+                    "id": active.id,
+                    "section": "experience",
+                    "item_index": 0,
+                    "highlight_index": -1,
+                    "text": "new",
+                }
+            )
+        )
 
 
 def test_ai_tool_read_results_include_record_type_and_specific_ids(tmp_path):

@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from sqlalchemy import create_engine, event, text
@@ -46,9 +47,20 @@ def init_database(db_path: Path) -> SessionFactory:
         _ensure_column(engine, "resumes", "file_path", "TEXT DEFAULT ''"),
         _ensure_column(engine, "resumes", "parsed_data", "TEXT DEFAULT ''"),
         _ensure_column(engine, "resumes", "parse_status", "TEXT DEFAULT 'pending'"),
+        _ensure_column(engine, "resumes", "title", "TEXT DEFAULT ''"),
+        _ensure_column(engine, "resumes", "is_master", "INTEGER DEFAULT 0"),
+        _ensure_column(engine, "resumes", "parent_resume_id", "INTEGER"),
+        _ensure_column(engine, "resumes", "source", "TEXT DEFAULT 'manual'"),
+        _ensure_column(engine, "resumes", "source_file_path", "TEXT DEFAULT ''"),
+        _ensure_column(engine, "resumes", "content_json", "TEXT DEFAULT '{}'"),
+        _ensure_column(engine, "resumes", "deleted_at", "DATETIME"),
     ]
+    resume_backfilled = _backfill_resume_v01(engine)
     if any(resume_migrations):
         _record_migration(engine, "0003_resume_content_columns", "Add resume content columns")
+        _record_migration(engine, "0004_resume_v01_columns", "Add resume v0.1 columns")
+    elif resume_backfilled:
+        _record_migration(engine, "0004_resume_v01_columns", "Add resume v0.1 columns")
     _ensure_knowledge_fts(engine)
     return sessionmaker(bind=engine, expire_on_commit=False)
 
@@ -168,6 +180,134 @@ def _ensure_column(engine, table: str, column: str, definition: str) -> bool:  #
             return False
         conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {definition}"))
         return True
+
+
+def _backfill_resume_v01(engine) -> bool:  # type: ignore[no-untyped-def]
+    changed = False
+    with engine.begin() as conn:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            ).fetchall()
+        }
+        if "resumes" not in tables:
+            return False
+        columns = {row[1] for row in conn.execute(text("PRAGMA table_info(resumes)")).fetchall()}
+        required = {
+            "id",
+            "name",
+            "file_path",
+            "parsed_data",
+            "title",
+            "is_master",
+            "source_file_path",
+            "content_json",
+            "deleted_at",
+        }
+        if not required.issubset(columns):
+            return False
+
+        result = conn.execute(
+            text(
+                """
+                UPDATE resumes
+                SET title = name
+                WHERE deleted_at IS NULL
+                  AND (title IS NULL OR trim(title) = '')
+                  AND name IS NOT NULL
+                  AND trim(name) != ''
+                """
+            )
+        )
+        changed = changed or bool(result.rowcount)
+
+        result = conn.execute(
+            text(
+                """
+                UPDATE resumes
+                SET source_file_path = file_path
+                WHERE deleted_at IS NULL
+                  AND (source_file_path IS NULL OR trim(source_file_path) = '')
+                  AND file_path IS NOT NULL
+                  AND trim(file_path) != ''
+                """
+            )
+        )
+        changed = changed or bool(result.rowcount)
+
+        rows = conn.execute(
+            text(
+                """
+                SELECT id, parsed_data, content_json
+                FROM resumes
+                WHERE deleted_at IS NULL
+                  AND parsed_data IS NOT NULL
+                  AND trim(parsed_data) != ''
+                """
+            )
+        ).fetchall()
+        for resume_id, parsed_data, content_json in rows:
+            if str(content_json or "").strip() not in {"", "{}"}:
+                continue
+            conn.execute(
+                text("UPDATE resumes SET content_json = :content_json WHERE id = :id"),
+                {
+                    "id": resume_id,
+                    "content_json": json.dumps(
+                        {"raw_text": parsed_data},
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                },
+            )
+            changed = True
+
+        master_rows = conn.execute(
+            text(
+                """
+                SELECT id
+                FROM resumes
+                WHERE deleted_at IS NULL
+                  AND is_master = 1
+                ORDER BY id ASC
+                """
+            )
+        ).fetchall()
+        if not master_rows:
+            first_active = conn.execute(
+                text(
+                    """
+                    SELECT id
+                    FROM resumes
+                    WHERE deleted_at IS NULL
+                    ORDER BY id ASC
+                    LIMIT 1
+                    """
+                )
+            ).fetchone()
+            if first_active is not None:
+                conn.execute(
+                    text("UPDATE resumes SET is_master = 1 WHERE id = :id"),
+                    {"id": first_active[0]},
+                )
+                changed = True
+        elif len(master_rows) > 1:
+            keep_id = master_rows[0][0]
+            result = conn.execute(
+                text(
+                    """
+                    UPDATE resumes
+                    SET is_master = 0
+                    WHERE deleted_at IS NULL
+                      AND is_master = 1
+                      AND id != :keep_id
+                    """
+                ),
+                {"keep_id": keep_id},
+            )
+            changed = changed or bool(result.rowcount)
+    return changed
 
 
 def _ensure_knowledge_fts(engine) -> None:  # type: ignore[no-untyped-def]

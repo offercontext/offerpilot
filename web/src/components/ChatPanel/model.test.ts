@@ -22,6 +22,17 @@ describe('buildTurns evidence normalization', () => {
     expect(meta.label).toBe('查看简历匹配记录');
   });
 
+  it('has write metadata for resume v0.1 tools', () => {
+    expect(toolMeta('resume_update_career_intent')).toMatchObject({
+      kind: 'write',
+      label: '更新简历求职意向',
+    });
+    expect(toolMeta('resume_rewrite_highlight')).toMatchObject({
+      kind: 'write',
+      label: '改写简历亮点',
+    });
+  });
+
   it('reloads stored turns for pending confirmations so current-turn evidence is available', async () => {
     const turns = await reloadConversationTurns(42, async (id) => {
       expect(id).toBe(42);

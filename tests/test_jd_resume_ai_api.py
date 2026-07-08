@@ -16,6 +16,32 @@ class JSONModel:
         return Assistant(content=json.dumps(self.payloads.pop(0), ensure_ascii=False))
 
 
+def _empty_pdf() -> bytes:
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /Resources << >> /MediaBox [0 0 612 792] >>",
+    ]
+    body = b"%PDF-1.4\n"
+    offsets = []
+    for index, obj in enumerate(objects, start=1):
+        offsets.append(len(body))
+        body += f"{index} 0 obj\n".encode() + obj + b"\nendobj\n"
+    xref_offset = len(body)
+    xref = b"0000000000 65535 f \n" + b"".join(
+        f"{offset:010d} 00000 n \n".encode() for offset in offsets
+    )
+    return (
+        body
+        + f"xref\n0 {len(objects) + 1}\n".encode()
+        + xref
+        + (
+            f"trailer\n<< /Root 1 0 R /Size {len(objects) + 1} >>\n"
+            f"startxref\n{xref_offset}\n%%EOF\n"
+        ).encode()
+    )
+
+
 def test_jd_analyze_requires_text_or_url_before_ai(tmp_path):
     client = TestClient(create_app(data_dir=tmp_path))
 
@@ -111,7 +137,7 @@ def test_resume_match_validates_resume_text_and_jd(tmp_path):
     client = TestClient(create_app(data_dir=tmp_path, chat_model=JSONModel([])))
     uploaded = client.post(
         "/api/resumes/upload",
-        files={"file": ("sample.pdf", b"%PDF-1.4\n%%EOF", "application/pdf")},
+        files={"file": ("sample.pdf", _empty_pdf(), "application/pdf")},
     ).json()
 
     missing_jd = client.post(f"/api/resumes/{uploaded['id']}/match", json={})

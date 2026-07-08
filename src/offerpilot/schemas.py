@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ApplicationOut(BaseModel):
@@ -104,11 +106,23 @@ class ResumeOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
-    name: str
-    file_path: str
-    parsed_data: str
-    parse_status: str
+    name: str = ""
+    file_path: str = ""
+    parsed_data: str = ""
+    parse_status: str = "pending"
+    title: str = ""
+    is_master: bool = False
+    parent_resume_id: int | None = None
+    source: str = "manual"
+    source_file_path: str = ""
+    content_json: dict[str, Any] = Field(default_factory=dict)
+    deleted_at: datetime | None = None
     created_at: datetime
+
+    @field_validator("content_json", mode="before")
+    @classmethod
+    def _parse_content_json(cls, value: Any) -> dict[str, Any]:
+        return normalize_resume_content(value)
 
 
 class ResumeMatchOut(BaseModel):
@@ -222,3 +236,74 @@ class MockSessionOut(BaseModel):
     score_confidence: int | None = None
     feedback: str
     created_at: datetime
+
+
+RESUME_COMPLETION_SECTIONS = (
+    "career_intent",
+    "contact",
+    "education",
+    "experience",
+    "projects",
+    "skills",
+)
+
+
+def normalize_resume_content(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def resume_completion(content: dict[str, Any]) -> tuple[int, list[str], bool]:
+    missing = [
+        section
+        for section in RESUME_COMPLETION_SECTIONS
+        if not _resume_section_present(section, content.get(section))
+    ]
+    present_count = len(RESUME_COMPLETION_SECTIONS) - len(missing)
+    completion_percent = round(present_count / len(RESUME_COMPLETION_SECTIONS) * 100)
+    return completion_percent, missing, not missing
+
+
+def resume_payload(resume: Any) -> dict[str, Any]:
+    payload = ResumeOut.model_validate(resume).model_dump(mode="json")
+    title = payload.get("title") or payload.get("name") or ""
+    source_file_path = payload.get("source_file_path") or payload.get("file_path") or ""
+    payload["title"] = title
+    payload["name"] = payload.get("name") or title
+    payload["source_file_path"] = source_file_path
+    payload["file_path"] = payload.get("file_path") or source_file_path
+    content = normalize_resume_content(payload.get("content_json"))
+    if not content and payload.get("parsed_data"):
+        content = {"raw_text": payload["parsed_data"]}
+    payload["content_json"] = content
+    completion_percent, missing_sections, is_complete = resume_completion(content)
+    payload["completion_percent"] = completion_percent
+    payload["missing_sections"] = missing_sections
+    payload["is_complete"] = is_complete
+    return payload
+
+
+def _resume_section_present(section: str, value: Any) -> bool:
+    if section == "career_intent":
+        if not isinstance(value, dict):
+            return False
+        roles = value.get("target_roles")
+        return isinstance(roles, list) and any(str(role).strip() for role in roles)
+    if isinstance(value, list):
+        return any(_non_empty(item) for item in value)
+    return _non_empty(value)
+
+
+def _non_empty(value: Any) -> bool:
+    if isinstance(value, dict):
+        return any(_non_empty(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_non_empty(item) for item in value)
+    return bool(str(value or "").strip())

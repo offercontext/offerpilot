@@ -10,7 +10,6 @@ import Sidebar from './Sidebar';
 import TopBar from './TopBar';
 import AddApplicationForm from '@/components/AddApplicationForm';
 import ApplicationDetail from '@/components/ApplicationDetail';
-import ResumeMatchModal from '@/components/ResumeMatchModal';
 import ResumeUploadModal from '@/components/ResumeUploadModal';
 import ChatPanel from '@/components/ChatPanel';
 import AISettingsDrawer from '@/components/AISettingsDrawer';
@@ -74,7 +73,6 @@ function computeStreak(apps: Application[], now = dayjs()): number {
 export default function AppShell() {
   const [view, setView] = useState<ViewMode>('dashboard');
   const [addOpen, setAddOpen] = useState(false);
-  const [resumeOpen, setResumeOpen] = useState(false);
   const [resumeUploadOpen, setResumeUploadOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [pilotDrawerOpen, setPilotDrawerOpen] = useState(false);
@@ -278,7 +276,6 @@ export default function AppShell() {
         open={!!selected}
         onClose={() => setSelected(null)}
       />
-      <ResumeMatchModal open={resumeOpen} onClose={() => setResumeOpen(false)} />
       <ResumeUploadModal
         open={resumeUploadOpen}
         uploading={uploadResumeMut.isPending}
@@ -292,7 +289,7 @@ export default function AppShell() {
         onNavigate={setView}
         onOpenDetail={(app) => setSelected(app)}
         onAddApplication={() => setAddOpen(true)}
-        onOpenResume={() => setResumeOpen(true)}
+        onOpenResume={() => setView('resumes')}
         onUploadResume={() => setResumeUploadOpen(true)}
         onOpenChat={() => openChat(undefined)}
         onOpenSettings={() => setAISettingsOpen(true)}
