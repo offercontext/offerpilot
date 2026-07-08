@@ -33,6 +33,7 @@ const QuestionBankView = lazy(() => import('@/components/QuestionBankView'));
 const OfferCenterView = lazy(() => import('@/components/OfferCenterView'));
 const DashboardView = lazy(() => import('@/features/dashboard/DashboardView'));
 const RemindersView = lazy(() => import('@/features/reminders/RemindersView'));
+const InterviewV01View = lazy(() => import('@/components/InterviewV01View'));
 const ResumeLibraryView = lazy(() => import('@/components/ResumeLibraryView'));
 const SettingsView = lazy(() => import('@/components/SettingsView'));
 
@@ -249,6 +250,7 @@ export default function AppShell() {
                   )}
                   {view === 'knowledge' && <KnowledgeLibraryView />}
                   {view === 'questions' && <QuestionBankView />}
+                  {view === 'interview' && <InterviewV01View />}
                   {view === 'resumes' && <ResumeLibraryView />}
                   {view === 'settings' && <SettingsView onOpenAISettings={() => setAISettingsOpen(true)} />}
                 </div>

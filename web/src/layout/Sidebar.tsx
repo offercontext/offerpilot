@@ -7,6 +7,7 @@ import {
   ReadOutlined,
   RobotOutlined,
   SettingOutlined,
+  AudioOutlined,
 } from '@ant-design/icons';
 import { Badge } from 'antd';
 import { useThemeMode } from '@/theme/ThemeContext';
@@ -22,6 +23,7 @@ const MODULE_ICONS: Record<ModuleKey, React.ReactNode> = {
   resume: <FileTextOutlined />,
   practice: <ReadOutlined />,
   pipeline: <AppstoreOutlined />,
+  interview: <AudioOutlined />,
   knowledge: <BookOutlined />,
   settings: <SettingOutlined />,
 };

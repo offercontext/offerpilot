@@ -13,21 +13,24 @@ describe('module navigation contract', () => {
       '简历',
       '练习',
       '投递',
+      '面试',
       '知识库',
       '设置',
     ]);
 
     expect(MODULE_NAV.some((item) => item.label.includes('Pilot'))).toBe(false);
-    expect(MODULE_NAV.some((item) => item.label === '面试')).toBe(false);
+    expect(MODULE_NAV.some((item) => item.label === '面试')).toBe(true);
     expect(resolveModuleForView('board')).toBe('pipeline');
     expect(resolveModuleForView('calendar')).toBe('pipeline');
     expect(resolveModuleForView('questions')).toBe('practice');
+    expect(resolveModuleForView('interview')).toBe('interview');
   });
 
   it('selects stable defaults for module clicks', () => {
     expect(defaultViewForModule('workspace')).toBe('dashboard');
     expect(defaultViewForModule('resume')).toBe('resumes');
     expect(defaultViewForModule('pipeline')).toBe('board');
+    expect(defaultViewForModule('interview')).toBe('interview');
     expect(defaultViewForModule('settings')).toBe('settings');
   });
 
@@ -38,6 +41,7 @@ describe('module navigation contract', () => {
       { view: 'offers', label: 'Offer' },
       { view: 'reminders', label: '提醒' },
     ]);
+    expect(moduleTabsForView('interview')).toEqual([{ view: 'interview', label: '面试' }]);
     expect(() => resolveModuleForView('mock')).toThrow('View mock is not part of v0.1 navigation');
   });
 });
