@@ -250,6 +250,40 @@ describe('buildTurns evidence normalization', () => {
     expect(turns[0].steps?.[0].evidenceUnavailable).toBeFalsy();
   });
 
+  it('keeps knowledge document contents as compact previews in tool evidence', () => {
+    const longContent = [
+      '# Java Threads',
+      'Processes isolate memory while threads share process resources.',
+      'Thread creation can use Thread, Runnable, Callable, or a thread pool.',
+      'This sentence should not be visible in the process timeline preview.',
+    ].join('\n\n');
+
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([{ id: 'call-doc', name: 'get_knowledge_document', args: { id: 8 } }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-doc',
+        content: JSON.stringify({
+          record_type: 'knowledge_document',
+          knowledge_document_id: 8,
+          id: 8,
+          knowledge_base_name: 'Interview KB',
+          title: 'Java Threads',
+          content: longContent,
+        }),
+      }),
+      msg({ role: 'assistant', content: 'I checked the document.' }),
+    ]);
+
+    const snippet = turns[0].steps?.[0].evidence?.[0].snippet ?? '';
+    expect(snippet.length).toBeLessThanOrEqual(180);
+    expect(snippet).toContain('Processes isolate memory');
+    expect(snippet).not.toContain('This sentence should not be visible');
+  });
+
   it('classifies resume tool results as resume evidence', () => {
     const turns = buildTurns([
       msg({

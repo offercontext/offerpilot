@@ -49,7 +49,7 @@ export default function ProcessTimeline({ steps }: Props) {
                     </span>
                     {s.evidence?.length ? <span className={styles.stepCount}>{s.evidence.length} 条来源</span> : null}
                   </div>
-                  {s.evidence?.length ? <EvidenceList items={s.evidence} compact /> : null}
+                  {s.evidence?.length ? <EvidenceList items={s.evidence} compact clamped /> : null}
                   {s.resultText ? <div className={styles.stepFallback}>工具返回：{s.resultText}</div> : null}
                   {s.evidenceUnavailable ? <div className={styles.stepFallback}>暂时无法展示这一步的明细。</div> : null}
                 </li>

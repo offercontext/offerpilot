@@ -42,6 +42,8 @@ export interface UITurn {
   steps?: ToolStep[];
 }
 
+const EVIDENCE_SNIPPET_MAX = 180;
+
 interface RawToolCall {
   id?: string;
   function?: { name?: string; arguments?: string };
@@ -137,7 +139,7 @@ function evidenceFromRecord(row: unknown, source: string, index: number): Eviden
         kind: 'resume',
         title: `简历匹配 #${id}`,
         meta: compact([numericMeta(record.resume_id, '简历'), numericMeta(record.application_id, '投递')]).join(' · '),
-        snippet: jdSummary(record.result) || text(record.jd_text),
+        snippet: previewText(jdSummary(record.result) || text(record.jd_text)),
         source,
       },
     ];
@@ -151,7 +153,7 @@ function evidenceFromRecord(row: unknown, source: string, index: number): Eviden
         kind: 'resume',
         title,
         meta: text(record.parse_status),
-        snippet: text(record.parsed_data),
+        snippet: previewText(record.parsed_data),
         source,
       },
     ];
@@ -164,7 +166,7 @@ function evidenceFromRecord(row: unknown, source: string, index: number): Eviden
         kind: 'jd',
         title: `JD 分析 #${id}`,
         meta: compact([text(record.jd_source), numericMeta(record.application_id, '投递')]).join(' \u00b7 '),
-        snippet: jdSummary(record.result) || text(record.jd_text),
+        snippet: previewText(jdSummary(record.result) || text(record.jd_text)),
         source,
       },
     ];
@@ -178,7 +180,7 @@ function evidenceFromRecord(row: unknown, source: string, index: number): Eviden
         kind: 'event',
         title,
         meta: compact([text(record.position_name), text(record.event_type), text(record.scheduled_at)]).join(' \u00b7 '),
-        snippet: text(record.notes),
+        snippet: previewText(record.notes),
         source,
       },
     ];
@@ -194,7 +196,7 @@ function evidenceFromRecord(row: unknown, source: string, index: number): Eviden
           kind: 'offer',
           title: company,
           meta: compact([position, amount, text(record.deadline), text(record.status)]).join(' \u00b7 '),
-          snippet: text(record.assessment) || text(record.notes),
+          snippet: previewText(text(record.assessment) || text(record.notes)),
           source,
         },
       ];
@@ -205,7 +207,7 @@ function evidenceFromRecord(row: unknown, source: string, index: number): Eviden
         kind: 'application',
         title: company,
         meta: compact([position, text(record.status), text(record.applied_at)]).join(' \u00b7 '),
-        snippet: text(record.notes),
+        snippet: previewText(record.notes),
         source,
       },
     ];
@@ -213,6 +215,9 @@ function evidenceFromRecord(row: unknown, source: string, index: number): Eviden
   const title = text(record.title) || text(record.document_title) || text(record.round) || text(record.name);
   if (title) {
     const isKnowledge = source.includes('knowledge') || recordType?.startsWith('knowledge');
+    const rawSnippet = isKnowledge
+      ? text(record.snippet) || text(record.summary) || text(record.content) || text(record.weak_points)
+      : text(record.snippet) || text(record.content) || text(record.summary) || text(record.weak_points);
     return [
       {
         id: `${source}-${id}`,
@@ -225,7 +230,7 @@ function evidenceFromRecord(row: unknown, source: string, index: number): Eviden
           text(record.scheduled_at),
           text(record.date),
         ]).join(' \u00b7 '),
-        snippet: text(record.snippet) || text(record.content) || text(record.summary) || text(record.weak_points),
+        snippet: previewText(rawSnippet),
         source,
       },
     ];
@@ -235,6 +240,14 @@ function evidenceFromRecord(row: unknown, source: string, index: number): Eviden
 
 function text(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function previewText(value: unknown, maxLength = EVIDENCE_SNIPPET_MAX): string | undefined {
+  const raw = text(value);
+  if (!raw) return undefined;
+  const normalized = raw.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
 }
 
 function numericMeta(value: unknown, label: string): string | undefined {
