@@ -191,4 +191,4 @@
 
 ### 对人类 reviewer
 
-PR 描述模板应含勾选项:"我已阅读 [RULEs](docs/architecture/rules.md),本 PR 未违反任何规则"。触碰 RULE 涉及模块但未勾选,**request changes**。
+PR 描述模板应含勾选项:"我已阅读 [RULEs](./rules.md),本 PR 未违反任何规则"。触碰 RULE 涉及模块但未勾选,**request changes**。
