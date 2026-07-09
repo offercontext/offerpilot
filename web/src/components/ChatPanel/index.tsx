@@ -148,6 +148,7 @@ export default function ChatPanel({
   const [confirmPhase, setConfirmPhase] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
   const [lastUndo, setLastUndo] = useState<ChatUndo | null>(null);
   const [loadingLabel, setLoadingLabel] = useState<string | undefined>(undefined);
+  const [hasStreamingAssistantContent, setHasStreamingAssistantContent] = useState(false);
   const [drawerWidth, setDrawerWidth] = useState(() => {
     const stored = Number(localStorage.getItem(CHAT_WIDTH_STORAGE_KEY));
     return Number.isFinite(stored) && stored > 0 ? clampChatWidth(stored) : DEFAULT_CHAT_WIDTH;
@@ -250,6 +251,7 @@ export default function ChatPanel({
     setConfirmPhase('idle');
     setLastUndo(null);
     setLoadingLabel(undefined);
+    setHasStreamingAssistantContent(false);
   }
 
   async function selectConversation(id: number) {
@@ -262,6 +264,7 @@ export default function ChatPanel({
       setPending(pendingActionForConversation(conversations, id));
       setDegraded(false);
       setConfirmError(null);
+      setHasStreamingAssistantContent(false);
       const conversation = conversations.find((item) => item.id === id);
       setConfirmPhase('idle');
       setLastUndo(conversation?.last_write_undo ?? null);
@@ -315,6 +318,7 @@ export default function ChatPanel({
 
   function appendAssistantDelta(delta: string) {
     if (!delta) return;
+    setHasStreamingAssistantContent(true);
     setTurns((items) => {
       if (!streamingAssistantActiveRef.current) {
         streamingAssistantActiveRef.current = true;
@@ -375,6 +379,7 @@ export default function ChatPanel({
     setLoadingLabel('正在理解你的问题');
     setTurns((t) => [...t, { role: 'user', content: trimmed }]);
     streamingAssistantActiveRef.current = false;
+    setHasStreamingAssistantContent(false);
     setLoading(true);
     const controller = new AbortController();
     abortControllerRef.current = controller;
@@ -471,6 +476,7 @@ export default function ChatPanel({
     setLoading(true);
     setLoadingLabel(approved ? `正在执行：${activePendingLabel(activePending)}` : '正在取消本次写入');
     streamingAssistantActiveRef.current = false;
+    setHasStreamingAssistantContent(false);
     const controller = new AbortController();
     abortControllerRef.current = controller;
     try {
@@ -716,13 +722,15 @@ export default function ChatPanel({
                 </div>
               ) : null}
 
-              {loading && !activePending && <ThinkingIndicator label={loadingLabel} />}
+              {loading && !activePending && !hasStreamingAssistantContent && (
+                <ThinkingIndicator label={loadingLabel} />
+              )}
               <div ref={endRef} />
             </div>
 
             {activePending && (
               <div className={styles.pendingDock}>
-                {loading ? <ThinkingIndicator label={loadingLabel} /> : null}
+                {loading && !hasStreamingAssistantContent ? <ThinkingIndicator label={loadingLabel} /> : null}
                 {confirmError ? (
                   <div className={styles.confirmRecovery}>
                     <span>{confirmError}</span>

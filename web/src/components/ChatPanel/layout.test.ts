@@ -70,6 +70,12 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).not.toContain('confirmAction,');
   });
 
+  it('hides the thinking indicator once assistant text is streaming', () => {
+    expect(component).toContain('hasStreamingAssistantContent');
+    expect(component).toContain('setHasStreamingAssistantContent(true)');
+    expect(component).toContain('loading && !activePending && !hasStreamingAssistantContent');
+  });
+
   it('resynchronizes real conversation state after users abort a stream', () => {
     expect(component).toContain('syncConversationAfterAbort');
     expect(component).toContain('await syncConversationAfterAbort(streamConversationId)');
