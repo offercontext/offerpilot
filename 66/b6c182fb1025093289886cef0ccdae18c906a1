@@ -1,0 +1,21 @@
+web/src/components/ChatPanel/index.tsx
+  s_1fea66e1b84b8e::t_0d308fdeafe37d 151,254,267,321,382,479,725-727,733
+web/src/components/ChatPanel/layout.test.ts
+  s_1fea66e1b84b8e::t_42f5024e544157 73-78
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "66b6c182fb1025093289886cef0ccdae18c906a1",
+  "prompts": {},
+  "sessions": {
+    "s_1fea66e1b84b8e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3fc1-daa4-77d1-9e1e-a46e0f1580f8",
+        "model": "gpt-5.5"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    }
+  }
+}
