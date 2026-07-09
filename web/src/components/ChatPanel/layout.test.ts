@@ -49,6 +49,8 @@ describe('ChatPanel docked layout contract', () => {
     expect(proposalCard).not.toContain('Evidence is limited');
     expect(proposalCard).toContain('FIELD_LABELS');
     expect(proposalCard).toContain('STATUS_LABELS');
+    expect(proposalCard).toContain('EVENT_TYPE_LABELS');
+    expect(proposalCard).toContain("duration_minutes: '时长'");
     expect(proposalCard).toContain('参考依据较少');
   });
 });

@@ -122,6 +122,32 @@ def test_chat_allows_wide_read_only_tool_summaries(tmp_path):
     assert response.json()["message"] == "summary complete"
 
 
+def test_chat_reply_hides_internal_tool_names(tmp_path):
+    model = ScriptedModel(
+        [
+            Assistant(
+                content=(
+                    "下一步可通过 update_application_status 更新状态；"
+                    "如有笔试安排，可使用 `create_application_event` 添加日程。"
+                )
+            )
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+
+    response = client.post("/api/chat", json={"message": "下一步怎么办", "conversation_id": 0})
+
+    assert response.status_code == 200
+    message = response.json()["message"]
+    assert "update_application_status" not in message
+    assert "create_application_event" not in message
+    assert "更新投递状态" in message
+    assert "添加投递日程" in message
+    stored = client.get(f"/api/chat/conversations/{response.json()['conversation_id']}").json()
+    assistant_messages = [item["content"] for item in stored if item["role"] == "assistant"]
+    assert assistant_messages == [message]
+
+
 @pytest.mark.parametrize("args", ["{bad", "[]"])
 def test_chat_pending_write_tolerates_invalid_args(tmp_path, args):
     model = ScriptedModel(
@@ -203,6 +229,71 @@ def test_chat_write_tool_requires_confirmation_before_mutating(tmp_path):
         }
     ]
     assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "interview"
+
+
+def test_chat_create_event_confirmation_includes_schedule_details(tmp_path):
+    app_client = TestClient(create_app(data_dir=tmp_path))
+    application = app_client.post(
+        "/api/applications",
+        json={"company_name": "牛客网", "position_name": "agent开发", "status": "applied"},
+    ).json()
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="w1",
+                        name="create_application_event",
+                        args=json.dumps(
+                            {
+                                "application_id": application["id"],
+                                "event_type": "written_test",
+                                "subtype": "assessment",
+                                "scheduled_at": "2026-07-10T19:00:00+08:00",
+                                "duration_minutes": 30,
+                                "notes": "牛客网 agent开发笔试",
+                            }
+                        ),
+                    )
+                ]
+            )
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+
+    response = client.post(
+        "/api/chat",
+        json={"message": "为这个投递创建一个笔试日程，明晚7点，30分钟", "conversation_id": 0},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["type"] == "confirmation_required"
+    pending = response.json()["pending_action"]
+    assert pending["human"] == "新建日程：笔试 · 2026-07-10 19:00 · 30 分钟"
+    assert pending["target"] == {
+        "id": f"application-event-draft-{application['id']}",
+        "kind": "application_event",
+        "title": "笔试",
+        "meta": "2026-07-10 19:00 · 30 分钟",
+        "source": "pending_action",
+        "snippet": "牛客网 agent开发笔试",
+    }
+    assert pending["proposed_changes"] == [
+        {"field": "event_type", "before": "", "after": "written_test"},
+        {"field": "subtype", "before": "", "after": "assessment"},
+        {"field": "scheduled_at", "before": "", "after": "2026-07-10T19:00:00+08:00"},
+        {"field": "duration_minutes", "before": "", "after": 30},
+        {"field": "notes", "before": "", "after": "牛客网 agent开发笔试"},
+    ]
+    assert pending["evidence"] == [
+        {
+            "id": f"application-{application['id']}",
+            "kind": "application",
+            "title": "牛客网",
+            "meta": "agent开发 · applied",
+            "source": "pending_action",
+        }
+    ]
 
 
 def test_chat_confirm_executes_pending_write(tmp_path):

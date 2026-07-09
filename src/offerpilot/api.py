@@ -1,6 +1,6 @@
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html import unescape
 from io import BytesIO
 from pathlib import Path
@@ -1081,6 +1081,7 @@ def create_app(
         except Exception as exc:
             return _ai_provider_error(exc, resolved_data_dir)
         _persist_ai_messages(chat, conversation_id, added)
+        reply = _user_facing_assistant_content(reply)
         if pending is not None:
             chat.set_pending_action(conversation_id, pending)
             return JSONResponse(
@@ -1138,6 +1139,7 @@ def create_app(
         except Exception as exc:
             return _ai_provider_error(exc, resolved_data_dir)
         _persist_ai_messages(chat, conversation_id, added)
+        reply = _user_facing_assistant_content(reply)
         if new_pending is not None:
             chat.set_pending_action(conversation_id, new_pending)
             return JSONResponse(
@@ -1477,14 +1479,36 @@ def _agent_thread_id(conversation_id: int) -> str:
 
 def _persist_ai_messages(repo: ChatRepository, conversation_id: int, messages: list[Message]) -> None:
     for message in messages:
+        content = message.content
+        if message.role == "assistant":
+            content = _user_facing_assistant_content(content)
         repo.append_message(
             conversation_id,
             message.role,
-            content=message.content,
+            content=content,
             tool_calls=_dump_tool_calls(message.tool_calls),
             tool_call_id=message.tool_call_id,
             provider_blocks=_dump_provider_blocks(message.provider_blocks),
         )
+
+
+_USER_FACING_TOOL_NAMES = {
+    "update_application_status": "更新投递状态",
+    "create_application_event": "添加投递日程",
+    "update_application_event": "更新投递日程",
+    "delete_application_event": "删除投递日程",
+    "add_application": "新建投递记录",
+}
+
+
+def _user_facing_assistant_content(content: str) -> str:
+    if not content:
+        return content
+    sanitized = content
+    for internal_name, label in _USER_FACING_TOOL_NAMES.items():
+        sanitized = sanitized.replace(f"`{internal_name}`", label)
+        sanitized = sanitized.replace(internal_name, label)
+    return sanitized
 
 
 def _chat_response_system_message() -> Message:
@@ -1494,7 +1518,8 @@ def _chat_response_system_message() -> Message:
             "You are OfferPilot, a job-search copilot. Use the user's language. "
             "For substantive answers, keep the reply concise and structure it as: "
             "Conclusion, Evidence, Next steps. When local tool evidence is thin, say so clearly. "
-            "Do not expose hidden reasoning."
+            "Do not expose hidden reasoning. Do not mention internal tool or API names such as "
+            "update_application_status or create_application_event; describe actions in user-facing language instead."
         ),
     )
 
@@ -1605,6 +1630,8 @@ def _pending_action_details(
     args: dict[str, Any],
     applications: ApplicationsRepository,
 ) -> dict[str, Any]:
+    if tool_name == "create_application_event":
+        return _pending_application_event_details(args, applications)
     if tool_name != "update_application_status":
         return {}
     app_id = args.get("id")
@@ -1639,6 +1666,97 @@ def _pending_action_details(
         "proposed_changes": proposed_changes,
         "evidence": [target],
     }
+
+
+_EVENT_TYPE_LABELS = {
+    "written_test": "笔试",
+    "interview": "面试",
+    "offer_step": "Offer 进展",
+    "deadline": "截止",
+    "custom": "自定义",
+}
+
+
+def _pending_application_event_details(
+    args: dict[str, Any],
+    applications: ApplicationsRepository,
+) -> dict[str, Any]:
+    application_id = args.get("application_id")
+    if not isinstance(application_id, (int, str)):
+        return {}
+    try:
+        resolved_id = int(application_id)
+    except ValueError:
+        return {}
+    application = applications.get(resolved_id)
+    if application is None:
+        return {}
+
+    event_type = str(args.get("event_type") or "")
+    event_label = _EVENT_TYPE_LABELS.get(event_type, "日程")
+    scheduled_at = str(args.get("scheduled_at") or "")
+    duration = args.get("duration_minutes")
+    time_label = _format_pending_datetime(scheduled_at)
+    duration_label = _format_pending_duration(duration)
+    target_meta = " · ".join(value for value in [time_label, duration_label] if value)
+    target = {
+        "id": f"application-event-draft-{application.id}",
+        "kind": "application_event",
+        "title": event_label,
+        "meta": target_meta,
+        "source": "pending_action",
+    }
+    notes = str(args.get("notes") or "")
+    if notes:
+        target["snippet"] = _short_preview(notes)
+
+    evidence = {
+        "id": f"application-{application.id}",
+        "kind": "application",
+        "title": application.company_name,
+        "meta": " · ".join(value for value in [application.position_name, application.status] if value),
+        "source": "pending_action",
+    }
+    proposed_changes = [
+        {"field": key, "before": "", "after": args[key]}
+        for key in [
+            "event_type",
+            "subtype",
+            "scheduled_at",
+            "duration_minutes",
+            "location",
+            "notes",
+            "remind_at",
+        ]
+        if args.get(key) not in (None, "", [])
+    ]
+    return {
+        "target": target,
+        "proposed_changes": proposed_changes,
+        "evidence": [evidence],
+    }
+
+
+def _format_pending_datetime(value: str) -> str:
+    if not value:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone(timedelta(hours=8)))
+    return parsed.strftime("%Y-%m-%d %H:%M")
+
+
+def _format_pending_duration(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    try:
+        minutes = int(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return f"{minutes} 分钟"
 
 
 def _short_preview(value: str, max_length: int = 180) -> str:

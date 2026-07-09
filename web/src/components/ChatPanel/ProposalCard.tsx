@@ -1,7 +1,9 @@
 import { createElement } from 'react';
 import { Alert, Button } from 'antd';
+import dayjs from 'dayjs';
 import type { PendingAction } from '@/types/chat';
 import { STATUS_LABELS, type ApplicationStatus } from '@/types/application';
+import { EVENT_TYPE_LABELS, type ScheduleEventType } from '@/types/event';
 import type { EvidenceItem } from './model';
 import { toolMeta } from './capabilities';
 import EvidenceList from './EvidenceList';
@@ -25,6 +27,20 @@ const FIELD_LABELS: Record<string, string> = {
   applied_at: '投递日期',
   title: '标题',
   deadline: '截止时间',
+  event_type: '日程类型',
+  subtype: '细分类型',
+  scheduled_at: '日程时间',
+  duration_minutes: '时长',
+  location: '地点',
+  remind_at: '提醒时间',
+};
+
+const SUBTYPE_LABELS: Record<string, string> = {
+  assessment: '测评',
+  technical: '技术面',
+  hr: 'HR 面',
+  final: '终面',
+  written: '笔试',
 };
 
 /** Best-effort "从 X 改为 Y" extraction for a before→after chip diff. */
@@ -62,11 +78,22 @@ function isApplicationStatus(value: unknown): value is ApplicationStatus {
   return typeof value === 'string' && value in STATUS_LABELS;
 }
 
+function isScheduleEventType(value: unknown): value is ScheduleEventType {
+  return typeof value === 'string' && value in EVENT_TYPE_LABELS;
+}
+
 function valueLabel(value: unknown, field?: string): string {
   if (value === null || value === undefined || value === '') return '空';
   if (typeof value === 'boolean') return value ? '是' : '否';
   if (field === 'status' && isApplicationStatus(value)) return STATUS_LABELS[value];
   if (isApplicationStatus(value)) return STATUS_LABELS[value];
+  if (field === 'event_type' && isScheduleEventType(value)) return EVENT_TYPE_LABELS[value];
+  if (field === 'subtype' && typeof value === 'string') return SUBTYPE_LABELS[value] ?? value;
+  if ((field === 'scheduled_at' || field === 'remind_at') && typeof value === 'string') {
+    const parsed = dayjs(value);
+    return parsed.isValid() ? parsed.format('YYYY-MM-DD HH:mm') : value;
+  }
+  if (field === 'duration_minutes') return `${value} 分钟`;
   return String(value);
 }
 

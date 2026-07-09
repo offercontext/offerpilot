@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from offerpilot.application_status import APPLICATION_STATUS_IDS, normalize_application_status
@@ -161,7 +161,7 @@ def event_tool_registry(
             "write": True,
             "description": "Create an application event. Use written_test.subtype=assessment for assessments.",
             "schema": _event_schema(["application_id", "event_type", "scheduled_at", "duration_minutes"]),
-            "describe": lambda args: _describe_id_action(args, "新建日程"),
+            "describe": _describe_create_application_event,
             "handler": lambda args: _create_application_event(applications, repo, args),
         },
         "update_application_event": {
@@ -721,9 +721,50 @@ def _describe_update_application_status(args: str) -> str:
     return f"将投递 #{payload.get('id', '')} 的状态改为 {payload.get('status', '')}"
 
 
+_EVENT_TYPE_LABELS = {
+    "written_test": "笔试",
+    "interview": "面试",
+    "offer_step": "Offer 进展",
+    "deadline": "截止",
+    "custom": "自定义",
+}
+
+
+def _describe_create_application_event(args: str) -> str:
+    payload = _payload(args)
+    event_type = str(payload.get("event_type") or "")
+    title = _EVENT_TYPE_LABELS.get(event_type, "日程")
+    scheduled_at = _format_pending_datetime(str(payload.get("scheduled_at") or ""))
+    duration = _format_pending_duration(payload.get("duration_minutes"))
+    details = " · ".join(value for value in [title, scheduled_at, duration] if value)
+    return f"新建日程：{details}" if details else "新建日程"
+
+
 def _describe_id_action(args: str, action: str) -> str:
     payload = _payload(args)
     return f"{action} #{payload.get('id', '')}"
+
+
+def _format_pending_datetime(value: str) -> str:
+    if not value:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone(timedelta(hours=8)))
+    return parsed.strftime("%Y-%m-%d %H:%M")
+
+
+def _format_pending_duration(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    try:
+        minutes = int(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return f"{minutes} 分钟"
 
 
 def _describe_note_action(args: str, action: str) -> str:
