@@ -17,6 +17,11 @@ DEFAULT_MAX_ITERATIONS = 20
 _DEFAULT_THREAD_ID = "conversation:ephemeral"
 AgentEventSink = Callable[[dict[str, Any]], None]
 AssistantDeltaSink = Callable[[str], None]
+CancelCheck = Callable[[], bool]
+
+
+class ChatRunCancelled(RuntimeError):
+    """Raised when a chat run is cancelled before another model/tool step."""
 
 
 class ChatModel(Protocol):
@@ -51,6 +56,7 @@ class _GraphState(TypedDict, total=False):
     status: str
     reply: str
     current_tool_call: dict[str, Any]
+    current_tool_calls: list[dict[str, Any]]
 
 
 class LangGraphAgentRunner:
@@ -62,12 +68,14 @@ class LangGraphAgentRunner:
         checkpoint_path: Path | None = None,
         thread_id: str = _DEFAULT_THREAD_ID,
         event_sink: AgentEventSink | None = None,
+        cancel_check: CancelCheck | None = None,
     ):
         self._model = model
         self._registry = registry
         self._checkpoint_path = checkpoint_path
         self._thread_id = thread_id
         self._event_sink = event_sink
+        self._cancel_check = cancel_check
         self._memory_saver = InMemorySaver()
         self._has_pending_checkpoint = False
 
@@ -134,6 +142,7 @@ class LangGraphAgentRunner:
         return graph.compile(checkpointer=checkpointer)
 
     def _call_model(self, state: _GraphState) -> _GraphState:
+        self._raise_if_cancelled()
         iterations = int(state.get("iterations", 0))
         max_iter = int(state.get("max_iter", DEFAULT_MAX_ITERATIONS))
         if iterations >= max_iter:
@@ -142,15 +151,16 @@ class LangGraphAgentRunner:
         work = [_message_from_dict(message) for message in state.get("messages", [])]
         tools = [{"name": name, **tool} for name, tool in self._registry.items()]
         assistant = self._complete_model(work, tools)
+        selected_tool_calls = _select_tool_calls(assistant.tool_calls, self._registry)
         assistant_message = Message(
             role="assistant",
             content=assistant.content,
-            tool_calls=assistant.tool_calls[:1],
+            tool_calls=selected_tool_calls,
             provider_blocks=assistant.provider_blocks,
         )
         added = [*state.get("added", []), _message_to_dict(assistant_message)]
         messages = [*state.get("messages", []), _message_to_dict(assistant_message)]
-        if not assistant.tool_calls:
+        if not selected_tool_calls:
             return {
                 "messages": messages,
                 "added": added,
@@ -158,49 +168,61 @@ class LangGraphAgentRunner:
                 "status": "final",
                 "iterations": iterations + 1,
             }
-        self._emit_tool_call(assistant.tool_calls[0], bool(state.get("auto_approve", False)))
+        for tool_call in selected_tool_calls:
+            self._emit_tool_call(tool_call, bool(state.get("auto_approve", False)))
         return {
             "messages": messages,
             "added": added,
-            "current_tool_call": _tool_call_to_dict(assistant.tool_calls[0]),
+            "current_tool_calls": [_tool_call_to_dict(tool_call) for tool_call in selected_tool_calls],
             "status": "tool",
             "iterations": iterations + 1,
         }
 
     def _handle_tool(self, state: _GraphState) -> _GraphState:
-        tool_call = state["current_tool_call"]
-        tool_name = str(tool_call["name"])
-        tool_args = str(tool_call.get("args") or "")
-        tool_call_id = str(tool_call["id"])
-        tool = self._registry.get(tool_name)
+        current_tool_calls = state.get("current_tool_calls") or [state["current_tool_call"]]
+        messages = list(state.get("messages", []))
+        added = list(state.get("added", []))
+        for tool_call in current_tool_calls:
+            self._raise_if_cancelled()
+            tool_name = str(tool_call["name"])
+            tool_args = str(tool_call.get("args") or "")
+            tool_call_id = str(tool_call["id"])
+            tool = self._registry.get(tool_name)
 
-        if tool is None:
-            result = f'错误：未知工具 "{tool_name}"'
-        elif bool(tool.get("write")) and not bool(state.get("auto_approve", False)):
-            validation_error = _validate_pending_action(tool.get("validate"), tool_args)
-            if validation_error:
-                result = "错误：" + validation_error
-            else:
-                describe = tool.get("describe")
-                pending = {
-                    "tool_call_id": tool_call_id,
-                    "tool_name": tool_name,
-                    "args": tool_args,
-                    "human": _describe_pending_action(describe, tool_args, tool_name),
-                }
-                resume_value = cast(dict[str, Any], interrupt(pending))
-                if bool(resume_value.get("approved")):
-                    result = _execute_tool(tool, tool_args)
+            if tool is None:
+                result = f'错误：未知工具 "{tool_name}"'
+            elif bool(tool.get("write")):
+                validation_error = _validate_pending_action(tool.get("validate"), tool_args)
+                if validation_error:
+                    result = "错误：" + validation_error
+                elif _requires_confirmation(tool, bool(state.get("auto_approve", False))):
+                    describe = tool.get("describe")
+                    pending = {
+                        "tool_call_id": tool_call_id,
+                        "tool_name": tool_name,
+                        "args": tool_args,
+                        "human": _describe_pending_action(describe, tool_args, tool_name),
+                    }
+                    resume_value = cast(dict[str, Any], interrupt(pending))
+                    self._raise_if_cancelled()
+                    if bool(resume_value.get("approved")):
+                        result = _execute_tool(tool, tool_args)
+                    else:
+                        result = "用户拒绝了该操作，请勿执行，并询问用户下一步希望怎么做。"
                 else:
-                    result = "用户拒绝了该操作，请勿执行，并询问用户下一步希望怎么做。"
-        else:
-            result = _execute_tool(tool, tool_args)
+                    self._raise_if_cancelled()
+                    result = _execute_tool(tool, tool_args)
+            else:
+                self._raise_if_cancelled()
+                result = _execute_tool(tool, tool_args)
 
-        self._emit_tool_result(tool_call_id, tool_name, result)
-        tool_message = Message(role="tool", content=result, tool_call_id=tool_call_id)
+            self._emit_tool_result(tool_call_id, tool_name, result)
+            tool_message = Message(role="tool", content=result, tool_call_id=tool_call_id)
+            messages.append(_message_to_dict(tool_message))
+            added.append(_message_to_dict(tool_message))
         return {
-            "messages": [*state.get("messages", []), _message_to_dict(tool_message)],
-            "added": [*state.get("added", []), _message_to_dict(tool_message)],
+            "messages": messages,
+            "added": added,
             "status": "continue",
         }
 
@@ -261,7 +283,7 @@ class LangGraphAgentRunner:
         tool_name = str(tool_call.name)
         tool = self._registry.get(tool_name) or {}
         is_write = bool(tool.get("write"))
-        confirm_mode = "auto" if is_write and auto_approve else "hitl" if is_write else "none"
+        confirm_mode = "hitl" if _requires_confirmation(tool, auto_approve) else "auto" if is_write else "none"
         summary = _tool_call_summary(tool, str(tool_call.args or ""), tool_name)
         self._emit_event(
             "tool_call",
@@ -317,6 +339,10 @@ class LangGraphAgentRunner:
         except Exception:
             return
 
+    def _raise_if_cancelled(self) -> None:
+        if self._cancel_check is not None and self._cancel_check():
+            raise ChatRunCancelled("chat run cancelled")
+
 
 def run_turn(
     model: ChatModel,
@@ -328,6 +354,7 @@ def run_turn(
     checkpoint_path: Path | None = None,
     thread_id: str = _DEFAULT_THREAD_ID,
     event_sink: AgentEventSink | None = None,
+    cancel_check: CancelCheck | None = None,
 ) -> tuple[list[Message], str, PendingAction | None]:
     return LangGraphAgentRunner(
         model,
@@ -335,6 +362,7 @@ def run_turn(
         checkpoint_path=checkpoint_path,
         thread_id=thread_id,
         event_sink=event_sink,
+        cancel_check=cancel_check,
     ).run_turn(messages, auto_approve=auto_approve, max_iter=max_iter)
 
 
@@ -350,6 +378,7 @@ def resume_after_confirm(
     checkpoint_path: Path | None = None,
     thread_id: str = _DEFAULT_THREAD_ID,
     event_sink: AgentEventSink | None = None,
+    cancel_check: CancelCheck | None = None,
 ) -> tuple[list[Message], str, PendingAction | None]:
     return LangGraphAgentRunner(
         model,
@@ -357,6 +386,7 @@ def resume_after_confirm(
         checkpoint_path=checkpoint_path,
         thread_id=thread_id,
         event_sink=event_sink,
+        cancel_check=cancel_check,
     ).resume_after_confirm(messages, pending, approved, auto_approve, max_iter)
 
 
@@ -386,6 +416,20 @@ def _execute_tool(tool: dict[str, Any], args: str) -> str:
         return str(handler(args))
     except Exception as exc:  # pragma: no cover - exercised through API adapters later.
         return "错误：" + str(exc)
+
+
+def _select_tool_calls(tool_calls: list[Any], registry: dict[str, dict[str, Any]]) -> list[Any]:
+    if not tool_calls:
+        return []
+    if all(not bool((registry.get(str(call.name)) or {}).get("write")) for call in tool_calls):
+        return tool_calls
+    return tool_calls[:1]
+
+
+def _requires_confirmation(tool: dict[str, Any], auto_approve: bool) -> bool:
+    if not bool(tool.get("write")):
+        return False
+    return not auto_approve or bool(tool.get("always_confirm"))
 
 
 def _tool_public_label(tool: dict[str, Any], fallback: str) -> str:

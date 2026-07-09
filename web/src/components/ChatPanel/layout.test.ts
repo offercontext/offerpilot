@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import component from './index.tsx?raw';
 import proposalCard from './ProposalCard.tsx?raw';
 import thinking from './ThinkingIndicator.tsx?raw';
+import contextPanel from './ContextPanel.tsx?raw';
+import evidenceList from './EvidenceList.tsx?raw';
 
 async function loadCss(): Promise<string> {
   const fsModule = 'node:fs';
@@ -42,7 +44,7 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('lastFailedText');
     expect(component).toContain('retryLastMessage');
     expect(component).toContain('clearLastFailure');
-    expect(component).toContain('改成手动整理');
+    expect(component).toContain('关闭提示');
     expect(component).toContain('disabledReason={composerDisabledReason}');
   });
 
@@ -158,5 +160,14 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('lastUndo');
     expect(component).toContain('undoLastWrite');
     expect(component).toContain('撤销最近一次 AI 写入');
+  });
+
+  it('keeps the context evidence panel fully localized for Chinese users', () => {
+    expect(contextPanel).toContain('当前参考依据');
+    expect(contextPanel).toContain('暂无参考依据');
+    expect(evidenceList).toContain('aria-label="参考依据"');
+    expect(contextPanel).not.toContain('Current evidence');
+    expect(contextPanel).not.toContain('No evidence collected yet');
+    expect(evidenceList).not.toContain('Evidence sources');
   });
 });

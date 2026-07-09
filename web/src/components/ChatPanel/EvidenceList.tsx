@@ -33,7 +33,7 @@ export default function EvidenceList({ items, compact, clamped }: Props) {
       className={`${styles.evidenceList} ${compact ? styles.evidenceListCompact : ''} ${
         clamped ? styles.evidenceListClamped : ''
       }`}
-      aria-label="Evidence sources"
+      aria-label="参考依据"
     >
       {items.map((item, index) => {
         const icon = ICONS[item.kind] ?? ICONS.unknown;

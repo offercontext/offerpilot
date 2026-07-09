@@ -99,4 +99,14 @@ describe('settings service v0.1 contract', () => {
     );
     expect(response).toEqual({ type: 'message', conversation_id: 3, message: 'confirmed' });
   });
+
+  it('uses Chinese fallback messages for broken SSE streams', async () => {
+    globalThis.fetch = vi.fn(async () => new Response(null, { status: 200 })) as typeof fetch;
+
+    await expect(streamChat('hi')).rejects.toThrow('对话连接中断，请稍后重试。');
+
+    globalThis.fetch = vi.fn(async () => sseResponse('event: status\ndata: {"event":"status","seq":1,"data":{}}\n\n')) as typeof fetch;
+
+    await expect(streamChat('hi')).rejects.toThrow('对话没有返回完整结果，请重试。');
+  });
 });

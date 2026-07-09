@@ -158,7 +158,7 @@ async function postChatStream(
     throw await streamHttpError(response);
   }
   if (!response.body) {
-    throw new Error('SSE response body is empty');
+    throw new Error('对话连接中断，请稍后重试。');
   }
 
   let completed: ChatResponse | undefined;
@@ -183,7 +183,7 @@ async function postChatStream(
   parser.push(decoder.decode());
   parser.flush();
   if (!completed) {
-    throw new Error('SSE stream completed without response');
+    throw new Error('对话没有返回完整结果，请重试。');
   }
   return completed;
 }

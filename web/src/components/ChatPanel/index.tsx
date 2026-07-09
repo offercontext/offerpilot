@@ -802,7 +802,7 @@ export default function ChatPanel({
                   重新发送
                 </button>
                 <button type="button" onClick={clearLastFailure}>
-                  改成手动整理
+                  关闭提示
                 </button>
               </div>
             ) : null}
