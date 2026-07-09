@@ -87,7 +87,6 @@ OfferPilot 的产品和架构事实源是飞书 wiki：
 - `docs/python-rewrite-contract.md`
 - `docs/p0-release-checklist.md`
 - `docs/superpowers/specs/*`
-- `docs/superpowers/plans/*`
 
 README 是公开说明，应视为用户承诺，而不是最新内部验收表。
 
