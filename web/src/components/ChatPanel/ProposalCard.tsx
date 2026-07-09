@@ -164,14 +164,22 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
         ) : null}
         {changes.length ? (
           <div className={styles.changeList}>
-            {changes.map((change) => (
-              <div key={change.field} className={styles.changeRow}>
-                <span>{fieldLabel(change.field)}</span>
-                <b>{valueLabel(change.before, change.field)}</b>
-                <i aria-hidden="true">→</i>
-                <b>{valueLabel(change.after, change.field)}</b>
-              </div>
-            ))}
+            {changes.map((change) => {
+              const beforeText = valueLabel(change.before, change.field);
+              const afterText = valueLabel(change.after, change.field);
+              return (
+                <div key={change.field} className={styles.changeRow}>
+                  <span>{fieldLabel(change.field)}</span>
+                  <b className={styles.changeValue} title={beforeText}>
+                    {beforeText}
+                  </b>
+                  <i aria-hidden="true">→</i>
+                  <b className={styles.changeValue} title={afterText}>
+                    {afterText}
+                  </b>
+                </div>
+              );
+            })}
           </div>
         ) : null}
         {thinEvidence ? (

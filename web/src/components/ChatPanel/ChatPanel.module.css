@@ -526,11 +526,14 @@
 .proposal {
   align-self: flex-start;
   max-width: 92%;
+  max-height: min(560px, calc(100vh - 140px));
   border: 1px solid rgba(99, 102, 241, 0.35);
   border-radius: 14px;
   overflow: hidden;
   box-shadow: var(--op-shadow-md);
   animation: opRise 0.4s var(--op-ease) both;
+  display: flex;
+  flex-direction: column;
 }
 .pendingDock {
   flex-shrink: 0;
@@ -563,6 +566,9 @@
 .prBody {
   padding: 13px 14px;
   background: var(--op-surface);
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-height: 0;
 }
 .diff {
   display: flex;
@@ -592,6 +598,12 @@
   font-size: 13.5px;
   color: var(--op-ink);
   line-height: 1.55;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .prSub {
   font-size: 12px;
@@ -621,6 +633,8 @@
   color: var(--op-ink);
   font-size: 12.5px;
   overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .changeList {
   display: grid;
@@ -648,6 +662,14 @@
   font-weight: 650;
   overflow-wrap: anywhere;
 }
+.changeValue {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .changeRow i {
   color: var(--op-muted);
   font-style: normal;
@@ -663,6 +685,7 @@
   gap: 8px;
   padding: 0 14px 13px;
   background: var(--op-surface);
+  flex-shrink: 0;
 }
 
 /* ---------- 思考态 ---------- */

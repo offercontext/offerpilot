@@ -3,6 +3,14 @@ import component from './index.tsx?raw';
 import proposalCard from './ProposalCard.tsx?raw';
 import thinking from './ThinkingIndicator.tsx?raw';
 
+async function loadCss(): Promise<string> {
+  const fsModule = 'node:fs';
+  const { readFileSync } = (await import(fsModule)) as {
+    readFileSync: (path: URL, encoding: string) => string;
+  };
+  return readFileSync(new URL('./ChatPanel.module.css', import.meta.url), 'utf8');
+}
+
 describe('ChatPanel docked layout contract', () => {
   it('keeps a new-chat control visible when the docked layout hides the thread rail', () => {
     expect(component).toContain('styles.workspaceDocked');
@@ -59,5 +67,16 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('{activePending && (');
     expect(component.indexOf('styles.pendingDock')).toBeGreaterThan(component.indexOf('</div>'));
     expect(component.indexOf('styles.pendingDock')).toBeLessThan(component.indexOf('<Composer'));
+  });
+
+  it('caps oversized confirmation cards and truncates long field values', async () => {
+    const css = await loadCss();
+
+    expect(css).toContain('max-height: min(560px, calc(100vh - 140px));');
+    expect(css).toContain('overflow-y: auto;');
+    expect(css).toContain('-webkit-line-clamp: 4;');
+    expect(css).toContain('text-overflow: ellipsis;');
+    expect(proposalCard).toContain('className={styles.changeValue}');
+    expect(proposalCard).toContain('title={afterText}');
   });
 });
