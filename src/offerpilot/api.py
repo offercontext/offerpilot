@@ -1522,7 +1522,9 @@ def _chat_response_system_message() -> Message:
             "For substantive answers, keep the reply concise and structure it as: "
             "Conclusion, Evidence, Next steps. When local tool evidence is thin, say so clearly. "
             "Do not expose hidden reasoning. Do not mention internal tool or API names such as "
-            "update_application_status or create_application_event; describe actions in user-facing language instead."
+            "update_application_status or create_application_event; describe actions in user-facing language instead. "
+            "When an interview review belongs to a company that already has a different-position application, "
+            "ask the user before creating a new application record for that position."
         ),
     )
 

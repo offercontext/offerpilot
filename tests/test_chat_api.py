@@ -368,6 +368,49 @@ def test_chat_create_application_confirmation_includes_record_details(tmp_path):
     ]
 
 
+def test_chat_create_application_for_existing_company_requires_user_confirmation(tmp_path):
+    app_client = TestClient(create_app(data_dir=tmp_path))
+    app_client.post(
+        "/api/applications",
+        json={"company_name": "牛客网", "position_name": "agent开发", "status": "applied"},
+    )
+    model = ScriptedModel(
+        [
+            Assistant(
+                content="我先为这次面试创建申请记录。",
+                tool_calls=[
+                    ToolCall(
+                        id="w1",
+                        name="create_application",
+                        args=json.dumps(
+                            {
+                                "company_name": "牛客网",
+                                "position_name": "软件测试工程师",
+                                "status": "interview",
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                ],
+            ),
+            Assistant(content="系统里已有牛客网的 agent开发 记录。要为软件测试工程师新建一条投递吗？"),
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+
+    response = client.post("/api/chat", json={"message": "帮我保存牛客网软件测试工程师复盘", "conversation_id": 0})
+
+    assert response.status_code == 200
+    assert response.json()["type"] == "message"
+    assert response.json()["message"] == "系统里已有牛客网的 agent开发 记录。要为软件测试工程师新建一条投递吗？"
+    assert client.get("/api/chat/conversations").json()[0]["pending_action"] is None
+    stored = client.get(f"/api/chat/conversations/{response.json()['conversation_id']}").json()
+    assert any(
+        item["role"] == "tool" and "requires explicit user confirmation" in item["content"]
+        for item in stored
+    )
+
+
 def test_chat_add_note_confirmation_includes_review_details(tmp_path):
     model = ScriptedModel(
         [

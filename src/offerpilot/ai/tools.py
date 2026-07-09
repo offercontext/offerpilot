@@ -91,7 +91,11 @@ def application_tool_registry(repo: ApplicationsRepository) -> dict[str, dict[st
         },
         "create_application": {
             "write": True,
-            "description": "Create a job application record.",
+            "description": (
+                "Create a job application record. If the same company already has records but this is a new "
+                "position, ask the user before creating it; set confirmed_new_position=true only after the user "
+                "explicitly confirms the new position should be added."
+            ),
             "schema": {
                 "type": "object",
                 "properties": {
@@ -99,6 +103,13 @@ def application_tool_registry(repo: ApplicationsRepository) -> dict[str, dict[st
                     "position_name": {"type": "string"},
                     "job_url": {"type": "string"},
                     "status": {"type": "string", "enum": list(APPLICATION_STATUS_IDS)},
+                    "confirmed_new_position": {
+                        "type": "boolean",
+                        "description": (
+                            "Set true only when the user explicitly confirmed creating a new position for "
+                            "an existing company."
+                        ),
+                    },
                     "closed_reason": {
                         "type": "string",
                         "description": "Required when status is closed.",
@@ -107,6 +118,7 @@ def application_tool_registry(repo: ApplicationsRepository) -> dict[str, dict[st
                 "required": ["company_name", "position_name"],
             },
             "describe": _describe_create_application,
+            "validate": lambda args: _validate_create_application(repo, args),
             "handler": lambda args: _create_application(repo, args),
         },
         "update_application_status": {
@@ -715,6 +727,27 @@ def _search_knowledge(repo: KnowledgeRepository, args: str) -> str:
 def _describe_create_application(args: str) -> str:
     payload = _payload(args)
     return f"新建投递：{payload.get('company_name', '')} - {payload.get('position_name', '')}"
+
+
+def _validate_create_application(repo: ApplicationsRepository, args: str) -> str:
+    payload = _payload(args)
+    company = str(payload.get("company_name") or "").strip()
+    position = str(payload.get("position_name") or "").strip()
+    if not company or not position or bool(payload.get("confirmed_new_position")):
+        return ""
+
+    company_key = company.casefold()
+    position_key = position.casefold()
+    same_company = [item for item in repo.list() if item.company_name.strip().casefold() == company_key]
+    if not same_company:
+        return ""
+    if any(item.position_name.strip().casefold() == position_key for item in same_company):
+        return ""
+    existing_positions = "、".join(sorted({item.position_name for item in same_company if item.position_name}))
+    return (
+        "create_application requires explicit user confirmation before adding a new position "
+        f"for existing company {company}. Existing positions: {existing_positions or 'unknown'}."
+    )
 
 
 def _describe_update_application_status(args: str) -> str:
