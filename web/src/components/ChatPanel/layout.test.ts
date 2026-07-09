@@ -53,4 +53,11 @@ describe('ChatPanel docked layout contract', () => {
     expect(proposalCard).toContain("duration_minutes: '时长'");
     expect(proposalCard).toContain('参考依据较少');
   });
+
+  it('renders pending write confirmations in a visible dock above the composer', () => {
+    expect(component).toContain('styles.pendingDock');
+    expect(component).toContain('{activePending && (');
+    expect(component.indexOf('styles.pendingDock')).toBeGreaterThan(component.indexOf('</div>'));
+    expect(component.indexOf('styles.pendingDock')).toBeLessThan(component.indexOf('<Composer'));
+  });
 });

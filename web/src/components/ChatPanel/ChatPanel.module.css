@@ -532,6 +532,14 @@
   box-shadow: var(--op-shadow-md);
   animation: opRise 0.4s var(--op-ease) both;
 }
+.pendingDock {
+  flex-shrink: 0;
+  padding: 0 22px 12px;
+}
+.pendingDock .proposal {
+  width: 100%;
+  max-width: 100%;
+}
 .prHead {
   display: flex;
   align-items: center;

@@ -398,6 +398,10 @@ export function pendingActionForConversation(
   return conversations.find((conversation) => conversation.id === conversationId)?.pending_action ?? null;
 }
 
+export function firstPendingConversationId(conversations: Conversation[]): number | undefined {
+  return conversations.find((conversation) => conversation.pending_action)?.id;
+}
+
 export function hydrateMissingPendingAction(
   current: PendingAction | null,
   conversations: Conversation[],
@@ -406,5 +410,7 @@ export function hydrateMissingPendingAction(
   if (current || conversationId === undefined) return current;
   return pendingActionForConversation(conversations, conversationId);
 }
+
+export const resolveActivePendingAction = hydrateMissingPendingAction;
 
 export { toolMeta };

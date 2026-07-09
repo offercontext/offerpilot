@@ -18,9 +18,10 @@ import type { Offer } from '@/types/offer';
 import {
   buildTurns,
   collectEvidence,
-  hydrateMissingPendingAction,
+  firstPendingConversationId,
   pendingActionForConversation,
   reloadConversationTurns,
+  resolveActivePendingAction,
   type EvidenceItem,
   type UITurn,
 } from './model';
@@ -116,6 +117,7 @@ export default function ChatPanel({
   const activeConv = conversations.find((c) => c.id === convID);
   const isNego = activeConv ? activeConv.mode === 'nego_coach' : offerId !== undefined;
   const capabilities = capabilitiesForMode(isNego);
+  const activePending = resolveActivePendingAction(pending, conversations, convID);
   const settingsQuery = useQuery({
     queryKey: SETTINGS_QUERY_KEY,
     queryFn: getSettings,
@@ -159,10 +161,6 @@ export default function ChatPanel({
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [turns, pending, loading]);
-
-  useEffect(() => {
-    setPending((current) => hydrateMissingPendingAction(current, conversations, convID));
-  }, [conversations, convID]);
 
   useEffect(() => {
     const onResize = () => setDrawerWidth((w) => clampChatWidth(w));
@@ -230,6 +228,13 @@ export default function ChatPanel({
     }
   }
 
+  useEffect(() => {
+    if (!open || convID !== undefined || turns.length > 0 || loading) return;
+    const pendingConversationId = firstPendingConversationId(conversations);
+    if (pendingConversationId === undefined) return;
+    void selectConversation(pendingConversationId);
+  }, [open, convID, conversations, turns.length, loading]);
+
   async function finishMessage(resp: Extract<ChatResponse, { type: 'message' }>) {
     setConvID(resp.conversation_id);
     setPending(null);
@@ -245,7 +250,7 @@ export default function ChatPanel({
 
   async function sendMessage(text: string): Promise<boolean> {
     const trimmed = text.trim();
-    if (!trimmed || loading || pending) return false;
+    if (!trimmed || loading || activePending) return false;
     setLastError(null);
     setLastFailedText('');
     setTurns((t) => [...t, { role: 'user', content: trimmed }]);
@@ -261,9 +266,9 @@ export default function ChatPanel({
       const resp = await sendChat(trimmed, convID, context);
       if (resp.type === 'confirmation_required') {
         setConvID(resp.conversation_id);
+        setPending(resp.pending_action);
         const storedTurns = await reloadConversationTurns(resp.conversation_id, getConversation);
         if (storedTurns) setTurns(storedTurns);
-        setPending(resp.pending_action);
         refreshConversations();
       } else {
         await finishMessage(resp);
@@ -288,7 +293,7 @@ export default function ChatPanel({
   }
 
   function retryLastMessage() {
-    if (!lastFailedText || loading || pending) return;
+    if (!lastFailedText || loading || activePending) return;
     void sendMessage(lastFailedText);
   }
 
@@ -299,9 +304,9 @@ export default function ChatPanel({
       const resp = await confirmAction(convID, approved);
       if (resp.type === 'confirmation_required') {
         setConvID(resp.conversation_id);
+        setPending(resp.pending_action);
         const storedTurns = await reloadConversationTurns(resp.conversation_id, getConversation);
         if (storedTurns) setTurns(storedTurns);
-        setPending(resp.pending_action);
         refreshConversations();
       } else {
         await finishMessage(resp);
@@ -331,17 +336,17 @@ export default function ChatPanel({
     void sendMessage(cap.prompt);
   }
 
-  const composerDisabled = loading || !!pending || !hasKey;
+  const composerDisabled = loading || !!activePending || !hasKey;
   const composerDisabledReason = !hasKey
     ? '先配置 API key 后即可对话'
-    : pending
+    : activePending
       ? '请先确认或取消上面的写入操作'
       : loading
         ? '正在等待 AI 回复'
         : undefined;
-  const showEmpty = turns.length === 0 && !pending && !loading;
+  const showEmpty = turns.length === 0 && !activePending && !loading;
   const threadEvidence = collectEvidence(turns);
-  const confirmationEvidence = pending ? pendingActionEvidence(threadEvidence, pending) : [];
+  const confirmationEvidence = activePending ? pendingActionEvidence(threadEvidence, activePending) : [];
 
   const iconBtnStyle: React.CSSProperties = {
     border: '1px solid var(--op-border)',
@@ -464,18 +469,21 @@ export default function ChatPanel({
                 turns.map((turn, i) => <MessageBubble key={i} turn={turn} index={i} />)
               )}
 
-              {pending && (
+              {loading && !activePending && <ThinkingIndicator />}
+              <div ref={endRef} />
+            </div>
+
+            {activePending && (
+              <div className={styles.pendingDock}>
                 <ProposalCard
-                  action={pending}
+                  action={activePending}
                   loading={loading}
                   evidence={confirmationEvidence}
                   onConfirm={() => handleConfirm(true)}
                   onCancel={() => handleConfirm(false)}
                 />
-              )}
-              {loading && !pending && <ThinkingIndicator />}
-              <div ref={endRef} />
-            </div>
+              </div>
+            )}
 
             {!hasKey && (
               <div className={styles.inlineKeyNotice}>
