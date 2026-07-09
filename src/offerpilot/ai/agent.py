@@ -160,18 +160,22 @@ class LangGraphAgentRunner:
         if tool is None:
             result = f'错误：未知工具 "{tool_name}"'
         elif bool(tool.get("write")) and not bool(state.get("auto_approve", False)):
-            describe = tool.get("describe")
-            pending = {
-                "tool_call_id": tool_call_id,
-                "tool_name": tool_name,
-                "args": tool_args,
-                "human": _describe_pending_action(describe, tool_args, tool_name),
-            }
-            resume_value = cast(dict[str, Any], interrupt(pending))
-            if bool(resume_value.get("approved")):
-                result = _execute_tool(tool, tool_args)
+            validation_error = _validate_pending_action(tool.get("validate"), tool_args)
+            if validation_error:
+                result = "错误：" + validation_error
             else:
-                result = "用户拒绝了该操作，请勿执行，并询问用户下一步希望怎么做。"
+                describe = tool.get("describe")
+                pending = {
+                    "tool_call_id": tool_call_id,
+                    "tool_name": tool_name,
+                    "args": tool_args,
+                    "human": _describe_pending_action(describe, tool_args, tool_name),
+                }
+                resume_value = cast(dict[str, Any], interrupt(pending))
+                if bool(resume_value.get("approved")):
+                    result = _execute_tool(tool, tool_args)
+                else:
+                    result = "用户拒绝了该操作，请勿执行，并询问用户下一步希望怎么做。"
         else:
             result = _execute_tool(tool, tool_args)
 
@@ -281,6 +285,16 @@ def _describe_pending_action(describe: Any, args: str, fallback: str) -> str:
     except Exception:
         return fallback
     return str(human or fallback)
+
+
+def _validate_pending_action(validate: Any, args: str) -> str:
+    if not callable(validate):
+        return ""
+    try:
+        error = validate(args)
+    except Exception as exc:
+        return str(exc)
+    return str(error or "")
 
 
 def _execute_tool(tool: dict[str, Any], args: str) -> str:

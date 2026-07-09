@@ -1498,6 +1498,9 @@ _USER_FACING_TOOL_NAMES = {
     "update_application_event": "更新投递日程",
     "delete_application_event": "删除投递日程",
     "add_application": "新建投递记录",
+    "add_note": "添加复盘记录",
+    "update_note": "更新复盘记录",
+    "delete_note": "删除复盘记录",
 }
 
 
@@ -1632,6 +1635,8 @@ def _pending_action_details(
 ) -> dict[str, Any]:
     if tool_name == "create_application_event":
         return _pending_application_event_details(args, applications)
+    if tool_name == "add_note":
+        return _pending_note_details(args, applications)
     if tool_name != "update_application_status":
         return {}
     app_id = args.get("id")
@@ -1757,6 +1762,70 @@ def _format_pending_duration(value: Any) -> str:
     except (TypeError, ValueError):
         return str(value)
     return f"{minutes} 分钟"
+
+
+def _pending_note_details(
+    args: dict[str, Any],
+    applications: ApplicationsRepository,
+) -> dict[str, Any]:
+    company = str(args.get("company") or "").strip()
+    position = str(args.get("position") or "").strip()
+    application_id = args.get("application_id")
+    application = None
+    if isinstance(application_id, (int, str)) and str(application_id).strip():
+        try:
+            application = applications.get(int(application_id))
+        except ValueError:
+            application = None
+    if application is not None:
+        company = company or application.company_name
+        position = position or application.position_name
+
+    round_name = str(args.get("round") or "").strip()
+    date = str(args.get("date") or "").strip()
+    title = company or "公司待补充"
+    meta = " · ".join(value for value in [position, round_name, date] if value)
+    target = {
+        "id": f"note-draft-{title}-{position or 'unknown'}",
+        "kind": "note",
+        "title": title,
+        "meta": meta,
+        "source": "pending_action",
+    }
+    questions = str(args.get("questions") or "").strip()
+    if questions:
+        target["snippet"] = _short_preview(questions)
+
+    proposed_changes = [
+        {"field": key, "before": "", "after": value}
+        for key, value in [
+            ("company", company),
+            ("position", position),
+            ("round", round_name),
+            ("date", date),
+            ("questions", questions),
+            ("self_reflection", str(args.get("self_reflection") or "").strip()),
+            ("difficulty_points", str(args.get("difficulty_points") or "").strip()),
+            ("mood", str(args.get("mood") or "").strip()),
+        ]
+        if value
+    ]
+    evidence = []
+    if application is not None:
+        evidence.append(
+            {
+                "id": f"application-{application.id}",
+                "kind": "application",
+                "title": application.company_name,
+                "meta": " · ".join(value for value in [application.position_name, application.status] if value),
+                "source": "pending_action",
+            }
+        )
+    return {
+        "target": target,
+        "proposed_changes": proposed_changes,
+        "evidence": evidence,
+    }
 
 
 def _short_preview(value: str, max_length: int = 180) -> str:

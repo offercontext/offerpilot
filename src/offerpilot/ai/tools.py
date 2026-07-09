@@ -200,6 +200,7 @@ def note_tool_registry(
             "description": "Add an interview review note. If application_id is present, company and position can be omitted.",
             "schema": _note_schema([]),
             "describe": lambda args: _describe_note_action(args, "新增复盘"),
+            "validate": _validate_note_action,
             "handler": lambda args: _add_note(applications, repo, args),
         },
         "update_note": {
@@ -769,7 +770,20 @@ def _format_pending_duration(value: Any) -> str:
 
 def _describe_note_action(args: str, action: str) -> str:
     payload = _payload(args)
-    return f"{action}: {payload.get('company', '')} {payload.get('round', '')}"
+    company = str(payload.get("company") or "").strip()
+    position = str(payload.get("position") or "").strip()
+    round_name = str(payload.get("round") or "").strip()
+    details = " · ".join(value for value in [company, position, round_name] if value)
+    return f"{action}：{details}" if details else action
+
+
+def _validate_note_action(args: str) -> str:
+    payload = _payload(args)
+    if _optional_int(payload, "application_id") > 0:
+        return ""
+    if str(payload.get("company") or "").strip():
+        return ""
+    return "add_note requires company when application_id is not provided"
 
 
 def _payload(args: str) -> dict[str, Any]:

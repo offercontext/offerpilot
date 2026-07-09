@@ -296,6 +296,84 @@ def test_chat_create_event_confirmation_includes_schedule_details(tmp_path):
     ]
 
 
+def test_chat_note_missing_company_asks_for_required_info_without_pending(tmp_path):
+    model = ScriptedModel(
+        [
+            Assistant(
+                content="没有找到对应的申请记录。我先帮你创建一份完整的面试复盘笔记。",
+                tool_calls=[
+                    ToolCall(
+                        id="w1",
+                        name="add_note",
+                        args=json.dumps({"position": "软件测试工程师", "round": "技术面", "questions": "测试流程"}),
+                    )
+                ],
+            ),
+            Assistant(content="保存复盘前还需要公司名称，补充后我再帮你保存。"),
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+
+    response = client.post("/api/chat", json={"message": "帮我保存面试复盘", "conversation_id": 0})
+
+    assert response.status_code == 200
+    assert response.json()["type"] == "message"
+    assert response.json()["message"] == "保存复盘前还需要公司名称，补充后我再帮你保存。"
+    assert client.get("/api/chat/conversations").json()[0]["pending_action"] is None
+    stored = client.get(f"/api/chat/conversations/{response.json()['conversation_id']}").json()
+    assert any(item["role"] == "tool" and "add_note requires company" in item["content"] for item in stored)
+
+
+def test_chat_add_note_confirmation_includes_review_details(tmp_path):
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="w1",
+                        name="add_note",
+                        args=json.dumps(
+                            {
+                                "company": "腾讯",
+                                "position": "软件测试工程师",
+                                "round": "技术面",
+                                "date": "2026-07-09",
+                                "questions": "测试流程和缺陷生命周期",
+                                "difficulty_points": "自动化测试经验不足",
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                ],
+            )
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+
+    response = client.post("/api/chat", json={"message": "帮我保存面试复盘", "conversation_id": 0})
+
+    assert response.status_code == 200
+    assert response.json()["type"] == "confirmation_required"
+    pending = response.json()["pending_action"]
+    assert pending["human"] == "新增复盘：腾讯 · 软件测试工程师 · 技术面"
+    assert pending["target"] == {
+        "id": "note-draft-腾讯-软件测试工程师",
+        "kind": "note",
+        "title": "腾讯",
+        "meta": "软件测试工程师 · 技术面 · 2026-07-09",
+        "source": "pending_action",
+        "snippet": "测试流程和缺陷生命周期",
+    }
+    assert pending["proposed_changes"] == [
+        {"field": "company", "before": "", "after": "腾讯"},
+        {"field": "position", "before": "", "after": "软件测试工程师"},
+        {"field": "round", "before": "", "after": "技术面"},
+        {"field": "date", "before": "", "after": "2026-07-09"},
+        {"field": "questions", "before": "", "after": "测试流程和缺陷生命周期"},
+        {"field": "difficulty_points", "before": "", "after": "自动化测试经验不足"},
+    ]
+
+
 def test_chat_confirm_executes_pending_write(tmp_path):
     app_client = TestClient(create_app(data_dir=tmp_path))
     application = app_client.post(
