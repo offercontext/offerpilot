@@ -60,6 +60,21 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('已停止当前回复');
   });
 
+  it('uses Pilot SSE stream services for chat and confirmation flows', () => {
+    expect(component).toContain('streamChat');
+    expect(component).toContain('streamConfirmAction');
+    expect(component).toContain('streamLoadingLabel');
+    expect(component).not.toContain('sendChat,');
+    expect(component).not.toContain('confirmAction,');
+  });
+
+  it('resynchronizes real conversation state after users abort a stream', () => {
+    expect(component).toContain('syncConversationAfterAbort');
+    expect(component).toContain('await syncConversationAfterAbort(streamConversationId)');
+    expect(component).toContain('await syncConversationAfterAbort(convID)');
+    expect(component).toContain('setPending(pendingActionForConversation');
+  });
+
   it('notifies owners after Pilot write flows can change application data', () => {
     expect(component).toContain('onDataChanged?: () => void');
     expect(component).toContain('if (autoApprove) onDataChanged?.();');
