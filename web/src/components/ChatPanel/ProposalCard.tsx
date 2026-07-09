@@ -136,6 +136,12 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
   const visibleEvidence = evidence.length ? evidence : actionEvidence;
   const changes = action.proposed_changes ?? [];
   const thinEvidence = visibleEvidence.length === 0;
+  const longDraftFields = changes.filter((change) => summarizeLongValue(change.after, change.field));
+  const confirmLabel = action.tool_name.includes('delete')
+    ? '确认删除'
+    : action.tool_name.includes('create') || action.tool_name === 'add_note'
+      ? '确认新建'
+      : '确认更新';
 
   return (
     <div className={styles.proposal} role="group" aria-label="AI 修改提议">
@@ -205,6 +211,9 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
             })}
           </div>
         ) : null}
+        {longDraftFields.length ? (
+          <div className={styles.draftHint}>长内容已按摘要展示，确认后会完整保存。</div>
+        ) : null}
         {action.risk_hint || thinEvidence ? (
           <Alert
             className={styles.prAlert}
@@ -222,7 +231,7 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
       </div>
       <div className={styles.prActions}>
         <Button type="primary" className="op-ai-btn" loading={loading} onClick={onConfirm}>
-          确认修改
+          {confirmLabel}
         </Button>
         <Button disabled={loading} onClick={onCancel}>
           取消

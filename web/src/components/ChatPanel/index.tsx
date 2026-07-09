@@ -30,6 +30,7 @@ import {
   pendingComposerDisabledReason,
   reloadConversationTurns,
   resolveActivePendingAction,
+  toolMeta,
   type EvidenceItem,
   type UITurn,
 } from './model';
@@ -119,6 +120,8 @@ export default function ChatPanel({
   const [panelOpen, setPanelOpen] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);
   const [lastFailedText, setLastFailedText] = useState('');
+  const [confirmError, setConfirmError] = useState<string | null>(null);
+  const [loadingLabel, setLoadingLabel] = useState<string | undefined>(undefined);
   const [drawerWidth, setDrawerWidth] = useState(() => {
     const stored = Number(localStorage.getItem(CHAT_WIDTH_STORAGE_KEY));
     return Number.isFinite(stored) && stored > 0 ? clampChatWidth(stored) : DEFAULT_CHAT_WIDTH;
@@ -215,6 +218,8 @@ export default function ChatPanel({
     setPanelOpen(false);
     setLastError(null);
     setLastFailedText('');
+    setConfirmError(null);
+    setLoadingLabel(undefined);
   }
 
   async function selectConversation(id: number) {
@@ -226,6 +231,7 @@ export default function ChatPanel({
       setTurns(buildTurns(stored));
       setPending(pendingActionForConversation(conversations, id));
       setDegraded(false);
+      setConfirmError(null);
     } catch (e: any) {
       toast.error(e?.response?.data?.error ?? '加载对话失败');
     } finally {
@@ -254,6 +260,7 @@ export default function ChatPanel({
     setConvID(resp.conversation_id);
     setPending(null);
     setDegraded(!!resp.degraded);
+    setConfirmError(null);
     try {
       const stored = await getConversation(resp.conversation_id);
       setTurns(buildTurns(stored));
@@ -277,6 +284,8 @@ export default function ChatPanel({
     if (!trimmed || loading || activePending) return false;
     setLastError(null);
     setLastFailedText('');
+    setConfirmError(null);
+    setLoadingLabel('正在理解你的问题');
     setTurns((t) => [...t, { role: 'user', content: trimmed }]);
     setLoading(true);
     const controller = new AbortController();
@@ -291,6 +300,7 @@ export default function ChatPanel({
             : undefined;
       const resp = await sendChat(trimmed, convID, context, { signal: controller.signal });
       if (resp.type === 'confirmation_required') {
+        setLoadingLabel('正在准备确认卡片');
         setConvID(resp.conversation_id);
         setPending(resp.pending_action);
         const storedTurns = await reloadConversationTurns(resp.conversation_id, getConversation);
@@ -323,6 +333,7 @@ export default function ChatPanel({
     } finally {
       if (abortControllerRef.current === controller) abortControllerRef.current = null;
       setLoading(false);
+      setLoadingLabel(undefined);
     }
   }
 
@@ -331,9 +342,20 @@ export default function ChatPanel({
     void sendMessage(lastFailedText);
   }
 
+  function clearLastFailure() {
+    setLastError(null);
+  }
+
+  function activePendingLabel(action: PendingAction | null): string {
+    if (!action) return '本次写入';
+    return action.workflow?.current_label || toolMeta(action.tool_name).label;
+  }
+
   async function handleConfirm(approved: boolean) {
     if (!convID) return;
+    setConfirmError(null);
     setLoading(true);
+    setLoadingLabel(approved ? `正在执行：${activePendingLabel(activePending)}` : '正在取消本次写入');
     const controller = new AbortController();
     abortControllerRef.current = controller;
     try {
@@ -350,11 +372,19 @@ export default function ChatPanel({
       }
     } catch (e: any) {
       if (isAbortError(e)) return;
-      toast.error(e?.response?.data?.error ?? '确认失败');
+      const error = e?.response?.data?.error ?? '确认失败';
+      setConfirmError(error);
+      toast.error(error);
     } finally {
       if (abortControllerRef.current === controller) abortControllerRef.current = null;
       setLoading(false);
+      setLoadingLabel(undefined);
     }
+  }
+
+  function retryConfirmAction() {
+    if (!activePending || loading) return;
+    void handleConfirm(true);
   }
 
   async function toggleAutoApprove(value: boolean) {
@@ -385,6 +415,14 @@ export default function ChatPanel({
   const showEmpty = turns.length === 0 && !activePending && !loading;
   const threadEvidence = collectEvidence(turns);
   const confirmationEvidence = activePending ? pendingActionEvidence(threadEvidence, activePending) : [];
+  const contextLabel =
+    activeConv?.context_type === 'application' && activeConv.context_ref
+      ? `投递 #${activeConv.context_ref}`
+      : isNego
+        ? '谈薪上下文'
+        : convID
+          ? '工作台'
+          : null;
 
   const iconBtnStyle: React.CSSProperties = {
     border: '1px solid var(--op-border)',
@@ -507,12 +545,31 @@ export default function ChatPanel({
                 turns.map((turn, i) => <MessageBubble key={i} turn={turn} index={i} />)
               )}
 
-              {loading && !activePending && <ThinkingIndicator />}
+              {contextLabel ? (
+                <div className={styles.contextBadge}>
+                  <span>当前上下文</span>
+                  <b>{contextLabel}</b>
+                </div>
+              ) : null}
+
+              {loading && !activePending && <ThinkingIndicator label={loadingLabel} />}
               <div ref={endRef} />
             </div>
 
             {activePending && (
               <div className={styles.pendingDock}>
+                {loading ? <ThinkingIndicator label={loadingLabel} /> : null}
+                {confirmError ? (
+                  <div className={styles.confirmRecovery}>
+                    <span>{confirmError}</span>
+                    <button type="button" onClick={retryConfirmAction} disabled={loading}>
+                      重试执行
+                    </button>
+                    <button type="button" onClick={() => handleConfirm(false)} disabled={loading}>
+                      取消本次写入
+                    </button>
+                  </div>
+                ) : null}
                 <ProposalCard
                   action={activePending}
                   loading={loading}
@@ -551,6 +608,9 @@ export default function ChatPanel({
                 <span>{lastError}</span>
                 <button type="button" onClick={retryLastMessage} disabled={composerDisabled}>
                   重新发送
+                </button>
+                <button type="button" onClick={clearLastFailure}>
+                  改成手动整理
                 </button>
               </div>
             ) : null}

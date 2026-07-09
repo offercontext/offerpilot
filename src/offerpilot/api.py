@@ -1102,9 +1102,21 @@ def create_app(
             )
         except Exception as exc:
             return _ai_provider_error(exc, resolved_data_dir)
+        added, forced_reply = _with_write_error_followup(added)
         _persist_ai_messages(chat, conversation_id, added)
-        reply = _user_facing_assistant_content(reply)
+        reply = forced_reply or _user_facing_assistant_content(reply)
         if pending is not None:
+            missing_question = _pending_action_missing_question(pending, applications)
+            if missing_question:
+                chat.clear_pending_action(conversation_id)
+                chat.append_message(conversation_id, "assistant", content=missing_question)
+                return JSONResponse(
+                    {
+                        "type": "message",
+                        "conversation_id": conversation_id,
+                        "message": missing_question,
+                    }
+                )
             chat.set_pending_action(conversation_id, pending)
             return JSONResponse(
                 {
@@ -1175,9 +1187,21 @@ def create_app(
             return error_response(504, "这次确认处理时间过长，已停止。请重试或取消这次写入。")
         except Exception as exc:
             return _ai_provider_error(exc, resolved_data_dir)
+        added, forced_reply = _with_write_error_followup(added)
         _persist_ai_messages(chat, conversation_id, added)
-        reply = _user_facing_assistant_content(reply)
+        reply = forced_reply or _user_facing_assistant_content(reply)
         if new_pending is not None:
+            missing_question = _pending_action_missing_question(new_pending, applications)
+            if missing_question:
+                chat.clear_pending_action(conversation_id)
+                chat.append_message(conversation_id, "assistant", content=missing_question)
+                return JSONResponse(
+                    {
+                        "type": "message",
+                        "conversation_id": conversation_id,
+                        "message": missing_question,
+                    }
+                )
             chat.set_pending_action(conversation_id, new_pending)
             return JSONResponse(
                 {
@@ -1553,6 +1577,7 @@ _USER_FACING_TOOL_NAMES = {
     "update_application_event": "更新投递日程",
     "delete_application_event": "删除投递日程",
     "add_application": "新建投递记录",
+    "create_application": "新建投递记录",
     "add_note": "添加复盘记录",
     "update_note": "更新复盘记录",
     "delete_note": "删除复盘记录",
@@ -1687,6 +1712,102 @@ def _pending_action_json(
     if applications is not None:
         payload.update(_pending_action_details(pending.tool_name, args, applications))
     return payload
+
+
+_FIELD_FOLLOWUP_LABELS = {
+    "application_id": "关联投递",
+    "company_name": "公司",
+    "position_name": "岗位",
+    "id": "记录编号",
+    "status": "状态",
+    "event_type": "日程类型",
+    "scheduled_at": "日程时间",
+    "duration_minutes": "时长",
+    "company": "公司",
+}
+
+
+def _with_write_error_followup(added: list[Message]) -> tuple[list[Message], str]:
+    followup = _write_error_followup(added)
+    if not followup:
+        return added, ""
+    updated = [*added]
+    for index in range(len(updated) - 1, -1, -1):
+        message = updated[index]
+        if message.role == "assistant" and not message.tool_calls:
+            updated[index] = Message(
+                role="assistant",
+                content=followup,
+                provider_blocks=message.provider_blocks,
+            )
+            return updated, followup
+    updated.append(Message(role="assistant", content=followup))
+    return updated, followup
+
+
+def _write_error_followup(added: list[Message]) -> str:
+    for message in reversed(added):
+        if message.role != "tool" or not message.content.startswith("错误："):
+            continue
+        error = message.content.removeprefix("错误：").strip()
+        if error.startswith("add_note date is unclear"):
+            return "这次复盘的具体面试日期还不明确。请告诉我具体日期，或回复“日期待定”确认先按待定保存。"
+        if error.startswith("add_note requires company"):
+            return "这次复盘还缺少公司信息。请告诉我公司名称，或先说明不关联具体公司。"
+        if error.startswith("create_application requires explicit user confirmation"):
+            return "我找到同公司已有不同岗位记录。请确认是否为这个新岗位单独新建一条投递记录？确认后我再继续整理。"
+    return ""
+
+
+def _pending_action_missing_question(
+    pending: PendingAction,
+    applications: ApplicationsRepository,
+) -> str:
+    args = _safe_tool_args(pending.args)
+    if pending.tool_name == "create_application":
+        if not str(args.get("company_name") or "").strip():
+            return "要新建投递记录的话，还需要公司名称。请告诉我公司是哪一家。"
+        if not str(args.get("position_name") or "").strip():
+            return "要新建投递记录的话，还需要岗位名称。请告诉我投递的具体岗位。"
+    if pending.tool_name == "update_application_status":
+        if not _has_int_like(args.get("id")):
+            return "要更新投递状态的话，还需要明确是哪条投递记录。请告诉我公司/岗位或记录编号。"
+        if not str(args.get("status") or "").strip():
+            return "要更新投递状态的话，还需要目标状态。请告诉我是已投递、笔试、面试、Offer 还是已结束。"
+    if pending.tool_name == "create_application_event":
+        application_id = args.get("application_id")
+        if not _has_existing_application(application_id, applications):
+            return "这条日程要关联哪条投递记录？请告诉我公司/岗位或记录编号。"
+        if not str(args.get("event_type") or "").strip():
+            return "这条日程是什么类型？比如笔试、面试、Offer 进展或截止事项。"
+        if not str(args.get("scheduled_at") or "").strip():
+            return "这条日程的具体时间是什么？请补充日期和开始时间。"
+        if not _has_int_like(args.get("duration_minutes")):
+            return "这条日程预计持续多久？请补充时长，例如 30 分钟。"
+    if pending.tool_name == "add_note":
+        if not _has_int_like(args.get("application_id")) and not str(args.get("company") or "").strip():
+            return "这次复盘还缺少公司信息。请告诉我公司名称，或先说明不关联具体公司。"
+        if not str(args.get("date") or "").strip():
+            return "这次复盘还缺少面试日期。请告诉我具体日期，或回复“日期待定”。"
+    return ""
+
+
+def _has_int_like(value: Any) -> bool:
+    if value in (None, ""):
+        return False
+    try:
+        return int(value) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _has_existing_application(value: Any, applications: ApplicationsRepository) -> bool:
+    if not _has_int_like(value):
+        return False
+    try:
+        return applications.get(int(value)) is not None
+    except (TypeError, ValueError):
+        return False
 
 
 def _pending_action_details(

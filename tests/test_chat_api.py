@@ -73,6 +73,82 @@ def test_chat_returns_recoverable_message_when_agent_times_out(tmp_path, monkeyp
     assert stored[-1]["content"] == "这次处理时间过长，已停止。你可以重试或换一种问法。"
 
 
+def test_chat_asks_followup_when_pending_event_missing_required_info(tmp_path):
+    app_client = TestClient(create_app(data_dir=tmp_path))
+    application = app_client.post(
+        "/api/applications",
+        json={"company_name": "牛客网", "position_name": "测试工程师", "status": "written_test"},
+    ).json()
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="event-1",
+                        name="create_application_event",
+                        args=json.dumps(
+                            {
+                                "application_id": application["id"],
+                                "event_type": "written_test",
+                                "scheduled_at": "2026-07-10T19:00:00+08:00",
+                            }
+                        ),
+                    )
+                ]
+            )
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+
+    response = client.post("/api/chat", json={"message": "为这条投递创建笔试日程", "conversation_id": 0})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["type"] == "message"
+    assert "时长" in body["message"]
+    assert "pending_action" not in body
+    assert client.get("/api/chat/conversations").json()[0]["pending_action"] is None
+    stored = client.get(f"/api/chat/conversations/{body['conversation_id']}").json()
+    assert stored[-1]["content"] == body["message"]
+
+
+def test_chat_turns_write_validation_error_into_chinese_followup(tmp_path):
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="note-1",
+                        name="add_note",
+                        args=json.dumps(
+                            {
+                                "company": "牛客网",
+                                "position": "软件测试工程师",
+                                "round": "技术一面",
+                                "date": "2026年XX月XX日",
+                                "questions": "测试流程和缺陷生命周期",
+                            }
+                        ),
+                    )
+                ]
+            ),
+            Assistant(content="好的，我先创建新的申请记录。"),
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+
+    response = client.post("/api/chat", json={"message": "保存面试复盘", "conversation_id": 0})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["type"] == "message"
+    assert "具体面试日期" in body["message"]
+    assert "日期待定" in body["message"]
+    assert "add_note" not in body["message"]
+    stored = client.get(f"/api/chat/conversations/{body['conversation_id']}").json()
+    assert stored[-1]["content"] == body["message"]
+
+
 def test_chat_provider_error_masks_configured_api_key(tmp_path):
     save_config(tmp_path, Config(api_key="sk-secret-value"))
     client = TestClient(
@@ -153,7 +229,8 @@ def test_chat_reply_hides_internal_tool_names(tmp_path):
             Assistant(
                 content=(
                     "下一步可通过 update_application_status 更新状态；"
-                    "如有笔试安排，可使用 `create_application_event` 添加日程。"
+                    "如有笔试安排，可使用 `create_application_event` 添加日程；"
+                    "也可以调用 create_application 新建投递。"
                 )
             )
         ]
@@ -166,8 +243,10 @@ def test_chat_reply_hides_internal_tool_names(tmp_path):
     message = response.json()["message"]
     assert "update_application_status" not in message
     assert "create_application_event" not in message
+    assert "create_application" not in message
     assert "更新投递状态" in message
     assert "添加投递日程" in message
+    assert "新建投递记录" in message
     stored = client.get(f"/api/chat/conversations/{response.json()['conversation_id']}").json()
     assistant_messages = [item["content"] for item in stored if item["role"] == "assistant"]
     assert assistant_messages == [message]
@@ -196,12 +275,9 @@ def test_chat_pending_write_tolerates_invalid_args(tmp_path, args):
     response = client.post("/api/chat", json={"message": "update", "conversation_id": 0})
 
     assert response.status_code == 200
-    assert response.json()["type"] == "confirmation_required"
-    assert response.json()["pending_action"] == {
-        "tool_name": "update_application_status",
-        "human": "update_application_status",
-        "args": {},
-    }
+    assert response.json()["type"] == "message"
+    assert "哪条投递记录" in response.json()["message"]
+    assert client.get("/api/chat/conversations").json()[0]["pending_action"] is None
 
 
 def test_chat_write_tool_requires_confirmation_before_mutating(tmp_path):
@@ -343,7 +419,7 @@ def test_chat_note_missing_company_asks_for_required_info_without_pending(tmp_pa
 
     assert response.status_code == 200
     assert response.json()["type"] == "message"
-    assert response.json()["message"] == "保存复盘前还需要公司名称，补充后我再帮你保存。"
+    assert "缺少公司信息" in response.json()["message"]
     assert client.get("/api/chat/conversations").json()[0]["pending_action"] is None
     stored = client.get(f"/api/chat/conversations/{response.json()['conversation_id']}").json()
     assert any(item["role"] == "tool" and "add_note requires company" in item["content"] for item in stored)
@@ -434,7 +510,8 @@ def test_chat_create_application_for_existing_company_requires_user_confirmation
 
     assert response.status_code == 200
     assert response.json()["type"] == "message"
-    assert response.json()["message"] == "系统里已有牛客网的 agent开发 记录。要为软件测试工程师新建一条投递吗？"
+    assert "同公司已有不同岗位记录" in response.json()["message"]
+    assert "单独新建一条投递记录" in response.json()["message"]
     assert client.get("/api/chat/conversations").json()[0]["pending_action"] is None
     stored = client.get(f"/api/chat/conversations/{response.json()['conversation_id']}").json()
     assert any(
@@ -531,7 +608,8 @@ def test_chat_add_note_placeholder_date_asks_before_confirmation(tmp_path):
 
     assert response.status_code == 200
     assert response.json()["type"] == "message"
-    assert response.json()["message"] == "面试日期还不明确。请补充具体日期，或告诉我以“日期待定”保存。"
+    assert "具体面试日期" in response.json()["message"]
+    assert "日期待定" in response.json()["message"]
     assert client.get("/api/chat/conversations").json()[0]["pending_action"] is None
     stored = client.get(f"/api/chat/conversations/{response.json()['conversation_id']}").json()
     assert any(item["role"] == "tool" and "date is unclear" in item["content"] for item in stored)

@@ -35,15 +35,20 @@ describe('ChatPanel docked layout contract', () => {
   it('keeps failed user drafts retryable instead of dropping them', () => {
     expect(component).toContain('lastFailedText');
     expect(component).toContain('retryLastMessage');
+    expect(component).toContain('clearLastFailure');
+    expect(component).toContain('改成手动整理');
     expect(component).toContain('disabledReason={composerDisabledReason}');
   });
 
   it('uses concrete waiting states while AI is working', () => {
     expect(thinking).toContain('WAITING_STEPS');
+    expect(thinking).toContain('label?: string');
     expect(thinking).toContain('正在理解你的问题');
     expect(thinking).toContain('正在调用工具读取上下文');
     expect(thinking).toContain('正在等待模型返回结果');
     expect(thinking).toContain('正在整理结论和下一步建议');
+    expect(component).toContain('loadingLabel');
+    expect(component).toContain('<ThinkingIndicator label={loadingLabel}');
   });
 
   it('lets users stop an in-flight assistant response', () => {
@@ -95,7 +100,18 @@ describe('ChatPanel docked layout contract', () => {
     expect(proposalCard).toContain('action.workflow');
     expect(proposalCard).toContain('第 {action.workflow.current_step} / {action.workflow.total_steps} 步');
     expect(proposalCard).toContain('summarizeLongValue');
+    expect(proposalCard).toContain('longDraftFields');
+    expect(proposalCard).toContain('长内容已按摘要展示，确认后会完整保存。');
     expect(proposalCard).toContain('action.risk_hint');
     expect(component).toContain('pendingComposerDisabledReason(activePending)');
+  });
+
+  it('surfaces pending confirmation recovery and the active conversation context', () => {
+    expect(component).toContain('confirmError');
+    expect(component).toContain('retryConfirmAction');
+    expect(component).toContain('取消本次写入');
+    expect(component).toContain('contextBadge');
+    expect(component).toContain('当前上下文');
+    expect(component).toContain('contextLabel');
   });
 });

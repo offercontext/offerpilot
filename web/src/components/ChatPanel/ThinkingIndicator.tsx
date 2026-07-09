@@ -8,7 +8,11 @@ const WAITING_STEPS = [
   '正在整理结论和下一步建议',
 ];
 
-export default function ThinkingIndicator() {
+interface Props {
+  label?: string;
+}
+
+export default function ThinkingIndicator({ label }: Props) {
   const [step, setStep] = useState(0);
 
   useEffect(() => {
@@ -23,7 +27,7 @@ export default function ThinkingIndicator() {
         <i />
         <i />
       </span>
-      <span>{WAITING_STEPS[step]}...</span>
+      <span>{label ?? WAITING_STEPS[step]}...</span>
     </div>
   );
 }
