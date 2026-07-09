@@ -202,12 +202,52 @@ def test_offerpilot_tool_registry_covers_notes_events_and_offers(tmp_path):
     assert registry["create_application_event"]["write"] is True
     assert registry["add_note"]["schema"]["required"] == []
     assert "application_id" in registry["add_note"]["schema"]["properties"]
+    assert "allow_placeholder_date" in registry["add_note"]["schema"]["properties"]
     assert listed_notes[0]["id"] == note.id
     assert listed_events[0]["id"] == event.id
     assert listed_events[0]["duration_minutes"] == 45
     assert listed_offers[0]["id"] == offer.id
     assert offer_detail["total_cash"] == 30000 * 15 + 50000
     assert [item["id"] for item in compared] == [offer.id]
+
+
+def test_add_note_validation_asks_before_unclear_placeholder_date(tmp_path):
+    session_factory = init_database(tmp_path / "data.db")
+    applications = ApplicationsRepository(session_factory)
+    notes = NotesRepository(session_factory)
+    events = ApplicationEventsRepository(session_factory)
+    offers = OffersRepository(session_factory)
+    registry = offerpilot_tool_registry(applications, events, notes, offers)
+
+    validation = registry["add_note"]["validate"](
+        json.dumps(
+            {
+                "company": "牛客网",
+                "position": "软件测试工程师",
+                "round": "技术一面",
+                "date": "2026年XX月XX日",
+            },
+            ensure_ascii=False,
+        )
+    )
+    allowed = registry["add_note"]["validate"](
+        json.dumps(
+            {
+                "company": "牛客网",
+                "position": "软件测试工程师",
+                "round": "技术一面",
+                "date": "日期待定",
+                "allow_placeholder_date": True,
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    assert validation == (
+        "add_note date is unclear; ask the user to provide a specific interview date "
+        "or confirm saving it as 日期待定 before creating a pending confirmation."
+    )
+    assert allowed == ""
 
 
 def test_offerpilot_event_tools_hide_soft_deleted_applications(tmp_path):

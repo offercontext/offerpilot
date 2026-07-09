@@ -51,6 +51,8 @@ const SUBTYPE_LABELS: Record<string, string> = {
   written: '笔试',
 };
 
+const LONG_REVIEW_FIELDS = new Set(['questions', 'self_reflection', 'difficulty_points', 'mood', 'notes']);
+
 /** Best-effort "从 X 改为 Y" extraction for a before→after chip diff. */
 function parseDiff(human: string): { was: string; now: string } | null {
   const m = human.match(
@@ -105,6 +107,18 @@ function valueLabel(value: unknown, field?: string): string {
   return String(value);
 }
 
+function summarizeLongValue(value: unknown, field?: string): string | null {
+  if (!field || !LONG_REVIEW_FIELDS.has(field) || typeof value !== 'string') return null;
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= 80) return null;
+  const paragraphs = value
+    .split(/\n{2,}|(?:^|\s)(?=#{1,6}\s)|(?:^|\s)(?=\d+[.、]\s)/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const paragraphCount = Math.max(1, paragraphs.length);
+  return `新增 ${paragraphCount} 段内容 · ${normalized.length} 字`;
+}
+
 export default function ProposalCard({ action, loading, evidence, onConfirm, onCancel }: Props) {
   const meta = toolMeta(action.tool_name);
   const diff = parseDiff(action.human);
@@ -132,6 +146,14 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
         AI 想执行一个修改操作 · {meta.label}
       </div>
       <div className={styles.prBody}>
+        {action.workflow ? (
+          <div className={styles.workflowHint}>
+            <span>
+              第 {action.workflow.current_step} / {action.workflow.total_steps} 步 · {action.workflow.current_label}
+            </span>
+            {action.workflow.description ? <b>{action.workflow.description}</b> : null}
+          </div>
+        ) : null}
         {diff ? (
           <>
             <div className={styles.diff}>
@@ -166,7 +188,8 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
           <div className={styles.changeList}>
             {changes.map((change) => {
               const beforeText = valueLabel(change.before, change.field);
-              const afterText = valueLabel(change.after, change.field);
+              const rawAfterText = valueLabel(change.after, change.field);
+              const afterText = summarizeLongValue(change.after, change.field) ?? rawAfterText;
               return (
                 <div key={change.field} className={styles.changeRow}>
                   <span>{fieldLabel(change.field)}</span>
@@ -174,7 +197,7 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
                     {beforeText}
                   </b>
                   <i aria-hidden="true">→</i>
-                  <b className={styles.changeValue} title={afterText}>
+                  <b className={styles.changeValue} title={rawAfterText}>
                     {afterText}
                   </b>
                 </div>
@@ -182,19 +205,20 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
             })}
           </div>
         ) : null}
-        {thinEvidence ? (
+        {action.risk_hint || thinEvidence ? (
           <Alert
             className={styles.prAlert}
             type="warning"
             showIcon
-            message="参考依据较少，请确认内容无误后再执行。"
+            message={action.risk_hint ?? '参考依据较少，请确认内容无误后再执行。'}
           />
-        ) : (
+        ) : null}
+        {!thinEvidence ? (
           <div className={styles.prEvidence}>
             <div className={styles.panelLabel}>参考依据</div>
             <EvidenceList items={visibleEvidence.slice(0, 3)} compact />
           </div>
-        )}
+        ) : null}
       </div>
       <div className={styles.prActions}>
         <Button type="primary" className="op-ai-btn" loading={loading} onClick={onConfirm}>

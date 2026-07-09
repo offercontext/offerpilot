@@ -366,6 +366,13 @@ def test_chat_create_application_confirmation_includes_record_details(tmp_path):
         {"field": "position_name", "before": "", "after": "软件测试工程师"},
         {"field": "status", "before": "", "after": "interview"},
     ]
+    assert pending["workflow"] == {
+        "current_step": 1,
+        "total_steps": 2,
+        "current_label": "新建投递",
+        "next_label": "保存面试复盘",
+        "description": "确认后我会继续保存这次面试复盘。",
+    }
 
 
 def test_chat_create_application_for_existing_company_requires_user_confirmation(tmp_path):
@@ -459,6 +466,50 @@ def test_chat_add_note_confirmation_includes_review_details(tmp_path):
         {"field": "questions", "before": "", "after": "测试流程和缺陷生命周期"},
         {"field": "difficulty_points", "before": "", "after": "自动化测试经验不足"},
     ]
+    assert pending["risk_hint"] == "基于本轮对话整理，请确认结构化内容无误。"
+    assert pending["workflow"] == {
+        "current_step": 2,
+        "total_steps": 2,
+        "current_label": "保存面试复盘",
+        "description": "这是本次连续写入的最后一步。",
+    }
+
+
+def test_chat_add_note_placeholder_date_asks_before_confirmation(tmp_path):
+    model = ScriptedModel(
+        [
+            Assistant(
+                content="我先保存复盘。",
+                tool_calls=[
+                    ToolCall(
+                        id="w1",
+                        name="add_note",
+                        args=json.dumps(
+                            {
+                                "company": "牛客网",
+                                "position": "软件测试工程师",
+                                "round": "技术一面",
+                                "date": "2026年XX月XX日",
+                                "questions": "测试流程",
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                ],
+            ),
+            Assistant(content="面试日期还不明确。请补充具体日期，或告诉我以“日期待定”保存。"),
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+
+    response = client.post("/api/chat", json={"message": "帮我保存牛客网面试复盘", "conversation_id": 0})
+
+    assert response.status_code == 200
+    assert response.json()["type"] == "message"
+    assert response.json()["message"] == "面试日期还不明确。请补充具体日期，或告诉我以“日期待定”保存。"
+    assert client.get("/api/chat/conversations").json()[0]["pending_action"] is None
+    stored = client.get(f"/api/chat/conversations/{response.json()['conversation_id']}").json()
+    assert any(item["role"] == "tool" and "date is unclear" in item["content"] for item in stored)
 
 
 def test_chat_confirm_executes_pending_write(tmp_path):
@@ -496,6 +547,106 @@ def test_chat_confirm_executes_pending_write(tmp_path):
         "message": "已更新",
     }
     assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
+
+
+def test_chat_confirm_add_note_returns_saved_record_summary(tmp_path):
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="w1",
+                        name="add_note",
+                        args=json.dumps(
+                            {
+                                "company": "牛客网",
+                                "position": "软件测试工程师",
+                                "round": "技术一面",
+                                "date": "2026-07-09",
+                                "questions": "测试流程",
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                ],
+            ),
+            Assistant(content="后续可以继续补充面试官追问。"),
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    pending = client.post("/api/chat", json={"message": "保存复盘", "conversation_id": 0}).json()
+
+    response = client.post(
+        "/api/chat/confirm",
+        json={"conversation_id": pending["conversation_id"], "approved": True},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["type"] == "message"
+    message = response.json()["message"]
+    assert "保存成功：复盘记录 #1 已保存（牛客网 · 软件测试工程师 · 技术一面）。" in message
+    assert "后续可以继续补充面试官追问。" in message
+
+
+def test_chat_confirm_create_application_continues_to_review_note_card(tmp_path):
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="w1",
+                        name="create_application",
+                        args=json.dumps(
+                            {
+                                "company_name": "牛客网",
+                                "position_name": "软件测试工程师",
+                                "status": "interview",
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                ],
+            ),
+            Assistant(
+                content="投递已创建，继续保存复盘。",
+                tool_calls=[
+                    ToolCall(
+                        id="w2",
+                        name="add_note",
+                        args=json.dumps(
+                            {
+                                "application_id": 1,
+                                "round": "技术一面",
+                                "date": "2026-07-09",
+                                "questions": "测试流程",
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                ],
+            ),
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    pending = client.post("/api/chat", json={"message": "保存牛客网面试复盘", "conversation_id": 0}).json()
+
+    response = client.post(
+        "/api/chat/confirm",
+        json={"conversation_id": pending["conversation_id"], "approved": True},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["type"] == "confirmation_required"
+    next_pending = response.json()["pending_action"]
+    assert next_pending["tool_name"] == "add_note"
+    assert next_pending["target"]["title"] == "牛客网"
+    assert next_pending["target"]["meta"] == "软件测试工程师 · 技术一面 · 2026-07-09"
+    assert next_pending["workflow"] == {
+        "current_step": 2,
+        "total_steps": 2,
+        "current_label": "保存面试复盘",
+        "description": "这是本次连续写入的最后一步。",
+    }
 
 
 def test_chat_confirm_replays_reasoning_content_for_pending_tool(tmp_path):

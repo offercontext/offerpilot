@@ -6,6 +6,7 @@ import {
   hydrateMissingPendingAction,
   firstPendingConversationId,
   pendingActionForConversation,
+  pendingComposerDisabledReason,
   reloadConversationTurns,
   toolMeta,
 } from './model';
@@ -687,6 +688,21 @@ describe('buildTurns evidence normalization', () => {
       human: '更新状态',
       args: { id: 1, status: 'offer' },
     });
+  });
+
+  it('explains the next step while a chained write confirmation is pending', () => {
+    expect(
+      pendingComposerDisabledReason({
+        tool_name: 'create_application',
+        human: '新建投递：牛客网 - 软件测试工程师',
+        workflow: {
+          current_step: 1,
+          total_steps: 2,
+          current_label: '新建投递',
+          next_label: '保存面试复盘',
+        },
+      }),
+    ).toBe('请先确认“新建投递”，确认后我会继续保存面试复盘。');
   });
 
   it('hydrates a missing pending action for the active conversation after refresh', () => {

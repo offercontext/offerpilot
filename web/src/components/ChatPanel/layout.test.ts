@@ -77,6 +77,14 @@ describe('ChatPanel docked layout contract', () => {
     expect(css).toContain('-webkit-line-clamp: 4;');
     expect(css).toContain('text-overflow: ellipsis;');
     expect(proposalCard).toContain('className={styles.changeValue}');
-    expect(proposalCard).toContain('title={afterText}');
+    expect(proposalCard).toContain('title={rawAfterText}');
+  });
+
+  it('summarizes multi-step write cards and long review fields', () => {
+    expect(proposalCard).toContain('action.workflow');
+    expect(proposalCard).toContain('第 {action.workflow.current_step} / {action.workflow.total_steps} 步');
+    expect(proposalCard).toContain('summarizeLongValue');
+    expect(proposalCard).toContain('action.risk_hint');
+    expect(component).toContain('pendingComposerDisabledReason(activePending)');
   });
 });

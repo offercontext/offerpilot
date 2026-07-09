@@ -20,6 +20,7 @@ import {
   collectEvidence,
   firstPendingConversationId,
   pendingActionForConversation,
+  pendingComposerDisabledReason,
   reloadConversationTurns,
   resolveActivePendingAction,
   type EvidenceItem,
@@ -340,7 +341,7 @@ export default function ChatPanel({
   const composerDisabledReason = !hasKey
     ? '先配置 API key 后即可对话'
     : activePending
-      ? '请先确认或取消上面的写入操作'
+      ? pendingComposerDisabledReason(activePending)
       : loading
         ? '正在等待 AI 回复'
         : undefined;

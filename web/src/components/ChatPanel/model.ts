@@ -413,4 +413,13 @@ export function hydrateMissingPendingAction(
 
 export const resolveActivePendingAction = hydrateMissingPendingAction;
 
+export function pendingComposerDisabledReason(action: PendingAction | null): string {
+  if (!action) return '请先确认或取消上面的写入操作';
+  const label = action.workflow?.current_label || toolMeta(action.tool_name).label;
+  if (action.workflow?.next_label) {
+    return `请先确认“${label}”，确认后我会继续${action.workflow.next_label}。`;
+  }
+  return `请先确认或取消“${label}”。`;
+}
+
 export { toolMeta };

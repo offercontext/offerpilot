@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -812,11 +813,26 @@ def _describe_note_action(args: str, action: str) -> str:
 
 def _validate_note_action(args: str) -> str:
     payload = _payload(args)
+    date = str(payload.get("date") or "").strip()
+    if date and not bool(payload.get("allow_placeholder_date")) and _looks_unclear_note_date(date):
+        return (
+            "add_note date is unclear; ask the user to provide a specific interview date "
+            "or confirm saving it as 日期待定 before creating a pending confirmation."
+        )
     if _optional_int(payload, "application_id") > 0:
         return ""
     if str(payload.get("company") or "").strip():
         return ""
     return "add_note requires company when application_id is not provided"
+
+
+def _looks_unclear_note_date(value: str) -> bool:
+    normalized = value.strip().lower()
+    if not normalized:
+        return False
+    if normalized in {"日期待定", "待定", "unknown", "tbd"}:
+        return True
+    return bool(re.search(r"(xx|x月|x日|某|待补|待确认|不详|未知)", normalized))
 
 
 def _payload(args: str) -> dict[str, Any]:
@@ -1119,6 +1135,10 @@ def _note_schema(required: list[str]) -> dict[str, Any]:
             "position": {"type": "string"},
             "round": {"type": "string"},
             "date": {"type": "string"},
+            "allow_placeholder_date": {
+                "type": "boolean",
+                "description": "Set true only after the user confirms saving an unclear interview date as 日期待定.",
+            },
             "questions": {"type": "string"},
             "self_reflection": {"type": "string"},
             "difficulty_points": {"type": "string"},

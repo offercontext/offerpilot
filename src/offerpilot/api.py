@@ -1150,6 +1150,8 @@ def create_app(
                 }
             )
         chat.clear_pending_action(conversation_id)
+        if bool(payload.get("approved")):
+            reply = _prepend_write_success(reply, pending, added)
         return JSONResponse({"type": "message", "conversation_id": conversation_id, "message": reply})
 
     @app.get("/api/chat/conversations")
@@ -1524,7 +1526,9 @@ def _chat_response_system_message() -> Message:
             "Do not expose hidden reasoning. Do not mention internal tool or API names such as "
             "update_application_status or create_application_event; describe actions in user-facing language instead. "
             "When an interview review belongs to a company that already has a different-position application, "
-            "ask the user before creating a new application record for that position."
+            "ask the user before creating a new application record for that position. "
+            "If a write tool reports that required information is missing or unclear, ask one direct follow-up "
+            "question instead of attempting another write."
         ),
     )
 
@@ -1677,6 +1681,55 @@ def _pending_action_details(
     }
 
 
+def _prepend_write_success(reply: str, pending: PendingAction, added: list[Message]) -> str:
+    if pending.tool_name not in {"create_application", "add_note", "create_application_event"}:
+        return reply
+    summary = _write_success_summary(pending.tool_name, added)
+    if not summary:
+        return reply
+    if summary in reply:
+        return reply
+    return f"{summary}\n\n{reply}".strip()
+
+
+def _write_success_summary(tool_name: str, added: list[Message]) -> str:
+    payload = _last_successful_tool_payload(added)
+    if not payload:
+        return ""
+    if tool_name == "create_application":
+        record_id = payload.get("application_id") or payload.get("id")
+        company = str(payload.get("company_name") or "").strip()
+        position = str(payload.get("position_name") or "").strip()
+        meta = " · ".join(value for value in [company, position] if value)
+        suffix = f"（{meta}）。" if meta else "。"
+        return f"✅ 创建成功：投递记录 #{record_id} 已保存{suffix}" if record_id else ""
+    if tool_name == "add_note":
+        record_id = payload.get("note_id") or payload.get("id")
+        company = str(payload.get("company") or "").strip()
+        position = str(payload.get("position") or "").strip()
+        round_name = str(payload.get("round") or "").strip()
+        meta = " · ".join(value for value in [company, position, round_name] if value)
+        suffix = f"（{meta}）。" if meta else "。"
+        return f"✅ 保存成功：复盘记录 #{record_id} 已保存{suffix}" if record_id else ""
+    if tool_name == "create_application_event":
+        record_id = payload.get("application_event_id") or payload.get("id")
+        return f"✅ 创建成功：日程 #{record_id} 已保存。" if record_id else ""
+    return ""
+
+
+def _last_successful_tool_payload(added: list[Message]) -> dict[str, Any]:
+    for message in reversed(added):
+        if message.role != "tool" or not message.content or message.content.startswith("错误："):
+            continue
+        try:
+            parsed = json.loads(message.content)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
+
+
 def _pending_create_application_details(args: dict[str, Any]) -> dict[str, Any]:
     company = str(args.get("company_name") or "").strip()
     position = str(args.get("position_name") or "").strip()
@@ -1704,11 +1757,20 @@ def _pending_create_application_details(args: dict[str, Any]) -> dict[str, Any]:
         ]
         if value
     ]
-    return {
+    details: dict[str, Any] = {
         "target": target,
         "proposed_changes": proposed_changes,
         "evidence": [],
     }
+    if status == "interview":
+        details["workflow"] = {
+            "current_step": 1,
+            "total_steps": 2,
+            "current_label": "新建投递",
+            "next_label": "保存面试复盘",
+            "description": "确认后我会继续保存这次面试复盘。",
+        }
+    return details
 
 
 _EVENT_TYPE_LABELS = {
@@ -1863,6 +1925,13 @@ def _pending_note_details(
         "target": target,
         "proposed_changes": proposed_changes,
         "evidence": evidence,
+        "risk_hint": "基于本轮对话整理，请确认结构化内容无误。",
+        "workflow": {
+            "current_step": 2,
+            "total_steps": 2,
+            "current_label": "保存面试复盘",
+            "description": "这是本次连续写入的最后一步。",
+        },
     }
 
 

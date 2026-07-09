@@ -26,6 +26,16 @@ export interface PendingAction {
   target?: PendingActionTarget;
   proposed_changes?: PendingActionChange[];
   evidence?: PendingActionEvidence[];
+  risk_hint?: string;
+  workflow?: PendingActionWorkflow;
+}
+
+export interface PendingActionWorkflow {
+  current_step: number;
+  total_steps: number;
+  current_label: string;
+  next_label?: string;
+  description?: string;
 }
 
 export interface PendingActionTarget {
