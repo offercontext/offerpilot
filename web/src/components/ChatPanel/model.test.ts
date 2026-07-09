@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { ChatMessage } from '@/types/chat';
-import { buildTurns, collectEvidence, pendingActionForConversation, reloadConversationTurns, toolMeta } from './model';
+import {
+  buildTurns,
+  collectEvidence,
+  hydrateMissingPendingAction,
+  pendingActionForConversation,
+  reloadConversationTurns,
+  toolMeta,
+} from './model';
 
 function msg(patch: Partial<ChatMessage> & Pick<ChatMessage, 'role'>): ChatMessage {
   return {
@@ -679,5 +686,61 @@ describe('buildTurns evidence normalization', () => {
       human: '更新状态',
       args: { id: 1, status: 'offer' },
     });
+  });
+
+  it('hydrates a missing pending action for the active conversation after refresh', () => {
+    const persisted = {
+      tool_name: 'create_application',
+      human: '新建投递：牛客网 - 软件测试工程师',
+      args: { company_name: '牛客网', position_name: '软件测试工程师', status: 'interview' },
+    };
+
+    const pending = hydrateMissingPendingAction(
+      null,
+      [
+        {
+          id: 65,
+          title: '牛客网面试复盘',
+          context_type: 'workspace',
+          context_ref: '',
+          created_at: '2026-07-09T00:00:00Z',
+          updated_at: '2026-07-09T00:00:01Z',
+          pending_action: persisted,
+        },
+      ],
+      65,
+    );
+
+    expect(pending).toEqual(persisted);
+  });
+
+  it('keeps the current pending action while conversation refresh is stale', () => {
+    const current = {
+      tool_name: 'create_application_event',
+      human: '新建投递事件',
+      args: { application_id: 40, event_type: 'written_test' },
+    };
+
+    const pending = hydrateMissingPendingAction(
+      current,
+      [
+        {
+          id: 65,
+          title: '牛客网面试复盘',
+          context_type: 'workspace',
+          context_ref: '',
+          created_at: '2026-07-09T00:00:00Z',
+          updated_at: '2026-07-09T00:00:01Z',
+          pending_action: {
+            tool_name: 'create_application',
+            human: '新建投递：牛客网 - 软件测试工程师',
+            args: { company_name: '牛客网', position_name: '软件测试工程师' },
+          },
+        },
+      ],
+      65,
+    );
+
+    expect(pending).toEqual(current);
   });
 });

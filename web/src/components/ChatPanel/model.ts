@@ -398,4 +398,13 @@ export function pendingActionForConversation(
   return conversations.find((conversation) => conversation.id === conversationId)?.pending_action ?? null;
 }
 
+export function hydrateMissingPendingAction(
+  current: PendingAction | null,
+  conversations: Conversation[],
+  conversationId: number | undefined,
+): PendingAction | null {
+  if (current || conversationId === undefined) return current;
+  return pendingActionForConversation(conversations, conversationId);
+}
+
 export { toolMeta };

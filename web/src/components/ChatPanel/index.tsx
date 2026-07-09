@@ -18,6 +18,7 @@ import type { Offer } from '@/types/offer';
 import {
   buildTurns,
   collectEvidence,
+  hydrateMissingPendingAction,
   pendingActionForConversation,
   reloadConversationTurns,
   type EvidenceItem,
@@ -158,6 +159,10 @@ export default function ChatPanel({
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [turns, pending, loading]);
+
+  useEffect(() => {
+    setPending((current) => hydrateMissingPendingAction(current, conversations, convID));
+  }, [conversations, convID]);
 
   useEffect(() => {
     const onResize = () => setDrawerWidth((w) => clampChatWidth(w));
