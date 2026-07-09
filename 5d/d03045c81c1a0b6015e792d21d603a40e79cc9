@@ -1,0 +1,44 @@
+web/src/layout/TopBar.tsx
+  s_7f2bc75bf7c269::t_dec6b6ba68df95 12,23-30,55-65
+web/src/components/ChatPanel/layout.test.ts
+  s_7f2bc75bf7c269::t_a0833e322267fb 29-32
+  s_7f2bc75bf7c269::t_4d4c8f46c274e7 23,26
+  s_7f2bc75bf7c269::t_85e576127515d5 27-28
+web/src/components/ChatPanel/index.tsx
+  s_7f2bc75bf7c269::t_03b072fdd43d27 52,161,613,665,836
+  s_7f2bc75bf7c269::t_4d4c8f46c274e7 648-649
+web/src/layout/navigation.test.ts
+  s_7f2bc75bf7c269::t_a35d35cf684026 10,18,22,29,37,50
+web/src/layout/AppShell.test.ts
+  s_7f2bc75bf7c269::t_db4bbd2b0df3ab 18,20,23-28
+  s_7f2bc75bf7c269::t_4d4c8f46c274e7 29-33
+  s_7f2bc75bf7c269::t_89a84af7cfbc93 19,21-22
+web/src/layout/Sidebar.tsx
+  s_7f2bc75bf7c269::t_13372c8d964c78 28,38
+web/src/layout/CommandPalette.test.ts
+  s_7f2bc75bf7c269::t_21d6a7cc8f0c3f 37-41
+web/src/layout/AppShell.tsx
+  s_7f2bc75bf7c269::t_f532e0fd657c01 280-288
+  s_7f2bc75bf7c269::t_4d4c8f46c274e7 340
+  s_7f2bc75bf7c269::t_8ec940a5200013 120,179-180,183-185,196-200,279,289,314,332,367
+web/src/layout/navigation.ts
+  s_7f2bc75bf7c269::t_5a9d16076ef2ae 14,24,45,62,77
+web/src/layout/CommandPalette.tsx
+  s_7f2bc75bf7c269::t_9b731703911e89 125
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "5dd03045c81c1a0b6015e792d21d603a40e79cc9",
+  "prompts": {},
+  "sessions": {
+    "s_7f2bc75bf7c269": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3fc9-102a-7c12-bd59-7b0c567c26b6",
+        "model": "gpt-5.5"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    }
+  }
+}
