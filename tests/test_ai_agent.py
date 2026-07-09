@@ -12,6 +12,16 @@ class ScriptedModel:
         return self.turns.pop(0)
 
 
+class StreamingScriptedModel:
+    def stream_complete(self, messages, tools, on_delta):
+        on_delta("流式")
+        on_delta("回复")
+        return Assistant(content="流式回复")
+
+    def complete(self, messages, tools):
+        raise AssertionError("stream_complete should be preferred when available")
+
+
 def test_write_tool_pauses_before_execution():
     calls = []
     registry = {
@@ -162,6 +172,27 @@ def test_event_sink_emits_read_tool_call_and_result():
                 "changed_entities": [],
             },
         },
+    ]
+
+
+def test_event_sink_emits_assistant_delta_from_streaming_model():
+    events = []
+
+    added, reply, pending = run_turn(
+        StreamingScriptedModel(),
+        {},
+        [],
+        auto_approve=False,
+        max_iter=8,
+        event_sink=events.append,
+    )
+
+    assert reply == "流式回复"
+    assert pending is None
+    assert added[-1].content == "流式回复"
+    assert events == [
+        {"event": "assistant_delta", "data": {"delta": "流式"}},
+        {"event": "assistant_delta", "data": {"delta": "回复"}},
     ]
 
 

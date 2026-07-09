@@ -64,6 +64,8 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('streamChat');
     expect(component).toContain('streamConfirmAction');
     expect(component).toContain('streamLoadingLabel');
+    expect(component).toContain('appendAssistantDelta');
+    expect(component).toContain("event.event === 'assistant_delta'");
     expect(component).not.toContain('sendChat,');
     expect(component).not.toContain('confirmAction,');
   });
@@ -73,6 +75,12 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('await syncConversationAfterAbort(streamConversationId)');
     expect(component).toContain('await syncConversationAfterAbort(convID)');
     expect(component).toContain('setPending(pendingActionForConversation');
+  });
+
+  it('cleans up partial assistant bubbles on stream failure and completed fallback', () => {
+    expect(component).toContain('if (streamingAssistantActiveRef.current)');
+    expect(component).toContain('await syncConversationAfterAbort(streamConversationId)');
+    expect(component).toContain('return [...t.slice(0, -1), { ...last, content: resp.message }];');
   });
 
   it('notifies owners after Pilot write flows can change application data', () => {

@@ -1207,7 +1207,7 @@ def create_app(
                 "meta",
                 {
                     "stream_version": STREAM_VERSION,
-                    "supports_delta": False,
+                    "supports_delta": _chat_model_supports_delta(model),
                     "supports_tool_events": True,
                     "supports_confirmation": True,
                 },
@@ -1455,7 +1455,7 @@ def create_app(
                     "meta",
                     {
                         "stream_version": STREAM_VERSION,
-                        "supports_delta": False,
+                        "supports_delta": _chat_model_supports_delta(model),
                         "supports_tool_events": True,
                         "supports_confirmation": True,
                     },
@@ -1487,7 +1487,7 @@ def create_app(
                 "meta",
                 {
                     "stream_version": STREAM_VERSION,
-                    "supports_delta": False,
+                    "supports_delta": _chat_model_supports_delta(model),
                     "supports_tool_events": True,
                     "supports_confirmation": True,
                 },
@@ -1947,6 +1947,10 @@ def _agent_thread_id(conversation_id: int) -> str:
     return f"conversation:{conversation_id}"
 
 
+def _chat_model_supports_delta(model: ChatModel) -> bool:
+    return callable(getattr(model, "stream_complete", None))
+
+
 def _persist_ai_messages(repo: ChatRepository, conversation_id: int, messages: list[Message]) -> None:
     for message in messages:
         content = message.content
@@ -1990,6 +1994,7 @@ def _chat_response_system_message() -> Message:
         role="system",
         content=(
             "You are OfferPilot, a job-search copilot. Use the user's language. "
+            "The current chat interface supports incremental streaming output for assistant text. "
             "For substantive answers, keep the reply concise and structure it as: "
             "Conclusion, Evidence, Next steps. When local tool evidence is thin, say so clearly. "
             "Do not expose hidden reasoning. Do not mention internal tool or API names such as "

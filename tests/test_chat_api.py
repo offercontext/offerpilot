@@ -55,6 +55,16 @@ class SlowModel:
         return Assistant(content="late reply")
 
 
+class StreamingModel:
+    def stream_complete(self, messages, tools, on_delta):
+        on_delta("第一段")
+        on_delta("第二段")
+        return Assistant(content="第一段第二段")
+
+    def complete(self, messages, tools):
+        raise AssertionError("stream_complete should be preferred")
+
+
 def _parse_sse_events(raw: str) -> list[dict[str, object]]:
     events = []
     for frame in raw.strip().split("\n\n"):
@@ -111,6 +121,28 @@ def test_chat_stream_emits_pilot_sse_v1_sequence(tmp_path):
         "conversation_id": events[0]["data"]["conversation_id"],
         "message": "可以，先把投递列表按状态过一遍。",
     }
+
+
+def test_chat_stream_emits_assistant_delta_events(tmp_path):
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=StreamingModel()))
+
+    response = client.post("/api/chat/stream", json={"message": "讲个长故事", "conversation_id": 0})
+
+    assert response.status_code == 200
+    events = _parse_sse_events(response.text)
+    assert [event["event"] for event in events] == [
+        "meta",
+        "user_message_saved",
+        "status",
+        "assistant_delta",
+        "assistant_delta",
+        "assistant_message",
+        "completed",
+    ]
+    assert events[0]["data"]["data"]["supports_delta"] is True
+    assert events[3]["data"]["data"] == {"delta": "第一段"}
+    assert events[4]["data"]["data"] == {"delta": "第二段"}
+    assert events[5]["data"]["data"] == {"message": "第一段第二段"}
 
 
 def test_chat_stream_emits_tool_call_and_result_events(tmp_path):

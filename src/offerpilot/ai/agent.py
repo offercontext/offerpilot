@@ -16,10 +16,21 @@ from offerpilot.ai.types import Assistant, Message
 DEFAULT_MAX_ITERATIONS = 20
 _DEFAULT_THREAD_ID = "conversation:ephemeral"
 AgentEventSink = Callable[[dict[str, Any]], None]
+AssistantDeltaSink = Callable[[str], None]
 
 
 class ChatModel(Protocol):
     def complete(self, messages: list[Message], tools: list[dict[str, Any]]) -> Assistant:
+        ...
+
+
+class StreamingChatModel(Protocol):
+    def stream_complete(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        on_delta: AssistantDeltaSink,
+    ) -> Assistant:
         ...
 
 
@@ -130,7 +141,7 @@ class LangGraphAgentRunner:
 
         work = [_message_from_dict(message) for message in state.get("messages", [])]
         tools = [{"name": name, **tool} for name, tool in self._registry.items()]
-        assistant = self._model.complete(work, tools)
+        assistant = self._complete_model(work, tools)
         assistant_message = Message(
             role="assistant",
             content=assistant.content,
@@ -282,6 +293,21 @@ class LangGraphAgentRunner:
 
     def _emit_tool_result(self, tool_call_id: str, tool_name: str, result: str) -> None:
         self._emit_event("tool_result", _tool_result_payload(tool_call_id, tool_name, result))
+
+    def _complete_model(self, messages: list[Message], tools: list[dict[str, Any]]) -> Assistant:
+        stream_complete = getattr(self._model, "stream_complete", None)
+        if callable(stream_complete):
+            return cast(StreamingChatModel, self._model).stream_complete(
+                messages,
+                tools,
+                self._emit_assistant_delta,
+            )
+        return self._model.complete(messages, tools)
+
+    def _emit_assistant_delta(self, delta: str) -> None:
+        if not delta:
+            return
+        self._emit_event("assistant_delta", {"delta": delta})
 
     def _emit_event(self, event: str, data: dict[str, Any]) -> None:
         if self._event_sink is None:

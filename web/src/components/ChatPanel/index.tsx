@@ -155,6 +155,7 @@ export default function ChatPanel({
   const endRef = useRef<HTMLDivElement>(null);
   const threadOfferId = useRef<number | undefined>(undefined);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const streamingAssistantActiveRef = useRef(false);
   const docked = variant === 'rail';
 
   const activeConv = conversations.find((c) => c.id === convID);
@@ -237,6 +238,7 @@ export default function ChatPanel({
 
   function startNewChat() {
     stopActiveRequest({ silent: true });
+    streamingAssistantActiveRef.current = false;
     setConvID(undefined);
     setTurns([]);
     setPending(null);
@@ -297,9 +299,42 @@ export default function ChatPanel({
       const stored = await getConversation(resp.conversation_id);
       setTurns(buildTurns(stored));
     } catch {
-      setTurns((t) => [...t, { role: 'assistant', content: resp.message }]);
+      setTurns((t) => {
+        if (streamingAssistantActiveRef.current) {
+          const last = t[t.length - 1];
+          if (last?.role === 'assistant') {
+            return [...t.slice(0, -1), { ...last, content: resp.message }];
+          }
+        }
+        return [...t, { role: 'assistant', content: resp.message }];
+      });
     }
+    streamingAssistantActiveRef.current = false;
     refreshConversations();
+  }
+
+  function appendAssistantDelta(delta: string) {
+    if (!delta) return;
+    setTurns((items) => {
+      if (!streamingAssistantActiveRef.current) {
+        streamingAssistantActiveRef.current = true;
+        return [...items, { role: 'assistant', content: delta }];
+      }
+      const last = items[items.length - 1];
+      if (last?.role !== 'assistant') {
+        return [...items, { role: 'assistant', content: delta }];
+      }
+      return [...items.slice(0, -1), { ...last, content: last.content + delta }];
+    });
+  }
+
+  function finalizeStreamedAssistant(message: string) {
+    if (!streamingAssistantActiveRef.current || !message) return;
+    setTurns((items) => {
+      const last = items[items.length - 1];
+      if (last?.role !== 'assistant') return items;
+      return [...items.slice(0, -1), { ...last, content: message }];
+    });
   }
 
   async function syncConversationAfterAbort(conversationId?: number) {
@@ -339,6 +374,7 @@ export default function ChatPanel({
     setConfirmPhase('idle');
     setLoadingLabel('正在理解你的问题');
     setTurns((t) => [...t, { role: 'user', content: trimmed }]);
+    streamingAssistantActiveRef.current = false;
     setLoading(true);
     const controller = new AbortController();
     abortControllerRef.current = controller;
@@ -357,6 +393,14 @@ export default function ChatPanel({
           if (event.conversation_id) {
             streamConversationId = event.conversation_id;
             if (isNew) setConvID(event.conversation_id);
+          }
+          if (event.event === 'assistant_delta') {
+            const data = event.data as { delta?: unknown };
+            if (typeof data.delta === 'string') appendAssistantDelta(data.delta);
+          }
+          if (event.event === 'assistant_message') {
+            const data = event.data as { message?: unknown };
+            if (typeof data.message === 'string') finalizeStreamedAssistant(data.message);
           }
           const label = streamLoadingLabel(event);
           if (label) setLoadingLabel(label);
@@ -383,6 +427,14 @@ export default function ChatPanel({
         return false;
       }
       const error = e?.response?.data?.error ?? e?.message ?? '对话失败，请稍后重试';
+      if (streamingAssistantActiveRef.current) {
+        streamingAssistantActiveRef.current = false;
+        await syncConversationAfterAbort(streamConversationId);
+        setLastError(error);
+        setLastFailedText(trimmed);
+        toast.error(error);
+        return false;
+      }
       setTurns((items) => {
         const last = items[items.length - 1];
         return last?.role === 'user' && last.content === trimmed ? items.slice(0, -1) : items;
@@ -418,12 +470,21 @@ export default function ChatPanel({
     setConfirmPhase(approved ? 'saving' : 'idle');
     setLoading(true);
     setLoadingLabel(approved ? `正在执行：${activePendingLabel(activePending)}` : '正在取消本次写入');
+    streamingAssistantActiveRef.current = false;
     const controller = new AbortController();
     abortControllerRef.current = controller;
     try {
       const resp = await streamConfirmAction(convID, approved, {
         signal: controller.signal,
         onEvent: (event) => {
+          if (event.event === 'assistant_delta') {
+            const data = event.data as { delta?: unknown };
+            if (typeof data.delta === 'string') appendAssistantDelta(data.delta);
+          }
+          if (event.event === 'assistant_message') {
+            const data = event.data as { message?: unknown };
+            if (typeof data.message === 'string') finalizeStreamedAssistant(data.message);
+          }
           const label = streamLoadingLabel(event);
           if (label) setLoadingLabel(label);
         },
@@ -446,6 +507,10 @@ export default function ChatPanel({
         return;
       }
       const error = e?.response?.data?.error ?? e?.message ?? '确认失败';
+      if (streamingAssistantActiveRef.current) {
+        streamingAssistantActiveRef.current = false;
+        await syncConversationAfterAbort(convID);
+      }
       setConfirmError(error);
       setConfirmPhase('error');
       toast.error(error);
