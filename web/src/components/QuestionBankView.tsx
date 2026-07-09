@@ -435,7 +435,7 @@ function QuestionFormModal({
       okText="保存"
       cancelText="取消"
       confirmLoading={saveMutation.isPending}
-      destroyOnClose
+      destroyOnHidden
     >
       <Form
         form={form}
