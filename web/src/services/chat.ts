@@ -10,26 +10,43 @@ export interface ChatContextInput {
   mode?: string;
 }
 
+export interface ChatRequestOptions {
+  signal?: AbortSignal;
+}
+
 export async function sendChat(
   message: string,
   conversationId?: number,
   context?: ChatContextInput,
+  options?: ChatRequestOptions,
 ): Promise<ChatResponse> {
-  const { data } = await http.post<ChatResponse>('/chat', {
-    message,
-    conversation_id: conversationId ?? 0,
-    ...(context?.context_type ? { context_type: context.context_type } : {}),
-    ...(context?.context_ref !== undefined ? { context_ref: String(context.context_ref) } : {}),
-    ...(context?.mode ? { mode: context.mode } : {}),
-  });
+  const { data } = await http.post<ChatResponse>(
+    '/chat',
+    {
+      message,
+      conversation_id: conversationId ?? 0,
+      ...(context?.context_type ? { context_type: context.context_type } : {}),
+      ...(context?.context_ref !== undefined ? { context_ref: String(context.context_ref) } : {}),
+      ...(context?.mode ? { mode: context.mode } : {}),
+    },
+    { signal: options?.signal },
+  );
   return data;
 }
 
-export async function confirmAction(conversationId: number, approved: boolean): Promise<ChatResponse> {
-  const { data } = await http.post<ChatResponse>('/chat/confirm', {
-    conversation_id: conversationId,
-    approved,
-  });
+export async function confirmAction(
+  conversationId: number,
+  approved: boolean,
+  options?: ChatRequestOptions,
+): Promise<ChatResponse> {
+  const { data } = await http.post<ChatResponse>(
+    '/chat/confirm',
+    {
+      conversation_id: conversationId,
+      approved,
+    },
+    { signal: options?.signal },
+  );
   return data;
 }
 

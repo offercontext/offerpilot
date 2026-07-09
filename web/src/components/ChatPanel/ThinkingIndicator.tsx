@@ -1,7 +1,12 @@
 import { useEffect, useState } from 'react';
 import styles from './ChatPanel.module.css';
 
-const WAITING_STEPS = ['正在理解你的问题', '正在读取本地求职上下文', '正在整理结论和下一步建议'];
+const WAITING_STEPS = [
+  '正在理解你的问题',
+  '正在调用工具读取上下文',
+  '正在等待模型返回结果',
+  '正在整理结论和下一步建议',
+];
 
 export default function ThinkingIndicator() {
   const [step, setStep] = useState(0);

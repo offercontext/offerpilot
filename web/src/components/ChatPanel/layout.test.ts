@@ -41,7 +41,18 @@ describe('ChatPanel docked layout contract', () => {
   it('uses concrete waiting states while AI is working', () => {
     expect(thinking).toContain('WAITING_STEPS');
     expect(thinking).toContain('正在理解你的问题');
+    expect(thinking).toContain('正在调用工具读取上下文');
+    expect(thinking).toContain('正在等待模型返回结果');
     expect(thinking).toContain('正在整理结论和下一步建议');
+  });
+
+  it('lets users stop an in-flight assistant response', () => {
+    expect(component).toContain('abortControllerRef');
+    expect(component).toContain('stopActiveRequest');
+    expect(component).toContain('controller.abort()');
+    expect(component).toContain('isAbortError');
+    expect(component).toContain('aria-label="停止当前回复"');
+    expect(component).toContain('已停止当前回复');
   });
 
   it('notifies owners after Pilot write flows can change application data', () => {

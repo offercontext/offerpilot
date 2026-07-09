@@ -1,7 +1,14 @@
 import { useEffect, useRef, useState, createElement } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Drawer, App as AntApp } from 'antd';
-import { CloseOutlined, RobotOutlined, AppstoreOutlined, PlusOutlined, ExpandAltOutlined } from '@ant-design/icons';
+import { Drawer, App as AntApp, Button } from 'antd';
+import {
+  CloseOutlined,
+  RobotOutlined,
+  AppstoreOutlined,
+  PlusOutlined,
+  ExpandAltOutlined,
+  StopOutlined,
+} from '@ant-design/icons';
 import {
   sendChat,
   confirmAction,
@@ -85,6 +92,11 @@ function pendingActionEvidence(evidence: EvidenceItem[], action: PendingAction):
   return evidence.filter((item) => evidenceMatchesPendingAction(item, action));
 }
 
+function isAbortError(error: unknown): boolean {
+  const candidate = error as { code?: string; name?: string; message?: string };
+  return candidate?.code === 'ERR_CANCELED' || candidate?.name === 'CanceledError' || candidate?.message === 'canceled';
+}
+
 export default function ChatPanel({
   open,
   onClose,
@@ -113,6 +125,7 @@ export default function ChatPanel({
   });
   const endRef = useRef<HTMLDivElement>(null);
   const threadOfferId = useRef<number | undefined>(undefined);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const docked = variant === 'rail';
 
   const activeConv = conversations.find((c) => c.id === convID);
@@ -194,6 +207,7 @@ export default function ChatPanel({
   }
 
   function startNewChat() {
+    stopActiveRequest({ silent: true });
     setConvID(undefined);
     setTurns([]);
     setPending(null);
@@ -249,6 +263,15 @@ export default function ChatPanel({
     refreshConversations();
   }
 
+  function stopActiveRequest(options: { silent?: boolean } = {}) {
+    const controller = abortControllerRef.current;
+    if (!controller) return;
+    controller.abort();
+    abortControllerRef.current = null;
+    setLoading(false);
+    if (!options.silent) toast.info('已停止当前回复');
+  }
+
   async function sendMessage(text: string): Promise<boolean> {
     const trimmed = text.trim();
     if (!trimmed || loading || activePending) return false;
@@ -256,6 +279,8 @@ export default function ChatPanel({
     setLastFailedText('');
     setTurns((t) => [...t, { role: 'user', content: trimmed }]);
     setLoading(true);
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
     try {
       const isNew = convID === undefined;
       const context =
@@ -264,7 +289,7 @@ export default function ChatPanel({
           : isNew && offerId !== undefined
             ? { context_type: 'workspace', context_ref: '', mode: 'nego_coach' }
             : undefined;
-      const resp = await sendChat(trimmed, convID, context);
+      const resp = await sendChat(trimmed, convID, context, { signal: controller.signal });
       if (resp.type === 'confirmation_required') {
         setConvID(resp.conversation_id);
         setPending(resp.pending_action);
@@ -279,6 +304,13 @@ export default function ChatPanel({
       if (isNew) refreshConversations();
       return true;
     } catch (e: any) {
+      if (isAbortError(e)) {
+        setTurns((items) => {
+          const last = items[items.length - 1];
+          return last?.role === 'user' && last.content === trimmed ? items.slice(0, -1) : items;
+        });
+        return false;
+      }
       const error = e?.response?.data?.error ?? '对话失败，请稍后重试';
       setTurns((items) => {
         const last = items[items.length - 1];
@@ -289,6 +321,7 @@ export default function ChatPanel({
       toast.error(error);
       return false;
     } finally {
+      if (abortControllerRef.current === controller) abortControllerRef.current = null;
       setLoading(false);
     }
   }
@@ -301,8 +334,10 @@ export default function ChatPanel({
   async function handleConfirm(approved: boolean) {
     if (!convID) return;
     setLoading(true);
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
     try {
-      const resp = await confirmAction(convID, approved);
+      const resp = await confirmAction(convID, approved, { signal: controller.signal });
       if (resp.type === 'confirmation_required') {
         setConvID(resp.conversation_id);
         setPending(resp.pending_action);
@@ -314,8 +349,10 @@ export default function ChatPanel({
         if (approved) onDataChanged?.();
       }
     } catch (e: any) {
+      if (isAbortError(e)) return;
       toast.error(e?.response?.data?.error ?? '确认失败');
     } finally {
+      if (abortControllerRef.current === controller) abortControllerRef.current = null;
       setLoading(false);
     }
   }
@@ -343,7 +380,7 @@ export default function ChatPanel({
     : activePending
       ? pendingComposerDisabledReason(activePending)
       : loading
-        ? '正在等待 AI 回复'
+        ? 'AI 正在处理，可点击停止当前回复'
         : undefined;
   const showEmpty = turns.length === 0 && !activePending && !loading;
   const threadEvidence = collectEvidence(turns);
@@ -483,6 +520,19 @@ export default function ChatPanel({
                   onConfirm={() => handleConfirm(true)}
                   onCancel={() => handleConfirm(false)}
                 />
+              </div>
+            )}
+
+            {loading && (
+              <div className={styles.stopDock}>
+                <Button
+                  danger
+                  icon={<StopOutlined />}
+                  aria-label="停止当前回复"
+                  onClick={() => stopActiveRequest()}
+                >
+                  停止当前回复
+                </Button>
               </div>
             )}
 

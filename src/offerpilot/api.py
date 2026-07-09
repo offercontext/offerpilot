@@ -1,5 +1,6 @@
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from datetime import datetime, timedelta, timezone
 from html import unescape
 from io import BytesIO
@@ -66,6 +67,14 @@ from offerpilot.schemas import (
     resume_payload,
 )
 from offerpilot.skills import SkillRegistryError, register_skill, skills_payload, update_skill
+
+CHAT_AGENT_TIMEOUT_SECONDS = 120.0
+CHAT_TIMEOUT_MESSAGE = "这次处理时间过长，已停止。你可以重试或换一种问法。"
+CHAT_CANCELLED_MESSAGE = "已取消本次写入。你可以修改信息后让我重新整理。"
+
+
+class ChatAgentTimedOut(RuntimeError):
+    pass
 
 
 def create_app(
@@ -1060,23 +1069,36 @@ def create_app(
             *([context_message] if context_message is not None else []),
             *_stored_messages_to_ai(chat.list_messages(conversation_id)),
         ]
+        registry = offerpilot_tool_registry(
+            applications,
+            events,
+            notes,
+            offers,
+            resumes=resumes,
+            jd_analyses=jd_analyses,
+            knowledge=knowledge,
+        )
         try:
-            added, reply, pending = run_turn(
-                model,
-                offerpilot_tool_registry(
-                    applications,
-                    events,
-                    notes,
-                    offers,
-                    resumes=resumes,
-                    jd_analyses=jd_analyses,
-                    knowledge=knowledge,
-                ),
-                history,
-                auto_approve=load_config(resolved_data_dir).chat_auto_approve_writes,
-                max_iter=DEFAULT_MAX_ITERATIONS,
-                checkpoint_path=_agent_checkpoint_path(resolved_data_dir),
-                thread_id=_agent_thread_id(conversation_id),
+            added, reply, pending = _run_chat_agent_with_timeout(
+                lambda: run_turn(
+                    model,
+                    registry,
+                    history,
+                    auto_approve=load_config(resolved_data_dir).chat_auto_approve_writes,
+                    max_iter=DEFAULT_MAX_ITERATIONS,
+                    checkpoint_path=_agent_checkpoint_path(resolved_data_dir),
+                    thread_id=_agent_thread_id(conversation_id),
+                )
+            )
+        except ChatAgentTimedOut:
+            chat.append_message(conversation_id, "assistant", content=CHAT_TIMEOUT_MESSAGE)
+            chat.clear_pending_action(conversation_id)
+            return JSONResponse(
+                {
+                    "type": "message",
+                    "conversation_id": conversation_id,
+                    "message": CHAT_TIMEOUT_MESSAGE,
+                }
             )
         except Exception as exc:
             return _ai_provider_error(exc, resolved_data_dir)
@@ -1111,31 +1133,46 @@ def create_app(
         pending = chat.get_pending_action(conversation_id) or _pending_action_from_stored_messages(stored)
         if pending is None:
             return error_response(400, "no pending action to confirm")
-        context_message = _chat_context_message(conversation, applications)
-        try:
-            added, reply, new_pending = resume_after_confirm(
-                model,
-                offerpilot_tool_registry(
-                    applications,
-                    events,
-                    notes,
-                    offers,
-                    resumes=resumes,
-                    jd_analyses=jd_analyses,
-                    knowledge=knowledge,
-                ),
-                [
-                    _chat_response_system_message(),
-                    *([context_message] if context_message is not None else []),
-                    *_stored_messages_to_ai(stored),
-                ],
-                pending,
-                approved=bool(payload.get("approved")),
-                auto_approve=load_config(resolved_data_dir).chat_auto_approve_writes,
-                max_iter=DEFAULT_MAX_ITERATIONS,
-                checkpoint_path=_agent_checkpoint_path(resolved_data_dir),
-                thread_id=_agent_thread_id(conversation_id),
+        if not bool(payload.get("approved")):
+            chat.clear_pending_action(conversation_id)
+            chat.append_message(conversation_id, "assistant", content=CHAT_CANCELLED_MESSAGE)
+            return JSONResponse(
+                {
+                    "type": "message",
+                    "conversation_id": conversation_id,
+                    "message": CHAT_CANCELLED_MESSAGE,
+                }
             )
+        context_message = _chat_context_message(conversation, applications)
+        registry = offerpilot_tool_registry(
+            applications,
+            events,
+            notes,
+            offers,
+            resumes=resumes,
+            jd_analyses=jd_analyses,
+            knowledge=knowledge,
+        )
+        try:
+            added, reply, new_pending = _run_chat_agent_with_timeout(
+                lambda: resume_after_confirm(
+                    model,
+                    registry,
+                    [
+                        _chat_response_system_message(),
+                        *([context_message] if context_message is not None else []),
+                        *_stored_messages_to_ai(stored),
+                    ],
+                    pending,
+                    approved=True,
+                    auto_approve=load_config(resolved_data_dir).chat_auto_approve_writes,
+                    max_iter=DEFAULT_MAX_ITERATIONS,
+                    checkpoint_path=_agent_checkpoint_path(resolved_data_dir),
+                    thread_id=_agent_thread_id(conversation_id),
+                )
+            )
+        except ChatAgentTimedOut:
+            return error_response(504, "这次确认处理时间过长，已停止。请重试或取消这次写入。")
         except Exception as exc:
             return _ai_provider_error(exc, resolved_data_dir)
         _persist_ai_messages(chat, conversation_id, added)
@@ -1417,6 +1454,22 @@ def error_response(status_code: int, message: str) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status_code)
 
 
+def _run_chat_agent_with_timeout(call: Any) -> Any:
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(call)
+    try:
+        result = future.result(timeout=CHAT_AGENT_TIMEOUT_SECONDS)
+    except FutureTimeoutError as exc:
+        future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise ChatAgentTimedOut() from exc
+    except Exception:
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise
+    executor.shutdown(wait=False)
+    return result
+
+
 def _ai_provider_error(exc: Exception, data_dir: Path) -> JSONResponse:
     cfg = load_config(data_dir)
     detail = _safe_provider_error(exc, cfg.provider_profiles()).strip()
@@ -1528,7 +1581,9 @@ def _chat_response_system_message() -> Message:
             "When an interview review belongs to a company that already has a different-position application, "
             "ask the user before creating a new application record for that position. "
             "If a write tool reports that required information is missing or unclear, ask one direct follow-up "
-            "question instead of attempting another write."
+            "question instead of attempting another write. After a successful write, give exactly one practical "
+            "next step in user-facing language, such as adding a schedule, generating an improvement plan, or "
+            "continuing the review."
         ),
     )
 

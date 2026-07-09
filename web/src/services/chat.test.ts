@@ -10,4 +10,10 @@ describe('settings service v0.1 contract', () => {
     expect(source).toContain('getSettingsBackup');
     expect(source).not.toContain('api_key: string;');
   });
+
+  it('allows chat requests and confirmations to be interrupted', () => {
+    expect(source).toContain('options?: ChatRequestOptions');
+    expect(source).toContain('signal?: AbortSignal');
+    expect(source).toContain('{ signal: options?.signal }');
+  });
 });

@@ -1,4 +1,5 @@
 import json
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -38,6 +39,12 @@ class SecretLeakingModel:
         raise RuntimeError("provider rejected API key sk-secret-value")
 
 
+class SlowModel:
+    def complete(self, messages, tools):
+        time.sleep(0.2)
+        return Assistant(content="late reply")
+
+
 def test_chat_returns_bad_gateway_when_model_fails(tmp_path):
     client = TestClient(
         create_app(data_dir=tmp_path, chat_model=FailingModel()),
@@ -48,6 +55,22 @@ def test_chat_returns_bad_gateway_when_model_fails(tmp_path):
 
     assert response.status_code == 502
     assert response.json() == {"error": "AI provider request failed: provider unavailable"}
+
+
+def test_chat_returns_recoverable_message_when_agent_times_out(tmp_path, monkeypatch):
+    import offerpilot.api as api_module
+
+    monkeypatch.setattr(api_module, "CHAT_AGENT_TIMEOUT_SECONDS", 0.01)
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=SlowModel()))
+
+    response = client.post("/api/chat", json={"message": "帮我总结最近复盘", "conversation_id": 0})
+
+    assert response.status_code == 200
+    assert response.json()["type"] == "message"
+    assert response.json()["message"] == "这次处理时间过长，已停止。你可以重试或换一种问法。"
+    stored = client.get(f"/api/chat/conversations/{response.json()['conversation_id']}").json()
+    assert stored[-1]["role"] == "assistant"
+    assert stored[-1]["content"] == "这次处理时间过长，已停止。你可以重试或换一种问法。"
 
 
 def test_chat_provider_error_masks_configured_api_key(tmp_path):
@@ -90,6 +113,8 @@ def test_chat_injects_response_structure_prompt(tmp_path):
     assert "Conclusion" in system.content
     assert "Evidence" in system.content
     assert "Next steps" in system.content
+    assert "one direct follow-up question" in system.content
+    assert "After a successful write" in system.content
 
 
 def test_chat_allows_wide_read_only_tool_summaries(tmp_path):
@@ -547,6 +572,44 @@ def test_chat_confirm_executes_pending_write(tmp_path):
         "message": "已更新",
     }
     assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
+
+
+def test_chat_cancel_pending_write_returns_short_local_message(tmp_path):
+    app_client = TestClient(create_app(data_dir=tmp_path))
+    application = app_client.post(
+        "/api/applications",
+        json={"company_name": "字节跳动", "position_name": "后端工程师", "status": "interview"},
+    ).json()
+    model = CapturingScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="w1",
+                        name="update_application_status",
+                        args=json.dumps({"id": application["id"], "status": "offer"}),
+                    )
+                ]
+            )
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    pending = client.post("/api/chat", json={"message": "改成 offer", "conversation_id": 0}).json()
+
+    response = client.post(
+        "/api/chat/confirm",
+        json={"conversation_id": pending["conversation_id"], "approved": False},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "type": "message",
+        "conversation_id": pending["conversation_id"],
+        "message": "已取消本次写入。你可以修改信息后让我重新整理。",
+    }
+    assert len(model.calls) == 1
+    assert client.get("/api/chat/conversations").json()[0]["pending_action"] is None
+    assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "interview"
 
 
 def test_chat_confirm_add_note_returns_saved_record_summary(tmp_path):
