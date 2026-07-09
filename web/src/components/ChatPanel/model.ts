@@ -1,4 +1,5 @@
 import type { ChatMessage, Conversation, PendingAction } from '@/types/chat';
+import { STATUS_LABELS, type ApplicationStatus } from '@/types/application';
 import { toolMeta } from './capabilities';
 
 export type EvidenceKind =
@@ -79,7 +80,10 @@ function extractDetail(argsStr?: string): string | undefined {
     const args = JSON.parse(argsStr) as Record<string, unknown>;
     for (const key of ['status', 'query', 'event_type', 'title', 'company_name']) {
       const v = args[key];
-      if (typeof v === 'string' && v.trim()) return v.trim().slice(0, 24);
+      if (typeof v === 'string' && v.trim()) {
+        const label = key === 'status' ? applicationStatusLabel(v) ?? v.trim() : v.trim();
+        return label.slice(0, 24);
+      }
     }
     const ids = args['ids'] ?? args['offer_ids'];
     if (Array.isArray(ids)) return `${ids.length} 项`;
@@ -200,7 +204,7 @@ function evidenceFromRecord(row: unknown, source: string, index: number): Eviden
           id: `offer-${id}`,
           kind: 'offer',
           title: company,
-          meta: compact([position, amount, text(record.deadline), text(record.status)]).join(' \u00b7 '),
+          meta: compact([position, amount, text(record.deadline), applicationStatusLabel(record.status)]).join(' \u00b7 '),
           snippet: previewText(text(record.assessment) || text(record.notes)),
           source,
         },
@@ -211,7 +215,7 @@ function evidenceFromRecord(row: unknown, source: string, index: number): Eviden
         id: `application-${id}`,
         kind: 'application',
         title: company,
-        meta: compact([position, text(record.status), text(record.applied_at)]).join(' \u00b7 '),
+        meta: compact([position, applicationStatusLabel(record.status), text(record.applied_at)]).join(' \u00b7 '),
         snippet: previewText(record.notes),
         source,
       },
@@ -245,6 +249,15 @@ function evidenceFromRecord(row: unknown, source: string, index: number): Eviden
 
 function text(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function isApplicationStatus(value: unknown): value is ApplicationStatus {
+  return typeof value === 'string' && value in STATUS_LABELS;
+}
+
+function applicationStatusLabel(value: unknown): string | undefined {
+  if (!isApplicationStatus(value)) return text(value);
+  return STATUS_LABELS[value];
 }
 
 function previewText(value: unknown, maxLength = EVIDENCE_SNIPPET_MAX): string | undefined {

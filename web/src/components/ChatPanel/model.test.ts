@@ -103,6 +103,22 @@ describe('buildTurns evidence normalization', () => {
     ]);
   });
 
+  it('localizes application status details in tool step summaries', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([
+          { id: 'write-app', name: 'create_application', args: { company_name: '牛客网', position_name: 'agent开发', status: 'applied' } },
+        ]),
+      }),
+    ]);
+
+    expect(turns[0].steps?.[0]).toMatchObject({
+      name: 'create_application',
+      detail: '已投递',
+    });
+  });
+
   it('attaches application evidence from tool results to the assistant turn', () => {
     const turns = buildTurns([
       msg({ role: 'user', content: '查看投递' }),
@@ -134,7 +150,7 @@ describe('buildTurns evidence normalization', () => {
           id: 'application-7',
           kind: 'application',
           title: '字节跳动',
-          meta: '后端工程师 \u00b7 interview \u00b7 2026-07-01',
+          meta: '后端工程师 \u00b7 面试 \u00b7 2026-07-01',
           source: 'list_applications',
         },
       ],
