@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import component from './index.tsx?raw';
+import proposalCard from './ProposalCard.tsx?raw';
 import thinking from './ThinkingIndicator.tsx?raw';
 
 describe('ChatPanel docked layout contract', () => {
@@ -39,5 +40,15 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('onDataChanged?: () => void');
     expect(component).toContain('if (autoApprove) onDataChanged?.();');
     expect(component).toContain('if (approved) onDataChanged?.();');
+  });
+
+  it('keeps write confirmation cards localized for Chinese users', () => {
+    expect(proposalCard).not.toContain('<span>Target</span>');
+    expect(proposalCard).not.toContain('<span>Proposed</span>');
+    expect(proposalCard).not.toContain('Status ->');
+    expect(proposalCard).not.toContain('Evidence is limited');
+    expect(proposalCard).toContain('FIELD_LABELS');
+    expect(proposalCard).toContain('STATUS_LABELS');
+    expect(proposalCard).toContain('参考依据较少');
   });
 });

@@ -1,6 +1,7 @@
 import { createElement } from 'react';
 import { Alert, Button } from 'antd';
 import type { PendingAction } from '@/types/chat';
+import { STATUS_LABELS, type ApplicationStatus } from '@/types/application';
 import type { EvidenceItem } from './model';
 import { toolMeta } from './capabilities';
 import EvidenceList from './EvidenceList';
@@ -14,6 +15,18 @@ interface Props {
   onCancel: () => void;
 }
 
+const FIELD_LABELS: Record<string, string> = {
+  status: '状态',
+  company_name: '公司',
+  position_name: '岗位',
+  job_url: '岗位链接',
+  source: '来源',
+  notes: '备注',
+  applied_at: '投递日期',
+  title: '标题',
+  deadline: '截止时间',
+};
+
 /** Best-effort "从 X 改为 Y" extraction for a before→after chip diff. */
 function parseDiff(human: string): { was: string; now: string } | null {
   const m = human.match(
@@ -25,7 +38,7 @@ function parseDiff(human: string): { was: string; now: string } | null {
 
 function actionTarget(action: PendingAction): string | null {
   const id = action.args?.id;
-  if (typeof id === 'number' || typeof id === 'string') return `Record #${id}`;
+  if (typeof id === 'number' || typeof id === 'string') return `记录 #${id}`;
   const company = action.args?.company_name;
   const role = action.args?.position_name;
   if (typeof company === 'string' && typeof role === 'string') return `${company} · ${role}`;
@@ -35,14 +48,25 @@ function actionTarget(action: PendingAction): string | null {
 
 function proposedValue(action: PendingAction): string | null {
   const status = action.args?.status;
-  if (typeof status === 'string' && status.trim()) return `Status -> ${status}`;
+  if (typeof status === 'string' && status.trim()) return `状态 → ${valueLabel(status, 'status')}`;
   const title = action.args?.title;
-  if (typeof title === 'string' && title.trim()) return `Title -> ${title}`;
+  if (typeof title === 'string' && title.trim()) return `标题 → ${title}`;
   return null;
 }
 
-function valueLabel(value: unknown): string {
-  if (value === null || value === undefined || value === '') return 'Empty';
+function fieldLabel(field: string): string {
+  return FIELD_LABELS[field] ?? field;
+}
+
+function isApplicationStatus(value: unknown): value is ApplicationStatus {
+  return typeof value === 'string' && value in STATUS_LABELS;
+}
+
+function valueLabel(value: unknown, field?: string): string {
+  if (value === null || value === undefined || value === '') return '空';
+  if (typeof value === 'boolean') return value ? '是' : '否';
+  if (field === 'status' && isApplicationStatus(value)) return STATUS_LABELS[value];
+  if (isApplicationStatus(value)) return STATUS_LABELS[value];
   return String(value);
 }
 
@@ -91,13 +115,13 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
           <div className={styles.prFacts}>
             {target ? (
               <div>
-                <span>Target</span>
+                <span>目标</span>
                 <b>{targetMeta ? `${target} · ${targetMeta}` : target}</b>
               </div>
             ) : null}
             {proposed ? (
               <div>
-                <span>Proposed</span>
+                <span>建议变更</span>
                 <b>{proposed}</b>
               </div>
             ) : null}
@@ -107,10 +131,10 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
           <div className={styles.changeList}>
             {changes.map((change) => (
               <div key={change.field} className={styles.changeRow}>
-                <span>{change.field}</span>
-                <b>{valueLabel(change.before)}</b>
+                <span>{fieldLabel(change.field)}</span>
+                <b>{valueLabel(change.before, change.field)}</b>
                 <i aria-hidden="true">→</i>
-                <b>{valueLabel(change.after)}</b>
+                <b>{valueLabel(change.after, change.field)}</b>
               </div>
             ))}
           </div>
@@ -120,11 +144,11 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
             className={styles.prAlert}
             type="warning"
             showIcon
-            message="Evidence is limited. Review this change carefully before confirming."
+            message="参考依据较少，请确认内容无误后再执行。"
           />
         ) : (
           <div className={styles.prEvidence}>
-            <div className={styles.panelLabel}>Evidence used</div>
+            <div className={styles.panelLabel}>参考依据</div>
             <EvidenceList items={visibleEvidence.slice(0, 3)} compact />
           </div>
         )}
