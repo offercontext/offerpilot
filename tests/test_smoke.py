@@ -24,6 +24,8 @@ def test_core_smoke_runs_spa_api_and_hitl_loop(tmp_path):
         "chat_pending",
         "confirm_action",
         "pending_cleared",
+        "chat_create_application_card",
+        "chat_create_event_card",
     ]
 
 
@@ -54,6 +56,8 @@ def test_http_smoke_uses_real_http_and_cleans_test_application(tmp_path):
         "http_chat_pending",
         "http_confirm_action",
         "http_pending_cleared",
+        "http_chat_create_application_card",
+        "http_chat_create_event_card",
         "http_cleanup",
     ]
 

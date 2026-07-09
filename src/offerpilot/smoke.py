@@ -34,43 +34,161 @@ class SmokeReport:
 class _SmokeChatModel(ChatModel):
     def __init__(self, application_id: int):
         self._application_id = application_id
-        self._turn = 0
 
     def complete(self, messages: list[Message], tools: list[dict[str, Any]]) -> Assistant:
-        self._turn += 1
-        if self._turn == 1:
+        if messages and messages[-1].role == "tool":
+            return Assistant(content="smoke complete")
+        user_message = _latest_user_message(messages)
+        if "create application card regression" in user_message:
             return Assistant(
                 tool_calls=[
                     ToolCall(
-                        id="smoke-write-1",
-                        name="update_application_status",
-                        args=json.dumps({"id": self._application_id, "status": "offer"}),
+                        id="smoke-create-application-card",
+                        name="create_application",
+                        args=json.dumps(
+                            {"company_name": "牛客网", "position_name": "agent开发", "status": "applied"},
+                            ensure_ascii=False,
+                        ),
                     )
                 ]
             )
-        return Assistant(content="smoke complete")
+        if "create event card regression" in user_message:
+            return Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="smoke-create-event-card",
+                        name="create_application_event",
+                        args=json.dumps(
+                            {
+                                "application_id": self._application_id,
+                                "event_type": "written_test",
+                                "subtype": "assessment",
+                                "scheduled_at": "2026-07-10T19:00:00+08:00",
+                                "duration_minutes": 30,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                ]
+            )
+        return Assistant(
+            tool_calls=[
+                ToolCall(
+                    id="smoke-write-1",
+                    name="update_application_status",
+                    args=json.dumps({"id": self._application_id, "status": "offer"}),
+                )
+            ]
+        )
 
 
 class _MutableSmokeChatModel(ChatModel):
     def __init__(self) -> None:
         self.application_id: int | None = None
-        self._turn = 0
 
     def complete(self, messages: list[Message], tools: list[dict[str, Any]]) -> Assistant:
-        self._turn += 1
-        if self._turn == 1:
-            if self.application_id is None:
-                raise RuntimeError("smoke application id was not initialized")
+        if self.application_id is None:
+            raise RuntimeError("smoke application id was not initialized")
+        if messages and messages[-1].role == "tool":
+            return Assistant(content="http smoke complete")
+        user_message = _latest_user_message(messages)
+        if "create application card regression" in user_message:
             return Assistant(
                 tool_calls=[
                     ToolCall(
-                        id="http-smoke-write-1",
-                        name="update_application_status",
-                        args=json.dumps({"id": self.application_id, "status": "offer"}),
+                        id="http-smoke-create-application-card",
+                        name="create_application",
+                        args=json.dumps(
+                            {"company_name": "牛客网", "position_name": "agent开发", "status": "applied"},
+                            ensure_ascii=False,
+                        ),
                     )
                 ]
             )
-        return Assistant(content="http smoke complete")
+        if "create event card regression" in user_message:
+            return Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="http-smoke-create-event-card",
+                        name="create_application_event",
+                        args=json.dumps(
+                            {
+                                "application_id": self.application_id,
+                                "event_type": "written_test",
+                                "subtype": "assessment",
+                                "scheduled_at": "2026-07-10T19:00:00+08:00",
+                                "duration_minutes": 30,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                ]
+            )
+        return Assistant(
+            tool_calls=[
+                ToolCall(
+                    id="http-smoke-write-1",
+                    name="update_application_status",
+                    args=json.dumps({"id": self.application_id, "status": "offer"}),
+                )
+            ]
+        )
+
+
+def _latest_user_message(messages: list[Message]) -> str:
+    for message in reversed(messages):
+        if message.role == "user":
+            return message.content
+    return ""
+
+
+def _assert_create_application_card(pending_body: dict[str, Any]) -> None:
+    if pending_body.get("type") != "confirmation_required":
+        raise RuntimeError("create application card smoke did not request confirmation")
+    action = pending_body.get("pending_action", {})
+    if action.get("tool_name") != "create_application":
+        raise RuntimeError("create application card smoke requested the wrong tool")
+    if action.get("human") != "新建投递：牛客网 - agent开发":
+        raise RuntimeError("create application card smoke lost the human-readable title")
+    expected_args = {"company_name": "牛客网", "position_name": "agent开发", "status": "applied"}
+    if action.get("args") != expected_args:
+        raise RuntimeError("create application card smoke lost the proposed application fields")
+
+
+def _assert_create_event_card(pending_body: dict[str, Any], application_id: int) -> None:
+    if pending_body.get("type") != "confirmation_required":
+        raise RuntimeError("create event card smoke did not request confirmation")
+    action = pending_body.get("pending_action", {})
+    if action.get("tool_name") != "create_application_event":
+        raise RuntimeError("create event card smoke requested the wrong tool")
+    if action.get("human") != "新建日程：笔试 · 2026-07-10 19:00 · 30 分钟":
+        raise RuntimeError("create event card smoke lost the human-readable schedule title")
+    if action.get("target") != {
+        "id": f"application-event-draft-{application_id}",
+        "kind": "application_event",
+        "title": "笔试",
+        "meta": "2026-07-10 19:00 · 30 分钟",
+        "source": "pending_action",
+    }:
+        raise RuntimeError("create event card smoke lost target schedule details")
+    if action.get("proposed_changes") != [
+        {"field": "event_type", "before": "", "after": "written_test"},
+        {"field": "subtype", "before": "", "after": "assessment"},
+        {"field": "scheduled_at", "before": "", "after": "2026-07-10T19:00:00+08:00"},
+        {"field": "duration_minutes", "before": "", "after": 30},
+    ]:
+        raise RuntimeError("create event card smoke lost proposed schedule changes")
+    evidence = action.get("evidence") or []
+    if not evidence or evidence[0].get("id") != f"application-{application_id}":
+        raise RuntimeError("create event card smoke lost application evidence")
+
+
+def _reject_pending_chat_action(client: Any, pending_body: dict[str, Any], step: str) -> None:
+    rejected = client.post(
+        "/api/chat/confirm",
+        json={"conversation_id": pending_body["conversation_id"], "approved": False},
+    )
+    _assert_status(rejected.status_code, 200, step)
 
 
 def run_core_smoke(data_dir: Path, static_dir: Path | None = None) -> SmokeReport:
@@ -131,6 +249,8 @@ def run_core_smoke(data_dir: Path, static_dir: Path | None = None) -> SmokeRepor
     if conversations[0]["pending_action"] is not None:
         raise RuntimeError("pending action was not cleared")
     steps.append(SmokeStep("pending_cleared", "pending action cleared after confirmation"))
+
+    _run_chat_card_regression_smoke(chat_client, steps, application_id)
 
     return SmokeReport(ok=True, steps=steps)
 
@@ -199,6 +319,7 @@ def run_http_smoke(
                     _run_real_ai_write_smoke(client, steps, company, application_id)
                 else:
                     _run_deterministic_chat_smoke(client, steps, application_id)
+                    _run_chat_card_regression_smoke(client, steps, application_id, step_prefix="http_")
             finally:
                 cleanup = client.delete(f"/api/applications/{application_id}")
                 _assert_status(cleanup.status_code, 200, "http_cleanup")
@@ -300,6 +421,34 @@ def _run_application_event_http_smoke(
             "application event create, update, read, list, and delete endpoints worked",
         )
     )
+
+
+def _run_chat_card_regression_smoke(
+    client: Any,
+    steps: list[SmokeStep],
+    application_id: int,
+    *,
+    step_prefix: str = "",
+) -> None:
+    create_application_step = f"{step_prefix}chat_create_application_card"
+    create_application_pending = client.post(
+        "/api/chat",
+        json={"message": "create application card regression", "conversation_id": 0},
+    )
+    _assert_status(create_application_pending.status_code, 200, create_application_step)
+    _assert_create_application_card(create_application_pending.json())
+    _reject_pending_chat_action(client, create_application_pending.json(), create_application_step)
+    steps.append(SmokeStep(create_application_step, "create application confirmation card kept key fields"))
+
+    create_event_step = f"{step_prefix}chat_create_event_card"
+    create_event_pending = client.post(
+        "/api/chat",
+        json={"message": "create event card regression", "conversation_id": 0},
+    )
+    _assert_status(create_event_pending.status_code, 200, create_event_step)
+    _assert_create_event_card(create_event_pending.json(), application_id)
+    _reject_pending_chat_action(client, create_event_pending.json(), create_event_step)
+    steps.append(SmokeStep(create_event_step, "create event confirmation card kept schedule details"))
 
 
 def _run_deterministic_chat_smoke(
