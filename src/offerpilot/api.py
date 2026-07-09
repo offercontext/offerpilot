@@ -1633,6 +1633,8 @@ def _pending_action_details(
     args: dict[str, Any],
     applications: ApplicationsRepository,
 ) -> dict[str, Any]:
+    if tool_name == "create_application":
+        return _pending_create_application_details(args)
     if tool_name == "create_application_event":
         return _pending_application_event_details(args, applications)
     if tool_name == "add_note":
@@ -1670,6 +1672,40 @@ def _pending_action_details(
         "target": target,
         "proposed_changes": proposed_changes,
         "evidence": [target],
+    }
+
+
+def _pending_create_application_details(args: dict[str, Any]) -> dict[str, Any]:
+    company = str(args.get("company_name") or "").strip()
+    position = str(args.get("position_name") or "").strip()
+    status = str(args.get("status") or "applied").strip() or "applied"
+    if not company and not position:
+        return {}
+    target = {
+        "id": f"application-draft-{company or 'unknown'}-{position or 'unknown'}",
+        "kind": "application",
+        "title": company or "公司待补充",
+        "meta": " · ".join(value for value in [position, status] if value),
+        "source": "pending_action",
+    }
+    notes = str(args.get("notes") or "").strip()
+    if notes:
+        target["snippet"] = _short_preview(notes)
+    proposed_changes = [
+        {"field": key, "before": "", "after": value}
+        for key, value in [
+            ("company_name", company),
+            ("position_name", position),
+            ("status", status),
+            ("job_url", str(args.get("job_url") or "").strip()),
+            ("notes", notes),
+        ]
+        if value
+    ]
+    return {
+        "target": target,
+        "proposed_changes": proposed_changes,
+        "evidence": [],
     }
 
 

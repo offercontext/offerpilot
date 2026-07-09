@@ -153,6 +153,20 @@ def _assert_create_application_card(pending_body: dict[str, Any]) -> None:
     expected_args = {"company_name": "牛客网", "position_name": "agent开发", "status": "applied"}
     if action.get("args") != expected_args:
         raise RuntimeError("create application card smoke lost the proposed application fields")
+    if action.get("target") != {
+        "id": "application-draft-牛客网-agent开发",
+        "kind": "application",
+        "title": "牛客网",
+        "meta": "agent开发 · applied",
+        "source": "pending_action",
+    }:
+        raise RuntimeError("create application card smoke lost target record details")
+    if action.get("proposed_changes") != [
+        {"field": "company_name", "before": "", "after": "牛客网"},
+        {"field": "position_name", "before": "", "after": "agent开发"},
+        {"field": "status", "before": "", "after": "applied"},
+    ]:
+        raise RuntimeError("create application card smoke lost proposed record changes")
 
 
 def _assert_create_event_card(pending_body: dict[str, Any], application_id: int) -> None:

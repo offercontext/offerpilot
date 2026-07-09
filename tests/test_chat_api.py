@@ -324,6 +324,50 @@ def test_chat_note_missing_company_asks_for_required_info_without_pending(tmp_pa
     assert any(item["role"] == "tool" and "add_note requires company" in item["content"] for item in stored)
 
 
+def test_chat_create_application_confirmation_includes_record_details(tmp_path):
+    model = ScriptedModel(
+        [
+            Assistant(
+                content="我先为你创建新的申请记录。",
+                tool_calls=[
+                    ToolCall(
+                        id="w1",
+                        name="create_application",
+                        args=json.dumps(
+                            {
+                                "company_name": "牛客网",
+                                "position_name": "软件测试工程师",
+                                "status": "interview",
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                ],
+            )
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+
+    response = client.post("/api/chat", json={"message": "帮我保存牛客网软件测试工程师复盘", "conversation_id": 0})
+
+    assert response.status_code == 200
+    assert response.json()["type"] == "confirmation_required"
+    pending = response.json()["pending_action"]
+    assert pending["human"] == "新建投递：牛客网 - 软件测试工程师"
+    assert pending["target"] == {
+        "id": "application-draft-牛客网-软件测试工程师",
+        "kind": "application",
+        "title": "牛客网",
+        "meta": "软件测试工程师 · interview",
+        "source": "pending_action",
+    }
+    assert pending["proposed_changes"] == [
+        {"field": "company_name", "before": "", "after": "牛客网"},
+        {"field": "position_name", "before": "", "after": "软件测试工程师"},
+        {"field": "status", "before": "", "after": "interview"},
+    ]
+
+
 def test_chat_add_note_confirmation_includes_review_details(tmp_path):
     model = ScriptedModel(
         [
