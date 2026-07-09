@@ -462,6 +462,8 @@ class Conversation(Base):
     mode: Mapped[str] = mapped_column(String, default="general", server_default="general")
     context_type: Mapped[str] = mapped_column(String, default="workspace", server_default="workspace")
     context_ref: Mapped[str] = mapped_column(String, default="", server_default="")
+    pinned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     pending_tool_call_id: Mapped[str] = mapped_column(String, default="", server_default="")
     pending_tool_name: Mapped[str] = mapped_column(String, default="", server_default="")
     pending_args: Mapped[str] = mapped_column(String, default="", server_default="")

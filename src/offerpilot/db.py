@@ -33,6 +33,8 @@ def init_database(db_path: Path) -> SessionFactory:
         _ensure_column(engine, "conversations", "mode", "TEXT DEFAULT 'general'"),
         _ensure_column(engine, "conversations", "context_type", "TEXT DEFAULT 'workspace'"),
         _ensure_column(engine, "conversations", "context_ref", "TEXT DEFAULT ''"),
+        _ensure_column(engine, "conversations", "pinned_at", "DATETIME"),
+        _ensure_column(engine, "conversations", "archived_at", "DATETIME"),
         _ensure_column(engine, "conversations", "pending_tool_call_id", "TEXT DEFAULT ''"),
         _ensure_column(engine, "conversations", "pending_tool_name", "TEXT DEFAULT ''"),
         _ensure_column(engine, "conversations", "pending_args", "TEXT DEFAULT ''"),

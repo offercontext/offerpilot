@@ -110,7 +110,7 @@ def create_app(
             auth_response = _auth_guard_response(request, resolved_data_dir)
             response = auth_response if auth_response is not None else await call_next(request)
         response.headers["Access-Control-Allow-Origin"] = "*"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-OfferPilot-Token"
         return response
 
@@ -1572,8 +1572,11 @@ def create_app(
         return StreamingResponse(stream(), media_type="text/event-stream; charset=utf-8", headers=sse_headers())
 
     @app.get("/api/chat/conversations")
-    def list_conversations() -> list[dict[str, Any]]:
-        return [_conversation_json(item, applications) for item in chat.list_conversations()]
+    def list_conversations(include_archived: bool = False) -> list[dict[str, Any]]:
+        return [
+            _conversation_json(item, applications)
+            for item in chat.list_conversations(include_archived=include_archived)
+        ]
 
     @app.get("/api/chat/conversations/{conversation_id}")
     def get_conversation(conversation_id: int) -> list[dict[str, Any]]:
@@ -1581,6 +1584,32 @@ def create_app(
             ChatMessageOut.model_validate(item).model_dump(mode="json")
             for item in chat.list_messages(conversation_id)
         ]
+
+    @app.patch("/api/chat/conversations/{conversation_id}")
+    def update_conversation(conversation_id: int, payload: dict[str, Any] = Body(...)) -> JSONResponse:
+        values: dict[str, Any] = {}
+        now = datetime.now(timezone.utc)
+        if "title" in payload:
+            title = str(payload.get("title") or "").strip()
+            if not title:
+                return error_response(400, "title is required")
+            values["title"] = title[:80]
+        if "context_type" in payload:
+            values["context_type"] = str(payload.get("context_type") or "workspace").strip() or "workspace"
+        if "context_ref" in payload:
+            values["context_ref"] = str(payload.get("context_ref") or "").strip()
+        if "pinned" in payload:
+            if not isinstance(payload.get("pinned"), bool):
+                return error_response(422, "pinned must be boolean")
+            values["pinned_at"] = now if payload["pinned"] else None
+        if "archived" in payload:
+            if not isinstance(payload.get("archived"), bool):
+                return error_response(422, "archived must be boolean")
+            values["archived_at"] = now if payload["archived"] else None
+        conversation = chat.update_conversation(conversation_id, values)
+        if conversation is None:
+            return error_response(404, "conversation not found")
+        return JSONResponse(_conversation_json(conversation, applications))
 
     @app.delete("/api/chat/conversations/{conversation_id}")
     def delete_conversation(conversation_id: int) -> dict[str, str]:

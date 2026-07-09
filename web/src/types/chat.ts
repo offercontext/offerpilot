@@ -4,6 +4,8 @@ export interface Conversation {
   mode?: string;
   context_type: string;
   context_ref: string;
+  pinned_at?: string | null;
+  archived_at?: string | null;
   pending_action?: PendingAction | null;
   pending_clarification?: PendingAction | null;
   last_write_undo?: ChatUndo | null;

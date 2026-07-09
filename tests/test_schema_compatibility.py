@@ -189,7 +189,9 @@ def test_init_database_adds_current_chat_context_columns(tmp_path):
         conversation_columns = {row[1] for row in conn.execute("PRAGMA table_info(conversations)")}
         message_columns = {row[1] for row in conn.execute("PRAGMA table_info(chat_messages)")}
 
-    assert {"mode", "context_type", "context_ref"}.issubset(conversation_columns)
+    assert {"mode", "context_type", "context_ref", "pinned_at", "archived_at"}.issubset(
+        conversation_columns
+    )
     assert "offer_id" not in conversation_columns
     assert "provider_blocks" in message_columns
 
@@ -242,7 +244,9 @@ def test_current_chat_context_migration_is_recorded(tmp_path):
         conversation_columns = {row[1] for row in conn.execute("PRAGMA table_info(conversations)")}
 
     assert "0002_chat_state_columns" in versions
-    assert {"context_type", "context_ref"}.issubset(conversation_columns)
+    assert {"context_type", "context_ref", "pinned_at", "archived_at"}.issubset(
+        conversation_columns
+    )
     assert "offer_id" not in conversation_columns
 
 

@@ -1427,6 +1427,66 @@ def test_chat_conversations_detail_and_delete(tmp_path):
     assert client.get("/api/chat/conversations").json() == []
 
 
+def test_chat_conversation_update_renames_pins_archives_and_clears_context(tmp_path):
+    model = ScriptedModel([Assistant(content="第一条"), Assistant(content="第二条")])
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    first = client.post(
+        "/api/chat",
+        json={
+            "message": "第一条",
+            "conversation_id": 0,
+            "context_type": "application",
+            "context_ref": "42",
+        },
+    ).json()["conversation_id"]
+    second = client.post("/api/chat", json={"message": "第二条", "conversation_id": 0}).json()[
+        "conversation_id"
+    ]
+
+    renamed = client.patch(
+        f"/api/chat/conversations/{first}",
+        json={
+            "title": "字节后端投递跟进",
+            "pinned": True,
+            "context_type": "workspace",
+            "context_ref": "",
+        },
+    )
+
+    assert renamed.status_code == 200
+    assert renamed.json()["title"] == "字节后端投递跟进"
+    assert renamed.json()["pinned_at"] is not None
+    assert renamed.json()["archived_at"] is None
+    assert renamed.json()["context_type"] == "workspace"
+    assert renamed.json()["context_ref"] == ""
+    conversations = client.get("/api/chat/conversations").json()
+    assert [item["id"] for item in conversations] == [first, second]
+
+    archived = client.patch(f"/api/chat/conversations/{first}", json={"archived": True})
+
+    assert archived.status_code == 200
+    assert archived.json()["archived_at"] is not None
+    assert [item["id"] for item in client.get("/api/chat/conversations").json()] == [second]
+    archived_list = client.get("/api/chat/conversations?include_archived=true").json()
+    assert [item["id"] for item in archived_list] == [first, second]
+
+
+def test_chat_conversation_update_rejects_string_booleans(tmp_path):
+    model = ScriptedModel([Assistant(content="第一条")])
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    conversation_id = client.post("/api/chat", json={"message": "第一条", "conversation_id": 0}).json()[
+        "conversation_id"
+    ]
+
+    response = client.patch(
+        f"/api/chat/conversations/{conversation_id}",
+        json={"pinned": "false"},
+    )
+
+    assert response.status_code == 422
+    assert client.get("/api/chat/conversations").json()[0]["pinned_at"] is None
+
+
 def test_chat_context_creates_application_scoped_conversation(tmp_path):
     model = ScriptedModel([Assistant(content="已读取投递上下文")])
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model))

@@ -154,16 +154,36 @@
   color: var(--op-muted);
   margin-top: 1px;
 }
-.threadDel {
-  color: var(--op-muted);
+.threadActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  flex-shrink: 0;
   opacity: 0;
-  font-size: 13px;
-  transition: opacity 0.15s var(--op-ease), color 0.15s var(--op-ease);
+  transition: opacity 0.15s var(--op-ease);
 }
-.thread:hover .threadDel {
+.thread:hover .threadActions,
+.threadActive .threadActions {
   opacity: 1;
 }
-.threadDel:hover {
+.threadAction {
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--op-muted);
+  font-size: 13px;
+  border-radius: 6px;
+  transition: color 0.15s var(--op-ease), background 0.15s var(--op-ease);
+}
+.threadAction:hover {
+  color: var(--op-primary);
+  background: var(--chat-tint);
+}
+.threadAction[aria-label='删除对话']:hover {
   color: var(--op-error);
 }
 .railEmpty {
@@ -1017,6 +1037,27 @@
 .contextBadge b {
   color: var(--op-ink);
   font-size: 11.5px;
+}
+.contextClear {
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--op-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+}
+.contextClear:hover {
+  background: var(--chat-tint);
+  color: var(--op-primary);
+}
+.contextClear:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 /* ---------- 斜杠命令浮层 ---------- */
