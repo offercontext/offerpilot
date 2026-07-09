@@ -1,0 +1,60 @@
+web/src/components/ChatPanel/layout.test.ts
+  s_1fea66e1b84b8e::t_d57af51a9ccf78 161-162
+  s_1fea66e1b84b8e::t_4fcb413263905b 158-160
+  s_1fea66e1b84b8e::t_e4b5834166be35 163-165
+  s_1fea66e1b84b8e::t_31177d9a001cc6 5,156-157,166-167
+tests/test_chat_api.py
+  s_1fea66e1b84b8e::t_d97824a242e61e 1432,1443-1444,1454,1474-1489
+  s_1fea66e1b84b8e::t_e135c97466495b 1430-1431
+  s_1fea66e1b84b8e::t_6cf045700b55ab 1433-1435,1440-1442
+  s_1fea66e1b84b8e::t_e25fec9159623d 1445-1447,1451-1453
+  s_1fea66e1b84b8e::t_459d573078ae90 1455-1457,1471-1473
+  s_1fea66e1b84b8e::t_3e47a020f4e15e 1436-1439,1448-1450,1458-1470
+src/offerpilot/api.py
+  s_1fea66e1b84b8e::t_4dd4eff0b88ef4 1602-1608
+  s_1fea66e1b84b8e::t_3233534e72b5bb 1599-1601
+  s_1fea66e1b84b8e::t_eec7b680f9f684 1609-1611
+  s_1fea66e1b84b8e::t_cdc7d7fc1241fa 113,1575-1579,1588-1598,1612-1613
+web/src/components/ChatPanel/ThreadRail.tsx
+  s_1fea66e1b84b8e::t_5c4f57c3143228 26,28-31,50,60-85,87-113
+  s_1fea66e1b84b8e::t_c5f508f8133a8a 23-25
+  s_1fea66e1b84b8e::t_6b28c88264aa38 27
+  s_1fea66e1b84b8e::t_8eeba2fb35d90e 114-116
+  s_1fea66e1b84b8e::t_5d11c133733839 2,5,14,21-22,117
+src/offerpilot/db.py
+  s_1fea66e1b84b8e::t_b03b739db42f46 36-37
+src/offerpilot/models.py
+  s_1fea66e1b84b8e::t_fe4d8298c41bab 465-466
+src/offerpilot/repositories/chat.py
+  s_1fea66e1b84b8e::t_c33236c7d0ece7 41-50,54-67
+src/offerpilot/schemas.py
+  s_1fea66e1b84b8e::t_2eabe0a338a59e 41-42
+tests/test_schema_compatibility.py
+  s_1fea66e1b84b8e::t_2b17ff5fb5f1f3 192-194,247-249
+web/src/components/ChatPanel/ChatPanel.module.css
+  s_1fea66e1b84b8e::t_d690d38784b658 157-161,163,165-166,169-186,1041-1061
+web/src/components/ChatPanel/index.tsx
+  s_1fea66e1b84b8e::t_1a4512099a9dd8 21,290-309,618,706,746-757
+web/src/services/chat.test.ts
+  s_1fea66e1b84b8e::t_cb2f561d27a4de 46-52
+web/src/services/chat.ts
+  s_1fea66e1b84b8e::t_0567165607aefe 200-203,216-231
+web/src/types/chat.ts
+  s_1fea66e1b84b8e::t_67546a4c8e1a34 7-8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "2e848b2409c32228a9d0d0997cd6d8256445ce0f",
+  "prompts": {},
+  "sessions": {
+    "s_1fea66e1b84b8e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3fc1-daa4-77d1-9e1e-a46e0f1580f8",
+        "model": "gpt-5.5"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    }
+  }
+}
