@@ -1,4 +1,5 @@
-import { Button, Drawer, List, Space, Tag, Typography } from 'antd';
+import { Button, List, Space, Tag, Typography } from 'antd';
+import { ArrowLeftOutlined } from '@ant-design/icons';
 import type { ActionCommand, PipelineInsight } from '@/lib/pipelineInsights';
 import styles from './pipeline.module.css';
 
@@ -42,10 +43,18 @@ export default function ActionDetailDrawer({ insight, open, onClose, onRunAction
     '流程行动'
   );
 
+  if (!open) return null;
+
   return (
-    <Drawer title={title} open={open} onClose={onClose} width={560} destroyOnClose>
+    <section className={styles.detailWorkspace} aria-label="流程行动详情">
       {detail && primaryAction ? (
         <div className={styles.drawerBody}>
+          <div className={styles.detailHeader}>
+            <Button type="link" className={styles.backButton} icon={<ArrowLeftOutlined />} onClick={onClose}>
+              返回工作台
+            </Button>
+            <div className={styles.detailTitle}>{title}</div>
+          </div>
           <section className={styles.section}>
             <Typography.Title level={5}>为什么出现</Typography.Title>
             <Typography.Paragraph>{detail.reason}</Typography.Paragraph>
@@ -87,6 +96,6 @@ export default function ActionDetailDrawer({ insight, open, onClose, onRunAction
           </section>
         </div>
       ) : null}
-    </Drawer>
+    </section>
   );
 }

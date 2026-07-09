@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button, Input, Spin, message } from 'antd';
 import {
   CloudUploadOutlined,
@@ -137,6 +137,23 @@ export default function ResumeLibraryView() {
     ].join(' ').toLowerCase().includes(kw);
   });
 
+  useEffect(() => {
+    if (editing) {
+      window.scrollTo({ top: 0, left: 0 });
+    }
+  }, [editing]);
+
+  if (editing) {
+    return (
+      <ResumeEditorDrawer
+        resume={editing}
+        open={!!editing}
+        onClose={() => setEditing(null)}
+        onSaved={(next) => setEditing(next)}
+      />
+    );
+  }
+
   return (
     <div
       onDragEnter={(e) => { e.preventDefault(); dragCounter.current++; setDragActive(true); }}
@@ -233,12 +250,6 @@ export default function ResumeLibraryView() {
         uploading={uploadMut.isPending}
         onSubmit={uploadFile}
         onClose={() => setUploadOpen(false)}
-      />
-      <ResumeEditorDrawer
-        resume={editing}
-        open={!!editing}
-        onClose={() => setEditing(null)}
-        onSaved={(next) => setEditing(next)}
       />
     </div>
   );

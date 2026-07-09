@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Button, Descriptions, Drawer, Input, Progress, Space, Tag, message } from 'antd';
+import { Button, Descriptions, Input, Progress, Space, Tag, message } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { updateResume } from '@/services/resumes';
 import type { CareerIntent, Resume, ResumeContent, UpdateResumeInput } from '@/types/resume';
@@ -136,7 +136,7 @@ export default function ResumeEditorDrawer({ resume, open, onClose, onSaved }: P
     [resume?.missing_sections]
   );
 
-  if (!resume && open) return null;
+  if (!open || !resume) return null;
 
   const currentMeta = SECTION_META.find((item) => item.key === activeSection);
 
@@ -161,21 +161,22 @@ export default function ResumeEditorDrawer({ resume, open, onClose, onSaved }: P
   };
 
   return (
-    <Drawer
-      title="编辑简历"
-      open={open}
-      onClose={onClose}
-      width={760}
-      destroyOnClose
-      footer={
-        <Space style={{ float: 'right' }}>
+    <section className={styles.editorWorkspace} aria-label="编辑简历">
+      <div className={styles.editorWorkspaceToolbar}>
+        <div>
+          <Button type="link" className={styles.backButton} onClick={onClose}>
+            返回简历库
+          </Button>
+          <div className={styles.editorWorkspaceTitle}>编辑简历</div>
+        </div>
+        <Space>
           <Button onClick={onClose}>取消</Button>
           <Button type="primary" loading={saveMut.isPending} onClick={handleSave}>
             保存
           </Button>
         </Space>
-      }
-    >
+      </div>
+
       <div className={styles.editorHeader}>
         <Input
           value={title}
@@ -264,7 +265,7 @@ export default function ResumeEditorDrawer({ resume, open, onClose, onSaved }: P
           ) : null}
         </section>
       </div>
-    </Drawer>
+    </section>
   );
 }
 

@@ -13,6 +13,25 @@
   flex-wrap: wrap;
 }
 
+.detailHeader {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.backButton {
+  width: fit-content;
+  height: auto;
+  padding: 0;
+}
+
+.detailTitle {
+  margin: 0;
+  color: var(--op-ink);
+  font-size: 24px;
+  line-height: 1.25;
+}
+
 .monthLabel {
   font-size: 16px;
   font-weight: 600;

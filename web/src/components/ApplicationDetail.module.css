@@ -1,0 +1,46 @@
+.detailWorkspace {
+  min-width: 0;
+  color: var(--op-text);
+}
+
+.header {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.backButton {
+  width: fit-content;
+  height: auto;
+  padding: 0;
+}
+
+.titleRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.title {
+  margin: 0 !important;
+}
+
+.actionRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+@media (max-width: 760px) {
+  .actionRow {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .actionRow :global(.ant-btn) {
+    width: 100%;
+  }
+}

@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Button, DatePicker, Drawer, Form, Input, InputNumber, Select, Space, message } from 'antd';
+import { ArrowLeftOutlined } from '@ant-design/icons';
+import { Button, DatePicker, Form, Input, InputNumber, Select, Space, message } from 'antd';
 import dayjs from 'dayjs';
 import type { Dayjs } from 'dayjs';
 import { createEvent, updateEvent } from '@/services/events';
@@ -120,22 +121,29 @@ export default function ScheduleEventForm({
     });
   };
 
+  if (!open) return null;
+
   return (
-    <Drawer
-      title={isEdit ? '编辑日程' : '新建日程'}
-      open={open}
-      onClose={handleClose}
-      width={460}
-      destroyOnClose
-      footer={
-        <Space style={{ display: 'flex', justifyContent: 'flex-end' }}>
+    <section aria-label={isEdit ? '编辑日程' : '新建日程'}>
+      <div style={{ display: 'grid', gap: 8, marginBottom: 18 }}>
+        <Button
+          type="link"
+          icon={<ArrowLeftOutlined />}
+          onClick={handleClose}
+          style={{ width: 'fit-content', height: 'auto', padding: 0 }}
+        >
+          返回上一层
+        </Button>
+        <Space style={{ width: '100%', justifyContent: 'space-between' }} align="center" wrap>
+          <h2 style={{ margin: 0 }}>{isEdit ? '编辑日程' : '新建日程'}</h2>
+          <Space>
           <Button onClick={handleClose}>取消</Button>
           <Button type="primary" loading={mutation.isPending} onClick={() => form.submit()}>
             {isEdit ? '保存' : '创建'}
           </Button>
+          </Space>
         </Space>
-      }
-    >
+      </div>
       <Form form={form} layout="vertical" onFinish={handleFinish} requiredMark={false}>
         <Form.Item
           name="application_id"
@@ -218,6 +226,6 @@ export default function ScheduleEventForm({
           <Input.TextArea rows={3} placeholder="准备事项、联系人等" />
         </Form.Item>
       </Form>
-    </Drawer>
+    </section>
   );
 }

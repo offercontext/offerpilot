@@ -1,6 +1,22 @@
-.drawer :global(.ant-drawer-body) {
-  background: var(--op-layout-bg);
-  padding: 18px;
+.workspace {
+  min-width: 0;
+}
+
+.workspaceHeader {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.backButton {
+  width: fit-content;
+  height: auto;
+  padding: 0;
+}
+
+.workspaceTitle {
+  color: var(--op-ink) !important;
+  margin: 0 !important;
 }
 
 .layout {
@@ -170,10 +186,6 @@
 }
 
 @media (max-width: 860px) {
-  .drawer :global(.ant-drawer-body) {
-    padding: 12px;
-  }
-
   .layout {
     grid-template-columns: 1fr;
     min-height: auto;

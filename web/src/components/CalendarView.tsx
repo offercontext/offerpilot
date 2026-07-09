@@ -7,7 +7,7 @@ import {
   PlusOutlined,
   RightOutlined,
 } from '@ant-design/icons';
-import { Button, Spin, Empty, Tag, Drawer, Popconfirm, Tooltip, message } from 'antd';
+import { Button, Spin, Empty, Tag, Popconfirm, Tooltip, message } from 'antd';
 import dayjs from 'dayjs';
 import type { Application } from '@/types/application';
 import type { CalendarEntry } from '@/types/calendar';
@@ -153,6 +153,116 @@ export default function CalendarView({ onOpenDetail, applications }: CalendarVie
     if (app) onOpenDetail(app);
   };
 
+  if (formOpen) {
+    return (
+      <div className={styles.wrap}>
+        <ScheduleEventForm
+          open={formOpen}
+          applications={applications}
+          event={editingEvent ?? undefined}
+          onClose={() => {
+            cancelPendingEdit();
+            setFormOpen(false);
+            setEditingEvent(null);
+          }}
+        />
+      </div>
+    );
+  }
+
+  if (selectedDate) {
+    return (
+      <div className={styles.wrap}>
+        <div className={styles.detailHeader}>
+          <Button
+            type="link"
+            icon={<LeftOutlined />}
+            className={styles.backButton}
+            onClick={() => {
+              cancelPendingEdit();
+              setSelectedDate(null);
+            }}
+          >
+            返回日历
+          </Button>
+          <h2 className={styles.detailTitle}>{dayjs(selectedDate).format('M月D日 记录')}</h2>
+        </div>
+        {selectedEntries.length === 0 ? (
+          <Empty description="这一天没有记录" />
+        ) : (
+          <div>
+            {selectedEntries.map((e, i) => (
+              <div
+                key={getEntryKey(e, i)}
+                className={[styles.entryItem, e.editable ? styles.entryItemStatic : ''].join(' ')}
+                onClick={() => !e.editable && openEntry(e)}
+              >
+                <div className={styles.entryHeader}>
+                  <div className={styles.entryTitleWrap}>
+                    {e.scheduled_at && (
+                      <span className={styles.entryTime}>{dayjs(e.scheduled_at).format('HH:mm')}</span>
+                    )}
+                    <strong className={styles.entryTitle}>{e.title}</strong>
+                  </div>
+                  <div className={styles.entryMeta}>
+                    <Tag color={getEntryTagColor(e)}>{getEntryLabel(e)}</Tag>
+                    {e.editable && (
+                      <div className={styles.entryActions} onClick={(event) => event.stopPropagation()}>
+                        <Tooltip title="编辑日程">
+                          <Button
+                            size="small"
+                            type="text"
+                            icon={<EditOutlined />}
+                            disabled={editMutation.isPending}
+                            loading={loadingEventId === e.event_id}
+                            onClick={() => {
+                              if (!e.event_id || editMutation.isPending) return;
+                              const token = editRequestToken.current + 1;
+                              editRequestToken.current = token;
+                              editMutation.mutate({
+                                eventId: e.event_id,
+                                token,
+                              });
+                            }}
+                          />
+                        </Tooltip>
+                        <Popconfirm
+                          title="删除日程"
+                          description="确定删除这个日程吗？"
+                          okText="删除"
+                          cancelText="取消"
+                          okButtonProps={{ danger: true, loading: deleteMutation.isPending }}
+                          onConfirm={() => {
+                            cancelPendingEdit();
+                            if (e.event_id) deleteMutation.mutate(e.event_id);
+                          }}
+                        >
+                          <Tooltip title="删除日程">
+                            <Button
+                              size="small"
+                              type="text"
+                              danger
+                              icon={<DeleteOutlined />}
+                            />
+                          </Tooltip>
+                        </Popconfirm>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                {e.subtitle && <div className={styles.entrySubtitle}>{e.subtitle}</div>}
+                {e.location && <div className={styles.entryLocation}>{e.location}</div>}
+              </div>
+            ))}
+            <p style={{ marginTop: 12, color: '#94a3b8', fontSize: 12 }}>
+              点击投递或复盘记录可打开对应投递详情。
+            </p>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className={styles.wrap}>
       <div className={styles.toolbar}>
@@ -248,99 +358,6 @@ export default function CalendarView({ onOpenDetail, applications }: CalendarVie
         </>
       )}
 
-      <Drawer
-        title={selectedDate ? dayjs(selectedDate).format('M月D日 记录') : ''}
-        open={!!selectedDate}
-        onClose={() => {
-          cancelPendingEdit();
-          setSelectedDate(null);
-        }}
-        width={360}
-        destroyOnClose
-      >
-        {selectedEntries.length === 0 ? (
-          <Empty description="这一天没有记录" />
-        ) : (
-          <div>
-            {selectedEntries.map((e, i) => (
-              <div
-                key={getEntryKey(e, i)}
-                className={[styles.entryItem, e.editable ? styles.entryItemStatic : ''].join(' ')}
-                onClick={() => !e.editable && openEntry(e)}
-              >
-                <div className={styles.entryHeader}>
-                  <div className={styles.entryTitleWrap}>
-                    {e.scheduled_at && (
-                      <span className={styles.entryTime}>{dayjs(e.scheduled_at).format('HH:mm')}</span>
-                    )}
-                    <strong className={styles.entryTitle}>{e.title}</strong>
-                  </div>
-                  <div className={styles.entryMeta}>
-                    <Tag color={getEntryTagColor(e)}>{getEntryLabel(e)}</Tag>
-                    {e.editable && (
-                      <div className={styles.entryActions} onClick={(event) => event.stopPropagation()}>
-                        <Tooltip title="编辑日程">
-                          <Button
-                            size="small"
-                            type="text"
-                            icon={<EditOutlined />}
-                            disabled={editMutation.isPending}
-                            loading={loadingEventId === e.event_id}
-                            onClick={() => {
-                              if (!e.event_id || editMutation.isPending) return;
-                              const token = editRequestToken.current + 1;
-                              editRequestToken.current = token;
-                              editMutation.mutate({
-                                eventId: e.event_id,
-                                token,
-                              });
-                            }}
-                          />
-                        </Tooltip>
-                        <Popconfirm
-                          title="删除日程"
-                          description="确定删除这个日程吗？"
-                          okText="删除"
-                          cancelText="取消"
-                          okButtonProps={{ danger: true, loading: deleteMutation.isPending }}
-                          onConfirm={() => {
-                            cancelPendingEdit();
-                            if (e.event_id) deleteMutation.mutate(e.event_id);
-                          }}
-                        >
-                          <Tooltip title="删除日程">
-                            <Button
-                              size="small"
-                              type="text"
-                              danger
-                              icon={<DeleteOutlined />}
-                            />
-                          </Tooltip>
-                        </Popconfirm>
-                      </div>
-                    )}
-                  </div>
-                </div>
-                {e.subtitle && <div className={styles.entrySubtitle}>{e.subtitle}</div>}
-                {e.location && <div className={styles.entryLocation}>{e.location}</div>}
-              </div>
-            ))}
-            <p style={{ marginTop: 12, color: '#94a3b8', fontSize: 12 }}>
-              点击投递或复盘记录可打开对应投递详情。
-            </p>
-          </div>
-        )}
-      </Drawer>
-      <ScheduleEventForm
-        open={formOpen}
-        applications={applications}
-        event={editingEvent ?? undefined}
-        onClose={() => {
-          cancelPendingEdit();
-          setFormOpen(false);
-          setEditingEvent(null);
-        }}
-      />
     </div>
   );
 }

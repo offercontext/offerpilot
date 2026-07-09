@@ -49,6 +49,16 @@ export default function OfferCenterView({ applications, onCoach }: Props) {
     );
   }
 
+  if (compareOpen) {
+    return (
+      <OfferCompareDrawer
+        open={compareOpen}
+        onClose={() => setCompareOpen(false)}
+        offers={selectedOffers}
+      />
+    );
+  }
+
   return (
     <div>
       <Row justify="space-between" align="middle" style={{ marginBottom: 16 }}>
@@ -109,7 +119,6 @@ export default function OfferCenterView({ applications, onCoach }: Props) {
         applications={applications}
         editing={editing}
       />
-      <OfferCompareDrawer open={compareOpen} onClose={() => setCompareOpen(false)} offers={selectedOffers} />
     </div>
   );
 }

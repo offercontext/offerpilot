@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { Button, Drawer, Form, Grid, Input, Select } from 'antd';
+import { Button, Form, Input, Select, Space } from 'antd';
 import type { KnowledgeDocument, KnowledgeDocumentInput } from '@/types/knowledge';
 
 interface Props {
@@ -23,7 +23,6 @@ export default function KnowledgeDocumentEditor({
   onSubmit,
   onClose,
 }: Props) {
-  const screens = Grid.useBreakpoint();
   const [form] = Form.useForm<FormValues>();
   const editing = !!document;
 
@@ -50,14 +49,24 @@ export default function KnowledgeDocumentEditor({
     });
   }
 
+  if (!open) return null;
+
   return (
-    <Drawer
-      title={editing ? '编辑知识文档' : '新建知识文档'}
-      open={open}
-      onClose={onClose}
-      width={screens.md ? 640 : '100%'}
-      destroyOnClose
-    >
+    <section aria-label={editing ? '编辑知识文档' : '新建知识文档'}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, marginBottom: 20 }}>
+        <div>
+          <Button type="link" style={{ height: 'auto', padding: 0 }} onClick={onClose}>
+            返回知识库
+          </Button>
+          <h2 style={{ margin: '8px 0 0' }}>{editing ? '编辑知识文档' : '新建知识文档'}</h2>
+        </div>
+        <Space>
+          <Button onClick={onClose}>取消</Button>
+          <Button type="primary" loading={saving} onClick={() => form.submit()}>
+            保存文档
+          </Button>
+        </Space>
+      </div>
       <Form form={form} layout="vertical" onFinish={handleFinish}>
         <Form.Item
           name="title"
@@ -74,11 +83,7 @@ export default function KnowledgeDocumentEditor({
         <Form.Item name="content" label="内容">
           <Input.TextArea rows={16} placeholder="在这里编写或粘贴学习资料、八股文、面试笔记等内容" />
         </Form.Item>
-
-        <Button type="primary" htmlType="submit" loading={saving}>
-          保存文档
-        </Button>
       </Form>
-    </Drawer>
+    </section>
   );
 }

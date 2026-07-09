@@ -4,7 +4,6 @@ import {
   Alert,
   Button,
   Checkbox,
-  Drawer,
   Empty,
   Form,
   Input,
@@ -16,7 +15,7 @@ import {
   Typography,
   App as AntApp,
 } from 'antd';
-import { CopyOutlined, ReloadOutlined, SaveOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, CopyOutlined, ReloadOutlined, SaveOutlined } from '@ant-design/icons';
 import type { Application } from '@/types/application';
 import type {
   MaterialKitChecklistItem,
@@ -313,15 +312,18 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
     }
   };
 
+  if (!open) return null;
+
   return (
-    <Drawer
-      title="投递材料包"
-      open={open}
-      onClose={onClose}
-      width="min(1120px, calc(100vw - 32px))"
-      destroyOnClose
-      className={styles.drawer}
-    >
+    <section className={styles.workspace} aria-label="投递材料包">
+      <div className={styles.workspaceHeader}>
+        <Button type="link" icon={<ArrowLeftOutlined />} className={styles.backButton} onClick={onClose}>
+          返回投递详情
+        </Button>
+        <Typography.Title level={3} className={styles.workspaceTitle}>
+          投递材料包
+        </Typography.Title>
+      </div>
       <Spin spinning={kitQuery.isFetching && !kitQuery.data}>
         <div className={styles.layout}>
           <aside className={styles.contextPanel}>
@@ -524,6 +526,6 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
           </main>
         </div>
       </Spin>
-    </Drawer>
+    </section>
   );
 }

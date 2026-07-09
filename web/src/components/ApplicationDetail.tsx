@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
-  Drawer,
   Typography,
   Tag,
   Timeline,
@@ -17,6 +16,7 @@ import {
   Space,
 } from 'antd';
 import {
+  ArrowLeftOutlined,
   CalendarOutlined,
   RobotOutlined,
   PlusOutlined,
@@ -36,6 +36,7 @@ import ScheduleEventForm from '@/components/ScheduleEventForm';
 import JDAnalyzeModal from './JDAnalyzeModal';
 import ReviewFormDrawer from './ReviewFormDrawer';
 import MaterialKitDrawer from './MaterialKitDrawer';
+import styles from './ApplicationDetail.module.css';
 
 const { Title, Paragraph, Text } = Typography;
 
@@ -127,30 +128,70 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
     }
   };
 
-  if (!application) return null;
+  const closeDetail = () => {
+    setEventFormOpen(false);
+    setMaterialKitOpen(false);
+    setEditingNote(null);
+    onClose();
+  };
+
+  if (!application || !open) return null;
+
+  if (eventFormOpen) {
+    return (
+      <ScheduleEventForm
+        open={eventFormOpen}
+        applications={[application]}
+        initialApplication={application}
+        onClose={() => setEventFormOpen(false)}
+      />
+    );
+  }
+
+  if (editingNote) {
+    return (
+      <ReviewFormDrawer
+        open={!!editingNote}
+        applications={[application]}
+        initialApplication={application}
+        note={editingNote}
+        saving={updateNoteMut.isPending}
+        onSubmit={(input) => {
+          if (editingNote) updateNoteMut.mutate({ id: editingNote.id, input });
+        }}
+        onClose={() => setEditingNote(null)}
+      />
+    );
+  }
+
+  if (materialKitOpen) {
+    return (
+      <MaterialKitDrawer
+        application={application}
+        open={materialKitOpen}
+        onClose={() => setMaterialKitOpen(false)}
+      />
+    );
+  }
 
   return (
     <>
-      <Drawer
-        title={
-          <span>
-            {application.company_name} · {application.position_name}
-          </span>
-        }
-        open={open}
-        onClose={() => {
-          setEventFormOpen(false);
-          setMaterialKitOpen(false);
-          setEditingNote(null);
-          onClose();
-        }}
-        width={520}
-        destroyOnClose
-      >
-        <div style={{ marginBottom: 16 }}>
-          <Tag color="green">{STATUS_LABELS[application.status]}</Tag>
+      <section className={styles.detailWorkspace} aria-label="投递详情">
+        <div className={styles.header}>
+          <Button type="link" className={styles.backButton} icon={<ArrowLeftOutlined />} onClick={closeDetail}>
+            返回上一层
+          </Button>
+          <div className={styles.titleRow}>
+            <Title level={3} className={styles.title}>
+              {application.company_name} · {application.position_name}
+            </Title>
+            <Tag color="green">{STATUS_LABELS[application.status]}</Tag>
+          </div>
+        </div>
+
+        <div className={styles.actionRow}>
           {application.job_url && (
-            <a href={application.job_url} target="_blank" rel="noreferrer" style={{ marginLeft: 8 }}>
+            <a href={application.job_url} target="_blank" rel="noreferrer">
               <LinkOutlined /> 查看 JD
             </a>
           )}
@@ -313,34 +354,12 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
         ) : (
           <Empty description="还没有面试复盘" />
         )}
-      </Drawer>
+      </section>
 
       <JDAnalyzeModal
         open={jdModalOpen}
         application={application}
         onClose={() => setJdModalOpen(false)}
-      />
-      <ScheduleEventForm
-        open={eventFormOpen}
-        applications={[application]}
-        initialApplication={application}
-        onClose={() => setEventFormOpen(false)}
-      />
-      <ReviewFormDrawer
-        open={!!editingNote}
-        applications={[application]}
-        initialApplication={application}
-        note={editingNote}
-        saving={updateNoteMut.isPending}
-        onSubmit={(input) => {
-          if (editingNote) updateNoteMut.mutate({ id: editingNote.id, input });
-        }}
-        onClose={() => setEditingNote(null)}
-      />
-      <MaterialKitDrawer
-        application={application}
-        open={materialKitOpen}
-        onClose={() => setMaterialKitOpen(false)}
       />
     </>
   );

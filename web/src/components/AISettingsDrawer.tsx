@@ -4,7 +4,6 @@ import {
   Alert,
   Button,
   Divider,
-  Drawer,
   Form,
   Input,
   List,
@@ -18,6 +17,7 @@ import {
 } from 'antd';
 import {
   ApiOutlined,
+  ArrowLeftOutlined,
   CheckCircleOutlined,
   DeleteOutlined,
   EditOutlined,
@@ -228,24 +228,28 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
     }
   }
 
+  if (!open) return null;
+
   return (
-    <Drawer
-      title={
-        <Space>
-          <ApiOutlined />
-          AI 设置
-        </Space>
-      }
-      open={open}
-      onClose={onClose}
-      width={620}
-      destroyOnClose
-      extra={
-        <Button type="primary" loading={saveMutation.isPending} onClick={() => saveMutation.mutate()}>
-          保存
+    <section aria-label="AI 设置" style={{ maxWidth: 1040, display: 'grid', gap: 16 }}>
+      <div style={{ display: 'grid', gap: 8 }}>
+        <Button
+          type="link"
+          icon={<ArrowLeftOutlined />}
+          onClick={onClose}
+          style={{ width: 'fit-content', height: 'auto', padding: 0 }}
+        >
+          返回设置
         </Button>
-      }
-    >
+        <Space style={{ width: '100%', justifyContent: 'space-between' }} align="center" wrap>
+          <Typography.Title level={3} style={{ margin: 0, color: 'var(--op-ink)' }}>
+            <ApiOutlined /> AI 设置
+          </Typography.Title>
+          <Button type="primary" loading={saveMutation.isPending} onClick={() => saveMutation.mutate()}>
+            保存
+          </Button>
+        </Space>
+      </div>
       <Space direction="vertical" size={16} style={{ width: '100%' }}>
         <Alert
           type={hasKey ? 'success' : 'warning'}
@@ -403,7 +407,7 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
           </div>
         </Form>
       </Space>
-    </Drawer>
+    </section>
   );
 }
 
