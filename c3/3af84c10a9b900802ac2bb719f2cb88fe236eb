@@ -1,0 +1,52 @@
+web/src/components/ChatPanel/layout.test.ts
+  s_7f2bc75bf7c269::t_6140dc86fc717e 67-68
+  s_7f2bc75bf7c269::t_dcecf0536d565b 80-85
+web/src/components/ChatPanel/index.tsx
+  s_7f2bc75bf7c269::t_099769acc30c8f 155,238,307-330,367,387-394,461,468-475
+  s_7f2bc75bf7c269::t_d922b6a994f837 293-301,303,419-426
+  s_7f2bc75bf7c269::t_da1b01e5e6b251 496-499
+tests/test_ai_agent.py
+  s_7f2bc75bf7c269::t_fb81c8ec503a39 15-24,178-195
+  s_511a437aa5b960::t_0998c0b04c652c 196-198
+src/offerpilot/ai/agent.py
+  s_7f2bc75bf7c269::t_4df80f488045f3 19,27-36,144,297-310
+  s_7f2bc75bf7c269::t_d9d4ae1a340b8f 311
+src/offerpilot/api.py
+  s_7f2bc75bf7c269::t_c6545ca79c8949 1899-1902,1946
+  s_7f2bc75bf7c269::t_42a5ecbe7f5694 1195,1407,1439
+tests/test_litellm_client.py
+  s_7f2bc75bf7c269::t_6c8f2e1864abf2 101-178
+  s_7f2bc75bf7c269::t_164082bde5d73e 179-211
+src/offerpilot/ai/client.py
+  s_7f2bc75bf7c269::t_713e1d737bc21a 56-62,64,70-71
+  s_7f2bc75bf7c269::t_fdbf53a5d59e2d 217-223
+  s_7f2bc75bf7c269::t_43de02e95af11b 45-55,63,65-69,72-82,125-186
+  s_7f2bc75bf7c269::t_5d4b30f9cb074e 187-188
+tests/test_chat_api.py
+  s_7f2bc75bf7c269::t_d621eab3d4507c 58-67,126-145
+  s_7f2bc75bf7c269::t_62240cec184de1 146-147
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "c33af84c10a9b900802ac2bb719f2cb88fe236eb",
+  "prompts": {},
+  "sessions": {
+    "s_511a437aa5b960": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3fb0-854e-7482-bf13-f20047e2cfcd",
+        "model": "gpt-5.5"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    },
+    "s_7f2bc75bf7c269": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3fc9-102a-7c12-bd59-7b0c567c26b6",
+        "model": "gpt-5.5"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    }
+  }
+}
