@@ -1,0 +1,54 @@
+web/src/services/chat.ts
+  s_7f2bc75bf7c269::t_3a84608f582c6d 1-2,18-21,58-186
+  s_7f2bc75bf7c269::t_f2c292203db5cb 187
+web/src/components/ChatPanel/index.tsx
+  s_7f2bc75bf7c269::t_c487b980bb883f 296-314,347-350,371,430-433
+  s_7f2bc75bf7c269::t_0924b412782e94 335
+  s_7f2bc75bf7c269::t_58b2e05d208a40 13-14,23,98-121,344-346,351-354,374,412-418,434
+src/offerpilot/sse.py
+  s_7f2bc75bf7c269::t_7ef06467010792 1-46
+web/src/types/chat.ts
+  s_7f2bc75bf7c269::t_db37311ba908ef 61-85
+web/src/components/ChatPanel/layout.test.ts
+  s_7f2bc75bf7c269::t_b4644a8abd027d 63-70
+  s_7f2bc75bf7c269::t_9453db71f1cb01 71-77
+tests/test_ai_agent.py
+  s_7f2bc75bf7c269::t_ea9b5b7960529b 112-259
+web/src/services/chat.test.ts
+  s_7f2bc75bf7c269::t_5dc66505ce06b4 1-2,4-23,40-96
+tests/test_chat_api.py
+  s_7f2bc75bf7c269::t_e50b4c5fed9c9a 58-115
+  s_7f2bc75bf7c269::t_b5ca04dcfa3444 42-51,216-245
+  s_7f2bc75bf7c269::t_f74a2c143a9d91 151-171
+  s_7f2bc75bf7c269::t_ac94970a929fec 248-282
+  s_7f2bc75bf7c269::t_a75d8b5e38f88a 116-150,172-215,246-247
+src/offerpilot/ai/agent.py
+  s_7f2bc75bf7c269::t_0f9e118b411a1a 7,18,53,59,150,188,237,249-293,304,311,326,333,365-430
+  s_7f2bc75bf7c269::t_e86bbf085d9b55 92
+  s_7f2bc75bf7c269::t_2cdbe8e27e5e46 3
+src/offerpilot/api.py
+  s_7f2bc75bf7c269::t_362c30318194cf 1838-1847
+  s_7f2bc75bf7c269::t_db437286c94407 1196,1363-1376,1378-1433,1435-1445,1448-1460,1464-1521
+  s_7f2bc75bf7c269::t_a7c55f16d46e83 12,17,72,1134-1195,1197-1202,1205-1211,1215-1273
+  s_7f2bc75bf7c269::t_f68b70915073c6 1289,1302,1377,1434
+  s_7f2bc75bf7c269::t_022fdb53eb5629 8,11,1203-1204,1212-1214,1446-1447,1461-1463
+  s_7f2bc75bf7c269::t_54887a3c388cb5 1802-1826
+  s_7f2bc75bf7c269::t_72b6cedeedd944 1274
+  s_7f2bc75bf7c269::t_5170ee331ae2fe 1522
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "c4ac608aece89ea73b7314c0a822fb78166fad92",
+  "prompts": {},
+  "sessions": {
+    "s_7f2bc75bf7c269": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3fc9-102a-7c12-bd59-7b0c567c26b6",
+        "model": "gpt-5.5"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    }
+  }
+}
