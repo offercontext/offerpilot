@@ -37,6 +37,12 @@ def init_database(db_path: Path) -> SessionFactory:
         _ensure_column(engine, "conversations", "pending_tool_name", "TEXT DEFAULT ''"),
         _ensure_column(engine, "conversations", "pending_args", "TEXT DEFAULT ''"),
         _ensure_column(engine, "conversations", "pending_human", "TEXT DEFAULT ''"),
+        _ensure_column(engine, "conversations", "clarification_tool_call_id", "TEXT DEFAULT ''"),
+        _ensure_column(engine, "conversations", "clarification_tool_name", "TEXT DEFAULT ''"),
+        _ensure_column(engine, "conversations", "clarification_args", "TEXT DEFAULT ''"),
+        _ensure_column(engine, "conversations", "clarification_human", "TEXT DEFAULT ''"),
+        _ensure_column(engine, "conversations", "clarification_question", "TEXT DEFAULT ''"),
+        _ensure_column(engine, "conversations", "last_write_undo_json", "TEXT DEFAULT ''"),
         _ensure_column(engine, "chat_messages", "provider_blocks", "TEXT DEFAULT ''"),
     ]
     if any(chat_migrations):

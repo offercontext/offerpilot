@@ -50,6 +50,18 @@ export async function confirmAction(
   return data;
 }
 
+export async function undoLastWrite(
+  conversationId: number,
+  options?: ChatRequestOptions,
+): Promise<Extract<ChatResponse, { type: 'message' }>> {
+  const { data } = await http.post<Extract<ChatResponse, { type: 'message' }>>(
+    '/chat/undo-last-write',
+    { conversation_id: conversationId },
+    { signal: options?.signal },
+  );
+  return data;
+}
+
 export async function listConversations(): Promise<Conversation[]> {
   const { data } = await http.get<Conversation[]>('/chat/conversations');
   return data ?? [];

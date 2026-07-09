@@ -18,9 +18,10 @@ import {
   listConversations,
   getConversation,
   deleteConversation,
+  undoLastWrite,
 } from '@/services/chat';
 import { getOffer } from '@/services/offers';
-import type { ChatResponse, Conversation, PendingAction } from '@/types/chat';
+import type { ChatResponse, ChatUndo, Conversation, PendingAction } from '@/types/chat';
 import type { Offer } from '@/types/offer';
 import {
   buildTurns,
@@ -121,6 +122,8 @@ export default function ChatPanel({
   const [lastError, setLastError] = useState<string | null>(null);
   const [lastFailedText, setLastFailedText] = useState('');
   const [confirmError, setConfirmError] = useState<string | null>(null);
+  const [confirmPhase, setConfirmPhase] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
+  const [lastUndo, setLastUndo] = useState<ChatUndo | null>(null);
   const [loadingLabel, setLoadingLabel] = useState<string | undefined>(undefined);
   const [drawerWidth, setDrawerWidth] = useState(() => {
     const stored = Number(localStorage.getItem(CHAT_WIDTH_STORAGE_KEY));
@@ -219,6 +222,8 @@ export default function ChatPanel({
     setLastError(null);
     setLastFailedText('');
     setConfirmError(null);
+    setConfirmPhase('idle');
+    setLastUndo(null);
     setLoadingLabel(undefined);
   }
 
@@ -232,6 +237,9 @@ export default function ChatPanel({
       setPending(pendingActionForConversation(conversations, id));
       setDegraded(false);
       setConfirmError(null);
+      const conversation = conversations.find((item) => item.id === id);
+      setConfirmPhase('idle');
+      setLastUndo(conversation?.last_write_undo ?? null);
     } catch (e: any) {
       toast.error(e?.response?.data?.error ?? '加载对话失败');
     } finally {
@@ -261,6 +269,7 @@ export default function ChatPanel({
     setPending(null);
     setDegraded(!!resp.degraded);
     setConfirmError(null);
+    setLastUndo(resp.undo ?? null);
     try {
       const stored = await getConversation(resp.conversation_id);
       setTurns(buildTurns(stored));
@@ -285,6 +294,7 @@ export default function ChatPanel({
     setLastError(null);
     setLastFailedText('');
     setConfirmError(null);
+    setConfirmPhase('idle');
     setLoadingLabel('正在理解你的问题');
     setTurns((t) => [...t, { role: 'user', content: trimmed }]);
     setLoading(true);
@@ -303,6 +313,7 @@ export default function ChatPanel({
         setLoadingLabel('正在准备确认卡片');
         setConvID(resp.conversation_id);
         setPending(resp.pending_action);
+        setConfirmPhase('idle');
         const storedTurns = await reloadConversationTurns(resp.conversation_id, getConversation);
         if (storedTurns) setTurns(storedTurns);
         refreshConversations();
@@ -354,6 +365,7 @@ export default function ChatPanel({
   async function handleConfirm(approved: boolean) {
     if (!convID) return;
     setConfirmError(null);
+    setConfirmPhase(approved ? 'saving' : 'idle');
     setLoading(true);
     setLoadingLabel(approved ? `正在执行：${activePendingLabel(activePending)}` : '正在取消本次写入');
     const controller = new AbortController();
@@ -363,17 +375,20 @@ export default function ChatPanel({
       if (resp.type === 'confirmation_required') {
         setConvID(resp.conversation_id);
         setPending(resp.pending_action);
+        setConfirmPhase('idle');
         const storedTurns = await reloadConversationTurns(resp.conversation_id, getConversation);
         if (storedTurns) setTurns(storedTurns);
         refreshConversations();
       } else {
         await finishMessage(resp);
+        setConfirmPhase(approved ? 'success' : 'idle');
         if (approved) onDataChanged?.();
       }
     } catch (e: any) {
       if (isAbortError(e)) return;
       const error = e?.response?.data?.error ?? '确认失败';
       setConfirmError(error);
+      setConfirmPhase('error');
       toast.error(error);
     } finally {
       if (abortControllerRef.current === controller) abortControllerRef.current = null;
@@ -385,6 +400,31 @@ export default function ChatPanel({
   function retryConfirmAction() {
     if (!activePending || loading) return;
     void handleConfirm(true);
+  }
+
+  async function handleUndoLastWrite() {
+    if (!convID || !lastUndo || loading) return;
+    setConfirmPhase('saving');
+    setLoading(true);
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    try {
+      const resp = await undoLastWrite(convID, { signal: controller.signal });
+      await finishMessage(resp);
+      setLastUndo(null);
+      setConfirmPhase('success');
+      onDataChanged?.();
+      toast.success('已撤销最近一次 AI 写入');
+    } catch (e: any) {
+      if (isAbortError(e)) return;
+      const error = e?.response?.data?.error ?? '撤销失败';
+      setConfirmPhase('error');
+      toast.error(error);
+    } finally {
+      if (abortControllerRef.current === controller) abortControllerRef.current = null;
+      setLoading(false);
+      setLoadingLabel(undefined);
+    }
   }
 
   async function toggleAutoApprove(value: boolean) {
@@ -590,6 +630,25 @@ export default function ChatPanel({
                 >
                   停止当前回复
                 </Button>
+              </div>
+            )}
+
+            {(confirmPhase !== 'idle' || lastUndo) && (
+              <div className={styles.writeStatus}>
+                <span>
+                  {confirmPhase === 'saving'
+                    ? '正在保存'
+                    : confirmPhase === 'error'
+                      ? '保存失败'
+                      : confirmPhase === 'success'
+                        ? '保存成功'
+                        : '最近一次 AI 写入可撤销'}
+                </span>
+                {lastUndo ? (
+                  <button type="button" onClick={handleUndoLastWrite} disabled={loading}>
+                    撤销最近一次 AI 写入
+                  </button>
+                ) : null}
               </div>
             )}
 

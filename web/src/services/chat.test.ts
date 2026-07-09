@@ -16,4 +16,9 @@ describe('settings service v0.1 contract', () => {
     expect(source).toContain('signal?: AbortSignal');
     expect(source).toContain('{ signal: options?.signal }');
   });
+
+  it('exposes the undo endpoint for the latest AI write', () => {
+    expect(source).toContain('undoLastWrite');
+    expect(source).toContain('/chat/undo-last-write');
+  });
 });

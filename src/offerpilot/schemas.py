@@ -39,6 +39,8 @@ class ConversationOut(BaseModel):
     context_type: str = "workspace"
     context_ref: str = ""
     pending_action: dict[str, object] | None = None
+    pending_clarification: dict[str, object] | None = None
+    last_write_undo: dict[str, object] | None = None
     created_at: datetime
     updated_at: datetime
 

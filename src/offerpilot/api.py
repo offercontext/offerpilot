@@ -1062,10 +1062,13 @@ def create_app(
             if conversation is None:
                 return error_response(404, "conversation not found")
 
+        clarification = chat.get_pending_clarification(conversation_id)
         chat.append_message(conversation_id, "user", content=message)
         context_message = _chat_context_message(conversation, applications)
+        clarification_message = _chat_clarification_message(clarification, message)
         history = [
             _chat_response_system_message(),
+            *([clarification_message] if clarification_message is not None else []),
             *([context_message] if context_message is not None else []),
             *_stored_messages_to_ai(chat.list_messages(conversation_id)),
         ]
@@ -1093,6 +1096,7 @@ def create_app(
         except ChatAgentTimedOut:
             chat.append_message(conversation_id, "assistant", content=CHAT_TIMEOUT_MESSAGE)
             chat.clear_pending_action(conversation_id)
+            chat.clear_pending_clarification(conversation_id)
             return JSONResponse(
                 {
                     "type": "message",
@@ -1105,10 +1109,15 @@ def create_app(
         added, forced_reply = _with_write_error_followup(added)
         _persist_ai_messages(chat, conversation_id, added)
         reply = forced_reply or _user_facing_assistant_content(reply)
+        if forced_reply and pending is None:
+            forced_pending = _pending_action_from_added_write_call(added)
+            if forced_pending is not None:
+                chat.set_pending_clarification(conversation_id, forced_pending, forced_reply)
         if pending is not None:
             missing_question = _pending_action_missing_question(pending, applications)
             if missing_question:
                 chat.clear_pending_action(conversation_id)
+                chat.set_pending_clarification(conversation_id, pending, missing_question)
                 chat.append_message(conversation_id, "assistant", content=missing_question)
                 return JSONResponse(
                     {
@@ -1117,6 +1126,7 @@ def create_app(
                         "message": missing_question,
                     }
                 )
+            chat.clear_pending_clarification(conversation_id)
             chat.set_pending_action(conversation_id, pending)
             return JSONResponse(
                 {
@@ -1126,6 +1136,11 @@ def create_app(
                 }
             )
         chat.clear_pending_action(conversation_id)
+        if not forced_reply and clarification is not None and _looks_like_followup_question(reply):
+            pending_clarification, _ = clarification
+            chat.set_pending_clarification(conversation_id, pending_clarification, reply)
+        elif not forced_reply:
+            chat.clear_pending_clarification(conversation_id)
         return JSONResponse({"type": "message", "conversation_id": conversation_id, "message": reply})
 
     @app.post("/api/chat/confirm")
@@ -1147,6 +1162,7 @@ def create_app(
             return error_response(400, "no pending action to confirm")
         if not bool(payload.get("approved")):
             chat.clear_pending_action(conversation_id)
+            chat.clear_pending_clarification(conversation_id)
             chat.append_message(conversation_id, "assistant", content=CHAT_CANCELLED_MESSAGE)
             return JSONResponse(
                 {
@@ -1156,6 +1172,7 @@ def create_app(
                 }
             )
         context_message = _chat_context_message(conversation, applications)
+        undo_seed = _undo_seed_for_pending(pending, applications)
         registry = offerpilot_tool_registry(
             applications,
             events,
@@ -1190,10 +1207,15 @@ def create_app(
         added, forced_reply = _with_write_error_followup(added)
         _persist_ai_messages(chat, conversation_id, added)
         reply = forced_reply or _user_facing_assistant_content(reply)
+        if forced_reply and new_pending is None:
+            forced_pending = _pending_action_from_added_write_call(added)
+            if forced_pending is not None:
+                chat.set_pending_clarification(conversation_id, forced_pending, forced_reply)
         if new_pending is not None:
             missing_question = _pending_action_missing_question(new_pending, applications)
             if missing_question:
                 chat.clear_pending_action(conversation_id)
+                chat.set_pending_clarification(conversation_id, new_pending, missing_question)
                 chat.append_message(conversation_id, "assistant", content=missing_question)
                 return JSONResponse(
                     {
@@ -1202,6 +1224,7 @@ def create_app(
                         "message": missing_question,
                     }
                 )
+            chat.clear_pending_clarification(conversation_id)
             chat.set_pending_action(conversation_id, new_pending)
             return JSONResponse(
                 {
@@ -1211,9 +1234,37 @@ def create_app(
                 }
             )
         chat.clear_pending_action(conversation_id)
+        if not forced_reply:
+            chat.clear_pending_clarification(conversation_id)
+        undo = _build_write_undo(pending, added, undo_seed)
+        if undo:
+            chat.set_last_write_undo(conversation_id, undo)
+        else:
+            chat.clear_last_write_undo(conversation_id)
         if bool(payload.get("approved")):
             reply = _prepend_write_success(reply, pending, added)
-        return JSONResponse({"type": "message", "conversation_id": conversation_id, "message": reply})
+        response_payload: dict[str, Any] = {"type": "message", "conversation_id": conversation_id, "message": reply}
+        if undo:
+            response_payload["undo"] = undo
+        return JSONResponse(response_payload)
+
+    @app.post("/api/chat/undo-last-write")
+    def undo_last_write(payload: dict[str, Any] = Body(...)) -> JSONResponse:
+        conversation_id = int(payload.get("conversation_id") or 0)
+        if conversation_id == 0:
+            return error_response(400, "conversation_id is required")
+        if chat.get_conversation(conversation_id) is None:
+            return error_response(404, "conversation not found")
+        undo = chat.get_last_write_undo(conversation_id)
+        if not undo:
+            return error_response(400, "没有可撤销的 AI 写入")
+        try:
+            message = _execute_chat_undo(undo, applications, events, notes)
+        except Exception as exc:
+            return error_response(400, f"撤销失败：{exc}")
+        chat.clear_last_write_undo(conversation_id)
+        chat.append_message(conversation_id, "assistant", content=message)
+        return JSONResponse({"type": "message", "conversation_id": conversation_id, "message": message})
 
     @app.get("/api/chat/conversations")
     def list_conversations() -> list[dict[str, Any]]:
@@ -1613,6 +1664,27 @@ def _chat_response_system_message() -> Message:
     )
 
 
+def _chat_clarification_message(
+    clarification: tuple[PendingAction, str] | None,
+    latest_user_answer: str,
+) -> Message | None:
+    if clarification is None:
+        return None
+    pending, question = clarification
+    return Message(
+        role="system",
+        content=(
+            "这是一轮补信息回复。请继续同一个写入草稿，不要从零开始。"
+            f"原始写入工具：{pending.tool_name}。"
+            f"原始草稿参数：{pending.args}。"
+            f"上次追问：{question}。"
+            f"用户本轮补充：{latest_user_answer}。"
+            "请合并这些信息：如果字段已经完整，发起同一个用户意图对应的写入工具调用；"
+            "如果仍缺关键字段，只追问一个最关键的问题。"
+        ),
+    )
+
+
 def _chat_context_message(conversation: Any, applications: ApplicationsRepository) -> Message | None:
     if conversation.context_type != "application" or not conversation.context_ref:
         return None
@@ -1696,6 +1768,20 @@ def _conversation_json(conversation: Any, applications: ApplicationsRepository) 
             ),
             applications,
         )
+    if conversation.clarification_tool_name:
+        payload["pending_clarification"] = _pending_action_json(
+            PendingAction(
+                tool_call_id=conversation.clarification_tool_call_id,
+                tool_name=conversation.clarification_tool_name,
+                args=conversation.clarification_args,
+                human=conversation.clarification_human or conversation.clarification_tool_name,
+            ),
+            applications,
+        )
+        payload["pending_clarification"]["question"] = conversation.clarification_question
+    else:
+        payload["pending_clarification"] = None
+    payload["last_write_undo"] = conversation.last_write_undo
     return payload
 
 
@@ -1724,6 +1810,11 @@ _FIELD_FOLLOWUP_LABELS = {
     "scheduled_at": "日程时间",
     "duration_minutes": "时长",
     "company": "公司",
+    "questions": "问题记录",
+    "self_reflection": "自我复盘",
+    "difficulty_points": "难点短板",
+    "mood": "感受",
+    "notes": "备注",
 }
 
 
@@ -1757,6 +1848,11 @@ def _write_error_followup(added: list[Message]) -> str:
         if error.startswith("create_application requires explicit user confirmation"):
             return "我找到同公司已有不同岗位记录。请确认是否为这个新岗位单独新建一条投递记录？确认后我再继续整理。"
     return ""
+
+
+def _looks_like_followup_question(reply: str) -> bool:
+    trimmed = reply.strip()
+    return bool(trimmed) and ("?" in trimmed or "？" in trimmed or "请告诉我" in trimmed or "请补充" in trimmed)
 
 
 def _pending_action_missing_question(
@@ -1904,6 +2000,141 @@ def _last_successful_tool_payload(added: list[Message]) -> dict[str, Any]:
         if isinstance(parsed, dict):
             return parsed
     return {}
+
+
+_WRITE_TOOL_NAMES = {
+    "create_application",
+    "update_application_status",
+    "create_application_event",
+    "add_note",
+}
+
+
+def _pending_action_from_added_write_call(added: list[Message]) -> PendingAction | None:
+    for message in reversed(added):
+        if message.role != "assistant" or not message.tool_calls:
+            continue
+        tool_call = message.tool_calls[0]
+        if tool_call.name not in _WRITE_TOOL_NAMES:
+            continue
+        return PendingAction(
+            tool_call_id=tool_call.id,
+            tool_name=tool_call.name,
+            args=tool_call.args,
+            human=tool_call.name,
+        )
+    return None
+
+
+def _undo_seed_for_pending(
+    pending: PendingAction,
+    applications: ApplicationsRepository,
+) -> dict[str, Any]:
+    if pending.tool_name != "update_application_status":
+        return {}
+    app_id = _safe_tool_args(pending.args).get("id")
+    if not _has_int_like(app_id):
+        return {}
+    application = applications.get(int(str(app_id)))
+    if application is None:
+        return {}
+    return {
+        "application_id": application.id,
+        "company_name": application.company_name,
+        "position_name": application.position_name,
+        "job_url": application.job_url,
+        "status": application.status,
+        "source": application.source,
+        "notes": application.notes,
+        "applied_at": application.applied_at.isoformat(),
+        "closed_reason": application.closed_reason,
+    }
+
+
+def _build_write_undo(
+    pending: PendingAction,
+    added: list[Message],
+    seed: dict[str, Any],
+) -> dict[str, Any]:
+    payload = _last_successful_tool_payload(added)
+    if pending.tool_name == "update_application_status" and seed:
+        return {
+            "kind": "update_application_status",
+            "label": "撤销更新投递状态",
+            "application_id": seed["application_id"],
+            "before": seed,
+        }
+    if pending.tool_name == "create_application":
+        application_id = payload.get("application_id") or payload.get("id")
+        if _has_int_like(application_id):
+            return {
+                "kind": "delete_application",
+                "label": "撤销新建投递",
+                "application_id": int(str(application_id)),
+            }
+    if pending.tool_name == "create_application_event":
+        event_id = payload.get("application_event_id") or payload.get("id")
+        if _has_int_like(event_id):
+            return {
+                "kind": "delete_application_event",
+                "label": "撤销新建日程",
+                "application_event_id": int(str(event_id)),
+            }
+    if pending.tool_name == "add_note":
+        note_id = payload.get("note_id") or payload.get("id")
+        if _has_int_like(note_id):
+            return {"kind": "delete_note", "label": "撤销保存复盘", "note_id": int(str(note_id))}
+    return {}
+
+
+def _execute_chat_undo(
+    undo: dict[str, Any],
+    applications: ApplicationsRepository,
+    events: ApplicationEventsRepository,
+    notes: NotesRepository,
+) -> str:
+    kind = str(undo.get("kind") or "")
+    if kind == "update_application_status":
+        before = undo.get("before")
+        if not isinstance(before, dict):
+            raise ValueError("undo payload is invalid")
+        applications.update_full(
+            int(before["application_id"]),
+            ApplicationCreate(
+                company_name=str(before.get("company_name") or ""),
+                position_name=str(before.get("position_name") or ""),
+                job_url=str(before.get("job_url") or ""),
+                status=str(before.get("status") or "applied"),
+                source=str(before.get("source") or "cli"),
+                notes=str(before.get("notes") or ""),
+                applied_at=_parse_optional_datetime(before.get("applied_at")),
+                closed_reason=str(before.get("closed_reason") or ""),
+            ),
+        )
+        return "已撤销最近一次 AI 写入：投递状态已恢复。"
+    if kind == "delete_application":
+        applications.delete(int(undo["application_id"]))
+        return "已撤销最近一次 AI 写入：新建投递已删除。"
+    if kind == "delete_application_event":
+        events.delete(int(undo["application_event_id"]))
+        return "已撤销最近一次 AI 写入：新建日程已删除。"
+    if kind == "delete_note":
+        notes.delete(int(undo["note_id"]))
+        return "已撤销最近一次 AI 写入：复盘记录已删除。"
+    raise ValueError("unsupported undo payload")
+
+
+def _parse_optional_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return None
 
 
 def _pending_create_application_details(args: dict[str, Any]) -> dict[str, Any]:
@@ -2097,7 +2328,7 @@ def _pending_note_details(
                 "source": "pending_action",
             }
         )
-    return {
+    details: dict[str, Any] = {
         "target": target,
         "proposed_changes": proposed_changes,
         "evidence": evidence,
@@ -2109,6 +2340,10 @@ def _pending_note_details(
             "description": "这是本次连续写入的最后一步。",
         },
     }
+    draft_summary = _pending_note_draft_summary(proposed_changes)
+    if draft_summary:
+        details["draft_summary"] = draft_summary
+    return details
 
 
 def _short_preview(value: str, max_length: int = 180) -> str:
@@ -2116,6 +2351,29 @@ def _short_preview(value: str, max_length: int = 180) -> str:
     if len(normalized) <= max_length:
         return normalized
     return normalized[: max_length - 3].rstrip() + "..."
+
+
+def _pending_note_draft_summary(changes: list[dict[str, Any]]) -> dict[str, Any]:
+    fields = []
+    for change in changes:
+        field = str(change.get("field") or "")
+        after = change.get("after")
+        if field not in {"questions", "self_reflection", "difficulty_points", "mood", "notes"}:
+            continue
+        if not isinstance(after, str):
+            continue
+        normalized = " ".join(after.split())
+        if len(normalized) < 80:
+            continue
+        fields.append(
+            {
+                "field": field,
+                "label": _FIELD_FOLLOWUP_LABELS.get(field) or field,
+                "summary": _short_preview(after, 96),
+                "characters": len(normalized),
+            }
+        )
+    return {"title": "复盘草稿", "fields": fields} if fields else {}
 
 
 def _pending_action_from_stored_messages(messages: list[Any]) -> PendingAction | None:

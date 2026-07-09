@@ -466,6 +466,12 @@ class Conversation(Base):
     pending_tool_name: Mapped[str] = mapped_column(String, default="", server_default="")
     pending_args: Mapped[str] = mapped_column(String, default="", server_default="")
     pending_human: Mapped[str] = mapped_column(String, default="", server_default="")
+    clarification_tool_call_id: Mapped[str] = mapped_column(String, default="", server_default="")
+    clarification_tool_name: Mapped[str] = mapped_column(String, default="", server_default="")
+    clarification_args: Mapped[str] = mapped_column(String, default="", server_default="")
+    clarification_human: Mapped[str] = mapped_column(String, default="", server_default="")
+    clarification_question: Mapped[str] = mapped_column(String, default="", server_default="")
+    last_write_undo_json: Mapped[str] = mapped_column(String, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -493,6 +499,33 @@ class Conversation(Base):
             "human": self.pending_human or self.pending_tool_name,
             "args": args,
         }
+
+    @property
+    def pending_clarification(self) -> dict[str, object] | None:
+        if not self.clarification_tool_name:
+            return None
+        try:
+            args = json.loads(self.clarification_args) if self.clarification_args else {}
+        except json.JSONDecodeError:
+            args = {}
+        if not isinstance(args, dict):
+            args = {}
+        return {
+            "tool_name": self.clarification_tool_name,
+            "human": self.clarification_human or self.clarification_tool_name,
+            "args": args,
+            "question": self.clarification_question,
+        }
+
+    @property
+    def last_write_undo(self) -> dict[str, object] | None:
+        if not self.last_write_undo_json:
+            return None
+        try:
+            payload = json.loads(self.last_write_undo_json)
+        except json.JSONDecodeError:
+            return None
+        return payload if isinstance(payload, dict) else None
 
 
 class ChatMessage(Base):

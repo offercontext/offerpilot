@@ -112,6 +112,62 @@ def test_chat_asks_followup_when_pending_event_missing_required_info(tmp_path):
     assert stored[-1]["content"] == body["message"]
 
 
+def test_chat_clarification_reply_resumes_missing_event_draft(tmp_path):
+    app_client = TestClient(create_app(data_dir=tmp_path))
+    application = app_client.post(
+        "/api/applications",
+        json={"company_name": "牛客网", "position_name": "测试工程师", "status": "written_test"},
+    ).json()
+    model = CapturingScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="event-1",
+                        name="create_application_event",
+                        args=json.dumps(
+                            {
+                                "application_id": application["id"],
+                                "event_type": "written_test",
+                                "scheduled_at": "2026-07-10T19:00:00+08:00",
+                            }
+                        ),
+                    )
+                ]
+            ),
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="event-2",
+                        name="create_application_event",
+                        args=json.dumps(
+                            {
+                                "application_id": application["id"],
+                                "event_type": "written_test",
+                                "scheduled_at": "2026-07-10T19:00:00+08:00",
+                                "duration_minutes": 30,
+                            }
+                        ),
+                    )
+                ]
+            ),
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    first = client.post("/api/chat", json={"message": "为这条投递创建笔试日程", "conversation_id": 0}).json()
+    conversation = client.get("/api/chat/conversations").json()[0]
+    assert conversation["pending_clarification"]["tool_name"] == "create_application_event"
+
+    second = client.post("/api/chat", json={"message": "30分钟", "conversation_id": first["conversation_id"]})
+
+    assert second.status_code == 200
+    assert second.json()["type"] == "confirmation_required"
+    assert second.json()["pending_action"]["args"]["duration_minutes"] == 30
+    assert "补信息" in model.calls[-1][1].content
+    conversation = client.get("/api/chat/conversations").json()[0]
+    assert conversation["pending_clarification"] is None
+
+
 def test_chat_turns_write_validation_error_into_chinese_followup(tmp_path):
     model = ScriptedModel(
         [
@@ -147,6 +203,46 @@ def test_chat_turns_write_validation_error_into_chinese_followup(tmp_path):
     assert "add_note" not in body["message"]
     stored = client.get(f"/api/chat/conversations/{body['conversation_id']}").json()
     assert stored[-1]["content"] == body["message"]
+
+
+def test_chat_confirmed_status_update_can_be_undone(tmp_path):
+    app_client = TestClient(create_app(data_dir=tmp_path))
+    application = app_client.post(
+        "/api/applications",
+        json={"company_name": "字节跳动", "position_name": "后端工程师", "status": "interview"},
+    ).json()
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="w1",
+                        name="update_application_status",
+                        args=json.dumps({"id": application["id"], "status": "offer"}),
+                    )
+                ]
+            ),
+            Assistant(content="已更新为 Offer。"),
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    pending = client.post("/api/chat", json={"message": "改成 offer", "conversation_id": 0}).json()
+    confirmed = client.post(
+        "/api/chat/confirm",
+        json={"conversation_id": pending["conversation_id"], "approved": True},
+    )
+
+    assert confirmed.status_code == 200
+    assert confirmed.json()["undo"]["label"] == "撤销更新投递状态"
+    assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
+
+    undone = client.post("/api/chat/undo-last-write", json={"conversation_id": pending["conversation_id"]})
+
+    assert undone.status_code == 200
+    assert undone.json()["type"] == "message"
+    assert "已撤销" in undone.json()["message"]
+    assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "interview"
+    assert client.get("/api/chat/conversations").json()[0]["last_write_undo"] is None
 
 
 def test_chat_provider_error_masks_configured_api_key(tmp_path):
@@ -644,11 +740,11 @@ def test_chat_confirm_executes_pending_write(tmp_path):
     )
 
     assert response.status_code == 200
-    assert response.json() == {
-        "type": "message",
-        "conversation_id": pending["conversation_id"],
-        "message": "已更新",
-    }
+    body = response.json()
+    assert body["type"] == "message"
+    assert body["conversation_id"] == pending["conversation_id"]
+    assert body["message"] == "已更新"
+    assert body["undo"]["label"] == "撤销更新投递状态"
     assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
 
 

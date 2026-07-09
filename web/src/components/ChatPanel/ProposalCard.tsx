@@ -214,6 +214,18 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
         {longDraftFields.length ? (
           <div className={styles.draftHint}>长内容已按摘要展示，确认后会完整保存。</div>
         ) : null}
+        {action.draft_summary?.fields.length ? (
+          <div className={styles.draftReview}>
+            <div className={styles.panelLabel}>草稿审阅</div>
+            {action.draft_summary.fields.map((field) => (
+              <div key={field.field} className={styles.draftItem}>
+                <span>{field.label}</span>
+                <b title={field.summary}>{field.summary}</b>
+                <i>{field.characters} 字</i>
+              </div>
+            ))}
+          </div>
+        ) : null}
         {action.risk_hint || thinEvidence ? (
           <Alert
             className={styles.prAlert}

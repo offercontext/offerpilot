@@ -101,6 +101,8 @@ describe('ChatPanel docked layout contract', () => {
     expect(proposalCard).toContain('第 {action.workflow.current_step} / {action.workflow.total_steps} 步');
     expect(proposalCard).toContain('summarizeLongValue');
     expect(proposalCard).toContain('longDraftFields');
+    expect(proposalCard).toContain('action.draft_summary');
+    expect(proposalCard).toContain('草稿审阅');
     expect(proposalCard).toContain('长内容已按摘要展示，确认后会完整保存。');
     expect(proposalCard).toContain('action.risk_hint');
     expect(component).toContain('pendingComposerDisabledReason(activePending)');
@@ -113,5 +115,13 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('contextBadge');
     expect(component).toContain('当前上下文');
     expect(component).toContain('contextLabel');
+  });
+
+  it('shows confirmation status and lets users undo the latest AI write', () => {
+    expect(component).toContain('confirmPhase');
+    expect(component).toContain('保存成功');
+    expect(component).toContain('lastUndo');
+    expect(component).toContain('undoLastWrite');
+    expect(component).toContain('撤销最近一次 AI 写入');
   });
 });
