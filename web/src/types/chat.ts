@@ -58,3 +58,28 @@ export interface PendingActionEvidence extends PendingActionTarget {}
 export type ChatResponse =
   | { type: 'message'; conversation_id: number; message: string; degraded?: boolean }
   | { type: 'confirmation_required'; conversation_id: number; pending_action: PendingAction };
+
+export type ChatStreamEventName =
+  | 'meta'
+  | 'user_message_saved'
+  | 'status'
+  | 'tool_call'
+  | 'tool_result'
+  | 'confirmation_required'
+  | 'assistant_delta'
+  | 'assistant_message'
+  | 'completed'
+  | 'error'
+  | 'cancelled';
+
+export interface ChatStreamEvent<TData = Record<string, unknown>> {
+  run_id?: string;
+  seq: number;
+  conversation_id?: number;
+  event: ChatStreamEventName | string;
+  ts?: string;
+  context_type?: string;
+  context_ref?: string;
+  mode?: string;
+  data: TData;
+}

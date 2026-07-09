@@ -39,10 +39,245 @@ class SecretLeakingModel:
         raise RuntimeError("provider rejected API key sk-secret-value")
 
 
+class FailAfterWriteModel:
+    def __init__(self, tool_call: ToolCall):
+        self.turns = [Assistant(tool_calls=[tool_call])]
+
+    def complete(self, messages, tools):
+        if self.turns:
+            return self.turns.pop(0)
+        raise RuntimeError("model failed after write")
+
+
 class SlowModel:
     def complete(self, messages, tools):
         time.sleep(0.2)
         return Assistant(content="late reply")
+
+
+def _parse_sse_events(raw: str) -> list[dict[str, object]]:
+    events = []
+    for frame in raw.strip().split("\n\n"):
+        if not frame or frame.startswith(":"):
+            continue
+        event_name = ""
+        event_id = ""
+        data_lines = []
+        for line in frame.splitlines():
+            if line.startswith("event:"):
+                event_name = line.removeprefix("event:").strip()
+            elif line.startswith("id:"):
+                event_id = line.removeprefix("id:").strip()
+            elif line.startswith("data:"):
+                data_lines.append(line.removeprefix("data:").strip())
+        assert event_name
+        payload = json.loads("\n".join(data_lines))
+        events.append({"event": event_name, "id": event_id, "data": payload})
+    return events
+
+
+def test_chat_stream_emits_pilot_sse_v1_sequence(tmp_path):
+    model = ScriptedModel([Assistant(content="可以，先把投递列表按状态过一遍。")])
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+
+    response = client.post(
+        "/api/chat/stream",
+        json={
+            "message": "下一步怎么办",
+            "conversation_id": 0,
+            "context_type": "workspace",
+            "mode": "general",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    events = _parse_sse_events(response.text)
+    assert [event["event"] for event in events] == [
+        "meta",
+        "user_message_saved",
+        "status",
+        "assistant_message",
+        "completed",
+    ]
+    seqs = [event["data"]["seq"] for event in events]
+    assert seqs == sorted(seqs)
+    assert events[0]["data"]["data"]["stream_version"] == "pilot-sse-v1"
+    assert events[0]["data"]["context_type"] == "workspace"
+    assert events[2]["data"]["data"]["phase"] == "model_running"
+    completed = events[-1]["data"]["data"]
+    assert completed["response"] == {
+        "type": "message",
+        "conversation_id": events[0]["data"]["conversation_id"],
+        "message": "可以，先把投递列表按状态过一遍。",
+    }
+
+
+def test_chat_stream_emits_tool_call_and_result_events(tmp_path):
+    model = ScriptedModel(
+        [
+            Assistant(tool_calls=[ToolCall(id="read-1", name="list_applications", args="{}")]),
+            Assistant(content="目前还没有投递记录。"),
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+
+    response = client.post("/api/chat/stream", json={"message": "看看投递", "conversation_id": 0})
+
+    assert response.status_code == 200
+    events = _parse_sse_events(response.text)
+    assert [event["event"] for event in events] == [
+        "meta",
+        "user_message_saved",
+        "status",
+        "tool_call",
+        "tool_result",
+        "assistant_message",
+        "completed",
+    ]
+    assert events[0]["data"]["data"]["supports_tool_events"] is True
+    tool_call = events[3]["data"]["data"]
+    assert tool_call["tool_call_id"] == "read-1"
+    assert tool_call["tool_name"] == "list_applications"
+    assert tool_call["kind"] == "read"
+    assert tool_call["confirm_mode"] == "none"
+    tool_result = events[4]["data"]["data"]
+    assert tool_result["tool_call_id"] == "read-1"
+    assert tool_result["status"] == "success"
+    assert tool_result["affected_resources"] == []
+    assert tool_result["changed_entities"] == []
+
+
+def test_chat_stream_keeps_tool_events_when_followup_model_call_fails(tmp_path):
+    model = FailAfterWriteModel(ToolCall(id="read-before-fail", name="list_applications", args="{}"))
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+
+    response = client.post("/api/chat/stream", json={"message": "看看投递", "conversation_id": 0})
+
+    assert response.status_code == 200
+    events = _parse_sse_events(response.text)
+    assert [event["event"] for event in events] == [
+        "meta",
+        "user_message_saved",
+        "status",
+        "tool_call",
+        "tool_result",
+        "error",
+    ]
+    assert events[3]["data"]["data"]["tool_call_id"] == "read-before-fail"
+    assert events[4]["data"]["data"]["status"] == "success"
+    assert events[5]["data"]["data"]["code"] == "ai_provider_error"
+
+
+def test_chat_confirm_stream_executes_pending_write_and_completes(tmp_path):
+    app_client = TestClient(create_app(data_dir=tmp_path))
+    application = app_client.post(
+        "/api/applications",
+        json={"company_name": "飞书", "position_name": "后端工程师", "status": "interview"},
+    ).json()
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="write-1",
+                        name="update_application_status",
+                        args=json.dumps({"id": application["id"], "status": "offer"}),
+                    )
+                ]
+            ),
+            Assistant(content="已更新为 offer。"),
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    pending = client.post("/api/chat", json={"message": "改成 offer", "conversation_id": 0}).json()
+
+    response = client.post(
+        "/api/chat/confirm/stream",
+        json={"conversation_id": pending["conversation_id"], "approved": True},
+    )
+
+    assert response.status_code == 200
+    events = _parse_sse_events(response.text)
+    assert [event["event"] for event in events] == [
+        "meta",
+        "status",
+        "tool_call",
+        "tool_result",
+        "assistant_message",
+        "completed",
+    ]
+    assert events[2]["data"]["data"]["confirm_mode"] == "approved"
+    assert events[3]["data"]["data"]["status"] == "success"
+    completed = events[-1]["data"]["data"]["response"]
+    assert completed["type"] == "message"
+    assert completed["conversation_id"] == pending["conversation_id"]
+    assert "offer" in completed["message"]
+
+
+def test_chat_confirm_stream_consumes_pending_before_running_write(tmp_path):
+    app_client = TestClient(create_app(data_dir=tmp_path))
+    application = app_client.post(
+        "/api/applications",
+        json={"company_name": "即刻", "position_name": "后端工程师", "status": "interview"},
+    ).json()
+    tool_call = ToolCall(
+        id="write-once",
+        name="update_application_status",
+        args=json.dumps({"id": application["id"], "status": "offer"}),
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=FailAfterWriteModel(tool_call)))
+    pending = client.post("/api/chat", json={"message": "改成 offer", "conversation_id": 0}).json()
+
+    failed_confirm = client.post(
+        "/api/chat/confirm/stream",
+        json={"conversation_id": pending["conversation_id"], "approved": True},
+    )
+    retry_confirm = client.post(
+        "/api/chat/confirm/stream",
+        json={"conversation_id": pending["conversation_id"], "approved": True},
+    )
+
+    failed_events = _parse_sse_events(failed_confirm.text)
+    assert failed_events[-1]["event"] == "error"
+    assert retry_confirm.status_code == 400
+    assert retry_confirm.json() == {"error": "no pending action to confirm"}
+    assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
+
+
+def test_chat_confirm_consumes_pending_before_running_write(tmp_path):
+    app_client = TestClient(create_app(data_dir=tmp_path))
+    application = app_client.post(
+        "/api/applications",
+        json={"company_name": "小宇宙", "position_name": "后端工程师", "status": "interview"},
+    ).json()
+    tool_call = ToolCall(
+        id="write-once-json",
+        name="update_application_status",
+        args=json.dumps({"id": application["id"], "status": "offer"}),
+    )
+    client = TestClient(
+        create_app(
+            data_dir=tmp_path,
+            chat_model=FailAfterWriteModel(tool_call),
+        ),
+        raise_server_exceptions=False,
+    )
+    pending = client.post("/api/chat", json={"message": "改成 offer", "conversation_id": 0}).json()
+
+    failed_confirm = client.post(
+        "/api/chat/confirm",
+        json={"conversation_id": pending["conversation_id"], "approved": True},
+    )
+    retry_confirm = client.post(
+        "/api/chat/confirm",
+        json={"conversation_id": pending["conversation_id"], "approved": True},
+    )
+
+    assert failed_confirm.status_code == 502
+    assert retry_confirm.status_code == 400
+    assert retry_confirm.json() == {"error": "no pending action to confirm"}
+    assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
 
 
 def test_chat_returns_bad_gateway_when_model_fails(tmp_path):

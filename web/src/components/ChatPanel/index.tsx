@@ -10,8 +10,8 @@ import {
   StopOutlined,
 } from '@ant-design/icons';
 import {
-  sendChat,
-  confirmAction,
+  streamChat,
+  streamConfirmAction,
   getSettings,
   SETTINGS_QUERY_KEY,
   updateAutoApprove,
@@ -20,7 +20,7 @@ import {
   deleteConversation,
 } from '@/services/chat';
 import { getOffer } from '@/services/offers';
-import type { ChatResponse, Conversation, PendingAction } from '@/types/chat';
+import type { ChatResponse, ChatStreamEvent, Conversation, PendingAction } from '@/types/chat';
 import type { Offer } from '@/types/offer';
 import {
   buildTurns,
@@ -95,7 +95,30 @@ function pendingActionEvidence(evidence: EvidenceItem[], action: PendingAction):
 
 function isAbortError(error: unknown): boolean {
   const candidate = error as { code?: string; name?: string; message?: string };
-  return candidate?.code === 'ERR_CANCELED' || candidate?.name === 'CanceledError' || candidate?.message === 'canceled';
+  return (
+    candidate?.code === 'ERR_CANCELED' ||
+    candidate?.name === 'CanceledError' ||
+    candidate?.name === 'AbortError' ||
+    candidate?.message === 'canceled'
+  );
+}
+
+function streamLoadingLabel(event: ChatStreamEvent): string | undefined {
+  const data = event.data as Record<string, unknown>;
+  if (event.event === 'status') {
+    return typeof data.label === 'string' && data.label.trim() ? data.label : undefined;
+  }
+  if (event.event === 'tool_call') {
+    const summary = typeof data.summary === 'string' ? data.summary.trim() : '';
+    return summary ? `正在处理：${summary}` : '正在调用本地能力';
+  }
+  if (event.event === 'tool_result') {
+    return data.status === 'error' ? '本地能力返回错误' : '已获得本地结果';
+  }
+  if (event.event === 'confirmation_required') {
+    return '正在准备确认卡片';
+  }
+  return undefined;
 }
 
 export default function ChatPanel({
@@ -270,6 +293,25 @@ export default function ChatPanel({
     refreshConversations();
   }
 
+  async function syncConversationAfterAbort(conversationId?: number) {
+    let nextConversations: Conversation[] | undefined;
+    try {
+      nextConversations = await listConversations();
+      setConversations(nextConversations);
+    } catch {
+      nextConversations = undefined;
+    }
+    if (!conversationId) return;
+    try {
+      const stored = await getConversation(conversationId);
+      setConvID(conversationId);
+      setTurns(buildTurns(stored));
+      setPending(pendingActionForConversation(nextConversations ?? conversations, conversationId));
+    } catch {
+      refreshConversations();
+    }
+  }
+
   function stopActiveRequest(options: { silent?: boolean } = {}) {
     const controller = abortControllerRef.current;
     if (!controller) return;
@@ -290,6 +332,7 @@ export default function ChatPanel({
     setLoading(true);
     const controller = new AbortController();
     abortControllerRef.current = controller;
+    let streamConversationId = convID;
     try {
       const isNew = convID === undefined;
       const context =
@@ -298,7 +341,17 @@ export default function ChatPanel({
           : isNew && offerId !== undefined
             ? { context_type: 'workspace', context_ref: '', mode: 'nego_coach' }
             : undefined;
-      const resp = await sendChat(trimmed, convID, context, { signal: controller.signal });
+      const resp = await streamChat(trimmed, convID, context, {
+        signal: controller.signal,
+        onEvent: (event) => {
+          if (event.conversation_id) {
+            streamConversationId = event.conversation_id;
+            if (isNew) setConvID(event.conversation_id);
+          }
+          const label = streamLoadingLabel(event);
+          if (label) setLoadingLabel(label);
+        },
+      });
       if (resp.type === 'confirmation_required') {
         setLoadingLabel('正在准备确认卡片');
         setConvID(resp.conversation_id);
@@ -315,13 +368,10 @@ export default function ChatPanel({
       return true;
     } catch (e: any) {
       if (isAbortError(e)) {
-        setTurns((items) => {
-          const last = items[items.length - 1];
-          return last?.role === 'user' && last.content === trimmed ? items.slice(0, -1) : items;
-        });
+        await syncConversationAfterAbort(streamConversationId);
         return false;
       }
-      const error = e?.response?.data?.error ?? '对话失败，请稍后重试';
+      const error = e?.response?.data?.error ?? e?.message ?? '对话失败，请稍后重试';
       setTurns((items) => {
         const last = items[items.length - 1];
         return last?.role === 'user' && last.content === trimmed ? items.slice(0, -1) : items;
@@ -359,7 +409,13 @@ export default function ChatPanel({
     const controller = new AbortController();
     abortControllerRef.current = controller;
     try {
-      const resp = await confirmAction(convID, approved, { signal: controller.signal });
+      const resp = await streamConfirmAction(convID, approved, {
+        signal: controller.signal,
+        onEvent: (event) => {
+          const label = streamLoadingLabel(event);
+          if (label) setLoadingLabel(label);
+        },
+      });
       if (resp.type === 'confirmation_required') {
         setConvID(resp.conversation_id);
         setPending(resp.pending_action);
@@ -371,8 +427,11 @@ export default function ChatPanel({
         if (approved) onDataChanged?.();
       }
     } catch (e: any) {
-      if (isAbortError(e)) return;
-      const error = e?.response?.data?.error ?? '确认失败';
+      if (isAbortError(e)) {
+        await syncConversationAfterAbort(convID);
+        return;
+      }
+      const error = e?.response?.data?.error ?? e?.message ?? '确认失败';
       setConfirmError(error);
       toast.error(error);
     } finally {

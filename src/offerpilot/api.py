@@ -5,14 +5,16 @@ from datetime import datetime, timedelta, timezone
 from html import unescape
 from io import BytesIO
 from pathlib import Path
+from queue import Empty, Queue
 from secrets import compare_digest
 from time import perf_counter
-from typing import Any, Optional
+from typing import Any, Callable, Generator, Optional
+from uuid import uuid4
 
 import httpx
 from fastapi import Body, FastAPI, File, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from pypdf import PdfReader
 
 from offerpilot.ai.agent import DEFAULT_MAX_ITERATIONS, ChatModel, PendingAction, resume_after_confirm, run_turn
@@ -67,6 +69,7 @@ from offerpilot.schemas import (
     resume_payload,
 )
 from offerpilot.skills import SkillRegistryError, register_skill, skills_payload, update_skill
+from offerpilot.sse import STREAM_VERSION, SseRun, format_sse, sse_headers
 
 CHAT_AGENT_TIMEOUT_SECONDS = 120.0
 CHAT_TIMEOUT_MESSAGE = "这次处理时间过长，已停止。你可以重试或换一种问法。"
@@ -1128,6 +1131,147 @@ def create_app(
         chat.clear_pending_action(conversation_id)
         return JSONResponse({"type": "message", "conversation_id": conversation_id, "message": reply})
 
+    @app.post("/api/chat/stream")
+    def send_chat_stream(payload: dict[str, Any] = Body(...)) -> Response:
+        model = _chat_model(chat_model, resolved_data_dir)
+        if isinstance(model, JSONResponse):
+            return model
+        message = str(payload.get("message") or "")
+        if not message:
+            return error_response(400, "message is required")
+
+        conversation_id = int(payload.get("conversation_id") or 0)
+        conversation = None
+        if conversation_id == 0:
+            context_type = str(payload.get("context_type") or "workspace").strip() or "workspace"
+            context_ref = str(payload.get("context_ref") or "").strip()
+            mode = str(payload.get("mode") or "general").strip() or "general"
+            title = _title_from_message(message)
+            conversation = chat.create_conversation(
+                title,
+                mode=mode,
+                context_type=context_type,
+                context_ref=context_ref,
+            )
+            conversation_id = conversation.id
+        else:
+            conversation = chat.get_conversation(conversation_id)
+            if conversation is None:
+                return error_response(404, "conversation not found")
+
+        chat.append_message(conversation_id, "user", content=message)
+        context_message = _chat_context_message(conversation, applications)
+        history = [
+            _chat_response_system_message(),
+            *([context_message] if context_message is not None else []),
+            *_stored_messages_to_ai(chat.list_messages(conversation_id)),
+        ]
+        registry = offerpilot_tool_registry(
+            applications,
+            events,
+            notes,
+            offers,
+            resumes=resumes,
+            jd_analyses=jd_analyses,
+            knowledge=knowledge,
+        )
+        run = SseRun(
+            run_id=str(uuid4()),
+            conversation_id=conversation_id,
+            context_type=str(conversation.context_type or "workspace"),
+            context_ref=str(conversation.context_ref or ""),
+            mode=str(conversation.mode or "general"),
+        )
+
+        def emit(event: str, data: dict[str, Any] | None = None) -> str:
+            envelope = run.envelope(event, data)
+            return format_sse(event, f"{run.run_id}:{envelope['seq']}", envelope)
+
+        def stream() -> Any:
+            yield emit(
+                "meta",
+                {
+                    "stream_version": STREAM_VERSION,
+                    "supports_delta": False,
+                    "supports_tool_events": True,
+                    "supports_confirmation": True,
+                },
+            )
+            yield emit("user_message_saved", {"role": "user"})
+            yield emit("status", {"phase": "model_running", "label": "正在思考"})
+            try:
+                added, reply, pending = yield from _run_chat_agent_with_sse_events(
+                    lambda event_sink: run_turn(
+                        model,
+                        registry,
+                        history,
+                        auto_approve=load_config(resolved_data_dir).chat_auto_approve_writes,
+                        max_iter=DEFAULT_MAX_ITERATIONS,
+                        checkpoint_path=_agent_checkpoint_path(resolved_data_dir),
+                        thread_id=_agent_thread_id(conversation_id),
+                        event_sink=event_sink,
+                    ),
+                    emit,
+                )
+            except ChatAgentTimedOut:
+                chat.append_message(conversation_id, "assistant", content=CHAT_TIMEOUT_MESSAGE)
+                chat.clear_pending_action(conversation_id)
+                yield emit(
+                    "error",
+                    {
+                        "code": "chat_agent_timeout",
+                        "message": CHAT_TIMEOUT_MESSAGE,
+                        "retryable": True,
+                        "degraded": False,
+                    },
+                )
+                return
+            except Exception as exc:
+                yield emit(
+                    "error",
+                    {
+                        "code": "ai_provider_error",
+                        "message": _safe_stream_error(exc, resolved_data_dir),
+                        "retryable": True,
+                        "degraded": False,
+                    },
+                )
+                return
+
+            added, forced_reply = _with_write_error_followup(added)
+            _persist_ai_messages(chat, conversation_id, added)
+            reply = forced_reply or _user_facing_assistant_content(reply)
+            if pending is not None:
+                missing_question = _pending_action_missing_question(pending, applications)
+                if missing_question:
+                    chat.clear_pending_action(conversation_id)
+                    chat.append_message(conversation_id, "assistant", content=missing_question)
+                    response = {
+                        "type": "message",
+                        "conversation_id": conversation_id,
+                        "message": missing_question,
+                    }
+                    yield emit("assistant_message", {"message": missing_question})
+                    yield emit("completed", {"response": response, "persisted": True})
+                    return
+                chat.set_pending_action(conversation_id, pending)
+                pending_payload = _pending_action_json(pending, applications)
+                response = {
+                    "type": "confirmation_required",
+                    "conversation_id": conversation_id,
+                    "pending_action": pending_payload,
+                }
+                yield emit("status", {"phase": "waiting_confirmation", "label": "需要确认"})
+                yield emit("confirmation_required", {"pending_action": pending_payload})
+                yield emit("completed", {"response": response, "persisted": True})
+                return
+            chat.clear_pending_action(conversation_id)
+            response = {"type": "message", "conversation_id": conversation_id, "message": reply}
+            yield emit("assistant_message", {"message": reply})
+            yield emit("completed", {"response": response, "persisted": True})
+
+        return StreamingResponse(stream(), media_type="text/event-stream; charset=utf-8", headers=sse_headers())
+
     @app.post("/api/chat/confirm")
     def confirm_chat(payload: dict[str, Any] = Body(...)) -> JSONResponse:
         model = _chat_model(chat_model, resolved_data_dir)
@@ -1142,7 +1286,7 @@ def create_app(
         stored = chat.list_messages(conversation_id)
         if not stored:
             return error_response(404, "conversation not found")
-        pending = chat.get_pending_action(conversation_id) or _pending_action_from_stored_messages(stored)
+        pending = chat.get_pending_action(conversation_id)
         if pending is None:
             return error_response(400, "no pending action to confirm")
         if not bool(payload.get("approved")):
@@ -1155,6 +1299,7 @@ def create_app(
                     "message": CHAT_CANCELLED_MESSAGE,
                 }
             )
+        chat.clear_pending_action(conversation_id)
         context_message = _chat_context_message(conversation, applications)
         registry = offerpilot_tool_registry(
             applications,
@@ -1214,6 +1359,166 @@ def create_app(
         if bool(payload.get("approved")):
             reply = _prepend_write_success(reply, pending, added)
         return JSONResponse({"type": "message", "conversation_id": conversation_id, "message": reply})
+
+    @app.post("/api/chat/confirm/stream")
+    def confirm_chat_stream(payload: dict[str, Any] = Body(...)) -> Response:
+        model = _chat_model(chat_model, resolved_data_dir)
+        if isinstance(model, JSONResponse):
+            return model
+        conversation_id = int(payload.get("conversation_id") or 0)
+        if conversation_id == 0:
+            return error_response(400, "conversation_id is required")
+        conversation = chat.get_conversation(conversation_id)
+        if conversation is None:
+            return error_response(404, "conversation not found")
+        stored = chat.list_messages(conversation_id)
+        if not stored:
+            return error_response(404, "conversation not found")
+        pending = chat.get_pending_action(conversation_id)
+        if pending is None:
+            return error_response(400, "no pending action to confirm")
+
+        run = SseRun(
+            run_id=str(uuid4()),
+            conversation_id=conversation_id,
+            context_type=str(conversation.context_type or "workspace"),
+            context_ref=str(conversation.context_ref or ""),
+            mode=str(conversation.mode or "general"),
+        )
+
+        def emit(event: str, data: dict[str, Any] | None = None) -> str:
+            envelope = run.envelope(event, data)
+            return format_sse(event, f"{run.run_id}:{envelope['seq']}", envelope)
+
+        if not bool(payload.get("approved")):
+
+            def reject_stream() -> Any:
+                chat.clear_pending_action(conversation_id)
+                chat.append_message(conversation_id, "assistant", content=CHAT_CANCELLED_MESSAGE)
+                response = {
+                    "type": "message",
+                    "conversation_id": conversation_id,
+                    "message": CHAT_CANCELLED_MESSAGE,
+                }
+                yield emit(
+                    "meta",
+                    {
+                        "stream_version": STREAM_VERSION,
+                        "supports_delta": False,
+                        "supports_tool_events": True,
+                        "supports_confirmation": True,
+                    },
+                )
+                yield emit("status", {"phase": "done", "label": "已取消"})
+                yield emit("cancelled", {"message": CHAT_CANCELLED_MESSAGE})
+                yield emit("completed", {"response": response, "persisted": True})
+
+            return StreamingResponse(
+                reject_stream(),
+                media_type="text/event-stream; charset=utf-8",
+                headers=sse_headers(),
+            )
+
+        context_message = _chat_context_message(conversation, applications)
+        registry = offerpilot_tool_registry(
+            applications,
+            events,
+            notes,
+            offers,
+            resumes=resumes,
+            jd_analyses=jd_analyses,
+            knowledge=knowledge,
+        )
+
+        def stream() -> Any:
+            chat.clear_pending_action(conversation_id)
+            yield emit(
+                "meta",
+                {
+                    "stream_version": STREAM_VERSION,
+                    "supports_delta": False,
+                    "supports_tool_events": True,
+                    "supports_confirmation": True,
+                },
+            )
+            yield emit("status", {"phase": "tool_running", "label": "正在执行确认操作"})
+            try:
+                added, reply, new_pending = yield from _run_chat_agent_with_sse_events(
+                    lambda event_sink: resume_after_confirm(
+                        model,
+                        registry,
+                        [
+                            _chat_response_system_message(),
+                            *([context_message] if context_message is not None else []),
+                            *_stored_messages_to_ai(stored),
+                        ],
+                        pending,
+                        approved=True,
+                        auto_approve=load_config(resolved_data_dir).chat_auto_approve_writes,
+                        max_iter=DEFAULT_MAX_ITERATIONS,
+                        checkpoint_path=_agent_checkpoint_path(resolved_data_dir),
+                        thread_id=_agent_thread_id(conversation_id),
+                        event_sink=event_sink,
+                    ),
+                    emit,
+                )
+            except ChatAgentTimedOut:
+                yield emit(
+                    "error",
+                    {
+                        "code": "chat_agent_timeout",
+                        "message": "这次确认处理时间过长，已停止。请重试或取消这次写入。",
+                        "retryable": True,
+                        "degraded": False,
+                    },
+                )
+                return
+            except Exception as exc:
+                yield emit(
+                    "error",
+                    {
+                        "code": "ai_provider_error",
+                        "message": _safe_stream_error(exc, resolved_data_dir),
+                        "retryable": True,
+                        "degraded": False,
+                    },
+                )
+                return
+
+            added, forced_reply = _with_write_error_followup(added)
+            _persist_ai_messages(chat, conversation_id, added)
+            reply = forced_reply or _user_facing_assistant_content(reply)
+            if new_pending is not None:
+                missing_question = _pending_action_missing_question(new_pending, applications)
+                if missing_question:
+                    chat.clear_pending_action(conversation_id)
+                    chat.append_message(conversation_id, "assistant", content=missing_question)
+                    response = {
+                        "type": "message",
+                        "conversation_id": conversation_id,
+                        "message": missing_question,
+                    }
+                    yield emit("assistant_message", {"message": missing_question})
+                    yield emit("completed", {"response": response, "persisted": True})
+                    return
+                chat.set_pending_action(conversation_id, new_pending)
+                pending_payload = _pending_action_json(new_pending, applications)
+                response = {
+                    "type": "confirmation_required",
+                    "conversation_id": conversation_id,
+                    "pending_action": pending_payload,
+                }
+                yield emit("status", {"phase": "waiting_confirmation", "label": "需要确认"})
+                yield emit("confirmation_required", {"pending_action": pending_payload})
+                yield emit("completed", {"response": response, "persisted": True})
+                return
+            chat.clear_pending_action(conversation_id)
+            reply = _prepend_write_success(reply, pending, added)
+            response = {"type": "message", "conversation_id": conversation_id, "message": reply}
+            yield emit("assistant_message", {"message": reply})
+            yield emit("completed", {"response": response, "persisted": True})
+
+        return StreamingResponse(stream(), media_type="text/event-stream; charset=utf-8", headers=sse_headers())
 
     @app.get("/api/chat/conversations")
     def list_conversations() -> list[dict[str, Any]]:
@@ -1494,6 +1799,31 @@ def _run_chat_agent_with_timeout(call: Any) -> Any:
     return result
 
 
+def _run_chat_agent_with_sse_events(
+    call: Callable[[Callable[[dict[str, Any]], None]], Any],
+    emit: Callable[[str, dict[str, Any] | None], str],
+) -> Generator[str, None, Any]:
+    event_queue: Queue[dict[str, Any]] = Queue()
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(lambda: call(event_queue.put))
+    deadline = perf_counter() + CHAT_AGENT_TIMEOUT_SECONDS
+    cancel_futures = True
+    try:
+        while not future.done() or not event_queue.empty():
+            try:
+                agent_event = event_queue.get(timeout=0.1)
+            except Empty as exc:
+                if perf_counter() >= deadline:
+                    future.cancel()
+                    raise ChatAgentTimedOut() from exc
+                continue
+            yield emit(str(agent_event["event"]), dict(agent_event["data"]))
+        cancel_futures = False
+        return future.result()
+    finally:
+        executor.shutdown(wait=False, cancel_futures=cancel_futures)
+
+
 def _ai_provider_error(exc: Exception, data_dir: Path) -> JSONResponse:
     cfg = load_config(data_dir)
     detail = _safe_provider_error(exc, cfg.provider_profiles()).strip()
@@ -1503,6 +1833,16 @@ def _ai_provider_error(exc: Exception, data_dir: Path) -> JSONResponse:
     if detail:
         message = f"{message}: {detail}"
     return error_response(502, message)
+
+
+def _safe_stream_error(exc: Exception, data_dir: Path) -> str:
+    cfg = load_config(data_dir)
+    detail = _safe_provider_error(exc, cfg.provider_profiles()).strip()
+    if cfg.auth_token:
+        detail = detail.replace(cfg.auth_token, "***")
+    if detail:
+        return f"AI provider request failed: {detail}"
+    return "AI provider request failed"
 
 
 def _auth_guard_response(request: Request, data_dir: Path) -> JSONResponse | None:

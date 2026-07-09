@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Protocol, TypedDict, cast
+from typing import Any, Callable, Literal, Protocol, TypedDict, cast
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -14,6 +15,7 @@ from offerpilot.ai.types import Assistant, Message
 
 DEFAULT_MAX_ITERATIONS = 20
 _DEFAULT_THREAD_ID = "conversation:ephemeral"
+AgentEventSink = Callable[[dict[str, Any]], None]
 
 
 class ChatModel(Protocol):
@@ -48,11 +50,13 @@ class LangGraphAgentRunner:
         *,
         checkpoint_path: Path | None = None,
         thread_id: str = _DEFAULT_THREAD_ID,
+        event_sink: AgentEventSink | None = None,
     ):
         self._model = model
         self._registry = registry
         self._checkpoint_path = checkpoint_path
         self._thread_id = thread_id
+        self._event_sink = event_sink
         self._memory_saver = InMemorySaver()
         self._has_pending_checkpoint = False
 
@@ -85,6 +89,7 @@ class LangGraphAgentRunner:
         auto_approve: bool,
         max_iter: int = DEFAULT_MAX_ITERATIONS,
     ) -> tuple[list[Message], str, PendingAction | None]:
+        self._emit_pending_tool_call(pending, "approved" if approved else "rejected")
         checkpoint_missing = self._checkpoint_path is None or not self._checkpoint_path.exists()
         if checkpoint_missing and not self._has_pending_checkpoint:
             return self._resume_without_checkpoint(messages, pending, approved, auto_approve, max_iter)
@@ -142,6 +147,7 @@ class LangGraphAgentRunner:
                 "status": "final",
                 "iterations": iterations + 1,
             }
+        self._emit_tool_call(assistant.tool_calls[0], bool(state.get("auto_approve", False)))
         return {
             "messages": messages,
             "added": added,
@@ -179,6 +185,7 @@ class LangGraphAgentRunner:
         else:
             result = _execute_tool(tool, tool_args)
 
+        self._emit_tool_result(tool_call_id, tool_name, result)
         tool_message = Message(role="tool", content=result, tool_call_id=tool_call_id)
         return {
             "messages": [*state.get("messages", []), _message_to_dict(tool_message)],
@@ -227,6 +234,7 @@ class LangGraphAgentRunner:
             result = _execute_tool(self._registry[pending.tool_name], pending.args)
         else:
             result = "用户拒绝了该操作，请勿执行，并询问用户下一步希望怎么做。"
+        self._emit_tool_result(pending.tool_call_id, pending.tool_name, result)
 
         tool_message = Message(role="tool", content=result, tool_call_id=pending.tool_call_id)
         added = [tool_message]
@@ -238,6 +246,51 @@ class LangGraphAgentRunner:
         added.extend(more)
         return added, reply, new_pending
 
+    def _emit_tool_call(self, tool_call: Any, auto_approve: bool) -> None:
+        tool_name = str(tool_call.name)
+        tool = self._registry.get(tool_name) or {}
+        is_write = bool(tool.get("write"))
+        confirm_mode = "auto" if is_write and auto_approve else "hitl" if is_write else "none"
+        summary = _tool_call_summary(tool, str(tool_call.args or ""), tool_name)
+        self._emit_event(
+            "tool_call",
+            {
+                "tool_call_id": str(tool_call.id),
+                "tool_name": tool_name,
+                "public_label": _tool_public_label(tool, tool_name),
+                "kind": "write" if is_write else "read",
+                "confirm_mode": confirm_mode,
+                "summary": summary,
+                "args_summary": _args_summary(str(tool_call.args or "")),
+            },
+        )
+
+    def _emit_pending_tool_call(self, pending: PendingAction, confirm_mode: str) -> None:
+        tool = self._registry.get(pending.tool_name) or {}
+        self._emit_event(
+            "tool_call",
+            {
+                "tool_call_id": pending.tool_call_id,
+                "tool_name": pending.tool_name,
+                "public_label": _tool_public_label(tool, pending.tool_name),
+                "kind": "write" if bool(tool.get("write")) else "read",
+                "confirm_mode": confirm_mode,
+                "summary": pending.human,
+                "args_summary": _args_summary(pending.args),
+            },
+        )
+
+    def _emit_tool_result(self, tool_call_id: str, tool_name: str, result: str) -> None:
+        self._emit_event("tool_result", _tool_result_payload(tool_call_id, tool_name, result))
+
+    def _emit_event(self, event: str, data: dict[str, Any]) -> None:
+        if self._event_sink is None:
+            return
+        try:
+            self._event_sink({"event": event, "data": data})
+        except Exception:
+            return
+
 
 def run_turn(
     model: ChatModel,
@@ -248,12 +301,14 @@ def run_turn(
     *,
     checkpoint_path: Path | None = None,
     thread_id: str = _DEFAULT_THREAD_ID,
+    event_sink: AgentEventSink | None = None,
 ) -> tuple[list[Message], str, PendingAction | None]:
     return LangGraphAgentRunner(
         model,
         registry,
         checkpoint_path=checkpoint_path,
         thread_id=thread_id,
+        event_sink=event_sink,
     ).run_turn(messages, auto_approve=auto_approve, max_iter=max_iter)
 
 
@@ -268,12 +323,14 @@ def resume_after_confirm(
     *,
     checkpoint_path: Path | None = None,
     thread_id: str = _DEFAULT_THREAD_ID,
+    event_sink: AgentEventSink | None = None,
 ) -> tuple[list[Message], str, PendingAction | None]:
     return LangGraphAgentRunner(
         model,
         registry,
         checkpoint_path=checkpoint_path,
         thread_id=thread_id,
+        event_sink=event_sink,
     ).resume_after_confirm(messages, pending, approved, auto_approve, max_iter)
 
 
@@ -303,6 +360,72 @@ def _execute_tool(tool: dict[str, Any], args: str) -> str:
         return str(handler(args))
     except Exception as exc:  # pragma: no cover - exercised through API adapters later.
         return "错误：" + str(exc)
+
+
+def _tool_public_label(tool: dict[str, Any], fallback: str) -> str:
+    description = str(tool.get("description") or "").strip()
+    return description or fallback
+
+
+def _tool_call_summary(tool: dict[str, Any], args: str, fallback: str) -> str:
+    if bool(tool.get("write")):
+        return _describe_pending_action(tool.get("describe"), args, fallback)
+    return _tool_public_label(tool, fallback)
+
+
+def _args_summary(args: str) -> Any:
+    try:
+        parsed = json.loads(args) if args else {}
+    except json.JSONDecodeError:
+        return {}
+    return _scrub_sensitive(parsed)
+
+
+def _tool_result_payload(tool_call_id: str, tool_name: str, result: str) -> dict[str, Any]:
+    structured = _json_object(result)
+    status = "error" if result.startswith("错误：") else "success"
+    return {
+        "tool_call_id": tool_call_id,
+        "tool_name": tool_name,
+        "status": status,
+        "summary": _summarize_tool_result(result),
+        "evidence": _list_field(structured, "evidence"),
+        "affected_resources": _list_field(structured, "affected_resources"),
+        "changed_entities": _list_field(structured, "changed_entities"),
+    }
+
+
+def _summarize_tool_result(result: str) -> str:
+    compact = " ".join(result.split())
+    return compact[:500]
+
+
+def _json_object(raw: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _list_field(payload: dict[str, Any], key: str) -> list[Any]:
+    value = payload.get(key)
+    return value if isinstance(value, list) else []
+
+
+def _scrub_sensitive(value: Any) -> Any:
+    if isinstance(value, dict):
+        result = {}
+        for key, item in value.items():
+            normalized = str(key).lower()
+            if any(marker in normalized for marker in ("key", "token", "secret", "password")):
+                result[key] = "***"
+            else:
+                result[key] = _scrub_sensitive(item)
+        return result
+    if isinstance(value, list):
+        return [_scrub_sensitive(item) for item in value]
+    return value
 
 
 def _next_after_model(state: _GraphState) -> Literal["tool", "final"]:
@@ -341,4 +464,3 @@ def _message_from_dict(raw: dict[str, Any]) -> Message:
         tool_call_id=str(raw.get("tool_call_id") or ""),
         provider_blocks=cast(dict[str, Any], raw.get("provider_blocks") or {}),
     )
-
