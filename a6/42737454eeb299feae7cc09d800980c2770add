@@ -1,0 +1,101 @@
+web/src/components/CalendarView.module.css
+  s_511a437aa5b960::t_b686ddb19ceedf 16-34
+web/src/components/MaterialKitDrawer.module.css
+  s_511a437aa5b960::t_f648d92026dacd 1-19
+web/src/components/QuestionBankView.module.css
+  s_511a437aa5b960::t_153139898b4e70 89-108
+web/src/components/ResumeLibraryView.module.css
+  s_511a437aa5b960::t_c492319440df0d 131-150,257
+  s_511a437aa5b960::t_3f6ab8c0b7dc17 258-259
+web/src/features/reminders/RemindersView.tsx
+  s_511a437aa5b960::t_b6ec31976e5c69 140-141,148-197
+web/src/components/KnowledgeLibraryView.tsx
+  s_511a437aa5b960::t_b9cc0a722c29d8 124-140
+web/src/components/ResumeEditorDrawer.tsx
+  s_511a437aa5b960::t_b062cd19b4a0ff 2,139,164-172,178-179,268
+web/src/components/OfferCompareDrawer.tsx
+  s_511a437aa5b960::t_e82c17c8cd3b71 1-2,51-52,54-65,71
+web/src/components/AISettingsDrawer.tsx
+  s_511a437aa5b960::t_1ab1b06f54b38f 20,231-232,234-242,244-252,410
+web/src/components/ReviewManagementView.tsx
+  s_511a437aa5b960::t_b930acc1a94ec2 129-144
+web/src/components/OfferCenterView.tsx
+  s_511a437aa5b960::t_7d3ca5d5b04dd4 52-61
+web/src/layout/workspaceDrilldown.test.ts
+  s_511a437aa5b960::t_d56798fbc1b6e8 101-105
+  s_511a437aa5b960::t_e4874541798afc 3,5,9-11,13-14,17,22,24,26-27,29,31,67-93
+  s_511a437aa5b960::t_54f561fe5abf86 97
+  s_511a437aa5b960::t_ef0833bdf00d8c 2,6-8,12,21,25,28,49-66
+  s_511a437aa5b960::t_9819b9bcbd262a 1,4,15-16,18-20,23,30,32-48,94-96,98-100,106
+web/src/layout/AppShell.tsx
+  s_511a437aa5b960::t_8740747c63bf88 187-197,200,209,226,240,246,252,256,259,282,335-336,338
+  s_511a437aa5b960::t_584e55946793d0 305
+  s_511a437aa5b960::t_c0fa70b58fefcd 169-171
+  s_511a437aa5b960::t_d46e08752706f9 212-214,304
+  s_511a437aa5b960::t_53ee194c6cecb0 215-225,227-239,241-245,247-251,253-255,257-258,260-273
+  s_1fea66e1b84b8e::t_46e889183c04a8 168
+web/src/components/QuestionBankView.tsx
+  s_511a437aa5b960::t_c6e9fff2c54c86 330-331
+  s_511a437aa5b960::t_21e0d26ea430f0 146-149,333-341,387
+web/src/components/ReviewFormDrawer.tsx
+  s_511a437aa5b960::t_0b79e3efb28886 2-3,73-74,76-95,147
+web/src/components/ResumeLibraryView.tsx
+  s_511a437aa5b960::t_dcb950b380521c 146-156
+  s_511a437aa5b960::t_8c06955ad9d36f 1,140-144
+  s_7f2bc75bf7c269::t_e8db23daaf0e8c 145
+web/src/components/KnowledgeDocumentEditor.tsx
+  s_511a437aa5b960::t_deb57b288c7fb9 2,52-53,55-69,87
+web/src/features/dashboard/DashboardView.tsx
+  s_511a437aa5b960::t_0a382a01de342f 185-186,193-237
+web/src/components/CalendarView.tsx
+  s_511a437aa5b960::t_875befa931af40 10,156-265
+web/src/features/pipeline/ActionDetailDrawer.tsx
+  s_511a437aa5b960::t_bae13c3b0f3be0 1-2,49,52-57,99
+  s_511a437aa5b960::t_d9d81d842722ff 46-47
+web/src/components/ApplicationDetail.module.css
+  s_511a437aa5b960::t_dab2455928b31b 1-46
+web/src/components/ApplicationDetail.tsx
+  s_511a437aa5b960::t_e5ae874c3b4cbc 19,39,131-139,179-181,183-192,357
+  s_511a437aa5b960::t_67f68e03605b85 140-175
+  s_511a437aa5b960::t_9aa668aa507629 182
+  s_511a437aa5b960::t_f7abf5edf58696 194
+web/src/components/ScheduleEventForm.tsx
+  s_511a437aa5b960::t_e5b6846c3ed640 3-4,124-125,127-139,144,146,229
+web/src/features/pipeline/pipeline.module.css
+  s_511a437aa5b960::t_ad9da2345152f1 1-4,11-25
+  s_7f2bc75bf7c269::t_a04c48ea3a3c11 26
+web/src/components/MaterialKitDrawer.tsx
+  s_511a437aa5b960::t_0ccaac9b515581 18,315-316,318-326,529
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "a642737454eeb299feae7cc09d800980c2770add",
+  "prompts": {},
+  "sessions": {
+    "s_1fea66e1b84b8e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3fc1-daa4-77d1-9e1e-a46e0f1580f8",
+        "model": "gpt-5.5"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    },
+    "s_511a437aa5b960": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3fb0-854e-7482-bf13-f20047e2cfcd",
+        "model": "gpt-5.5"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    },
+    "s_7f2bc75bf7c269": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3fc9-102a-7c12-bd59-7b0c567c26b6",
+        "model": "gpt-5.5"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    }
+  }
+}
