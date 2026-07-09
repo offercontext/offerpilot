@@ -326,7 +326,7 @@ function GenerateDrawer({ open, onClose }: { open: boolean; onClose: () => void 
   });
 
   return (
-    <Drawer title="AI 生成题目" open={open} onClose={onClose} width={420} destroyOnClose>
+    <Drawer title="AI 生成题目" open={open} onClose={onClose} width={420} destroyOnHidden>
       <Space direction="vertical" size={20} style={{ width: '100%' }}>
         <div>
           <div style={{ marginBottom: 8, fontWeight: 600 }}>来源</div>
@@ -423,7 +423,7 @@ function QuestionFormModal({
       okText="保存"
       cancelText="取消"
       confirmLoading={saveMutation.isPending}
-      destroyOnClose
+      destroyOnHidden
     >
       <Form
         form={form}
