@@ -11,6 +11,7 @@ export type ViewMode =
   | 'knowledge'
   | 'questions'
   | 'resumes'
+  | 'pilot'
   | 'settings';
 
 export type ModuleKey =
@@ -20,6 +21,7 @@ export type ModuleKey =
   | 'pipeline'
   | 'interview'
   | 'knowledge'
+  | 'pilot'
   | 'settings';
 
 export interface ModuleNavItem {
@@ -40,6 +42,7 @@ export const MODULE_NAV: ModuleNavItem[] = [
   { key: 'pipeline', label: '投递', defaultView: 'board' },
   { key: 'interview', label: '面试', defaultView: 'interview' },
   { key: 'knowledge', label: '知识库', defaultView: 'knowledge' },
+  { key: 'pilot', label: 'Pilot', defaultView: 'pilot' },
   { key: 'settings', label: '设置', defaultView: 'settings' },
 ];
 
@@ -56,6 +59,7 @@ export const MODULE_TABS: Record<ModuleKey, ModuleTabItem[]> = {
   ],
   interview: [{ view: 'interview', label: '面试' }],
   knowledge: [{ view: 'knowledge', label: '知识库' }],
+  pilot: [{ view: 'pilot', label: '会话中心' }],
   settings: [{ view: 'settings', label: '设置' }],
 };
 
@@ -70,6 +74,7 @@ const VIEW_TO_MODULE: Partial<Record<ViewMode, ModuleKey>> = {
   offers: 'pipeline',
   interview: 'interview',
   knowledge: 'knowledge',
+  pilot: 'pilot',
   settings: 'settings',
 };
 

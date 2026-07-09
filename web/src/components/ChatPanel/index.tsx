@@ -49,7 +49,7 @@ interface Props {
   onClose: () => void;
   offerId?: number;
   onOpenSettings?: () => void;
-  variant?: 'drawer' | 'rail';
+  variant?: 'drawer' | 'rail' | 'page';
   onExpand?: () => void;
   onDataChanged?: () => void;
 }
@@ -158,6 +158,7 @@ export default function ChatPanel({
   const abortControllerRef = useRef<AbortController | null>(null);
   const streamingAssistantActiveRef = useRef(false);
   const docked = variant === 'rail';
+  const inlinePage = variant === 'page';
 
   const activeConv = conversations.find((c) => c.id === convID);
   const isNego = activeConv ? activeConv.mode === 'nego_coach' : offerId !== undefined;
@@ -609,7 +610,7 @@ export default function ChatPanel({
 
   const workspace = (
     <>
-      {!docked && (
+      {!docked && !inlinePage && (
         <div
           className={styles.resizeHandle}
           role="separator"
@@ -644,8 +645,8 @@ export default function ChatPanel({
             <button
               type="button"
               className={styles.dockedExpand}
-              aria-label="展开完整助手"
-              title="展开完整助手"
+              aria-label="打开 Pilot tab"
+              title="打开 Pilot tab"
               onClick={onExpand}
               style={{ ...iconBtnStyle, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
             >
@@ -661,7 +662,7 @@ export default function ChatPanel({
           >
             {createElement(AppstoreOutlined)}
           </button>
-          {(!docked || offerId !== undefined) && (
+          {((!docked && !inlinePage) || offerId !== undefined) && (
             <button
               type="button"
               aria-label={docked ? '退出 Offer 上下文' : '关闭'}
@@ -832,7 +833,7 @@ export default function ChatPanel({
     </>
   );
 
-  if (docked) return workspace;
+  if (docked || inlinePage) return workspace;
 
   return (
     <Drawer

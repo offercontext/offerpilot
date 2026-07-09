@@ -34,6 +34,11 @@ describe('CommandPalette resume commands', () => {
     expect(source).not.toContain('简历匹配');
   });
 
+  it('separates the Pilot tab navigation from the contextual chat entry', () => {
+    expect(source).toContain('打开右侧 Pilot 对话');
+    expect(source).toContain('前往 ${item.label}');
+  });
+
   it('builds application search commands without soft-deleted rows', () => {
     const opened: number[] = [];
     const commands = buildApplicationSearchCommands(

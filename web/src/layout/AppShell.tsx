@@ -117,6 +117,7 @@ export default function AppShell() {
     void qc.invalidateQueries({ queryKey: ['events'] });
     void qc.invalidateQueries({ queryKey: ['offers'] });
     void qc.invalidateQueries({ queryKey: ['questions', 'stats'] });
+    void qc.invalidateQueries({ queryKey: ['chat', 'conversations'] });
   };
 
   const uploadResumeMut = useMutation({
@@ -175,8 +176,13 @@ export default function AppShell() {
     }
   }, [apps, selected]);
 
+  const shouldShowContextualPilot = view !== 'pilot';
+
   const openChat = (offerId?: number) => {
     setCoachOfferId(offerId);
+    if (view === 'pilot') {
+      setView('dashboard');
+    }
     if (pilotRailAvailable) {
       setPilotDrawerOpen(true);
       return;
@@ -187,6 +193,11 @@ export default function AppShell() {
   const navigateToView = (nextView: ViewMode) => {
     setAISettingsOpen(false);
     setSelected(null);
+    if (nextView === 'pilot') {
+      setChatOpen(false);
+      setPilotDrawerOpen(false);
+      setCoachOfferId(undefined);
+    }
     setView(nextView);
   };
 
@@ -265,6 +276,17 @@ export default function AppShell() {
           {view === 'questions' && <QuestionBankView />}
           {view === 'interview' && <InterviewV01View />}
           {view === 'resumes' && <ResumeLibraryView />}
+          {view === 'pilot' && (
+            <div style={{ height: 'calc(100vh - 128px)', minHeight: 640 }}>
+              <ChatPanel
+                variant="page"
+                open
+                onClose={() => undefined}
+                onOpenSettings={() => setAISettingsOpen(true)}
+                onDataChanged={refreshWorkspaceData}
+              />
+            </div>
+          )}
           {view === 'settings' && <SettingsView onOpenAISettings={() => setAISettingsOpen(true)} />}
         </div>
       </Suspense>
@@ -281,7 +303,6 @@ export default function AppShell() {
         view={view}
         onChange={navigateToView}
         reminderCount={actions.length}
-        onOpenChat={() => openChat(undefined)}
       />
       <Layout className="op-app-main" style={{ background: 'var(--op-layout-bg)', minWidth: 0, width: '100%' }}>
         <TopBar
@@ -290,6 +311,7 @@ export default function AppShell() {
           onSearch={() => setPaletteOpen(true)}
           onOpenChat={() => openChat(undefined)}
           onOpenSettings={() => setAISettingsOpen(true)}
+          showContextualPilot={shouldShowContextualPilot}
         />
         <Content className="op-app-content" style={{ padding: '0 24px 24px' }}>
           {isLoading ? (
@@ -307,7 +329,7 @@ export default function AppShell() {
           )}
         </Content>
       </Layout>
-      {pilotRailAvailable && !pilotDrawerOpen && (
+      {shouldShowContextualPilot && pilotRailAvailable && !pilotDrawerOpen && (
         <aside className="op-pilot-rail" aria-label="Pilot">
           <ChatPanel
             variant="rail"
@@ -315,7 +337,7 @@ export default function AppShell() {
             onClose={() => setCoachOfferId(undefined)}
             offerId={coachOfferId}
             onOpenSettings={() => setAISettingsOpen(true)}
-            onExpand={() => setPilotDrawerOpen(true)}
+            onExpand={() => navigateToView('pilot')}
             onDataChanged={refreshWorkspaceData}
           />
         </aside>
@@ -342,7 +364,7 @@ export default function AppShell() {
         pipelineActions={pipelineActions}
         onRunPipelineAction={runPipelineAction}
       />
-      {(!pilotRailAvailable || pilotDrawerOpen) && (
+      {shouldShowContextualPilot && (!pilotRailAvailable || pilotDrawerOpen) && (
         <ChatPanel
           open={pilotRailAvailable ? pilotDrawerOpen : chatOpen}
           onClose={() => {

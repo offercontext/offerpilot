@@ -20,10 +20,16 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('docked &&');
   });
 
-  it('lets the docked Pilot expand into the full assistant drawer', () => {
+  it('lets the docked Pilot expose an action that opens the Pilot tab', () => {
     expect(component).toContain('onExpand');
     expect(component).toContain('ExpandAltOutlined');
-    expect(component).toContain('aria-label="展开完整助手"');
+    expect(component).toContain('aria-label="打开 Pilot tab"');
+  });
+
+  it('supports a normal Pilot tab page variant that reuses the expanded workspace', () => {
+    expect(component).toContain("variant?: 'drawer' | 'rail' | 'page'");
+    expect(component).toContain("const inlinePage = variant === 'page'");
+    expect(component).toContain('if (docked || inlinePage) return workspace');
   });
 
   it('shows an inline API-key setup notice when the docked context panel is hidden', () => {

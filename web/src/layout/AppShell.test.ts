@@ -15,4 +15,20 @@ describe('AppShell source contract', () => {
     expect(source).toContain("queryKey: ['questions', 'stats']");
     expect(source).toContain('onDataChanged={refreshWorkspaceData}');
   });
+
+  it('renders Pilot as a normal tab with the expanded assistant workspace', () => {
+    expect(source).toContain("view === 'pilot'");
+    expect(source).toContain('variant="page"');
+    expect(source).not.toContain('PilotHomeView');
+  });
+
+  it('keeps the contextual Pilot rail out of the Pilot tab itself', () => {
+    expect(source).toContain("view !== 'pilot'");
+    expect(source).toContain('shouldShowContextualPilot');
+  });
+
+  it('routes the docked Pilot expand action into the normal Pilot tab', () => {
+    expect(source).toContain("onExpand={() => navigateToView('pilot')}");
+    expect(source).not.toContain('onExpand={() => setPilotDrawerOpen(true)}');
+  });
 });

@@ -122,7 +122,7 @@ export default function CommandPalette({
       { key: 'resume-library', label: '打开简历库', hint: '简历', run: () => { onOpenResume(); onClose(); } },
       { key: 'new-resume', label: '新建简历', hint: '在简历库创建薄版', run: () => { onOpenResume(); onClose(); } },
       { key: 'uploadResume', label: '上传简历', hint: 'PDF 到简历库', run: () => { onUploadResume?.(); onClose(); } },
-      { key: 'chat', label: '打开 Pilot', hint: '动作', run: () => { onOpenChat(); onClose(); } },
+      { key: 'chat', label: '打开右侧 Pilot 对话', hint: '动作', run: () => { onOpenChat(); onClose(); } },
       { key: 'settings-ai', label: '打开 AI 设置', hint: '设置', run: () => { onOpenSettings(); onClose(); } },
       ...buildPipelineNavigationCommands(onNavigate, onClose),
       ...MODULE_NAV.map((item) => ({
