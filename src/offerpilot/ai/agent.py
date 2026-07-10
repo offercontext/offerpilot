@@ -26,6 +26,10 @@ class ChatRunCancelled(RuntimeError):
     """Raised when a chat run is cancelled before another model/tool step."""
 
 
+class StalePendingActionError(ValueError):
+    """Raised when a confirmation does not match the checkpoint interrupt."""
+
+
 class ChatModel(Protocol):
     def complete(self, messages: list[Message], tools: list[dict[str, Any]]) -> Assistant:
         ...
@@ -126,6 +130,8 @@ class LangGraphAgentRunner:
 
         with self._checkpointer() as checkpointer:
             graph = self._compile_graph(checkpointer)
+            config = self._config(max_iter)
+            _assert_pending_checkpoint_identity(graph, config, pending)
             result = graph.invoke(
                 Command(
                     update={"added": []},
@@ -137,7 +143,7 @@ class LangGraphAgentRunner:
                         "rejection_feedback": rejection_feedback,
                     },
                 ),
-                self._config(max_iter),
+                config,
             )
         added, reply, new_pending = self._result_from_state(cast(dict[str, Any], result))
         if new_pending is not None:
@@ -574,6 +580,36 @@ def _resume_identity_error(
     if resume_value.get("tool_name") != tool_name:
         return "confirmation does not match the pending tool"
     return ""
+
+
+def _assert_pending_checkpoint_identity(
+    graph: Any,
+    config: dict[str, Any],
+    pending: PendingAction,
+) -> None:
+    try:
+        snapshot = graph.get_state(config)
+    except Exception as exc:
+        raise StalePendingActionError(
+            "stale pending action: unable to read the current checkpoint"
+        ) from exc
+    interrupts = getattr(snapshot, "interrupts", ())
+    if not isinstance(interrupts, tuple) or len(interrupts) != 1:
+        raise StalePendingActionError(
+            "stale pending action: no current checkpoint interrupt"
+        )
+    current = getattr(interrupts[0], "value", None)
+    if not isinstance(current, dict):
+        raise StalePendingActionError(
+            "stale pending action: invalid checkpoint interrupt"
+        )
+    if (
+        current.get("tool_call_id") != pending.tool_call_id
+        or current.get("tool_name") != pending.tool_name
+    ):
+        raise StalePendingActionError(
+            "stale pending action: confirmation does not match the current checkpoint"
+        )
 
 
 def _parse_json_object(raw: str, error_message: str) -> dict[str, Any]:

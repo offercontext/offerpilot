@@ -7,6 +7,7 @@ from offerpilot.ai.agent import (
     ChatRunCancelled,
     LangGraphAgentRunner,
     PendingAction,
+    StalePendingActionError,
     prepare_pending_action,
     resume_after_confirm,
     run_turn,
@@ -286,18 +287,31 @@ def test_checkpoint_resume_rejects_stale_pending_identity_without_approved_event
         human=pending.human,
     )
 
-    added, reply, new_pending = runner.resume_after_confirm(
-        [], stale_pending, approved=True, auto_approve=False, max_iter=8
-    )
+    events_before_stale_resume = list(events)
+    with pytest.raises(StalePendingActionError, match="stale pending action"):
+        runner.resume_after_confirm(
+            [], stale_pending, approved=True, auto_approve=False, max_iter=8
+        )
 
     assert calls == []
-    assert reply == "stale confirmation rejected"
-    assert new_pending is None
-    assert added[0].content.startswith("错误：")
+    assert events == events_before_stale_resume
     assert not any(
         event["event"] == "tool_call" and event["data"].get("confirm_mode") == "approved"
         for event in events
     )
+
+    added, reply, new_pending = runner.resume_after_confirm(
+        [], pending, approved=True, auto_approve=False, max_iter=8
+    )
+
+    assert calls == ['{"id":7,"status":"offer"}']
+    assert reply == "stale confirmation rejected"
+    assert new_pending is None
+    assert added[0].role == "tool"
+    assert sum(
+        event["event"] == "tool_call" and event["data"].get("confirm_mode") == "approved"
+        for event in events
+    ) == 1
 
 
 def test_checkpoint_validator_exception_fails_closed_without_leaking_details():
