@@ -1,0 +1,23 @@
+web/src/components/ChatPanel/layout.test.ts
+  s_00fff216c0c1ef::t_4a83c8ca07e3f9 175-180
+web/src/components/ChatPanel/index.tsx
+  s_00fff216c0c1ef::t_3654e136dc5349 163,183-195,468-471
+web/src/types/chat.ts
+  s_00fff216c0c1ef::t_3654e136dc5349 4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "41d2f89a4b44018f884d7ec1b3080f7f871c5743",
+  "prompts": {},
+  "sessions": {
+    "s_00fff216c0c1ef": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f49b7-4729-7983-91e1-31d35f2738f1",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    }
+  }
+}
