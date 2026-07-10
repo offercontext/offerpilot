@@ -51,6 +51,7 @@ from offerpilot.repositories.offers import OfferCreate, OffersRepository
 from offerpilot.repositories.questions import QuestionCreate, QuestionsRepository, question_hash
 from offerpilot.repositories.resumes import ResumeCreate, ResumeMatchCreate, ResumesRepository
 from offerpilot.repositories.wakeups import WakeupCreate, WakeupsRepository, wakeup_payload
+from offerpilot.onboarding import onboarding_payload
 from offerpilot.schemas import (
     ApplicationOut,
     ChatMessageOut,
@@ -132,6 +133,20 @@ def create_app(
             "auth_enabled": cfg.auth_enabled,
             "authenticated": (not cfg.auth_enabled) or _request_has_valid_auth_token(request, cfg.auth_token),
         }
+
+    @app.get("/api/onboarding")
+    def get_onboarding() -> dict[str, object]:
+        return onboarding_payload(load_config(resolved_data_dir), applications, resumes, chat)
+
+    @app.patch("/api/onboarding")
+    def update_onboarding(payload: dict[str, Any] = Body(...)) -> JSONResponse:
+        force_open = payload.get("force_open")
+        if not isinstance(force_open, bool):
+            return error_response(422, "force_open must be boolean")
+        current = load_config(resolved_data_dir)
+        current.onboarding_force_open = force_open
+        save_config(resolved_data_dir, current)
+        return JSONResponse(onboarding_payload(current, applications, resumes, chat))
 
     @app.get("/api/application-statuses")
     def list_application_statuses() -> list[dict[str, str]]:

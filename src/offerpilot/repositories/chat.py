@@ -102,6 +102,11 @@ class ChatRepository:
         with self._session_factory() as session:
             return list(session.scalars(statement))
 
+    def has_user_message(self) -> bool:
+        statement = select(ChatMessage.id).where(ChatMessage.role == "user").limit(1)
+        with self._session_factory() as session:
+            return session.scalar(statement) is not None
+
     def get_pending_action(self, conversation_id: int) -> PendingAction | None:
         with self._session_factory() as session:
             conversation = session.get(Conversation, conversation_id)
