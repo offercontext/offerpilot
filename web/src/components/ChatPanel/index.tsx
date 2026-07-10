@@ -619,7 +619,11 @@ export default function ChatPanel({
           onPointerDown={startResize}
         />
       )}
-      <div className={`${styles.workspace} ${docked ? styles.workspaceDocked : ''}`}>
+      <div
+        className={`${styles.workspace} ${docked ? styles.workspaceDocked : ''} ${
+          inlinePage ? styles.workspacePage : ''
+        }`}
+      >
         <header className={styles.header}>
           <div className={styles.avatar} aria-hidden="true">
             <RobotOutlined />

@@ -543,6 +543,19 @@
   width: 100%;
   max-width: 100%;
 }
+.workspacePage .pendingDock {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+.workspacePage .pendingDock .proposal {
+  width: min(100%, 720px);
+  max-width: 720px;
+}
+.workspaceDocked .pendingDock .proposal {
+  width: 100%;
+  max-width: 100%;
+}
 .stopDock {
   flex-shrink: 0;
   display: flex;

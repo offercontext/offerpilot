@@ -34,6 +34,16 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('if (docked || inlinePage) return workspace');
   });
 
+  it('limits confirmation cards in the full Pilot page without narrowing the rail drawer', async () => {
+    const css = await loadCss();
+
+    expect(component).toContain('inlinePage ? styles.workspacePage');
+    expect(css).toContain('.workspacePage .pendingDock');
+    expect(css).toContain('max-width: 720px;');
+    expect(css).toContain('.workspaceDocked .pendingDock .proposal');
+    expect(css).toContain('max-width: 100%;');
+  });
+
   it('shows an inline API-key setup notice when the docked context panel is hidden', () => {
     expect(component).toContain('styles.inlineKeyNotice');
     expect(component).toContain('!hasKey &&');
