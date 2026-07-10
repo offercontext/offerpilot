@@ -1,6 +1,6 @@
-import { useState, createElement } from 'react';
+import { useLayoutEffect, useState, createElement } from 'react';
 import { RightOutlined, ThunderboltOutlined } from '@ant-design/icons';
-import { remainingEvidence, selectEvidence, type ToolStep } from './model';
+import { remainingEvidence, selectEvidence, toolStepSetIdentity, type ToolStep } from './model';
 import { toolMeta } from './capabilities';
 import EvidenceList from './EvidenceList';
 import styles from './ChatPanel.module.css';
@@ -12,6 +12,12 @@ interface Props {
 export default function ProcessTimeline({ steps }: Props) {
   const [open, setOpen] = useState(false);
   const [expandedSteps, setExpandedSteps] = useState(false);
+  const stepSetIdentity = toolStepSetIdentity(steps);
+
+  useLayoutEffect(() => {
+    setExpandedSteps(false);
+  }, [stepSetIdentity]);
+
   if (!steps.length) return null;
 
   const visibleSteps = expandedSteps ? steps : steps.slice(0, 8);

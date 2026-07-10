@@ -488,6 +488,9 @@ describe('ChatPanel docked layout contract', () => {
     expect(processTimeline).toContain('remainingCount={evidenceSelection.remainingCount}');
     expect(processTimeline).toContain('remaining={remainingEvidence(step.evidence ?? [], evidenceSelection.visible)}');
     expect(processTimeline).toContain('open ? (');
+    expect(processTimeline).toContain('const stepSetIdentity = toolStepSetIdentity(steps);');
+    expect(processTimeline).toContain('useLayoutEffect(() => {');
+    expect(processTimeline).toContain('}, [stepSetIdentity]);');
     expect(processTimeline).toContain('`还有 ${remainingSteps} 步`');
     expect(processTimeline).toContain('aria-expanded={expandedSteps}');
     expect(processTimeline).toContain('<button');

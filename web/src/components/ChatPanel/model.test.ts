@@ -29,6 +29,7 @@ import {
   shouldConsumeConfirmationSettlement,
   shouldRestoreConfirmationRetryFocus,
   selectEvidence,
+  toolStepSetIdentity,
 } from './model';
 
 describe('evidence selection', () => {
@@ -157,6 +158,18 @@ describe('evidence selection', () => {
     expect(selection.similar).toEqual([]);
     expect(selection.remainingCount).toBe(1);
     expect(remainingEvidence(items, selection.visible).map((entry) => entry.id)).toEqual(['9']);
+  });
+
+  it('changes the timeline step-set identity for a new tool call or evidence record', () => {
+    const current = [{ name: 'get_application', toolCallId: 'call-1', evidence: [item('1', 'Acme', 'applications')] }];
+
+    expect(toolStepSetIdentity(current)).toBe(toolStepSetIdentity([...current]));
+    expect(toolStepSetIdentity(current)).not.toBe(
+      toolStepSetIdentity([{ ...current[0], toolCallId: 'call-2' }]),
+    );
+    expect(toolStepSetIdentity(current)).not.toBe(
+      toolStepSetIdentity([{ ...current[0], evidence: [item('2', 'Acme', 'applications')] }]),
+    );
   });
 });
 
