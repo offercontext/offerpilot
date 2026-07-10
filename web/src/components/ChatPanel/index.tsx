@@ -42,6 +42,7 @@ import {
   isCurrentVisibleConversationRequest,
   shouldAbortActiveRequestOnClose,
   clearOwnedConfirmationLock,
+  shouldConsumeConfirmationSettlement,
   hasConfirmationSettled,
   pendingComposerDisabledReason,
   reloadConversationTurns,
@@ -645,7 +646,13 @@ export default function ChatPanel({
         visibleRequestGeneration,
       );
       if (!isCurrentVisibleRequest(visibleRequestGeneration)) return;
-      if (hasConfirmationSettled(nextPending, expectedConfirmationToken)) {
+      if (
+        shouldConsumeConfirmationSettlement(
+          nextPending,
+          expectedConfirmationToken,
+          isCurrentVisibleRequest(visibleRequestGeneration),
+        )
+      ) {
         if (clearOwnedConfirmationLock(confirmationLocksRef.current, conversationId, execution)) {
           if (lockedConfirmationRef.current === execution) lockedConfirmationRef.current = null;
           setConfirmPhase('idle');
@@ -665,7 +672,13 @@ export default function ChatPanel({
       visibleRequestGeneration,
     );
     if (!isCurrentVisibleRequest(visibleRequestGeneration)) return;
-    if (hasConfirmationSettled(nextPending, locked.confirmationToken)) {
+    if (
+      shouldConsumeConfirmationSettlement(
+        nextPending,
+        locked.confirmationToken,
+        isCurrentVisibleRequest(visibleRequestGeneration),
+      )
+    ) {
       if (clearOwnedConfirmationLock(confirmationLocksRef.current, locked.conversationId, locked)) {
         if (lockedConfirmationRef.current === locked) lockedConfirmationRef.current = null;
         setConfirmPhase('idle');
@@ -850,11 +863,6 @@ export default function ChatPanel({
         },
       });
       if (!isCurrentVisibleRequest(visibleRequestGeneration)) {
-        clearOwnedConfirmationLock(
-          confirmationLocksRef.current,
-          confirmationExecution.conversationId,
-          confirmationExecution,
-        );
         refreshConversations();
         return;
       }

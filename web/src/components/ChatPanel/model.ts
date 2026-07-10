@@ -106,6 +106,14 @@ export function hasConfirmationSettled(
   );
 }
 
+export function shouldConsumeConfirmationSettlement(
+  pending: PendingAction | null | undefined,
+  expectedConfirmationToken: string,
+  viewIsCurrent: boolean,
+): boolean {
+  return viewIsCurrent && hasConfirmationSettled(pending, expectedConfirmationToken);
+}
+
 export function confirmationInputForRetry(
   input: ConfirmationInput | null,
 ): ConfirmationInput | null {

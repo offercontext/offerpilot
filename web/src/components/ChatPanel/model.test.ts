@@ -23,6 +23,7 @@ import {
   hasConfirmationSettled,
   shouldAbortActiveRequestOnClose,
   clearOwnedConfirmationLock,
+  shouldConsumeConfirmationSettlement,
   shouldRestoreConfirmationRetryFocus,
 } from './model';
 
@@ -140,6 +141,40 @@ describe('active request ownership', () => {
     expect(clearOwnedConfirmationLock(locks, 1, stale)).toBe(false);
     expect(locks.get(1)).toBe(replacement);
     expect(clearOwnedConfirmationLock(locks, 1, replacement)).toBe(true);
+    expect(locks.has(1)).toBe(false);
+  });
+
+  it('consumes hidden completion only when reopen reconciliation hydrates it', () => {
+    const owner = { confirmationToken: 'token-a' };
+    const locks = new Map([[1, owner]]);
+    let state = {
+      phase: 'saving',
+      turns: ['partial'],
+      pending: 'token-a' as string | null,
+      undo: null as string | null,
+    };
+    let dataChangedCalls = 0;
+
+    if (shouldConsumeConfirmationSettlement(null, 'token-a', false)) {
+      clearOwnedConfirmationLock(locks, 1, owner);
+    }
+    expect(locks.get(1)).toBe(owner);
+
+    if (shouldConsumeConfirmationSettlement(null, 'token-a', true)) {
+      const consumed = clearOwnedConfirmationLock(locks, 1, owner);
+      if (consumed) {
+        state = { phase: 'idle', turns: ['persisted result'], pending: null, undo: 'undo-a' };
+        dataChangedCalls += 1;
+      }
+    }
+
+    expect(state).toEqual({
+      phase: 'idle',
+      turns: ['persisted result'],
+      pending: null,
+      undo: 'undo-a',
+    });
+    expect(dataChangedCalls).toBe(1);
     expect(locks.has(1)).toBe(false);
   });
 });

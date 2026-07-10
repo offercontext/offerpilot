@@ -394,7 +394,6 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain(
       'clearOwnedConfirmationLock(',
     );
-    expect(component).toContain('confirmationExecution.conversationId,');
     expect(component).toContain('if (confirmationLocksRef.current.has(convID)) return;');
     expect(component).toContain('lockedConfirmationRef.current = confirmationExecution;');
     expect(component).toContain(
@@ -416,6 +415,21 @@ describe('ChatPanel docked layout contract', () => {
     expect(contextReset).toContain('visibleRequestGenerationRef.current += 1;');
     expect(contextReset).toContain('setLoading(false);');
     expect(contextReset).toContain('setLoadingLabel(undefined);');
+
+    const confirmationResponseStart = component.indexOf(
+      'const resp = await streamConfirmAction',
+    );
+    const staleCompletionStart = component.indexOf(
+      'if (!isCurrentVisibleRequest(visibleRequestGeneration)) {',
+      confirmationResponseStart,
+    );
+    const staleCompletionEnd = component.indexOf(
+      'clearOwnedConfirmationLock(confirmationLocksRef.current, convID',
+      staleCompletionStart,
+    );
+    const staleCompletion = component.slice(staleCompletionStart, staleCompletionEnd);
+    expect(staleCompletion).toContain('refreshConversations();');
+    expect(staleCompletion).not.toContain('clearOwnedConfirmationLock(');
   });
 
   it('guards conversation list refreshes against stale view responses', () => {
