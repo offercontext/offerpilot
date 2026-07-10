@@ -1,0 +1,28 @@
+src/offerpilot/api.py
+  s_00fff216c0c1ef::t_b43bf2d8ab72a2 54,137-149
+  s_00fff216c0c1ef::t_417d946375735b 150
+src/offerpilot/onboarding.py
+  s_00fff216c0c1ef::t_b43bf2d8ab72a2 1-30
+tests/test_onboarding_api.py
+  s_00fff216c0c1ef::t_64e2b5131228d5 1-81
+src/offerpilot/config.py
+  s_00fff216c0c1ef::t_b43bf2d8ab72a2 44
+src/offerpilot/repositories/chat.py
+  s_00fff216c0c1ef::t_b43bf2d8ab72a2 105-109
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "0c758a5436382aa7b76de89195759597faba4091",
+  "prompts": {},
+  "sessions": {
+    "s_00fff216c0c1ef": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f49b7-4729-7983-91e1-31d35f2738f1",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    }
+  }
+}
