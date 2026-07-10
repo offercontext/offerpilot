@@ -356,18 +356,26 @@ def test_confirmation_race_preserves_replacement_checkpoint(monkeypatch):
 
         class RaceGraph:
             def get_state(self, config):
-                return graph.get_state(config)
+                snapshot = graph.get_state(config)
+                if snapshot.interrupts:
+                    replacement["interrupt_id"] = snapshot.interrupts[0].id
+                return snapshot
 
             def invoke(self, value, config):
-                if not replacement:
+                if "pending" not in replacement:
                     replacement_result = graph.invoke(
-                        {
-                            "messages": [],
-                            "added": [],
-                            "auto_approve": False,
-                            "max_iter": 8,
-                            "iterations": 0,
-                        },
+                        agent_module.Command(
+                            resume={
+                                replacement["interrupt_id"]: {
+                                    "approved": True,
+                                    "tool_call_id": pending_a.tool_call_id,
+                                    "tool_name": pending_a.tool_name,
+                                    "effective_args": pending_a.args,
+                                    "rejection_feedback": "",
+                                    "resume_attempt_id": "concurrent-confirmation",
+                                }
+                            }
+                        ),
                         config,
                     )
                     _, _, pending_b = runner._result_from_state(replacement_result)
@@ -379,37 +387,34 @@ def test_confirmation_race_preserves_replacement_checkpoint(monkeypatch):
 
     monkeypatch.setattr(runner, "_compile_graph", compile_with_race)
 
-    try:
-        _, race_reply, pending_after_race = runner.resume_after_confirm(
+    with pytest.raises(StalePendingActionError, match="stale pending action"):
+        runner.resume_after_confirm(
             [], pending_a, approved=True, auto_approve=False, max_iter=8
         )
-    except StalePendingActionError:
-        pending_after_race = replacement["pending"]
-    else:
-        assert race_reply == ""
-        assert pending_after_race is not None
-        assert pending_after_race.tool_call_id == "call-b"
-        assert pending_after_race.tool_name == "update_application_status"
 
-    assert calls == []
-    assert not any(
+    assert calls == ['{"id":7,"status":"offer"}']
+    assert sum(
         event["event"] == "tool_call" and event["data"].get("confirm_mode") == "approved"
         for event in events
-    )
+    ) == 1
 
-    pending_b = pending_after_race
+    pending_b = replacement["pending"]
     added, reply, new_pending = runner.resume_after_confirm(
         [], pending_b, approved=True, auto_approve=False, max_iter=8
     )
 
-    assert calls == ['{"id":7,"status":"rejected"}']
-    assert added[0].role == "tool"
+    assert calls == [
+        '{"id":7,"status":"offer"}',
+        '{"id":7,"status":"rejected"}',
+    ]
+    assert [message.role for message in added] == ["tool", "assistant"]
+    assert added[0].tool_call_id == "call-b"
     assert reply == "replacement completed"
     assert new_pending is None
     assert sum(
         event["event"] == "tool_call" and event["data"].get("confirm_mode") == "approved"
         for event in events
-    ) == 1
+    ) == 2
 
 
 def test_mapped_confirmation_allows_chained_write_to_create_fresh_interrupt():

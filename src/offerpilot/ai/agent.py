@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Literal, Protocol, TypedDict, cast
+from uuid import uuid4
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -64,6 +65,8 @@ class _GraphState(TypedDict, total=False):
     reply: str
     current_tool_call: dict[str, Any]
     current_tool_calls: list[dict[str, Any]]
+    consumed_resume_id: str
+    consumed_resume_attempt_id: str
 
 
 class LangGraphAgentRunner:
@@ -133,12 +136,14 @@ class LangGraphAgentRunner:
             graph = self._compile_graph(checkpointer)
             config = self._config(max_iter)
             interrupt_id = _assert_pending_checkpoint_identity(graph, config, pending)
+            resume_attempt_id = uuid4().hex
             resume_payload = {
                 "approved": approved,
                 "tool_call_id": pending.tool_call_id,
                 "tool_name": pending.tool_name,
                 "effective_args": pending.args,
                 "rejection_feedback": rejection_feedback,
+                "resume_attempt_id": resume_attempt_id,
             }
             result = graph.invoke(
                 Command(
@@ -146,7 +151,15 @@ class LangGraphAgentRunner:
                 ),
                 config,
             )
-        added, reply, new_pending = self._result_from_state(cast(dict[str, Any], result))
+        result_state = cast(dict[str, Any], result)
+        if (
+            result_state.get("consumed_resume_id") != interrupt_id
+            or result_state.get("consumed_resume_attempt_id") != resume_attempt_id
+        ):
+            raise StalePendingActionError(
+                "stale pending action: confirmation resume was not consumed"
+            )
+        added, reply, new_pending = self._result_from_state(result_state)
         if new_pending is not None:
             self._has_pending_checkpoint = True
         return added, reply, new_pending
@@ -209,13 +222,15 @@ class LangGraphAgentRunner:
         current_tool_calls = state.get("current_tool_calls") or [state["current_tool_call"]]
         messages = list(state.get("messages", []))
         added = list(state.get("added", []))
+        consumed_resume_id = str(state.get("consumed_resume_id") or "")
+        consumed_resume_attempt_id = str(state.get("consumed_resume_attempt_id") or "")
         for tool_call in current_tool_calls:
             self._raise_if_cancelled()
             tool_name = str(tool_call["name"])
             tool_args = str(tool_call.get("args") or "")
             tool_call_id = str(tool_call["id"])
             tool = self._registry.get(tool_name)
-            has_mapped_resume, mapped_resume = _mapped_resume_payload()
+            has_mapped_resume, mapped_resume, mapped_interrupt_id = _mapped_resume_payload()
             if has_mapped_resume:
                 mapped_identity_error = _resume_identity_error(
                     mapped_resume,
@@ -226,6 +241,13 @@ class LangGraphAgentRunner:
                     raise StalePendingActionError(
                         "stale pending action: " + mapped_identity_error
                     )
+                mapped_attempt_id = mapped_resume.get("resume_attempt_id")
+                if not isinstance(mapped_attempt_id, str) or not mapped_attempt_id:
+                    raise StalePendingActionError(
+                        "stale pending action: confirmation resume identity is missing"
+                    )
+                consumed_resume_id = mapped_interrupt_id
+                consumed_resume_attempt_id = mapped_attempt_id
                 added = []
 
             if tool is None:
@@ -303,6 +325,8 @@ class LangGraphAgentRunner:
             "messages": messages,
             "added": added,
             "status": "continue",
+            "consumed_resume_id": consumed_resume_id,
+            "consumed_resume_attempt_id": consumed_resume_attempt_id,
         }
 
     def _checkpointer(self) -> AbstractContextManager[Any]:
@@ -634,22 +658,22 @@ def _assert_pending_checkpoint_identity(
     return interrupt_id
 
 
-def _mapped_resume_payload() -> tuple[bool, dict[str, Any]]:
+def _mapped_resume_payload() -> tuple[bool, dict[str, Any], str]:
     try:
         configurable = get_config().get("configurable", {})
     except RuntimeError:
-        return False, {}
+        return False, {}, ""
     if "__pregel_resume_map" not in configurable:
-        return False, {}
+        return False, {}, ""
     resume_map = configurable.get("__pregel_resume_map")
     checkpoint_ns = configurable.get("checkpoint_ns")
     if not isinstance(resume_map, dict) or not isinstance(checkpoint_ns, str):
-        return True, {}
+        return True, {}, ""
     current_interrupt_id = Interrupt.from_ns(value=None, ns=checkpoint_ns).id
     if current_interrupt_id not in resume_map:
-        return False, {}
+        return False, {}, ""
     payload = resume_map[current_interrupt_id]
-    return True, payload if isinstance(payload, dict) else {}
+    return True, payload if isinstance(payload, dict) else {}, current_interrupt_id
 
 
 def _parse_json_object(raw: str, error_message: str) -> dict[str, Any]:
