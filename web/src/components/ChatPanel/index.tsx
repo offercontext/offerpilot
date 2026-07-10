@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, createElement } from 'react';
+import { useEffect, useReducer, useRef, useState, createElement } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Drawer, App as AntApp, Button } from 'antd';
 import {
@@ -45,9 +45,11 @@ import {
   type UITurn,
 } from './model';
 import {
+  createPilotPageContextRemovalState,
+  deriveActivePageContext,
   pageContextChips,
   pageContextKey,
-  removePageContextChip,
+  pilotPageContextRemovalReducer,
 } from '@/lib/pilotPageContext';
 import { capabilitiesForMode, type Capability } from './capabilities';
 import ThreadRail from './ThreadRail';
@@ -148,6 +150,7 @@ export default function ChatPanel({
   pageContext,
 }: Props) {
   const { message: toast } = AntApp.useApp();
+  const incomingPageContextKey = pageContextKey(pageContext);
   const [turns, setTurns] = useState<UITurn[]>([]);
   const [convID, setConvID] = useState<number | undefined>(undefined);
   const [pending, setPending] = useState<PendingAction | null>(null);
@@ -165,7 +168,12 @@ export default function ChatPanel({
   const [lastUndo, setLastUndo] = useState<ChatUndo | null>(null);
   const [loadingLabel, setLoadingLabel] = useState<string | undefined>(undefined);
   const [hasStreamingAssistantContent, setHasStreamingAssistantContent] = useState(false);
-  const [activePageContext, setActivePageContext] = useState<PilotPageContext | undefined>(() => pageContext);
+  const [pageContextRemovalState, dispatchPageContextRemoval] = useReducer(
+    pilotPageContextRemovalReducer,
+    incomingPageContextKey,
+    createPilotPageContextRemovalState,
+  );
+  const activePageContext = deriveActivePageContext(pageContext, pageContextRemovalState);
   const [drawerWidth, setDrawerWidth] = useState(() => {
     const stored = Number(localStorage.getItem(CHAT_WIDTH_STORAGE_KEY));
     return Number.isFinite(stored) && stored > 0 ? clampChatWidth(stored) : DEFAULT_CHAT_WIDTH;
@@ -174,9 +182,6 @@ export default function ChatPanel({
   const threadOfferId = useRef<number | undefined>(undefined);
   const abortControllerRef = useRef<AbortController | null>(null);
   const streamingAssistantActiveRef = useRef(false);
-  const pageContextRef = useRef(pageContext);
-  pageContextRef.current = pageContext;
-  const incomingPageContextKey = pageContextKey(pageContext);
   const docked = variant === 'rail';
   const inlinePage = variant === 'page';
 
@@ -191,7 +196,7 @@ export default function ChatPanel({
   });
 
   useEffect(() => {
-    setActivePageContext(pageContextRef.current);
+    dispatchPageContextRemoval({ type: 'sync', contextKey: incomingPageContextKey });
   }, [incomingPageContextKey]);
 
   function refreshConversations() {
@@ -621,7 +626,7 @@ export default function ChatPanel({
 
   function removeRequestContextChip(chipKey: string) {
     if (!activePageContext) return;
-    setActivePageContext(removePageContextChip(activePageContext, chipKey));
+    dispatchPageContextRemoval({ type: 'remove', contextKey: incomingPageContextKey, chipKey });
   }
 
   const composerDisabled = loading || !!activePending || !hasKey;

@@ -169,14 +169,17 @@ describe('ChatPanel docked layout contract', () => {
     const css = await loadCss();
 
     expect(component).toContain('pageContext?: PilotPageContext');
-    expect(component).toContain('useState<PilotPageContext | undefined>(() => pageContext)');
+    expect(component).not.toContain('useState<PilotPageContext | undefined>(() => pageContext)');
+    expect(component).not.toContain('setActivePageContext');
     expect(component).toContain('pageContextKey(pageContext)');
-    expect(component).toContain('setActivePageContext(pageContextRef.current)');
+    expect(component).toContain('pilotPageContextRemovalReducer,');
+    expect(component).toContain('deriveActivePageContext(pageContext, pageContextRemovalState)');
+    expect(component).toContain("type: 'sync', contextKey: incomingPageContextKey");
     expect(component).toContain('}, [incomingPageContextKey]);');
     expect(component).toContain('buildChatRequestContext({');
     expect(component).toContain('pageContext: activePageContext');
     expect(component).toContain('pageContextChips(activePageContext)');
-    expect(component).toContain('removePageContextChip(activePageContext, chipKey)');
+    expect(component).toContain("type: 'remove', contextKey: incomingPageContextKey, chipKey");
     expect(component).toContain('aria-label={`\u79fb\u9664${chip.label}`}');
     expect(component).toContain('disabled={loading}');
     expect(component).toContain('styles.requestContextRow');

@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { ChatMessage, PilotPageContext } from '@/types/chat';
 import {
+  createPilotPageContextRemovalState,
+  deriveActivePageContext,
+  pageContextKey,
+  pilotPageContextRemovalReducer,
+} from '@/lib/pilotPageContext';
+import {
   buildChatRequestContext,
   buildTurns,
   collectEvidence,
@@ -28,6 +34,28 @@ describe('buildChatRequestContext', () => {
         pageContext,
       }),
     ).toEqual({ page_context: pageContext });
+  });
+
+  it('sends the latest derived context while retaining same-page removals', () => {
+    const identity = pageContextKey(pageContext);
+    const removalState = pilotPageContextRemovalReducer(
+      createPilotPageContextRemovalState(identity),
+      { type: 'remove', contextKey: identity, chipKey: 'entity' },
+    );
+    const refreshedContext = {
+      ...pageContext,
+      label: '最新投递列表',
+      entity: {
+        ...pageContext.entity!,
+        label: '星海智能 · 高级前端工程师',
+        description: '当前状态：已录用',
+      },
+    };
+    const activePageContext = deriveActivePageContext(refreshedContext, removalState);
+
+    expect(buildChatRequestContext({ conversationId: 7, pageContext: activePageContext })).toEqual({
+      page_context: { view: 'applications-list', label: '最新投递列表' },
+    });
   });
 
   it('prefers a loaded offer application for a new conversation', () => {

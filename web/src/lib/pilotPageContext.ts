@@ -118,3 +118,49 @@ export function removePageContextChip(
   void removedFilters;
   return withoutFilters;
 }
+
+export interface PilotPageContextRemovalState {
+  contextKey: string;
+  removedChipKeys: string[];
+}
+
+export type PilotPageContextRemovalAction =
+  | { type: 'sync'; contextKey: string }
+  | { type: 'remove'; contextKey: string; chipKey: string };
+
+export function createPilotPageContextRemovalState(
+  contextKey: string,
+): PilotPageContextRemovalState {
+  return { contextKey, removedChipKeys: [] };
+}
+
+export function pilotPageContextRemovalReducer(
+  state: PilotPageContextRemovalState,
+  action: PilotPageContextRemovalAction,
+): PilotPageContextRemovalState {
+  if (action.type === 'sync') {
+    return action.contextKey === state.contextKey
+      ? state
+      : createPilotPageContextRemovalState(action.contextKey);
+  }
+
+  const removedChipKeys = action.contextKey === state.contextKey ? state.removedChipKeys : [];
+  if (removedChipKeys.includes(action.chipKey)) return state;
+  return {
+    contextKey: action.contextKey,
+    removedChipKeys: [...removedChipKeys, action.chipKey],
+  };
+}
+
+export function deriveActivePageContext(
+  context: PilotPageContext | undefined,
+  removalState: PilotPageContextRemovalState,
+): PilotPageContext | undefined {
+  if (!context || removalState.contextKey !== pageContextKey(context)) return context;
+
+  return removalState.removedChipKeys.reduce<PilotPageContext | undefined>(
+    (activeContext, chipKey) =>
+      activeContext ? removePageContextChip(activeContext, chipKey) : undefined,
+    context,
+  );
+}

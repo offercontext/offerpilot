@@ -5,8 +5,11 @@ import type { PilotPageContext } from '@/types/chat';
 import {
   PILOT_VIEW_LABELS,
   buildPilotPageContext,
+  createPilotPageContextRemovalState,
+  deriveActivePageContext,
   pageContextChips,
   pageContextKey,
+  pilotPageContextRemovalReducer,
   removePageContextChip,
 } from './pilotPageContext';
 
@@ -131,6 +134,61 @@ describe('pilot page context', () => {
       ],
     });
     expect(pageContextKey()).toBe('');
+  });
+
+  it('derives fresh same-identity data while preserving removed chips', () => {
+    const original: PilotPageContext = {
+      view: 'applications-list',
+      label: '投递列表',
+      entity: {
+        kind: 'application',
+        id: '42',
+        label: '星海科技 · 前端工程师',
+        description: '当前状态：面试',
+      },
+      filters: [{ key: 'source', label: '来源', value: '校招' }],
+    };
+    const updated: PilotPageContext = {
+      ...original,
+      label: '最新投递',
+      entity: {
+        ...original.entity!,
+        label: '星海智能 · 高级前端工程师',
+        description: '当前状态：已录用',
+      },
+      filters: [{ key: 'source', label: '渠道', value: '校招' }],
+    };
+    const identity = pageContextKey(original);
+    const state = pilotPageContextRemovalReducer(
+      createPilotPageContextRemovalState(identity),
+      { type: 'remove', contextKey: identity, chipKey: 'filter:source' },
+    );
+
+    expect(deriveActivePageContext(updated, state)).toEqual({
+      view: 'applications-list',
+      label: '最新投递',
+      entity: {
+        kind: 'application',
+        id: '42',
+        label: '星海智能 · 高级前端工程师',
+        description: '当前状态：已录用',
+      },
+    });
+  });
+
+  it('ignores stale removals immediately when the semantic identity changes', () => {
+    const oldIdentity = pageContextKey({ view: 'board', label: '投递看板' });
+    const state = pilotPageContextRemovalReducer(
+      createPilotPageContextRemovalState(oldIdentity),
+      { type: 'remove', contextKey: oldIdentity, chipKey: 'view' },
+    );
+    const navigated: PilotPageContext = { view: 'calendar', label: '投递日历' };
+    const newIdentity = pageContextKey(navigated);
+
+    expect(deriveActivePageContext(navigated, state)).toEqual(navigated);
+    expect(
+      pilotPageContextRemovalReducer(state, { type: 'sync', contextKey: newIdentity }),
+    ).toEqual(createPilotPageContextRemovalState(newIdentity));
   });
 
   it('creates readable chips for the view, entity, and filters', () => {
