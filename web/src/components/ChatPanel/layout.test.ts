@@ -475,11 +475,19 @@ describe('ChatPanel docked layout contract', () => {
   it('renders expandable evidence and timeline limits with native controls', async () => {
     const css = await loadCss();
 
-    expect(evidenceList).toContain('另有 {similar.length} 条同类依据');
+    expect(evidenceList).toContain('`另有 ${similar.length} 条同类依据`');
     expect(evidenceList).toContain('aria-expanded={expanded}');
-    expect(evidenceList).toContain('...similar');
+    expect(evidenceList).toContain('...remaining');
     expect(evidenceList).toContain('formatEvidenceMeta(item.meta)');
+    expect(evidenceList).toContain('evidenceSetIdentity(items, similar, remaining)');
+    expect(evidenceList).toContain('remaining = similar');
+    expect(evidenceList).toContain("{expanded ? '收起依据' : '展开依据'}");
     expect(processTimeline).toContain('const visibleSteps = expandedSteps ? steps : steps.slice(0, 8);');
+    expect(processTimeline).toContain('const evidenceSelection = selectEvidence(step.evidence ?? [], 8);');
+    expect(processTimeline).toContain('similar={evidenceSelection.similar}');
+    expect(processTimeline).toContain('remainingCount={evidenceSelection.remainingCount}');
+    expect(processTimeline).toContain('remaining={remainingEvidence(step.evidence ?? [], evidenceSelection.visible)}');
+    expect(processTimeline).toContain('open ? (');
     expect(processTimeline).toContain('`还有 ${remainingSteps} 步`');
     expect(processTimeline).toContain('aria-expanded={expandedSteps}');
     expect(processTimeline).toContain('<button');

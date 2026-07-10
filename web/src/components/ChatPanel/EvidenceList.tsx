@@ -5,13 +5,14 @@ import {
   FileTextOutlined,
   ProfileOutlined,
 } from '@ant-design/icons';
-import { createElement, useId, useState } from 'react';
-import { evidenceIdentity, formatEvidenceMeta, type EvidenceItem } from './model';
+import { createElement, useEffect, useId, useState } from 'react';
+import { evidenceIdentity, evidenceSetIdentity, formatEvidenceMeta, type EvidenceItem } from './model';
 import styles from './ChatPanel.module.css';
 
 interface Props {
   items: EvidenceItem[];
   similar?: EvidenceItem[];
+  remaining?: EvidenceItem[];
   remainingCount?: number;
   compact?: boolean;
   clamped?: boolean;
@@ -31,13 +32,19 @@ const ICONS = {
 export default function EvidenceList({
   items,
   similar = [],
+  remaining = similar,
   remainingCount,
   compact,
   clamped,
 }: Props) {
   const [expanded, setExpanded] = useState(false);
   const listId = useId();
-  const displayedItems = expanded ? [...items, ...similar] : items;
+  const setIdentity = evidenceSetIdentity(items, similar, remaining);
+  const displayedItems = expanded ? [...items, ...remaining] : items;
+
+  useEffect(() => {
+    setExpanded(false);
+  }, [setIdentity]);
 
   if (!items.length) return null;
 
@@ -66,10 +73,10 @@ export default function EvidenceList({
           );
         })}
       </ul>
-      {similar.length ? (
+      {remaining.length ? (
         <div className={`${styles.evidenceControls} ${compact ? styles.evidenceControlsCompact : ''}`}>
           <span className={styles.evidenceMore}>
-            另有 {similar.length} 条同类依据
+            {similar.length ? `另有 ${similar.length} 条同类依据` : `另有 ${remaining.length} 条依据`}
             {remainingCount && remainingCount > similar.length ? `（共 ${remainingCount} 条未展示）` : ''}
           </span>
           <button
@@ -79,7 +86,7 @@ export default function EvidenceList({
             aria-expanded={expanded}
             onClick={() => setExpanded((value) => !value)}
           >
-            {expanded ? '收起同类依据' : '展开同类依据'}
+            {expanded ? '收起依据' : '展开依据'}
           </button>
         </div>
       ) : null}

@@ -10,11 +10,13 @@ import {
   buildChatRequestContext,
   buildTurns,
   collectEvidence,
+  evidenceSetIdentity,
   formatEvidenceMeta,
   hydrateMissingPendingAction,
   pendingActionForConversation,
   pendingComposerDisabledReason,
   pendingAutoSelectReducer,
+  remainingEvidence,
   shouldApplyConversationRequest,
   isCurrentVisibleConversationRequest,
   reloadConversationTurns,
@@ -97,8 +99,63 @@ describe('evidence selection', () => {
     expect(formatEvidenceMeta('scheduled 2026-07-10T09:05:00Z+08:00')).toBe(
       'scheduled 2026-07-10T09:05:00Z+08:00',
     );
+    expect(formatEvidenceMeta('scheduled 2026-07-10T09:05.123')).toBe('scheduled 2026-07-10T09:05.123');
+    expect(formatEvidenceMeta('scheduled 2026-07-10T09:05:00.abc')).toBe(
+      'scheduled 2026-07-10T09:05:00.abc',
+    );
     expect(formatEvidenceMeta('scheduled someday')).toBe('scheduled someday');
     expect(formatEvidenceMeta()).toBeUndefined();
+  });
+
+  it('changes the evidence-set identity when a conversation supplies different visible or similar records', () => {
+    const visible = [item('1', 'Acme', 'applications')];
+    const similar = [item('2', 'Acme', 'applications')];
+
+    expect(evidenceSetIdentity(visible, similar)).not.toBe(evidenceSetIdentity(visible, []));
+    expect(evidenceSetIdentity(visible, similar)).not.toBe(
+      evidenceSetIdentity([item('3', 'Acme', 'applications')], similar),
+    );
+    expect(evidenceSetIdentity(visible, similar, [item('3', 'Beta', 'applications')])).not.toBe(
+      evidenceSetIdentity(visible, similar, [item('4', 'Gamma', 'applications')]),
+    );
+  });
+
+  it('collects newest evidence first and applies the diversified cap after exact dedupe', () => {
+    const evidence = collectEvidence(
+      [
+        {
+          role: 'assistant',
+          content: '',
+          steps: [{ name: 'list_applications', evidence: [item('old', 'Older', 'applications')] }],
+        },
+        {
+          role: 'assistant',
+          content: '',
+          steps: [
+            {
+              name: 'list_applications',
+              evidence: [
+                item('new-1', 'Acme #1', 'applications'),
+                item('new-2', 'Acme #2', 'applications'),
+                item('new-3', 'Beta', 'applications'),
+              ],
+            },
+          ],
+        },
+      ],
+      2,
+    );
+
+    expect(evidence.map((entry) => entry.id)).toEqual(['new-1', 'new-3']);
+  });
+
+  it('retains omitted distinct records for expansion even when they are not similar', () => {
+    const items = Array.from({ length: 9 }, (_value, index) => item(String(index + 1), `Record ${index + 1}`));
+    const selection = selectEvidence(items, 8);
+
+    expect(selection.similar).toEqual([]);
+    expect(selection.remainingCount).toBe(1);
+    expect(remainingEvidence(items, selection.visible).map((entry) => entry.id)).toEqual(['9']);
   });
 });
 

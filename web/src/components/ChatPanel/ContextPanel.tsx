@@ -3,7 +3,7 @@ import { Switch } from 'antd';
 import type { Offer } from '@/types/offer';
 import { OFFER_STATUS_LABELS, OFFER_STATUS_COLORS } from '@/types/offer';
 import type { Capability } from './capabilities';
-import { selectEvidence, type EvidenceItem } from './model';
+import { remainingEvidence, selectEvidence, type EvidenceItem } from './model';
 import EvidenceList from './EvidenceList';
 import styles from './ChatPanel.module.css';
 
@@ -74,6 +74,7 @@ export default function ContextPanel({
           <EvidenceList
             items={evidenceSelection.visible}
             similar={evidenceSelection.similar}
+            remaining={remainingEvidence(evidence, evidenceSelection.visible)}
             remainingCount={evidenceSelection.remainingCount}
             clamped
           />

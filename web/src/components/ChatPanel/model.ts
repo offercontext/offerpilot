@@ -525,6 +525,27 @@ export function evidenceIdentity(item: EvidenceItem): string {
   return `${item.source}:${item.id}`;
 }
 
+/** Stable evidence-set identity used to reset local disclosure state on a conversation change. */
+export function evidenceSetIdentity(
+  items: EvidenceItem[],
+  similar: EvidenceItem[] = [],
+  remaining: EvidenceItem[] = [],
+): string {
+  return `visible:${items.map(evidenceIdentity).join('\u001f')}|similar:${similar.map(evidenceIdentity).join('\u001f')}|remaining:${remaining.map(evidenceIdentity).join('\u001f')}`;
+}
+
+/** Return the distinct records omitted from a bounded view in their original encounter order. */
+export function remainingEvidence(items: EvidenceItem[], visible: EvidenceItem[]): EvidenceItem[] {
+  const visibleIdentities = new Set(visible.map(evidenceIdentity));
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const identity = evidenceIdentity(item);
+    if (seen.has(identity)) return false;
+    seen.add(identity);
+    return !visibleIdentities.has(identity);
+  });
+}
+
 function evidenceClusterKey(item: EvidenceItem): string {
   const normalizedTitle = item.title
     .trim()
@@ -580,7 +601,7 @@ export function selectEvidence(items: EvidenceItem[], limit: number): EvidenceSe
   };
 }
 
-const EVIDENCE_TIMESTAMP = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?(?![\w:+-])/g;
+const EVIDENCE_TIMESTAMP = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?(?![\w:+.-])/g;
 
 function isValidEvidenceTimestamp(timestamp: string): boolean {
   const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?$/.exec(timestamp);
