@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Input, Button } from 'antd';
 import { SendOutlined } from '@ant-design/icons';
 import type { Capability } from './capabilities';
@@ -10,12 +10,18 @@ interface Props {
   disabled?: boolean;
   disabledReason?: string;
   placeholder?: string;
+  resetKey?: number;
   onSend: (text: string) => void | boolean | Promise<void | boolean>;
 }
 
-export default function Composer({ capabilities, disabled, disabledReason, placeholder, onSend }: Props) {
+export default function Composer({ capabilities, disabled, disabledReason, placeholder, resetKey, onSend }: Props) {
   const [value, setValue] = useState('');
   const [sel, setSel] = useState(0);
+
+  useEffect(() => {
+    setValue('');
+    setSel(0);
+  }, [resetKey]);
 
   const slashQuery = value.startsWith('/') ? value.slice(1).trim().toLowerCase() : null;
   const menuOpen = slashQuery !== null && !disabled;

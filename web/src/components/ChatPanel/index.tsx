@@ -171,6 +171,8 @@ export default function ChatPanel({
   const abortControllerRef = useRef<AbortController | null>(null);
   const streamingAssistantActiveRef = useRef(false);
   const titleRefreshTimeoutsRef = useRef<number[]>([]);
+  const skipPendingResumeRef = useRef(false);
+  const [composerResetKey, setComposerResetKey] = useState(0);
   const docked = variant === 'rail';
   const inlinePage = variant === 'page';
 
@@ -267,6 +269,7 @@ export default function ChatPanel({
 
   function startNewChat() {
     stopActiveRequest({ silent: true });
+    skipPendingResumeRef.current = true;
     streamingAssistantActiveRef.current = false;
     setConvID(undefined);
     setTurns([]);
@@ -281,6 +284,7 @@ export default function ChatPanel({
     setLoadingLabel(undefined);
     setHasStreamingAssistantContent(false);
     setDraftContext(null);
+    setComposerResetKey((key) => key + 1);
   }
 
   useEffect(() => {
@@ -344,11 +348,15 @@ export default function ChatPanel({
   }
 
   useEffect(() => {
-    if (!open || convID !== undefined || turns.length > 0 || loading) return;
+    if (!open || draftContext !== null || convID !== undefined || turns.length > 0 || loading) return;
+    if (skipPendingResumeRef.current) {
+      skipPendingResumeRef.current = false;
+      return;
+    }
     const pendingConversationId = firstPendingConversationId(conversations);
     if (pendingConversationId === undefined) return;
     void selectConversation(pendingConversationId);
-  }, [open, convID, conversations, turns.length, loading]);
+  }, [open, convID, conversations, turns.length, loading, draftContext]);
 
   async function finishMessage(resp: Extract<ChatResponse, { type: 'message' }>) {
     setConvID(resp.conversation_id);
@@ -905,12 +913,13 @@ export default function ChatPanel({
                 </button>
               </div>
             ) : null}
-            <Composer
-              capabilities={capabilities}
-              disabled={composerDisabled}
-              disabledReason={composerDisabledReason}
-              onSend={sendMessage}
-            />
+             <Composer
+               capabilities={capabilities}
+               disabled={composerDisabled}
+               disabledReason={composerDisabledReason}
+               resetKey={composerResetKey}
+               onSend={sendMessage}
+             />
           </section>
 
           <ContextPanel

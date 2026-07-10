@@ -4,8 +4,9 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from offerpilot.ai.types import Assistant, ToolCall
+from offerpilot.ai.types import Assistant, Message, ToolCall
 from offerpilot.api import create_app
+from offerpilot.api import _has_write_attempt, _write_outcome
 from offerpilot.config import Config, save_config
 
 
@@ -68,6 +69,26 @@ class StreamingModel:
 class FailingTitleModel:
     def complete(self, messages, tools):
         raise RuntimeError("title provider unavailable")
+
+
+def test_write_status_uses_registry_metadata_for_all_write_tools():
+    registry = {"update_offer": {"write": True}}
+    added = [
+        Message(
+            role="assistant",
+            tool_calls=[ToolCall(id="call-1", name="update_offer", args='{"id": 1}')],
+        ),
+        Message(role="tool", content='{"offer_id": 1}', tool_call_id="call-1"),
+    ]
+
+    assert _has_write_attempt(added, registry) is True
+    assert _write_outcome(added, attempted=True) == ("success", "")
+
+
+def test_write_status_does_not_report_missing_delete_as_success():
+    added = [Message(role="tool", content='{"deleted": false}', tool_call_id="call-1")]
+
+    assert _write_outcome(added, attempted=True) == ("failed", "目标记录不存在")
 
 
 def _parse_sse_events(raw: str) -> list[dict[str, object]]:

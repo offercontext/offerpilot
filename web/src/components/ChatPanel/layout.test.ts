@@ -186,6 +186,17 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('draftContext');
   });
 
+  it('does not auto-resume an older pending thread after an application start request', () => {
+    expect(component).toContain('skipPendingResumeRef');
+    expect(component).toContain('skipPendingResumeRef.current = true');
+    expect(component).toContain('if (skipPendingResumeRef.current)');
+  });
+
+  it('clears unsent composer text when an application start request opens a new draft', () => {
+    expect(component).toContain('composerResetKey');
+    expect(component).toContain('resetKey={composerResetKey}');
+  });
+
   it('uses structured write status instead of treating every message response as success', () => {
     expect(component).toContain('resp.write_status === \'success\'');
     expect(component).toContain('resp.write_status === \'failed\'');

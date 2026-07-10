@@ -1146,9 +1146,9 @@ def create_app(
         added, forced_reply = _with_write_error_followup(added)
         _persist_ai_messages(chat, conversation_id, added)
         reply = forced_reply or _user_facing_assistant_content(reply)
-        write_status, write_error = _write_outcome(added, _has_write_attempt(added))
+        write_status, write_error = _write_outcome(added, _has_write_attempt(added, registry))
         if forced_reply and pending is None:
-            forced_pending = _pending_action_from_added_write_call(added)
+            forced_pending = _pending_action_from_added_write_call(added, registry)
             if forced_pending is not None:
                 chat.set_pending_clarification(conversation_id, forced_pending, forced_reply)
         if pending is not None:
@@ -1312,7 +1312,7 @@ def create_app(
             added, forced_reply = _with_write_error_followup(added)
             _persist_ai_messages(chat, conversation_id, added)
             reply = forced_reply or _user_facing_assistant_content(reply)
-            write_status, write_error = _write_outcome(added, _has_write_attempt(added))
+            write_status, write_error = _write_outcome(added, _has_write_attempt(added, registry))
             if pending is not None:
                 missing_question = _pending_action_missing_question(pending, applications)
                 if missing_question:
@@ -1419,7 +1419,7 @@ def create_app(
         reply = forced_reply or _user_facing_assistant_content(reply)
         write_status, write_error = _write_outcome(added, attempted=True)
         if forced_reply and new_pending is None:
-            forced_pending = _pending_action_from_added_write_call(added)
+            forced_pending = _pending_action_from_added_write_call(added, registry)
             if forced_pending is not None:
                 chat.set_pending_clarification(conversation_id, forced_pending, forced_reply)
         if new_pending is not None:
@@ -2496,18 +2496,15 @@ def _last_successful_tool_payload(added: list[Message]) -> dict[str, Any]:
     return {}
 
 
-_WRITE_TOOL_NAMES = {
-    "create_application",
-    "update_application_status",
-    "create_application_event",
-    "add_note",
-}
+def _write_tool_names(registry: dict[str, dict[str, Any]]) -> set[str]:
+    return {name for name, tool in registry.items() if bool(tool.get("write"))}
 
 
-def _has_write_attempt(added: list[Message]) -> bool:
+def _has_write_attempt(added: list[Message], registry: dict[str, dict[str, Any]]) -> bool:
+    write_tool_names = _write_tool_names(registry)
     return any(
         message.role == "assistant"
-        and any(tool_call.name in _WRITE_TOOL_NAMES for tool_call in message.tool_calls)
+        and any(tool_call.name in write_tool_names for tool_call in message.tool_calls)
         for message in added
     )
 
@@ -2518,17 +2515,23 @@ def _write_outcome(added: list[Message], attempted: bool) -> tuple[str, str]:
     for message in reversed(added):
         if message.role == "tool" and message.content.startswith("错误："):
             return "failed", message.content.removeprefix("错误：").strip()
-    if _last_successful_tool_payload(added):
+    payload = _last_successful_tool_payload(added)
+    if payload:
+        if payload.get("deleted") is False:
+            return "failed", "目标记录不存在"
         return "success", ""
     return "failed", "写入未完成"
 
 
-def _pending_action_from_added_write_call(added: list[Message]) -> PendingAction | None:
+def _pending_action_from_added_write_call(
+    added: list[Message], registry: dict[str, dict[str, Any]]
+) -> PendingAction | None:
+    write_tool_names = _write_tool_names(registry)
     for message in reversed(added):
         if message.role != "assistant" or not message.tool_calls:
             continue
         tool_call = message.tool_calls[0]
-        if tool_call.name not in _WRITE_TOOL_NAMES:
+        if tool_call.name not in write_tool_names:
             continue
         return PendingAction(
             tool_call_id=tool_call.id,
