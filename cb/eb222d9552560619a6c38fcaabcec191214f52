@@ -1,0 +1,27 @@
+src/offerpilot/api.py
+  s_00fff216c0c1ef::t_f2f9d6b1f37192 87-94,1408,1556,2168-2182,2275,2278,2288-2312
+  s_00fff216c0c1ef::t_bac9766b6c6d19 1437,1613
+  s_00fff216c0c1ef::t_fe042f3735332a 1555
+  s_00fff216c0c1ef::t_23715bbb9d1cf9 2276-2277
+tests/test_chat_api.py
+  s_00fff216c0c1ef::t_1cbc9cf175f3ec 12-13,1231-1252
+  s_00fff216c0c1ef::t_57303693dd2dad 1195-1230,1253-1292
+  s_00fff216c0c1ef::t_43027d23ad1723 3,10,77-97,118-139
+  s_00fff216c0c1ef::t_235f204d547732 140-141
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "cbeb222d9552560619a6c38fcaabcec191214f52",
+  "prompts": {},
+  "sessions": {
+    "s_00fff216c0c1ef": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f49b7-4729-7983-91e1-31d35f2738f1",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    }
+  }
+}
