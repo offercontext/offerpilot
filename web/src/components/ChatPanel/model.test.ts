@@ -21,6 +21,8 @@ import {
   confirmationInputForRetry,
   confirmationErrorRequiresSync,
   hasConfirmationSettled,
+  shouldAbortActiveRequestOnClose,
+  clearOwnedConfirmationLock,
   shouldRestoreConfirmationRetryFocus,
 } from './model';
 
@@ -102,6 +104,44 @@ describe('background confirmation settlement', () => {
     ).toBe(true);
   });
 
+});
+
+describe('active request ownership', () => {
+  it('preserves confirmation A across new-chat, B selection, and panel close', () => {
+    const confirmationA = {
+      kind: 'confirmation' as const,
+      conversationId: 1,
+      confirmationToken: 'token-a',
+    };
+    let visibleConversationId: number | undefined = 1;
+
+    visibleConversationId = undefined;
+    expect(visibleConversationId).toBeUndefined();
+    expect(shouldAbortActiveRequestOnClose(confirmationA)).toBe(false);
+
+    visibleConversationId = 2;
+    expect(visibleConversationId).toBe(2);
+    expect(shouldAbortActiveRequestOnClose(confirmationA)).toBe(false);
+  });
+
+  it('aborts an ordinary active chat when the panel closes', () => {
+    expect(
+      shouldAbortActiveRequestOnClose({ kind: 'chat', conversationId: 2 }),
+    ).toBe(true);
+    expect(shouldAbortActiveRequestOnClose(null)).toBe(false);
+  });
+
+  it('does not let stale A completion clear a newer lock for A', () => {
+    const stale = { confirmationToken: 'old-token' };
+    const replacement = { confirmationToken: 'replacement-token' };
+    const locks = new Map([[1, stale]]);
+    locks.set(1, replacement);
+
+    expect(clearOwnedConfirmationLock(locks, 1, stale)).toBe(false);
+    expect(locks.get(1)).toBe(replacement);
+    expect(clearOwnedConfirmationLock(locks, 1, replacement)).toBe(true);
+    expect(locks.has(1)).toBe(false);
+  });
 });
 
 describe('buildChatRequestContext', () => {

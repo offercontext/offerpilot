@@ -40,6 +40,8 @@ import {
   pendingAutoSelectReducer,
   shouldApplyConversationRequest,
   isCurrentVisibleConversationRequest,
+  shouldAbortActiveRequestOnClose,
+  clearOwnedConfirmationLock,
   hasConfirmationSettled,
   pendingComposerDisabledReason,
   reloadConversationTurns,
@@ -49,6 +51,7 @@ import {
   confirmationErrorRequiresSync,
   shouldRestoreConfirmationRetryFocus,
   type EvidenceItem,
+  type ActiveConversationRequestOwner,
   type UITurn,
 } from './model';
 import {
@@ -85,6 +88,10 @@ interface Props {
 interface ConfirmationExecution {
   conversationId: number;
   confirmationToken: string;
+}
+
+interface ActiveConversationRequest extends ActiveConversationRequestOwner {
+  controller: AbortController;
 }
 
 const CHAT_WIDTH_STORAGE_KEY = 'offerpilot.chatPanelWidth';
@@ -199,7 +206,7 @@ export default function ChatPanel({
   });
   const endRef = useRef<HTMLDivElement>(null);
   const threadOfferId = useRef<number | undefined>(undefined);
-  const abortControllerRef = useRef<AbortController | null>(null);
+  const activeRequestRef = useRef<ActiveConversationRequest | null>(null);
   const streamingAssistantActiveRef = useRef(false);
   const lastConfirmationInputRef = useRef<ConfirmationInput | null>(null);
   const activePendingRef = useRef<PendingAction | null>(null);
@@ -243,18 +250,22 @@ export default function ChatPanel({
     if (!open) {
       confirmationMonitorRef.current += 1;
       conversationSelectionRequestRef.current += 1;
-      const activeConversationId = activeConversationIdRef.current;
-      const activeConfirmationExecution =
-        activeConversationId === undefined
-          ? undefined
-          : confirmationLocksRef.current.get(activeConversationId);
-      if (
-        activeConfirmationExecution &&
-        activeConfirmationExecution.conversationId === activeConversationId
-      ) {
-        confirmationReconcileOnOpenRef.current = activeConfirmationExecution;
-      } else {
+      const activeRequest = activeRequestRef.current;
+      if (shouldAbortActiveRequestOnClose(activeRequest)) {
         stopActiveRequest({ silent: true });
+      } else if (
+        activeRequest?.kind === 'confirmation' &&
+        activeRequest.conversationId !== undefined
+      ) {
+        const activeConfirmationExecution = confirmationLocksRef.current.get(
+          activeRequest.conversationId,
+        );
+        if (
+          activeConfirmationExecution &&
+          activeConfirmationExecution.confirmationToken === activeRequest.confirmationToken
+        ) {
+          confirmationReconcileOnOpenRef.current = activeConfirmationExecution;
+        }
       }
       visibleRequestGenerationRef.current += 1;
       const closeGeneration = visibleRequestGenerationRef.current;
@@ -286,6 +297,7 @@ export default function ChatPanel({
           monitorId,
           reopenGeneration,
           reconciliation.confirmationToken,
+          reconciliation,
         );
       }
     }
@@ -399,9 +411,7 @@ export default function ChatPanel({
     markPendingAutoSelect('suppress');
     conversationSelectionRequestRef.current += 1;
     visibleRequestGenerationRef.current += 1;
-    const activeConfirmationLock =
-      convID === undefined ? undefined : confirmationLocksRef.current.get(convID);
-    if (!activeConfirmationLock) {
+    if (shouldAbortActiveRequestOnClose(activeRequestRef.current)) {
       stopActiveRequest({ silent: true });
     }
     lockedConfirmationRef.current = null;
@@ -457,6 +467,7 @@ export default function ChatPanel({
           monitorId,
           visibleRequestGeneration,
           selectedConfirmationLock.confirmationToken,
+          selectedConfirmationLock,
         );
       } else {
         confirmationLocksRef.current.delete(id);
@@ -612,6 +623,7 @@ export default function ChatPanel({
     monitorId: number,
     visibleRequestGeneration: number,
     expectedConfirmationToken: string,
+    execution: ConfirmationExecution,
   ) {
     let pollCount = 0;
     while (
@@ -634,10 +646,11 @@ export default function ChatPanel({
       );
       if (!isCurrentVisibleRequest(visibleRequestGeneration)) return;
       if (hasConfirmationSettled(nextPending, expectedConfirmationToken)) {
-        confirmationLocksRef.current.delete(conversationId);
-        lockedConfirmationRef.current = null;
-        setConfirmPhase('idle');
-        onDataChanged?.();
+        if (clearOwnedConfirmationLock(confirmationLocksRef.current, conversationId, execution)) {
+          if (lockedConfirmationRef.current === execution) lockedConfirmationRef.current = null;
+          setConfirmPhase('idle');
+          onDataChanged?.();
+        }
         return;
       }
     }
@@ -653,20 +666,21 @@ export default function ChatPanel({
     );
     if (!isCurrentVisibleRequest(visibleRequestGeneration)) return;
     if (hasConfirmationSettled(nextPending, locked.confirmationToken)) {
-      confirmationLocksRef.current.delete(locked.conversationId);
-      lockedConfirmationRef.current = null;
-      setConfirmPhase('idle');
-      onDataChanged?.();
+      if (clearOwnedConfirmationLock(confirmationLocksRef.current, locked.conversationId, locked)) {
+        if (lockedConfirmationRef.current === locked) lockedConfirmationRef.current = null;
+        setConfirmPhase('idle');
+        onDataChanged?.();
+      }
     } else {
       setConfirmPhase('saving');
     }
   }
 
   function stopActiveRequest(options: { silent?: boolean } = {}) {
-    const controller = abortControllerRef.current;
-    if (!controller) return;
-    controller.abort();
-    abortControllerRef.current = null;
+    const activeRequest = activeRequestRef.current;
+    if (!activeRequest) return;
+    activeRequest.controller.abort();
+    activeRequestRef.current = null;
     setLoading(false);
     if (!options.silent) toast.info('已停止当前回复');
   }
@@ -687,7 +701,11 @@ export default function ChatPanel({
     setHasStreamingAssistantContent(false);
     setLoading(true);
     const controller = new AbortController();
-    abortControllerRef.current = controller;
+    activeRequestRef.current = {
+      controller,
+      kind: 'chat',
+      conversationId: convID,
+    };
     let streamConversationId = convID;
     try {
       const isNew = convID === undefined;
@@ -768,7 +786,7 @@ export default function ChatPanel({
       toast.error(error);
       return false;
     } finally {
-      if (abortControllerRef.current === controller) abortControllerRef.current = null;
+      if (activeRequestRef.current?.controller === controller) activeRequestRef.current = null;
       if (isCurrentVisibleRequest(visibleRequestGeneration)) {
         setLoading(false);
         setLoadingLabel(undefined);
@@ -808,7 +826,12 @@ export default function ChatPanel({
     streamingAssistantActiveRef.current = false;
     setHasStreamingAssistantContent(false);
     const controller = new AbortController();
-    abortControllerRef.current = controller;
+    activeRequestRef.current = {
+      controller,
+      kind: 'confirmation',
+      conversationId: convID,
+      confirmationToken: input.confirmation_token,
+    };
     try {
       const resp = await streamConfirmAction(convID, input, {
         signal: controller.signal,
@@ -827,11 +850,18 @@ export default function ChatPanel({
         },
       });
       if (!isCurrentVisibleRequest(visibleRequestGeneration)) {
+        clearOwnedConfirmationLock(
+          confirmationLocksRef.current,
+          confirmationExecution.conversationId,
+          confirmationExecution,
+        );
         refreshConversations();
         return;
       }
-      confirmationLocksRef.current.delete(convID);
-      lockedConfirmationRef.current = null;
+      clearOwnedConfirmationLock(confirmationLocksRef.current, convID, confirmationExecution);
+      if (lockedConfirmationRef.current === confirmationExecution) {
+        lockedConfirmationRef.current = null;
+      }
       if (resp.type === 'confirmation_required') {
         restoreConfirmationRetryFocusRef.current = false;
         lastConfirmationInputRef.current = null;
@@ -876,8 +906,10 @@ export default function ChatPanel({
           input.confirmation_token,
         );
         if (confirmationSettled) {
-          confirmationLocksRef.current.delete(convID);
-          lockedConfirmationRef.current = null;
+          clearOwnedConfirmationLock(confirmationLocksRef.current, convID, confirmationExecution);
+          if (lockedConfirmationRef.current === confirmationExecution) {
+            lockedConfirmationRef.current = null;
+          }
         }
         setConfirmError(null);
         if (
@@ -894,6 +926,7 @@ export default function ChatPanel({
             monitorId,
             visibleRequestGeneration,
             input.confirmation_token,
+            confirmationExecution,
           );
         } else {
           setConfirmPhase('idle');
@@ -915,10 +948,11 @@ export default function ChatPanel({
         monitorId,
         visibleRequestGeneration,
         input.confirmation_token,
+        confirmationExecution,
       );
       toast.error(error);
     } finally {
-      if (abortControllerRef.current === controller) abortControllerRef.current = null;
+      if (activeRequestRef.current?.controller === controller) activeRequestRef.current = null;
       if (isCurrentVisibleRequest(visibleRequestGeneration)) {
         setLoading(false);
         setLoadingLabel(undefined);
@@ -947,7 +981,11 @@ export default function ChatPanel({
     setConfirmPhase('saving');
     setLoading(true);
     const controller = new AbortController();
-    abortControllerRef.current = controller;
+    activeRequestRef.current = {
+      controller,
+      kind: 'undo',
+      conversationId: convID,
+    };
     try {
       const resp = await undoLastWrite(convID, { signal: controller.signal });
       const applied = await finishMessage(resp, visibleRequestGeneration);
@@ -964,7 +1002,7 @@ export default function ChatPanel({
       setConfirmPhase('error');
       toast.error(error);
     } finally {
-      if (abortControllerRef.current === controller) abortControllerRef.current = null;
+      if (activeRequestRef.current?.controller === controller) activeRequestRef.current = null;
       if (isCurrentVisibleRequest(visibleRequestGeneration)) {
         setLoading(false);
         setLoadingLabel(undefined);

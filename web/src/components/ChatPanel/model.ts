@@ -75,6 +75,27 @@ export function isCurrentVisibleConversationRequest(
   return requestGeneration === currentGeneration;
 }
 
+export interface ActiveConversationRequestOwner {
+  kind: 'chat' | 'confirmation' | 'undo';
+  conversationId?: number;
+  confirmationToken?: string;
+}
+
+export function shouldAbortActiveRequestOnClose(
+  request: ActiveConversationRequestOwner | null,
+): boolean {
+  return request !== null && request.kind !== 'confirmation';
+}
+
+export function clearOwnedConfirmationLock<T>(
+  locks: Map<number, T>,
+  conversationId: number,
+  owner: T,
+): boolean {
+  if (locks.get(conversationId) !== owner) return false;
+  return locks.delete(conversationId);
+}
+
 export function hasConfirmationSettled(
   pending: PendingAction | null | undefined,
   expectedConfirmationToken: string,

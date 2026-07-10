@@ -71,9 +71,9 @@ describe('ChatPanel docked layout contract', () => {
   });
 
   it('lets users stop an in-flight assistant response', () => {
-    expect(component).toContain('abortControllerRef');
+    expect(component).toContain('activeRequestRef');
     expect(component).toContain('stopActiveRequest');
-    expect(component).toContain('controller.abort()');
+    expect(component).toContain('activeRequest.controller.abort()');
     expect(component).toContain('isAbortError');
     expect(component).toContain('aria-label="停止当前回复"');
     expect(component).toContain('已停止当前回复');
@@ -380,6 +380,7 @@ describe('ChatPanel docked layout contract', () => {
     const contextReset = component.slice(contextStart, contextEnd);
 
     expect(closeEffect).toContain('visibleRequestGenerationRef.current += 1;');
+    expect(closeEffect).toContain('shouldAbortActiveRequestOnClose(activeRequest)');
     expect(closeEffect).toContain('stopActiveRequest({ silent: true });');
     expect(closeEffect).toContain('setPending(null);');
     expect(closeEffect).toContain('confirmationReconcileOnOpenRef.current =');
@@ -388,6 +389,12 @@ describe('ChatPanel docked layout contract', () => {
     );
     expect(closeEffect).toContain('monitorConfirmationCompletion(');
     expect(component).toContain('confirmationLocksRef.current.set(convID, confirmationExecution);');
+    expect(component).toContain("kind: 'confirmation'");
+    expect(component).toContain('confirmationToken: input.confirmation_token');
+    expect(component).toContain(
+      'clearOwnedConfirmationLock(',
+    );
+    expect(component).toContain('confirmationExecution.conversationId,');
     expect(component).toContain('if (confirmationLocksRef.current.has(convID)) return;');
     expect(component).toContain('lockedConfirmationRef.current = confirmationExecution;');
     expect(component).toContain(
@@ -399,8 +406,7 @@ describe('ChatPanel docked layout contract', () => {
     const newChatStart = component.indexOf('function startNewChat()');
     const newChatEnd = component.indexOf('async function selectConversation', newChatStart);
     const newChat = component.slice(newChatStart, newChatEnd);
-    expect(newChat).toContain('const activeConfirmationLock =');
-    expect(newChat).toContain('if (!activeConfirmationLock)');
+    expect(newChat).toContain('shouldAbortActiveRequestOnClose(activeRequestRef.current)');
     expect(component).not.toContain('confirmationExecution.settled = true;');
     expect(component).toContain('CONFIRMATION_RECONCILE_MAX_POLLS = 240');
     expect(component).toContain('确认操作仍在处理中，请刷新状态后再继续。');
