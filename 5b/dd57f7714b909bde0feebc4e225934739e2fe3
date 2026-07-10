@@ -1,0 +1,19 @@
+docs/superpowers/specs/2026-07-10-v01-closeout-design.md
+  s_00fff216c0c1ef::t_bea898807e60ff 1-277
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "5bdd57f7714b909bde0feebc4e225934739e2fe3",
+  "prompts": {},
+  "sessions": {
+    "s_00fff216c0c1ef": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f49b7-4729-7983-91e1-31d35f2738f1",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    }
+  }
+}
