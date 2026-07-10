@@ -18,6 +18,7 @@ import {
   listConversations,
   getConversation,
   deleteConversation,
+  updateConversation,
   undoLastWrite,
 } from '@/services/chat';
 import { getOffer } from '@/services/offers';
@@ -284,6 +285,26 @@ export default function ChatPanel({
     } catch (e: any) {
       toast.error(e?.response?.data?.error ?? '删除失败');
     }
+  }
+
+  async function handleConversationUpdate(id: number, payload: Parameters<typeof updateConversation>[1]) {
+    try {
+      const updated = await updateConversation(id, payload);
+      if (updated.archived_at) {
+        setConversations((items) => items.filter((item) => item.id !== id));
+        if (id === convID) startNewChat();
+      } else {
+        setConversations((items) => items.map((item) => (item.id === id ? updated : item)));
+      }
+      refreshConversations();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.error ?? '更新对话失败');
+    }
+  }
+
+  async function clearActiveContext() {
+    if (!convID) return;
+    await handleConversationUpdate(convID, { context_type: 'workspace', context_ref: '' });
   }
 
   useEffect(() => {
@@ -594,6 +615,7 @@ export default function ChatPanel({
         : convID
           ? '工作台'
           : null;
+  const canClearContext = !!convID && !!activeConv && activeConv.context_type !== 'workspace';
 
   const iconBtnStyle: React.CSSProperties = {
     border: '1px solid var(--op-border)',
@@ -685,6 +707,7 @@ export default function ChatPanel({
             onSelect={selectConversation}
             onNew={startNewChat}
             onDelete={removeConversation}
+            onUpdate={handleConversationUpdate}
           />
 
           <section className={styles.center}>
@@ -724,6 +747,18 @@ export default function ChatPanel({
                 <div className={styles.contextBadge}>
                   <span>当前上下文</span>
                   <b>{contextLabel}</b>
+                  {canClearContext ? (
+                    <button
+                      type="button"
+                      className={styles.contextClear}
+                      aria-label="移除当前上下文"
+                      title="移除当前上下文"
+                      onClick={clearActiveContext}
+                      disabled={loading}
+                    >
+                      {createElement(CloseOutlined)}
+                    </button>
+                  ) : null}
                 </div>
               ) : null}
 

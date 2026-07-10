@@ -197,8 +197,10 @@ async function streamHttpError(response: Response) {
   }
 }
 
-export async function listConversations(): Promise<Conversation[]> {
-  const { data } = await http.get<Conversation[]>('/chat/conversations');
+export async function listConversations(includeArchived = false): Promise<Conversation[]> {
+  const { data } = await http.get<Conversation[]>('/chat/conversations', {
+    params: includeArchived ? { include_archived: true } : undefined,
+  });
   return data ?? [];
 }
 
@@ -209,6 +211,22 @@ export async function getConversation(id: number): Promise<ChatMessage[]> {
 
 export async function deleteConversation(id: number): Promise<void> {
   await http.delete(`/chat/conversations/${id}`);
+}
+
+export interface UpdateConversationPayload {
+  title?: string;
+  pinned?: boolean;
+  archived?: boolean;
+  context_type?: string;
+  context_ref?: string;
+}
+
+export async function updateConversation(
+  id: number,
+  payload: UpdateConversationPayload,
+): Promise<Conversation> {
+  const { data } = await http.patch<Conversation>(`/chat/conversations/${id}`, payload);
+  return data;
 }
 
 export interface Settings {

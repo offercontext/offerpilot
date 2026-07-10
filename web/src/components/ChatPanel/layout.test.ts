@@ -4,6 +4,7 @@ import proposalCard from './ProposalCard.tsx?raw';
 import thinking from './ThinkingIndicator.tsx?raw';
 import contextPanel from './ContextPanel.tsx?raw';
 import evidenceList from './EvidenceList.tsx?raw';
+import threadRail from './ThreadRail.tsx?raw';
 
 async function loadCss(): Promise<string> {
   const fsModule = 'node:fs';
@@ -162,6 +163,18 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('contextBadge');
     expect(component).toContain('当前上下文');
     expect(component).toContain('contextLabel');
+  });
+
+  it('lets users manage conversations and remove active context from the Pilot UI', () => {
+    expect(threadRail).toContain('PushpinOutlined');
+    expect(threadRail).toContain('EditOutlined');
+    expect(threadRail).toContain('InboxOutlined');
+    expect(threadRail).toContain('onUpdate');
+    expect(threadRail).toContain('stopActionPropagation');
+    expect(threadRail).toContain('onKeyDown={stopActionPropagation}');
+    expect(component).toContain('updateConversation');
+    expect(component).toContain('clearActiveContext');
+    expect(component).toContain('aria-label="移除当前上下文"');
   });
 
   it('shows confirmation status and lets users undo the latest AI write', () => {

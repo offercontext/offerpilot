@@ -43,6 +43,13 @@ describe('settings service v0.1 contract', () => {
     expect(source).toContain('/chat/undo-last-write');
   });
 
+  it('exposes conversation management updates for rename, pin, archive, and context clearing', () => {
+    expect(source).toContain('UpdateConversationPayload');
+    expect(source).toContain('updateConversation');
+    expect(source).toContain('patch<Conversation>');
+    expect(source).toContain('`/chat/conversations/${id}`');
+  });
+
   it('parses SSE events across chunk boundaries', () => {
     const events: ChatStreamEvent[] = [];
     const parser = createSseParser((event) => events.push(event));

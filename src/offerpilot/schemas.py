@@ -38,6 +38,8 @@ class ConversationOut(BaseModel):
     mode: str = "general"
     context_type: str = "workspace"
     context_ref: str = ""
+    pinned_at: datetime | None = None
+    archived_at: datetime | None = None
     pending_action: dict[str, object] | None = None
     pending_clarification: dict[str, object] | None = None
     last_write_undo: dict[str, object] | None = None

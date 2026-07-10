@@ -38,10 +38,32 @@ class ChatRepository:
         with self._session_factory() as session:
             return session.get(Conversation, conversation_id)
 
-    def list_conversations(self) -> list[Conversation]:
-        statement = select(Conversation).order_by(Conversation.updated_at.desc(), Conversation.id.desc())
+    def list_conversations(self, include_archived: bool = False) -> list[Conversation]:
+        statement = select(Conversation)
+        if not include_archived:
+            statement = statement.where(Conversation.archived_at.is_(None))
+        statement = statement.order_by(
+            Conversation.pinned_at.is_(None).asc(),
+            Conversation.pinned_at.desc(),
+            Conversation.updated_at.desc(),
+            Conversation.id.desc(),
+        )
         with self._session_factory() as session:
             return list(session.scalars(statement))
+
+    def update_conversation(self, conversation_id: int, values: dict[str, Any]) -> Conversation | None:
+        if not values:
+            return self.get_conversation(conversation_id)
+        with self._session_factory() as session:
+            conversation = session.get(Conversation, conversation_id)
+            if conversation is None:
+                return None
+            for key, value in values.items():
+                setattr(conversation, key, value)
+            conversation.updated_at = datetime.now(timezone.utc)
+            session.commit()
+            session.refresh(conversation)
+            return conversation
 
     def append_message(
         self,
