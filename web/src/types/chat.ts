@@ -1,6 +1,7 @@
 export interface Conversation {
   id: number;
   title: string;
+  title_source?: 'fallback' | 'generated' | 'manual' | string;
   mode?: string;
   context_type: string;
   context_ref: string;

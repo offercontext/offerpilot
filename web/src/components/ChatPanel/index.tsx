@@ -160,6 +160,7 @@ export default function ChatPanel({
   const threadOfferId = useRef<number | undefined>(undefined);
   const abortControllerRef = useRef<AbortController | null>(null);
   const streamingAssistantActiveRef = useRef(false);
+  const titleRefreshTimeoutsRef = useRef<number[]>([]);
   const docked = variant === 'rail';
   const inlinePage = variant === 'page';
 
@@ -178,6 +179,19 @@ export default function ChatPanel({
       .then(setConversations)
       .catch(() => undefined);
   }
+
+  function scheduleTitleRefresh() {
+    titleRefreshTimeoutsRef.current.forEach((id) => window.clearTimeout(id));
+    titleRefreshTimeoutsRef.current = [1000, 3000].map((delay) =>
+      window.setTimeout(() => {
+        refreshConversations();
+      }, delay),
+    );
+  }
+
+  useEffect(() => () => {
+    titleRefreshTimeoutsRef.current.forEach((id) => window.clearTimeout(id));
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -451,7 +465,10 @@ export default function ChatPanel({
         if (autoApprove) onDataChanged?.();
         if (resp.degraded) toast.info('当前模型不支持工具调用，已切换为只读摘要模式');
       }
-      if (isNew) refreshConversations();
+       if (isNew) {
+         refreshConversations();
+         scheduleTitleRefresh();
+       }
       return true;
     } catch (e: any) {
       if (isAbortError(e)) {

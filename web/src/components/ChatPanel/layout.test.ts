@@ -172,4 +172,10 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('undoLastWrite');
     expect(component).toContain('撤销最近一次 AI 写入');
   });
+
+  it('refreshes a new conversation after background title generation', () => {
+    expect(component).toContain('titleRefreshTimeoutsRef');
+    expect(component).toContain('scheduleTitleRefresh');
+    expect(component).toContain('window.setTimeout');
+  });
 });
