@@ -1,0 +1,40 @@
+web/src/types/chat.ts
+  s_00fff216c0c1ef::t_0f2bba5e0bf4e8 17-24
+web/src/components/KanbanBoard/index.tsx
+  s_00fff216c0c1ef::t_0f2bba5e0bf4e8 32,35,131
+web/src/layout/AppShell.tsx
+  s_00fff216c0c1ef::t_0f2bba5e0bf4e8 1,10,85-86,199-213,251,279,284-286,309,365,402
+web/src/components/ChatPanel/layout.test.ts
+  s_00fff216c0c1ef::t_5d5a07109ca039 183
+  s_00fff216c0c1ef::t_eab642f7784d15 181-182,184-187
+web/src/components/KanbanBoard/KanbanColumn.tsx
+  s_00fff216c0c1ef::t_0f2bba5e0bf4e8 14,25,52
+web/src/components/KanbanBoard/KanbanCard.tsx
+  s_00fff216c0c1ef::t_0f2bba5e0bf4e8 4,22,32,109-120
+  s_00fff216c0c1ef::t_c80adf081c2b2b 121-122
+web/src/components/ApplicationDetail.tsx
+  s_00fff216c0c1ef::t_0f2bba5e0bf4e8 54,57,208-212
+web/src/components/ApplicationListView.tsx
+  s_00fff216c0c1ef::t_0f2bba5e0bf4e8 1-2,20,35,82-98
+  s_00fff216c0c1ef::t_7334d7f4be5c52 99
+web/src/components/ChatPanel/index.tsx
+  s_00fff216c0c1ef::t_c3b481aca87e2c 26-33,64,143,156,283,286-291,339-342,448-455,659-661,668
+web/src/components/applicationPilotEntry.test.ts
+  s_00fff216c0c1ef::t_eab642f7784d15 1-12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "c37779d19c7b4328b849f1e3c85995e17f2d9970",
+  "prompts": {},
+  "sessions": {
+    "s_00fff216c0c1ef": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f49b7-4729-7983-91e1-31d35f2738f1",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    }
+  }
+}
