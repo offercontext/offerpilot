@@ -230,6 +230,8 @@ export async function updateConversation(
 }
 
 export interface Settings {
+  version: string;
+  data_dir: string;
   chat_auto_approve_writes: boolean;
   active_provider_id: string;
   fallback_provider_id: string;
@@ -321,8 +323,8 @@ export async function getSettingsBackup(): Promise<SettingsBackup> {
   return data;
 }
 
-export async function getLogs(limit = 20): Promise<LogEntry[]> {
-  const { data } = await http.get<LogsResponse>('/logs', { params: { limit } });
+export async function getLogs(limit = 20, level = ''): Promise<LogEntry[]> {
+  const { data } = await http.get<LogsResponse>('/logs', { params: { limit, ...(level ? { level } : {}) } });
   return data.entries ?? [];
 }
 

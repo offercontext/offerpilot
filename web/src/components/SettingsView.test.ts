@@ -8,6 +8,10 @@ describe('SettingsView localization', () => {
     expect(source).toContain('运行诊断');
     expect(source).toContain('配置 AI');
     expect(source).toContain('导出备份');
+    expect(source).toContain('复制诊断信息');
+    expect(source).toContain('重新打开新手引导');
+    expect(source).toContain('数据目录');
+    expect(source).toContain('日志筛选');
     expect(source).toContain('多供应商');
     expect(source).toContain('Fallback');
     expect(source).not.toContain('>Settings<');

@@ -3,6 +3,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from datetime import datetime, timedelta, timezone
 from html import unescape
+from importlib.metadata import PackageNotFoundError, version as package_version
 from io import BytesIO
 from pathlib import Path
 from queue import Empty, Queue
@@ -75,6 +76,10 @@ from offerpilot.sse import STREAM_VERSION, SseRun, format_sse, sse_headers
 CHAT_AGENT_TIMEOUT_SECONDS = 120.0
 CHAT_TIMEOUT_MESSAGE = "这次处理时间过长，已停止。你可以重试或换一种问法。"
 CHAT_CANCELLED_MESSAGE = "已取消本次写入。你可以修改信息后让我重新整理。"
+try:
+    APP_VERSION = package_version("offerpilot")
+except PackageNotFoundError:
+    APP_VERSION = "0.1.0"
 
 
 class ChatAgentTimedOut(RuntimeError):
@@ -1806,8 +1811,11 @@ def create_app(
         return JSONResponse({"status": "deleted"})
 
     @app.get("/api/logs")
-    def get_logs(limit: int = 100) -> dict[str, Any]:
-        return {"entries": read_recent_log_entries(resolved_data_dir, limit=limit)}
+    def get_logs(limit: int = 100, level: str = "") -> Any:
+        normalized_level = level.strip().upper()
+        if normalized_level not in {"", "DEBUG", "INFO", "WARNING", "ERROR"}:
+            return error_response(422, "invalid log level")
+        return {"entries": read_recent_log_entries(resolved_data_dir, limit=limit, level=normalized_level)}
 
     @app.get("/api/skills")
     def list_skills() -> dict[str, Any]:
@@ -1838,7 +1846,7 @@ def create_app(
     @app.get("/api/settings")
     def get_settings() -> dict[str, Any]:
         cfg = load_config(resolved_data_dir)
-        return _settings_payload(cfg)
+        return _settings_payload(cfg, resolved_data_dir)
 
     @app.post("/api/settings/providers/test")
     def test_settings_provider(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
@@ -1902,6 +1910,7 @@ def create_app(
             auth_enabled=bool(payload.get("auth_enabled", current.auth_enabled)),
             auth_token=current.auth_token,
             log_level=str(payload.get("log_level") or current.log_level).upper(),
+            onboarding_force_open=current.onboarding_force_open,
             skills=current.skills,
         )
         api_key = payload.get("api_key")
@@ -1917,7 +1926,7 @@ def create_app(
         if auth_token:
             next_config.auth_token = str(auth_token)
         save_config(resolved_data_dir, next_config)
-        return _settings_payload(next_config)
+        return _settings_payload(next_config, resolved_data_dir)
 
     @app.get("/{full_path:path}", include_in_schema=False)
     def serve_frontend(full_path: str) -> Response:
@@ -2984,9 +2993,11 @@ def _dev_placeholder_html() -> str:
 </html>"""
 
 
-def _settings_payload(cfg: Config) -> dict[str, Any]:
+def _settings_payload(cfg: Config, data_dir: Path | None = None) -> dict[str, Any]:
     active = cfg.active_provider()
     return {
+        "version": APP_VERSION,
+        "data_dir": str((data_dir or resolve_data_dir()).resolve()),
         "chat_auto_approve_writes": cfg.chat_auto_approve_writes,
         "active_provider_id": active.id,
         "fallback_provider_id": cfg.fallback_provider_id,
