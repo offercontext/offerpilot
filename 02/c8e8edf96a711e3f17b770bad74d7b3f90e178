@@ -1,0 +1,43 @@
+src/offerpilot/repositories/chat.py
+  s_00fff216c0c1ef::t_8dc1c44e7b1fc7 24,28,70-85
+  s_00fff216c0c1ef::t_066c25f978de33 86
+src/offerpilot/schemas.py
+  s_00fff216c0c1ef::t_8dc1c44e7b1fc7 38
+src/offerpilot/api.py
+  s_00fff216c0c1ef::t_8dc1c44e7b1fc7 15,87,1057,1059-1060,1069,1090-1098,1179,1181-1182,1191,1211-1219,1639
+  s_00fff216c0c1ef::t_8677da348c0a4b 1058,1180
+  s_00fff216c0c1ef::t_22b3bdae0bda1c 2014-2045
+tests/test_database.py
+  s_00fff216c0c1ef::t_d7b7595d20b1e5 1-18
+src/offerpilot/db.py
+  s_00fff216c0c1ef::t_8dc1c44e7b1fc7 34
+tests/test_chat_api.py
+  s_00fff216c0c1ef::t_d7b7595d20b1e5 68-72,1435-1469
+  s_496ec40103d2ca::t_ec2e22f717f0b8 1470-1471
+src/offerpilot/models.py
+  s_00fff216c0c1ef::t_8dc1c44e7b1fc7 462
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "02c8e8edf96a711e3f17b770bad74d7b3f90e178",
+  "prompts": {},
+  "sessions": {
+    "s_00fff216c0c1ef": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f49b7-4729-7983-91e1-31d35f2738f1",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    },
+    "s_496ec40103d2ca": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f41cb-1c0b-7152-a6cd-661a79e373ff",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    }
+  }
+}
