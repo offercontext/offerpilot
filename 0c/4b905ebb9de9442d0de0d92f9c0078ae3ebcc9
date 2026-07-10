@@ -1,0 +1,23 @@
+docs/p0-release-checklist.md
+  s_00fff216c0c1ef::t_4f77bc1ef3e4c2 32,56,66,76
+src/offerpilot/diagnostics.py
+  s_00fff216c0c1ef::t_ee98ed74f15166 35
+src/offerpilot/repositories/chat.py
+  s_00fff216c0c1ef::t_ee98ed74f15166 85
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "0c4b905ebb9de9442d0de0d92f9c0078ae3ebcc9",
+  "prompts": {},
+  "sessions": {
+    "s_00fff216c0c1ef": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f49b7-4729-7983-91e1-31d35f2738f1",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    }
+  }
+}
