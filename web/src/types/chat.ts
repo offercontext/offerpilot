@@ -1,3 +1,27 @@
+import type { ViewMode } from '@/layout/navigation';
+
+export interface PilotPageContext {
+  view: ViewMode;
+  label: string;
+  entity?: {
+    kind: 'application' | 'offer';
+    id: string;
+    label: string;
+    description?: string;
+  };
+  filters?: Array<{
+    key: string;
+    label: string;
+    value: string;
+  }>;
+}
+
+export interface PilotContextChip {
+  key: string;
+  label: string;
+  value: string;
+}
+
 export interface Conversation {
   id: number;
   title: string;

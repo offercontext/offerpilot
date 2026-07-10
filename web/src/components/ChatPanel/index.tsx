@@ -22,7 +22,14 @@ import {
   undoLastWrite,
 } from '@/services/chat';
 import { getOffer } from '@/services/offers';
-import type { ChatResponse, ChatStreamEvent, ChatUndo, Conversation, PendingAction } from '@/types/chat';
+import type {
+  ChatResponse,
+  ChatStreamEvent,
+  ChatUndo,
+  Conversation,
+  PendingAction,
+  PilotPageContext,
+} from '@/types/chat';
 import type { Offer } from '@/types/offer';
 import {
   buildTurns,
@@ -53,6 +60,7 @@ interface Props {
   variant?: 'drawer' | 'rail' | 'page';
   onExpand?: () => void;
   onDataChanged?: () => void;
+  pageContext?: PilotPageContext;
 }
 
 const CHAT_WIDTH_STORAGE_KEY = 'offerpilot.chatPanelWidth';
