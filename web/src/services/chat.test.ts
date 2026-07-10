@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createSseParser, streamChat, streamConfirmAction } from './chat';
+import { createSseParser, sendChat, streamChat, streamConfirmAction } from './chat';
 import source from './chat.ts?raw';
-import type { ChatStreamEvent } from '@/types/chat';
+import type { ChatStreamEvent, PilotPageContext } from '@/types/chat';
+
+const { postMock } = vi.hoisted(() => ({ postMock: vi.fn() }));
+
+vi.mock('./http', () => ({
+  createApiClient: () => ({ post: postMock }),
+}));
 
 const originalFetch = globalThis.fetch;
 
@@ -19,6 +25,7 @@ function sseResponse(frames: string) {
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  postMock.mockReset();
   vi.restoreAllMocks();
 });
 
@@ -85,6 +92,52 @@ describe('settings service v0.1 contract', () => {
     );
     expect(events.map((event) => event.event)).toEqual(['completed']);
     expect(response).toEqual({ type: 'message', conversation_id: 3, message: 'ok' });
+  });
+
+  it('sends page context unchanged through JSON and omits it when absent', async () => {
+    const pageContext: PilotPageContext = {
+      view: 'board',
+      label: '投递看板',
+      entity: { kind: 'application', id: '12', label: '启明智能 · 算法工程师' },
+      filters: [{ key: 'status', label: '状态', value: '面试' }],
+    };
+    postMock
+      .mockResolvedValueOnce({ data: { type: 'message', conversation_id: 3, message: 'ok' } })
+      .mockResolvedValueOnce({ data: { type: 'message', conversation_id: 3, message: 'ok' } });
+
+    await sendChat('hi', 3, { context_type: 'workspace', page_context: pageContext });
+    await sendChat('again', 3, { context_type: 'workspace' });
+
+    expect(postMock.mock.calls[0][1]).toEqual({
+      message: 'hi',
+      conversation_id: 3,
+      context_type: 'workspace',
+      page_context: pageContext,
+    });
+    expect(postMock.mock.calls[0][1].page_context).toBe(pageContext);
+    expect(postMock.mock.calls[1][1]).not.toHaveProperty('page_context');
+  });
+
+  it('sends page context unchanged through SSE and omits it when absent', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      sseResponse(
+        'event: completed\nid: run:1\ndata: {"event":"completed","seq":1,"data":{"response":{"type":"message","conversation_id":3,"message":"ok"}}}\n\n',
+      ),
+    );
+    globalThis.fetch = fetchMock as typeof fetch;
+    const pageContext: PilotPageContext = {
+      view: 'calendar',
+      label: '日历',
+      filters: [{ key: 'month', label: '月份', value: '2026-07' }],
+    };
+
+    await streamChat('hi', 3, { page_context: pageContext });
+    await streamChat('again', 3);
+
+    const firstBody = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
+    const secondBody = JSON.parse(fetchMock.mock.calls[1][1]?.body as string);
+    expect(firstBody.page_context).toEqual(pageContext);
+    expect(secondBody).not.toHaveProperty('page_context');
   });
 
   it('streams confirmation through the pilot SSE endpoint', async () => {
