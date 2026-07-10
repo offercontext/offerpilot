@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { Skeleton, Button } from 'antd';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Alert, Skeleton, Button } from 'antd';
 import dayjs from 'dayjs';
 import { listApplications } from '@/services/applications';
 import { listEvents } from '@/services/events';
@@ -28,6 +28,12 @@ import TodayActionPlan from './widgets/TodayActionPlan';
 import ApplicationReadinessStrip from './widgets/ApplicationReadinessStrip';
 import FocusWorkspace from './widgets/FocusWorkspace';
 import styles from './dashboard.module.css';
+import OnboardingChecklist from '@/features/onboarding/OnboardingChecklist';
+import {
+  getOnboarding,
+  ONBOARDING_QUERY_KEY,
+  setOnboardingForceOpen,
+} from '@/services/onboarding';
 
 type DetailAction = ActionCommand & { id?: string };
 type DetailInsight = PipelineInsight & {
@@ -55,6 +61,7 @@ interface Props {
 }
 
 export default function DashboardView({ onNavigate, onOpenDetailById, onAddApplication }: Props) {
+  const queryClient = useQueryClient();
   const [now, setNow] = useState(() => dayjs());
   const [selectedInsightId, setSelectedInsightId] = useState<string | null>(null);
   const [focusApplicationId, setFocusApplicationId] = useState<number | undefined>(undefined);
@@ -65,6 +72,15 @@ export default function DashboardView({ onNavigate, onOpenDetailById, onAddAppli
   }, []);
 
   const appsQ = useQuery({ queryKey: ['applications'], queryFn: () => listApplications() });
+  const onboardingQ = useQuery({
+    queryKey: ONBOARDING_QUERY_KEY,
+    queryFn: getOnboarding,
+    retry: false,
+  });
+  const collapseOnboarding = useMutation({
+    mutationFn: () => setOnboardingForceOpen(false),
+    onSuccess: (status) => queryClient.setQueryData(ONBOARDING_QUERY_KEY, status),
+  });
   const eventsQ = useQuery({ queryKey: ['events'], queryFn: () => listEvents() });
   const offersQ = useQuery({ queryKey: ['offers'], queryFn: () => listOffers() });
   const practiceStatsQ = useQuery({
@@ -160,6 +176,28 @@ export default function DashboardView({ onNavigate, onOpenDetailById, onAddAppli
     onNavigate(action.target);
   };
 
+  const onboarding = onboardingQ.isError ? (
+    <Alert
+      type="warning"
+      showIcon
+      message="新手引导暂时加载失败"
+      action={<Button onClick={() => onboardingQ.refetch()}>重试</Button>}
+      style={{ marginBottom: 16 }}
+    />
+  ) : onboardingQ.data && (!onboardingQ.data.is_complete || onboardingQ.data.force_open) ? (
+    <div style={{ marginBottom: 16 }}>
+      <OnboardingChecklist
+        status={onboardingQ.data}
+        onCollapse={() => collapseOnboarding.mutate()}
+      />
+    </div>
+  ) : onboardingQ.data ? (
+    <div className={styles.card} style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+      <span style={{ color: 'var(--op-ink)', fontWeight: 600 }}>新手引导已完成</span>
+      <Button type="link" onClick={() => collapseOnboarding.mutate()}>收起</Button>
+    </div>
+  ) : null;
+
   if (appsQ.isLoading) {
     return <Skeleton active paragraph={{ rows: 8 }} />;
   }
@@ -167,6 +205,7 @@ export default function DashboardView({ onNavigate, onOpenDetailById, onAddAppli
   if (apps.length === 0) {
     return (
       <div className={styles.grid}>
+        {onboarding}
         <div className={styles.card} style={{ textAlign: 'center', padding: 48 }}>
           <div style={{ color: 'var(--op-ink)', fontSize: 18, fontWeight: 700, marginBottom: 8 }}>
             从第一条投递开始建立求职节奏
@@ -195,6 +234,7 @@ export default function DashboardView({ onNavigate, onOpenDetailById, onAddAppli
 
   return (
     <div className={styles.grid}>
+      {onboarding}
       <MissionHeader
         summary={mission}
         nextAction={nextMissionAction}

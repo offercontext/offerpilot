@@ -1,15 +1,13 @@
 import { Button } from 'antd';
-import { PlusOutlined, SearchOutlined, RobotOutlined, SettingOutlined } from '@ant-design/icons';
+import { PlusOutlined, SearchOutlined, SettingOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 
 interface Props {
   streakDays: number;
   onAdd: () => void;
   onSearch: () => void;
-  onOpenChat: () => void;
   onOpenSettings: () => void;
   onUploadResume?: () => void;
-  showContextualPilot?: boolean;
 }
 
 function greeting(): string {
@@ -24,9 +22,7 @@ export default function TopBar({
   streakDays,
   onAdd,
   onSearch,
-  onOpenChat,
   onOpenSettings,
-  showContextualPilot = true,
 }: Props) {
   return (
     <header
@@ -52,17 +48,6 @@ export default function TopBar({
           搜索 <span style={{ opacity: 0.6, marginLeft: 4 }}>⌘K</span>
         </Button>
         <Button icon={<SettingOutlined />} onClick={onOpenSettings} aria-label="AI 设置" />
-        {showContextualPilot && (
-          <Button
-            type="primary"
-            className="op-ai-btn"
-            icon={<RobotOutlined />}
-            onClick={onOpenChat}
-            style={{ fontWeight: 600 }}
-          >
-            右侧对话
-          </Button>
-        )}
         <Button type="primary" icon={<PlusOutlined />} onClick={onAdd}>
           添加投递
         </Button>

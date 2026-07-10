@@ -186,6 +186,7 @@ def event_tool_registry(
         },
         "delete_application_event": {
             "write": True,
+            "always_confirm": True,
             "description": "Delete an application event by id.",
             "schema": _id_schema("Application event id."),
             "describe": lambda args: _describe_id_action(args, "删除日程"),
@@ -210,6 +211,7 @@ def note_tool_registry(
         },
         "add_note": {
             "write": True,
+            "always_confirm": True,
             "description": "Add an interview review note. If application_id is present, company and position can be omitted.",
             "schema": _note_schema([]),
             "describe": lambda args: _describe_note_action(args, "新增复盘"),
@@ -218,6 +220,7 @@ def note_tool_registry(
         },
         "update_note": {
             "write": True,
+            "always_confirm": True,
             "description": "Update an existing interview review note. Missing fields keep existing values.",
             "schema": _note_schema(["id"]),
             "describe": lambda args: _describe_id_action(args, "更新复盘"),
@@ -225,6 +228,7 @@ def note_tool_registry(
         },
         "delete_note": {
             "write": True,
+            "always_confirm": True,
             "description": "Delete an interview review note by id.",
             "schema": _id_schema("Note id."),
             "describe": lambda args: _describe_id_action(args, "删除复盘"),
@@ -265,6 +269,7 @@ def offer_tool_registry(repo: OffersRepository) -> dict[str, dict[str, Any]]:
         },
         "update_offer": {
             "write": True,
+            "always_confirm": True,
             "description": "Update an offer. Missing fields keep existing values.",
             "schema": _offer_schema(["id"]),
             "describe": lambda args: _describe_id_action(args, "更新 Offer"),
@@ -272,6 +277,7 @@ def offer_tool_registry(repo: OffersRepository) -> dict[str, dict[str, Any]]:
         },
         "save_offer_assessment": {
             "write": True,
+            "always_confirm": True,
             "description": "Save or replace the assessment text for an offer.",
             "schema": {
                 "type": "object",
@@ -303,6 +309,7 @@ def resume_tool_registry(repo: ResumesRepository) -> dict[str, dict[str, Any]]:
         },
         "resume_update_career_intent": {
             "write": True,
+            "always_confirm": True,
             "description": "Update a resume's career_intent block. Requires user confirmation.",
             "schema": {
                 "type": "object",
@@ -317,6 +324,7 @@ def resume_tool_registry(repo: ResumesRepository) -> dict[str, dict[str, Any]]:
         },
         "resume_rewrite_highlight": {
             "write": True,
+            "always_confirm": True,
             "description": "Rewrite one highlight in a structured resume section. Requires user confirmation.",
             "schema": {
                 "type": "object",

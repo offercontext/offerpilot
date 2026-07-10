@@ -65,3 +65,7 @@ docs/superpowers/
 
 # Other tools' local state
 .omc/
+
+# Local browser and whiteboard verification artifacts
+.playwright-mcp/
+diagrams/

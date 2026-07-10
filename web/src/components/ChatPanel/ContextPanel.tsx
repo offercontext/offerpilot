@@ -67,12 +67,12 @@ export default function ContextPanel({
       )}
 
       <div>
-        <div className={styles.panelLabel}>Current evidence</div>
+        <div className={styles.panelLabel}>当前参考依据</div>
         {evidence.length ? (
           <EvidenceList items={evidence.slice(0, 5)} clamped />
         ) : (
           <div className={styles.evidenceEmpty}>
-            No evidence collected yet. Ask a question or choose a capability to let the assistant inspect your local data.
+            暂无参考依据。你可以直接提问，或选择一个能力，让领航员读取本地求职数据。
           </div>
         )}
       </div>
@@ -103,7 +103,7 @@ export default function ContextPanel({
       <div>
         <div className={styles.panelLabel}>设置</div>
         <label className={styles.setting}>
-          <span>写操作免确认</span>
+          <span>本地写入自动确认</span>
           <Switch checked={autoApprove} onChange={onToggleAutoApprove} />
         </label>
       </div>
@@ -124,7 +124,7 @@ export default function ContextPanel({
         </div>
       )}
       <div className={styles.notice}>
-        领航员可读取并（经确认后）修改你的投递、日程、复盘与 Offer。所有写操作默认需你点确认。
+        领航员可读取并修改你的投递、日程、复盘与 Offer。删除等高风险写入始终需要你手动确认。
       </div>
     </aside>
   );

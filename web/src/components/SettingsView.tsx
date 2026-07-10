@@ -1,21 +1,34 @@
-import { ApiOutlined, DownloadOutlined, FileSearchOutlined, ReloadOutlined, SettingOutlined } from '@ant-design/icons';
-import { useMutation, useQuery } from '@tanstack/react-query';
-import { Button, Divider, Empty, Skeleton, Space, Tag, Typography, message } from 'antd';
+import { ApiOutlined, CopyOutlined, DownloadOutlined, FileSearchOutlined, ReloadOutlined, SettingOutlined } from '@ant-design/icons';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Button, Divider, Empty, Input, Modal, Select, Skeleton, Space, Tag, Typography, message } from 'antd';
 import { getLogs, getSettings, getSettingsBackup, type LogEntry, type Settings } from '@/services/chat';
+import { ONBOARDING_QUERY_KEY, setOnboardingForceOpen } from '@/services/onboarding';
+import { buildDiagnosticsText } from '@/lib/diagnostics';
+import { useMemo, useState } from 'react';
 
 interface Props {
   onOpenAISettings: () => void;
 }
 
 export default function SettingsView({ onOpenAISettings }: Props) {
+  const queryClient = useQueryClient();
+  const [logLevel, setLogLevel] = useState('');
   const settingsQuery = useQuery({
     queryKey: ['settings-summary'],
     queryFn: getSettings,
   });
   const logsQuery = useQuery({
-    queryKey: ['runtime-logs', 20],
-    queryFn: () => getLogs(20),
+    queryKey: ['runtime-logs', 20, logLevel],
+    queryFn: () => getLogs(20, logLevel),
     refetchInterval: 15000,
+  });
+  const reopenOnboardingMutation = useMutation({
+    mutationFn: () => setOnboardingForceOpen(true),
+    onSuccess: (status) => {
+      queryClient.setQueryData(ONBOARDING_QUERY_KEY, status);
+      message.success('已重新打开新手引导');
+    },
+    onError: () => message.error('新手引导打开失败'),
   });
   const backupMutation = useMutation({
     mutationFn: getSettingsBackup,
@@ -35,6 +48,25 @@ export default function SettingsView({ onOpenAISettings }: Props) {
   });
   const settings = settingsQuery.data;
   const logs = logsQuery.data ?? [];
+  const diagnosticsText = useMemo(
+    () => (settings ? buildDiagnosticsText(settings, logs) : ''),
+    [settings, logs],
+  );
+
+  async function copyDiagnostics() {
+    if (!diagnosticsText) return;
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
+      await navigator.clipboard.writeText(diagnosticsText);
+      message.success('诊断信息已复制');
+    } catch {
+      Modal.info({
+        title: '复制诊断信息失败，请手动复制',
+        content: <Input.TextArea value={diagnosticsText} readOnly autoSize={{ minRows: 8, maxRows: 18 }} />,
+        width: 720,
+      });
+    }
+  }
 
   return (
     <section
@@ -73,11 +105,13 @@ export default function SettingsView({ onOpenAISettings }: Props) {
           }}
         >
           <RuntimeField label="运行模式" value={formatRuntimeMode(settings?.runtime_mode)} />
+          <RuntimeField label="版本" value={settings?.version ?? '-'} />
           <RuntimeField label="多供应商" value={`${settings?.providers.length ?? 0} 个`} />
           <RuntimeField label="Fallback" value={fallbackLabel(settings)} />
           <RuntimeField label="日志级别" value={settings?.log_level ?? '-'} />
           <RuntimeField label="访问控制" value={settings?.auth_enabled ? '已开启' : '未开启'} />
           <RuntimeField label="密钥状态" value={settings?.has_api_key ? '已配置' : '未配置'} />
+          <RuntimeField label="数据目录" value={settings?.data_dir ?? '-'} />
         </div>
         <div>
           <Space wrap>
@@ -90,6 +124,12 @@ export default function SettingsView({ onOpenAISettings }: Props) {
               onClick={() => backupMutation.mutate()}
             >
               导出备份
+            </Button>
+            <Button
+              loading={reopenOnboardingMutation.isPending}
+              onClick={() => reopenOnboardingMutation.mutate()}
+            >
+              重新打开新手引导
             </Button>
           </Space>
         </div>
@@ -108,6 +148,24 @@ export default function SettingsView({ onOpenAISettings }: Props) {
               最近的本地运行日志。
             </Typography.Text>
           </div>
+          <Space wrap>
+            <Select
+              aria-label="日志筛选"
+              value={logLevel}
+              onChange={setLogLevel}
+              options={[
+                { value: '', label: '全部日志' },
+                { value: 'DEBUG', label: 'DEBUG' },
+                { value: 'INFO', label: 'INFO' },
+                { value: 'WARNING', label: 'WARNING' },
+                { value: 'ERROR', label: 'ERROR' },
+              ]}
+              style={{ width: 130 }}
+            />
+            <Button icon={<CopyOutlined />} onClick={copyDiagnostics} disabled={!settings}>
+              复制诊断信息
+            </Button>
+          </Space>
           <Button
             icon={<ReloadOutlined />}
             onClick={() => logsQuery.refetch()}

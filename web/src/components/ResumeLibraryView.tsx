@@ -17,6 +17,7 @@ import {
   updateResume,
   uploadResume,
 } from '@/services/resumes';
+import { ONBOARDING_QUERY_KEY } from '@/services/onboarding';
 import ResumeCard from './ResumeCard';
 import ResumeUploadModal from './ResumeUploadModal';
 import ResumeEditorDrawer from './ResumeEditorDrawer';
@@ -54,6 +55,7 @@ export default function ResumeLibraryView() {
     onSuccess: (res) => {
       message.success('已创建薄版简历');
       qc.invalidateQueries({ queryKey: ['resumes'] });
+      qc.invalidateQueries({ queryKey: ONBOARDING_QUERY_KEY });
       setEditing(res);
     },
     onError: () => message.error('创建失败'),
@@ -64,6 +66,7 @@ export default function ResumeLibraryView() {
     onSuccess: (res) => {
       message.success('已从样例创建');
       qc.invalidateQueries({ queryKey: ['resumes'] });
+      qc.invalidateQueries({ queryKey: ONBOARDING_QUERY_KEY });
       setEditing(res);
     },
     onError: () => message.error('创建样例失败'),
@@ -74,6 +77,7 @@ export default function ResumeLibraryView() {
     onSuccess: (res) => {
       message.success(res.parse_status === 'text-ready' ? '上传成功' : '已上传，但文本提取失败，请手动校正');
       qc.invalidateQueries({ queryKey: ['resumes'] });
+      qc.invalidateQueries({ queryKey: ONBOARDING_QUERY_KEY });
       setUploadOpen(false);
       setEditing(res);
     },
@@ -85,6 +89,7 @@ export default function ResumeLibraryView() {
     onSuccess: (res) => {
       message.success('已设为主简历');
       qc.invalidateQueries({ queryKey: ['resumes'] });
+      qc.invalidateQueries({ queryKey: ONBOARDING_QUERY_KEY });
       setEditing(res);
     },
     onError: () => message.error('设置主简历失败'),
@@ -102,7 +107,11 @@ export default function ResumeLibraryView() {
 
   const deleteMut = useMutation({
     mutationFn: (id: number) => deleteResume(id),
-    onSuccess: () => { message.success('已删除'); qc.invalidateQueries({ queryKey: ['resumes'] }); },
+    onSuccess: () => {
+      message.success('已删除');
+      qc.invalidateQueries({ queryKey: ['resumes'] });
+      qc.invalidateQueries({ queryKey: ONBOARDING_QUERY_KEY });
+    },
     onError: (error: any) => {
       const detail = error?.response?.data?.error;
       message.error(detail === 'master resume cannot be deleted' ? '主简历不可删除' : '删除失败');

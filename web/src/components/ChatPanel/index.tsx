@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, createElement } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Drawer, App as AntApp, Button } from 'antd';
 import {
   CloseOutlined,
@@ -22,7 +22,15 @@ import {
   undoLastWrite,
 } from '@/services/chat';
 import { getOffer } from '@/services/offers';
-import type { ChatResponse, ChatStreamEvent, ChatUndo, Conversation, PendingAction } from '@/types/chat';
+import { ONBOARDING_QUERY_KEY } from '@/services/onboarding';
+import type {
+  ChatResponse,
+  ChatStartRequest,
+  ChatStreamEvent,
+  ChatUndo,
+  Conversation,
+  PendingAction,
+} from '@/types/chat';
 import type { Offer } from '@/types/offer';
 import {
   buildTurns,
@@ -53,6 +61,7 @@ interface Props {
   variant?: 'drawer' | 'rail' | 'page';
   onExpand?: () => void;
   onDataChanged?: () => void;
+  startRequest?: ChatStartRequest;
 }
 
 const CHAT_WIDTH_STORAGE_KEY = 'offerpilot.chatPanelWidth';
@@ -131,7 +140,9 @@ export default function ChatPanel({
   variant = 'drawer',
   onExpand,
   onDataChanged,
+  startRequest,
 }: Props) {
+  const queryClient = useQueryClient();
   const { message: toast } = AntApp.useApp();
   const [turns, setTurns] = useState<UITurn[]>([]);
   const [convID, setConvID] = useState<number | undefined>(undefined);
@@ -142,6 +153,7 @@ export default function ChatPanel({
   const [degraded, setDegraded] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [offer, setOffer] = useState<Offer | null>(null);
+  const [draftContext, setDraftContext] = useState<ChatStartRequest | null>(null);
   const [panelOpen, setPanelOpen] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);
   const [lastFailedText, setLastFailedText] = useState('');
@@ -158,6 +170,9 @@ export default function ChatPanel({
   const threadOfferId = useRef<number | undefined>(undefined);
   const abortControllerRef = useRef<AbortController | null>(null);
   const streamingAssistantActiveRef = useRef(false);
+  const titleRefreshTimeoutsRef = useRef<number[]>([]);
+  const skipPendingResumeRef = useRef(false);
+  const [composerResetKey, setComposerResetKey] = useState(0);
   const docked = variant === 'rail';
   const inlinePage = variant === 'page';
 
@@ -176,6 +191,19 @@ export default function ChatPanel({
       .then(setConversations)
       .catch(() => undefined);
   }
+
+  function scheduleTitleRefresh() {
+    titleRefreshTimeoutsRef.current.forEach((id) => window.clearTimeout(id));
+    titleRefreshTimeoutsRef.current = [1000, 3000].map((delay) =>
+      window.setTimeout(() => {
+        refreshConversations();
+      }, delay),
+    );
+  }
+
+  useEffect(() => () => {
+    titleRefreshTimeoutsRef.current.forEach((id) => window.clearTimeout(id));
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -241,6 +269,7 @@ export default function ChatPanel({
 
   function startNewChat() {
     stopActiveRequest({ silent: true });
+    skipPendingResumeRef.current = true;
     streamingAssistantActiveRef.current = false;
     setConvID(undefined);
     setTurns([]);
@@ -254,7 +283,15 @@ export default function ChatPanel({
     setLastUndo(null);
     setLoadingLabel(undefined);
     setHasStreamingAssistantContent(false);
+    setDraftContext(null);
+    setComposerResetKey((key) => key + 1);
   }
+
+  useEffect(() => {
+    if (!startRequest) return;
+    startNewChat();
+    setDraftContext(startRequest);
+  }, [startRequest?.requestKey]);
 
   async function selectConversation(id: number) {
     if (id === convID) return;
@@ -303,16 +340,23 @@ export default function ChatPanel({
   }
 
   async function clearActiveContext() {
-    if (!convID) return;
+    if (!convID) {
+      setDraftContext(null);
+      return;
+    }
     await handleConversationUpdate(convID, { context_type: 'workspace', context_ref: '' });
   }
 
   useEffect(() => {
-    if (!open || convID !== undefined || turns.length > 0 || loading) return;
+    if (!open || draftContext !== null || convID !== undefined || turns.length > 0 || loading) return;
+    if (skipPendingResumeRef.current) {
+      skipPendingResumeRef.current = false;
+      return;
+    }
     const pendingConversationId = firstPendingConversationId(conversations);
     if (pendingConversationId === undefined) return;
     void selectConversation(pendingConversationId);
-  }, [open, convID, conversations, turns.length, loading]);
+  }, [open, convID, conversations, turns.length, loading, draftContext]);
 
   async function finishMessage(resp: Extract<ChatResponse, { type: 'message' }>) {
     setConvID(resp.conversation_id);
@@ -409,14 +453,23 @@ export default function ChatPanel({
     try {
       const isNew = convID === undefined;
       const context =
-        isNew && offer?.application_id
-          ? { context_type: 'application', context_ref: offer.application_id, mode: 'nego_coach' }
+        isNew && draftContext
+          ? {
+              context_type: draftContext.context_type,
+              context_ref: draftContext.context_ref,
+              mode: draftContext.mode,
+            }
+          : isNew && offer?.application_id
+            ? { context_type: 'application', context_ref: offer.application_id, mode: 'nego_coach' }
           : isNew && offerId !== undefined
             ? { context_type: 'workspace', context_ref: '', mode: 'nego_coach' }
             : undefined;
       const resp = await streamChat(trimmed, convID, context, {
         signal: controller.signal,
         onEvent: (event) => {
+          if (event.event === 'user_message_saved') {
+            void queryClient.invalidateQueries({ queryKey: ONBOARDING_QUERY_KEY });
+          }
           if (event.conversation_id) {
             streamConversationId = event.conversation_id;
             if (isNew) setConvID(event.conversation_id);
@@ -446,7 +499,10 @@ export default function ChatPanel({
         if (autoApprove) onDataChanged?.();
         if (resp.degraded) toast.info('当前模型不支持工具调用，已切换为只读摘要模式');
       }
-      if (isNew) refreshConversations();
+       if (isNew) {
+         refreshConversations();
+         scheduleTitleRefresh();
+       }
       return true;
     } catch (e: any) {
       if (isAbortError(e)) {
@@ -526,8 +582,22 @@ export default function ChatPanel({
         refreshConversations();
       } else {
         await finishMessage(resp);
-        setConfirmPhase(approved ? 'success' : 'idle');
-        if (approved) onDataChanged?.();
+        if (!approved || resp.write_status === 'cancelled') {
+          setConfirmPhase('idle');
+        } else if (resp.write_status === 'success') {
+          setConfirmPhase('success');
+          onDataChanged?.();
+        } else if (resp.write_status === 'failed') {
+          const error = resp.write_error || '写入失败，请检查记录后重试。';
+          setConfirmError(error);
+          setConfirmPhase('error');
+          toast.error(error);
+        } else {
+          const error = '写入结果未知，请检查记录后再继续。';
+          setConfirmError(error);
+          setConfirmPhase('error');
+          toast.error(error);
+        }
       }
     } catch (e: any) {
       if (isAbortError(e)) {
@@ -608,14 +678,16 @@ export default function ChatPanel({
   const threadEvidence = collectEvidence(turns);
   const confirmationEvidence = activePending ? pendingActionEvidence(threadEvidence, activePending) : [];
   const contextLabel =
-    activeConv?.context_type === 'application' && activeConv.context_ref
+    !convID && draftContext
+      ? draftContext.context_label
+      : activeConv?.context_type === 'application' && activeConv.context_ref
       ? `投递 #${activeConv.context_ref}`
       : isNego
         ? '谈薪上下文'
         : convID
           ? '工作台'
           : null;
-  const canClearContext = !!convID && !!activeConv && activeConv.context_type !== 'workspace';
+  const canClearContext = draftContext !== null || (!!convID && !!activeConv && activeConv.context_type !== 'workspace');
 
   const iconBtnStyle: React.CSSProperties = {
     border: '1px solid var(--op-border)',
@@ -641,7 +713,11 @@ export default function ChatPanel({
           onPointerDown={startResize}
         />
       )}
-      <div className={`${styles.workspace} ${docked ? styles.workspaceDocked : ''}`}>
+      <div
+        className={`${styles.workspace} ${docked ? styles.workspaceDocked : ''} ${
+          inlinePage ? styles.workspacePage : ''
+        }`}
+      >
         <header className={styles.header}>
           <div className={styles.avatar} aria-hidden="true">
             <RobotOutlined />
@@ -837,16 +913,17 @@ export default function ChatPanel({
                   重新发送
                 </button>
                 <button type="button" onClick={clearLastFailure}>
-                  改成手动整理
+                  关闭提示
                 </button>
               </div>
             ) : null}
-            <Composer
-              capabilities={capabilities}
-              disabled={composerDisabled}
-              disabledReason={composerDisabledReason}
-              onSend={sendMessage}
-            />
+             <Composer
+               capabilities={capabilities}
+               disabled={composerDisabled}
+               disabledReason={composerDisabledReason}
+               resetKey={composerResetKey}
+               onSend={sendMessage}
+             />
           </section>
 
           <ContextPanel

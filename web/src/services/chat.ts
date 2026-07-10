@@ -158,7 +158,7 @@ async function postChatStream(
     throw await streamHttpError(response);
   }
   if (!response.body) {
-    throw new Error('SSE response body is empty');
+    throw new Error('对话连接中断，请稍后重试。');
   }
 
   let completed: ChatResponse | undefined;
@@ -183,7 +183,7 @@ async function postChatStream(
   parser.push(decoder.decode());
   parser.flush();
   if (!completed) {
-    throw new Error('SSE stream completed without response');
+    throw new Error('对话没有返回完整结果，请重试。');
   }
   return completed;
 }
@@ -230,6 +230,8 @@ export async function updateConversation(
 }
 
 export interface Settings {
+  version: string;
+  data_dir: string;
   chat_auto_approve_writes: boolean;
   active_provider_id: string;
   fallback_provider_id: string;
@@ -321,8 +323,8 @@ export async function getSettingsBackup(): Promise<SettingsBackup> {
   return data;
 }
 
-export async function getLogs(limit = 20): Promise<LogEntry[]> {
-  const { data } = await http.get<LogsResponse>('/logs', { params: { limit } });
+export async function getLogs(limit = 20, level = ''): Promise<LogEntry[]> {
+  const { data } = await http.get<LogsResponse>('/logs', { params: { limit, ...(level ? { level } : {}) } });
   return data.entries ?? [];
 }
 

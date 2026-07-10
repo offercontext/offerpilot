@@ -1,6 +1,7 @@
 export interface Conversation {
   id: number;
   title: string;
+  title_source?: 'fallback' | 'generated' | 'manual' | string;
   mode?: string;
   context_type: string;
   context_ref: string;
@@ -12,6 +13,16 @@ export interface Conversation {
   created_at: string;
   updated_at: string;
 }
+
+export interface ChatStartRequest {
+  requestKey: number;
+  context_type: 'application';
+  context_ref: string;
+  context_label: string;
+  mode: 'general';
+}
+
+export type WriteStatus = 'success' | 'failed' | 'cancelled' | 'none';
 
 export interface ChatMessage {
   id: number;
@@ -77,7 +88,15 @@ export interface ChatUndo {
 }
 
 export type ChatResponse =
-  | { type: 'message'; conversation_id: number; message: string; degraded?: boolean; undo?: ChatUndo | null }
+  | {
+      type: 'message';
+      conversation_id: number;
+      message: string;
+      degraded?: boolean;
+      undo?: ChatUndo | null;
+      write_status?: WriteStatus;
+      write_error?: string;
+    }
   | { type: 'confirmation_required'; conversation_id: number; pending_action: PendingAction };
 
 export type ChatStreamEventName =

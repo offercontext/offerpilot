@@ -31,6 +31,7 @@ def init_database(db_path: Path) -> SessionFactory:
 
     chat_migrations = [
         _ensure_column(engine, "conversations", "mode", "TEXT DEFAULT 'general'"),
+        _ensure_column(engine, "conversations", "title_source", "TEXT DEFAULT 'manual'"),
         _ensure_column(engine, "conversations", "context_type", "TEXT DEFAULT 'workspace'"),
         _ensure_column(engine, "conversations", "context_ref", "TEXT DEFAULT ''"),
         _ensure_column(engine, "conversations", "pinned_at", "DATETIME"),

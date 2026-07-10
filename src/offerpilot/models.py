@@ -459,6 +459,7 @@ class Conversation(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     title: Mapped[str] = mapped_column(String, nullable=False, default="新对话", server_default="新对话")
+    title_source: Mapped[str] = mapped_column(String, nullable=False, default="fallback", server_default="fallback")
     mode: Mapped[str] = mapped_column(String, default="general", server_default="general")
     context_type: Mapped[str] = mapped_column(String, default="workspace", server_default="workspace")
     context_ref: Mapped[str] = mapped_column(String, default="", server_default="")
