@@ -1195,6 +1195,13 @@
   flex: 1;
   min-width: 0;
 }
+.confirmRecovery small {
+  display: block;
+  margin-top: 2px;
+  color: var(--op-muted);
+  font-size: 11px;
+  text-wrap: pretty;
+}
 .confirmRecovery button {
   flex-shrink: 0;
   border: 0;

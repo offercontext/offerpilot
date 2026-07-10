@@ -910,22 +910,17 @@ export default function ChatPanel({
               <div className={styles.pendingDock}>
                 {loading && !hasStreamingAssistantContent ? <ThinkingIndicator label={loadingLabel} /> : null}
                 {confirmError ? (
-                  <div className={styles.confirmRecovery}>
-                    <span>{confirmError}</span>
+                  <div className={styles.confirmRecovery} role="alert">
+                    <span>
+                      {confirmError}
+                      <small>
+                        {lastConfirmationInputRef.current?.approved === false
+                          ? '重试会继续提交拒绝；也可以在下方审核卡片修改反馈。'
+                          : '重试会保留本次编辑；如需放弃，请使用下方审核卡片。'}
+                      </small>
+                    </span>
                     <button type="button" onClick={retryConfirmAction} disabled={loading}>
-                      重试执行
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        handleConfirm({
-                          approved: false,
-                          confirmation_token: activePending.confirmation_token,
-                        })
-                      }
-                      disabled={loading}
-                    >
-                      取消本次写入
+                      {lastConfirmationInputRef.current?.approved === false ? '重试拒绝' : '重试执行'}
                     </button>
                   </div>
                 ) : null}

@@ -159,7 +159,7 @@ describe('ChatPanel docked layout contract', () => {
   it('surfaces pending confirmation recovery and the active conversation context', () => {
     expect(component).toContain('confirmError');
     expect(component).toContain('retryConfirmAction');
-    expect(component).toContain('取消本次写入');
+    expect(component).toContain('如需放弃，请使用下方审核卡片');
     expect(component).toContain('contextBadge');
     expect(component).toContain('当前上下文');
     expect(component).toContain('contextLabel');
@@ -170,6 +170,24 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('lastConfirmationInputRef.current = null');
     expect(component).toContain('await syncConversationAfterAbort(convID)');
     expect(component).not.toContain('void handleConfirm(true)');
+  });
+
+  it('keeps rejection deliberate when confirmation recovery is visible', () => {
+    const recoveryStart = component.indexOf('{confirmError ? (');
+    const proposalStart = component.indexOf('<ProposalCard', recoveryStart);
+    const recoverySource = component.slice(recoveryStart, proposalStart);
+
+    expect(recoveryStart).toBeGreaterThan(-1);
+    expect(proposalStart).toBeGreaterThan(recoveryStart);
+    expect(recoverySource).toContain('retryConfirmAction');
+    expect(recoverySource).toContain('role="alert"');
+    expect(recoverySource).toContain('lastConfirmationInputRef.current?.approved === false');
+    expect(recoverySource).toContain('重试拒绝');
+    expect(recoverySource).toContain('重试会继续提交拒绝');
+    expect(recoverySource).not.toContain('handleConfirm({');
+    expect(recoverySource).not.toContain('approved: false');
+    expect(component.match(/approved: false/g)).toHaveLength(1);
+    expect(component.match(/onCancel=\{\(rejectionFeedback\)/g)).toHaveLength(1);
   });
 
   it('renders typed accessible proposal controls without an arbitrary JSON editor', () => {
