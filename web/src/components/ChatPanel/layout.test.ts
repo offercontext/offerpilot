@@ -190,6 +190,25 @@ describe('ChatPanel docked layout contract', () => {
     expect(component.match(/onCancel=\{\(rejectionFeedback\)/g)).toHaveLength(1);
   });
 
+  it('gives confirmation recovery a compact accessible retry target', async () => {
+    const css = await loadCss();
+    const buttonStart = css.indexOf('.confirmRecovery button {');
+    const disabledStart = css.indexOf('.confirmRecovery button:disabled', buttonStart);
+    const buttonRule = css.slice(buttonStart, disabledStart);
+    const reducedMotionStart = css.indexOf('@media (prefers-reduced-motion: reduce)');
+    const reducedMotionRule = css.slice(reducedMotionStart);
+
+    expect(buttonStart).toBeGreaterThan(-1);
+    expect(buttonRule).toContain('min-height: 40px;');
+    expect(buttonRule).toContain('padding: 0 12px;');
+    expect(buttonRule).toContain('transition-property: color, background-color, transform;');
+    expect(css).toContain('.confirmRecovery button:active:not(:disabled)');
+    expect(css).toContain('transform: scale(0.96);');
+    expect(css).toContain('flex-wrap: wrap;');
+    expect(reducedMotionRule).toContain('.confirmRecovery button');
+    expect(buttonRule).not.toContain('transition: all');
+  });
+
   it('renders typed accessible proposal controls without an arbitrary JSON editor', () => {
     expect(proposalCard).toContain("Select");
     expect(proposalCard).toContain("Switch");

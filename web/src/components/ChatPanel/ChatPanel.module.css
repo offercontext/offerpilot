@@ -1179,6 +1179,7 @@
 }
 .confirmRecovery {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: 10px;
@@ -1192,7 +1193,7 @@
   line-height: 1.5;
 }
 .confirmRecovery span {
-  flex: 1;
+  flex: 1 1 220px;
   min-width: 0;
 }
 .confirmRecovery small {
@@ -1204,12 +1205,28 @@
 }
 .confirmRecovery button {
   flex-shrink: 0;
+  min-height: 40px;
+  margin-left: auto;
   border: 0;
-  padding: 0;
+  border-radius: 8px;
+  padding: 0 12px;
   background: transparent;
   color: var(--op-primary);
   font-weight: 700;
   cursor: pointer;
+  transition-property: color, background-color, transform;
+  transition-duration: 160ms;
+  transition-timing-function: var(--op-ease);
+}
+.confirmRecovery button:hover:not(:disabled) {
+  background: rgba(99, 102, 241, 0.08);
+}
+.confirmRecovery button:focus-visible {
+  outline: 2px solid var(--op-primary);
+  outline-offset: 2px;
+}
+.confirmRecovery button:active:not(:disabled) {
+  transform: scale(0.96);
 }
 .confirmRecovery button:disabled {
   opacity: 0.5;
@@ -1622,7 +1639,8 @@
   .promptCard,
   .composerBox,
   .editorDisclosure,
-  .reviewBack {
+  .reviewBack,
+  .confirmRecovery button {
     transition: none;
   }
 }
