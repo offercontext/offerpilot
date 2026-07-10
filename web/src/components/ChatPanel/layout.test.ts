@@ -97,21 +97,22 @@ describe('ChatPanel docked layout contract', () => {
 
   it('resynchronizes real conversation state after users abort a stream', () => {
     expect(component).toContain('syncConversationAfterAbort');
-    expect(component).toContain('await syncConversationAfterAbort(streamConversationId, selectionRequestId)');
-    expect(component).toContain('await syncConversationAfterAbort(convID, selectionRequestId)');
-    expect(component).toContain('setPending(pendingActionForConversation');
+    expect(component).toContain('await syncConversationAfterAbort(streamConversationId, visibleRequestGeneration)');
+    expect(component).toContain('await syncConversationAfterAbort(convID, visibleRequestGeneration)');
+    expect(component).toContain('const selectedPending = pendingActionForConversation');
+    expect(component).toContain('setPending(selectedPending);');
   });
 
   it('cleans up partial assistant bubbles on stream failure and completed fallback', () => {
     expect(component).toContain('if (streamingAssistantActiveRef.current)');
-    expect(component).toContain('await syncConversationAfterAbort(streamConversationId, selectionRequestId)');
+    expect(component).toContain('await syncConversationAfterAbort(streamConversationId, visibleRequestGeneration)');
     expect(component).toContain('return [...t.slice(0, -1), { ...last, content: resp.message }];');
   });
 
   it('notifies owners after Pilot write flows can change application data', () => {
     expect(component).toContain('onDataChanged?: () => void');
-    expect(component).toContain('if (autoApprove) onDataChanged?.();');
-    expect(component).toContain('if (approved) onDataChanged?.();');
+    expect(component).toContain('if (applied && autoApprove) onDataChanged?.();');
+    expect(component).toContain('if (approved && applied) onDataChanged?.();');
   });
 
   it('keeps write confirmation cards localized for Chinese users', () => {
@@ -168,7 +169,7 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('void handleConfirm(retryInput)');
     expect(component).toContain('confirmationErrorRequiresSync');
     expect(component).toContain('lastConfirmationInputRef.current = null');
-    expect(component).toContain('await syncConversationAfterAbort(convID, selectionRequestId)');
+    expect(component).toContain('await syncConversationAfterAbort(convID, visibleRequestGeneration)');
     expect(component).not.toContain('void handleConfirm(true)');
   });
 
@@ -352,14 +353,63 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('conversationSelectionRequestRef');
     expect(component).toContain('shouldApplyConversationRequest(');
     expect(component).toContain('conversationSelectionRequestRef.current += 1;');
-    expect(component).toContain('selectionRequestId: number,');
-    expect(component).toContain('selectionRequestId !== conversationSelectionRequestRef.current');
+    expect(component).toContain('visibleRequestGeneration: number,');
+    expect(component).toContain('!isCurrentVisibleRequest(visibleRequestGeneration)');
     expect(component).toContain("markPendingAutoSelect('suppress')");
     expect(component).toContain("markPendingAutoSelect('allow')");
     expect(component).toContain('if (pendingAutoSelectSuppressedRef.current) return;');
     expect(component).toContain('resolveActivePendingAction(pending, conversations, convID)');
     expect(component).toContain('const composerDisabled = loading || !!activePending || !hasKey;');
     expect(component).not.toContain('conversations.some((conversation) => conversation.pending_action)');
+  });
+
+  it('isolates visible chat and confirmation mutations by request generation', () => {
+    expect(component).toContain('visibleRequestGenerationRef');
+    expect(component).toContain('const visibleRequestGeneration = ++visibleRequestGenerationRef.current;');
+    expect(component).toContain('isCurrentVisibleConversationRequest(');
+    expect(component).toContain('if (!isCurrentVisibleRequest(visibleRequestGeneration))');
+    expect(component).toContain('finishMessage(resp, visibleRequestGeneration)');
+  });
+
+  it('invalidates request state and clears loading on close or durable context reset', () => {
+    const closeStart = component.indexOf('if (!open) {');
+    const closeEnd = component.indexOf('}, [open]);', closeStart);
+    const closeEffect = component.slice(closeStart, closeEnd);
+    const contextStart = component.indexOf('if (offerId !== threadOfferId.current) {');
+    const contextEnd = component.indexOf('threadOfferId.current = offerId;', contextStart);
+    const contextReset = component.slice(contextStart, contextEnd);
+
+    expect(closeEffect).toContain('visibleRequestGenerationRef.current += 1;');
+    expect(closeEffect).toContain('stopActiveRequest({ silent: true });');
+    expect(closeEffect).toContain('setPending(null);');
+    expect(closeEffect).toContain('confirmationReconcileOnOpenRef.current =');
+    expect(closeEffect).toContain(
+      'void syncConversationAfterAbort(activeConversationIdRef.current, closeGeneration);',
+    );
+    expect(closeEffect).toContain('monitorConfirmationCompletion(');
+    expect(component).toContain('confirmationLocksRef.current.set(convID, confirmationExecution);');
+    expect(component).toContain('if (confirmationLocksRef.current.has(convID)) return;');
+    expect(component).toContain('lockedConfirmationRef.current = confirmationExecution;');
+    expect(component).toContain(
+      'const confirmationSettled = hasConfirmationSettled(',
+    );
+    expect(component).toContain("setConfirmPhase('saving');");
+    expect(component).toContain('const selectedConfirmationLock = confirmationLocksRef.current.get(id);');
+    expect(component).toContain('if (selectedConfirmationLock) {');
+    const newChatStart = component.indexOf('function startNewChat()');
+    const newChatEnd = component.indexOf('async function selectConversation', newChatStart);
+    const newChat = component.slice(newChatStart, newChatEnd);
+    expect(newChat).toContain('const activeConfirmationLock =');
+    expect(newChat).toContain('if (!activeConfirmationLock)');
+    expect(component).not.toContain('confirmationExecution.settled = true;');
+    expect(component).toContain('CONFIRMATION_RECONCILE_MAX_POLLS = 240');
+    expect(component).toContain('确认操作仍在处理中，请刷新状态后再继续。');
+    expect(component).toContain('onClick={refreshConfirmationStatus}');
+    expect(closeEffect).toContain('setLoading(false);');
+    expect(closeEffect).toContain('setLoadingLabel(undefined);');
+    expect(contextReset).toContain('visibleRequestGenerationRef.current += 1;');
+    expect(contextReset).toContain('setLoading(false);');
+    expect(contextReset).toContain('setLoadingLabel(undefined);');
   });
 
   it('guards conversation list refreshes against stale view responses', () => {

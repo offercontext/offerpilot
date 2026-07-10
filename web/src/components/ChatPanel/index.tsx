@@ -39,6 +39,8 @@ import {
   pendingActionForConversation,
   pendingAutoSelectReducer,
   shouldApplyConversationRequest,
+  isCurrentVisibleConversationRequest,
+  hasConfirmationSettled,
   pendingComposerDisabledReason,
   reloadConversationTurns,
   resolveActivePendingAction,
@@ -80,9 +82,15 @@ interface Props {
   pageContext?: PilotPageContext;
 }
 
+interface ConfirmationExecution {
+  conversationId: number;
+  confirmationToken: string;
+}
+
 const CHAT_WIDTH_STORAGE_KEY = 'offerpilot.chatPanelWidth';
 const DEFAULT_CHAT_WIDTH = 920;
 const MIN_CHAT_WIDTH = 720;
+const CONFIRMATION_RECONCILE_MAX_POLLS = 240;
 
 function maxChatWidth() {
   return Math.max(MIN_CHAT_WIDTH, Math.min(window.innerWidth - 32, 1440));
@@ -199,9 +207,13 @@ export default function ChatPanel({
   const restoreConfirmationRetryFocusRef = useRef(false);
   const activeConversationIdRef = useRef<number | undefined>(undefined);
   const confirmationMonitorRef = useRef(0);
+  const confirmationLocksRef = useRef(new Map<number, ConfirmationExecution>());
+  const confirmationReconcileOnOpenRef = useRef<ConfirmationExecution | null>(null);
+  const lockedConfirmationRef = useRef<ConfirmationExecution | null>(null);
   const pendingAutoSelectSuppressedRef = useRef(false);
   const conversationSelectionRequestRef = useRef(0);
   const conversationListRequestRef = useRef(0);
+  const visibleRequestGenerationRef = useRef(0);
   const showArchivedRef = useRef(showArchived);
   showArchivedRef.current = showArchived;
   const docked = variant === 'rail';
@@ -228,7 +240,55 @@ export default function ChatPanel({
   }, [convID]);
 
   useEffect(() => {
-    if (!open) confirmationMonitorRef.current += 1;
+    if (!open) {
+      confirmationMonitorRef.current += 1;
+      conversationSelectionRequestRef.current += 1;
+      const activeConversationId = activeConversationIdRef.current;
+      const activeConfirmationExecution =
+        activeConversationId === undefined
+          ? undefined
+          : confirmationLocksRef.current.get(activeConversationId);
+      if (
+        activeConfirmationExecution &&
+        activeConfirmationExecution.conversationId === activeConversationId
+      ) {
+        confirmationReconcileOnOpenRef.current = activeConfirmationExecution;
+      } else {
+        stopActiveRequest({ silent: true });
+      }
+      visibleRequestGenerationRef.current += 1;
+      const closeGeneration = visibleRequestGenerationRef.current;
+      if (streamingAssistantActiveRef.current) {
+        setTurns((current) => current.slice(0, -1));
+      }
+      streamingAssistantActiveRef.current = false;
+      setPending(null);
+      setConfirmError(null);
+      setConfirmPhase('idle');
+      setLastUndo(null);
+      setLoading(false);
+      setLoadingLabel(undefined);
+      void syncConversationAfterAbort(activeConversationIdRef.current, closeGeneration);
+    } else {
+      const reconciliation = confirmationReconcileOnOpenRef.current;
+      confirmationReconcileOnOpenRef.current = null;
+      if (
+        reconciliation &&
+        activeConversationIdRef.current === reconciliation.conversationId
+      ) {
+        lockedConfirmationRef.current = reconciliation;
+        visibleRequestGenerationRef.current += 1;
+        const reopenGeneration = visibleRequestGenerationRef.current;
+        setConfirmPhase('saving');
+        const monitorId = ++confirmationMonitorRef.current;
+        void monitorConfirmationCompletion(
+          reconciliation.conversationId,
+          monitorId,
+          reopenGeneration,
+          reconciliation.confirmationToken,
+        );
+      }
+    }
   }, [open]);
 
   useEffect(() => {
@@ -250,6 +310,13 @@ export default function ChatPanel({
     dispatchPendingAutoSelect(action);
   }
 
+  function isCurrentVisibleRequest(requestGeneration: number) {
+    return isCurrentVisibleConversationRequest(
+      requestGeneration,
+      visibleRequestGenerationRef.current,
+    );
+  }
+
   function refreshConversations(includeArchived = showArchivedRef.current) {
     const requestId = ++conversationListRequestRef.current;
     listConversations(includeArchived)
@@ -262,9 +329,14 @@ export default function ChatPanel({
   useEffect(() => {
     if (!open) return;
     if (offerId !== threadOfferId.current) {
+      conversationSelectionRequestRef.current += 1;
+      visibleRequestGenerationRef.current += 1;
+      streamingAssistantActiveRef.current = false;
       setConvID(undefined);
       setTurns([]);
       setPending(null);
+      setLoading(false);
+      setLoadingLabel(undefined);
       markPendingAutoSelect('allow');
       lastConfirmationInputRef.current = null;
       setDegraded(false);
@@ -326,7 +398,13 @@ export default function ChatPanel({
   function startNewChat() {
     markPendingAutoSelect('suppress');
     conversationSelectionRequestRef.current += 1;
-    stopActiveRequest({ silent: true });
+    visibleRequestGenerationRef.current += 1;
+    const activeConfirmationLock =
+      convID === undefined ? undefined : confirmationLocksRef.current.get(convID);
+    if (!activeConfirmationLock) {
+      stopActiveRequest({ silent: true });
+    }
+    lockedConfirmationRef.current = null;
     streamingAssistantActiveRef.current = false;
     setConvID(undefined);
     setTurns([]);
@@ -347,6 +425,8 @@ export default function ChatPanel({
   async function selectConversation(id: number) {
     markPendingAutoSelect('allow');
     if (id === convID) return;
+    visibleRequestGenerationRef.current += 1;
+    const visibleRequestGeneration = visibleRequestGenerationRef.current;
     const requestId = ++conversationSelectionRequestRef.current;
     setLoading(true);
     try {
@@ -360,13 +440,29 @@ export default function ChatPanel({
       ) return;
       setConvID(id);
       setTurns(buildTurns(stored));
-      setPending(pendingActionForConversation(conversations, id));
+      const selectedPending = pendingActionForConversation(conversations, id);
+      setPending(selectedPending);
       lastConfirmationInputRef.current = null;
       setDegraded(false);
       setConfirmError(null);
       setHasStreamingAssistantContent(false);
       const conversation = conversations.find((item) => item.id === id);
-      setConfirmPhase('idle');
+      const selectedConfirmationLock = confirmationLocksRef.current.get(id);
+      if (selectedConfirmationLock) {
+        lockedConfirmationRef.current = selectedConfirmationLock;
+        setConfirmPhase('saving');
+        const monitorId = ++confirmationMonitorRef.current;
+        void monitorConfirmationCompletion(
+          id,
+          monitorId,
+          visibleRequestGeneration,
+          selectedConfirmationLock.confirmationToken,
+        );
+      } else {
+        confirmationLocksRef.current.delete(id);
+        lockedConfirmationRef.current = null;
+        setConfirmPhase('idle');
+      }
       setLastUndo(conversation?.last_write_undo ?? null);
     } catch (e: any) {
       if (requestId === conversationSelectionRequestRef.current) {
@@ -417,16 +513,23 @@ export default function ChatPanel({
     void selectConversation(pendingConversationId);
   }, [open, convID, conversations, turns.length, loading, showArchived]);
 
-  async function finishMessage(resp: Extract<ChatResponse, { type: 'message' }>) {
+  async function finishMessage(
+    resp: Extract<ChatResponse, { type: 'message' }>,
+    visibleRequestGeneration: number,
+  ): Promise<boolean> {
+    const storedTurns = await reloadConversationTurns(resp.conversation_id, getConversation);
+    if (!isCurrentVisibleRequest(visibleRequestGeneration)) {
+      refreshConversations();
+      return false;
+    }
     setConvID(resp.conversation_id);
     setPending(null);
     setDegraded(!!resp.degraded);
     setConfirmError(null);
     setLastUndo(resp.undo ?? null);
-    try {
-      const stored = await getConversation(resp.conversation_id);
-      setTurns(buildTurns(stored));
-    } catch {
+    if (storedTurns) {
+      setTurns(storedTurns);
+    } else {
       setTurns((t) => {
         if (streamingAssistantActiveRef.current) {
           const last = t[t.length - 1];
@@ -439,6 +542,7 @@ export default function ChatPanel({
     }
     streamingAssistantActiveRef.current = false;
     refreshConversations();
+    return true;
   }
 
   function appendAssistantDelta(delta: string) {
@@ -468,7 +572,7 @@ export default function ChatPanel({
 
   async function syncConversationAfterAbort(
     conversationId: number | undefined,
-    selectionRequestId: number,
+    visibleRequestGeneration: number,
   ): Promise<PendingAction | null | undefined> {
     let nextConversations: Conversation[] | undefined;
     try {
@@ -489,7 +593,7 @@ export default function ChatPanel({
         nextConversations ?? conversations,
         conversationId,
       );
-      if (selectionRequestId !== conversationSelectionRequestRef.current) {
+      if (!isCurrentVisibleRequest(visibleRequestGeneration)) {
         return nextPending;
       }
       setConvID(conversationId);
@@ -506,26 +610,55 @@ export default function ChatPanel({
   async function monitorConfirmationCompletion(
     conversationId: number,
     monitorId: number,
-    selectionRequestId: number,
+    visibleRequestGeneration: number,
+    expectedConfirmationToken: string,
   ) {
+    let pollCount = 0;
     while (
+      pollCount < CONFIRMATION_RECONCILE_MAX_POLLS &&
       confirmationMonitorRef.current === monitorId &&
-      activeConversationIdRef.current === conversationId
+      activeConversationIdRef.current === conversationId &&
+      isCurrentVisibleRequest(visibleRequestGeneration)
     ) {
       await new Promise((resolve) => window.setTimeout(resolve, 500));
+      pollCount += 1;
       if (
         confirmationMonitorRef.current !== monitorId ||
         activeConversationIdRef.current !== conversationId
       ) {
         return;
       }
-      const nextPending = await syncConversationAfterAbort(conversationId, selectionRequestId);
-      if (selectionRequestId !== conversationSelectionRequestRef.current) return;
-      if (nextPending === null) {
+      const nextPending = await syncConversationAfterAbort(
+        conversationId,
+        visibleRequestGeneration,
+      );
+      if (!isCurrentVisibleRequest(visibleRequestGeneration)) return;
+      if (hasConfirmationSettled(nextPending, expectedConfirmationToken)) {
+        confirmationLocksRef.current.delete(conversationId);
+        lockedConfirmationRef.current = null;
         setConfirmPhase('idle');
         onDataChanged?.();
         return;
       }
+    }
+  }
+
+  async function refreshConfirmationStatus() {
+    const locked = lockedConfirmationRef.current;
+    if (!locked || activeConversationIdRef.current !== locked.conversationId) return;
+    const visibleRequestGeneration = visibleRequestGenerationRef.current;
+    const nextPending = await syncConversationAfterAbort(
+      locked.conversationId,
+      visibleRequestGeneration,
+    );
+    if (!isCurrentVisibleRequest(visibleRequestGeneration)) return;
+    if (hasConfirmationSettled(nextPending, locked.confirmationToken)) {
+      confirmationLocksRef.current.delete(locked.conversationId);
+      lockedConfirmationRef.current = null;
+      setConfirmPhase('idle');
+      onDataChanged?.();
+    } else {
+      setConfirmPhase('saving');
     }
   }
 
@@ -542,7 +675,7 @@ export default function ChatPanel({
     const trimmed = text.trim();
     if (!trimmed || loading || activePending) return false;
     if (convID === undefined) markPendingAutoSelect('suppress');
-    const selectionRequestId = conversationSelectionRequestRef.current;
+    const visibleRequestGeneration = ++visibleRequestGenerationRef.current;
     lastConfirmationInputRef.current = null;
     setLastError(null);
     setLastFailedText('');
@@ -567,6 +700,7 @@ export default function ChatPanel({
       const resp = await streamChat(trimmed, convID, requestContext, {
         signal: controller.signal,
         onEvent: (event) => {
+          if (!isCurrentVisibleRequest(visibleRequestGeneration)) return;
           if (event.conversation_id) {
             streamConversationId = event.conversation_id;
             if (isNew) setConvID(event.conversation_id);
@@ -583,31 +717,43 @@ export default function ChatPanel({
           if (label) setLoadingLabel(label);
         },
       });
+      if (!isCurrentVisibleRequest(visibleRequestGeneration)) {
+        refreshConversations();
+        return true;
+      }
       if (resp.type === 'confirmation_required') {
         setLoadingLabel('正在准备确认卡片');
         setConvID(resp.conversation_id);
         setPending(resp.pending_action);
         setConfirmPhase('idle');
         const storedTurns = await reloadConversationTurns(resp.conversation_id, getConversation);
-        if (storedTurns) setTurns(storedTurns);
+        if (isCurrentVisibleRequest(visibleRequestGeneration) && storedTurns) {
+          setTurns(storedTurns);
+        }
         refreshConversations();
       } else {
-        await finishMessage(resp);
-        if (autoApprove) onDataChanged?.();
-        if (resp.degraded) toast.info('当前模型不支持工具调用，已切换为只读摘要模式');
+        const applied = await finishMessage(resp, visibleRequestGeneration);
+        if (applied && autoApprove) onDataChanged?.();
+        if (applied && resp.degraded) {
+          toast.info('当前模型不支持工具调用，已切换为只读摘要模式');
+        }
       }
       if (isNew) refreshConversations();
       return true;
     } catch (e: any) {
+      if (!isCurrentVisibleRequest(visibleRequestGeneration)) {
+        refreshConversations();
+        return false;
+      }
       if (isAbortError(e)) {
-        await syncConversationAfterAbort(streamConversationId, selectionRequestId);
+        await syncConversationAfterAbort(streamConversationId, visibleRequestGeneration);
         return false;
       }
       const error = e?.response?.data?.error ?? e?.message ?? '对话失败，请稍后重试';
       if (streamingAssistantActiveRef.current) {
         streamingAssistantActiveRef.current = false;
-        await syncConversationAfterAbort(streamConversationId, selectionRequestId);
-        if (selectionRequestId !== conversationSelectionRequestRef.current) return false;
+        await syncConversationAfterAbort(streamConversationId, visibleRequestGeneration);
+        if (!isCurrentVisibleRequest(visibleRequestGeneration)) return false;
         setLastError(error);
         setLastFailedText(trimmed);
         toast.error(error);
@@ -623,8 +769,10 @@ export default function ChatPanel({
       return false;
     } finally {
       if (abortControllerRef.current === controller) abortControllerRef.current = null;
-      setLoading(false);
-      setLoadingLabel(undefined);
+      if (isCurrentVisibleRequest(visibleRequestGeneration)) {
+        setLoading(false);
+        setLoadingLabel(undefined);
+      }
     }
   }
 
@@ -645,7 +793,13 @@ export default function ChatPanel({
   async function handleConfirm(input: ConfirmationInput) {
     if (!convID) return;
     if (input.confirmation_token !== activePendingRef.current?.confirmation_token) return;
-    const selectionRequestId = conversationSelectionRequestRef.current;
+    if (confirmationLocksRef.current.has(convID)) return;
+    const visibleRequestGeneration = ++visibleRequestGenerationRef.current;
+    const confirmationExecution: ConfirmationExecution = {
+      conversationId: convID,
+      confirmationToken: input.confirmation_token,
+    };
+    confirmationLocksRef.current.set(convID, confirmationExecution);
     const approved = input.approved;
     lastConfirmationInputRef.current = confirmationInputForRetry(input);
     setConfirmPhase(approved ? 'saving' : 'idle');
@@ -659,6 +813,7 @@ export default function ChatPanel({
       const resp = await streamConfirmAction(convID, input, {
         signal: controller.signal,
         onEvent: (event) => {
+          if (!isCurrentVisibleRequest(visibleRequestGeneration)) return;
           if (event.event === 'assistant_delta') {
             const data = event.data as { delta?: unknown };
             if (typeof data.delta === 'string') appendAssistantDelta(data.delta);
@@ -671,6 +826,12 @@ export default function ChatPanel({
           if (label) setLoadingLabel(label);
         },
       });
+      if (!isCurrentVisibleRequest(visibleRequestGeneration)) {
+        refreshConversations();
+        return;
+      }
+      confirmationLocksRef.current.delete(convID);
+      lockedConfirmationRef.current = null;
       if (resp.type === 'confirmation_required') {
         restoreConfirmationRetryFocusRef.current = false;
         lastConfirmationInputRef.current = null;
@@ -679,19 +840,27 @@ export default function ChatPanel({
         setPending(resp.pending_action);
         setConfirmPhase('idle');
         const storedTurns = await reloadConversationTurns(resp.conversation_id, getConversation);
-        if (storedTurns) setTurns(storedTurns);
+        if (isCurrentVisibleRequest(visibleRequestGeneration) && storedTurns) {
+          setTurns(storedTurns);
+        }
         refreshConversations();
       } else {
         restoreConfirmationRetryFocusRef.current = false;
-        await finishMessage(resp);
-        lastConfirmationInputRef.current = null;
-        setConfirmPhase(approved ? 'success' : 'idle');
-        if (approved) onDataChanged?.();
+        const applied = await finishMessage(resp, visibleRequestGeneration);
+        if (applied) {
+          lastConfirmationInputRef.current = null;
+          setConfirmPhase(approved ? 'success' : 'idle');
+        }
+        if (approved && applied) onDataChanged?.();
       }
     } catch (e: any) {
+      if (!isCurrentVisibleRequest(visibleRequestGeneration)) {
+        refreshConversations();
+        return;
+      }
       if (isAbortError(e)) {
         restoreConfirmationRetryFocusRef.current = false;
-        await syncConversationAfterAbort(convID, selectionRequestId);
+        await syncConversationAfterAbort(convID, visibleRequestGeneration);
         return;
       }
       const error = e?.response?.data?.error ?? e?.message ?? '确认失败';
@@ -700,13 +869,32 @@ export default function ChatPanel({
         lastConfirmationInputRef.current = null;
         streamingAssistantActiveRef.current = false;
         if (e?.code === 'stale_pending_action') setPending(null);
-        const nextPending = await syncConversationAfterAbort(convID, selectionRequestId);
-        if (selectionRequestId !== conversationSelectionRequestRef.current) return;
+        const nextPending = await syncConversationAfterAbort(convID, visibleRequestGeneration);
+        if (!isCurrentVisibleRequest(visibleRequestGeneration)) return;
+        const confirmationSettled = hasConfirmationSettled(
+          nextPending,
+          input.confirmation_token,
+        );
+        if (confirmationSettled) {
+          confirmationLocksRef.current.delete(convID);
+          lockedConfirmationRef.current = null;
+        }
         setConfirmError(null);
-        if (e?.code === 'confirmation_in_progress' && convID && nextPending !== null) {
+        if (
+          e?.code === 'confirmation_in_progress' &&
+          convID &&
+          !confirmationSettled &&
+          nextPending !== null
+        ) {
+          lockedConfirmationRef.current = confirmationExecution;
           setConfirmPhase('saving');
           const monitorId = ++confirmationMonitorRef.current;
-          void monitorConfirmationCompletion(convID, monitorId, selectionRequestId);
+          void monitorConfirmationCompletion(
+            convID,
+            monitorId,
+            visibleRequestGeneration,
+            input.confirmation_token,
+          );
         } else {
           setConfirmPhase('idle');
         }
@@ -715,16 +903,26 @@ export default function ChatPanel({
       }
       if (streamingAssistantActiveRef.current) {
         streamingAssistantActiveRef.current = false;
-        await syncConversationAfterAbort(convID, selectionRequestId);
-        if (selectionRequestId !== conversationSelectionRequestRef.current) return;
+        await syncConversationAfterAbort(convID, visibleRequestGeneration);
+        if (!isCurrentVisibleRequest(visibleRequestGeneration)) return;
       }
-      setConfirmError(error);
-      setConfirmPhase('error');
+      lockedConfirmationRef.current = confirmationExecution;
+      setConfirmError(null);
+      setConfirmPhase('saving');
+      const monitorId = ++confirmationMonitorRef.current;
+      void monitorConfirmationCompletion(
+        convID,
+        monitorId,
+        visibleRequestGeneration,
+        input.confirmation_token,
+      );
       toast.error(error);
     } finally {
       if (abortControllerRef.current === controller) abortControllerRef.current = null;
-      setLoading(false);
-      setLoadingLabel(undefined);
+      if (isCurrentVisibleRequest(visibleRequestGeneration)) {
+        setLoading(false);
+        setLoadingLabel(undefined);
+      }
     }
   }
 
@@ -745,26 +943,32 @@ export default function ChatPanel({
 
   async function handleUndoLastWrite() {
     if (!convID || !lastUndo || loading) return;
+    const visibleRequestGeneration = ++visibleRequestGenerationRef.current;
     setConfirmPhase('saving');
     setLoading(true);
     const controller = new AbortController();
     abortControllerRef.current = controller;
     try {
       const resp = await undoLastWrite(convID, { signal: controller.signal });
-      await finishMessage(resp);
-      setLastUndo(null);
-      setConfirmPhase('success');
-      onDataChanged?.();
-      toast.success('已撤销最近一次 AI 写入');
+      const applied = await finishMessage(resp, visibleRequestGeneration);
+      if (applied) {
+        setLastUndo(null);
+        setConfirmPhase('success');
+        toast.success('已撤销最近一次 AI 写入');
+      }
+      if (applied) onDataChanged?.();
     } catch (e: any) {
+      if (!isCurrentVisibleRequest(visibleRequestGeneration)) return;
       if (isAbortError(e)) return;
       const error = e?.response?.data?.error ?? '撤销失败';
       setConfirmPhase('error');
       toast.error(error);
     } finally {
       if (abortControllerRef.current === controller) abortControllerRef.current = null;
-      setLoading(false);
-      setLoadingLabel(undefined);
+      if (isCurrentVisibleRequest(visibleRequestGeneration)) {
+        setLoading(false);
+        setLoadingLabel(undefined);
+      }
     }
   }
 
@@ -1014,6 +1218,14 @@ export default function ChatPanel({
                         : lastConfirmationInputRef.current?.approved === false
                           ? '重试拒绝'
                           : '重试执行'}
+                    </button>
+                  </div>
+                ) : null}
+                {confirmPhase === 'saving' && !loading ? (
+                  <div className={styles.confirmRecovery} role="status">
+                    <span>确认操作仍在处理中，请刷新状态后再继续。</span>
+                    <button type="button" onClick={refreshConfirmationStatus}>
+                      刷新状态
                     </button>
                   </div>
                 ) : null}

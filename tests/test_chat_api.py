@@ -1,6 +1,7 @@
 import json
 import re
 import time
+from datetime import datetime, timezone
 from threading import Event
 
 import pytest
@@ -3993,6 +3994,47 @@ def test_chat_conversation_archive_rejects_pending_but_allows_other_updates_and_
     assert restored.status_code == 200
     assert restored.json()["archived_at"] is None
     assert client.get("/api/chat/conversations").json()[0]["id"] == conversation_id
+
+
+def test_chat_does_not_return_confirmation_when_conversation_was_archived_during_model_run(
+    tmp_path, monkeypatch
+):
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="archive-race",
+                        name="create_application",
+                        args=json.dumps({"company_name": "竞态公司", "position_name": "后端"}),
+                    )
+                ]
+            )
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    repo = ChatRepository(session_factory_for_data_dir(tmp_path))
+    conversation = repo.create_conversation("archive race")
+    original_persist_pending = ChatRepository.persist_pending_action
+
+    def archive_before_pending(self, conversation_id, pending, messages):
+        self.update_conversation_for_archive(
+            conversation_id, {"archived_at": datetime.now(timezone.utc)}
+        )
+        return original_persist_pending(self, conversation_id, pending, messages)
+
+    monkeypatch.setattr(ChatRepository, "persist_pending_action", archive_before_pending)
+
+    response = client.post(
+        "/api/chat", json={"message": "创建投递", "conversation_id": conversation.id}
+    )
+
+    assert response.status_code == 409
+    assert "归档" in response.json()["error"]
+    assert repo.get_pending_action(conversation.id) is None
+    assert [(message.role, message.content) for message in repo.list_messages(conversation.id)] == [
+        ("user", "创建投递")
+    ]
 
 
 def test_chat_conversation_update_checks_missing_conversation_before_validating_payload(tmp_path):

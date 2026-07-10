@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session, sessionmaker
@@ -10,6 +11,12 @@ from sqlalchemy.orm import Session, sessionmaker
 from offerpilot.ai.agent import PendingAction
 from offerpilot.ai.types import Message
 from offerpilot.models import ChatMessage, Conversation
+
+
+@dataclass(frozen=True)
+class ConversationArchiveUpdate:
+    status: Literal["updated", "not_found", "pending"]
+    conversation: Conversation | None = None
 
 
 class ChatRepository:
@@ -68,6 +75,26 @@ class ChatRepository:
             session.refresh(conversation)
             return conversation
 
+    def update_conversation_for_archive(
+        self, conversation_id: int, values: dict[str, Any]
+    ) -> ConversationArchiveUpdate:
+        now = datetime.now(timezone.utc)
+        with self._session_factory() as session:
+            result = session.execute(
+                update(Conversation)
+                .where(Conversation.id == conversation_id)
+                .where(Conversation.pending_tool_name == "")
+                .values(**values, updated_at=now)
+            )
+            if getattr(result, "rowcount", 0) == 1:
+                session.commit()
+                conversation = session.get(Conversation, conversation_id)
+                return ConversationArchiveUpdate("updated", conversation)
+            conversation = session.get(Conversation, conversation_id)
+            if conversation is None:
+                return ConversationArchiveUpdate("not_found")
+            return ConversationArchiveUpdate("pending")
+
     def append_message(
         self,
         conversation_id: int,
@@ -117,11 +144,12 @@ class ChatRepository:
                 human=conversation.pending_human or conversation.pending_tool_name,
             )
 
-    def set_pending_action(self, conversation_id: int, pending: PendingAction) -> None:
+    def set_pending_action(self, conversation_id: int, pending: PendingAction) -> bool:
         with self._session_factory() as session:
-            session.execute(
+            result = session.execute(
                 update(Conversation)
                 .where(Conversation.id == conversation_id)
+                .where(Conversation.archived_at.is_(None))
                 .values(
                     pending_tool_call_id=pending.tool_call_id,
                     pending_tool_name=pending.tool_name,
@@ -131,6 +159,49 @@ class ChatRepository:
                 )
             )
             session.commit()
+            return getattr(result, "rowcount", 0) == 1
+
+    def persist_pending_action(
+        self,
+        conversation_id: int,
+        pending: PendingAction,
+        messages: list[dict[str, str]],
+    ) -> bool:
+        """Atomically persist a write proposal and make it the pending action."""
+        with self._session_factory() as session:
+            result = session.execute(
+                update(Conversation)
+                .where(Conversation.id == conversation_id)
+                .where(Conversation.archived_at.is_(None))
+                .values(
+                    pending_tool_call_id=pending.tool_call_id,
+                    pending_tool_name=pending.tool_name,
+                    pending_args=pending.args,
+                    pending_human=pending.human,
+                    clarification_tool_call_id="",
+                    clarification_tool_name="",
+                    clarification_args="",
+                    clarification_human="",
+                    clarification_question="",
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            if getattr(result, "rowcount", 0) != 1:
+                session.rollback()
+                return False
+            for message in messages:
+                session.add(
+                    ChatMessage(
+                        conversation_id=conversation_id,
+                        role=message.get("role", ""),
+                        content=message.get("content", ""),
+                        tool_calls=message.get("tool_calls", ""),
+                        tool_call_id=message.get("tool_call_id", ""),
+                        provider_blocks=message.get("provider_blocks", ""),
+                    )
+                )
+            session.commit()
+            return True
 
     def clear_pending_action(self, conversation_id: int) -> None:
         with self._session_factory() as session:
@@ -246,12 +317,14 @@ class ChatRepository:
                 }
             )
         with self._session_factory() as session:
-            result = session.execute(
+            statement = (
                 update(Conversation)
                 .where(Conversation.id == conversation_id)
                 .where(Conversation.updated_at == expected_generation)
-                .values(**values)
             )
+            if pending is not None:
+                statement = statement.where(Conversation.archived_at.is_(None))
+            result = session.execute(statement.values(**values))
             if getattr(result, "rowcount", 0) != 1:
                 session.rollback()
                 return None

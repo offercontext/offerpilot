@@ -15,10 +15,12 @@ import {
   pendingComposerDisabledReason,
   pendingAutoSelectReducer,
   shouldApplyConversationRequest,
+  isCurrentVisibleConversationRequest,
   reloadConversationTurns,
   toolMeta,
   confirmationInputForRetry,
   confirmationErrorRequiresSync,
+  hasConfirmationSettled,
   shouldRestoreConfirmationRetryFocus,
 } from './model';
 
@@ -42,6 +44,64 @@ describe('pending auto-selection suppression', () => {
     expect(shouldApplyConversationRequest(2, 3, false)).toBe(false);
     expect(shouldApplyConversationRequest(3, 3, true)).toBe(false);
   });
+});
+
+describe('visible conversation request isolation', () => {
+  it('ignores deferred chat deltas, pending state, and completion after switching from A to B', () => {
+    let generation = 0;
+    let visible = { conversationId: 1, turns: ['A'], pending: 'A pending' as string | null };
+    const requestA = ++generation;
+    const apply = (requestGeneration: number, mutation: () => void) => {
+      if (isCurrentVisibleConversationRequest(requestGeneration, generation)) mutation();
+    };
+
+    generation += 1;
+    visible = { conversationId: 2, turns: ['B'], pending: null };
+    apply(requestA, () => visible.turns.push('late A delta'));
+    apply(requestA, () => { visible.pending = 'late A pending'; });
+    apply(requestA, () => { visible = { conversationId: 1, turns: ['A complete'], pending: null }; });
+
+    expect(visible).toEqual({ conversationId: 2, turns: ['B'], pending: null });
+  });
+
+  it('ignores deferred confirmation mutations after switching conversations', () => {
+    let generation = 4;
+    let visible = { conversationId: 2, turns: ['B'], pending: null as string | null, undo: null as string | null };
+    const confirmationA = generation;
+
+    generation += 1;
+    if (isCurrentVisibleConversationRequest(confirmationA, generation)) {
+      visible = { conversationId: 1, turns: ['confirmed A'], pending: 'next A', undo: 'undo A' };
+    }
+
+    expect(visible).toEqual({ conversationId: 2, turns: ['B'], pending: null, undo: null });
+  });
+});
+
+describe('background confirmation settlement', () => {
+  const original = {
+    tool_name: 'create_application',
+    human: 'create',
+    confirmation_token: 'original-token',
+  };
+
+  it('keeps polling while the original pending action is still durable', () => {
+    for (let poll = 0; poll < 240; poll += 1) {
+      expect(hasConfirmationSettled(original, 'original-token')).toBe(false);
+    }
+    expect(hasConfirmationSettled(undefined, 'original-token')).toBe(false);
+  });
+
+  it('settles when the pending action clears or is replaced', () => {
+    expect(hasConfirmationSettled(null, 'original-token')).toBe(true);
+    expect(
+      hasConfirmationSettled(
+        { ...original, confirmation_token: 'replacement-token' },
+        'original-token',
+      ),
+    ).toBe(true);
+  });
+
 });
 
 describe('buildChatRequestContext', () => {

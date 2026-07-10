@@ -68,6 +68,23 @@ export function shouldApplyConversationRequest(
   return requestId === currentRequestId && !autoSelectSuppressed;
 }
 
+export function isCurrentVisibleConversationRequest(
+  requestGeneration: number,
+  currentGeneration: number,
+): boolean {
+  return requestGeneration === currentGeneration;
+}
+
+export function hasConfirmationSettled(
+  pending: PendingAction | null | undefined,
+  expectedConfirmationToken: string,
+): boolean {
+  return (
+    pending === null ||
+    (pending !== undefined && pending.confirmation_token !== expectedConfirmationToken)
+  );
+}
+
 export function confirmationInputForRetry(
   input: ConfirmationInput | null,
 ): ConfirmationInput | null {

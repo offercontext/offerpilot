@@ -1179,15 +1179,11 @@ def create_app(
         except Exception as exc:
             return _ai_provider_error(exc, resolved_data_dir)
         added, forced_reply = _with_write_error_followup(added)
-        _persist_ai_messages(chat, conversation_id, added)
         reply = forced_reply or _user_facing_assistant_content(reply)
-        if forced_reply and pending is None:
-            forced_pending = _pending_action_from_added_write_call(added)
-            if forced_pending is not None:
-                chat.set_pending_clarification(conversation_id, forced_pending, forced_reply)
         if pending is not None:
             missing_question = _pending_action_missing_question(pending, applications)
             if missing_question:
+                _persist_ai_messages(chat, conversation_id, added)
                 chat.clear_pending_action(conversation_id)
                 chat.set_pending_clarification(conversation_id, pending, missing_question)
                 chat.append_message(conversation_id, "assistant", content=missing_question)
@@ -1198,8 +1194,10 @@ def create_app(
                         "message": missing_question,
                     }
                 )
-            chat.clear_pending_clarification(conversation_id)
-            chat.set_pending_action(conversation_id, pending)
+            if not chat.persist_pending_action(
+                conversation_id, pending, _persistable_ai_messages(added)
+            ):
+                return error_response(409, "对话已归档，无法保存待确认操作。")
             return JSONResponse(
                 {
                     "type": "confirmation_required",
@@ -1207,6 +1205,11 @@ def create_app(
                     "pending_action": _pending_action_json(pending, applications),
                 }
             )
+        _persist_ai_messages(chat, conversation_id, added)
+        if forced_reply:
+            forced_pending = _pending_action_from_added_write_call(added)
+            if forced_pending is not None:
+                chat.set_pending_clarification(conversation_id, forced_pending, forced_reply)
         chat.clear_pending_action(conversation_id)
         if not forced_reply and clarification is not None and _looks_like_followup_question(reply):
             pending_clarification, _ = clarification
@@ -1338,15 +1341,11 @@ def create_app(
                 return
 
             added, forced_reply = _with_write_error_followup(added)
-            _persist_ai_messages(chat, conversation_id, added)
             reply = forced_reply or _user_facing_assistant_content(reply)
-            if forced_reply and pending is None:
-                forced_pending = _pending_action_from_added_write_call(added)
-                if forced_pending is not None:
-                    chat.set_pending_clarification(conversation_id, forced_pending, forced_reply)
             if pending is not None:
                 missing_question = _pending_action_missing_question(pending, applications)
                 if missing_question:
+                    _persist_ai_messages(chat, conversation_id, added)
                     chat.clear_pending_action(conversation_id)
                     chat.set_pending_clarification(conversation_id, pending, missing_question)
                     chat.append_message(conversation_id, "assistant", content=missing_question)
@@ -1358,8 +1357,19 @@ def create_app(
                     yield emit("assistant_message", {"message": missing_question})
                     yield emit("completed", {"response": response, "persisted": True})
                     return
-                chat.clear_pending_clarification(conversation_id)
-                chat.set_pending_action(conversation_id, pending)
+                if not chat.persist_pending_action(
+                    conversation_id, pending, _persistable_ai_messages(added)
+                ):
+                    yield emit(
+                        "error",
+                        {
+                            "code": "conversation_archived",
+                            "message": "对话已归档，无法保存待确认操作。",
+                            "retryable": False,
+                            "degraded": False,
+                        },
+                    )
+                    return
                 pending_payload = _pending_action_json(pending, applications)
                 response = {
                     "type": "confirmation_required",
@@ -1370,6 +1380,11 @@ def create_app(
                 yield emit("confirmation_required", {"pending_action": pending_payload})
                 yield emit("completed", {"response": response, "persisted": True})
                 return
+            _persist_ai_messages(chat, conversation_id, added)
+            if forced_reply:
+                forced_pending = _pending_action_from_added_write_call(added)
+                if forced_pending is not None:
+                    chat.set_pending_clarification(conversation_id, forced_pending, forced_reply)
             chat.clear_pending_action(conversation_id)
             if (
                 not forced_reply
@@ -1556,9 +1571,12 @@ def create_app(
                 ):
                     return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
             else:
-                _persist_ai_messages(chat, conversation_id, persisted_added)
-                chat.clear_pending_clarification(conversation_id)
-                chat.set_pending_action(conversation_id, new_pending)
+                if not chat.persist_pending_action(
+                    conversation_id,
+                    new_pending,
+                    _persistable_ai_messages(persisted_added),
+                ):
+                    return error_response(409, "对话已归档，无法保存待确认操作。")
             return JSONResponse(
                 {
                     "type": "confirmation_required",
@@ -1964,9 +1982,21 @@ def create_app(
                         )
                         return
                 else:
-                    _persist_ai_messages(chat, conversation_id, persisted_added)
-                    chat.clear_pending_clarification(conversation_id)
-                    chat.set_pending_action(conversation_id, new_pending)
+                    if not chat.persist_pending_action(
+                        conversation_id,
+                        new_pending,
+                        _persistable_ai_messages(persisted_added),
+                    ):
+                        yield emit(
+                            "error",
+                            {
+                                "code": "conversation_archived",
+                                "message": "对话已归档，无法保存待确认操作。",
+                                "retryable": False,
+                                "degraded": False,
+                            },
+                        )
+                        return
                 pending_payload = _pending_action_json(new_pending, applications)
                 response = {
                     "type": "confirmation_required",
@@ -2072,10 +2102,16 @@ def create_app(
         if "archived" in payload:
             if not isinstance(payload.get("archived"), bool):
                 return error_response(422, "archived must be boolean")
-            if payload["archived"] and existing.pending_tool_name:
-                return error_response(409, "该对话有待确认操作，完成或取消后才能归档")
             values["archived_at"] = now if payload["archived"] else None
-        conversation = chat.update_conversation(conversation_id, values)
+        if payload.get("archived") is True:
+            archive_update = chat.update_conversation_for_archive(conversation_id, values)
+            if archive_update.status == "not_found":
+                return error_response(404, "conversation not found")
+            if archive_update.status == "pending":
+                return error_response(409, "该对话有待确认操作，完成或取消后才能归档")
+            conversation = archive_update.conversation
+        else:
+            conversation = chat.update_conversation(conversation_id, values)
         assert conversation is not None
         return JSONResponse(_conversation_json(conversation, applications))
 
