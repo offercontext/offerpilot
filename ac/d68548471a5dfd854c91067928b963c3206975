@@ -1,0 +1,22 @@
+web/src/layout/TopBar.test.ts
+  s_00fff216c0c1ef::t_d6abfc8cabbf7b 2
+  s_00fff216c0c1ef::t_6001b8ef49b91d 1,3-10
+web/src/layout/TopBar.tsx
+  s_00fff216c0c1ef::t_e0d25baf5eb56d 2
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "acd68548471a5dfd854c91067928b963c3206975",
+  "prompts": {},
+  "sessions": {
+    "s_00fff216c0c1ef": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f49b7-4729-7983-91e1-31d35f2738f1",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    }
+  }
+}
