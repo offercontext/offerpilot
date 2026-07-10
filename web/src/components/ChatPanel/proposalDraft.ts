@@ -39,7 +39,27 @@ export function buildEditableDraft(action: PendingAction): ProposalDraft {
   return draft;
 }
 
+function isDeclaredClearValue(
+  descriptor: PendingActionEditableField,
+  value: unknown,
+): boolean {
+  const clearValue = descriptor.clear_value;
+  const clearValueType = typeof clearValue;
+  const scalarClearValue =
+    clearValue === null ||
+    clearValueType === 'string' ||
+    clearValueType === 'boolean' ||
+    (clearValueType === 'number' && Number.isFinite(clearValue));
+  return (
+    scalarClearValue &&
+    descriptor.clearable === true &&
+    Object.prototype.hasOwnProperty.call(descriptor, 'clear_value') &&
+    Object.is(value, clearValue)
+  );
+}
+
 function validDraftValue(descriptor: PendingActionEditableField, value: unknown): boolean {
+  if (isDeclaredClearValue(descriptor, value)) return true;
   if (value === undefined || value === null) return false;
   switch (descriptor.type) {
     case 'string':
@@ -69,8 +89,11 @@ export function changedEditableArgs(
     const value = draft[descriptor.field];
     if (!validDraftValue(descriptor, value)) continue;
     if (Object.is(value, action.args?.[descriptor.field])) continue;
+    const declaredClear = isDeclaredClearValue(descriptor, value);
     changed[descriptor.field] =
-      descriptor.type === 'datetime' ? dayjs(value as string).toISOString() : value;
+      descriptor.type === 'datetime' && !declaredClear
+        ? dayjs(value as string).toISOString()
+        : value;
   }
   return Object.keys(changed).length ? changed : undefined;
 }

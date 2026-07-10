@@ -926,6 +926,26 @@ def test_chat_clarification_reply_resumes_missing_event_draft(tmp_path):
     assert second.status_code == 200
     assert second.json()["type"] == "confirmation_required"
     assert second.json()["pending_action"]["args"]["duration_minutes"] == 30
+    editable_fields = {
+        descriptor["field"]: descriptor
+        for descriptor in second.json()["pending_action"]["editable_fields"]
+    }
+    assert editable_fields["remind_at"] == {
+        "field": "remind_at",
+        "type": "datetime",
+        "clearable": True,
+        "clear_value": "",
+    }
+    assert editable_fields["round"] == {
+        "field": "round",
+        "type": "number",
+        "clearable": True,
+        "clear_value": 0,
+    }
+    assert editable_fields["scheduled_at"] == {
+        "field": "scheduled_at",
+        "type": "datetime",
+    }
     assert "补信息" in model.calls[-1][1].content
     conversation = client.get("/api/chat/conversations").json()[0]
     assert conversation["pending_clarification"] is None

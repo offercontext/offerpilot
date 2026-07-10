@@ -215,13 +215,17 @@ describe('ChatPanel docked layout contract', () => {
     expect(proposalCard).toContain("InputNumber");
     expect(proposalCard).toContain("DatePicker");
     expect(proposalCard).toContain("showTime");
-    expect(proposalCard).toContain("allowClear={false}");
+    expect(proposalCard).toContain("allowClear={descriptor.clearable === true}");
+    expect(proposalCard).toContain("descriptor.clear_value");
     expect(proposalCard).toContain("precision={0}");
     expect(proposalCard).toContain("action.args?.[descriptor.field]");
     expect(proposalCard).toContain("Input.TextArea");
     expect(proposalCard).toContain("<Input");
     expect(proposalCard).toContain("htmlFor={controlId}");
     expect(proposalCard).toContain("const common = { id: controlId");
+    expect(proposalCard.match(/size="large"/g)?.length ?? 0).toBeGreaterThanOrEqual(5);
+    expect(proposalCard).toContain("styles.switchHitArea");
+    expect(proposalCard).toContain('<label className={styles.switchHitArea} htmlFor={controlId}>');
     expect(proposalCard).toContain("编辑建议");
     expect(proposalCard).not.toContain("JSON.stringify(action.args");
     expect(proposalCard).not.toContain("Monaco");
@@ -250,8 +254,9 @@ describe('ChatPanel docked layout contract', () => {
     expect(css).toContain('transform: scale(0.96);');
     expect(css).toContain('transition-property: background-color, color, box-shadow, transform;');
     expect(css).toContain('overflow-wrap: anywhere;');
-    expect(css).toContain('.editorControl:global(.ant-switch)');
-    expect(css).toContain('.editorField :global(.ant-select-selector)');
+    expect(css).toContain('.switchHitArea');
+    expect(css).not.toContain('.editorControl:global(.ant-switch)');
+    expect(css).not.toContain('.editorField :global(.ant-select-selector)');
     expect(css).not.toContain('transition: all');
   });
 
@@ -264,6 +269,21 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain("key={`${convID}:${activePending.confirmation_token}`}");
     expect(component).toContain("retryInput.confirmation_token !== activePending.confirmation_token");
     expect(component).toContain("input.confirmation_token !== activePendingRef.current?.confirmation_token");
+  });
+
+  it('keeps recovery mounted and restores retry focus after a repeated failure', () => {
+    const confirmStart = component.indexOf('async function handleConfirm(input: ConfirmationInput)');
+    const retryStart = component.indexOf('function retryConfirmAction()', confirmStart);
+    const confirmSource = component.slice(confirmStart, retryStart);
+    const requestStartSource = confirmSource.slice(0, confirmSource.indexOf('setConfirmPhase('));
+
+    expect(requestStartSource).not.toContain('setConfirmError(null);');
+    expect(component).toContain('confirmRetryButtonRef');
+    expect(component).toContain('restoreConfirmationRetryFocusRef');
+    expect(component).toContain('shouldRestoreConfirmationRetryFocus(');
+    expect(component).toContain('confirmRetryButtonRef.current?.focus()');
+    expect(component).toContain('ref={confirmRetryButtonRef}');
+    expect(component).toMatch(/setConfirmError\(null\);\s+setConvID\(resp\.conversation_id\)/);
   });
 
   it('keeps removable request page context separate from durable conversation context', async () => {

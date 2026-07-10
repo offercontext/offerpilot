@@ -68,6 +68,13 @@ def _editable_registry(calls=None, validate=None):
             {"field": "score", "type": "number"},
             {"field": "active", "type": "boolean"},
             {"field": "scheduled_at", "type": "datetime"},
+            {
+                "field": "remind_at",
+                "type": "datetime",
+                "clearable": True,
+                "clear_value": "",
+            },
+            {"field": "round", "type": "number", "clearable": True, "clear_value": 0},
         ],
         "handler": lambda args: calls.append(args) or '{"ok":true}',
     }
@@ -211,6 +218,60 @@ def test_prepare_pending_action_accepts_all_supported_edited_types():
         "scheduled_at": "2026-07-10T12:30:00Z",
     }
     assert "用户备注" in prepared.args
+
+
+def test_prepare_pending_action_accepts_only_exact_declared_clear_sentinels():
+    pending = _pending(
+        {
+            "id": 7,
+            "status": "offer",
+            "scheduled_at": "2026-07-10T12:30:00Z",
+            "remind_at": "2026-07-10T11:30:00Z",
+            "round": 2,
+        }
+    )
+
+    prepared = prepare_pending_action(
+        pending,
+        _editable_registry(),
+        {"remind_at": "", "round": 0},
+    )
+
+    assert json.loads(prepared.args) == {
+        "id": 7,
+        "status": "offer",
+        "scheduled_at": "2026-07-10T12:30:00Z",
+        "remind_at": "",
+        "round": 0,
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("scheduled_at", ""),
+        ("remind_at", None),
+        ("round", False),
+    ],
+)
+def test_prepare_pending_action_rejects_undeclared_or_inexact_clear_values(field, value):
+    with pytest.raises(ValueError, match=field):
+        prepare_pending_action(_pending(), _editable_registry(), {field: value})
+
+
+def test_prepare_pending_action_rejects_non_scalar_declared_clear_sentinel():
+    registry = _editable_registry()
+    registry["update_application_status"]["editable_fields"] = [
+        {
+            "field": "scheduled_at",
+            "type": "datetime",
+            "clearable": True,
+            "clear_value": {},
+        }
+    ]
+
+    with pytest.raises(ValueError, match="scheduled_at"):
+        prepare_pending_action(_pending(), registry, {"scheduled_at": {}})
 
 
 def test_prepare_pending_action_rejects_unknown_descriptor_type():

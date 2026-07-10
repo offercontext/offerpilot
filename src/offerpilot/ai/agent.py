@@ -868,7 +868,20 @@ def _reject_non_json_constant(value: str) -> None:
     raise ValueError(f'non-JSON numeric constant "{value}"')
 
 
+def _is_json_scalar(value: Any) -> bool:
+    if value is None or isinstance(value, (str, bool, int)):
+        return True
+    return isinstance(value, float) and math.isfinite(value)
+
+
 def _validate_edited_value(field: str, value: Any, descriptor: dict[str, Any]) -> None:
+    if (
+        descriptor.get("clearable") is True
+        and "clear_value" in descriptor
+        and _is_json_scalar(descriptor["clear_value"])
+        and _same_json_value(value, descriptor["clear_value"])
+    ):
+        return
     field_type = descriptor.get("type")
     if field_type in {"string", "long_text"}:
         if not isinstance(value, str):

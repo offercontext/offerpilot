@@ -199,6 +199,7 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
         return (
           <Select
             {...common}
+            size="large"
             value={typeof value === 'string' ? value : undefined}
             options={(descriptor.options ?? []).map((option) => ({
               value: option,
@@ -209,25 +210,33 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
         );
       case 'boolean':
         return (
-          <Switch
-            {...common}
-            checked={value === true}
-            checkedChildren="是"
-            unCheckedChildren="否"
-            onChange={(next) => updateDraft(descriptor.field, next)}
-          />
+          <label className={styles.switchHitArea} htmlFor={controlId}>
+            <Switch
+              {...common}
+              checked={value === true}
+              checkedChildren="是"
+              unCheckedChildren="否"
+              onChange={(next) => updateDraft(descriptor.field, next)}
+            />
+          </label>
         );
       case 'number':
         return (
           <InputNumber
             {...common}
+            size="large"
             precision={0}
             step={1}
             value={typeof value === 'number' && Number.isFinite(value) ? value : undefined}
             onChange={(next) =>
               typeof next === 'number' && Number.isFinite(next)
                 ? updateDraft(descriptor.field, next)
-                : updateDraft(descriptor.field, action.args?.[descriptor.field])
+                : updateDraft(
+                    descriptor.field,
+                    descriptor.clearable === true
+                      ? descriptor.clear_value
+                      : action.args?.[descriptor.field],
+                  )
             }
           />
         );
@@ -237,13 +246,19 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
         return (
           <DatePicker
             {...common}
+            size="large"
             showTime
-            allowClear={false}
+            allowClear={descriptor.clearable === true}
             value={dateValue}
             format="YYYY-MM-DD HH:mm"
-            onChange={(next) =>
-              updateDraft(descriptor.field, next?.isValid() ? next.toISOString() : undefined)
-            }
+            onChange={(next) => {
+              const nextValue = next?.isValid()
+                ? next.toISOString()
+                : descriptor.clearable === true
+                  ? descriptor.clear_value
+                  : action.args?.[descriptor.field];
+              updateDraft(descriptor.field, nextValue);
+            }}
           />
         );
       }
@@ -251,6 +266,7 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
         return (
           <Input.TextArea
             {...common}
+            size="large"
             value={typeof value === 'string' ? value : ''}
             autoSize={{ minRows: 4, maxRows: 9 }}
             onChange={(event) => updateDraft(descriptor.field, event.target.value)}
@@ -260,6 +276,7 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
         return (
           <Input
             {...common}
+            size="large"
             value={typeof value === 'string' ? value : ''}
             onChange={(event) => updateDraft(descriptor.field, event.target.value)}
           />
@@ -414,6 +431,7 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
           <label htmlFor={`${editorId}-feedback`}>拒绝原因（可选）</label>
           <Input.TextArea
             id={`${editorId}-feedback`}
+            size="large"
             value={currentReview.feedback}
             maxLength={500}
             showCount

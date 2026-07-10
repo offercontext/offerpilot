@@ -885,8 +885,12 @@
   min-width: 0;
   max-width: 100%;
 }
-.editorControl:global(.ant-switch) {
-  min-width: 52px;
+.switchHitArea {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  width: 52px;
+  min-width: 40px;
   min-height: 40px;
 }
 .editorField > :global(.ant-select),
@@ -896,12 +900,6 @@
 .editorField > :global(.ant-input-affix-wrapper),
 .editorField > :global(.ant-input-textarea) {
   width: 100%;
-}
-.editorField :global(.ant-select-selector),
-.editorField > :global(.ant-input-number),
-.editorField > :global(.ant-picker),
-.editorField > :global(input.ant-input) {
-  min-height: 40px;
 }
 .editorField :global(textarea.ant-input),
 .rejectPanel :global(textarea.ant-input) {

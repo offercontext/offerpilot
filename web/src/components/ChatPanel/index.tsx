@@ -44,6 +44,7 @@ import {
   toolMeta,
   confirmationInputForRetry,
   confirmationErrorRequiresSync,
+  shouldRestoreConfirmationRetryFocus,
   type EvidenceItem,
   type UITurn,
 } from './model';
@@ -187,6 +188,8 @@ export default function ChatPanel({
   const streamingAssistantActiveRef = useRef(false);
   const lastConfirmationInputRef = useRef<ConfirmationInput | null>(null);
   const activePendingRef = useRef<PendingAction | null>(null);
+  const confirmRetryButtonRef = useRef<HTMLButtonElement | null>(null);
+  const restoreConfirmationRetryFocusRef = useRef(false);
   const activeConversationIdRef = useRef<number | undefined>(undefined);
   const confirmationMonitorRef = useRef(0);
   const docked = variant === 'rail';
@@ -215,6 +218,20 @@ export default function ChatPanel({
   useEffect(() => {
     if (!open) confirmationMonitorRef.current += 1;
   }, [open]);
+
+  useEffect(() => {
+    if (
+      !shouldRestoreConfirmationRetryFocus(
+        restoreConfirmationRetryFocusRef.current,
+        confirmError,
+        loading,
+      )
+    ) {
+      return;
+    }
+    confirmRetryButtonRef.current?.focus();
+    restoreConfirmationRetryFocusRef.current = false;
+  }, [confirmError, loading]);
 
   function refreshConversations() {
     listConversations()
@@ -576,7 +593,6 @@ export default function ChatPanel({
     if (input.confirmation_token !== activePendingRef.current?.confirmation_token) return;
     const approved = input.approved;
     lastConfirmationInputRef.current = confirmationInputForRetry(input);
-    setConfirmError(null);
     setConfirmPhase(approved ? 'saving' : 'idle');
     setLoading(true);
     setLoadingLabel(approved ? `正在执行：${activePendingLabel(activePending)}` : '正在取消本次写入');
@@ -601,7 +617,9 @@ export default function ChatPanel({
         },
       });
       if (resp.type === 'confirmation_required') {
+        restoreConfirmationRetryFocusRef.current = false;
         lastConfirmationInputRef.current = null;
+        setConfirmError(null);
         setConvID(resp.conversation_id);
         setPending(resp.pending_action);
         setConfirmPhase('idle');
@@ -609,6 +627,7 @@ export default function ChatPanel({
         if (storedTurns) setTurns(storedTurns);
         refreshConversations();
       } else {
+        restoreConfirmationRetryFocusRef.current = false;
         await finishMessage(resp);
         lastConfirmationInputRef.current = null;
         setConfirmPhase(approved ? 'success' : 'idle');
@@ -616,11 +635,13 @@ export default function ChatPanel({
       }
     } catch (e: any) {
       if (isAbortError(e)) {
+        restoreConfirmationRetryFocusRef.current = false;
         await syncConversationAfterAbort(convID);
         return;
       }
       const error = e?.response?.data?.error ?? e?.message ?? '确认失败';
       if (confirmationErrorRequiresSync(e?.code)) {
+        restoreConfirmationRetryFocusRef.current = false;
         lastConfirmationInputRef.current = null;
         streamingAssistantActiveRef.current = false;
         if (e?.code === 'stale_pending_action') setPending(null);
@@ -655,11 +676,13 @@ export default function ChatPanel({
     const retryInput = confirmationInputForRetry(lastConfirmationInputRef.current);
     if (!retryInput) return;
     if (retryInput.confirmation_token !== activePending.confirmation_token) {
+      restoreConfirmationRetryFocusRef.current = false;
       lastConfirmationInputRef.current = null;
       setConfirmError(null);
       setConfirmPhase('idle');
       return;
     }
+    restoreConfirmationRetryFocusRef.current = true;
     void handleConfirm(retryInput);
   }
 
@@ -919,8 +942,17 @@ export default function ChatPanel({
                           : '重试会保留本次编辑；如需放弃，请使用下方审核卡片。'}
                       </small>
                     </span>
-                    <button type="button" onClick={retryConfirmAction} disabled={loading}>
-                      {lastConfirmationInputRef.current?.approved === false ? '重试拒绝' : '重试执行'}
+                    <button
+                      ref={confirmRetryButtonRef}
+                      type="button"
+                      onClick={retryConfirmAction}
+                      disabled={loading}
+                    >
+                      {loading
+                        ? '处理中…'
+                        : lastConfirmationInputRef.current?.approved === false
+                          ? '重试拒绝'
+                          : '重试执行'}
                     </button>
                   </div>
                 ) : null}

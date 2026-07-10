@@ -67,6 +67,8 @@ export interface PendingActionEditableField {
   field: string;
   type: EditableFieldType;
   options?: string[];
+  clearable?: boolean;
+  clear_value?: string | number | boolean | null;
 }
 
 export interface PendingActionDraftSummary {

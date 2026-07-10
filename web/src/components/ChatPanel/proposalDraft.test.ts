@@ -90,6 +90,61 @@ describe('proposal draft helpers', () => {
     ).toEqual({ scheduled_at: '2026-07-11T01:30:00.000Z' });
   });
 
+  it('preserves exact declared clear sentinels as changed editable values', () => {
+    const clearable = action({
+      args: {
+        id: 7,
+        remind_at: '2026-07-10T01:30:00.000Z',
+        deadline: '2026-07-20T10:00:00.000Z',
+        round: 2,
+        base_monthly: 30000,
+        signing_bonus: 50000,
+      },
+      editable_fields: [
+        { field: 'remind_at', type: 'datetime', clearable: true, clear_value: '' },
+        { field: 'deadline', type: 'datetime', clearable: true, clear_value: '' },
+        { field: 'round', type: 'number', clearable: true, clear_value: 0 },
+        { field: 'base_monthly', type: 'number', clearable: true, clear_value: 0 },
+        { field: 'signing_bonus', type: 'number', clearable: true, clear_value: 0 },
+      ],
+    });
+
+    expect(
+      changedEditableArgs(clearable, {
+        remind_at: '',
+        deadline: '',
+        round: 0,
+        base_monthly: 0,
+        signing_bonus: 0,
+        id: 99,
+      }),
+    ).toEqual({
+      remind_at: '',
+      deadline: '',
+      round: 0,
+      base_monthly: 0,
+      signing_bonus: 0,
+    });
+    expect(changedEditableArgs(clearable, { remind_at: null, round: false })).toBeUndefined();
+  });
+
+  it('rejects malformed non-scalar clear metadata defensively', () => {
+    const sentinel = {};
+    const malformed = action({
+      args: { remind_at: '2026-07-10T01:30:00.000Z' },
+      editable_fields: [
+        {
+          field: 'remind_at',
+          type: 'datetime',
+          clearable: true,
+          clear_value: sentinel,
+        } as never,
+      ],
+    });
+
+    expect(changedEditableArgs(malformed, { remind_at: sentinel })).toBeUndefined();
+  });
+
   it('preserves value types when deciding whether a field changed', () => {
     const typed = action({
       args: { count: 1 },

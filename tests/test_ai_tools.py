@@ -29,9 +29,14 @@ def test_write_tools_expose_type_aware_editable_fields_defensively(tmp_path):
         {"field": "event_type", "type": "enum", "options": list(EVENT_TYPES)},
         {"field": "subtype", "type": "string"},
         {"field": "scheduled_at", "type": "datetime"},
-        {"field": "remind_at", "type": "datetime"},
+        {
+            "field": "remind_at",
+            "type": "datetime",
+            "clearable": True,
+            "clear_value": "",
+        },
         {"field": "duration_minutes", "type": "number"},
-        {"field": "round", "type": "number"},
+        {"field": "round", "type": "number", "clearable": True, "clear_value": 0},
         {"field": "location", "type": "string"},
         {"field": "notes", "type": "long_text"},
         {"field": "status", "type": "string"},
@@ -69,12 +74,27 @@ def test_write_tools_expose_type_aware_editable_fields_defensively(tmp_path):
             {"field": "company_name", "type": "string"},
             {"field": "position_name", "type": "string"},
             {"field": "status", "type": "enum", "options": list(OFFER_STATUSES)},
-            {"field": "base_monthly", "type": "number"},
+            {
+                "field": "base_monthly",
+                "type": "number",
+                "clearable": True,
+                "clear_value": 0,
+            },
             {"field": "months_per_year", "type": "number"},
-            {"field": "signing_bonus", "type": "number"},
+            {
+                "field": "signing_bonus",
+                "type": "number",
+                "clearable": True,
+                "clear_value": 0,
+            },
             {"field": "equity", "type": "string"},
             {"field": "perks", "type": "long_text"},
-            {"field": "deadline", "type": "datetime"},
+            {
+                "field": "deadline",
+                "type": "datetime",
+                "clearable": True,
+                "clear_value": "",
+            },
             {"field": "notes", "type": "long_text"},
             {"field": "assessment", "type": "long_text"},
         ],
@@ -105,6 +125,71 @@ def test_write_tools_expose_type_aware_editable_fields_defensively(tmp_path):
     assert editable_fields_for_tool("update_application_status") == expected[
         "update_application_status"
     ]
+
+
+def test_clearable_tool_fields_use_declared_handler_sentinels(tmp_path):
+    session_factory = init_database(tmp_path / "data.db")
+    applications = ApplicationsRepository(session_factory)
+    events = ApplicationEventsRepository(session_factory)
+    notes = NotesRepository(session_factory)
+    offers = OffersRepository(session_factory)
+    app = applications.create(ApplicationCreate(company_name="ByteDance", position_name="Backend"))
+    event = events.create(
+        ApplicationEventCreate(
+            application_id=app.id,
+            event_type="interview",
+            scheduled_at=datetime(2026, 7, 10, 10, tzinfo=timezone.utc),
+            duration_minutes=45,
+            round=2,
+            remind_at=datetime(2026, 7, 10, 9, tzinfo=timezone.utc),
+        )
+    )
+    offer = offers.create(
+        OfferCreate(
+            application_id=app.id,
+            company_name=app.company_name,
+            position_name=app.position_name,
+            base_monthly=30000,
+            months_per_year=15,
+            signing_bonus=50000,
+            deadline="2026-07-20T18:00:00+08:00",
+        )
+    )
+    registry = offerpilot_tool_registry(applications, events, notes, offers)
+
+    cleared_event = json.loads(
+        registry["update_application_event"]["handler"](
+            json.dumps(
+                {
+                    "id": event.id,
+                    "application_id": app.id,
+                    "event_type": "interview",
+                    "scheduled_at": "2026-07-10T10:00:00Z",
+                    "duration_minutes": 45,
+                    "remind_at": "",
+                    "round": 0,
+                }
+            )
+        )
+    )
+    cleared_offer = json.loads(
+        registry["update_offer"]["handler"](
+            json.dumps(
+                {
+                    "id": offer.id,
+                    "base_monthly": 0,
+                    "signing_bonus": 0,
+                    "deadline": "",
+                }
+            )
+        )
+    )
+
+    assert cleared_event.get("remind_at") is None
+    assert cleared_event["round"] == 0
+    assert cleared_offer["base_monthly"] == 0
+    assert cleared_offer["signing_bonus"] == 0
+    assert cleared_offer["deadline"] == ""
 
 
 def test_application_read_tools_return_json(tmp_path):

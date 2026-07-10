@@ -18,7 +18,17 @@ import {
   toolMeta,
   confirmationInputForRetry,
   confirmationErrorRequiresSync,
+  shouldRestoreConfirmationRetryFocus,
 } from './model';
+
+describe('confirmation retry focus lifecycle', () => {
+  it('restores focus only after a requested retry finishes with an error', () => {
+    expect(shouldRestoreConfirmationRetryFocus(true, '网络失败', false)).toBe(true);
+    expect(shouldRestoreConfirmationRetryFocus(true, '网络失败', true)).toBe(false);
+    expect(shouldRestoreConfirmationRetryFocus(true, null, false)).toBe(false);
+    expect(shouldRestoreConfirmationRetryFocus(false, '网络失败', false)).toBe(false);
+  });
+});
 
 describe('buildChatRequestContext', () => {
   const pageContext: PilotPageContext = {

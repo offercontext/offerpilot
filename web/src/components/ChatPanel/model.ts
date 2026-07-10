@@ -75,6 +75,14 @@ export function confirmationErrorRequiresSync(code: unknown): boolean {
   return code === 'stale_pending_action' || code === 'confirmation_in_progress';
 }
 
+export function shouldRestoreConfirmationRetryFocus(
+  restoreRequested: boolean,
+  confirmError: string | null,
+  loading: boolean,
+): boolean {
+  return restoreRequested && confirmError !== null && !loading;
+}
+
 interface BuildChatRequestContextOptions {
   conversationId?: number;
   offerApplicationId?: number;
