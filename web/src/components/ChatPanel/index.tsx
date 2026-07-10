@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, createElement } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Drawer, App as AntApp, Button } from 'antd';
 import {
   CloseOutlined,
@@ -22,6 +22,7 @@ import {
   undoLastWrite,
 } from '@/services/chat';
 import { getOffer } from '@/services/offers';
+import { ONBOARDING_QUERY_KEY } from '@/services/onboarding';
 import type { ChatResponse, ChatStreamEvent, ChatUndo, Conversation, PendingAction } from '@/types/chat';
 import type { Offer } from '@/types/offer';
 import {
@@ -132,6 +133,7 @@ export default function ChatPanel({
   onExpand,
   onDataChanged,
 }: Props) {
+  const queryClient = useQueryClient();
   const { message: toast } = AntApp.useApp();
   const [turns, setTurns] = useState<UITurn[]>([]);
   const [convID, setConvID] = useState<number | undefined>(undefined);
@@ -417,6 +419,9 @@ export default function ChatPanel({
       const resp = await streamChat(trimmed, convID, context, {
         signal: controller.signal,
         onEvent: (event) => {
+          if (event.event === 'user_message_saved') {
+            void queryClient.invalidateQueries({ queryKey: ONBOARDING_QUERY_KEY });
+          }
           if (event.conversation_id) {
             streamConversationId = event.conversation_id;
             if (isNew) setConvID(event.conversation_id);

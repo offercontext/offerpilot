@@ -37,6 +37,7 @@ import {
   type Settings,
   type UpdateSettingsPayload,
 } from '@/services/chat';
+import { ONBOARDING_QUERY_KEY } from '@/services/onboarding';
 
 interface Props {
   open: boolean;
@@ -136,6 +137,7 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
     onSuccess: (settings) => {
       qc.setQueryData(SETTINGS_QUERY_KEY, settings);
       qc.invalidateQueries({ queryKey: SETTINGS_QUERY_KEY });
+      qc.invalidateQueries({ queryKey: ONBOARDING_QUERY_KEY });
       message.success('AI 设置已保存');
       setProviders(toEditableProviders(settings));
       setActiveProviderId(settings.active_provider_id);

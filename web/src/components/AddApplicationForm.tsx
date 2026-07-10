@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Modal, Input, Form, Select, message } from 'antd';
 import { useQueryClient } from '@tanstack/react-query';
 import { createApplication } from '@/services/applications';
+import { ONBOARDING_QUERY_KEY } from '@/services/onboarding';
 import { STATUS_LABELS } from '@/types/application';
 import type { ApplicationStatus } from '@/types/application';
 
@@ -33,6 +34,7 @@ export default function AddApplicationForm({ open, onClose }: AddApplicationForm
         closed_reason: values.closed_reason ?? '',
       });
       queryClient.invalidateQueries({ queryKey: ['applications'] });
+      queryClient.invalidateQueries({ queryKey: ONBOARDING_QUERY_KEY });
       message.success('已添加投递');
       form.resetFields();
       onClose();

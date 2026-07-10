@@ -4,6 +4,7 @@ import { Button, Layout, Spin, Tabs, message } from 'antd';
 import { listApplications } from '@/services/applications';
 import { listEvents } from '@/services/events';
 import { listOffers } from '@/services/offers';
+import { ONBOARDING_QUERY_KEY } from '@/services/onboarding';
 import { uploadResume } from '@/services/resumes';
 import type { Application } from '@/types/application';
 import Sidebar from './Sidebar';
@@ -118,6 +119,7 @@ export default function AppShell() {
     void qc.invalidateQueries({ queryKey: ['offers'] });
     void qc.invalidateQueries({ queryKey: ['questions', 'stats'] });
     void qc.invalidateQueries({ queryKey: ['chat', 'conversations'] });
+    void qc.invalidateQueries({ queryKey: ONBOARDING_QUERY_KEY });
   };
 
   const uploadResumeMut = useMutation({
@@ -125,6 +127,7 @@ export default function AppShell() {
     onSuccess: (res) => {
       message.success(res.parse_status === 'text-ready' ? '上传成功' : '已上传，文本提取失败，请到简历库校正');
       qc.invalidateQueries({ queryKey: ['resumes'] });
+      qc.invalidateQueries({ queryKey: ONBOARDING_QUERY_KEY });
       setResumeUploadOpen(false);
     },
     onError: () => message.error('上传失败'),
