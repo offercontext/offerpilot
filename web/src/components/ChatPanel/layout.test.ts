@@ -99,7 +99,7 @@ describe('ChatPanel docked layout contract', () => {
   it('notifies owners after Pilot write flows can change application data', () => {
     expect(component).toContain('onDataChanged?: () => void');
     expect(component).toContain('if (autoApprove) onDataChanged?.();');
-    expect(component).toContain('if (approved) onDataChanged?.();');
+    expect(component).toContain("resp.write_status === 'success'");
   });
 
   it('keeps write confirmation cards localized for Chinese users', () => {
@@ -184,5 +184,11 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('setConvID(undefined)');
     expect(component).toContain('setTurns([])');
     expect(component).toContain('draftContext');
+  });
+
+  it('uses structured write status instead of treating every message response as success', () => {
+    expect(component).toContain('resp.write_status === \'success\'');
+    expect(component).toContain('resp.write_status === \'failed\'');
+    expect(component).toContain('resp.write_error');
   });
 });

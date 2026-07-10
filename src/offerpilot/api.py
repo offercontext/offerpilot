@@ -1141,6 +1141,7 @@ def create_app(
         added, forced_reply = _with_write_error_followup(added)
         _persist_ai_messages(chat, conversation_id, added)
         reply = forced_reply or _user_facing_assistant_content(reply)
+        write_status, write_error = _write_outcome(added, _has_write_attempt(added))
         if forced_reply and pending is None:
             forced_pending = _pending_action_from_added_write_call(added)
             if forced_pending is not None:
@@ -1173,7 +1174,15 @@ def create_app(
             chat.set_pending_clarification(conversation_id, pending_clarification, reply)
         elif not forced_reply:
             chat.clear_pending_clarification(conversation_id)
-        return JSONResponse({"type": "message", "conversation_id": conversation_id, "message": reply})
+        response_payload: dict[str, Any] = {
+            "type": "message",
+            "conversation_id": conversation_id,
+            "message": reply,
+            "write_status": write_status,
+        }
+        if write_error:
+            response_payload["write_error"] = write_error
+        return JSONResponse(response_payload)
 
     @app.post("/api/chat/stream")
     def send_chat_stream(
@@ -1298,6 +1307,7 @@ def create_app(
             added, forced_reply = _with_write_error_followup(added)
             _persist_ai_messages(chat, conversation_id, added)
             reply = forced_reply or _user_facing_assistant_content(reply)
+            write_status, write_error = _write_outcome(added, _has_write_attempt(added))
             if pending is not None:
                 missing_question = _pending_action_missing_question(pending, applications)
                 if missing_question:
@@ -1323,7 +1333,14 @@ def create_app(
                 yield emit("completed", {"response": response, "persisted": True})
                 return
             chat.clear_pending_action(conversation_id)
-            response = {"type": "message", "conversation_id": conversation_id, "message": reply}
+            response = {
+                "type": "message",
+                "conversation_id": conversation_id,
+                "message": reply,
+                "write_status": write_status,
+            }
+            if write_error:
+                response["write_error"] = write_error
             yield emit("assistant_message", {"message": reply})
             yield emit("completed", {"response": response, "persisted": True})
 
@@ -1355,6 +1372,7 @@ def create_app(
                     "type": "message",
                     "conversation_id": conversation_id,
                     "message": CHAT_CANCELLED_MESSAGE,
+                    "write_status": "cancelled",
                 }
             )
         chat.clear_pending_action(conversation_id)
@@ -1394,6 +1412,7 @@ def create_app(
         added, forced_reply = _with_write_error_followup(added)
         _persist_ai_messages(chat, conversation_id, added)
         reply = forced_reply or _user_facing_assistant_content(reply)
+        write_status, write_error = _write_outcome(added, attempted=True)
         if forced_reply and new_pending is None:
             forced_pending = _pending_action_from_added_write_call(added)
             if forced_pending is not None:
@@ -1423,14 +1442,21 @@ def create_app(
         chat.clear_pending_action(conversation_id)
         if not forced_reply:
             chat.clear_pending_clarification(conversation_id)
-        undo = _build_write_undo(pending, added, undo_seed)
+        undo = _build_write_undo(pending, added, undo_seed) if write_status == "success" else None
         if undo:
             chat.set_last_write_undo(conversation_id, undo)
         else:
             chat.clear_last_write_undo(conversation_id)
-        if bool(payload.get("approved")):
+        if write_status == "success":
             reply = _prepend_write_success(reply, pending, added)
-        response_payload: dict[str, Any] = {"type": "message", "conversation_id": conversation_id, "message": reply}
+        response_payload: dict[str, Any] = {
+            "type": "message",
+            "conversation_id": conversation_id,
+            "message": reply,
+            "write_status": write_status,
+        }
+        if write_error:
+            response_payload["write_error"] = write_error
         if undo:
             response_payload["undo"] = undo
         return JSONResponse(response_payload)
@@ -1492,6 +1518,7 @@ def create_app(
                     "type": "message",
                     "conversation_id": conversation_id,
                     "message": CHAT_CANCELLED_MESSAGE,
+                    "write_status": "cancelled",
                 }
                 yield emit(
                     "meta",
@@ -1581,6 +1608,7 @@ def create_app(
             added, forced_reply = _with_write_error_followup(added)
             _persist_ai_messages(chat, conversation_id, added)
             reply = forced_reply or _user_facing_assistant_content(reply)
+            write_status, write_error = _write_outcome(added, attempted=True)
             if new_pending is not None:
                 missing_question = _pending_action_missing_question(new_pending, applications)
                 if missing_question:
@@ -1606,8 +1634,16 @@ def create_app(
                 yield emit("completed", {"response": response, "persisted": True})
                 return
             chat.clear_pending_action(conversation_id)
-            reply = _prepend_write_success(reply, pending, added)
-            response = {"type": "message", "conversation_id": conversation_id, "message": reply}
+            if write_status == "success":
+                reply = _prepend_write_success(reply, pending, added)
+            response = {
+                "type": "message",
+                "conversation_id": conversation_id,
+                "message": reply,
+                "write_status": write_status,
+            }
+            if write_error:
+                response["write_error"] = write_error
             yield emit("assistant_message", {"message": reply})
             yield emit("completed", {"response": response, "persisted": True})
 
@@ -2457,6 +2493,25 @@ _WRITE_TOOL_NAMES = {
     "create_application_event",
     "add_note",
 }
+
+
+def _has_write_attempt(added: list[Message]) -> bool:
+    return any(
+        message.role == "assistant"
+        and any(tool_call.name in _WRITE_TOOL_NAMES for tool_call in message.tool_calls)
+        for message in added
+    )
+
+
+def _write_outcome(added: list[Message], attempted: bool) -> tuple[str, str]:
+    if not attempted:
+        return "none", ""
+    for message in reversed(added):
+        if message.role == "tool" and message.content.startswith("错误："):
+            return "failed", message.content.removeprefix("错误：").strip()
+    if _last_successful_tool_payload(added):
+        return "success", ""
+    return "failed", "写入未完成"
 
 
 def _pending_action_from_added_write_call(added: list[Message]) -> PendingAction | None:

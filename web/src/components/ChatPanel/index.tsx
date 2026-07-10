@@ -574,8 +574,22 @@ export default function ChatPanel({
         refreshConversations();
       } else {
         await finishMessage(resp);
-        setConfirmPhase(approved ? 'success' : 'idle');
-        if (approved) onDataChanged?.();
+        if (!approved || resp.write_status === 'cancelled') {
+          setConfirmPhase('idle');
+        } else if (resp.write_status === 'success') {
+          setConfirmPhase('success');
+          onDataChanged?.();
+        } else if (resp.write_status === 'failed') {
+          const error = resp.write_error || '写入失败，请检查记录后重试。';
+          setConfirmError(error);
+          setConfirmPhase('error');
+          toast.error(error);
+        } else {
+          const error = '写入结果未知，请检查记录后再继续。';
+          setConfirmError(error);
+          setConfirmPhase('error');
+          toast.error(error);
+        }
       }
     } catch (e: any) {
       if (isAbortError(e)) {

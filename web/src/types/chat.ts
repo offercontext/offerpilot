@@ -22,6 +22,8 @@ export interface ChatStartRequest {
   mode: 'general';
 }
 
+export type WriteStatus = 'success' | 'failed' | 'cancelled' | 'none';
+
 export interface ChatMessage {
   id: number;
   conversation_id: number;
@@ -86,7 +88,15 @@ export interface ChatUndo {
 }
 
 export type ChatResponse =
-  | { type: 'message'; conversation_id: number; message: string; degraded?: boolean; undo?: ChatUndo | null }
+  | {
+      type: 'message';
+      conversation_id: number;
+      message: string;
+      degraded?: boolean;
+      undo?: ChatUndo | null;
+      write_status?: WriteStatus;
+      write_error?: string;
+    }
   | { type: 'confirmation_required'; conversation_id: number; pending_action: PendingAction };
 
 export type ChatStreamEventName =

@@ -125,6 +125,7 @@ def test_chat_stream_emits_pilot_sse_v1_sequence(tmp_path):
         "type": "message",
         "conversation_id": events[0]["data"]["conversation_id"],
         "message": "可以，先把投递列表按状态过一遍。",
+        "write_status": "none",
     }
 
 
@@ -1016,6 +1017,7 @@ def test_chat_confirm_executes_pending_write(tmp_path):
     assert body["type"] == "message"
     assert body["conversation_id"] == pending["conversation_id"]
     assert body["message"] == "已更新"
+    assert body["write_status"] == "success"
     assert body["undo"]["label"] == "撤销更新投递状态"
     assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
 
@@ -1052,10 +1054,55 @@ def test_chat_cancel_pending_write_returns_short_local_message(tmp_path):
         "type": "message",
         "conversation_id": pending["conversation_id"],
         "message": "已取消本次写入。你可以修改信息后让我重新整理。",
+        "write_status": "cancelled",
     }
     assert len(model.calls) == 1
     assert client.get("/api/chat/conversations").json()[0]["pending_action"] is None
     assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "interview"
+
+
+def test_chat_confirm_reports_failed_write_without_success_prefix(tmp_path):
+    app_client = TestClient(create_app(data_dir=tmp_path))
+    application = app_client.post(
+        "/api/applications",
+        json={
+            "company_name": "验收科技",
+            "position_name": "后端工程师",
+            "status": "closed",
+            "closed_reason": "流程结束",
+        },
+    ).json()
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="write-closed",
+                        name="update_application_status",
+                        args=json.dumps({"id": application["id"], "status": "interview"}),
+                    )
+                ]
+            ),
+            Assistant(content="这条投递保持已结束状态。"),
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+
+    pending = client.post(
+        "/api/chat",
+        json={"message": "把验收科技改成面试", "conversation_id": 0},
+    ).json()
+    response = client.post(
+        "/api/chat/confirm",
+        json={"conversation_id": pending["conversation_id"], "approved": True},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["write_status"] == "failed"
+    assert "closed application cannot be reopened" in body["write_error"]
+    assert "保存成功" not in body["message"]
+    assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "closed"
 
 
 def test_chat_confirm_add_note_returns_saved_record_summary(tmp_path):
