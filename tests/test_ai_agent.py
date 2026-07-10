@@ -674,12 +674,10 @@ def test_checkpoint_rejects_non_finite_overflow_args(overflow_source):
             human=pending.human,
         )
 
-    added, _, _ = runner.resume_after_confirm(
-        [], pending, approved=True, auto_approve=False, max_iter=8
-    )
+    with pytest.raises(ValueError, match="valid JSON object"):
+        runner.resume_after_confirm([], pending, approved=True, auto_approve=False, max_iter=8)
 
     assert calls == []
-    assert added[0].content.startswith("错误：")
 
 
 def test_missing_checkpoint_fallback_executes_effective_args():
@@ -852,36 +850,127 @@ def test_fallback_handler_error_remains_claimed_against_replay():
     assert calls == ['{"id":7,"status":"offer"}']
 
 
-def test_fallback_validation_error_remains_claimed_and_emits_approval():
+def test_fallback_validation_error_remains_retryable_without_approval_or_sink():
     calls = []
     events = []
+    outcomes = []
     registry = _editable_registry(calls, validate=lambda args: "blocked arguments")
     pending = _pending()
     thread_id = "conversation:fallback-validation-error"
 
-    LangGraphAgentRunner(
-        ScriptedModel([Assistant(content="validation blocked")]),
-        registry,
-        thread_id=thread_id,
-        event_sink=events.append,
-    ).resume_after_confirm([], pending, approved=True, auto_approve=False, max_iter=8)
-
-    with pytest.raises(StalePendingActionError, match="already consumed"):
-        LangGraphAgentRunner(
-            ScriptedModel([Assistant(content="must not retry")]),
-            registry,
-            thread_id=thread_id,
-            event_sink=events.append,
-        ).resume_after_confirm([], pending, approved=True, auto_approve=False, max_iter=8)
+    for _ in range(2):
+        with pytest.raises(ValueError, match="blocked arguments"):
+            LangGraphAgentRunner(
+                ScriptedModel([Assistant(content="must not run")]),
+                registry,
+                thread_id=thread_id,
+                event_sink=events.append,
+                confirmation_result_sink=lambda *args: outcomes.append(args),
+            ).resume_after_confirm([], pending, approved=True, auto_approve=False, max_iter=8)
 
     assert calls == []
-    assert (
-        sum(
-            event["event"] == "tool_call" and event["data"].get("confirm_mode") == "approved"
-            for event in events
-        )
-        == 1
+    assert outcomes == []
+    assert not any(
+        event["event"] == "tool_call" and event["data"].get("confirm_mode") == "approved"
+        for event in events
     )
+
+
+def test_fallback_parse_error_remains_retryable_without_consuming_claim():
+    pending = PendingAction("bad-json", "update_application_status", "{", "change status")
+    outcomes = []
+    calls = []
+    registry = _editable_registry(calls)
+    thread_id = "conversation:fallback-parse-error"
+
+    for _ in range(2):
+        with pytest.raises(ValueError, match="valid JSON object"):
+            LangGraphAgentRunner(
+                ScriptedModel([Assistant(content="must not run")]),
+                registry,
+                thread_id=thread_id,
+                confirmation_result_sink=lambda *args: outcomes.append(args),
+            ).resume_after_confirm([], pending, approved=True, auto_approve=False, max_iter=8)
+
+    assert outcomes == []
+    valid_pending = PendingAction(
+        pending.tool_call_id,
+        pending.tool_name,
+        json.dumps({"id": 7, "status": "offer"}),
+        pending.human,
+    )
+    LangGraphAgentRunner(
+        ScriptedModel([Assistant(content="done")]),
+        registry,
+        thread_id=thread_id,
+    ).resume_after_confirm([], valid_pending, approved=True, auto_approve=False, max_iter=8)
+    assert calls == ['{"id":7,"status":"offer"}']
+
+
+def test_checkpoint_prehandler_validation_failure_keeps_interrupt_retryable(
+    tmp_path,
+    monkeypatch,
+):
+    calls = []
+    outcomes = []
+    pending = _pending()
+    checkpoint_path = tmp_path / "prehandler-validation.sqlite"
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id=pending.tool_call_id,
+                        name=pending.tool_name,
+                        args=pending.args,
+                    )
+                ]
+            ),
+            Assistant(content="done"),
+        ]
+    )
+    registry = _editable_registry(calls)
+    _, _, stored_pending = run_turn(
+        model,
+        registry,
+        [],
+        auto_approve=False,
+        checkpoint_path=checkpoint_path,
+        thread_id="conversation:prehandler-validation",
+    )
+    original = agent_module._validated_resumed_args
+    monkeypatch.setattr(
+        agent_module,
+        "_validated_resumed_args",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("pre-handler invalid")),
+    )
+
+    with pytest.raises(ValueError, match="pre-handler invalid"):
+        LangGraphAgentRunner(
+            model,
+            registry,
+            checkpoint_path=checkpoint_path,
+            thread_id="conversation:prehandler-validation",
+            confirmation_result_sink=lambda *args: outcomes.append(args),
+        ).resume_after_confirm([], stored_pending, approved=True, auto_approve=False, max_iter=8)
+
+    assert calls == []
+    assert outcomes == []
+    monkeypatch.setattr(agent_module, "_validated_resumed_args", original)
+
+    added, reply, new_pending = LangGraphAgentRunner(
+        model,
+        registry,
+        checkpoint_path=checkpoint_path,
+        thread_id="conversation:prehandler-validation",
+        confirmation_result_sink=lambda *args: outcomes.append(args),
+    ).resume_after_confirm([], stored_pending, approved=True, auto_approve=False, max_iter=8)
+
+    assert calls == [pending.args.replace(" ", "")]
+    assert len(outcomes) == 1
+    assert added[0].role == "tool"
+    assert reply == "done"
+    assert new_pending is None
 
 
 def test_confirmation_locks_are_scoped_by_thread_id():
@@ -983,23 +1072,23 @@ def test_approved_resume_rejects_missing_or_non_string_effective_args(monkeypatc
         resume_payload["effective_args"] = effective_args
     monkeypatch.setattr(agent_module, "interrupt", lambda pending: resume_payload)
 
-    result = runner._handle_tool(
-        {
-            "messages": [],
-            "added": [],
-            "auto_approve": False,
-            "current_tool_calls": [
-                {
-                    "id": "w1",
-                    "name": "update_application_status",
-                    "args": json.dumps({"id": 7, "status": "offer"}),
-                }
-            ],
-        }
-    )
+    with pytest.raises(ValueError):
+        runner._handle_tool(
+            {
+                "messages": [],
+                "added": [],
+                "auto_approve": False,
+                "current_tool_calls": [
+                    {
+                        "id": "w1",
+                        "name": "update_application_status",
+                        "args": json.dumps({"id": 7, "status": "offer"}),
+                    }
+                ],
+            }
+        )
 
     assert calls == []
-    assert result["added"][0]["content"].startswith("错误：")
 
 
 def test_resume_does_not_treat_non_boolean_approval_as_approved(monkeypatch):
@@ -1040,20 +1129,18 @@ def test_missing_checkpoint_validates_effective_args_before_handler_execution():
     calls = []
     registry = _editable_registry(calls, validate=lambda args: "blocked effective arguments")
 
-    added, reply, new_pending = resume_after_confirm(
-        ScriptedModel([Assistant(content="not executed")]),
-        registry,
-        [],
-        _pending(),
-        approved=True,
-        auto_approve=False,
-        max_iter=8,
-    )
+    with pytest.raises(ValueError, match="blocked effective arguments"):
+        resume_after_confirm(
+            ScriptedModel([Assistant(content="not executed")]),
+            registry,
+            [],
+            _pending(),
+            approved=True,
+            auto_approve=False,
+            max_iter=8,
+        )
 
     assert calls == []
-    assert added[0].content == "错误：blocked effective arguments"
-    assert reply == "not executed"
-    assert new_pending is None
 
 
 def test_missing_checkpoint_validator_exception_fails_closed_without_leaking_details():
@@ -1062,19 +1149,20 @@ def test_missing_checkpoint_validator_exception_fails_closed_without_leaking_det
     def validate(args):
         raise Exception("database password leaked")
 
-    added, _, _ = resume_after_confirm(
-        ScriptedModel([Assistant(content="not executed")]),
-        _editable_registry(calls, validate=validate),
-        [],
-        _pending(),
-        approved=True,
-        auto_approve=False,
-        max_iter=8,
-    )
+    with pytest.raises(ValueError) as exc_info:
+        resume_after_confirm(
+            ScriptedModel([Assistant(content="not executed")]),
+            _editable_registry(calls, validate=validate),
+            [],
+            _pending(),
+            approved=True,
+            auto_approve=False,
+            max_iter=8,
+        )
 
     assert calls == []
-    assert added[0].content == "错误：工具参数验证失败，请检查后重试。"
-    assert "password" not in added[0].content
+    assert str(exc_info.value) == "工具参数验证失败，请检查后重试。"
+    assert "password" not in str(exc_info.value)
 
 
 @pytest.mark.parametrize(
@@ -1091,18 +1179,18 @@ def test_missing_checkpoint_rejects_non_finite_effective_args(raw_args):
     calls = []
     pending = PendingAction("w1", "update_application_status", raw_args, "change status")
 
-    added, _, _ = resume_after_confirm(
-        ScriptedModel([Assistant(content="not executed")]),
-        _editable_registry(calls),
-        [],
-        pending,
-        approved=True,
-        auto_approve=False,
-        max_iter=8,
-    )
+    with pytest.raises(ValueError, match="valid JSON object"):
+        resume_after_confirm(
+            ScriptedModel([Assistant(content="not executed")]),
+            _editable_registry(calls),
+            [],
+            pending,
+            approved=True,
+            auto_approve=False,
+            max_iter=8,
+        )
 
     assert calls == []
-    assert added[0].content.startswith("错误：")
 
 
 def test_missing_checkpoint_does_not_treat_non_boolean_approval_as_approved():
@@ -1230,7 +1318,9 @@ def test_confirmation_result_sink_records_approved_tool_error():
 
     assert len(outcomes) == 1
     effective, approved, message = outcomes[0]
-    assert effective == _pending()
+    assert effective.tool_call_id == _pending().tool_call_id
+    assert effective.tool_name == _pending().tool_name
+    assert json.loads(effective.args) == json.loads(_pending().args)
     assert approved is True
     assert message.content == "错误：write failed"
     assert added[0] == message

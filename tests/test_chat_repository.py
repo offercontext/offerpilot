@@ -10,6 +10,7 @@ def test_resolve_pending_confirmation_atomically_persists_result_and_clears_stat
     pending = PendingAction("write-1", "update_application_status", '{"id":1}', "update")
     repo.set_pending_action(conversation.id, pending)
     repo.set_pending_clarification(conversation.id, pending, "clarify")
+    repo.set_last_write_undo(conversation.id, {"kind": "previous"})
     tool_message = Message(role="tool", content='{"id":1,"status":"offer"}', tool_call_id="write-1")
     undo = {"kind": "update_application_status", "application_id": 1}
 
@@ -52,6 +53,43 @@ def test_resolve_pending_confirmation_cas_does_not_clear_newer_pending(tmp_path)
     assert resolved is False
     assert repo.get_pending_action(conversation.id) == newer
     assert repo.list_messages(conversation.id) == []
+
+
+def test_resolve_pending_confirmation_preserves_existing_undo(tmp_path):
+    repo = ChatRepository(init_database(tmp_path / "data.db"))
+    conversation = repo.create_conversation("confirm")
+    pending = PendingAction("write-1", "update_application_status", '{"id":1}', "update")
+    previous = {"kind": "create_application", "application_id": 9}
+    repo.set_pending_action(conversation.id, pending)
+    repo.set_last_write_undo(conversation.id, previous)
+
+    resolved = repo.resolve_pending_confirmation(
+        conversation.id,
+        pending,
+        Message(role="tool", content="rejected", tool_call_id="write-1"),
+        None,
+    )
+
+    assert resolved is True
+    assert repo.get_last_write_undo(conversation.id) == previous
+
+
+def test_resolve_pending_confirmation_clears_existing_undo(tmp_path):
+    repo = ChatRepository(init_database(tmp_path / "data.db"))
+    conversation = repo.create_conversation("confirm")
+    pending = PendingAction("write-1", "update_application_status", '{"id":1}', "update")
+    repo.set_pending_action(conversation.id, pending)
+    repo.set_last_write_undo(conversation.id, {"kind": "old"})
+
+    resolved = repo.resolve_pending_confirmation(
+        conversation.id,
+        pending,
+        Message(role="tool", content="ambiguous failure", tool_call_id="write-1"),
+        {},
+    )
+
+    assert resolved is True
+    assert repo.get_last_write_undo(conversation.id) is None
 
 
 def test_set_pending_action_if_empty_does_not_overwrite_newer_pending(tmp_path):

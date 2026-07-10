@@ -260,9 +260,24 @@ class ChatRepository:
         conversation_id: int,
         expected: PendingAction,
         tool_message: Message,
-        undo: dict[str, Any],
+        undo: dict[str, Any] | None,
     ) -> bool:
+        """Persist a result with tri-state undo: None preserves, empty clears, non-empty replaces."""
         now = datetime.now(timezone.utc)
+        values: dict[str, Any] = {
+            "pending_tool_call_id": "",
+            "pending_tool_name": "",
+            "pending_args": "",
+            "pending_human": "",
+            "clarification_tool_call_id": "",
+            "clarification_tool_name": "",
+            "clarification_args": "",
+            "clarification_human": "",
+            "clarification_question": "",
+            "updated_at": now,
+        }
+        if undo is not None:
+            values["last_write_undo_json"] = json.dumps(undo, ensure_ascii=False) if undo else ""
         with self._session_factory() as session:
             result = session.execute(
                 update(Conversation)
@@ -270,19 +285,7 @@ class ChatRepository:
                 .where(Conversation.pending_tool_call_id == expected.tool_call_id)
                 .where(Conversation.pending_tool_name == expected.tool_name)
                 .where(Conversation.pending_args == expected.args)
-                .values(
-                    pending_tool_call_id="",
-                    pending_tool_name="",
-                    pending_args="",
-                    pending_human="",
-                    clarification_tool_call_id="",
-                    clarification_tool_name="",
-                    clarification_args="",
-                    clarification_human="",
-                    clarification_question="",
-                    last_write_undo_json=(json.dumps(undo, ensure_ascii=False) if undo else ""),
-                    updated_at=now,
-                )
+                .values(**values)
             )
             if getattr(result, "rowcount", 0) != 1:
                 session.rollback()

@@ -1994,6 +1994,57 @@ def test_chat_confirm_invalid_payload_returns_422_and_preserves_pending(
     assert client.get("/api/chat/conversations").json()[0]["pending_action"] is not None
 
 
+@pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
+def test_chat_confirm_prehandler_validation_preserves_pending_and_undo(
+    tmp_path,
+    monkeypatch,
+    endpoint,
+):
+    import offerpilot.ai.agent as agent_module
+
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="prehandler-invalid",
+                        name="update_application_status",
+                        args=json.dumps({"id": 1, "status": "offer"}),
+                    )
+                ]
+            ),
+            Assistant(content="must not run"),
+        ]
+    )
+    app_client, client, application, pending = _create_status_confirmation(tmp_path, model)
+    previous_undo = {"kind": "create_application", "application_id": 77}
+    ChatRepository(session_factory_for_data_dir(tmp_path)).set_last_write_undo(
+        pending["conversation_id"], previous_undo
+    )
+    monkeypatch.setattr(
+        agent_module,
+        "_validated_resumed_args",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("pre-handler invalid")),
+    )
+
+    response = client.post(
+        endpoint,
+        json={"conversation_id": pending["conversation_id"], "approved": True},
+    )
+
+    if endpoint.endswith("/stream"):
+        error = _parse_sse_events(response.text)[-1]
+        assert error["event"] == "error"
+        assert error["data"]["data"]["code"] == "invalid_confirmation"
+    else:
+        assert response.status_code == 422
+    conversation = client.get("/api/chat/conversations").json()[0]
+    assert conversation["pending_action"]["args"]["status"] == "offer"
+    assert conversation["last_write_undo"] == previous_undo
+    assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "interview"
+    assert len(model.turns) == 1
+
+
 @pytest.mark.parametrize("conversation_id", [None, 0, -1, "1", 1.5, True, {}, []])
 @pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
 def test_chat_confirm_rejects_invalid_conversation_id_without_server_error(
@@ -2102,7 +2153,7 @@ def test_chat_confirm_edited_status_executes_effective_args_and_keeps_immutable_
     assert client.get("/api/chat/conversations").json()[0]["pending_action"] is None
 
 
-def test_chat_confirm_stream_rejection_is_normal_followup_and_clears_previous_undo(tmp_path):
+def test_chat_confirm_stream_rejection_is_normal_followup_and_preserves_previous_undo(tmp_path):
     model = ScriptedModel(
         [
             Assistant(
@@ -2131,7 +2182,8 @@ def test_chat_confirm_stream_rejection_is_normal_followup_and_clears_previous_un
         "/api/chat/confirm",
         json={"conversation_id": first_pending["conversation_id"], "approved": True},
     ).json()
-    assert client.get("/api/chat/conversations").json()[0]["last_write_undo"] is not None
+    previous_undo = client.get("/api/chat/conversations").json()[0]["last_write_undo"]
+    assert previous_undo is not None
 
     response = client.post(
         "/api/chat/confirm/stream",
@@ -2149,7 +2201,7 @@ def test_chat_confirm_stream_rejection_is_normal_followup_and_clears_previous_un
     assert events[-1]["data"]["data"]["response"]["message"] == "Okay, I will leave it unchanged."
     conversation = client.get("/api/chat/conversations").json()[0]
     assert conversation["pending_action"] is None
-    assert conversation["last_write_undo"] is None
+    assert conversation["last_write_undo"] == previous_undo
 
 
 @pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
@@ -2236,6 +2288,82 @@ def test_chat_confirm_result_cas_loss_preserves_newer_pending(tmp_path, monkeypa
 
 
 @pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
+def test_chat_confirm_cas_loss_aborts_before_auto_approved_second_write(
+    tmp_path,
+    monkeypatch,
+    endpoint,
+):
+    app_client = TestClient(create_app(data_dir=tmp_path))
+    first = app_client.post(
+        "/api/applications",
+        json={"company_name": "First", "position_name": "Engineer", "status": "interview"},
+    ).json()
+    second = app_client.post(
+        "/api/applications",
+        json={"company_name": "Second", "position_name": "Designer", "status": "applied"},
+    ).json()
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="cas-first",
+                        name="update_application_status",
+                        args=json.dumps({"id": first["id"], "status": "offer"}),
+                    )
+                ]
+            ),
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="must-not-run",
+                        name="update_application_status",
+                        args=json.dumps({"id": second["id"], "status": "interview"}),
+                    )
+                ]
+            ),
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    pending = client.post("/api/chat", json={"message": "update two", "conversation_id": 0}).json()
+    save_config(tmp_path, Config(api_key="sk-test", chat_auto_approve_writes=True))
+    newer = PendingAction(
+        "newer-cas",
+        "update_application_status",
+        json.dumps({"id": second["id"], "status": "closed"}),
+        "newer",
+    )
+    newer_undo = {"kind": "create_application", "application_id": 404}
+
+    def lose_cas(self, conversation_id, expected, tool_message, undo):
+        self.set_pending_action(conversation_id, newer)
+        self.set_pending_clarification(conversation_id, newer, "newer question")
+        self.set_last_write_undo(conversation_id, newer_undo)
+        return False
+
+    monkeypatch.setattr(ChatRepository, "resolve_pending_confirmation", lose_cas)
+
+    response = client.post(
+        endpoint,
+        json={"conversation_id": pending["conversation_id"], "approved": True},
+    )
+
+    if endpoint.endswith("/stream"):
+        error = _parse_sse_events(response.text)[-1]
+        assert error["event"] == "error"
+        assert error["data"]["data"]["code"] == "stale_pending_action"
+    else:
+        assert response.status_code == 409
+    assert app_client.get(f"/api/applications/{first['id']}").json()["status"] == "offer"
+    assert app_client.get(f"/api/applications/{second['id']}").json()["status"] == "applied"
+    conversation = client.get("/api/chat/conversations").json()[0]
+    assert conversation["pending_action"]["args"]["status"] == "closed"
+    assert conversation["pending_clarification"]["question"] == "newer question"
+    assert conversation["last_write_undo"] == newer_undo
+    assert len(model.turns) == 1
+
+
+@pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
 def test_chat_confirm_tool_error_uses_expected_pending_cas(tmp_path, monkeypatch, endpoint):
     newer = PendingAction(
         "newer-after-error",
@@ -2291,6 +2419,9 @@ def test_chat_confirm_tool_error_provider_failure_is_durable(tmp_path, endpoint)
         )
     )
     _, client, _, pending = _create_status_confirmation(tmp_path, model)
+    ChatRepository(session_factory_for_data_dir(tmp_path)).set_last_write_undo(
+        pending["conversation_id"], {"kind": "previous-safe-undo"}
+    )
 
     response = client.post(
         endpoint,
@@ -2308,6 +2439,7 @@ def test_chat_confirm_tool_error_provider_failure_is_durable(tmp_path, endpoint)
     assert "undo" not in body
     conversation = client.get("/api/chat/conversations").json()[0]
     assert conversation["pending_action"] is None
+    assert conversation["last_write_undo"] is None
     stored = client.get(f"/api/chat/conversations/{pending['conversation_id']}").json()
     assert sum(message["role"] == "tool" for message in stored) == 1
 
@@ -2415,6 +2547,10 @@ def test_chat_confirm_rejection_provider_failure_records_cancellation_once(tmp_p
         tmp_path,
         FailAfterWriteModel(tool_call),
     )
+    previous_undo = {"kind": "create_application", "application_id": 42}
+    ChatRepository(session_factory_for_data_dir(tmp_path)).set_last_write_undo(
+        pending["conversation_id"], previous_undo
+    )
 
     response = client.post(
         endpoint,
@@ -2436,7 +2572,7 @@ def test_chat_confirm_rejection_provider_failure_records_cancellation_once(tmp_p
     assert "undo" not in body
     conversation = client.get("/api/chat/conversations").json()[0]
     assert conversation["pending_action"] is None
-    assert conversation["last_write_undo"] is None
+    assert conversation["last_write_undo"] == previous_undo
     stored = client.get(f"/api/chat/conversations/{pending['conversation_id']}").json()
     assert [message["role"] for message in stored].count("tool") == 1
     assert [message["content"] for message in stored].count(body["message"]) == 1

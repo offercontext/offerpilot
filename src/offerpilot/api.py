@@ -23,6 +23,7 @@ from offerpilot.ai.agent import (
     ChatModel,
     ChatRunCancelled,
     PendingAction,
+    PendingActionValidationError,
     StalePendingActionError,
     prepare_pending_action,
     resume_after_confirm,
@@ -1460,6 +1461,8 @@ def create_app(
             if fallback is not None:
                 return JSONResponse(fallback)
             return error_response(504, "这次确认处理时间过长，已停止。请重试或取消这次写入。")
+        except PendingActionValidationError as exc:
+            return error_response(422, f"确认参数无效：{exc}")
         except StalePendingActionError:
             return error_response(409, "待确认操作已过期或正在处理中，请刷新对话后重试。")
         except Exception as exc:
@@ -1697,6 +1700,17 @@ def create_app(
                     {
                         "code": "chat_agent_timeout",
                         "message": "这次确认处理时间过长，已停止。请重试或取消这次写入。",
+                        "retryable": True,
+                        "degraded": False,
+                    },
+                )
+                return
+            except PendingActionValidationError as exc:
+                yield emit(
+                    "error",
+                    {
+                        "code": "invalid_confirmation",
+                        "message": f"确认参数无效：{exc}",
                         "retryable": True,
                         "degraded": False,
                     },
@@ -2439,14 +2453,20 @@ def _confirmation_result_recorder(
             undo = (
                 _build_write_undo(effective_pending, [tool_message], undo_seed) if succeeded else {}
             )
+            # Rejection never attempts a handler, so it preserves the previous undo. Every
+            # approved sink call follows a handler attempt; errors are mutation-ambiguous and
+            # therefore clear the previous undo fail-closed.
+            undo_update = undo if approved else None
             if not repo.resolve_pending_confirmation(
                 conversation_id,
                 expected_pending,
                 tool_message,
-                undo,
+                undo_update,
             ):
                 outcome["cas_lost"] = True
-                return
+                raise StalePendingActionError(
+                    "stale pending action: confirmation result compare-and-set failed"
+                )
             outcome.update(
                 {
                     "pending": effective_pending,

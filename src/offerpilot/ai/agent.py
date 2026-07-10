@@ -51,6 +51,10 @@ class StalePendingActionError(ValueError):
     """Raised when a confirmation does not match the checkpoint interrupt."""
 
 
+class PendingActionValidationError(ValueError):
+    """Raised when confirmation arguments fail before a write handler is attempted."""
+
+
 class ChatModel(Protocol):
     def complete(self, messages: list[Message], tools: list[dict[str, Any]]) -> Assistant: ...
 
@@ -363,18 +367,6 @@ class LangGraphAgentRunner:
                     if identity_error:
                         raise StalePendingActionError("stale pending action: " + identity_error)
                     if resume_value.get("approved") is True:
-                        event_args = resume_value.get("effective_args")
-                        effective_pending = PendingAction(
-                            tool_call_id=tool_call_id,
-                            tool_name=tool_name,
-                            args=event_args if isinstance(event_args, str) else tool_args,
-                            human=str(pending["human"]),
-                        )
-                        self._emit_pending_tool_call(
-                            effective_pending,
-                            "approved",
-                        )
-                        confirmed_outcome = (effective_pending, True)
                         try:
                             effective_args = _validated_resumed_args(
                                 tool_call_id,
@@ -384,20 +376,24 @@ class LangGraphAgentRunner:
                                 self._registry,
                             )
                         except ValueError as exc:
-                            result = "错误：" + str(exc)
-                        else:
-                            result = _execute_tool(tool, effective_args)
-                            confirmed_outcome = (
-                                PendingAction(
-                                    tool_call_id=tool_call_id,
-                                    tool_name=tool_name,
-                                    args=effective_args,
-                                    human=_describe_pending_action(
-                                        describe, effective_args, str(pending["human"])
-                                    ),
-                                ),
-                                True,
-                            )
+                            raise PendingActionValidationError(str(exc)) from exc
+                        effective_pending = PendingAction(
+                            tool_call_id=tool_call_id,
+                            tool_name=tool_name,
+                            args=effective_args,
+                            human=_describe_pending_action(
+                                describe, effective_args, str(pending["human"])
+                            ),
+                        )
+                        self._emit_pending_tool_call(
+                            effective_pending,
+                            "approved",
+                        )
+                        confirmed_outcome = (
+                            effective_pending,
+                            True,
+                        )
+                        result = _execute_tool(tool, effective_args)
                     else:
                         self._emit_pending_tool_call(
                             PendingAction(
@@ -487,15 +483,8 @@ class LangGraphAgentRunner:
         rejection_feedback: str,
         confirmation_lock_key: ConfirmationLockKey,
     ) -> tuple[list[Message], str, PendingAction | None]:
+        sink_pending = pending
         if approved is True:
-            if not _claim_fallback_confirmation(
-                confirmation_lock_key,
-                pending,
-            ):
-                raise StalePendingActionError(
-                    "stale pending action: fallback confirmation was already consumed"
-                )
-            self._emit_pending_tool_call(pending, "approved")
             tool = self._registry[pending.tool_name]
             try:
                 parsed_args = _parse_json_object(
@@ -503,14 +492,26 @@ class LangGraphAgentRunner:
                     "pending arguments must be a valid JSON object",
                 )
             except ValueError as exc:
-                result = "错误：" + str(exc)
-            else:
-                effective_args = _encode_json_object(parsed_args)
-                validation_error = _validate_pending_action(tool.get("validate"), effective_args)
-                if validation_error:
-                    result = "错误：" + validation_error
-                else:
-                    result = _execute_tool(tool, effective_args)
+                raise PendingActionValidationError(str(exc)) from exc
+            effective_args = _encode_json_object(parsed_args)
+            validation_error = _validate_pending_action(tool.get("validate"), effective_args)
+            if validation_error:
+                raise PendingActionValidationError(validation_error)
+            sink_pending = PendingAction(
+                tool_call_id=pending.tool_call_id,
+                tool_name=pending.tool_name,
+                args=effective_args,
+                human=pending.human,
+            )
+            self._emit_pending_tool_call(sink_pending, "approved")
+            if not _claim_fallback_confirmation(
+                confirmation_lock_key,
+                pending,
+            ):
+                raise StalePendingActionError(
+                    "stale pending action: fallback confirmation was already consumed"
+                )
+            result = _execute_tool(tool, effective_args)
         else:
             self._emit_pending_tool_call(pending, "rejected")
             result = _rejection_result(rejection_feedback)
@@ -519,7 +520,7 @@ class LangGraphAgentRunner:
         tool_message = Message(role="tool", content=result, tool_call_id=pending.tool_call_id)
         added = [tool_message]
         if self._confirmation_result_sink is not None:
-            self._confirmation_result_sink(pending, approved, tool_message)
+            self._confirmation_result_sink(sink_pending, approved, tool_message)
         more, reply, new_pending = self.run_turn(
             [*messages, tool_message],
             auto_approve=auto_approve,
