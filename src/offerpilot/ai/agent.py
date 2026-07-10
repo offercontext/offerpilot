@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 import math
-from contextlib import AbstractContextManager, nullcontext
+import os
+from collections import OrderedDict
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Literal, Protocol, TypedDict, cast
+from threading import Lock
+from typing import Any, Callable, Iterator, Literal, Protocol, TypedDict, cast
 from uuid import uuid4
 
 from langgraph.checkpoint.memory import InMemorySaver
@@ -22,6 +25,22 @@ _DEFAULT_THREAD_ID = "conversation:ephemeral"
 AgentEventSink = Callable[[dict[str, Any]], None]
 AssistantDeltaSink = Callable[[str], None]
 CancelCheck = Callable[[], bool]
+_IN_MEMORY_CONFIRMATION_NAMESPACE = "offerpilot.ai.agent.in-memory"
+_MAX_FALLBACK_CONFIRMATION_CLAIMS = 4096
+ConfirmationLockKey = tuple[str, str]
+
+
+@dataclass
+class _ConfirmationLockEntry:
+    lock: Any
+    users: int = 0
+
+
+_CONFIRMATION_STATE_GUARD = Lock()
+_CONFIRMATION_LOCKS: dict[ConfirmationLockKey, _ConfirmationLockEntry] = {}
+_FALLBACK_CONFIRMATION_CLAIMS: OrderedDict[
+    tuple[ConfirmationLockKey, str, str], None
+] = OrderedDict()
 
 
 class ChatRunCancelled(RuntimeError):
@@ -53,6 +72,40 @@ class PendingAction:
     tool_name: str
     args: str
     human: str
+
+
+@contextmanager
+def _confirmation_lock(lock_key: ConfirmationLockKey) -> Iterator[None]:
+    with _CONFIRMATION_STATE_GUARD:
+        entry = _CONFIRMATION_LOCKS.get(lock_key)
+        if entry is None:
+            entry = _ConfirmationLockEntry(lock=Lock())
+            _CONFIRMATION_LOCKS[lock_key] = entry
+        entry.users += 1
+    entry.lock.acquire()
+    try:
+        yield
+    finally:
+        entry.lock.release()
+        with _CONFIRMATION_STATE_GUARD:
+            entry.users -= 1
+            if entry.users == 0 and _CONFIRMATION_LOCKS.get(lock_key) is entry:
+                del _CONFIRMATION_LOCKS[lock_key]
+
+
+def _claim_fallback_confirmation(
+    lock_key: ConfirmationLockKey,
+    pending: PendingAction,
+) -> bool:
+    claim_key = (lock_key, pending.tool_call_id, pending.tool_name)
+    with _CONFIRMATION_STATE_GUARD:
+        if claim_key in _FALLBACK_CONFIRMATION_CLAIMS:
+            _FALLBACK_CONFIRMATION_CLAIMS.move_to_end(claim_key)
+            return False
+        _FALLBACK_CONFIRMATION_CLAIMS[claim_key] = None
+        while len(_FALLBACK_CONFIRMATION_CLAIMS) > _MAX_FALLBACK_CONFIRMATION_CLAIMS:
+            _FALLBACK_CONFIRMATION_CLAIMS.popitem(last=False)
+    return True
 
 
 class _GraphState(TypedDict, total=False):
@@ -120,9 +173,30 @@ class LangGraphAgentRunner:
         rejection_feedback: str = "",
     ) -> tuple[list[Message], str, PendingAction | None]:
         approved = approved is True
+        confirmation_lock_key = self._confirmation_lock_key()
+        with _confirmation_lock(confirmation_lock_key):
+            return self._resume_after_confirm_locked(
+                messages,
+                pending,
+                approved,
+                auto_approve,
+                max_iter,
+                rejection_feedback,
+                confirmation_lock_key,
+            )
+
+    def _resume_after_confirm_locked(
+        self,
+        messages: list[Message],
+        pending: PendingAction,
+        approved: bool,
+        auto_approve: bool,
+        max_iter: int,
+        rejection_feedback: str,
+        confirmation_lock_key: ConfirmationLockKey,
+    ) -> tuple[list[Message], str, PendingAction | None]:
         checkpoint_missing = self._checkpoint_path is None or not self._checkpoint_path.exists()
         if checkpoint_missing and not self._has_pending_checkpoint:
-            self._emit_pending_tool_call(pending, "approved" if approved else "rejected")
             return self._resume_without_checkpoint(
                 messages,
                 pending,
@@ -130,6 +204,7 @@ class LangGraphAgentRunner:
                 auto_approve,
                 max_iter,
                 rejection_feedback,
+                confirmation_lock_key,
             )
 
         with self._checkpointer() as checkpointer:
@@ -163,6 +238,15 @@ class LangGraphAgentRunner:
         if new_pending is not None:
             self._has_pending_checkpoint = True
         return added, reply, new_pending
+
+    def _confirmation_lock_key(self) -> ConfirmationLockKey:
+        if self._checkpoint_path is None:
+            checkpoint_identity = _IN_MEMORY_CONFIRMATION_NAMESPACE
+        else:
+            checkpoint_identity = os.path.normcase(
+                str(self._checkpoint_path.expanduser().resolve())
+            )
+        return checkpoint_identity, self._thread_id
 
     def _compile_graph(self, checkpointer: Any) -> Any:
         graph = StateGraph(_GraphState)
@@ -365,9 +449,18 @@ class LangGraphAgentRunner:
         approved: bool,
         auto_approve: bool,
         max_iter: int,
-        rejection_feedback: str = "",
+        rejection_feedback: str,
+        confirmation_lock_key: ConfirmationLockKey,
     ) -> tuple[list[Message], str, PendingAction | None]:
         if approved is True:
+            if not _claim_fallback_confirmation(
+                confirmation_lock_key,
+                pending,
+            ):
+                raise StalePendingActionError(
+                    "stale pending action: fallback confirmation was already consumed"
+                )
+            self._emit_pending_tool_call(pending, "approved")
             tool = self._registry[pending.tool_name]
             try:
                 parsed_args = _parse_json_object(
@@ -384,6 +477,7 @@ class LangGraphAgentRunner:
                 else:
                     result = _execute_tool(tool, effective_args)
         else:
+            self._emit_pending_tool_call(pending, "rejected")
             result = _rejection_result(rejection_feedback)
         self._emit_tool_result(pending.tool_call_id, pending.tool_name, result)
 

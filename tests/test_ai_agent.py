@@ -1,4 +1,6 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier, Lock
 
 import pytest
 
@@ -69,6 +71,19 @@ def _pending(args=None):
         args=json.dumps(args if args is not None else {"id": 7, "status": "offer"}),
         human="change status",
     )
+
+
+@pytest.fixture(autouse=True)
+def _clear_fallback_confirmation_claims():
+    claims = getattr(agent_module, "_FALLBACK_CONFIRMATION_CLAIMS", None)
+    guard = getattr(agent_module, "_CONFIRMATION_STATE_GUARD", None)
+    if claims is not None and guard is not None:
+        with guard:
+            claims.clear()
+    yield
+    if claims is not None and guard is not None:
+        with guard:
+            claims.clear()
 
 
 def test_prepare_pending_action_merges_edited_status_and_preserves_id():
@@ -668,6 +683,251 @@ def test_missing_checkpoint_fallback_executes_effective_args():
     assert calls == ['{"id":7,"status":"rejected"}']
     assert reply == "done"
     assert new_pending is None
+
+
+def test_concurrent_sqlite_confirmations_execute_handler_at_most_once(tmp_path):
+    calls = []
+    calls_lock = Lock()
+
+    def handler(args):
+        with calls_lock:
+            calls.append(args)
+        return '{"ok":true}'
+
+    registry = _editable_registry()
+    registry["update_application_status"]["handler"] = handler
+    checkpoint_path = tmp_path / "concurrent_confirmations.sqlite"
+    thread_id = "conversation:concurrent-sqlite"
+    creator = LangGraphAgentRunner(
+        ScriptedModel(
+            [
+                Assistant(
+                    tool_calls=[
+                        ToolCall(
+                            id="shared-write",
+                            name="update_application_status",
+                            args=json.dumps({"id": 7, "status": "offer"}),
+                        )
+                    ]
+                )
+            ]
+        ),
+        registry,
+        checkpoint_path=checkpoint_path,
+        thread_id=thread_id,
+    )
+    _, _, pending = creator.run_turn([], auto_approve=False, max_iter=8)
+    assert pending is not None
+    runners = [
+        LangGraphAgentRunner(
+            ScriptedModel([Assistant(content=f"done-{index}")]),
+            registry,
+            checkpoint_path=checkpoint_path,
+            thread_id=thread_id,
+        )
+        for index in range(2)
+    ]
+    start = Barrier(3)
+
+    def confirm(runner):
+        start.wait(timeout=5)
+        try:
+            runner.resume_after_confirm(
+                [], pending, approved=True, auto_approve=False, max_iter=8
+            )
+        except StalePendingActionError:
+            return "stale"
+        return "success"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(confirm, runner) for runner in runners]
+        start.wait(timeout=5)
+        outcomes = [future.result(timeout=10) for future in futures]
+
+    assert calls == ['{"id":7,"status":"offer"}']
+    assert sorted(outcomes) == ["stale", "success"]
+
+
+def test_concurrent_fallback_confirmations_execute_handler_at_most_once():
+    calls = []
+    calls_lock = Lock()
+
+    def handler(args):
+        with calls_lock:
+            calls.append(args)
+        return '{"ok":true}'
+
+    registry = _editable_registry()
+    registry["update_application_status"]["handler"] = handler
+    pending = _pending()
+    thread_id = "conversation:concurrent-fallback"
+    runners = [
+        LangGraphAgentRunner(
+            ScriptedModel([Assistant(content=f"done-{index}")]),
+            registry,
+            thread_id=thread_id,
+        )
+        for index in range(2)
+    ]
+    start = Barrier(3)
+
+    def confirm(runner):
+        start.wait(timeout=5)
+        try:
+            runner.resume_after_confirm(
+                [], pending, approved=True, auto_approve=False, max_iter=8
+            )
+        except StalePendingActionError:
+            return "stale"
+        return "success"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(confirm, runner) for runner in runners]
+        start.wait(timeout=5)
+        outcomes = [future.result(timeout=10) for future in futures]
+
+    assert calls == ['{"id":7,"status":"offer"}']
+    assert sorted(outcomes) == ["stale", "success"]
+
+
+def test_rejected_fallback_does_not_claim_write_execution():
+    calls = []
+    registry = _editable_registry(calls)
+    pending = _pending()
+    thread_id = "conversation:rejected-fallback"
+
+    LangGraphAgentRunner(
+        ScriptedModel([Assistant(content="rejected")]),
+        registry,
+        thread_id=thread_id,
+    ).resume_after_confirm(
+        [], pending, approved=False, auto_approve=False, max_iter=8
+    )
+    LangGraphAgentRunner(
+        ScriptedModel([Assistant(content="approved later")]),
+        registry,
+        thread_id=thread_id,
+    ).resume_after_confirm(
+        [], pending, approved=True, auto_approve=False, max_iter=8
+    )
+
+    assert calls == ['{"id":7,"status":"offer"}']
+
+
+def test_fallback_handler_error_remains_claimed_against_replay():
+    calls = []
+
+    def handler(args):
+        calls.append(args)
+        raise RuntimeError("failed after side effect")
+
+    registry = _editable_registry()
+    registry["update_application_status"]["handler"] = handler
+    pending = _pending()
+    thread_id = "conversation:fallback-handler-error"
+
+    added, _, _ = LangGraphAgentRunner(
+        ScriptedModel([Assistant(content="write may have completed")]),
+        registry,
+        thread_id=thread_id,
+    ).resume_after_confirm(
+        [], pending, approved=True, auto_approve=False, max_iter=8
+    )
+    assert added[0].content.startswith("错误：")
+
+    with pytest.raises(StalePendingActionError, match="already consumed"):
+        LangGraphAgentRunner(
+            ScriptedModel([Assistant(content="must not retry")]),
+            registry,
+            thread_id=thread_id,
+        ).resume_after_confirm(
+            [], pending, approved=True, auto_approve=False, max_iter=8
+        )
+
+    assert calls == ['{"id":7,"status":"offer"}']
+
+
+def test_fallback_validation_error_remains_claimed_and_emits_approval():
+    calls = []
+    events = []
+    registry = _editable_registry(calls, validate=lambda args: "blocked arguments")
+    pending = _pending()
+    thread_id = "conversation:fallback-validation-error"
+
+    LangGraphAgentRunner(
+        ScriptedModel([Assistant(content="validation blocked")]),
+        registry,
+        thread_id=thread_id,
+        event_sink=events.append,
+    ).resume_after_confirm(
+        [], pending, approved=True, auto_approve=False, max_iter=8
+    )
+
+    with pytest.raises(StalePendingActionError, match="already consumed"):
+        LangGraphAgentRunner(
+            ScriptedModel([Assistant(content="must not retry")]),
+            registry,
+            thread_id=thread_id,
+            event_sink=events.append,
+        ).resume_after_confirm(
+            [], pending, approved=True, auto_approve=False, max_iter=8
+        )
+
+    assert calls == []
+    assert sum(
+        event["event"] == "tool_call" and event["data"].get("confirm_mode") == "approved"
+        for event in events
+    ) == 1
+
+
+def test_confirmation_locks_are_scoped_by_thread_id():
+    calls = []
+    calls_lock = Lock()
+    handlers_entered = Barrier(2)
+
+    def handler(args):
+        handlers_entered.wait(timeout=5)
+        with calls_lock:
+            calls.append(args)
+        return '{"ok":true}'
+
+    registry = _editable_registry()
+    registry["update_application_status"]["handler"] = handler
+    pending_actions = [
+        PendingAction(
+            tool_call_id=f"write-{index}",
+            tool_name="update_application_status",
+            args=json.dumps({"id": index, "status": "offer"}),
+            human="change status",
+        )
+        for index in (1, 2)
+    ]
+    runners = [
+        LangGraphAgentRunner(
+            ScriptedModel([Assistant(content=f"done-{index}")]),
+            registry,
+            thread_id=f"conversation:parallel-{index}",
+        )
+        for index in (1, 2)
+    ]
+    start = Barrier(3)
+
+    def confirm(runner, pending):
+        start.wait(timeout=5)
+        runner.resume_after_confirm(
+            [], pending, approved=True, auto_approve=False, max_iter=8
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(confirm, runner, pending)
+            for runner, pending in zip(runners, pending_actions, strict=True)
+        ]
+        start.wait(timeout=5)
+        for future in futures:
+            future.result(timeout=10)
+
+    assert sorted(json.loads(args)["id"] for args in calls) == [1, 2]
 
 
 @pytest.mark.parametrize(
