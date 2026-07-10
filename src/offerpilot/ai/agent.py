@@ -509,6 +509,9 @@ class LangGraphAgentRunner:
                 human=pending.human,
             )
             self._emit_pending_tool_call(sink_pending, "approved")
+            self._raise_if_cancelled()
+            if self._confirmation_attempt_sink is not None:
+                self._confirmation_attempt_sink(sink_pending)
             if not _claim_fallback_confirmation(
                 confirmation_lock_key,
                 pending,
@@ -516,9 +519,6 @@ class LangGraphAgentRunner:
                 raise StalePendingActionError(
                     "stale pending action: fallback confirmation was already consumed"
                 )
-            self._raise_if_cancelled()
-            if self._confirmation_attempt_sink is not None:
-                self._confirmation_attempt_sink(sink_pending)
             result = _execute_tool(tool, effective_args)
         else:
             self._emit_pending_tool_call(pending, "rejected")

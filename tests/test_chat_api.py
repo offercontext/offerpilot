@@ -1,6 +1,7 @@
 import json
 import re
 import time
+from threading import Event
 
 import pytest
 from fastapi.testclient import TestClient
@@ -2869,6 +2870,91 @@ def test_chat_confirm_timeout_before_result_sink_keeps_pending(tmp_path, monkeyp
     assert client.get("/api/chat/conversations").json()[0]["pending_action"] is not None
     stored = client.get(f"/api/chat/conversations/{pending['conversation_id']}").json()
     assert [message["role"] for message in stored].count("tool") == 0
+
+
+@pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
+def test_chat_confirm_fallback_timeout_before_handler_keeps_retry_claim(
+    tmp_path,
+    monkeypatch,
+    endpoint,
+):
+    import offerpilot.ai.agent as agent_module
+    import offerpilot.api as api_module
+
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="fallback-prehandler-timeout",
+                        name="update_application_status",
+                        args=json.dumps({"id": 1, "status": "offer"}),
+                    )
+                ]
+            ),
+            Assistant(content="updated once"),
+        ]
+    )
+    app_client, client, application, pending = _create_status_confirmation(tmp_path, model)
+    (tmp_path / "agent_checkpoints.sqlite").unlink()
+    validation_started = Event()
+    release_validation = Event()
+    original_validate = agent_module._validate_pending_action
+    original_update = ApplicationsRepository.update_full
+    handler_calls = []
+
+    def block_first_validation(validate, args):
+        if not validation_started.is_set():
+            validation_started.set()
+            assert release_validation.wait(timeout=5)
+        return original_validate(validate, args)
+
+    def record_update(self, app_id, data):
+        handler_calls.append((app_id, data.status))
+        return original_update(self, app_id, data)
+
+    monkeypatch.setattr(agent_module, "_validate_pending_action", block_first_validation)
+    monkeypatch.setattr(ApplicationsRepository, "update_full", record_update)
+    monkeypatch.setattr(api_module, "CHAT_AGENT_TIMEOUT_SECONDS", 0.05)
+
+    first = client.post(
+        endpoint,
+        json={
+            "conversation_id": pending["conversation_id"],
+            "approved": True,
+            "confirmation_token": pending["pending_action"]["confirmation_token"],
+        },
+    )
+    assert validation_started.is_set()
+    if endpoint.endswith("/stream"):
+        timeout_error = _parse_sse_events(first.text)[-1]
+        assert timeout_error["data"]["data"]["code"] == "chat_agent_timeout"
+        assert timeout_error["data"]["data"]["retryable"] is True
+    else:
+        assert first.status_code == 504
+    assert handler_calls == []
+    assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "interview"
+    assert client.get("/api/chat/conversations").json()[0]["pending_action"] is not None
+
+    release_validation.set()
+    monkeypatch.setattr(api_module, "CHAT_AGENT_TIMEOUT_SECONDS", 1.0)
+    retry = client.post(
+        endpoint,
+        json={
+            "conversation_id": pending["conversation_id"],
+            "approved": True,
+            "confirmation_token": pending["pending_action"]["confirmation_token"],
+        },
+    )
+
+    if endpoint.endswith("/stream"):
+        retry_events = _parse_sse_events(retry.text)
+        assert retry_events[-1]["event"] == "completed"
+    else:
+        assert retry.status_code == 200
+    assert handler_calls == [(application["id"], "offer")]
+    assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
+    assert client.get("/api/chat/conversations").json()[0]["pending_action"] is None
 
 
 def test_chat_confirm_add_note_returns_saved_record_summary(tmp_path):
