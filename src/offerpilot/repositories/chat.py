@@ -8,6 +8,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from offerpilot.ai.agent import PendingAction
+from offerpilot.ai.types import Message
 from offerpilot.models import ChatMessage, Conversation
 
 
@@ -51,7 +52,9 @@ class ChatRepository:
         with self._session_factory() as session:
             return list(session.scalars(statement))
 
-    def update_conversation(self, conversation_id: int, values: dict[str, Any]) -> Conversation | None:
+    def update_conversation(
+        self, conversation_id: int, values: dict[str, Any]
+    ) -> Conversation | None:
         if not values:
             return self.get_conversation(conversation_id)
         with self._session_factory() as session:
@@ -129,6 +132,114 @@ class ChatRepository:
             )
             session.commit()
 
+    def set_pending_action_if_empty(
+        self,
+        conversation_id: int,
+        pending: PendingAction,
+    ) -> bool:
+        with self._session_factory() as session:
+            result = session.execute(
+                update(Conversation)
+                .where(Conversation.id == conversation_id)
+                .where(Conversation.pending_tool_name == "")
+                .values(
+                    pending_tool_call_id=pending.tool_call_id,
+                    pending_tool_name=pending.tool_name,
+                    pending_args=pending.args,
+                    pending_human=pending.human,
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            session.commit()
+            return getattr(result, "rowcount", 0) == 1
+
+    def persist_chained_confirmation_if_empty(
+        self,
+        conversation_id: int,
+        pending: PendingAction,
+        messages: list[dict[str, str]],
+    ) -> bool:
+        now = datetime.now(timezone.utc)
+        with self._session_factory() as session:
+            result = session.execute(
+                update(Conversation)
+                .where(Conversation.id == conversation_id)
+                .where(Conversation.pending_tool_name == "")
+                .where(Conversation.clarification_tool_name == "")
+                .values(
+                    pending_tool_call_id=pending.tool_call_id,
+                    pending_tool_name=pending.tool_name,
+                    pending_args=pending.args,
+                    pending_human=pending.human,
+                    clarification_tool_call_id="",
+                    clarification_tool_name="",
+                    clarification_args="",
+                    clarification_human="",
+                    clarification_question="",
+                    updated_at=now,
+                )
+            )
+            if getattr(result, "rowcount", 0) != 1:
+                session.rollback()
+                return False
+            for message in messages:
+                session.add(
+                    ChatMessage(
+                        conversation_id=conversation_id,
+                        role=message.get("role", ""),
+                        content=message.get("content", ""),
+                        tool_calls=message.get("tool_calls", ""),
+                        tool_call_id=message.get("tool_call_id", ""),
+                        provider_blocks=message.get("provider_blocks", ""),
+                    )
+                )
+            session.commit()
+            return True
+
+    def persist_confirmation_clarification_if_empty(
+        self,
+        conversation_id: int,
+        pending: PendingAction,
+        question: str,
+        messages: list[dict[str, str]],
+    ) -> bool:
+        now = datetime.now(timezone.utc)
+        with self._session_factory() as session:
+            result = session.execute(
+                update(Conversation)
+                .where(Conversation.id == conversation_id)
+                .where(Conversation.pending_tool_name == "")
+                .where(Conversation.clarification_tool_name == "")
+                .values(
+                    pending_tool_call_id="",
+                    pending_tool_name="",
+                    pending_args="",
+                    pending_human="",
+                    clarification_tool_call_id=pending.tool_call_id,
+                    clarification_tool_name=pending.tool_name,
+                    clarification_args=pending.args,
+                    clarification_human=pending.human,
+                    clarification_question=question,
+                    updated_at=now,
+                )
+            )
+            if getattr(result, "rowcount", 0) != 1:
+                session.rollback()
+                return False
+            for message in messages:
+                session.add(
+                    ChatMessage(
+                        conversation_id=conversation_id,
+                        role=message.get("role", ""),
+                        content=message.get("content", ""),
+                        tool_calls=message.get("tool_calls", ""),
+                        tool_call_id=message.get("tool_call_id", ""),
+                        provider_blocks=message.get("provider_blocks", ""),
+                    )
+                )
+            session.commit()
+            return True
+
     def clear_pending_action(self, conversation_id: int) -> None:
         with self._session_factory() as session:
             session.execute(
@@ -143,6 +254,49 @@ class ChatRepository:
                 )
             )
             session.commit()
+
+    def resolve_pending_confirmation(
+        self,
+        conversation_id: int,
+        expected: PendingAction,
+        tool_message: Message,
+        undo: dict[str, Any],
+    ) -> bool:
+        now = datetime.now(timezone.utc)
+        with self._session_factory() as session:
+            result = session.execute(
+                update(Conversation)
+                .where(Conversation.id == conversation_id)
+                .where(Conversation.pending_tool_call_id == expected.tool_call_id)
+                .where(Conversation.pending_tool_name == expected.tool_name)
+                .where(Conversation.pending_args == expected.args)
+                .values(
+                    pending_tool_call_id="",
+                    pending_tool_name="",
+                    pending_args="",
+                    pending_human="",
+                    clarification_tool_call_id="",
+                    clarification_tool_name="",
+                    clarification_args="",
+                    clarification_human="",
+                    clarification_question="",
+                    last_write_undo_json=(json.dumps(undo, ensure_ascii=False) if undo else ""),
+                    updated_at=now,
+                )
+            )
+            if getattr(result, "rowcount", 0) != 1:
+                session.rollback()
+                return False
+            session.add(
+                ChatMessage(
+                    conversation_id=conversation_id,
+                    role=tool_message.role,
+                    content=tool_message.content,
+                    tool_call_id=tool_message.tool_call_id,
+                )
+            )
+            session.commit()
+            return True
 
     def get_pending_clarification(self, conversation_id: int) -> tuple[PendingAction, str] | None:
         with self._session_factory() as session:
@@ -228,9 +382,28 @@ class ChatRepository:
             )
             session.commit()
 
+    def clear_last_write_undo_if_matches(
+        self,
+        conversation_id: int,
+        expected: dict[str, Any],
+    ) -> bool:
+        with self._session_factory() as session:
+            result = session.execute(
+                update(Conversation)
+                .where(Conversation.id == conversation_id)
+                .where(
+                    Conversation.last_write_undo_json == json.dumps(expected, ensure_ascii=False)
+                )
+                .values(last_write_undo_json="", updated_at=datetime.now(timezone.utc))
+            )
+            session.commit()
+            return getattr(result, "rowcount", 0) == 1
+
     def delete_conversation(self, conversation_id: int) -> None:
         with self._session_factory() as session:
-            session.execute(delete(ChatMessage).where(ChatMessage.conversation_id == conversation_id))
+            session.execute(
+                delete(ChatMessage).where(ChatMessage.conversation_id == conversation_id)
+            )
             conversation = session.get(Conversation, conversation_id)
             if conversation is not None:
                 session.delete(conversation)

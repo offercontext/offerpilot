@@ -45,6 +45,18 @@ class RecordingScriptedModel(ScriptedModel):
         return super().complete(messages, tools)
 
 
+class FailAfterPendingModel:
+    def __init__(self, tool_call):
+        self.tool_call = tool_call
+        self.calls = 0
+
+    def complete(self, messages, tools):
+        self.calls += 1
+        if self.calls == 1:
+            return Assistant(tool_calls=[self.tool_call])
+        raise RuntimeError("provider failed after confirmed tool")
+
+
 def _editable_registry(calls=None, validate=None):
     calls = calls if calls is not None else []
     tool = {
@@ -323,10 +335,13 @@ def test_checkpoint_resume_rejects_stale_pending_identity_without_approved_event
     assert reply == "stale confirmation rejected"
     assert new_pending is None
     assert added[0].role == "tool"
-    assert sum(
-        event["event"] == "tool_call" and event["data"].get("confirm_mode") == "approved"
-        for event in events
-    ) == 1
+    assert (
+        sum(
+            event["event"] == "tool_call" and event["data"].get("confirm_mode") == "approved"
+            for event in events
+        )
+        == 1
+    )
 
 
 def test_confirmation_race_preserves_replacement_checkpoint(monkeypatch):
@@ -403,15 +418,16 @@ def test_confirmation_race_preserves_replacement_checkpoint(monkeypatch):
     monkeypatch.setattr(runner, "_compile_graph", compile_with_race)
 
     with pytest.raises(StalePendingActionError, match="stale pending action"):
-        runner.resume_after_confirm(
-            [], pending_a, approved=True, auto_approve=False, max_iter=8
-        )
+        runner.resume_after_confirm([], pending_a, approved=True, auto_approve=False, max_iter=8)
 
     assert calls == ['{"id":7,"status":"offer"}']
-    assert sum(
-        event["event"] == "tool_call" and event["data"].get("confirm_mode") == "approved"
-        for event in events
-    ) == 1
+    assert (
+        sum(
+            event["event"] == "tool_call" and event["data"].get("confirm_mode") == "approved"
+            for event in events
+        )
+        == 1
+    )
 
     pending_b = replacement["pending"]
     added, reply, new_pending = runner.resume_after_confirm(
@@ -426,10 +442,13 @@ def test_confirmation_race_preserves_replacement_checkpoint(monkeypatch):
     assert added[0].tool_call_id == "call-b"
     assert reply == "replacement completed"
     assert new_pending is None
-    assert sum(
-        event["event"] == "tool_call" and event["data"].get("confirm_mode") == "approved"
-        for event in events
-    ) == 2
+    assert (
+        sum(
+            event["event"] == "tool_call" and event["data"].get("confirm_mode") == "approved"
+            for event in events
+        )
+        == 2
+    )
 
 
 def test_mapped_confirmation_allows_chained_write_to_create_fresh_interrupt():
@@ -520,9 +539,7 @@ def test_missing_resume_identity_preserves_checkpoint(monkeypatch):
 
     monkeypatch.setattr(agent_module, "Command", command_without_identity)
     with pytest.raises(StalePendingActionError, match="stale pending action"):
-        runner.resume_after_confirm(
-            [], pending, approved=True, auto_approve=False, max_iter=8
-        )
+        runner.resume_after_confirm([], pending, approved=True, auto_approve=False, max_iter=8)
 
     assert calls == []
     monkeypatch.setattr(agent_module, "Command", original_command)
@@ -732,9 +749,7 @@ def test_concurrent_sqlite_confirmations_execute_handler_at_most_once(tmp_path):
     def confirm(runner):
         start.wait(timeout=5)
         try:
-            runner.resume_after_confirm(
-                [], pending, approved=True, auto_approve=False, max_iter=8
-            )
+            runner.resume_after_confirm([], pending, approved=True, auto_approve=False, max_iter=8)
         except StalePendingActionError:
             return "stale"
         return "success"
@@ -774,9 +789,7 @@ def test_concurrent_fallback_confirmations_execute_handler_at_most_once():
     def confirm(runner):
         start.wait(timeout=5)
         try:
-            runner.resume_after_confirm(
-                [], pending, approved=True, auto_approve=False, max_iter=8
-            )
+            runner.resume_after_confirm([], pending, approved=True, auto_approve=False, max_iter=8)
         except StalePendingActionError:
             return "stale"
         return "success"
@@ -800,16 +813,12 @@ def test_rejected_fallback_does_not_claim_write_execution():
         ScriptedModel([Assistant(content="rejected")]),
         registry,
         thread_id=thread_id,
-    ).resume_after_confirm(
-        [], pending, approved=False, auto_approve=False, max_iter=8
-    )
+    ).resume_after_confirm([], pending, approved=False, auto_approve=False, max_iter=8)
     LangGraphAgentRunner(
         ScriptedModel([Assistant(content="approved later")]),
         registry,
         thread_id=thread_id,
-    ).resume_after_confirm(
-        [], pending, approved=True, auto_approve=False, max_iter=8
-    )
+    ).resume_after_confirm([], pending, approved=True, auto_approve=False, max_iter=8)
 
     assert calls == ['{"id":7,"status":"offer"}']
 
@@ -830,9 +839,7 @@ def test_fallback_handler_error_remains_claimed_against_replay():
         ScriptedModel([Assistant(content="write may have completed")]),
         registry,
         thread_id=thread_id,
-    ).resume_after_confirm(
-        [], pending, approved=True, auto_approve=False, max_iter=8
-    )
+    ).resume_after_confirm([], pending, approved=True, auto_approve=False, max_iter=8)
     assert added[0].content.startswith("错误：")
 
     with pytest.raises(StalePendingActionError, match="already consumed"):
@@ -840,9 +847,7 @@ def test_fallback_handler_error_remains_claimed_against_replay():
             ScriptedModel([Assistant(content="must not retry")]),
             registry,
             thread_id=thread_id,
-        ).resume_after_confirm(
-            [], pending, approved=True, auto_approve=False, max_iter=8
-        )
+        ).resume_after_confirm([], pending, approved=True, auto_approve=False, max_iter=8)
 
     assert calls == ['{"id":7,"status":"offer"}']
 
@@ -859,9 +864,7 @@ def test_fallback_validation_error_remains_claimed_and_emits_approval():
         registry,
         thread_id=thread_id,
         event_sink=events.append,
-    ).resume_after_confirm(
-        [], pending, approved=True, auto_approve=False, max_iter=8
-    )
+    ).resume_after_confirm([], pending, approved=True, auto_approve=False, max_iter=8)
 
     with pytest.raises(StalePendingActionError, match="already consumed"):
         LangGraphAgentRunner(
@@ -869,15 +872,16 @@ def test_fallback_validation_error_remains_claimed_and_emits_approval():
             registry,
             thread_id=thread_id,
             event_sink=events.append,
-        ).resume_after_confirm(
-            [], pending, approved=True, auto_approve=False, max_iter=8
-        )
+        ).resume_after_confirm([], pending, approved=True, auto_approve=False, max_iter=8)
 
     assert calls == []
-    assert sum(
-        event["event"] == "tool_call" and event["data"].get("confirm_mode") == "approved"
-        for event in events
-    ) == 1
+    assert (
+        sum(
+            event["event"] == "tool_call" and event["data"].get("confirm_mode") == "approved"
+            for event in events
+        )
+        == 1
+    )
 
 
 def test_confirmation_locks_are_scoped_by_thread_id():
@@ -914,9 +918,7 @@ def test_confirmation_locks_are_scoped_by_thread_id():
 
     def confirm(runner, pending):
         start.wait(timeout=5)
-        runner.resume_after_confirm(
-            [], pending, approved=True, auto_approve=False, max_iter=8
-        )
+        runner.resume_after_confirm([], pending, approved=True, auto_approve=False, max_iter=8)
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [
@@ -1161,6 +1163,79 @@ def test_empty_rejection_feedback_keeps_generic_rejection_message():
     assert added[0].content == "用户拒绝了该操作，请勿执行，并询问用户下一步希望怎么做。"
 
 
+def test_confirmation_result_sink_runs_before_followup_provider_failure(tmp_path):
+    calls = []
+    outcomes = []
+    checkpoint_path = tmp_path / "agent.sqlite"
+    pending = _pending()
+    model = FailAfterPendingModel(
+        ToolCall(
+            id=pending.tool_call_id,
+            name=pending.tool_name,
+            args=pending.args,
+        )
+    )
+    _, _, stored_pending = run_turn(
+        model,
+        _editable_registry(calls),
+        [],
+        auto_approve=False,
+        checkpoint_path=checkpoint_path,
+        thread_id="conversation:result-sink",
+    )
+
+    with pytest.raises(RuntimeError, match="provider failed after confirmed tool"):
+        resume_after_confirm(
+            model,
+            _editable_registry(calls),
+            [],
+            stored_pending,
+            approved=True,
+            auto_approve=False,
+            checkpoint_path=checkpoint_path,
+            thread_id="conversation:result-sink",
+            confirmation_result_sink=lambda effective, approved, message: outcomes.append(
+                (effective, approved, message)
+            ),
+        )
+
+    assert len(calls) == 1
+    assert len(outcomes) == 1
+    effective, approved, message = outcomes[0]
+    assert effective.tool_call_id == stored_pending.tool_call_id
+    assert effective.tool_name == stored_pending.tool_name
+    assert json.loads(effective.args) == json.loads(stored_pending.args)
+    assert approved is True
+    assert message.role == "tool"
+    assert message.tool_call_id == stored_pending.tool_call_id
+    assert message.content == '{"ok":true}'
+
+
+def test_confirmation_result_sink_records_approved_tool_error():
+    outcomes = []
+    registry = _editable_registry()
+    registry["update_application_status"]["handler"] = lambda args: "错误：write failed"
+
+    added, _, _ = resume_after_confirm(
+        ScriptedModel([Assistant(content="handled")]),
+        registry,
+        [],
+        _pending(),
+        approved=True,
+        auto_approve=False,
+        confirmation_result_sink=lambda effective, approved, message: outcomes.append(
+            (effective, approved, message)
+        ),
+    )
+
+    assert len(outcomes) == 1
+    effective, approved, message = outcomes[0]
+    assert effective == _pending()
+    assert approved is True
+    assert message.content == "错误：write failed"
+    assert added[0] == message
+
+
 def test_write_tool_pauses_before_execution():
     calls = []
     registry = {
@@ -1388,7 +1463,9 @@ def test_auto_approved_write_still_runs_validation_before_execution():
     registry = {
         "create_application": {
             "write": True,
-            "validate": lambda args: "create_application requires explicit user confirmation before adding a new position",
+            "validate": lambda args: (
+                "create_application requires explicit user confirmation before adding a new position"
+            ),
             "handler": lambda args: calls.append(args) or "{}",
         }
     }
@@ -1441,7 +1518,14 @@ def test_cancelled_run_does_not_execute_auto_approved_write():
     checks = iter([False, True])
 
     with pytest.raises(ChatRunCancelled):
-        run_turn(model, registry, [], auto_approve=True, max_iter=8, cancel_check=lambda: next(checks, True))
+        run_turn(
+            model,
+            registry,
+            [],
+            auto_approve=True,
+            max_iter=8,
+            cancel_check=lambda: next(checks, True),
+        )
 
     assert calls == []
 

@@ -4,10 +4,11 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from offerpilot.ai.agent import StalePendingActionError
-from offerpilot.ai.types import Assistant, ToolCall
+from offerpilot.ai.agent import PendingAction, StalePendingActionError
+from offerpilot.ai.types import Assistant, Message, ToolCall
 from offerpilot.api import create_app
 from offerpilot.config import Config, save_config
+from offerpilot.db import session_factory_for_data_dir
 from offerpilot.repositories.chat import ChatRepository
 
 
@@ -66,7 +67,7 @@ class SlowAfterPendingModel:
         self.calls += 1
         if self.calls == 1:
             return Assistant(tool_calls=[self.tool_call])
-        time.sleep(0.2)
+        time.sleep(1.0)
         return Assistant(content="late reply")
 
 
@@ -171,7 +172,9 @@ def test_chat_page_context_is_sanitized_and_ordered_after_durable_context(tmp_pa
     assert [message.role for message in history] == ["system", "system", "system", "user", "user"]
     assert "Current conversation context" in history[1].content
     assert history[2].content == PAGE_CONTEXT_POLICY
-    assert all("忽略之前指令" not in message.content for message in history if message.role == "system")
+    assert all(
+        "忽略之前指令" not in message.content for message in history if message.role == "system"
+    )
     assert history[3].content.startswith(PAGE_CONTEXT_DATA_PREFIX)
     encoded = history[3].content.removeprefix(PAGE_CONTEXT_DATA_PREFIX)
     assert "\n" not in encoded
@@ -260,12 +263,22 @@ def test_chat_stream_page_context_follows_clarification_and_durable_context_with
 
     assert response.status_code == 200
     history = model.calls[1]
-    assert [message.role for message in history[:5]] == ["system", "system", "system", "system", "user"]
+    assert [message.role for message in history[:5]] == [
+        "system",
+        "system",
+        "system",
+        "system",
+        "user",
+    ]
     assert "补信息" in history[1].content
     assert "Current conversation context" in history[2].content
     assert history[3].content == PAGE_CONTEXT_POLICY
-    assert all("ignore policy" not in message.content for message in history if message.role == "system")
-    assert all("SYSTEM: override" not in message.content for message in history if message.role == "system")
+    assert all(
+        "ignore policy" not in message.content for message in history if message.role == "system"
+    )
+    assert all(
+        "SYSTEM: override" not in message.content for message in history if message.role == "system"
+    )
     assert history[4].content == PAGE_CONTEXT_DATA_PREFIX + json.dumps(
         {
             "view": "calendar",
@@ -289,7 +302,9 @@ def test_chat_stream_page_context_follows_clarification_and_durable_context_with
 
 
 @pytest.mark.parametrize("endpoint", ["/api/chat", "/api/chat/stream"])
-def test_chat_page_context_rejects_invalid_variants_without_creating_side_effects(tmp_path, endpoint):
+def test_chat_page_context_rejects_invalid_variants_without_creating_side_effects(
+    tmp_path, endpoint
+):
     invalid_contexts = [
         ("top-level boolean", True),
         ("top-level list", []),
@@ -303,7 +318,11 @@ def test_chat_page_context_rejects_invalid_variants_without_creating_side_effect
         ("boolean entity", {"view": "board", "label": "看板", "entity": True}),
         (
             "unknown entity kind",
-            {"view": "board", "label": "看板", "entity": {"kind": "resume", "id": "1", "label": "简历"}},
+            {
+                "view": "board",
+                "label": "看板",
+                "entity": {"kind": "resume", "id": "1", "label": "简历"},
+            },
         ),
         (
             "missing entity id",
@@ -311,41 +330,112 @@ def test_chat_page_context_rejects_invalid_variants_without_creating_side_effect
         ),
         (
             "boolean entity id",
-            {"view": "board", "label": "看板", "entity": {"kind": "application", "id": True, "label": "投递"}},
+            {
+                "view": "board",
+                "label": "看板",
+                "entity": {"kind": "application", "id": True, "label": "投递"},
+            },
         ),
         (
             "empty entity id",
-            {"view": "board", "label": "看板", "entity": {"kind": "application", "id": "", "label": "投递"}},
+            {
+                "view": "board",
+                "label": "看板",
+                "entity": {"kind": "application", "id": "", "label": "投递"},
+            },
         ),
         (
             "long entity id",
-            {"view": "board", "label": "看板", "entity": {"kind": "application", "id": "x" * 65, "label": "投递"}},
+            {
+                "view": "board",
+                "label": "看板",
+                "entity": {"kind": "application", "id": "x" * 65, "label": "投递"},
+            },
         ),
         (
             "long entity label",
-            {"view": "board", "label": "看板", "entity": {"kind": "application", "id": "1", "label": "x" * 121}},
+            {
+                "view": "board",
+                "label": "看板",
+                "entity": {"kind": "application", "id": "1", "label": "x" * 121},
+            },
         ),
         (
             "boolean entity description",
-            {"view": "board", "label": "看板", "entity": {"kind": "application", "id": "1", "label": "投递", "description": False}},
+            {
+                "view": "board",
+                "label": "看板",
+                "entity": {"kind": "application", "id": "1", "label": "投递", "description": False},
+            },
         ),
         (
             "long entity description",
-            {"view": "board", "label": "看板", "entity": {"kind": "application", "id": "1", "label": "投递", "description": "x" * 241}},
+            {
+                "view": "board",
+                "label": "看板",
+                "entity": {
+                    "kind": "application",
+                    "id": "1",
+                    "label": "投递",
+                    "description": "x" * 241,
+                },
+            },
         ),
         ("boolean filters", {"view": "board", "label": "看板", "filters": True}),
         ("object filters", {"view": "board", "label": "看板", "filters": {}}),
         (
             "too many filters",
-            {"view": "board", "label": "看板", "filters": [{"key": str(i), "label": "筛选", "value": "值"} for i in range(9)]},
+            {
+                "view": "board",
+                "label": "看板",
+                "filters": [{"key": str(i), "label": "筛选", "value": "值"} for i in range(9)],
+            },
         ),
         ("boolean filter", {"view": "board", "label": "看板", "filters": [True]}),
-        ("missing filter key", {"view": "board", "label": "看板", "filters": [{"label": "筛选", "value": "值"}]}),
-        ("boolean filter key", {"view": "board", "label": "看板", "filters": [{"key": True, "label": "筛选", "value": "值"}]}),
-        ("long filter key", {"view": "board", "label": "看板", "filters": [{"key": "x" * 41, "label": "筛选", "value": "值"}]}),
-        ("long filter label", {"view": "board", "label": "看板", "filters": [{"key": "status", "label": "x" * 81, "value": "值"}]}),
-        ("boolean filter value", {"view": "board", "label": "看板", "filters": [{"key": "status", "label": "筛选", "value": False}]}),
-        ("long filter value", {"view": "board", "label": "看板", "filters": [{"key": "status", "label": "筛选", "value": "x" * 161}]}),
+        (
+            "missing filter key",
+            {"view": "board", "label": "看板", "filters": [{"label": "筛选", "value": "值"}]},
+        ),
+        (
+            "boolean filter key",
+            {
+                "view": "board",
+                "label": "看板",
+                "filters": [{"key": True, "label": "筛选", "value": "值"}],
+            },
+        ),
+        (
+            "long filter key",
+            {
+                "view": "board",
+                "label": "看板",
+                "filters": [{"key": "x" * 41, "label": "筛选", "value": "值"}],
+            },
+        ),
+        (
+            "long filter label",
+            {
+                "view": "board",
+                "label": "看板",
+                "filters": [{"key": "status", "label": "x" * 81, "value": "值"}],
+            },
+        ),
+        (
+            "boolean filter value",
+            {
+                "view": "board",
+                "label": "看板",
+                "filters": [{"key": "status", "label": "筛选", "value": False}],
+            },
+        ),
+        (
+            "long filter value",
+            {
+                "view": "board",
+                "label": "看板",
+                "filters": [{"key": "status", "label": "筛选", "value": "x" * 161}],
+            },
+        ),
     ]
     model = CapturingScriptedModel([Assistant(content="must not run")])
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
@@ -379,7 +469,10 @@ def test_chat_page_context_validation_does_not_append_to_existing_conversation(t
     )
 
     assert response.status_code == 422
-    assert client.get(f"/api/chat/conversations/{created['conversation_id']}").json() == before_messages
+    assert (
+        client.get(f"/api/chat/conversations/{created['conversation_id']}").json()
+        == before_messages
+    )
     assert client.get("/api/chat/conversations").json()[0] == before_conversation
     assert len(model.calls) == 1
 
@@ -418,7 +511,9 @@ def test_chat_page_context_accepts_each_supported_view(tmp_path, view):
 
     assert response.status_code == 200
     assert model.calls[0][1].content == PAGE_CONTEXT_POLICY
-    assert json.loads(model.calls[0][2].content.removeprefix(PAGE_CONTEXT_DATA_PREFIX))["view"] == view
+    assert (
+        json.loads(model.calls[0][2].content.removeprefix(PAGE_CONTEXT_DATA_PREFIX))["view"] == view
+    )
 
 
 def test_chat_page_context_accepts_entity_id_at_64_character_boundary(tmp_path):
@@ -443,7 +538,10 @@ def test_chat_page_context_accepts_entity_id_at_64_character_boundary(tmp_path):
     assert response.status_code == 200
     data_message = model.calls[0][2]
     assert data_message.role == "user"
-    assert json.loads(data_message.content.removeprefix(PAGE_CONTEXT_DATA_PREFIX))["entity"]["id"] == entity_id
+    assert (
+        json.loads(data_message.content.removeprefix(PAGE_CONTEXT_DATA_PREFIX))["entity"]["id"]
+        == entity_id
+    )
 
 
 def test_chat_stream_emits_pilot_sse_v1_sequence(tmp_path):
@@ -541,7 +639,9 @@ def test_chat_stream_emits_tool_call_and_result_events(tmp_path):
 
 
 def test_chat_stream_keeps_tool_events_when_followup_model_call_fails(tmp_path):
-    model = FailAfterWriteModel(ToolCall(id="read-before-fail", name="list_applications", args="{}"))
+    model = FailAfterWriteModel(
+        ToolCall(id="read-before-fail", name="list_applications", args="{}")
+    )
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
 
     response = client.post("/api/chat/stream", json={"message": "看看投递", "conversation_id": 0})
@@ -607,7 +707,7 @@ def test_chat_confirm_stream_executes_pending_write_and_completes(tmp_path):
     assert "offer" in completed["message"]
 
 
-def test_chat_confirm_stream_preserves_pending_when_followup_model_fails(tmp_path):
+def test_chat_confirm_stream_recovers_committed_write_when_followup_model_fails(tmp_path):
     app_client = TestClient(create_app(data_dir=tmp_path))
     application = app_client.post(
         "/api/applications",
@@ -630,16 +730,22 @@ def test_chat_confirm_stream_preserves_pending_when_followup_model_fails(tmp_pat
         json={"conversation_id": pending["conversation_id"], "approved": True},
     )
 
-    failed_events = _parse_sse_events(failed_confirm.text)
-    assert failed_events[-1]["event"] == "error"
-    retry_events = _parse_sse_events(retry_confirm.text)
-    assert retry_events[-1]["event"] == "error"
-    assert retry_events[-1]["data"]["data"]["code"] == "stale_pending_action"
-    assert client.get("/api/chat/conversations").json()[0]["pending_action"] is not None
+    events = _parse_sse_events(failed_confirm.text)
+    assert events[-1]["event"] == "completed"
+    completed = events[-1]["data"]["data"]["response"]
+    assert "写入已完成" in completed["message"]
+    assert completed["undo"]["application_id"] == application["id"]
+    assert retry_confirm.status_code == 400
+    conversation = client.get("/api/chat/conversations").json()[0]
+    assert conversation["pending_action"] is None
+    assert conversation["last_write_undo"] == completed["undo"]
+    stored = client.get(f"/api/chat/conversations/{pending['conversation_id']}").json()
+    assert [message["role"] for message in stored].count("tool") == 1
+    assert [message["content"] for message in stored].count(completed["message"]) == 1
     assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
 
 
-def test_chat_confirm_preserves_pending_when_followup_model_fails(tmp_path):
+def test_chat_confirm_recovers_committed_write_when_followup_model_fails(tmp_path):
     app_client = TestClient(create_app(data_dir=tmp_path))
     application = app_client.post(
         "/api/applications",
@@ -668,9 +774,16 @@ def test_chat_confirm_preserves_pending_when_followup_model_fails(tmp_path):
         json={"conversation_id": pending["conversation_id"], "approved": True},
     )
 
-    assert failed_confirm.status_code == 502
-    assert retry_confirm.status_code == 409
-    assert client.get("/api/chat/conversations").json()[0]["pending_action"] is not None
+    assert failed_confirm.status_code == 200
+    assert "写入已完成" in failed_confirm.json()["message"]
+    assert failed_confirm.json()["undo"]["application_id"] == application["id"]
+    assert retry_confirm.status_code == 400
+    conversation = client.get("/api/chat/conversations").json()[0]
+    assert conversation["pending_action"] is None
+    assert conversation["last_write_undo"] == failed_confirm.json()["undo"]
+    stored = client.get(f"/api/chat/conversations/{pending['conversation_id']}").json()
+    assert [message["role"] for message in stored].count("tool") == 1
+    assert [message["content"] for message in stored].count(failed_confirm.json()["message"]) == 1
     assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
 
 
@@ -683,7 +796,9 @@ def test_chat_returns_bad_gateway_when_model_fails(tmp_path):
     response = client.post("/api/chat", json={"message": "你好", "conversation_id": 0})
 
     assert response.status_code == 502
-    assert response.json() == {"error": "AI 连接失败：provider unavailable。请检查 AI 设置或稍后重试。"}
+    assert response.json() == {
+        "error": "AI 连接失败：provider unavailable。请检查 AI 设置或稍后重试。"
+    }
 
 
 def test_chat_returns_recoverable_message_when_agent_times_out(tmp_path, monkeypatch):
@@ -729,7 +844,9 @@ def test_chat_asks_followup_when_pending_event_missing_required_info(tmp_path):
     )
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
 
-    response = client.post("/api/chat", json={"message": "为这条投递创建笔试日程", "conversation_id": 0})
+    response = client.post(
+        "/api/chat", json={"message": "为这条投递创建笔试日程", "conversation_id": 0}
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -783,11 +900,15 @@ def test_chat_clarification_reply_resumes_missing_event_draft(tmp_path):
         ]
     )
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
-    first = client.post("/api/chat", json={"message": "为这条投递创建笔试日程", "conversation_id": 0}).json()
+    first = client.post(
+        "/api/chat", json={"message": "为这条投递创建笔试日程", "conversation_id": 0}
+    ).json()
     conversation = client.get("/api/chat/conversations").json()[0]
     assert conversation["pending_clarification"]["tool_name"] == "create_application_event"
 
-    second = client.post("/api/chat", json={"message": "30分钟", "conversation_id": first["conversation_id"]})
+    second = client.post(
+        "/api/chat", json={"message": "30分钟", "conversation_id": first["conversation_id"]}
+    )
 
     assert second.status_code == 200
     assert second.json()["type"] == "confirmation_required"
@@ -839,7 +960,9 @@ def test_chat_stream_clarification_reply_resumes_missing_event_draft(tmp_path):
         ]
     )
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
-    first = client.post("/api/chat/stream", json={"message": "为这条投递创建笔试日程", "conversation_id": 0})
+    first = client.post(
+        "/api/chat/stream", json={"message": "为这条投递创建笔试日程", "conversation_id": 0}
+    )
     first_events = _parse_sse_events(first.text)
     first_completed = first_events[-1]["data"]["data"]["response"]
     conversation = client.get("/api/chat/conversations").json()[0]
@@ -926,15 +1049,274 @@ def test_chat_confirmed_status_update_can_be_undone(tmp_path):
 
     assert confirmed.status_code == 200
     assert confirmed.json()["undo"]["label"] == "撤销更新投递状态"
+    assert confirmed.json()["undo"]["expected_after"] == {
+        "status": "offer",
+        "closed_reason": "",
+    }
     assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
 
-    undone = client.post("/api/chat/undo-last-write", json={"conversation_id": pending["conversation_id"]})
+    undone = client.post(
+        "/api/chat/undo-last-write", json={"conversation_id": pending["conversation_id"]}
+    )
 
     assert undone.status_code == 200
     assert undone.json()["type"] == "message"
     assert "已撤销" in undone.json()["message"]
     assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "interview"
     assert client.get("/api/chat/conversations").json()[0]["last_write_undo"] is None
+
+
+def test_chat_status_undo_preserves_unrelated_application_edits(tmp_path):
+    app_client = TestClient(create_app(data_dir=tmp_path))
+    application = app_client.post(
+        "/api/applications",
+        json={"company_name": "Acme", "position_name": "Backend", "status": "interview"},
+    ).json()
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="undo-unrelated",
+                        name="update_application_status",
+                        args=json.dumps({"id": application["id"], "status": "offer"}),
+                    )
+                ]
+            ),
+            Assistant(content="updated"),
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    pending = client.post("/api/chat", json={"message": "offer", "conversation_id": 0}).json()
+    client.post(
+        "/api/chat/confirm",
+        json={"conversation_id": pending["conversation_id"], "approved": True},
+    )
+    app_client.put(
+        f"/api/applications/{application['id']}",
+        json={"status": "offer", "notes": "user note", "job_url": "https://example.test/job"},
+    )
+
+    undone = client.post(
+        "/api/chat/undo-last-write",
+        json={"conversation_id": pending["conversation_id"]},
+    )
+
+    assert undone.status_code == 200
+    restored = app_client.get(f"/api/applications/{application['id']}").json()
+    assert restored["status"] == "interview"
+    assert restored["notes"] == "user note"
+    assert restored["job_url"] == "https://example.test/job"
+
+
+def test_chat_status_undo_rejects_changed_mutated_fields(tmp_path):
+    app_client = TestClient(create_app(data_dir=tmp_path))
+    application = app_client.post(
+        "/api/applications",
+        json={"company_name": "Acme", "position_name": "Backend", "status": "interview"},
+    ).json()
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="undo-conflict",
+                        name="update_application_status",
+                        args=json.dumps({"id": application["id"], "status": "offer"}),
+                    )
+                ]
+            ),
+            Assistant(content="updated"),
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    pending = client.post("/api/chat", json={"message": "offer", "conversation_id": 0}).json()
+    client.post(
+        "/api/chat/confirm",
+        json={"conversation_id": pending["conversation_id"], "approved": True},
+    )
+    app_client.put(
+        f"/api/applications/{application['id']}",
+        json={"status": "closed", "closed_reason": "user changed it"},
+    )
+
+    undone = client.post(
+        "/api/chat/undo-last-write",
+        json={"conversation_id": pending["conversation_id"]},
+    )
+
+    assert undone.status_code == 409
+    current = app_client.get(f"/api/applications/{application['id']}").json()
+    assert current["status"] == "closed"
+    assert current["closed_reason"] == "user changed it"
+    assert client.get("/api/chat/conversations").json()[0]["last_write_undo"] is not None
+
+
+def test_chat_created_application_undo_deletes_unchanged_record(tmp_path):
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="create-app-undo",
+                        name="create_application",
+                        args=json.dumps(
+                            {
+                                "company_name": "Created Co",
+                                "position_name": "Engineer",
+                                "status": "applied",
+                            }
+                        ),
+                    )
+                ]
+            ),
+            Assistant(content="created"),
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    pending = client.post("/api/chat", json={"message": "create", "conversation_id": 0}).json()
+    confirmed = client.post(
+        "/api/chat/confirm",
+        json={"conversation_id": pending["conversation_id"], "approved": True},
+    ).json()
+
+    undone = client.post(
+        "/api/chat/undo-last-write",
+        json={"conversation_id": pending["conversation_id"]},
+    )
+
+    assert confirmed["undo"]["expected_after"]["company_name"] == "Created Co"
+    assert undone.status_code == 200
+    assert client.get(f"/api/applications/{confirmed['undo']['application_id']}").status_code == 404
+
+
+def test_chat_created_application_undo_rejects_edited_record(tmp_path):
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="create-app-conflict",
+                        name="create_application",
+                        args=json.dumps(
+                            {
+                                "company_name": "Created Co",
+                                "position_name": "Engineer",
+                                "status": "applied",
+                            }
+                        ),
+                    )
+                ]
+            ),
+            Assistant(content="created"),
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    pending = client.post("/api/chat", json={"message": "create", "conversation_id": 0}).json()
+    confirmed = client.post(
+        "/api/chat/confirm",
+        json={"conversation_id": pending["conversation_id"], "approved": True},
+    ).json()
+    application_id = confirmed["undo"]["application_id"]
+    client.put(
+        f"/api/applications/{application_id}",
+        json={"status": "applied", "notes": "user edited"},
+    )
+
+    undone = client.post(
+        "/api/chat/undo-last-write",
+        json={"conversation_id": pending["conversation_id"]},
+    )
+
+    assert undone.status_code == 409
+    assert client.get(f"/api/applications/{application_id}").json()["notes"] == "user edited"
+
+
+def test_chat_created_event_undo_rejects_edited_record(tmp_path):
+    app_client = TestClient(create_app(data_dir=tmp_path))
+    application = app_client.post(
+        "/api/applications",
+        json={"company_name": "Acme", "position_name": "Engineer", "status": "interview"},
+    ).json()
+    event_args = {
+        "application_id": application["id"],
+        "event_type": "interview",
+        "scheduled_at": "2026-08-01T10:00:00Z",
+        "duration_minutes": 60,
+        "location": "Room A",
+    }
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="create-event-conflict",
+                        name="create_application_event",
+                        args=json.dumps(event_args),
+                    )
+                ]
+            ),
+            Assistant(content="created"),
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    pending = client.post("/api/chat", json={"message": "schedule", "conversation_id": 0}).json()
+    confirmed = client.post(
+        "/api/chat/confirm",
+        json={"conversation_id": pending["conversation_id"], "approved": True},
+    ).json()
+    event_id = confirmed["undo"]["application_event_id"]
+    client.put(
+        f"/api/application-events/{event_id}",
+        json={**event_args, "location": "User changed room"},
+    )
+
+    undone = client.post(
+        "/api/chat/undo-last-write",
+        json={"conversation_id": pending["conversation_id"]},
+    )
+
+    assert undone.status_code == 409
+    assert (
+        client.get(f"/api/application-events/{event_id}").json()["location"] == "User changed room"
+    )
+
+
+def test_chat_created_note_undo_rejects_edited_record(tmp_path):
+    note_args = {
+        "company": "Acme",
+        "position": "Engineer",
+        "round": "First",
+        "date": "2026-08-01",
+        "questions": "Original",
+    }
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(id="create-note-conflict", name="add_note", args=json.dumps(note_args))
+                ]
+            ),
+            Assistant(content="created"),
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    pending = client.post("/api/chat", json={"message": "note", "conversation_id": 0}).json()
+    confirmed = client.post(
+        "/api/chat/confirm",
+        json={"conversation_id": pending["conversation_id"], "approved": True},
+    ).json()
+    note_id = confirmed["undo"]["note_id"]
+    client.put(f"/api/notes/{note_id}", json={**note_args, "questions": "User changed"})
+
+    undone = client.post(
+        "/api/chat/undo-last-write",
+        json={"conversation_id": pending["conversation_id"]},
+    )
+
+    assert undone.status_code == 409
+    notes = client.get("/api/notes").json()
+    assert next(note for note in notes if note["id"] == note_id)["questions"] == "User changed"
 
 
 def test_chat_provider_error_masks_configured_api_key(tmp_path):
@@ -948,28 +1330,39 @@ def test_chat_provider_error_masks_configured_api_key(tmp_path):
 
     assert response.status_code == 502
     assert "sk-secret-value" not in response.text
-    assert response.json() == {"error": "AI 连接失败：provider rejected API key ***。请检查 AI 设置或稍后重试。"}
+    assert response.json() == {
+        "error": "AI 连接失败：provider rejected API key ***。请检查 AI 设置或稍后重试。"
+    }
 
 
 def test_chat_exposes_module_tools_to_model(tmp_path):
     model = CapturingScriptedModel([Assistant(content="ok")])
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
 
-    response = client.post("/api/chat", json={"message": "what context can you inspect?", "conversation_id": 0})
+    response = client.post(
+        "/api/chat", json={"message": "what context can you inspect?", "conversation_id": 0}
+    )
 
     assert response.status_code == 200
     captured_tools = {tool["name"] for tool in model.tools[0]}
-    assert {"list_applications", "list_notes", "list_application_events", "list_offers"}.issubset(captured_tools)
-    assert {"list_resumes", "list_jd_analyses", "list_knowledge_documents", "search_knowledge"}.issubset(
+    assert {"list_applications", "list_notes", "list_application_events", "list_offers"}.issubset(
         captured_tools
     )
+    assert {
+        "list_resumes",
+        "list_jd_analyses",
+        "list_knowledge_documents",
+        "search_knowledge",
+    }.issubset(captured_tools)
 
 
 def test_chat_injects_response_structure_prompt(tmp_path):
     model = CapturingScriptedModel([Assistant(content="ok")])
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
 
-    response = client.post("/api/chat", json={"message": "what should I do next?", "conversation_id": 0})
+    response = client.post(
+        "/api/chat", json={"message": "what should I do next?", "conversation_id": 0}
+    )
 
     assert response.status_code == 200
     system = model.calls[0][0]
@@ -992,11 +1385,31 @@ def test_chat_allows_wide_read_only_tool_summaries(tmp_path):
             Assistant(tool_calls=[ToolCall(id="r5", name="list_resumes", args="{}")]),
             Assistant(tool_calls=[ToolCall(id="r6", name="list_jd_analyses", args="{}")]),
             Assistant(tool_calls=[ToolCall(id="r7", name="list_knowledge_documents", args="{}")]),
-            Assistant(tool_calls=[ToolCall(id="r8", name="search_knowledge", args=json.dumps({"query": "Java"}))]),
-            Assistant(tool_calls=[ToolCall(id="r9", name="compare_offers", args=json.dumps({"ids": []}))]),
-            Assistant(tool_calls=[ToolCall(id="r10", name="list_resume_matches", args=json.dumps({"resume_id": 1}))]),
-            Assistant(tool_calls=[ToolCall(id="r11", name="get_application_event", args=json.dumps({"id": 1}))]),
-            Assistant(tool_calls=[ToolCall(id="r12", name="get_knowledge_document", args=json.dumps({"id": 1}))]),
+            Assistant(
+                tool_calls=[
+                    ToolCall(id="r8", name="search_knowledge", args=json.dumps({"query": "Java"}))
+                ]
+            ),
+            Assistant(
+                tool_calls=[ToolCall(id="r9", name="compare_offers", args=json.dumps({"ids": []}))]
+            ),
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="r10", name="list_resume_matches", args=json.dumps({"resume_id": 1})
+                    )
+                ]
+            ),
+            Assistant(
+                tool_calls=[
+                    ToolCall(id="r11", name="get_application_event", args=json.dumps({"id": 1}))
+                ]
+            ),
+            Assistant(
+                tool_calls=[
+                    ToolCall(id="r12", name="get_knowledge_document", args=json.dumps({"id": 1}))
+                ]
+            ),
             Assistant(content="summary complete"),
         ]
     )
@@ -1005,7 +1418,9 @@ def test_chat_allows_wide_read_only_tool_summaries(tmp_path):
         raise_server_exceptions=False,
     )
 
-    response = client.post("/api/chat", json={"message": "summarize everything", "conversation_id": 0})
+    response = client.post(
+        "/api/chat", json={"message": "summarize everything", "conversation_id": 0}
+    )
 
     assert response.status_code == 200
     assert response.json()["type"] == "message"
@@ -1090,7 +1505,9 @@ def test_chat_write_tool_requires_confirmation_before_mutating(tmp_path):
     )
     chat_client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
 
-    response = chat_client.post("/api/chat", json={"message": "帮我把这条改成 offer", "conversation_id": 0})
+    response = chat_client.post(
+        "/api/chat", json={"message": "帮我把这条改成 offer", "conversation_id": 0}
+    )
 
     assert response.status_code == 200
     assert response.json()["type"] == "confirmation_required"
@@ -1195,7 +1612,13 @@ def test_chat_note_missing_company_asks_for_required_info_without_pending(tmp_pa
                     ToolCall(
                         id="w1",
                         name="add_note",
-                        args=json.dumps({"position": "软件测试工程师", "round": "技术面", "questions": "测试流程"}),
+                        args=json.dumps(
+                            {
+                                "position": "软件测试工程师",
+                                "round": "技术面",
+                                "questions": "测试流程",
+                            }
+                        ),
                     )
                 ],
             ),
@@ -1211,7 +1634,9 @@ def test_chat_note_missing_company_asks_for_required_info_without_pending(tmp_pa
     assert "缺少公司信息" in response.json()["message"]
     assert client.get("/api/chat/conversations").json()[0]["pending_action"] is None
     stored = client.get(f"/api/chat/conversations/{response.json()['conversation_id']}").json()
-    assert any(item["role"] == "tool" and "add_note requires company" in item["content"] for item in stored)
+    assert any(
+        item["role"] == "tool" and "add_note requires company" in item["content"] for item in stored
+    )
 
 
 def test_chat_create_application_confirmation_includes_record_details(tmp_path):
@@ -1238,7 +1663,9 @@ def test_chat_create_application_confirmation_includes_record_details(tmp_path):
     )
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
 
-    response = client.post("/api/chat", json={"message": "帮我保存牛客网软件测试工程师复盘", "conversation_id": 0})
+    response = client.post(
+        "/api/chat", json={"message": "帮我保存牛客网软件测试工程师复盘", "conversation_id": 0}
+    )
 
     assert response.status_code == 200
     assert response.json()["type"] == "confirmation_required"
@@ -1290,12 +1717,16 @@ def test_chat_create_application_for_existing_company_requires_user_confirmation
                     )
                 ],
             ),
-            Assistant(content="系统里已有牛客网的 agent开发 记录。要为软件测试工程师新建一条投递吗？"),
+            Assistant(
+                content="系统里已有牛客网的 agent开发 记录。要为软件测试工程师新建一条投递吗？"
+            ),
         ]
     )
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
 
-    response = client.post("/api/chat", json={"message": "帮我保存牛客网软件测试工程师复盘", "conversation_id": 0})
+    response = client.post(
+        "/api/chat", json={"message": "帮我保存牛客网软件测试工程师复盘", "conversation_id": 0}
+    )
 
     assert response.status_code == 200
     assert response.json()["type"] == "message"
@@ -1393,7 +1824,9 @@ def test_chat_add_note_placeholder_date_asks_before_confirmation(tmp_path):
     )
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
 
-    response = client.post("/api/chat", json={"message": "帮我保存牛客网面试复盘", "conversation_id": 0})
+    response = client.post(
+        "/api/chat", json={"message": "帮我保存牛客网面试复盘", "conversation_id": 0}
+    )
 
     assert response.status_code == 200
     assert response.json()["type"] == "message"
@@ -1561,6 +1994,26 @@ def test_chat_confirm_invalid_payload_returns_422_and_preserves_pending(
     assert client.get("/api/chat/conversations").json()[0]["pending_action"] is not None
 
 
+@pytest.mark.parametrize("conversation_id", [None, 0, -1, "1", 1.5, True, {}, []])
+@pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
+def test_chat_confirm_rejects_invalid_conversation_id_without_server_error(
+    tmp_path,
+    endpoint,
+    conversation_id,
+):
+    client = TestClient(
+        create_app(data_dir=tmp_path, chat_model=ScriptedModel([])),
+        raise_server_exceptions=False,
+    )
+
+    response = client.post(
+        endpoint,
+        json={"conversation_id": conversation_id, "approved": True},
+    )
+
+    assert response.status_code in {400, 422}
+
+
 @pytest.mark.parametrize(
     "edited_args",
     [
@@ -1649,7 +2102,7 @@ def test_chat_confirm_edited_status_executes_effective_args_and_keeps_immutable_
     assert client.get("/api/chat/conversations").json()[0]["pending_action"] is None
 
 
-def test_chat_confirm_stream_rejection_is_normal_followup_and_preserves_previous_undo(tmp_path):
+def test_chat_confirm_stream_rejection_is_normal_followup_and_clears_previous_undo(tmp_path):
     model = ScriptedModel(
         [
             Assistant(
@@ -1678,7 +2131,7 @@ def test_chat_confirm_stream_rejection_is_normal_followup_and_preserves_previous
         "/api/chat/confirm",
         json={"conversation_id": first_pending["conversation_id"], "approved": True},
     ).json()
-    undo_before = client.get("/api/chat/conversations").json()[0]["last_write_undo"]
+    assert client.get("/api/chat/conversations").json()[0]["last_write_undo"] is not None
 
     response = client.post(
         "/api/chat/confirm/stream",
@@ -1696,7 +2149,7 @@ def test_chat_confirm_stream_rejection_is_normal_followup_and_preserves_previous
     assert events[-1]["data"]["data"]["response"]["message"] == "Okay, I will leave it unchanged."
     conversation = client.get("/api/chat/conversations").json()[0]
     assert conversation["pending_action"] is None
-    assert conversation["last_write_undo"] == undo_before
+    assert conversation["last_write_undo"] is None
 
 
 @pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
@@ -1739,7 +2192,180 @@ def test_chat_confirm_stale_resume_preserves_pending(tmp_path, monkeypatch, endp
 
 
 @pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
-def test_chat_confirm_timeout_preserves_pending(tmp_path, monkeypatch, endpoint):
+def test_chat_confirm_result_cas_loss_preserves_newer_pending(tmp_path, monkeypatch, endpoint):
+    newer = PendingAction(
+        "newer-write",
+        "update_application_status",
+        json.dumps({"id": 1, "status": "closed", "closed_reason": "newer"}),
+        "newer",
+    )
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="cas-lost",
+                        name="update_application_status",
+                        args=json.dumps({"id": 1, "status": "offer"}),
+                    )
+                ]
+            ),
+            Assistant(content="old confirmation completed"),
+        ]
+    )
+    _, client, _, pending = _create_status_confirmation(tmp_path, model)
+
+    def lose_cas(self, conversation_id, expected, tool_message, undo):
+        self.set_pending_action(conversation_id, newer)
+        return False
+
+    monkeypatch.setattr(ChatRepository, "resolve_pending_confirmation", lose_cas)
+    response = client.post(
+        endpoint,
+        json={"conversation_id": pending["conversation_id"], "approved": True},
+    )
+
+    if endpoint.endswith("/stream"):
+        error = _parse_sse_events(response.text)[-1]
+        assert error["event"] == "error"
+        assert error["data"]["data"]["code"] == "stale_pending_action"
+    else:
+        assert response.status_code == 409
+    conversation = client.get("/api/chat/conversations").json()[0]
+    assert conversation["pending_action"]["args"]["closed_reason"] == "newer"
+
+
+@pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
+def test_chat_confirm_tool_error_uses_expected_pending_cas(tmp_path, monkeypatch, endpoint):
+    newer = PendingAction(
+        "newer-after-error",
+        "update_application_status",
+        json.dumps({"id": 1, "status": "closed", "closed_reason": "newer"}),
+        "newer",
+    )
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="confirmed-tool-error",
+                        name="update_application_status",
+                        args=json.dumps({"id": 999, "status": "offer"}),
+                    )
+                ]
+            ),
+            Assistant(content="write failed"),
+        ]
+    )
+    _, client, _, pending = _create_status_confirmation(tmp_path, model)
+
+    def lose_cas(self, conversation_id, expected, tool_message, undo):
+        assert tool_message.content.startswith("错误：")
+        self.set_pending_action(conversation_id, newer)
+        return False
+
+    monkeypatch.setattr(ChatRepository, "resolve_pending_confirmation", lose_cas)
+
+    response = client.post(
+        endpoint,
+        json={"conversation_id": pending["conversation_id"], "approved": True},
+    )
+
+    if endpoint.endswith("/stream"):
+        error = _parse_sse_events(response.text)[-1]
+        assert error["event"] == "error"
+        assert error["data"]["data"]["code"] == "stale_pending_action"
+    else:
+        assert response.status_code == 409
+    conversation = client.get("/api/chat/conversations").json()[0]
+    assert conversation["pending_action"]["args"]["closed_reason"] == "newer"
+
+
+@pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
+def test_chat_confirm_tool_error_provider_failure_is_durable(tmp_path, endpoint):
+    model = FailAfterWriteModel(
+        ToolCall(
+            id="durable-tool-error",
+            name="update_application_status",
+            args=json.dumps({"id": 999, "status": "offer"}),
+        )
+    )
+    _, client, _, pending = _create_status_confirmation(tmp_path, model)
+
+    response = client.post(
+        endpoint,
+        json={"conversation_id": pending["conversation_id"], "approved": True},
+    )
+
+    assert response.status_code == 200
+    if endpoint.endswith("/stream"):
+        events = _parse_sse_events(response.text)
+        assert events[-1]["event"] == "completed"
+        body = events[-1]["data"]["data"]["response"]
+    else:
+        body = response.json()
+    assert "写入未完成" in body["message"]
+    assert "undo" not in body
+    conversation = client.get("/api/chat/conversations").json()[0]
+    assert conversation["pending_action"] is None
+    stored = client.get(f"/api/chat/conversations/{pending['conversation_id']}").json()
+    assert sum(message["role"] == "tool" for message in stored) == 1
+
+
+@pytest.mark.parametrize("failure_kind", ["provider", "timeout"])
+@pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
+def test_chat_confirm_result_cas_loss_stays_stale_on_followup_failure(
+    tmp_path,
+    monkeypatch,
+    endpoint,
+    failure_kind,
+):
+    import offerpilot.api as api_module
+
+    newer = PendingAction(
+        "newer-after-failure",
+        "update_application_status",
+        json.dumps({"id": 1, "status": "closed", "closed_reason": "newer"}),
+        "newer",
+    )
+    tool_call = ToolCall(
+        id="cas-lost-failure",
+        name="update_application_status",
+        args=json.dumps({"id": 1, "status": "offer"}),
+    )
+    model = (
+        FailAfterWriteModel(tool_call)
+        if failure_kind == "provider"
+        else SlowAfterPendingModel(tool_call)
+    )
+    if failure_kind == "timeout":
+        monkeypatch.setattr(api_module, "CHAT_AGENT_TIMEOUT_SECONDS", 0.25)
+    _, client, _, pending = _create_status_confirmation(tmp_path, model)
+
+    def lose_cas(self, conversation_id, expected, tool_message, undo):
+        self.set_pending_action(conversation_id, newer)
+        return False
+
+    monkeypatch.setattr(ChatRepository, "resolve_pending_confirmation", lose_cas)
+    response = client.post(
+        endpoint,
+        json={"conversation_id": pending["conversation_id"], "approved": True},
+    )
+
+    if endpoint.endswith("/stream"):
+        error = _parse_sse_events(response.text)[-1]
+        assert error["event"] == "error"
+        assert error["data"]["data"]["code"] == "stale_pending_action"
+    else:
+        assert response.status_code == 409
+    conversation = client.get("/api/chat/conversations").json()[0]
+    assert conversation["pending_action"]["args"]["closed_reason"] == "newer"
+
+
+@pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
+def test_chat_confirm_timeout_after_write_returns_completed_fallback(
+    tmp_path, monkeypatch, endpoint
+):
     import offerpilot.api as api_module
 
     model = SlowAfterPendingModel(
@@ -1750,20 +2376,152 @@ def test_chat_confirm_timeout_preserves_pending(tmp_path, monkeypatch, endpoint)
         )
     )
     _, client, _, pending = _create_status_confirmation(tmp_path, model)
-    monkeypatch.setattr(api_module, "CHAT_AGENT_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(api_module, "CHAT_AGENT_TIMEOUT_SECONDS", 0.25)
 
     response = client.post(
         endpoint,
         json={"conversation_id": pending["conversation_id"], "approved": True},
     )
 
+    assert response.status_code == 200
     if endpoint.endswith("/stream"):
-        error = _parse_sse_events(response.text)[-1]
-        assert error["event"] == "error"
-        assert error["data"]["data"]["code"] == "chat_agent_timeout"
+        events = _parse_sse_events(response.text)
+        assert events[-1]["event"] == "completed"
+        body = events[-1]["data"]["data"]["response"]
+    else:
+        body = response.json()
+    assert "写入已完成" in body["message"]
+    assert body["undo"]["application_id"] == 1
+    conversation = client.get("/api/chat/conversations").json()[0]
+    assert conversation["pending_action"] is None
+    assert conversation["last_write_undo"] == body["undo"]
+    stored = client.get(f"/api/chat/conversations/{pending['conversation_id']}").json()
+    assert [message["role"] for message in stored].count("tool") == 1
+    assert [message["content"] for message in stored].count(body["message"]) == 1
+    retry = client.post(
+        endpoint, json={"conversation_id": pending["conversation_id"], "approved": True}
+    )
+    assert retry.status_code == 400
+
+
+@pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
+def test_chat_confirm_rejection_provider_failure_records_cancellation_once(tmp_path, endpoint):
+    tool_call = ToolCall(
+        id="reject-provider-failure",
+        name="update_application_status",
+        args=json.dumps({"id": 1, "status": "offer"}),
+    )
+    app_client, client, application, pending = _create_status_confirmation(
+        tmp_path,
+        FailAfterWriteModel(tool_call),
+    )
+
+    response = client.post(
+        endpoint,
+        json={
+            "conversation_id": pending["conversation_id"],
+            "approved": False,
+            "rejection_feedback": "Keep interview status.",
+        },
+    )
+
+    assert response.status_code == 200
+    if endpoint.endswith("/stream"):
+        events = _parse_sse_events(response.text)
+        assert events[-1]["event"] == "completed"
+        body = events[-1]["data"]["data"]["response"]
+    else:
+        body = response.json()
+    assert "已记录取消" in body["message"]
+    assert "undo" not in body
+    conversation = client.get("/api/chat/conversations").json()[0]
+    assert conversation["pending_action"] is None
+    assert conversation["last_write_undo"] is None
+    stored = client.get(f"/api/chat/conversations/{pending['conversation_id']}").json()
+    assert [message["role"] for message in stored].count("tool") == 1
+    assert [message["content"] for message in stored].count(body["message"]) == 1
+    assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "interview"
+    retry = client.post(
+        endpoint, json={"conversation_id": pending["conversation_id"], "approved": False}
+    )
+    assert retry.status_code == 400
+
+
+@pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
+def test_chat_confirm_rejection_timeout_returns_recorded_fallback(tmp_path, monkeypatch, endpoint):
+    import offerpilot.api as api_module
+
+    model = SlowAfterPendingModel(
+        ToolCall(
+            id="reject-timeout",
+            name="update_application_status",
+            args=json.dumps({"id": 1, "status": "offer"}),
+        )
+    )
+    app_client, client, application, pending = _create_status_confirmation(tmp_path, model)
+    monkeypatch.setattr(api_module, "CHAT_AGENT_TIMEOUT_SECONDS", 0.25)
+
+    response = client.post(
+        endpoint,
+        json={"conversation_id": pending["conversation_id"], "approved": False},
+    )
+
+    if endpoint.endswith("/stream"):
+        body = _parse_sse_events(response.text)[-1]["data"]["data"]["response"]
+    else:
+        body = response.json()
+    assert response.status_code == 200
+    assert "已记录取消" in body["message"]
+    assert "undo" not in body
+    assert client.get("/api/chat/conversations").json()[0]["pending_action"] is None
+    assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "interview"
+
+
+@pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
+def test_chat_confirm_timeout_before_result_sink_keeps_pending(tmp_path, monkeypatch, endpoint):
+    import offerpilot.api as api_module
+
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="late-result-sink",
+                        name="update_application_status",
+                        args=json.dumps({"id": 1, "status": "offer"}),
+                    )
+                ]
+            )
+        ]
+    )
+    _, client, _, pending = _create_status_confirmation(tmp_path, model)
+    monkeypatch.setattr(api_module, "CHAT_AGENT_TIMEOUT_SECONDS", 0.01)
+
+    def late_result(*args, **kwargs):
+        time.sleep(0.2)
+        kwargs["confirmation_result_sink"](
+            args[3],
+            True,
+            Message(
+                role="tool", content='{"id":1,"status":"offer"}', tool_call_id="late-result-sink"
+            ),
+        )
+        return [], "late", None
+
+    monkeypatch.setattr(api_module, "resume_after_confirm", late_result)
+    response = client.post(
+        endpoint,
+        json={"conversation_id": pending["conversation_id"], "approved": True},
+    )
+    time.sleep(0.25)
+
+    if endpoint.endswith("/stream"):
+        assert _parse_sse_events(response.text)[-1]["event"] == "error"
     else:
         assert response.status_code == 504
     assert client.get("/api/chat/conversations").json()[0]["pending_action"] is not None
+    stored = client.get(f"/api/chat/conversations/{pending['conversation_id']}").json()
+    assert [message["role"] for message in stored].count("tool") == 0
 
 
 def test_chat_confirm_add_note_returns_saved_record_summary(tmp_path):
@@ -1845,7 +2603,9 @@ def test_chat_confirm_create_application_continues_to_review_note_card(tmp_path)
         ]
     )
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
-    pending = client.post("/api/chat", json={"message": "保存牛客网面试复盘", "conversation_id": 0}).json()
+    pending = client.post(
+        "/api/chat", json={"message": "保存牛客网面试复盘", "conversation_id": 0}
+    ).json()
 
     response = client.post(
         "/api/chat/confirm",
@@ -1899,9 +2659,7 @@ def test_chat_confirm_replays_reasoning_content_for_pending_tool(tmp_path):
     replayed_assistant = next(
         message for message in model.calls[1] if message.role == "assistant" and message.tool_calls
     )
-    assert replayed_assistant.provider_blocks == {
-        "reasoning_content": "已选择目标投递"
-    }
+    assert replayed_assistant.provider_blocks == {"reasoning_content": "已选择目标投递"}
 
 
 def test_chat_confirm_keeps_application_context_for_model(tmp_path):
@@ -2108,6 +2866,113 @@ def test_chat_confirm_atomically_replaces_chained_pending_write(tmp_path, monkey
     }
 
 
+@pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
+def test_chat_confirm_chained_pending_cas_loss_has_no_partial_history(
+    tmp_path,
+    monkeypatch,
+    endpoint,
+):
+    app_client = TestClient(create_app(data_dir=tmp_path))
+    first = app_client.post(
+        "/api/applications",
+        json={"company_name": "First", "position_name": "Engineer", "status": "interview"},
+    ).json()
+    second = app_client.post(
+        "/api/applications",
+        json={"company_name": "Second", "position_name": "Designer", "status": "applied"},
+    ).json()
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="chain-first",
+                        name="update_application_status",
+                        args=json.dumps({"id": first["id"], "status": "offer"}),
+                    )
+                ]
+            ),
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="abandoned-chain",
+                        name="update_application_status",
+                        args=json.dumps({"id": second["id"], "status": "interview"}),
+                    )
+                ]
+            ),
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    pending = client.post("/api/chat", json={"message": "update two", "conversation_id": 0}).json()
+    newer = PendingAction(
+        "newer-chain",
+        "update_application_status",
+        json.dumps({"id": second["id"], "status": "closed"}),
+        "newer",
+    )
+
+    def lose_transition(self, conversation_id, pending_action, messages):
+        self.set_pending_action(conversation_id, newer)
+        self.set_pending_clarification(conversation_id, newer, "newer question")
+        return False
+
+    monkeypatch.setattr(
+        ChatRepository,
+        "persist_chained_confirmation_if_empty",
+        lose_transition,
+        raising=False,
+    )
+
+    response = client.post(
+        endpoint,
+        json={"conversation_id": pending["conversation_id"], "approved": True},
+    )
+
+    if endpoint.endswith("/stream"):
+        error = _parse_sse_events(response.text)[-1]
+        assert error["event"] == "error"
+        assert error["data"]["data"]["code"] == "stale_pending_action"
+    else:
+        assert response.status_code == 409
+    conversation = client.get("/api/chat/conversations").json()[0]
+    assert conversation["pending_action"]["args"]["status"] == "closed"
+    assert conversation["pending_clarification"]["question"] == "newer question"
+    stored = client.get(f"/api/chat/conversations/{pending['conversation_id']}").json()
+    assert all("abandoned-chain" not in str(message.get("tool_calls", "")) for message in stored)
+
+
+def test_chat_undo_does_not_clear_a_newer_confirmed_write(tmp_path, monkeypatch):
+    import offerpilot.api as api_module
+
+    repo = ChatRepository(session_factory_for_data_dir(tmp_path))
+    conversation = repo.create_conversation("undo race")
+    old = {"kind": "update_application_status", "application_id": 1}
+    newer = {"kind": "create_application", "application_id": 2}
+    repo.set_last_write_undo(conversation.id, old)
+    monkeypatch.setattr(api_module, "_execute_chat_undo", lambda *args: "old undo completed")
+
+    def install_newer_before_clear(self, conversation_id, expected):
+        self.set_last_write_undo(conversation_id, newer)
+        return False
+
+    monkeypatch.setattr(
+        ChatRepository,
+        "clear_last_write_undo_if_matches",
+        install_newer_before_clear,
+        raising=False,
+    )
+    client = TestClient(create_app(data_dir=tmp_path))
+
+    response = client.post(
+        "/api/chat/undo-last-write",
+        json={"conversation_id": conversation.id},
+    )
+
+    assert response.status_code == 200
+    assert repo.get_last_write_undo(conversation.id) == newer
+
+
 def test_chat_auto_approve_executes_write_without_pending(tmp_path):
     save_config(tmp_path, Config(api_key="sk-test", chat_auto_approve_writes=True))
     app_client = TestClient(create_app(data_dir=tmp_path))
@@ -2200,9 +3065,9 @@ def test_chat_conversation_update_renames_pins_archives_and_clears_context(tmp_p
 def test_chat_conversation_update_rejects_string_booleans(tmp_path):
     model = ScriptedModel([Assistant(content="第一条")])
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
-    conversation_id = client.post("/api/chat", json={"message": "第一条", "conversation_id": 0}).json()[
-        "conversation_id"
-    ]
+    conversation_id = client.post(
+        "/api/chat", json={"message": "第一条", "conversation_id": 0}
+    ).json()["conversation_id"]
 
     response = client.patch(
         f"/api/chat/conversations/{conversation_id}",

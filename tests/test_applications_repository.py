@@ -83,7 +83,9 @@ def test_update_full_replaces_application_fields(tmp_path):
 def test_update_full_records_first_status_timestamp_only_once(tmp_path):
     session_factory = init_database(tmp_path / "data.db")
     repo = ApplicationsRepository(session_factory)
-    app = repo.create(ApplicationCreate(company_name="A", position_name="Backend", status="applied"))
+    app = repo.create(
+        ApplicationCreate(company_name="A", position_name="Backend", status="applied")
+    )
 
     first = repo.update_full(
         app.id,
@@ -108,10 +110,14 @@ def test_update_full_records_first_status_timestamp_only_once(tmp_path):
 def test_update_full_requires_closed_reason_when_entering_closed(tmp_path):
     session_factory = init_database(tmp_path / "data.db")
     repo = ApplicationsRepository(session_factory)
-    app = repo.create(ApplicationCreate(company_name="A", position_name="Backend", status="interview"))
+    app = repo.create(
+        ApplicationCreate(company_name="A", position_name="Backend", status="interview")
+    )
 
     try:
-        repo.update_full(app.id, ApplicationCreate(company_name="A", position_name="Backend", status="closed"))
+        repo.update_full(
+            app.id, ApplicationCreate(company_name="A", position_name="Backend", status="closed")
+        )
     except ValueError as exc:
         assert str(exc) == "closed_reason is required when closing an application"
     else:
@@ -148,7 +154,9 @@ def test_update_full_requires_fresh_closed_reason_and_rejects_reopen(tmp_path):
     assert app.closed_reason == ""
 
     try:
-        repo.update_full(app.id, ApplicationCreate(company_name="A", position_name="Backend", status="closed"))
+        repo.update_full(
+            app.id, ApplicationCreate(company_name="A", position_name="Backend", status="closed")
+        )
     except ValueError as exc:
         assert str(exc) == "closed_reason is required when closing an application"
     else:
@@ -174,6 +182,53 @@ def test_update_full_requires_fresh_closed_reason_and_rejects_reopen(tmp_path):
         assert str(exc) == "closed application cannot be reopened"
     else:
         raise AssertionError("closed application should not reopen")
+
+
+def test_restore_status_if_matches_changes_only_status_fields(tmp_path):
+    repo = ApplicationsRepository(init_database(tmp_path / "data.db"))
+    app = repo.create(
+        ApplicationCreate(company_name="A", position_name="Backend", status="interview")
+    )
+    repo.update_full(
+        app.id,
+        ApplicationCreate(
+            company_name="User renamed",
+            position_name="Backend",
+            status="offer",
+            notes="user note",
+        ),
+    )
+
+    restored = repo.restore_status_if_matches(
+        app.id,
+        expected_status="offer",
+        expected_closed_reason="",
+        status="interview",
+        closed_reason="",
+    )
+
+    assert restored is True
+    current = repo.get(app.id)
+    assert current is not None
+    assert current.status == "interview"
+    assert current.company_name == "User renamed"
+    assert current.notes == "user note"
+
+
+def test_restore_status_if_matches_rejects_conflict(tmp_path):
+    repo = ApplicationsRepository(init_database(tmp_path / "data.db"))
+    app = repo.create(ApplicationCreate(company_name="A", position_name="Backend", status="offer"))
+
+    restored = repo.restore_status_if_matches(
+        app.id,
+        expected_status="closed",
+        expected_closed_reason="user",
+        status="interview",
+        closed_reason="",
+    )
+
+    assert restored is False
+    assert repo.get(app.id).status == "offer"
 
 
 def test_dashboard_groups_by_status(tmp_path):

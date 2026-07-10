@@ -38,9 +38,9 @@ class _ConfirmationLockEntry:
 
 _CONFIRMATION_STATE_GUARD = Lock()
 _CONFIRMATION_LOCKS: dict[ConfirmationLockKey, _ConfirmationLockEntry] = {}
-_FALLBACK_CONFIRMATION_CLAIMS: OrderedDict[
-    tuple[ConfirmationLockKey, str, str], None
-] = OrderedDict()
+_FALLBACK_CONFIRMATION_CLAIMS: OrderedDict[tuple[ConfirmationLockKey, str, str], None] = (
+    OrderedDict()
+)
 
 
 class ChatRunCancelled(RuntimeError):
@@ -52,8 +52,7 @@ class StalePendingActionError(ValueError):
 
 
 class ChatModel(Protocol):
-    def complete(self, messages: list[Message], tools: list[dict[str, Any]]) -> Assistant:
-        ...
+    def complete(self, messages: list[Message], tools: list[dict[str, Any]]) -> Assistant: ...
 
 
 class StreamingChatModel(Protocol):
@@ -62,8 +61,7 @@ class StreamingChatModel(Protocol):
         messages: list[Message],
         tools: list[dict[str, Any]],
         on_delta: AssistantDeltaSink,
-    ) -> Assistant:
-        ...
+    ) -> Assistant: ...
 
 
 @dataclass
@@ -72,6 +70,9 @@ class PendingAction:
     tool_name: str
     args: str
     human: str
+
+
+ConfirmationResultSink = Callable[[PendingAction, bool, Message], None]
 
 
 @contextmanager
@@ -132,6 +133,7 @@ class LangGraphAgentRunner:
         thread_id: str = _DEFAULT_THREAD_ID,
         event_sink: AgentEventSink | None = None,
         cancel_check: CancelCheck | None = None,
+        confirmation_result_sink: ConfirmationResultSink | None = None,
     ):
         self._model = model
         self._registry = registry
@@ -139,6 +141,7 @@ class LangGraphAgentRunner:
         self._thread_id = thread_id
         self._event_sink = event_sink
         self._cancel_check = cancel_check
+        self._confirmation_result_sink = confirmation_result_sink
         self._memory_saver = InMemorySaver()
         self._has_pending_checkpoint = False
 
@@ -297,7 +300,9 @@ class LangGraphAgentRunner:
         return {
             "messages": messages,
             "added": added,
-            "current_tool_calls": [_tool_call_to_dict(tool_call) for tool_call in selected_tool_calls],
+            "current_tool_calls": [
+                _tool_call_to_dict(tool_call) for tool_call in selected_tool_calls
+            ],
             "status": "tool",
             "iterations": iterations + 1,
         }
@@ -309,6 +314,7 @@ class LangGraphAgentRunner:
         consumed_resume_id = str(state.get("consumed_resume_id") or "")
         consumed_resume_attempt_id = str(state.get("consumed_resume_attempt_id") or "")
         for tool_call in current_tool_calls:
+            confirmed_outcome: tuple[PendingAction, bool] | None = None
             self._raise_if_cancelled()
             tool_name = str(tool_call["name"])
             tool_args = str(tool_call.get("args") or "")
@@ -322,9 +328,7 @@ class LangGraphAgentRunner:
                     tool_name,
                 )
                 if mapped_identity_error:
-                    raise StalePendingActionError(
-                        "stale pending action: " + mapped_identity_error
-                    )
+                    raise StalePendingActionError("stale pending action: " + mapped_identity_error)
                 mapped_attempt_id = mapped_resume.get("resume_attempt_id")
                 if not isinstance(mapped_attempt_id, str) or not mapped_attempt_id:
                     raise StalePendingActionError(
@@ -357,20 +361,20 @@ class LangGraphAgentRunner:
                         tool_name,
                     )
                     if identity_error:
-                        raise StalePendingActionError(
-                            "stale pending action: " + identity_error
-                        )
+                        raise StalePendingActionError("stale pending action: " + identity_error)
                     if resume_value.get("approved") is True:
                         event_args = resume_value.get("effective_args")
+                        effective_pending = PendingAction(
+                            tool_call_id=tool_call_id,
+                            tool_name=tool_name,
+                            args=event_args if isinstance(event_args, str) else tool_args,
+                            human=str(pending["human"]),
+                        )
                         self._emit_pending_tool_call(
-                            PendingAction(
-                                tool_call_id=tool_call_id,
-                                tool_name=tool_name,
-                                args=event_args if isinstance(event_args, str) else tool_args,
-                                human=str(pending["human"]),
-                            ),
+                            effective_pending,
                             "approved",
                         )
+                        confirmed_outcome = (effective_pending, True)
                         try:
                             effective_args = _validated_resumed_args(
                                 tool_call_id,
@@ -383,6 +387,17 @@ class LangGraphAgentRunner:
                             result = "错误：" + str(exc)
                         else:
                             result = _execute_tool(tool, effective_args)
+                            confirmed_outcome = (
+                                PendingAction(
+                                    tool_call_id=tool_call_id,
+                                    tool_name=tool_name,
+                                    args=effective_args,
+                                    human=_describe_pending_action(
+                                        describe, effective_args, str(pending["human"])
+                                    ),
+                                ),
+                                True,
+                            )
                     else:
                         self._emit_pending_tool_call(
                             PendingAction(
@@ -394,6 +409,15 @@ class LangGraphAgentRunner:
                             "rejected",
                         )
                         result = _rejection_result(resume_value.get("rejection_feedback"))
+                        confirmed_outcome = (
+                            PendingAction(
+                                tool_call_id=tool_call_id,
+                                tool_name=tool_name,
+                                args=tool_args,
+                                human=str(pending["human"]),
+                            ),
+                            False,
+                        )
                 else:
                     self._raise_if_cancelled()
                     result = _execute_tool(tool, tool_args)
@@ -405,6 +429,13 @@ class LangGraphAgentRunner:
             tool_message = Message(role="tool", content=result, tool_call_id=tool_call_id)
             messages.append(_message_to_dict(tool_message))
             added.append(_message_to_dict(tool_message))
+            if confirmed_outcome is not None and self._confirmation_result_sink is not None:
+                effective_pending, confirmed_approved = confirmed_outcome
+                self._confirmation_result_sink(
+                    effective_pending,
+                    confirmed_approved,
+                    tool_message,
+                )
         return {
             "messages": messages,
             "added": added,
@@ -434,11 +465,15 @@ class LangGraphAgentRunner:
         interrupts = state.get("__interrupt__") or []
         if interrupts:
             pending_payload = getattr(interrupts[0], "value")
-            return added, "", PendingAction(
-                tool_call_id=str(pending_payload["tool_call_id"]),
-                tool_name=str(pending_payload["tool_name"]),
-                args=str(pending_payload["args"]),
-                human=str(pending_payload["human"]),
+            return (
+                added,
+                "",
+                PendingAction(
+                    tool_call_id=str(pending_payload["tool_call_id"]),
+                    tool_name=str(pending_payload["tool_name"]),
+                    args=str(pending_payload["args"]),
+                    human=str(pending_payload["human"]),
+                ),
             )
         return added, str(state.get("reply") or ""), None
 
@@ -483,6 +518,8 @@ class LangGraphAgentRunner:
 
         tool_message = Message(role="tool", content=result, tool_call_id=pending.tool_call_id)
         added = [tool_message]
+        if self._confirmation_result_sink is not None:
+            self._confirmation_result_sink(pending, approved, tool_message)
         more, reply, new_pending = self.run_turn(
             [*messages, tool_message],
             auto_approve=auto_approve,
@@ -495,7 +532,9 @@ class LangGraphAgentRunner:
         tool_name = str(tool_call.name)
         tool = self._registry.get(tool_name) or {}
         is_write = bool(tool.get("write"))
-        confirm_mode = "hitl" if _requires_confirmation(tool, auto_approve) else "auto" if is_write else "none"
+        confirm_mode = (
+            "hitl" if _requires_confirmation(tool, auto_approve) else "auto" if is_write else "none"
+        )
         summary = _tool_call_summary(tool, str(tool_call.args or ""), tool_name)
         self._emit_event(
             "tool_call",
@@ -594,6 +633,7 @@ def resume_after_confirm(
     thread_id: str = _DEFAULT_THREAD_ID,
     event_sink: AgentEventSink | None = None,
     cancel_check: CancelCheck | None = None,
+    confirmation_result_sink: ConfirmationResultSink | None = None,
 ) -> tuple[list[Message], str, PendingAction | None]:
     return LangGraphAgentRunner(
         model,
@@ -602,6 +642,7 @@ def resume_after_confirm(
         thread_id=thread_id,
         event_sink=event_sink,
         cancel_check=cancel_check,
+        confirmation_result_sink=confirmation_result_sink,
     ).resume_after_confirm(
         messages,
         pending,
@@ -730,15 +771,11 @@ def _assert_pending_checkpoint_identity(
         ) from exc
     interrupts = getattr(snapshot, "interrupts", ())
     if not isinstance(interrupts, tuple) or len(interrupts) != 1:
-        raise StalePendingActionError(
-            "stale pending action: no current checkpoint interrupt"
-        )
+        raise StalePendingActionError("stale pending action: no current checkpoint interrupt")
     current_interrupt = interrupts[0]
     current = getattr(current_interrupt, "value", None)
     if not isinstance(current, dict):
-        raise StalePendingActionError(
-            "stale pending action: invalid checkpoint interrupt"
-        )
+        raise StalePendingActionError("stale pending action: invalid checkpoint interrupt")
     if (
         current.get("tool_call_id") != pending.tool_call_id
         or current.get("tool_name") != pending.tool_name
@@ -748,9 +785,7 @@ def _assert_pending_checkpoint_identity(
         )
     interrupt_id = getattr(current_interrupt, "id", None)
     if not isinstance(interrupt_id, str) or not interrupt_id:
-        raise StalePendingActionError(
-            "stale pending action: invalid checkpoint interrupt identity"
-        )
+        raise StalePendingActionError("stale pending action: invalid checkpoint interrupt identity")
     return interrupt_id
 
 

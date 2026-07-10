@@ -163,6 +163,10 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('contextBadge');
     expect(component).toContain('当前上下文');
     expect(component).toContain('contextLabel');
+    expect(component).toContain('lastConfirmationInputRef');
+    expect(component).toContain('confirmationInputForRetry(lastConfirmationInputRef.current)');
+    expect(component).toContain('void handleConfirm(retryInput)');
+    expect(component).not.toContain('void handleConfirm(true)');
   });
 
   it('keeps removable request page context separate from durable conversation context', async () => {

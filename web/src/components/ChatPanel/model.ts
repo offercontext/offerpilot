@@ -1,4 +1,5 @@
 import type { ChatMessage, Conversation, PendingAction, PilotPageContext } from '@/types/chat';
+import type { ConfirmationInput } from '@/services/chat';
 import { STATUS_LABELS, type ApplicationStatus } from '@/types/application';
 import { toolMeta } from './capabilities';
 
@@ -48,6 +49,24 @@ export interface ChatRequestContext {
   context_ref?: string | number;
   mode?: 'general' | 'nego_coach';
   page_context?: PilotPageContext;
+}
+
+export function confirmationInputForRetry(
+  input: ConfirmationInput | null,
+): ConfirmationInput | null {
+  if (input === null) return null;
+  if (input.approved) {
+    return {
+      approved: true,
+      ...(input.edited_args ? { edited_args: { ...input.edited_args } } : {}),
+    };
+  }
+  return {
+    approved: false,
+    ...(input.rejection_feedback !== undefined
+      ? { rejection_feedback: input.rejection_feedback }
+      : {}),
+  };
 }
 
 interface BuildChatRequestContextOptions {

@@ -2,6 +2,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { confirmAction, createSseParser, sendChat, streamChat, streamConfirmAction } from './chat';
 import source from './chat.ts?raw';
 import type { ChatStreamEvent, PilotPageContext } from '@/types/chat';
+import type { ConfirmationInput } from './chat';
+
+const approvalInput: ConfirmationInput = { approved: true, edited_args: { status: 'offer' } };
+const rejectionInput: ConfirmationInput = { approved: false, rejection_feedback: 'Keep it.' };
+// @ts-expect-error approval cannot carry rejection feedback
+const invalidApprovalInput: ConfirmationInput = { approved: true, rejection_feedback: 'no' };
+// @ts-expect-error rejection cannot carry edited arguments
+const invalidRejectionInput: ConfirmationInput = { approved: false, edited_args: {} };
+void [approvalInput, rejectionInput, invalidApprovalInput, invalidRejectionInput];
 
 const { postMock } = vi.hoisted(() => ({ postMock: vi.fn() }));
 
@@ -164,7 +173,7 @@ describe('settings service v0.1 contract', () => {
   });
 
   it('serializes identical confirmation input for JSON and SSE endpoints', async () => {
-    const input = { approved: false, rejection_feedback: 'Keep the current status.' };
+    const input = { approved: false, rejection_feedback: 'Keep the current status.' } satisfies ConfirmationInput;
     postMock.mockResolvedValueOnce({
       data: { type: 'message', conversation_id: 3, message: 'kept' },
     });

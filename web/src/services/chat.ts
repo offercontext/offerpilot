@@ -20,11 +20,17 @@ export interface ChatStreamRequestOptions extends ChatRequestOptions {
   onEvent?: (event: ChatStreamEvent) => void;
 }
 
-export interface ConfirmationInput {
-  approved: boolean;
-  edited_args?: Record<string, unknown>;
-  rejection_feedback?: string;
-}
+export type ConfirmationInput =
+  | {
+      approved: true;
+      edited_args?: Record<string, unknown>;
+      rejection_feedback?: never;
+    }
+  | {
+      approved: false;
+      rejection_feedback?: string;
+      edited_args?: never;
+    };
 
 export async function sendChat(
   message: string,

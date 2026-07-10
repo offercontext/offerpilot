@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from offerpilot.models import Application, ApplicationEvent
@@ -82,7 +83,9 @@ class ApplicationEventsRepository:
         with self._session_factory() as session:
             rows = session.execute(statement).all()
             return [
-                ApplicationEventWithApplication(event=row[0], company_name=row[1], position_name=row[2])
+                ApplicationEventWithApplication(
+                    event=row[0], company_name=row[1], position_name=row[2]
+                )
                 for row in rows
             ]
 
@@ -119,6 +122,35 @@ class ApplicationEventsRepository:
             session.commit()
             return True
 
+    def delete_if_matches(self, event_id: int, expected: dict[str, object]) -> bool:
+        scheduled_at = _expected_datetime(expected.get("scheduled_at"))
+        remind_at = _expected_datetime(expected.get("remind_at"))
+        tags = expected.get("tags")
+        encoded_tags = json.dumps(tags if isinstance(tags, list) else [], ensure_ascii=False)
+        statement = (
+            delete(ApplicationEvent)
+            .where(ApplicationEvent.id == event_id)
+            .where(ApplicationEvent.application_id == expected.get("application_id"))
+            .where(ApplicationEvent.event_type == expected.get("event_type"))
+            .where(ApplicationEvent.subtype == expected.get("subtype"))
+            .where(ApplicationEvent._tags == encoded_tags)
+            .where(ApplicationEvent.round == expected.get("round"))
+            .where(ApplicationEvent.scheduled_at == scheduled_at)
+            .where(ApplicationEvent.duration_minutes == expected.get("duration_minutes"))
+            .where(ApplicationEvent.location == expected.get("location"))
+            .where(ApplicationEvent.notes == expected.get("notes"))
+            .where(ApplicationEvent.status == expected.get("status"))
+        )
+        statement = (
+            statement.where(ApplicationEvent.remind_at.is_(None))
+            if remind_at is None
+            else statement.where(ApplicationEvent.remind_at == remind_at)
+        )
+        with self._session_factory() as session:
+            result = session.execute(statement)
+            session.commit()
+            return getattr(result, "rowcount", 0) == 1
+
 
 def _get_visible_event(session: Session, event_id: int) -> Optional[ApplicationEvent]:
     event = session.scalar(
@@ -129,10 +161,19 @@ def _get_visible_event(session: Session, event_id: int) -> Optional[ApplicationE
     )
     return event
 
+
 def duration_minutes(duration: str | int) -> int:
     if isinstance(duration, int):
         return duration
     return int(str(duration).removesuffix("m") or "0")
+
+
+def _expected_datetime(value: object) -> datetime | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        return value
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
 
 
 def _month_bounds(month: str) -> tuple[datetime, datetime] | None:

@@ -16,6 +16,7 @@ import {
   pendingComposerDisabledReason,
   reloadConversationTurns,
   toolMeta,
+  confirmationInputForRetry,
 } from './model';
 
 describe('buildChatRequestContext', () => {
@@ -96,6 +97,20 @@ describe('buildChatRequestContext', () => {
       context_ref: '',
       mode: 'general',
     });
+  });
+});
+
+describe('confirmation retry intent', () => {
+  it('preserves approval edits exactly', () => {
+    const input = { approved: true as const, edited_args: { status: 'closed', closed_reason: 'Paused' } };
+
+    expect(confirmationInputForRetry(input)).toEqual(input);
+  });
+
+  it('preserves rejection feedback exactly', () => {
+    const input = { approved: false as const, rejection_feedback: 'Keep the current status.' };
+
+    expect(confirmationInputForRetry(input)).toEqual(input);
   });
 });
 

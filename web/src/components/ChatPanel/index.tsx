@@ -20,6 +20,7 @@ import {
   deleteConversation,
   updateConversation,
   undoLastWrite,
+  type ConfirmationInput,
 } from '@/services/chat';
 import { getOffer } from '@/services/offers';
 import type {
@@ -41,6 +42,7 @@ import {
   reloadConversationTurns,
   resolveActivePendingAction,
   toolMeta,
+  confirmationInputForRetry,
   type EvidenceItem,
   type UITurn,
 } from './model';
@@ -182,6 +184,7 @@ export default function ChatPanel({
   const threadOfferId = useRef<number | undefined>(undefined);
   const abortControllerRef = useRef<AbortController | null>(null);
   const streamingAssistantActiveRef = useRef(false);
+  const lastConfirmationInputRef = useRef<ConfirmationInput | null>(null);
   const docked = variant === 'rail';
   const inlinePage = variant === 'page';
 
@@ -211,6 +214,7 @@ export default function ChatPanel({
       setConvID(undefined);
       setTurns([]);
       setPending(null);
+      lastConfirmationInputRef.current = null;
       setDegraded(false);
       threadOfferId.current = offerId;
     }
@@ -273,6 +277,7 @@ export default function ChatPanel({
     setConvID(undefined);
     setTurns([]);
     setPending(null);
+    lastConfirmationInputRef.current = null;
     setDegraded(false);
     setPanelOpen(false);
     setLastError(null);
@@ -292,6 +297,7 @@ export default function ChatPanel({
       setConvID(id);
       setTurns(buildTurns(stored));
       setPending(pendingActionForConversation(conversations, id));
+      lastConfirmationInputRef.current = null;
       setDegraded(false);
       setConfirmError(null);
       setHasStreamingAssistantContent(false);
@@ -422,6 +428,7 @@ export default function ChatPanel({
   async function sendMessage(text: string): Promise<boolean> {
     const trimmed = text.trim();
     if (!trimmed || loading || activePending) return false;
+    lastConfirmationInputRef.current = null;
     setLastError(null);
     setLastFailedText('');
     setConfirmError(null);
@@ -519,8 +526,10 @@ export default function ChatPanel({
     return action.workflow?.current_label || toolMeta(action.tool_name).label;
   }
 
-  async function handleConfirm(approved: boolean) {
+  async function handleConfirm(input: ConfirmationInput) {
     if (!convID) return;
+    const approved = input.approved;
+    lastConfirmationInputRef.current = confirmationInputForRetry(input);
     setConfirmError(null);
     setConfirmPhase(approved ? 'saving' : 'idle');
     setLoading(true);
@@ -530,7 +539,7 @@ export default function ChatPanel({
     const controller = new AbortController();
     abortControllerRef.current = controller;
     try {
-      const resp = await streamConfirmAction(convID, { approved }, {
+      const resp = await streamConfirmAction(convID, input, {
         signal: controller.signal,
         onEvent: (event) => {
           if (event.event === 'assistant_delta') {
@@ -546,6 +555,7 @@ export default function ChatPanel({
         },
       });
       if (resp.type === 'confirmation_required') {
+        lastConfirmationInputRef.current = null;
         setConvID(resp.conversation_id);
         setPending(resp.pending_action);
         setConfirmPhase('idle');
@@ -554,6 +564,7 @@ export default function ChatPanel({
         refreshConversations();
       } else {
         await finishMessage(resp);
+        lastConfirmationInputRef.current = null;
         setConfirmPhase(approved ? 'success' : 'idle');
         if (approved) onDataChanged?.();
       }
@@ -579,7 +590,9 @@ export default function ChatPanel({
 
   function retryConfirmAction() {
     if (!activePending || loading) return;
-    void handleConfirm(true);
+    const retryInput = confirmationInputForRetry(lastConfirmationInputRef.current);
+    if (!retryInput) return;
+    void handleConfirm(retryInput);
   }
 
   async function handleUndoLastWrite() {
@@ -834,7 +847,7 @@ export default function ChatPanel({
                     <button type="button" onClick={retryConfirmAction} disabled={loading}>
                       重试执行
                     </button>
-                    <button type="button" onClick={() => handleConfirm(false)} disabled={loading}>
+                    <button type="button" onClick={() => handleConfirm({ approved: false })} disabled={loading}>
                       取消本次写入
                     </button>
                   </div>
@@ -843,8 +856,8 @@ export default function ChatPanel({
                   action={activePending}
                   loading={loading}
                   evidence={confirmationEvidence}
-                  onConfirm={() => handleConfirm(true)}
-                  onCancel={() => handleConfirm(false)}
+                  onConfirm={() => handleConfirm({ approved: true })}
+                  onCancel={() => handleConfirm({ approved: false })}
                 />
               </div>
             )}
