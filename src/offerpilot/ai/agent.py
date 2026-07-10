@@ -10,6 +10,7 @@ from typing import Any, Callable, Literal, Protocol, TypedDict, cast
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.config import get_config
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
@@ -131,17 +132,17 @@ class LangGraphAgentRunner:
         with self._checkpointer() as checkpointer:
             graph = self._compile_graph(checkpointer)
             config = self._config(max_iter)
-            _assert_pending_checkpoint_identity(graph, config, pending)
+            interrupt_id = _assert_pending_checkpoint_identity(graph, config, pending)
+            resume_payload = {
+                "approved": approved,
+                "tool_call_id": pending.tool_call_id,
+                "tool_name": pending.tool_name,
+                "effective_args": pending.args,
+                "rejection_feedback": rejection_feedback,
+            }
             result = graph.invoke(
                 Command(
-                    update={"added": []},
-                    resume={
-                        "approved": approved,
-                        "tool_call_id": pending.tool_call_id,
-                        "tool_name": pending.tool_name,
-                        "effective_args": pending.args,
-                        "rejection_feedback": rejection_feedback,
-                    },
+                    resume={interrupt_id: resume_payload},
                 ),
                 config,
             )
@@ -214,6 +215,18 @@ class LangGraphAgentRunner:
             tool_args = str(tool_call.get("args") or "")
             tool_call_id = str(tool_call["id"])
             tool = self._registry.get(tool_name)
+            has_mapped_resume, mapped_resume = _mapped_resume_payload()
+            if has_mapped_resume:
+                mapped_identity_error = _resume_identity_error(
+                    mapped_resume,
+                    tool_call_id,
+                    tool_name,
+                )
+                if mapped_identity_error:
+                    raise StalePendingActionError(
+                        "stale pending action: " + mapped_identity_error
+                    )
+                added = []
 
             if tool is None:
                 result = f'错误：未知工具 "{tool_name}"'
@@ -238,8 +251,10 @@ class LangGraphAgentRunner:
                         tool_name,
                     )
                     if identity_error:
-                        result = "错误：" + identity_error
-                    elif resume_value.get("approved") is True:
+                        raise StalePendingActionError(
+                            "stale pending action: " + identity_error
+                        )
+                    if resume_value.get("approved") is True:
                         event_args = resume_value.get("effective_args")
                         self._emit_pending_tool_call(
                             PendingAction(
@@ -586,7 +601,7 @@ def _assert_pending_checkpoint_identity(
     graph: Any,
     config: dict[str, Any],
     pending: PendingAction,
-) -> None:
+) -> str:
     try:
         snapshot = graph.get_state(config)
     except Exception as exc:
@@ -598,7 +613,8 @@ def _assert_pending_checkpoint_identity(
         raise StalePendingActionError(
             "stale pending action: no current checkpoint interrupt"
         )
-    current = getattr(interrupts[0], "value", None)
+    current_interrupt = interrupts[0]
+    current = getattr(current_interrupt, "value", None)
     if not isinstance(current, dict):
         raise StalePendingActionError(
             "stale pending action: invalid checkpoint interrupt"
@@ -610,6 +626,26 @@ def _assert_pending_checkpoint_identity(
         raise StalePendingActionError(
             "stale pending action: confirmation does not match the current checkpoint"
         )
+    interrupt_id = getattr(current_interrupt, "id", None)
+    if not isinstance(interrupt_id, str) or not interrupt_id:
+        raise StalePendingActionError(
+            "stale pending action: invalid checkpoint interrupt identity"
+        )
+    return interrupt_id
+
+
+def _mapped_resume_payload() -> tuple[bool, dict[str, Any]]:
+    try:
+        configurable = get_config().get("configurable", {})
+    except RuntimeError:
+        return False, {}
+    if "__pregel_resume_map" not in configurable:
+        return False, {}
+    resume_map = configurable.get("__pregel_resume_map")
+    if not isinstance(resume_map, dict) or len(resume_map) != 1:
+        return True, {}
+    payload = next(iter(resume_map.values()))
+    return True, payload if isinstance(payload, dict) else {}
 
 
 def _parse_json_object(raw: str, error_message: str) -> dict[str, Any]:

@@ -314,6 +314,147 @@ def test_checkpoint_resume_rejects_stale_pending_identity_without_approved_event
     ) == 1
 
 
+def test_confirmation_race_preserves_replacement_checkpoint(monkeypatch):
+    calls = []
+    events = []
+    registry = _editable_registry(calls)
+    runner = LangGraphAgentRunner(
+        ScriptedModel(
+            [
+                Assistant(
+                    tool_calls=[
+                        ToolCall(
+                            id="call-a",
+                            name="update_application_status",
+                            args=json.dumps({"id": 7, "status": "offer"}),
+                        )
+                    ]
+                ),
+                Assistant(
+                    tool_calls=[
+                        ToolCall(
+                            id="call-b",
+                            name="update_application_status",
+                            args=json.dumps({"id": 7, "status": "rejected"}),
+                        )
+                    ]
+                ),
+                Assistant(content="replacement completed"),
+            ]
+        ),
+        registry,
+        event_sink=events.append,
+    )
+    _, _, pending_a = runner.run_turn([], auto_approve=False, max_iter=8)
+    assert pending_a is not None
+
+    original_compile = runner._compile_graph
+    replacement = {}
+
+    def compile_with_race(checkpointer):
+        graph = original_compile(checkpointer)
+
+        class RaceGraph:
+            def get_state(self, config):
+                return graph.get_state(config)
+
+            def invoke(self, value, config):
+                if not replacement:
+                    replacement_result = graph.invoke(
+                        {
+                            "messages": [],
+                            "added": [],
+                            "auto_approve": False,
+                            "max_iter": 8,
+                            "iterations": 0,
+                        },
+                        config,
+                    )
+                    _, _, pending_b = runner._result_from_state(replacement_result)
+                    assert pending_b is not None
+                    replacement["pending"] = pending_b
+                return graph.invoke(value, config)
+
+        return RaceGraph()
+
+    monkeypatch.setattr(runner, "_compile_graph", compile_with_race)
+
+    with pytest.raises(StalePendingActionError, match="stale pending action"):
+        runner.resume_after_confirm(
+            [], pending_a, approved=True, auto_approve=False, max_iter=8
+        )
+
+    assert calls == []
+    assert not any(
+        event["event"] == "tool_call" and event["data"].get("confirm_mode") == "approved"
+        for event in events
+    )
+
+    pending_b = replacement["pending"]
+    added, reply, new_pending = runner.resume_after_confirm(
+        [], pending_b, approved=True, auto_approve=False, max_iter=8
+    )
+
+    assert calls == ['{"id":7,"status":"rejected"}']
+    assert added[0].role == "tool"
+    assert reply == "replacement completed"
+    assert new_pending is None
+    assert sum(
+        event["event"] == "tool_call" and event["data"].get("confirm_mode") == "approved"
+        for event in events
+    ) == 1
+
+
+def test_missing_resume_identity_preserves_checkpoint(monkeypatch):
+    calls = []
+    registry = _editable_registry(calls)
+    runner = LangGraphAgentRunner(
+        ScriptedModel(
+            [
+                Assistant(
+                    tool_calls=[
+                        ToolCall(
+                            id="w1",
+                            name="update_application_status",
+                            args=json.dumps({"id": 7, "status": "offer"}),
+                        )
+                    ]
+                ),
+                Assistant(content="done"),
+            ]
+        ),
+        registry,
+    )
+    _, _, pending = runner.run_turn([], auto_approve=False, max_iter=8)
+    assert pending is not None
+    original_command = agent_module.Command
+
+    def command_without_identity(*, resume):
+        stripped_resume_map = {}
+        for interrupt_id, payload in resume.items():
+            stripped_payload = dict(payload)
+            stripped_payload.pop("tool_call_id")
+            stripped_payload.pop("tool_name")
+            stripped_resume_map[interrupt_id] = stripped_payload
+        return original_command(resume=stripped_resume_map)
+
+    monkeypatch.setattr(agent_module, "Command", command_without_identity)
+    with pytest.raises(StalePendingActionError, match="stale pending action"):
+        runner.resume_after_confirm(
+            [], pending, approved=True, auto_approve=False, max_iter=8
+        )
+
+    assert calls == []
+    monkeypatch.setattr(agent_module, "Command", original_command)
+    _, reply, new_pending = runner.resume_after_confirm(
+        [], pending, approved=True, auto_approve=False, max_iter=8
+    )
+
+    assert calls == ['{"id":7,"status":"offer"}']
+    assert reply == "done"
+    assert new_pending is None
+
+
 def test_checkpoint_validator_exception_fails_closed_without_leaking_details():
     calls = []
     validation_count = 0
