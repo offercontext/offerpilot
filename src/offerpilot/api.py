@@ -84,6 +84,14 @@ from offerpilot.sse import STREAM_VERSION, SseRun, format_sse, sse_headers
 CHAT_AGENT_TIMEOUT_SECONDS = 120.0
 CHAT_TIMEOUT_MESSAGE = "这次处理时间过长，已停止。你可以重试或换一种问法。"
 CHAT_CANCELLED_MESSAGE = "已取消本次写入。你可以修改信息后让我重新整理。"
+_CANCELLED_TOOL_RESULT = json.dumps(
+    {"status": "cancelled", "message": "用户取消了该操作，未执行。"},
+    ensure_ascii=False,
+)
+_ORPHAN_TOOL_RESULT = json.dumps(
+    {"status": "unknown", "message": "历史记录中缺少该工具调用的结果，本轮未重新执行。"},
+    ensure_ascii=False,
+)
 try:
     APP_VERSION = package_version("offerpilot")
 except PackageNotFoundError:
@@ -1397,7 +1405,7 @@ def create_app(
         if not bool(payload.get("approved")):
             chat.clear_pending_action(conversation_id)
             chat.clear_pending_clarification(conversation_id)
-            chat.append_message(conversation_id, "assistant", content=CHAT_CANCELLED_MESSAGE)
+            _append_cancelled_pending_action(chat, conversation_id, pending)
             return JSONResponse(
                 {
                     "type": "message",
@@ -1426,7 +1434,7 @@ def create_app(
                     [
                         _chat_response_system_message(),
                         *([context_message] if context_message is not None else []),
-                        *_stored_messages_to_ai(stored),
+                        *_stored_messages_to_ai(stored, pending_tool_call_id=pending.tool_call_id),
                     ],
                     pending,
                     approved=True,
@@ -1544,7 +1552,8 @@ def create_app(
 
             def reject_stream() -> Any:
                 chat.clear_pending_action(conversation_id)
-                chat.append_message(conversation_id, "assistant", content=CHAT_CANCELLED_MESSAGE)
+                chat.clear_pending_clarification(conversation_id)
+                _append_cancelled_pending_action(chat, conversation_id, pending)
                 response = {
                     "type": "message",
                     "conversation_id": conversation_id,
@@ -1601,7 +1610,7 @@ def create_app(
                         [
                             _chat_response_system_message(),
                             *([context_message] if context_message is not None else []),
-                            *_stored_messages_to_ai(stored),
+                            *_stored_messages_to_ai(stored, pending_tool_call_id=pending.tool_call_id),
                         ],
                         pending,
                         approved=True,
@@ -2156,6 +2165,21 @@ def _persist_ai_messages(repo: ChatRepository, conversation_id: int, messages: l
         )
 
 
+def _append_cancelled_pending_action(
+    repo: ChatRepository,
+    conversation_id: int,
+    pending: PendingAction,
+) -> None:
+    if pending.tool_call_id:
+        repo.append_message(
+            conversation_id,
+            "tool",
+            content=_CANCELLED_TOOL_RESULT,
+            tool_call_id=pending.tool_call_id,
+        )
+    repo.append_message(conversation_id, "assistant", content=CHAT_CANCELLED_MESSAGE)
+
+
 _USER_FACING_TOOL_NAMES = {
     "update_application_status": "更新投递状态",
     "create_application_event": "添加投递日程",
@@ -2248,8 +2272,10 @@ def _chat_context_message(conversation: Any, applications: ApplicationsRepositor
     )
 
 
-def _stored_messages_to_ai(messages: list[Any]) -> list[Message]:
-    return [
+def _stored_messages_to_ai(messages: list[Any], pending_tool_call_id: str = "") -> list[Message]:
+    # A pending confirmation is completed by resume_after_confirm, so its tool result
+    # must not be synthesized here before the real execution/rejection result is added.
+    converted = [
         Message(
             role=message.role,
             content=message.content,
@@ -2259,6 +2285,31 @@ def _stored_messages_to_ai(messages: list[Any]) -> list[Message]:
         )
         for message in messages
     ]
+    normalized: list[Message] = []
+    unresolved_tool_call_ids: list[str] = []
+    for message in converted:
+        if unresolved_tool_call_ids and message.role != "tool":
+            normalized.extend(
+                Message(role="tool", content=_ORPHAN_TOOL_RESULT, tool_call_id=tool_call_id)
+                for tool_call_id in unresolved_tool_call_ids
+                if tool_call_id != pending_tool_call_id
+            )
+            unresolved_tool_call_ids.clear()
+        normalized.append(message)
+        if message.role == "assistant" and message.tool_calls:
+            unresolved_tool_call_ids.extend(tool_call.id for tool_call in message.tool_calls)
+        elif message.role == "tool" and message.tool_call_id:
+            unresolved_tool_call_ids = [
+                tool_call_id
+                for tool_call_id in unresolved_tool_call_ids
+                if tool_call_id != message.tool_call_id
+            ]
+    normalized.extend(
+        Message(role="tool", content=_ORPHAN_TOOL_RESULT, tool_call_id=tool_call_id)
+        for tool_call_id in unresolved_tool_call_ids
+        if tool_call_id != pending_tool_call_id
+    )
+    return normalized
 
 
 def _dump_tool_calls(tool_calls: list[ToolCall]) -> str:

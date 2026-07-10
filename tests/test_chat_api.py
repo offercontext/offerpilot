@@ -1,13 +1,16 @@
 import json
 import time
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
 from offerpilot.ai.types import Assistant, Message, ToolCall
 from offerpilot.api import create_app
-from offerpilot.api import _has_write_attempt, _write_outcome
+from offerpilot.api import _has_write_attempt, _stored_messages_to_ai, _write_outcome
 from offerpilot.config import Config, save_config
+from offerpilot.db import session_factory_for_data_dir
+from offerpilot.repositories.chat import ChatRepository
 
 
 class ScriptedModel:
@@ -71,6 +74,27 @@ class FailingTitleModel:
         raise RuntimeError("title provider unavailable")
 
 
+class ProtocolValidatingModel:
+    def __init__(self, reply="历史消息已恢复，可以继续了。"):
+        self.reply = reply
+        self.calls = []
+
+    def complete(self, messages, tools):
+        self.calls.append(messages)
+        for index, message in enumerate(messages):
+            if message.role != "assistant" or not message.tool_calls:
+                continue
+            expected_ids = {tool_call.id for tool_call in message.tool_calls}
+            actual_ids = set()
+            for following in messages[index + 1 :]:
+                if following.role != "tool":
+                    break
+                actual_ids.add(following.tool_call_id)
+            if expected_ids - actual_ids:
+                raise AssertionError("assistant tool_calls must have matching tool messages")
+        return Assistant(content=self.reply)
+
+
 def test_write_status_uses_registry_metadata_for_all_write_tools():
     registry = {"update_offer": {"write": True}}
     added = [
@@ -89,6 +113,30 @@ def test_write_status_does_not_report_missing_delete_as_success():
     added = [Message(role="tool", content='{"deleted": false}', tool_call_id="call-1")]
 
     assert _write_outcome(added, attempted=True) == ("failed", "目标记录不存在")
+
+
+def test_stored_messages_to_ai_repairs_orphan_tool_calls():
+    stored = [
+        SimpleNamespace(
+            role="assistant",
+            content="",
+            tool_calls=json.dumps([{"id": "orphan-1", "name": "update_offer", "args": "{}"}]),
+            tool_call_id="",
+            provider_blocks="",
+        ),
+        SimpleNamespace(
+            role="assistant",
+            content="已取消本次写入。",
+            tool_calls="",
+            tool_call_id="",
+            provider_blocks="",
+        ),
+    ]
+
+    messages = _stored_messages_to_ai(stored)
+
+    assert [message.role for message in messages] == ["assistant", "tool", "assistant"]
+    assert messages[1].tool_call_id == "orphan-1"
 
 
 def _parse_sse_events(raw: str) -> list[dict[str, object]]:
@@ -1144,6 +1192,104 @@ def test_chat_cancel_pending_write_returns_short_local_message(tmp_path):
     assert len(model.calls) == 1
     assert client.get("/api/chat/conversations").json()[0]["pending_action"] is None
     assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "interview"
+    stored = client.get(f"/api/chat/conversations/{pending['conversation_id']}").json()
+    assert [item["role"] for item in stored[-2:]] == ["tool", "assistant"]
+    assert stored[-2]["tool_call_id"] == "w1"
+
+
+def test_chat_cancel_pending_write_keeps_next_turn_provider_compatible(tmp_path):
+    app_client = TestClient(create_app(data_dir=tmp_path))
+    application = app_client.post(
+        "/api/applications",
+        json={"company_name": "字节跳动", "position_name": "后端工程师", "status": "interview"},
+    ).json()
+    pending_model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="w1",
+                        name="update_application_status",
+                        args=json.dumps({"id": application["id"], "status": "offer"}),
+                    )
+                ]
+            )
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=pending_model))
+    pending = client.post("/api/chat", json={"message": "改成 offer", "conversation_id": 0}).json()
+    client.post(
+        "/api/chat/confirm",
+        json={"conversation_id": pending["conversation_id"], "approved": False},
+    )
+
+    validating_model = ProtocolValidatingModel()
+    reloaded_client = TestClient(create_app(data_dir=tmp_path, chat_model=validating_model))
+    response = reloaded_client.post(
+        "/api/chat",
+        json={"message": "继续", "conversation_id": pending["conversation_id"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["message"] == "历史消息已恢复，可以继续了。"
+    assert validating_model.calls
+
+
+def test_chat_next_turn_repairs_legacy_orphan_tool_call_history(tmp_path):
+    chat = ChatRepository(session_factory_for_data_dir(tmp_path))
+    conversation = chat.create_conversation("legacy")
+    chat.append_message(
+        conversation.id,
+        "assistant",
+        tool_calls=json.dumps([{"id": "legacy-w1", "name": "update_offer", "args": "{}"}]),
+    )
+    chat.append_message(conversation.id, "assistant", content="已取消本次写入。")
+
+    validating_model = ProtocolValidatingModel()
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=validating_model))
+    response = client.post(
+        "/api/chat",
+        json={"message": "继续", "conversation_id": conversation.id},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["message"] == "历史消息已恢复，可以继续了。"
+    assert validating_model.calls
+
+
+def test_chat_confirm_stream_cancel_persists_tool_result(tmp_path):
+    app_client = TestClient(create_app(data_dir=tmp_path))
+    application = app_client.post(
+        "/api/applications",
+        json={"company_name": "飞书", "position_name": "后端工程师", "status": "interview"},
+    ).json()
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="stream-w1",
+                        name="update_application_status",
+                        args=json.dumps({"id": application["id"], "status": "offer"}),
+                    )
+                ]
+            )
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    pending = client.post("/api/chat", json={"message": "改成 offer", "conversation_id": 0}).json()
+
+    response = client.post(
+        "/api/chat/confirm/stream",
+        json={"conversation_id": pending["conversation_id"], "approved": False},
+    )
+
+    assert response.status_code == 200
+    events = _parse_sse_events(response.text)
+    assert events[-1]["event"] == "completed"
+    stored = client.get(f"/api/chat/conversations/{pending['conversation_id']}").json()
+    assert [item["role"] for item in stored[-2:]] == ["tool", "assistant"]
+    assert stored[-2]["tool_call_id"] == "stream-w1"
 
 
 def test_chat_confirm_reports_failed_write_without_success_prefix(tmp_path):
