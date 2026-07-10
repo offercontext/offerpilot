@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from offerpilot.ai.agent import PendingAction, StalePendingActionError
 from offerpilot.ai.types import Assistant, Message, ToolCall
-from offerpilot.api import create_app
+from offerpilot.api import _title_from_message, create_app
 from offerpilot.config import Config, save_config
 from offerpilot.db import session_factory_for_data_dir
 from offerpilot.models import (
@@ -3836,6 +3836,70 @@ def test_chat_confirm_discards_fallback_when_conversation_generation_changes(
     assert [message["content"] for message in stored].count("newer activity") == 1
     assert all("写入已完成" not in message["content"] for message in stored)
     assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("", "新对话"),
+        ("\n\t  \n", "新对话"),
+        ("\n\n  first\t  request   \nsecond line", "first request"),
+        ("请帮我安排明天的面试。然后整理准备材料", "请帮我安排明天的面试。"),
+        ("Please prepare my interview! Then organize my notes", "Please prepare my interview!"),
+        ("好！再说一些事情", "好！再说一些事情"),
+        ("OK; continue work", "OK; continue work"),
+        ("x" * 37, "x" * 36),
+    ],
+)
+def test_title_from_message_uses_first_line_sentence_boundary_and_unicode_cap(message, expected):
+    assert _title_from_message(message) == expected
+
+
+def test_title_from_message_caps_emoji_by_unicode_code_points():
+    title = _title_from_message("😀" * 36 + " trailing")
+
+    assert title == "😀" * 36
+    assert len(title) == 36
+
+
+def test_chat_new_json_conversation_title_is_deterministic_and_manual_rename_persists(tmp_path):
+    model = ScriptedModel([Assistant(content="first reply"), Assistant(content="second reply")])
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+
+    created = client.post(
+        "/api/chat",
+        json={"message": "\n  First\t request   with spaces\nignored", "conversation_id": 0},
+    ).json()
+    conversation_id = created["conversation_id"]
+    renamed = client.patch(
+        f"/api/chat/conversations/{conversation_id}", json={"title": "Manual title"}
+    )
+    continued = client.post(
+        "/api/chat",
+        json={"message": "A different later message", "conversation_id": conversation_id},
+    )
+    conversation = client.get("/api/chat/conversations").json()[0]
+
+    assert conversation["title"] == "Manual title"
+    assert renamed.status_code == 200
+    assert continued.status_code == 200
+
+
+def test_chat_new_stream_conversation_uses_deterministic_title(tmp_path):
+    client = TestClient(
+        create_app(data_dir=tmp_path, chat_model=ScriptedModel([Assistant(content="stream reply")]))
+    )
+
+    response = client.post(
+        "/api/chat/stream",
+        json={"message": "请帮我准备后端面试。后续内容", "conversation_id": 0},
+    )
+    conversation_id = _parse_sse_events(response.text)[0]["data"]["conversation_id"]
+    conversation = client.get("/api/chat/conversations").json()[0]
+
+    assert response.status_code == 200
+    assert conversation["id"] == conversation_id
+    assert conversation["title"] == "请帮我准备后端面试。"
 
 
 def test_chat_conversations_detail_and_delete(tmp_path):

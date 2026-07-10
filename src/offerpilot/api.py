@@ -2524,8 +2524,17 @@ def _payload_text(payload: dict[str, Any], key: str, fallback: str) -> str:
 
 
 def _title_from_message(message: str) -> str:
-    trimmed = message.strip()
-    return trimmed[:30] or "新对话"
+    for line in message.splitlines():
+        title = " ".join(line.split())
+        if title:
+            break
+    else:
+        return "新对话"
+
+    sentence_end = re.search(r"[。！？!?；;]", title)
+    if sentence_end is not None and sentence_end.end() >= 8:
+        title = title[: sentence_end.end()]
+    return title[:36] or "新对话"
 
 
 def _agent_checkpoint_path(data_dir: Path) -> Path:
