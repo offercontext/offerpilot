@@ -1,0 +1,41 @@
+web/src/components/ChatPanel/layout.test.ts
+  s_00fff216c0c1ef::t_55e476f5eaf8bf 102
+  s_00fff216c0c1ef::t_e7e75bee63523a 188-193
+web/src/types/chat.ts
+  s_00fff216c0c1ef::t_e7e75bee63523a 25-26,91-99
+web/src/components/ChatPanel/index.tsx
+  s_00fff216c0c1ef::t_707b187558972c 577-592
+tests/test_chat_api.py
+  s_00fff216c0c1ef::t_ffbe0f64ed21cc 128
+  s_00fff216c0c1ef::t_f4edea799b4c4d 1020,1057,1064-1105
+  s_00fff216c0c1ef::t_64f9a9d94099dd 1106-1107
+src/offerpilot/api.py
+  s_00fff216c0c1ef::t_49089f87a30c0f 2498-2505
+  s_00fff216c0c1ef::t_27909c2245438f 1144,1177-1185,1310,1336-1343,1521,1611,1637-1646
+  s_00fff216c0c1ef::t_6836e7351ff3d6 1375,1415,1445,1450,1452-1459,2506-2514
+  s_496ec40103d2ca::t_5b5d57dcfe6b39 2515-2516
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "a75191fa459623ee32ff2b8075b920756c622911",
+  "prompts": {},
+  "sessions": {
+    "s_00fff216c0c1ef": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f49b7-4729-7983-91e1-31d35f2738f1",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    },
+    "s_496ec40103d2ca": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f41cb-1c0b-7152-a6cd-661a79e373ff",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    }
+  }
+}
