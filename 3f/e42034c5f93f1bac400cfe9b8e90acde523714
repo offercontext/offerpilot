@@ -1,0 +1,22 @@
+docs/superpowers/plans/2026-07-10-v01-closeout.md
+  s_00fff216c0c1ef::t_19bdd32b4d9673 77,321-323,530-561,569-594,680,703
+  s_00fff216c0c1ef::t_47830f3ee8da43 766,785-786
+  s_00fff216c0c1ef::t_fa19878d3d998b 1-26,28-76,78-184,189-281,283-292,294-306,309-320,324-395,398-400,403-408,410-461,463-466,468-529,562-568,595-608,610-612,616-617,619-679,681-702,704-765,767-784,787-848
+  s_00fff216c0c1ef::t_c718790ac546e5 27,185-188,282,293,307-308,396-397,401-402,409,462,467,609,613-615,618
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "3fe42034c5f93f1bac400cfe9b8e90acde523714",
+  "prompts": {},
+  "sessions": {
+    "s_00fff216c0c1ef": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f49b7-4729-7983-91e1-31d35f2738f1",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    }
+  }
+}
