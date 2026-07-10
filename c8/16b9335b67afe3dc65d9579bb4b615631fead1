@@ -1,0 +1,37 @@
+src/offerpilot/diagnostics.py
+  s_00fff216c0c1ef::t_cc3919c1e26fc1 21,27-28,35-42
+tests/test_diagnostics_api.py
+  s_00fff216c0c1ef::t_0b3881bfbe4bbe 23-41
+web/src/services/chat.ts
+  s_00fff216c0c1ef::t_6bf615cf1107c1 233-234,326-327
+web/src/components/SettingsView.tsx
+  s_00fff216c0c1ef::t_e2af1db5603626 1-3,5-7,14-15,21-22,25-32,51-69,108,114,128-133,151-168
+web/src/lib/diagnostics.ts
+  s_00fff216c0c1ef::t_6bf615cf1107c1 1-22
+web/src/components/SettingsView.test.ts
+  s_00fff216c0c1ef::t_b3719e947b620f 11-14
+tests/test_settings_api.py
+  s_00fff216c0c1ef::t_0b3881bfbe4bbe 20-29
+  s_00fff216c0c1ef::t_1120cd95e3b31d 55-68
+web/src/lib/diagnostics.test.ts
+  s_00fff216c0c1ef::t_b3719e947b620f 1-42
+src/offerpilot/api.py
+  s_00fff216c0c1ef::t_fe25229490e01c 1814
+  s_00fff216c0c1ef::t_cc3919c1e26fc1 6,79-82,1815-1818,1849,1913,1929,2996,2999-3000
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "c816b9335b67afe3dc65d9579bb4b615631fead1",
+  "prompts": {},
+  "sessions": {
+    "s_00fff216c0c1ef": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f49b7-4729-7983-91e1-31d35f2738f1",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    }
+  }
+}
