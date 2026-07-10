@@ -3868,9 +3868,13 @@ def test_chat_new_json_conversation_title_is_deterministic_and_manual_rename_per
 
     created = client.post(
         "/api/chat",
-        json={"message": "\n  First\t request   with spaces\nignored", "conversation_id": 0},
+        json={"message": "\n  First\t request   \nignored", "conversation_id": 0},
     ).json()
     conversation_id = created["conversation_id"]
+    created_conversation = client.get("/api/chat/conversations").json()[0]
+
+    assert created_conversation["title"] == "First request"
+
     renamed = client.patch(
         f"/api/chat/conversations/{conversation_id}", json={"title": "Manual title"}
     )
