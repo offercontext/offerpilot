@@ -116,7 +116,19 @@ def test_prepare_pending_action_rejects_unknown_tool():
         prepare_pending_action(pending, _editable_registry(), {})
 
 
-@pytest.mark.parametrize("raw_args", ["{", "[]", '"text"', "null", '{"score":NaN}'])
+@pytest.mark.parametrize(
+    "raw_args",
+    [
+        "{",
+        "[]",
+        '"text"',
+        "null",
+        '{"score":NaN}',
+        '{"score":Infinity}',
+        '{"score":-Infinity}',
+        '{"score":1e400}',
+    ],
+)
 def test_prepare_pending_action_rejects_malformed_or_non_object_original_args(raw_args):
     pending = PendingAction("w1", "update_application_status", raw_args, "change status")
 
@@ -233,6 +245,191 @@ def test_in_memory_checkpoint_executes_effective_args():
     assert new_pending is None
 
 
+@pytest.mark.parametrize(
+    ("stale_tool_call_id", "stale_tool_name"),
+    [("other-call", "update_application_status"), ("w1", "other_write_tool")],
+)
+def test_checkpoint_resume_rejects_stale_pending_identity_without_approved_event(
+    stale_tool_call_id, stale_tool_name
+):
+    calls = []
+    events = []
+    registry = _editable_registry(calls)
+    registry["other_write_tool"] = {
+        "write": True,
+        "handler": lambda args: calls.append("other:" + args) or '{"ok":true}',
+    }
+    runner = LangGraphAgentRunner(
+        ScriptedModel(
+            [
+                Assistant(
+                    tool_calls=[
+                        ToolCall(
+                            id="w1",
+                            name="update_application_status",
+                            args=json.dumps({"id": 7, "status": "offer"}),
+                        )
+                    ]
+                ),
+                Assistant(content="stale confirmation rejected"),
+            ]
+        ),
+        registry,
+        event_sink=events.append,
+    )
+    _, _, pending = runner.run_turn([], auto_approve=False, max_iter=8)
+    assert pending is not None
+    stale_pending = PendingAction(
+        tool_call_id=stale_tool_call_id,
+        tool_name=stale_tool_name,
+        args=pending.args,
+        human=pending.human,
+    )
+
+    added, reply, new_pending = runner.resume_after_confirm(
+        [], stale_pending, approved=True, auto_approve=False, max_iter=8
+    )
+
+    assert calls == []
+    assert reply == "stale confirmation rejected"
+    assert new_pending is None
+    assert added[0].content.startswith("错误：")
+    assert not any(
+        event["event"] == "tool_call" and event["data"].get("confirm_mode") == "approved"
+        for event in events
+    )
+
+
+def test_checkpoint_validator_exception_fails_closed_without_leaking_details():
+    calls = []
+    validation_count = 0
+
+    def validate(args):
+        nonlocal validation_count
+        validation_count += 1
+        if validation_count == 1:
+            return ""
+        raise Exception()
+
+    registry = _editable_registry(calls, validate=validate)
+    runner = LangGraphAgentRunner(
+        ScriptedModel(
+            [
+                Assistant(
+                    tool_calls=[
+                        ToolCall(
+                            id="w1",
+                            name="update_application_status",
+                            args=json.dumps({"id": 7, "status": "offer"}),
+                        )
+                    ]
+                ),
+                Assistant(content="validation failed"),
+            ]
+        ),
+        registry,
+    )
+    _, _, pending = runner.run_turn([], auto_approve=False, max_iter=8)
+    assert pending is not None
+
+    added, _, _ = runner.resume_after_confirm(
+        [], pending, approved=True, auto_approve=False, max_iter=8
+    )
+
+    assert calls == []
+    assert added[0].content == "错误：工具参数验证失败，请检查后重试。"
+
+
+@pytest.mark.parametrize(
+    ("effective_args", "expected_args"),
+    [
+        (' { "id" : 7, "status" : "rejected" } ', '{"id":7,"status":"rejected"}'),
+        (
+            '{"id":7,"status":"offer","status":"rejected"}',
+            '{"id":7,"status":"rejected"}',
+        ),
+    ],
+)
+def test_checkpoint_executes_only_canonical_effective_args(effective_args, expected_args):
+    calls = []
+    registry = _editable_registry(calls)
+    runner = LangGraphAgentRunner(
+        ScriptedModel(
+            [
+                Assistant(
+                    tool_calls=[
+                        ToolCall(
+                            id="w1",
+                            name="update_application_status",
+                            args=json.dumps({"id": 7, "status": "offer"}),
+                        )
+                    ]
+                ),
+                Assistant(content="done"),
+            ]
+        ),
+        registry,
+    )
+    _, _, pending = runner.run_turn([], auto_approve=False, max_iter=8)
+    assert pending is not None
+    effective_pending = PendingAction(
+        tool_call_id=pending.tool_call_id,
+        tool_name=pending.tool_name,
+        args=effective_args,
+        human=pending.human,
+    )
+
+    runner.resume_after_confirm(
+        [], effective_pending, approved=True, auto_approve=False, max_iter=8
+    )
+
+    assert calls == [expected_args]
+
+
+@pytest.mark.parametrize("overflow_source", ["original", "effective"])
+def test_checkpoint_rejects_non_finite_overflow_args(overflow_source):
+    calls = []
+    registry = _editable_registry(calls)
+    original_args = (
+        '{"id":7,"status":"offer","score":1e400}'
+        if overflow_source == "original"
+        else '{"id":7,"status":"offer"}'
+    )
+    runner = LangGraphAgentRunner(
+        ScriptedModel(
+            [
+                Assistant(
+                    tool_calls=[
+                        ToolCall(
+                            id="w1",
+                            name="update_application_status",
+                            args=original_args,
+                        )
+                    ]
+                ),
+                Assistant(content="overflow rejected"),
+            ]
+        ),
+        registry,
+    )
+    _, _, pending = runner.run_turn([], auto_approve=False, max_iter=8)
+    assert pending is not None
+    if overflow_source == "effective":
+        pending = PendingAction(
+            tool_call_id=pending.tool_call_id,
+            tool_name=pending.tool_name,
+            args='{"id":7,"status":"offer","score":1e400}',
+            human=pending.human,
+        )
+
+    added, _, _ = runner.resume_after_confirm(
+        [], pending, approved=True, auto_approve=False, max_iter=8
+    )
+
+    assert calls == []
+    assert added[0].content.startswith("错误：")
+
+
 def test_missing_checkpoint_fallback_executes_effective_args():
     calls = []
     registry = _editable_registry(calls)
@@ -256,6 +453,35 @@ def test_missing_checkpoint_fallback_executes_effective_args():
 @pytest.mark.parametrize(
     "effective_args",
     [
+        ' { "id" : 7, "status" : "rejected" } ',
+        '{"id":7,"status":"offer","status":"rejected"}',
+    ],
+)
+def test_missing_checkpoint_executes_only_canonical_effective_args(effective_args):
+    calls = []
+    pending = PendingAction(
+        tool_call_id="w1",
+        tool_name="update_application_status",
+        args=effective_args,
+        human="change status",
+    )
+
+    resume_after_confirm(
+        ScriptedModel([Assistant(content="done")]),
+        _editable_registry(calls),
+        [],
+        pending,
+        approved=True,
+        auto_approve=False,
+        max_iter=8,
+    )
+
+    assert calls == ['{"id":7,"status":"rejected"}']
+
+
+@pytest.mark.parametrize(
+    "effective_args",
+    [
         None,
         {"id": 7, "status": "rejected"},
         '{"id":999,"status":"offer"}',
@@ -266,7 +492,11 @@ def test_approved_resume_rejects_missing_or_non_string_effective_args(monkeypatc
     calls = []
     registry = _editable_registry(calls)
     runner = LangGraphAgentRunner(ScriptedModel([]), registry)
-    resume_payload = {"approved": True}
+    resume_payload = {
+        "approved": True,
+        "tool_call_id": "w1",
+        "tool_name": "update_application_status",
+    }
     if effective_args is not None:
         resume_payload["effective_args"] = effective_args
     monkeypatch.setattr(agent_module, "interrupt", lambda pending: resume_payload)
@@ -297,7 +527,12 @@ def test_resume_does_not_treat_non_boolean_approval_as_approved(monkeypatch):
     monkeypatch.setattr(
         agent_module,
         "interrupt",
-        lambda pending: {"approved": "true", "effective_args": pending["args"]},
+        lambda pending: {
+            "approved": "true",
+            "effective_args": pending["args"],
+            "tool_call_id": pending["tool_call_id"],
+            "tool_name": pending["tool_name"],
+        },
     )
 
     result = runner._handle_tool(
@@ -337,6 +572,55 @@ def test_missing_checkpoint_validates_effective_args_before_handler_execution():
     assert added[0].content == "错误：blocked effective arguments"
     assert reply == "not executed"
     assert new_pending is None
+
+
+def test_missing_checkpoint_validator_exception_fails_closed_without_leaking_details():
+    calls = []
+
+    def validate(args):
+        raise Exception("database password leaked")
+
+    added, _, _ = resume_after_confirm(
+        ScriptedModel([Assistant(content="not executed")]),
+        _editable_registry(calls, validate=validate),
+        [],
+        _pending(),
+        approved=True,
+        auto_approve=False,
+        max_iter=8,
+    )
+
+    assert calls == []
+    assert added[0].content == "错误：工具参数验证失败，请检查后重试。"
+    assert "password" not in added[0].content
+
+
+@pytest.mark.parametrize(
+    "raw_args",
+    [
+        '{"id":7,"status":"offer","score":NaN}',
+        '{"id":7,"status":"offer","score":Infinity}',
+        '{"id":7,"status":"offer","score":-Infinity}',
+        '{"id":7,"status":"offer","score":1e400}',
+        '{"id":7,"status":"offer","nested":{"scores":[1,1e400]}}',
+    ],
+)
+def test_missing_checkpoint_rejects_non_finite_effective_args(raw_args):
+    calls = []
+    pending = PendingAction("w1", "update_application_status", raw_args, "change status")
+
+    added, _, _ = resume_after_confirm(
+        ScriptedModel([Assistant(content="not executed")]),
+        _editable_registry(calls),
+        [],
+        pending,
+        approved=True,
+        auto_approve=False,
+        max_iter=8,
+    )
+
+    assert calls == []
+    assert added[0].content.startswith("错误：")
 
 
 def test_missing_checkpoint_does_not_treat_non_boolean_approval_as_approved():
@@ -456,7 +740,7 @@ def test_confirm_executes_pending_write():
         max_iter=8,
     )
 
-    assert calls == [json.dumps({"id": 1, "status": "offer"})]
+    assert calls == ['{"id":1,"status":"offer"}']
     assert added[0].role == "tool"
     assert reply == "done"
     assert new_pending is None
@@ -786,7 +1070,7 @@ def test_event_sink_emits_tool_events_when_confirm_resumes_without_checkpoint():
         event_sink=events.append,
     )
 
-    assert calls == [json.dumps({"id": 1, "status": "offer"})]
+    assert calls == ['{"id":1,"status":"offer"}']
     assert added[0].role == "tool"
     assert reply == "done"
     assert new_pending is None
@@ -849,7 +1133,7 @@ def test_langgraph_runner_resumes_pending_write_from_sqlite_checkpoint(tmp_path)
         max_iter=8,
     )
 
-    assert calls == [json.dumps({"id": 1, "status": "offer"})]
+    assert calls == ['{"id":1,"status":"offer"}']
     assert added_after_confirm[0].role == "tool"
     assert reply_after_confirm == "done"
     assert new_pending is None

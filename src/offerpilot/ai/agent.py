@@ -112,9 +112,9 @@ class LangGraphAgentRunner:
         rejection_feedback: str = "",
     ) -> tuple[list[Message], str, PendingAction | None]:
         approved = approved is True
-        self._emit_pending_tool_call(pending, "approved" if approved else "rejected")
         checkpoint_missing = self._checkpoint_path is None or not self._checkpoint_path.exists()
         if checkpoint_missing and not self._has_pending_checkpoint:
+            self._emit_pending_tool_call(pending, "approved" if approved else "rejected")
             return self._resume_without_checkpoint(
                 messages,
                 pending,
@@ -131,6 +131,8 @@ class LangGraphAgentRunner:
                     update={"added": []},
                     resume={
                         "approved": approved,
+                        "tool_call_id": pending.tool_call_id,
+                        "tool_name": pending.tool_name,
                         "effective_args": pending.args,
                         "rejection_feedback": rejection_feedback,
                     },
@@ -224,7 +226,24 @@ class LangGraphAgentRunner:
                     raw_resume_value = interrupt(pending)
                     resume_value = raw_resume_value if isinstance(raw_resume_value, dict) else {}
                     self._raise_if_cancelled()
-                    if resume_value.get("approved") is True:
+                    identity_error = _resume_identity_error(
+                        resume_value,
+                        tool_call_id,
+                        tool_name,
+                    )
+                    if identity_error:
+                        result = "错误：" + identity_error
+                    elif resume_value.get("approved") is True:
+                        event_args = resume_value.get("effective_args")
+                        self._emit_pending_tool_call(
+                            PendingAction(
+                                tool_call_id=tool_call_id,
+                                tool_name=tool_name,
+                                args=event_args if isinstance(event_args, str) else tool_args,
+                                human=str(pending["human"]),
+                            ),
+                            "approved",
+                        )
                         try:
                             effective_args = _validated_resumed_args(
                                 tool_call_id,
@@ -238,6 +257,15 @@ class LangGraphAgentRunner:
                         else:
                             result = _execute_tool(tool, effective_args)
                     else:
+                        self._emit_pending_tool_call(
+                            PendingAction(
+                                tool_call_id=tool_call_id,
+                                tool_name=tool_name,
+                                args=tool_args,
+                                human=str(pending["human"]),
+                            ),
+                            "rejected",
+                        )
                         result = _rejection_result(resume_value.get("rejection_feedback"))
                 else:
                     self._raise_if_cancelled()
@@ -296,11 +324,20 @@ class LangGraphAgentRunner:
     ) -> tuple[list[Message], str, PendingAction | None]:
         if approved is True:
             tool = self._registry[pending.tool_name]
-            validation_error = _validate_pending_action(tool.get("validate"), pending.args)
-            if validation_error:
-                result = "错误：" + validation_error
+            try:
+                parsed_args = _parse_json_object(
+                    pending.args,
+                    "pending arguments must be a valid JSON object",
+                )
+            except ValueError as exc:
+                result = "错误：" + str(exc)
             else:
-                result = _execute_tool(tool, pending.args)
+                effective_args = _encode_json_object(parsed_args)
+                validation_error = _validate_pending_action(tool.get("validate"), effective_args)
+                if validation_error:
+                    result = "错误：" + validation_error
+                else:
+                    result = _execute_tool(tool, effective_args)
         else:
             result = _rejection_result(rejection_feedback)
         self._emit_tool_result(pending.tool_call_id, pending.tool_name, result)
@@ -448,12 +485,10 @@ def prepare_pending_action(
     if tool is None:
         raise ValueError(f'unknown pending tool "{pending.tool_name}"')
 
-    try:
-        original_args = json.loads(pending.args, parse_constant=_reject_non_json_constant)
-    except (ValueError, TypeError) as exc:
-        raise ValueError("pending arguments must be a valid JSON object") from exc
-    if not isinstance(original_args, dict):
-        raise ValueError("pending arguments must be a valid JSON object")
+    original_args = _parse_json_object(
+        pending.args,
+        "pending arguments must be a valid JSON object",
+    )
 
     descriptors = tool.get("editable_fields")
     editable_fields = (
@@ -473,7 +508,7 @@ def prepare_pending_action(
         _validate_edited_value(str(field), value, editable_fields[field])
 
     effective_args = {**original_args, **edited_args}
-    encoded_args = json.dumps(effective_args, ensure_ascii=False, separators=(",", ":"))
+    encoded_args = _encode_json_object(effective_args)
     validation_error = _validate_pending_action(tool.get("validate"), encoded_args)
     if validation_error:
         raise ValueError(validation_error)
@@ -495,18 +530,16 @@ def _validated_resumed_args(
     if not isinstance(effective_encoded_args, str):
         raise ValueError("approved resume requires validated effective arguments")
     try:
-        original_args = json.loads(
+        original_args = _parse_json_object(
             original_encoded_args,
-            parse_constant=_reject_non_json_constant,
+            "effective arguments must be a valid JSON object",
         )
-        effective_args = json.loads(
+        effective_args = _parse_json_object(
             effective_encoded_args,
-            parse_constant=_reject_non_json_constant,
+            "effective arguments must be a valid JSON object",
         )
-    except (ValueError, TypeError) as exc:
+    except ValueError as exc:
         raise ValueError("effective arguments must be a valid JSON object") from exc
-    if not isinstance(original_args, dict) or not isinstance(effective_args, dict):
-        raise ValueError("effective arguments must be a valid JSON object")
 
     missing_fields = [str(field) for field in original_args if field not in effective_args]
     if missing_fields:
@@ -518,7 +551,7 @@ def _validated_resumed_args(
         for field, value in effective_args.items()
         if field not in original_args or not _same_json_value(original_args[field], value)
     }
-    prepare_pending_action(
+    prepared = prepare_pending_action(
         PendingAction(
             tool_call_id=tool_call_id,
             tool_name=tool_name,
@@ -528,7 +561,50 @@ def _validated_resumed_args(
         registry,
         edited_args,
     )
-    return effective_encoded_args
+    return prepared.args
+
+
+def _resume_identity_error(
+    resume_value: dict[str, Any],
+    tool_call_id: str,
+    tool_name: str,
+) -> str:
+    if resume_value.get("tool_call_id") != tool_call_id:
+        return "confirmation does not match the pending tool call"
+    if resume_value.get("tool_name") != tool_name:
+        return "confirmation does not match the pending tool"
+    return ""
+
+
+def _parse_json_object(raw: str, error_message: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(raw, parse_constant=_reject_non_json_constant)
+        _validate_finite_json_numbers(parsed)
+    except (ValueError, TypeError) as exc:
+        raise ValueError(error_message) from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(error_message)
+    return parsed
+
+
+def _encode_json_object(value: dict[str, Any]) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
+def _validate_finite_json_numbers(value: Any) -> None:
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("JSON numbers must be finite")
+    if isinstance(value, dict):
+        for item in value.values():
+            _validate_finite_json_numbers(item)
+    elif isinstance(value, list):
+        for item in value:
+            _validate_finite_json_numbers(item)
 
 
 def _same_json_value(left: Any, right: Any) -> bool:
@@ -606,9 +682,9 @@ def _validate_pending_action(validate: Any, args: str) -> str:
         return ""
     try:
         error = validate(args)
-    except Exception as exc:
-        return str(exc)
-    return str(error or "")
+        return str(error or "")
+    except Exception:
+        return "工具参数验证失败，请检查后重试。"
 
 
 def _execute_tool(tool: dict[str, Any], args: str) -> str:
