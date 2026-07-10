@@ -2,7 +2,15 @@ import json
 
 import pytest
 
-from offerpilot.ai.agent import ChatRunCancelled, LangGraphAgentRunner, PendingAction, resume_after_confirm, run_turn
+import offerpilot.ai.agent as agent_module
+from offerpilot.ai.agent import (
+    ChatRunCancelled,
+    LangGraphAgentRunner,
+    PendingAction,
+    prepare_pending_action,
+    resume_after_confirm,
+    run_turn,
+)
 from offerpilot.ai.types import Assistant, ToolCall
 
 
@@ -22,6 +30,371 @@ class StreamingScriptedModel:
 
     def complete(self, messages, tools):
         raise AssertionError("stream_complete should be preferred when available")
+
+
+class RecordingScriptedModel(ScriptedModel):
+    def __init__(self, turns):
+        super().__init__(turns)
+        self.message_batches = []
+
+    def complete(self, messages, tools):
+        self.message_batches.append(list(messages))
+        return super().complete(messages, tools)
+
+
+def _editable_registry(calls=None, validate=None):
+    calls = calls if calls is not None else []
+    tool = {
+        "write": True,
+        "editable_fields": [
+            {"field": "status", "type": "enum", "options": ["offer", "rejected"]},
+            {"field": "title", "type": "string"},
+            {"field": "note", "type": "long_text"},
+            {"field": "score", "type": "number"},
+            {"field": "active", "type": "boolean"},
+            {"field": "scheduled_at", "type": "datetime"},
+        ],
+        "handler": lambda args: calls.append(args) or '{"ok":true}',
+    }
+    if validate is not None:
+        tool["validate"] = validate
+    return {"update_application_status": tool}
+
+
+def _pending(args=None):
+    return PendingAction(
+        tool_call_id="w1",
+        tool_name="update_application_status",
+        args=json.dumps(args if args is not None else {"id": 7, "status": "offer"}),
+        human="change status",
+    )
+
+
+def test_prepare_pending_action_merges_edited_status_and_preserves_id():
+    pending = _pending({"id": 7, "status": "offer", "note": "old"})
+
+    prepared = prepare_pending_action(pending, _editable_registry(), {"status": "rejected"})
+
+    assert prepared is not pending
+    assert prepared.tool_call_id == pending.tool_call_id
+    assert prepared.tool_name == pending.tool_name
+    assert prepared.human == pending.human
+    assert prepared.args == '{"id":7,"status":"rejected","note":"old"}'
+    assert json.loads(pending.args) == {"id": 7, "status": "offer", "note": "old"}
+
+
+def test_prepare_pending_action_none_edits_leave_pending_unchanged():
+    pending = _pending()
+
+    assert prepare_pending_action(pending, {}, None) is pending
+
+
+@pytest.mark.parametrize("edited", [["status"], "status", 1, True])
+def test_prepare_pending_action_rejects_non_object_edits(edited):
+    with pytest.raises(ValueError, match="object"):
+        prepare_pending_action(_pending(), _editable_registry(), edited)
+
+
+@pytest.mark.parametrize("edited_field", ["id", "application_id", "index", "unknown"])
+def test_prepare_pending_action_rejects_non_editable_fields(edited_field):
+    with pytest.raises(ValueError, match=edited_field):
+        prepare_pending_action(_pending(), _editable_registry(), {edited_field: 99})
+
+
+def test_prepare_pending_action_lists_all_non_editable_fields():
+    with pytest.raises(ValueError) as exc_info:
+        prepare_pending_action(_pending(), _editable_registry(), {"id": 1, "unknown": "x"})
+
+    assert "id" in str(exc_info.value)
+    assert "unknown" in str(exc_info.value)
+
+
+def test_prepare_pending_action_rejects_unknown_tool():
+    pending = PendingAction("w1", "missing", "{}", "missing")
+
+    with pytest.raises(ValueError, match="missing"):
+        prepare_pending_action(pending, _editable_registry(), {})
+
+
+@pytest.mark.parametrize("raw_args", ["{", "[]", '"text"', "null", '{"score":NaN}'])
+def test_prepare_pending_action_rejects_malformed_or_non_object_original_args(raw_args):
+    pending = PendingAction("w1", "update_application_status", raw_args, "change status")
+
+    with pytest.raises(ValueError, match="JSON object"):
+        prepare_pending_action(pending, _editable_registry(), {})
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("title", 3),
+        ("note", 3),
+        ("score", "3"),
+        ("score", True),
+        ("score", float("nan")),
+        ("score", float("inf")),
+        ("score", float("-inf")),
+        ("active", 1),
+        ("scheduled_at", 123),
+        ("scheduled_at", ""),
+        ("scheduled_at", "not-a-date"),
+        ("status", 1),
+        ("status", "waiting"),
+    ],
+)
+def test_prepare_pending_action_rejects_invalid_edited_values(field, value):
+    with pytest.raises(ValueError, match=field):
+        prepare_pending_action(_pending(), _editable_registry(), {field: value})
+
+
+def test_prepare_pending_action_accepts_all_supported_edited_types():
+    prepared = prepare_pending_action(
+        _pending(),
+        _editable_registry(),
+        {
+            "status": "rejected",
+            "title": "Backend Engineer",
+            "note": "用户备注",
+            "score": 3.5,
+            "active": False,
+            "scheduled_at": "2026-07-10T12:30:00Z",
+        },
+    )
+
+    assert json.loads(prepared.args) == {
+        "id": 7,
+        "status": "rejected",
+        "title": "Backend Engineer",
+        "note": "用户备注",
+        "score": 3.5,
+        "active": False,
+        "scheduled_at": "2026-07-10T12:30:00Z",
+    }
+    assert "用户备注" in prepared.args
+
+
+def test_prepare_pending_action_rejects_unknown_descriptor_type():
+    registry = _editable_registry()
+    registry["update_application_status"]["editable_fields"] = [
+        {"field": "status", "type": "object"}
+    ]
+
+    with pytest.raises(ValueError, match="unknown.*type|type.*unknown"):
+        prepare_pending_action(_pending(), registry, {"status": "offer"})
+
+
+def test_prepare_pending_action_runs_tool_validator_on_effective_args():
+    seen = []
+
+    def validate(args):
+        seen.append(json.loads(args))
+        return (
+            "status transition is not allowed" if json.loads(args)["status"] == "rejected" else ""
+        )
+
+    with pytest.raises(ValueError, match="status transition is not allowed"):
+        prepare_pending_action(
+            _pending(), _editable_registry(validate=validate), {"status": "rejected"}
+        )
+
+    assert seen == [{"id": 7, "status": "rejected"}]
+
+
+def test_in_memory_checkpoint_executes_effective_args():
+    calls = []
+    registry = _editable_registry(calls)
+    runner = LangGraphAgentRunner(
+        ScriptedModel(
+            [
+                Assistant(
+                    tool_calls=[
+                        ToolCall(
+                            id="w1",
+                            name="update_application_status",
+                            args=json.dumps({"id": 7, "status": "offer"}),
+                        )
+                    ]
+                ),
+                Assistant(content="done"),
+            ]
+        ),
+        registry,
+    )
+    _, _, pending = runner.run_turn([], auto_approve=False, max_iter=8)
+    assert pending is not None
+    effective_pending = prepare_pending_action(pending, registry, {"status": "rejected"})
+
+    _, reply, new_pending = runner.resume_after_confirm(
+        [], effective_pending, approved=True, auto_approve=False, max_iter=8
+    )
+
+    assert calls == ['{"id":7,"status":"rejected"}']
+    assert reply == "done"
+    assert new_pending is None
+
+
+def test_missing_checkpoint_fallback_executes_effective_args():
+    calls = []
+    registry = _editable_registry(calls)
+    effective_pending = prepare_pending_action(_pending(), registry, {"status": "rejected"})
+
+    _, reply, new_pending = resume_after_confirm(
+        ScriptedModel([Assistant(content="done")]),
+        registry,
+        [],
+        effective_pending,
+        approved=True,
+        auto_approve=False,
+        max_iter=8,
+    )
+
+    assert calls == ['{"id":7,"status":"rejected"}']
+    assert reply == "done"
+    assert new_pending is None
+
+
+@pytest.mark.parametrize(
+    "effective_args",
+    [
+        None,
+        {"id": 7, "status": "rejected"},
+        '{"id":999,"status":"offer"}',
+        '{"id":7.0,"status":"offer"}',
+    ],
+)
+def test_approved_resume_rejects_missing_or_non_string_effective_args(monkeypatch, effective_args):
+    calls = []
+    registry = _editable_registry(calls)
+    runner = LangGraphAgentRunner(ScriptedModel([]), registry)
+    resume_payload = {"approved": True}
+    if effective_args is not None:
+        resume_payload["effective_args"] = effective_args
+    monkeypatch.setattr(agent_module, "interrupt", lambda pending: resume_payload)
+
+    result = runner._handle_tool(
+        {
+            "messages": [],
+            "added": [],
+            "auto_approve": False,
+            "current_tool_calls": [
+                {
+                    "id": "w1",
+                    "name": "update_application_status",
+                    "args": json.dumps({"id": 7, "status": "offer"}),
+                }
+            ],
+        }
+    )
+
+    assert calls == []
+    assert result["added"][0]["content"].startswith("错误：")
+
+
+def test_resume_does_not_treat_non_boolean_approval_as_approved(monkeypatch):
+    calls = []
+    registry = _editable_registry(calls)
+    runner = LangGraphAgentRunner(ScriptedModel([]), registry)
+    monkeypatch.setattr(
+        agent_module,
+        "interrupt",
+        lambda pending: {"approved": "true", "effective_args": pending["args"]},
+    )
+
+    result = runner._handle_tool(
+        {
+            "messages": [],
+            "added": [],
+            "auto_approve": False,
+            "current_tool_calls": [
+                {
+                    "id": "w1",
+                    "name": "update_application_status",
+                    "args": json.dumps({"id": 7, "status": "offer"}),
+                }
+            ],
+        }
+    )
+
+    assert calls == []
+    assert result["added"][0]["content"].startswith("用户拒绝")
+
+
+def test_missing_checkpoint_validates_effective_args_before_handler_execution():
+    calls = []
+    registry = _editable_registry(calls, validate=lambda args: "blocked effective arguments")
+
+    added, reply, new_pending = resume_after_confirm(
+        ScriptedModel([Assistant(content="not executed")]),
+        registry,
+        [],
+        _pending(),
+        approved=True,
+        auto_approve=False,
+        max_iter=8,
+    )
+
+    assert calls == []
+    assert added[0].content == "错误：blocked effective arguments"
+    assert reply == "not executed"
+    assert new_pending is None
+
+
+def test_missing_checkpoint_does_not_treat_non_boolean_approval_as_approved():
+    calls = []
+
+    added, _, _ = resume_after_confirm(
+        ScriptedModel([Assistant(content="not executed")]),
+        _editable_registry(calls),
+        [],
+        _pending(),
+        approved="false",
+        auto_approve=False,
+        max_iter=8,
+    )
+
+    assert calls == []
+    assert added[0].content.startswith("用户拒绝")
+
+
+def test_rejection_feedback_reaches_next_model_turn_without_handler_execution():
+    calls = []
+    model = RecordingScriptedModel([Assistant(content="understood")])
+
+    added, reply, new_pending = resume_after_confirm(
+        model,
+        _editable_registry(calls),
+        [],
+        _pending(),
+        approved=False,
+        auto_approve=False,
+        max_iter=8,
+        rejection_feedback="  Keep it in offer status.  ",
+    )
+
+    assert calls == []
+    assert reply == "understood"
+    assert new_pending is None
+    assert "用户拒绝" in added[0].content
+    assert "Keep it in offer status." in added[0].content
+    assert "Keep it in offer status." in model.message_batches[0][-1].content
+
+
+def test_empty_rejection_feedback_keeps_generic_rejection_message():
+    calls = []
+    model = RecordingScriptedModel([Assistant(content="cancelled")])
+
+    added, _, _ = resume_after_confirm(
+        model,
+        _editable_registry(calls),
+        [],
+        _pending(),
+        approved=False,
+        auto_approve=False,
+        rejection_feedback="   ",
+    )
+
+    assert calls == []
+    assert added[0].content == "用户拒绝了该操作，请勿执行，并询问用户下一步希望怎么做。"
 
 
 def test_write_tool_pauses_before_execution():

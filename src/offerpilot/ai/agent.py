@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import math
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Literal, Protocol, TypedDict, cast
 
@@ -107,16 +109,32 @@ class LangGraphAgentRunner:
         approved: bool,
         auto_approve: bool,
         max_iter: int = DEFAULT_MAX_ITERATIONS,
+        rejection_feedback: str = "",
     ) -> tuple[list[Message], str, PendingAction | None]:
+        approved = approved is True
         self._emit_pending_tool_call(pending, "approved" if approved else "rejected")
         checkpoint_missing = self._checkpoint_path is None or not self._checkpoint_path.exists()
         if checkpoint_missing and not self._has_pending_checkpoint:
-            return self._resume_without_checkpoint(messages, pending, approved, auto_approve, max_iter)
+            return self._resume_without_checkpoint(
+                messages,
+                pending,
+                approved,
+                auto_approve,
+                max_iter,
+                rejection_feedback,
+            )
 
         with self._checkpointer() as checkpointer:
             graph = self._compile_graph(checkpointer)
             result = graph.invoke(
-                Command(update={"added": []}, resume={"approved": approved}),
+                Command(
+                    update={"added": []},
+                    resume={
+                        "approved": approved,
+                        "effective_args": pending.args,
+                        "rejection_feedback": rejection_feedback,
+                    },
+                ),
                 self._config(max_iter),
             )
         added, reply, new_pending = self._result_from_state(cast(dict[str, Any], result))
@@ -203,12 +221,24 @@ class LangGraphAgentRunner:
                         "args": tool_args,
                         "human": _describe_pending_action(describe, tool_args, tool_name),
                     }
-                    resume_value = cast(dict[str, Any], interrupt(pending))
+                    raw_resume_value = interrupt(pending)
+                    resume_value = raw_resume_value if isinstance(raw_resume_value, dict) else {}
                     self._raise_if_cancelled()
-                    if bool(resume_value.get("approved")):
-                        result = _execute_tool(tool, tool_args)
+                    if resume_value.get("approved") is True:
+                        try:
+                            effective_args = _validated_resumed_args(
+                                tool_call_id,
+                                tool_name,
+                                tool_args,
+                                resume_value.get("effective_args"),
+                                self._registry,
+                            )
+                        except ValueError as exc:
+                            result = "错误：" + str(exc)
+                        else:
+                            result = _execute_tool(tool, effective_args)
                     else:
-                        result = "用户拒绝了该操作，请勿执行，并询问用户下一步希望怎么做。"
+                        result = _rejection_result(resume_value.get("rejection_feedback"))
                 else:
                     self._raise_if_cancelled()
                     result = _execute_tool(tool, tool_args)
@@ -262,11 +292,17 @@ class LangGraphAgentRunner:
         approved: bool,
         auto_approve: bool,
         max_iter: int,
+        rejection_feedback: str = "",
     ) -> tuple[list[Message], str, PendingAction | None]:
-        if approved:
-            result = _execute_tool(self._registry[pending.tool_name], pending.args)
+        if approved is True:
+            tool = self._registry[pending.tool_name]
+            validation_error = _validate_pending_action(tool.get("validate"), pending.args)
+            if validation_error:
+                result = "错误：" + validation_error
+            else:
+                result = _execute_tool(tool, pending.args)
         else:
-            result = "用户拒绝了该操作，请勿执行，并询问用户下一步希望怎么做。"
+            result = _rejection_result(rejection_feedback)
         self._emit_tool_result(pending.tool_call_id, pending.tool_name, result)
 
         tool_message = Message(role="tool", content=result, tool_call_id=pending.tool_call_id)
@@ -374,6 +410,7 @@ def resume_after_confirm(
     approved: bool,
     auto_approve: bool,
     max_iter: int = DEFAULT_MAX_ITERATIONS,
+    rejection_feedback: str = "",
     *,
     checkpoint_path: Path | None = None,
     thread_id: str = _DEFAULT_THREAD_ID,
@@ -387,7 +424,171 @@ def resume_after_confirm(
         thread_id=thread_id,
         event_sink=event_sink,
         cancel_check=cancel_check,
-    ).resume_after_confirm(messages, pending, approved, auto_approve, max_iter)
+    ).resume_after_confirm(
+        messages,
+        pending,
+        approved,
+        auto_approve,
+        max_iter,
+        rejection_feedback,
+    )
+
+
+def prepare_pending_action(
+    pending: PendingAction,
+    registry: dict[str, dict[str, Any]],
+    edited_args: dict[str, Any] | None,
+) -> PendingAction:
+    if edited_args is None:
+        return pending
+    if not isinstance(edited_args, dict):
+        raise ValueError("edited arguments must be a JSON object")
+
+    tool = registry.get(pending.tool_name)
+    if tool is None:
+        raise ValueError(f'unknown pending tool "{pending.tool_name}"')
+
+    try:
+        original_args = json.loads(pending.args, parse_constant=_reject_non_json_constant)
+    except (ValueError, TypeError) as exc:
+        raise ValueError("pending arguments must be a valid JSON object") from exc
+    if not isinstance(original_args, dict):
+        raise ValueError("pending arguments must be a valid JSON object")
+
+    descriptors = tool.get("editable_fields")
+    editable_fields = (
+        {
+            descriptor.get("field"): descriptor
+            for descriptor in descriptors
+            if isinstance(descriptor, dict) and isinstance(descriptor.get("field"), str)
+        }
+        if isinstance(descriptors, list)
+        else {}
+    )
+    non_editable = [str(field) for field in edited_args if field not in editable_fields]
+    if non_editable:
+        raise ValueError("non-editable fields: " + ", ".join(sorted(non_editable)))
+
+    for field, value in edited_args.items():
+        _validate_edited_value(str(field), value, editable_fields[field])
+
+    effective_args = {**original_args, **edited_args}
+    encoded_args = json.dumps(effective_args, ensure_ascii=False, separators=(",", ":"))
+    validation_error = _validate_pending_action(tool.get("validate"), encoded_args)
+    if validation_error:
+        raise ValueError(validation_error)
+    return PendingAction(
+        tool_call_id=pending.tool_call_id,
+        tool_name=pending.tool_name,
+        args=encoded_args,
+        human=pending.human,
+    )
+
+
+def _validated_resumed_args(
+    tool_call_id: str,
+    tool_name: str,
+    original_encoded_args: str,
+    effective_encoded_args: Any,
+    registry: dict[str, dict[str, Any]],
+) -> str:
+    if not isinstance(effective_encoded_args, str):
+        raise ValueError("approved resume requires validated effective arguments")
+    try:
+        original_args = json.loads(
+            original_encoded_args,
+            parse_constant=_reject_non_json_constant,
+        )
+        effective_args = json.loads(
+            effective_encoded_args,
+            parse_constant=_reject_non_json_constant,
+        )
+    except (ValueError, TypeError) as exc:
+        raise ValueError("effective arguments must be a valid JSON object") from exc
+    if not isinstance(original_args, dict) or not isinstance(effective_args, dict):
+        raise ValueError("effective arguments must be a valid JSON object")
+
+    missing_fields = [str(field) for field in original_args if field not in effective_args]
+    if missing_fields:
+        raise ValueError(
+            "effective arguments removed original fields: " + ", ".join(missing_fields)
+        )
+    edited_args = {
+        field: value
+        for field, value in effective_args.items()
+        if field not in original_args or not _same_json_value(original_args[field], value)
+    }
+    prepare_pending_action(
+        PendingAction(
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            args=original_encoded_args,
+            human=tool_name,
+        ),
+        registry,
+        edited_args,
+    )
+    return effective_encoded_args
+
+
+def _same_json_value(left: Any, right: Any) -> bool:
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(
+            _same_json_value(value, right[key]) for key, value in left.items()
+        )
+    if isinstance(left, list):
+        return len(left) == len(right) and all(
+            _same_json_value(left_value, right_value)
+            for left_value, right_value in zip(left, right, strict=True)
+        )
+    return bool(left == right)
+
+
+def _reject_non_json_constant(value: str) -> None:
+    raise ValueError(f'non-JSON numeric constant "{value}"')
+
+
+def _validate_edited_value(field: str, value: Any, descriptor: dict[str, Any]) -> None:
+    field_type = descriptor.get("type")
+    if field_type in {"string", "long_text"}:
+        if not isinstance(value, str):
+            raise ValueError(f'edited field "{field}" must be a string')
+        return
+    if field_type == "number":
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f'edited field "{field}" must be a finite number')
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError(f'edited field "{field}" must be a finite number')
+        return
+    if field_type == "boolean":
+        if not isinstance(value, bool):
+            raise ValueError(f'edited field "{field}" must be a boolean')
+        return
+    if field_type == "enum":
+        options = descriptor.get("options")
+        if not isinstance(value, str) or not isinstance(options, list) or value not in options:
+            raise ValueError(f'edited field "{field}" must be one of the configured options')
+        return
+    if field_type == "datetime":
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f'edited field "{field}" must be an ISO/RFC3339 datetime string')
+        try:
+            datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(
+                f'edited field "{field}" must be an ISO/RFC3339 datetime string'
+            ) from exc
+        return
+    raise ValueError(f'edited field "{field}" has unknown descriptor type "{field_type}"')
+
+
+def _rejection_result(rejection_feedback: Any) -> str:
+    feedback = rejection_feedback.strip() if isinstance(rejection_feedback, str) else ""
+    if not feedback:
+        return "用户拒绝了该操作，请勿执行，并询问用户下一步希望怎么做。"
+    return f"用户拒绝了该操作，请勿执行。用户反馈：{feedback}请将这条反馈作为用户指导继续正常回应。"
 
 
 def _describe_pending_action(describe: Any, args: str, fallback: str) -> str:
