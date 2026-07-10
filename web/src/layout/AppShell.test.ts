@@ -31,4 +31,11 @@ describe('AppShell source contract', () => {
     expect(source).toContain("onExpand={() => navigateToView('pilot')}");
     expect(source).not.toContain('onExpand={() => setPilotDrawerOpen(true)}');
   });
+
+  it('starts a fresh application-scoped Pilot draft from shared entry surfaces', () => {
+    expect(source).toContain('startApplicationChat');
+    expect(source).toContain("context_type: 'application'");
+    expect(source).toContain('requestKey:');
+    expect(source).toContain('onAskPilot={startApplicationChat}');
+  });
 });
