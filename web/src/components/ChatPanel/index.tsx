@@ -23,7 +23,14 @@ import {
 } from '@/services/chat';
 import { getOffer } from '@/services/offers';
 import { ONBOARDING_QUERY_KEY } from '@/services/onboarding';
-import type { ChatResponse, ChatStreamEvent, ChatUndo, Conversation, PendingAction } from '@/types/chat';
+import type {
+  ChatResponse,
+  ChatStartRequest,
+  ChatStreamEvent,
+  ChatUndo,
+  Conversation,
+  PendingAction,
+} from '@/types/chat';
 import type { Offer } from '@/types/offer';
 import {
   buildTurns,
@@ -54,6 +61,7 @@ interface Props {
   variant?: 'drawer' | 'rail' | 'page';
   onExpand?: () => void;
   onDataChanged?: () => void;
+  startRequest?: ChatStartRequest;
 }
 
 const CHAT_WIDTH_STORAGE_KEY = 'offerpilot.chatPanelWidth';
@@ -132,6 +140,7 @@ export default function ChatPanel({
   variant = 'drawer',
   onExpand,
   onDataChanged,
+  startRequest,
 }: Props) {
   const queryClient = useQueryClient();
   const { message: toast } = AntApp.useApp();
@@ -144,6 +153,7 @@ export default function ChatPanel({
   const [degraded, setDegraded] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [offer, setOffer] = useState<Offer | null>(null);
+  const [draftContext, setDraftContext] = useState<ChatStartRequest | null>(null);
   const [panelOpen, setPanelOpen] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);
   const [lastFailedText, setLastFailedText] = useState('');
@@ -270,7 +280,14 @@ export default function ChatPanel({
     setLastUndo(null);
     setLoadingLabel(undefined);
     setHasStreamingAssistantContent(false);
+    setDraftContext(null);
   }
+
+  useEffect(() => {
+    if (!startRequest) return;
+    startNewChat();
+    setDraftContext(startRequest);
+  }, [startRequest?.requestKey]);
 
   async function selectConversation(id: number) {
     if (id === convID) return;
@@ -319,7 +336,10 @@ export default function ChatPanel({
   }
 
   async function clearActiveContext() {
-    if (!convID) return;
+    if (!convID) {
+      setDraftContext(null);
+      return;
+    }
     await handleConversationUpdate(convID, { context_type: 'workspace', context_ref: '' });
   }
 
@@ -425,8 +445,14 @@ export default function ChatPanel({
     try {
       const isNew = convID === undefined;
       const context =
-        isNew && offer?.application_id
-          ? { context_type: 'application', context_ref: offer.application_id, mode: 'nego_coach' }
+        isNew && draftContext
+          ? {
+              context_type: draftContext.context_type,
+              context_ref: draftContext.context_ref,
+              mode: draftContext.mode,
+            }
+          : isNew && offer?.application_id
+            ? { context_type: 'application', context_ref: offer.application_id, mode: 'nego_coach' }
           : isNew && offerId !== undefined
             ? { context_type: 'workspace', context_ref: '', mode: 'nego_coach' }
             : undefined;
@@ -630,14 +656,16 @@ export default function ChatPanel({
   const threadEvidence = collectEvidence(turns);
   const confirmationEvidence = activePending ? pendingActionEvidence(threadEvidence, activePending) : [];
   const contextLabel =
-    activeConv?.context_type === 'application' && activeConv.context_ref
+    !convID && draftContext
+      ? draftContext.context_label
+      : activeConv?.context_type === 'application' && activeConv.context_ref
       ? `投递 #${activeConv.context_ref}`
       : isNego
         ? '谈薪上下文'
         : convID
           ? '工作台'
           : null;
-  const canClearContext = !!convID && !!activeConv && activeConv.context_type !== 'workspace';
+  const canClearContext = draftContext !== null || (!!convID && !!activeConv && activeConv.context_type !== 'workspace');
 
   const iconBtnStyle: React.CSSProperties = {
     border: '1px solid var(--op-border)',

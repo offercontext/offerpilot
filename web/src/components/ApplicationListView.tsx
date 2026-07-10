@@ -1,4 +1,5 @@
-import { Input, Select, Table, Tag } from 'antd';
+import { Button, Input, Select, Table, Tag } from 'antd';
+import { RobotOutlined } from '@ant-design/icons';
 import { useMemo, useState } from 'react';
 import dayjs from 'dayjs';
 import type { ColumnsType } from 'antd/es/table';
@@ -16,6 +17,7 @@ interface ApplicationListViewProps {
   applications: Application[];
   events: ScheduleEvent[];
   onOpenDetail: (app: Application) => void;
+  onAskPilot: (app: Application) => void;
 }
 
 const STATUS_FILTERS = [
@@ -30,7 +32,7 @@ const SORT_OPTIONS: { value: ApplicationSortBy; label: string }[] = [
   { value: 'applied_asc', label: '最早投递优先' },
 ];
 
-export default function ApplicationListView({ applications, events, onOpenDetail }: ApplicationListViewProps) {
+export default function ApplicationListView({ applications, events, onOpenDetail, onAskPilot }: ApplicationListViewProps) {
   const [keyword, setKeyword] = useState('');
   const [status, setStatus] = useState<ApplicationStatus | 'all'>('all');
   const [sortBy, setSortBy] = useState<ApplicationSortBy>('updated_desc');
@@ -76,6 +78,24 @@ export default function ApplicationListView({ applications, events, onOpenDetail
       dataIndex: 'updated_at',
       width: 150,
       render: (value: string) => <span className={styles.muted}>{dayjs(value).format('YYYY-MM-DD HH:mm')}</span>,
+    },
+    {
+      title: 'Pilot',
+      key: 'pilot',
+      width: 112,
+      render: (_, row) => (
+        <Button
+          type="link"
+          size="small"
+          icon={<RobotOutlined />}
+          onClick={(event) => {
+            event.stopPropagation();
+            onAskPilot(row);
+          }}
+        >
+          问 Pilot
+        </Button>
+      ),
     },
   ];
 

@@ -1,4 +1,4 @@
-import { Component, lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { Component, lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button, Layout, Spin, Tabs, message } from 'antd';
 import { listApplications } from '@/services/applications';
@@ -7,6 +7,7 @@ import { listOffers } from '@/services/offers';
 import { ONBOARDING_QUERY_KEY } from '@/services/onboarding';
 import { uploadResume } from '@/services/resumes';
 import type { Application } from '@/types/application';
+import type { ChatStartRequest } from '@/types/chat';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
 import AddApplicationForm from '@/components/AddApplicationForm';
@@ -81,6 +82,8 @@ export default function AppShell() {
   const [aiSettingsOpen, setAISettingsOpen] = useState(false);
   const [selected, setSelected] = useState<Application | null>(null);
   const [coachOfferId, setCoachOfferId] = useState<number | undefined>(undefined);
+  const [chatStartRequest, setChatStartRequest] = useState<ChatStartRequest>();
+  const nextChatStartRequestKey = useRef(0);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [now, setNow] = useState(() => dayjs());
   const [pilotRailAvailable, setPilotRailAvailable] = useState(() =>
@@ -193,6 +196,21 @@ export default function AppShell() {
     setChatOpen(true);
   };
 
+  const startApplicationChat = (application: Application) => {
+    setCoachOfferId(undefined);
+    setChatStartRequest({
+      requestKey: ++nextChatStartRequestKey.current,
+      context_type: 'application',
+      context_ref: String(application.id),
+      context_label: `${application.company_name} · ${application.position_name}`,
+      mode: 'general',
+    });
+    if (view !== 'pilot') {
+      if (pilotRailAvailable) setPilotDrawerOpen(true);
+      else setChatOpen(true);
+    }
+  };
+
   const navigateToView = (nextView: ViewMode) => {
     setAISettingsOpen(false);
     setSelected(null);
@@ -230,6 +248,7 @@ export default function AppShell() {
       application={selectedApp}
       open
       onClose={() => setSelected(null)}
+      onAskPilot={startApplicationChat}
     />
   ) : (
     <>
@@ -257,13 +276,14 @@ export default function AppShell() {
             />
           )}
           {view === 'board' && (
-            <KanbanBoard applications={apps} onOpenDetail={openApplicationDetail} />
+            <KanbanBoard applications={apps} onOpenDetail={openApplicationDetail} onAskPilot={startApplicationChat} />
           )}
           {view === 'applications-list' && (
             <ApplicationListView
               applications={apps}
-              events={evs}
-              onOpenDetail={openApplicationDetail}
+               events={evs}
+               onOpenDetail={openApplicationDetail}
+               onAskPilot={startApplicationChat}
             />
           )}
           {view === 'calendar' && (
@@ -286,6 +306,7 @@ export default function AppShell() {
                 open
                 onClose={() => undefined}
                 onOpenSettings={() => setAISettingsOpen(true)}
+                startRequest={chatStartRequest}
                 onDataChanged={refreshWorkspaceData}
               />
             </div>
@@ -341,6 +362,7 @@ export default function AppShell() {
             offerId={coachOfferId}
             onOpenSettings={() => setAISettingsOpen(true)}
             onExpand={() => navigateToView('pilot')}
+            startRequest={chatStartRequest}
             onDataChanged={refreshWorkspaceData}
           />
         </aside>
@@ -377,6 +399,7 @@ export default function AppShell() {
           }}
           offerId={coachOfferId}
           onOpenSettings={() => setAISettingsOpen(true)}
+          startRequest={chatStartRequest}
           onDataChanged={refreshWorkspaceData}
         />
       )}

@@ -178,4 +178,11 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('scheduleTitleRefresh');
     expect(component).toContain('window.setTimeout');
   });
+
+  it('resets the active conversation for every application start request', () => {
+    expect(component).toContain('startRequest?.requestKey');
+    expect(component).toContain('setConvID(undefined)');
+    expect(component).toContain('setTurns([])');
+    expect(component).toContain('draftContext');
+  });
 });

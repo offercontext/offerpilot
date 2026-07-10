@@ -14,6 +14,14 @@ export interface Conversation {
   updated_at: string;
 }
 
+export interface ChatStartRequest {
+  requestKey: number;
+  context_type: 'application';
+  context_ref: string;
+  context_label: string;
+  mode: 'general';
+}
+
 export interface ChatMessage {
   id: number;
   conversation_id: number;
