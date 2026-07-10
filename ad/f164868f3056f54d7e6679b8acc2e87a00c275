@@ -1,0 +1,32 @@
+src/offerpilot/api.py
+  s_00fff216c0c1ef::t_c1a75db4aae64e 1149,1151,1315,1422,2499-2500,2503-2504,2507,2526-2529,2534
+  s_00fff216c0c1ef::t_47c481bb02b3c7 2518-2521
+web/src/components/ChatPanel/Composer.tsx
+  s_00fff216c0c1ef::t_54b8c1600a5a08 1,13,17,21-24
+  s_00fff216c0c1ef::t_47458deec59052 25
+tests/test_chat_api.py
+  s_00fff216c0c1ef::t_c1a75db4aae64e 7,9,74-85
+  s_00fff216c0c1ef::t_47c481bb02b3c7 88-93
+  s_00fff216c0c1ef::t_092c56d071816d 86-87
+web/src/components/ChatPanel/index.tsx
+  s_00fff216c0c1ef::t_54b8c1600a5a08 174-175,272,287,351-355,359,916-922
+web/src/components/ChatPanel/layout.test.ts
+  s_00fff216c0c1ef::t_4cc161eb0aab66 195-199
+  s_00fff216c0c1ef::t_053891ddfd0eef 189-194
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "adf164868f3056f54d7e6679b8acc2e87a00c275",
+  "prompts": {},
+  "sessions": {
+    "s_00fff216c0c1ef": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f49b7-4729-7983-91e1-31d35f2738f1",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    }
+  }
+}
