@@ -4,8 +4,9 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from offerpilot.ai.types import Assistant, ToolCall
+from offerpilot.ai.types import Assistant, Message, ToolCall
 from offerpilot.api import create_app
+from offerpilot.api import _has_write_attempt, _write_outcome
 from offerpilot.config import Config, save_config
 
 
@@ -65,6 +66,31 @@ class StreamingModel:
         raise AssertionError("stream_complete should be preferred")
 
 
+class FailingTitleModel:
+    def complete(self, messages, tools):
+        raise RuntimeError("title provider unavailable")
+
+
+def test_write_status_uses_registry_metadata_for_all_write_tools():
+    registry = {"update_offer": {"write": True}}
+    added = [
+        Message(
+            role="assistant",
+            tool_calls=[ToolCall(id="call-1", name="update_offer", args='{"id": 1}')],
+        ),
+        Message(role="tool", content='{"offer_id": 1}', tool_call_id="call-1"),
+    ]
+
+    assert _has_write_attempt(added, registry) is True
+    assert _write_outcome(added, attempted=True) == ("success", "")
+
+
+def test_write_status_does_not_report_missing_delete_as_success():
+    added = [Message(role="tool", content='{"deleted": false}', tool_call_id="call-1")]
+
+    assert _write_outcome(added, attempted=True) == ("failed", "目标记录不存在")
+
+
 def _parse_sse_events(raw: str) -> list[dict[str, object]]:
     events = []
     for frame in raw.strip().split("\n\n"):
@@ -120,6 +146,7 @@ def test_chat_stream_emits_pilot_sse_v1_sequence(tmp_path):
         "type": "message",
         "conversation_id": events[0]["data"]["conversation_id"],
         "message": "可以，先把投递列表按状态过一遍。",
+        "write_status": "none",
     }
 
 
@@ -1075,6 +1102,7 @@ def test_chat_confirm_executes_pending_write(tmp_path):
     assert body["type"] == "message"
     assert body["conversation_id"] == pending["conversation_id"]
     assert body["message"] == "已更新"
+    assert body["write_status"] == "success"
     assert body["undo"]["label"] == "撤销更新投递状态"
     assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
 
@@ -1111,10 +1139,55 @@ def test_chat_cancel_pending_write_returns_short_local_message(tmp_path):
         "type": "message",
         "conversation_id": pending["conversation_id"],
         "message": "已取消本次写入。你可以修改信息后让我重新整理。",
+        "write_status": "cancelled",
     }
     assert len(model.calls) == 1
     assert client.get("/api/chat/conversations").json()[0]["pending_action"] is None
     assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "interview"
+
+
+def test_chat_confirm_reports_failed_write_without_success_prefix(tmp_path):
+    app_client = TestClient(create_app(data_dir=tmp_path))
+    application = app_client.post(
+        "/api/applications",
+        json={
+            "company_name": "验收科技",
+            "position_name": "后端工程师",
+            "status": "closed",
+            "closed_reason": "流程结束",
+        },
+    ).json()
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="write-closed",
+                        name="update_application_status",
+                        args=json.dumps({"id": application["id"], "status": "interview"}),
+                    )
+                ]
+            ),
+            Assistant(content="这条投递保持已结束状态。"),
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+
+    pending = client.post(
+        "/api/chat",
+        json={"message": "把验收科技改成面试", "conversation_id": 0},
+    ).json()
+    response = client.post(
+        "/api/chat/confirm",
+        json={"conversation_id": pending["conversation_id"], "approved": True},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["write_status"] == "failed"
+    assert "closed application cannot be reopened" in body["write_error"]
+    assert "保存成功" not in body["message"]
+    assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "closed"
 
 
 def test_chat_confirm_add_note_returns_saved_record_summary(tmp_path):
@@ -1489,6 +1562,43 @@ def test_chat_conversations_detail_and_delete(tmp_path):
     assert messages[0]["role"] == "user"
     assert deleted.status_code == 200
     assert client.get("/api/chat/conversations").json() == []
+
+
+def test_first_message_generates_title_without_overwriting_manual_rename(tmp_path):
+    chat_model = ScriptedModel([Assistant(content="回复")])
+    title_model = ScriptedModel([Assistant(content="字节后端投递规划")])
+    client = TestClient(
+        create_app(data_dir=tmp_path, chat_model=chat_model, title_model=title_model)
+    )
+
+    created = client.post(
+        "/api/chat",
+        json={"message": "帮我规划一下字节跳动后端岗位的投递", "conversation_id": 0},
+    ).json()
+
+    conversation = client.get("/api/chat/conversations").json()[0]
+    assert conversation["id"] == created["conversation_id"]
+    assert conversation["title"] == "字节后端投递规划"
+    assert conversation["title_source"] == "generated"
+
+
+def test_first_message_keeps_fallback_title_when_generation_fails(tmp_path):
+    client = TestClient(
+        create_app(
+            data_dir=tmp_path,
+            chat_model=ScriptedModel([Assistant(content="回复")]),
+            title_model=FailingTitleModel(),
+        )
+    )
+
+    client.post(
+        "/api/chat",
+        json={"message": "这是一个很长的首条消息用于验证标题回退", "conversation_id": 0},
+    )
+
+    conversation = client.get("/api/chat/conversations").json()[0]
+    assert conversation["title"] == "这是一个很长的首条消息用于验证标题回退"[:30]
+    assert conversation["title_source"] == "fallback"
 
 
 def test_chat_conversation_update_renames_pins_archives_and_clears_context(tmp_path):

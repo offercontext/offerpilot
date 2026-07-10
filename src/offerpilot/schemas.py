@@ -35,6 +35,7 @@ class ConversationOut(BaseModel):
 
     id: int
     title: str
+    title_source: str = "manual"
     mode: str = "general"
     context_type: str = "workspace"
     context_ref: str = ""

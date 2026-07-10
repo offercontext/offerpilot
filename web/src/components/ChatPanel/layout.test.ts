@@ -111,7 +111,7 @@ describe('ChatPanel docked layout contract', () => {
   it('notifies owners after Pilot write flows can change application data', () => {
     expect(component).toContain('onDataChanged?: () => void');
     expect(component).toContain('if (autoApprove) onDataChanged?.();');
-    expect(component).toContain('if (approved) onDataChanged?.();');
+    expect(component).toContain("resp.write_status === 'success'");
   });
 
   it('keeps write confirmation cards localized for Chinese users', () => {
@@ -192,5 +192,35 @@ describe('ChatPanel docked layout contract', () => {
     expect(contextPanel).not.toContain('Current evidence');
     expect(contextPanel).not.toContain('No evidence collected yet');
     expect(evidenceList).not.toContain('Evidence sources');
+  });
+
+  it('refreshes a new conversation after background title generation', () => {
+    expect(component).toContain('titleRefreshTimeoutsRef');
+    expect(component).toContain('scheduleTitleRefresh');
+    expect(component).toContain('window.setTimeout');
+  });
+
+  it('resets the active conversation for every application start request', () => {
+    expect(component).toContain('startRequest?.requestKey');
+    expect(component).toContain('setConvID(undefined)');
+    expect(component).toContain('setTurns([])');
+    expect(component).toContain('draftContext');
+  });
+
+  it('does not auto-resume an older pending thread after an application start request', () => {
+    expect(component).toContain('skipPendingResumeRef');
+    expect(component).toContain('skipPendingResumeRef.current = true');
+    expect(component).toContain('if (skipPendingResumeRef.current)');
+  });
+
+  it('clears unsent composer text when an application start request opens a new draft', () => {
+    expect(component).toContain('composerResetKey');
+    expect(component).toContain('resetKey={composerResetKey}');
+  });
+
+  it('uses structured write status instead of treating every message response as success', () => {
+    expect(component).toContain('resp.write_status === \'success\'');
+    expect(component).toContain('resp.write_status === \'failed\'');
+    expect(component).toContain('resp.write_error');
   });
 });

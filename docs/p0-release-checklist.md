@@ -29,7 +29,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release-gate.ps1
 ```
 
 ```bash
-scripts/release-gate.sh
+./scripts/release-gate.sh
 ```
 
 The scripts wrap the following checks:
@@ -53,7 +53,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release-gate.ps1 -
 ```
 
 ```bash
-scripts/release-gate.sh --real-ai
+./scripts/release-gate.sh --real-ai
 ```
 
 On a machine with Docker, run:
@@ -63,7 +63,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release-gate.ps1 -
 ```
 
 ```bash
-scripts/release-gate.sh --docker
+./scripts/release-gate.sh --docker
 ```
 
 For install-path verification, run:
@@ -73,7 +73,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release-gate.ps1 -
 ```
 
 ```bash
-scripts/release-gate.sh --install
+./scripts/release-gate.sh --install
 ```
 
 This calls `scripts/install-gate.ps1` or `scripts/install-gate.sh` to verify the source checkout CLI and isolated `uv tool install` path. The shell gate also verifies `scripts/install.sh --source` against the local checkout.

@@ -17,6 +17,16 @@ def test_get_settings_hides_api_key(tmp_path):
     assert "api_key" not in response.json()
 
 
+def test_get_settings_exposes_version_and_data_directory_without_secrets(tmp_path):
+    save_config(tmp_path, Config(api_key="sk-secret", auth_token="auth-secret"))
+    body = TestClient(create_app(data_dir=tmp_path)).get("/api/settings").json()
+
+    assert body["version"] == "0.1.0"
+    assert body["data_dir"] == str(tmp_path.resolve())
+    assert "sk-secret" not in str(body)
+    assert "auth-secret" not in str(body)
+
+
 def test_put_settings_preserves_blank_api_key(tmp_path):
     save_config(tmp_path, Config(api_key="sk-secret"))
     client = TestClient(create_app(data_dir=tmp_path))
@@ -40,6 +50,20 @@ def test_put_settings_preserves_blank_api_key(tmp_path):
     assert response.json()["auth_enabled"] is True
     assert response.json()["log_level"] == "DEBUG"
     assert load_config(tmp_path).api_key == "sk-secret"
+
+
+def test_put_settings_preserves_onboarding_reopen_preference(tmp_path):
+    client = TestClient(create_app(data_dir=tmp_path))
+    reopened = client.patch("/api/onboarding", json={"force_open": True})
+    assert reopened.status_code == 200
+
+    response = client.put(
+        "/api/settings",
+        json={"chat_auto_approve_writes": True},
+    )
+
+    assert response.status_code == 200
+    assert client.get("/api/onboarding").json()["force_open"] is True
 
 
 def test_get_settings_exposes_provider_profiles_without_keys(tmp_path):

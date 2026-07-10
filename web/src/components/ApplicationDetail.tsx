@@ -51,9 +51,10 @@ interface ApplicationDetailProps {
   open: boolean;
   onClose: () => void;
   onMockInterview?: (app: Application) => void;
+  onAskPilot?: (app: Application) => void;
 }
 
-export default function ApplicationDetail({ application, open, onClose, onMockInterview }: ApplicationDetailProps) {
+export default function ApplicationDetail({ application, open, onClose, onMockInterview, onAskPilot }: ApplicationDetailProps) {
   const queryClient = useQueryClient();
   const [form] = Form.useForm();
   const [analyzing, setAnalyzing] = useState(false);
@@ -204,6 +205,11 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
           >
             分析 JD
           </Button>
+          {onAskPilot && (
+            <Button icon={<RobotOutlined />} onClick={() => onAskPilot(application)}>
+              问 Pilot
+            </Button>
+          )}
           <Button
             icon={<FileTextOutlined />}
             onClick={() => setMaterialKitOpen(true)}

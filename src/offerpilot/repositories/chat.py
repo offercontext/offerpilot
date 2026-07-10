@@ -21,9 +21,11 @@ class ChatRepository:
         mode: str = "general",
         context_type: str = "workspace",
         context_ref: str = "",
+        title_source: str = "fallback",
     ) -> Conversation:
         conversation = Conversation(
             title=title,
+            title_source=title_source,
             mode=mode,
             context_type=context_type or "workspace",
             context_ref=context_ref or "",
@@ -65,6 +67,23 @@ class ChatRepository:
             session.refresh(conversation)
             return conversation
 
+    def apply_generated_title(self, conversation_id: int, title: str) -> bool:
+        with self._session_factory() as session:
+            result = session.execute(
+                update(Conversation)
+                .where(
+                    Conversation.id == conversation_id,
+                    Conversation.title_source == "fallback",
+                )
+                .values(
+                    title=title,
+                    title_source="generated",
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            session.commit()
+            return bool(getattr(result, "rowcount", 0))
+
     def append_message(
         self,
         conversation_id: int,
@@ -101,6 +120,11 @@ class ChatRepository:
         )
         with self._session_factory() as session:
             return list(session.scalars(statement))
+
+    def has_user_message(self) -> bool:
+        statement = select(ChatMessage.id).where(ChatMessage.role == "user").limit(1)
+        with self._session_factory() as session:
+            return session.scalar(statement) is not None
 
     def get_pending_action(self, conversation_id: int) -> PendingAction | None:
         with self._session_factory() as session:

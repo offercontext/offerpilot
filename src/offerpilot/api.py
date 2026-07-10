@@ -3,6 +3,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from datetime import datetime, timedelta, timezone
 from html import unescape
+from importlib.metadata import PackageNotFoundError, version as package_version
 from io import BytesIO
 from pathlib import Path
 from queue import Empty, Queue
@@ -13,7 +14,7 @@ from typing import Any, Callable, Generator, Optional
 from uuid import uuid4
 
 import httpx
-from fastapi import Body, FastAPI, File, Request, UploadFile
+from fastapi import BackgroundTasks, Body, FastAPI, File, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from pypdf import PdfReader
@@ -59,6 +60,7 @@ from offerpilot.repositories.offers import OfferCreate, OffersRepository
 from offerpilot.repositories.questions import QuestionCreate, QuestionsRepository, question_hash
 from offerpilot.repositories.resumes import ResumeCreate, ResumeMatchCreate, ResumesRepository
 from offerpilot.repositories.wakeups import WakeupCreate, WakeupsRepository, wakeup_payload
+from offerpilot.onboarding import onboarding_payload
 from offerpilot.schemas import (
     ApplicationOut,
     ChatMessageOut,
@@ -82,6 +84,10 @@ from offerpilot.sse import STREAM_VERSION, SseRun, format_sse, sse_headers
 CHAT_AGENT_TIMEOUT_SECONDS = 120.0
 CHAT_TIMEOUT_MESSAGE = "这次处理时间过长，已停止。你可以重试或换一种问法。"
 CHAT_CANCELLED_MESSAGE = "已取消本次写入。你可以修改信息后让我重新整理。"
+try:
+    APP_VERSION = package_version("offerpilot")
+except PackageNotFoundError:
+    APP_VERSION = "0.1.0"
 
 
 class ChatAgentTimedOut(RuntimeError):
@@ -91,6 +97,7 @@ class ChatAgentTimedOut(RuntimeError):
 def create_app(
     data_dir: Optional[Path] = None,
     chat_model: Optional[ChatModel] = None,
+    title_model: Optional[ChatModel] = None,
     static_dir: Optional[Path] = None,
 ) -> FastAPI:
     resolved_data_dir = data_dir or resolve_data_dir()
@@ -140,6 +147,20 @@ def create_app(
             "auth_enabled": cfg.auth_enabled,
             "authenticated": (not cfg.auth_enabled) or _request_has_valid_auth_token(request, cfg.auth_token),
         }
+
+    @app.get("/api/onboarding")
+    def get_onboarding() -> dict[str, object]:
+        return onboarding_payload(load_config(resolved_data_dir), applications, resumes, chat)
+
+    @app.patch("/api/onboarding")
+    def update_onboarding(payload: dict[str, Any] = Body(...)) -> JSONResponse:
+        force_open = payload.get("force_open")
+        if not isinstance(force_open, bool):
+            return error_response(422, "force_open must be boolean")
+        current = load_config(resolved_data_dir)
+        current.onboarding_force_open = force_open
+        save_config(resolved_data_dir, current)
+        return JSONResponse(onboarding_payload(current, applications, resumes, chat))
 
     @app.get("/api/application-statuses")
     def list_application_statuses() -> list[dict[str, str]]:
@@ -1046,7 +1067,10 @@ def create_app(
         return entries
 
     @app.post("/api/chat")
-    def send_chat(payload: dict[str, Any] = Body(...)) -> JSONResponse:
+    def send_chat(
+        background_tasks: BackgroundTasks,
+        payload: dict[str, Any] = Body(...),
+    ) -> JSONResponse:
         model = _chat_model(chat_model, resolved_data_dir)
         if isinstance(model, JSONResponse):
             return model
@@ -1055,6 +1079,7 @@ def create_app(
             return error_response(400, "message is required")
 
         conversation_id = int(payload.get("conversation_id") or 0)
+        created_new = conversation_id == 0
         conversation = None
         if conversation_id == 0:
             context_type = str(payload.get("context_type") or "workspace").strip() or "workspace"
@@ -1075,6 +1100,15 @@ def create_app(
 
         clarification = chat.get_pending_clarification(conversation_id)
         chat.append_message(conversation_id, "user", content=message)
+        if created_new:
+            background_tasks.add_task(
+                _generate_conversation_title,
+                title_model,
+                chat,
+                conversation_id,
+                message,
+                resolved_data_dir,
+            )
         context_message = _chat_context_message(conversation, applications)
         clarification_message = _chat_clarification_message(clarification, message)
         history = [
@@ -1120,8 +1154,9 @@ def create_app(
         added, forced_reply = _with_write_error_followup(added)
         _persist_ai_messages(chat, conversation_id, added)
         reply = forced_reply or _user_facing_assistant_content(reply)
+        write_status, write_error = _write_outcome(added, _has_write_attempt(added, registry))
         if forced_reply and pending is None:
-            forced_pending = _pending_action_from_added_write_call(added)
+            forced_pending = _pending_action_from_added_write_call(added, registry)
             if forced_pending is not None:
                 chat.set_pending_clarification(conversation_id, forced_pending, forced_reply)
         if pending is not None:
@@ -1152,10 +1187,21 @@ def create_app(
             chat.set_pending_clarification(conversation_id, pending_clarification, reply)
         elif not forced_reply:
             chat.clear_pending_clarification(conversation_id)
-        return JSONResponse({"type": "message", "conversation_id": conversation_id, "message": reply})
+        response_payload: dict[str, Any] = {
+            "type": "message",
+            "conversation_id": conversation_id,
+            "message": reply,
+            "write_status": write_status,
+        }
+        if write_error:
+            response_payload["write_error"] = write_error
+        return JSONResponse(response_payload)
 
     @app.post("/api/chat/stream")
-    def send_chat_stream(payload: dict[str, Any] = Body(...)) -> Response:
+    def send_chat_stream(
+        background_tasks: BackgroundTasks,
+        payload: dict[str, Any] = Body(...),
+    ) -> Response:
         model = _chat_model(chat_model, resolved_data_dir)
         if isinstance(model, JSONResponse):
             return model
@@ -1164,6 +1210,7 @@ def create_app(
             return error_response(400, "message is required")
 
         conversation_id = int(payload.get("conversation_id") or 0)
+        created_new = conversation_id == 0
         conversation = None
         if conversation_id == 0:
             context_type = str(payload.get("context_type") or "workspace").strip() or "workspace"
@@ -1184,6 +1231,15 @@ def create_app(
 
         clarification = chat.get_pending_clarification(conversation_id)
         chat.append_message(conversation_id, "user", content=message)
+        if created_new:
+            background_tasks.add_task(
+                _generate_conversation_title,
+                title_model,
+                chat,
+                conversation_id,
+                message,
+                resolved_data_dir,
+            )
         context_message = _chat_context_message(conversation, applications)
         clarification_message = _chat_clarification_message(clarification, message)
         history = [
@@ -1272,9 +1328,10 @@ def create_app(
             _persist_ai_messages(chat, conversation_id, added)
             reply = forced_reply or _user_facing_assistant_content(reply)
             if forced_reply and pending is None:
-                forced_pending = _pending_action_from_added_write_call(added)
+                forced_pending = _pending_action_from_added_write_call(added, registry)
                 if forced_pending is not None:
                     chat.set_pending_clarification(conversation_id, forced_pending, forced_reply)
+            write_status, write_error = _write_outcome(added, _has_write_attempt(added, registry))
             if pending is not None:
                 missing_question = _pending_action_missing_question(pending, applications)
                 if missing_question:
@@ -1307,7 +1364,14 @@ def create_app(
                 chat.set_pending_clarification(conversation_id, pending_clarification, reply)
             elif not forced_reply:
                 chat.clear_pending_clarification(conversation_id)
-            response = {"type": "message", "conversation_id": conversation_id, "message": reply}
+            response = {
+                "type": "message",
+                "conversation_id": conversation_id,
+                "message": reply,
+                "write_status": write_status,
+            }
+            if write_error:
+                response["write_error"] = write_error
             yield emit("assistant_message", {"message": reply})
             yield emit("completed", {"response": response, "persisted": True})
 
@@ -1339,6 +1403,7 @@ def create_app(
                     "type": "message",
                     "conversation_id": conversation_id,
                     "message": CHAT_CANCELLED_MESSAGE,
+                    "write_status": "cancelled",
                 }
             )
         chat.clear_pending_action(conversation_id)
@@ -1378,8 +1443,9 @@ def create_app(
         added, forced_reply = _with_write_error_followup(added)
         _persist_ai_messages(chat, conversation_id, added)
         reply = forced_reply or _user_facing_assistant_content(reply)
+        write_status, write_error = _write_outcome(added, attempted=True)
         if forced_reply and new_pending is None:
-            forced_pending = _pending_action_from_added_write_call(added)
+            forced_pending = _pending_action_from_added_write_call(added, registry)
             if forced_pending is not None:
                 chat.set_pending_clarification(conversation_id, forced_pending, forced_reply)
         if new_pending is not None:
@@ -1407,14 +1473,21 @@ def create_app(
         chat.clear_pending_action(conversation_id)
         if not forced_reply:
             chat.clear_pending_clarification(conversation_id)
-        undo = _build_write_undo(pending, added, undo_seed)
+        undo = _build_write_undo(pending, added, undo_seed) if write_status == "success" else None
         if undo:
             chat.set_last_write_undo(conversation_id, undo)
         else:
             chat.clear_last_write_undo(conversation_id)
-        if bool(payload.get("approved")):
+        if write_status == "success":
             reply = _prepend_write_success(reply, pending, added)
-        response_payload: dict[str, Any] = {"type": "message", "conversation_id": conversation_id, "message": reply}
+        response_payload: dict[str, Any] = {
+            "type": "message",
+            "conversation_id": conversation_id,
+            "message": reply,
+            "write_status": write_status,
+        }
+        if write_error:
+            response_payload["write_error"] = write_error
         if undo:
             response_payload["undo"] = undo
         return JSONResponse(response_payload)
@@ -1476,6 +1549,7 @@ def create_app(
                     "type": "message",
                     "conversation_id": conversation_id,
                     "message": CHAT_CANCELLED_MESSAGE,
+                    "write_status": "cancelled",
                 }
                 yield emit(
                     "meta",
@@ -1569,9 +1643,10 @@ def create_app(
             _persist_ai_messages(chat, conversation_id, added)
             reply = forced_reply or _user_facing_assistant_content(reply)
             if forced_reply and new_pending is None:
-                forced_pending = _pending_action_from_added_write_call(added)
+                forced_pending = _pending_action_from_added_write_call(added, registry)
                 if forced_pending is not None:
                     chat.set_pending_clarification(conversation_id, forced_pending, forced_reply)
+            write_status, write_error = _write_outcome(added, attempted=True)
             if new_pending is not None:
                 missing_question = _pending_action_missing_question(new_pending, applications)
                 if missing_question:
@@ -1601,8 +1676,16 @@ def create_app(
             chat.clear_pending_action(conversation_id)
             if not forced_reply:
                 chat.clear_pending_clarification(conversation_id)
-            reply = _prepend_write_success(reply, pending, added)
-            response = {"type": "message", "conversation_id": conversation_id, "message": reply}
+            if write_status == "success":
+                reply = _prepend_write_success(reply, pending, added)
+            response = {
+                "type": "message",
+                "conversation_id": conversation_id,
+                "message": reply,
+                "write_status": write_status,
+            }
+            if write_error:
+                response["write_error"] = write_error
             yield emit("assistant_message", {"message": reply})
             yield emit("completed", {"response": response, "persisted": True})
 
@@ -1631,6 +1714,7 @@ def create_app(
             if not title:
                 return error_response(400, "title is required")
             values["title"] = title[:80]
+            values["title_source"] = "manual"
         if "context_type" in payload:
             values["context_type"] = str(payload.get("context_type") or "workspace").strip() or "workspace"
         if "context_ref" in payload:
@@ -1764,8 +1848,11 @@ def create_app(
         return JSONResponse({"status": "deleted"})
 
     @app.get("/api/logs")
-    def get_logs(limit: int = 100) -> dict[str, Any]:
-        return {"entries": read_recent_log_entries(resolved_data_dir, limit=limit)}
+    def get_logs(limit: int = 100, level: str = "") -> Any:
+        normalized_level = level.strip().upper()
+        if normalized_level not in {"", "DEBUG", "INFO", "WARNING", "ERROR"}:
+            return error_response(422, "invalid log level")
+        return {"entries": read_recent_log_entries(resolved_data_dir, limit=limit, level=normalized_level)}
 
     @app.get("/api/skills")
     def list_skills() -> dict[str, Any]:
@@ -1796,7 +1883,7 @@ def create_app(
     @app.get("/api/settings")
     def get_settings() -> dict[str, Any]:
         cfg = load_config(resolved_data_dir)
-        return _settings_payload(cfg)
+        return _settings_payload(cfg, resolved_data_dir)
 
     @app.post("/api/settings/providers/test")
     def test_settings_provider(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
@@ -1860,6 +1947,7 @@ def create_app(
             auth_enabled=bool(payload.get("auth_enabled", current.auth_enabled)),
             auth_token=current.auth_token,
             log_level=str(payload.get("log_level") or current.log_level).upper(),
+            onboarding_force_open=current.onboarding_force_open,
             skills=current.skills,
         )
         api_key = payload.get("api_key")
@@ -1875,7 +1963,7 @@ def create_app(
         if auth_token:
             next_config.auth_token = str(auth_token)
         save_config(resolved_data_dir, next_config)
-        return _settings_payload(next_config)
+        return _settings_payload(next_config, resolved_data_dir)
 
     @app.get("/{full_path:path}", include_in_schema=False)
     def serve_frontend(full_path: str) -> Response:
@@ -2007,6 +2095,38 @@ def _payload_text(payload: dict[str, Any], key: str, fallback: str) -> str:
 def _title_from_message(message: str) -> str:
     trimmed = message.strip()
     return trimmed[:30] or "新对话"
+
+
+def _generate_conversation_title(
+    injected: Optional[ChatModel],
+    chat: ChatRepository,
+    conversation_id: int,
+    first_message: str,
+    data_dir: Path,
+) -> None:
+    try:
+        model = _chat_model(injected, data_dir)
+        if isinstance(model, JSONResponse):
+            return
+        assistant = model.complete(
+            [
+                Message(
+                    role="system",
+                    content="为求职助手对话生成不超过30个汉字的单行标题，只输出标题。",
+                ),
+                Message(role="user", content=first_message),
+            ],
+            [],
+        )
+        title = " ".join(assistant.content.split()).strip("\"'“”‘’ ")[:30]
+        if title:
+            chat.apply_generated_title(conversation_id, title)
+    except Exception as exc:  # pragma: no cover - provider behavior is covered through fallback tests
+        append_log_entry(
+            data_dir,
+            "WARNING",
+            f"conversation title generation failed: {type(exc).__name__}",
+        )
 
 
 def _agent_checkpoint_path(data_dir: Path) -> Path:
@@ -2416,20 +2536,42 @@ def _last_successful_tool_payload(added: list[Message]) -> dict[str, Any]:
     return {}
 
 
-_WRITE_TOOL_NAMES = {
-    "create_application",
-    "update_application_status",
-    "create_application_event",
-    "add_note",
-}
+def _write_tool_names(registry: dict[str, dict[str, Any]]) -> set[str]:
+    return {name for name, tool in registry.items() if bool(tool.get("write"))}
 
 
-def _pending_action_from_added_write_call(added: list[Message]) -> PendingAction | None:
+def _has_write_attempt(added: list[Message], registry: dict[str, dict[str, Any]]) -> bool:
+    write_tool_names = _write_tool_names(registry)
+    return any(
+        message.role == "assistant"
+        and any(tool_call.name in write_tool_names for tool_call in message.tool_calls)
+        for message in added
+    )
+
+
+def _write_outcome(added: list[Message], attempted: bool) -> tuple[str, str]:
+    if not attempted:
+        return "none", ""
+    for message in reversed(added):
+        if message.role == "tool" and message.content.startswith("错误："):
+            return "failed", message.content.removeprefix("错误：").strip()
+    payload = _last_successful_tool_payload(added)
+    if payload:
+        if payload.get("deleted") is False:
+            return "failed", "目标记录不存在"
+        return "success", ""
+    return "failed", "写入未完成"
+
+
+def _pending_action_from_added_write_call(
+    added: list[Message], registry: dict[str, dict[str, Any]]
+) -> PendingAction | None:
+    write_tool_names = _write_tool_names(registry)
     for message in reversed(added):
         if message.role != "assistant" or not message.tool_calls:
             continue
         tool_call = message.tool_calls[0]
-        if tool_call.name not in _WRITE_TOOL_NAMES:
+        if tool_call.name not in write_tool_names:
             continue
         return PendingAction(
             tool_call_id=tool_call.id,
@@ -2894,9 +3036,11 @@ def _dev_placeholder_html() -> str:
 </html>"""
 
 
-def _settings_payload(cfg: Config) -> dict[str, Any]:
+def _settings_payload(cfg: Config, data_dir: Path | None = None) -> dict[str, Any]:
     active = cfg.active_provider()
     return {
+        "version": APP_VERSION,
+        "data_dir": str((data_dir or resolve_data_dir()).resolve()),
         "chat_auto_approve_writes": cfg.chat_auto_approve_writes,
         "active_provider_id": active.id,
         "fallback_provider_id": cfg.fallback_provider_id,
