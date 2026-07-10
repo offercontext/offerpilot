@@ -43,6 +43,7 @@ import {
   resolveActivePendingAction,
   toolMeta,
   confirmationInputForRetry,
+  confirmationErrorRequiresSync,
   type EvidenceItem,
   type UITurn,
 } from './model';
@@ -185,6 +186,8 @@ export default function ChatPanel({
   const abortControllerRef = useRef<AbortController | null>(null);
   const streamingAssistantActiveRef = useRef(false);
   const lastConfirmationInputRef = useRef<ConfirmationInput | null>(null);
+  const activeConversationIdRef = useRef<number | undefined>(undefined);
+  const confirmationMonitorRef = useRef(0);
   const docked = variant === 'rail';
   const inlinePage = variant === 'page';
 
@@ -201,6 +204,15 @@ export default function ChatPanel({
   useEffect(() => {
     dispatchPageContextRemoval({ type: 'sync', contextKey: incomingPageContextKey });
   }, [incomingPageContextKey]);
+
+  useEffect(() => {
+    activeConversationIdRef.current = convID;
+    confirmationMonitorRef.current += 1;
+  }, [convID]);
+
+  useEffect(() => {
+    if (!open) confirmationMonitorRef.current += 1;
+  }, [open]);
 
   function refreshConversations() {
     listConversations()
@@ -397,7 +409,9 @@ export default function ChatPanel({
     });
   }
 
-  async function syncConversationAfterAbort(conversationId?: number) {
+  async function syncConversationAfterAbort(
+    conversationId?: number,
+  ): Promise<PendingAction | null | undefined> {
     let nextConversations: Conversation[] | undefined;
     try {
       nextConversations = await listConversations();
@@ -405,14 +419,43 @@ export default function ChatPanel({
     } catch {
       nextConversations = undefined;
     }
-    if (!conversationId) return;
+    if (!conversationId) return undefined;
     try {
       const stored = await getConversation(conversationId);
+      const summary = (nextConversations ?? conversations).find((item) => item.id === conversationId);
+      const nextPending = pendingActionForConversation(
+        nextConversations ?? conversations,
+        conversationId,
+      );
       setConvID(conversationId);
       setTurns(buildTurns(stored));
-      setPending(pendingActionForConversation(nextConversations ?? conversations, conversationId));
+      setPending(nextPending);
+      setLastUndo(summary?.last_write_undo ?? null);
+      return nextPending;
     } catch {
       refreshConversations();
+      return undefined;
+    }
+  }
+
+  async function monitorConfirmationCompletion(conversationId: number, monitorId: number) {
+    while (
+      confirmationMonitorRef.current === monitorId &&
+      activeConversationIdRef.current === conversationId
+    ) {
+      await new Promise((resolve) => window.setTimeout(resolve, 500));
+      if (
+        confirmationMonitorRef.current !== monitorId ||
+        activeConversationIdRef.current !== conversationId
+      ) {
+        return;
+      }
+      const nextPending = await syncConversationAfterAbort(conversationId);
+      if (nextPending === null) {
+        setConfirmPhase('idle');
+        onDataChanged?.();
+        return;
+      }
     }
   }
 
@@ -574,6 +617,22 @@ export default function ChatPanel({
         return;
       }
       const error = e?.response?.data?.error ?? e?.message ?? '确认失败';
+      if (confirmationErrorRequiresSync(e?.code)) {
+        lastConfirmationInputRef.current = null;
+        streamingAssistantActiveRef.current = false;
+        if (e?.code === 'stale_pending_action') setPending(null);
+        const nextPending = await syncConversationAfterAbort(convID);
+        setConfirmError(null);
+        if (e?.code === 'confirmation_in_progress' && convID && nextPending !== null) {
+          setConfirmPhase('saving');
+          const monitorId = ++confirmationMonitorRef.current;
+          void monitorConfirmationCompletion(convID, monitorId);
+        } else {
+          setConfirmPhase('idle');
+        }
+        toast.error(error);
+        return;
+      }
       if (streamingAssistantActiveRef.current) {
         streamingAssistantActiveRef.current = false;
         await syncConversationAfterAbort(convID);
@@ -847,17 +906,36 @@ export default function ChatPanel({
                     <button type="button" onClick={retryConfirmAction} disabled={loading}>
                       重试执行
                     </button>
-                    <button type="button" onClick={() => handleConfirm({ approved: false })} disabled={loading}>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleConfirm({
+                          approved: false,
+                          confirmation_token: activePending.confirmation_token,
+                        })
+                      }
+                      disabled={loading}
+                    >
                       取消本次写入
                     </button>
                   </div>
                 ) : null}
                 <ProposalCard
                   action={activePending}
-                  loading={loading}
+                  loading={loading || confirmPhase === 'saving'}
                   evidence={confirmationEvidence}
-                  onConfirm={() => handleConfirm({ approved: true })}
-                  onCancel={() => handleConfirm({ approved: false })}
+                  onConfirm={() =>
+                    handleConfirm({
+                      approved: true,
+                      confirmation_token: activePending.confirmation_token,
+                    })
+                  }
+                  onCancel={() =>
+                    handleConfirm({
+                      approved: false,
+                      confirmation_token: activePending.confirmation_token,
+                    })
+                  }
                 />
               </div>
             )}

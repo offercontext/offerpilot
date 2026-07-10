@@ -50,6 +50,7 @@ export interface ChatMessage {
 export interface PendingAction {
   tool_name: string;
   human: string;
+  confirmation_token: string;
   args?: Record<string, unknown>;
   editable_fields?: PendingActionEditableField[];
   target?: PendingActionTarget;

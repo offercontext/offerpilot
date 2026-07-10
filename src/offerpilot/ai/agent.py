@@ -28,6 +28,7 @@ CancelCheck = Callable[[], bool]
 _IN_MEMORY_CONFIRMATION_NAMESPACE = "offerpilot.ai.agent.in-memory"
 _MAX_FALLBACK_CONFIRMATION_CLAIMS = 4096
 ConfirmationLockKey = tuple[str, str]
+FallbackConfirmationClaim = tuple[ConfirmationLockKey, str, str, str]
 
 
 @dataclass
@@ -38,9 +39,7 @@ class _ConfirmationLockEntry:
 
 _CONFIRMATION_STATE_GUARD = Lock()
 _CONFIRMATION_LOCKS: dict[ConfirmationLockKey, _ConfirmationLockEntry] = {}
-_FALLBACK_CONFIRMATION_CLAIMS: OrderedDict[tuple[ConfirmationLockKey, str, str], None] = (
-    OrderedDict()
-)
+_FALLBACK_CONFIRMATION_CLAIMS: OrderedDict[FallbackConfirmationClaim, None] = OrderedDict()
 
 
 class ChatRunCancelled(RuntimeError):
@@ -77,6 +76,7 @@ class PendingAction:
 
 
 ConfirmationResultSink = Callable[[PendingAction, bool, Message], None]
+ConfirmationAttemptSink = Callable[[PendingAction], None]
 
 
 @contextmanager
@@ -102,7 +102,7 @@ def _claim_fallback_confirmation(
     lock_key: ConfirmationLockKey,
     pending: PendingAction,
 ) -> bool:
-    claim_key = (lock_key, pending.tool_call_id, pending.tool_name)
+    claim_key = (lock_key, pending.tool_call_id, pending.tool_name, pending.args)
     with _CONFIRMATION_STATE_GUARD:
         if claim_key in _FALLBACK_CONFIRMATION_CLAIMS:
             _FALLBACK_CONFIRMATION_CLAIMS.move_to_end(claim_key)
@@ -138,6 +138,7 @@ class LangGraphAgentRunner:
         event_sink: AgentEventSink | None = None,
         cancel_check: CancelCheck | None = None,
         confirmation_result_sink: ConfirmationResultSink | None = None,
+        confirmation_attempt_sink: ConfirmationAttemptSink | None = None,
     ):
         self._model = model
         self._registry = registry
@@ -146,6 +147,7 @@ class LangGraphAgentRunner:
         self._event_sink = event_sink
         self._cancel_check = cancel_check
         self._confirmation_result_sink = confirmation_result_sink
+        self._confirmation_attempt_sink = confirmation_attempt_sink
         self._memory_saver = InMemorySaver()
         self._has_pending_checkpoint = False
 
@@ -393,6 +395,9 @@ class LangGraphAgentRunner:
                             effective_pending,
                             True,
                         )
+                        self._raise_if_cancelled()
+                        if self._confirmation_attempt_sink is not None:
+                            self._confirmation_attempt_sink(effective_pending)
                         result = _execute_tool(tool, effective_args)
                     else:
                         self._emit_pending_tool_call(
@@ -511,6 +516,9 @@ class LangGraphAgentRunner:
                 raise StalePendingActionError(
                     "stale pending action: fallback confirmation was already consumed"
                 )
+            self._raise_if_cancelled()
+            if self._confirmation_attempt_sink is not None:
+                self._confirmation_attempt_sink(sink_pending)
             result = _execute_tool(tool, effective_args)
         else:
             self._emit_pending_tool_call(pending, "rejected")
@@ -635,6 +643,7 @@ def resume_after_confirm(
     event_sink: AgentEventSink | None = None,
     cancel_check: CancelCheck | None = None,
     confirmation_result_sink: ConfirmationResultSink | None = None,
+    confirmation_attempt_sink: ConfirmationAttemptSink | None = None,
 ) -> tuple[list[Message], str, PendingAction | None]:
     return LangGraphAgentRunner(
         model,
@@ -644,6 +653,7 @@ def resume_after_confirm(
         event_sink=event_sink,
         cancel_check=cancel_check,
         confirmation_result_sink=confirmation_result_sink,
+        confirmation_attempt_sink=confirmation_attempt_sink,
     ).resume_after_confirm(
         messages,
         pending,

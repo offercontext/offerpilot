@@ -1,4 +1,5 @@
 import json
+import re
 import time
 
 import pytest
@@ -9,6 +10,7 @@ from offerpilot.ai.types import Assistant, Message, ToolCall
 from offerpilot.api import create_app
 from offerpilot.config import Config, save_config
 from offerpilot.db import session_factory_for_data_dir
+from offerpilot.repositories.applications import ApplicationsRepository
 from offerpilot.repositories.chat import ChatRepository
 
 
@@ -686,7 +688,7 @@ def test_chat_confirm_stream_executes_pending_write_and_completes(tmp_path):
 
     response = client.post(
         "/api/chat/confirm/stream",
-        json={"conversation_id": pending["conversation_id"], "approved": True},
+        json={"conversation_id": pending["conversation_id"], "approved": True, "confirmation_token": pending["pending_action"]["confirmation_token"]},
     )
 
     assert response.status_code == 200
@@ -723,11 +725,11 @@ def test_chat_confirm_stream_recovers_committed_write_when_followup_model_fails(
 
     failed_confirm = client.post(
         "/api/chat/confirm/stream",
-        json={"conversation_id": pending["conversation_id"], "approved": True},
+        json={"conversation_id": pending["conversation_id"], "approved": True, "confirmation_token": pending["pending_action"]["confirmation_token"]},
     )
     retry_confirm = client.post(
         "/api/chat/confirm/stream",
-        json={"conversation_id": pending["conversation_id"], "approved": True},
+        json={"conversation_id": pending["conversation_id"], "approved": True, "confirmation_token": pending["pending_action"]["confirmation_token"]},
     )
 
     events = _parse_sse_events(failed_confirm.text)
@@ -735,7 +737,8 @@ def test_chat_confirm_stream_recovers_committed_write_when_followup_model_fails(
     completed = events[-1]["data"]["data"]["response"]
     assert "写入已完成" in completed["message"]
     assert completed["undo"]["application_id"] == application["id"]
-    assert retry_confirm.status_code == 400
+    retry_events = _parse_sse_events(retry_confirm.text)
+    assert retry_events[-1]["data"]["data"]["code"] == "stale_pending_action"
     conversation = client.get("/api/chat/conversations").json()[0]
     assert conversation["pending_action"] is None
     assert conversation["last_write_undo"] == completed["undo"]
@@ -767,17 +770,17 @@ def test_chat_confirm_recovers_committed_write_when_followup_model_fails(tmp_pat
 
     failed_confirm = client.post(
         "/api/chat/confirm",
-        json={"conversation_id": pending["conversation_id"], "approved": True},
+        json={"conversation_id": pending["conversation_id"], "approved": True, "confirmation_token": pending["pending_action"]["confirmation_token"]},
     )
     retry_confirm = client.post(
         "/api/chat/confirm",
-        json={"conversation_id": pending["conversation_id"], "approved": True},
+        json={"conversation_id": pending["conversation_id"], "approved": True, "confirmation_token": pending["pending_action"]["confirmation_token"]},
     )
 
     assert failed_confirm.status_code == 200
     assert "写入已完成" in failed_confirm.json()["message"]
     assert failed_confirm.json()["undo"]["application_id"] == application["id"]
-    assert retry_confirm.status_code == 400
+    assert retry_confirm.status_code == 409
     conversation = client.get("/api/chat/conversations").json()[0]
     assert conversation["pending_action"] is None
     assert conversation["last_write_undo"] == failed_confirm.json()["undo"]
@@ -1044,7 +1047,11 @@ def test_chat_confirmed_status_update_can_be_undone(tmp_path):
     pending = client.post("/api/chat", json={"message": "改成 offer", "conversation_id": 0}).json()
     confirmed = client.post(
         "/api/chat/confirm",
-        json={"conversation_id": pending["conversation_id"], "approved": True},
+        json={
+            "conversation_id": pending["conversation_id"],
+            "approved": True,
+            "confirmation_token": pending["pending_action"]["confirmation_token"],
+        },
     )
 
     assert confirmed.status_code == 200
@@ -1090,7 +1097,7 @@ def test_chat_status_undo_preserves_unrelated_application_edits(tmp_path):
     pending = client.post("/api/chat", json={"message": "offer", "conversation_id": 0}).json()
     client.post(
         "/api/chat/confirm",
-        json={"conversation_id": pending["conversation_id"], "approved": True},
+        json={"conversation_id": pending["conversation_id"], "approved": True, "confirmation_token": pending["pending_action"]["confirmation_token"]},
     )
     app_client.put(
         f"/api/applications/{application['id']}",
@@ -1133,7 +1140,7 @@ def test_chat_status_undo_rejects_changed_mutated_fields(tmp_path):
     pending = client.post("/api/chat", json={"message": "offer", "conversation_id": 0}).json()
     client.post(
         "/api/chat/confirm",
-        json={"conversation_id": pending["conversation_id"], "approved": True},
+        json={"conversation_id": pending["conversation_id"], "approved": True, "confirmation_token": pending["pending_action"]["confirmation_token"]},
     )
     app_client.put(
         f"/api/applications/{application['id']}",
@@ -1177,7 +1184,11 @@ def test_chat_created_application_undo_deletes_unchanged_record(tmp_path):
     pending = client.post("/api/chat", json={"message": "create", "conversation_id": 0}).json()
     confirmed = client.post(
         "/api/chat/confirm",
-        json={"conversation_id": pending["conversation_id"], "approved": True},
+        json={
+            "conversation_id": pending["conversation_id"],
+            "approved": True,
+            "confirmation_token": pending["pending_action"]["confirmation_token"],
+        },
     ).json()
 
     undone = client.post(
@@ -1186,6 +1197,7 @@ def test_chat_created_application_undo_deletes_unchanged_record(tmp_path):
     )
 
     assert confirmed["undo"]["expected_after"]["company_name"] == "Created Co"
+    assert confirmed["undo"]["expected_after"]["updated_at"]
     assert undone.status_code == 200
     assert client.get(f"/api/applications/{confirmed['undo']['application_id']}").status_code == 404
 
@@ -1215,7 +1227,11 @@ def test_chat_created_application_undo_rejects_edited_record(tmp_path):
     pending = client.post("/api/chat", json={"message": "create", "conversation_id": 0}).json()
     confirmed = client.post(
         "/api/chat/confirm",
-        json={"conversation_id": pending["conversation_id"], "approved": True},
+        json={
+            "conversation_id": pending["conversation_id"],
+            "approved": True,
+            "confirmation_token": pending["pending_action"]["confirmation_token"],
+        },
     ).json()
     application_id = confirmed["undo"]["application_id"]
     client.put(
@@ -1230,6 +1246,107 @@ def test_chat_created_application_undo_rejects_edited_record(tmp_path):
 
     assert undone.status_code == 409
     assert client.get(f"/api/applications/{application_id}").json()["notes"] == "user edited"
+
+
+def _created_application_with_undo(tmp_path, tool_call_id):
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id=tool_call_id,
+                        name="create_application",
+                        args=json.dumps(
+                            {
+                                "company_name": "Guarded Co",
+                                "position_name": "Engineer",
+                                "status": "applied",
+                            }
+                        ),
+                    )
+                ]
+            ),
+            Assistant(content="created"),
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    pending = client.post("/api/chat", json={"message": "create", "conversation_id": 0}).json()
+    confirmed = client.post(
+        "/api/chat/confirm",
+        json={
+            "conversation_id": pending["conversation_id"],
+            "approved": True,
+            "confirmation_token": pending["pending_action"]["confirmation_token"],
+        },
+    ).json()
+    return client, pending, confirmed
+
+
+def test_chat_created_application_undo_rejects_same_value_later_edit(tmp_path):
+    client, pending, confirmed = _created_application_with_undo(tmp_path, "same-value-edit")
+    application_id = confirmed["undo"]["application_id"]
+    current = client.get(f"/api/applications/{application_id}").json()
+    time.sleep(0.01)
+    updated = client.put(
+        f"/api/applications/{application_id}",
+        json={"status": current["status"], "notes": current["notes"]},
+    )
+
+    undone = client.post(
+        "/api/chat/undo-last-write",
+        json={"conversation_id": pending["conversation_id"]},
+    )
+
+    assert updated.status_code == 200
+    assert updated.json()["updated_at"] != confirmed["undo"]["expected_after"]["updated_at"]
+    assert undone.status_code == 409
+    assert client.get(f"/api/applications/{application_id}").status_code == 200
+
+
+@pytest.mark.parametrize("dependency", ["event", "note", "offer"])
+def test_chat_created_application_undo_rejects_new_dependencies(tmp_path, dependency):
+    client, pending, confirmed = _created_application_with_undo(
+        tmp_path, f"dependency-{dependency}"
+    )
+    application_id = confirmed["undo"]["application_id"]
+    if dependency == "event":
+        created = client.post(
+            "/api/application-events",
+            json={
+                "application_id": application_id,
+                "event_type": "interview",
+                "scheduled_at": "2026-08-01T10:00:00Z",
+                "duration_minutes": 30,
+            },
+        )
+    elif dependency == "note":
+        created = client.post(
+            "/api/notes",
+            json={
+                "application_id": application_id,
+                "company": "Guarded Co",
+                "position": "Engineer",
+                "date": "2026-08-01",
+            },
+        )
+    else:
+        created = client.post(
+            "/api/offers",
+            json={
+                "application_id": application_id,
+                "company_name": "Guarded Co",
+                "position_name": "Engineer",
+            },
+        )
+
+    undone = client.post(
+        "/api/chat/undo-last-write",
+        json={"conversation_id": pending["conversation_id"]},
+    )
+
+    assert created.status_code == 201
+    assert undone.status_code == 409
+    assert client.get(f"/api/applications/{application_id}").status_code == 200
 
 
 def test_chat_created_event_undo_rejects_edited_record(tmp_path):
@@ -1263,7 +1380,7 @@ def test_chat_created_event_undo_rejects_edited_record(tmp_path):
     pending = client.post("/api/chat", json={"message": "schedule", "conversation_id": 0}).json()
     confirmed = client.post(
         "/api/chat/confirm",
-        json={"conversation_id": pending["conversation_id"], "approved": True},
+        json={"conversation_id": pending["conversation_id"], "approved": True, "confirmation_token": pending["pending_action"]["confirmation_token"]},
     ).json()
     event_id = confirmed["undo"]["application_event_id"]
     client.put(
@@ -1304,7 +1421,7 @@ def test_chat_created_note_undo_rejects_edited_record(tmp_path):
     pending = client.post("/api/chat", json={"message": "note", "conversation_id": 0}).json()
     confirmed = client.post(
         "/api/chat/confirm",
-        json={"conversation_id": pending["conversation_id"], "approved": True},
+        json={"conversation_id": pending["conversation_id"], "approved": True, "confirmation_token": pending["pending_action"]["confirmation_token"]},
     ).json()
     note_id = confirmed["undo"]["note_id"]
     client.put(f"/api/notes/{note_id}", json={**note_args, "questions": "User changed"})
@@ -1862,7 +1979,7 @@ def test_chat_confirm_executes_pending_write(tmp_path):
 
     response = client.post(
         "/api/chat/confirm",
-        json={"conversation_id": pending["conversation_id"], "approved": True},
+        json={"conversation_id": pending["conversation_id"], "approved": True, "confirmation_token": pending["pending_action"]["confirmation_token"]},
     )
 
     assert response.status_code == 200
@@ -1902,6 +2019,7 @@ def test_chat_rejection_feedback_reaches_model_without_running_write(tmp_path):
         json={
             "conversation_id": pending["conversation_id"],
             "approved": False,
+            "confirmation_token": pending["pending_action"]["confirmation_token"],
             "rejection_feedback": "  Keep it in interview.  ",
         },
     )
@@ -1939,6 +2057,7 @@ def test_chat_rejection_without_feedback_uses_generic_agent_followup(tmp_path):
         json={
             "conversation_id": pending["conversation_id"],
             "approved": False,
+            "confirmation_token": pending["pending_action"]["confirmation_token"],
             "rejection_feedback": "   ",
         },
     )
@@ -1962,6 +2081,8 @@ def test_chat_rejection_without_feedback_uses_generic_agent_followup(tmp_path):
         {"approved": False, "edited_args": {}},
         {"approved": True, "edited_args": {}, "rejection_feedback": "no"},
         {"approved": False, "rejection_feedback": "x" * 501},
+        {"approved": True, "confirmation_token": None},
+        {"approved": True, "confirmation_token": "not-a-token"},
     ],
 )
 @pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
@@ -1987,7 +2108,11 @@ def test_chat_confirm_invalid_payload_returns_422_and_preserves_pending(
 
     response = client.post(
         endpoint,
-        json={"conversation_id": pending["conversation_id"], **invalid_input},
+        json={
+            "conversation_id": pending["conversation_id"],
+            "confirmation_token": pending["pending_action"]["confirmation_token"],
+            **invalid_input,
+        },
     )
 
     assert response.status_code == 422
@@ -2029,7 +2154,7 @@ def test_chat_confirm_prehandler_validation_preserves_pending_and_undo(
 
     response = client.post(
         endpoint,
-        json={"conversation_id": pending["conversation_id"], "approved": True},
+        json={"conversation_id": pending["conversation_id"], "approved": True, "confirmation_token": pending["pending_action"]["confirmation_token"]},
     )
 
     if endpoint.endswith("/stream"):
@@ -2099,6 +2224,7 @@ def test_chat_confirm_invalid_edits_return_422_and_preserve_pending(
         json={
             "conversation_id": pending["conversation_id"],
             "approved": True,
+            "confirmation_token": pending["pending_action"]["confirmation_token"],
             "edited_args": edited_args,
         },
     )
@@ -2133,6 +2259,7 @@ def test_chat_confirm_edited_status_executes_effective_args_and_keeps_immutable_
         json={
             "conversation_id": pending["conversation_id"],
             "approved": True,
+            "confirmation_token": pending["pending_action"]["confirmation_token"],
             "edited_args": {"status": "closed", "closed_reason": "Paused"},
         },
     )
@@ -2180,7 +2307,11 @@ def test_chat_confirm_stream_rejection_is_normal_followup_and_preserves_previous
     _, client, _, first_pending = _create_status_confirmation(tmp_path, model)
     second_pending = client.post(
         "/api/chat/confirm",
-        json={"conversation_id": first_pending["conversation_id"], "approved": True},
+        json={
+            "conversation_id": first_pending["conversation_id"],
+            "approved": True,
+            "confirmation_token": first_pending["pending_action"]["confirmation_token"],
+        },
     ).json()
     previous_undo = client.get("/api/chat/conversations").json()[0]["last_write_undo"]
     assert previous_undo is not None
@@ -2190,6 +2321,7 @@ def test_chat_confirm_stream_rejection_is_normal_followup_and_preserves_previous
         json={
             "conversation_id": first_pending["conversation_id"],
             "approved": False,
+            "confirmation_token": second_pending["pending_action"]["confirmation_token"],
             "rejection_feedback": " Leave it as offer. ",
         },
     )
@@ -2198,7 +2330,9 @@ def test_chat_confirm_stream_rejection_is_normal_followup_and_preserves_previous
     assert second_pending["type"] == "confirmation_required"
     assert "cancelled" not in [event["event"] for event in events]
     assert events[-1]["event"] == "completed"
-    assert events[-1]["data"]["data"]["response"]["message"] == "Okay, I will leave it unchanged."
+    completed_response = events[-1]["data"]["data"]["response"]
+    assert completed_response["message"] == "Okay, I will leave it unchanged."
+    assert completed_response["undo"] == previous_undo
     conversation = client.get("/api/chat/conversations").json()[0]
     assert conversation["pending_action"] is None
     assert conversation["last_write_undo"] == previous_undo
@@ -2229,7 +2363,7 @@ def test_chat_confirm_stale_resume_preserves_pending(tmp_path, monkeypatch, endp
     monkeypatch.setattr(api_module, "resume_after_confirm", stale)
     response = client.post(
         endpoint,
-        json={"conversation_id": pending["conversation_id"], "approved": True},
+        json={"conversation_id": pending["conversation_id"], "approved": True, "confirmation_token": pending["pending_action"]["confirmation_token"]},
     )
 
     if endpoint.endswith("/stream"):
@@ -2274,7 +2408,7 @@ def test_chat_confirm_result_cas_loss_preserves_newer_pending(tmp_path, monkeypa
     monkeypatch.setattr(ChatRepository, "resolve_pending_confirmation", lose_cas)
     response = client.post(
         endpoint,
-        json={"conversation_id": pending["conversation_id"], "approved": True},
+        json={"conversation_id": pending["conversation_id"], "approved": True, "confirmation_token": pending["pending_action"]["confirmation_token"]},
     )
 
     if endpoint.endswith("/stream"):
@@ -2339,13 +2473,13 @@ def test_chat_confirm_cas_loss_aborts_before_auto_approved_second_write(
         self.set_pending_action(conversation_id, newer)
         self.set_pending_clarification(conversation_id, newer, "newer question")
         self.set_last_write_undo(conversation_id, newer_undo)
-        return False
+        return None
 
     monkeypatch.setattr(ChatRepository, "resolve_pending_confirmation", lose_cas)
 
     response = client.post(
         endpoint,
-        json={"conversation_id": pending["conversation_id"], "approved": True},
+        json={"conversation_id": pending["conversation_id"], "approved": True, "confirmation_token": pending["pending_action"]["confirmation_token"]},
     )
 
     if endpoint.endswith("/stream"):
@@ -2396,7 +2530,7 @@ def test_chat_confirm_tool_error_uses_expected_pending_cas(tmp_path, monkeypatch
 
     response = client.post(
         endpoint,
-        json={"conversation_id": pending["conversation_id"], "approved": True},
+        json={"conversation_id": pending["conversation_id"], "approved": True, "confirmation_token": pending["pending_action"]["confirmation_token"]},
     )
 
     if endpoint.endswith("/stream"):
@@ -2425,7 +2559,7 @@ def test_chat_confirm_tool_error_provider_failure_is_durable(tmp_path, endpoint)
 
     response = client.post(
         endpoint,
-        json={"conversation_id": pending["conversation_id"], "approved": True},
+        json={"conversation_id": pending["conversation_id"], "approved": True, "confirmation_token": pending["pending_action"]["confirmation_token"]},
     )
 
     assert response.status_code == 200
@@ -2476,12 +2610,12 @@ def test_chat_confirm_result_cas_loss_stays_stale_on_followup_failure(
 
     def lose_cas(self, conversation_id, expected, tool_message, undo):
         self.set_pending_action(conversation_id, newer)
-        return False
+        return None
 
     monkeypatch.setattr(ChatRepository, "resolve_pending_confirmation", lose_cas)
     response = client.post(
         endpoint,
-        json={"conversation_id": pending["conversation_id"], "approved": True},
+        json={"conversation_id": pending["conversation_id"], "approved": True, "confirmation_token": pending["pending_action"]["confirmation_token"]},
     )
 
     if endpoint.endswith("/stream"):
@@ -2512,7 +2646,7 @@ def test_chat_confirm_timeout_after_write_returns_completed_fallback(
 
     response = client.post(
         endpoint,
-        json={"conversation_id": pending["conversation_id"], "approved": True},
+        json={"conversation_id": pending["conversation_id"], "approved": True, "confirmation_token": pending["pending_action"]["confirmation_token"]},
     )
 
     assert response.status_code == 200
@@ -2531,9 +2665,76 @@ def test_chat_confirm_timeout_after_write_returns_completed_fallback(
     assert [message["role"] for message in stored].count("tool") == 1
     assert [message["content"] for message in stored].count(body["message"]) == 1
     retry = client.post(
-        endpoint, json={"conversation_id": pending["conversation_id"], "approved": True}
+        endpoint,
+        json={
+            "conversation_id": pending["conversation_id"],
+            "approved": True,
+            "confirmation_token": pending["pending_action"]["confirmation_token"],
+        },
     )
-    assert retry.status_code == 400
+    if endpoint.endswith("/stream"):
+        retry_error = _parse_sse_events(retry.text)[-1]
+        assert retry_error["data"]["data"]["code"] == "stale_pending_action"
+    else:
+        assert retry.status_code == 409
+
+
+@pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
+def test_chat_confirm_timeout_during_handler_finalizes_durably_later(
+    tmp_path,
+    monkeypatch,
+    endpoint,
+):
+    import offerpilot.api as api_module
+
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="slow-handler",
+                        name="update_application_status",
+                        args=json.dumps({"id": 1, "status": "offer"}),
+                    )
+                ]
+            ),
+            Assistant(content="late follow-up"),
+        ]
+    )
+    app_client, client, application, pending = _create_status_confirmation(tmp_path, model)
+    original_update = ApplicationsRepository.update_full
+
+    def slow_update(self, app_id, data):
+        time.sleep(0.3)
+        return original_update(self, app_id, data)
+
+    monkeypatch.setattr(ApplicationsRepository, "update_full", slow_update)
+    monkeypatch.setattr(api_module, "CHAT_AGENT_TIMEOUT_SECONDS", 0.05)
+
+    response = client.post(
+        endpoint,
+        json={
+            "conversation_id": pending["conversation_id"],
+            "approved": True,
+            "confirmation_token": pending["pending_action"]["confirmation_token"],
+        },
+    )
+
+    if endpoint.endswith("/stream"):
+        error = _parse_sse_events(response.text)[-1]
+        assert error["event"] == "error"
+        assert error["data"]["data"]["code"] == "confirmation_in_progress"
+        assert error["data"]["data"]["retryable"] is False
+    else:
+        assert response.status_code == 409
+        assert "仍在后台执行" in response.json()["error"]
+    time.sleep(0.5)
+    conversation = client.get("/api/chat/conversations").json()[0]
+    assert conversation["pending_action"] is None
+    assert conversation["last_write_undo"] is not None
+    assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
+    stored = client.get(f"/api/chat/conversations/{pending['conversation_id']}").json()
+    assert sum(message["role"] == "tool" for message in stored) == 1
 
 
 @pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
@@ -2557,6 +2758,7 @@ def test_chat_confirm_rejection_provider_failure_records_cancellation_once(tmp_p
         json={
             "conversation_id": pending["conversation_id"],
             "approved": False,
+            "confirmation_token": pending["pending_action"]["confirmation_token"],
             "rejection_feedback": "Keep interview status.",
         },
     )
@@ -2569,7 +2771,7 @@ def test_chat_confirm_rejection_provider_failure_records_cancellation_once(tmp_p
     else:
         body = response.json()
     assert "已记录取消" in body["message"]
-    assert "undo" not in body
+    assert body["undo"] == previous_undo
     conversation = client.get("/api/chat/conversations").json()[0]
     assert conversation["pending_action"] is None
     assert conversation["last_write_undo"] == previous_undo
@@ -2578,9 +2780,18 @@ def test_chat_confirm_rejection_provider_failure_records_cancellation_once(tmp_p
     assert [message["content"] for message in stored].count(body["message"]) == 1
     assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "interview"
     retry = client.post(
-        endpoint, json={"conversation_id": pending["conversation_id"], "approved": False}
+        endpoint,
+        json={
+            "conversation_id": pending["conversation_id"],
+            "approved": False,
+            "confirmation_token": pending["pending_action"]["confirmation_token"],
+        },
     )
-    assert retry.status_code == 400
+    if endpoint.endswith("/stream"):
+        retry_error = _parse_sse_events(retry.text)[-1]
+        assert retry_error["data"]["data"]["code"] == "stale_pending_action"
+    else:
+        assert retry.status_code == 409
 
 
 @pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
@@ -2599,7 +2810,7 @@ def test_chat_confirm_rejection_timeout_returns_recorded_fallback(tmp_path, monk
 
     response = client.post(
         endpoint,
-        json={"conversation_id": pending["conversation_id"], "approved": False},
+        json={"conversation_id": pending["conversation_id"], "approved": False, "confirmation_token": pending["pending_action"]["confirmation_token"]},
     )
 
     if endpoint.endswith("/stream"):
@@ -2647,7 +2858,7 @@ def test_chat_confirm_timeout_before_result_sink_keeps_pending(tmp_path, monkeyp
     monkeypatch.setattr(api_module, "resume_after_confirm", late_result)
     response = client.post(
         endpoint,
-        json={"conversation_id": pending["conversation_id"], "approved": True},
+        json={"conversation_id": pending["conversation_id"], "approved": True, "confirmation_token": pending["pending_action"]["confirmation_token"]},
     )
     time.sleep(0.25)
 
@@ -2689,7 +2900,7 @@ def test_chat_confirm_add_note_returns_saved_record_summary(tmp_path):
 
     response = client.post(
         "/api/chat/confirm",
-        json={"conversation_id": pending["conversation_id"], "approved": True},
+        json={"conversation_id": pending["conversation_id"], "approved": True, "confirmation_token": pending["pending_action"]["confirmation_token"]},
     )
 
     assert response.status_code == 200
@@ -2745,7 +2956,7 @@ def test_chat_confirm_create_application_continues_to_review_note_card(tmp_path)
 
     response = client.post(
         "/api/chat/confirm",
-        json={"conversation_id": pending["conversation_id"], "approved": True},
+        json={"conversation_id": pending["conversation_id"], "approved": True, "confirmation_token": pending["pending_action"]["confirmation_token"]},
     )
 
     assert response.status_code == 200
@@ -2788,7 +2999,7 @@ def test_chat_confirm_replays_reasoning_content_for_pending_tool(tmp_path):
 
     response = client.post(
         "/api/chat/confirm",
-        json={"conversation_id": pending["conversation_id"], "approved": True},
+        json={"conversation_id": pending["conversation_id"], "approved": True, "confirmation_token": pending["pending_action"]["confirmation_token"]},
     )
 
     assert response.status_code == 200
@@ -2832,7 +3043,7 @@ def test_chat_confirm_keeps_application_context_for_model(tmp_path):
 
     response = client.post(
         "/api/chat/confirm",
-        json={"conversation_id": pending["conversation_id"], "approved": True},
+        json={"conversation_id": pending["conversation_id"], "approved": True, "confirmation_token": pending["pending_action"]["confirmation_token"]},
     )
 
     assert response.status_code == 200
@@ -2871,7 +3082,7 @@ def test_chat_confirm_resumes_pending_write_from_langgraph_checkpoint(tmp_path):
     reloaded_client = TestClient(create_app(data_dir=tmp_path, chat_model=second_model))
     response = reloaded_client.post(
         "/api/chat/confirm",
-        json={"conversation_id": pending["conversation_id"], "approved": True},
+        json={"conversation_id": pending["conversation_id"], "approved": True, "confirmation_token": pending["pending_action"]["confirmation_token"]},
     )
 
     assert response.status_code == 200
@@ -2941,7 +3152,7 @@ def test_chat_confirm_clears_persisted_pending_action(tmp_path):
 
     response = client.post(
         "/api/chat/confirm",
-        json={"conversation_id": pending["conversation_id"], "approved": True},
+        json={"conversation_id": pending["conversation_id"], "approved": True, "confirmation_token": pending["pending_action"]["confirmation_token"]},
     )
 
     assert response.status_code == 200
@@ -2990,7 +3201,7 @@ def test_chat_confirm_atomically_replaces_chained_pending_write(tmp_path, monkey
 
     response = client.post(
         "/api/chat/confirm",
-        json={"conversation_id": pending["conversation_id"], "approved": True},
+        json={"conversation_id": pending["conversation_id"], "approved": True, "confirmation_token": pending["pending_action"]["confirmation_token"]},
     )
 
     assert response.status_code == 200
@@ -3048,21 +3259,28 @@ def test_chat_confirm_chained_pending_cas_loss_has_no_partial_history(
         "newer",
     )
 
-    def lose_transition(self, conversation_id, pending_action, messages):
+    def lose_transition(
+        self,
+        conversation_id,
+        expected_generation,
+        messages,
+        *,
+        pending=None,
+        clarification=None,
+    ):
         self.set_pending_action(conversation_id, newer)
         self.set_pending_clarification(conversation_id, newer, "newer question")
-        return False
+        return None
 
     monkeypatch.setattr(
         ChatRepository,
-        "persist_chained_confirmation_if_empty",
+        "persist_confirmation_continuation",
         lose_transition,
-        raising=False,
     )
 
     response = client.post(
         endpoint,
-        json={"conversation_id": pending["conversation_id"], "approved": True},
+        json={"conversation_id": pending["conversation_id"], "approved": True, "confirmation_token": pending["pending_action"]["confirmation_token"]},
     )
 
     if endpoint.endswith("/stream"):
@@ -3109,6 +3327,22 @@ def test_chat_undo_does_not_clear_a_newer_confirmed_write(tmp_path, monkeypatch)
     assert repo.get_last_write_undo(conversation.id) == newer
 
 
+@pytest.mark.parametrize("conversation_id", [None, 0, -1, "1", 1.5, True, {}, []])
+def test_chat_undo_rejects_invalid_conversation_id_without_server_error(
+    tmp_path,
+    conversation_id,
+):
+    client = TestClient(create_app(data_dir=tmp_path), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/chat/undo-last-write",
+        json={"conversation_id": conversation_id},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "conversation_id must be a positive integer"
+
+
 def test_chat_auto_approve_executes_write_without_pending(tmp_path):
     save_config(tmp_path, Config(api_key="sk-test", chat_auto_approve_writes=True))
     app_client = TestClient(create_app(data_dir=tmp_path))
@@ -3136,6 +3370,204 @@ def test_chat_auto_approve_executes_write_without_pending(tmp_path):
 
     assert response.status_code == 200
     assert response.json()["type"] == "message"
+    assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
+
+
+def test_pending_action_confirmation_token_is_opaque_and_stable_across_reload(tmp_path):
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="stable-token",
+                        name="update_application_status",
+                        args=json.dumps({"id": 1, "status": "offer"}),
+                    )
+                ]
+            )
+        ]
+    )
+    _, client, _, pending = _create_status_confirmation(tmp_path, model)
+
+    token = pending["pending_action"]["confirmation_token"]
+    reloaded = client.get("/api/chat/conversations").json()[0]["pending_action"]
+
+    assert re.fullmatch(r"[0-9a-f]{64}", token)
+    assert reloaded["confirmation_token"] == token
+    assert "update_application_status" not in token
+
+
+@pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
+def test_chat_confirm_rejects_review_token_after_pending_replacement(
+    tmp_path,
+    endpoint,
+):
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="reviewed-write",
+                        name="update_application_status",
+                        args=json.dumps({"id": 1, "status": "offer"}),
+                    )
+                ]
+            ),
+            Assistant(content="must not run"),
+        ]
+    )
+    app_client, client, application, pending = _create_status_confirmation(tmp_path, model)
+    reviewed_token = pending["pending_action"]["confirmation_token"]
+    replacement = PendingAction(
+        "replacement-write",
+        "update_application_status",
+        json.dumps({"id": application["id"], "status": "closed", "closed_reason": "new"}),
+        "replacement",
+    )
+    ChatRepository(session_factory_for_data_dir(tmp_path)).set_pending_action(
+        pending["conversation_id"], replacement
+    )
+
+    response = client.post(
+        endpoint,
+        json={
+            "conversation_id": pending["conversation_id"],
+            "approved": True,
+            "confirmation_token": reviewed_token,
+        },
+    )
+
+    if endpoint.endswith("/stream"):
+        error = _parse_sse_events(response.text)[-1]
+        assert error["event"] == "error"
+        assert error["data"]["data"]["code"] == "stale_pending_action"
+    else:
+        assert response.status_code == 409
+    current = client.get("/api/chat/conversations").json()[0]
+    assert current["pending_action"]["args"]["status"] == "closed"
+    assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "interview"
+    assert len(model.turns) == 1
+
+
+@pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
+def test_chat_confirm_discards_followup_when_conversation_generation_changes(
+    tmp_path,
+    endpoint,
+):
+    state: dict[str, object] = {}
+
+    class ConcurrentActivityModel:
+        calls = 0
+
+        def complete(self, messages, tools):
+            self.calls += 1
+            if self.calls == 1:
+                return Assistant(
+                    tool_calls=[
+                        ToolCall(
+                            id="generation-first",
+                            name="update_application_status",
+                            args=json.dumps({"id": 1, "status": "offer"}),
+                        )
+                    ]
+                )
+            repo = state["repo"]
+            assert isinstance(repo, ChatRepository)
+            repo.append_message(int(state["conversation_id"]), "user", content="newer activity")
+            return Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="stale-followup",
+                        name="update_application_status",
+                        args=json.dumps({"id": 1, "status": "closed"}),
+                    )
+                ]
+            )
+
+    app_client, client, application, pending = _create_status_confirmation(
+        tmp_path, ConcurrentActivityModel()
+    )
+    state.update(
+        repo=ChatRepository(session_factory_for_data_dir(tmp_path)),
+        conversation_id=pending["conversation_id"],
+    )
+
+    response = client.post(
+        endpoint,
+        json={
+            "conversation_id": pending["conversation_id"],
+            "approved": True,
+            "confirmation_token": pending["pending_action"]["confirmation_token"],
+        },
+    )
+
+    if endpoint.endswith("/stream"):
+        error = _parse_sse_events(response.text)[-1]
+        assert error["event"] == "error"
+        assert error["data"]["data"]["code"] == "stale_pending_action"
+    else:
+        assert response.status_code == 409
+    conversation = client.get("/api/chat/conversations").json()[0]
+    assert conversation["pending_action"] is None
+    stored = client.get(f"/api/chat/conversations/{pending['conversation_id']}").json()
+    assert sum("stale-followup" in str(message.get("tool_calls", "")) for message in stored) == 0
+    assert [message["content"] for message in stored].count("newer activity") == 1
+    assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
+
+
+@pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
+def test_chat_confirm_discards_fallback_when_conversation_generation_changes(
+    tmp_path,
+    endpoint,
+):
+    state: dict[str, object] = {}
+
+    class ConcurrentFailureModel:
+        calls = 0
+
+        def complete(self, messages, tools):
+            self.calls += 1
+            if self.calls == 1:
+                return Assistant(
+                    tool_calls=[
+                        ToolCall(
+                            id="generation-fallback",
+                            name="update_application_status",
+                            args=json.dumps({"id": 1, "status": "offer"}),
+                        )
+                    ]
+                )
+            repo = state["repo"]
+            assert isinstance(repo, ChatRepository)
+            repo.append_message(int(state["conversation_id"]), "user", content="newer activity")
+            raise RuntimeError("provider failed after concurrent activity")
+
+    app_client, client, application, pending = _create_status_confirmation(
+        tmp_path, ConcurrentFailureModel()
+    )
+    state.update(
+        repo=ChatRepository(session_factory_for_data_dir(tmp_path)),
+        conversation_id=pending["conversation_id"],
+    )
+
+    response = client.post(
+        endpoint,
+        json={
+            "conversation_id": pending["conversation_id"],
+            "approved": True,
+            "confirmation_token": pending["pending_action"]["confirmation_token"],
+        },
+    )
+
+    if endpoint.endswith("/stream"):
+        error = _parse_sse_events(response.text)[-1]
+        assert error["event"] == "error"
+        assert error["data"]["data"]["code"] == "stale_pending_action"
+    else:
+        assert response.status_code == 409
+    stored = client.get(f"/api/chat/conversations/{pending['conversation_id']}").json()
+    assert [message["content"] for message in stored].count("newer activity") == 1
+    assert all("写入已完成" not in message["content"] for message in stored)
     assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
 
 

@@ -27,8 +27,8 @@ def test_resolve_pending_confirmation_atomically_persists_result_and_clears_stat
         undo,
     )
 
-    assert resolved is True
-    assert replayed is False
+    assert resolved is not None
+    assert replayed is None
     assert repo.get_pending_action(conversation.id) is None
     assert repo.get_pending_clarification(conversation.id) is None
     assert repo.get_last_write_undo(conversation.id) == undo
@@ -50,7 +50,7 @@ def test_resolve_pending_confirmation_cas_does_not_clear_newer_pending(tmp_path)
         {},
     )
 
-    assert resolved is False
+    assert resolved is None
     assert repo.get_pending_action(conversation.id) == newer
     assert repo.list_messages(conversation.id) == []
 
@@ -70,7 +70,7 @@ def test_resolve_pending_confirmation_preserves_existing_undo(tmp_path):
         None,
     )
 
-    assert resolved is True
+    assert resolved is not None
     assert repo.get_last_write_undo(conversation.id) == previous
 
 
@@ -88,120 +88,8 @@ def test_resolve_pending_confirmation_clears_existing_undo(tmp_path):
         {},
     )
 
-    assert resolved is True
+    assert resolved is not None
     assert repo.get_last_write_undo(conversation.id) is None
-
-
-def test_set_pending_action_if_empty_does_not_overwrite_newer_pending(tmp_path):
-    repo = ChatRepository(init_database(tmp_path / "data.db"))
-    conversation = repo.create_conversation("confirm")
-    newer = PendingAction("write-2", "update_application_status", '{"id":2}', "second")
-    chained = PendingAction("write-3", "update_application_status", '{"id":3}', "third")
-    repo.set_pending_action(conversation.id, newer)
-
-    replaced = repo.set_pending_action_if_empty(conversation.id, chained)
-
-    assert replaced is False
-    assert repo.get_pending_action(conversation.id) == newer
-
-
-def test_set_pending_action_if_empty_sets_chained_pending(tmp_path):
-    repo = ChatRepository(init_database(tmp_path / "data.db"))
-    conversation = repo.create_conversation("confirm")
-    chained = PendingAction("write-3", "update_application_status", '{"id":3}', "third")
-
-    replaced = repo.set_pending_action_if_empty(conversation.id, chained)
-
-    assert replaced is True
-    assert repo.get_pending_action(conversation.id) == chained
-
-
-def test_persist_chained_confirmation_if_empty_commits_messages_and_state_together(tmp_path):
-    repo = ChatRepository(init_database(tmp_path / "data.db"))
-    conversation = repo.create_conversation("confirm")
-    chained = PendingAction("write-3", "update_application_status", '{"id":3}', "third")
-    messages = [
-        {
-            "role": "assistant",
-            "content": "next write",
-            "tool_calls": '[{"id":"write-3"}]',
-            "tool_call_id": "",
-            "provider_blocks": "",
-        }
-    ]
-
-    persisted = repo.persist_chained_confirmation_if_empty(
-        conversation.id,
-        chained,
-        messages,
-    )
-
-    assert persisted is True
-    assert repo.get_pending_action(conversation.id) == chained
-    stored = repo.list_messages(conversation.id)
-    assert [(message.role, message.content, message.tool_calls) for message in stored] == [
-        ("assistant", "next write", '[{"id":"write-3"}]')
-    ]
-
-
-def test_persist_chained_confirmation_if_empty_loses_without_partial_changes(tmp_path):
-    repo = ChatRepository(init_database(tmp_path / "data.db"))
-    conversation = repo.create_conversation("confirm")
-    newer = PendingAction("write-2", "update_application_status", '{"id":2}', "second")
-    chained = PendingAction("write-3", "update_application_status", '{"id":3}', "third")
-    repo.set_pending_action(conversation.id, newer)
-    repo.set_pending_clarification(conversation.id, newer, "newer question")
-
-    persisted = repo.persist_chained_confirmation_if_empty(
-        conversation.id,
-        chained,
-        [
-            {
-                "role": "assistant",
-                "content": "abandoned write",
-                "tool_calls": '[{"id":"write-3"}]',
-                "tool_call_id": "",
-                "provider_blocks": "",
-            }
-        ],
-    )
-
-    assert persisted is False
-    assert repo.get_pending_action(conversation.id) == newer
-    assert repo.get_pending_clarification(conversation.id) == (newer, "newer question")
-    assert repo.list_messages(conversation.id) == []
-
-
-def test_persist_confirmation_clarification_if_empty_is_atomic(tmp_path):
-    repo = ChatRepository(init_database(tmp_path / "data.db"))
-    conversation = repo.create_conversation("confirm")
-    clarification = PendingAction("write-3", "create_application", "{}", "create")
-    messages = [
-        {
-            "role": "assistant",
-            "content": "which company?",
-            "tool_calls": "",
-            "tool_call_id": "",
-            "provider_blocks": "",
-        }
-    ]
-
-    persisted = repo.persist_confirmation_clarification_if_empty(
-        conversation.id,
-        clarification,
-        "which company?",
-        messages,
-    )
-
-    assert persisted is True
-    assert repo.get_pending_action(conversation.id) is None
-    assert repo.get_pending_clarification(conversation.id) == (
-        clarification,
-        "which company?",
-    )
-    assert [message.content for message in repo.list_messages(conversation.id)] == [
-        "which company?"
-    ]
 
 
 def test_clear_last_write_undo_if_matches_preserves_newer_undo(tmp_path):
@@ -217,3 +105,84 @@ def test_clear_last_write_undo_if_matches_preserves_newer_undo(tmp_path):
     assert stale_clear is False
     assert matching_clear is True
     assert repo.get_last_write_undo(conversation.id) is None
+
+
+def test_confirmation_continuation_rejects_stale_conversation_generation(tmp_path):
+    repo = ChatRepository(init_database(tmp_path / "data.db"))
+    conversation = repo.create_conversation("confirm")
+    pending = PendingAction("write-1", "update_application_status", '{"id":1}', "first")
+    repo.set_pending_action(conversation.id, pending)
+    generation = repo.resolve_pending_confirmation(
+        conversation.id,
+        pending,
+        Message(role="tool", content='{"ok":true}', tool_call_id="write-1"),
+        {"kind": "undo"},
+    )
+    repo.append_message(conversation.id, "user", content="newer activity")
+    stale_pending = PendingAction("write-2", "update_application_status", '{"id":2}', "old")
+
+    persisted = repo.persist_confirmation_continuation(
+        conversation.id,
+        generation,
+        [
+            {
+                "role": "assistant",
+                "content": "stale continuation",
+                "tool_calls": '[{"id":"write-2"}]',
+                "tool_call_id": "",
+                "provider_blocks": "",
+            }
+        ],
+        pending=stale_pending,
+    )
+
+    assert persisted is None
+    assert repo.get_pending_action(conversation.id) is None
+    assert [message.content for message in repo.list_messages(conversation.id)] == [
+        '{"ok":true}',
+        "newer activity",
+    ]
+
+
+def test_confirmation_continuation_generation_is_consumed_once(tmp_path):
+    repo = ChatRepository(init_database(tmp_path / "data.db"))
+    conversation = repo.create_conversation("confirm")
+    pending = PendingAction("write-1", "update_application_status", '{"id":1}', "first")
+    chained = PendingAction("write-2", "update_application_status", '{"id":2}', "second")
+    repo.set_pending_action(conversation.id, pending)
+    generation = repo.resolve_pending_confirmation(
+        conversation.id,
+        pending,
+        Message(role="tool", content='{"ok":true}', tool_call_id="write-1"),
+        {"kind": "undo"},
+    )
+    messages = [
+        {
+            "role": "assistant",
+            "content": "next",
+            "tool_calls": '[{"id":"write-2"}]',
+            "tool_call_id": "",
+            "provider_blocks": "",
+        }
+    ]
+
+    first = repo.persist_confirmation_continuation(
+        conversation.id,
+        generation,
+        messages,
+        pending=chained,
+    )
+    replay = repo.persist_confirmation_continuation(
+        conversation.id,
+        generation,
+        messages,
+        pending=chained,
+    )
+
+    assert first is not None
+    assert replay is None
+    assert repo.get_pending_action(conversation.id) == chained
+    assert [message.content for message in repo.list_messages(conversation.id)] == [
+        '{"ok":true}',
+        "next",
+    ]

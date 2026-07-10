@@ -132,114 +132,6 @@ class ChatRepository:
             )
             session.commit()
 
-    def set_pending_action_if_empty(
-        self,
-        conversation_id: int,
-        pending: PendingAction,
-    ) -> bool:
-        with self._session_factory() as session:
-            result = session.execute(
-                update(Conversation)
-                .where(Conversation.id == conversation_id)
-                .where(Conversation.pending_tool_name == "")
-                .values(
-                    pending_tool_call_id=pending.tool_call_id,
-                    pending_tool_name=pending.tool_name,
-                    pending_args=pending.args,
-                    pending_human=pending.human,
-                    updated_at=datetime.now(timezone.utc),
-                )
-            )
-            session.commit()
-            return getattr(result, "rowcount", 0) == 1
-
-    def persist_chained_confirmation_if_empty(
-        self,
-        conversation_id: int,
-        pending: PendingAction,
-        messages: list[dict[str, str]],
-    ) -> bool:
-        now = datetime.now(timezone.utc)
-        with self._session_factory() as session:
-            result = session.execute(
-                update(Conversation)
-                .where(Conversation.id == conversation_id)
-                .where(Conversation.pending_tool_name == "")
-                .where(Conversation.clarification_tool_name == "")
-                .values(
-                    pending_tool_call_id=pending.tool_call_id,
-                    pending_tool_name=pending.tool_name,
-                    pending_args=pending.args,
-                    pending_human=pending.human,
-                    clarification_tool_call_id="",
-                    clarification_tool_name="",
-                    clarification_args="",
-                    clarification_human="",
-                    clarification_question="",
-                    updated_at=now,
-                )
-            )
-            if getattr(result, "rowcount", 0) != 1:
-                session.rollback()
-                return False
-            for message in messages:
-                session.add(
-                    ChatMessage(
-                        conversation_id=conversation_id,
-                        role=message.get("role", ""),
-                        content=message.get("content", ""),
-                        tool_calls=message.get("tool_calls", ""),
-                        tool_call_id=message.get("tool_call_id", ""),
-                        provider_blocks=message.get("provider_blocks", ""),
-                    )
-                )
-            session.commit()
-            return True
-
-    def persist_confirmation_clarification_if_empty(
-        self,
-        conversation_id: int,
-        pending: PendingAction,
-        question: str,
-        messages: list[dict[str, str]],
-    ) -> bool:
-        now = datetime.now(timezone.utc)
-        with self._session_factory() as session:
-            result = session.execute(
-                update(Conversation)
-                .where(Conversation.id == conversation_id)
-                .where(Conversation.pending_tool_name == "")
-                .where(Conversation.clarification_tool_name == "")
-                .values(
-                    pending_tool_call_id="",
-                    pending_tool_name="",
-                    pending_args="",
-                    pending_human="",
-                    clarification_tool_call_id=pending.tool_call_id,
-                    clarification_tool_name=pending.tool_name,
-                    clarification_args=pending.args,
-                    clarification_human=pending.human,
-                    clarification_question=question,
-                    updated_at=now,
-                )
-            )
-            if getattr(result, "rowcount", 0) != 1:
-                session.rollback()
-                return False
-            for message in messages:
-                session.add(
-                    ChatMessage(
-                        conversation_id=conversation_id,
-                        role=message.get("role", ""),
-                        content=message.get("content", ""),
-                        tool_calls=message.get("tool_calls", ""),
-                        tool_call_id=message.get("tool_call_id", ""),
-                        provider_blocks=message.get("provider_blocks", ""),
-                    )
-                )
-            session.commit()
-            return True
-
     def clear_pending_action(self, conversation_id: int) -> None:
         with self._session_factory() as session:
             session.execute(
@@ -261,7 +153,7 @@ class ChatRepository:
         expected: PendingAction,
         tool_message: Message,
         undo: dict[str, Any] | None,
-    ) -> bool:
+    ) -> datetime | None:
         """Persist a result with tri-state undo: None preserves, empty clears, non-empty replaces."""
         now = datetime.now(timezone.utc)
         values: dict[str, Any] = {
@@ -289,7 +181,7 @@ class ChatRepository:
             )
             if getattr(result, "rowcount", 0) != 1:
                 session.rollback()
-                return False
+                return None
             session.add(
                 ChatMessage(
                     conversation_id=conversation_id,
@@ -299,7 +191,73 @@ class ChatRepository:
                 )
             )
             session.commit()
-            return True
+            return now
+
+    def persist_confirmation_continuation(
+        self,
+        conversation_id: int,
+        expected_generation: datetime | None,
+        messages: list[dict[str, str]],
+        *,
+        pending: PendingAction | None = None,
+        clarification: tuple[PendingAction, str] | None = None,
+    ) -> datetime | None:
+        if expected_generation is None:
+            return None
+        now = datetime.now(timezone.utc)
+        values: dict[str, Any] = {"updated_at": now}
+        if pending is not None:
+            values.update(
+                {
+                    "pending_tool_call_id": pending.tool_call_id,
+                    "pending_tool_name": pending.tool_name,
+                    "pending_args": pending.args,
+                    "pending_human": pending.human,
+                    "clarification_tool_call_id": "",
+                    "clarification_tool_name": "",
+                    "clarification_args": "",
+                    "clarification_human": "",
+                    "clarification_question": "",
+                }
+            )
+        elif clarification is not None:
+            action, question = clarification
+            values.update(
+                {
+                    "pending_tool_call_id": "",
+                    "pending_tool_name": "",
+                    "pending_args": "",
+                    "pending_human": "",
+                    "clarification_tool_call_id": action.tool_call_id,
+                    "clarification_tool_name": action.tool_name,
+                    "clarification_args": action.args,
+                    "clarification_human": action.human,
+                    "clarification_question": question,
+                }
+            )
+        with self._session_factory() as session:
+            result = session.execute(
+                update(Conversation)
+                .where(Conversation.id == conversation_id)
+                .where(Conversation.updated_at == expected_generation)
+                .values(**values)
+            )
+            if getattr(result, "rowcount", 0) != 1:
+                session.rollback()
+                return None
+            for message in messages:
+                session.add(
+                    ChatMessage(
+                        conversation_id=conversation_id,
+                        role=message.get("role", ""),
+                        content=message.get("content", ""),
+                        tool_calls=message.get("tool_calls", ""),
+                        tool_call_id=message.get("tool_call_id", ""),
+                        provider_blocks=message.get("provider_blocks", ""),
+                    )
+                )
+            session.commit()
+            return now
 
     def get_pending_clarification(self, conversation_id: int) -> tuple[PendingAction, str] | None:
         with self._session_factory() as session:

@@ -3,6 +3,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from datetime import datetime, timedelta, timezone
 from html import unescape
+from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
 from queue import Empty, Queue
@@ -1392,7 +1393,7 @@ def create_app(
         confirmation = _confirmation_input(payload)
         if isinstance(confirmation, JSONResponse):
             return confirmation
-        approved, edited_args, rejection_feedback = confirmation
+        approved, edited_args, rejection_feedback, confirmation_token = confirmation
         conversation_id = _confirmation_conversation_id(payload)
         if isinstance(conversation_id, JSONResponse):
             return conversation_id
@@ -1407,7 +1408,9 @@ def create_app(
             return error_response(404, "conversation not found")
         pending = chat.get_pending_action(conversation_id)
         if pending is None:
-            return error_response(400, "no pending action to confirm")
+            return error_response(409, "待确认操作已过期，请刷新对话后重试。")
+        if not compare_digest(confirmation_token, _confirmation_token(pending)):
+            return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
         registry = offerpilot_tool_registry(
             applications,
             events,
@@ -1433,6 +1436,23 @@ def create_app(
                 undo_seed,
             )
         )
+        confirmation_attempted = Event()
+        confirmation_cancelled = Event()
+        confirmation_attempt_lock = Lock()
+
+        def start_confirmation_attempt(action: PendingAction) -> None:
+            with confirmation_attempt_lock:
+                current = chat.get_pending_action(conversation_id)
+                if (
+                    confirmation_cancelled.is_set()
+                    or current is None
+                    or not compare_digest(confirmation_token, _confirmation_token(current))
+                ):
+                    raise StalePendingActionError(
+                        "stale pending action: action changed before handler attempt"
+                    )
+                confirmation_attempted.set()
+
         try:
             added, reply, new_pending = _run_chat_agent_with_timeout(
                 lambda: resume_after_confirm(
@@ -1451,15 +1471,28 @@ def create_app(
                     checkpoint_path=_agent_checkpoint_path(resolved_data_dir),
                     thread_id=_agent_thread_id(conversation_id),
                     confirmation_result_sink=confirmation_result_sink,
+                    confirmation_attempt_sink=start_confirmation_attempt,
+                    cancel_check=confirmation_cancelled.is_set,
                 )
             )
         except ChatAgentTimedOut:
-            cancel_confirmation_result()
             if confirmed_outcome.get("cas_lost"):
                 return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
             fallback = _persist_confirmation_fallback(chat, conversation_id, confirmed_outcome)
             if fallback is not None:
+                confirmation_cancelled.set()
                 return JSONResponse(fallback)
+            if confirmed_outcome.get("cas_lost"):
+                return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
+            with confirmation_attempt_lock:
+                attempt_in_progress = confirmation_attempted.is_set()
+                if not attempt_in_progress:
+                    confirmation_cancelled.set()
+            if attempt_in_progress:
+                return error_response(
+                    409, "确认操作仍在后台执行，请刷新对话查看结果，不要重复提交。"
+                )
+            cancel_confirmation_result()
             return error_response(504, "这次确认处理时间过长，已停止。请重试或取消这次写入。")
         except PendingActionValidationError as exc:
             return error_response(422, f"确认参数无效：{exc}")
@@ -1471,16 +1504,17 @@ def create_app(
             fallback = _persist_confirmation_fallback(chat, conversation_id, confirmed_outcome)
             if fallback is not None:
                 return JSONResponse(fallback)
+            if confirmed_outcome.get("cas_lost"):
+                return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
             return _ai_provider_error(exc, resolved_data_dir)
         if confirmed_outcome.get("cas_lost"):
             return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
         added, forced_reply = _with_write_error_followup(added)
         persisted_added = _without_persisted_confirmation_result(added, confirmed_outcome)
         reply = forced_reply or _user_facing_assistant_content(reply)
+        forced_pending: PendingAction | None = None
         if forced_reply and new_pending is None:
             forced_pending = _pending_action_from_added_write_call(added)
-            if forced_pending is not None:
-                chat.set_pending_clarification(conversation_id, forced_pending, forced_reply)
         if new_pending is not None:
             missing_question = _pending_action_missing_question(new_pending, applications)
             if missing_question:
@@ -1489,11 +1523,12 @@ def create_app(
                         *persisted_added,
                         Message(role="assistant", content=missing_question),
                     ]
-                    if not chat.persist_confirmation_clarification_if_empty(
+                    if not _persist_confirmation_continuation(
+                        chat,
                         conversation_id,
-                        new_pending,
-                        missing_question,
-                        _persistable_ai_messages(clarification_messages),
+                        confirmed_outcome,
+                        clarification_messages,
+                        clarification=(new_pending, missing_question),
                     ):
                         return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
                 else:
@@ -1509,10 +1544,12 @@ def create_app(
                     }
                 )
             if confirmed_outcome:
-                if not chat.persist_chained_confirmation_if_empty(
+                if not _persist_confirmation_continuation(
+                    chat,
                     conversation_id,
-                    new_pending,
-                    _persistable_ai_messages(persisted_added),
+                    confirmed_outcome,
+                    persisted_added,
+                    pending=new_pending,
                 ):
                     return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
             else:
@@ -1526,11 +1563,27 @@ def create_app(
                     "pending_action": _pending_action_json(new_pending, applications),
                 }
             )
-        _persist_ai_messages(chat, conversation_id, persisted_added)
-        if not confirmed_outcome:
+        if confirmed_outcome:
+            clarification = (
+                (forced_pending, forced_reply)
+                if forced_pending is not None and forced_reply
+                else None
+            )
+            if not _persist_confirmation_continuation(
+                chat,
+                conversation_id,
+                confirmed_outcome,
+                persisted_added,
+                clarification=clarification,
+            ):
+                return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
+        else:
+            _persist_ai_messages(chat, conversation_id, persisted_added)
             chat.clear_pending_action(conversation_id)
-        if not forced_reply and not confirmed_outcome:
-            chat.clear_pending_clarification(conversation_id)
+            if forced_pending is not None and forced_reply:
+                chat.set_pending_clarification(conversation_id, forced_pending, forced_reply)
+            elif not forced_reply:
+                chat.clear_pending_clarification(conversation_id)
         undo = (
             dict(confirmed_outcome.get("undo") or {})
             if confirmed_outcome
@@ -1556,9 +1609,9 @@ def create_app(
 
     @app.post("/api/chat/undo-last-write")
     def undo_last_write(payload: dict[str, Any] = Body(...)) -> JSONResponse:
-        conversation_id = int(payload.get("conversation_id") or 0)
-        if conversation_id == 0:
-            return error_response(400, "conversation_id is required")
+        conversation_id = _confirmation_conversation_id(payload)
+        if isinstance(conversation_id, JSONResponse):
+            return conversation_id
         if chat.get_conversation(conversation_id) is None:
             return error_response(404, "conversation not found")
         undo = chat.get_last_write_undo(conversation_id)
@@ -1581,7 +1634,7 @@ def create_app(
         confirmation = _confirmation_input(payload)
         if isinstance(confirmation, JSONResponse):
             return confirmation
-        approved, edited_args, rejection_feedback = confirmation
+        approved, edited_args, rejection_feedback, confirmation_token = confirmation
         conversation_id = _confirmation_conversation_id(payload)
         if isinstance(conversation_id, JSONResponse):
             return conversation_id
@@ -1594,9 +1647,40 @@ def create_app(
         stored = chat.list_messages(conversation_id)
         if not stored:
             return error_response(404, "conversation not found")
+        run = SseRun(
+            run_id=str(uuid4()),
+            conversation_id=conversation_id,
+            context_type=str(conversation.context_type or "workspace"),
+            context_ref=str(conversation.context_ref or ""),
+            mode=str(conversation.mode or "general"),
+        )
+
+        def emit(event: str, data: dict[str, Any] | None = None) -> str:
+            envelope = run.envelope(event, data)
+            return format_sse(event, f"{run.run_id}:{envelope['seq']}", envelope)
+
+        def stale_response() -> StreamingResponse:
+
+            def stale_stream() -> Any:
+                yield emit(
+                    "error",
+                    {
+                        "code": "stale_pending_action",
+                        "message": "待确认操作已被更新，请刷新对话后重试。",
+                        "retryable": True,
+                        "degraded": False,
+                    },
+                )
+
+            return StreamingResponse(
+                stale_stream(), media_type="text/event-stream; charset=utf-8", headers=sse_headers()
+            )
+
         pending = chat.get_pending_action(conversation_id)
         if pending is None:
-            return error_response(400, "no pending action to confirm")
+            return stale_response()
+        if not compare_digest(confirmation_token, _confirmation_token(pending)):
+            return stale_response()
 
         registry = offerpilot_tool_registry(
             applications,
@@ -1614,18 +1698,6 @@ def create_app(
         except ValueError as exc:
             return error_response(422, f"invalid confirmation edits: {exc}")
 
-        run = SseRun(
-            run_id=str(uuid4()),
-            conversation_id=conversation_id,
-            context_type=str(conversation.context_type or "workspace"),
-            context_ref=str(conversation.context_ref or ""),
-            mode=str(conversation.mode or "general"),
-        )
-
-        def emit(event: str, data: dict[str, Any] | None = None) -> str:
-            envelope = run.envelope(event, data)
-            return format_sse(event, f"{run.run_id}:{envelope['seq']}", envelope)
-
         context_message = _chat_context_message(conversation, applications)
         undo_seed = _undo_seed_for_pending(effective_pending, applications) if approved else {}
         confirmed_outcome, confirmation_result_sink, cancel_confirmation_result = (
@@ -1636,6 +1708,22 @@ def create_app(
                 undo_seed,
             )
         )
+        confirmation_attempted = Event()
+        confirmation_cancelled = Event()
+        confirmation_attempt_lock = Lock()
+
+        def start_confirmation_attempt(action: PendingAction) -> None:
+            with confirmation_attempt_lock:
+                current = chat.get_pending_action(conversation_id)
+                if (
+                    confirmation_cancelled.is_set()
+                    or current is None
+                    or not compare_digest(confirmation_token, _confirmation_token(current))
+                ):
+                    raise StalePendingActionError(
+                        "stale pending action: action changed before handler attempt"
+                    )
+                confirmation_attempted.set()
 
         def stream() -> Any:
             yield emit(
@@ -1669,8 +1757,9 @@ def create_app(
                         checkpoint_path=_agent_checkpoint_path(resolved_data_dir),
                         thread_id=_agent_thread_id(conversation_id),
                         event_sink=event_sink,
-                        cancel_check=cancel_check,
+                        cancel_check=lambda: confirmation_cancelled.is_set() or cancel_check(),
                         confirmation_result_sink=confirmation_result_sink,
+                        confirmation_attempt_sink=start_confirmation_attempt,
                     ),
                     emit,
                 )
@@ -1678,7 +1767,6 @@ def create_app(
                 cancel_confirmation_result()
                 return
             except ChatAgentTimedOut:
-                cancel_confirmation_result()
                 if confirmed_outcome.get("cas_lost"):
                     yield emit(
                         "error",
@@ -1695,6 +1783,33 @@ def create_app(
                     yield emit("assistant_message", {"message": fallback["message"]})
                     yield emit("completed", {"response": fallback, "persisted": True})
                     return
+                if confirmed_outcome.get("cas_lost"):
+                    yield emit(
+                        "error",
+                        {
+                            "code": "stale_pending_action",
+                            "message": "待确认操作已被更新，请刷新对话后重试。",
+                            "retryable": True,
+                            "degraded": False,
+                        },
+                    )
+                    return
+                with confirmation_attempt_lock:
+                    attempt_in_progress = confirmation_attempted.is_set()
+                    if not attempt_in_progress:
+                        confirmation_cancelled.set()
+                if attempt_in_progress:
+                    yield emit(
+                        "error",
+                        {
+                            "code": "confirmation_in_progress",
+                            "message": "确认操作仍在后台执行，请刷新对话查看结果，不要重复提交。",
+                            "retryable": False,
+                            "degraded": False,
+                        },
+                    )
+                    return
+                cancel_confirmation_result()
                 yield emit(
                     "error",
                     {
@@ -1744,6 +1859,17 @@ def create_app(
                     yield emit("assistant_message", {"message": fallback["message"]})
                     yield emit("completed", {"response": fallback, "persisted": True})
                     return
+                if confirmed_outcome.get("cas_lost"):
+                    yield emit(
+                        "error",
+                        {
+                            "code": "stale_pending_action",
+                            "message": "待确认操作已被更新，请刷新对话后重试。",
+                            "retryable": True,
+                            "degraded": False,
+                        },
+                    )
+                    return
                 yield emit(
                     "error",
                     {
@@ -1769,10 +1895,9 @@ def create_app(
             added, forced_reply = _with_write_error_followup(added)
             persisted_added = _without_persisted_confirmation_result(added, confirmed_outcome)
             reply = forced_reply or _user_facing_assistant_content(reply)
+            forced_pending: PendingAction | None = None
             if forced_reply and new_pending is None:
                 forced_pending = _pending_action_from_added_write_call(added)
-                if forced_pending is not None:
-                    chat.set_pending_clarification(conversation_id, forced_pending, forced_reply)
             if new_pending is not None:
                 missing_question = _pending_action_missing_question(new_pending, applications)
                 if missing_question:
@@ -1781,11 +1906,12 @@ def create_app(
                             *persisted_added,
                             Message(role="assistant", content=missing_question),
                         ]
-                        if not chat.persist_confirmation_clarification_if_empty(
+                        if not _persist_confirmation_continuation(
+                            chat,
                             conversation_id,
-                            new_pending,
-                            missing_question,
-                            _persistable_ai_messages(clarification_messages),
+                            confirmed_outcome,
+                            clarification_messages,
+                            clarification=(new_pending, missing_question),
                         ):
                             yield emit(
                                 "error",
@@ -1813,10 +1939,12 @@ def create_app(
                     yield emit("completed", {"response": response, "persisted": True})
                     return
                 if confirmed_outcome:
-                    if not chat.persist_chained_confirmation_if_empty(
+                    if not _persist_confirmation_continuation(
+                        chat,
                         conversation_id,
-                        new_pending,
-                        _persistable_ai_messages(persisted_added),
+                        confirmed_outcome,
+                        persisted_added,
+                        pending=new_pending,
                     ):
                         yield emit(
                             "error",
@@ -1842,11 +1970,36 @@ def create_app(
                 yield emit("confirmation_required", {"pending_action": pending_payload})
                 yield emit("completed", {"response": response, "persisted": True})
                 return
-            _persist_ai_messages(chat, conversation_id, persisted_added)
-            if not confirmed_outcome:
+            if confirmed_outcome:
+                clarification = (
+                    (forced_pending, forced_reply)
+                    if forced_pending is not None and forced_reply
+                    else None
+                )
+                if not _persist_confirmation_continuation(
+                    chat,
+                    conversation_id,
+                    confirmed_outcome,
+                    persisted_added,
+                    clarification=clarification,
+                ):
+                    yield emit(
+                        "error",
+                        {
+                            "code": "stale_pending_action",
+                            "message": "待确认操作已被更新，请刷新对话后重试。",
+                            "retryable": True,
+                            "degraded": False,
+                        },
+                    )
+                    return
+            else:
+                _persist_ai_messages(chat, conversation_id, persisted_added)
                 chat.clear_pending_action(conversation_id)
-            if not forced_reply and not confirmed_outcome:
-                chat.clear_pending_clarification(conversation_id)
+                if forced_pending is not None and forced_reply:
+                    chat.set_pending_clarification(conversation_id, forced_pending, forced_reply)
+                elif not forced_reply:
+                    chat.clear_pending_clarification(conversation_id)
             undo = (
                 dict(confirmed_outcome.get("undo") or {})
                 if confirmed_outcome
@@ -2177,10 +2330,16 @@ def error_response(status_code: int, message: str) -> JSONResponse:
 
 def _confirmation_input(
     payload: dict[str, Any],
-) -> tuple[bool, dict[str, Any] | None, str] | JSONResponse:
+) -> tuple[bool, dict[str, Any] | None, str, str] | JSONResponse:
     approved = payload.get("approved")
     if not isinstance(approved, bool):
         return error_response(422, "approved must be a boolean")
+    confirmation_token = payload.get("confirmation_token")
+    if (
+        not isinstance(confirmation_token, str)
+        or re.fullmatch(r"[0-9a-f]{64}", confirmation_token) is None
+    ):
+        return error_response(422, "confirmation_token must be a 64-character lowercase hex string")
 
     has_edited_args = "edited_args" in payload
     has_rejection_feedback = "rejection_feedback" in payload
@@ -2205,7 +2364,7 @@ def _confirmation_input(
         if len(rejection_feedback) > 500:
             return error_response(422, "rejection_feedback must be at most 500 characters")
 
-    return approved, edited_args, rejection_feedback
+    return approved, edited_args, rejection_feedback, confirmation_token
 
 
 def _confirmation_conversation_id(payload: dict[str, Any]) -> int | JSONResponse:
@@ -2457,23 +2616,26 @@ def _confirmation_result_recorder(
             # approved sink call follows a handler attempt; errors are mutation-ambiguous and
             # therefore clear the previous undo fail-closed.
             undo_update = undo if approved else None
-            if not repo.resolve_pending_confirmation(
+            continuation_generation = repo.resolve_pending_confirmation(
                 conversation_id,
                 expected_pending,
                 tool_message,
                 undo_update,
-            ):
+            )
+            if continuation_generation is None:
                 outcome["cas_lost"] = True
                 raise StalePendingActionError(
                     "stale pending action: confirmation result compare-and-set failed"
                 )
+            response_undo = undo if approved else repo.get_last_write_undo(conversation_id) or {}
             outcome.update(
                 {
                     "pending": effective_pending,
                     "approved": approved,
                     "succeeded": succeeded,
                     "tool_call_id": tool_message.tool_call_id,
-                    "undo": undo,
+                    "undo": response_undo,
+                    "continuation_generation": continuation_generation,
                 }
             )
 
@@ -2499,6 +2661,31 @@ def _without_persisted_confirmation_result(
     ]
 
 
+def _persist_confirmation_continuation(
+    repo: ChatRepository,
+    conversation_id: int,
+    outcome: dict[str, Any],
+    messages: list[Message],
+    *,
+    pending: PendingAction | None = None,
+    clarification: tuple[PendingAction, str] | None = None,
+) -> bool:
+    generation = outcome.get("continuation_generation")
+    if not isinstance(generation, datetime):
+        return False
+    next_generation = repo.persist_confirmation_continuation(
+        conversation_id,
+        generation,
+        _persistable_ai_messages(messages),
+        pending=pending,
+        clarification=clarification,
+    )
+    if next_generation is None:
+        return False
+    outcome["continuation_generation"] = next_generation
+    return True
+
+
 def _persist_confirmation_fallback(
     repo: ChatRepository,
     conversation_id: int,
@@ -2515,7 +2702,19 @@ def _persist_confirmation_fallback(
         if approved
         else CHAT_REJECTION_FALLBACK
     )
-    repo.append_message(conversation_id, "assistant", content=message)
+    generation = outcome.get("continuation_generation")
+    if not isinstance(generation, datetime):
+        outcome["cas_lost"] = True
+        return None
+    next_generation = repo.persist_confirmation_continuation(
+        conversation_id,
+        generation,
+        _persistable_ai_messages([Message(role="assistant", content=message)]),
+    )
+    if next_generation is None:
+        outcome["cas_lost"] = True
+        return None
+    outcome["continuation_generation"] = next_generation
     outcome["fallback_persisted"] = True
     response: dict[str, Any] = {
         "type": "message",
@@ -2523,7 +2722,7 @@ def _persist_confirmation_fallback(
         "message": message,
     }
     undo = outcome.get("undo")
-    if succeeded and isinstance(undo, dict) and undo:
+    if isinstance(undo, dict) and undo:
         response["undo"] = undo
     return response
 
@@ -2742,11 +2941,31 @@ def _pending_action_json(
         "tool_name": pending.tool_name,
         "human": pending.human,
         "args": args,
+        "confirmation_token": _confirmation_token(pending),
         "editable_fields": editable_fields_for_tool(pending.tool_name),
     }
     if applications is not None:
         payload.update(_pending_action_details(pending.tool_name, args, applications))
     return payload
+
+
+def _confirmation_token(pending: PendingAction) -> str:
+    try:
+        parsed_args = json.loads(pending.args)
+        canonical_args = json.dumps(
+            parsed_args,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (json.JSONDecodeError, TypeError, ValueError):
+        canonical_args = pending.args
+    identity = json.dumps(
+        [pending.tool_call_id, pending.tool_name, canonical_args],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return sha256(identity.encode("utf-8")).hexdigest()
 
 
 _FIELD_FOLLOWUP_LABELS = {
@@ -3059,6 +3278,7 @@ _CREATED_RECORD_FINGERPRINT_FIELDS = {
         "notes",
         "applied_at",
         "closed_reason",
+        "updated_at",
     ),
     "create_application_event": (
         "application_id",
@@ -3090,7 +3310,7 @@ _CREATED_RECORD_FINGERPRINT_FIELDS = {
 def _created_record_fingerprint(tool_name: str, payload: dict[str, Any]) -> dict[str, Any]:
     fields = _CREATED_RECORD_FINGERPRINT_FIELDS.get(tool_name, ())
     fingerprint = {field: payload.get(field) for field in fields}
-    for field in ("applied_at", "scheduled_at", "remind_at"):
+    for field in ("applied_at", "scheduled_at", "remind_at", "updated_at"):
         if field in fingerprint:
             fingerprint[field] = _canonical_datetime(fingerprint[field])
     return fingerprint

@@ -20,14 +20,28 @@ export interface ChatStreamRequestOptions extends ChatRequestOptions {
   onEvent?: (event: ChatStreamEvent) => void;
 }
 
+export class ChatStreamError extends Error {
+  code?: string;
+  retryable?: boolean;
+
+  constructor(message: string, code?: string, retryable?: boolean) {
+    super(message);
+    this.name = 'ChatStreamError';
+    this.code = code;
+    this.retryable = retryable;
+  }
+}
+
 export type ConfirmationInput =
   | {
       approved: true;
+      confirmation_token: string;
       edited_args?: Record<string, unknown>;
       rejection_feedback?: never;
     }
   | {
       approved: false;
+      confirmation_token: string;
       rejection_feedback?: string;
       edited_args?: never;
     };
@@ -185,8 +199,12 @@ async function postChatStream(
       completed = data.response;
     }
     if (event.event === 'error') {
-      const data = event.data as { message?: string };
-      throw new Error(data.message || '对话失败，请稍后重试');
+      const data = event.data as { code?: string; message?: string; retryable?: boolean };
+      throw new ChatStreamError(
+        data.message || '对话失败，请稍后重试',
+        data.code,
+        data.retryable,
+      );
     }
   });
   const reader = response.body.getReader();

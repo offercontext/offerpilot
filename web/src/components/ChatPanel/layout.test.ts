@@ -166,6 +166,9 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('lastConfirmationInputRef');
     expect(component).toContain('confirmationInputForRetry(lastConfirmationInputRef.current)');
     expect(component).toContain('void handleConfirm(retryInput)');
+    expect(component).toContain('confirmationErrorRequiresSync');
+    expect(component).toContain('lastConfirmationInputRef.current = null');
+    expect(component).toContain('await syncConversationAfterAbort(convID)');
     expect(component).not.toContain('void handleConfirm(true)');
   });
 

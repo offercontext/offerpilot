@@ -21,6 +21,7 @@ def test_application_delete_if_matches_is_conditional(tmp_path):
         "notes": app.notes,
         "applied_at": app.applied_at.isoformat(),
         "closed_reason": app.closed_reason,
+        "updated_at": app.updated_at.isoformat(),
     }
 
     assert repo.delete_if_matches(app.id, {**expected, "notes": "changed"}) is False

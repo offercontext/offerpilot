@@ -17,6 +17,7 @@ import {
   reloadConversationTurns,
   toolMeta,
   confirmationInputForRetry,
+  confirmationErrorRequiresSync,
 } from './model';
 
 describe('buildChatRequestContext', () => {
@@ -102,15 +103,29 @@ describe('buildChatRequestContext', () => {
 
 describe('confirmation retry intent', () => {
   it('preserves approval edits exactly', () => {
-    const input = { approved: true as const, edited_args: { status: 'closed', closed_reason: 'Paused' } };
+    const input = {
+      approved: true as const,
+      confirmation_token: 'a'.repeat(64),
+      edited_args: { status: 'closed', closed_reason: 'Paused' },
+    };
 
     expect(confirmationInputForRetry(input)).toEqual(input);
   });
 
   it('preserves rejection feedback exactly', () => {
-    const input = { approved: false as const, rejection_feedback: 'Keep the current status.' };
+    const input = {
+      approved: false as const,
+      confirmation_token: 'b'.repeat(64),
+      rejection_feedback: 'Keep the current status.',
+    };
 
     expect(confirmationInputForRetry(input)).toEqual(input);
+  });
+
+  it('forces state refresh for stale and in-progress confirmation errors', () => {
+    expect(confirmationErrorRequiresSync('stale_pending_action')).toBe(true);
+    expect(confirmationErrorRequiresSync('confirmation_in_progress')).toBe(true);
+    expect(confirmationErrorRequiresSync('ai_provider_error')).toBe(false);
   });
 });
 
@@ -779,6 +794,7 @@ describe('buildTurns evidence normalization', () => {
           pending_action: {
             tool_name: 'update_application_status',
             human: '更新状态',
+            confirmation_token: 'a'.repeat(64),
             args: { id: 1, status: 'offer' },
           },
         },
@@ -789,6 +805,7 @@ describe('buildTurns evidence normalization', () => {
     expect(pending).toEqual({
       tool_name: 'update_application_status',
       human: '更新状态',
+      confirmation_token: 'a'.repeat(64),
       args: { id: 1, status: 'offer' },
     });
   });
@@ -798,6 +815,7 @@ describe('buildTurns evidence normalization', () => {
       pendingComposerDisabledReason({
         tool_name: 'create_application',
         human: '新建投递：牛客网 - 软件测试工程师',
+        confirmation_token: 'a'.repeat(64),
         workflow: {
           current_step: 1,
           total_steps: 2,
@@ -812,6 +830,7 @@ describe('buildTurns evidence normalization', () => {
     const persisted = {
       tool_name: 'create_application',
       human: '新建投递：牛客网 - 软件测试工程师',
+      confirmation_token: 'a'.repeat(64),
       args: { company_name: '牛客网', position_name: '软件测试工程师', status: 'interview' },
     };
 
@@ -838,6 +857,7 @@ describe('buildTurns evidence normalization', () => {
     const current = {
       tool_name: 'create_application_event',
       human: '新建投递事件',
+      confirmation_token: 'b'.repeat(64),
       args: { application_id: 40, event_type: 'written_test' },
     };
 
@@ -854,6 +874,7 @@ describe('buildTurns evidence normalization', () => {
           pending_action: {
             tool_name: 'create_application',
             human: '新建投递：牛客网 - 软件测试工程师',
+            confirmation_token: 'a'.repeat(64),
             args: { company_name: '牛客网', position_name: '软件测试工程师' },
           },
         },
@@ -876,6 +897,7 @@ describe('buildTurns evidence normalization', () => {
         pending_action: {
           tool_name: 'create_application',
           human: '新建投递：牛客网 - 软件测试工程师',
+          confirmation_token: 'a'.repeat(64),
           args: { company_name: '牛客网', position_name: '软件测试工程师' },
         },
       },

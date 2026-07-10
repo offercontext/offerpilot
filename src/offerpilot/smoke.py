@@ -200,7 +200,11 @@ def _assert_create_event_card(pending_body: dict[str, Any], application_id: int)
 def _reject_pending_chat_action(client: Any, pending_body: dict[str, Any], step: str) -> None:
     rejected = client.post(
         "/api/chat/confirm",
-        json={"conversation_id": pending_body["conversation_id"], "approved": False},
+        json={
+            "conversation_id": pending_body["conversation_id"],
+            "approved": False,
+            "confirmation_token": pending_body["pending_action"]["confirmation_token"],
+        },
     )
     _assert_status(rejected.status_code, 200, step)
 
@@ -251,7 +255,11 @@ def run_core_smoke(data_dir: Path, static_dir: Path | None = None) -> SmokeRepor
 
     confirmed = chat_client.post(
         "/api/chat/confirm",
-        json={"conversation_id": pending_body["conversation_id"], "approved": True},
+        json={
+            "conversation_id": pending_body["conversation_id"],
+            "approved": True,
+            "confirmation_token": pending_body["pending_action"]["confirmation_token"],
+        },
     )
     _assert_status(confirmed.status_code, 200, "confirm_action")
     after_confirm = client.get(f"/api/applications/{application_id}").json()
@@ -482,7 +490,11 @@ def _run_deterministic_chat_smoke(
 
     confirmed = client.post(
         "/api/chat/confirm",
-        json={"conversation_id": pending_body["conversation_id"], "approved": True},
+        json={
+            "conversation_id": pending_body["conversation_id"],
+            "approved": True,
+            "confirmation_token": pending_body["pending_action"]["confirmation_token"],
+        },
     )
     _assert_status(confirmed.status_code, 200, "http_confirm_action")
     after_confirm = client.get(f"/api/applications/{application_id}").json()
@@ -518,7 +530,11 @@ def _run_real_ai_write_smoke(
         steps.append(SmokeStep("http_chat_pending", "real AI requested write confirmation"))
         confirmed = client.post(
             "/api/chat/confirm",
-            json={"conversation_id": conversation_id, "approved": True},
+            json={
+                "conversation_id": conversation_id,
+                "approved": True,
+                "confirmation_token": pending_body["pending_action"]["confirmation_token"],
+            },
         )
         _assert_status(confirmed.status_code, 200, "http_confirm_action")
     else:

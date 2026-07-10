@@ -4,11 +4,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from sqlalchemy import select, update
+from sqlalchemy import exists, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from offerpilot.application_status import normalize_application_status
-from offerpilot.models import Application
+from offerpilot.models import Application, ApplicationEvent, InterviewNote, Offer
 
 
 @dataclass
@@ -43,6 +43,7 @@ class ApplicationsRepository:
             notes=data.notes,
             applied_at=applied_at,
             closed_reason=closed_reason,
+            updated_at=now,
         )
         _mark_first_status_timestamp(app, status, now)
         with self._session_factory() as session:
@@ -90,7 +91,9 @@ class ApplicationsRepository:
                 app.closed_reason = closed_reason
             else:
                 app.closed_reason = ""
-            _mark_first_status_timestamp(app, status, datetime.now(timezone.utc))
+            now = datetime.now(timezone.utc)
+            _mark_first_status_timestamp(app, status, now)
+            app.updated_at = now
             session.commit()
             session.refresh(app)
             return app
@@ -106,6 +109,9 @@ class ApplicationsRepository:
         applied_at = expected.get("applied_at")
         if isinstance(applied_at, str):
             applied_at = datetime.fromisoformat(applied_at.replace("Z", "+00:00"))
+        updated_at = expected.get("updated_at")
+        if isinstance(updated_at, str):
+            updated_at = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
         with self._session_factory() as session:
             result = session.execute(
                 update(Application)
@@ -119,6 +125,10 @@ class ApplicationsRepository:
                 .where(Application.notes == expected.get("notes"))
                 .where(Application.applied_at == applied_at)
                 .where(Application.closed_reason == expected.get("closed_reason"))
+                .where(Application.updated_at == updated_at)
+                .where(~exists().where(ApplicationEvent.application_id == app_id))
+                .where(~exists().where(InterviewNote.application_id == app_id))
+                .where(~exists().where(Offer.application_id == app_id))
                 .values(deleted_at=datetime.now(timezone.utc))
             )
             session.commit()

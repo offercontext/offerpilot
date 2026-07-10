@@ -1326,6 +1326,60 @@ def test_confirmation_result_sink_records_approved_tool_error():
     assert added[0] == message
 
 
+@pytest.mark.parametrize("use_checkpoint", [False, True])
+def test_confirmation_attempt_sink_runs_immediately_before_handler(
+    tmp_path,
+    use_checkpoint,
+):
+    attempts = []
+    calls = []
+    pending = _pending()
+
+    def handler(args):
+        assert attempts == [pending.tool_call_id]
+        calls.append(args)
+        return '{"ok":true}'
+
+    registry = _editable_registry()
+    registry[pending.tool_name]["handler"] = handler
+    checkpoint_path = tmp_path / "attempt.sqlite" if use_checkpoint else None
+    model = ScriptedModel([Assistant(content="done")])
+    if use_checkpoint:
+        model = ScriptedModel(
+            [
+                Assistant(
+                    tool_calls=[
+                        ToolCall(id=pending.tool_call_id, name=pending.tool_name, args=pending.args)
+                    ]
+                ),
+                Assistant(content="done"),
+            ]
+        )
+        _, _, pending = run_turn(
+            model,
+            registry,
+            [],
+            auto_approve=False,
+            checkpoint_path=checkpoint_path,
+            thread_id="conversation:attempt",
+        )
+
+    resume_after_confirm(
+        model,
+        registry,
+        [],
+        pending,
+        approved=True,
+        auto_approve=False,
+        checkpoint_path=checkpoint_path,
+        thread_id="conversation:attempt",
+        confirmation_attempt_sink=lambda action: attempts.append(action.tool_call_id),
+    )
+
+    assert attempts == [pending.tool_call_id]
+    assert calls == ['{"id":7,"status":"offer"}']
+
+
 def test_write_tool_pauses_before_execution():
     calls = []
     registry = {

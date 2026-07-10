@@ -4,13 +4,30 @@ import source from './chat.ts?raw';
 import type { ChatStreamEvent, PilotPageContext } from '@/types/chat';
 import type { ConfirmationInput } from './chat';
 
-const approvalInput: ConfirmationInput = { approved: true, edited_args: { status: 'offer' } };
-const rejectionInput: ConfirmationInput = { approved: false, rejection_feedback: 'Keep it.' };
+const confirmationToken = 'a'.repeat(64);
+const approvalInput: ConfirmationInput = {
+  approved: true,
+  confirmation_token: confirmationToken,
+  edited_args: { status: 'offer' },
+};
+const rejectionInput: ConfirmationInput = {
+  approved: false,
+  confirmation_token: confirmationToken,
+  rejection_feedback: 'Keep it.',
+};
+// @ts-expect-error every confirmation must bind to the reviewed pending action
+const missingTokenInput: ConfirmationInput = { approved: true };
 // @ts-expect-error approval cannot carry rejection feedback
 const invalidApprovalInput: ConfirmationInput = { approved: true, rejection_feedback: 'no' };
 // @ts-expect-error rejection cannot carry edited arguments
 const invalidRejectionInput: ConfirmationInput = { approved: false, edited_args: {} };
-void [approvalInput, rejectionInput, invalidApprovalInput, invalidRejectionInput];
+void [
+  approvalInput,
+  rejectionInput,
+  missingTokenInput,
+  invalidApprovalInput,
+  invalidRejectionInput,
+];
 
 const { postMock } = vi.hoisted(() => ({ postMock: vi.fn() }));
 
@@ -159,6 +176,7 @@ describe('settings service v0.1 contract', () => {
 
     const response = await streamConfirmAction(3, {
       approved: true,
+      confirmation_token: confirmationToken,
       edited_args: { status: 'offer' },
     });
 
@@ -166,14 +184,23 @@ describe('settings service v0.1 contract', () => {
       '/api/chat/confirm/stream',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ conversation_id: 3, approved: true, edited_args: { status: 'offer' } }),
+        body: JSON.stringify({
+          conversation_id: 3,
+          approved: true,
+          confirmation_token: confirmationToken,
+          edited_args: { status: 'offer' },
+        }),
       }),
     );
     expect(response).toEqual({ type: 'message', conversation_id: 3, message: 'confirmed' });
   });
 
   it('serializes identical confirmation input for JSON and SSE endpoints', async () => {
-    const input = { approved: false, rejection_feedback: 'Keep the current status.' } satisfies ConfirmationInput;
+    const input = {
+      approved: false,
+      confirmation_token: confirmationToken,
+      rejection_feedback: 'Keep the current status.',
+    } satisfies ConfirmationInput;
     postMock.mockResolvedValueOnce({
       data: { type: 'message', conversation_id: 3, message: 'kept' },
     });
@@ -204,5 +231,19 @@ describe('settings service v0.1 contract', () => {
     globalThis.fetch = vi.fn(async () => sseResponse('event: status\ndata: {"event":"status","seq":1,"data":{}}\n\n')) as typeof fetch;
 
     await expect(streamChat('hi')).rejects.toThrow('对话没有返回完整结果，请重试。');
+  });
+
+  it('preserves stale confirmation metadata on SSE errors', async () => {
+    globalThis.fetch = vi.fn(async () =>
+      sseResponse(
+        'event: error\nid: run:1\ndata: {"event":"error","seq":1,"data":{"code":"stale_pending_action","message":"stale","retryable":true}}\n\n',
+      ),
+    ) as typeof fetch;
+
+    await expect(streamConfirmAction(3, approvalInput)).rejects.toMatchObject({
+      code: 'stale_pending_action',
+      retryable: true,
+      message: 'stale',
+    });
   });
 });
