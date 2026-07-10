@@ -7,6 +7,7 @@ from io import BytesIO
 from pathlib import Path
 from queue import Empty, Queue
 from secrets import compare_digest
+from threading import Event
 from time import perf_counter
 from typing import Any, Callable, Generator, Optional
 from uuid import uuid4
@@ -17,7 +18,14 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from pypdf import PdfReader
 
-from offerpilot.ai.agent import DEFAULT_MAX_ITERATIONS, ChatModel, PendingAction, resume_after_confirm, run_turn
+from offerpilot.ai.agent import (
+    DEFAULT_MAX_ITERATIONS,
+    ChatModel,
+    ChatRunCancelled,
+    PendingAction,
+    resume_after_confirm,
+    run_turn,
+)
 from offerpilot.ai.client import ConfiguredAIClient
 from offerpilot.ai.tools import offerpilot_tool_registry
 from offerpilot.ai.types import Message, ToolCall
@@ -1174,10 +1182,13 @@ def create_app(
             if conversation is None:
                 return error_response(404, "conversation not found")
 
+        clarification = chat.get_pending_clarification(conversation_id)
         chat.append_message(conversation_id, "user", content=message)
         context_message = _chat_context_message(conversation, applications)
+        clarification_message = _chat_clarification_message(clarification, message)
         history = [
             _chat_response_system_message(),
+            *([clarification_message] if clarification_message is not None else []),
             *([context_message] if context_message is not None else []),
             *_stored_messages_to_ai(chat.list_messages(conversation_id)),
         ]
@@ -1216,7 +1227,7 @@ def create_app(
             yield emit("status", {"phase": "model_running", "label": "正在思考"})
             try:
                 added, reply, pending = yield from _run_chat_agent_with_sse_events(
-                    lambda event_sink: run_turn(
+                    lambda event_sink, cancel_check: run_turn(
                         model,
                         registry,
                         history,
@@ -1225,12 +1236,16 @@ def create_app(
                         checkpoint_path=_agent_checkpoint_path(resolved_data_dir),
                         thread_id=_agent_thread_id(conversation_id),
                         event_sink=event_sink,
+                        cancel_check=cancel_check,
                     ),
                     emit,
                 )
+            except ChatRunCancelled:
+                return
             except ChatAgentTimedOut:
                 chat.append_message(conversation_id, "assistant", content=CHAT_TIMEOUT_MESSAGE)
                 chat.clear_pending_action(conversation_id)
+                chat.clear_pending_clarification(conversation_id)
                 yield emit(
                     "error",
                     {
@@ -1256,10 +1271,15 @@ def create_app(
             added, forced_reply = _with_write_error_followup(added)
             _persist_ai_messages(chat, conversation_id, added)
             reply = forced_reply or _user_facing_assistant_content(reply)
+            if forced_reply and pending is None:
+                forced_pending = _pending_action_from_added_write_call(added)
+                if forced_pending is not None:
+                    chat.set_pending_clarification(conversation_id, forced_pending, forced_reply)
             if pending is not None:
                 missing_question = _pending_action_missing_question(pending, applications)
                 if missing_question:
                     chat.clear_pending_action(conversation_id)
+                    chat.set_pending_clarification(conversation_id, pending, missing_question)
                     chat.append_message(conversation_id, "assistant", content=missing_question)
                     response = {
                         "type": "message",
@@ -1269,6 +1289,7 @@ def create_app(
                     yield emit("assistant_message", {"message": missing_question})
                     yield emit("completed", {"response": response, "persisted": True})
                     return
+                chat.clear_pending_clarification(conversation_id)
                 chat.set_pending_action(conversation_id, pending)
                 pending_payload = _pending_action_json(pending, applications)
                 response = {
@@ -1281,6 +1302,11 @@ def create_app(
                 yield emit("completed", {"response": response, "persisted": True})
                 return
             chat.clear_pending_action(conversation_id)
+            if not forced_reply and clarification is not None and _looks_like_followup_question(reply):
+                pending_clarification, _ = clarification
+                chat.set_pending_clarification(conversation_id, pending_clarification, reply)
+            elif not forced_reply:
+                chat.clear_pending_clarification(conversation_id)
             response = {"type": "message", "conversation_id": conversation_id, "message": reply}
             yield emit("assistant_message", {"message": reply})
             yield emit("completed", {"response": response, "persisted": True})
@@ -1495,7 +1521,7 @@ def create_app(
             yield emit("status", {"phase": "tool_running", "label": "正在执行确认操作"})
             try:
                 added, reply, new_pending = yield from _run_chat_agent_with_sse_events(
-                    lambda event_sink: resume_after_confirm(
+                    lambda event_sink, cancel_check: resume_after_confirm(
                         model,
                         registry,
                         [
@@ -1510,9 +1536,12 @@ def create_app(
                         checkpoint_path=_agent_checkpoint_path(resolved_data_dir),
                         thread_id=_agent_thread_id(conversation_id),
                         event_sink=event_sink,
+                        cancel_check=cancel_check,
                     ),
                     emit,
                 )
+            except ChatRunCancelled:
+                return
             except ChatAgentTimedOut:
                 yield emit(
                     "error",
@@ -1539,10 +1568,15 @@ def create_app(
             added, forced_reply = _with_write_error_followup(added)
             _persist_ai_messages(chat, conversation_id, added)
             reply = forced_reply or _user_facing_assistant_content(reply)
+            if forced_reply and new_pending is None:
+                forced_pending = _pending_action_from_added_write_call(added)
+                if forced_pending is not None:
+                    chat.set_pending_clarification(conversation_id, forced_pending, forced_reply)
             if new_pending is not None:
                 missing_question = _pending_action_missing_question(new_pending, applications)
                 if missing_question:
                     chat.clear_pending_action(conversation_id)
+                    chat.set_pending_clarification(conversation_id, new_pending, missing_question)
                     chat.append_message(conversation_id, "assistant", content=missing_question)
                     response = {
                         "type": "message",
@@ -1552,6 +1586,7 @@ def create_app(
                     yield emit("assistant_message", {"message": missing_question})
                     yield emit("completed", {"response": response, "persisted": True})
                     return
+                chat.clear_pending_clarification(conversation_id)
                 chat.set_pending_action(conversation_id, new_pending)
                 pending_payload = _pending_action_json(new_pending, applications)
                 response = {
@@ -1564,6 +1599,8 @@ def create_app(
                 yield emit("completed", {"response": response, "persisted": True})
                 return
             chat.clear_pending_action(conversation_id)
+            if not forced_reply:
+                chat.clear_pending_clarification(conversation_id)
             reply = _prepend_write_success(reply, pending, added)
             response = {"type": "message", "conversation_id": conversation_id, "message": reply}
             yield emit("assistant_message", {"message": reply})
@@ -1880,12 +1917,13 @@ def _run_chat_agent_with_timeout(call: Any) -> Any:
 
 
 def _run_chat_agent_with_sse_events(
-    call: Callable[[Callable[[dict[str, Any]], None]], Any],
+    call: Callable[[Callable[[dict[str, Any]], None], Callable[[], bool]], Any],
     emit: Callable[[str, dict[str, Any] | None], str],
 ) -> Generator[str, None, Any]:
     event_queue: Queue[dict[str, Any]] = Queue()
+    cancel_event = Event()
     executor = ThreadPoolExecutor(max_workers=1)
-    future = executor.submit(lambda: call(event_queue.put))
+    future = executor.submit(lambda: call(event_queue.put, cancel_event.is_set))
     deadline = perf_counter() + CHAT_AGENT_TIMEOUT_SECONDS
     cancel_futures = True
     try:
@@ -1901,6 +1939,7 @@ def _run_chat_agent_with_sse_events(
         cancel_futures = False
         return future.result()
     finally:
+        cancel_event.set()
         executor.shutdown(wait=False, cancel_futures=cancel_futures)
 
 
@@ -1909,9 +1948,11 @@ def _ai_provider_error(exc: Exception, data_dir: Path) -> JSONResponse:
     detail = _safe_provider_error(exc, cfg.provider_profiles()).strip()
     if cfg.auth_token:
         detail = detail.replace(cfg.auth_token, "***")
-    message = "AI provider request failed"
+    message = "AI 连接失败"
     if detail:
-        message = f"{message}: {detail}"
+        message = f"{message}：{detail}。请检查 AI 设置或稍后重试。"
+    else:
+        message = f"{message}。请检查 AI 设置或稍后重试。"
     return error_response(502, message)
 
 
@@ -1921,8 +1962,8 @@ def _safe_stream_error(exc: Exception, data_dir: Path) -> str:
     if cfg.auth_token:
         detail = detail.replace(cfg.auth_token, "***")
     if detail:
-        return f"AI provider request failed: {detail}"
-    return "AI provider request failed"
+        return f"AI 连接失败：{detail}。请检查 AI 设置或稍后重试。"
+    return "AI 连接失败。请检查 AI 设置或稍后重试。"
 
 
 def _auth_guard_response(request: Request, data_dir: Path) -> JSONResponse | None:
@@ -2022,18 +2063,17 @@ def _chat_response_system_message() -> Message:
     return Message(
         role="system",
         content=(
-            "You are OfferPilot, a job-search copilot. Use the user's language. "
-            "The current chat interface supports incremental streaming output for assistant text. "
-            "For substantive answers, keep the reply concise and structure it as: "
-            "Conclusion, Evidence, Next steps. When local tool evidence is thin, say so clearly. "
-            "Do not expose hidden reasoning. Do not mention internal tool or API names such as "
-            "update_application_status or create_application_event; describe actions in user-facing language instead. "
-            "When an interview review belongs to a company that already has a different-position application, "
-            "ask the user before creating a new application record for that position. "
-            "If a write tool reports that required information is missing or unclear, ask one direct follow-up "
-            "question instead of attempting another write. After a successful write, give exactly one practical "
-            "next step in user-facing language, such as adding a schedule, generating an improvement plan, or "
-            "continuing the review."
+            "你是 OfferPilot，一个求职领航助手。始终使用用户的语言回复。"
+            "当前对话界面支持助手文本增量流式输出。"
+            "对于实质性回答，请保持简洁，并优先按「结论、依据、下一步」组织。"
+            "如果本地工具依据较少，要明确说明。"
+            "不要暴露隐藏推理。不要提到 update_application_status、create_application_event "
+            "等内部工具或 API 名称；请改用用户能理解的动作描述。"
+            "当面试复盘属于某家公司但系统里已有不同岗位投递时，"
+            "先询问用户是否要为该岗位新建投递记录。"
+            "如果写入工具提示必填信息缺失或不明确，只追问一个最关键问题，"
+            "不要继续尝试另一个写入。成功写入后，只给一个实用的下一步建议，"
+            "例如添加日程、生成改进计划，或继续补充复盘。"
         ),
     )
 

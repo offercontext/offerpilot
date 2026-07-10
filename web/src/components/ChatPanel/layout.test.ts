@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import component from './index.tsx?raw';
 import proposalCard from './ProposalCard.tsx?raw';
 import thinking from './ThinkingIndicator.tsx?raw';
+import contextPanel from './ContextPanel.tsx?raw';
+import evidenceList from './EvidenceList.tsx?raw';
 import threadRail from './ThreadRail.tsx?raw';
 
 async function loadCss(): Promise<string> {
@@ -33,6 +35,16 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('if (docked || inlinePage) return workspace');
   });
 
+  it('limits confirmation cards in the full Pilot page without narrowing the rail drawer', async () => {
+    const css = await loadCss();
+
+    expect(component).toContain('inlinePage ? styles.workspacePage');
+    expect(css).toContain('.workspacePage .pendingDock');
+    expect(css).toContain('max-width: 720px;');
+    expect(css).toContain('.workspaceDocked .pendingDock .proposal');
+    expect(css).toContain('max-width: 100%;');
+  });
+
   it('shows an inline API-key setup notice when the docked context panel is hidden', () => {
     expect(component).toContain('styles.inlineKeyNotice');
     expect(component).toContain('!hasKey &&');
@@ -43,7 +55,7 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('lastFailedText');
     expect(component).toContain('retryLastMessage');
     expect(component).toContain('clearLastFailure');
-    expect(component).toContain('改成手动整理');
+    expect(component).toContain('关闭提示');
     expect(component).toContain('disabledReason={composerDisabledReason}');
   });
 
@@ -171,5 +183,14 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('lastUndo');
     expect(component).toContain('undoLastWrite');
     expect(component).toContain('撤销最近一次 AI 写入');
+  });
+
+  it('keeps the context evidence panel fully localized for Chinese users', () => {
+    expect(contextPanel).toContain('当前参考依据');
+    expect(contextPanel).toContain('暂无参考依据');
+    expect(evidenceList).toContain('aria-label="参考依据"');
+    expect(contextPanel).not.toContain('Current evidence');
+    expect(contextPanel).not.toContain('No evidence collected yet');
+    expect(evidenceList).not.toContain('Evidence sources');
   });
 });

@@ -1,6 +1,8 @@
 import json
 
-from offerpilot.ai.agent import LangGraphAgentRunner, PendingAction, resume_after_confirm, run_turn
+import pytest
+
+from offerpilot.ai.agent import ChatRunCancelled, LangGraphAgentRunner, PendingAction, resume_after_confirm, run_turn
 from offerpilot.ai.types import Assistant, ToolCall
 
 
@@ -173,6 +175,138 @@ def test_event_sink_emits_read_tool_call_and_result():
             },
         },
     ]
+
+
+def test_executes_multiple_read_only_tool_calls_from_one_assistant_turn():
+    calls = []
+    registry = {
+        "list_applications": {
+            "write": False,
+            "description": "查看投递列表",
+            "handler": lambda args: calls.append(("apps", args)) or "[]",
+        },
+        "list_notes": {
+            "write": False,
+            "description": "查看复盘记录",
+            "handler": lambda args: calls.append(("notes", args)) or "[]",
+        },
+    }
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(id="r1", name="list_applications", args="{}"),
+                    ToolCall(id="r2", name="list_notes", args=json.dumps({"limit": 3})),
+                ]
+            ),
+            Assistant(content="已汇总。"),
+        ]
+    )
+
+    added, reply, pending = run_turn(model, registry, [], auto_approve=False, max_iter=8)
+
+    assert reply == "已汇总。"
+    assert pending is None
+    assert [call[0] for call in calls] == ["apps", "notes"]
+    assert added[0].role == "assistant"
+    assert [tool.name for tool in added[0].tool_calls] == ["list_applications", "list_notes"]
+    assert [message.tool_call_id for message in added if message.role == "tool"] == ["r1", "r2"]
+
+
+def test_always_confirm_write_pauses_even_when_auto_approve_is_enabled():
+    calls = []
+    registry = {
+        "delete_note": {
+            "write": True,
+            "always_confirm": True,
+            "describe": lambda args: "删除复盘记录",
+            "handler": lambda args: calls.append(args) or "{}",
+        }
+    }
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="d1",
+                        name="delete_note",
+                        args=json.dumps({"id": 1}),
+                    )
+                ]
+            )
+        ]
+    )
+
+    added, reply, pending = run_turn(model, registry, [], auto_approve=True, max_iter=8)
+
+    assert reply == ""
+    assert isinstance(pending, PendingAction)
+    assert pending.tool_name == "delete_note"
+    assert calls == []
+    assert added[-1].tool_calls[0].name == "delete_note"
+
+
+def test_auto_approved_write_still_runs_validation_before_execution():
+    calls = []
+    registry = {
+        "create_application": {
+            "write": True,
+            "validate": lambda args: "create_application requires explicit user confirmation before adding a new position",
+            "handler": lambda args: calls.append(args) or "{}",
+        }
+    }
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="c1",
+                        name="create_application",
+                        args=json.dumps({"company_name": "牛客网", "position_name": "测试工程师"}),
+                    )
+                ]
+            ),
+            Assistant(content="需要你先确认。"),
+        ]
+    )
+
+    added, reply, pending = run_turn(model, registry, [], auto_approve=True, max_iter=8)
+
+    assert reply == "需要你先确认。"
+    assert pending is None
+    assert calls == []
+    assert added[1].role == "tool"
+    assert "requires explicit user confirmation" in added[1].content
+
+
+def test_cancelled_run_does_not_execute_auto_approved_write():
+    calls = []
+    registry = {
+        "update_application_status": {
+            "write": True,
+            "describe": lambda args: "更新投递状态",
+            "handler": lambda args: calls.append(args) or "{}",
+        }
+    }
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="w1",
+                        name="update_application_status",
+                        args=json.dumps({"id": 1, "status": "offer"}),
+                    )
+                ]
+            )
+        ]
+    )
+    checks = iter([False, True])
+
+    with pytest.raises(ChatRunCancelled):
+        run_turn(model, registry, [], auto_approve=True, max_iter=8, cancel_check=lambda: next(checks, True))
+
+    assert calls == []
 
 
 def test_event_sink_emits_assistant_delta_from_streaming_model():

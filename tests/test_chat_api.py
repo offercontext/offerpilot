@@ -321,7 +321,7 @@ def test_chat_returns_bad_gateway_when_model_fails(tmp_path):
     response = client.post("/api/chat", json={"message": "你好", "conversation_id": 0})
 
     assert response.status_code == 502
-    assert response.json() == {"error": "AI provider request failed: provider unavailable"}
+    assert response.json() == {"error": "AI 连接失败：provider unavailable。请检查 AI 设置或稍后重试。"}
 
 
 def test_chat_returns_recoverable_message_when_agent_times_out(tmp_path, monkeypatch):
@@ -435,6 +435,69 @@ def test_chat_clarification_reply_resumes_missing_event_draft(tmp_path):
     assert conversation["pending_clarification"] is None
 
 
+def test_chat_stream_clarification_reply_resumes_missing_event_draft(tmp_path):
+    app_client = TestClient(create_app(data_dir=tmp_path))
+    application = app_client.post(
+        "/api/applications",
+        json={"company_name": "牛客网", "position_name": "测试工程师", "status": "written_test"},
+    ).json()
+    model = CapturingScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="event-1",
+                        name="create_application_event",
+                        args=json.dumps(
+                            {
+                                "application_id": application["id"],
+                                "event_type": "written_test",
+                                "scheduled_at": "2026-07-10T19:00:00+08:00",
+                            }
+                        ),
+                    )
+                ]
+            ),
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="event-2",
+                        name="create_application_event",
+                        args=json.dumps(
+                            {
+                                "application_id": application["id"],
+                                "event_type": "written_test",
+                                "scheduled_at": "2026-07-10T19:00:00+08:00",
+                                "duration_minutes": 30,
+                            }
+                        ),
+                    )
+                ]
+            ),
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    first = client.post("/api/chat/stream", json={"message": "为这条投递创建笔试日程", "conversation_id": 0})
+    first_events = _parse_sse_events(first.text)
+    first_completed = first_events[-1]["data"]["data"]["response"]
+    conversation = client.get("/api/chat/conversations").json()[0]
+    assert conversation["pending_clarification"]["tool_name"] == "create_application_event"
+
+    second = client.post(
+        "/api/chat/stream",
+        json={"message": "30分钟", "conversation_id": first_completed["conversation_id"]},
+    )
+
+    assert second.status_code == 200
+    second_events = _parse_sse_events(second.text)
+    completed = second_events[-1]["data"]["data"]["response"]
+    assert completed["type"] == "confirmation_required"
+    assert completed["pending_action"]["args"]["duration_minutes"] == 30
+    assert "补信息" in model.calls[-1][1].content
+    conversation = client.get("/api/chat/conversations").json()[0]
+    assert conversation["pending_clarification"] is None
+
+
 def test_chat_turns_write_validation_error_into_chinese_followup(tmp_path):
     model = ScriptedModel(
         [
@@ -523,7 +586,7 @@ def test_chat_provider_error_masks_configured_api_key(tmp_path):
 
     assert response.status_code == 502
     assert "sk-secret-value" not in response.text
-    assert response.json() == {"error": "AI provider request failed: provider rejected API key ***"}
+    assert response.json() == {"error": "AI 连接失败：provider rejected API key ***。请检查 AI 设置或稍后重试。"}
 
 
 def test_chat_exposes_module_tools_to_model(tmp_path):
@@ -549,11 +612,12 @@ def test_chat_injects_response_structure_prompt(tmp_path):
     assert response.status_code == 200
     system = model.calls[0][0]
     assert system.role == "system"
-    assert "Conclusion" in system.content
-    assert "Evidence" in system.content
-    assert "Next steps" in system.content
-    assert "one direct follow-up question" in system.content
-    assert "After a successful write" in system.content
+    assert "结论" in system.content
+    assert "依据" in system.content
+    assert "下一步" in system.content
+    assert "只追问一个最关键问题" in system.content
+    assert "成功写入后" in system.content
+    assert "Conclusion" not in system.content
 
 
 def test_chat_allows_wide_read_only_tool_summaries(tmp_path):

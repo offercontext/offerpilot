@@ -641,7 +641,11 @@ export default function ChatPanel({
           onPointerDown={startResize}
         />
       )}
-      <div className={`${styles.workspace} ${docked ? styles.workspaceDocked : ''}`}>
+      <div
+        className={`${styles.workspace} ${docked ? styles.workspaceDocked : ''} ${
+          inlinePage ? styles.workspacePage : ''
+        }`}
+      >
         <header className={styles.header}>
           <div className={styles.avatar} aria-hidden="true">
             <RobotOutlined />
@@ -837,7 +841,7 @@ export default function ChatPanel({
                   重新发送
                 </button>
                 <button type="button" onClick={clearLastFailure}>
-                  改成手动整理
+                  关闭提示
                 </button>
               </div>
             ) : null}
