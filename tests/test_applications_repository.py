@@ -42,6 +42,19 @@ def test_filter_applications_by_status(tmp_path):
     assert apps[0].company_name == "A"
 
 
+def test_delete_soft_deletes_and_default_reads_hide_deleted(tmp_path):
+    session_factory = init_database(tmp_path / "data.db")
+    repo = ApplicationsRepository(session_factory)
+    kept = repo.create(ApplicationCreate(company_name="A", position_name="Backend"))
+    deleted = repo.create(ApplicationCreate(company_name="B", position_name="Frontend"))
+
+    repo.delete(deleted.id)
+
+    assert [app.id for app in repo.list()] == [kept.id]
+    assert repo.get(deleted.id) is None
+    assert repo.dashboard()["total"] == 1
+
+
 def test_update_full_replaces_application_fields(tmp_path):
     session_factory = init_database(tmp_path / "data.db")
     repo = ApplicationsRepository(session_factory)
@@ -67,6 +80,102 @@ def test_update_full_replaces_application_fields(tmp_path):
     assert updated.source == "web"
 
 
+def test_update_full_records_first_status_timestamp_only_once(tmp_path):
+    session_factory = init_database(tmp_path / "data.db")
+    repo = ApplicationsRepository(session_factory)
+    app = repo.create(ApplicationCreate(company_name="A", position_name="Backend", status="applied"))
+
+    first = repo.update_full(
+        app.id,
+        ApplicationCreate(company_name="A", position_name="Backend", status="interview"),
+    )
+    repo.update_full(
+        app.id,
+        ApplicationCreate(company_name="A", position_name="Backend", status="written_test"),
+    )
+    second = repo.update_full(
+        app.id,
+        ApplicationCreate(company_name="A", position_name="Backend", status="interview"),
+    )
+
+    assert app.first_applied_at is not None
+    assert first is not None
+    assert first.first_interview_at is not None
+    assert second is not None
+    assert second.first_interview_at == first.first_interview_at
+
+
+def test_update_full_requires_closed_reason_when_entering_closed(tmp_path):
+    session_factory = init_database(tmp_path / "data.db")
+    repo = ApplicationsRepository(session_factory)
+    app = repo.create(ApplicationCreate(company_name="A", position_name="Backend", status="interview"))
+
+    try:
+        repo.update_full(app.id, ApplicationCreate(company_name="A", position_name="Backend", status="closed"))
+    except ValueError as exc:
+        assert str(exc) == "closed_reason is required when closing an application"
+    else:
+        raise AssertionError("closing without closed_reason should fail")
+
+    closed = repo.update_full(
+        app.id,
+        ApplicationCreate(
+            company_name="A",
+            position_name="Backend",
+            status="closed",
+            closed_reason="主动放弃",
+        ),
+    )
+
+    assert closed is not None
+    assert closed.status == "closed"
+    assert closed.closed_reason == "主动放弃"
+    assert closed.closed_at is not None
+
+
+def test_update_full_requires_fresh_closed_reason_and_rejects_reopen(tmp_path):
+    session_factory = init_database(tmp_path / "data.db")
+    repo = ApplicationsRepository(session_factory)
+    app = repo.create(
+        ApplicationCreate(
+            company_name="A",
+            position_name="Backend",
+            status="applied",
+            closed_reason="stale",
+        )
+    )
+
+    assert app.closed_reason == ""
+
+    try:
+        repo.update_full(app.id, ApplicationCreate(company_name="A", position_name="Backend", status="closed"))
+    except ValueError as exc:
+        assert str(exc) == "closed_reason is required when closing an application"
+    else:
+        raise AssertionError("closing without a fresh closed_reason should fail")
+
+    closed = repo.update_full(
+        app.id,
+        ApplicationCreate(
+            company_name="A",
+            position_name="Backend",
+            status="closed",
+            closed_reason="岗位关闭",
+        ),
+    )
+    assert closed is not None
+
+    try:
+        repo.update_full(
+            app.id,
+            ApplicationCreate(company_name="A", position_name="Backend", status="interview"),
+        )
+    except ValueError as exc:
+        assert str(exc) == "closed application cannot be reopened"
+    else:
+        raise AssertionError("closed application should not reopen")
+
+
 def test_dashboard_groups_by_status(tmp_path):
     session_factory = init_database(tmp_path / "data.db")
     repo = ApplicationsRepository(session_factory)
@@ -78,4 +187,3 @@ def test_dashboard_groups_by_status(tmp_path):
     assert dashboard["total"] == 2
     assert len(dashboard["board"]["interview"]) == 1
     assert len(dashboard["board"]["offer"]) == 1
-

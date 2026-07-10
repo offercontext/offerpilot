@@ -9,6 +9,7 @@ interface Props {
   onOpenChat: () => void;
   onOpenSettings: () => void;
   onUploadResume?: () => void;
+  showContextualPilot?: boolean;
 }
 
 function greeting(): string {
@@ -19,7 +20,14 @@ function greeting(): string {
   return '晚上好，今天辛苦了';
 }
 
-export default function TopBar({ streakDays, onAdd, onSearch, onOpenChat, onOpenSettings }: Props) {
+export default function TopBar({
+  streakDays,
+  onAdd,
+  onSearch,
+  onOpenChat,
+  onOpenSettings,
+  showContextualPilot = true,
+}: Props) {
   return (
     <header
       className="op-topbar"
@@ -44,15 +52,17 @@ export default function TopBar({ streakDays, onAdd, onSearch, onOpenChat, onOpen
           搜索 <span style={{ opacity: 0.6, marginLeft: 4 }}>⌘K</span>
         </Button>
         <Button icon={<SettingOutlined />} onClick={onOpenSettings} aria-label="AI 设置" />
-        <Button
-          type="primary"
-          className="op-ai-btn"
-          icon={<RobotOutlined />}
-          onClick={onOpenChat}
-          style={{ fontWeight: 600 }}
-        >
-          AI 助手
-        </Button>
+        {showContextualPilot && (
+          <Button
+            type="primary"
+            className="op-ai-btn"
+            icon={<RobotOutlined />}
+            onClick={onOpenChat}
+            style={{ fontWeight: 600 }}
+          >
+            右侧对话
+          </Button>
+        )}
         <Button type="primary" icon={<PlusOutlined />} onClick={onAdd}>
           添加投递
         </Button>

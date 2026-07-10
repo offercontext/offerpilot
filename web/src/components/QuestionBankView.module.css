@@ -86,6 +86,26 @@
   flex: 1;
 }
 
+.layerHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.backButton {
+  height: auto;
+  padding: 0;
+}
+
+.layerTitle {
+  margin: 8px 0 0;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--op-ink);
+}
+
 /* Question list */
 .qList {
   display: flex;

@@ -121,6 +121,23 @@ export default function KnowledgeLibraryView() {
   const documents = documentsQuery.data ?? [];
   const loading = documentsQuery.isLoading;
 
+  if (editorOpen) {
+    return (
+      <div style={{ padding: 24 }}>
+        <KnowledgeDocumentEditor
+          open={editorOpen}
+          document={editingDocument}
+          saving={createDocMut.isPending || updateDocMut.isPending}
+          onSubmit={saveDocument}
+          onClose={() => {
+            setEditorOpen(false);
+            setEditingDocument(null);
+          }}
+        />
+      </div>
+    );
+  }
+
   return (
     <div style={{ padding: 24 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, marginBottom: 20 }}>
@@ -214,16 +231,6 @@ export default function KnowledgeLibraryView() {
         />
       )}
 
-      <KnowledgeDocumentEditor
-        open={editorOpen}
-        document={editingDocument}
-        saving={createDocMut.isPending || updateDocMut.isPending}
-        onSubmit={saveDocument}
-        onClose={() => {
-          setEditorOpen(false);
-          setEditingDocument(null);
-        }}
-      />
       <KnowledgeImportModal
         open={importOpen}
         uploading={importDocMut.isPending}

@@ -1,14 +1,37 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button, Input, Spin, message } from 'antd';
-import { PlusOutlined } from '@ant-design/icons';
+import {
+  CloudUploadOutlined,
+  FileAddOutlined,
+  FileTextOutlined,
+  PlusOutlined,
+} from '@ant-design/icons';
 import type { DragEvent } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { listResumes, uploadResume, deleteResume } from '@/services/resumes';
+import {
+  copyResume,
+  createResume,
+  createResumeFromSample,
+  deleteResume,
+  listResumes,
+  updateResume,
+  uploadResume,
+} from '@/services/resumes';
 import ResumeCard from './ResumeCard';
 import ResumeUploadModal from './ResumeUploadModal';
-import ResumeTextEditorDrawer from './ResumeTextEditorDrawer';
-import type { Resume } from '@/types/resume';
+import ResumeEditorDrawer from './ResumeEditorDrawer';
+import type { Resume, ResumeContent } from '@/types/resume';
 import styles from './ResumeLibraryView.module.css';
+
+const BLANK_RESUME_CONTENT: ResumeContent = {
+  career_intent: { target_roles: [], target_locations: [] },
+  contact: {},
+  education: [],
+  experience: [],
+  projects: [],
+  skills: [],
+  raw_text: '',
+};
 
 export default function ResumeLibraryView() {
   const qc = useQueryClient();
@@ -19,6 +42,32 @@ export default function ResumeLibraryView() {
   const dragCounter = useRef(0);
 
   const resumesQuery = useQuery({ queryKey: ['resumes'], queryFn: listResumes });
+
+  const createDialogMut = useMutation({
+    mutationFn: () =>
+      createResume({
+        title: 'Pilot 对话薄版简历',
+        source: 'dialog',
+        content_json: BLANK_RESUME_CONTENT,
+        career_intent: BLANK_RESUME_CONTENT.career_intent,
+      }),
+    onSuccess: (res) => {
+      message.success('已创建薄版简历');
+      qc.invalidateQueries({ queryKey: ['resumes'] });
+      setEditing(res);
+    },
+    onError: () => message.error('创建失败'),
+  });
+
+  const sampleMut = useMutation({
+    mutationFn: () => createResumeFromSample({ sample_id: 'backend' }),
+    onSuccess: (res) => {
+      message.success('已从样例创建');
+      qc.invalidateQueries({ queryKey: ['resumes'] });
+      setEditing(res);
+    },
+    onError: () => message.error('创建样例失败'),
+  });
 
   const uploadMut = useMutation({
     mutationFn: (file: File) => uploadResume(file),
@@ -31,23 +80,79 @@ export default function ResumeLibraryView() {
     onError: () => message.error('上传失败'),
   });
 
+  const setMasterMut = useMutation({
+    mutationFn: (id: number) => updateResume(id, { is_master: true }),
+    onSuccess: (res) => {
+      message.success('已设为主简历');
+      qc.invalidateQueries({ queryKey: ['resumes'] });
+      setEditing(res);
+    },
+    onError: () => message.error('设置主简历失败'),
+  });
+
+  const copyMut = useMutation({
+    mutationFn: (id: number) => copyResume(id),
+    onSuccess: (res) => {
+      message.success('已复制简历');
+      qc.invalidateQueries({ queryKey: ['resumes'] });
+      setEditing(res);
+    },
+    onError: () => message.error('复制失败'),
+  });
+
   const deleteMut = useMutation({
     mutationFn: (id: number) => deleteResume(id),
     onSuccess: () => { message.success('已删除'); qc.invalidateQueries({ queryKey: ['resumes'] }); },
-    onError: () => message.error('删除失败'),
+    onError: (error: any) => {
+      const detail = error?.response?.data?.error;
+      message.error(detail === 'master resume cannot be deleted' ? '主简历不可删除' : '删除失败');
+    },
   });
+
+  const uploadFile = (file: File) => {
+    if (!file.name.toLowerCase().endsWith('.pdf')) {
+      message.error('仅支持 PDF 简历');
+      return;
+    }
+    uploadMut.mutate(file);
+  };
 
   const handleDrop = (e: DragEvent) => {
     e.preventDefault();
     dragCounter.current = 0;
     setDragActive(false);
     const file = e.dataTransfer.files?.[0];
-    if (file) uploadMut.mutate(file);
+    if (file) uploadFile(file);
   };
 
-  const filtered = (resumesQuery.data ?? []).filter((r) =>
-    !keyword || (r.name || '').toLowerCase().includes(keyword.toLowerCase())
-  );
+  const resumes = resumesQuery.data ?? [];
+  const kw = keyword.trim().toLowerCase();
+  const filtered = resumes.filter((r) => {
+    if (!kw) return true;
+    return [
+      r.title,
+      r.name,
+      r.source,
+      ...(r.missing_sections ?? []),
+    ].join(' ').toLowerCase().includes(kw);
+  });
+
+  useEffect(() => {
+    if (editing) {
+      window.scrollTo({ top: 0, left: 0 });
+    }
+  }, [editing]);
+
+  if (editing) {
+    return (
+      <ResumeEditorDrawer
+        resume={editing}
+        open={!!editing}
+        onClose={() => setEditing(null)}
+        onSaved={(next) => setEditing(next)}
+      />
+    );
+  }
 
   return (
     <div
@@ -61,7 +166,7 @@ export default function ResumeLibraryView() {
           <div className={styles.title}>简历库</div>
           <div className={styles.subtitle}>共 {filtered.length} 份 · 拖入 PDF 至任意位置可上传</div>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div className={styles.headerActions}>
           <Input.Search
             placeholder="搜索简历"
             value={keyword}
@@ -69,17 +174,51 @@ export default function ResumeLibraryView() {
             allowClear
             style={{ width: 200 }}
           />
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setUploadOpen(true)}>上传简历</Button>
+          <Button
+            icon={<PlusOutlined />}
+            loading={createDialogMut.isPending}
+            onClick={() => createDialogMut.mutate()}
+          >
+            和 Pilot 创建薄版
+          </Button>
+          <Button icon={<CloudUploadOutlined />} onClick={() => setUploadOpen(true)}>上传 PDF</Button>
+          <Button
+            type="primary"
+            icon={<FileAddOutlined />}
+            loading={sampleMut.isPending}
+            onClick={() => sampleMut.mutate()}
+          >
+            用样例开始
+          </Button>
         </div>
       </div>
 
       {resumesQuery.isLoading ? (
         <div style={{ textAlign: 'center', padding: 48 }}><Spin /></div>
+      ) : resumes.length === 0 ? (
+        <div className={styles.emptyState}>
+          <div className={styles.emptyIcon}><FileTextOutlined /></div>
+          <div className={styles.emptyTitle}>还没有简历</div>
+          <div className={styles.emptyHint}>选择一个入口开始，之后都可以在编辑器里补全结构化章节。</div>
+          <div className={styles.emptyActions}>
+            <button className={styles.emptyAction} type="button" onClick={() => createDialogMut.mutate()}>
+              <div className={styles.emptyActionTitle}>和 Pilot 创建薄版</div>
+              <div className={styles.emptyActionDesc}>先生成可编辑的空结构，再逐章补充。</div>
+            </button>
+            <button className={styles.emptyAction} type="button" onClick={() => setUploadOpen(true)}>
+              <div className={styles.emptyActionTitle}>上传 PDF</div>
+              <div className={styles.emptyActionDesc}>继续使用现有上传流程，仅支持 PDF。</div>
+            </button>
+            <button className={styles.emptyAction} type="button" onClick={() => sampleMut.mutate()}>
+              <div className={styles.emptyActionTitle}>用样例开始</div>
+              <div className={styles.emptyActionDesc}>默认创建后端工程师样例。</div>
+            </button>
+          </div>
+        </div>
       ) : filtered.length === 0 ? (
         <div className={styles.dropZone}>
-          <div className={styles.dropIcon}>📄</div>
-          <div className={styles.dropTitle}>拖拽 PDF 简历到此处</div>
-          <div className={styles.dropHint}>或点击右上角「上传简历」· 单文件最大 10MB</div>
+          <div className={styles.dropTitle}>没有匹配的简历</div>
+          <div className={styles.dropHint}>换个关键词，或从右上角创建新简历。</div>
         </div>
       ) : (
         <div className={styles.grid}>
@@ -87,9 +226,9 @@ export default function ResumeLibraryView() {
             <div key={r.id} className={styles.card} style={{ animationDelay: `${Math.min(i, 6) * 60}ms` }}>
               <ResumeCard
                 resume={r}
-                onMatch={() => message.info('请到 AI 匹配入口选此简历')}
                 onEdit={() => setEditing(r)}
-                onDownload={() => message.info('请在编辑抽屉内下载原文件')}
+                onSetMaster={() => setMasterMut.mutate(r.id)}
+                onCopy={() => copyMut.mutate(r.id)}
                 onDelete={() => deleteMut.mutate(r.id)}
               />
             </div>
@@ -97,11 +236,10 @@ export default function ResumeLibraryView() {
         </div>
       )}
 
-      {filtered.length > 0 && !resumesQuery.isLoading && (
-        <div className={`${styles.dropZone} ${dragActive ? styles.dropZoneActive : ''}`} style={{ marginTop: 16 }}>
-          <div className={styles.dropIcon}>📄</div>
+      {resumes.length > 0 && !resumesQuery.isLoading && (
+        <div className={`${styles.dropZone} ${styles.dropZoneCompact} ${dragActive ? styles.dropZoneActive : ''}`} style={{ marginTop: 16 }}>
           <div className={styles.dropTitle}>拖拽 PDF 到此处上传</div>
-          <div className={styles.dropHint}>或点击「上传简历」按钮</div>
+          <div className={styles.dropHint}>或点击「上传 PDF」按钮</div>
         </div>
       )}
 
@@ -110,13 +248,8 @@ export default function ResumeLibraryView() {
       <ResumeUploadModal
         open={uploadOpen}
         uploading={uploadMut.isPending}
-        onSubmit={(f) => uploadMut.mutate(f)}
+        onSubmit={uploadFile}
         onClose={() => setUploadOpen(false)}
-      />
-      <ResumeTextEditorDrawer
-        resume={editing}
-        open={!!editing}
-        onClose={() => setEditing(null)}
       />
     </div>
   );

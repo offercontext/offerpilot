@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from offerpilot.application_status import APPLICATION_STATUS_IDS, normalize_application_status
@@ -24,7 +25,8 @@ from offerpilot.schemas import (
     KnowledgeDocumentOut,
     OfferOut,
     ResumeMatchOut,
-    ResumeOut,
+    normalize_resume_content,
+    resume_payload,
 )
 
 
@@ -90,7 +92,11 @@ def application_tool_registry(repo: ApplicationsRepository) -> dict[str, dict[st
         },
         "create_application": {
             "write": True,
-            "description": "Create a job application record.",
+            "description": (
+                "Create a job application record. If the same company already has records but this is a new "
+                "position, ask the user before creating it; set confirmed_new_position=true only after the user "
+                "explicitly confirms the new position should be added."
+            ),
             "schema": {
                 "type": "object",
                 "properties": {
@@ -98,10 +104,22 @@ def application_tool_registry(repo: ApplicationsRepository) -> dict[str, dict[st
                     "position_name": {"type": "string"},
                     "job_url": {"type": "string"},
                     "status": {"type": "string", "enum": list(APPLICATION_STATUS_IDS)},
+                    "confirmed_new_position": {
+                        "type": "boolean",
+                        "description": (
+                            "Set true only when the user explicitly confirmed creating a new position for "
+                            "an existing company."
+                        ),
+                    },
+                    "closed_reason": {
+                        "type": "string",
+                        "description": "Required when status is closed.",
+                    },
                 },
                 "required": ["company_name", "position_name"],
             },
             "describe": _describe_create_application,
+            "validate": lambda args: _validate_create_application(repo, args),
             "handler": lambda args: _create_application(repo, args),
         },
         "update_application_status": {
@@ -115,6 +133,10 @@ def application_tool_registry(repo: ApplicationsRepository) -> dict[str, dict[st
                         "description": "Application id returned by list_applications.",
                     },
                     "status": {"type": "string", "enum": list(APPLICATION_STATUS_IDS)},
+                    "closed_reason": {
+                        "type": "string",
+                        "description": "Required when status is closed.",
+                    },
                 },
                 "required": ["id", "status"],
             },
@@ -152,7 +174,7 @@ def event_tool_registry(
             "write": True,
             "description": "Create an application event. Use written_test.subtype=assessment for assessments.",
             "schema": _event_schema(["application_id", "event_type", "scheduled_at", "duration_minutes"]),
-            "describe": lambda args: _describe_id_action(args, "新建日程"),
+            "describe": _describe_create_application_event,
             "handler": lambda args: _create_application_event(applications, repo, args),
         },
         "update_application_event": {
@@ -191,6 +213,7 @@ def note_tool_registry(
             "description": "Add an interview review note. If application_id is present, company and position can be omitted.",
             "schema": _note_schema([]),
             "describe": lambda args: _describe_note_action(args, "新增复盘"),
+            "validate": _validate_note_action,
             "handler": lambda args: _add_note(applications, repo, args),
         },
         "update_note": {
@@ -277,6 +300,37 @@ def resume_tool_registry(repo: ResumesRepository) -> dict[str, dict[str, Any]]:
             "description": "Get one resume including parsed text by id.",
             "schema": _id_schema("Resume id."),
             "handler": lambda args: _get_resume(repo, args),
+        },
+        "resume_update_career_intent": {
+            "write": True,
+            "description": "Update a resume's career_intent block. Requires user confirmation.",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer"},
+                    "career_intent": {"type": "object"},
+                },
+                "required": ["id", "career_intent"],
+            },
+            "describe": lambda args: _describe_id_action(args, "更新简历求职意向"),
+            "handler": lambda args: _resume_update_career_intent(repo, args),
+        },
+        "resume_rewrite_highlight": {
+            "write": True,
+            "description": "Rewrite one highlight in a structured resume section. Requires user confirmation.",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer"},
+                    "section": {"type": "string"},
+                    "item_index": {"type": "integer"},
+                    "highlight_index": {"type": "integer"},
+                    "text": {"type": "string"},
+                },
+                "required": ["id", "section", "item_index", "highlight_index", "text"],
+            },
+            "describe": lambda args: _describe_id_action(args, "改写简历亮点"),
+            "handler": lambda args: _resume_rewrite_highlight(repo, args),
         },
         "list_resume_matches": {
             "write": False,
@@ -370,6 +424,7 @@ def _create_application(repo: ApplicationsRepository, args: str) -> str:
             job_url=str(payload.get("job_url") or ""),
             status=normalize_application_status(str(payload.get("status") or "applied")),
             source="ai",
+            closed_reason=str(payload.get("closed_reason") or ""),
         )
     )
     return json.dumps(_application_json(app), ensure_ascii=False)
@@ -391,6 +446,7 @@ def _update_application_status(repo: ApplicationsRepository, args: str) -> str:
             source=app.source,
             notes=app.notes,
             applied_at=app.applied_at,
+            closed_reason=str(payload.get("closed_reason") or ""),
         ),
     )
     if updated is None:
@@ -561,9 +617,69 @@ def _get_resume(repo: ResumesRepository, args: str) -> str:
     return _json(_resume_json(resume))
 
 
+def _resume_update_career_intent(repo: ResumesRepository, args: str) -> str:
+    payload = _payload(args)
+    resume_id = _required_int(payload, "id", "resume_update_career_intent")
+    career_intent = payload.get("career_intent")
+    if not isinstance(career_intent, dict):
+        raise ValueError("resume_update_career_intent requires career_intent object")
+    resume = repo.get(resume_id)
+    if resume is None or resume.deleted_at is not None:
+        raise ValueError("resume not found")
+    content = normalize_resume_content(resume.content_json)
+    content["career_intent"] = career_intent
+    updated = repo.update(resume_id, {"content_json": content})
+    if updated is None:
+        raise ValueError("resume not found")
+    return _json(_resume_json(updated))
+
+
+def _resume_rewrite_highlight(repo: ResumesRepository, args: str) -> str:
+    payload = _payload(args)
+    resume_id = _required_int(payload, "id", "resume_rewrite_highlight")
+    section = str(payload.get("section") or "").strip()
+    item_index = _required_int(payload, "item_index", "resume_rewrite_highlight")
+    highlight_index = _required_int(payload, "highlight_index", "resume_rewrite_highlight")
+    text = str(payload.get("text") or "").strip()
+    if not section:
+        raise ValueError("resume_rewrite_highlight requires section")
+    if item_index < 0:
+        raise ValueError("item_index must be non-negative")
+    if highlight_index < 0:
+        raise ValueError("highlight_index must be non-negative")
+    if not text:
+        raise ValueError("resume_rewrite_highlight requires text")
+    resume = repo.get(resume_id)
+    if resume is None or resume.deleted_at is not None:
+        raise ValueError("resume not found")
+    content = normalize_resume_content(resume.content_json)
+    section_items = content.get(section)
+    if not isinstance(section_items, list):
+        raise ValueError(f"resume section not found: {section}")
+    try:
+        item = section_items[item_index]
+    except IndexError as exc:
+        raise ValueError("resume_rewrite_highlight item_index out of range") from exc
+    if not isinstance(item, dict):
+        raise ValueError("resume_rewrite_highlight item must be an object")
+    highlights = item.get("highlights")
+    if not isinstance(highlights, list):
+        raise ValueError("resume_rewrite_highlight requires highlights list")
+    try:
+        highlights[highlight_index] = text
+    except IndexError as exc:
+        raise ValueError("resume_rewrite_highlight highlight_index out of range") from exc
+    updated = repo.update(resume_id, {"content_json": content})
+    if updated is None:
+        raise ValueError("resume not found")
+    return _json(_resume_json(updated))
+
+
 def _list_resume_matches(repo: ResumesRepository, args: str) -> str:
     payload = _payload(args)
     resume_id = _required_int(payload, "resume_id", "list_resume_matches")
+    if repo.get(resume_id) is None:
+        raise ValueError("resume not found")
     return _json([_resume_match_json(match) for match in repo.list_matches(resume_id)])
 
 
@@ -614,9 +730,49 @@ def _describe_create_application(args: str) -> str:
     return f"新建投递：{payload.get('company_name', '')} - {payload.get('position_name', '')}"
 
 
+def _validate_create_application(repo: ApplicationsRepository, args: str) -> str:
+    payload = _payload(args)
+    company = str(payload.get("company_name") or "").strip()
+    position = str(payload.get("position_name") or "").strip()
+    if not company or not position or bool(payload.get("confirmed_new_position")):
+        return ""
+
+    company_key = company.casefold()
+    position_key = position.casefold()
+    same_company = [item for item in repo.list() if item.company_name.strip().casefold() == company_key]
+    if not same_company:
+        return ""
+    if any(item.position_name.strip().casefold() == position_key for item in same_company):
+        return ""
+    existing_positions = "、".join(sorted({item.position_name for item in same_company if item.position_name}))
+    return (
+        "create_application requires explicit user confirmation before adding a new position "
+        f"for existing company {company}. Existing positions: {existing_positions or 'unknown'}."
+    )
+
+
 def _describe_update_application_status(args: str) -> str:
     payload = _payload(args)
     return f"将投递 #{payload.get('id', '')} 的状态改为 {payload.get('status', '')}"
+
+
+_EVENT_TYPE_LABELS = {
+    "written_test": "笔试",
+    "interview": "面试",
+    "offer_step": "Offer 进展",
+    "deadline": "截止",
+    "custom": "自定义",
+}
+
+
+def _describe_create_application_event(args: str) -> str:
+    payload = _payload(args)
+    event_type = str(payload.get("event_type") or "")
+    title = _EVENT_TYPE_LABELS.get(event_type, "日程")
+    scheduled_at = _format_pending_datetime(str(payload.get("scheduled_at") or ""))
+    duration = _format_pending_duration(payload.get("duration_minutes"))
+    details = " · ".join(value for value in [title, scheduled_at, duration] if value)
+    return f"新建日程：{details}" if details else "新建日程"
 
 
 def _describe_id_action(args: str, action: str) -> str:
@@ -624,9 +780,59 @@ def _describe_id_action(args: str, action: str) -> str:
     return f"{action} #{payload.get('id', '')}"
 
 
+def _format_pending_datetime(value: str) -> str:
+    if not value:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone(timedelta(hours=8)))
+    return parsed.strftime("%Y-%m-%d %H:%M")
+
+
+def _format_pending_duration(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    try:
+        minutes = int(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return f"{minutes} 分钟"
+
+
 def _describe_note_action(args: str, action: str) -> str:
     payload = _payload(args)
-    return f"{action}: {payload.get('company', '')} {payload.get('round', '')}"
+    company = str(payload.get("company") or "").strip()
+    position = str(payload.get("position") or "").strip()
+    round_name = str(payload.get("round") or "").strip()
+    details = " · ".join(value for value in [company, position, round_name] if value)
+    return f"{action}：{details}" if details else action
+
+
+def _validate_note_action(args: str) -> str:
+    payload = _payload(args)
+    date = str(payload.get("date") or "").strip()
+    if date and not bool(payload.get("allow_placeholder_date")) and _looks_unclear_note_date(date):
+        return (
+            "add_note date is unclear; ask the user to provide a specific interview date "
+            "or confirm saving it as 日期待定 before creating a pending confirmation."
+        )
+    if _optional_int(payload, "application_id") > 0:
+        return ""
+    if str(payload.get("company") or "").strip():
+        return ""
+    return "add_note requires company when application_id is not provided"
+
+
+def _looks_unclear_note_date(value: str) -> bool:
+    normalized = value.strip().lower()
+    if not normalized:
+        return False
+    if normalized in {"日期待定", "待定", "unknown", "tbd"}:
+        return True
+    return bool(re.search(r"(xx|x月|x日|某|待补|待确认|不详|未知)", normalized))
 
 
 def _payload(args: str) -> dict[str, Any]:
@@ -726,7 +932,7 @@ def _offer_json(offer: Any) -> dict[str, Any]:
 
 
 def _resume_json(resume: Any) -> dict[str, Any]:
-    payload = ResumeOut.model_validate(resume).model_dump(mode="json")
+    payload = resume_payload(resume)
     payload["record_type"] = "resume"
     payload["resume_id"] = resume.id
     return payload
@@ -929,6 +1135,10 @@ def _note_schema(required: list[str]) -> dict[str, Any]:
             "position": {"type": "string"},
             "round": {"type": "string"},
             "date": {"type": "string"},
+            "allow_placeholder_date": {
+                "type": "boolean",
+                "description": "Set true only after the user confirms saving an unclear interview date as 日期待定.",
+            },
             "questions": {"type": "string"},
             "self_reflection": {"type": "string"},
             "difficulty_points": {"type": "string"},

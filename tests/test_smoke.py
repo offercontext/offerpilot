@@ -3,7 +3,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from offerpilot.cli import app
-from offerpilot.smoke import run_core_smoke
+from offerpilot.smoke import run_core_smoke, run_http_smoke
 
 
 def _static_dir(tmp_path: Path) -> Path:
@@ -24,6 +24,8 @@ def test_core_smoke_runs_spa_api_and_hitl_loop(tmp_path):
         "chat_pending",
         "confirm_action",
         "pending_cleared",
+        "chat_create_application_card",
+        "chat_create_event_card",
     ]
 
 
@@ -36,3 +38,40 @@ def test_cli_smoke_prints_checked_steps(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert "Smoke passed" in result.output
     assert "confirm_action" in result.output
+
+
+def test_http_smoke_uses_real_http_and_cleans_test_application(tmp_path):
+    report = run_http_smoke(data_dir=tmp_path / "data", static_dir=_static_dir(tmp_path), real_ai=False)
+
+    assert report.ok is True
+    assert [step.name for step in report.steps] == [
+        "http_unconfigured_chat",
+        "http_health",
+        "http_settings",
+        "http_spa",
+        "http_create_application",
+        "http_list_applications",
+        "http_resume_crud",
+        "http_application_event_crud",
+        "http_chat_pending",
+        "http_confirm_action",
+        "http_pending_cleared",
+        "http_chat_create_application_card",
+        "http_chat_create_event_card",
+        "http_cleanup",
+    ]
+
+
+def test_cli_verify_local_runs_http_smoke(monkeypatch, tmp_path):
+    monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path / "data"))
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["verify", "--profile", "local", "--static-dir", str(_static_dir(tmp_path))])
+
+    assert result.exit_code == 0
+    assert "Verify local passed" in result.output
+    assert "http_unconfigured_chat" in result.output
+    assert "http_resume_crud" in result.output
+    assert "http_application_event_crud" in result.output
+    assert "http_health" in result.output
+    assert "http_confirm_action" in result.output

@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Button,
-  Drawer,
   Empty,
   Form,
   Input,
@@ -144,6 +143,10 @@ function BankTab() {
       return next;
     });
 
+  if (generateOpen) {
+    return <GenerateDrawer open={generateOpen} onClose={() => setGenerateOpen(false)} />;
+  }
+
   return (
     <>
       <div className={styles.toolbar}>
@@ -284,7 +287,6 @@ function BankTab() {
         </div>
       )}
 
-      <GenerateDrawer open={generateOpen} onClose={() => setGenerateOpen(false)} />
       <QuestionFormModal
         open={manualOpen || !!editing}
         question={editing}
@@ -325,8 +327,18 @@ function GenerateDrawer({ open, onClose }: { open: boolean; onClose: () => void 
     },
   });
 
+  if (!open) return null;
+
   return (
-    <Drawer title="AI 生成题目" open={open} onClose={onClose} width={420} destroyOnClose>
+    <section aria-label="AI 生成题目">
+      <div className={styles.layerHeader}>
+        <div>
+          <Button type="link" className={styles.backButton} onClick={onClose}>
+            返回题库
+          </Button>
+          <h2 className={styles.layerTitle}>AI 生成题目</h2>
+        </div>
+      </div>
       <Space direction="vertical" size={20} style={{ width: '100%' }}>
         <div>
           <div style={{ marginBottom: 8, fontWeight: 600 }}>来源</div>
@@ -372,7 +384,7 @@ function GenerateDrawer({ open, onClose }: { open: boolean; onClose: () => void 
           已存在的题目会自动去重（精确 + 近似），不会重复入库。
         </Paragraph>
       </Space>
-    </Drawer>
+    </section>
   );
 }
 
@@ -423,7 +435,7 @@ function QuestionFormModal({
       okText="保存"
       cancelText="取消"
       confirmLoading={saveMutation.isPending}
-      destroyOnClose
+      destroyOnHidden
     >
       <Form
         form={form}

@@ -1,6 +1,7 @@
 export type ViewMode =
   | 'dashboard'
   | 'board'
+  | 'applications-list'
   | 'calendar'
   | 'reminders'
   | 'interview'
@@ -10,6 +11,7 @@ export type ViewMode =
   | 'knowledge'
   | 'questions'
   | 'resumes'
+  | 'pilot'
   | 'settings';
 
 export type ModuleKey =
@@ -19,6 +21,7 @@ export type ModuleKey =
   | 'pipeline'
   | 'interview'
   | 'knowledge'
+  | 'pilot'
   | 'settings';
 
 export interface ModuleNavItem {
@@ -39,6 +42,7 @@ export const MODULE_NAV: ModuleNavItem[] = [
   { key: 'pipeline', label: '投递', defaultView: 'board' },
   { key: 'interview', label: '面试', defaultView: 'interview' },
   { key: 'knowledge', label: '知识库', defaultView: 'knowledge' },
+  { key: 'pilot', label: 'Pilot', defaultView: 'pilot' },
   { key: 'settings', label: '设置', defaultView: 'settings' },
 ];
 
@@ -48,12 +52,14 @@ export const MODULE_TABS: Record<ModuleKey, ModuleTabItem[]> = {
   practice: [{ view: 'questions', label: '题库' }],
   pipeline: [
     { view: 'board', label: '看板' },
+    { view: 'applications-list', label: '列表' },
     { view: 'calendar', label: '日历' },
     { view: 'offers', label: 'Offer' },
     { view: 'reminders', label: '提醒' },
   ],
   interview: [{ view: 'interview', label: '面试' }],
   knowledge: [{ view: 'knowledge', label: '知识库' }],
+  pilot: [{ view: 'pilot', label: '会话中心' }],
   settings: [{ view: 'settings', label: '设置' }],
 };
 
@@ -62,11 +68,13 @@ const VIEW_TO_MODULE: Partial<Record<ViewMode, ModuleKey>> = {
   resumes: 'resume',
   questions: 'practice',
   board: 'pipeline',
+  'applications-list': 'pipeline',
   calendar: 'pipeline',
   reminders: 'pipeline',
   offers: 'pipeline',
   interview: 'interview',
   knowledge: 'knowledge',
+  pilot: 'pilot',
   settings: 'settings',
 };
 

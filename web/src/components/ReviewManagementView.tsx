@@ -126,6 +126,22 @@ export default function ReviewManagementView({ applications }: Props) {
     }
   }
 
+  if (drawerOpen) {
+    return (
+      <ReviewFormDrawer
+        open={drawerOpen}
+        applications={applications}
+        note={editing}
+        saving={createMut.isPending || updateMut.isPending}
+        onSubmit={handleSubmit}
+        onClose={() => {
+          setDrawerOpen(false);
+          setEditing(null);
+        }}
+      />
+    );
+  }
+
   return (
     <div>
       <Space style={{ marginBottom: 16, width: '100%', alignItems: 'center' }} wrap>
@@ -215,17 +231,6 @@ export default function ReviewManagementView({ applications }: Props) {
         </Space>
       )}
 
-      <ReviewFormDrawer
-        open={drawerOpen}
-        applications={applications}
-        note={editing}
-        saving={createMut.isPending || updateMut.isPending}
-        onSubmit={handleSubmit}
-        onClose={() => {
-          setDrawerOpen(false);
-          setEditing(null);
-        }}
-      />
     </div>
   );
 }

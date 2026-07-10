@@ -1,4 +1,5 @@
-import type { ChatMessage, ChatResponse, Conversation } from '@/types/chat';
+import type { ChatMessage, ChatResponse, ChatStreamEvent, Conversation } from '@/types/chat';
+import { authHeaders } from './authToken';
 import { createApiClient } from './http';
 
 const http = createApiClient({ baseURL: '/api', timeout: 130000 });
@@ -10,31 +11,196 @@ export interface ChatContextInput {
   mode?: string;
 }
 
+export interface ChatRequestOptions {
+  signal?: AbortSignal;
+}
+
+export interface ChatStreamRequestOptions extends ChatRequestOptions {
+  onEvent?: (event: ChatStreamEvent) => void;
+}
+
 export async function sendChat(
   message: string,
   conversationId?: number,
   context?: ChatContextInput,
+  options?: ChatRequestOptions,
 ): Promise<ChatResponse> {
-  const { data } = await http.post<ChatResponse>('/chat', {
-    message,
-    conversation_id: conversationId ?? 0,
-    ...(context?.context_type ? { context_type: context.context_type } : {}),
-    ...(context?.context_ref !== undefined ? { context_ref: String(context.context_ref) } : {}),
-    ...(context?.mode ? { mode: context.mode } : {}),
-  });
+  const { data } = await http.post<ChatResponse>(
+    '/chat',
+    {
+      message,
+      conversation_id: conversationId ?? 0,
+      ...(context?.context_type ? { context_type: context.context_type } : {}),
+      ...(context?.context_ref !== undefined ? { context_ref: String(context.context_ref) } : {}),
+      ...(context?.mode ? { mode: context.mode } : {}),
+    },
+    { signal: options?.signal },
+  );
   return data;
 }
 
-export async function confirmAction(conversationId: number, approved: boolean): Promise<ChatResponse> {
-  const { data } = await http.post<ChatResponse>('/chat/confirm', {
-    conversation_id: conversationId,
-    approved,
-  });
+export async function confirmAction(
+  conversationId: number,
+  approved: boolean,
+  options?: ChatRequestOptions,
+): Promise<ChatResponse> {
+  const { data } = await http.post<ChatResponse>(
+    '/chat/confirm',
+    {
+      conversation_id: conversationId,
+      approved,
+    },
+    { signal: options?.signal },
+  );
   return data;
 }
 
-export async function listConversations(): Promise<Conversation[]> {
-  const { data } = await http.get<Conversation[]>('/chat/conversations');
+export async function undoLastWrite(
+  conversationId: number,
+  options?: ChatRequestOptions,
+): Promise<Extract<ChatResponse, { type: 'message' }>> {
+  const { data } = await http.post<Extract<ChatResponse, { type: 'message' }>>(
+    '/chat/undo-last-write',
+    { conversation_id: conversationId },
+    { signal: options?.signal },
+  );
+  return data;
+}
+
+export function createSseParser(onEvent: (event: ChatStreamEvent) => void) {
+  let buffer = '';
+
+  function parseFrame(frame: string) {
+    const dataLines: string[] = [];
+    let eventName = '';
+    for (const line of frame.split('\n')) {
+      if (line.startsWith(':')) continue;
+      if (line.startsWith('event:')) {
+        eventName = line.slice('event:'.length).trim();
+      } else if (line.startsWith('data:')) {
+        dataLines.push(line.slice('data:'.length).trim());
+      }
+    }
+    if (!dataLines.length) return;
+    const parsed = JSON.parse(dataLines.join('\n')) as ChatStreamEvent;
+    onEvent({ ...parsed, event: parsed.event || eventName });
+  }
+
+  return {
+    push(chunk: string) {
+      buffer += chunk;
+      buffer = buffer.replace(/\r\n/g, '\n');
+      let frameEnd = buffer.indexOf('\n\n');
+      while (frameEnd >= 0) {
+        const frame = buffer.slice(0, frameEnd).trim();
+        buffer = buffer.slice(frameEnd + 2);
+        if (frame) parseFrame(frame);
+        frameEnd = buffer.indexOf('\n\n');
+      }
+    },
+    flush() {
+      const frame = buffer.trim();
+      buffer = '';
+      if (frame) parseFrame(frame);
+    },
+  };
+}
+
+export async function streamChat(
+  message: string,
+  conversationId?: number,
+  context?: ChatContextInput,
+  options?: ChatStreamRequestOptions,
+): Promise<ChatResponse> {
+  return postChatStream(
+    '/api/chat/stream',
+    {
+      message,
+      conversation_id: conversationId ?? 0,
+      ...(context?.context_type ? { context_type: context.context_type } : {}),
+      ...(context?.context_ref !== undefined ? { context_ref: String(context.context_ref) } : {}),
+      ...(context?.mode ? { mode: context.mode } : {}),
+    },
+    options,
+  );
+}
+
+export async function streamConfirmAction(
+  conversationId: number,
+  approved: boolean,
+  options?: ChatStreamRequestOptions,
+): Promise<ChatResponse> {
+  return postChatStream(
+    '/api/chat/confirm/stream',
+    {
+      conversation_id: conversationId,
+      approved,
+    },
+    options,
+  );
+}
+
+async function postChatStream(
+  url: string,
+  body: Record<string, unknown>,
+  options?: ChatStreamRequestOptions,
+): Promise<ChatResponse> {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders(),
+    },
+    body: JSON.stringify(body),
+    signal: options?.signal,
+  });
+  if (!response.ok) {
+    throw await streamHttpError(response);
+  }
+  if (!response.body) {
+    throw new Error('SSE response body is empty');
+  }
+
+  let completed: ChatResponse | undefined;
+  const decoder = new TextDecoder();
+  const parser = createSseParser((event) => {
+    options?.onEvent?.(event);
+    if (event.event === 'completed') {
+      const data = event.data as { response?: ChatResponse };
+      completed = data.response;
+    }
+    if (event.event === 'error') {
+      const data = event.data as { message?: string };
+      throw new Error(data.message || '对话失败，请稍后重试');
+    }
+  });
+  const reader = response.body.getReader();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    parser.push(decoder.decode(value, { stream: true }));
+  }
+  parser.push(decoder.decode());
+  parser.flush();
+  if (!completed) {
+    throw new Error('SSE stream completed without response');
+  }
+  return completed;
+}
+
+async function streamHttpError(response: Response) {
+  try {
+    const payload = (await response.json()) as { error?: string };
+    return new Error(payload.error || `HTTP ${response.status}`);
+  } catch {
+    return new Error(`HTTP ${response.status}`);
+  }
+}
+
+export async function listConversations(includeArchived = false): Promise<Conversation[]> {
+  const { data } = await http.get<Conversation[]>('/chat/conversations', {
+    params: includeArchived ? { include_archived: true } : undefined,
+  });
   return data ?? [];
 }
 
@@ -47,9 +213,26 @@ export async function deleteConversation(id: number): Promise<void> {
   await http.delete(`/chat/conversations/${id}`);
 }
 
+export interface UpdateConversationPayload {
+  title?: string;
+  pinned?: boolean;
+  archived?: boolean;
+  context_type?: string;
+  context_ref?: string;
+}
+
+export async function updateConversation(
+  id: number,
+  payload: UpdateConversationPayload,
+): Promise<Conversation> {
+  const { data } = await http.patch<Conversation>(`/chat/conversations/${id}`, payload);
+  return data;
+}
+
 export interface Settings {
   chat_auto_approve_writes: boolean;
   active_provider_id: string;
+  fallback_provider_id: string;
   providers: AIProviderProfile[];
   base_url: string;
   model: string;
@@ -82,10 +265,38 @@ export interface AIProviderProfile {
 export interface UpdateSettingsPayload {
   chat_auto_approve_writes: boolean;
   active_provider_id?: string;
+  fallback_provider_id?: string;
   providers?: Array<Omit<AIProviderProfile, 'has_api_key'> & { api_key?: string }>;
-  base_url: string;
-  model: string;
+  base_url?: string;
+  model?: string;
   api_key?: string;
+}
+
+export interface ProviderConnectionTestPayload {
+  provider_id?: string;
+  provider?: Omit<AIProviderProfile, 'has_api_key'> & { api_key?: string };
+}
+
+export interface ProviderConnectionTestResult {
+  ok: boolean;
+  provider_id?: string;
+  model?: string;
+  latency_ms?: number;
+  message?: string;
+  error?: string;
+}
+
+export interface SettingsBackup {
+  version: number;
+  exported_at: string;
+  runtime_mode: Settings['runtime_mode'];
+  auth_enabled: boolean;
+  has_auth_token: boolean;
+  log_level: Settings['log_level'];
+  chat_auto_approve_writes: boolean;
+  active_provider_id: string;
+  fallback_provider_id: string;
+  providers: AIProviderProfile[];
 }
 
 export async function getSettings(): Promise<Settings> {
@@ -95,6 +306,18 @@ export async function getSettings(): Promise<Settings> {
 
 export async function updateSettings(payload: UpdateSettingsPayload): Promise<Settings> {
   const { data } = await http.put<Settings>('/settings', payload);
+  return data;
+}
+
+export async function testProviderConnection(
+  payload: ProviderConnectionTestPayload,
+): Promise<ProviderConnectionTestResult> {
+  const { data } = await http.post<ProviderConnectionTestResult>('/settings/providers/test', payload);
+  return data;
+}
+
+export async function getSettingsBackup(): Promise<SettingsBackup> {
+  const { data } = await http.get<SettingsBackup>('/settings/backup');
   return data;
 }
 

@@ -1,8 +1,9 @@
 .header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   margin-bottom: 16px;
+  gap: 16px;
 }
 .title {
   font-size: 20px;
@@ -15,16 +16,74 @@
   margin-top: 2px;
   font-variant-numeric: tabular-nums;
 }
+.headerActions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
 .grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 14px;
 }
-@media (max-width: 1100px) {
-  .grid { grid-template-columns: repeat(2, 1fr); }
+.emptyState {
+  border: 1px solid var(--op-border);
+  border-radius: 8px;
+  padding: 28px;
+  background: var(--op-surface);
+  margin-bottom: 16px;
 }
-@media (max-width: 768px) {
-  .grid { grid-template-columns: 1fr; }
+.emptyIcon {
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  background: var(--op-layout-bg);
+  color: var(--op-primary);
+  font-size: 22px;
+  margin-bottom: 12px;
+}
+.emptyTitle {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--op-text);
+  margin-bottom: 4px;
+}
+.emptyHint {
+  font-size: 13px;
+  color: var(--op-muted);
+  margin-bottom: 16px;
+}
+.emptyActions {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+.emptyAction {
+  border: 1px solid var(--op-border);
+  border-radius: 8px;
+  padding: 14px;
+  background: #fff;
+  color: var(--op-text);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 150ms var(--op-ease), transform 150ms var(--op-ease);
+}
+.emptyAction:hover {
+  border-color: var(--op-primary);
+  transform: translateY(-1px);
+}
+.emptyActionTitle {
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+.emptyActionDesc {
+  color: var(--op-muted);
+  font-size: 12px;
+  line-height: 1.45;
 }
 .dropZone {
   border: 2px dashed var(--op-border);
@@ -38,6 +97,9 @@
 .dropZoneActive {
   border-color: var(--op-primary);
   background: var(--op-layout-bg);
+}
+.dropZoneCompact {
+  padding: 18px;
 }
 .dropIcon { font-size: 28px; margin-bottom: 6px; }
 .dropTitle { font-size: 15px; color: var(--op-text); font-weight: 600; }
@@ -65,4 +127,154 @@
   font-size: 18px;
   color: var(--op-primary);
   font-weight: 600;
+}
+.editorWorkspace {
+  min-width: 0;
+}
+.editorWorkspaceToolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.backButton {
+  padding: 0;
+  height: auto;
+}
+.editorWorkspaceTitle {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--op-text);
+  margin-top: 6px;
+}
+.editorHeader {
+  border: 1px solid var(--op-border);
+  border-radius: 8px;
+  padding: 14px;
+  background: var(--op-surface);
+  margin-bottom: 14px;
+}
+.editorTitleInput {
+  font-size: 18px;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+.editorMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--op-muted);
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+.editorCompletion {
+  display: grid;
+  gap: 8px;
+}
+.missingLine {
+  min-height: 24px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  color: var(--op-muted);
+  font-size: 12px;
+}
+.editorDescriptions {
+  margin-bottom: 14px;
+}
+.editorGrid {
+  display: grid;
+  grid-template-columns: 148px minmax(0, 1fr);
+  gap: 14px;
+}
+.sectionNav {
+  border: 1px solid var(--op-border);
+  border-radius: 8px;
+  background: var(--op-surface);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-self: start;
+}
+.sectionNav button {
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--op-muted);
+  padding: 8px 10px;
+  text-align: left;
+  cursor: pointer;
+  font-size: 13px;
+}
+.sectionNav button:hover,
+.sectionNavActive {
+  background: var(--op-layout-bg) !important;
+  color: var(--op-text) !important;
+  font-weight: 700;
+}
+.sectionEditor {
+  min-width: 0;
+  border: 1px solid var(--op-border);
+  border-radius: 8px;
+  padding: 14px;
+  background: var(--op-surface);
+}
+.sectionTitle {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--op-text);
+  margin-bottom: 12px;
+}
+.fieldLabel {
+  display: block;
+  color: var(--op-muted);
+  font-size: 12px;
+  font-weight: 700;
+  margin: 12px 0 6px;
+}
+.inlineExample {
+  margin-top: 8px;
+  color: var(--op-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+.codeTextarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}
+@media (max-width: 1100px) {
+  .grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 900px) {
+  .header {
+    flex-direction: column;
+  }
+  .editorWorkspaceToolbar {
+    flex-direction: column;
+  }
+  .headerActions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+  .emptyActions {
+    grid-template-columns: 1fr;
+  }
+  .editorGrid {
+    grid-template-columns: 1fr;
+  }
+  .sectionNav {
+    flex-direction: row;
+    overflow-x: auto;
+  }
+  .sectionNav button {
+    white-space: nowrap;
+  }
+}
+@media (max-width: 768px) {
+  .grid { grid-template-columns: 1fr; }
 }

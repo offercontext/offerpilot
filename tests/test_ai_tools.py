@@ -1,6 +1,8 @@
 import json
 from datetime import datetime, timezone
 
+import pytest
+
 from offerpilot.ai.tools import application_tool_registry, offerpilot_tool_registry
 from offerpilot.db import init_database
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
@@ -40,6 +42,7 @@ def test_application_tool_schemas_require_detail_ids(tmp_path):
     assert update_schema["required"] == ["id", "status"]
     assert "id" in get_schema["properties"]
     assert "id" in update_schema["properties"]
+    assert "closed_reason" in update_schema["properties"]
 
 
 def test_get_application_requires_id_with_readable_error(tmp_path):
@@ -102,6 +105,53 @@ def test_application_status_tool_rejects_invalid_status(tmp_path):
         raise AssertionError("invalid status should raise")
 
 
+def test_application_status_tool_requires_and_saves_closed_reason(tmp_path):
+    repo = ApplicationsRepository(init_database(tmp_path / "data.db"))
+    created = repo.create(ApplicationCreate(company_name="ByteDance", position_name="Backend", status="interview"))
+    registry = application_tool_registry(repo)
+
+    try:
+        registry["update_application_status"]["handler"](
+            json.dumps({"id": created.id, "status": "closed"})
+        )
+    except ValueError as exc:
+        assert str(exc) == "closed_reason is required when closing an application"
+    else:
+        raise AssertionError("closing without closed_reason should raise")
+
+    closed = json.loads(
+        registry["update_application_status"]["handler"](
+            json.dumps({"id": created.id, "status": "closed", "closed_reason": "已接受其他 offer"})
+        )
+    )
+
+    assert closed["status"] == "closed"
+    assert closed["closed_reason"] == "已接受其他 offer"
+    assert closed["closed_at"] is not None
+
+
+def test_application_status_tool_rejects_reopening_closed_application(tmp_path):
+    repo = ApplicationsRepository(init_database(tmp_path / "data.db"))
+    created = repo.create(
+        ApplicationCreate(
+            company_name="ByteDance",
+            position_name="Backend",
+            status="closed",
+            closed_reason="岗位关闭",
+        )
+    )
+    registry = application_tool_registry(repo)
+
+    try:
+        registry["update_application_status"]["handler"](
+            json.dumps({"id": created.id, "status": "interview"})
+        )
+    except ValueError as exc:
+        assert str(exc) == "closed application cannot be reopened"
+    else:
+        raise AssertionError("reopening a closed application should raise")
+
+
 def test_offerpilot_tool_registry_covers_notes_events_and_offers(tmp_path):
     session_factory = init_database(tmp_path / "data.db")
     applications = ApplicationsRepository(session_factory)
@@ -152,12 +202,99 @@ def test_offerpilot_tool_registry_covers_notes_events_and_offers(tmp_path):
     assert registry["create_application_event"]["write"] is True
     assert registry["add_note"]["schema"]["required"] == []
     assert "application_id" in registry["add_note"]["schema"]["properties"]
+    assert "allow_placeholder_date" in registry["add_note"]["schema"]["properties"]
     assert listed_notes[0]["id"] == note.id
     assert listed_events[0]["id"] == event.id
     assert listed_events[0]["duration_minutes"] == 45
     assert listed_offers[0]["id"] == offer.id
     assert offer_detail["total_cash"] == 30000 * 15 + 50000
     assert [item["id"] for item in compared] == [offer.id]
+
+
+def test_add_note_validation_asks_before_unclear_placeholder_date(tmp_path):
+    session_factory = init_database(tmp_path / "data.db")
+    applications = ApplicationsRepository(session_factory)
+    notes = NotesRepository(session_factory)
+    events = ApplicationEventsRepository(session_factory)
+    offers = OffersRepository(session_factory)
+    registry = offerpilot_tool_registry(applications, events, notes, offers)
+
+    validation = registry["add_note"]["validate"](
+        json.dumps(
+            {
+                "company": "牛客网",
+                "position": "软件测试工程师",
+                "round": "技术一面",
+                "date": "2026年XX月XX日",
+            },
+            ensure_ascii=False,
+        )
+    )
+    allowed = registry["add_note"]["validate"](
+        json.dumps(
+            {
+                "company": "牛客网",
+                "position": "软件测试工程师",
+                "round": "技术一面",
+                "date": "日期待定",
+                "allow_placeholder_date": True,
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    assert validation == (
+        "add_note date is unclear; ask the user to provide a specific interview date "
+        "or confirm saving it as 日期待定 before creating a pending confirmation."
+    )
+    assert allowed == ""
+
+
+def test_offerpilot_event_tools_hide_soft_deleted_applications(tmp_path):
+    session_factory = init_database(tmp_path / "data.db")
+    applications = ApplicationsRepository(session_factory)
+    notes = NotesRepository(session_factory)
+    events = ApplicationEventsRepository(session_factory)
+    offers = OffersRepository(session_factory)
+    app = applications.create(ApplicationCreate(company_name="ByteDance", position_name="Backend"))
+    event = events.create(
+        ApplicationEventCreate(
+            application_id=app.id,
+            event_type="interview",
+            scheduled_at=datetime(2026, 7, 10, 10, tzinfo=timezone.utc),
+            duration_minutes=45,
+        )
+    )
+    registry = offerpilot_tool_registry(applications, events, notes, offers)
+
+    applications.delete(app.id)
+
+    assert json.loads(registry["list_application_events"]["handler"](json.dumps({}))) == []
+    try:
+        registry["get_application_event"]["handler"](json.dumps({"id": event.id}))
+    except ValueError as exc:
+        assert str(exc) == "application event not found"
+    else:
+        raise AssertionError("event for soft-deleted application should not be readable")
+
+    try:
+        registry["update_application_event"]["handler"](
+            json.dumps(
+                {
+                    "id": event.id,
+                    "application_id": app.id,
+                    "event_type": "interview",
+                    "scheduled_at": "2026-07-11T10:00:00Z",
+                    "duration_minutes": 45,
+                }
+            )
+        )
+    except ValueError as exc:
+        assert str(exc) == "application event not found"
+    else:
+        raise AssertionError("event for soft-deleted application should not be writable")
+
+    assert registry["delete_application_event"]["handler"](json.dumps({"id": event.id})) == '{"deleted":false}'
 
 
 def test_offerpilot_write_tools_mutate_notes_events_and_offers(tmp_path):
@@ -376,6 +513,149 @@ def test_offerpilot_tool_registry_covers_resumes_jd_and_knowledge(tmp_path):
     assert search_results[0]["record_type"] == "knowledge_search_result"
     assert search_results[0]["search_result_id"] == search_results[0]["chunk_id"]
     assert "knowledge_base_id" not in search_results[0]
+
+
+def test_resume_write_tools_are_marked_and_update_structured_content(tmp_path):
+    session_factory = init_database(tmp_path / "data.db")
+    applications = ApplicationsRepository(session_factory)
+    events = ApplicationEventsRepository(session_factory)
+    notes = NotesRepository(session_factory)
+    offers = OffersRepository(session_factory)
+    resumes = ResumesRepository(session_factory)
+    resume = resumes.create(
+        ResumeCreate(
+            title="Backend Resume",
+            source="manual",
+            content_json={
+                "career_intent": {"target_roles": []},
+                "experience": [{"company": "OfferPilot", "highlights": ["Built APIs"]}],
+            },
+        )
+    )
+    registry = offerpilot_tool_registry(applications, events, notes, offers, resumes=resumes)
+
+    assert registry["resume_update_career_intent"]["write"] is True
+    assert registry["resume_rewrite_highlight"]["write"] is True
+    assert "describe" in registry["resume_update_career_intent"]
+    assert "describe" in registry["resume_rewrite_highlight"]
+
+    updated = json.loads(
+        registry["resume_update_career_intent"]["handler"](
+            json.dumps(
+                {
+                    "id": resume.id,
+                    "career_intent": {
+                        "target_roles": ["Backend Engineer"],
+                        "target_locations": ["Shanghai"],
+                    },
+                }
+            )
+        )
+    )
+    rewritten = json.loads(
+        registry["resume_rewrite_highlight"]["handler"](
+            json.dumps(
+                {
+                    "id": resume.id,
+                    "section": "experience",
+                    "item_index": 0,
+                    "highlight_index": 0,
+                    "text": "Built FastAPI resume APIs with structured persistence.",
+                }
+            )
+        )
+    )
+
+    assert updated["content_json"]["career_intent"]["target_roles"] == ["Backend Engineer"]
+    assert rewritten["content_json"]["experience"][0]["highlights"] == [
+        "Built FastAPI resume APIs with structured persistence."
+    ]
+    assert resumes.get(resume.id).content_json == json.dumps(  # type: ignore[union-attr]
+        rewritten["content_json"],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def test_resume_tools_reject_deleted_resume_and_negative_highlight_indexes(tmp_path):
+    session_factory = init_database(tmp_path / "data.db")
+    applications = ApplicationsRepository(session_factory)
+    events = ApplicationEventsRepository(session_factory)
+    notes = NotesRepository(session_factory)
+    offers = OffersRepository(session_factory)
+    resumes = ResumesRepository(session_factory)
+    active = resumes.create(
+        ResumeCreate(
+            title="Active Resume",
+            source="manual",
+            content_json={
+                "career_intent": {"target_roles": ["Backend Engineer"]},
+                "experience": [{"company": "OfferPilot", "highlights": ["Built APIs"]}],
+            },
+        )
+    )
+    deleted = resumes.create(
+        ResumeCreate(
+            title="Deleted Resume",
+            source="manual",
+            is_master=False,
+            content_json={"experience": [{"highlights": ["Old"]}]},
+        )
+    )
+    resumes.create_match(
+        ResumeMatchCreate(
+            resume_id=deleted.id,
+            jd_text="Backend API engineer",
+            result='{"summary":"legacy match"}',
+        )
+    )
+    resumes.delete(deleted.id)
+    registry = offerpilot_tool_registry(applications, events, notes, offers, resumes=resumes)
+
+    with pytest.raises(ValueError, match="resume not found"):
+        registry["get_resume"]["handler"](json.dumps({"id": deleted.id}))
+    with pytest.raises(ValueError, match="resume not found"):
+        registry["resume_update_career_intent"]["handler"](
+            json.dumps({"id": deleted.id, "career_intent": {"target_roles": ["Backend"]}})
+        )
+    with pytest.raises(ValueError, match="resume not found"):
+        registry["resume_rewrite_highlight"]["handler"](
+            json.dumps(
+                {
+                    "id": deleted.id,
+                    "section": "experience",
+                    "item_index": 0,
+                    "highlight_index": 0,
+                    "text": "new",
+                }
+            )
+        )
+    with pytest.raises(ValueError, match="resume not found"):
+        registry["list_resume_matches"]["handler"](json.dumps({"resume_id": deleted.id}))
+    with pytest.raises(ValueError, match="item_index must be non-negative"):
+        registry["resume_rewrite_highlight"]["handler"](
+            json.dumps(
+                {
+                    "id": active.id,
+                    "section": "experience",
+                    "item_index": -1,
+                    "highlight_index": 0,
+                    "text": "new",
+                }
+            )
+        )
+    with pytest.raises(ValueError, match="highlight_index must be non-negative"):
+        registry["resume_rewrite_highlight"]["handler"](
+            json.dumps(
+                {
+                    "id": active.id,
+                    "section": "experience",
+                    "item_index": 0,
+                    "highlight_index": -1,
+                    "text": "new",
+                }
+            )
+        )
 
 
 def test_ai_tool_read_results_include_record_type_and_specific_ids(tmp_path):

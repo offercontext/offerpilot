@@ -4,7 +4,7 @@ import { Select, message, Popconfirm, Button } from 'antd';
 import { DeleteOutlined, RightOutlined } from '@ant-design/icons';
 import { useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
-import { updateApplication, deleteApplication } from '@/services/applications';
+import { deleteApplication } from '@/services/applications';
 import { STATUS_LABELS } from '@/types/application';
 import type { Application, ApplicationStatus } from '@/types/application';
 import styles from './KanbanBoard.module.css';
@@ -19,9 +19,17 @@ interface KanbanCardProps {
   isDragging?: boolean;
   overlay?: boolean;
   onOpenDetail?: (app: Application) => void;
+  onRequestStatusChange?: (app: Application, status: ApplicationStatus) => void;
 }
 
-export default function KanbanCard({ record, columnStatus, isDragging, overlay, onOpenDetail }: KanbanCardProps) {
+export default function KanbanCard({
+  record,
+  columnStatus,
+  isDragging,
+  overlay,
+  onOpenDetail,
+  onRequestStatusChange,
+}: KanbanCardProps) {
   const queryClient = useQueryClient();
   const [selectOpen, setSelectOpen] = useState(false);
 
@@ -33,24 +41,14 @@ export default function KanbanCard({ record, columnStatus, isDragging, overlay, 
 
   const handleStatusChange = async (newStatus: ApplicationStatus) => {
     if (newStatus === record.status) return;
-    try {
-      await updateApplication(record.id, {
-        company_name: record.company_name,
-        position_name: record.position_name,
-        job_url: record.job_url,
-        status: newStatus,
-        notes: record.notes,
-      });
-      queryClient.invalidateQueries({ queryKey: ['applications'] });
-    } catch {
-      message.error('状态更新失败');
-    }
+    onRequestStatusChange?.(record, newStatus);
   };
 
   const handleDelete = async () => {
     try {
       await deleteApplication(record.id);
       queryClient.invalidateQueries({ queryKey: ['applications'] });
+      queryClient.invalidateQueries({ queryKey: ['events'] });
       message.success('已删除');
     } catch {
       message.error('删除失败');

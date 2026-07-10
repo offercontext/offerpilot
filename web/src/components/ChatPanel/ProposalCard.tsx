@@ -1,6 +1,9 @@
 import { createElement } from 'react';
 import { Alert, Button } from 'antd';
+import dayjs from 'dayjs';
 import type { PendingAction } from '@/types/chat';
+import { STATUS_LABELS, type ApplicationStatus } from '@/types/application';
+import { EVENT_TYPE_LABELS, type ScheduleEventType } from '@/types/event';
 import type { EvidenceItem } from './model';
 import { toolMeta } from './capabilities';
 import EvidenceList from './EvidenceList';
@@ -14,6 +17,42 @@ interface Props {
   onCancel: () => void;
 }
 
+const FIELD_LABELS: Record<string, string> = {
+  status: '状态',
+  company_name: '公司',
+  position_name: '岗位',
+  job_url: '岗位链接',
+  source: '来源',
+  notes: '备注',
+  company: '公司',
+  position: '岗位',
+  round: '轮次',
+  date: '日期',
+  questions: '问题记录',
+  self_reflection: '自我复盘',
+  difficulty_points: '难点短板',
+  mood: '感受',
+  applied_at: '投递日期',
+  title: '标题',
+  deadline: '截止时间',
+  event_type: '日程类型',
+  subtype: '细分类型',
+  scheduled_at: '日程时间',
+  duration_minutes: '时长',
+  location: '地点',
+  remind_at: '提醒时间',
+};
+
+const SUBTYPE_LABELS: Record<string, string> = {
+  assessment: '测评',
+  technical: '技术面',
+  hr: 'HR 面',
+  final: '终面',
+  written: '笔试',
+};
+
+const LONG_REVIEW_FIELDS = new Set(['questions', 'self_reflection', 'difficulty_points', 'mood', 'notes']);
+
 /** Best-effort "从 X 改为 Y" extraction for a before→after chip diff. */
 function parseDiff(human: string): { was: string; now: string } | null {
   const m = human.match(
@@ -25,7 +64,7 @@ function parseDiff(human: string): { was: string; now: string } | null {
 
 function actionTarget(action: PendingAction): string | null {
   const id = action.args?.id;
-  if (typeof id === 'number' || typeof id === 'string') return `Record #${id}`;
+  if (typeof id === 'number' || typeof id === 'string') return `记录 #${id}`;
   const company = action.args?.company_name;
   const role = action.args?.position_name;
   if (typeof company === 'string' && typeof role === 'string') return `${company} · ${role}`;
@@ -35,18 +74,74 @@ function actionTarget(action: PendingAction): string | null {
 
 function proposedValue(action: PendingAction): string | null {
   const status = action.args?.status;
-  if (typeof status === 'string' && status.trim()) return `Status -> ${status}`;
+  if (typeof status === 'string' && status.trim()) return `状态 → ${valueLabel(status, 'status')}`;
   const title = action.args?.title;
-  if (typeof title === 'string' && title.trim()) return `Title -> ${title}`;
+  if (typeof title === 'string' && title.trim()) return `标题 → ${title}`;
   return null;
+}
+
+function fieldLabel(field: string): string {
+  return FIELD_LABELS[field] ?? field;
+}
+
+function isApplicationStatus(value: unknown): value is ApplicationStatus {
+  return typeof value === 'string' && value in STATUS_LABELS;
+}
+
+function isScheduleEventType(value: unknown): value is ScheduleEventType {
+  return typeof value === 'string' && value in EVENT_TYPE_LABELS;
+}
+
+function valueLabel(value: unknown, field?: string): string {
+  if (value === null || value === undefined || value === '') return '空';
+  if (typeof value === 'boolean') return value ? '是' : '否';
+  if (field === 'status' && isApplicationStatus(value)) return STATUS_LABELS[value];
+  if (isApplicationStatus(value)) return STATUS_LABELS[value];
+  if (field === 'event_type' && isScheduleEventType(value)) return EVENT_TYPE_LABELS[value];
+  if (field === 'subtype' && typeof value === 'string') return SUBTYPE_LABELS[value] ?? value;
+  if ((field === 'scheduled_at' || field === 'remind_at') && typeof value === 'string') {
+    const parsed = dayjs(value);
+    return parsed.isValid() ? parsed.format('YYYY-MM-DD HH:mm') : value;
+  }
+  if (field === 'duration_minutes') return `${value} 分钟`;
+  return String(value);
+}
+
+function summarizeLongValue(value: unknown, field?: string): string | null {
+  if (!field || !LONG_REVIEW_FIELDS.has(field) || typeof value !== 'string') return null;
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= 80) return null;
+  const paragraphs = value
+    .split(/\n{2,}|(?:^|\s)(?=#{1,6}\s)|(?:^|\s)(?=\d+[.、]\s)/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const paragraphCount = Math.max(1, paragraphs.length);
+  return `新增 ${paragraphCount} 段内容 · ${normalized.length} 字`;
 }
 
 export default function ProposalCard({ action, loading, evidence, onConfirm, onCancel }: Props) {
   const meta = toolMeta(action.tool_name);
   const diff = parseDiff(action.human);
-  const target = actionTarget(action);
+  const target = action.target?.title ?? actionTarget(action);
+  const targetMeta = action.target?.meta;
   const proposed = proposedValue(action);
-  const thinEvidence = evidence.length === 0;
+  const actionEvidence = action.evidence?.map((item) => ({
+    id: item.id,
+    kind: item.kind as EvidenceItem['kind'],
+    title: item.title,
+    meta: item.meta,
+    snippet: item.snippet,
+    source: item.source,
+  })) ?? [];
+  const visibleEvidence = evidence.length ? evidence : actionEvidence;
+  const changes = action.proposed_changes ?? [];
+  const thinEvidence = visibleEvidence.length === 0;
+  const longDraftFields = changes.filter((change) => summarizeLongValue(change.after, change.field));
+  const confirmLabel = action.tool_name.includes('delete')
+    ? '确认删除'
+    : action.tool_name.includes('create') || action.tool_name === 'add_note'
+      ? '确认新建'
+      : '确认更新';
 
   return (
     <div className={styles.proposal} role="group" aria-label="AI 修改提议">
@@ -57,6 +152,14 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
         AI 想执行一个修改操作 · {meta.label}
       </div>
       <div className={styles.prBody}>
+        {action.workflow ? (
+          <div className={styles.workflowHint}>
+            <span>
+              第 {action.workflow.current_step} / {action.workflow.total_steps} 步 · {action.workflow.current_label}
+            </span>
+            {action.workflow.description ? <b>{action.workflow.description}</b> : null}
+          </div>
+        ) : null}
         {diff ? (
           <>
             <div className={styles.diff}>
@@ -75,35 +178,72 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
           <div className={styles.prFacts}>
             {target ? (
               <div>
-                <span>Target</span>
-                <b>{target}</b>
+                <span>目标</span>
+                <b>{targetMeta ? `${target} · ${targetMeta}` : target}</b>
               </div>
             ) : null}
             {proposed ? (
               <div>
-                <span>Proposed</span>
+                <span>建议变更</span>
                 <b>{proposed}</b>
               </div>
             ) : null}
           </div>
         ) : null}
-        {thinEvidence ? (
+        {changes.length ? (
+          <div className={styles.changeList}>
+            {changes.map((change) => {
+              const beforeText = valueLabel(change.before, change.field);
+              const rawAfterText = valueLabel(change.after, change.field);
+              const afterText = summarizeLongValue(change.after, change.field) ?? rawAfterText;
+              return (
+                <div key={change.field} className={styles.changeRow}>
+                  <span>{fieldLabel(change.field)}</span>
+                  <b className={styles.changeValue} title={beforeText}>
+                    {beforeText}
+                  </b>
+                  <i aria-hidden="true">→</i>
+                  <b className={styles.changeValue} title={rawAfterText}>
+                    {afterText}
+                  </b>
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
+        {longDraftFields.length ? (
+          <div className={styles.draftHint}>长内容已按摘要展示，确认后会完整保存。</div>
+        ) : null}
+        {action.draft_summary?.fields.length ? (
+          <div className={styles.draftReview}>
+            <div className={styles.panelLabel}>草稿审阅</div>
+            {action.draft_summary.fields.map((field) => (
+              <div key={field.field} className={styles.draftItem}>
+                <span>{field.label}</span>
+                <b title={field.summary}>{field.summary}</b>
+                <i>{field.characters} 字</i>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {action.risk_hint || thinEvidence ? (
           <Alert
             className={styles.prAlert}
             type="warning"
             showIcon
-            message="Evidence is limited. Review this change carefully before confirming."
+            message={action.risk_hint ?? '参考依据较少，请确认内容无误后再执行。'}
           />
-        ) : (
+        ) : null}
+        {!thinEvidence ? (
           <div className={styles.prEvidence}>
-            <div className={styles.panelLabel}>Evidence used</div>
-            <EvidenceList items={evidence.slice(0, 3)} compact />
+            <div className={styles.panelLabel}>参考依据</div>
+            <EvidenceList items={visibleEvidence.slice(0, 3)} compact />
           </div>
-        )}
+        ) : null}
       </div>
       <div className={styles.prActions}>
         <Button type="primary" className="op-ai-btn" loading={loading} onClick={onConfirm}>
-          确认修改
+          {confirmLabel}
         </Button>
         <Button disabled={loading} onClick={onCancel}>
           取消

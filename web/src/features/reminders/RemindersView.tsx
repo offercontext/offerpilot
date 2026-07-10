@@ -137,60 +137,63 @@ export default function RemindersView({ onNavigate, onOpenDetailById }: Props) {
     onNavigate(action.target);
   };
 
-  return (
-    <>
-      <div className={styles.wrap}>
-        <div className={styles.toolbar}>
-          <Input.Search
-            allowClear
-            placeholder="搜索流程行动"
-            value={keyword}
-            onChange={(event) => setKeyword(event.target.value)}
-            onSearch={setKeyword}
-          />
-          <Select value={kind} options={KIND_FILTER_OPTIONS} onChange={setKind} aria-label="筛选行动类型" />
-        </div>
-
-        {filteredInsights.length === 0 ? (
-          <div className={styles.empty}>
-            暂无匹配的流程行动。可以新增投递、复习到期题目，或整理一次复盘来保持节奏。
-          </div>
-        ) : (
-          GROUPS.map(({ key, label }) => {
-            const items = filteredInsights.filter((item) => item.priority === key);
-            if (items.length === 0) return null;
-            return (
-              <div key={key} className={styles.group}>
-                <div className={styles.groupTitle}>
-                  {label} ({items.length})
-                </div>
-                {items.map((item, i) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    className={styles.item}
-                    style={{ animationDelay: `${i * 40}ms` }}
-                    onClick={() => setSelectedInsightId(item.id)}
-                  >
-                    <span className={`${styles.dot} ${styles[item.priority]}`} aria-hidden="true" />
-                    <span className={styles.body}>
-                      <span className={styles.title}>{item.title}</span>
-                      <span className={styles.detail}>{item.reason}</span>
-                    </span>
-                    <span className={styles.primaryAction}>{item.primaryAction.label}</span>
-                  </button>
-                ))}
-              </div>
-            );
-          })
-        )}
-      </div>
+  if (selectedInsight) {
+    return (
       <ActionDetailDrawer
         insight={selectedInsight}
         open={!!selectedInsight}
         onClose={() => setSelectedInsightId(null)}
         onRunAction={runInsightAction}
       />
-    </>
+    );
+  }
+
+  return (
+    <div className={styles.wrap}>
+      <div className={styles.toolbar}>
+        <Input.Search
+          allowClear
+          placeholder="搜索流程行动"
+          value={keyword}
+          onChange={(event) => setKeyword(event.target.value)}
+          onSearch={setKeyword}
+        />
+        <Select value={kind} options={KIND_FILTER_OPTIONS} onChange={setKind} aria-label="筛选行动类型" />
+      </div>
+
+      {filteredInsights.length === 0 ? (
+        <div className={styles.empty}>
+          暂无匹配的流程行动。可以新增投递、复习到期题目，或整理一次复盘来保持节奏。
+        </div>
+      ) : (
+        GROUPS.map(({ key, label }) => {
+          const items = filteredInsights.filter((item) => item.priority === key);
+          if (items.length === 0) return null;
+          return (
+            <div key={key} className={styles.group}>
+              <div className={styles.groupTitle}>
+                {label} ({items.length})
+              </div>
+              {items.map((item, i) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={styles.item}
+                  style={{ animationDelay: `${i * 40}ms` }}
+                  onClick={() => setSelectedInsightId(item.id)}
+                >
+                  <span className={`${styles.dot} ${styles[item.priority]}`} aria-hidden />
+                  <span className={styles.body}>
+                    <span className={styles.title}>{item.title}</span>
+                    <span className={styles.detail}>{item.reason}</span>
+                  </span>
+                  <span className={styles.primaryAction}>{item.primaryAction.label}</span>
+                </button>
+              ))}
+            </div>
+          );
+        })
+      )}
+    </div>
   );
 }

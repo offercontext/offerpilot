@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
-import { Button, Drawer, Form, Input, Select, Space } from 'antd';
+import { ArrowLeftOutlined } from '@ant-design/icons';
+import { Button, Form, Input, Select, Space } from 'antd';
 import type { Application } from '@/types/application';
 import type { CreateNoteInput, InterviewNote } from '@/types/note';
 
@@ -69,14 +70,29 @@ export default function ReviewFormDrawer({
     });
   }
 
+  if (!open) return null;
+
   return (
-    <Drawer
-      title={editing ? '编辑面试复盘' : '新建面试复盘'}
-      open={open}
-      onClose={onClose}
-      width={520}
-      destroyOnClose
-    >
+    <section aria-label={editing ? '编辑面试复盘' : '新建面试复盘'}>
+      <div style={{ display: 'grid', gap: 8, marginBottom: 18 }}>
+        <Button
+          type="link"
+          icon={<ArrowLeftOutlined />}
+          onClick={onClose}
+          style={{ width: 'fit-content', height: 'auto', padding: 0 }}
+        >
+          返回上一层
+        </Button>
+        <Space style={{ width: '100%', justifyContent: 'space-between' }} align="center" wrap>
+          <h2 style={{ margin: 0 }}>{editing ? '编辑面试复盘' : '新建面试复盘'}</h2>
+          <Space>
+            <Button onClick={onClose}>取消</Button>
+            <Button type="primary" loading={saving} onClick={() => form.submit()}>
+              保存复盘
+            </Button>
+          </Space>
+        </Space>
+      </div>
       <Form form={form} layout="vertical" onFinish={onSubmit}>
         <Form.Item name="application_id" label="关联投递">
           <Select
@@ -127,11 +143,7 @@ export default function ReviewFormDrawer({
         <Form.Item name="difficulty_points" label="难点/薄弱点">
           <Input.TextArea rows={4} placeholder="哪些知识点没答好" />
         </Form.Item>
-
-        <Button type="primary" htmlType="submit" loading={saving}>
-          保存复盘
-        </Button>
       </Form>
-    </Drawer>
+    </section>
   );
 }

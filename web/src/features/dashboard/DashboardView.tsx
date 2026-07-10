@@ -182,55 +182,58 @@ export default function DashboardView({ onNavigate, onOpenDetailById, onAddAppli
     );
   }
 
-  return (
-    <>
-      <div className={styles.grid}>
-        <MissionHeader
-          summary={mission}
-          nextAction={nextMissionAction}
-          onRunAction={handleAction}
-          onAddApplication={onAddApplication}
-        />
-        <WeeklyMissionPanel metrics={mission.metrics} onNavigate={onNavigate} />
-        <div className={styles.missionWorkspaceGrid}>
-          <TodayActionPlan
-            groups={mission.actionGroups}
-            onAction={handleAction}
-            onSeeAll={() => onNavigate('reminders')}
-          />
-          <FocusWorkspace
-            application={focusApplication}
-            readiness={focusReadiness}
-            onOpenDetail={onOpenDetailById}
-            onNavigate={onNavigate}
-          />
-        </div>
-        <ApplicationReadinessStrip
-          items={mission.readiness}
-          focusApplicationId={effectiveFocusApplicationId}
-          onFocus={setFocusApplicationId}
-        />
-        <KpiCards kpis={kpis} />
-        <div className={styles.row2b}>
-          <ConversionFunnel stages={funnel} />
-          <MomentumChart buckets={momentum} />
-        </div>
-        <div className={styles.row2b}>
-          <UpcomingSchedule events={events} />
-          <div className={styles.card}>
-            <div className={styles.cardTitle}>行动说明</div>
-            <div className={styles.empty}>
-              今日行动由投递停滞、即将到来的面试、Offer 截止期和到期题目自动推导。
-            </div>
-          </div>
-        </div>
-      </div>
+  if (selectedInsight) {
+    return (
       <ActionDetailDrawer
         insight={selectedInsight}
         open={!!selectedInsight}
         onClose={() => setSelectedInsightId(null)}
         onRunAction={runInsightAction}
       />
-    </>
+    );
+  }
+
+  return (
+    <div className={styles.grid}>
+      <MissionHeader
+        summary={mission}
+        nextAction={nextMissionAction}
+        onRunAction={handleAction}
+        onAddApplication={onAddApplication}
+      />
+      <WeeklyMissionPanel metrics={mission.metrics} onNavigate={onNavigate} />
+      <div className={styles.missionWorkspaceGrid}>
+        <TodayActionPlan
+          groups={mission.actionGroups}
+          onAction={handleAction}
+          onSeeAll={() => onNavigate('reminders')}
+        />
+        <FocusWorkspace
+          application={focusApplication}
+          readiness={focusReadiness}
+          onOpenDetail={onOpenDetailById}
+          onNavigate={onNavigate}
+        />
+      </div>
+      <ApplicationReadinessStrip
+        items={mission.readiness}
+        focusApplicationId={effectiveFocusApplicationId}
+        onFocus={setFocusApplicationId}
+      />
+      <KpiCards kpis={kpis} />
+      <div className={styles.row2b}>
+        <ConversionFunnel stages={funnel} />
+        <MomentumChart buckets={momentum} />
+      </div>
+      <div className={styles.row2b}>
+        <UpcomingSchedule events={events} />
+        <div className={styles.card}>
+          <div className={styles.cardTitle}>行动说明</div>
+          <div className={styles.empty}>
+            今日行动由投递停滞、即将到来的面试、Offer 截止期和到期题目自动推导。
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }

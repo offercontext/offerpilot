@@ -3,6 +3,10 @@
 Date: 2026-07-06
 Branch: `feature/20260705-python-rewrite`
 
+Archived snapshot from the Python rewrite cutover. This is not the current
+architecture entry point; use `README.md`, `AGENTS.md`, and the active docs in
+`docs/` for current operating guidance.
+
 ## First Principles
 
 OfferPilot is now a Python-first, local-first job-search workbench. The

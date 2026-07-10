@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 
 from offerpilot.api import create_app
 from offerpilot.db import init_database
@@ -137,6 +138,136 @@ def test_update_application_status_preserves_existing_fields(tmp_path):
     assert response.json()["position_name"] == "Backend"
     assert response.json()["job_url"] == "https://example.test/job"
     assert response.json()["notes"] == "keep me"
+
+
+def test_update_application_to_closed_requires_reason(tmp_path):
+    client = TestClient(create_app(data_dir=tmp_path))
+    created = client.post(
+        "/api/applications",
+        json={"company_name": "ByteDance", "position_name": "Backend", "status": "interview"},
+    ).json()
+
+    missing_reason = client.put(
+        f"/api/applications/{created['id']}",
+        json={"status": "closed"},
+    )
+    closed = client.put(
+        f"/api/applications/{created['id']}",
+        json={"status": "closed", "closed_reason": "岗位关闭"},
+    )
+
+    assert missing_reason.status_code == 400
+    assert missing_reason.json() == {"error": "closed_reason is required when closing an application"}
+    assert closed.status_code == 200
+    assert closed.json()["status"] == "closed"
+    assert closed.json()["closed_reason"] == "岗位关闭"
+    assert closed.json()["closed_at"] is not None
+
+
+def test_closed_reason_must_be_fresh_when_entering_closed(tmp_path):
+    client = TestClient(create_app(data_dir=tmp_path))
+    created = client.post(
+        "/api/applications",
+        json={
+            "company_name": "ByteDance",
+            "position_name": "Backend",
+            "status": "applied",
+            "closed_reason": "stale",
+        },
+    ).json()
+
+    missing_reason = client.put(
+        f"/api/applications/{created['id']}",
+        json={"status": "closed"},
+    )
+    closed = client.put(
+        f"/api/applications/{created['id']}",
+        json={"status": "closed", "closed_reason": "岗位关闭"},
+    )
+    reopened = client.put(
+        f"/api/applications/{created['id']}",
+        json={"status": "interview"},
+    )
+
+    assert created["closed_reason"] == ""
+    assert missing_reason.status_code == 400
+    assert closed.status_code == 200
+    assert reopened.status_code == 400
+    assert reopened.json() == {"error": "closed application cannot be reopened"}
+
+
+def test_api_does_not_reuse_stale_closed_reason_when_entering_closed(tmp_path):
+    data_dir = tmp_path / "data"
+    session_factory = init_database(data_dir / "data.db")
+    repo = ApplicationsRepository(session_factory)
+    app = repo.create(
+        ApplicationCreate(company_name="ByteDance", position_name="Backend", status="interview")
+    )
+    with session_factory() as session:
+        session.execute(
+            text("UPDATE applications SET closed_reason = 'stale reason' WHERE id = :id"),
+            {"id": app.id},
+        )
+        session.commit()
+
+    client = TestClient(create_app(data_dir=data_dir))
+    missing_reason = client.put(f"/api/applications/{app.id}", json={"status": "closed"})
+    with_reason = client.put(
+        f"/api/applications/{app.id}",
+        json={"status": "closed", "closed_reason": "岗位关闭"},
+    )
+
+    assert missing_reason.status_code == 400
+    assert missing_reason.json() == {"error": "closed_reason is required when closing an application"}
+    assert with_reason.status_code == 200
+    assert with_reason.json()["closed_reason"] == "岗位关闭"
+
+
+def test_deleted_application_is_hidden_from_reads_and_dashboard(tmp_path):
+    client = TestClient(create_app(data_dir=tmp_path))
+    kept = client.post(
+        "/api/applications",
+        json={"company_name": "Keep", "position_name": "Backend", "status": "applied"},
+    ).json()
+    deleted = client.post(
+        "/api/applications",
+        json={"company_name": "Delete", "position_name": "Frontend", "status": "offer"},
+    ).json()
+
+    response = client.delete(f"/api/applications/{deleted['id']}")
+    listed = client.get("/api/applications")
+    dashboard = client.get("/api/dashboard").json()
+
+    assert response.status_code == 200
+    assert response.json() == {"message": "Deleted"}
+    assert client.get(f"/api/applications/{deleted['id']}").status_code == 404
+    assert client.put(f"/api/applications/{deleted['id']}", json={"status": "interview"}).status_code == 404
+    assert [item["id"] for item in listed.json()] == [kept["id"]]
+    assert dashboard["total"] == 1
+    assert all(item["id"] != deleted["id"] for items in dashboard["board"].values() for item in items)
+
+
+def test_status_first_timestamps_are_set_once(tmp_path):
+    client = TestClient(create_app(data_dir=tmp_path))
+    created = client.post(
+        "/api/applications",
+        json={"company_name": "ByteDance", "position_name": "Backend", "status": "applied"},
+    ).json()
+
+    first_interview = client.put(
+        f"/api/applications/{created['id']}",
+        json={"status": "interview"},
+    ).json()
+    client.put(f"/api/applications/{created['id']}", json={"status": "written_test"})
+    second_interview = client.put(
+        f"/api/applications/{created['id']}",
+        json={"status": "interview"},
+    ).json()
+
+    assert created["first_applied_at"] is not None
+    assert created["first_interview_at"] is None
+    assert first_interview["first_interview_at"] is not None
+    assert second_interview["first_interview_at"] == first_interview["first_interview_at"]
 
 
 def test_update_application_preserves_existing_source(tmp_path):

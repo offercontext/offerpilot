@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -27,6 +27,14 @@ class Application(Base):
         nullable=False,
         server_default=func.current_timestamp(),
     )
+    first_pending_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    first_applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    first_written_test_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    first_interview_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    first_offer_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    closed_reason: Mapped[str] = mapped_column(String, default="", server_default="")
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -152,6 +160,16 @@ class Resume(Base):
     file_path: Mapped[str] = mapped_column(String, default="", server_default="")
     parsed_data: Mapped[str] = mapped_column(String, default="", server_default="")
     parse_status: Mapped[str] = mapped_column(String, default="pending", server_default="pending")
+    title: Mapped[str] = mapped_column(String, default="", server_default="")
+    is_master: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    parent_resume_id: Mapped[int | None] = mapped_column(
+        ForeignKey("resumes.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    source: Mapped[str] = mapped_column(String, default="manual", server_default="manual")
+    source_file_path: Mapped[str] = mapped_column(String, default="", server_default="")
+    content_json: Mapped[str] = mapped_column(String, default="{}", server_default="{}")
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -444,10 +462,18 @@ class Conversation(Base):
     mode: Mapped[str] = mapped_column(String, default="general", server_default="general")
     context_type: Mapped[str] = mapped_column(String, default="workspace", server_default="workspace")
     context_ref: Mapped[str] = mapped_column(String, default="", server_default="")
+    pinned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     pending_tool_call_id: Mapped[str] = mapped_column(String, default="", server_default="")
     pending_tool_name: Mapped[str] = mapped_column(String, default="", server_default="")
     pending_args: Mapped[str] = mapped_column(String, default="", server_default="")
     pending_human: Mapped[str] = mapped_column(String, default="", server_default="")
+    clarification_tool_call_id: Mapped[str] = mapped_column(String, default="", server_default="")
+    clarification_tool_name: Mapped[str] = mapped_column(String, default="", server_default="")
+    clarification_args: Mapped[str] = mapped_column(String, default="", server_default="")
+    clarification_human: Mapped[str] = mapped_column(String, default="", server_default="")
+    clarification_question: Mapped[str] = mapped_column(String, default="", server_default="")
+    last_write_undo_json: Mapped[str] = mapped_column(String, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -475,6 +501,33 @@ class Conversation(Base):
             "human": self.pending_human or self.pending_tool_name,
             "args": args,
         }
+
+    @property
+    def pending_clarification(self) -> dict[str, object] | None:
+        if not self.clarification_tool_name:
+            return None
+        try:
+            args = json.loads(self.clarification_args) if self.clarification_args else {}
+        except json.JSONDecodeError:
+            args = {}
+        if not isinstance(args, dict):
+            args = {}
+        return {
+            "tool_name": self.clarification_tool_name,
+            "human": self.clarification_human or self.clarification_tool_name,
+            "args": args,
+            "question": self.clarification_question,
+        }
+
+    @property
+    def last_write_undo(self) -> dict[str, object] | None:
+        if not self.last_write_undo_json:
+            return None
+        try:
+            payload = json.loads(self.last_write_undo_json)
+        except json.JSONDecodeError:
+            return None
+        return payload if isinstance(payload, dict) else None
 
 
 class ChatMessage(Base):

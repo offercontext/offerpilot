@@ -17,6 +17,14 @@ export interface Application {
   source: string;
   notes: string;
   applied_at: string;
+  first_pending_at?: string | null;
+  first_applied_at?: string | null;
+  first_written_test_at?: string | null;
+  first_interview_at?: string | null;
+  first_offer_at?: string | null;
+  closed_reason?: string;
+  closed_at?: string | null;
+  deleted_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -28,6 +36,7 @@ export interface ApplicationInput {
   job_url?: string;
   status?: ApplicationStatus;
   notes?: string;
+  closed_reason?: string;
 }
 
 export interface DashboardSummary {

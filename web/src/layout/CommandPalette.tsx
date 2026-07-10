@@ -28,6 +28,54 @@ function pipelineInsightMatches(item: PipelineInsight, keyword: string): boolean
     .includes(keyword);
 }
 
+export function buildApplicationSearchCommands(
+  applications: Application[],
+  keyword: string,
+  onOpenDetail: (app: Application) => void,
+  onClose: () => void
+): Command[] {
+  const kw = keyword.trim().toLowerCase();
+  if (!kw) return [];
+
+  return applications
+    .filter((a) => !a.deleted_at)
+    .filter(
+      (a) =>
+        a.company_name.toLowerCase().includes(kw) ||
+        a.position_name.toLowerCase().includes(kw)
+    )
+    .slice(0, 6)
+    .map((a) => ({
+      key: `app-${a.id}`,
+      label: `${a.company_name} · ${a.position_name}`,
+      hint: '投递',
+      run: () => {
+        onOpenDetail(a);
+        onClose();
+      },
+    }));
+}
+
+export function buildPipelineNavigationCommands(
+  onNavigate: (v: ViewMode) => void,
+  onClose: () => void
+): Command[] {
+  return [
+    { key: 'pipeline-board', label: '打开投递看板', hint: '投递', view: 'board' },
+    { key: 'pipeline-list', label: '打开投递列表', hint: '投递', view: 'applications-list' },
+    { key: 'pipeline-calendar', label: '打开事件日历', hint: '投递', view: 'calendar' },
+    { key: 'pipeline-reminders', label: '打开跟进提醒', hint: '投递', view: 'reminders' },
+  ].map((item) => ({
+    key: item.key,
+    label: item.label,
+    hint: item.hint,
+    run: () => {
+      onNavigate(item.view as ViewMode);
+      onClose();
+    },
+  }));
+}
+
 interface Props {
   open: boolean;
   onClose: () => void;
@@ -71,10 +119,12 @@ export default function CommandPalette({
   const actions: Command[] = useMemo(
     () => [
       { key: 'add', label: '添加投递', hint: '动作', run: () => { onAddApplication(); onClose(); } },
-      { key: 'resume', label: '简历匹配', hint: '动作', run: () => { onOpenResume(); onClose(); } },
+      { key: 'resume-library', label: '打开简历库', hint: '简历', run: () => { onOpenResume(); onClose(); } },
+      { key: 'new-resume', label: '新建简历', hint: '在简历库创建薄版', run: () => { onOpenResume(); onClose(); } },
       { key: 'uploadResume', label: '上传简历', hint: 'PDF 到简历库', run: () => { onUploadResume?.(); onClose(); } },
-      { key: 'chat', label: '打开 Pilot', hint: '动作', run: () => { onOpenChat(); onClose(); } },
+      { key: 'chat', label: '打开右侧 Pilot 对话', hint: '动作', run: () => { onOpenChat(); onClose(); } },
       { key: 'settings-ai', label: '打开 AI 设置', hint: '设置', run: () => { onOpenSettings(); onClose(); } },
+      ...buildPipelineNavigationCommands(onNavigate, onClose),
       ...MODULE_NAV.map((item) => ({
         key: `nav-${item.key}`,
         label: `前往 ${item.label}`,
@@ -105,21 +155,7 @@ export default function CommandPalette({
         })),
     [pipelineActions, kw, onRunPipelineAction, onClose]
   );
-  const appMatches: Command[] = kw
-    ? applications
-        .filter(
-          (a) =>
-            a.company_name.toLowerCase().includes(kw) ||
-            a.position_name.toLowerCase().includes(kw)
-        )
-        .slice(0, 6)
-        .map((a) => ({
-          key: `app-${a.id}`,
-          label: `${a.company_name} · ${a.position_name}`,
-          hint: '投递',
-          run: () => { onOpenDetail(a); onClose(); },
-        }))
-    : [];
+  const appMatches = buildApplicationSearchCommands(applications, kw, onOpenDetail, onClose);
 
   const actionMatches = kw
     ? actions.filter((c) => c.label.toLowerCase().includes(kw))

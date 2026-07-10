@@ -42,6 +42,7 @@ class Config(BaseModel):
     local_port: int = DEFAULT_PORT
     chat_auto_approve_writes: bool = False
     active_provider_id: str = DEFAULT_PROVIDER_ID
+    fallback_provider_id: str = ""
     providers: list[AIProviderProfile] = Field(default_factory=list)
     runtime_mode: RuntimeMode = "local"
     auth_enabled: bool = False
@@ -71,6 +72,20 @@ class Config(BaseModel):
             if profile.id == self.active_provider_id:
                 return profile
         return profiles[0]
+
+    def provider_by_id(self, provider_id: str) -> AIProviderProfile | None:
+        for profile in self.provider_profiles():
+            if profile.id == provider_id:
+                return profile
+        return None
+
+    def fallback_provider(self) -> AIProviderProfile | None:
+        if not self.fallback_provider_id:
+            return None
+        fallback = self.provider_by_id(self.fallback_provider_id)
+        if fallback is None or fallback.id == self.active_provider().id:
+            return None
+        return fallback
 
 
 def resolve_data_dir() -> Path:
@@ -125,4 +140,3 @@ def normalize_runtime_mode(value: str, fallback: RuntimeMode = "local") -> Runti
     if value == "server":
         return "server"
     return fallback
-

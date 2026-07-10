@@ -96,3 +96,154 @@ def test_client_uses_active_provider_profile(monkeypatch):
 def test_client_requires_active_provider_key():
     with pytest.raises(ValueError, match="AI is not configured"):
         ConfiguredAIClient(Config(providers=[AIProviderProfile(id="default", api_key="")]))
+
+
+def test_client_streams_content_deltas_through_litellm(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake_completion(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return [
+            SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="你"))]),
+            SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="好"))]),
+        ]
+
+    monkeypatch.setattr(ai_client, "completion", fake_completion)
+    client = ConfiguredAIClient(Config(api_key="sk-test", model="gpt-4o"))
+    deltas: list[str] = []
+
+    assistant = client.stream_complete([Message(role="user", content="hello")], [], deltas.append)
+
+    assert captured["stream"] is True
+    assert deltas == ["你", "好"]
+    assert assistant.content == "你好"
+    assert assistant.tool_calls == []
+
+
+def test_client_streams_tool_calls_through_litellm(monkeypatch):
+    def fake_completion(**kwargs: Any) -> Any:
+        return [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "function": {
+                                        "name": "list_applications",
+                                        "arguments": '{"status"',
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {
+                                        "arguments": ':"offer"}',
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        ]
+
+    monkeypatch.setattr(ai_client, "completion", fake_completion)
+    client = ConfiguredAIClient(Config(api_key="sk-test", model="gpt-4o"))
+    deltas: list[str] = []
+
+    assistant = client.stream_complete(
+        [Message(role="user", content="hello")],
+        [{"name": "list_applications", "schema": {"type": "object"}}],
+        deltas.append,
+    )
+
+    assert deltas == []
+    assert assistant.content == ""
+    assert assistant.tool_calls[0].id == "call_1"
+    assert assistant.tool_calls[0].name == "list_applications"
+    assert assistant.tool_calls[0].args == '{"status":"offer"}'
+
+
+def test_client_does_not_fallback_after_streaming_visible_delta(monkeypatch):
+    calls: list[str] = []
+
+    def fake_completion(**kwargs: Any) -> Any:
+        calls.append(str(kwargs["api_key"]))
+        if kwargs["api_key"] == "sk-primary":
+            def chunks():
+                yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="半句"))])
+                raise RuntimeError("stream failed")
+
+            return chunks()
+        return [SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="backup"))])]
+
+    monkeypatch.setattr(ai_client, "completion", fake_completion)
+    client = ConfiguredAIClient(
+        Config(
+            active_provider_id="primary",
+            fallback_provider_id="backup",
+            providers=[
+                AIProviderProfile(id="primary", api_key="sk-primary", model="gpt-4o"),
+                AIProviderProfile(id="backup", api_key="sk-backup", model="gpt-4o-mini"),
+            ],
+        )
+    )
+    deltas: list[str] = []
+
+    with pytest.raises(RuntimeError, match="stream failed"):
+        client.stream_complete([Message(role="user", content="hello")], [], deltas.append)
+
+    assert deltas == ["半句"]
+    assert calls == ["sk-primary"]
+
+
+def test_client_falls_back_to_configured_provider_after_primary_failure(monkeypatch):
+    calls: list[dict[str, Any]] = []
+
+    def fake_completion(**kwargs: Any) -> Any:
+        calls.append(kwargs)
+        if kwargs["api_key"] == "sk-primary":
+            raise RuntimeError("primary provider unavailable")
+        return {"choices": [{"message": {"content": "fallback ok"}}]}
+
+    monkeypatch.setattr(ai_client, "completion", fake_completion)
+    client = ConfiguredAIClient(
+        Config(
+            active_provider_id="primary",
+            fallback_provider_id="backup",
+            providers=[
+                AIProviderProfile(
+                    id="primary",
+                    label="Primary",
+                    provider="openai",
+                    api_key="sk-primary",
+                    model="gpt-4o",
+                ),
+                AIProviderProfile(
+                    id="backup",
+                    label="Backup",
+                    provider="openrouter",
+                    api_key="sk-backup",
+                    model="openai/gpt-4o-mini",
+                ),
+            ],
+        )
+    )
+
+    assistant = client.complete([Message(role="user", content="hello")], [])
+
+    assert assistant.content == "fallback ok"
+    assert [call["api_key"] for call in calls] == ["sk-primary", "sk-backup"]
+    assert calls[1]["model"] == "openai/gpt-4o-mini"

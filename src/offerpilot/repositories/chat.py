@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
+from typing import Any
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session, sessionmaker
@@ -36,10 +38,32 @@ class ChatRepository:
         with self._session_factory() as session:
             return session.get(Conversation, conversation_id)
 
-    def list_conversations(self) -> list[Conversation]:
-        statement = select(Conversation).order_by(Conversation.updated_at.desc(), Conversation.id.desc())
+    def list_conversations(self, include_archived: bool = False) -> list[Conversation]:
+        statement = select(Conversation)
+        if not include_archived:
+            statement = statement.where(Conversation.archived_at.is_(None))
+        statement = statement.order_by(
+            Conversation.pinned_at.is_(None).asc(),
+            Conversation.pinned_at.desc(),
+            Conversation.updated_at.desc(),
+            Conversation.id.desc(),
+        )
         with self._session_factory() as session:
             return list(session.scalars(statement))
+
+    def update_conversation(self, conversation_id: int, values: dict[str, Any]) -> Conversation | None:
+        if not values:
+            return self.get_conversation(conversation_id)
+        with self._session_factory() as session:
+            conversation = session.get(Conversation, conversation_id)
+            if conversation is None:
+                return None
+            for key, value in values.items():
+                setattr(conversation, key, value)
+            conversation.updated_at = datetime.now(timezone.utc)
+            session.commit()
+            session.refresh(conversation)
+            return conversation
 
     def append_message(
         self,
@@ -117,6 +141,90 @@ class ChatRepository:
                     pending_human="",
                     updated_at=datetime.now(timezone.utc),
                 )
+            )
+            session.commit()
+
+    def get_pending_clarification(self, conversation_id: int) -> tuple[PendingAction, str] | None:
+        with self._session_factory() as session:
+            conversation = session.get(Conversation, conversation_id)
+            if conversation is None or not conversation.clarification_tool_name:
+                return None
+            return (
+                PendingAction(
+                    tool_call_id=conversation.clarification_tool_call_id,
+                    tool_name=conversation.clarification_tool_name,
+                    args=conversation.clarification_args,
+                    human=conversation.clarification_human or conversation.clarification_tool_name,
+                ),
+                conversation.clarification_question,
+            )
+
+    def set_pending_clarification(
+        self,
+        conversation_id: int,
+        pending: PendingAction,
+        question: str,
+    ) -> None:
+        with self._session_factory() as session:
+            session.execute(
+                update(Conversation)
+                .where(Conversation.id == conversation_id)
+                .values(
+                    clarification_tool_call_id=pending.tool_call_id,
+                    clarification_tool_name=pending.tool_name,
+                    clarification_args=pending.args,
+                    clarification_human=pending.human,
+                    clarification_question=question,
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            session.commit()
+
+    def clear_pending_clarification(self, conversation_id: int) -> None:
+        with self._session_factory() as session:
+            session.execute(
+                update(Conversation)
+                .where(Conversation.id == conversation_id)
+                .values(
+                    clarification_tool_call_id="",
+                    clarification_tool_name="",
+                    clarification_args="",
+                    clarification_human="",
+                    clarification_question="",
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            session.commit()
+
+    def get_last_write_undo(self, conversation_id: int) -> dict[str, Any] | None:
+        with self._session_factory() as session:
+            conversation = session.get(Conversation, conversation_id)
+            if conversation is None or not conversation.last_write_undo_json:
+                return None
+            try:
+                payload = json.loads(conversation.last_write_undo_json)
+            except json.JSONDecodeError:
+                return None
+            return payload if isinstance(payload, dict) else None
+
+    def set_last_write_undo(self, conversation_id: int, undo: dict[str, Any]) -> None:
+        with self._session_factory() as session:
+            session.execute(
+                update(Conversation)
+                .where(Conversation.id == conversation_id)
+                .values(
+                    last_write_undo_json=json.dumps(undo, ensure_ascii=False),
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            session.commit()
+
+    def clear_last_write_undo(self, conversation_id: int) -> None:
+        with self._session_factory() as session:
+            session.execute(
+                update(Conversation)
+                .where(Conversation.id == conversation_id)
+                .values(last_write_undo_json="", updated_at=datetime.now(timezone.utc))
             )
             session.commit()
 

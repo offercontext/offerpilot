@@ -1,4 +1,5 @@
-import { Drawer, Table, Empty } from 'antd';
+import { ArrowLeftOutlined } from '@ant-design/icons';
+import { Button, Empty, Table } from 'antd';
 import type { Offer } from '@/types/offer';
 import { OFFER_STATUS_LABELS } from '@/types/offer';
 
@@ -47,13 +48,26 @@ export default function OfferCompareDrawer({ open, onClose, offers }: Props) {
     fieldRow('截止日', (o) => o.deadline || '无'),
   ];
 
+  if (!open) return null;
+
   return (
-    <Drawer title="Offer 横向对比" open={open} onClose={onClose} width={640}>
+    <section aria-label="Offer 横向对比">
+      <div style={{ display: 'grid', gap: 8, marginBottom: 18 }}>
+        <Button
+          type="link"
+          icon={<ArrowLeftOutlined />}
+          onClick={onClose}
+          style={{ width: 'fit-content', height: 'auto', padding: 0 }}
+        >
+          返回 Offer 中心
+        </Button>
+        <h2 style={{ margin: 0 }}>Offer 横向对比</h2>
+      </div>
       {offers.length === 0 ? (
         <Empty description="请选择至少一个 offer" />
       ) : (
         <Table columns={columns} dataSource={data} pagination={false} scroll={{ x: true }} size="small" bordered />
       )}
-    </Drawer>
+    </section>
   );
 }

@@ -1,4 +1,11 @@
-import type { CreateResumeInput, Resume, MatchResumeResponse } from '@/types/resume';
+import type {
+  CopyResumeInput,
+  CreateResumeFromSampleInput,
+  CreateResumeInput,
+  MatchResumeResponse,
+  Resume,
+  UpdateResumeInput,
+} from '@/types/resume';
 import { createApiClient } from './http';
 
 const http = createApiClient({ baseURL: '/api', timeout: 130000 });
@@ -10,6 +17,21 @@ export async function createResume(input: CreateResumeInput): Promise<Resume> {
 
 export async function listResumes(): Promise<Resume[]> {
   const { data } = await http.get<Resume[]>('/resumes');
+  return data;
+}
+
+export async function createResumeFromSample(input: CreateResumeFromSampleInput): Promise<Resume> {
+  const { data } = await http.post<Resume>('/resumes/from-sample', input);
+  return data;
+}
+
+export async function updateResume(id: number, input: UpdateResumeInput): Promise<Resume> {
+  const { data } = await http.patch<Resume>(`/resumes/${id}`, input);
+  return data;
+}
+
+export async function copyResume(id: number, input: CopyResumeInput = {}): Promise<Resume> {
+  const { data } = await http.post<Resume>(`/resumes/${id}/copy`, input);
   return data;
 }
 
@@ -32,14 +54,5 @@ export async function uploadResume(file: File): Promise<Resume> {
     timeout: 30000,
     headers: { 'Content-Type': 'multipart/form-data' },
   });
-  return data;
-}
-
-export async function updateResumeText(id: number, text: string): Promise<void> {
-  await http.put(`/resumes/${id}/text`, { text });
-}
-
-export async function downloadResumeFile(id: number): Promise<Blob> {
-  const { data } = await http.get(`/resumes/${id}/file`, { responseType: 'blob' });
   return data;
 }

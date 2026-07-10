@@ -28,7 +28,7 @@ Run from the worktree root unless noted:
 | Data directory | `cmd/oc/main.go` uses `OFFERPILOT_DATA`; otherwise `~/.offerpilot`; creates directory `0755` | Keep the same environment variable and default directory |
 | Database path | CLI and server use `data.db` under the data directory | Keep `data.db`; never create a parallel default path |
 | Config path | `config.json` under the data directory | Keep JSON field names and defaults |
-| Config defaults | `base_url=https://api.openai.com/v1`, `model=gpt-4o`, `local_port=8080`, `chat_auto_approve_writes=false` | Preserve defaults and missing-file behavior |
+| Config defaults | `base_url=https://api.openai.com/v1`, `model=gpt-4o`, `local_port=8080`, `chat_auto_approve_writes=false`, `fallback_provider_id=""` | Preserve defaults and missing-file behavior |
 | Docker data | Docker image sets `OFFERPILOT_DATA=/data` and declares `/data` as a volume | Keep a first-class Docker data path in the final cutover image |
 | HTTP prefix | All JSON APIs live under `/api`; frontend assets are served from root | Keep `/api` prefix so current React services work |
 | JSON casing | API and DB structs expose snake_case JSON fields | Keep snake_case field names |
@@ -98,15 +98,18 @@ Compatibility footnotes:
 | `POST /api/jd/analyze` | `jd_text` or `jd_url`, optional `application_id` | JD analysis result and saved row | `internal/api/jd.go`, `web/src/services/ai.ts` | Phase 5 after AI minimum |
 | `GET /api/jd/analyses` | Optional `application_id` | `JDAnalysis[]` | `internal/api/jd.go` | Phase 5 |
 | `GET /api/jd/analyses/{id}` | Path id | `JDAnalysis` | `internal/api/jd.go` | Phase 5 |
-| `POST /api/resumes` | Text resume body | `Resume` | `internal/api/resume.go` | Phase 5 |
-| `GET /api/resumes` | None | `Resume[]` | `internal/api/resume.go` | Phase 5 |
-| `GET /api/resumes/{id}` | Path id | `Resume` | `internal/api/resume.go` | Phase 5 |
-| `DELETE /api/resumes/{id}` | Path id | status JSON | `internal/api/resume.go` | Phase 5 |
-| `POST /api/resumes/{id}/match` | JD text/url and optional app id | Match result | `internal/api/resume.go` | Phase 5 after AI minimum |
-| `GET /api/resumes/{id}/matches` | Path id | `ResumeMatch[]` | `internal/api/resume.go` | Phase 5 |
-| `POST /api/resumes/upload` | Multipart upload | Resume row | `internal/api/resume.go` | Phase 5 |
-| `PUT /api/resumes/{id}/text` | Text body | Resume row | `internal/api/resume.go` | Phase 5 |
-| `GET /api/resumes/{id}/file` | Path id | File download | `internal/api/resume.go` | Phase 5 |
+| `POST /api/resumes` | v0.1 structured resume body: `title`, `source`, `content_json` | `Resume` with completion metadata | `src/offerpilot/api.py`, `web/src/services/resumes.ts` | v0.1 complete |
+| `GET /api/resumes` | None | Active `Resume[]` | `src/offerpilot/api.py`, `web/src/services/resumes.ts` | v0.1 complete |
+| `POST /api/resumes/upload` | Multipart PDF upload, one file <= 10 MB | Resume row with `source=upload`, file path, text parse status | `src/offerpilot/api.py`, `web/src/services/resumes.ts` | v0.1 complete |
+| `POST /api/resumes/from-sample` | Optional sample id/title | Structured sample resume | `src/offerpilot/api.py`, `web/src/services/resumes.ts` | v0.1 complete |
+| `GET /api/resumes/{id}` | Path id | `Resume` | `src/offerpilot/api.py` | v0.1 complete |
+| `PATCH /api/resumes/{id}` | Partial v0.1 fields: `title`, `content_json`, `career_intent`, `is_master`, `source` | Updated `Resume` | `src/offerpilot/api.py`, `web/src/services/resumes.ts` | v0.1 complete |
+| `POST /api/resumes/{id}/copy` | Optional title | Copied non-master resume | `src/offerpilot/api.py`, `web/src/services/resumes.ts` | v0.1 complete |
+| `DELETE /api/resumes/{id}` | Path id | status JSON | `src/offerpilot/api.py`, `web/src/services/resumes.ts` | v0.1 complete |
+| `POST /api/resumes/{id}/match` | JD text/url and optional app id | Match result | `src/offerpilot/api.py`, `web/src/services/resumes.ts` | v0.2/deep JD flow deferred; compatibility endpoint present |
+| `GET /api/resumes/{id}/matches` | Path id | `ResumeMatch[]` | `src/offerpilot/api.py` | v0.2/deep JD flow deferred; compatibility endpoint present |
+| `PUT /api/resumes/{id}/text` | Text body | status JSON | `src/offerpilot/api.py` | compatibility endpoint present |
+| `GET /api/resumes/{id}/file` | Path id | File download | `src/offerpilot/api.py` | compatibility endpoint present |
 | `GET /api/knowledge-documents` | Optional query filter | `KnowledgeDocument[]` | `src/offerpilot/api.py` | v0.1 |
 | `POST /api/knowledge-documents` | Document body, no knowledge base id | `KnowledgeDocument` | `src/offerpilot/api.py` | v0.1 |
 | `POST /api/knowledge-documents/import` | Import body | `KnowledgeDocument` | `internal/api/knowledge.go` | Phase 5 |
@@ -135,7 +138,7 @@ Compatibility footnotes:
 Compatibility footnotes:
 
 - JD analyze returns a parsed result object, while list/get analysis endpoints expose `result` as a raw JSON string.
-- Resume upload accepts one PDF up to 10 MB; `parse-failed` resumes may still return `201`.
+- Resume upload accepts one real PDF up to 10 MB. Invalid `.pdf` bytes return `400`; valid PDFs without extractable text may still create a `parse-failed` resume.
 - Material-kit `GET` returns `404` for missing kit; the frontend maps that to `null`.
 - Knowledge document import accepts `.md` or `.txt` up to 1 MB and uses `source_type=upload`.
 - Question delete returns `204 No Content`, unlike most delete endpoints.
@@ -153,13 +156,16 @@ Compatibility footnotes:
 | `GET /api/chat/conversations` | None | `Conversation[]` | Includes `mode`, `context_type`, and `context_ref`; `offer_id` is not part of the v0.1 conversation contract. | List order/update time |
 | `GET /api/chat/conversations/{id}` | Path id | `ChatMessage[]` | `tool_calls` remains a JSON string in DB/API model. | Preserve tool metadata |
 | `DELETE /api/chat/conversations/{id}` | Path id | `{"status":"deleted"}` | Deletes messages first, then conversation. | Cascade/delete behavior |
-| `GET /api/settings` | None | `{"chat_auto_approve_writes": bool, "base_url": string, "model": string, "has_api_key": bool}` | Never returns raw API key. | No secret exposure |
-| `PUT /api/settings` | `chat_auto_approve_writes`, `base_url`, `model`, optional `api_key` | Same as GET | Blank/missing API key must not erase existing key unless current Go behavior says so. | Update fields, preserve/replace secret |
+| `GET /api/settings` | None | `{"chat_auto_approve_writes": bool, "active_provider_id": string, "fallback_provider_id": string, "providers": ProviderProfile[], "base_url": string, "model": string, "has_api_key": bool, "runtime_mode": string, "auth_enabled": bool, "has_auth_token": bool, "log_level": string}` | Never returns raw API key; provider profiles expose `has_api_key` only. | No secret exposure, multi-provider summary |
+| `PUT /api/settings` | `chat_auto_approve_writes`, optional `active_provider_id`, optional `fallback_provider_id`, optional `providers`, optional `base_url`, optional `model`, optional `api_key`, runtime/auth/log fields | Same as GET | Blank/missing API key must not erase existing key; omitted provider list preserves existing profiles. Invalid fallback clears to empty. | Update fields, preserve/replace secret, preserve provider list |
+| `POST /api/settings/providers/test` | Either `{"provider_id": string}` or `{"provider": ProviderProfile + optional api_key}` | `{"ok": true, "provider_id": string, "model": string, "latency_ms": number, "message": "连接成功"}` or `{"ok": false, "error": string}` | Runs a minimal non-tool model call; errors are readable and sanitized. | Saved provider test, draft provider test, no key leakage |
+| `GET /api/settings/backup` | None | Safe JSON backup with runtime/auth/log flags, active/fallback ids, provider profiles with `has_api_key` only | v0.1 export only; no restore/import. | Backup excludes plaintext `api_key` |
 
 Chat/settings compatibility footnotes:
 
 - `GET /api/chat/conversations/{id}` does not currently 404 just because the message list is empty.
 - `PUT /api/settings` preserves the existing API key when `api_key` is blank or omitted.
+- AI calls try `active_provider_id` first; if it fails and `fallback_provider_id` is valid, enabled, and keyed, the fallback provider is attempted and the provider event is written to diagnostics logs.
 - New chat without explicit context creates a workspace conversation. Offer-specific UI may set `mode=nego_coach`, but persistent conversation context is still `context_type/context_ref`.
 
 ## SQLite Schema Contract
@@ -177,7 +183,7 @@ by this idempotent Go migrator.
 | `applications` | `id` PK autoincrement; `company_name` not null; `position_name` not null; `job_url` default empty; `status` not null default `applied`; `source` not null default `cli`; `notes` default empty; `applied_at`, `created_at`, `updated_at` not null default current timestamp | `idx_applications_status`; first Python milestone must fully support this table |
 | `application_events` | `id`; `application_id` not null FK cascade; `event_type` in `written_test/interview/offer_step/deadline/custom`; `subtype`; `tags` JSON text default `[]`; `round` default 0; nullable `scheduled_at`; `duration_minutes`; `location`; `notes`; nullable `remind_at`; `status`; `created_at` | `idx_application_events_app`, `idx_application_events_type`; old `events` is dropped, not kept compatible |
 | `interview_notes` | `id`; nullable `application_id` FK set null; `company`, `position` not null; `round`, `date`, `questions`, `self_reflection`, `difficulty_points`, `mood`; `created_at` | `idx_notes_app` |
-| `resumes` | `id`; `name`; nullable `file_path`; nullable `parsed_data`; `parse_status` default `pending`; `created_at` | `ensureColumn` maintains all four non-id content columns for legacy DBs |
+| `resumes` | `id`; `name`; `file_path`; `parsed_data`; `parse_status` default `pending`; `title`; `is_master`; nullable `parent_resume_id`; `source`; `source_file_path`; `content_json`; nullable `deleted_at`; `created_at` | v0.1 structured resume model; startup repairs add/backfill all v0.1 columns and keep exactly one active master when possible |
 | `jd_analyses` | `id`; nullable `application_id` FK set null; `jd_source` default `text`; `jd_text` not null; `result` not null; `created_at` | `idx_jd_app` |
 | `resume_matches` | `id`; `resume_id` not null FK cascade; nullable `application_id` FK set null; `jd_text` not null; `result` not null; `created_at` | `idx_matches_resume` |
 | `offers` | `id`; nullable `application_id` FK set null; `company_name`, `position_name` not null; `status` default `pending`; `base_monthly`, `months_per_year`, `signing_bonus`; `equity`, `perks`, `deadline`, `notes`, `assessment`; timestamps | `idx_offers_app`, `idx_offers_status`; `total_cash` is derived, not stored |
@@ -246,7 +252,7 @@ The agent loop lives in `internal/ai/agent.go`.
 | Rule | Current behavior | Python requirement |
 |---|---|---|
 | Provider abstraction | `ai.Client` supports OpenAI-compatible and Anthropic-style tool calls | Keep provider interface behind one app-level AI client |
-| Provider selection | `base_url` containing `anthropic` uses Anthropic Messages API; other URLs use OpenAI-compatible `/chat/completions` | Preserve this heuristic unless config contract is revised |
+| Provider selection | Config supports an active provider profile plus an optional fallback provider profile. LiteLLM model routing prefixes provider names unless the model already includes a provider prefix. | Preserve active-first/fallback-second behavior and keep provider adapters isolated behind one interface |
 | Tool loop | Max 8 iterations; model sees full history plus tools; only first tool call is executed per assistant turn | Preserve max iteration and one-tool-per-turn semantics |
 | Unknown tool | Converts to a tool result string `错误：未知工具 "name"` and continues | Preserve non-crashing behavior |
 | Write gate | If `tool.Write` and auto-approve is false, return pending action before executing handler | Mandatory |

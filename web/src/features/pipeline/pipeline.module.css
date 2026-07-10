@@ -1,7 +1,27 @@
+.detailWorkspace {
+  max-width: 820px;
+}
+
 .drawerBody {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.detailHeader {
+  margin-bottom: 24px;
+}
+
+.backButton {
+  height: auto;
+  padding: 0;
+  margin-bottom: 10px;
+}
+
+.detailTitle {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--op-ink);
 }
 
 .section {

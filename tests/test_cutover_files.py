@@ -40,6 +40,8 @@ def test_readme_documents_current_v01_contract():
     assert "AGPLv3" in readme
     assert "LiteLLM" in readme
     assert "oc smoke" in readme
+    assert "oc verify --profile local" in readme
+    assert "oc verify --profile real-ai" in readme
     assert "oc skill trust" in readme
     assert "oc skill add --manifest" in readme
     assert "SQLite FTS5 chunk retrieval" in readme
@@ -96,6 +98,73 @@ def test_local_smoke_scripts_exercise_oc_start_with_built_spa():
     assert "scripts/local-smoke.ps1" in readme
 
 
+def test_release_gate_scripts_wrap_required_v01_checks():
+    powershell_script = (ROOT / "scripts" / "release-gate.ps1").read_text(encoding="utf-8")
+    shell_script = (ROOT / "scripts" / "release-gate.sh").read_text(encoding="utf-8")
+    checklist = (ROOT / "docs" / "p0-release-checklist.md").read_text(encoding="utf-8")
+
+    for command in [
+        "uv run pytest -q",
+        "uv run ruff check .",
+        "uv run mypy src",
+        "oc verify --profile local",
+        "oc verify --profile real-ai",
+    ]:
+        assert command in powershell_script
+        assert command in shell_script
+
+    assert "npm.cmd test" in powershell_script
+    assert "npm.cmd run build" in powershell_script
+    assert "scripts\\local-smoke.ps1" in powershell_script
+    assert "scripts\\docker-smoke.ps1" in powershell_script
+
+    assert "npm test" in shell_script
+    assert "npm run build" in shell_script
+    assert "scripts/local-smoke.sh" in shell_script
+    assert "scripts/docker-smoke.sh" in shell_script
+
+    assert "release-gate.ps1" in checklist
+    assert "release-gate.sh" in checklist
+
+
+def test_install_gate_scripts_cover_source_and_tool_install_paths():
+    powershell_script = (ROOT / "scripts" / "install-gate.ps1").read_text(encoding="utf-8")
+    shell_script = (ROOT / "scripts" / "install-gate.sh").read_text(encoding="utf-8")
+    release_powershell = (ROOT / "scripts" / "release-gate.ps1").read_text(encoding="utf-8")
+    release_shell = (ROOT / "scripts" / "release-gate.sh").read_text(encoding="utf-8")
+    checklist = (ROOT / "docs" / "p0-release-checklist.md").read_text(encoding="utf-8")
+
+    assert "uv run oc --help" in powershell_script
+    assert "uv tool install --force ." in powershell_script
+    assert "UV_TOOL_BIN_DIR" in powershell_script
+
+    assert "uv run oc --help" in shell_script
+    assert "uv tool install --force ." in shell_script
+    assert "scripts/install.sh --source" in shell_script
+    assert "UV_TOOL_BIN_DIR" in shell_script
+
+    assert "install-gate.ps1" in release_powershell
+    assert "install-gate.sh" in release_shell
+    assert "install-gate.ps1" in checklist
+    assert "install-gate.sh" in checklist
+
+
+def test_p0_release_checklist_documents_browser_product_walkthrough():
+    checklist = (ROOT / "docs" / "p0-release-checklist.md").read_text(encoding="utf-8")
+
+    assert "Browser Product Walkthrough" in checklist
+    for required_area in [
+        "Dashboard",
+        "Resumes",
+        "Applications",
+        "Application events",
+        "Pilot",
+        "Settings",
+        "Interview empty state",
+    ]:
+        assert required_area in checklist
+
+
 def test_p0_release_checklist_documents_non_docker_release_gate():
     gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
     checklist = (ROOT / "docs" / "p0-release-checklist.md").read_text(encoding="utf-8")
@@ -109,6 +178,8 @@ def test_p0_release_checklist_documents_non_docker_release_gate():
     assert "npm.cmd test" in checklist
     assert "npm.cmd run build" in checklist
     assert "scripts/local-smoke.ps1" in checklist
+    assert "oc verify --profile local" in checklist
+    assert "oc verify --profile real-ai" in checklist
     assert "AGPLv3" in checklist
     assert "schema_migrations" in checklist
     assert "pending actions" in checklist

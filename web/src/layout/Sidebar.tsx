@@ -25,6 +25,7 @@ const MODULE_ICONS: Record<ModuleKey, React.ReactNode> = {
   pipeline: <AppstoreOutlined />,
   interview: <AudioOutlined />,
   knowledge: <BookOutlined />,
+  pilot: <RobotOutlined />,
   settings: <SettingOutlined />,
 };
 
@@ -32,10 +33,9 @@ interface Props {
   view: ViewMode;
   onChange: (v: ViewMode) => void;
   reminderCount: number;
-  onOpenChat: () => void;
 }
 
-export default function Sidebar({ view, onChange, reminderCount, onOpenChat }: Props) {
+export default function Sidebar({ view, onChange, reminderCount }: Props) {
   const { mode, toggle } = useThemeMode();
   const activeModule = resolveModuleForView(view);
 
@@ -103,24 +103,6 @@ export default function Sidebar({ view, onChange, reminderCount, onOpenChat }: P
       })}
 
       <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <button
-          onClick={onOpenChat}
-          style={{
-            border: 'none',
-            cursor: 'pointer',
-            textAlign: 'left',
-            background: 'var(--op-layout-bg)',
-            borderRadius: 8,
-            padding: 11,
-            color: 'var(--op-primary)',
-            fontSize: 13,
-            display: 'flex',
-            gap: 8,
-            alignItems: 'center',
-          }}
-        >
-          <RobotOutlined /> Pilot
-        </button>
         <button
           onClick={toggle}
           aria-label="切换明暗模式"
