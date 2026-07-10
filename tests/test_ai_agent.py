@@ -379,10 +379,17 @@ def test_confirmation_race_preserves_replacement_checkpoint(monkeypatch):
 
     monkeypatch.setattr(runner, "_compile_graph", compile_with_race)
 
-    with pytest.raises(StalePendingActionError, match="stale pending action"):
-        runner.resume_after_confirm(
+    try:
+        _, race_reply, pending_after_race = runner.resume_after_confirm(
             [], pending_a, approved=True, auto_approve=False, max_iter=8
         )
+    except StalePendingActionError:
+        pending_after_race = replacement["pending"]
+    else:
+        assert race_reply == ""
+        assert pending_after_race is not None
+        assert pending_after_race.tool_call_id == "call-b"
+        assert pending_after_race.tool_name == "update_application_status"
 
     assert calls == []
     assert not any(
@@ -390,7 +397,7 @@ def test_confirmation_race_preserves_replacement_checkpoint(monkeypatch):
         for event in events
     )
 
-    pending_b = replacement["pending"]
+    pending_b = pending_after_race
     added, reply, new_pending = runner.resume_after_confirm(
         [], pending_b, approved=True, auto_approve=False, max_iter=8
     )
@@ -403,6 +410,59 @@ def test_confirmation_race_preserves_replacement_checkpoint(monkeypatch):
         event["event"] == "tool_call" and event["data"].get("confirm_mode") == "approved"
         for event in events
     ) == 1
+
+
+def test_mapped_confirmation_allows_chained_write_to_create_fresh_interrupt():
+    calls = []
+    registry = _editable_registry(calls)
+    runner = LangGraphAgentRunner(
+        ScriptedModel(
+            [
+                Assistant(
+                    tool_calls=[
+                        ToolCall(
+                            id="w1",
+                            name="update_application_status",
+                            args=json.dumps({"id": 7, "status": "offer"}),
+                        )
+                    ]
+                ),
+                Assistant(
+                    tool_calls=[
+                        ToolCall(
+                            id="w2",
+                            name="update_application_status",
+                            args=json.dumps({"id": 7, "status": "rejected"}),
+                        )
+                    ]
+                ),
+                Assistant(content="both writes completed"),
+            ]
+        ),
+        registry,
+    )
+    _, _, pending_w1 = runner.run_turn([], auto_approve=False, max_iter=8)
+    assert pending_w1 is not None
+
+    _, reply_w1, pending_w2 = runner.resume_after_confirm(
+        [], pending_w1, approved=True, auto_approve=False, max_iter=8
+    )
+
+    assert calls == ['{"id":7,"status":"offer"}']
+    assert reply_w1 == ""
+    assert pending_w2 is not None
+    assert pending_w2.tool_call_id == "w2"
+
+    _, reply_w2, new_pending = runner.resume_after_confirm(
+        [], pending_w2, approved=True, auto_approve=False, max_iter=8
+    )
+
+    assert calls == [
+        '{"id":7,"status":"offer"}',
+        '{"id":7,"status":"rejected"}',
+    ]
+    assert reply_w2 == "both writes completed"
+    assert new_pending is None
 
 
 def test_missing_resume_identity_preserves_checkpoint(monkeypatch):

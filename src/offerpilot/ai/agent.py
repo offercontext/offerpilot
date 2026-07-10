@@ -12,7 +12,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.config import get_config
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import Command, interrupt
+from langgraph.types import Command, Interrupt, interrupt
 
 from offerpilot.ai.types import Assistant, Message
 
@@ -642,9 +642,13 @@ def _mapped_resume_payload() -> tuple[bool, dict[str, Any]]:
     if "__pregel_resume_map" not in configurable:
         return False, {}
     resume_map = configurable.get("__pregel_resume_map")
-    if not isinstance(resume_map, dict) or len(resume_map) != 1:
+    checkpoint_ns = configurable.get("checkpoint_ns")
+    if not isinstance(resume_map, dict) or not isinstance(checkpoint_ns, str):
         return True, {}
-    payload = next(iter(resume_map.values()))
+    current_interrupt_id = Interrupt.from_ns(value=None, ns=checkpoint_ns).id
+    if current_interrupt_id not in resume_map:
+        return False, {}
+    payload = resume_map[current_interrupt_id]
     return True, payload if isinstance(payload, dict) else {}
 
 
