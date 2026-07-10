@@ -1034,6 +1034,67 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+.requestContextRow {
+  align-self: stretch;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0 0 4px;
+}
+.requestContextChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 4px 5px 4px 8px;
+  border: 1px solid color-mix(in srgb, var(--op-primary) 24%, var(--op-border));
+  border-radius: 999px;
+  background: var(--chat-tint);
+  color: var(--op-ink);
+  font-size: 11px;
+}
+.requestContextChipText {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.requestContextLabel {
+  flex: 0 0 auto;
+  color: var(--op-primary);
+  font-weight: 700;
+}
+.requestContextValue {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.requestContextClear {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--op-muted);
+  cursor: pointer;
+}
+.requestContextClear:hover {
+  background: color-mix(in srgb, var(--op-primary) 12%, transparent);
+  color: var(--op-primary);
+}
+.requestContextClear:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 .contextBadge {
   align-self: flex-start;
   display: inline-flex;

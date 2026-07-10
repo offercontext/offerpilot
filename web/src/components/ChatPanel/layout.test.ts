@@ -165,6 +165,33 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('contextLabel');
   });
 
+  it('keeps removable request page context separate from durable conversation context', async () => {
+    const css = await loadCss();
+
+    expect(component).toContain('pageContext?: PilotPageContext');
+    expect(component).toContain('useState<PilotPageContext | undefined>(() => pageContext)');
+    expect(component).toContain('pageContextKey(pageContext)');
+    expect(component).toContain('setActivePageContext(pageContextRef.current)');
+    expect(component).toContain('}, [incomingPageContextKey]);');
+    expect(component).toContain('buildChatRequestContext({');
+    expect(component).toContain('pageContext: activePageContext');
+    expect(component).toContain('pageContextChips(activePageContext)');
+    expect(component).toContain('removePageContextChip(activePageContext, chipKey)');
+    expect(component).toContain('aria-label={`\u79fb\u9664${chip.label}`}');
+    expect(component).toContain('disabled={loading}');
+    expect(component).toContain('styles.requestContextRow');
+    expect(component).toContain('styles.contextBadge');
+    expect(css).toContain('.requestContextRow');
+    expect(css).toContain('flex-wrap: wrap;');
+    expect(css).toContain('min-width: 0;');
+  });
+
+  it('does not mix persistent context fields into existing conversation requests', () => {
+    expect(component).toContain('conversationId: convID');
+    expect(component).toContain('const requestContext = buildChatRequestContext');
+    expect(component).toContain('streamChat(trimmed, convID, requestContext');
+  });
+
   it('lets users manage conversations and remove active context from the Pilot UI', () => {
     expect(threadRail).toContain('PushpinOutlined');
     expect(threadRail).toContain('EditOutlined');

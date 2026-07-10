@@ -32,6 +32,7 @@ import type {
 } from '@/types/chat';
 import type { Offer } from '@/types/offer';
 import {
+  buildChatRequestContext,
   buildTurns,
   collectEvidence,
   firstPendingConversationId,
@@ -43,6 +44,11 @@ import {
   type EvidenceItem,
   type UITurn,
 } from './model';
+import {
+  pageContextChips,
+  pageContextKey,
+  removePageContextChip,
+} from '@/lib/pilotPageContext';
 import { capabilitiesForMode, type Capability } from './capabilities';
 import ThreadRail from './ThreadRail';
 import MessageBubble from './MessageBubble';
@@ -139,6 +145,7 @@ export default function ChatPanel({
   variant = 'drawer',
   onExpand,
   onDataChanged,
+  pageContext,
 }: Props) {
   const { message: toast } = AntApp.useApp();
   const [turns, setTurns] = useState<UITurn[]>([]);
@@ -158,6 +165,7 @@ export default function ChatPanel({
   const [lastUndo, setLastUndo] = useState<ChatUndo | null>(null);
   const [loadingLabel, setLoadingLabel] = useState<string | undefined>(undefined);
   const [hasStreamingAssistantContent, setHasStreamingAssistantContent] = useState(false);
+  const [activePageContext, setActivePageContext] = useState<PilotPageContext | undefined>(() => pageContext);
   const [drawerWidth, setDrawerWidth] = useState(() => {
     const stored = Number(localStorage.getItem(CHAT_WIDTH_STORAGE_KEY));
     return Number.isFinite(stored) && stored > 0 ? clampChatWidth(stored) : DEFAULT_CHAT_WIDTH;
@@ -166,6 +174,9 @@ export default function ChatPanel({
   const threadOfferId = useRef<number | undefined>(undefined);
   const abortControllerRef = useRef<AbortController | null>(null);
   const streamingAssistantActiveRef = useRef(false);
+  const pageContextRef = useRef(pageContext);
+  pageContextRef.current = pageContext;
+  const incomingPageContextKey = pageContextKey(pageContext);
   const docked = variant === 'rail';
   const inlinePage = variant === 'page';
 
@@ -178,6 +189,10 @@ export default function ChatPanel({
     queryFn: getSettings,
     enabled: open,
   });
+
+  useEffect(() => {
+    setActivePageContext(pageContextRef.current);
+  }, [incomingPageContextKey]);
 
   function refreshConversations() {
     listConversations()
@@ -416,13 +431,13 @@ export default function ChatPanel({
     let streamConversationId = convID;
     try {
       const isNew = convID === undefined;
-      const context =
-        isNew && offer?.application_id
-          ? { context_type: 'application', context_ref: offer.application_id, mode: 'nego_coach' }
-          : isNew && offerId !== undefined
-            ? { context_type: 'workspace', context_ref: '', mode: 'nego_coach' }
-            : undefined;
-      const resp = await streamChat(trimmed, convID, context, {
+      const requestContext = buildChatRequestContext({
+        conversationId: convID,
+        offerApplicationId: offer?.application_id,
+        offerId,
+        pageContext: activePageContext,
+      });
+      const resp = await streamChat(trimmed, convID, requestContext, {
         signal: controller.signal,
         onEvent: (event) => {
           if (event.conversation_id) {
@@ -604,6 +619,11 @@ export default function ChatPanel({
     void sendMessage(cap.prompt);
   }
 
+  function removeRequestContextChip(chipKey: string) {
+    if (!activePageContext) return;
+    setActivePageContext(removePageContextChip(activePageContext, chipKey));
+  }
+
   const composerDisabled = loading || !!activePending || !hasKey;
   const composerDisabledReason = !hasKey
     ? '先配置 API key 后即可对话'
@@ -615,6 +635,7 @@ export default function ChatPanel({
   const showEmpty = turns.length === 0 && !activePending && !loading;
   const threadEvidence = collectEvidence(turns);
   const confirmationEvidence = activePending ? pendingActionEvidence(threadEvidence, activePending) : [];
+  const activeRequestChips = activePageContext ? pageContextChips(activePageContext) : [];
   const contextLabel =
     activeConv?.context_type === 'application' && activeConv.context_ref
       ? `投递 #${activeConv.context_ref}`
@@ -750,6 +771,29 @@ export default function ChatPanel({
               ) : (
                 turns.map((turn, i) => <MessageBubble key={i} turn={turn} index={i} />)
               )}
+
+              {activeRequestChips.length > 0 ? (
+                <div className={styles.requestContextRow} aria-label="本次请求上下文">
+                  {activeRequestChips.map((chip) => (
+                    <div key={chip.key} className={styles.requestContextChip}>
+                      <span className={styles.requestContextChipText}>
+                        <span className={styles.requestContextLabel}>{chip.label}</span>
+                        <span className={styles.requestContextValue} title={chip.value}>{chip.value}</span>
+                      </span>
+                      <button
+                        type="button"
+                        className={styles.requestContextClear}
+                        aria-label={`移除${chip.label}`}
+                        title={`移除${chip.label}`}
+                        onClick={() => removeRequestContextChip(chip.key)}
+                        disabled={loading}
+                      >
+                        {createElement(CloseOutlined)}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
 
               {contextLabel ? (
                 <div className={styles.contextBadge}>

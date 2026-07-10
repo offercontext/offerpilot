@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import type { ChatMessage } from '@/types/chat';
+import type { ChatMessage, PilotPageContext } from '@/types/chat';
 import {
+  buildChatRequestContext,
   buildTurns,
   collectEvidence,
   hydrateMissingPendingAction,
@@ -10,6 +11,65 @@ import {
   reloadConversationTurns,
   toolMeta,
 } from './model';
+
+describe('buildChatRequestContext', () => {
+  const pageContext: PilotPageContext = {
+    view: 'applications-list',
+    label: '投递列表',
+    entity: { kind: 'application', id: '42', label: '星海科技 · 前端工程师' },
+  };
+
+  it('sends only request page context for an existing conversation', () => {
+    expect(
+      buildChatRequestContext({
+        conversationId: 7,
+        offerApplicationId: 99,
+        offerId: 8,
+        pageContext,
+      }),
+    ).toEqual({ page_context: pageContext });
+  });
+
+  it('prefers a loaded offer application for a new conversation', () => {
+    expect(
+      buildChatRequestContext({
+        offerApplicationId: 99,
+        offerId: 8,
+        pageContext,
+      }),
+    ).toEqual({
+      context_type: 'application',
+      context_ref: 99,
+      mode: 'nego_coach',
+      page_context: pageContext,
+    });
+  });
+
+  it('binds a new general conversation to the page application entity', () => {
+    expect(buildChatRequestContext({ pageContext })).toEqual({
+      context_type: 'application',
+      context_ref: '42',
+      mode: 'general',
+      page_context: pageContext,
+    });
+  });
+
+  it('falls back to negotiation workspace context when only an offer id is available', () => {
+    expect(buildChatRequestContext({ offerId: 8 })).toEqual({
+      context_type: 'workspace',
+      context_ref: '',
+      mode: 'nego_coach',
+    });
+  });
+
+  it('uses general workspace context for other new conversations', () => {
+    expect(buildChatRequestContext({})).toEqual({
+      context_type: 'workspace',
+      context_ref: '',
+      mode: 'general',
+    });
+  });
+});
 
 function msg(patch: Partial<ChatMessage> & Pick<ChatMessage, 'role'>): ChatMessage {
   return {

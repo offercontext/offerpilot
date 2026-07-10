@@ -1,4 +1,4 @@
-import type { ChatMessage, Conversation, PendingAction } from '@/types/chat';
+import type { ChatMessage, Conversation, PendingAction, PilotPageContext } from '@/types/chat';
 import { STATUS_LABELS, type ApplicationStatus } from '@/types/application';
 import { toolMeta } from './capabilities';
 
@@ -41,6 +41,56 @@ export interface UITurn {
   content: string;
   /** Tool steps the assistant ran before producing this answer. */
   steps?: ToolStep[];
+}
+
+export interface ChatRequestContext {
+  context_type?: 'workspace' | 'application';
+  context_ref?: string | number;
+  mode?: 'general' | 'nego_coach';
+  page_context?: PilotPageContext;
+}
+
+interface BuildChatRequestContextOptions {
+  conversationId?: number;
+  offerApplicationId?: number;
+  offerId?: number;
+  pageContext?: PilotPageContext;
+}
+
+export function buildChatRequestContext({
+  conversationId,
+  offerApplicationId,
+  offerId,
+  pageContext,
+}: BuildChatRequestContextOptions): ChatRequestContext {
+  if (conversationId !== undefined) {
+    return pageContext ? { page_context: pageContext } : {};
+  }
+
+  if (offerApplicationId !== undefined) {
+    return {
+      context_type: 'application',
+      context_ref: offerApplicationId,
+      mode: 'nego_coach',
+      ...(pageContext ? { page_context: pageContext } : {}),
+    };
+  }
+
+  if (pageContext?.entity?.kind === 'application') {
+    return {
+      context_type: 'application',
+      context_ref: pageContext.entity.id,
+      mode: 'general',
+      page_context: pageContext,
+    };
+  }
+
+  return {
+    context_type: 'workspace',
+    context_ref: '',
+    mode: offerId !== undefined ? 'nego_coach' : 'general',
+    ...(pageContext ? { page_context: pageContext } : {}),
+  };
 }
 
 const EVIDENCE_SNIPPET_MAX = 180;
