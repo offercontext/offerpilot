@@ -33,11 +33,14 @@ describe('conversation search and views', () => {
       },
     }),
     conversation(4, { archived_at: '2026-07-09T00:00:00.000Z' }),
+    conversation(5, { mode: 'mock_interview' }),
   ];
 
   it('searches case-insensitively across title, localized mode, context label, fallback context, and pending terms', () => {
     expect(searchConversations(items, '字节').map((item) => item.id)).toEqual([1]);
     expect(searchConversations(items, '谈薪教练').map((item) => item.id)).toEqual([2]);
+    expect(searchConversations(items, 'NEGO_COACH').map((item) => item.id)).toEqual([2]);
+    expect(searchConversations(items, 'mock_interview').map((item) => item.id)).toEqual([5]);
     expect(searchConversations(items, 'APPLICATION').map((item) => item.id)).toEqual([2]);
     expect(searchConversations(items, '42').map((item) => item.id)).toEqual([2]);
     expect(searchConversations(items, 'PENDING').map((item) => item.id)).toEqual([3]);
@@ -45,7 +48,7 @@ describe('conversation search and views', () => {
   });
 
   it('separates active and archived conversations without leaking either view', () => {
-    expect(filterConversationsByView(items, 'active').map((item) => item.id)).toEqual([1, 2, 3]);
+    expect(filterConversationsByView(items, 'active').map((item) => item.id)).toEqual([1, 2, 3, 5]);
     expect(filterConversationsByView(items, 'archived').map((item) => item.id)).toEqual([4]);
   });
 });

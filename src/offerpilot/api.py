@@ -2118,9 +2118,7 @@ def create_app(
             {
                 "session": _mock_session_json(session_model),
                 "conversation_id": conversation.id,
-                "conversation": ConversationOut.model_validate(conversation).model_dump(
-                    mode="json"
-                ),
+                "conversation": _conversation_json(conversation, applications),
             },
             status_code=201,
         )

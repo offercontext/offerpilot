@@ -20,6 +20,7 @@ function conversationSearchText(conversation: Conversation): string {
     || [conversation.context_type, conversation.context_ref].filter(Boolean).join(' ');
   return [
     conversation.title,
+    conversation.mode ?? '',
     conversationModeLabel(conversation.mode),
     context,
     conversation.context_type,
