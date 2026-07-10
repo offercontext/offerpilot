@@ -4,7 +4,7 @@ import dayjs from 'dayjs';
 import type { PendingAction, PendingActionEditableField } from '@/types/chat';
 import { STATUS_LABELS, type ApplicationStatus } from '@/types/application';
 import { EVENT_TYPE_LABELS, type ScheduleEventType } from '@/types/event';
-import type { EvidenceItem } from './model';
+import { selectEvidence, type EvidenceItem } from './model';
 import { toolMeta } from './capabilities';
 import EvidenceList from './EvidenceList';
 import {
@@ -162,7 +162,7 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
     snippet: item.snippet,
     source: item.source,
   })) ?? [];
-  const visibleEvidence = evidence.length ? evidence : actionEvidence;
+  const visibleEvidence = selectEvidence(evidence.length ? evidence : actionEvidence, 3).visible;
   const changes = action.proposed_changes ?? [];
   const thinEvidence = visibleEvidence.length === 0;
   const longDraftFields = changes.filter((change) => summarizeLongValue(change.after, change.field));

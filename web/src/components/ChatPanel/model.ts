@@ -1,6 +1,7 @@
 import type { ChatMessage, Conversation, PendingAction, PilotPageContext } from '@/types/chat';
 import type { ConfirmationInput } from '@/services/chat';
 import { STATUS_LABELS, type ApplicationStatus } from '@/types/application';
+import dayjs from 'dayjs';
 import { toolMeta } from './capabilities';
 
 export type EvidenceKind =
@@ -20,6 +21,15 @@ export interface EvidenceItem {
   meta?: string;
   snippet?: string;
   source: string;
+}
+
+export interface EvidenceSelection {
+  /** Distinct records selected for the bounded default view. */
+  visible: EvidenceItem[];
+  /** Omitted records that share a normalized cluster with a visible record. */
+  similar: EvidenceItem[];
+  /** Every omitted distinct record, including records in other clusters. */
+  remainingCount: number;
 }
 
 export interface ToolStep {
@@ -510,20 +520,121 @@ function resolveToolResultIndex(
   return pending.findIndex((_step, index) => !assignedIndexes.has(index));
 }
 
+/** Stable exact-record identity. Titles are intentionally not part of deduplication. */
+export function evidenceIdentity(item: EvidenceItem): string {
+  return `${item.source}:${item.id}`;
+}
+
+function evidenceClusterKey(item: EvidenceItem): string {
+  const normalizedTitle = item.title
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/\s*#\d+\s*$/, '')
+    .trim();
+  return `${item.kind}:${normalizedTitle}`;
+}
+
+/**
+ * Select bounded evidence without conflating exact records with title clusters.
+ * A first pass gives each encountered cluster one representative; a second pass
+ * fills remaining space with other distinct records in stable encounter order.
+ */
+export function selectEvidence(items: EvidenceItem[], limit: number): EvidenceSelection {
+  const distinct: EvidenceItem[] = [];
+  const identities = new Set<string>();
+  for (const item of items) {
+    const identity = evidenceIdentity(item);
+    if (identities.has(identity)) continue;
+    identities.add(identity);
+    distinct.push(item);
+  }
+
+  const maximum = Math.max(0, Math.floor(limit));
+  const visible: EvidenceItem[] = [];
+  const selectedIdentities = new Set<string>();
+  const visibleClusters = new Set<string>();
+
+  for (const item of distinct) {
+    if (visible.length >= maximum) break;
+    const cluster = evidenceClusterKey(item);
+    if (visibleClusters.has(cluster)) continue;
+    visible.push(item);
+    selectedIdentities.add(evidenceIdentity(item));
+    visibleClusters.add(cluster);
+  }
+
+  for (const item of distinct) {
+    if (visible.length >= maximum) break;
+    const identity = evidenceIdentity(item);
+    if (selectedIdentities.has(identity)) continue;
+    visible.push(item);
+    selectedIdentities.add(identity);
+  }
+
+  const omitted = distinct.filter((item) => !selectedIdentities.has(evidenceIdentity(item)));
+  return {
+    visible,
+    similar: omitted.filter((item) => visibleClusters.has(evidenceClusterKey(item))),
+    remainingCount: omitted.length,
+  };
+}
+
+const EVIDENCE_TIMESTAMP = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?(?![\w:+-])/g;
+
+function isValidEvidenceTimestamp(timestamp: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?$/.exec(timestamp);
+  if (!match) return false;
+
+  const [, yearValue, monthValue, dayValue, hourValue, minuteValue, secondValue, timezone] = match;
+  const year = Number(yearValue);
+  const month = Number(monthValue);
+  const day = Number(dayValue);
+  const hour = Number(hourValue);
+  const minute = Number(minuteValue);
+  const second = secondValue === undefined ? 0 : Number(secondValue);
+  const calendarDate = new Date(Date.UTC(year, month - 1, day));
+  if (
+    calendarDate.getUTCFullYear() !== year ||
+    calendarDate.getUTCMonth() !== month - 1 ||
+    calendarDate.getUTCDate() !== day ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 59
+  ) {
+    return false;
+  }
+
+  if (!timezone || timezone === 'Z') return true;
+  const timezoneDigits = timezone.slice(1).replace(':', '');
+  return Number(timezoneDigits.slice(0, 2)) <= 23 && Number(timezoneDigits.slice(2)) <= 59;
+}
+
+/** Format embedded ISO/RFC3339 timestamps in local time while preserving other metadata. */
+export function formatEvidenceMeta(meta?: string): string | undefined {
+  if (!meta) return meta;
+  return meta.replace(EVIDENCE_TIMESTAMP, (timestamp) => {
+    if (!isValidEvidenceTimestamp(timestamp)) return timestamp;
+    const parsed = dayjs(timestamp);
+    return parsed.isValid() ? parsed.format('YYYY-MM-DD HH:mm') : timestamp;
+  });
+}
+
+/** Gather newest thread evidence, then apply bounded diversified selection. */
 export function collectEvidence(turns: UITurn[], limit = 8): EvidenceItem[] {
   const seen = new Set<string>();
   const out: EvidenceItem[] = [];
   for (const turn of [...turns].reverse()) {
     for (const step of [...(turn.steps ?? [])].reverse()) {
       for (const item of step.evidence ?? []) {
-        if (seen.has(item.id)) continue;
-        seen.add(item.id);
+        const identity = evidenceIdentity(item);
+        if (seen.has(identity)) continue;
+        seen.add(identity);
         out.push(item);
-        if (out.length >= limit) return out;
       }
     }
   }
-  return out;
+  return selectEvidence(out, limit).visible;
 }
 
 export async function reloadConversationTurns(

@@ -10,6 +10,7 @@ import {
   buildChatRequestContext,
   buildTurns,
   collectEvidence,
+  formatEvidenceMeta,
   hydrateMissingPendingAction,
   pendingActionForConversation,
   pendingComposerDisabledReason,
@@ -25,7 +26,81 @@ import {
   clearOwnedConfirmationLock,
   shouldConsumeConfirmationSettlement,
   shouldRestoreConfirmationRetryFocus,
+  selectEvidence,
 } from './model';
+
+describe('evidence selection', () => {
+  const item = (id: string, title: string, source = 'tool', kind: 'application' = 'application') => ({
+    id,
+    title,
+    source,
+    kind: kind as 'application',
+  });
+
+  it('dedupes only matching source and id while preserving different sources and ids', () => {
+    const evidence = collectEvidence([
+      {
+        role: 'assistant',
+        content: '',
+        steps: [
+          {
+            name: 'list_applications',
+            evidence: [
+              item('42', 'Same company', 'latest'),
+              item('42', 'Same company', 'other-source'),
+              item('43', 'Same company', 'latest'),
+              item('42', 'Duplicate record', 'latest'),
+            ],
+          },
+        ],
+      },
+    ]);
+
+    expect(evidence.map(({ source, id }) => `${source}:${id}`)).toEqual([
+      'latest:42',
+      'other-source:42',
+      'latest:43',
+    ]);
+  });
+
+  it('selects one representative per normalized cluster before filling remaining capacity', () => {
+    const selection = selectEvidence(
+      [
+        item('1', 'Acme #1'),
+        item('2', 'Acme #2'),
+        item('3', 'Beta'),
+        item('4', 'Acme #3'),
+        item('5', 'Gamma'),
+      ],
+      4,
+    );
+
+    expect(selection.visible.map((entry) => entry.id)).toEqual(['1', '3', '5', '2']);
+    expect(selection.similar.map((entry) => entry.id)).toEqual(['4']);
+    expect(selection.remainingCount).toBe(1);
+  });
+
+  it('keeps exact records with matching titles distinct and reports all omitted records', () => {
+    const selection = selectEvidence(
+      [item('1', 'Same title'), item('2', 'Same title'), item('3', 'Another title')],
+      1,
+    );
+
+    expect(selection.visible.map((entry) => entry.id)).toEqual(['1']);
+    expect(selection.similar.map((entry) => entry.id)).toEqual(['2']);
+    expect(selection.remainingCount).toBe(2);
+  });
+
+  it('formats embedded valid timestamps without changing invalid metadata', () => {
+    expect(formatEvidenceMeta('scheduled 2026-07-10T09:05:59+08:00')).toBe('scheduled 2026-07-10 09:05');
+    expect(formatEvidenceMeta('scheduled 2026-02-30T09:05:00Z')).toBe('scheduled 2026-02-30T09:05:00Z');
+    expect(formatEvidenceMeta('scheduled 2026-07-10T09:05:00Z+08:00')).toBe(
+      'scheduled 2026-07-10T09:05:00Z+08:00',
+    );
+    expect(formatEvidenceMeta('scheduled someday')).toBe('scheduled someday');
+    expect(formatEvidenceMeta()).toBeUndefined();
+  });
+});
 
 describe('confirmation retry focus lifecycle', () => {
   it('restores focus only after a requested retry finishes with an error', () => {

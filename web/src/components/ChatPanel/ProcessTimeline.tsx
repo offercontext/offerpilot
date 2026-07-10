@@ -11,51 +11,61 @@ interface Props {
 
 export default function ProcessTimeline({ steps }: Props) {
   const [open, setOpen] = useState(false);
+  const [expandedSteps, setExpandedSteps] = useState(false);
   if (!steps.length) return null;
+
+  const visibleSteps = expandedSteps ? steps : steps.slice(0, 8);
+  const remainingSteps = Math.max(0, steps.length - visibleSteps.length);
 
   return (
     <div className={`${styles.timeline} ${open ? styles.timelineOpen : ''}`} aria-label="AI 操作摘要">
-      <div
+      <button
+        type="button"
         className={styles.tlHead}
-        role="button"
-        tabIndex={0}
         aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            setOpen((v) => !v);
-          }
-        }}
+        onClick={() => setOpen((value) => !value)}
       >
         <ThunderboltOutlined aria-hidden="true" />
         <span>AI 做了什么 · 共 {steps.length} 步</span>
         <RightOutlined className={styles.tlChev} aria-hidden="true" />
-      </div>
+      </button>
       <div className={styles.tlBody}>
         <div className={styles.tlInner}>
           <ul className={styles.tlSteps}>
-            {steps.map((s, i) => {
-              const meta = toolMeta(s.name);
+            {visibleSteps.map((step, index) => {
+              const meta = toolMeta(step.name);
               return (
-                <li key={i} className={`${styles.step} ${meta.kind === 'write' ? styles.stepWrite : styles.stepRead}`}>
+                <li
+                  key={`${step.toolCallId ?? step.name}-${index}`}
+                  className={`${styles.step} ${meta.kind === 'write' ? styles.stepWrite : styles.stepRead}`}
+                >
                   <div className={styles.stepLine}>
                     <span className={styles.stepIcon} aria-hidden="true">
                       {createElement(meta.icon)}
                     </span>
                     <span className={styles.stepText}>
                       <b>{meta.label}</b>
-                      {s.detail ? <span className={styles.stepDetail}> · {s.detail}</span> : null}
+                      {step.detail ? <span className={styles.stepDetail}> · {step.detail}</span> : null}
                     </span>
-                    {s.evidence?.length ? <span className={styles.stepCount}>{s.evidence.length} 条来源</span> : null}
+                    {step.evidence?.length ? <span className={styles.stepCount}>{step.evidence.length} 条来源</span> : null}
                   </div>
-                  {s.evidence?.length ? <EvidenceList items={s.evidence} compact clamped /> : null}
-                  {s.resultText ? <div className={styles.stepFallback}>工具返回：{s.resultText}</div> : null}
-                  {s.evidenceUnavailable ? <div className={styles.stepFallback}>暂时无法展示这一步的明细。</div> : null}
+                  {step.evidence?.length ? <EvidenceList items={step.evidence} compact clamped /> : null}
+                  {step.resultText ? <div className={styles.stepFallback}>工具返回：{step.resultText}</div> : null}
+                  {step.evidenceUnavailable ? <div className={styles.stepFallback}>暂时无法展示这一步的明细。</div> : null}
                 </li>
               );
             })}
           </ul>
+          {steps.length > 8 ? (
+            <button
+              type="button"
+              className={styles.timelineExpand}
+              aria-expanded={expandedSteps}
+              onClick={() => setExpandedSteps((value) => !value)}
+            >
+              {expandedSteps ? '收起后续步骤' : `还有 ${remainingSteps} 步`}
+            </button>
+          ) : null}
         </div>
       </div>
     </div>

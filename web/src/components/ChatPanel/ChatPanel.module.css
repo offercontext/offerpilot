@@ -486,21 +486,31 @@
 }
 .tlHead {
   display: flex;
+  width: 100%;
+  min-height: 40px;
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
+  border: 0;
+  background: transparent;
   cursor: pointer;
+  font: inherit;
+  text-align: left;
   font-size: 12px;
   color: var(--op-muted);
   user-select: none;
-  transition: background 0.18s var(--op-ease);
+  transition-property: background-color, transform;
+  transition-duration: 180ms;
+  transition-timing-function: var(--op-ease);
 }
 .tlHead:hover {
   background: var(--chat-tint-soft);
 }
 .tlChev {
   margin-left: auto;
-  transition: transform 0.25s var(--op-ease);
+  transition-property: transform;
+  transition-duration: 250ms;
+  transition-timing-function: var(--op-ease);
 }
 .timelineOpen .tlChev {
   transform: rotate(90deg);
@@ -515,6 +525,39 @@
 }
 .tlInner {
   overflow: hidden;
+}
+.timelineExpand,
+.evidenceExpand {
+  min-height: 40px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--op-primary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  transition-property: background-color, color, transform;
+  transition-duration: 160ms;
+  transition-timing-function: var(--op-ease);
+}
+.timelineExpand {
+  margin: 0 14px 10px;
+  padding: 0 10px;
+}
+.timelineExpand:hover,
+.evidenceExpand:hover {
+  background: var(--chat-tint-soft);
+}
+.timelineExpand:focus-visible,
+.evidenceExpand:focus-visible,
+.tlHead:focus-visible {
+  outline: 2px solid var(--op-primary);
+  outline-offset: -2px;
+}
+.timelineExpand:active,
+.evidenceExpand:active {
+  transform: scale(0.96);
 }
 .tlSteps {
   padding: 2px 14px 12px;
@@ -595,6 +638,9 @@
   flex-direction: column;
   gap: 8px;
 }
+.evidenceGroup {
+  min-width: 0;
+}
 .evidenceListCompact {
   margin-left: 30px;
 }
@@ -642,6 +688,27 @@
   line-height: 1.45;
   text-wrap: pretty;
   overflow-wrap: anywhere;
+}
+.evidenceControls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin-top: 4px;
+}
+.evidenceControlsCompact {
+  margin-left: 30px;
+}
+.evidenceMore {
+  color: var(--op-muted);
+  font-size: 11.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+.evidenceExpand {
+  flex: 0 0 auto;
+  padding: 0 8px;
 }
 
 /* ---------- 提议卡（写确认） ---------- */
@@ -1714,6 +1781,9 @@
   .evidenceListCompact {
     margin-left: 0;
   }
+  .evidenceControlsCompact {
+    margin-left: 0;
+  }
   .editorField {
     grid-template-columns: minmax(0, 1fr);
     gap: 6px;
@@ -1736,6 +1806,9 @@
   }
   .tlBody,
   .tlChev,
+  .tlHead,
+  .timelineExpand,
+  .evidenceExpand,
   .promptCard,
   .composerBox,
   .editorDisclosure,

@@ -4,6 +4,7 @@ import proposalCard from './ProposalCard.tsx?raw';
 import thinking from './ThinkingIndicator.tsx?raw';
 import contextPanel from './ContextPanel.tsx?raw';
 import evidenceList from './EvidenceList.tsx?raw';
+import processTimeline from './ProcessTimeline.tsx?raw';
 import threadRail from './ThreadRail.tsx?raw';
 
 async function loadCss(): Promise<string> {
@@ -461,5 +462,33 @@ describe('ChatPanel docked layout contract', () => {
     expect(contextPanel).not.toContain('Current evidence');
     expect(contextPanel).not.toContain('No evidence collected yet');
     expect(evidenceList).not.toContain('Evidence sources');
+  });
+
+  it('bounds and diversifies context and proposal evidence without merging record ids', () => {
+    expect(contextPanel).toContain('selectEvidence(evidence, 5)');
+    expect(contextPanel).toContain('similar={evidenceSelection.similar}');
+    expect(contextPanel).toContain('remainingCount={evidenceSelection.remainingCount}');
+    expect(proposalCard).toContain('selectEvidence');
+    expect(proposalCard).toContain('visibleEvidence.slice(0, 3)');
+  });
+
+  it('renders expandable evidence and timeline limits with native controls', async () => {
+    const css = await loadCss();
+
+    expect(evidenceList).toContain('另有 {similar.length} 条同类依据');
+    expect(evidenceList).toContain('aria-expanded={expanded}');
+    expect(evidenceList).toContain('...similar');
+    expect(evidenceList).toContain('formatEvidenceMeta(item.meta)');
+    expect(processTimeline).toContain('const visibleSteps = expandedSteps ? steps : steps.slice(0, 8);');
+    expect(processTimeline).toContain('`还有 ${remainingSteps} 步`');
+    expect(processTimeline).toContain('aria-expanded={expandedSteps}');
+    expect(processTimeline).toContain('<button');
+    expect(processTimeline).not.toContain('role="button"');
+    expect(css).toContain('.evidenceExpand');
+    expect(css).toContain('.timelineExpand');
+    expect(css).toContain('min-height: 40px;');
+    expect(css).toMatch(/\.evidenceControlsCompact\s*\{\s*margin-left:\s*0;/);
+    expect(css).toMatch(/\.tlHead,\s*\.timelineExpand,\s*\.evidenceExpand,/);
+    expect(css).toContain('@media (prefers-reduced-motion: reduce)');
   });
 });
