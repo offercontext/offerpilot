@@ -1,0 +1,103 @@
+src/offerpilot/api.py
+  s_00fff216c0c1ef::t_9f827e19c949a5 6,17,63,87-90,100,151-164,1070-1073,1082,1103-1111,1157,1159,1190-1198,1201-1204,1213,1234-1242,1331,1334,1367-1374,1406,1446,1448,1476,1481,1483-1490,1552,1646,1649,1679-1688,1717,1851-1855,1886,1950,1966,2100-2131,2539-2563,2566-2569,2574,3039,3042-3043
+web/src/components/ChatPanel/layout.test.ts
+  s_00fff216c0c1ef::t_9f827e19c949a5 114,196-225
+docs/p0-release-checklist.md
+  s_00fff216c0c1ef::t_3d911eadfc4ec0 32,56,66,76
+docs/superpowers/plans/2026-07-10-v01-closeout.md
+  s_00fff216c0c1ef::t_544a7f99a2b676 1-848
+docs/superpowers/specs/2026-07-10-v01-closeout-design.md
+  s_00fff216c0c1ef::t_5f9ce5271d6cb3 1-277
+src/offerpilot/config.py
+  s_00fff216c0c1ef::t_afe5d3ce49f182 44
+src/offerpilot/db.py
+  s_00fff216c0c1ef::t_1cd53f10f76340 34
+src/offerpilot/diagnostics.py
+  s_00fff216c0c1ef::t_1faa3bdeaf9ac6 21,27-28,35-42
+src/offerpilot/models.py
+  s_00fff216c0c1ef::t_28e52759455a2f 462
+src/offerpilot/onboarding.py
+  s_00fff216c0c1ef::t_d0f09c4fe9274d 1-30
+src/offerpilot/repositories/chat.py
+  s_00fff216c0c1ef::t_e75644a6c51cc4 24,28,70-86,124-128
+src/offerpilot/schemas.py
+  s_00fff216c0c1ef::t_8ef51399429720 38
+tests/test_chat_api.py
+  s_00fff216c0c1ef::t_cdf568c26bbc3e 7,9,69-93,149,1105,1142,1149-1192,1567-1603
+tests/test_database.py
+  s_00fff216c0c1ef::t_d15391f415728e 1-18
+tests/test_diagnostics_api.py
+  s_00fff216c0c1ef::t_27743b27019037 23-41
+tests/test_onboarding_api.py
+  s_00fff216c0c1ef::t_cca89a95c5d095 1-81
+tests/test_settings_api.py
+  s_00fff216c0c1ef::t_a55c9ff71f331b 20-29,55-68
+web/src/components/AISettingsDrawer.tsx
+  s_00fff216c0c1ef::t_741ef68867676b 40,140
+web/src/components/AddApplicationForm.tsx
+  s_00fff216c0c1ef::t_a243052a0e72b2 5,37
+web/src/components/ApplicationDetail.tsx
+  s_00fff216c0c1ef::t_d779f6d71a55dc 54,57,208-212
+web/src/components/ApplicationListView.tsx
+  s_00fff216c0c1ef::t_26730d07ae1b10 1-2,20,35,82-99
+web/src/components/ChatPanel/Composer.tsx
+  s_00fff216c0c1ef::t_23c64b78b0954e 1,13,17,21-25
+web/src/components/ChatPanel/index.tsx
+  s_00fff216c0c1ef::t_4d3148c7ccf512 2,25-33,64,143,145,156,173-175,195-207,272,286-287,290-295,343-346,351-355,359,456-463,470-472,502-505,585-600,681-683,690,920-926
+web/src/components/KanbanBoard/KanbanCard.tsx
+  s_00fff216c0c1ef::t_982bf6148b6b4a 4,22,32,109-122
+web/src/components/KanbanBoard/KanbanColumn.tsx
+  s_00fff216c0c1ef::t_1622373b1e802a 14,25,52
+web/src/components/KanbanBoard/index.tsx
+  s_00fff216c0c1ef::t_65e3d379641dcf 32,35,131
+web/src/components/ResumeLibraryView.tsx
+  s_00fff216c0c1ef::t_a03760b50bff89 20,58,69,80,92,110-114
+web/src/components/SettingsView.test.ts
+  s_00fff216c0c1ef::t_3f7adc1d733175 11-14
+web/src/components/SettingsView.tsx
+  s_00fff216c0c1ef::t_8678f92d06ba0c 1-3,5-7,14-15,21-22,25-32,51-69,108,114,128-133,151-168
+web/src/components/applicationPilotEntry.test.ts
+  s_00fff216c0c1ef::t_4f76cdc258f8a1 1-12
+web/src/features/dashboard/DashboardView.tsx
+  s_00fff216c0c1ef::t_9a3f44f006b34f 2-3,31-36,64,75-83,179-200,208,237
+web/src/features/onboarding/OnboardingChecklist.module.css
+  s_00fff216c0c1ef::t_851431b35c46bc 1-82
+web/src/features/onboarding/OnboardingChecklist.test.tsx
+  s_00fff216c0c1ef::t_471ec396176825 1-29
+web/src/features/onboarding/OnboardingChecklist.tsx
+  s_00fff216c0c1ef::t_ed62352da79957 1-50
+web/src/layout/AppShell.test.ts
+  s_00fff216c0c1ef::t_59a0ef41434968 34-40
+web/src/layout/AppShell.tsx
+  s_00fff216c0c1ef::t_88a95cb146b9ba 1,7,10,85-86,125,133,199-213,251,279,284-286,309,363,400
+web/src/layout/TopBar.test.ts
+  s_00fff216c0c1ef::t_fa5db62e22e4f2 1-10
+web/src/layout/TopBar.tsx
+  s_00fff216c0c1ef::t_06ff33871e12e1 2
+web/src/lib/diagnostics.test.ts
+  s_00fff216c0c1ef::t_fb70055b06a70a 1-42
+web/src/lib/diagnostics.ts
+  s_00fff216c0c1ef::t_9a0ff8e6ca9c93 1-22
+web/src/services/chat.ts
+  s_00fff216c0c1ef::t_6748c8d49fd725 233-234,326-327
+web/src/services/onboarding.ts
+  s_00fff216c0c1ef::t_aac5e35d48ccc5 1-27
+web/src/types/chat.ts
+  s_00fff216c0c1ef::t_e4f12a7ca34ccb 4,17-26,91-99
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "9fb8578c5343ad7d28b92ae80baed510cca33003",
+  "prompts": {},
+  "sessions": {
+    "s_00fff216c0c1ef": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f49b7-4729-7983-91e1-31d35f2738f1",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    }
+  }
+}
