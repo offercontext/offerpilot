@@ -1,0 +1,38 @@
+web/src/features/dashboard/DashboardView.tsx
+  s_00fff216c0c1ef::t_0552446046b240 2-3,31-36,64,75-83,179-200,208,237
+web/src/features/onboarding/OnboardingChecklist.test.tsx
+  s_00fff216c0c1ef::t_fb4db57946b5b4 1-29
+web/src/features/onboarding/OnboardingChecklist.module.css
+  s_00fff216c0c1ef::t_6c1010150870fd 1-82
+web/src/components/AddApplicationForm.tsx
+  s_00fff216c0c1ef::t_4ea27cdb4ce408 5,37
+web/src/layout/AppShell.tsx
+  s_00fff216c0c1ef::t_4ea27cdb4ce408 7,122,130
+web/src/components/ResumeLibraryView.tsx
+  s_00fff216c0c1ef::t_4ea27cdb4ce408 20,58,69,80,92,110-114
+web/src/components/ChatPanel/index.tsx
+  s_00fff216c0c1ef::t_4ea27cdb4ce408 2,25,136,422-424
+web/src/services/onboarding.ts
+  s_00fff216c0c1ef::t_6c1010150870fd 4-27
+  s_00fff216c0c1ef::t_52ada789cf93ad 1-3
+web/src/features/onboarding/OnboardingChecklist.tsx
+  s_00fff216c0c1ef::t_6c1010150870fd 1-50
+web/src/components/AISettingsDrawer.tsx
+  s_00fff216c0c1ef::t_4ea27cdb4ce408 40,140
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "82dd86dc45632de43f54bb149443a79eba6a3fe3",
+  "prompts": {},
+  "sessions": {
+    "s_00fff216c0c1ef": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f49b7-4729-7983-91e1-31d35f2738f1",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    }
+  }
+}
