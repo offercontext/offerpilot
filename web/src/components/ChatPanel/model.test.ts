@@ -99,6 +99,7 @@ describe('evidence selection', () => {
     expect(formatEvidenceMeta('scheduled 2026-07-10T09:05:00Z+08:00')).toBe(
       'scheduled 2026-07-10T09:05:00Z+08:00',
     );
+    expect(formatEvidenceMeta('scheduled 2026-07-10T09:05:00Z.')).toBe('scheduled 2026-07-10 17:05.');
     expect(formatEvidenceMeta('scheduled 2026-07-10T09:05.123')).toBe('scheduled 2026-07-10T09:05.123');
     expect(formatEvidenceMeta('scheduled 2026-07-10T09:05:00.abc')).toBe(
       'scheduled 2026-07-10T09:05:00.abc',

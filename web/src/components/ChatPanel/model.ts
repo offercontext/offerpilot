@@ -601,7 +601,7 @@ export function selectEvidence(items: EvidenceItem[], limit: number): EvidenceSe
   };
 }
 
-const EVIDENCE_TIMESTAMP = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?(?![\w:+.-])/g;
+const EVIDENCE_TIMESTAMP = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?(?![\w:+-]|\.(?=[A-Za-z0-9]))/g;
 
 function isValidEvidenceTimestamp(timestamp: string): boolean {
   const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?$/.exec(timestamp);
