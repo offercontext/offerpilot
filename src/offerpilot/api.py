@@ -1428,7 +1428,12 @@ def create_app(
             return error_response(422, f"invalid confirmation edits: {exc}")
         context_message = _chat_context_message(conversation, applications)
         undo_seed = _undo_seed_for_pending(effective_pending, applications) if approved else {}
-        confirmed_outcome, confirmation_result_sink, cancel_confirmation_result = (
+        (
+            confirmed_outcome,
+            confirmation_result_sink,
+            cancel_confirmation_result,
+            finalize_confirmation_timeout,
+        ) = (
             _confirmation_result_recorder(
                 chat,
                 conversation_id,
@@ -1478,16 +1483,14 @@ def create_app(
         except ChatAgentTimedOut:
             if confirmed_outcome.get("cas_lost"):
                 return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
-            fallback = _persist_confirmation_fallback(chat, conversation_id, confirmed_outcome)
-            if fallback is not None:
+            with confirmation_attempt_lock:
+                attempt_in_progress = confirmation_attempted.is_set()
                 confirmation_cancelled.set()
+            fallback = finalize_confirmation_timeout()
+            if fallback is not None:
                 return JSONResponse(fallback)
             if confirmed_outcome.get("cas_lost"):
                 return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
-            with confirmation_attempt_lock:
-                attempt_in_progress = confirmation_attempted.is_set()
-                if not attempt_in_progress:
-                    confirmation_cancelled.set()
             if attempt_in_progress:
                 return error_response(
                     409, "确认操作仍在后台执行，请刷新对话查看结果，不要重复提交。"
@@ -1700,7 +1703,12 @@ def create_app(
 
         context_message = _chat_context_message(conversation, applications)
         undo_seed = _undo_seed_for_pending(effective_pending, applications) if approved else {}
-        confirmed_outcome, confirmation_result_sink, cancel_confirmation_result = (
+        (
+            confirmed_outcome,
+            confirmation_result_sink,
+            cancel_confirmation_result,
+            finalize_confirmation_timeout,
+        ) = (
             _confirmation_result_recorder(
                 chat,
                 conversation_id,
@@ -1778,7 +1786,10 @@ def create_app(
                         },
                     )
                     return
-                fallback = _persist_confirmation_fallback(chat, conversation_id, confirmed_outcome)
+                with confirmation_attempt_lock:
+                    attempt_in_progress = confirmation_attempted.is_set()
+                    confirmation_cancelled.set()
+                fallback = finalize_confirmation_timeout()
                 if fallback is not None:
                     yield emit("assistant_message", {"message": fallback["message"]})
                     yield emit("completed", {"response": fallback, "persisted": True})
@@ -1794,10 +1805,6 @@ def create_app(
                         },
                     )
                     return
-                with confirmation_attempt_lock:
-                    attempt_in_progress = confirmation_attempted.is_set()
-                    if not attempt_in_progress:
-                        confirmation_cancelled.set()
                 if attempt_in_progress:
                     yield emit(
                         "error",
@@ -2599,9 +2606,11 @@ def _confirmation_result_recorder(
     dict[str, Any],
     Callable[[PendingAction, bool, Message], None],
     Callable[[], None],
+    Callable[[], dict[str, Any] | None],
 ]:
     outcome: dict[str, Any] = {}
     active = True
+    timed_out = False
     lock = Lock()
 
     def record(effective_pending: PendingAction, approved: bool, tool_message: Message) -> None:
@@ -2616,12 +2625,22 @@ def _confirmation_result_recorder(
             # approved sink call follows a handler attempt; errors are mutation-ambiguous and
             # therefore clear the previous undo fail-closed.
             undo_update = undo if approved else None
-            continuation_generation = repo.resolve_pending_confirmation(
-                conversation_id,
-                expected_pending,
-                tool_message,
-                undo_update,
-            )
+            terminal_message = _confirmation_fallback_message(approved, succeeded) if timed_out else ""
+            if terminal_message:
+                continuation_generation = repo.resolve_pending_confirmation(
+                    conversation_id,
+                    expected_pending,
+                    tool_message,
+                    undo_update,
+                    terminal_assistant_content=terminal_message,
+                )
+            else:
+                continuation_generation = repo.resolve_pending_confirmation(
+                    conversation_id,
+                    expected_pending,
+                    tool_message,
+                    undo_update,
+                )
             if continuation_generation is None:
                 outcome["cas_lost"] = True
                 raise StalePendingActionError(
@@ -2638,13 +2657,33 @@ def _confirmation_result_recorder(
                     "continuation_generation": continuation_generation,
                 }
             )
+            if terminal_message:
+                fallback_response = _confirmation_fallback_response(
+                    conversation_id,
+                    terminal_message,
+                    response_undo,
+                )
+                outcome["fallback_persisted"] = True
+                outcome["fallback_response"] = fallback_response
 
     def cancel() -> None:
         nonlocal active
         with lock:
             active = False
 
-    return outcome, record, cancel
+    def finalize_timeout() -> dict[str, Any] | None:
+        nonlocal timed_out
+        with lock:
+            timed_out = True
+            existing = outcome.get("fallback_response")
+            if isinstance(existing, dict):
+                return dict(existing)
+            fallback = _persist_confirmation_fallback(repo, conversation_id, outcome)
+            if fallback is not None:
+                outcome["fallback_response"] = fallback
+            return fallback
+
+    return outcome, record, cancel, finalize_timeout
 
 
 def _without_persisted_confirmation_result(
@@ -2695,13 +2734,7 @@ def _persist_confirmation_fallback(
         return None
     approved = outcome.get("approved") is True
     succeeded = outcome.get("succeeded") is True
-    message = (
-        CHAT_CONFIRMED_WRITE_FALLBACK
-        if succeeded
-        else CHAT_CONFIRMED_WRITE_ERROR_FALLBACK
-        if approved
-        else CHAT_REJECTION_FALLBACK
-    )
+    message = _confirmation_fallback_message(approved, succeeded)
     generation = outcome.get("continuation_generation")
     if not isinstance(generation, datetime):
         outcome["cas_lost"] = True
@@ -2716,13 +2749,35 @@ def _persist_confirmation_fallback(
         return None
     outcome["continuation_generation"] = next_generation
     outcome["fallback_persisted"] = True
+    undo = outcome.get("undo")
+    return _confirmation_fallback_response(
+        conversation_id,
+        message,
+        undo if isinstance(undo, dict) else {},
+    )
+
+
+def _confirmation_fallback_message(approved: bool, succeeded: bool) -> str:
+    return (
+        CHAT_CONFIRMED_WRITE_FALLBACK
+        if succeeded
+        else CHAT_CONFIRMED_WRITE_ERROR_FALLBACK
+        if approved
+        else CHAT_REJECTION_FALLBACK
+    )
+
+
+def _confirmation_fallback_response(
+    conversation_id: int,
+    message: str,
+    undo: dict[str, Any],
+) -> dict[str, Any]:
     response: dict[str, Any] = {
         "type": "message",
         "conversation_id": conversation_id,
         "message": message,
     }
-    undo = outcome.get("undo")
-    if isinstance(undo, dict) and undo:
+    if undo:
         response["undo"] = undo
     return response
 

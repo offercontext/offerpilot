@@ -1,12 +1,109 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from offerpilot.db import init_database
+from offerpilot.models import (
+    APPLICATION_FOREIGN_KEY_MODELS,
+    ApplicationEvent,
+    ApplicationMaterialKit,
+    Base,
+    Conversation,
+    InterviewNote,
+    JDAnalysis,
+    MockSession,
+    Offer,
+    Question,
+    Resume,
+    ResumeMatch,
+)
 from offerpilot.repositories.application_events import (
     ApplicationEventCreate,
     ApplicationEventsRepository,
 )
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
 from offerpilot.repositories.notes import NoteCreate, NotesRepository
+
+
+def _application_dependency(model, application_id):
+    if model is ApplicationEvent:
+        return model(application_id=application_id, event_type="interview")
+    if model is InterviewNote:
+        return model(application_id=application_id, company="A", position="Engineer")
+    if model is Offer:
+        return model(application_id=application_id, company_name="A", position_name="Engineer")
+    if model is JDAnalysis:
+        return model(application_id=application_id, jd_text="JD", result="{}")
+    if model is ApplicationMaterialKit:
+        return model(application_id=application_id)
+    if model is Question:
+        return model(application_id=application_id, question="Why?")
+    raise AssertionError(f"dependency {model.__name__} needs related rows")
+
+
+def test_application_dependency_test_matrix_covers_every_model_fk():
+    actual = {
+        mapper.class_
+        for mapper in Base.registry.mappers
+        if any(
+            foreign_key.target_fullname == "applications.id"
+            for column in mapper.local_table.columns
+            for foreign_key in column.foreign_keys
+        )
+    }
+
+    assert set(APPLICATION_FOREIGN_KEY_MODELS) == actual
+
+
+@pytest.mark.parametrize("dependency_model", APPLICATION_FOREIGN_KEY_MODELS)
+def test_application_delete_if_matches_rejects_every_fk_dependency(tmp_path, dependency_model):
+    session_factory = init_database(tmp_path / "data.db")
+    repo = ApplicationsRepository(session_factory)
+    app = repo.create(ApplicationCreate(company_name="A", position_name="Engineer"))
+    expected = {
+        "company_name": app.company_name,
+        "position_name": app.position_name,
+        "job_url": app.job_url,
+        "status": app.status,
+        "source": app.source,
+        "notes": app.notes,
+        "applied_at": app.applied_at.isoformat(),
+        "closed_reason": app.closed_reason,
+        "updated_at": app.updated_at.isoformat(),
+    }
+    with session_factory() as session:
+        if dependency_model is ResumeMatch:
+            resume = Resume(name="Main")
+            session.add(resume)
+            session.flush()
+            dependency = ResumeMatch(
+                resume_id=resume.id,
+                application_id=app.id,
+                jd_text="JD",
+                result="{}",
+            )
+        elif dependency_model is MockSession:
+            conversation = Conversation(title="Mock")
+            session.add(conversation)
+            session.flush()
+            dependency = MockSession(
+                conversation_id=conversation.id,
+                application_id=app.id,
+                title="Mock",
+                role="Engineer",
+            )
+        else:
+            dependency = _application_dependency(dependency_model, app.id)
+        session.add(dependency)
+        session.commit()
+        dependency_id = dependency.id
+
+    assert repo.delete_if_matches(app.id, expected) is False
+    assert repo.get(app.id) is not None
+    with session_factory() as session:
+        preserved = session.get(dependency_model, dependency_id)
+        assert preserved is not None
+        assert preserved.application_id == app.id
 
 
 def test_application_delete_if_matches_is_conditional(tmp_path):

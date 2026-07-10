@@ -8,7 +8,7 @@ from sqlalchemy import exists, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from offerpilot.application_status import normalize_application_status
-from offerpilot.models import Application, ApplicationEvent, InterviewNote, Offer
+from offerpilot.models import APPLICATION_FOREIGN_KEY_MODELS, Application
 
 
 @dataclass
@@ -113,7 +113,7 @@ class ApplicationsRepository:
         if isinstance(updated_at, str):
             updated_at = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
         with self._session_factory() as session:
-            result = session.execute(
+            statement = (
                 update(Application)
                 .where(Application.id == app_id)
                 .where(Application.deleted_at.is_(None))
@@ -126,11 +126,12 @@ class ApplicationsRepository:
                 .where(Application.applied_at == applied_at)
                 .where(Application.closed_reason == expected.get("closed_reason"))
                 .where(Application.updated_at == updated_at)
-                .where(~exists().where(ApplicationEvent.application_id == app_id))
-                .where(~exists().where(InterviewNote.application_id == app_id))
-                .where(~exists().where(Offer.application_id == app_id))
-                .values(deleted_at=datetime.now(timezone.utc))
             )
+            for dependency_model in APPLICATION_FOREIGN_KEY_MODELS:
+                statement = statement.where(
+                    ~exists().where(dependency_model.application_id == app_id)
+                )
+            result = session.execute(statement.values(deleted_at=datetime.now(timezone.utc)))
             session.commit()
             return getattr(result, "rowcount", 0) == 1
 

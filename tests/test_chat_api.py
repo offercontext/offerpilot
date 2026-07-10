@@ -11,6 +11,15 @@ from offerpilot.ai.types import Assistant, Message, ToolCall
 from offerpilot.api import create_app
 from offerpilot.config import Config, save_config
 from offerpilot.db import session_factory_for_data_dir
+from offerpilot.models import (
+    ApplicationMaterialKit,
+    Conversation,
+    JDAnalysis,
+    MockSession,
+    Question,
+    Resume,
+    ResumeMatch,
+)
 from offerpilot.repositories.applications import ApplicationsRepository
 from offerpilot.repositories.chat import ChatRepository
 
@@ -1304,7 +1313,10 @@ def test_chat_created_application_undo_rejects_same_value_later_edit(tmp_path):
     assert client.get(f"/api/applications/{application_id}").status_code == 200
 
 
-@pytest.mark.parametrize("dependency", ["event", "note", "offer"])
+@pytest.mark.parametrize(
+    "dependency",
+    ["event", "note", "offer", "resume_match", "jd_analysis", "material_kit", "question", "mock"],
+)
 def test_chat_created_application_undo_rejects_new_dependencies(tmp_path, dependency):
     client, pending, confirmed = _created_application_with_undo(
         tmp_path, f"dependency-{dependency}"
@@ -1330,7 +1342,7 @@ def test_chat_created_application_undo_rejects_new_dependencies(tmp_path, depend
                 "date": "2026-08-01",
             },
         )
-    else:
+    elif dependency == "offer":
         created = client.post(
             "/api/offers",
             json={
@@ -1339,15 +1351,59 @@ def test_chat_created_application_undo_rejects_new_dependencies(tmp_path, depend
                 "position_name": "Engineer",
             },
         )
+    else:
+        session_factory = session_factory_for_data_dir(tmp_path)
+        with session_factory() as session:
+            if dependency == "resume_match":
+                resume = Resume(name="Main")
+                session.add(resume)
+                session.flush()
+                dependency_row = ResumeMatch(
+                    resume_id=resume.id,
+                    application_id=application_id,
+                    jd_text="JD",
+                    result="{}",
+                )
+            elif dependency == "jd_analysis":
+                dependency_row = JDAnalysis(
+                    application_id=application_id,
+                    jd_text="JD",
+                    result="{}",
+                )
+            elif dependency == "material_kit":
+                dependency_row = ApplicationMaterialKit(application_id=application_id)
+            elif dependency == "question":
+                dependency_row = Question(application_id=application_id, question="Why?")
+            else:
+                conversation = Conversation(title="Mock")
+                session.add(conversation)
+                session.flush()
+                dependency_row = MockSession(
+                    conversation_id=conversation.id,
+                    application_id=application_id,
+                    title="Mock",
+                    role="Engineer",
+                )
+            session.add(dependency_row)
+            session.commit()
+            dependency_id = dependency_row.id
+            dependency_model = type(dependency_row)
+        created = None
 
     undone = client.post(
         "/api/chat/undo-last-write",
         json={"conversation_id": pending["conversation_id"]},
     )
 
-    assert created.status_code == 201
+    if created is not None:
+        assert created.status_code == 201
     assert undone.status_code == 409
     assert client.get(f"/api/applications/{application_id}").status_code == 200
+    if created is None:
+        with session_factory_for_data_dir(tmp_path)() as session:
+            preserved = session.get(dependency_model, dependency_id)
+            assert preserved is not None
+            assert preserved.application_id == application_id
 
 
 def test_chat_created_event_undo_rejects_edited_record(tmp_path):
@@ -2706,11 +2762,11 @@ def test_chat_confirm_timeout_during_handler_finalizes_durably_later(
     original_update = ApplicationsRepository.update_full
 
     def slow_update(self, app_id, data):
-        time.sleep(0.3)
+        time.sleep(0.4)
         return original_update(self, app_id, data)
 
     monkeypatch.setattr(ApplicationsRepository, "update_full", slow_update)
-    monkeypatch.setattr(api_module, "CHAT_AGENT_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(api_module, "CHAT_AGENT_TIMEOUT_SECONDS", 0.15)
 
     response = client.post(
         endpoint,
@@ -2736,6 +2792,110 @@ def test_chat_confirm_timeout_during_handler_finalizes_durably_later(
     assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
     stored = client.get(f"/api/chat/conversations/{pending['conversation_id']}").json()
     assert sum(message["role"] == "tool" for message in stored) == 1
+
+
+@pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
+def test_chat_confirm_slow_handler_atomically_finishes_without_chained_continuation(
+    tmp_path,
+    monkeypatch,
+    endpoint,
+):
+    import offerpilot.api as api_module
+
+    handler_started = Event()
+    release_handler = Event()
+    continuation_started = Event()
+    release_continuation = Event()
+
+    class WouldChainModel:
+        calls = 0
+
+        def complete(self, messages, tools):
+            self.calls += 1
+            if self.calls == 1:
+                return Assistant(
+                    tool_calls=[
+                        ToolCall(
+                            id="slow-atomic-handler",
+                            name="update_application_status",
+                            args=json.dumps({"id": 1, "status": "offer"}),
+                        )
+                    ]
+                )
+            continuation_started.set()
+            assert release_continuation.wait(timeout=5)
+            return Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="must-not-chain-after-timeout",
+                        name="update_application_status",
+                        args=json.dumps({"id": 1, "status": "closed"}),
+                    )
+                ]
+            )
+
+    model = WouldChainModel()
+    app_client, client, application, pending = _create_status_confirmation(tmp_path, model)
+    original_update = ApplicationsRepository.update_full
+
+    def blocked_update(self, app_id, data):
+        handler_started.set()
+        assert release_handler.wait(timeout=5)
+        return original_update(self, app_id, data)
+
+    monkeypatch.setattr(ApplicationsRepository, "update_full", blocked_update)
+    monkeypatch.setattr(api_module, "CHAT_AGENT_TIMEOUT_SECONDS", 0.05)
+
+    response = client.post(
+        endpoint,
+        json={
+            "conversation_id": pending["conversation_id"],
+            "approved": True,
+            "confirmation_token": pending["pending_action"]["confirmation_token"],
+        },
+    )
+
+    assert handler_started.is_set()
+    if endpoint.endswith("/stream"):
+        error = _parse_sse_events(response.text)[-1]
+        assert error["data"]["data"]["code"] == "confirmation_in_progress"
+    else:
+        assert response.status_code == 409
+    before_release = client.get("/api/chat/conversations").json()[0]
+    assert before_release["pending_action"] is not None
+    assert all(
+        "写入已完成" not in message["content"]
+        for message in client.get(
+            f"/api/chat/conversations/{pending['conversation_id']}"
+        ).json()
+    )
+
+    try:
+        release_handler.set()
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            conversation = client.get("/api/chat/conversations").json()[0]
+            stored = client.get(
+                f"/api/chat/conversations/{pending['conversation_id']}"
+            ).json()
+            if conversation["pending_action"] is None:
+                assert any("写入已完成" in message["content"] for message in stored)
+                break
+            time.sleep(0.01)
+        else:
+            pytest.fail("background confirmation did not reach a terminal state")
+    finally:
+        release_continuation.set()
+
+    assert continuation_started.is_set() is False
+    assert model.calls == 1
+    conversation = client.get("/api/chat/conversations").json()[0]
+    assert conversation["pending_action"] is None
+    assert conversation["last_write_undo"] is not None
+    stored = client.get(f"/api/chat/conversations/{pending['conversation_id']}").json()
+    assert sum(message["role"] == "tool" for message in stored) == 1
+    assert sum("写入已完成" in message["content"] for message in stored) == 1
+    assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
 
 
 @pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])

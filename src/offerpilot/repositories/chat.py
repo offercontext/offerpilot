@@ -153,6 +153,8 @@ class ChatRepository:
         expected: PendingAction,
         tool_message: Message,
         undo: dict[str, Any] | None,
+        *,
+        terminal_assistant_content: str = "",
     ) -> datetime | None:
         """Persist a result with tri-state undo: None preserves, empty clears, non-empty replaces."""
         now = datetime.now(timezone.utc)
@@ -190,6 +192,14 @@ class ChatRepository:
                     tool_call_id=tool_message.tool_call_id,
                 )
             )
+            if terminal_assistant_content:
+                session.add(
+                    ChatMessage(
+                        conversation_id=conversation_id,
+                        role="assistant",
+                        content=terminal_assistant_content,
+                    )
+                )
             session.commit()
             return now
 
