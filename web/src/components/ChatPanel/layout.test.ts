@@ -97,14 +97,14 @@ describe('ChatPanel docked layout contract', () => {
 
   it('resynchronizes real conversation state after users abort a stream', () => {
     expect(component).toContain('syncConversationAfterAbort');
-    expect(component).toContain('await syncConversationAfterAbort(streamConversationId)');
-    expect(component).toContain('await syncConversationAfterAbort(convID)');
+    expect(component).toContain('await syncConversationAfterAbort(streamConversationId, selectionRequestId)');
+    expect(component).toContain('await syncConversationAfterAbort(convID, selectionRequestId)');
     expect(component).toContain('setPending(pendingActionForConversation');
   });
 
   it('cleans up partial assistant bubbles on stream failure and completed fallback', () => {
     expect(component).toContain('if (streamingAssistantActiveRef.current)');
-    expect(component).toContain('await syncConversationAfterAbort(streamConversationId)');
+    expect(component).toContain('await syncConversationAfterAbort(streamConversationId, selectionRequestId)');
     expect(component).toContain('return [...t.slice(0, -1), { ...last, content: resp.message }];');
   });
 
@@ -168,7 +168,7 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('void handleConfirm(retryInput)');
     expect(component).toContain('confirmationErrorRequiresSync');
     expect(component).toContain('lastConfirmationInputRef.current = null');
-    expect(component).toContain('await syncConversationAfterAbort(convID)');
+    expect(component).toContain('await syncConversationAfterAbort(convID, selectionRequestId)');
     expect(component).not.toContain('void handleConfirm(true)');
   });
 
@@ -326,6 +326,54 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('updateConversation');
     expect(component).toContain('clearActiveContext');
     expect(component).toContain('aria-label="移除当前上下文"');
+  });
+
+  it('supports searchable active and archive conversation views with recovery actions', async () => {
+    const css = await loadCss();
+
+    expect(threadRail).toContain('aria-label="搜索对话"');
+    expect(threadRail).toContain("view === 'archived'");
+    expect(threadRail).toContain('待确认');
+    expect(threadRail).toContain('该对话有待确认操作，完成或取消后才能归档');
+    expect(threadRail).toContain("onUpdate(conversation.id, { archived: false })");
+    expect(threadRail).toContain('恢复对话');
+    expect(threadRail).toContain('GROUP_LABELS');
+    expect(component).toContain('refreshConversations(showArchived)');
+    expect(component).toContain('listConversations(includeArchived)');
+    expect(component).toContain('showArchived={showArchived}');
+    expect(component).toContain('onViewChange={setShowArchived}');
+    expect(css).toContain('min-height: 40px;');
+    expect(css).toContain('overflow-x: hidden;');
+    expect(css).toContain('@media (prefers-reduced-motion: reduce)');
+  });
+
+  it('suppresses pending auto-selection after an explicit new chat and locks only the active thread', () => {
+    expect(component).toContain('pendingAutoSelectSuppressedRef');
+    expect(component).toContain('conversationSelectionRequestRef');
+    expect(component).toContain('shouldApplyConversationRequest(');
+    expect(component).toContain('conversationSelectionRequestRef.current += 1;');
+    expect(component).toContain('selectionRequestId: number,');
+    expect(component).toContain('selectionRequestId !== conversationSelectionRequestRef.current');
+    expect(component).toContain("markPendingAutoSelect('suppress')");
+    expect(component).toContain("markPendingAutoSelect('allow')");
+    expect(component).toContain('if (pendingAutoSelectSuppressedRef.current) return;');
+    expect(component).toContain('resolveActivePendingAction(pending, conversations, convID)');
+    expect(component).toContain('const composerDisabled = loading || !!activePending || !hasKey;');
+    expect(component).not.toContain('conversations.some((conversation) => conversation.pending_action)');
+  });
+
+  it('guards conversation list refreshes against stale view responses', () => {
+    expect(component).toContain('conversationListRequestRef');
+    expect(component).toContain('showArchivedRef.current = showArchived;');
+    expect(component).toContain('const includeArchived = showArchivedRef.current;');
+    expect(component).toContain('const requestId = ++conversationListRequestRef.current;');
+    expect(component).toContain('if (requestId === conversationListRequestRef.current)');
+  });
+
+  it('keeps thread selection separate from row actions for accessible keyboard semantics', () => {
+    expect(threadRail).toContain('className={styles.threadSelect}');
+    expect(threadRail).not.toContain('role="button"');
+    expect(threadRail).not.toContain('tabIndex={0}');
   });
 
   it('shows confirmation status and lets users undo the latest AI write', () => {

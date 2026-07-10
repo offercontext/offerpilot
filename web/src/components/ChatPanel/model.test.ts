@@ -11,9 +11,10 @@ import {
   buildTurns,
   collectEvidence,
   hydrateMissingPendingAction,
-  firstPendingConversationId,
   pendingActionForConversation,
   pendingComposerDisabledReason,
+  pendingAutoSelectReducer,
+  shouldApplyConversationRequest,
   reloadConversationTurns,
   toolMeta,
   confirmationInputForRetry,
@@ -27,6 +28,19 @@ describe('confirmation retry focus lifecycle', () => {
     expect(shouldRestoreConfirmationRetryFocus(true, '网络失败', true)).toBe(false);
     expect(shouldRestoreConfirmationRetryFocus(true, null, false)).toBe(false);
     expect(shouldRestoreConfirmationRetryFocus(false, '网络失败', false)).toBe(false);
+  });
+});
+
+describe('pending auto-selection suppression', () => {
+  it('suppresses explicit new chats and restores eligibility after selecting a conversation', () => {
+    expect(pendingAutoSelectReducer(false, 'suppress')).toBe(true);
+    expect(pendingAutoSelectReducer(true, 'allow')).toBe(false);
+  });
+
+  it('rejects a late selection response after an explicit new chat invalidates its generation', () => {
+    expect(shouldApplyConversationRequest(3, 3, false)).toBe(true);
+    expect(shouldApplyConversationRequest(2, 3, false)).toBe(false);
+    expect(shouldApplyConversationRequest(3, 3, true)).toBe(false);
   });
 });
 
@@ -895,33 +909,4 @@ describe('buildTurns evidence normalization', () => {
     expect(pending).toEqual(current);
   });
 
-  it('finds the newest conversation with a pending action', () => {
-    const id = firstPendingConversationId([
-      {
-        id: 72,
-        title: '牛客网面试复盘',
-        context_type: 'workspace',
-        context_ref: '',
-        created_at: '2026-07-09T00:00:00Z',
-        updated_at: '2026-07-09T00:00:02Z',
-        pending_action: {
-          tool_name: 'create_application',
-          human: '新建投递：牛客网 - 软件测试工程师',
-          confirmation_token: 'a'.repeat(64),
-          args: { company_name: '牛客网', position_name: '软件测试工程师' },
-        },
-      },
-      {
-        id: 71,
-        title: '普通对话',
-        context_type: 'workspace',
-        context_ref: '',
-        created_at: '2026-07-09T00:00:00Z',
-        updated_at: '2026-07-09T00:00:01Z',
-        pending_action: null,
-      },
-    ]);
-
-    expect(id).toBe(72);
-  });
 });

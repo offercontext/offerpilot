@@ -2049,6 +2049,9 @@ def create_app(
     def update_conversation(
         conversation_id: int, payload: dict[str, Any] = Body(...)
     ) -> JSONResponse:
+        existing = chat.get_conversation(conversation_id)
+        if existing is None:
+            return error_response(404, "conversation not found")
         values: dict[str, Any] = {}
         now = datetime.now(timezone.utc)
         if "title" in payload:
@@ -2069,10 +2072,11 @@ def create_app(
         if "archived" in payload:
             if not isinstance(payload.get("archived"), bool):
                 return error_response(422, "archived must be boolean")
+            if payload["archived"] and existing.pending_tool_name:
+                return error_response(409, "该对话有待确认操作，完成或取消后才能归档")
             values["archived_at"] = now if payload["archived"] else None
         conversation = chat.update_conversation(conversation_id, values)
-        if conversation is None:
-            return error_response(404, "conversation not found")
+        assert conversation is not None
         return JSONResponse(_conversation_json(conversation, applications))
 
     @app.delete("/api/chat/conversations/{conversation_id}")
@@ -2960,6 +2964,7 @@ def _dump_provider_blocks(provider_blocks: dict[str, Any]) -> str:
 
 def _conversation_json(conversation: Any, applications: ApplicationsRepository) -> dict[str, Any]:
     payload = ConversationOut.model_validate(conversation).model_dump(mode="json")
+    payload["context_label"] = _conversation_context_label(conversation, applications)
     if conversation.pending_tool_name:
         payload["pending_action"] = _pending_action_json(
             PendingAction(
@@ -2985,6 +2990,27 @@ def _conversation_json(conversation: Any, applications: ApplicationsRepository) 
         payload["pending_clarification"] = None
     payload["last_write_undo"] = conversation.last_write_undo
     return payload
+
+
+def _conversation_context_label(
+    conversation: Any, applications: ApplicationsRepository
+) -> str:
+    if conversation.context_type == "application":
+        try:
+            application_id = int(conversation.context_ref)
+        except (TypeError, ValueError):
+            application_id = 0
+        application = applications.get(application_id) if application_id > 0 else None
+        if application is not None:
+            return f"{application.company_name} · {application.position_name}"
+        return f"投递 #{conversation.context_ref}" if conversation.context_ref else "投递"
+    if conversation.context_type == "workspace":
+        return "工作区"
+    if conversation.context_type == "global":
+        return "全局"
+    if conversation.context_type == "mode":
+        return "谈薪教练" if conversation.mode == "nego_coach" else "通用"
+    return conversation.context_ref or "通用"
 
 
 def _pending_action_json(

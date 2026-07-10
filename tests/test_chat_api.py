@@ -3912,6 +3912,100 @@ def test_chat_conversation_update_rejects_string_booleans(tmp_path):
     assert client.get("/api/chat/conversations").json()[0]["pinned_at"] is None
 
 
+def test_chat_conversation_context_label_resolves_application_and_localized_fallbacks(tmp_path):
+    app_client = TestClient(create_app(data_dir=tmp_path))
+    application = app_client.post(
+        "/api/applications",
+        json={"company_name": "字节跳动", "position_name": "后端工程师", "status": "interview"},
+    ).json()
+    repo = ChatRepository(session_factory_for_data_dir(tmp_path))
+    application_conversation = repo.create_conversation(
+        "投递对话", context_type="application", context_ref=str(application["id"])
+    )
+    workspace_conversation = repo.create_conversation("工作区对话")
+    global_conversation = repo.create_conversation("全局对话", context_type="global")
+    mode_conversation = repo.create_conversation(
+        "谈薪对话", mode="nego_coach", context_type="mode"
+    )
+
+    conversations = {
+        item["id"]: item for item in app_client.get("/api/chat/conversations").json()
+    }
+
+    assert conversations[application_conversation.id]["context_label"] == "字节跳动 · 后端工程师"
+    assert conversations[workspace_conversation.id]["context_label"] == "工作区"
+    assert conversations[global_conversation.id]["context_label"] == "全局"
+    assert conversations[mode_conversation.id]["context_label"] == "谈薪教练"
+
+
+def test_chat_conversation_archive_rejects_pending_but_allows_other_updates_and_restore(tmp_path):
+    app_client = TestClient(create_app(data_dir=tmp_path))
+    application = app_client.post(
+        "/api/applications",
+        json={"company_name": "字节跳动", "position_name": "后端工程师", "status": "interview"},
+    ).json()
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="archive-guard",
+                        name="update_application_status",
+                        args=json.dumps({"id": application["id"], "status": "offer"}),
+                    )
+                ]
+            )
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    conversation_id = client.post(
+        "/api/chat", json={"message": "改成 offer", "conversation_id": 0}
+    ).json()["conversation_id"]
+
+    blocked = client.patch(
+        f"/api/chat/conversations/{conversation_id}", json={"archived": True}
+    )
+    renamed = client.patch(
+        f"/api/chat/conversations/{conversation_id}",
+        json={"title": "待确认状态", "pinned": True},
+    )
+
+    assert blocked.status_code == 409
+    assert "待确认" in blocked.json()["error"]
+    assert renamed.status_code == 200
+    assert renamed.json()["title"] == "待确认状态"
+    assert renamed.json()["pinned_at"] is not None
+    active = client.get("/api/chat/conversations").json()[0]
+    assert active["id"] == conversation_id
+    assert active["archived_at"] is None
+
+    repo = ChatRepository(session_factory_for_data_dir(tmp_path))
+    repo.clear_pending_action(conversation_id)
+    archived = client.patch(
+        f"/api/chat/conversations/{conversation_id}", json={"archived": True}
+    )
+    restored = client.patch(
+        f"/api/chat/conversations/{conversation_id}", json={"archived": False}
+    )
+
+    assert archived.status_code == 200
+    assert archived.json()["archived_at"] is not None
+    assert restored.status_code == 200
+    assert restored.json()["archived_at"] is None
+    assert client.get("/api/chat/conversations").json()[0]["id"] == conversation_id
+
+
+def test_chat_conversation_update_checks_missing_conversation_before_validating_payload(tmp_path):
+    client = TestClient(create_app(data_dir=tmp_path))
+
+    response = client.patch(
+        "/api/chat/conversations/99999", json={"title": "", "pinned": "false"}
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"] == "conversation not found"
+
+
 def test_chat_context_creates_application_scoped_conversation(tmp_path):
     model = ScriptedModel([Assistant(content="已读取投递上下文")])
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model))

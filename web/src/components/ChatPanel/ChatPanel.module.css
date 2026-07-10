@@ -107,29 +107,70 @@
   padding: 14px 12px 8px 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  overflow-y: auto;
+  gap: 8px;
+  overflow-x: hidden;
   min-height: 0;
+  min-width: 0;
 }
 .railNew {
-  margin-bottom: 8px;
+  min-height: 40px;
+  flex: 0 0 auto;
+}
+.railSearch {
+  min-height: 40px;
+  flex: 0 0 auto;
+}
+.railViewToggle {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px;
+  padding: 2px;
+  border-radius: 10px;
+  background: var(--op-layout-bg);
+  flex: 0 0 auto;
+}
+.railViewToggle button {
+  min-width: 0;
+  min-height: 40px;
+  padding-inline: 8px;
+}
+.railThreads {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 2px;
+}
+.threadGroup + .threadGroup {
+  margin-top: 8px;
 }
 .railLabel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   font-size: 11px;
   color: var(--op-muted);
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  margin: 8px 4px 2px;
+  margin: 8px 4px 4px;
+}
+.groupCount {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
 }
 .thread {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 6px;
-  padding: 9px 10px;
+  position: relative;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: 62px;
   border-radius: 9px;
-  cursor: pointer;
-  transition: background 0.18s var(--op-ease);
+  overflow: hidden;
+  transition-property: background-color, box-shadow;
+  transition-duration: 0.18s;
+  transition-timing-function: var(--op-ease);
 }
 .thread:hover {
   background: var(--chat-tint-soft);
@@ -137,11 +178,30 @@
 .threadActive {
   background: var(--chat-tint);
 }
-.threadMain {
+.threadSelect {
+  display: block;
+  width: 100%;
   min-width: 0;
-  flex: 1;
+  min-height: 62px;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: inherit;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.threadSelect:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--op-primary);
+}
+.threadMain {
+  display: block;
+  min-width: 0;
 }
 .threadTitle {
+  display: block;
   font-size: 13px;
   font-weight: 500;
   white-space: nowrap;
@@ -150,26 +210,66 @@
   color: var(--op-ink);
 }
 .threadMeta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
   font-size: 11px;
   color: var(--op-muted);
-  margin-top: 1px;
+  margin-top: 2px;
+  white-space: nowrap;
 }
-.threadActions {
+.threadContext {
+  display: block;
+  min-width: 0;
+  margin-top: 2px;
+  color: var(--op-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pendingBadge {
   display: inline-flex;
   align-items: center;
-  gap: 1px;
-  flex-shrink: 0;
+  min-height: 18px;
+  padding: 0 6px;
+  border: 1px solid color-mix(in srgb, var(--op-warning) 34%, transparent);
+  border-radius: 999px;
+  color: var(--op-warning);
+  background: color-mix(in srgb, var(--op-warning) 10%, transparent);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+}
+.threadActions {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  display: grid;
+  grid-template-columns: repeat(4, 40px);
+  align-items: center;
+  gap: 0;
+  padding: 0 2px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--op-surface) 94%, transparent);
+  box-shadow: -8px 0 14px color-mix(in srgb, var(--op-surface) 86%, transparent);
   opacity: 0;
-  transition: opacity 0.15s var(--op-ease);
+  pointer-events: none;
+  transition-property: opacity;
+  transition-duration: 0.15s;
+  transition-timing-function: var(--op-ease);
 }
 .thread:hover .threadActions,
-.threadActive .threadActions {
+.thread:focus-within .threadActions {
   opacity: 1;
+  pointer-events: auto;
 }
 .threadAction {
-  width: 22px;
-  height: 22px;
-  min-width: 22px;
+  width: 40px;
+  height: 40px;
+  min-width: 40px;
+  min-height: 40px;
   padding: 0;
   display: inline-flex;
   align-items: center;
@@ -177,19 +277,21 @@
   color: var(--op-muted);
   font-size: 13px;
   border-radius: 6px;
-  transition: color 0.15s var(--op-ease), background 0.15s var(--op-ease);
+  transition-property: color, background-color, transform;
+  transition-duration: 0.15s;
+  transition-timing-function: var(--op-ease);
 }
 .threadAction:hover {
   color: var(--op-primary);
   background: var(--chat-tint);
 }
-.threadAction[aria-label='删除对话']:hover {
-  color: var(--op-error);
+.threadAction:active:not(:disabled) {
+  transform: scale(0.96);
 }
 .railEmpty {
   font-size: 12px;
   color: var(--op-muted);
-  padding: 12px 8px;
+  padding: 32px 8px;
   text-align: center;
 }
 
@@ -1639,6 +1741,11 @@
   .editorDisclosure,
   .reviewBack,
   .confirmRecovery button {
+    transition: none;
+  }
+  .thread,
+  .threadActions,
+  .threadAction {
     transition: none;
   }
 }

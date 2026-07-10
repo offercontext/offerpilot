@@ -36,8 +36,9 @@ import {
   buildChatRequestContext,
   buildTurns,
   collectEvidence,
-  firstPendingConversationId,
   pendingActionForConversation,
+  pendingAutoSelectReducer,
+  shouldApplyConversationRequest,
   pendingComposerDisabledReason,
   reloadConversationTurns,
   resolveActivePendingAction,
@@ -48,6 +49,10 @@ import {
   type EvidenceItem,
   type UITurn,
 } from './model';
+import {
+  filterConversationsByView,
+  firstPendingConversationId,
+} from './conversationList';
 import {
   createPilotPageContextRemovalState,
   deriveActivePageContext,
@@ -163,6 +168,8 @@ export default function ChatPanel({
   const [hasKey, setHasKey] = useState(true);
   const [degraded, setDegraded] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [showArchived, setShowArchived] = useState(false);
+  const [, dispatchPendingAutoSelect] = useReducer(pendingAutoSelectReducer, false);
   const [offer, setOffer] = useState<Offer | null>(null);
   const [panelOpen, setPanelOpen] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);
@@ -192,6 +199,11 @@ export default function ChatPanel({
   const restoreConfirmationRetryFocusRef = useRef(false);
   const activeConversationIdRef = useRef<number | undefined>(undefined);
   const confirmationMonitorRef = useRef(0);
+  const pendingAutoSelectSuppressedRef = useRef(false);
+  const conversationSelectionRequestRef = useRef(0);
+  const conversationListRequestRef = useRef(0);
+  const showArchivedRef = useRef(showArchived);
+  showArchivedRef.current = showArchived;
   const docked = variant === 'rail';
   const inlinePage = variant === 'page';
 
@@ -233,9 +245,17 @@ export default function ChatPanel({
     restoreConfirmationRetryFocusRef.current = false;
   }, [confirmError, loading]);
 
-  function refreshConversations() {
-    listConversations()
-      .then(setConversations)
+  function markPendingAutoSelect(action: 'suppress' | 'allow') {
+    pendingAutoSelectSuppressedRef.current = action === 'suppress';
+    dispatchPendingAutoSelect(action);
+  }
+
+  function refreshConversations(includeArchived = showArchivedRef.current) {
+    const requestId = ++conversationListRequestRef.current;
+    listConversations(includeArchived)
+      .then((items) => {
+        if (requestId === conversationListRequestRef.current) setConversations(items);
+      })
       .catch(() => undefined);
   }
 
@@ -245,12 +265,13 @@ export default function ChatPanel({
       setConvID(undefined);
       setTurns([]);
       setPending(null);
+      markPendingAutoSelect('allow');
       lastConfirmationInputRef.current = null;
       setDegraded(false);
       threadOfferId.current = offerId;
     }
-    refreshConversations();
-  }, [open, offerId]);
+    refreshConversations(showArchived);
+  }, [open, offerId, showArchived]);
 
   useEffect(() => {
     if (!settingsQuery.data) return;
@@ -303,6 +324,8 @@ export default function ChatPanel({
   }
 
   function startNewChat() {
+    markPendingAutoSelect('suppress');
+    conversationSelectionRequestRef.current += 1;
     stopActiveRequest({ silent: true });
     streamingAssistantActiveRef.current = false;
     setConvID(undefined);
@@ -318,13 +341,23 @@ export default function ChatPanel({
     setLastUndo(null);
     setLoadingLabel(undefined);
     setHasStreamingAssistantContent(false);
+    setLoading(false);
   }
 
   async function selectConversation(id: number) {
+    markPendingAutoSelect('allow');
     if (id === convID) return;
+    const requestId = ++conversationSelectionRequestRef.current;
     setLoading(true);
     try {
       const stored = await getConversation(id);
+      if (
+        !shouldApplyConversationRequest(
+          requestId,
+          conversationSelectionRequestRef.current,
+          pendingAutoSelectSuppressedRef.current,
+        )
+      ) return;
       setConvID(id);
       setTurns(buildTurns(stored));
       setPending(pendingActionForConversation(conversations, id));
@@ -336,9 +369,11 @@ export default function ChatPanel({
       setConfirmPhase('idle');
       setLastUndo(conversation?.last_write_undo ?? null);
     } catch (e: any) {
-      toast.error(e?.response?.data?.error ?? '加载对话失败');
+      if (requestId === conversationSelectionRequestRef.current) {
+        toast.error(e?.response?.data?.error ?? '加载对话失败');
+      }
     } finally {
-      setLoading(false);
+      if (requestId === conversationSelectionRequestRef.current) setLoading(false);
     }
   }
 
@@ -374,10 +409,13 @@ export default function ChatPanel({
 
   useEffect(() => {
     if (!open || convID !== undefined || turns.length > 0 || loading) return;
-    const pendingConversationId = firstPendingConversationId(conversations);
+    if (showArchived) return;
+    if (pendingAutoSelectSuppressedRef.current) return;
+    const activeConversations = filterConversationsByView(conversations, 'active');
+    const pendingConversationId = firstPendingConversationId(activeConversations);
     if (pendingConversationId === undefined) return;
     void selectConversation(pendingConversationId);
-  }, [open, convID, conversations, turns.length, loading]);
+  }, [open, convID, conversations, turns.length, loading, showArchived]);
 
   async function finishMessage(resp: Extract<ChatResponse, { type: 'message' }>) {
     setConvID(resp.conversation_id);
@@ -429,12 +467,17 @@ export default function ChatPanel({
   }
 
   async function syncConversationAfterAbort(
-    conversationId?: number,
+    conversationId: number | undefined,
+    selectionRequestId: number,
   ): Promise<PendingAction | null | undefined> {
     let nextConversations: Conversation[] | undefined;
     try {
-      nextConversations = await listConversations();
-      setConversations(nextConversations);
+      const requestId = ++conversationListRequestRef.current;
+      const includeArchived = showArchivedRef.current;
+      nextConversations = await listConversations(includeArchived);
+      if (requestId === conversationListRequestRef.current) {
+        setConversations(nextConversations);
+      }
     } catch {
       nextConversations = undefined;
     }
@@ -446,6 +489,9 @@ export default function ChatPanel({
         nextConversations ?? conversations,
         conversationId,
       );
+      if (selectionRequestId !== conversationSelectionRequestRef.current) {
+        return nextPending;
+      }
       setConvID(conversationId);
       setTurns(buildTurns(stored));
       setPending(nextPending);
@@ -457,7 +503,11 @@ export default function ChatPanel({
     }
   }
 
-  async function monitorConfirmationCompletion(conversationId: number, monitorId: number) {
+  async function monitorConfirmationCompletion(
+    conversationId: number,
+    monitorId: number,
+    selectionRequestId: number,
+  ) {
     while (
       confirmationMonitorRef.current === monitorId &&
       activeConversationIdRef.current === conversationId
@@ -469,7 +519,8 @@ export default function ChatPanel({
       ) {
         return;
       }
-      const nextPending = await syncConversationAfterAbort(conversationId);
+      const nextPending = await syncConversationAfterAbort(conversationId, selectionRequestId);
+      if (selectionRequestId !== conversationSelectionRequestRef.current) return;
       if (nextPending === null) {
         setConfirmPhase('idle');
         onDataChanged?.();
@@ -490,6 +541,8 @@ export default function ChatPanel({
   async function sendMessage(text: string): Promise<boolean> {
     const trimmed = text.trim();
     if (!trimmed || loading || activePending) return false;
+    if (convID === undefined) markPendingAutoSelect('suppress');
+    const selectionRequestId = conversationSelectionRequestRef.current;
     lastConfirmationInputRef.current = null;
     setLastError(null);
     setLastFailedText('');
@@ -547,13 +600,14 @@ export default function ChatPanel({
       return true;
     } catch (e: any) {
       if (isAbortError(e)) {
-        await syncConversationAfterAbort(streamConversationId);
+        await syncConversationAfterAbort(streamConversationId, selectionRequestId);
         return false;
       }
       const error = e?.response?.data?.error ?? e?.message ?? '对话失败，请稍后重试';
       if (streamingAssistantActiveRef.current) {
         streamingAssistantActiveRef.current = false;
-        await syncConversationAfterAbort(streamConversationId);
+        await syncConversationAfterAbort(streamConversationId, selectionRequestId);
+        if (selectionRequestId !== conversationSelectionRequestRef.current) return false;
         setLastError(error);
         setLastFailedText(trimmed);
         toast.error(error);
@@ -591,6 +645,7 @@ export default function ChatPanel({
   async function handleConfirm(input: ConfirmationInput) {
     if (!convID) return;
     if (input.confirmation_token !== activePendingRef.current?.confirmation_token) return;
+    const selectionRequestId = conversationSelectionRequestRef.current;
     const approved = input.approved;
     lastConfirmationInputRef.current = confirmationInputForRetry(input);
     setConfirmPhase(approved ? 'saving' : 'idle');
@@ -636,7 +691,7 @@ export default function ChatPanel({
     } catch (e: any) {
       if (isAbortError(e)) {
         restoreConfirmationRetryFocusRef.current = false;
-        await syncConversationAfterAbort(convID);
+        await syncConversationAfterAbort(convID, selectionRequestId);
         return;
       }
       const error = e?.response?.data?.error ?? e?.message ?? '确认失败';
@@ -645,12 +700,13 @@ export default function ChatPanel({
         lastConfirmationInputRef.current = null;
         streamingAssistantActiveRef.current = false;
         if (e?.code === 'stale_pending_action') setPending(null);
-        const nextPending = await syncConversationAfterAbort(convID);
+        const nextPending = await syncConversationAfterAbort(convID, selectionRequestId);
+        if (selectionRequestId !== conversationSelectionRequestRef.current) return;
         setConfirmError(null);
         if (e?.code === 'confirmation_in_progress' && convID && nextPending !== null) {
           setConfirmPhase('saving');
           const monitorId = ++confirmationMonitorRef.current;
-          void monitorConfirmationCompletion(convID, monitorId);
+          void monitorConfirmationCompletion(convID, monitorId, selectionRequestId);
         } else {
           setConfirmPhase('idle');
         }
@@ -659,7 +715,8 @@ export default function ChatPanel({
       }
       if (streamingAssistantActiveRef.current) {
         streamingAssistantActiveRef.current = false;
-        await syncConversationAfterAbort(convID);
+        await syncConversationAfterAbort(convID, selectionRequestId);
+        if (selectionRequestId !== conversationSelectionRequestRef.current) return;
       }
       setConfirmError(error);
       setConfirmPhase('error');
@@ -746,8 +803,10 @@ export default function ChatPanel({
   const confirmationEvidence = activePending ? pendingActionEvidence(threadEvidence, activePending) : [];
   const activeRequestChips = activePageContext ? pageContextChips(activePageContext) : [];
   const contextLabel =
-    activeConv?.context_type === 'application' && activeConv.context_ref
-      ? `投递 #${activeConv.context_ref}`
+    activeConv?.context_label
+      ? activeConv.context_label
+      : activeConv?.context_type === 'application' && activeConv.context_ref
+        ? `投递 #${activeConv.context_ref}`
       : isNego
         ? '谈薪上下文'
         : convID
@@ -842,6 +901,8 @@ export default function ChatPanel({
           <ThreadRail
             conversations={conversations}
             activeId={convID}
+            showArchived={showArchived}
+            onViewChange={setShowArchived}
             onSelect={selectConversation}
             onNew={startNewChat}
             onDelete={removeConversation}

@@ -51,6 +51,23 @@ export interface ChatRequestContext {
   page_context?: PilotPageContext;
 }
 
+export type PendingAutoSelectAction = 'suppress' | 'allow';
+
+export function pendingAutoSelectReducer(
+  _suppressed: boolean,
+  action: PendingAutoSelectAction,
+): boolean {
+  return action === 'suppress';
+}
+
+export function shouldApplyConversationRequest(
+  requestId: number,
+  currentRequestId: number,
+  autoSelectSuppressed: boolean,
+): boolean {
+  return requestId === currentRequestId && !autoSelectSuppressed;
+}
+
 export function confirmationInputForRetry(
   input: ConfirmationInput | null,
 ): ConfirmationInput | null {
@@ -479,10 +496,6 @@ export function pendingActionForConversation(
   conversationId: number,
 ): PendingAction | null {
   return conversations.find((conversation) => conversation.id === conversationId)?.pending_action ?? null;
-}
-
-export function firstPendingConversationId(conversations: Conversation[]): number | undefined {
-  return conversations.find((conversation) => conversation.pending_action)?.id;
 }
 
 export function hydrateMissingPendingAction(

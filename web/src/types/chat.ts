@@ -28,6 +28,7 @@ export interface Conversation {
   mode?: string;
   context_type: string;
   context_ref: string;
+  context_label?: string;
   pinned_at?: string | null;
   archived_at?: string | null;
   pending_action?: PendingAction | null;
