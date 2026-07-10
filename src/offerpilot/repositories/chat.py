@@ -21,9 +21,11 @@ class ChatRepository:
         mode: str = "general",
         context_type: str = "workspace",
         context_ref: str = "",
+        title_source: str = "fallback",
     ) -> Conversation:
         conversation = Conversation(
             title=title,
+            title_source=title_source,
             mode=mode,
             context_type=context_type or "workspace",
             context_ref=context_ref or "",
@@ -64,6 +66,23 @@ class ChatRepository:
             session.commit()
             session.refresh(conversation)
             return conversation
+
+    def apply_generated_title(self, conversation_id: int, title: str) -> bool:
+        with self._session_factory() as session:
+            result = session.execute(
+                update(Conversation)
+                .where(
+                    Conversation.id == conversation_id,
+                    Conversation.title_source == "fallback",
+                )
+                .values(
+                    title=title,
+                    title_source="generated",
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            session.commit()
+            return bool(result.rowcount)
 
     def append_message(
         self,

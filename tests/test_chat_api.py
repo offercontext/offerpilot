@@ -65,6 +65,11 @@ class StreamingModel:
         raise AssertionError("stream_complete should be preferred")
 
 
+class FailingTitleModel:
+    def complete(self, messages, tools):
+        raise RuntimeError("title provider unavailable")
+
+
 def _parse_sse_events(raw: str) -> list[dict[str, object]]:
     events = []
     for frame in raw.strip().split("\n\n"):
@@ -1425,6 +1430,43 @@ def test_chat_conversations_detail_and_delete(tmp_path):
     assert messages[0]["role"] == "user"
     assert deleted.status_code == 200
     assert client.get("/api/chat/conversations").json() == []
+
+
+def test_first_message_generates_title_without_overwriting_manual_rename(tmp_path):
+    chat_model = ScriptedModel([Assistant(content="回复")])
+    title_model = ScriptedModel([Assistant(content="字节后端投递规划")])
+    client = TestClient(
+        create_app(data_dir=tmp_path, chat_model=chat_model, title_model=title_model)
+    )
+
+    created = client.post(
+        "/api/chat",
+        json={"message": "帮我规划一下字节跳动后端岗位的投递", "conversation_id": 0},
+    ).json()
+
+    conversation = client.get("/api/chat/conversations").json()[0]
+    assert conversation["id"] == created["conversation_id"]
+    assert conversation["title"] == "字节后端投递规划"
+    assert conversation["title_source"] == "generated"
+
+
+def test_first_message_keeps_fallback_title_when_generation_fails(tmp_path):
+    client = TestClient(
+        create_app(
+            data_dir=tmp_path,
+            chat_model=ScriptedModel([Assistant(content="回复")]),
+            title_model=FailingTitleModel(),
+        )
+    )
+
+    client.post(
+        "/api/chat",
+        json={"message": "这是一个很长的首条消息用于验证标题回退", "conversation_id": 0},
+    )
+
+    conversation = client.get("/api/chat/conversations").json()[0]
+    assert conversation["title"] == "这是一个很长的首条消息用于验证标题回退"[:30]
+    assert conversation["title_source"] == "fallback"
 
 
 def test_chat_conversation_update_renames_pins_archives_and_clears_context(tmp_path):

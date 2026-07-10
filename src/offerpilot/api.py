@@ -12,7 +12,7 @@ from typing import Any, Callable, Generator, Optional
 from uuid import uuid4
 
 import httpx
-from fastapi import Body, FastAPI, File, Request, UploadFile
+from fastapi import BackgroundTasks, Body, FastAPI, File, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from pypdf import PdfReader
@@ -84,6 +84,7 @@ class ChatAgentTimedOut(RuntimeError):
 def create_app(
     data_dir: Optional[Path] = None,
     chat_model: Optional[ChatModel] = None,
+    title_model: Optional[ChatModel] = None,
     static_dir: Optional[Path] = None,
 ) -> FastAPI:
     resolved_data_dir = data_dir or resolve_data_dir()
@@ -1053,7 +1054,10 @@ def create_app(
         return entries
 
     @app.post("/api/chat")
-    def send_chat(payload: dict[str, Any] = Body(...)) -> JSONResponse:
+    def send_chat(
+        background_tasks: BackgroundTasks,
+        payload: dict[str, Any] = Body(...),
+    ) -> JSONResponse:
         model = _chat_model(chat_model, resolved_data_dir)
         if isinstance(model, JSONResponse):
             return model
@@ -1062,6 +1066,7 @@ def create_app(
             return error_response(400, "message is required")
 
         conversation_id = int(payload.get("conversation_id") or 0)
+        created_new = conversation_id == 0
         conversation = None
         if conversation_id == 0:
             context_type = str(payload.get("context_type") or "workspace").strip() or "workspace"
@@ -1082,6 +1087,15 @@ def create_app(
 
         clarification = chat.get_pending_clarification(conversation_id)
         chat.append_message(conversation_id, "user", content=message)
+        if created_new:
+            background_tasks.add_task(
+                _generate_conversation_title,
+                title_model,
+                chat,
+                conversation_id,
+                message,
+                resolved_data_dir,
+            )
         context_message = _chat_context_message(conversation, applications)
         clarification_message = _chat_clarification_message(clarification, message)
         history = [
@@ -1162,7 +1176,10 @@ def create_app(
         return JSONResponse({"type": "message", "conversation_id": conversation_id, "message": reply})
 
     @app.post("/api/chat/stream")
-    def send_chat_stream(payload: dict[str, Any] = Body(...)) -> Response:
+    def send_chat_stream(
+        background_tasks: BackgroundTasks,
+        payload: dict[str, Any] = Body(...),
+    ) -> Response:
         model = _chat_model(chat_model, resolved_data_dir)
         if isinstance(model, JSONResponse):
             return model
@@ -1171,6 +1188,7 @@ def create_app(
             return error_response(400, "message is required")
 
         conversation_id = int(payload.get("conversation_id") or 0)
+        created_new = conversation_id == 0
         conversation = None
         if conversation_id == 0:
             context_type = str(payload.get("context_type") or "workspace").strip() or "workspace"
@@ -1190,6 +1208,15 @@ def create_app(
                 return error_response(404, "conversation not found")
 
         chat.append_message(conversation_id, "user", content=message)
+        if created_new:
+            background_tasks.add_task(
+                _generate_conversation_title,
+                title_model,
+                chat,
+                conversation_id,
+                message,
+                resolved_data_dir,
+            )
         context_message = _chat_context_message(conversation, applications)
         history = [
             _chat_response_system_message(),
@@ -1609,6 +1636,7 @@ def create_app(
             if not title:
                 return error_response(400, "title is required")
             values["title"] = title[:80]
+            values["title_source"] = "manual"
         if "context_type" in payload:
             values["context_type"] = str(payload.get("context_type") or "workspace").strip() or "workspace"
         if "context_ref" in payload:
@@ -1981,6 +2009,38 @@ def _payload_text(payload: dict[str, Any], key: str, fallback: str) -> str:
 def _title_from_message(message: str) -> str:
     trimmed = message.strip()
     return trimmed[:30] or "新对话"
+
+
+def _generate_conversation_title(
+    injected: Optional[ChatModel],
+    chat: ChatRepository,
+    conversation_id: int,
+    first_message: str,
+    data_dir: Path,
+) -> None:
+    try:
+        model = _chat_model(injected, data_dir)
+        if isinstance(model, JSONResponse):
+            return
+        assistant = model.complete(
+            [
+                Message(
+                    role="system",
+                    content="为求职助手对话生成不超过30个汉字的单行标题，只输出标题。",
+                ),
+                Message(role="user", content=first_message),
+            ],
+            [],
+        )
+        title = " ".join(assistant.content.split()).strip("\"'“”‘’ ")[:30]
+        if title:
+            chat.apply_generated_title(conversation_id, title)
+    except Exception as exc:  # pragma: no cover - provider behavior is covered through fallback tests
+        append_log_entry(
+            data_dir,
+            "WARNING",
+            f"conversation title generation failed: {type(exc).__name__}",
+        )
 
 
 def _agent_checkpoint_path(data_dir: Path) -> Path:
