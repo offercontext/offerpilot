@@ -23,6 +23,8 @@ from offerpilot.ai.agent import (
     ChatModel,
     ChatRunCancelled,
     PendingAction,
+    StalePendingActionError,
+    prepare_pending_action,
     resume_after_confirm,
     run_turn,
 )
@@ -81,7 +83,6 @@ from offerpilot.sse import STREAM_VERSION, SseRun, format_sse, sse_headers
 
 CHAT_AGENT_TIMEOUT_SECONDS = 120.0
 CHAT_TIMEOUT_MESSAGE = "这次处理时间过长，已停止。你可以重试或换一种问法。"
-CHAT_CANCELLED_MESSAGE = "已取消本次写入。你可以修改信息后让我重新整理。"
 CHAT_PAGE_CONTEXT_VIEWS = {
     "dashboard",
     "board",
@@ -1348,6 +1349,10 @@ def create_app(
 
     @app.post("/api/chat/confirm")
     def confirm_chat(payload: dict[str, Any] = Body(...)) -> JSONResponse:
+        confirmation = _confirmation_input(payload)
+        if isinstance(confirmation, JSONResponse):
+            return confirmation
+        approved, edited_args, rejection_feedback = confirmation
         model = _chat_model(chat_model, resolved_data_dir)
         if isinstance(model, JSONResponse):
             return model
@@ -1363,20 +1368,6 @@ def create_app(
         pending = chat.get_pending_action(conversation_id)
         if pending is None:
             return error_response(400, "no pending action to confirm")
-        if not bool(payload.get("approved")):
-            chat.clear_pending_action(conversation_id)
-            chat.clear_pending_clarification(conversation_id)
-            chat.append_message(conversation_id, "assistant", content=CHAT_CANCELLED_MESSAGE)
-            return JSONResponse(
-                {
-                    "type": "message",
-                    "conversation_id": conversation_id,
-                    "message": CHAT_CANCELLED_MESSAGE,
-                }
-            )
-        chat.clear_pending_action(conversation_id)
-        context_message = _chat_context_message(conversation, applications)
-        undo_seed = _undo_seed_for_pending(pending, applications)
         registry = offerpilot_tool_registry(
             applications,
             events,
@@ -1385,6 +1376,16 @@ def create_app(
             resumes=resumes,
             jd_analyses=jd_analyses,
             knowledge=knowledge,
+        )
+        try:
+            effective_pending = (
+                prepare_pending_action(pending, registry, edited_args) if approved else pending
+            )
+        except ValueError as exc:
+            return error_response(422, f"invalid confirmation edits: {exc}")
+        context_message = _chat_context_message(conversation, applications)
+        undo_seed = (
+            _undo_seed_for_pending(effective_pending, applications) if approved else {}
         )
         try:
             added, reply, new_pending = _run_chat_agent_with_timeout(
@@ -1396,16 +1397,19 @@ def create_app(
                         *([context_message] if context_message is not None else []),
                         *_stored_messages_to_ai(stored),
                     ],
-                    pending,
-                    approved=True,
+                    effective_pending,
+                    approved=approved,
                     auto_approve=load_config(resolved_data_dir).chat_auto_approve_writes,
                     max_iter=DEFAULT_MAX_ITERATIONS,
+                    rejection_feedback=rejection_feedback,
                     checkpoint_path=_agent_checkpoint_path(resolved_data_dir),
                     thread_id=_agent_thread_id(conversation_id),
                 )
             )
         except ChatAgentTimedOut:
             return error_response(504, "这次确认处理时间过长，已停止。请重试或取消这次写入。")
+        except StalePendingActionError:
+            return error_response(409, "待确认操作已过期或正在处理中，请刷新对话后重试。")
         except Exception as exc:
             return _ai_provider_error(exc, resolved_data_dir)
         added, forced_reply = _with_write_error_followup(added)
@@ -1418,9 +1422,9 @@ def create_app(
         if new_pending is not None:
             missing_question = _pending_action_missing_question(new_pending, applications)
             if missing_question:
-                chat.clear_pending_action(conversation_id)
                 chat.set_pending_clarification(conversation_id, new_pending, missing_question)
                 chat.append_message(conversation_id, "assistant", content=missing_question)
+                chat.clear_pending_action(conversation_id)
                 return JSONResponse(
                     {
                         "type": "message",
@@ -1440,13 +1444,13 @@ def create_app(
         chat.clear_pending_action(conversation_id)
         if not forced_reply:
             chat.clear_pending_clarification(conversation_id)
-        undo = _build_write_undo(pending, added, undo_seed)
-        if undo:
-            chat.set_last_write_undo(conversation_id, undo)
-        else:
-            chat.clear_last_write_undo(conversation_id)
-        if bool(payload.get("approved")):
-            reply = _prepend_write_success(reply, pending, added)
+        undo = _build_write_undo(effective_pending, added, undo_seed) if approved else {}
+        if approved:
+            if undo:
+                chat.set_last_write_undo(conversation_id, undo)
+            else:
+                chat.clear_last_write_undo(conversation_id)
+            reply = _prepend_write_success(reply, effective_pending, added)
         response_payload: dict[str, Any] = {"type": "message", "conversation_id": conversation_id, "message": reply}
         if undo:
             response_payload["undo"] = undo
@@ -1472,6 +1476,10 @@ def create_app(
 
     @app.post("/api/chat/confirm/stream")
     def confirm_chat_stream(payload: dict[str, Any] = Body(...)) -> Response:
+        confirmation = _confirmation_input(payload)
+        if isinstance(confirmation, JSONResponse):
+            return confirmation
+        approved, edited_args, rejection_feedback = confirmation
         model = _chat_model(chat_model, resolved_data_dir)
         if isinstance(model, JSONResponse):
             return model
@@ -1488,6 +1496,22 @@ def create_app(
         if pending is None:
             return error_response(400, "no pending action to confirm")
 
+        registry = offerpilot_tool_registry(
+            applications,
+            events,
+            notes,
+            offers,
+            resumes=resumes,
+            jd_analyses=jd_analyses,
+            knowledge=knowledge,
+        )
+        try:
+            effective_pending = (
+                prepare_pending_action(pending, registry, edited_args) if approved else pending
+            )
+        except ValueError as exc:
+            return error_response(422, f"invalid confirmation edits: {exc}")
+
         run = SseRun(
             run_id=str(uuid4()),
             conversation_id=conversation_id,
@@ -1500,48 +1524,12 @@ def create_app(
             envelope = run.envelope(event, data)
             return format_sse(event, f"{run.run_id}:{envelope['seq']}", envelope)
 
-        if not bool(payload.get("approved")):
-
-            def reject_stream() -> Any:
-                chat.clear_pending_action(conversation_id)
-                chat.append_message(conversation_id, "assistant", content=CHAT_CANCELLED_MESSAGE)
-                response = {
-                    "type": "message",
-                    "conversation_id": conversation_id,
-                    "message": CHAT_CANCELLED_MESSAGE,
-                }
-                yield emit(
-                    "meta",
-                    {
-                        "stream_version": STREAM_VERSION,
-                        "supports_delta": _chat_model_supports_delta(model),
-                        "supports_tool_events": True,
-                        "supports_confirmation": True,
-                    },
-                )
-                yield emit("status", {"phase": "done", "label": "已取消"})
-                yield emit("cancelled", {"message": CHAT_CANCELLED_MESSAGE})
-                yield emit("completed", {"response": response, "persisted": True})
-
-            return StreamingResponse(
-                reject_stream(),
-                media_type="text/event-stream; charset=utf-8",
-                headers=sse_headers(),
-            )
-
         context_message = _chat_context_message(conversation, applications)
-        registry = offerpilot_tool_registry(
-            applications,
-            events,
-            notes,
-            offers,
-            resumes=resumes,
-            jd_analyses=jd_analyses,
-            knowledge=knowledge,
+        undo_seed = (
+            _undo_seed_for_pending(effective_pending, applications) if approved else {}
         )
 
         def stream() -> Any:
-            chat.clear_pending_action(conversation_id)
             yield emit(
                 "meta",
                 {
@@ -1551,7 +1539,10 @@ def create_app(
                     "supports_confirmation": True,
                 },
             )
-            yield emit("status", {"phase": "tool_running", "label": "正在执行确认操作"})
+            if approved:
+                yield emit("status", {"phase": "tool_running", "label": "正在执行确认操作"})
+            else:
+                yield emit("status", {"phase": "thinking", "label": "正在根据你的反馈继续"})
             try:
                 added, reply, new_pending = yield from _run_chat_agent_with_sse_events(
                     lambda event_sink, cancel_check: resume_after_confirm(
@@ -1562,10 +1553,11 @@ def create_app(
                             *([context_message] if context_message is not None else []),
                             *_stored_messages_to_ai(stored),
                         ],
-                        pending,
-                        approved=True,
+                        effective_pending,
+                        approved=approved,
                         auto_approve=load_config(resolved_data_dir).chat_auto_approve_writes,
                         max_iter=DEFAULT_MAX_ITERATIONS,
+                        rejection_feedback=rejection_feedback,
                         checkpoint_path=_agent_checkpoint_path(resolved_data_dir),
                         thread_id=_agent_thread_id(conversation_id),
                         event_sink=event_sink,
@@ -1581,6 +1573,17 @@ def create_app(
                     {
                         "code": "chat_agent_timeout",
                         "message": "这次确认处理时间过长，已停止。请重试或取消这次写入。",
+                        "retryable": True,
+                        "degraded": False,
+                    },
+                )
+                return
+            except StalePendingActionError:
+                yield emit(
+                    "error",
+                    {
+                        "code": "stale_pending_action",
+                        "message": "待确认操作已过期或正在处理中，请刷新对话后重试。",
                         "retryable": True,
                         "degraded": False,
                     },
@@ -1608,9 +1611,9 @@ def create_app(
             if new_pending is not None:
                 missing_question = _pending_action_missing_question(new_pending, applications)
                 if missing_question:
-                    chat.clear_pending_action(conversation_id)
                     chat.set_pending_clarification(conversation_id, new_pending, missing_question)
                     chat.append_message(conversation_id, "assistant", content=missing_question)
+                    chat.clear_pending_action(conversation_id)
                     response = {
                         "type": "message",
                         "conversation_id": conversation_id,
@@ -1634,8 +1637,16 @@ def create_app(
             chat.clear_pending_action(conversation_id)
             if not forced_reply:
                 chat.clear_pending_clarification(conversation_id)
-            reply = _prepend_write_success(reply, pending, added)
+            undo = _build_write_undo(effective_pending, added, undo_seed) if approved else {}
+            if approved:
+                if undo:
+                    chat.set_last_write_undo(conversation_id, undo)
+                else:
+                    chat.clear_last_write_undo(conversation_id)
+                reply = _prepend_write_success(reply, effective_pending, added)
             response = {"type": "message", "conversation_id": conversation_id, "message": reply}
+            if undo:
+                response["undo"] = undo
             yield emit("assistant_message", {"message": reply})
             yield emit("completed", {"response": response, "persisted": True})
 
@@ -1931,6 +1942,39 @@ def create_app(
 
 def error_response(status_code: int, message: str) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status_code)
+
+
+def _confirmation_input(
+    payload: dict[str, Any],
+) -> tuple[bool, dict[str, Any] | None, str] | JSONResponse:
+    approved = payload.get("approved")
+    if not isinstance(approved, bool):
+        return error_response(422, "approved must be a boolean")
+
+    has_edited_args = "edited_args" in payload
+    has_rejection_feedback = "rejection_feedback" in payload
+    if approved and has_rejection_feedback:
+        return error_response(422, "rejection_feedback is only allowed when approved is false")
+    if not approved and has_edited_args:
+        return error_response(422, "edited_args is only allowed when approved is true")
+
+    edited_args: dict[str, Any] | None = None
+    if has_edited_args:
+        raw_edited_args = payload["edited_args"]
+        if not isinstance(raw_edited_args, dict):
+            return error_response(422, "edited_args must be a JSON object")
+        edited_args = raw_edited_args
+
+    rejection_feedback = ""
+    if has_rejection_feedback:
+        raw_rejection_feedback = payload["rejection_feedback"]
+        if not isinstance(raw_rejection_feedback, str):
+            return error_response(422, "rejection_feedback must be a string")
+        rejection_feedback = raw_rejection_feedback.strip()
+        if len(rejection_feedback) > 500:
+            return error_response(422, "rejection_feedback must be at most 500 characters")
+
+    return approved, edited_args, rejection_feedback
 
 
 def _run_chat_agent_with_timeout(call: Any) -> Any:

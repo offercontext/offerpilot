@@ -530,7 +530,7 @@ export default function ChatPanel({
     const controller = new AbortController();
     abortControllerRef.current = controller;
     try {
-      const resp = await streamConfirmAction(convID, approved, {
+      const resp = await streamConfirmAction(convID, { approved }, {
         signal: controller.signal,
         onEvent: (event) => {
           if (event.event === 'assistant_delta') {

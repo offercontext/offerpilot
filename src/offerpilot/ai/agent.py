@@ -520,7 +520,9 @@ class LangGraphAgentRunner:
                 "public_label": _tool_public_label(tool, pending.tool_name),
                 "kind": "write" if bool(tool.get("write")) else "read",
                 "confirm_mode": confirm_mode,
-                "summary": pending.human,
+                "summary": _describe_pending_action(
+                    tool.get("describe"), pending.args, pending.human
+                ),
                 "args_summary": _args_summary(pending.args),
             },
         )
@@ -655,7 +657,7 @@ def prepare_pending_action(
         tool_call_id=pending.tool_call_id,
         tool_name=pending.tool_name,
         args=encoded_args,
-        human=pending.human,
+        human=_describe_pending_action(tool.get("describe"), encoded_args, pending.human),
     )
 
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createSseParser, sendChat, streamChat, streamConfirmAction } from './chat';
+import { confirmAction, createSseParser, sendChat, streamChat, streamConfirmAction } from './chat';
 import source from './chat.ts?raw';
 import type { ChatStreamEvent, PilotPageContext } from '@/types/chat';
 
@@ -148,16 +148,43 @@ describe('settings service v0.1 contract', () => {
     );
     globalThis.fetch = fetchMock as typeof fetch;
 
-    const response = await streamConfirmAction(3, true);
+    const response = await streamConfirmAction(3, {
+      approved: true,
+      edited_args: { status: 'offer' },
+    });
 
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/chat/confirm/stream',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ conversation_id: 3, approved: true }),
+        body: JSON.stringify({ conversation_id: 3, approved: true, edited_args: { status: 'offer' } }),
       }),
     );
     expect(response).toEqual({ type: 'message', conversation_id: 3, message: 'confirmed' });
+  });
+
+  it('serializes identical confirmation input for JSON and SSE endpoints', async () => {
+    const input = { approved: false, rejection_feedback: 'Keep the current status.' };
+    postMock.mockResolvedValueOnce({
+      data: { type: 'message', conversation_id: 3, message: 'kept' },
+    });
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      sseResponse(
+        'event: completed\nid: run:1\ndata: {"event":"completed","seq":1,"data":{"response":{"type":"message","conversation_id":3,"message":"kept"}}}\n\n',
+      ),
+    );
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    await confirmAction(3, input);
+    await streamConfirmAction(3, input);
+
+    expect(postMock).toHaveBeenCalledWith(
+      '/chat/confirm',
+      { conversation_id: 3, ...input },
+      { signal: undefined },
+    );
+    const streamBody = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
+    expect(streamBody).toEqual({ conversation_id: 3, ...input });
   });
 
   it('uses Chinese fallback messages for broken SSE streams', async () => {

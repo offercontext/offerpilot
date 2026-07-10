@@ -20,6 +20,12 @@ export interface ChatStreamRequestOptions extends ChatRequestOptions {
   onEvent?: (event: ChatStreamEvent) => void;
 }
 
+export interface ConfirmationInput {
+  approved: boolean;
+  edited_args?: Record<string, unknown>;
+  rejection_feedback?: string;
+}
+
 export async function sendChat(
   message: string,
   conversationId?: number,
@@ -43,14 +49,14 @@ export async function sendChat(
 
 export async function confirmAction(
   conversationId: number,
-  approved: boolean,
+  input: ConfirmationInput,
   options?: ChatRequestOptions,
 ): Promise<ChatResponse> {
   const { data } = await http.post<ChatResponse>(
     '/chat/confirm',
     {
       conversation_id: conversationId,
-      approved,
+      ...input,
     },
     { signal: options?.signal },
   );
@@ -130,14 +136,14 @@ export async function streamChat(
 
 export async function streamConfirmAction(
   conversationId: number,
-  approved: boolean,
+  input: ConfirmationInput,
   options?: ChatStreamRequestOptions,
 ): Promise<ChatResponse> {
   return postChatStream(
     '/api/chat/confirm/stream',
     {
       conversation_id: conversationId,
-      approved,
+      ...input,
     },
     options,
   );
