@@ -3,7 +3,14 @@ from datetime import datetime, timezone
 
 import pytest
 
-from offerpilot.ai.tools import application_tool_registry, offerpilot_tool_registry
+from offerpilot.ai.tools import (
+    EVENT_TYPES,
+    OFFER_STATUSES,
+    application_tool_registry,
+    editable_fields_for_tool,
+    offerpilot_tool_registry,
+)
+from offerpilot.application_status import APPLICATION_STATUS_IDS
 from offerpilot.db import init_database
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
 from offerpilot.repositories.application_events import ApplicationEventCreate, ApplicationEventsRepository
@@ -15,6 +22,89 @@ from offerpilot.repositories.knowledge import (
 from offerpilot.repositories.notes import NoteCreate, NotesRepository
 from offerpilot.repositories.offers import OfferCreate, OffersRepository
 from offerpilot.repositories.resumes import ResumeCreate, ResumeMatchCreate, ResumesRepository
+
+
+def test_write_tools_expose_type_aware_editable_fields_defensively(tmp_path):
+    event_fields = [
+        {"field": "event_type", "type": "enum", "options": list(EVENT_TYPES)},
+        {"field": "subtype", "type": "string"},
+        {"field": "scheduled_at", "type": "datetime"},
+        {"field": "remind_at", "type": "datetime"},
+        {"field": "duration_minutes", "type": "number"},
+        {"field": "round", "type": "number"},
+        {"field": "location", "type": "string"},
+        {"field": "notes", "type": "long_text"},
+        {"field": "status", "type": "string"},
+    ]
+    note_fields = [
+        {"field": "company", "type": "string"},
+        {"field": "position", "type": "string"},
+        {"field": "round", "type": "string"},
+        {"field": "date", "type": "datetime"},
+        {"field": "allow_placeholder_date", "type": "boolean"},
+        {"field": "questions", "type": "long_text"},
+        {"field": "self_reflection", "type": "long_text"},
+        {"field": "difficulty_points", "type": "long_text"},
+        {"field": "mood", "type": "long_text"},
+    ]
+    expected = {
+        "create_application": [
+            {"field": "company_name", "type": "string"},
+            {"field": "position_name", "type": "string"},
+            {"field": "job_url", "type": "string"},
+            {"field": "status", "type": "enum", "options": list(APPLICATION_STATUS_IDS)},
+            {"field": "closed_reason", "type": "long_text"},
+        ],
+        "update_application_status": [
+            {"field": "status", "type": "enum", "options": list(APPLICATION_STATUS_IDS)},
+            {"field": "closed_reason", "type": "long_text"},
+        ],
+        "create_application_event": event_fields,
+        "update_application_event": event_fields,
+        "delete_application_event": [],
+        "add_note": note_fields,
+        "update_note": note_fields,
+        "delete_note": [],
+        "update_offer": [
+            {"field": "company_name", "type": "string"},
+            {"field": "position_name", "type": "string"},
+            {"field": "status", "type": "enum", "options": list(OFFER_STATUSES)},
+            {"field": "base_monthly", "type": "number"},
+            {"field": "months_per_year", "type": "number"},
+            {"field": "signing_bonus", "type": "number"},
+            {"field": "equity", "type": "string"},
+            {"field": "perks", "type": "long_text"},
+            {"field": "deadline", "type": "datetime"},
+            {"field": "notes", "type": "long_text"},
+            {"field": "assessment", "type": "long_text"},
+        ],
+        "save_offer_assessment": [{"field": "assessment", "type": "long_text"}],
+        "resume_update_career_intent": [],
+        "resume_rewrite_highlight": [{"field": "text", "type": "long_text"}],
+    }
+
+    session_factory = init_database(tmp_path / "data.db")
+    registry = offerpilot_tool_registry(
+        ApplicationsRepository(session_factory),
+        ApplicationEventsRepository(session_factory),
+        NotesRepository(session_factory),
+        OffersRepository(session_factory),
+        resumes=ResumesRepository(session_factory),
+    )
+    write_names = {name for name, entry in registry.items() if entry["write"]}
+
+    assert write_names == set(expected)
+    for tool_name, descriptors in expected.items():
+        assert editable_fields_for_tool(tool_name) == descriptors
+        assert registry[tool_name]["editable_fields"] == descriptors
+
+    first = editable_fields_for_tool("update_application_status")
+    first[0]["field"] = "mutated"
+    first[0]["options"].append("mutated")
+
+    assert editable_fields_for_tool("update_application_status") == expected[
+        "update_application_status"
+    ]
 
 
 def test_application_read_tools_return_json(tmp_path):

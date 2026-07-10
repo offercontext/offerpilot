@@ -1664,7 +1664,7 @@ def test_chat_confirm_resumes_pending_write_from_langgraph_checkpoint(tmp_path):
     assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
 
 
-def test_chat_conversation_exposes_pending_action_for_reload(tmp_path):
+def test_chat_conversation_reload_preserves_pending_action_editable_fields(tmp_path):
     app_client = TestClient(create_app(data_dir=tmp_path))
     application = app_client.post(
         "/api/applications",
@@ -1690,6 +1690,14 @@ def test_chat_conversation_exposes_pending_action_for_reload(tmp_path):
 
     assert conversations[0]["id"] == pending["conversation_id"]
     assert conversations[0]["pending_action"] == pending["pending_action"]
+    assert pending["pending_action"]["editable_fields"] == [
+        {
+            "field": "status",
+            "type": "enum",
+            "options": ["pending", "applied", "written_test", "interview", "offer", "closed"],
+        },
+        {"field": "closed_reason", "type": "long_text"},
+    ]
     assert conversations[0]["pending_action"]["target"]["title"] == "字节跳动"
 
 

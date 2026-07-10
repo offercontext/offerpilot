@@ -51,12 +51,21 @@ export interface PendingAction {
   tool_name: string;
   human: string;
   args?: Record<string, unknown>;
+  editable_fields?: PendingActionEditableField[];
   target?: PendingActionTarget;
   proposed_changes?: PendingActionChange[];
   evidence?: PendingActionEvidence[];
   risk_hint?: string;
   workflow?: PendingActionWorkflow;
   draft_summary?: PendingActionDraftSummary;
+}
+
+export type EditableFieldType = 'string' | 'long_text' | 'number' | 'boolean' | 'enum' | 'datetime';
+
+export interface PendingActionEditableField {
+  field: string;
+  type: EditableFieldType;
+  options?: string[];
 }
 
 export interface PendingActionDraftSummary {

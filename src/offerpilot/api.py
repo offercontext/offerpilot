@@ -27,7 +27,7 @@ from offerpilot.ai.agent import (
     run_turn,
 )
 from offerpilot.ai.client import ConfiguredAIClient
-from offerpilot.ai.tools import offerpilot_tool_registry
+from offerpilot.ai.tools import editable_fields_for_tool, offerpilot_tool_registry
 from offerpilot.ai.types import Message, ToolCall
 from offerpilot.application_status import application_status_options, normalize_application_status
 from offerpilot.config import (
@@ -2345,6 +2345,7 @@ def _pending_action_json(
         "tool_name": pending.tool_name,
         "human": pending.human,
         "args": args,
+        "editable_fields": editable_fields_for_tool(pending.tool_name),
     }
     if applications is not None:
         payload.update(_pending_action_details(pending.tool_name, args, applications))
