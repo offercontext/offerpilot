@@ -56,3 +56,7 @@ docs/superpowers/
 
 # Local brainstorming companion artifacts
 .superpowers/
+
+# Local browser and whiteboard verification artifacts
+.playwright-mcp/
+diagrams/
