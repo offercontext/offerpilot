@@ -32,7 +32,7 @@ def read_recent_log_entries(data_dir: Path, limit: int = 100, level: str = "") -
             continue
         if not isinstance(parsed, dict):
             continue
-        entry = {
+        entry: LogEntry = {
             "level": str(parsed.get("level") or "INFO"),
             "message": str(parsed.get("message") or ""),
         }

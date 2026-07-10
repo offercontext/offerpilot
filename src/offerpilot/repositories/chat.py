@@ -82,7 +82,7 @@ class ChatRepository:
                 )
             )
             session.commit()
-            return bool(result.rowcount)
+            return bool(getattr(result, "rowcount", 0))
 
     def append_message(
         self,
