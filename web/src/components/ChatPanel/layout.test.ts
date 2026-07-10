@@ -172,6 +172,63 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).not.toContain('void handleConfirm(true)');
   });
 
+  it('renders typed accessible proposal controls without an arbitrary JSON editor', () => {
+    expect(proposalCard).toContain("Select");
+    expect(proposalCard).toContain("Switch");
+    expect(proposalCard).toContain("InputNumber");
+    expect(proposalCard).toContain("DatePicker");
+    expect(proposalCard).toContain("showTime");
+    expect(proposalCard).toContain("allowClear={false}");
+    expect(proposalCard).toContain("precision={0}");
+    expect(proposalCard).toContain("action.args?.[descriptor.field]");
+    expect(proposalCard).toContain("Input.TextArea");
+    expect(proposalCard).toContain("<Input");
+    expect(proposalCard).toContain("htmlFor={controlId}");
+    expect(proposalCard).toContain("const common = { id: controlId");
+    expect(proposalCard).toContain("编辑建议");
+    expect(proposalCard).not.toContain("JSON.stringify(action.args");
+    expect(proposalCard).not.toContain("Monaco");
+  });
+
+  it('uses a two-step rejection with bounded optional feedback', () => {
+    expect(proposalCard).toContain("setRejectOpen(true)");
+    expect(proposalCard).toContain("maxLength={500}");
+    expect(proposalCard).toContain("feedback.trim() || undefined");
+    expect(proposalCard).toContain("返回审核");
+    expect(proposalCard).toContain("最终拒绝");
+    expect(proposalCard).toContain("pendingFocusTargetRef");
+    expect(proposalCard).toContain("document.getElementById(targetId)?.focus()");
+    expect(proposalCard).toContain('role="region"');
+    expect(proposalCard).not.toContain("onConfirm(rejectionFeedback");
+  });
+
+  it('keeps proposal editing compact, tactile, and overflow-safe', async () => {
+    const css = await loadCss();
+
+    expect(css).toContain('.proposalEditor');
+    expect(css).toContain('.editorGrid');
+    expect(css).toContain('.editorDisclosure');
+    expect(css).toContain('.reviewBack');
+    expect(css).toContain('min-height: 40px;');
+    expect(css).toContain('transform: scale(0.96);');
+    expect(css).toContain('transition-property: background-color, color, box-shadow, transform;');
+    expect(css).toContain('overflow-wrap: anywhere;');
+    expect(css).toContain('.editorControl:global(.ant-switch)');
+    expect(css).toContain('.editorField :global(.ant-select-selector)');
+    expect(css).not.toContain('transition: all');
+  });
+
+  it('attaches the current pending token to edited approval and rejection intents', () => {
+    expect(proposalCard).toContain("onConfirm: (editedArgs?: Record<string, unknown>) => void");
+    expect(proposalCard).toContain("onCancel: (rejectionFeedback?: string) => void");
+    expect(component).toContain("...(editedArgs ? { edited_args: editedArgs } : {})");
+    expect(component).toContain("...(rejectionFeedback ? { rejection_feedback: rejectionFeedback } : {})");
+    expect(component).toContain("confirmation_token: activePending.confirmation_token");
+    expect(component).toContain("key={`${convID}:${activePending.confirmation_token}`}");
+    expect(component).toContain("retryInput.confirmation_token !== activePending.confirmation_token");
+    expect(component).toContain("input.confirmation_token !== activePendingRef.current?.confirmation_token");
+  });
+
   it('keeps removable request page context separate from durable conversation context', async () => {
     const css = await loadCss();
 

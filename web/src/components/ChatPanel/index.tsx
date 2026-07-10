@@ -186,6 +186,7 @@ export default function ChatPanel({
   const abortControllerRef = useRef<AbortController | null>(null);
   const streamingAssistantActiveRef = useRef(false);
   const lastConfirmationInputRef = useRef<ConfirmationInput | null>(null);
+  const activePendingRef = useRef<PendingAction | null>(null);
   const activeConversationIdRef = useRef<number | undefined>(undefined);
   const confirmationMonitorRef = useRef(0);
   const docked = variant === 'rail';
@@ -195,6 +196,7 @@ export default function ChatPanel({
   const isNego = activeConv ? activeConv.mode === 'nego_coach' : offerId !== undefined;
   const capabilities = capabilitiesForMode(isNego);
   const activePending = resolveActivePendingAction(pending, conversations, convID);
+  activePendingRef.current = activePending;
   const settingsQuery = useQuery({
     queryKey: SETTINGS_QUERY_KEY,
     queryFn: getSettings,
@@ -571,6 +573,7 @@ export default function ChatPanel({
 
   async function handleConfirm(input: ConfirmationInput) {
     if (!convID) return;
+    if (input.confirmation_token !== activePendingRef.current?.confirmation_token) return;
     const approved = input.approved;
     lastConfirmationInputRef.current = confirmationInputForRetry(input);
     setConfirmError(null);
@@ -651,6 +654,12 @@ export default function ChatPanel({
     if (!activePending || loading) return;
     const retryInput = confirmationInputForRetry(lastConfirmationInputRef.current);
     if (!retryInput) return;
+    if (retryInput.confirmation_token !== activePending.confirmation_token) {
+      lastConfirmationInputRef.current = null;
+      setConfirmError(null);
+      setConfirmPhase('idle');
+      return;
+    }
     void handleConfirm(retryInput);
   }
 
@@ -921,19 +930,22 @@ export default function ChatPanel({
                   </div>
                 ) : null}
                 <ProposalCard
+                  key={`${convID}:${activePending.confirmation_token}`}
                   action={activePending}
                   loading={loading || confirmPhase === 'saving'}
                   evidence={confirmationEvidence}
-                  onConfirm={() =>
+                  onConfirm={(editedArgs) =>
                     handleConfirm({
                       approved: true,
                       confirmation_token: activePending.confirmation_token,
+                      ...(editedArgs ? { edited_args: editedArgs } : {}),
                     })
                   }
-                  onCancel={() =>
+                  onCancel={(rejectionFeedback) =>
                     handleConfirm({
                       approved: false,
                       confirmation_token: activePending.confirmation_token,
+                      ...(rejectionFeedback ? { rejection_feedback: rejectionFeedback } : {}),
                     })
                   }
                 />
