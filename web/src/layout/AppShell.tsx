@@ -333,9 +333,7 @@ export default function AppShell() {
           streakDays={streak}
           onAdd={() => setAddOpen(true)}
           onSearch={() => setPaletteOpen(true)}
-          onOpenChat={() => openChat(undefined)}
           onOpenSettings={() => setAISettingsOpen(true)}
-          showContextualPilot={shouldShowContextualPilot}
         />
         <Content className="op-app-content" style={{ padding: '0 24px 24px' }}>
           {isLoading ? (
