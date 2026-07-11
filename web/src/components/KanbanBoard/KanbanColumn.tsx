@@ -11,7 +11,6 @@ interface KanbanColumnProps {
   cards: Application[];
   activeId: number | null;
   onOpenDetail?: (app: Application) => void;
-  onAskPilot?: (app: Application) => void;
   onRequestStatusChange: (app: Application, status: ApplicationStatus) => void;
 }
 
@@ -22,7 +21,6 @@ export default function KanbanColumn({
   cards,
   activeId,
   onOpenDetail,
-  onAskPilot,
   onRequestStatusChange,
 }: KanbanColumnProps) {
   const { isOver, setNodeRef } = useDroppable({ id: status });
@@ -49,7 +47,6 @@ export default function KanbanColumn({
               columnStatus={status}
               isDragging={card.id === activeId}
               onOpenDetail={onOpenDetail}
-              onAskPilot={onAskPilot}
               onRequestStatusChange={onRequestStatusChange}
             />
           ))

@@ -287,7 +287,7 @@ export default function AppShell() {
             />
           )}
           {view === 'board' && (
-            <KanbanBoard applications={apps} onOpenDetail={openApplicationDetail} onAskPilot={startApplicationChat} />
+            <KanbanBoard applications={apps} onOpenDetail={openApplicationDetail} />
           )}
           {view === 'applications-list' && (
             <ApplicationListView
