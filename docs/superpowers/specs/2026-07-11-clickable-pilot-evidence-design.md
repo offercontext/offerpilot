@@ -57,13 +57,15 @@ type EvidenceTarget =
   | { kind: 'application'; id: number }
   | { kind: 'offer'; id: number }
   | { kind: 'resume'; id: number }
-  | { kind: 'event'; id: number; scheduledAt?: string };
+  | { kind: 'event'; id: number; scheduledAt: string };
 ```
 
 `model.ts` derives this value from the structured tool result at the same time
 it derives the display title and metadata. A target is emitted only for a
-finite positive numeric id. The model response text, an evidence title, and
-any client-provided label are never treated as an identifier.
+finite positive numeric id; event targets also require a parseable scheduled
+time so the calendar destination is exact. The model response text, an
+evidence title, and any client-provided label are never treated as an
+identifier.
 
 `EvidenceList` accepts an optional `onOpenEvidence` callback and renders a
 button only for an item carrying `target`. `ProcessTimeline`, `MessageBubble`,
@@ -101,8 +103,8 @@ changes view state; normal event editing remains user initiated.
 
 - All clickable rows use native buttons, visible focus treatment, an
   `aria-label`, Enter/Space activation, and a concise hover affordance.
-- Invalid ids and malformed tool results produce no target and cannot trigger
-  navigation.
+- Invalid ids, missing event times, and malformed tool results produce no
+  target and cannot trigger navigation.
 - If an item has a target but no longer exists, the destination reports the
   missing record and leaves the current chat and selected record unchanged.
 - Focus changes do not automatically scroll the chat stream or dismiss Pilot.
