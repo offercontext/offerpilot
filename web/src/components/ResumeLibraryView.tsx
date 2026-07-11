@@ -22,6 +22,7 @@ import ResumeCard from './ResumeCard';
 import ResumeUploadModal from './ResumeUploadModal';
 import ResumeEditorDrawer from './ResumeEditorDrawer';
 import type { Resume, ResumeContent } from '@/types/resume';
+import { findEvidenceFocusRecord } from '@/lib/pilotEvidenceFocus';
 import styles from './ResumeLibraryView.module.css';
 
 const BLANK_RESUME_CONTENT: ResumeContent = {
@@ -36,9 +37,15 @@ const BLANK_RESUME_CONTENT: ResumeContent = {
 
 interface ResumeLibraryViewProps {
   onAttachToPilot?: (attachment: import('@/types/chat').PilotContextAttachment) => void;
+  focusResumeId?: number;
+  onEvidenceFocusConsumed?: () => void;
 }
 
-export default function ResumeLibraryView({ onAttachToPilot }: ResumeLibraryViewProps) {
+export default function ResumeLibraryView({
+  onAttachToPilot,
+  focusResumeId,
+  onEvidenceFocusConsumed,
+}: ResumeLibraryViewProps) {
   const qc = useQueryClient();
   const [uploadOpen, setUploadOpen] = useState(false);
   const [editing, setEditing] = useState<Resume | null>(null);
@@ -139,6 +146,18 @@ export default function ResumeLibraryView({ onAttachToPilot }: ResumeLibraryView
   };
 
   const resumes = resumesQuery.data ?? [];
+
+  useEffect(() => {
+    if (focusResumeId === undefined || resumesQuery.isLoading) return;
+    const resume = findEvidenceFocusRecord(resumes, focusResumeId);
+    if (resume) {
+      setEditing(resume);
+    } else {
+      message.warning('引用的记录已不存在');
+    }
+    onEvidenceFocusConsumed?.();
+  }, [focusResumeId, resumes, resumesQuery.isLoading, onEvidenceFocusConsumed]);
+
   const kw = keyword.trim().toLowerCase();
   const filtered = resumes.filter((r) => {
     if (!kw) return true;

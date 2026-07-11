@@ -15,6 +15,7 @@ import AddApplicationForm from '@/components/AddApplicationForm';
 import ApplicationDetail from '@/components/ApplicationDetail';
 import ResumeUploadModal from '@/components/ResumeUploadModal';
 import ChatPanel from '@/components/ChatPanel';
+import type { EvidenceTarget } from '@/components/ChatPanel/model';
 import AISettingsDrawer from '@/components/AISettingsDrawer';
 import CommandPalette from './CommandPalette';
 import { moduleTabsForView, type ViewMode } from './navigation';
@@ -97,6 +98,7 @@ function AppShellContent() {
   const [pilotDrawerOpen, setPilotDrawerOpen] = useState(false);
   const [aiSettingsOpen, setAISettingsOpen] = useState(false);
   const [selected, setSelected] = useState<Application | null>(null);
+  const [evidenceFocus, setEvidenceFocus] = useState<Exclude<EvidenceTarget, { kind: 'application' }> | null>(null);
   const [coachOfferId, setCoachOfferId] = useState<number | undefined>(undefined);
   const [chatStartRequest, setChatStartRequest] = useState<ChatStartRequest>();
   const [activePilotAttachmentKey, setActivePilotAttachmentKey] = useState<PilotAttachmentConversationKey>();
@@ -292,6 +294,38 @@ function AppShellContent() {
     setSelected(app);
   };
 
+  const clearEvidenceFocus = (target: EvidenceTarget) => {
+    setEvidenceFocus((current) => (current === target ? null : current));
+  };
+
+  const openEvidence = (target: EvidenceTarget) => {
+    setAISettingsOpen(false);
+    if (target.kind === 'application') {
+      const app = apps.find((item) => item.id === target.id);
+      if (app) {
+        openApplicationDetail(app);
+      } else {
+        message.warning('引用的记录已不存在');
+      }
+      return;
+    }
+
+    setSelected(null);
+    setEvidenceFocus(target);
+    if (view === 'pilot' && !pilotRailAvailable) {
+      setChatOpen(true);
+    }
+    if (target.kind === 'offer') {
+      navigateToView('offers');
+      return;
+    }
+    if (target.kind === 'resume') {
+      navigateToView('resumes');
+      return;
+    }
+    navigateToView('calendar');
+  };
+
   const goDetailById = (appId: number) => {
     const app = apps.find((a) => a.id === appId);
     if (app) openApplicationDetail(app);
@@ -305,6 +339,10 @@ function AppShellContent() {
 
     navigateToView(item.primaryAction.target);
   };
+
+  const calendarEvidenceFocus = evidenceFocus?.kind === 'event' ? evidenceFocus : undefined;
+  const offerEvidenceFocus = evidenceFocus?.kind === 'offer' ? evidenceFocus : undefined;
+  const resumeEvidenceFocus = evidenceFocus?.kind === 'resume' ? evidenceFocus : undefined;
 
   const workspaceContent = aiSettingsOpen ? (
     <AISettingsDrawer open onClose={() => setAISettingsOpen(false)} />
@@ -354,18 +392,35 @@ function AppShellContent() {
             />
           )}
           {view === 'calendar' && (
-            <CalendarView applications={apps} onOpenDetail={openApplicationDetail} />
+            <CalendarView
+              applications={apps}
+              onOpenDetail={openApplicationDetail}
+              focusEvent={calendarEvidenceFocus}
+              onEvidenceFocusConsumed={calendarEvidenceFocus ? () => clearEvidenceFocus(calendarEvidenceFocus) : undefined}
+            />
           )}
           {view === 'reminders' && (
             <RemindersView onNavigate={navigateToView} onOpenDetailById={goDetailById} />
           )}
           {view === 'offers' && (
-            <OfferCenterView applications={apps} onCoach={(offer) => openChat(offer.id)} onAttachToPilot={attachToPilot} />
+            <OfferCenterView
+              applications={apps}
+              onCoach={(offer) => openChat(offer.id)}
+              onAttachToPilot={attachToPilot}
+              focusOfferId={offerEvidenceFocus?.id}
+              onEvidenceFocusConsumed={offerEvidenceFocus ? () => clearEvidenceFocus(offerEvidenceFocus) : undefined}
+            />
           )}
           {view === 'knowledge' && <KnowledgeLibraryView />}
           {view === 'questions' && <QuestionBankView />}
           {view === 'interview' && <InterviewV01View />}
-          {view === 'resumes' && <ResumeLibraryView onAttachToPilot={attachToPilot} />}
+          {view === 'resumes' && (
+            <ResumeLibraryView
+              onAttachToPilot={attachToPilot}
+              focusResumeId={resumeEvidenceFocus?.id}
+              onEvidenceFocusConsumed={resumeEvidenceFocus ? () => clearEvidenceFocus(resumeEvidenceFocus) : undefined}
+            />
+          )}
           {view === 'pilot' && (
             <div style={{ height: 'calc(100vh - 128px)', minHeight: 640 }}>
               <ChatPanel
@@ -377,6 +432,7 @@ function AppShellContent() {
                 onDataChanged={refreshWorkspaceData}
                 attachmentDraftKey={pilotAttachmentDraftKey}
                 onAttachmentKeyChange={syncPilotAttachmentKey}
+                onOpenEvidence={openEvidence}
               />
             </div>
           )}
@@ -439,6 +495,7 @@ function AppShellContent() {
             pageContext={pageContext}
             attachmentDraftKey={pilotAttachmentDraftKey}
             onAttachmentKeyChange={syncPilotAttachmentKey}
+            onOpenEvidence={openEvidence}
           />
         </aside>
       )}
@@ -480,6 +537,7 @@ function AppShellContent() {
           pageContext={pageContext}
           attachmentDraftKey={pilotAttachmentDraftKey}
           onAttachmentKeyChange={syncPilotAttachmentKey}
+          onOpenEvidence={openEvidence}
         />
       )}
       </Layout>

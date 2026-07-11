@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Row, Col, Button, Space, Statistic, Spin, Empty } from 'antd';
+import { Row, Col, Button, Space, Statistic, Spin, Empty, message } from 'antd';
 import { PlusOutlined, SwapOutlined } from '@ant-design/icons';
 import type { Application } from '@/types/application';
 import type { Offer } from '@/types/offer';
@@ -8,18 +8,27 @@ import { listOffers } from '@/services/offers';
 import OfferCard from '@/components/OfferCard';
 import AddOfferForm from '@/components/AddOfferForm';
 import OfferCompareDrawer from '@/components/OfferCompareDrawer';
+import { findEvidenceFocusRecord } from '@/lib/pilotEvidenceFocus';
 
 interface Props {
   applications: Application[];
   onCoach: (offer: Offer) => void;
   onAttachToPilot?: (attachment: import('@/types/chat').PilotContextAttachment) => void;
+  focusOfferId?: number;
+  onEvidenceFocusConsumed?: () => void;
 }
 
 function wan(n: number): string {
   return (n / 10000).toFixed(1) + '万';
 }
 
-export default function OfferCenterView({ applications, onCoach, onAttachToPilot }: Props) {
+export default function OfferCenterView({
+  applications,
+  onCoach,
+  onAttachToPilot,
+  focusOfferId,
+  onEvidenceFocusConsumed,
+}: Props) {
   const [addOpen, setAddOpen] = useState(false);
   const [editing, setEditing] = useState<Offer | null>(null);
   const [compareOpen, setCompareOpen] = useState(false);
@@ -29,6 +38,18 @@ export default function OfferCenterView({ applications, onCoach, onAttachToPilot
     queryKey: ['offers'],
     queryFn: () => listOffers(),
   });
+
+  useEffect(() => {
+    if (focusOfferId === undefined || isLoading) return;
+    const offer = findEvidenceFocusRecord(offers, focusOfferId);
+    if (offer) {
+      setEditing(offer);
+      setAddOpen(true);
+    } else {
+      message.warning('引用的记录已不存在');
+    }
+    onEvidenceFocusConsumed?.();
+  }, [focusOfferId, isLoading, offers, onEvidenceFocusConsumed]);
 
   const stats = useMemo(() => {
     if (offers.length === 0) return { avg: 0, maxSigning: 0 };

@@ -107,4 +107,30 @@ describe('AppShell source contract', () => {
     expect(attachSource).not.toContain('openChat();');
     expect(attachSource).toContain('addAttachmentToKey(attachmentKey, attachment);');
   });
+
+  it('routes evidence through one-shot destination focus without changing Pilot visibility', () => {
+    expect(source).toContain("import type { EvidenceTarget } from '@/components/ChatPanel/model'");
+    expect(source).toContain(
+      "const [evidenceFocus, setEvidenceFocus] = useState<Exclude<EvidenceTarget, { kind: 'application' }> | null>(null);",
+    );
+    expect(source).toContain('const clearEvidenceFocus = (target: EvidenceTarget) => {');
+    expect(source).toContain('setEvidenceFocus((current) => (current === target ? null : current));');
+    expect(source).toContain('const openEvidence = (target: EvidenceTarget) => {');
+    expect(source).toContain("if (view === 'pilot' && !pilotRailAvailable) {");
+    expect(source).toContain('setChatOpen(true);');
+    expect(source).toContain('onOpenEvidence={openEvidence}');
+    expect(source.match(/onOpenEvidence=\{openEvidence\}/g)).toHaveLength(3);
+  });
+
+  it('passes exact evidence focus targets to their destination views', () => {
+    expect(source).toContain("const calendarEvidenceFocus = evidenceFocus?.kind === 'event' ? evidenceFocus : undefined;");
+    expect(source).toContain("const offerEvidenceFocus = evidenceFocus?.kind === 'offer' ? evidenceFocus : undefined;");
+    expect(source).toContain("const resumeEvidenceFocus = evidenceFocus?.kind === 'resume' ? evidenceFocus : undefined;");
+    expect(source).toContain('focusOfferId={offerEvidenceFocus?.id}');
+    expect(source).toContain('focusResumeId={resumeEvidenceFocus?.id}');
+    expect(source).toContain('focusEvent={calendarEvidenceFocus}');
+    expect(source).toContain('onEvidenceFocusConsumed={offerEvidenceFocus ? () => clearEvidenceFocus(offerEvidenceFocus) : undefined}');
+    expect(source).toContain('onEvidenceFocusConsumed={resumeEvidenceFocus ? () => clearEvidenceFocus(resumeEvidenceFocus) : undefined}');
+    expect(source).toContain('onEvidenceFocusConsumed={calendarEvidenceFocus ? () => clearEvidenceFocus(calendarEvidenceFocus) : undefined}');
+  });
 });

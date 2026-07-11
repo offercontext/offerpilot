@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   DeleteOutlined,
@@ -16,6 +16,8 @@ import { deleteEvent, getEvent } from '@/services/events';
 import { getCalendar } from '@/services/calendar';
 import type { ScheduleEvent } from '@/types/event';
 import { EVENT_TYPE_LABELS } from '@/types/event';
+import type { EvidenceTarget } from '@/components/ChatPanel/model';
+import { eventFocusDate } from '@/lib/pilotEvidenceFocus';
 import styles from './CalendarView.module.css';
 
 const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日'];
@@ -23,9 +25,16 @@ const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日'];
 interface CalendarViewProps {
   onOpenDetail: (app: Application) => void;
   applications: Application[];
+  focusEvent?: Extract<EvidenceTarget, { kind: 'event' }>;
+  onEvidenceFocusConsumed?: () => void;
 }
 
-export default function CalendarView({ onOpenDetail, applications }: CalendarViewProps) {
+export default function CalendarView({
+  onOpenDetail,
+  applications,
+  focusEvent,
+  onEvidenceFocusConsumed,
+}: CalendarViewProps) {
   const queryClient = useQueryClient();
   const [currentMonth, setCurrentMonth] = useState(() => dayjs().date(1));
   const [formOpen, setFormOpen] = useState(false);
@@ -68,6 +77,7 @@ export default function CalendarView({ onOpenDetail, applications }: CalendarVie
 
   const today = dayjs();
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [focusedEventId, setFocusedEventId] = useState<number | null>(null);
   const selectedEntries = selectedDate ? byDate.get(selectedDate) ?? [] : [];
 
   const cancelPendingEdit = () => {
@@ -75,6 +85,33 @@ export default function CalendarView({ onOpenDetail, applications }: CalendarVie
     latestEditEventId.current = null;
     setLoadingEventId(null);
   };
+
+  useEffect(() => {
+    if (!focusEvent) return;
+    const date = eventFocusDate(focusEvent.scheduledAt);
+    if (!date) {
+      setFocusedEventId(null);
+      message.warning('引用的记录已不存在');
+      onEvidenceFocusConsumed?.();
+      return;
+    }
+
+    cancelPendingEdit();
+    setFormOpen(false);
+    setEditingEvent(null);
+    setCurrentMonth(dayjs(date).startOf('month'));
+    setSelectedDate(date);
+    setFocusedEventId(focusEvent.id);
+    onEvidenceFocusConsumed?.();
+  }, [focusEvent, onEvidenceFocusConsumed]);
+
+  useEffect(() => {
+    if (focusedEventId === null || !selectedDate || isLoading) return;
+    if (monthKey !== dayjs(selectedDate).format('YYYY-MM')) return;
+    if (selectedEntries.some((entry) => entry.event_id === focusedEventId)) return;
+    message.warning('引用的记录已不存在');
+    setFocusedEventId(null);
+  }, [focusedEventId, isLoading, monthKey, selectedDate, selectedEntries]);
 
   const deleteMutation = useMutation({
     mutationFn: deleteEvent,
@@ -194,7 +231,11 @@ export default function CalendarView({ onOpenDetail, applications }: CalendarVie
             {selectedEntries.map((e, i) => (
               <div
                 key={getEntryKey(e, i)}
-                className={[styles.entryItem, e.editable ? styles.entryItemStatic : ''].join(' ')}
+                className={[
+                  styles.entryItem,
+                  focusedEventId === e.event_id ? styles.entryItemFocused : '',
+                  e.editable ? styles.entryItemStatic : '',
+                ].join(' ')}
                 onClick={() => !e.editable && openEntry(e)}
               >
                 <div className={styles.entryHeader}>
