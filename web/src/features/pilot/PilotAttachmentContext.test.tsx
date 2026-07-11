@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  captureActiveAttachmentKey,
   emptyPilotAttachmentState,
   pilotAttachmentStateReducer,
   type PilotAttachmentState,
@@ -20,11 +19,10 @@ function reduce(
 describe('PilotAttachmentContext attachment draft store', () => {
   it('restores attachments when switching back to an existing conversation', () => {
     const withConversationSeven = reduce(emptyPilotAttachmentState(),
-      { type: 'set-active', key: 'conversation:7' },
-      { type: 'add', attachment: application },
+      { type: 'add', key: 'conversation:7', attachment: application },
     );
-    const onConversationEight = reduce(withConversationSeven, { type: 'set-active', key: 'conversation:8' });
-    const backOnConversationSeven = reduce(onConversationEight, { type: 'set-active', key: 'conversation:7' });
+    const onConversationEight = reduce(withConversationSeven, { type: 'clear', key: 'conversation:8' });
+    const backOnConversationSeven = onConversationEight;
 
     expect(onConversationEight.drafts['conversation:8']?.attachments ?? []).toEqual([]);
     expect(backOnConversationSeven.drafts['conversation:7']?.attachments).toEqual([application]);
@@ -32,10 +30,8 @@ describe('PilotAttachmentContext attachment draft store', () => {
 
   it('isolates a fresh request draft from persisted conversations', () => {
     const state = reduce(emptyPilotAttachmentState(),
-      { type: 'set-active', key: 'conversation:7' },
-      { type: 'add', attachment: application },
-      { type: 'set-active', key: 'new:15' },
-      { type: 'add', attachment: offer },
+      { type: 'add', key: 'conversation:7', attachment: application },
+      { type: 'add', key: 'new:15', attachment: offer },
     );
 
     expect(state.drafts['conversation:7']?.attachments).toEqual([application]);
@@ -44,17 +40,14 @@ describe('PilotAttachmentContext attachment draft store', () => {
 
   it('removes and clears only the active draft', () => {
     const populated = reduce(emptyPilotAttachmentState(),
-      { type: 'set-active', key: 'conversation:7' },
-      { type: 'add', attachment: application },
-      { type: 'add', attachment: resume },
-      { type: 'set-active', key: 'conversation:8' },
-      { type: 'add', attachment: offer },
+      { type: 'add', key: 'conversation:7', attachment: application },
+      { type: 'add', key: 'conversation:7', attachment: resume },
+      { type: 'add', key: 'conversation:8', attachment: offer },
     );
     const removed = reduce(populated,
-      { type: 'set-active', key: 'conversation:7' },
-      { type: 'remove', attachmentOrKey: 'application:7' },
+      { type: 'remove', key: 'conversation:7', attachmentOrKey: 'application:7' },
     );
-    const cleared = reduce(removed, { type: 'clear-active' });
+    const cleared = reduce(removed, { type: 'clear', key: 'conversation:7' });
 
     expect(removed.drafts['conversation:7']?.attachments).toEqual([resume]);
     expect(cleared.drafts['conversation:7']?.attachments).toEqual([]);
@@ -67,29 +60,25 @@ describe('PilotAttachmentContext attachment draft store', () => {
       id: String(index + 1),
       label: `Resume ${index + 1}`,
     }));
-    const withoutKey = reduce(emptyPilotAttachmentState(), { type: 'add', attachment: attachments[0] });
     const limited = reduce(emptyPilotAttachmentState(),
-      { type: 'set-active', key: 'new:15' },
-      ...attachments.map((attachment) => ({ type: 'add' as const, attachment })),
+      ...attachments.map((attachment) => ({ type: 'add' as const, key: 'new:15' as const, attachment })),
     );
 
-    expect(withoutKey).toEqual(emptyPilotAttachmentState());
     expect(limited.drafts['new:15']?.attachments).toHaveLength(5);
     expect(limited.drafts['new:15']?.message).toBeTruthy();
   });
 
-  it('captures a normal new-draft key so only a successful send clears its attachments', () => {
+  it('clears only the keyed draft selected by a successful send', () => {
     const normalNewDraft = reduce(emptyPilotAttachmentState(),
-      { type: 'set-active', key: 'new:draft-1' },
-      { type: 'add', attachment: application },
+      { type: 'add', key: 'new:draft-1', attachment: application },
+      { type: 'add', key: 'new:draft-2', attachment: offer },
     );
-    const sendKey = captureActiveAttachmentKey(normalNewDraft);
-    const successfulSend = reduce(normalNewDraft, { type: 'clear-by-key', key: sendKey! });
+    const successfulSend = reduce(normalNewDraft, { type: 'clear', key: 'new:draft-1' });
     const failedSend = normalNewDraft;
     const abortedSend = normalNewDraft;
 
-    expect(sendKey).toBe('new:draft-1');
     expect(successfulSend.drafts['new:draft-1']?.attachments).toEqual([]);
+    expect(successfulSend.drafts['new:draft-2']?.attachments).toEqual([offer]);
     expect(failedSend.drafts['new:draft-1']?.attachments).toEqual([application]);
     expect(abortedSend.drafts['new:draft-1']?.attachments).toEqual([application]);
   });

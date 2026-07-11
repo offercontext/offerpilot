@@ -1,4 +1,13 @@
-import { createContext, useContext, useMemo, useReducer, useRef, type ReactNode } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import {
   addPilotAttachment,
   emptyPilotAttachmentDraft,
@@ -10,16 +19,24 @@ import type { PilotContextAttachment } from '@/types/chat';
 export type PilotAttachmentConversationKey = `conversation:${number}` | `new:${string}`;
 
 export interface PilotAttachmentState {
-  activeKey?: PilotAttachmentConversationKey;
   drafts: Partial<Record<PilotAttachmentConversationKey, PilotAttachmentDraft>>;
 }
 
-type PilotAttachmentAction =
-  | { type: 'set-active'; key?: PilotAttachmentConversationKey }
-  | { type: 'add'; attachment: PilotContextAttachment }
-  | { type: 'remove'; attachmentOrKey: PilotContextAttachment | string }
-  | { type: 'clear-active' }
-  | { type: 'clear-by-key'; key: PilotAttachmentConversationKey };
+export type PilotAttachmentAction =
+  | { type: 'add'; key: PilotAttachmentConversationKey; attachment: PilotContextAttachment }
+  | { type: 'remove'; key: PilotAttachmentConversationKey; attachmentOrKey: PilotContextAttachment | string }
+  | { type: 'clear'; key: PilotAttachmentConversationKey };
+
+interface PilotAttachmentStore {
+  drafts: PilotAttachmentState['drafts'];
+  addAttachment: (key: PilotAttachmentConversationKey, attachment: PilotContextAttachment) => void;
+  removeAttachment: (
+    key: PilotAttachmentConversationKey,
+    attachmentOrKey: PilotContextAttachment | string,
+  ) => void;
+  clearAttachmentsByKey: (key: PilotAttachmentConversationKey) => void;
+  createNewDraftKey: () => PilotAttachmentConversationKey;
+}
 
 export interface PilotAttachmentContextValue {
   activeKey?: PilotAttachmentConversationKey;
@@ -34,16 +51,10 @@ export interface PilotAttachmentContextValue {
   ensureNewAttachmentDraft: () => PilotAttachmentConversationKey;
 }
 
-const PilotAttachmentContext = createContext<PilotAttachmentContextValue | null>(null);
+const PilotAttachmentContext = createContext<PilotAttachmentStore | null>(null);
 
 export function emptyPilotAttachmentState(): PilotAttachmentState {
   return { drafts: {} };
-}
-
-export function captureActiveAttachmentKey(
-  state: PilotAttachmentState,
-): PilotAttachmentConversationKey | undefined {
-  return state.activeKey;
 }
 
 function withDraft(
@@ -58,33 +69,18 @@ export function pilotAttachmentStateReducer(
   state: PilotAttachmentState,
   action: PilotAttachmentAction,
 ): PilotAttachmentState {
+  const currentDraft = state.drafts[action.key] ?? emptyPilotAttachmentDraft();
+
   switch (action.type) {
-    case 'set-active':
-      return state.activeKey === action.key ? state : { ...state, activeKey: action.key };
-    case 'add': {
-      if (!state.activeKey) return state;
+    case 'add':
+      return withDraft(state, action.key, addPilotAttachment(currentDraft, action.attachment));
+    case 'remove':
       return withDraft(
         state,
-        state.activeKey,
-        addPilotAttachment(state.drafts[state.activeKey] ?? emptyPilotAttachmentDraft(), action.attachment),
+        action.key,
+        removePilotAttachment(currentDraft, action.attachmentOrKey),
       );
-    }
-    case 'remove': {
-      if (!state.activeKey) return state;
-      return withDraft(
-        state,
-        state.activeKey,
-        removePilotAttachment(
-          state.drafts[state.activeKey] ?? emptyPilotAttachmentDraft(),
-          action.attachmentOrKey,
-        ),
-      );
-    }
-    case 'clear-active':
-      return state.activeKey
-        ? withDraft(state, state.activeKey, emptyPilotAttachmentDraft())
-        : state;
-    case 'clear-by-key':
+    case 'clear':
       return withDraft(state, action.key, emptyPilotAttachmentDraft());
   }
 }
@@ -92,39 +88,100 @@ export function pilotAttachmentStateReducer(
 export function PilotAttachmentProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(pilotAttachmentStateReducer, undefined, emptyPilotAttachmentState);
   const nextNewDraftKeyRef = useRef(0);
-  const activeDraft = state.activeKey
-    ? state.drafts[state.activeKey] ?? emptyPilotAttachmentDraft()
-    : emptyPilotAttachmentDraft();
-  const value = useMemo<PilotAttachmentContextValue>(
+  const addAttachment = useCallback(
+    (key: PilotAttachmentConversationKey, attachment: PilotContextAttachment) =>
+      dispatch({ type: 'add', key, attachment }),
+    [],
+  );
+  const removeAttachment = useCallback(
+    (key: PilotAttachmentConversationKey, attachmentOrKey: PilotContextAttachment | string) =>
+      dispatch({ type: 'remove', key, attachmentOrKey }),
+    [],
+  );
+  const clearAttachmentsByKey = useCallback(
+    (key: PilotAttachmentConversationKey) => dispatch({ type: 'clear', key }),
+    [],
+  );
+  const createNewDraftKey = useCallback(() => {
+    nextNewDraftKeyRef.current += 1;
+    return `new:draft-${nextNewDraftKeyRef.current}` as PilotAttachmentConversationKey;
+  }, []);
+  const store = useMemo<PilotAttachmentStore>(
     () => ({
-      activeKey: captureActiveAttachmentKey(state),
-      attachments: activeDraft.attachments,
-      notice: activeDraft.message,
-      setActiveConversationKey: (key) => dispatch({ type: 'set-active', key }),
-      addAttachment: (attachment) => dispatch({ type: 'add', attachment }),
-      removeAttachment: (attachmentOrKey) => dispatch({ type: 'remove', attachmentOrKey }),
-      clearAttachments: () => dispatch({ type: 'clear-active' }),
-      clearAttachmentsByKey: (key) => dispatch({ type: 'clear-by-key', key }),
-      beginNewAttachmentDraft: () => {
-        const key = `new:draft-${++nextNewDraftKeyRef.current}` as PilotAttachmentConversationKey;
-        dispatch({ type: 'set-active', key });
-        return key;
-      },
-      ensureNewAttachmentDraft: () => {
-        if (state.activeKey?.startsWith('new:')) return state.activeKey;
-        const key = `new:draft-${++nextNewDraftKeyRef.current}` as PilotAttachmentConversationKey;
-        dispatch({ type: 'set-active', key });
-        return key;
-      },
+      drafts: state.drafts,
+      addAttachment,
+      removeAttachment,
+      clearAttachmentsByKey,
+      createNewDraftKey,
     }),
-    [activeDraft.attachments, activeDraft.message, state.activeKey],
+    [state.drafts, addAttachment, removeAttachment, clearAttachmentsByKey, createNewDraftKey],
   );
 
-  return <PilotAttachmentContext.Provider value={value}>{children}</PilotAttachmentContext.Provider>;
+  return <PilotAttachmentContext.Provider value={store}>{children}</PilotAttachmentContext.Provider>;
 }
 
-export function usePilotAttachments(): PilotAttachmentContextValue {
-  const value = useContext(PilotAttachmentContext);
-  if (!value) throw new Error('usePilotAttachments must be used within PilotAttachmentProvider');
-  return value;
+export function usePilotAttachments(
+  initialKey?: PilotAttachmentConversationKey,
+): PilotAttachmentContextValue {
+  const store = useContext(PilotAttachmentContext);
+  if (!store) throw new Error('usePilotAttachments must be used within PilotAttachmentProvider');
+
+  const [activeKey, setActiveKey] = useState<PilotAttachmentConversationKey | undefined>(initialKey);
+  const activeDraft = activeKey ? store.drafts[activeKey] ?? emptyPilotAttachmentDraft() : undefined;
+  const setActiveConversationKey = useCallback((key?: PilotAttachmentConversationKey) => {
+    setActiveKey(key);
+  }, []);
+  const beginNewAttachmentDraft = useCallback(() => {
+    const key = store.createNewDraftKey();
+    setActiveKey(key);
+    return key;
+  }, [store.createNewDraftKey]);
+  const ensureNewAttachmentDraft = useCallback(() => {
+    if (activeKey?.startsWith('new:')) return activeKey;
+    const key = store.createNewDraftKey();
+    setActiveKey(key);
+    return key;
+  }, [activeKey, store.createNewDraftKey]);
+  const addAttachment = useCallback(
+    (attachment: PilotContextAttachment) => {
+      if (activeKey) store.addAttachment(activeKey, attachment);
+    },
+    [activeKey, store.addAttachment],
+  );
+  const removeAttachment = useCallback(
+    (attachmentOrKey: PilotContextAttachment | string) => {
+      if (activeKey) store.removeAttachment(activeKey, attachmentOrKey);
+    },
+    [activeKey, store.removeAttachment],
+  );
+  const clearAttachments = useCallback(() => {
+    if (activeKey) store.clearAttachmentsByKey(activeKey);
+  }, [activeKey, store.clearAttachmentsByKey]);
+
+  return useMemo(
+    () => ({
+      activeKey,
+      attachments: activeDraft?.attachments ?? [],
+      notice: activeDraft?.message,
+      setActiveConversationKey,
+      addAttachment,
+      removeAttachment,
+      clearAttachments,
+      clearAttachmentsByKey: store.clearAttachmentsByKey,
+      beginNewAttachmentDraft,
+      ensureNewAttachmentDraft,
+    }),
+    [
+      activeKey,
+      activeDraft?.attachments,
+      activeDraft?.message,
+      setActiveConversationKey,
+      addAttachment,
+      removeAttachment,
+      clearAttachments,
+      store.clearAttachmentsByKey,
+      beginNewAttachmentDraft,
+      ensureNewAttachmentDraft,
+    ],
+  );
 }
