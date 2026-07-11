@@ -7,7 +7,6 @@ import dayjs from 'dayjs';
 import { deleteApplication } from '@/services/applications';
 import { STATUS_LABELS } from '@/types/application';
 import type { Application, ApplicationStatus } from '@/types/application';
-import { createPilotAttachmentDragBinding } from '../PilotAttachmentHandle';
 import styles from './KanbanBoard.module.css';
 
 const STATUS_OPTIONS = (Object.entries(STATUS_LABELS) as [ApplicationStatus, string][]).map(
@@ -16,23 +15,19 @@ const STATUS_OPTIONS = (Object.entries(STATUS_LABELS) as [ApplicationStatus, str
 
 interface KanbanCardProps {
   record: Application;
-  columnStatus?: ApplicationStatus;
   isDragging?: boolean;
   overlay?: boolean;
   onOpenDetail?: (app: Application) => void;
   onAskPilot?: (app: Application) => void;
-  onAttachToPilot?: (attachment: import('@/types/chat').PilotContextAttachment) => void;
   onRequestStatusChange?: (app: Application, status: ApplicationStatus) => void;
 }
 
 export default function KanbanCard({
   record,
-  columnStatus,
   isDragging,
   overlay,
   onOpenDetail,
   onAskPilot,
-  onAttachToPilot,
   onRequestStatusChange,
 }: KanbanCardProps) {
   const queryClient = useQueryClient();
@@ -40,17 +35,8 @@ export default function KanbanCard({
 
   const { attributes, listeners, setNodeRef } = useDraggable({
     id: record.id,
-    data: { status: columnStatus },
     disabled: overlay,
   });
-  const applicationDragBinding = onAttachToPilot
-    ? createPilotAttachmentDragBinding({
-        kind: 'application',
-        id: String(record.id),
-        label: `${record.company_name} · ${record.position_name}`,
-      })
-    : undefined;
-  const cardDragBinding = columnStatus ? { ...listeners, ...attributes } : applicationDragBinding;
 
   const handleStatusChange = async (newStatus: ApplicationStatus) => {
     if (newStatus === record.status) return;
@@ -86,7 +72,8 @@ export default function KanbanCard({
     <div
       ref={setNodeRef}
       className={`${styles.card} ${isDragging ? styles.cardPlaceholder : ''}`}
-      {...cardDragBinding}
+      {...listeners}
+      {...attributes}
     >
       {cardContent}
       <div className={styles.cardFooter}>

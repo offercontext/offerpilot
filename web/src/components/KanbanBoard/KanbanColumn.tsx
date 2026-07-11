@@ -12,7 +12,6 @@ interface KanbanColumnProps {
   activeId: number | null;
   onOpenDetail?: (app: Application) => void;
   onAskPilot?: (app: Application) => void;
-  onAttachToPilot?: (attachment: import('@/types/chat').PilotContextAttachment) => void;
   onRequestStatusChange: (app: Application, status: ApplicationStatus) => void;
 }
 
@@ -24,7 +23,6 @@ export default function KanbanColumn({
   activeId,
   onOpenDetail,
   onAskPilot,
-  onAttachToPilot,
   onRequestStatusChange,
 }: KanbanColumnProps) {
   const { isOver, setNodeRef } = useDroppable({ id: status });
@@ -48,11 +46,9 @@ export default function KanbanColumn({
             <KanbanCard
               key={card.id}
               record={card}
-              columnStatus={status}
               isDragging={card.id === activeId}
               onOpenDetail={onOpenDetail}
               onAskPilot={onAskPilot}
-              onAttachToPilot={onAttachToPilot}
               onRequestStatusChange={onRequestStatusChange}
             />
           ))

@@ -133,7 +133,6 @@ export default function KanbanBoard({ applications, onOpenDetail, onAskPilot, on
             activeId={activeId}
             onOpenDetail={onOpenDetail}
             onAskPilot={onAskPilot}
-            onAttachToPilot={onAttachToPilot}
             onRequestStatusChange={requestStatusChange}
           />
         ))}

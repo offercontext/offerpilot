@@ -13,6 +13,7 @@ import { PILOT_CONTEXT_DROP_ID } from './applicationLifecycle';
 const dnd = vi.hoisted(() => ({
   monitor: undefined as any,
   dropTargets: [] as string[],
+  pointerDown: vi.fn(),
 }));
 
 vi.mock('@dnd-kit/core', () => ({
@@ -21,7 +22,11 @@ vi.mock('@dnd-kit/core', () => ({
   useDndMonitor: (monitor: any) => {
     dnd.monitor = monitor;
   },
-  useDraggable: () => ({ attributes: {}, listeners: {}, setNodeRef: () => undefined }),
+  useDraggable: () => ({
+    attributes: { 'data-dnd-kit-draggable': 'true' },
+    listeners: { onPointerDown: dnd.pointerDown },
+    setNodeRef: () => undefined,
+  }),
   useDroppable: ({ id }: { id: string }) => {
     dnd.dropTargets.push(id);
     return { isOver: false, setNodeRef: () => undefined };
@@ -117,6 +122,7 @@ function startAndDrop(overId: string | null) {
 beforeEach(() => {
   dnd.monitor = undefined;
   dnd.dropTargets = [];
+  dnd.pointerDown.mockReset();
   vi.mocked(updateApplication).mockResolvedValue({} as never);
 });
 
@@ -131,6 +137,17 @@ afterEach(() => {
 });
 
 describe('Kanban Pilot dnd-kit routing', () => {
+  it('renders the whole Kanban card with dnd-kit bindings and no native draggable attribute', () => {
+    renderBoard();
+
+    const card = container?.querySelector<HTMLDivElement>('[data-dnd-kit-draggable="true"]');
+    expect(card).not.toBeNull();
+    expect(card?.getAttribute('draggable')).toBeNull();
+    act(() => card?.dispatchEvent(new Event('pointerdown', { bubbles: true })));
+    expect(dnd.pointerDown).toHaveBeenCalledTimes(1);
+    expect(dnd.monitor.onDragStart).toEqual(expect.any(Function));
+  });
+
   it('drops a whole card on a status column without attaching it to Pilot', async () => {
     const { onAttachToPilot } = renderBoard();
 

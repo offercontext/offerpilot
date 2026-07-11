@@ -22,7 +22,10 @@ describe('application Pilot entry contract', () => {
 
   it('keeps Kanban card dragging inside dnd-kit instead of a native draggable binding', () => {
     expect(kanbanCard).toContain("import { useDraggable } from '@dnd-kit/core'");
-    expect(kanbanCard).toContain('const cardDragBinding = columnStatus ? { ...listeners, ...attributes } : applicationDragBinding;');
+    expect(kanbanCard).toContain('{...listeners}');
+    expect(kanbanCard).toContain('{...attributes}');
+    expect(kanbanCard).not.toContain('createPilotAttachmentDragBinding');
+    expect(kanbanCard).not.toContain('applicationDragBinding');
     expect(kanbanCard).not.toContain('draggable: true');
     expect(kanbanCard).not.toContain('<PilotAttachmentHandle');
   });
