@@ -714,6 +714,33 @@ def test_chat_attachments_reject_invalid_input_without_new_or_existing_conversat
 
 
 @pytest.mark.parametrize("endpoint", ["/api/chat", "/api/chat/stream"])
+@pytest.mark.parametrize("use_existing_conversation", [False, True])
+def test_chat_attachments_reject_explicit_null_without_conversation_side_effects(
+    tmp_path, endpoint, use_existing_conversation
+):
+    model = CapturingScriptedModel([Assistant(content="created"), Assistant(content="must not run")])
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    created = client.post("/api/chat", json={"message": "first", "conversation_id": 0}).json()
+    conversation_id = created["conversation_id"]
+    before_messages = client.get(f"/api/chat/conversations/{conversation_id}").json()
+    before_conversations = client.get("/api/chat/conversations").json()
+
+    response = client.post(
+        endpoint,
+        json={
+            "message": "must not persist",
+            "conversation_id": conversation_id if use_existing_conversation else 0,
+            "attachments": None,
+        },
+    )
+
+    assert response.status_code == 422
+    assert client.get(f"/api/chat/conversations/{conversation_id}").json() == before_messages
+    assert client.get("/api/chat/conversations").json() == before_conversations
+    assert len(model.calls) == 1
+
+
+@pytest.mark.parametrize("endpoint", ["/api/chat", "/api/chat/stream"])
 def test_chat_attachments_bound_missing_record_context(tmp_path, endpoint):
     model = CapturingScriptedModel([Assistant(content="ok")])
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model))

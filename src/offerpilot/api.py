@@ -1143,7 +1143,11 @@ def create_app(
     ) -> JSONResponse:
         try:
             page_context = _normalize_chat_page_context(payload.get("page_context"))
-            attachments = _normalize_chat_attachments(payload.get("attachments"))
+            attachments = (
+                _normalize_chat_attachments(payload["attachments"])
+                if "attachments" in payload
+                else None
+            )
         except ValueError as exc:
             return error_response(422, str(exc))
         model = _chat_model(chat_model, resolved_data_dir)
@@ -1286,7 +1290,11 @@ def create_app(
     ) -> Response:
         try:
             page_context = _normalize_chat_page_context(payload.get("page_context"))
-            attachments = _normalize_chat_attachments(payload.get("attachments"))
+            attachments = (
+                _normalize_chat_attachments(payload["attachments"])
+                if "attachments" in payload
+                else None
+            )
         except ValueError as exc:
             return error_response(422, str(exc))
         model = _chat_model(chat_model, resolved_data_dir)
@@ -3120,9 +3128,9 @@ def _chat_page_context_messages(page_context: dict[str, Any] | None) -> list[Mes
     ]
 
 
-def _normalize_chat_attachments(value: Any) -> list[dict[str, str]] | None:
+def _normalize_chat_attachments(value: Any) -> list[dict[str, str]]:
     if value is None:
-        return None
+        raise ValueError("attachments must be a list")
     if not isinstance(value, list):
         raise ValueError("attachments must be a list")
     if not 1 <= len(value) <= 5:
