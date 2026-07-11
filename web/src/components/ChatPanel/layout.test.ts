@@ -4,6 +4,7 @@ import proposalCard from './ProposalCard.tsx?raw';
 import thinking from './ThinkingIndicator.tsx?raw';
 import contextPanel from './ContextPanel.tsx?raw';
 import evidenceList from './EvidenceList.tsx?raw';
+import processTimeline from './ProcessTimeline.tsx?raw';
 import threadRail from './ThreadRail.tsx?raw';
 
 async function loadCss(): Promise<string> {
@@ -71,9 +72,9 @@ describe('ChatPanel docked layout contract', () => {
   });
 
   it('lets users stop an in-flight assistant response', () => {
-    expect(component).toContain('abortControllerRef');
+    expect(component).toContain('activeRequestRef');
     expect(component).toContain('stopActiveRequest');
-    expect(component).toContain('controller.abort()');
+    expect(component).toContain('activeRequest.controller.abort()');
     expect(component).toContain('isAbortError');
     expect(component).toContain('aria-label="停止当前回复"');
     expect(component).toContain('已停止当前回复');
@@ -97,20 +98,22 @@ describe('ChatPanel docked layout contract', () => {
 
   it('resynchronizes real conversation state after users abort a stream', () => {
     expect(component).toContain('syncConversationAfterAbort');
-    expect(component).toContain('await syncConversationAfterAbort(streamConversationId)');
-    expect(component).toContain('await syncConversationAfterAbort(convID)');
-    expect(component).toContain('setPending(pendingActionForConversation');
+    expect(component).toContain('await syncConversationAfterAbort(streamConversationId, visibleRequestGeneration)');
+    expect(component).toContain('await syncConversationAfterAbort(convID, visibleRequestGeneration)');
+    expect(component).toContain('const selectedPending = pendingActionForConversation');
+    expect(component).toContain('setPending(selectedPending);');
   });
 
   it('cleans up partial assistant bubbles on stream failure and completed fallback', () => {
     expect(component).toContain('if (streamingAssistantActiveRef.current)');
-    expect(component).toContain('await syncConversationAfterAbort(streamConversationId)');
+    expect(component).toContain('await syncConversationAfterAbort(streamConversationId, visibleRequestGeneration)');
     expect(component).toContain('return [...t.slice(0, -1), { ...last, content: resp.message }];');
   });
 
   it('notifies owners after Pilot write flows can change application data', () => {
     expect(component).toContain('onDataChanged?: () => void');
-    expect(component).toContain('if (autoApprove) onDataChanged?.();');
+    expect(component).toContain('if (applied && autoApprove) onDataChanged?.();');
+    expect(component).toContain('if (approved && applied) onDataChanged?.();');
     expect(component).toContain("resp.write_status === 'success'");
   });
 
@@ -159,10 +162,161 @@ describe('ChatPanel docked layout contract', () => {
   it('surfaces pending confirmation recovery and the active conversation context', () => {
     expect(component).toContain('confirmError');
     expect(component).toContain('retryConfirmAction');
-    expect(component).toContain('取消本次写入');
+    expect(component).toContain('如需放弃，请使用下方审核卡片');
     expect(component).toContain('contextBadge');
     expect(component).toContain('当前上下文');
     expect(component).toContain('contextLabel');
+    expect(component).toContain('lastConfirmationInputRef');
+    expect(component).toContain('confirmationInputForRetry(lastConfirmationInputRef.current)');
+    expect(component).toContain('void handleConfirm(retryInput)');
+    expect(component).toContain('confirmationErrorRequiresSync');
+    expect(component).toContain('lastConfirmationInputRef.current = null');
+    expect(component).toContain('await syncConversationAfterAbort(convID, visibleRequestGeneration)');
+    expect(component).not.toContain('void handleConfirm(true)');
+  });
+
+  it('keeps rejection deliberate when confirmation recovery is visible', () => {
+    const recoveryStart = component.indexOf('{confirmError ? (');
+    const proposalStart = component.indexOf('<ProposalCard', recoveryStart);
+    const recoverySource = component.slice(recoveryStart, proposalStart);
+
+    expect(recoveryStart).toBeGreaterThan(-1);
+    expect(proposalStart).toBeGreaterThan(recoveryStart);
+    expect(recoverySource).toContain('retryConfirmAction');
+    expect(recoverySource).toContain('role="alert"');
+    expect(recoverySource).toContain('lastConfirmationInputRef.current?.approved === false');
+    expect(recoverySource).toContain('重试拒绝');
+    expect(recoverySource).toContain('重试会继续提交拒绝');
+    expect(recoverySource).not.toContain('handleConfirm({');
+    expect(recoverySource).not.toContain('approved: false');
+    expect(component.match(/approved: false/g)).toHaveLength(1);
+    expect(component.match(/onCancel=\{\(rejectionFeedback\)/g)).toHaveLength(1);
+  });
+
+  it('gives confirmation recovery a compact accessible retry target', async () => {
+    const css = await loadCss();
+    const buttonStart = css.indexOf('.confirmRecovery button {');
+    const disabledStart = css.indexOf('.confirmRecovery button:disabled', buttonStart);
+    const buttonRule = css.slice(buttonStart, disabledStart);
+    const reducedMotionStart = css.indexOf('@media (prefers-reduced-motion: reduce)');
+    const reducedMotionRule = css.slice(reducedMotionStart);
+
+    expect(buttonStart).toBeGreaterThan(-1);
+    expect(buttonRule).toContain('min-height: 40px;');
+    expect(buttonRule).toContain('padding: 0 12px;');
+    expect(buttonRule).toContain('transition-property: color, background-color, transform;');
+    expect(css).toContain('.confirmRecovery button:active:not(:disabled)');
+    expect(css).toContain('transform: scale(0.96);');
+    expect(css).toContain('flex-wrap: wrap;');
+    expect(reducedMotionRule).toContain('.confirmRecovery button');
+    expect(buttonRule).not.toContain('transition: all');
+  });
+
+  it('renders typed accessible proposal controls without an arbitrary JSON editor', () => {
+    expect(proposalCard).toContain("Select");
+    expect(proposalCard).toContain("Switch");
+    expect(proposalCard).toContain("InputNumber");
+    expect(proposalCard).toContain("DatePicker");
+    expect(proposalCard).toContain("showTime");
+    expect(proposalCard).toContain("allowClear={descriptor.clearable === true}");
+    expect(proposalCard).toContain("descriptor.clear_value");
+    expect(proposalCard).toContain("precision={0}");
+    expect(proposalCard).toContain("action.args?.[descriptor.field]");
+    expect(proposalCard).toContain("Input.TextArea");
+    expect(proposalCard).toContain("<Input");
+    expect(proposalCard).toContain("htmlFor={controlId}");
+    expect(proposalCard).toContain("const common = { id: controlId");
+    expect(proposalCard.match(/size="large"/g)?.length ?? 0).toBeGreaterThanOrEqual(5);
+    expect(proposalCard).toContain("styles.switchHitArea");
+    expect(proposalCard).toContain('<label className={styles.switchHitArea} htmlFor={controlId}>');
+    expect(proposalCard).toContain("编辑建议");
+    expect(proposalCard).not.toContain("JSON.stringify(action.args");
+    expect(proposalCard).not.toContain("Monaco");
+  });
+
+  it('uses a two-step rejection with bounded optional feedback', () => {
+    expect(proposalCard).toContain("setRejectOpen(true)");
+    expect(proposalCard).toContain("maxLength={500}");
+    expect(proposalCard).toContain("feedback.trim() || undefined");
+    expect(proposalCard).toContain("返回审核");
+    expect(proposalCard).toContain("最终拒绝");
+    expect(proposalCard).toContain("pendingFocusTargetRef");
+    expect(proposalCard).toContain("document.getElementById(targetId)?.focus()");
+    expect(proposalCard).toContain('role="region"');
+    expect(proposalCard).not.toContain("onConfirm(rejectionFeedback");
+  });
+
+  it('keeps proposal editing compact, tactile, and overflow-safe', async () => {
+    const css = await loadCss();
+
+    expect(css).toContain('.proposalEditor');
+    expect(css).toContain('.editorGrid');
+    expect(css).toContain('.editorDisclosure');
+    expect(css).toContain('.reviewBack');
+    expect(css).toContain('min-height: 40px;');
+    expect(css).toContain('transform: scale(0.96);');
+    expect(css).toContain('transition-property: background-color, color, box-shadow, transform;');
+    expect(css).toContain('overflow-wrap: anywhere;');
+    expect(css).toContain('.switchHitArea');
+    expect(css).not.toContain('.editorControl:global(.ant-switch)');
+    expect(css).not.toContain('.editorField :global(.ant-select-selector)');
+    expect(css).not.toContain('transition: all');
+  });
+
+  it('attaches the current pending token to edited approval and rejection intents', () => {
+    expect(proposalCard).toContain("onConfirm: (editedArgs?: Record<string, unknown>) => void");
+    expect(proposalCard).toContain("onCancel: (rejectionFeedback?: string) => void");
+    expect(component).toContain("...(editedArgs ? { edited_args: editedArgs } : {})");
+    expect(component).toContain("...(rejectionFeedback ? { rejection_feedback: rejectionFeedback } : {})");
+    expect(component).toContain("confirmation_token: activePending.confirmation_token");
+    expect(component).toContain("key={`${convID}:${activePending.confirmation_token}`}");
+    expect(component).toContain("retryInput.confirmation_token !== activePending.confirmation_token");
+    expect(component).toContain("input.confirmation_token !== activePendingRef.current?.confirmation_token");
+  });
+
+  it('keeps recovery mounted and restores retry focus after a repeated failure', () => {
+    const confirmStart = component.indexOf('async function handleConfirm(input: ConfirmationInput)');
+    const retryStart = component.indexOf('function retryConfirmAction()', confirmStart);
+    const confirmSource = component.slice(confirmStart, retryStart);
+    const requestStartSource = confirmSource.slice(0, confirmSource.indexOf('setConfirmPhase('));
+
+    expect(requestStartSource).not.toContain('setConfirmError(null);');
+    expect(component).toContain('confirmRetryButtonRef');
+    expect(component).toContain('restoreConfirmationRetryFocusRef');
+    expect(component).toContain('shouldRestoreConfirmationRetryFocus(');
+    expect(component).toContain('confirmRetryButtonRef.current?.focus()');
+    expect(component).toContain('ref={confirmRetryButtonRef}');
+    expect(component).toMatch(/setConfirmError\(null\);\s+setConvID\(resp\.conversation_id\)/);
+  });
+
+  it('keeps removable request page context separate from durable conversation context', async () => {
+    const css = await loadCss();
+
+    expect(component).toContain('pageContext?: PilotPageContext');
+    expect(component).not.toContain('useState<PilotPageContext | undefined>(() => pageContext)');
+    expect(component).not.toContain('setActivePageContext');
+    expect(component).toContain('pageContextKey(pageContext)');
+    expect(component).toContain('pilotPageContextRemovalReducer,');
+    expect(component).toContain('deriveActivePageContext(pageContext, pageContextRemovalState)');
+    expect(component).toContain("type: 'sync', contextKey: incomingPageContextKey");
+    expect(component).toContain('}, [incomingPageContextKey]);');
+    expect(component).toContain('buildChatRequestContext({');
+    expect(component).toContain('pageContext: activePageContext');
+    expect(component).toContain('pageContextChips(activePageContext)');
+    expect(component).toContain("type: 'remove', contextKey: incomingPageContextKey, chipKey");
+    expect(component).toContain('aria-label={`\u79fb\u9664${chip.label}`}');
+    expect(component).toContain('disabled={loading}');
+    expect(component).toContain('styles.requestContextRow');
+    expect(component).toContain('styles.contextBadge');
+    expect(css).toContain('.requestContextRow');
+    expect(css).toContain('flex-wrap: wrap;');
+    expect(css).toContain('min-width: 0;');
+  });
+
+  it('does not mix persistent context fields into existing conversation requests', () => {
+    expect(component).toContain('conversationId: convID');
+    expect(component).toContain('buildChatRequestContext({');
+    expect(component).toContain('streamChat(trimmed, convID, requestContext');
   });
 
   it('lets users manage conversations and remove active context from the Pilot UI', () => {
@@ -175,6 +329,123 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('updateConversation');
     expect(component).toContain('clearActiveContext');
     expect(component).toContain('aria-label="移除当前上下文"');
+  });
+
+  it('supports searchable active and archive conversation views with recovery actions', async () => {
+    const css = await loadCss();
+
+    expect(threadRail).toContain('aria-label="搜索对话"');
+    expect(threadRail).toContain("view === 'archived'");
+    expect(threadRail).toContain('待确认');
+    expect(threadRail).toContain('该对话有待确认操作，完成或取消后才能归档');
+    expect(threadRail).toContain("onUpdate(conversation.id, { archived: false })");
+    expect(threadRail).toContain('恢复对话');
+    expect(threadRail).toContain('GROUP_LABELS');
+    expect(component).toContain('refreshConversations(showArchived)');
+    expect(component).toContain('listConversations(includeArchived)');
+    expect(component).toContain('showArchived={showArchived}');
+    expect(component).toContain('onViewChange={setShowArchived}');
+    expect(css).toContain('min-height: 40px;');
+    expect(css).toContain('overflow-x: hidden;');
+    expect(css).toContain('@media (prefers-reduced-motion: reduce)');
+  });
+
+  it('suppresses pending auto-selection after an explicit new chat and locks only the active thread', () => {
+    expect(component).toContain('pendingAutoSelectSuppressedRef');
+    expect(component).toContain('conversationSelectionRequestRef');
+    expect(component).toContain('shouldApplyConversationRequest(');
+    expect(component).toContain('conversationSelectionRequestRef.current += 1;');
+    expect(component).toContain('visibleRequestGeneration: number,');
+    expect(component).toContain('!isCurrentVisibleRequest(visibleRequestGeneration)');
+    expect(component).toContain("markPendingAutoSelect('suppress')");
+    expect(component).toContain("markPendingAutoSelect('allow')");
+    expect(component).toContain('if (pendingAutoSelectSuppressedRef.current) return;');
+    expect(component).toContain('resolveActivePendingAction(pending, conversations, convID)');
+    expect(component).toContain('const composerDisabled = loading || !!activePending || !hasKey;');
+    expect(component).not.toContain('conversations.some((conversation) => conversation.pending_action)');
+  });
+
+  it('isolates visible chat and confirmation mutations by request generation', () => {
+    expect(component).toContain('visibleRequestGenerationRef');
+    expect(component).toContain('const visibleRequestGeneration = ++visibleRequestGenerationRef.current;');
+    expect(component).toContain('isCurrentVisibleConversationRequest(');
+    expect(component).toContain('if (!isCurrentVisibleRequest(visibleRequestGeneration))');
+    expect(component).toContain('finishMessage(resp, visibleRequestGeneration)');
+  });
+
+  it('invalidates request state and clears loading on close or durable context reset', () => {
+    const closeStart = component.indexOf('if (!open) {');
+    const closeEnd = component.indexOf('}, [open]);', closeStart);
+    const closeEffect = component.slice(closeStart, closeEnd);
+    const contextStart = component.indexOf('if (offerId !== threadOfferId.current) {');
+    const contextEnd = component.indexOf('threadOfferId.current = offerId;', contextStart);
+    const contextReset = component.slice(contextStart, contextEnd);
+
+    expect(closeEffect).toContain('visibleRequestGenerationRef.current += 1;');
+    expect(closeEffect).toContain('shouldAbortActiveRequestOnClose(activeRequest)');
+    expect(closeEffect).toContain('stopActiveRequest({ silent: true });');
+    expect(closeEffect).toContain('setPending(null);');
+    expect(closeEffect).toContain('confirmationReconcileOnOpenRef.current =');
+    expect(closeEffect).toContain(
+      'void syncConversationAfterAbort(activeConversationIdRef.current, closeGeneration);',
+    );
+    expect(closeEffect).toContain('monitorConfirmationCompletion(');
+    expect(component).toContain('confirmationLocksRef.current.set(convID, confirmationExecution);');
+    expect(component).toContain("kind: 'confirmation'");
+    expect(component).toContain('confirmationToken: input.confirmation_token');
+    expect(component).toContain(
+      'clearOwnedConfirmationLock(',
+    );
+    expect(component).toContain('if (confirmationLocksRef.current.has(convID)) return;');
+    expect(component).toContain('lockedConfirmationRef.current = confirmationExecution;');
+    expect(component).toContain(
+      'const confirmationSettled = hasConfirmationSettled(',
+    );
+    expect(component).toContain("setConfirmPhase('saving');");
+    expect(component).toContain('const selectedConfirmationLock = confirmationLocksRef.current.get(id);');
+    expect(component).toContain('if (selectedConfirmationLock) {');
+    const newChatStart = component.indexOf('function startNewChat()');
+    const newChatEnd = component.indexOf('async function selectConversation', newChatStart);
+    const newChat = component.slice(newChatStart, newChatEnd);
+    expect(newChat).toContain('shouldAbortActiveRequestOnClose(activeRequestRef.current)');
+    expect(component).not.toContain('confirmationExecution.settled = true;');
+    expect(component).toContain('CONFIRMATION_RECONCILE_MAX_POLLS = 240');
+    expect(component).toContain('确认操作仍在处理中，请刷新状态后再继续。');
+    expect(component).toContain('onClick={refreshConfirmationStatus}');
+    expect(closeEffect).toContain('setLoading(false);');
+    expect(closeEffect).toContain('setLoadingLabel(undefined);');
+    expect(contextReset).toContain('visibleRequestGenerationRef.current += 1;');
+    expect(contextReset).toContain('setLoading(false);');
+    expect(contextReset).toContain('setLoadingLabel(undefined);');
+
+    const confirmationResponseStart = component.indexOf(
+      'const resp = await streamConfirmAction',
+    );
+    const staleCompletionStart = component.indexOf(
+      'if (!isCurrentVisibleRequest(visibleRequestGeneration)) {',
+      confirmationResponseStart,
+    );
+    const staleCompletionEnd = component.indexOf(
+      'clearOwnedConfirmationLock(confirmationLocksRef.current, convID',
+      staleCompletionStart,
+    );
+    const staleCompletion = component.slice(staleCompletionStart, staleCompletionEnd);
+    expect(staleCompletion).toContain('refreshConversations();');
+    expect(staleCompletion).not.toContain('clearOwnedConfirmationLock(');
+  });
+
+  it('guards conversation list refreshes against stale view responses', () => {
+    expect(component).toContain('conversationListRequestRef');
+    expect(component).toContain('showArchivedRef.current = showArchived;');
+    expect(component).toContain('const includeArchived = showArchivedRef.current;');
+    expect(component).toContain('const requestId = ++conversationListRequestRef.current;');
+    expect(component).toContain('if (requestId === conversationListRequestRef.current)');
+  });
+
+  it('keeps thread selection separate from row actions for accessible keyboard semantics', () => {
+    expect(threadRail).toContain('className={styles.threadSelect}');
+    expect(threadRail).not.toContain('role="button"');
+    expect(threadRail).not.toContain('tabIndex={0}');
   });
 
   it('shows confirmation status and lets users undo the latest AI write', () => {
@@ -208,9 +479,8 @@ describe('ChatPanel docked layout contract', () => {
   });
 
   it('does not auto-resume an older pending thread after an application start request', () => {
-    expect(component).toContain('skipPendingResumeRef');
-    expect(component).toContain('skipPendingResumeRef.current = true');
-    expect(component).toContain('if (skipPendingResumeRef.current)');
+    expect(component).toContain("markPendingAutoSelect('suppress')");
+    expect(component).toContain('pendingAutoSelectSuppressedRef.current');
   });
 
   it('clears unsent composer text when an application start request opens a new draft', () => {
@@ -222,5 +492,45 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('resp.write_status === \'success\'');
     expect(component).toContain('resp.write_status === \'failed\'');
     expect(component).toContain('resp.write_error');
+  });
+
+  it('bounds and diversifies context and proposal evidence without merging record ids', () => {
+    expect(contextPanel).toContain('selectEvidence(evidence, 5)');
+    expect(contextPanel).toContain('similar={evidenceSelection.similar}');
+    expect(contextPanel).toContain('remainingCount={evidenceSelection.remainingCount}');
+    expect(proposalCard).toContain('selectEvidence');
+    expect(proposalCard).toContain('visibleEvidence.slice(0, 3)');
+  });
+
+  it('renders expandable evidence and timeline limits with native controls', async () => {
+    const css = await loadCss();
+
+    expect(evidenceList).toContain('`另有 ${similar.length} 条同类依据`');
+    expect(evidenceList).toContain('aria-expanded={expanded}');
+    expect(evidenceList).toContain('...remaining');
+    expect(evidenceList).toContain('formatEvidenceMeta(item.meta)');
+    expect(evidenceList).toContain('title={item.meta}');
+    expect(evidenceList).toContain('evidenceSetIdentity(items, similar, remaining)');
+    expect(evidenceList).toContain('remaining = similar');
+    expect(evidenceList).toContain("{expanded ? '收起依据' : '展开依据'}");
+    expect(processTimeline).toContain('const visibleSteps = expandedSteps ? steps : steps.slice(0, 8);');
+    expect(processTimeline).toContain('const evidenceSelection = selectEvidence(step.evidence ?? [], 8);');
+    expect(processTimeline).toContain('similar={evidenceSelection.similar}');
+    expect(processTimeline).toContain('remainingCount={evidenceSelection.remainingCount}');
+    expect(processTimeline).toContain('remaining={remainingEvidence(step.evidence ?? [], evidenceSelection.visible)}');
+    expect(processTimeline).toContain('open ? (');
+    expect(processTimeline).toContain('const stepSetIdentity = toolStepSetIdentity(steps);');
+    expect(processTimeline).toContain('useLayoutEffect(() => {');
+    expect(processTimeline).toContain('}, [stepSetIdentity]);');
+    expect(processTimeline).toContain('`还有 ${remainingSteps} 步`');
+    expect(processTimeline).toContain('aria-expanded={expandedSteps}');
+    expect(processTimeline).toContain('<button');
+    expect(processTimeline).not.toContain('role="button"');
+    expect(css).toContain('.evidenceExpand');
+    expect(css).toContain('.timelineExpand');
+    expect(css).toContain('min-height: 40px;');
+    expect(css).toMatch(/\.evidenceControlsCompact\s*\{\s*margin-left:\s*0;/);
+    expect(css).toMatch(/\.tlHead,\s*\.timelineExpand,\s*\.evidenceExpand,/);
+    expect(css).toContain('@media (prefers-reduced-motion: reduce)');
   });
 });

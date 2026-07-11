@@ -38,4 +38,23 @@ describe('AppShell source contract', () => {
     expect(source).toContain('requestKey:');
     expect(source).toContain('onAskPilot={startApplicationChat}');
   });
+
+  it('derives page context from the active view, application, and coached offer', () => {
+    expect(source).toContain('const coachedOffer = ofrs.find((offer) => offer.id === coachOfferId);');
+    expect(source).toContain('const pageContext = useMemo(');
+    expect(source).toContain('buildPilotPageContext({');
+    expect(source).toContain('selectedApplication: selectedApp');
+    expect(source).toContain('coachedOffer');
+    expect(source).toContain('[view, selectedApp, coachedOffer]');
+  });
+
+  it('passes page context only to contextual Pilot panels', () => {
+    const fullPilotStart = source.indexOf("{view === 'pilot'");
+    const fullPilotEnd = source.indexOf("{view === 'settings'", fullPilotStart);
+    const fullPilotSource = source.slice(fullPilotStart, fullPilotEnd);
+
+    expect(fullPilotSource).toContain('variant="page"');
+    expect(fullPilotSource).not.toContain('pageContext=');
+    expect(source.match(/pageContext=\{pageContext\}/g)).toHaveLength(2);
+  });
 });

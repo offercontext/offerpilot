@@ -434,6 +434,20 @@ class MockSession(Base):
     )
 
 
+# Every model with a direct foreign key to applications.id. Conditional application
+# deletion iterates this explicit inventory; a metadata-backed test keeps it exhaustive.
+APPLICATION_FOREIGN_KEY_MODELS = (
+    ApplicationEvent,
+    InterviewNote,
+    Offer,
+    ResumeMatch,
+    JDAnalysis,
+    ApplicationMaterialKit,
+    Question,
+    MockSession,
+)
+
+
 class Wakeup(Base):
     __tablename__ = "wakeups"
     __table_args__ = (

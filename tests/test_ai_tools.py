@@ -3,7 +3,14 @@ from datetime import datetime, timezone
 
 import pytest
 
-from offerpilot.ai.tools import application_tool_registry, offerpilot_tool_registry
+from offerpilot.ai.tools import (
+    EVENT_TYPES,
+    OFFER_STATUSES,
+    application_tool_registry,
+    editable_fields_for_tool,
+    offerpilot_tool_registry,
+)
+from offerpilot.application_status import APPLICATION_STATUS_IDS
 from offerpilot.db import init_database
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
 from offerpilot.repositories.application_events import ApplicationEventCreate, ApplicationEventsRepository
@@ -15,6 +22,174 @@ from offerpilot.repositories.knowledge import (
 from offerpilot.repositories.notes import NoteCreate, NotesRepository
 from offerpilot.repositories.offers import OfferCreate, OffersRepository
 from offerpilot.repositories.resumes import ResumeCreate, ResumeMatchCreate, ResumesRepository
+
+
+def test_write_tools_expose_type_aware_editable_fields_defensively(tmp_path):
+    event_fields = [
+        {"field": "event_type", "type": "enum", "options": list(EVENT_TYPES)},
+        {"field": "subtype", "type": "string"},
+        {"field": "scheduled_at", "type": "datetime"},
+        {
+            "field": "remind_at",
+            "type": "datetime",
+            "clearable": True,
+            "clear_value": "",
+        },
+        {"field": "duration_minutes", "type": "number"},
+        {"field": "round", "type": "number", "clearable": True, "clear_value": 0},
+        {"field": "location", "type": "string"},
+        {"field": "notes", "type": "long_text"},
+        {"field": "status", "type": "string"},
+    ]
+    note_fields = [
+        {"field": "company", "type": "string"},
+        {"field": "position", "type": "string"},
+        {"field": "round", "type": "string"},
+        {"field": "date", "type": "datetime"},
+        {"field": "allow_placeholder_date", "type": "boolean"},
+        {"field": "questions", "type": "long_text"},
+        {"field": "self_reflection", "type": "long_text"},
+        {"field": "difficulty_points", "type": "long_text"},
+        {"field": "mood", "type": "long_text"},
+    ]
+    expected = {
+        "create_application": [
+            {"field": "company_name", "type": "string"},
+            {"field": "position_name", "type": "string"},
+            {"field": "job_url", "type": "string"},
+            {"field": "status", "type": "enum", "options": list(APPLICATION_STATUS_IDS)},
+            {"field": "closed_reason", "type": "long_text"},
+        ],
+        "update_application_status": [
+            {"field": "status", "type": "enum", "options": list(APPLICATION_STATUS_IDS)},
+            {"field": "closed_reason", "type": "long_text"},
+        ],
+        "create_application_event": event_fields,
+        "update_application_event": event_fields,
+        "delete_application_event": [],
+        "add_note": note_fields,
+        "update_note": note_fields,
+        "delete_note": [],
+        "update_offer": [
+            {"field": "company_name", "type": "string"},
+            {"field": "position_name", "type": "string"},
+            {"field": "status", "type": "enum", "options": list(OFFER_STATUSES)},
+            {
+                "field": "base_monthly",
+                "type": "number",
+                "clearable": True,
+                "clear_value": 0,
+            },
+            {"field": "months_per_year", "type": "number"},
+            {
+                "field": "signing_bonus",
+                "type": "number",
+                "clearable": True,
+                "clear_value": 0,
+            },
+            {"field": "equity", "type": "string"},
+            {"field": "perks", "type": "long_text"},
+            {
+                "field": "deadline",
+                "type": "datetime",
+                "clearable": True,
+                "clear_value": "",
+            },
+            {"field": "notes", "type": "long_text"},
+            {"field": "assessment", "type": "long_text"},
+        ],
+        "save_offer_assessment": [{"field": "assessment", "type": "long_text"}],
+        "resume_update_career_intent": [],
+        "resume_rewrite_highlight": [{"field": "text", "type": "long_text"}],
+    }
+
+    session_factory = init_database(tmp_path / "data.db")
+    registry = offerpilot_tool_registry(
+        ApplicationsRepository(session_factory),
+        ApplicationEventsRepository(session_factory),
+        NotesRepository(session_factory),
+        OffersRepository(session_factory),
+        resumes=ResumesRepository(session_factory),
+    )
+    write_names = {name for name, entry in registry.items() if entry["write"]}
+
+    assert write_names == set(expected)
+    for tool_name, descriptors in expected.items():
+        assert editable_fields_for_tool(tool_name) == descriptors
+        assert registry[tool_name]["editable_fields"] == descriptors
+
+    first = editable_fields_for_tool("update_application_status")
+    first[0]["field"] = "mutated"
+    first[0]["options"].append("mutated")
+
+    assert editable_fields_for_tool("update_application_status") == expected[
+        "update_application_status"
+    ]
+
+
+def test_clearable_tool_fields_use_declared_handler_sentinels(tmp_path):
+    session_factory = init_database(tmp_path / "data.db")
+    applications = ApplicationsRepository(session_factory)
+    events = ApplicationEventsRepository(session_factory)
+    notes = NotesRepository(session_factory)
+    offers = OffersRepository(session_factory)
+    app = applications.create(ApplicationCreate(company_name="ByteDance", position_name="Backend"))
+    event = events.create(
+        ApplicationEventCreate(
+            application_id=app.id,
+            event_type="interview",
+            scheduled_at=datetime(2026, 7, 10, 10, tzinfo=timezone.utc),
+            duration_minutes=45,
+            round=2,
+            remind_at=datetime(2026, 7, 10, 9, tzinfo=timezone.utc),
+        )
+    )
+    offer = offers.create(
+        OfferCreate(
+            application_id=app.id,
+            company_name=app.company_name,
+            position_name=app.position_name,
+            base_monthly=30000,
+            months_per_year=15,
+            signing_bonus=50000,
+            deadline="2026-07-20T18:00:00+08:00",
+        )
+    )
+    registry = offerpilot_tool_registry(applications, events, notes, offers)
+
+    cleared_event = json.loads(
+        registry["update_application_event"]["handler"](
+            json.dumps(
+                {
+                    "id": event.id,
+                    "application_id": app.id,
+                    "event_type": "interview",
+                    "scheduled_at": "2026-07-10T10:00:00Z",
+                    "duration_minutes": 45,
+                    "remind_at": "",
+                    "round": 0,
+                }
+            )
+        )
+    )
+    cleared_offer = json.loads(
+        registry["update_offer"]["handler"](
+            json.dumps(
+                {
+                    "id": offer.id,
+                    "base_monthly": 0,
+                    "signing_bonus": 0,
+                    "deadline": "",
+                }
+            )
+        )
+    )
+
+    assert cleared_event.get("remind_at") is None
+    assert cleared_event["round"] == 0
+    assert cleared_offer["base_monthly"] == 0
+    assert cleared_offer["signing_bonus"] == 0
+    assert cleared_offer["deadline"] == ""
 
 
 def test_application_read_tools_return_json(tmp_path):

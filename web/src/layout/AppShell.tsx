@@ -23,6 +23,7 @@ import {
   type PipelineInsight,
 } from '@/lib/pipelineInsights';
 import { getPracticeStats } from '@/services/questions';
+import { buildPilotPageContext } from '@/lib/pilotPageContext';
 import dayjs from 'dayjs';
 
 const { Content } = Layout;
@@ -170,6 +171,16 @@ export default function AppShell() {
   const selectedApp = selected
     ? apps.find((a) => a.id === selected.id) ?? null
     : null;
+  const coachedOffer = ofrs.find((offer) => offer.id === coachOfferId);
+  const pageContext = useMemo(
+    () =>
+      buildPilotPageContext({
+        view,
+        selectedApplication: selectedApp ?? undefined,
+        coachedOffer,
+      }),
+    [view, selectedApp, coachedOffer]
+  );
   const moduleTabs = moduleTabsForView(view);
 
   useEffect(() => {
@@ -362,6 +373,7 @@ export default function AppShell() {
             onExpand={() => navigateToView('pilot')}
             startRequest={chatStartRequest}
             onDataChanged={refreshWorkspaceData}
+            pageContext={pageContext}
           />
         </aside>
       )}
@@ -399,6 +411,7 @@ export default function AppShell() {
           onOpenSettings={() => setAISettingsOpen(true)}
           startRequest={chatStartRequest}
           onDataChanged={refreshWorkspaceData}
+          pageContext={pageContext}
         />
       )}
     </Layout>

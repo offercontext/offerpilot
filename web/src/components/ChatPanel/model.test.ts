@@ -1,15 +1,484 @@
 import { describe, expect, it } from 'vitest';
-import type { ChatMessage } from '@/types/chat';
+import type { ChatMessage, PilotPageContext } from '@/types/chat';
 import {
+  createPilotPageContextRemovalState,
+  deriveActivePageContext,
+  pageContextKey,
+  pilotPageContextRemovalReducer,
+} from '@/lib/pilotPageContext';
+import {
+  buildChatRequestContext,
   buildTurns,
   collectEvidence,
+  evidenceSetIdentity,
+  formatEvidenceMeta,
   hydrateMissingPendingAction,
-  firstPendingConversationId,
   pendingActionForConversation,
   pendingComposerDisabledReason,
+  pendingAutoSelectReducer,
+  remainingEvidence,
+  shouldApplyConversationRequest,
+  isCurrentVisibleConversationRequest,
   reloadConversationTurns,
   toolMeta,
+  confirmationInputForRetry,
+  confirmationErrorAllowsImmediateRetry,
+  confirmationErrorRequiresSync,
+  hasConfirmationSettled,
+  shouldAbortActiveRequestOnClose,
+  clearOwnedConfirmationLock,
+  shouldConsumeConfirmationSettlement,
+  shouldRestoreConfirmationRetryFocus,
+  selectEvidence,
+  toolStepSetIdentity,
 } from './model';
+
+describe('evidence selection', () => {
+  const item = (id: string, title: string, source = 'tool', kind: 'application' = 'application') => ({
+    id,
+    title,
+    source,
+    kind: kind as 'application',
+  });
+
+  it('dedupes only matching source, id, and display metadata while preserving conflicts and occurrences', () => {
+    const evidence = collectEvidence([
+      {
+        role: 'assistant',
+        content: '',
+        steps: [
+          {
+            name: 'list_applications',
+            evidence: [
+              item('42', 'Same company', 'latest'),
+              item('42', 'Same company', 'other-source'),
+              item('43', 'Same company', 'latest'),
+              item('42', 'Same company', 'latest'),
+              item('42', 'Conflicting company', 'latest'),
+            ],
+          },
+        ],
+      },
+    ]);
+
+    expect(evidence).toHaveLength(4);
+    expect(evidence).toContainEqual(
+      expect.objectContaining({ source: 'latest', id: '42', title: 'Same company', occurrences: 2 }),
+    );
+    expect(evidence).toContainEqual(
+      expect.objectContaining({ source: 'latest', id: '42', title: 'Conflicting company', occurrences: 1 }),
+    );
+  });
+
+  it('selects one representative per normalized cluster before filling remaining capacity', () => {
+    const selection = selectEvidence(
+      [
+        item('1', 'Acme #1'),
+        item('2', 'Acme #2'),
+        item('3', 'Beta'),
+        item('4', 'Acme #3'),
+        item('5', 'Gamma'),
+      ],
+      4,
+    );
+
+    expect(selection.visible.map((entry) => entry.id)).toEqual(['1', '3', '5', '2']);
+    expect(selection.similar.map((entry) => entry.id)).toEqual(['4']);
+    expect(selection.remainingCount).toBe(1);
+  });
+
+  it('keeps exact records with matching titles distinct and reports all omitted records', () => {
+    const selection = selectEvidence(
+      [item('1', 'Same title'), item('2', 'Same title'), item('3', 'Another title')],
+      1,
+    );
+
+    expect(selection.visible.map((entry) => entry.id)).toEqual(['1']);
+    expect(selection.similar.map((entry) => entry.id)).toEqual(['2']);
+    expect(selection.remainingCount).toBe(2);
+  });
+
+  it('formats embedded valid timestamps without changing invalid metadata', () => {
+    expect(formatEvidenceMeta('scheduled 2026-07-10T09:05:59+08:00')).toBe('scheduled 2026-07-10 09:05');
+    expect(formatEvidenceMeta('scheduled 2026-02-30T09:05:00Z')).toBe('scheduled 2026-02-30T09:05:00Z');
+    expect(formatEvidenceMeta('scheduled 2026-07-10T09:05:00Z+08:00')).toBe(
+      'scheduled 2026-07-10T09:05:00Z+08:00',
+    );
+    expect(formatEvidenceMeta('scheduled 2026-07-10T09:05:00Z.')).toBe('scheduled 2026-07-10 17:05.');
+    expect(formatEvidenceMeta('scheduled 2026-07-10T09:05.123')).toBe('scheduled 2026-07-10T09:05.123');
+    expect(formatEvidenceMeta('scheduled 2026-07-10T09:05:00.abc')).toBe(
+      'scheduled 2026-07-10T09:05:00.abc',
+    );
+    expect(formatEvidenceMeta('scheduled someday')).toBe('scheduled someday');
+    expect(formatEvidenceMeta()).toBeUndefined();
+  });
+
+  it('changes the evidence-set identity when a conversation supplies different visible or similar records', () => {
+    const visible = [item('1', 'Acme', 'applications')];
+    const similar = [item('2', 'Acme', 'applications')];
+
+    expect(evidenceSetIdentity(visible, similar)).not.toBe(evidenceSetIdentity(visible, []));
+    expect(evidenceSetIdentity(visible, similar)).not.toBe(
+      evidenceSetIdentity([item('3', 'Acme', 'applications')], similar),
+    );
+    expect(evidenceSetIdentity(visible, similar, [item('3', 'Beta', 'applications')])).not.toBe(
+      evidenceSetIdentity(visible, similar, [item('4', 'Gamma', 'applications')]),
+    );
+  });
+
+  it('collects newest evidence first and applies the diversified cap after exact dedupe', () => {
+    const evidence = collectEvidence(
+      [
+        {
+          role: 'assistant',
+          content: '',
+          steps: [{ name: 'list_applications', evidence: [item('old', 'Older', 'applications')] }],
+        },
+        {
+          role: 'assistant',
+          content: '',
+          steps: [
+            {
+              name: 'list_applications',
+              evidence: [
+                item('new-1', 'Acme #1', 'applications'),
+                item('new-2', 'Acme #2', 'applications'),
+                item('new-3', 'Beta', 'applications'),
+              ],
+            },
+          ],
+        },
+      ],
+      2,
+    );
+
+    expect(evidence.map((entry) => entry.id)).toEqual(['new-1', 'new-3']);
+  });
+
+  it('retains omitted distinct records for expansion even when they are not similar', () => {
+    const items = Array.from({ length: 9 }, (_value, index) => item(String(index + 1), `Record ${index + 1}`));
+    const selection = selectEvidence(items, 8);
+
+    expect(selection.similar).toEqual([]);
+    expect(selection.remainingCount).toBe(1);
+    expect(remainingEvidence(items, selection.visible).map((entry) => entry.id)).toEqual(['9']);
+  });
+
+  it('changes the timeline step-set identity for a new tool call or evidence record', () => {
+    const current = [{ name: 'get_application', toolCallId: 'call-1', evidence: [item('1', 'Acme', 'applications')] }];
+
+    expect(toolStepSetIdentity(current)).toBe(toolStepSetIdentity([...current]));
+    expect(toolStepSetIdentity(current)).not.toBe(
+      toolStepSetIdentity([{ ...current[0], toolCallId: 'call-2' }]),
+    );
+    expect(toolStepSetIdentity(current)).not.toBe(
+      toolStepSetIdentity([{ ...current[0], evidence: [item('2', 'Acme', 'applications')] }]),
+    );
+  });
+
+  it('changes the timeline step-set identity for ID-less rendered tool changes', () => {
+    const base = {
+      name: 'search_knowledge',
+      detail: 'first query',
+      resultText: 'first result',
+      evidenceUnavailable: true,
+      evidence: [
+        {
+          id: '1',
+          source: 'knowledge',
+          kind: 'note' as const,
+          title: 'first title',
+          meta: 'first meta',
+          snippet: 'first snippet',
+        },
+      ],
+    };
+    const identity = toolStepSetIdentity([base]);
+
+    expect(identity).not.toBe(toolStepSetIdentity([{ ...base, name: 'list_applications' }]));
+    expect(identity).not.toBe(toolStepSetIdentity([{ ...base, detail: 'second query' }]));
+    expect(identity).not.toBe(toolStepSetIdentity([{ ...base, resultText: 'second result' }]));
+    expect(identity).not.toBe(toolStepSetIdentity([{ ...base, evidenceUnavailable: false }]));
+    expect(identity).not.toBe(
+      toolStepSetIdentity([{ ...base, evidence: [{ ...base.evidence[0], title: 'second title' }] }]),
+    );
+    expect(identity).not.toBe(
+      toolStepSetIdentity([{ ...base, evidence: [{ ...base.evidence[0], meta: 'second meta' }] }]),
+    );
+    expect(identity).not.toBe(
+      toolStepSetIdentity([{ ...base, evidence: [{ ...base.evidence[0], snippet: 'second snippet' }] }]),
+    );
+    expect(identity).not.toBe(
+      toolStepSetIdentity([{ ...base, evidence: [{ ...base.evidence[0], kind: 'knowledge' as const }] }]),
+    );
+  });
+});
+
+describe('confirmation retry focus lifecycle', () => {
+  it('restores focus only after a requested retry finishes with an error', () => {
+    expect(shouldRestoreConfirmationRetryFocus(true, '网络失败', false)).toBe(true);
+    expect(shouldRestoreConfirmationRetryFocus(true, '网络失败', true)).toBe(false);
+    expect(shouldRestoreConfirmationRetryFocus(true, null, false)).toBe(false);
+    expect(shouldRestoreConfirmationRetryFocus(false, '网络失败', false)).toBe(false);
+  });
+});
+
+describe('pending auto-selection suppression', () => {
+  it('suppresses explicit new chats and restores eligibility after selecting a conversation', () => {
+    expect(pendingAutoSelectReducer(false, 'suppress')).toBe(true);
+    expect(pendingAutoSelectReducer(true, 'allow')).toBe(false);
+  });
+
+  it('rejects a late selection response after an explicit new chat invalidates its generation', () => {
+    expect(shouldApplyConversationRequest(3, 3, false)).toBe(true);
+    expect(shouldApplyConversationRequest(2, 3, false)).toBe(false);
+    expect(shouldApplyConversationRequest(3, 3, true)).toBe(false);
+  });
+});
+
+describe('visible conversation request isolation', () => {
+  it('ignores deferred chat deltas, pending state, and completion after switching from A to B', () => {
+    let generation = 0;
+    let visible = { conversationId: 1, turns: ['A'], pending: 'A pending' as string | null };
+    const requestA = ++generation;
+    const apply = (requestGeneration: number, mutation: () => void) => {
+      if (isCurrentVisibleConversationRequest(requestGeneration, generation)) mutation();
+    };
+
+    generation += 1;
+    visible = { conversationId: 2, turns: ['B'], pending: null };
+    apply(requestA, () => visible.turns.push('late A delta'));
+    apply(requestA, () => { visible.pending = 'late A pending'; });
+    apply(requestA, () => { visible = { conversationId: 1, turns: ['A complete'], pending: null }; });
+
+    expect(visible).toEqual({ conversationId: 2, turns: ['B'], pending: null });
+  });
+
+  it('ignores deferred confirmation mutations after switching conversations', () => {
+    let generation = 4;
+    let visible = { conversationId: 2, turns: ['B'], pending: null as string | null, undo: null as string | null };
+    const confirmationA = generation;
+
+    generation += 1;
+    if (isCurrentVisibleConversationRequest(confirmationA, generation)) {
+      visible = { conversationId: 1, turns: ['confirmed A'], pending: 'next A', undo: 'undo A' };
+    }
+
+    expect(visible).toEqual({ conversationId: 2, turns: ['B'], pending: null, undo: null });
+  });
+});
+
+describe('background confirmation settlement', () => {
+  const original = {
+    tool_name: 'create_application',
+    human: 'create',
+    confirmation_token: 'original-token',
+  };
+
+  it('keeps polling while the original pending action is still durable', () => {
+    for (let poll = 0; poll < 240; poll += 1) {
+      expect(hasConfirmationSettled(original, 'original-token')).toBe(false);
+    }
+    expect(hasConfirmationSettled(undefined, 'original-token')).toBe(false);
+  });
+
+  it('settles when the pending action clears or is replaced', () => {
+    expect(hasConfirmationSettled(null, 'original-token')).toBe(true);
+    expect(
+      hasConfirmationSettled(
+        { ...original, confirmation_token: 'replacement-token' },
+        'original-token',
+      ),
+    ).toBe(true);
+  });
+
+});
+
+describe('active request ownership', () => {
+  it('preserves confirmation A across new-chat, B selection, and panel close', () => {
+    const confirmationA = {
+      kind: 'confirmation' as const,
+      conversationId: 1,
+      confirmationToken: 'token-a',
+    };
+    let visibleConversationId: number | undefined = 1;
+
+    visibleConversationId = undefined;
+    expect(visibleConversationId).toBeUndefined();
+    expect(shouldAbortActiveRequestOnClose(confirmationA)).toBe(false);
+
+    visibleConversationId = 2;
+    expect(visibleConversationId).toBe(2);
+    expect(shouldAbortActiveRequestOnClose(confirmationA)).toBe(false);
+  });
+
+  it('aborts an ordinary active chat when the panel closes', () => {
+    expect(
+      shouldAbortActiveRequestOnClose({ kind: 'chat', conversationId: 2 }),
+    ).toBe(true);
+    expect(shouldAbortActiveRequestOnClose(null)).toBe(false);
+  });
+
+  it('does not let stale A completion clear a newer lock for A', () => {
+    const stale = { confirmationToken: 'old-token' };
+    const replacement = { confirmationToken: 'replacement-token' };
+    const locks = new Map([[1, stale]]);
+    locks.set(1, replacement);
+
+    expect(clearOwnedConfirmationLock(locks, 1, stale)).toBe(false);
+    expect(locks.get(1)).toBe(replacement);
+    expect(clearOwnedConfirmationLock(locks, 1, replacement)).toBe(true);
+    expect(locks.has(1)).toBe(false);
+  });
+
+  it('consumes hidden completion only when reopen reconciliation hydrates it', () => {
+    const owner = { confirmationToken: 'token-a' };
+    const locks = new Map([[1, owner]]);
+    let state = {
+      phase: 'saving',
+      turns: ['partial'],
+      pending: 'token-a' as string | null,
+      undo: null as string | null,
+    };
+    let dataChangedCalls = 0;
+
+    if (shouldConsumeConfirmationSettlement(null, 'token-a', false)) {
+      clearOwnedConfirmationLock(locks, 1, owner);
+    }
+    expect(locks.get(1)).toBe(owner);
+
+    if (shouldConsumeConfirmationSettlement(null, 'token-a', true)) {
+      const consumed = clearOwnedConfirmationLock(locks, 1, owner);
+      if (consumed) {
+        state = { phase: 'idle', turns: ['persisted result'], pending: null, undo: 'undo-a' };
+        dataChangedCalls += 1;
+      }
+    }
+
+    expect(state).toEqual({
+      phase: 'idle',
+      turns: ['persisted result'],
+      pending: null,
+      undo: 'undo-a',
+    });
+    expect(dataChangedCalls).toBe(1);
+    expect(locks.has(1)).toBe(false);
+  });
+});
+
+describe('buildChatRequestContext', () => {
+  const pageContext: PilotPageContext = {
+    view: 'applications-list',
+    label: '投递列表',
+    entity: { kind: 'application', id: '42', label: '星海科技 · 前端工程师' },
+  };
+
+  it('sends only request page context for an existing conversation', () => {
+    expect(
+      buildChatRequestContext({
+        conversationId: 7,
+        offerApplicationId: 99,
+        offerId: 8,
+        pageContext,
+      }),
+    ).toEqual({ page_context: pageContext });
+  });
+
+  it('sends the latest derived context while retaining same-page removals', () => {
+    const identity = pageContextKey(pageContext);
+    const removalState = pilotPageContextRemovalReducer(
+      createPilotPageContextRemovalState(identity),
+      { type: 'remove', contextKey: identity, chipKey: 'entity' },
+    );
+    const refreshedContext = {
+      ...pageContext,
+      label: '最新投递列表',
+      entity: {
+        ...pageContext.entity!,
+        label: '星海智能 · 高级前端工程师',
+        description: '当前状态：已录用',
+      },
+    };
+    const activePageContext = deriveActivePageContext(refreshedContext, removalState);
+
+    expect(buildChatRequestContext({ conversationId: 7, pageContext: activePageContext })).toEqual({
+      page_context: { view: 'applications-list', label: '最新投递列表' },
+    });
+  });
+
+  it('prefers a loaded offer application for a new conversation', () => {
+    expect(
+      buildChatRequestContext({
+        offerApplicationId: 99,
+        offerId: 8,
+        pageContext,
+      }),
+    ).toEqual({
+      context_type: 'application',
+      context_ref: 99,
+      mode: 'nego_coach',
+      page_context: pageContext,
+    });
+  });
+
+  it('binds a new general conversation to the page application entity', () => {
+    expect(buildChatRequestContext({ pageContext })).toEqual({
+      context_type: 'application',
+      context_ref: '42',
+      mode: 'general',
+      page_context: pageContext,
+    });
+  });
+
+  it('falls back to negotiation workspace context when only an offer id is available', () => {
+    expect(buildChatRequestContext({ offerId: 8 })).toEqual({
+      context_type: 'workspace',
+      context_ref: '',
+      mode: 'nego_coach',
+    });
+  });
+
+  it('uses general workspace context for other new conversations', () => {
+    expect(buildChatRequestContext({})).toEqual({
+      context_type: 'workspace',
+      context_ref: '',
+      mode: 'general',
+    });
+  });
+});
+
+describe('confirmation retry intent', () => {
+  it('preserves approval edits exactly', () => {
+    const input = {
+      approved: true as const,
+      confirmation_token: 'a'.repeat(64),
+      edited_args: { status: 'closed', closed_reason: 'Paused' },
+    };
+
+    expect(confirmationInputForRetry(input)).toEqual(input);
+  });
+
+  it('preserves rejection feedback exactly', () => {
+    const input = {
+      approved: false as const,
+      confirmation_token: 'b'.repeat(64),
+      rejection_feedback: 'Keep the current status.',
+    };
+
+    expect(confirmationInputForRetry(input)).toEqual(input);
+  });
+
+  it('forces state refresh for stale and in-progress confirmation errors', () => {
+    expect(confirmationErrorRequiresSync('stale_pending_action')).toBe(true);
+    expect(confirmationErrorRequiresSync('confirmation_in_progress')).toBe(true);
+    expect(confirmationErrorRequiresSync('ai_provider_error')).toBe(false);
+  });
+
+  it('allows rejected confirmation edits to restore the review card immediately', () => {
+    expect(confirmationErrorAllowsImmediateRetry('http_422')).toBe(true);
+    expect(confirmationErrorAllowsImmediateRetry('confirmation_in_progress')).toBe(false);
+  });
+});
 
 function msg(patch: Partial<ChatMessage> & Pick<ChatMessage, 'role'>): ChatMessage {
   return {
@@ -676,6 +1145,7 @@ describe('buildTurns evidence normalization', () => {
           pending_action: {
             tool_name: 'update_application_status',
             human: '更新状态',
+            confirmation_token: 'a'.repeat(64),
             args: { id: 1, status: 'offer' },
           },
         },
@@ -686,6 +1156,7 @@ describe('buildTurns evidence normalization', () => {
     expect(pending).toEqual({
       tool_name: 'update_application_status',
       human: '更新状态',
+      confirmation_token: 'a'.repeat(64),
       args: { id: 1, status: 'offer' },
     });
   });
@@ -695,6 +1166,7 @@ describe('buildTurns evidence normalization', () => {
       pendingComposerDisabledReason({
         tool_name: 'create_application',
         human: '新建投递：牛客网 - 软件测试工程师',
+        confirmation_token: 'a'.repeat(64),
         workflow: {
           current_step: 1,
           total_steps: 2,
@@ -709,6 +1181,7 @@ describe('buildTurns evidence normalization', () => {
     const persisted = {
       tool_name: 'create_application',
       human: '新建投递：牛客网 - 软件测试工程师',
+      confirmation_token: 'a'.repeat(64),
       args: { company_name: '牛客网', position_name: '软件测试工程师', status: 'interview' },
     };
 
@@ -735,6 +1208,7 @@ describe('buildTurns evidence normalization', () => {
     const current = {
       tool_name: 'create_application_event',
       human: '新建投递事件',
+      confirmation_token: 'b'.repeat(64),
       args: { application_id: 40, event_type: 'written_test' },
     };
 
@@ -751,6 +1225,7 @@ describe('buildTurns evidence normalization', () => {
           pending_action: {
             tool_name: 'create_application',
             human: '新建投递：牛客网 - 软件测试工程师',
+            confirmation_token: 'a'.repeat(64),
             args: { company_name: '牛客网', position_name: '软件测试工程师' },
           },
         },
@@ -761,32 +1236,4 @@ describe('buildTurns evidence normalization', () => {
     expect(pending).toEqual(current);
   });
 
-  it('finds the newest conversation with a pending action', () => {
-    const id = firstPendingConversationId([
-      {
-        id: 72,
-        title: '牛客网面试复盘',
-        context_type: 'workspace',
-        context_ref: '',
-        created_at: '2026-07-09T00:00:00Z',
-        updated_at: '2026-07-09T00:00:02Z',
-        pending_action: {
-          tool_name: 'create_application',
-          human: '新建投递：牛客网 - 软件测试工程师',
-          args: { company_name: '牛客网', position_name: '软件测试工程师' },
-        },
-      },
-      {
-        id: 71,
-        title: '普通对话',
-        context_type: 'workspace',
-        context_ref: '',
-        created_at: '2026-07-09T00:00:00Z',
-        updated_at: '2026-07-09T00:00:01Z',
-        pending_action: null,
-      },
-    ]);
-
-    expect(id).toBe(72);
-  });
 });

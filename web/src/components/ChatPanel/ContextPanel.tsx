@@ -3,7 +3,7 @@ import { Switch } from 'antd';
 import type { Offer } from '@/types/offer';
 import { OFFER_STATUS_LABELS, OFFER_STATUS_COLORS } from '@/types/offer';
 import type { Capability } from './capabilities';
-import type { EvidenceItem } from './model';
+import { remainingEvidence, selectEvidence, type EvidenceItem } from './model';
 import EvidenceList from './EvidenceList';
 import styles from './ChatPanel.module.css';
 
@@ -41,6 +41,8 @@ export default function ContextPanel({
   onToggleAutoApprove,
   onOpenSettings,
 }: Props) {
+  const evidenceSelection = selectEvidence(evidence, 5);
+
   return (
     <aside className={`${styles.context} ${floating ? styles.contextFloating : ''}`}>
       {isNego && offer && (
@@ -68,8 +70,14 @@ export default function ContextPanel({
 
       <div>
         <div className={styles.panelLabel}>当前参考依据</div>
-        {evidence.length ? (
-          <EvidenceList items={evidence.slice(0, 5)} clamped />
+        {evidenceSelection.visible.length ? (
+          <EvidenceList
+            items={evidenceSelection.visible}
+            similar={evidenceSelection.similar}
+            remaining={remainingEvidence(evidence, evidenceSelection.visible)}
+            remainingCount={evidenceSelection.remainingCount}
+            clamped
+          />
         ) : (
           <div className={styles.evidenceEmpty}>
             暂无参考依据。你可以直接提问，或选择一个能力，让领航员读取本地求职数据。

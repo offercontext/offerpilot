@@ -1,3 +1,27 @@
+import type { ViewMode } from '@/layout/navigation';
+
+export interface PilotPageContext {
+  view: ViewMode;
+  label: string;
+  entity?: {
+    kind: 'application' | 'offer';
+    id: string;
+    label: string;
+    description?: string;
+  };
+  filters?: Array<{
+    key: string;
+    label: string;
+    value: string;
+  }>;
+}
+
+export interface PilotContextChip {
+  key: string;
+  label: string;
+  value: string;
+}
+
 export interface Conversation {
   id: number;
   title: string;
@@ -5,6 +29,7 @@ export interface Conversation {
   mode?: string;
   context_type: string;
   context_ref: string;
+  context_label?: string;
   pinned_at?: string | null;
   archived_at?: string | null;
   pending_action?: PendingAction | null;
@@ -37,13 +62,25 @@ export interface ChatMessage {
 export interface PendingAction {
   tool_name: string;
   human: string;
+  confirmation_token: string;
   args?: Record<string, unknown>;
+  editable_fields?: PendingActionEditableField[];
   target?: PendingActionTarget;
   proposed_changes?: PendingActionChange[];
   evidence?: PendingActionEvidence[];
   risk_hint?: string;
   workflow?: PendingActionWorkflow;
   draft_summary?: PendingActionDraftSummary;
+}
+
+export type EditableFieldType = 'string' | 'long_text' | 'number' | 'boolean' | 'enum' | 'datetime';
+
+export interface PendingActionEditableField {
+  field: string;
+  type: EditableFieldType;
+  options?: string[];
+  clearable?: boolean;
+  clear_value?: string | number | boolean | null;
 }
 
 export interface PendingActionDraftSummary {

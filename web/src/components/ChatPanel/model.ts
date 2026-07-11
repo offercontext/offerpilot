@@ -1,5 +1,7 @@
-import type { ChatMessage, Conversation, PendingAction } from '@/types/chat';
+import type { ChatMessage, Conversation, PendingAction, PilotPageContext } from '@/types/chat';
+import type { ConfirmationInput } from '@/services/chat';
 import { STATUS_LABELS, type ApplicationStatus } from '@/types/application';
+import dayjs from 'dayjs';
 import { toolMeta } from './capabilities';
 
 export type EvidenceKind =
@@ -19,6 +21,17 @@ export interface EvidenceItem {
   meta?: string;
   snippet?: string;
   source: string;
+  /** Number of identical source records collapsed into this entry. */
+  occurrences?: number;
+}
+
+export interface EvidenceSelection {
+  /** Distinct records selected for the bounded default view. */
+  visible: EvidenceItem[];
+  /** Omitted records that share a normalized cluster with a visible record. */
+  similar: EvidenceItem[];
+  /** Every omitted distinct record, including records in other clusters. */
+  remainingCount: number;
 }
 
 export interface ToolStep {
@@ -41,6 +54,156 @@ export interface UITurn {
   content: string;
   /** Tool steps the assistant ran before producing this answer. */
   steps?: ToolStep[];
+}
+
+export interface ChatRequestContext {
+  context_type?: 'workspace' | 'application';
+  context_ref?: string | number;
+  mode?: 'general' | 'nego_coach';
+  page_context?: PilotPageContext;
+}
+
+export type PendingAutoSelectAction = 'suppress' | 'allow';
+
+export function pendingAutoSelectReducer(
+  _suppressed: boolean,
+  action: PendingAutoSelectAction,
+): boolean {
+  return action === 'suppress';
+}
+
+export function shouldApplyConversationRequest(
+  requestId: number,
+  currentRequestId: number,
+  autoSelectSuppressed: boolean,
+): boolean {
+  return requestId === currentRequestId && !autoSelectSuppressed;
+}
+
+export function isCurrentVisibleConversationRequest(
+  requestGeneration: number,
+  currentGeneration: number,
+): boolean {
+  return requestGeneration === currentGeneration;
+}
+
+export interface ActiveConversationRequestOwner {
+  kind: 'chat' | 'confirmation' | 'undo';
+  conversationId?: number;
+  confirmationToken?: string;
+}
+
+export function shouldAbortActiveRequestOnClose(
+  request: ActiveConversationRequestOwner | null,
+): boolean {
+  return request !== null && request.kind !== 'confirmation';
+}
+
+export function clearOwnedConfirmationLock<T>(
+  locks: Map<number, T>,
+  conversationId: number,
+  owner: T,
+): boolean {
+  if (locks.get(conversationId) !== owner) return false;
+  return locks.delete(conversationId);
+}
+
+export function hasConfirmationSettled(
+  pending: PendingAction | null | undefined,
+  expectedConfirmationToken: string,
+): boolean {
+  return (
+    pending === null ||
+    (pending !== undefined && pending.confirmation_token !== expectedConfirmationToken)
+  );
+}
+
+export function shouldConsumeConfirmationSettlement(
+  pending: PendingAction | null | undefined,
+  expectedConfirmationToken: string,
+  viewIsCurrent: boolean,
+): boolean {
+  return viewIsCurrent && hasConfirmationSettled(pending, expectedConfirmationToken);
+}
+
+export function confirmationInputForRetry(
+  input: ConfirmationInput | null,
+): ConfirmationInput | null {
+  if (input === null) return null;
+  if (input.approved) {
+    return {
+      approved: true,
+      confirmation_token: input.confirmation_token,
+      ...(input.edited_args ? { edited_args: { ...input.edited_args } } : {}),
+    };
+  }
+  return {
+    approved: false,
+    confirmation_token: input.confirmation_token,
+    ...(input.rejection_feedback !== undefined
+      ? { rejection_feedback: input.rejection_feedback }
+      : {}),
+  };
+}
+
+export function confirmationErrorRequiresSync(code: unknown): boolean {
+  return code === 'stale_pending_action' || code === 'confirmation_in_progress';
+}
+
+/** A pre-execution validation rejection leaves the reviewed action safely retryable. */
+export function confirmationErrorAllowsImmediateRetry(code: unknown): boolean {
+  return code === 'http_422';
+}
+
+export function shouldRestoreConfirmationRetryFocus(
+  restoreRequested: boolean,
+  confirmError: string | null,
+  loading: boolean,
+): boolean {
+  return restoreRequested && confirmError !== null && !loading;
+}
+
+interface BuildChatRequestContextOptions {
+  conversationId?: number;
+  offerApplicationId?: number;
+  offerId?: number;
+  pageContext?: PilotPageContext;
+}
+
+export function buildChatRequestContext({
+  conversationId,
+  offerApplicationId,
+  offerId,
+  pageContext,
+}: BuildChatRequestContextOptions): ChatRequestContext {
+  if (conversationId !== undefined) {
+    return pageContext ? { page_context: pageContext } : {};
+  }
+
+  if (offerApplicationId !== undefined) {
+    return {
+      context_type: 'application',
+      context_ref: offerApplicationId,
+      mode: 'nego_coach',
+      ...(pageContext ? { page_context: pageContext } : {}),
+    };
+  }
+
+  if (pageContext?.entity?.kind === 'application') {
+    return {
+      context_type: 'application',
+      context_ref: pageContext.entity.id,
+      mode: 'general',
+      page_context: pageContext,
+    };
+  }
+
+  return {
+    context_type: 'workspace',
+    context_ref: '',
+    mode: offerId !== undefined ? 'nego_coach' : 'general',
+    ...(pageContext ? { page_context: pageContext } : {}),
+  };
 }
 
 const EVIDENCE_SNIPPET_MAX = 180;
@@ -364,20 +527,180 @@ function resolveToolResultIndex(
   return pending.findIndex((_step, index) => !assignedIndexes.has(index));
 }
 
+function normalizeEvidenceValue(value?: string): string {
+  return (value ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+/** Stable exact-record identity. Display metadata prevents conflicting records from being collapsed. */
+export function evidenceIdentity(item: EvidenceItem): string {
+  return JSON.stringify([
+    normalizeEvidenceValue(item.source),
+    item.id,
+    item.kind,
+    normalizeEvidenceValue(item.title),
+    normalizeEvidenceValue(item.meta),
+    normalizeEvidenceValue(item.snippet),
+  ]);
+}
+
+function distinctEvidenceWithOccurrences(items: EvidenceItem[]): EvidenceItem[] {
+  const indexByIdentity = new Map<string, number>();
+  const distinct: EvidenceItem[] = [];
+  for (const item of items) {
+    const identity = evidenceIdentity(item);
+    const existingIndex = indexByIdentity.get(identity);
+    if (existingIndex === undefined) {
+      indexByIdentity.set(identity, distinct.length);
+      distinct.push({ ...item, occurrences: item.occurrences ?? 1 });
+      continue;
+    }
+    const existing = distinct[existingIndex];
+    distinct[existingIndex] = {
+      ...existing,
+      occurrences: (existing.occurrences ?? 1) + (item.occurrences ?? 1),
+    };
+  }
+  return distinct;
+}
+
+/** Stable identity for timeline expansion state across MessageBubble reuse. */
+export function toolStepSetIdentity(steps: ToolStep[]): string {
+  return JSON.stringify(
+    steps.map((step) => ({
+      name: step.name,
+      toolCallId: step.toolCallId,
+      detail: step.detail,
+      resultText: step.resultText,
+      evidenceUnavailable: step.evidenceUnavailable,
+      evidence: step.evidence?.map((item) => ({
+        identity: evidenceIdentity(item),
+        kind: item.kind,
+        title: item.title,
+        meta: item.meta,
+        snippet: item.snippet,
+      })),
+    })),
+  );
+}
+
+/** Stable evidence-set identity used to reset local disclosure state on a conversation change. */
+export function evidenceSetIdentity(
+  items: EvidenceItem[],
+  similar: EvidenceItem[] = [],
+  remaining: EvidenceItem[] = [],
+): string {
+  const identityWithOccurrences = (item: EvidenceItem) =>
+    `${evidenceIdentity(item)}:${item.occurrences ?? 1}`;
+  return `visible:${items.map(identityWithOccurrences).join('\u001f')}|similar:${similar.map(identityWithOccurrences).join('\u001f')}|remaining:${remaining.map(identityWithOccurrences).join('\u001f')}`;
+}
+
+/** Return the distinct records omitted from a bounded view in their original encounter order. */
+export function remainingEvidence(items: EvidenceItem[], visible: EvidenceItem[]): EvidenceItem[] {
+  const visibleIdentities = new Set(visible.map(evidenceIdentity));
+  return distinctEvidenceWithOccurrences(items).filter(
+    (item) => !visibleIdentities.has(evidenceIdentity(item)),
+  );
+}
+
+function evidenceClusterKey(item: EvidenceItem): string {
+  const normalizedTitle = item.title
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/\s*#\d+\s*$/, '')
+    .trim();
+  return `${item.kind}:${normalizedTitle}`;
+}
+
+/**
+ * Select bounded evidence without conflating exact records with title clusters.
+ * A first pass gives each encountered cluster one representative; a second pass
+ * fills remaining space with other distinct records in stable encounter order.
+ */
+export function selectEvidence(items: EvidenceItem[], limit: number): EvidenceSelection {
+  const distinct = distinctEvidenceWithOccurrences(items);
+
+  const maximum = Math.max(0, Math.floor(limit));
+  const visible: EvidenceItem[] = [];
+  const selectedIdentities = new Set<string>();
+  const visibleClusters = new Set<string>();
+
+  for (const item of distinct) {
+    if (visible.length >= maximum) break;
+    const cluster = evidenceClusterKey(item);
+    if (visibleClusters.has(cluster)) continue;
+    visible.push(item);
+    selectedIdentities.add(evidenceIdentity(item));
+    visibleClusters.add(cluster);
+  }
+
+  for (const item of distinct) {
+    if (visible.length >= maximum) break;
+    const identity = evidenceIdentity(item);
+    if (selectedIdentities.has(identity)) continue;
+    visible.push(item);
+    selectedIdentities.add(identity);
+  }
+
+  const omitted = distinct.filter((item) => !selectedIdentities.has(evidenceIdentity(item)));
+  return {
+    visible,
+    similar: omitted.filter((item) => visibleClusters.has(evidenceClusterKey(item))),
+    remainingCount: omitted.length,
+  };
+}
+
+const EVIDENCE_TIMESTAMP = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?(?![\w:+-]|\.(?=[A-Za-z0-9]))/g;
+
+function isValidEvidenceTimestamp(timestamp: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?$/.exec(timestamp);
+  if (!match) return false;
+
+  const [, yearValue, monthValue, dayValue, hourValue, minuteValue, secondValue, timezone] = match;
+  const year = Number(yearValue);
+  const month = Number(monthValue);
+  const day = Number(dayValue);
+  const hour = Number(hourValue);
+  const minute = Number(minuteValue);
+  const second = secondValue === undefined ? 0 : Number(secondValue);
+  const calendarDate = new Date(Date.UTC(year, month - 1, day));
+  if (
+    calendarDate.getUTCFullYear() !== year ||
+    calendarDate.getUTCMonth() !== month - 1 ||
+    calendarDate.getUTCDate() !== day ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 59
+  ) {
+    return false;
+  }
+
+  if (!timezone || timezone === 'Z') return true;
+  const timezoneDigits = timezone.slice(1).replace(':', '');
+  return Number(timezoneDigits.slice(0, 2)) <= 23 && Number(timezoneDigits.slice(2)) <= 59;
+}
+
+/** Format embedded ISO/RFC3339 timestamps in local time while preserving other metadata. */
+export function formatEvidenceMeta(meta?: string): string | undefined {
+  if (!meta) return meta;
+  return meta.replace(EVIDENCE_TIMESTAMP, (timestamp) => {
+    if (!isValidEvidenceTimestamp(timestamp)) return timestamp;
+    const parsed = dayjs(timestamp);
+    return parsed.isValid() ? parsed.format('YYYY-MM-DD HH:mm') : timestamp;
+  });
+}
+
+/** Gather newest thread evidence, then apply bounded diversified selection. */
 export function collectEvidence(turns: UITurn[], limit = 8): EvidenceItem[] {
-  const seen = new Set<string>();
   const out: EvidenceItem[] = [];
   for (const turn of [...turns].reverse()) {
     for (const step of [...(turn.steps ?? [])].reverse()) {
       for (const item of step.evidence ?? []) {
-        if (seen.has(item.id)) continue;
-        seen.add(item.id);
         out.push(item);
-        if (out.length >= limit) return out;
       }
     }
   }
-  return out;
+  return selectEvidence(out, limit).visible;
 }
 
 export async function reloadConversationTurns(
@@ -396,10 +719,6 @@ export function pendingActionForConversation(
   conversationId: number,
 ): PendingAction | null {
   return conversations.find((conversation) => conversation.id === conversationId)?.pending_action ?? null;
-}
-
-export function firstPendingConversationId(conversations: Conversation[]): number | undefined {
-  return conversations.find((conversation) => conversation.pending_action)?.id;
 }
 
 export function hydrateMissingPendingAction(
