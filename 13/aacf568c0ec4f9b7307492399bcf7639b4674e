@@ -1,0 +1,25 @@
+web/src/components/KanbanBoard/KanbanCard.tsx
+  s_00fff216c0c1ef::t_52baa777900627 4
+web/src/layout/AppShell.tsx
+  s_00fff216c0c1ef::t_52baa777900627 290
+web/src/components/applicationPilotEntry.test.ts
+  s_00fff216c0c1ef::t_d1e53afc6a0b70 7-8
+web/src/components/KanbanBoard/index.tsx
+  s_00fff216c0c1ef::t_52baa777900627 34
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "13aacf568c0ec4f9b7307492399bcf7639b4674e",
+  "prompts": {},
+  "sessions": {
+    "s_00fff216c0c1ef": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f49b7-4729-7983-91e1-31d35f2738f1",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "wuboxin <wuboxin@xiaohongshu.com>"
+    }
+  }
+}
