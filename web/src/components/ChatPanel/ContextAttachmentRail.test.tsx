@@ -91,6 +91,14 @@ describe('ContextAttachmentRail', () => {
     expect(protectedDrag.defaultPrevented).toBe(true);
     expect(rail.className).toContain('contextAttachmentRailDragging');
 
+    const malformedDrag = nativeDragOver(
+      rail,
+      'application/x-offerpilot-context-attachment',
+      '{oops',
+    );
+    expect(malformedDrag.defaultPrevented).toBe(false);
+    expect(rail.className).not.toContain('contextAttachmentRailDragging');
+
     const malformed = nativeDrop(rail, 'application/x-offerpilot-context-attachment', '{oops');
     expect(malformed.defaultPrevented).toBe(false);
     expect(onNativeDrop).not.toHaveBeenCalled();
