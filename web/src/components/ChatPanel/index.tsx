@@ -80,6 +80,7 @@ import ThinkingIndicator from './ThinkingIndicator';
 import Composer from './Composer';
 import ContextAttachmentRail from './ContextAttachmentRail';
 import ContextPanel from './ContextPanel';
+import PilotContextDropTarget from '@/components/KanbanBoard/PilotContextDropTarget';
 import styles from './ChatPanel.module.css';
 
 interface Props {
@@ -94,6 +95,7 @@ interface Props {
   pageContext?: PilotPageContext;
   attachmentDraftKey?: PilotAttachmentConversationKey;
   onAttachmentKeyChange?: (key?: PilotAttachmentConversationKey) => void;
+  pilotDropTarget?: boolean;
 }
 
 interface ConfirmationExecution {
@@ -186,6 +188,7 @@ export default function ChatPanel({
   pageContext,
   attachmentDraftKey,
   onAttachmentKeyChange,
+  pilotDropTarget = false,
 }: Props) {
   const queryClient = useQueryClient();
   const { message: toast } = AntApp.useApp();
@@ -1516,7 +1519,11 @@ export default function ChatPanel({
     </>
   );
 
-  if (docked || inlinePage) return workspace;
+  const panelWorkspace = pilotDropTarget ? (
+    <PilotContextDropTarget>{workspace}</PilotContextDropTarget>
+  ) : workspace;
+
+  if (docked || inlinePage) return panelWorkspace;
 
   return (
     <Drawer
@@ -1529,7 +1536,7 @@ export default function ChatPanel({
       closable={false}
       styles={{ body: { padding: 16, height: '100%', overflow: 'hidden', position: 'relative' } }}
     >
-      {workspace}
+      {panelWorkspace}
     </Drawer>
   );
 }

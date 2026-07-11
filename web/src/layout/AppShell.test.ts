@@ -92,4 +92,10 @@ describe('AppShell source contract', () => {
     expect(fullPilotSource).toContain('attachmentDraftKey={pilotAttachmentDraftKey}');
     expect(source.match(/attachmentDraftKey=\{pilotAttachmentDraftKey\}/g)).toHaveLength(3);
   });
+
+  it('registers a dnd-kit Pilot target for both visible Pilot surfaces', () => {
+    expect(source).toContain('const contextualPilotPanelOpen = pilotRailAvailable ? pilotDrawerOpen : chatOpen;');
+    expect(source).toContain('shouldShowContextualPilot && contextualPilotPanelOpen &&');
+    expect(source.match(/pilotDropTarget/g)).toHaveLength(2);
+  });
 });

@@ -1,4 +1,5 @@
 import { Component, lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { DndContext, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button, Layout, Spin, Tabs, message } from 'antd';
 import { listApplications } from '@/services/applications';
@@ -108,6 +109,9 @@ function AppShellContent() {
   const [pilotRailAvailable, setPilotRailAvailable] = useState(() =>
     typeof window === 'undefined' ? false : window.matchMedia('(min-width: 1180px)').matches
   );
+  const kanbanSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+  );
   const { addAttachment: addAttachmentToKey, createNewDraftWithAttachment } = usePilotAttachmentStore();
 
   const { data: applications = [], isLoading, isError: appsError } = useQuery({
@@ -213,6 +217,7 @@ function AppShellContent() {
   }, [apps, selected]);
 
   const shouldShowContextualPilot = view !== 'pilot';
+  const contextualPilotPanelOpen = pilotRailAvailable ? pilotDrawerOpen : chatOpen;
 
   const openChat = (offerId?: number) => {
     setCoachOfferId(offerId);
@@ -383,7 +388,8 @@ function AppShellContent() {
   );
 
   return (
-    <Layout
+    <DndContext sensors={kanbanSensors}>
+      <Layout
       className="op-app-shell"
       style={{ minHeight: '100vh', background: 'var(--op-layout-bg)' }}
       hasSider
@@ -421,6 +427,7 @@ function AppShellContent() {
           <ChatPanel
             variant="rail"
             open
+            pilotDropTarget
             onClose={() => setCoachOfferId(undefined)}
             offerId={coachOfferId}
             onOpenSettings={() => setAISettingsOpen(true)}
@@ -458,9 +465,10 @@ function AppShellContent() {
         pipelineActions={pipelineActions}
         onRunPipelineAction={runPipelineAction}
       />
-      {shouldShowContextualPilot && (!pilotRailAvailable || pilotDrawerOpen) && (
+      {shouldShowContextualPilot && contextualPilotPanelOpen && (
         <ChatPanel
-          open={pilotRailAvailable ? pilotDrawerOpen : chatOpen}
+          open={contextualPilotPanelOpen}
+          pilotDropTarget
           onClose={() => {
             setChatOpen(false);
             setPilotDrawerOpen(false);
@@ -475,6 +483,7 @@ function AppShellContent() {
           onAttachmentKeyChange={syncPilotAttachmentKey}
         />
       )}
-    </Layout>
+      </Layout>
+    </DndContext>
   );
 }

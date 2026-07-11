@@ -33,7 +33,16 @@ describe('ChatPanel docked layout contract', () => {
   it('supports a normal Pilot tab page variant that reuses the expanded workspace', () => {
     expect(component).toContain("variant?: 'drawer' | 'rail' | 'page'");
     expect(component).toContain("const inlinePage = variant === 'page'");
-    expect(component).toContain('if (docked || inlinePage) return workspace');
+    expect(component).toContain('if (docked || inlinePage) return panelWorkspace');
+  });
+
+  it('mounts Kanban drop targeting inside the visible rail or drawer surface', () => {
+    expect(component).toContain("from '@/components/KanbanBoard/PilotContextDropTarget'");
+    expect(component).toContain('pilotDropTarget?: boolean');
+    expect(component).toContain('const panelWorkspace = pilotDropTarget ? (');
+    expect(component).toContain('<PilotContextDropTarget>{workspace}</PilotContextDropTarget>');
+    expect(component).toContain('if (docked || inlinePage) return panelWorkspace');
+    expect(component).toContain('{panelWorkspace}');
   });
 
   it('limits confirmation cards in the full Pilot page without narrowing the rail drawer', async () => {

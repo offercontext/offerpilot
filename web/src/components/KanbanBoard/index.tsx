@@ -1,12 +1,9 @@
 import { useMemo, useState } from 'react';
 import {
-  DndContext,
   DragOverlay,
-  PointerSensor,
   type DragEndEvent,
   type DragStartEvent,
-  useSensor,
-  useSensors,
+  useDndMonitor,
 } from '@dnd-kit/core';
 import { useQueryClient } from '@tanstack/react-query';
 import { Input, Modal, Typography, message } from 'antd';
@@ -22,6 +19,7 @@ import KanbanCard from './KanbanCard';
 import {
   buildApplicationStatusPayload,
   requiresClosedReason,
+  resolveKanbanDropDestination,
   willRecordFirstStatusTimestamp,
 } from './applicationLifecycle';
 import styles from './KanbanBoard.module.css';
@@ -56,10 +54,6 @@ export default function KanbanBoard({ applications, onOpenDetail, onAskPilot, on
 
   const activeRecord = applications.find((a) => a.id === activeId) ?? null;
 
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
-  );
-
   const handleDragStart = (event: DragStartEvent) => {
     setActiveId(event.active.id as number);
   };
@@ -75,13 +69,21 @@ export default function KanbanBoard({ applications, onOpenDetail, onAskPilot, on
     setActiveId(null);
     if (!over) return;
 
-    const currentStatus = active.data.current?.status as ApplicationStatus;
-    const newStatus = over.id as ApplicationStatus;
-    if (currentStatus === newStatus) return;
-
     const appId = active.id as number;
     const app = applications.find((item) => item.id === appId);
-    if (app) requestStatusChange(app, newStatus);
+    if (!app) return;
+
+    const destination = resolveKanbanDropDestination(String(over.id));
+    if (!destination) return;
+    if (destination.kind === 'pilot') {
+      onAttachToPilot?.({
+        kind: 'application',
+        id: String(app.id),
+        label: `${app.company_name} · ${app.position_name}`,
+      });
+      return;
+    }
+    if (app.status !== destination.status) requestStatusChange(app, destination.status);
   };
 
   const confirmStatusChange = async () => {
@@ -112,13 +114,14 @@ export default function KanbanBoard({ applications, onOpenDetail, onAskPilot, on
     setActiveId(null);
   };
 
+  useDndMonitor({
+    onDragStart: handleDragStart,
+    onDragEnd: handleDragEnd,
+    onDragCancel: handleDragCancel,
+  });
+
   return (
-    <DndContext
-      sensors={sensors}
-      onDragStart={handleDragStart}
-      onDragEnd={handleDragEnd}
-      onDragCancel={handleDragCancel}
-    >
+    <>
       <div className={styles.board}>
         {KANBAN_COLUMNS.map((status) => (
           <KanbanColumn
@@ -172,6 +175,6 @@ export default function KanbanBoard({ applications, onOpenDetail, onAskPilot, on
           </div>
         )}
       </Modal>
-    </DndContext>
+    </>
   );
 }
