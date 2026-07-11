@@ -1186,6 +1186,45 @@ describe('buildTurns evidence normalization', () => {
     expect(turns[0].steps?.[0].evidence?.[0]?.target).toBeUndefined();
   });
 
+  it('leaves events with rollover calendar or time values targetless', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([
+          { id: 'call-rollover-date', name: 'list_application_events', args: {} },
+          { id: 'call-rollover-hour', name: 'list_application_events', args: {} },
+        ]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-rollover-date',
+        content: JSON.stringify([
+          {
+            record_type: 'application_event',
+            id: 1,
+            company_name: 'Acme',
+            scheduled_at: '2026-02-30T09:05:00Z',
+          },
+        ]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-rollover-hour',
+        content: JSON.stringify([
+          {
+            record_type: 'application_event',
+            id: 2,
+            company_name: 'Acme',
+            scheduled_at: '2026-01-01T24:00:00Z',
+          },
+        ]),
+      }),
+      msg({ role: 'assistant', content: 'These events are not safely targetable.' }),
+    ]);
+
+    expect(turns[0].steps?.map((step) => step.evidence?.[0]?.target)).toEqual([undefined, undefined]);
+  });
+
   it('keeps unsupported, plain-text, and malformed results targetless', () => {
     const turns = buildTurns([
       msg({
@@ -1195,6 +1234,7 @@ describe('buildTurns evidence normalization', () => {
           { id: 'call-jd', name: 'list_jd_analyses', args: {} },
           { id: 'call-note', name: 'list_notes', args: {} },
           { id: 'call-unknown', name: 'unknown_tool', args: {} },
+          { id: 'call-unknown-application', name: 'unknown_application_reader', args: {} },
           { id: 'call-text', name: 'tool_text', args: {} },
           { id: 'call-json', name: 'tool_json', args: {} },
         ]),
@@ -1219,12 +1259,18 @@ describe('buildTurns evidence normalization', () => {
         tool_call_id: 'call-unknown',
         content: JSON.stringify([{ record_type: 'unknown', id: 7, company_name: 'Not an application' }]),
       }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-unknown-application',
+        content: JSON.stringify([{ id: 7, company_name: 'Not an application' }]),
+      }),
       msg({ role: 'tool', tool_call_id: 'call-text', content: 'A plain text result.' }),
       msg({ role: 'tool', tool_call_id: 'call-json', content: '{bad json' }),
       msg({ role: 'assistant', content: 'Only structured local records can be targets.' }),
     ]);
 
     expect(turns[0].steps?.map((step) => step.evidence?.[0]?.target)).toEqual([
+      undefined,
       undefined,
       undefined,
       undefined,

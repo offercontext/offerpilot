@@ -214,6 +214,11 @@ export function buildChatRequestContext({
 }
 
 const EVIDENCE_SNIPPET_MAX = 180;
+const APPLICATION_EVIDENCE_SOURCES = new Set(['list_applications', 'get_application']);
+const OFFER_EVIDENCE_SOURCES = new Set(['list_offers', 'get_offer', 'compare_offers']);
+const RESUME_EVIDENCE_SOURCES = new Set(['list_resumes', 'get_resume']);
+const RESUME_MATCH_EVIDENCE_SOURCES = new Set(['list_resume_matches']);
+const EVENT_EVIDENCE_SOURCES = new Set(['list_application_events', 'get_application_event']);
 
 interface RawToolCall {
   id?: string;
@@ -307,7 +312,7 @@ function evidenceFromRecord(row: unknown, source: string, index: number): Eviden
   const recordType = text(record.record_type);
   const isResumeMatch = source.includes('resume_match') || recordType === 'resume_match';
   if (isResumeMatch) {
-    const target = hasCompatibleRecordType(recordType, source, ['resume_match'])
+    const target = hasCompatibleRecordType(recordType, source, ['resume_match'], RESUME_MATCH_EVIDENCE_SOURCES)
       ? resumeTarget(record.resume_id)
       : undefined;
     return [
@@ -325,7 +330,9 @@ function evidenceFromRecord(row: unknown, source: string, index: number): Eviden
   const isResume = source.includes('resume') || recordType === 'resume';
   if (isResume) {
     const title = text(record.name) || `简历 #${id}`;
-    const target = hasCompatibleRecordType(recordType, source, ['resume']) ? resumeTarget(record.id) : undefined;
+    const target = hasCompatibleRecordType(recordType, source, ['resume'], RESUME_EVIDENCE_SOURCES)
+      ? resumeTarget(record.id)
+      : undefined;
     return [
       {
         id: `${source}-${id}`,
@@ -354,7 +361,7 @@ function evidenceFromRecord(row: unknown, source: string, index: number): Eviden
   const isEvent = source.includes('event') || recordType === 'event' || recordType === 'application_event';
   if (isEvent) {
     const title = text(record.company_name) || text(record.title) || `日程 #${id}`;
-    const target = hasCompatibleRecordType(recordType, source, ['event', 'application_event'])
+    const target = hasCompatibleRecordType(recordType, source, ['event', 'application_event'], EVENT_EVIDENCE_SOURCES)
       ? eventTarget(record)
       : undefined;
     return [
@@ -379,7 +386,9 @@ function evidenceFromRecord(row: unknown, source: string, index: number): Eviden
   if (company) {
     if ('total_cash' in record || 'deadline' in record) {
       const amount = typeof record.total_cash === 'number' ? `${Math.round(record.total_cash / 10000)}w` : '';
-      const target = hasCompatibleRecordType(recordType, source, ['offer']) ? offerTarget(record.id) : undefined;
+      const target = hasCompatibleRecordType(recordType, source, ['offer'], OFFER_EVIDENCE_SOURCES)
+        ? offerTarget(record.id)
+        : undefined;
       return [
         {
           id: `offer-${id}`,
@@ -392,7 +401,7 @@ function evidenceFromRecord(row: unknown, source: string, index: number): Eviden
         },
       ];
     }
-    const target = hasCompatibleRecordType(recordType, source, ['application'])
+    const target = hasCompatibleRecordType(recordType, source, ['application'], APPLICATION_EVIDENCE_SOURCES)
       ? applicationTarget(record.id)
       : undefined;
     return [
@@ -441,11 +450,13 @@ function safePositiveRecordId(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }
 
-function hasCompatibleRecordType(recordType: string | undefined, source: string, expected: string[]): boolean {
-  return (
-    expected.includes(recordType ?? '') ||
-    (recordType === undefined && expected.some((type) => source.includes(type === 'application_event' ? 'event' : type)))
-  );
+function hasCompatibleRecordType(
+  recordType: string | undefined,
+  source: string,
+  expected: string[],
+  supportedSources: Set<string>,
+): boolean {
+  return expected.includes(recordType ?? '') || (recordType === undefined && supportedSources.has(source));
 }
 
 function applicationTarget(value: unknown): EvidenceTarget | undefined {
@@ -466,7 +477,7 @@ function resumeTarget(value: unknown): EvidenceTarget | undefined {
 function eventTarget(record: Record<string, unknown>): EvidenceTarget | undefined {
   const id = safePositiveRecordId(record.application_event_id) ?? safePositiveRecordId(record.id);
   const scheduledAt = text(record.scheduled_at);
-  if (id === undefined || !scheduledAt || !dayjs(scheduledAt).isValid()) return undefined;
+  if (id === undefined || !scheduledAt || !isValidEvidenceTimestamp(scheduledAt)) return undefined;
   return { kind: 'event', id, scheduledAt };
 }
 
