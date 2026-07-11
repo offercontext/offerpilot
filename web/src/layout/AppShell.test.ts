@@ -153,9 +153,17 @@ describe('AppShell source contract', () => {
     expect(resumeLibraryView).toContain('if (focusResumeId === undefined || resumesQuery.isLoading || resumesQuery.isError) return;');
     expect(calendarView).toContain('const { data: rawEntries, isLoading, isError } = useQuery({');
     expect(calendarView).toContain('if (focusedEventId === null || !selectedDate || isLoading || isError) return;');
+  });
 
-    const eventFocusStart = calendarView.indexOf('if (focusedEventId === null || !selectedDate || isLoading || isError) return;');
-    const eventFocusEnd = calendarView.indexOf('const deleteMutation', eventFocusStart);
-    expect(calendarView.slice(eventFocusStart, eventFocusEnd)).toContain('onEvidenceFocusConsumed?.();');
+  it('keeps missing calendar-event cleanup local after handing off valid focus', () => {
+    const initialFocusStart = calendarView.indexOf('useEffect(() => {\n    if (!focusEvent) return;');
+    const verificationStart = calendarView.indexOf('useEffect(() => {\n    if (focusedEventId === null', initialFocusStart);
+    const verificationEnd = calendarView.indexOf('const deleteMutation', verificationStart);
+    const initialFocus = calendarView.slice(initialFocusStart, verificationStart);
+    const verification = calendarView.slice(verificationStart, verificationEnd);
+
+    expect(initialFocus).toContain('setFocusedEventId(focusEvent.id);\n    onEvidenceFocusConsumed?.();');
+    expect(verification).toContain('setFocusedEventId(null);');
+    expect(verification).not.toContain('onEvidenceFocusConsumed?.();');
   });
 });

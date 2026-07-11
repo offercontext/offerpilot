@@ -102,18 +102,15 @@ export default function CalendarView({
     setCurrentMonth(dayjs(date).startOf('month'));
     setSelectedDate(date);
     setFocusedEventId(focusEvent.id);
+    onEvidenceFocusConsumed?.();
   }, [focusEvent, onEvidenceFocusConsumed]);
 
   useEffect(() => {
     if (focusedEventId === null || !selectedDate || isLoading || isError) return;
     if (monthKey !== dayjs(selectedDate).format('YYYY-MM')) return;
-    if (selectedEntries.some((entry) => entry.event_id === focusedEventId)) {
-      onEvidenceFocusConsumed?.();
-      return;
-    }
+    if (selectedEntries.some((entry) => entry.event_id === focusedEventId)) return;
     message.warning('引用的记录已不存在');
     setFocusedEventId(null);
-    onEvidenceFocusConsumed?.();
   }, [focusedEventId, isLoading, isError, monthKey, selectedDate, selectedEntries, onEvidenceFocusConsumed]);
 
   const deleteMutation = useMutation({
