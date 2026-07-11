@@ -6,8 +6,8 @@ import offerCard from './OfferCard.tsx?raw';
 import resumeCard from './ResumeCard.tsx?raw';
 
 describe('application Pilot entry contract', () => {
-  it('binds every supported card root directly to native Pilot attachment drag', () => {
-    const cardSources = [applicationDetail, applicationList, kanbanCard, offerCard, resumeCard];
+  it('binds non-Kanban card roots directly to native Pilot attachment drag', () => {
+    const cardSources = [applicationDetail, applicationList, offerCard, resumeCard];
 
     for (const source of cardSources) {
       expect(source).toContain('createPilotAttachmentDragBinding');
@@ -16,8 +16,14 @@ describe('application Pilot entry contract', () => {
       expect(source).not.toContain('添加到 Pilot');
     }
 
-    expect(kanbanCard).toContain('onAttachToPilot');
     expect(offerCard).toContain("kind: 'offer'");
     expect(resumeCard).toContain("kind: 'resume'");
+  });
+
+  it('keeps Kanban card dragging inside dnd-kit instead of a native draggable binding', () => {
+    expect(kanbanCard).toContain("import { useDraggable } from '@dnd-kit/core'");
+    expect(kanbanCard).toContain('const cardDragBinding = columnStatus ? { ...listeners, ...attributes } : applicationDragBinding;');
+    expect(kanbanCard).not.toContain('draggable: true');
+    expect(kanbanCard).not.toContain('<PilotAttachmentHandle');
   });
 });
