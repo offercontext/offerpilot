@@ -24,6 +24,7 @@ import {
 } from '@/lib/pipelineInsights';
 import { getPracticeStats } from '@/services/questions';
 import { buildPilotPageContext } from '@/lib/pilotPageContext';
+import { PilotAttachmentProvider } from '@/features/pilot/PilotAttachmentContext';
 import dayjs from 'dayjs';
 
 const { Content } = Layout;
@@ -329,6 +330,7 @@ export default function AppShell() {
   );
 
   return (
+    <PilotAttachmentProvider>
     <Layout
       className="op-app-shell"
       style={{ minHeight: '100vh', background: 'var(--op-layout-bg)' }}
@@ -415,5 +417,6 @@ export default function AppShell() {
         />
       )}
     </Layout>
+    </PilotAttachmentProvider>
   );
 }

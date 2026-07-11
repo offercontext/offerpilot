@@ -69,6 +69,8 @@ import {
   pageContextKey,
   pilotPageContextRemovalReducer,
 } from '@/lib/pilotPageContext';
+import { usePilotAttachments } from '@/features/pilot/PilotAttachmentContext';
+import type { PilotAttachmentConversationKey } from '@/features/pilot/PilotAttachmentContext';
 import { capabilitiesForMode, type Capability } from './capabilities';
 import ThreadRail from './ThreadRail';
 import MessageBubble from './MessageBubble';
@@ -181,6 +183,12 @@ export default function ChatPanel({
 }: Props) {
   const queryClient = useQueryClient();
   const { message: toast } = AntApp.useApp();
+  const {
+    setActiveConversationKey,
+    clearAttachmentsByKey,
+    beginNewAttachmentDraft,
+    ensureNewAttachmentDraft,
+  } = usePilotAttachments();
   const incomingPageContextKey = pageContextKey(pageContext);
   const [turns, setTurns] = useState<UITurn[]>([]);
   const [convID, setConvID] = useState<number | undefined>(undefined);
@@ -246,6 +254,18 @@ export default function ChatPanel({
     queryFn: getSettings,
     enabled: open,
   });
+
+  useEffect(() => {
+    if (convID !== undefined) {
+      setActiveConversationKey(`conversation:${convID}`);
+      return;
+    }
+    if (draftContext) {
+      setActiveConversationKey(`new:${draftContext.requestKey}`);
+      return;
+    }
+    ensureNewAttachmentDraft();
+  }, [convID, draftContext?.requestKey, ensureNewAttachmentDraft, setActiveConversationKey]);
 
   useEffect(() => {
     dispatchPageContextRemoval({ type: 'sync', contextKey: incomingPageContextKey });
@@ -431,6 +451,7 @@ export default function ChatPanel({
   }
 
   function startNewChat() {
+    beginNewAttachmentDraft();
     markPendingAutoSelect('suppress');
     conversationSelectionRequestRef.current += 1;
     visibleRequestGenerationRef.current += 1;
@@ -734,6 +755,13 @@ export default function ChatPanel({
   async function sendMessage(text: string): Promise<boolean> {
     const trimmed = text.trim();
     if (!trimmed || loading || activePending) return false;
+    const attachmentDraftKeyAtSend = (
+      convID !== undefined
+        ? `conversation:${convID}`
+        : draftContext
+          ? `new:${draftContext.requestKey}`
+          : undefined
+    ) as PilotAttachmentConversationKey | undefined;
     if (convID === undefined) markPendingAutoSelect('suppress');
     const visibleRequestGeneration = ++visibleRequestGenerationRef.current;
     lastConfirmationInputRef.current = null;
@@ -794,6 +822,7 @@ export default function ChatPanel({
       });
       if (!isCurrentVisibleRequest(visibleRequestGeneration)) {
         refreshConversations();
+        if (attachmentDraftKeyAtSend) clearAttachmentsByKey(attachmentDraftKeyAtSend);
         return true;
       }
       if (resp.type === 'confirmation_required') {
@@ -817,6 +846,7 @@ export default function ChatPanel({
          refreshConversations();
          scheduleTitleRefresh();
        }
+      if (attachmentDraftKeyAtSend) clearAttachmentsByKey(attachmentDraftKeyAtSend);
       return true;
     } catch (e: any) {
       if (!isCurrentVisibleRequest(visibleRequestGeneration)) {

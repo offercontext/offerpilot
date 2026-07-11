@@ -57,4 +57,11 @@ describe('AppShell source contract', () => {
     expect(fullPilotSource).not.toContain('pageContext=');
     expect(source.match(/pageContext=\{pageContext\}/g)).toHaveLength(2);
   });
+
+  it('shares one attachment provider across business surfaces and every Pilot panel', () => {
+    expect(source).toContain("import { PilotAttachmentProvider } from '@/features/pilot/PilotAttachmentContext'");
+    expect(source).toContain('<PilotAttachmentProvider>');
+    expect(source).toContain('</PilotAttachmentProvider>');
+    expect(source.indexOf('<PilotAttachmentProvider>')).toBeLessThan(source.indexOf('<Layout'));
+  });
 });

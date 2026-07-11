@@ -319,6 +319,20 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('streamChat(trimmed, convID, requestContext');
   });
 
+  it('scopes attachment drafts to the displayed conversation or fresh request', () => {
+    expect(component).toContain("import { usePilotAttachments } from '@/features/pilot/PilotAttachmentContext'");
+    expect(component).toContain('setActiveConversationKey(`conversation:${convID}`)');
+    expect(component).toContain('setActiveConversationKey(`new:${draftContext.requestKey}`)');
+    expect(component).toContain('ensureNewAttachmentDraft()');
+    expect(component).toContain('beginNewAttachmentDraft()');
+  });
+
+  it('clears only the send-time attachment draft after a successful send', () => {
+    expect(component).toContain('const attachmentDraftKeyAtSend =');
+    expect(component).toContain('clearAttachmentsByKey(attachmentDraftKeyAtSend)');
+    expect(component).not.toContain('clearAttachments()');
+  });
+
   it('lets users manage conversations and remove active context from the Pilot UI', () => {
     expect(threadRail).toContain('PushpinOutlined');
     expect(threadRail).toContain('EditOutlined');
