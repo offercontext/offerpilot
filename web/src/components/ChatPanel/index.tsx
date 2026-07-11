@@ -783,8 +783,8 @@ export default function ChatPanel({
     let streamConversationId = convID;
     try {
       const isNew = convID === undefined;
-      const requestContext =
-        isNew && draftContext
+      const requestContext = {
+        ...(isNew && draftContext
           ? {
               context_type: draftContext.context_type,
               context_ref: draftContext.context_ref,
@@ -796,7 +796,9 @@ export default function ChatPanel({
               offerApplicationId: offer?.application_id,
               offerId,
               pageContext: activePageContext,
-            });
+            })),
+        ...(attachments.length ? { attachments: [...attachments] } : {}),
+      };
       const resp = await streamChat(trimmed, convID, requestContext, {
         signal: controller.signal,
         onEvent: (event) => {

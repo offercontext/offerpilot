@@ -90,6 +90,12 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).not.toContain('confirmAction,');
   });
 
+  it('snapshots current context attachments into the chat stream request', () => {
+    expect(component).toContain('attachments: [...attachments]');
+    expect(component).toContain('const requestContext');
+    expect(component).toContain('streamChat(trimmed, convID, requestContext');
+  });
+
   it('hides the thinking indicator once assistant text is streaming', () => {
     expect(component).toContain('hasStreamingAssistantContent');
     expect(component).toContain('setHasStreamingAssistantContent(true)');

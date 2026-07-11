@@ -1,4 +1,11 @@
-import type { ChatMessage, ChatResponse, ChatStreamEvent, Conversation, PilotPageContext } from '@/types/chat';
+import type {
+  ChatMessage,
+  ChatResponse,
+  ChatStreamEvent,
+  Conversation,
+  PilotContextAttachment,
+  PilotPageContext,
+} from '@/types/chat';
 import { authHeaders } from './authToken';
 import { createApiClient } from './http';
 
@@ -10,6 +17,7 @@ export interface ChatContextInput {
   context_ref?: string | number;
   mode?: string;
   page_context?: PilotPageContext;
+  attachments?: PilotContextAttachment[];
 }
 
 export interface ChatRequestOptions {
@@ -67,6 +75,7 @@ export async function sendChat(
       ...(context?.context_ref !== undefined ? { context_ref: String(context.context_ref) } : {}),
       ...(context?.mode ? { mode: context.mode } : {}),
       ...(context?.page_context !== undefined ? { page_context: context.page_context } : {}),
+      ...(context?.attachments !== undefined ? { attachments: context.attachments } : {}),
     },
     { signal: options?.signal },
   );
@@ -155,6 +164,7 @@ export async function streamChat(
       ...(context?.context_ref !== undefined ? { context_ref: String(context.context_ref) } : {}),
       ...(context?.mode ? { mode: context.mode } : {}),
       ...(context?.page_context !== undefined ? { page_context: context.page_context } : {}),
+      ...(context?.attachments !== undefined ? { attachments: context.attachments } : {}),
     },
     options,
   );
