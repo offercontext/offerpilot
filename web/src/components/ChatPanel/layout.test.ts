@@ -479,6 +479,7 @@ describe('ChatPanel docked layout contract', () => {
     expect(evidenceList).toContain('aria-expanded={expanded}');
     expect(evidenceList).toContain('...remaining');
     expect(evidenceList).toContain('formatEvidenceMeta(item.meta)');
+    expect(evidenceList).toContain('title={item.meta}');
     expect(evidenceList).toContain('evidenceSetIdentity(items, similar, remaining)');
     expect(evidenceList).toContain('remaining = similar');
     expect(evidenceList).toContain("{expanded ? '收起依据' : '展开依据'}");

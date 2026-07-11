@@ -21,6 +21,8 @@ export interface EvidenceItem {
   meta?: string;
   snippet?: string;
   source: string;
+  /** Number of identical source records collapsed into this entry. */
+  occurrences?: number;
 }
 
 export interface EvidenceSelection {
@@ -146,6 +148,11 @@ export function confirmationInputForRetry(
 
 export function confirmationErrorRequiresSync(code: unknown): boolean {
   return code === 'stale_pending_action' || code === 'confirmation_in_progress';
+}
+
+/** A pre-execution validation rejection leaves the reviewed action safely retryable. */
+export function confirmationErrorAllowsImmediateRetry(code: unknown): boolean {
+  return code === 'http_422';
 }
 
 export function shouldRestoreConfirmationRetryFocus(
@@ -520,9 +527,40 @@ function resolveToolResultIndex(
   return pending.findIndex((_step, index) => !assignedIndexes.has(index));
 }
 
-/** Stable exact-record identity. Titles are intentionally not part of deduplication. */
+function normalizeEvidenceValue(value?: string): string {
+  return (value ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+/** Stable exact-record identity. Display metadata prevents conflicting records from being collapsed. */
 export function evidenceIdentity(item: EvidenceItem): string {
-  return `${item.source}:${item.id}`;
+  return JSON.stringify([
+    normalizeEvidenceValue(item.source),
+    item.id,
+    item.kind,
+    normalizeEvidenceValue(item.title),
+    normalizeEvidenceValue(item.meta),
+    normalizeEvidenceValue(item.snippet),
+  ]);
+}
+
+function distinctEvidenceWithOccurrences(items: EvidenceItem[]): EvidenceItem[] {
+  const indexByIdentity = new Map<string, number>();
+  const distinct: EvidenceItem[] = [];
+  for (const item of items) {
+    const identity = evidenceIdentity(item);
+    const existingIndex = indexByIdentity.get(identity);
+    if (existingIndex === undefined) {
+      indexByIdentity.set(identity, distinct.length);
+      distinct.push({ ...item, occurrences: item.occurrences ?? 1 });
+      continue;
+    }
+    const existing = distinct[existingIndex];
+    distinct[existingIndex] = {
+      ...existing,
+      occurrences: (existing.occurrences ?? 1) + (item.occurrences ?? 1),
+    };
+  }
+  return distinct;
 }
 
 /** Stable identity for timeline expansion state across MessageBubble reuse. */
@@ -551,19 +589,17 @@ export function evidenceSetIdentity(
   similar: EvidenceItem[] = [],
   remaining: EvidenceItem[] = [],
 ): string {
-  return `visible:${items.map(evidenceIdentity).join('\u001f')}|similar:${similar.map(evidenceIdentity).join('\u001f')}|remaining:${remaining.map(evidenceIdentity).join('\u001f')}`;
+  const identityWithOccurrences = (item: EvidenceItem) =>
+    `${evidenceIdentity(item)}:${item.occurrences ?? 1}`;
+  return `visible:${items.map(identityWithOccurrences).join('\u001f')}|similar:${similar.map(identityWithOccurrences).join('\u001f')}|remaining:${remaining.map(identityWithOccurrences).join('\u001f')}`;
 }
 
 /** Return the distinct records omitted from a bounded view in their original encounter order. */
 export function remainingEvidence(items: EvidenceItem[], visible: EvidenceItem[]): EvidenceItem[] {
   const visibleIdentities = new Set(visible.map(evidenceIdentity));
-  const seen = new Set<string>();
-  return items.filter((item) => {
-    const identity = evidenceIdentity(item);
-    if (seen.has(identity)) return false;
-    seen.add(identity);
-    return !visibleIdentities.has(identity);
-  });
+  return distinctEvidenceWithOccurrences(items).filter(
+    (item) => !visibleIdentities.has(evidenceIdentity(item)),
+  );
 }
 
 function evidenceClusterKey(item: EvidenceItem): string {
@@ -582,14 +618,7 @@ function evidenceClusterKey(item: EvidenceItem): string {
  * fills remaining space with other distinct records in stable encounter order.
  */
 export function selectEvidence(items: EvidenceItem[], limit: number): EvidenceSelection {
-  const distinct: EvidenceItem[] = [];
-  const identities = new Set<string>();
-  for (const item of items) {
-    const identity = evidenceIdentity(item);
-    if (identities.has(identity)) continue;
-    identities.add(identity);
-    distinct.push(item);
-  }
+  const distinct = distinctEvidenceWithOccurrences(items);
 
   const maximum = Math.max(0, Math.floor(limit));
   const visible: EvidenceItem[] = [];
@@ -663,14 +692,10 @@ export function formatEvidenceMeta(meta?: string): string | undefined {
 
 /** Gather newest thread evidence, then apply bounded diversified selection. */
 export function collectEvidence(turns: UITurn[], limit = 8): EvidenceItem[] {
-  const seen = new Set<string>();
   const out: EvidenceItem[] = [];
   for (const turn of [...turns].reverse()) {
     for (const step of [...(turn.steps ?? [])].reverse()) {
       for (const item of step.evidence ?? []) {
-        const identity = evidenceIdentity(item);
-        if (seen.has(identity)) continue;
-        seen.add(identity);
         out.push(item);
       }
     }

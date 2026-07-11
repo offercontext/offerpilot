@@ -46,6 +46,12 @@ export type ConfirmationInput =
       edited_args?: never;
     };
 
+export type ConfirmationRequest = ConfirmationInput | boolean;
+
+function confirmationPayload(input: ConfirmationRequest): ConfirmationInput | { approved: boolean } {
+  return typeof input === 'boolean' ? { approved: input } : input;
+}
+
 export async function sendChat(
   message: string,
   conversationId?: number,
@@ -69,14 +75,14 @@ export async function sendChat(
 
 export async function confirmAction(
   conversationId: number,
-  input: ConfirmationInput,
+  input: ConfirmationRequest,
   options?: ChatRequestOptions,
 ): Promise<ChatResponse> {
   const { data } = await http.post<ChatResponse>(
     '/chat/confirm',
     {
       conversation_id: conversationId,
-      ...input,
+      ...confirmationPayload(input),
     },
     { signal: options?.signal },
   );
@@ -156,14 +162,14 @@ export async function streamChat(
 
 export async function streamConfirmAction(
   conversationId: number,
-  input: ConfirmationInput,
+  input: ConfirmationRequest,
   options?: ChatStreamRequestOptions,
 ): Promise<ChatResponse> {
   return postChatStream(
     '/api/chat/confirm/stream',
     {
       conversation_id: conversationId,
-      ...input,
+      ...confirmationPayload(input),
     },
     options,
   );
@@ -224,9 +230,9 @@ async function postChatStream(
 async function streamHttpError(response: Response) {
   try {
     const payload = (await response.json()) as { error?: string };
-    return new Error(payload.error || `HTTP ${response.status}`);
+    return new ChatStreamError(payload.error || `HTTP ${response.status}`, `http_${response.status}`);
   } catch {
-    return new Error(`HTTP ${response.status}`);
+    return new ChatStreamError(`HTTP ${response.status}`, `http_${response.status}`);
   }
 }
 

@@ -1424,6 +1424,10 @@ def create_app(
         pending = chat.get_pending_action(conversation_id)
         if pending is None:
             return error_response(409, "待确认操作已过期，请刷新对话后重试。")
+        if confirmation_token is None:
+            if edited_args is not None or rejection_feedback:
+                return error_response(422, "confirmation_token is required when changing confirmation details")
+            confirmation_token = _confirmation_token(pending)
         if not compare_digest(confirmation_token, _confirmation_token(pending)):
             return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
         registry = offerpilot_tool_registry(
@@ -1700,6 +1704,10 @@ def create_app(
         pending = chat.get_pending_action(conversation_id)
         if pending is None:
             return stale_response()
+        if confirmation_token is None:
+            if edited_args is not None or rejection_feedback:
+                return error_response(422, "confirmation_token is required when changing confirmation details")
+            confirmation_token = _confirmation_token(pending)
         if not compare_digest(confirmation_token, _confirmation_token(pending)):
             return stale_response()
 
@@ -2375,16 +2383,19 @@ def error_response(status_code: int, message: str) -> JSONResponse:
 
 def _confirmation_input(
     payload: dict[str, Any],
-) -> tuple[bool, dict[str, Any] | None, str, str] | JSONResponse:
+) -> tuple[bool, dict[str, Any] | None, str, str | None] | JSONResponse:
     approved = payload.get("approved")
     if not isinstance(approved, bool):
         return error_response(422, "approved must be a boolean")
-    confirmation_token = payload.get("confirmation_token")
-    if (
-        not isinstance(confirmation_token, str)
-        or re.fullmatch(r"[0-9a-f]{64}", confirmation_token) is None
-    ):
-        return error_response(422, "confirmation_token must be a 64-character lowercase hex string")
+    confirmation_token: str | None = None
+    if "confirmation_token" in payload:
+        raw_confirmation_token = payload["confirmation_token"]
+        if (
+            not isinstance(raw_confirmation_token, str)
+            or re.fullmatch(r"[0-9a-f]{64}", raw_confirmation_token) is None
+        ):
+            return error_response(422, "confirmation_token must be a 64-character lowercase hex string")
+        confirmation_token = raw_confirmation_token
 
     has_edited_args = "edited_args" in payload
     has_rejection_feedback = "rejection_feedback" in payload

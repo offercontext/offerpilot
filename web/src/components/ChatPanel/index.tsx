@@ -49,6 +49,7 @@ import {
   resolveActivePendingAction,
   toolMeta,
   confirmationInputForRetry,
+  confirmationErrorAllowsImmediateRetry,
   confirmationErrorRequiresSync,
   shouldRestoreConfirmationRetryFocus,
   type EvidenceItem,
@@ -902,6 +903,17 @@ export default function ChatPanel({
         return;
       }
       const error = e?.response?.data?.error ?? e?.message ?? '确认失败';
+      if (confirmationErrorAllowsImmediateRetry(e?.code)) {
+        clearOwnedConfirmationLock(confirmationLocksRef.current, convID, confirmationExecution);
+        if (lockedConfirmationRef.current === confirmationExecution) {
+          lockedConfirmationRef.current = null;
+        }
+        restoreConfirmationRetryFocusRef.current = true;
+        setConfirmError(error);
+        setConfirmPhase('error');
+        toast.error(error);
+        return;
+      }
       if (confirmationErrorRequiresSync(e?.code)) {
         restoreConfirmationRetryFocusRef.current = false;
         lastConfirmationInputRef.current = null;

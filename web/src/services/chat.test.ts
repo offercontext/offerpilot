@@ -223,6 +223,31 @@ describe('settings service v0.1 contract', () => {
     expect(streamBody).toEqual({ conversation_id: 3, ...input });
   });
 
+  it('keeps the legacy boolean confirmation calls compatible with JSON and SSE endpoints', async () => {
+    postMock.mockResolvedValueOnce({
+      data: { type: 'message', conversation_id: 3, message: 'confirmed' },
+    });
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      sseResponse(
+        'event: completed\nid: run:1\ndata: {"event":"completed","seq":1,"data":{"response":{"type":"message","conversation_id":3,"message":"confirmed"}}}\n\n',
+      ),
+    );
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    await confirmAction(3, true);
+    await streamConfirmAction(3, false);
+
+    expect(postMock).toHaveBeenCalledWith(
+      '/chat/confirm',
+      { conversation_id: 3, approved: true },
+      { signal: undefined },
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0][1]?.body as string)).toEqual({
+      conversation_id: 3,
+      approved: false,
+    });
+  });
+
   it('uses Chinese fallback messages for broken SSE streams', async () => {
     globalThis.fetch = vi.fn(async () => new Response(null, { status: 200 })) as typeof fetch;
 
@@ -244,6 +269,15 @@ describe('settings service v0.1 contract', () => {
       code: 'stale_pending_action',
       retryable: true,
       message: 'stale',
+    });
+  });
+
+  it('classifies rejected confirmation edits as an immediately recoverable HTTP error', async () => {
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ error: 'invalid edits' }), { status: 422 })) as typeof fetch;
+
+    await expect(streamConfirmAction(3, approvalInput)).rejects.toMatchObject({
+      code: 'http_422',
+      message: 'invalid edits',
     });
   });
 });

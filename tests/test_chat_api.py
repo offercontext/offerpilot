@@ -2198,6 +2198,32 @@ def test_chat_confirm_invalid_payload_returns_422_and_preserves_pending(
 
 
 @pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
+def test_chat_confirm_accepts_legacy_boolean_payload_without_confirmation_token(tmp_path, endpoint):
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="legacy-confirm",
+                        name="update_application_status",
+                        args=json.dumps({"id": 1, "status": "offer"}),
+                    )
+                ]
+            )
+        ]
+    )
+    app_client, client, application, pending = _create_status_confirmation(tmp_path, model)
+
+    response = client.post(
+        endpoint,
+        json={"conversation_id": pending["conversation_id"], "approved": True},
+    )
+
+    assert response.status_code == 200
+    assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
+
+
+@pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
 def test_chat_confirm_prehandler_validation_preserves_pending_and_undo(
     tmp_path,
     monkeypatch,

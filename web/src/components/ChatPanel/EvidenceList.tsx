@@ -66,7 +66,12 @@ export default function EvidenceList({
               </span>
               <span className={styles.evidenceMain}>
                 <span className={styles.evidenceTitle}>{item.title}</span>
-                {item.meta ? <span className={styles.evidenceMeta}>{formatEvidenceMeta(item.meta)}</span> : null}
+                {item.meta ? <span className={styles.evidenceMeta} title={item.meta}>{formatEvidenceMeta(item.meta)}</span> : null}
+                {(item.occurrences ?? 1) > 1 ? (
+                  <span className={styles.evidenceCount} aria-label={`同条依据出现 ${item.occurrences} 次`}>
+                    ×{item.occurrences}
+                  </span>
+                ) : null}
                 {item.snippet ? <span className={styles.evidenceSnippet}>{item.snippet}</span> : null}
               </span>
             </li>

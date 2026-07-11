@@ -22,6 +22,7 @@ import {
   reloadConversationTurns,
   toolMeta,
   confirmationInputForRetry,
+  confirmationErrorAllowsImmediateRetry,
   confirmationErrorRequiresSync,
   hasConfirmationSettled,
   shouldAbortActiveRequestOnClose,
@@ -40,7 +41,7 @@ describe('evidence selection', () => {
     kind: kind as 'application',
   });
 
-  it('dedupes only matching source and id while preserving different sources and ids', () => {
+  it('dedupes only matching source, id, and display metadata while preserving conflicts and occurrences', () => {
     const evidence = collectEvidence([
       {
         role: 'assistant',
@@ -52,18 +53,21 @@ describe('evidence selection', () => {
               item('42', 'Same company', 'latest'),
               item('42', 'Same company', 'other-source'),
               item('43', 'Same company', 'latest'),
-              item('42', 'Duplicate record', 'latest'),
+              item('42', 'Same company', 'latest'),
+              item('42', 'Conflicting company', 'latest'),
             ],
           },
         ],
       },
     ]);
 
-    expect(evidence.map(({ source, id }) => `${source}:${id}`)).toEqual([
-      'latest:42',
-      'other-source:42',
-      'latest:43',
-    ]);
+    expect(evidence).toHaveLength(4);
+    expect(evidence).toContainEqual(
+      expect.objectContaining({ source: 'latest', id: '42', title: 'Same company', occurrences: 2 }),
+    );
+    expect(evidence).toContainEqual(
+      expect.objectContaining({ source: 'latest', id: '42', title: 'Conflicting company', occurrences: 1 }),
+    );
   });
 
   it('selects one representative per normalized cluster before filling remaining capacity', () => {
@@ -468,6 +472,11 @@ describe('confirmation retry intent', () => {
     expect(confirmationErrorRequiresSync('stale_pending_action')).toBe(true);
     expect(confirmationErrorRequiresSync('confirmation_in_progress')).toBe(true);
     expect(confirmationErrorRequiresSync('ai_provider_error')).toBe(false);
+  });
+
+  it('allows rejected confirmation edits to restore the review card immediately', () => {
+    expect(confirmationErrorAllowsImmediateRetry('http_422')).toBe(true);
+    expect(confirmationErrorAllowsImmediateRetry('confirmation_in_progress')).toBe(false);
   });
 });
 
