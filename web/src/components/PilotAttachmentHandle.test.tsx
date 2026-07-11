@@ -2,7 +2,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import PilotAttachmentHandle from './PilotAttachmentHandle';
+import { createPilotAttachmentDragBinding } from './PilotAttachmentHandle';
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -28,26 +28,28 @@ afterEach(() => {
   container = undefined;
 });
 
-describe('PilotAttachmentHandle', () => {
-  it('serializes its reference-only attachment for native drag and offers an accessible click action', () => {
-    const onAttach = vi.fn();
+describe('createPilotAttachmentDragBinding', () => {
+  it('binds a card root to serialize its reference-only attachment for native drag', () => {
     const attachment = { kind: 'application' as const, id: '7', label: 'ByteDance · Backend' };
-    const view = render(<PilotAttachmentHandle attachment={attachment} onAttach={onAttach} />);
-    const button = view.querySelector<HTMLButtonElement>('button')!;
+    const binding = createPilotAttachmentDragBinding(attachment);
+    const view = render(<article {...binding} />);
+    const cardRoot = view.querySelector<HTMLElement>('article')!;
     const setData = vi.fn();
+    const dataTransfer = { setData, effectAllowed: 'none' };
     const dragStart = new Event('dragstart', { bubbles: true });
-    Object.defineProperty(dragStart, 'dataTransfer', { value: { setData } });
+    Object.defineProperty(dragStart, 'dataTransfer', { value: dataTransfer });
 
-    expect(button.draggable).toBe(true);
-    expect(button.getAttribute('aria-label')).toBe('添加 ByteDance · Backend 到 Pilot 上下文');
+    expect(cardRoot.draggable).toBe(true);
+    expect(cardRoot.getAttribute('aria-label')).toContain(attachment.label);
+    expect(view.querySelector('button')).toBeNull();
+    expect(view.textContent).not.toContain('添加到 Pilot');
 
-    act(() => button.dispatchEvent(dragStart));
-    act(() => button.click());
+    act(() => cardRoot.dispatchEvent(dragStart));
 
     expect(setData).toHaveBeenCalledWith(
       'application/x-offerpilot-context-attachment',
       JSON.stringify(attachment),
     );
-    expect(onAttach).toHaveBeenCalledWith(attachment);
+    expect(dataTransfer.effectAllowed).toBe('copy');
   });
 });
