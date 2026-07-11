@@ -98,6 +98,10 @@ function render(ui: React.ReactNode) {
   return container;
 }
 
+function rerender(ui: React.ReactNode) {
+  act(() => root?.render(ui));
+}
+
 function setQueryState({
   data = [],
   isLoading = false,
@@ -134,6 +138,15 @@ describe('evidence destination query states', () => {
     const view = render(<ResumeLibraryView />);
 
     expect(view.textContent).toContain('正在加载简历');
+  });
+
+  it('keeps Resume hooks stable when loading resolves to a successful library page', () => {
+    setQueryState({ isLoading: true });
+    const view = render(<ResumeLibraryView />);
+
+    setQueryState({ data: [] });
+    expect(() => rerender(<ResumeLibraryView />)).not.toThrow();
+    expect(view.textContent).toContain('简历库');
   });
 
   it('prioritises Calendar selected-date loading over empty-day copy', () => {

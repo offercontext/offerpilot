@@ -158,6 +158,12 @@ export default function ResumeLibraryView({
     onEvidenceFocusConsumed?.();
   }, [focusResumeId, resumes, resumesQuery.isLoading, resumesQuery.isError, onEvidenceFocusConsumed]);
 
+  useEffect(() => {
+    if (editing) {
+      window.scrollTo({ top: 0, left: 0 });
+    }
+  }, [editing]);
+
   if (resumesQuery.isLoading) {
     return (
       <div role="status" style={{ textAlign: 'center', padding: 48 }}>
@@ -186,12 +192,6 @@ export default function ResumeLibraryView({
       ...(r.missing_sections ?? []),
     ].join(' ').toLowerCase().includes(kw);
   });
-
-  useEffect(() => {
-    if (editing) {
-      window.scrollTo({ top: 0, left: 0 });
-    }
-  }, [editing]);
 
   if (editing) {
     return (
