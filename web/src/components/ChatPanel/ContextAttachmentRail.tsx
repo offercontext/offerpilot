@@ -68,7 +68,6 @@ export default function ContextAttachmentRail({
       }}
       onDragOver={(event) => {
         if (disabled || !hasNativeAttachmentType(event)) return;
-        if (!parseNativeAttachment(event.dataTransfer.getData(NATIVE_ATTACHMENT_TYPE))) return;
         event.preventDefault();
         setDragging(true);
       }}

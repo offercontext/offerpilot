@@ -87,12 +87,17 @@ describe('ContextAttachmentRail', () => {
     const view = render(<ContextAttachmentRail attachments={[]} onRemove={vi.fn()} onNativeDrop={onNativeDrop} />);
     const rail = view.querySelector('[data-testid="context-attachment-rail"]')!;
 
-    const compatibleDrag = nativeDragOver(
-      rail,
-      'application/x-offerpilot-context-attachment',
-      JSON.stringify({ kind: 'offer', id: '7', label: 'Acme offer' }),
-    );
-    expect(compatibleDrag.defaultPrevented).toBe(true);
+    const protectedDrag = nativeDragOver(rail, 'application/x-offerpilot-context-attachment', '');
+    expect(protectedDrag.defaultPrevented).toBe(true);
+    expect(rail.className).toContain('contextAttachmentRailDragging');
+
+    const malformed = nativeDrop(rail, 'application/x-offerpilot-context-attachment', '{oops');
+    expect(malformed.defaultPrevented).toBe(false);
+    expect(onNativeDrop).not.toHaveBeenCalled();
+    expect(rail.className).not.toContain('contextAttachmentRailDragging');
+
+    const secondProtectedDrag = nativeDragOver(rail, 'application/x-offerpilot-context-attachment', '');
+    expect(secondProtectedDrag.defaultPrevented).toBe(true);
 
     const valid = nativeDrop(
       rail,
@@ -102,21 +107,18 @@ describe('ContextAttachmentRail', () => {
     expect(valid.defaultPrevented).toBe(true);
     expect(onNativeDrop).toHaveBeenCalledWith({ kind: 'offer', id: '7', label: 'Acme offer' });
 
-    const malformed = nativeDrop(rail, 'application/x-offerpilot-context-attachment', '{oops');
     const unrelated = nativeDrop(rail, 'text/plain', JSON.stringify({ kind: 'offer', id: '7', label: 'Acme offer' }));
     const incomplete = nativeDrop(
       rail,
       'application/x-offerpilot-context-attachment',
       JSON.stringify({ kind: 'offer', id: '', label: 'Acme offer' }),
     );
-    expect(malformed.defaultPrevented).toBe(false);
     expect(unrelated.defaultPrevented).toBe(false);
     expect(incomplete.defaultPrevented).toBe(false);
     expect(onNativeDrop).toHaveBeenCalledTimes(1);
+    expect(rail.className).not.toContain('contextAttachmentRailDragging');
 
     const unrelatedDrag = nativeDragOver(rail, 'text/plain', 'not an attachment');
-    const malformedDrag = nativeDragOver(rail, 'application/x-offerpilot-context-attachment', '{oops');
     expect(unrelatedDrag.defaultPrevented).toBe(false);
-    expect(malformedDrag.defaultPrevented).toBe(false);
   });
 });
