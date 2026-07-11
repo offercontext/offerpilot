@@ -261,7 +261,7 @@ describe('evidence destination query states', () => {
   it('waits for a Calendar background refetch before resolving focus', () => {
     const consumed = vi.fn();
     setQueryState({ data: [], isFetching: true });
-    render(
+    const view = render(
       <CalendarView
         applications={[application]}
         onOpenDetail={vi.fn()}
@@ -288,5 +288,6 @@ describe('evidence destination query states', () => {
 
     expect(antdState.message.warning).not.toHaveBeenCalled();
     expect(consumed).toHaveBeenCalledTimes(1);
+    expect(view.querySelector('[class*="entryItemFocused"]')).not.toBeNull();
   });
 });

@@ -11,6 +11,10 @@ const app = {
   applied_at: '2026-07-10T09:00:00Z',
 };
 
+const queryClientState = vi.hoisted(() => ({
+  invalidateQueries: vi.fn(),
+}));
+
 vi.mock('@tanstack/react-query', () => ({
   useMutation: () => ({ isPending: false, mutate: vi.fn() }),
   useQuery: (options: any) => {
@@ -23,7 +27,7 @@ vi.mock('@tanstack/react-query', () => ({
     };
     return { data: dataByKey[key], isError: false, isLoading: false };
   },
-  useQueryClient: () => ({ invalidateQueries: vi.fn() }),
+  useQueryClient: () => queryClientState,
 }));
 
 vi.mock('@dnd-kit/core', () => ({
@@ -85,6 +89,13 @@ vi.mock('@/components/ChatPanel', () => ({
       >
         Open application
       </button>
+      <button
+        type="button"
+        data-testid={`refresh-pilot-${props.variant ?? 'drawer'}`}
+        onClick={() => props.onDataChanged?.()}
+      >
+        Refresh Pilot data
+      </button>
     </section>
   ),
 }));
@@ -141,6 +152,17 @@ afterEach(() => {
 });
 
 describe('AppShell evidence navigation', () => {
+  it('invalidates the same-month calendar query after Pilot data changes', async () => {
+    const view = render(<AppShell />);
+    await flush();
+
+    act(() => view.querySelector<HTMLButtonElement>('[data-testid="nav-pilot"]')?.click());
+    await flush();
+    act(() => view.querySelector<HTMLButtonElement>('[data-testid="refresh-pilot-page"]')?.click());
+
+    expect(queryClientState.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['calendar'] });
+  });
+
   it('cancels unresolved non-application focus when a later application opens from narrow Pilot', async () => {
     const view = render(<AppShell />);
     await flush();

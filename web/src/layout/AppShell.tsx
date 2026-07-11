@@ -145,6 +145,7 @@ function AppShellContent() {
   const refreshWorkspaceData = () => {
     void qc.invalidateQueries({ queryKey: ['applications'] });
     void qc.invalidateQueries({ queryKey: ['events'] });
+    void qc.invalidateQueries({ queryKey: ['calendar'] });
     void qc.invalidateQueries({ queryKey: ['offers'] });
     void qc.invalidateQueries({ queryKey: ['questions', 'stats'] });
     void qc.invalidateQueries({ queryKey: ['chat', 'conversations'] });
