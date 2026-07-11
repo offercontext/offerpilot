@@ -22,6 +22,14 @@ export interface PilotContextChip {
   value: string;
 }
 
+export type PilotAttachmentKind = 'application' | 'offer' | 'resume';
+
+export interface PilotContextAttachment {
+  kind: PilotAttachmentKind;
+  id: string;
+  label: string;
+}
+
 export interface Conversation {
   id: number;
   title: string;
