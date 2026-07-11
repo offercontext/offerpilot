@@ -1532,7 +1532,9 @@ export default function ChatPanel({
   );
 
   const panelWorkspace = pilotDropTarget ? (
-    <PilotContextDropTarget>{nativeDropWorkspace}</PilotContextDropTarget>
+    <PilotContextDropTarget disabled={composerDisabled} onNativeDrop={addAttachment}>
+      {workspace}
+    </PilotContextDropTarget>
   ) : nativeDropWorkspace;
 
   if (docked || inlinePage) return panelWorkspace;

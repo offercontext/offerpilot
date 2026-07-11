@@ -41,7 +41,7 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('pilotDropTarget?: boolean');
     expect(component).toContain('const panelWorkspace = pilotDropTarget ? (');
     expect(component).toContain('<NativePilotAttachmentDropSurface');
-    expect(component).toContain('<PilotContextDropTarget>{nativeDropWorkspace}</PilotContextDropTarget>');
+    expect(component).toContain('<PilotContextDropTarget disabled={composerDisabled} onNativeDrop={addAttachment}>');
     expect(component).toContain('if (docked || inlinePage) return panelWorkspace');
     expect(component).toContain('{panelWorkspace}');
   });
