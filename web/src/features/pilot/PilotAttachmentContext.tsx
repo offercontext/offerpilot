@@ -22,6 +22,7 @@ type PilotAttachmentAction =
   | { type: 'clear-by-key'; key: PilotAttachmentConversationKey };
 
 export interface PilotAttachmentContextValue {
+  activeKey?: PilotAttachmentConversationKey;
   attachments: PilotContextAttachment[];
   notice?: string;
   setActiveConversationKey: (key?: PilotAttachmentConversationKey) => void;
@@ -37,6 +38,12 @@ const PilotAttachmentContext = createContext<PilotAttachmentContextValue | null>
 
 export function emptyPilotAttachmentState(): PilotAttachmentState {
   return { drafts: {} };
+}
+
+export function captureActiveAttachmentKey(
+  state: PilotAttachmentState,
+): PilotAttachmentConversationKey | undefined {
+  return state.activeKey;
 }
 
 function withDraft(
@@ -90,6 +97,7 @@ export function PilotAttachmentProvider({ children }: { children: ReactNode }) {
     : emptyPilotAttachmentDraft();
   const value = useMemo<PilotAttachmentContextValue>(
     () => ({
+      activeKey: captureActiveAttachmentKey(state),
       attachments: activeDraft.attachments,
       notice: activeDraft.message,
       setActiveConversationKey: (key) => dispatch({ type: 'set-active', key }),

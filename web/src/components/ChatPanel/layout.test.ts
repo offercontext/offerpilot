@@ -328,6 +328,7 @@ describe('ChatPanel docked layout contract', () => {
   });
 
   it('clears only the send-time attachment draft after a successful send', () => {
+    expect(component).toContain('activeKey: activeAttachmentKey');
     expect(component).toContain('const attachmentDraftKeyAtSend =');
     expect(component).toContain('clearAttachmentsByKey(attachmentDraftKeyAtSend)');
     expect(component).not.toContain('clearAttachments()');

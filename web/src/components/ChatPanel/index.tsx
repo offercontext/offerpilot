@@ -70,7 +70,6 @@ import {
   pilotPageContextRemovalReducer,
 } from '@/lib/pilotPageContext';
 import { usePilotAttachments } from '@/features/pilot/PilotAttachmentContext';
-import type { PilotAttachmentConversationKey } from '@/features/pilot/PilotAttachmentContext';
 import { capabilitiesForMode, type Capability } from './capabilities';
 import ThreadRail from './ThreadRail';
 import MessageBubble from './MessageBubble';
@@ -184,6 +183,7 @@ export default function ChatPanel({
   const queryClient = useQueryClient();
   const { message: toast } = AntApp.useApp();
   const {
+    activeKey: activeAttachmentKey,
     setActiveConversationKey,
     clearAttachmentsByKey,
     beginNewAttachmentDraft,
@@ -755,13 +755,7 @@ export default function ChatPanel({
   async function sendMessage(text: string): Promise<boolean> {
     const trimmed = text.trim();
     if (!trimmed || loading || activePending) return false;
-    const attachmentDraftKeyAtSend = (
-      convID !== undefined
-        ? `conversation:${convID}`
-        : draftContext
-          ? `new:${draftContext.requestKey}`
-          : undefined
-    ) as PilotAttachmentConversationKey | undefined;
+    const attachmentDraftKeyAtSend = activeAttachmentKey ?? ensureNewAttachmentDraft();
     if (convID === undefined) markPendingAutoSelect('suppress');
     const visibleRequestGeneration = ++visibleRequestGenerationRef.current;
     lastConfirmationInputRef.current = null;

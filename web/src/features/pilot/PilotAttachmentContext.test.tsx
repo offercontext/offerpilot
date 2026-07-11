@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  captureActiveAttachmentKey,
   emptyPilotAttachmentState,
   pilotAttachmentStateReducer,
   type PilotAttachmentState,
@@ -75,5 +76,21 @@ describe('PilotAttachmentContext attachment draft store', () => {
     expect(withoutKey).toEqual(emptyPilotAttachmentState());
     expect(limited.drafts['new:15']?.attachments).toHaveLength(5);
     expect(limited.drafts['new:15']?.message).toBeTruthy();
+  });
+
+  it('captures a normal new-draft key so only a successful send clears its attachments', () => {
+    const normalNewDraft = reduce(emptyPilotAttachmentState(),
+      { type: 'set-active', key: 'new:draft-1' },
+      { type: 'add', attachment: application },
+    );
+    const sendKey = captureActiveAttachmentKey(normalNewDraft);
+    const successfulSend = reduce(normalNewDraft, { type: 'clear-by-key', key: sendKey! });
+    const failedSend = normalNewDraft;
+    const abortedSend = normalNewDraft;
+
+    expect(sendKey).toBe('new:draft-1');
+    expect(successfulSend.drafts['new:draft-1']?.attachments).toEqual([]);
+    expect(failedSend.drafts['new:draft-1']?.attachments).toEqual([application]);
+    expect(abortedSend.drafts['new:draft-1']?.attachments).toEqual([application]);
   });
 });
