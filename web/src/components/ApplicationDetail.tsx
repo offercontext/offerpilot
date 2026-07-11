@@ -36,7 +36,7 @@ import ScheduleEventForm from '@/components/ScheduleEventForm';
 import JDAnalyzeModal from './JDAnalyzeModal';
 import ReviewFormDrawer from './ReviewFormDrawer';
 import MaterialKitDrawer from './MaterialKitDrawer';
-import PilotAttachmentHandle from './PilotAttachmentHandle';
+import { createPilotAttachmentDragBinding } from './PilotAttachmentHandle';
 import styles from './ApplicationDetail.module.css';
 
 const { Title, Paragraph, Text } = Typography;
@@ -177,9 +177,17 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
     );
   }
 
+  const applicationDragBinding = onAttachToPilot
+    ? createPilotAttachmentDragBinding({
+        kind: 'application',
+        id: String(application.id),
+        label: `${application.company_name} · ${application.position_name}`,
+      })
+    : undefined;
+
   return (
     <>
-      <section className={styles.detailWorkspace} aria-label="投递详情">
+      <section className={styles.detailWorkspace} {...applicationDragBinding}>
         <div className={styles.header}>
           <Button type="link" className={styles.backButton} icon={<ArrowLeftOutlined />} onClick={closeDetail}>
             返回上一层
@@ -211,16 +219,6 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
             <Button icon={<RobotOutlined />} onClick={() => onAskPilot(application)}>
               问 Pilot
             </Button>
-          )}
-          {onAttachToPilot && (
-            <PilotAttachmentHandle
-              attachment={{
-                kind: 'application',
-                id: String(application.id),
-                label: `${application.company_name} · ${application.position_name}`,
-              }}
-              onAttach={onAttachToPilot}
-            />
           )}
           <Button
             icon={<FileTextOutlined />}

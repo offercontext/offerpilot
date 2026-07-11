@@ -6,9 +6,16 @@ import offerCard from './OfferCard.tsx?raw';
 import resumeCard from './ResumeCard.tsx?raw';
 
 describe('application Pilot entry contract', () => {
-  it('exposes an accessible Pilot attachment action for applications, offers, and resumes', () => {
-    expect(applicationDetail).toContain('PilotAttachmentHandle');
-    expect(applicationList).toContain('PilotAttachmentHandle');
+  it('binds every supported card root directly to native Pilot attachment drag', () => {
+    const cardSources = [applicationDetail, applicationList, kanbanCard, offerCard, resumeCard];
+
+    for (const source of cardSources) {
+      expect(source).toContain('createPilotAttachmentDragBinding');
+      expect(source).not.toMatch(/import PilotAttachmentHandle/);
+      expect(source).not.toMatch(/<PilotAttachmentHandle/);
+      expect(source).not.toContain('添加到 Pilot');
+    }
+
     expect(kanbanCard).toContain('onAttachToPilot');
     expect(offerCard).toContain("kind: 'offer'");
     expect(resumeCard).toContain("kind: 'resume'");

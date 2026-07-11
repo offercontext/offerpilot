@@ -7,7 +7,7 @@ import dayjs from 'dayjs';
 import { deleteApplication } from '@/services/applications';
 import { STATUS_LABELS } from '@/types/application';
 import type { Application, ApplicationStatus } from '@/types/application';
-import PilotAttachmentHandle from '../PilotAttachmentHandle';
+import { createPilotAttachmentDragBinding } from '../PilotAttachmentHandle';
 import styles from './KanbanBoard.module.css';
 
 const STATUS_OPTIONS = (Object.entries(STATUS_LABELS) as [ApplicationStatus, string][]).map(
@@ -43,6 +43,13 @@ export default function KanbanCard({
     data: { status: columnStatus },
     disabled: overlay,
   });
+  const applicationDragBinding = onAttachToPilot
+    ? createPilotAttachmentDragBinding({
+        kind: 'application',
+        id: String(record.id),
+        label: `${record.company_name} · ${record.position_name}`,
+      })
+    : undefined;
 
   const handleStatusChange = async (newStatus: ApplicationStatus) => {
     if (newStatus === record.status) return;
@@ -78,6 +85,7 @@ export default function KanbanCard({
     <div
       ref={setNodeRef}
       className={`${styles.card} ${isDragging ? styles.cardPlaceholder : ''}`}
+      {...applicationDragBinding}
     >
       <div className={styles.cardDragSurface} {...listeners} {...attributes}>
         {cardContent}
@@ -122,17 +130,6 @@ export default function KanbanCard({
             >
               问 Pilot
             </Button>
-          )}
-          {onAttachToPilot && (
-            <PilotAttachmentHandle
-              className={styles.cardAttachmentHandle}
-              attachment={{
-                kind: 'application',
-                id: String(record.id),
-                label: `${record.company_name} · ${record.position_name}`,
-              }}
-              onAttach={onAttachToPilot}
-            />
           )}
           <Popconfirm
             title="确定删除这条投递？"

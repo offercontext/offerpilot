@@ -12,7 +12,7 @@ import {
   type ApplicationSortBy,
 } from './KanbanBoard/applicationLifecycle';
 import styles from './ApplicationListView.module.css';
-import PilotAttachmentHandle from './PilotAttachmentHandle';
+import { createPilotAttachmentDragBinding } from './PilotAttachmentHandle';
 
 interface ApplicationListViewProps {
   applications: Application[];
@@ -95,16 +95,6 @@ export default function ApplicationListView({ applications, events, onOpenDetail
           >
             问 Pilot
           </Button>
-          {onAttachToPilot && (
-            <PilotAttachmentHandle
-              attachment={{
-                kind: 'application',
-                id: String(row.id),
-                label: `${row.company_name} · ${row.position_name}`,
-              }}
-              onAttach={onAttachToPilot}
-            />
-          )}
         </div>
       ),
     },
@@ -141,6 +131,13 @@ export default function ApplicationListView({ applications, events, onOpenDetail
         dataSource={rows}
         pagination={{ pageSize: 10, showSizeChanger: false }}
         onRow={(row) => ({
+          ...(onAttachToPilot
+            ? createPilotAttachmentDragBinding({
+                kind: 'application',
+                id: String(row.id),
+                label: `${row.company_name} · ${row.position_name}`,
+              })
+            : {}),
           onClick: () => onOpenDetail(row),
           style: { cursor: 'pointer' },
         })}

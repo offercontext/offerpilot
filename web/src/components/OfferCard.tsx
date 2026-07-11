@@ -2,7 +2,7 @@ import { Card, Tag, Button, Checkbox, Space, Typography } from 'antd';
 import { MessageOutlined, EyeOutlined } from '@ant-design/icons';
 import type { Offer } from '@/types/offer';
 import { OFFER_STATUS_LABELS, OFFER_STATUS_COLORS } from '@/types/offer';
-import PilotAttachmentHandle from './PilotAttachmentHandle';
+import { createPilotAttachmentDragBinding } from './PilotAttachmentHandle';
 
 const { Text } = Typography;
 
@@ -20,10 +20,19 @@ function formatWan(n: number): string {
 }
 
 export default function OfferCard({ offer, selected, onToggleSelect, onCoach, onView, onAttachToPilot }: Props) {
+  const offerDragBinding = onAttachToPilot
+    ? createPilotAttachmentDragBinding({
+        kind: 'offer',
+        id: String(offer.id),
+        label: `${offer.company_name} · ${offer.position_name}`,
+      })
+    : undefined;
+
   return (
     <Card
       size="small"
       style={{ borderColor: OFFER_STATUS_COLORS[offer.status] }}
+      {...offerDragBinding}
       title={
         <Space>
           <Checkbox checked={selected} onChange={() => onToggleSelect(offer.id)} />
@@ -51,16 +60,6 @@ export default function OfferCard({ offer, selected, onToggleSelect, onCoach, on
         <Button size="small" icon={<EyeOutlined />} onClick={() => onView(offer)}>
           详情
         </Button>
-        {onAttachToPilot && (
-          <PilotAttachmentHandle
-            attachment={{
-              kind: 'offer',
-              id: String(offer.id),
-              label: `${offer.company_name} · ${offer.position_name}`,
-            }}
-            onAttach={onAttachToPilot}
-          />
-        )}
       </Space>
     </Card>
   );

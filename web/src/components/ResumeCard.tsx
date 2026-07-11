@@ -3,7 +3,7 @@ import { CopyOutlined, DeleteOutlined, EditOutlined, StarOutlined } from '@ant-d
 import dayjs from 'dayjs';
 import type { ReactNode } from 'react';
 import type { Resume } from '@/types/resume';
-import PilotAttachmentHandle from './PilotAttachmentHandle';
+import { createPilotAttachmentDragBinding } from './PilotAttachmentHandle';
 
 interface Props {
   resume: Resume;
@@ -37,9 +37,12 @@ export default function ResumeCard({ resume, onEdit, onSetMaster, onCopy, onDele
   const completion = Math.max(0, Math.min(100, resume.completion_percent ?? 0));
   const missing = (resume.missing_sections ?? []).map((item) => SECTION_LABELS[item] ?? item);
   const preview = sectionPreview(resume);
+  const resumeDragBinding = onAttachToPilot
+    ? createPilotAttachmentDragBinding({ kind: 'resume', id: String(resume.id), label: title })
+    : undefined;
 
   return (
-    <Card hoverable styles={{ body: { padding: 14 } }}>
+    <Card hoverable styles={{ body: { padding: 14 } }} {...resumeDragBinding}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           {resume.is_master && <Tag color="blue" style={{ borderRadius: 8 }}>主简历</Tag>}
@@ -84,15 +87,6 @@ export default function ResumeCard({ resume, onEdit, onSetMaster, onCopy, onDele
         )}
         <VDivider />
         <CardAction label="复制" icon={<CopyOutlined />} onClick={() => onCopy(resume.id)} />
-        {onAttachToPilot && (
-          <>
-            <VDivider />
-            <PilotAttachmentHandle
-              attachment={{ kind: 'resume', id: String(resume.id), label: title }}
-              onAttach={onAttachToPilot}
-            />
-          </>
-        )}
         <VDivider />
         <CardAction
           label="删除"
