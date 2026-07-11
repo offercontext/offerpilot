@@ -7,7 +7,9 @@ export interface PilotAttachmentDraft {
   message?: string;
 }
 
-export const emptyPilotAttachmentDraft: PilotAttachmentDraft = { attachments: [] };
+export function emptyPilotAttachmentDraft(): PilotAttachmentDraft {
+  return { attachments: [] };
+}
 
 export function pilotAttachmentKey(item: PilotContextAttachment): string {
   return `${item.kind}:${item.id}`;

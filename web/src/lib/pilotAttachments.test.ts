@@ -28,12 +28,19 @@ const resume: PilotContextAttachment = {
 };
 
 describe('pilot attachments', () => {
+  it('creates independent empty attachment drafts', () => {
+    const first = emptyPilotAttachmentDraft();
+    first.attachments.push(application);
+
+    expect(emptyPilotAttachmentDraft().attachments).toEqual([]);
+  });
+
   it('keys attachments by kind and id', () => {
     expect(pilotAttachmentKey(application)).toBe('application:application-1');
   });
 
   it('deduplicates matching attachments while preserving first-added order', () => {
-    const first = addPilotAttachment(emptyPilotAttachmentDraft, application);
+    const first = addPilotAttachment(emptyPilotAttachmentDraft(), application);
     const second = addPilotAttachment(first, offer);
     const duplicate = addPilotAttachment(second, { ...application, label: '已改名的岗位' });
 
@@ -42,7 +49,7 @@ describe('pilot attachments', () => {
   });
 
   it('returns a visible message instead of silently dropping an attachment over the limit', () => {
-    let draft = emptyPilotAttachmentDraft;
+    let draft = emptyPilotAttachmentDraft();
     for (let index = 0; index < PILOT_ATTACHMENT_LIMIT; index += 1) {
       draft = addPilotAttachment(draft, {
         kind: 'application',
@@ -58,13 +65,13 @@ describe('pilot attachments', () => {
   });
 
   it('removes the requested attachment by kind and id', () => {
-    const draft = addPilotAttachment(addPilotAttachment(emptyPilotAttachmentDraft, application), resume);
+    const draft = addPilotAttachment(addPilotAttachment(emptyPilotAttachmentDraft(), application), resume);
 
     expect(removePilotAttachment(draft, application)).toEqual({ attachments: [resume] });
   });
 
   it('suggests the required deterministic questions for an application and resume', () => {
-    const draft = addPilotAttachment(addPilotAttachment(emptyPilotAttachmentDraft, application), resume);
+    const draft = addPilotAttachment(addPilotAttachment(emptyPilotAttachmentDraft(), application), resume);
 
     expect(pilotQuickQuestions(draft.attachments)).toEqual([
       '分析简历与岗位的匹配差距',
