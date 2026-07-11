@@ -29,7 +29,7 @@ export default function PilotContextDropTarget({
           {children}
         </NativePilotAttachmentDropSurface>
       ) : children}
-      {isOver ? <div className={styles.dropHint}>Drop to add to Pilot context</div> : null}
+      {isOver ? <div className={styles.dropHint}>松开以加入 Pilot 上下文</div> : null}
     </div>
   );
 }

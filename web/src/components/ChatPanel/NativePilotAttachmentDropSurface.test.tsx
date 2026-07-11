@@ -33,6 +33,29 @@ function drop(target: Element, payload: unknown) {
   return event;
 }
 
+function dragOver(target: Element, payload: unknown) {
+  const event = new Event('dragover', { bubbles: true, cancelable: true });
+  Object.defineProperty(event, 'dataTransfer', {
+    value: {
+      types: ['application/x-offerpilot-context-attachment'],
+      getData: () => JSON.stringify(payload),
+    },
+  });
+  act(() => target.dispatchEvent(event));
+  return event;
+}
+
+function dragEnter(target: Element, payload: string) {
+  const event = new Event('dragenter', { bubbles: true, cancelable: true });
+  Object.defineProperty(event, 'dataTransfer', {
+    value: {
+      types: ['application/x-offerpilot-context-attachment'],
+      getData: () => payload,
+    },
+  });
+  act(() => target.dispatchEvent(event));
+}
+
 afterEach(() => {
   act(() => root?.unmount());
   container?.remove();
@@ -54,6 +77,35 @@ describe('NativePilotAttachmentDropSurface', () => {
 
     expect(event.defaultPrevented).toBe(true);
     expect(onNativeDrop).toHaveBeenCalledWith({ kind: 'resume', id: '3', label: 'Backend resume' });
+  });
+
+  it('uses the same Chinese full-surface drop affordance for native card drags', () => {
+    const view = render(
+      <NativePilotAttachmentDropSurface onNativeDrop={vi.fn()}>
+        <div>Visible Pilot</div>
+      </NativePilotAttachmentDropSurface>,
+    );
+    const surface = view.querySelector<HTMLElement>('[data-testid="pilot-native-drop-surface"]')!;
+
+    const event = dragOver(surface, { kind: 'offer', id: '8', label: 'Acme offer' });
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(surface.dataset.dragging).toBe('true');
+    expect(surface.textContent).toContain('松开以加入 Pilot 上下文');
+  });
+
+  it('does not show the full-surface affordance for an observable malformed native payload', () => {
+    const view = render(
+      <NativePilotAttachmentDropSurface onNativeDrop={vi.fn()}>
+        <div>Visible Pilot</div>
+      </NativePilotAttachmentDropSurface>,
+    );
+    const surface = view.querySelector<HTMLElement>('[data-testid="pilot-native-drop-surface"]')!;
+
+    dragEnter(surface, '{oops');
+
+    expect(surface.dataset.dragging).toBeUndefined();
+    expect(surface.textContent).not.toContain('松开以加入 Pilot 上下文');
   });
 
   it('does not accept a native attachment while the composer is disabled', () => {

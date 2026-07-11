@@ -34,11 +34,14 @@ export default function NativePilotAttachmentDropSurface({ children, disabled, o
 
   return (
     <div
-      className={styles.nativePilotDropSurface}
+      className={`${styles.nativePilotDropSurface} ${dragging ? styles.nativePilotDropSurfaceDragging : ''}`}
       data-testid="pilot-native-drop-surface"
       data-dragging={dragging || undefined}
       onDragEnter={(event) => {
-        if (!disabled && hasNativeAttachmentType(event)) setDragging(true);
+        if (disabled || !hasNativeAttachmentType(event)) return;
+        const payload = event.dataTransfer.getData(NATIVE_ATTACHMENT_TYPE);
+        if (payload && !parseNativeAttachment(payload)) return;
+        setDragging(true);
       }}
       onDragOver={(event) => {
         if (disabled || !hasNativeAttachmentType(event)) return;
@@ -63,6 +66,7 @@ export default function NativePilotAttachmentDropSurface({ children, disabled, o
       }}
     >
       {children}
+      {dragging ? <div className={styles.nativePilotDropHint}>松开以加入 Pilot 上下文</div> : null}
     </div>
   );
 }
