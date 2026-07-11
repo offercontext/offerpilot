@@ -725,6 +725,87 @@ describe('buildTurns evidence normalization', () => {
     });
   });
 
+  it('falls back to an event row id when application_event_id is absent', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([{ id: 'call-event', name: 'list_application_events', args: {} }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-event',
+        content: JSON.stringify([
+          {
+            record_type: 'application_event',
+            id: 9,
+            company_name: 'Acme',
+            scheduled_at: '2026-07-01T07:00:00Z',
+          },
+        ]),
+      }),
+      msg({ role: 'assistant', content: 'I found an event.' }),
+    ]);
+
+    expect(turns[0].steps?.[0].evidence?.[0]?.target).toEqual({
+      kind: 'event',
+      id: 9,
+      scheduledAt: '2026-07-01T07:00:00Z',
+    });
+  });
+
+  it('leaves events with negative, fractional, unsafe, or non-finite ids targetless', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([
+          { id: 'call-negative', name: 'list_application_events', args: {} },
+          { id: 'call-fractional', name: 'list_application_events', args: {} },
+          { id: 'call-unsafe', name: 'list_application_events', args: {} },
+          { id: 'call-nonfinite', name: 'list_application_events', args: {} },
+        ]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-negative',
+        content: JSON.stringify([
+          { record_type: 'application_event', id: -1, company_name: 'Acme', scheduled_at: '2026-07-01T07:00:00Z' },
+        ]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-fractional',
+        content: JSON.stringify([
+          { record_type: 'application_event', id: 1.5, company_name: 'Acme', scheduled_at: '2026-07-01T07:00:00Z' },
+        ]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-unsafe',
+        content: JSON.stringify([
+          {
+            record_type: 'application_event',
+            id: Number.MAX_SAFE_INTEGER + 1,
+            company_name: 'Acme',
+            scheduled_at: '2026-07-01T07:00:00Z',
+          },
+        ]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-nonfinite',
+        content: '[{"record_type":"application_event","id":1e309,"company_name":"Acme","scheduled_at":"2026-07-01T07:00:00Z"}]',
+      }),
+      msg({ role: 'assistant', content: 'These events are not safely targetable.' }),
+    ]);
+
+    expect(turns[0].steps?.map((step) => step.evidence?.[0]?.target)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]);
+  });
+
   it('attaches evidence to the final answer when a tool-calling assistant includes preamble content', () => {
     const turns = buildTurns([
       msg({ role: 'user', content: '查看投递' }),
@@ -1079,6 +1160,30 @@ describe('buildTurns evidence normalization', () => {
     for (const step of turns[0].steps ?? []) {
       expect(step.evidence?.[0]?.target).toBeUndefined();
     }
+  });
+
+  it('leaves event evidence with an empty scheduled time targetless', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([{ id: 'call-empty-time', name: 'list_application_events', args: {} }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-empty-time',
+        content: JSON.stringify([
+          {
+            record_type: 'application_event',
+            id: 1,
+            company_name: 'Acme',
+            scheduled_at: '   ',
+          },
+        ]),
+      }),
+      msg({ role: 'assistant', content: 'This event is not safely targetable.' }),
+    ]);
+
+    expect(turns[0].steps?.[0].evidence?.[0]?.target).toBeUndefined();
   });
 
   it('keeps unsupported, plain-text, and malformed results targetless', () => {
