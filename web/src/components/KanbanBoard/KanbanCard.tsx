@@ -7,6 +7,7 @@ import dayjs from 'dayjs';
 import { deleteApplication } from '@/services/applications';
 import { STATUS_LABELS } from '@/types/application';
 import type { Application, ApplicationStatus } from '@/types/application';
+import PilotAttachmentHandle from '../PilotAttachmentHandle';
 import styles from './KanbanBoard.module.css';
 
 const STATUS_OPTIONS = (Object.entries(STATUS_LABELS) as [ApplicationStatus, string][]).map(
@@ -20,6 +21,7 @@ interface KanbanCardProps {
   overlay?: boolean;
   onOpenDetail?: (app: Application) => void;
   onAskPilot?: (app: Application) => void;
+  onAttachToPilot?: (attachment: import('@/types/chat').PilotContextAttachment) => void;
   onRequestStatusChange?: (app: Application, status: ApplicationStatus) => void;
 }
 
@@ -30,6 +32,7 @@ export default function KanbanCard({
   overlay,
   onOpenDetail,
   onAskPilot,
+  onAttachToPilot,
   onRequestStatusChange,
 }: KanbanCardProps) {
   const queryClient = useQueryClient();
@@ -75,10 +78,10 @@ export default function KanbanCard({
     <div
       ref={setNodeRef}
       className={`${styles.card} ${isDragging ? styles.cardPlaceholder : ''}`}
-      {...listeners}
-      {...attributes}
     >
-      {cardContent}
+      <div className={styles.cardDragSurface} {...listeners} {...attributes}>
+        {cardContent}
+      </div>
       <div className={styles.cardFooter}>
         <Select
           value={record.status}
@@ -119,6 +122,17 @@ export default function KanbanCard({
             >
               问 Pilot
             </Button>
+          )}
+          {onAttachToPilot && (
+            <PilotAttachmentHandle
+              className={styles.cardAttachmentHandle}
+              attachment={{
+                kind: 'application',
+                id: String(record.id),
+                label: `${record.company_name} · ${record.position_name}`,
+              }}
+              onAttach={onAttachToPilot}
+            />
           )}
           <Popconfirm
             title="确定删除这条投递？"

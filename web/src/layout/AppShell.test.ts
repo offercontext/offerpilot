@@ -64,4 +64,13 @@ describe('AppShell source contract', () => {
     expect(source).toContain('</PilotAttachmentProvider>');
     expect(source.indexOf('<PilotAttachmentProvider>')).toBeLessThan(source.indexOf('<Layout'));
   });
+
+  it('keeps card attachments on the selected keyed draft across every Pilot panel', () => {
+    const fullPilotStart = source.indexOf("{view === 'pilot'");
+    const fullPilotEnd = source.indexOf("{view === 'settings'", fullPilotStart);
+    const fullPilotSource = source.slice(fullPilotStart, fullPilotEnd);
+
+    expect(fullPilotSource).toContain('onAttachmentKeyChange={syncPilotAttachmentKey}');
+    expect(source).toContain('pendingAttachmentDraftKeyRef.current ?? pendingAttachmentDraftKey');
+  });
 });

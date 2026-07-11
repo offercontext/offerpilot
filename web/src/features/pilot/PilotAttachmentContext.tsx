@@ -27,7 +27,7 @@ export type PilotAttachmentAction =
   | { type: 'remove'; key: PilotAttachmentConversationKey; attachmentOrKey: PilotContextAttachment | string }
   | { type: 'clear'; key: PilotAttachmentConversationKey };
 
-interface PilotAttachmentStore {
+export interface PilotAttachmentStore {
   drafts: PilotAttachmentState['drafts'];
   addAttachment: (key: PilotAttachmentConversationKey, attachment: PilotContextAttachment) => void;
   removeAttachment: (
@@ -36,6 +36,7 @@ interface PilotAttachmentStore {
   ) => void;
   clearAttachmentsByKey: (key: PilotAttachmentConversationKey) => void;
   createNewDraftKey: () => PilotAttachmentConversationKey;
+  createNewDraftWithAttachment: (attachment: PilotContextAttachment) => PilotAttachmentConversationKey;
 }
 
 export interface PilotAttachmentContextValue {
@@ -106,6 +107,12 @@ export function PilotAttachmentProvider({ children }: { children: ReactNode }) {
     nextNewDraftKeyRef.current += 1;
     return `new:draft-${nextNewDraftKeyRef.current}` as PilotAttachmentConversationKey;
   }, []);
+  const createNewDraftWithAttachment = useCallback((attachment: PilotContextAttachment) => {
+    nextNewDraftKeyRef.current += 1;
+    const key = `new:draft-${nextNewDraftKeyRef.current}` as PilotAttachmentConversationKey;
+    dispatch({ type: 'add', key, attachment });
+    return key;
+  }, []);
   const store = useMemo<PilotAttachmentStore>(
     () => ({
       drafts: state.drafts,
@@ -113,18 +120,31 @@ export function PilotAttachmentProvider({ children }: { children: ReactNode }) {
       removeAttachment,
       clearAttachmentsByKey,
       createNewDraftKey,
+      createNewDraftWithAttachment,
     }),
-    [state.drafts, addAttachment, removeAttachment, clearAttachmentsByKey, createNewDraftKey],
+    [
+      state.drafts,
+      addAttachment,
+      removeAttachment,
+      clearAttachmentsByKey,
+      createNewDraftKey,
+      createNewDraftWithAttachment,
+    ],
   );
 
   return <PilotAttachmentContext.Provider value={store}>{children}</PilotAttachmentContext.Provider>;
 }
 
+export function usePilotAttachmentStore(): PilotAttachmentStore {
+  const store = useContext(PilotAttachmentContext);
+  if (!store) throw new Error('usePilotAttachmentStore must be used within PilotAttachmentProvider');
+  return store;
+}
+
 export function usePilotAttachments(
   initialKey?: PilotAttachmentConversationKey,
 ): PilotAttachmentContextValue {
-  const store = useContext(PilotAttachmentContext);
-  if (!store) throw new Error('usePilotAttachments must be used within PilotAttachmentProvider');
+  const store = usePilotAttachmentStore();
 
   const [activeKey, setActiveKey] = useState<PilotAttachmentConversationKey | undefined>(initialKey);
   const activeDraft = activeKey ? store.drafts[activeKey] ?? emptyPilotAttachmentDraft() : undefined;

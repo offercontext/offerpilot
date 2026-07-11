@@ -110,6 +110,14 @@
   cursor: grabbing;
 }
 
+.cardDragSurface {
+  cursor: grab;
+}
+
+.cardDragSurface:active {
+  cursor: grabbing;
+}
+
 .cardPlaceholder {
   opacity: 0.3;
   border: 2px dashed #cbd5e1;
@@ -162,6 +170,15 @@
   display: flex;
   justify-content: flex-end;
   margin-top: 8px;
+}
+
+.cardAttachmentHandle {
+  border: 0;
+  background: transparent;
+  color: #0284c7;
+  cursor: grab;
+  font-size: 12px;
+  padding: 0 4px;
 }
 
 /* Mobile responsive */

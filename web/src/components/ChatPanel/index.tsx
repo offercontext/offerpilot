@@ -71,6 +71,7 @@ import {
 } from '@/lib/pilotPageContext';
 import { pilotQuickQuestions } from '@/lib/pilotAttachments';
 import { usePilotAttachments } from '@/features/pilot/PilotAttachmentContext';
+import { type PilotAttachmentConversationKey } from '@/features/pilot/PilotAttachmentContext';
 import { capabilitiesForMode, type Capability } from './capabilities';
 import ThreadRail from './ThreadRail';
 import MessageBubble from './MessageBubble';
@@ -91,6 +92,8 @@ interface Props {
   onDataChanged?: () => void;
   startRequest?: ChatStartRequest;
   pageContext?: PilotPageContext;
+  attachmentDraftKey?: PilotAttachmentConversationKey;
+  onAttachmentKeyChange?: (key?: PilotAttachmentConversationKey) => void;
 }
 
 interface ConfirmationExecution {
@@ -181,6 +184,8 @@ export default function ChatPanel({
   onDataChanged,
   startRequest,
   pageContext,
+  attachmentDraftKey,
+  onAttachmentKeyChange,
 }: Props) {
   const queryClient = useQueryClient();
   const { message: toast } = AntApp.useApp();
@@ -262,6 +267,10 @@ export default function ChatPanel({
   });
 
   useEffect(() => {
+    if (attachmentDraftKey) {
+      setActiveConversationKey(attachmentDraftKey);
+      return;
+    }
     if (convID !== undefined) {
       setActiveConversationKey(`conversation:${convID}`);
       return;
@@ -271,7 +280,11 @@ export default function ChatPanel({
       return;
     }
     ensureNewAttachmentDraft();
-  }, [convID, draftContext?.requestKey, ensureNewAttachmentDraft, setActiveConversationKey]);
+  }, [attachmentDraftKey, convID, draftContext?.requestKey, ensureNewAttachmentDraft, setActiveConversationKey]);
+
+  useEffect(() => {
+    onAttachmentKeyChange?.(activeAttachmentKey);
+  }, [activeAttachmentKey, onAttachmentKeyChange]);
 
   useEffect(() => {
     dispatchPageContextRemoval({ type: 'sync', contextKey: incomingPageContextKey });

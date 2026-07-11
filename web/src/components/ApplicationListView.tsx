@@ -12,12 +12,14 @@ import {
   type ApplicationSortBy,
 } from './KanbanBoard/applicationLifecycle';
 import styles from './ApplicationListView.module.css';
+import PilotAttachmentHandle from './PilotAttachmentHandle';
 
 interface ApplicationListViewProps {
   applications: Application[];
   events: ScheduleEvent[];
   onOpenDetail: (app: Application) => void;
   onAskPilot: (app: Application) => void;
+  onAttachToPilot?: (attachment: import('@/types/chat').PilotContextAttachment) => void;
 }
 
 const STATUS_FILTERS = [
@@ -32,7 +34,7 @@ const SORT_OPTIONS: { value: ApplicationSortBy; label: string }[] = [
   { value: 'applied_asc', label: '最早投递优先' },
 ];
 
-export default function ApplicationListView({ applications, events, onOpenDetail, onAskPilot }: ApplicationListViewProps) {
+export default function ApplicationListView({ applications, events, onOpenDetail, onAskPilot, onAttachToPilot }: ApplicationListViewProps) {
   const [keyword, setKeyword] = useState('');
   const [status, setStatus] = useState<ApplicationStatus | 'all'>('all');
   const [sortBy, setSortBy] = useState<ApplicationSortBy>('updated_desc');
@@ -84,17 +86,26 @@ export default function ApplicationListView({ applications, events, onOpenDetail
       key: 'pilot',
       width: 112,
       render: (_, row) => (
-        <Button
-          type="link"
-          size="small"
-          icon={<RobotOutlined />}
-          onClick={(event) => {
-            event.stopPropagation();
-            onAskPilot(row);
-          }}
-        >
-          问 Pilot
-        </Button>
+        <div onClick={(event) => event.stopPropagation()}>
+          <Button
+            type="link"
+            size="small"
+            icon={<RobotOutlined />}
+            onClick={() => onAskPilot(row)}
+          >
+            问 Pilot
+          </Button>
+          {onAttachToPilot && (
+            <PilotAttachmentHandle
+              attachment={{
+                kind: 'application',
+                id: String(row.id),
+                label: `${row.company_name} · ${row.position_name}`,
+              }}
+              onAttach={onAttachToPilot}
+            />
+          )}
+        </div>
       ),
     },
   ];

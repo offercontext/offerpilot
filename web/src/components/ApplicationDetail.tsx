@@ -36,6 +36,7 @@ import ScheduleEventForm from '@/components/ScheduleEventForm';
 import JDAnalyzeModal from './JDAnalyzeModal';
 import ReviewFormDrawer from './ReviewFormDrawer';
 import MaterialKitDrawer from './MaterialKitDrawer';
+import PilotAttachmentHandle from './PilotAttachmentHandle';
 import styles from './ApplicationDetail.module.css';
 
 const { Title, Paragraph, Text } = Typography;
@@ -52,9 +53,10 @@ interface ApplicationDetailProps {
   onClose: () => void;
   onMockInterview?: (app: Application) => void;
   onAskPilot?: (app: Application) => void;
+  onAttachToPilot?: (attachment: import('@/types/chat').PilotContextAttachment) => void;
 }
 
-export default function ApplicationDetail({ application, open, onClose, onMockInterview, onAskPilot }: ApplicationDetailProps) {
+export default function ApplicationDetail({ application, open, onClose, onMockInterview, onAskPilot, onAttachToPilot }: ApplicationDetailProps) {
   const queryClient = useQueryClient();
   const [form] = Form.useForm();
   const [analyzing, setAnalyzing] = useState(false);
@@ -209,6 +211,16 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
             <Button icon={<RobotOutlined />} onClick={() => onAskPilot(application)}>
               问 Pilot
             </Button>
+          )}
+          {onAttachToPilot && (
+            <PilotAttachmentHandle
+              attachment={{
+                kind: 'application',
+                id: String(application.id),
+                label: `${application.company_name} · ${application.position_name}`,
+              }}
+              onAttach={onAttachToPilot}
+            />
           )}
           <Button
             icon={<FileTextOutlined />}

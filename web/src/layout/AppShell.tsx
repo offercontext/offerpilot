@@ -7,7 +7,7 @@ import { listOffers } from '@/services/offers';
 import { ONBOARDING_QUERY_KEY } from '@/services/onboarding';
 import { uploadResume } from '@/services/resumes';
 import type { Application } from '@/types/application';
-import type { ChatStartRequest } from '@/types/chat';
+import type { ChatStartRequest, PilotContextAttachment } from '@/types/chat';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
 import AddApplicationForm from '@/components/AddApplicationForm';
@@ -25,6 +25,10 @@ import {
 import { getPracticeStats } from '@/services/questions';
 import { buildPilotPageContext } from '@/lib/pilotPageContext';
 import { PilotAttachmentProvider } from '@/features/pilot/PilotAttachmentContext';
+import {
+  usePilotAttachmentStore,
+  type PilotAttachmentConversationKey,
+} from '@/features/pilot/PilotAttachmentContext';
 import dayjs from 'dayjs';
 
 const { Content } = Layout;
@@ -76,6 +80,14 @@ function computeStreak(apps: Application[], now = dayjs()): number {
 }
 
 export default function AppShell() {
+  return (
+    <PilotAttachmentProvider>
+      <AppShellContent />
+    </PilotAttachmentProvider>
+  );
+}
+
+function AppShellContent() {
   const [view, setView] = useState<ViewMode>('dashboard');
   const [addOpen, setAddOpen] = useState(false);
   const [resumeUploadOpen, setResumeUploadOpen] = useState(false);
@@ -85,12 +97,16 @@ export default function AppShell() {
   const [selected, setSelected] = useState<Application | null>(null);
   const [coachOfferId, setCoachOfferId] = useState<number | undefined>(undefined);
   const [chatStartRequest, setChatStartRequest] = useState<ChatStartRequest>();
+  const [activePilotAttachmentKey, setActivePilotAttachmentKey] = useState<PilotAttachmentConversationKey>();
+  const [pendingAttachmentDraftKey, setPendingAttachmentDraftKey] = useState<PilotAttachmentConversationKey>();
+  const pendingAttachmentDraftKeyRef = useRef<PilotAttachmentConversationKey>();
   const nextChatStartRequestKey = useRef(0);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [now, setNow] = useState(() => dayjs());
   const [pilotRailAvailable, setPilotRailAvailable] = useState(() =>
     typeof window === 'undefined' ? false : window.matchMedia('(min-width: 1180px)').matches
   );
+  const { addAttachment: addAttachmentToKey, createNewDraftWithAttachment } = usePilotAttachmentStore();
 
   const { data: applications = [], isLoading, isError: appsError } = useQuery({
     queryKey: ['applications'],
@@ -208,6 +224,27 @@ export default function AppShell() {
     setChatOpen(true);
   };
 
+  const attachToPilot = (attachment: PilotContextAttachment) => {
+    openChat();
+    const attachmentKey =
+      activePilotAttachmentKey ?? pendingAttachmentDraftKeyRef.current ?? pendingAttachmentDraftKey;
+    if (attachmentKey) {
+      addAttachmentToKey(attachmentKey, attachment);
+      return;
+    }
+    const key = createNewDraftWithAttachment(attachment);
+    pendingAttachmentDraftKeyRef.current = key;
+    setPendingAttachmentDraftKey(key);
+  };
+
+  const syncPilotAttachmentKey = (key?: PilotAttachmentConversationKey) => {
+    setActivePilotAttachmentKey(key);
+    if (key && key === pendingAttachmentDraftKeyRef.current) {
+      pendingAttachmentDraftKeyRef.current = undefined;
+      setPendingAttachmentDraftKey(undefined);
+    }
+  };
+
   const startApplicationChat = (application: Application) => {
     setCoachOfferId(undefined);
     setChatStartRequest({
@@ -261,6 +298,7 @@ export default function AppShell() {
       open
       onClose={() => setSelected(null)}
       onAskPilot={startApplicationChat}
+      onAttachToPilot={attachToPilot}
     />
   ) : (
     <>
@@ -288,7 +326,7 @@ export default function AppShell() {
             />
           )}
           {view === 'board' && (
-            <KanbanBoard applications={apps} onOpenDetail={openApplicationDetail} onAskPilot={startApplicationChat} />
+            <KanbanBoard applications={apps} onOpenDetail={openApplicationDetail} onAskPilot={startApplicationChat} onAttachToPilot={attachToPilot} />
           )}
           {view === 'applications-list' && (
             <ApplicationListView
@@ -296,6 +334,7 @@ export default function AppShell() {
                events={evs}
                onOpenDetail={openApplicationDetail}
                onAskPilot={startApplicationChat}
+               onAttachToPilot={attachToPilot}
             />
           )}
           {view === 'calendar' && (
@@ -305,12 +344,12 @@ export default function AppShell() {
             <RemindersView onNavigate={navigateToView} onOpenDetailById={goDetailById} />
           )}
           {view === 'offers' && (
-            <OfferCenterView applications={apps} onCoach={(offer) => openChat(offer.id)} />
+            <OfferCenterView applications={apps} onCoach={(offer) => openChat(offer.id)} onAttachToPilot={attachToPilot} />
           )}
           {view === 'knowledge' && <KnowledgeLibraryView />}
           {view === 'questions' && <QuestionBankView />}
           {view === 'interview' && <InterviewV01View />}
-          {view === 'resumes' && <ResumeLibraryView />}
+          {view === 'resumes' && <ResumeLibraryView onAttachToPilot={attachToPilot} />}
           {view === 'pilot' && (
             <div style={{ height: 'calc(100vh - 128px)', minHeight: 640 }}>
               <ChatPanel
@@ -320,6 +359,8 @@ export default function AppShell() {
                 onOpenSettings={() => setAISettingsOpen(true)}
                 startRequest={chatStartRequest}
                 onDataChanged={refreshWorkspaceData}
+                attachmentDraftKey={pendingAttachmentDraftKey}
+                onAttachmentKeyChange={syncPilotAttachmentKey}
               />
             </div>
           )}
@@ -330,7 +371,6 @@ export default function AppShell() {
   );
 
   return (
-    <PilotAttachmentProvider>
     <Layout
       className="op-app-shell"
       style={{ minHeight: '100vh', background: 'var(--op-layout-bg)' }}
@@ -376,6 +416,8 @@ export default function AppShell() {
             startRequest={chatStartRequest}
             onDataChanged={refreshWorkspaceData}
             pageContext={pageContext}
+            attachmentDraftKey={pendingAttachmentDraftKey}
+            onAttachmentKeyChange={syncPilotAttachmentKey}
           />
         </aside>
       )}
@@ -414,9 +456,10 @@ export default function AppShell() {
           startRequest={chatStartRequest}
           onDataChanged={refreshWorkspaceData}
           pageContext={pageContext}
+          attachmentDraftKey={pendingAttachmentDraftKey}
+          onAttachmentKeyChange={syncPilotAttachmentKey}
         />
       )}
     </Layout>
-    </PilotAttachmentProvider>
   );
 }

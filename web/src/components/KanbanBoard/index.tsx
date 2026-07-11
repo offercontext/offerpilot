@@ -30,9 +30,10 @@ interface KanbanBoardProps {
   applications: Application[];
   onOpenDetail?: (app: Application) => void;
   onAskPilot?: (app: Application) => void;
+  onAttachToPilot?: (attachment: import('@/types/chat').PilotContextAttachment) => void;
 }
 
-export default function KanbanBoard({ applications, onOpenDetail, onAskPilot }: KanbanBoardProps) {
+export default function KanbanBoard({ applications, onOpenDetail, onAskPilot, onAttachToPilot }: KanbanBoardProps) {
   const queryClient = useQueryClient();
   const [activeId, setActiveId] = useState<number | null>(null);
   const [pendingMove, setPendingMove] = useState<{ app: Application; status: ApplicationStatus } | null>(null);
@@ -129,6 +130,7 @@ export default function KanbanBoard({ applications, onOpenDetail, onAskPilot }: 
             activeId={activeId}
             onOpenDetail={onOpenDetail}
             onAskPilot={onAskPilot}
+            onAttachToPilot={onAttachToPilot}
             onRequestStatusChange={requestStatusChange}
           />
         ))}

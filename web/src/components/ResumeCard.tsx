@@ -3,6 +3,7 @@ import { CopyOutlined, DeleteOutlined, EditOutlined, StarOutlined } from '@ant-d
 import dayjs from 'dayjs';
 import type { ReactNode } from 'react';
 import type { Resume } from '@/types/resume';
+import PilotAttachmentHandle from './PilotAttachmentHandle';
 
 interface Props {
   resume: Resume;
@@ -10,6 +11,7 @@ interface Props {
   onSetMaster: (id: number) => void;
   onCopy: (id: number) => void;
   onDelete: (id: number) => void;
+  onAttachToPilot?: (attachment: import('@/types/chat').PilotContextAttachment) => void;
 }
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -29,7 +31,7 @@ const SECTION_LABELS: Record<string, string> = {
   skills: '技能清单',
 };
 
-export default function ResumeCard({ resume, onEdit, onSetMaster, onCopy, onDelete }: Props) {
+export default function ResumeCard({ resume, onEdit, onSetMaster, onCopy, onDelete, onAttachToPilot }: Props) {
   const title = resume.title || resume.name || `简历 #${resume.id}`;
   const sourceLabel = SOURCE_LABELS[resume.source] ?? resume.source;
   const completion = Math.max(0, Math.min(100, resume.completion_percent ?? 0));
@@ -82,6 +84,15 @@ export default function ResumeCard({ resume, onEdit, onSetMaster, onCopy, onDele
         )}
         <VDivider />
         <CardAction label="复制" icon={<CopyOutlined />} onClick={() => onCopy(resume.id)} />
+        {onAttachToPilot && (
+          <>
+            <VDivider />
+            <PilotAttachmentHandle
+              attachment={{ kind: 'resume', id: String(resume.id), label: title }}
+              onAttach={onAttachToPilot}
+            />
+          </>
+        )}
         <VDivider />
         <CardAction
           label="删除"
