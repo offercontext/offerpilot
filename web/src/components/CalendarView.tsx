@@ -231,6 +231,7 @@ export default function CalendarView({
             onClick={() => {
               cancelPendingEdit();
               setSelectedDate(null);
+              setFocusedEventId(null);
             }}
           >
             返回日历
@@ -397,7 +398,11 @@ export default function CalendarView({
                     isToday ? styles.cellToday : '',
                     dayEntries.length > 0 ? styles.cellActive : '',
                   ].join(' ')}
-                  onClick={() => dayEntries.length > 0 && setSelectedDate(ds)}
+                  onClick={() => {
+                    if (dayEntries.length === 0) return;
+                    setFocusedEventId(null);
+                    setSelectedDate(ds);
+                  }}
                 >
                   <div className={styles.dateNum}>{d.date()}</div>
                   {dayEntries.length > 0 && (

@@ -55,6 +55,7 @@ vi.mock('./Sidebar', () => ({
   default: (props: any) => (
     <nav>
       <button type="button" data-testid="nav-pilot" onClick={() => props.onChange('pilot')}>Pilot</button>
+      <button type="button" data-testid="nav-board" onClick={() => props.onChange('board')}>Board</button>
       <button type="button" data-testid="nav-offers" onClick={() => props.onChange('offers')}>Offers</button>
     </nav>
   ),
@@ -182,6 +183,24 @@ describe('AppShell evidence navigation', () => {
     expect(view.querySelector('[data-testid="chat-drawer"]')).not.toBeNull();
 
     act(() => view.querySelector<HTMLButtonElement>('[data-testid="close-application"]')?.click());
+    act(() => view.querySelector<HTMLButtonElement>('[data-testid="nav-offers"]')?.click());
+    await flush();
+
+    expect(view.querySelector('[data-testid="offer-focus"]')?.textContent).toBe('none');
+  });
+
+  it('clears an errored evidence target when the user leaves its destination', async () => {
+    const view = render(<AppShell />);
+    await flush();
+
+    act(() => view.querySelector<HTMLButtonElement>('[data-testid="nav-pilot"]')?.click());
+    await flush();
+    act(() => view.querySelector<HTMLButtonElement>('[data-testid="open-offer-page"]')?.click());
+    await flush();
+
+    expect(view.querySelector('[data-testid="offer-focus"]')?.textContent).toBe('9');
+    act(() => view.querySelector<HTMLButtonElement>('[data-testid="nav-board"]')?.click());
+    await flush();
     act(() => view.querySelector<HTMLButtonElement>('[data-testid="nav-offers"]')?.click());
     await flush();
 

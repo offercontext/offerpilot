@@ -279,9 +279,10 @@ function AppShellContent() {
     }
   };
 
-  const navigateToView = (nextView: ViewMode) => {
+  const navigateToView = (nextView: ViewMode, { preserveEvidenceFocus = false }: { preserveEvidenceFocus?: boolean } = {}) => {
     setAISettingsOpen(false);
     setSelected(null);
+    if (!preserveEvidenceFocus) setEvidenceFocus(null);
     if (nextView === 'pilot') {
       setChatOpen(false);
       setPilotDrawerOpen(false);
@@ -319,14 +320,14 @@ function AppShellContent() {
     setSelected(null);
     setEvidenceFocus(target);
     if (target.kind === 'offer') {
-      navigateToView('offers');
+      navigateToView('offers', { preserveEvidenceFocus: true });
       return;
     }
     if (target.kind === 'resume') {
-      navigateToView('resumes');
+      navigateToView('resumes', { preserveEvidenceFocus: true });
       return;
     }
-    navigateToView('calendar');
+    navigateToView('calendar', { preserveEvidenceFocus: true });
   };
 
   const goDetailById = (appId: number) => {

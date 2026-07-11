@@ -290,4 +290,24 @@ describe('evidence destination query states', () => {
     expect(consumed).toHaveBeenCalledTimes(1);
     expect(view.querySelector('[class*="entryItemFocused"]')).not.toBeNull();
   });
+
+  it('clears focused Calendar evidence before manually opening another populated day', () => {
+    setQueryState({
+      data: [
+        { app_id: 1, date: '2026-07-11', event_id: 9, title: 'Focused', type: 'interview' },
+        { app_id: 1, date: '2026-07-12', event_id: 10, title: 'Other', type: 'interview' },
+      ],
+    });
+    const view = render(
+      <CalendarView applications={[application]} onOpenDetail={vi.fn()} focusEvent={focusEvent} onEvidenceFocusConsumed={vi.fn()} />,
+    );
+
+    expect(view.querySelector('[class*="entryItemFocused"]')).not.toBeNull();
+    act(() => Array.from(view.querySelectorAll('button')).find((button) => button.textContent === '返回日历')?.click());
+    const otherDay = Array.from(view.querySelectorAll('div')).find((element) => element.textContent === '12');
+    act(() => otherDay?.parentElement?.click());
+
+    expect(antdState.message.warning).not.toHaveBeenCalled();
+    expect(view.querySelector('[class*="entryItemFocused"]')).toBeNull();
+  });
 });
