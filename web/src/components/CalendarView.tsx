@@ -42,9 +42,11 @@ export default function CalendarView({
   const [loadingEventId, setLoadingEventId] = useState<number | null>(null);
   const latestEditEventId = useRef<number | null>(null);
   const editRequestToken = useRef(0);
+  const focusedEvidenceTarget = useRef<Extract<EvidenceTarget, { kind: 'event' }> | null>(null);
+  const consumedEvidenceTarget = useRef<Extract<EvidenceTarget, { kind: 'event' }> | null>(null);
   const monthKey = currentMonth.format('YYYY-MM');
 
-  const { data: rawEntries, isLoading, isError, refetch } = useQuery({
+  const { data: rawEntries, isLoading, isError, isFetching, refetch } = useQuery({
     queryKey: ['calendar', monthKey],
     queryFn: () => getCalendar(monthKey),
   });
@@ -87,7 +89,11 @@ export default function CalendarView({
   };
 
   useEffect(() => {
-    if (!focusEvent) return;
+    if (!focusEvent) {
+      focusedEvidenceTarget.current = null;
+      consumedEvidenceTarget.current = null;
+      return;
+    }
     const date = eventFocusDate(focusEvent.scheduledAt);
     if (!date) {
       setFocusedEventId(null);
@@ -96,22 +102,29 @@ export default function CalendarView({
       return;
     }
 
-    cancelPendingEdit();
-    setFormOpen(false);
-    setEditingEvent(null);
-    setCurrentMonth(dayjs(date).startOf('month'));
-    setSelectedDate(date);
-    setFocusedEventId(focusEvent.id);
-    if (!isError) onEvidenceFocusConsumed?.();
-  }, [focusEvent, isError, onEvidenceFocusConsumed]);
+    if (focusedEvidenceTarget.current !== focusEvent) {
+      focusedEvidenceTarget.current = focusEvent;
+      consumedEvidenceTarget.current = null;
+      cancelPendingEdit();
+      setFormOpen(false);
+      setEditingEvent(null);
+      setCurrentMonth(dayjs(date).startOf('month'));
+      setSelectedDate(date);
+      setFocusedEventId(focusEvent.id);
+    }
+
+    if (isError || isFetching || consumedEvidenceTarget.current === focusEvent) return;
+    consumedEvidenceTarget.current = focusEvent;
+    onEvidenceFocusConsumed?.();
+  }, [focusEvent, isError, isFetching, onEvidenceFocusConsumed]);
 
   useEffect(() => {
-    if (focusedEventId === null || !selectedDate || isLoading || isError) return;
+    if (focusedEventId === null || !selectedDate || isLoading || isError || isFetching) return;
     if (monthKey !== dayjs(selectedDate).format('YYYY-MM')) return;
     if (selectedEntries.some((entry) => entry.event_id === focusedEventId)) return;
     message.warning('引用的记录已不存在');
     setFocusedEventId(null);
-  }, [focusedEventId, isLoading, isError, monthKey, selectedDate, selectedEntries, onEvidenceFocusConsumed]);
+  }, [focusedEventId, isLoading, isError, isFetching, monthKey, selectedDate, selectedEntries]);
 
   const deleteMutation = useMutation({
     mutationFn: deleteEvent,

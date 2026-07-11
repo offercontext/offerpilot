@@ -148,21 +148,22 @@ describe('AppShell source contract', () => {
   });
 
   it('retains destination focus while its queried data is in an error state', () => {
-    expect(offerCenterView).toContain('const { data: offers = [], isLoading, isError, refetch } = useQuery({');
-    expect(offerCenterView).toContain('if (focusOfferId === undefined || isLoading || isError) return;');
-    expect(resumeLibraryView).toContain('if (focusResumeId === undefined || resumesQuery.isLoading || resumesQuery.isError) return;');
-    expect(calendarView).toContain('const { data: rawEntries, isLoading, isError, refetch } = useQuery({');
-    expect(calendarView).toContain('if (focusedEventId === null || !selectedDate || isLoading || isError) return;');
+    expect(offerCenterView).toContain('const { data: offers = [], isLoading, isError, isFetching, refetch } = useQuery({');
+    expect(offerCenterView).toContain('if (focusOfferId === undefined || isLoading || isError || isFetching) return;');
+    expect(resumeLibraryView).toContain('resumesQuery.isFetching');
+    expect(calendarView).toContain('const { data: rawEntries, isLoading, isError, isFetching, refetch } = useQuery({');
+    expect(calendarView).toContain('if (focusedEventId === null || !selectedDate || isLoading || isError || isFetching) return;');
   });
 
   it('keeps missing calendar-event cleanup local after handing off valid focus', () => {
-    const initialFocusStart = calendarView.indexOf('useEffect(() => {\n    if (!focusEvent) return;');
+    const initialFocusStart = calendarView.indexOf('const date = eventFocusDate(focusEvent.scheduledAt);');
     const verificationStart = calendarView.indexOf('useEffect(() => {\n    if (focusedEventId === null', initialFocusStart);
     const verificationEnd = calendarView.indexOf('const deleteMutation', verificationStart);
     const initialFocus = calendarView.slice(initialFocusStart, verificationStart);
     const verification = calendarView.slice(verificationStart, verificationEnd);
 
-    expect(initialFocus).toContain('setFocusedEventId(focusEvent.id);\n    if (!isError) onEvidenceFocusConsumed?.();');
+    expect(initialFocus).toContain('setFocusedEventId(focusEvent.id);');
+    expect(initialFocus).toContain('if (isError || isFetching || consumedEvidenceTarget.current === focusEvent) return;');
     expect(verification).toContain('setFocusedEventId(null);');
     expect(verification).not.toContain('onEvidenceFocusConsumed?.();');
   });

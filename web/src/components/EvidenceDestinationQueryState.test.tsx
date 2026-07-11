@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Application } from '@/types/application';
 import OfferCenterView from './OfferCenterView';
 import ResumeLibraryView from './ResumeLibraryView';
@@ -12,6 +12,7 @@ const queryState = vi.hoisted(() => ({
     data: [] as unknown,
     isLoading: false,
     isError: false,
+    isFetching: false,
     refetch: vi.fn(),
   },
 }));
@@ -106,14 +107,20 @@ function setQueryState({
   data = [],
   isLoading = false,
   isError = false,
+  isFetching = false,
 }: Partial<typeof queryState.current>) {
   queryState.current = {
     data,
     isLoading,
     isError,
+    isFetching,
     refetch: vi.fn(),
   };
 }
+
+beforeEach(() => {
+  window.scrollTo = vi.fn();
+});
 
 afterEach(() => {
   act(() => root?.unmount());
@@ -212,5 +219,74 @@ describe('evidence destination query states', () => {
     expect(consumed).not.toHaveBeenCalled();
     act(() => Array.from(view.querySelectorAll('button')).find((button) => button.textContent === '重试')?.click());
     expect(queryState.current.refetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for an Offer background refetch before resolving focus', () => {
+    const consumed = vi.fn();
+    setQueryState({ data: [], isFetching: true });
+    render(
+      <OfferCenterView
+        applications={[application]}
+        onCoach={vi.fn()}
+        focusOfferId={9}
+        onEvidenceFocusConsumed={consumed}
+      />,
+    );
+
+    expect(antdState.message.warning).not.toHaveBeenCalled();
+    expect(consumed).not.toHaveBeenCalled();
+
+    setQueryState({ data: [{ id: 9, signing_bonus: 0, total_cash: 0 }], isFetching: false });
+    rerender(<OfferCenterView applications={[application]} onCoach={vi.fn()} focusOfferId={9} onEvidenceFocusConsumed={consumed} />);
+
+    expect(antdState.message.warning).not.toHaveBeenCalled();
+    expect(consumed).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for a Resume background refetch before resolving focus', () => {
+    const consumed = vi.fn();
+    setQueryState({ data: [], isFetching: true });
+    render(<ResumeLibraryView focusResumeId={9} onEvidenceFocusConsumed={consumed} />);
+
+    expect(antdState.message.warning).not.toHaveBeenCalled();
+    expect(consumed).not.toHaveBeenCalled();
+
+    setQueryState({ data: [{ id: 9 }], isFetching: false });
+    rerender(<ResumeLibraryView focusResumeId={9} onEvidenceFocusConsumed={consumed} />);
+
+    expect(antdState.message.warning).not.toHaveBeenCalled();
+    expect(consumed).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for a Calendar background refetch before resolving focus', () => {
+    const consumed = vi.fn();
+    setQueryState({ data: [], isFetching: true });
+    render(
+      <CalendarView
+        applications={[application]}
+        onOpenDetail={vi.fn()}
+        focusEvent={focusEvent}
+        onEvidenceFocusConsumed={consumed}
+      />,
+    );
+
+    expect(antdState.message.warning).not.toHaveBeenCalled();
+    expect(consumed).not.toHaveBeenCalled();
+
+    setQueryState({
+      data: [{ app_id: 1, date: '2026-07-11', event_id: 9, title: 'Interview', type: 'interview' }],
+      isFetching: false,
+    });
+    rerender(
+      <CalendarView
+        applications={[application]}
+        onOpenDetail={vi.fn()}
+        focusEvent={focusEvent}
+        onEvidenceFocusConsumed={consumed}
+      />,
+    );
+
+    expect(antdState.message.warning).not.toHaveBeenCalled();
+    expect(consumed).toHaveBeenCalledTimes(1);
   });
 });
