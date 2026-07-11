@@ -34,7 +34,7 @@ export default function OfferCenterView({
   const [compareOpen, setCompareOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
 
-  const { data: offers = [], isLoading, isError } = useQuery({
+  const { data: offers = [], isLoading, isError, refetch } = useQuery({
     queryKey: ['offers'],
     queryFn: () => listOffers(),
   });
@@ -66,8 +66,19 @@ export default function OfferCenterView({
 
   if (isLoading) {
     return (
-      <div style={{ textAlign: 'center', padding: 48 }}>
+      <div role="status" style={{ textAlign: 'center', padding: 48 }}>
         <Spin size="large" />
+        <div>正在加载 Offer</div>
+      </div>
+    );
+  }
+
+  if (isError) {
+    return (
+      <div role="alert" style={{ textAlign: 'center', padding: 48 }}>
+        <Empty description="加载 Offer 失败">
+          <Button onClick={() => void refetch()}>重试</Button>
+        </Empty>
       </div>
     );
   }

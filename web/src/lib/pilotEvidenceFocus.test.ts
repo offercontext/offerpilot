@@ -29,6 +29,10 @@ describe('eventFocusDate', () => {
     expect(eventFocusDate('2026-07-31T23:30:00Z')).toBe('2026-07-31');
   });
 
+  it('treats a timezone-less datetime as UTC', () => {
+    expect(eventFocusDate('2026-07-11T00:30:00')).toBe('2026-07-11');
+  });
+
   it('returns undefined for an invalid timestamp', () => {
     expect(eventFocusDate('not-a-timestamp')).toBeUndefined();
   });

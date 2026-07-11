@@ -300,9 +300,14 @@ function AppShellContent() {
 
   const openEvidence = (target: EvidenceTarget) => {
     setAISettingsOpen(false);
+    if (view === 'pilot' && !pilotRailAvailable) {
+      setChatOpen(true);
+    }
     if (target.kind === 'application') {
+      setEvidenceFocus(null);
       const app = apps.find((item) => item.id === target.id);
       if (app) {
+        if (view === 'pilot') setView('board');
         openApplicationDetail(app);
       } else {
         message.warning('引用的记录已不存在');
@@ -312,9 +317,6 @@ function AppShellContent() {
 
     setSelected(null);
     setEvidenceFocus(target);
-    if (view === 'pilot' && !pilotRailAvailable) {
-      setChatOpen(true);
-    }
     if (target.kind === 'offer') {
       navigateToView('offers');
       return;

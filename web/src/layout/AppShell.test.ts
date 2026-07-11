@@ -148,10 +148,10 @@ describe('AppShell source contract', () => {
   });
 
   it('retains destination focus while its queried data is in an error state', () => {
-    expect(offerCenterView).toContain('const { data: offers = [], isLoading, isError } = useQuery({');
+    expect(offerCenterView).toContain('const { data: offers = [], isLoading, isError, refetch } = useQuery({');
     expect(offerCenterView).toContain('if (focusOfferId === undefined || isLoading || isError) return;');
     expect(resumeLibraryView).toContain('if (focusResumeId === undefined || resumesQuery.isLoading || resumesQuery.isError) return;');
-    expect(calendarView).toContain('const { data: rawEntries, isLoading, isError } = useQuery({');
+    expect(calendarView).toContain('const { data: rawEntries, isLoading, isError, refetch } = useQuery({');
     expect(calendarView).toContain('if (focusedEventId === null || !selectedDate || isLoading || isError) return;');
   });
 
@@ -162,7 +162,7 @@ describe('AppShell source contract', () => {
     const initialFocus = calendarView.slice(initialFocusStart, verificationStart);
     const verification = calendarView.slice(verificationStart, verificationEnd);
 
-    expect(initialFocus).toContain('setFocusedEventId(focusEvent.id);\n    onEvidenceFocusConsumed?.();');
+    expect(initialFocus).toContain('setFocusedEventId(focusEvent.id);\n    if (!isError) onEvidenceFocusConsumed?.();');
     expect(verification).toContain('setFocusedEventId(null);');
     expect(verification).not.toContain('onEvidenceFocusConsumed?.();');
   });

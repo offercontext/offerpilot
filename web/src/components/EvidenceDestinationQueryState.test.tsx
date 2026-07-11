@@ -1,0 +1,203 @@
+// @vitest-environment jsdom
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { Application } from '@/types/application';
+import OfferCenterView from './OfferCenterView';
+import ResumeLibraryView from './ResumeLibraryView';
+import CalendarView from './CalendarView';
+
+const queryState = vi.hoisted(() => ({
+  current: {
+    data: [] as unknown,
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  },
+}));
+
+const antdState = vi.hoisted(() => ({
+  message: {
+    error: vi.fn(),
+    success: vi.fn(),
+    warning: vi.fn(),
+  },
+}));
+
+vi.mock('@tanstack/react-query', () => ({
+  useMutation: () => ({ isPending: false, mutate: vi.fn() }),
+  useQuery: () => queryState.current,
+  useQueryClient: () => ({ invalidateQueries: vi.fn() }),
+}));
+
+vi.mock('antd', () => {
+  const Button = (props: any) => (
+    <button type="button" disabled={props.disabled} onClick={props.onClick}>{props.children}</button>
+  );
+  const Input = Object.assign(
+    (props: any) => <input value={props.value} onChange={props.onChange} />,
+    { Search: (props: any) => <input value={props.value} onChange={props.onChange} /> },
+  );
+  const Empty = (props: any) => <div>{props.description}{props.children}</div>;
+  const Spin = () => <div>loading-spinner</div>;
+  const Box = (props: any) => <div>{props.children}</div>;
+
+  return {
+    Button,
+    Col: Box,
+    Empty,
+    Input,
+    message: antdState.message,
+    Popconfirm: Box,
+    Row: Box,
+    Space: Box,
+    Spin,
+    Statistic: (props: any) => <div>{props.title}{props.value}</div>,
+    Tag: Box,
+    Tooltip: Box,
+  };
+});
+
+vi.mock('@ant-design/icons', () => ({
+  CloudUploadOutlined: () => null,
+  DeleteOutlined: () => null,
+  EditOutlined: () => null,
+  FileAddOutlined: () => null,
+  FileTextOutlined: () => null,
+  LeftOutlined: () => null,
+  PlusOutlined: () => null,
+  RightOutlined: () => null,
+  SwapOutlined: () => null,
+}));
+
+vi.mock('@/components/OfferCard', () => ({ default: () => <div /> }));
+vi.mock('@/components/AddOfferForm', () => ({ default: () => <div /> }));
+vi.mock('@/components/OfferCompareDrawer', () => ({ default: () => <div /> }));
+vi.mock('@/components/ResumeCard', () => ({ default: () => <div /> }));
+vi.mock('@/components/ResumeUploadModal', () => ({ default: () => <div /> }));
+vi.mock('@/components/ResumeEditorDrawer', () => ({ default: () => <div /> }));
+vi.mock('@/components/ScheduleEventForm', () => ({ default: () => <div /> }));
+
+declare global {
+  var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
+}
+
+globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+const application = { id: 1 } as Application;
+const focusEvent = { kind: 'event' as const, id: 9, scheduledAt: '2026-07-11T09:30:00Z' };
+
+let container: HTMLDivElement | undefined;
+let root: Root | undefined;
+
+function render(ui: React.ReactNode) {
+  container = document.createElement('div');
+  document.body.appendChild(container);
+  root = createRoot(container);
+  act(() => root?.render(ui));
+  return container;
+}
+
+function setQueryState({
+  data = [],
+  isLoading = false,
+  isError = false,
+}: Partial<typeof queryState.current>) {
+  queryState.current = {
+    data,
+    isLoading,
+    isError,
+    refetch: vi.fn(),
+  };
+}
+
+afterEach(() => {
+  act(() => root?.unmount());
+  container?.remove();
+  root = undefined;
+  container = undefined;
+  vi.clearAllMocks();
+});
+
+describe('evidence destination query states', () => {
+  it('renders explicit Offer loading instead of an empty state', () => {
+    setQueryState({ isLoading: true });
+
+    const view = render(<OfferCenterView applications={[application]} onCoach={vi.fn()} />);
+
+    expect(view.textContent).toContain('正在加载 Offer');
+  });
+
+  it('renders explicit Resume loading instead of an empty library', () => {
+    setQueryState({ isLoading: true });
+
+    const view = render(<ResumeLibraryView />);
+
+    expect(view.textContent).toContain('正在加载简历');
+  });
+
+  it('prioritises Calendar selected-date loading over empty-day copy', () => {
+    setQueryState({ isLoading: true });
+
+    const view = render(
+      <CalendarView applications={[application]} onOpenDetail={vi.fn()} focusEvent={focusEvent} />,
+    );
+
+    expect(view.textContent).toContain('正在加载日程');
+    expect(view.textContent).not.toContain('这一天没有记录');
+  });
+
+  it('keeps Offer focus on query error and retries without a missing-record warning', () => {
+    setQueryState({ isError: true });
+    const consumed = vi.fn();
+
+    const view = render(
+      <OfferCenterView
+        applications={[application]}
+        onCoach={vi.fn()}
+        focusOfferId={9}
+        onEvidenceFocusConsumed={consumed}
+      />,
+    );
+
+    expect(view.textContent).toContain('加载 Offer 失败');
+    expect(antdState.message.warning).not.toHaveBeenCalled();
+    expect(consumed).not.toHaveBeenCalled();
+    act(() => view.querySelector('button')?.click());
+    expect(queryState.current.refetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps Resume focus on query error and retries without a missing-record warning', () => {
+    setQueryState({ isError: true });
+    const consumed = vi.fn();
+
+    const view = render(<ResumeLibraryView focusResumeId={9} onEvidenceFocusConsumed={consumed} />);
+
+    expect(view.textContent).toContain('加载简历失败');
+    expect(antdState.message.warning).not.toHaveBeenCalled();
+    expect(consumed).not.toHaveBeenCalled();
+    act(() => view.querySelector('button')?.click());
+    expect(queryState.current.refetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps Calendar focus on query error and retries without a missing-record warning', () => {
+    setQueryState({ isError: true });
+    const consumed = vi.fn();
+
+    const view = render(
+      <CalendarView
+        applications={[application]}
+        onOpenDetail={vi.fn()}
+        focusEvent={focusEvent}
+        onEvidenceFocusConsumed={consumed}
+      />,
+    );
+
+    expect(view.textContent).toContain('加载日程失败');
+    expect(view.textContent).not.toContain('这一天没有记录');
+    expect(antdState.message.warning).not.toHaveBeenCalled();
+    expect(consumed).not.toHaveBeenCalled();
+    act(() => Array.from(view.querySelectorAll('button')).find((button) => button.textContent === '重试')?.click());
+    expect(queryState.current.refetch).toHaveBeenCalledTimes(1);
+  });
+});

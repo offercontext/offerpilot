@@ -32,6 +32,6 @@ export function eventFocusDate(scheduledAt: string): string | undefined {
     return undefined;
   }
 
-  const date = dayjs(scheduledAt);
-  return date.isValid() ? date.utc().format('YYYY-MM-DD') : undefined;
+  const date = dayjs.utc(scheduledAt);
+  return date.isValid() ? date.format('YYYY-MM-DD') : undefined;
 }

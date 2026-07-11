@@ -158,6 +158,24 @@ export default function ResumeLibraryView({
     onEvidenceFocusConsumed?.();
   }, [focusResumeId, resumes, resumesQuery.isLoading, resumesQuery.isError, onEvidenceFocusConsumed]);
 
+  if (resumesQuery.isLoading) {
+    return (
+      <div role="status" style={{ textAlign: 'center', padding: 48 }}>
+        <Spin />
+        <div>正在加载简历</div>
+      </div>
+    );
+  }
+
+  if (resumesQuery.isError) {
+    return (
+      <div role="alert" style={{ textAlign: 'center', padding: 48 }}>
+        <div style={{ marginBottom: 12 }}>加载简历失败</div>
+        <Button onClick={() => void resumesQuery.refetch()}>重试</Button>
+      </div>
+    );
+  }
+
   const kw = keyword.trim().toLowerCase();
   const filtered = resumes.filter((r) => {
     if (!kw) return true;
@@ -225,9 +243,7 @@ export default function ResumeLibraryView({
         </div>
       </div>
 
-      {resumesQuery.isLoading ? (
-        <div style={{ textAlign: 'center', padding: 48 }}><Spin /></div>
-      ) : resumes.length === 0 ? (
+      {resumes.length === 0 ? (
         <div className={styles.emptyState}>
           <div className={styles.emptyIcon}><FileTextOutlined /></div>
           <div className={styles.emptyTitle}>还没有简历</div>

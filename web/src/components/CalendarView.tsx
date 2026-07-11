@@ -44,7 +44,7 @@ export default function CalendarView({
   const editRequestToken = useRef(0);
   const monthKey = currentMonth.format('YYYY-MM');
 
-  const { data: rawEntries, isLoading, isError } = useQuery({
+  const { data: rawEntries, isLoading, isError, refetch } = useQuery({
     queryKey: ['calendar', monthKey],
     queryFn: () => getCalendar(monthKey),
   });
@@ -102,8 +102,8 @@ export default function CalendarView({
     setCurrentMonth(dayjs(date).startOf('month'));
     setSelectedDate(date);
     setFocusedEventId(focusEvent.id);
-    onEvidenceFocusConsumed?.();
-  }, [focusEvent, onEvidenceFocusConsumed]);
+    if (!isError) onEvidenceFocusConsumed?.();
+  }, [focusEvent, isError, onEvidenceFocusConsumed]);
 
   useEffect(() => {
     if (focusedEventId === null || !selectedDate || isLoading || isError) return;
@@ -224,7 +224,17 @@ export default function CalendarView({
           </Button>
           <h2 className={styles.detailTitle}>{dayjs(selectedDate).format('M月D日 记录')}</h2>
         </div>
-        {selectedEntries.length === 0 ? (
+        {isLoading ? (
+          <div role="status" style={{ textAlign: 'center', padding: 48 }}>
+            <Spin />
+            <div>正在加载日程</div>
+          </div>
+        ) : isError ? (
+          <div role="alert" style={{ textAlign: 'center', padding: 48 }}>
+            <div style={{ marginBottom: 12 }}>加载日程失败</div>
+            <Button onClick={() => void refetch()}>重试</Button>
+          </div>
+        ) : selectedEntries.length === 0 ? (
           <Empty description="这一天没有记录" />
         ) : (
           <div>
@@ -341,8 +351,14 @@ export default function CalendarView({
       </div>
 
       {isLoading ? (
-        <div style={{ textAlign: 'center', padding: 48 }}>
+        <div role="status" style={{ textAlign: 'center', padding: 48 }}>
           <Spin />
+          <div>正在加载日程</div>
+        </div>
+      ) : isError ? (
+        <div role="alert" style={{ textAlign: 'center', padding: 48 }}>
+          <div style={{ marginBottom: 12 }}>加载日程失败</div>
+          <Button onClick={() => void refetch()}>重试</Button>
         </div>
       ) : (
         <>
