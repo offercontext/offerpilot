@@ -527,12 +527,22 @@ export function evidenceIdentity(item: EvidenceItem): string {
 
 /** Stable identity for timeline expansion state across MessageBubble reuse. */
 export function toolStepSetIdentity(steps: ToolStep[]): string {
-  return steps
-    .map((step) => {
-      const evidence = (step.evidence ?? []).map(evidenceIdentity).join('\u001f');
-      return `${step.toolCallId ?? ''}\u001f${step.name}\u001f${evidence}`;
-    })
-    .join('\u001e');
+  return JSON.stringify(
+    steps.map((step) => ({
+      name: step.name,
+      toolCallId: step.toolCallId,
+      detail: step.detail,
+      resultText: step.resultText,
+      evidenceUnavailable: step.evidenceUnavailable,
+      evidence: step.evidence?.map((item) => ({
+        identity: evidenceIdentity(item),
+        kind: item.kind,
+        title: item.title,
+        meta: item.meta,
+        snippet: item.snippet,
+      })),
+    })),
+  );
 }
 
 /** Stable evidence-set identity used to reset local disclosure state on a conversation change. */

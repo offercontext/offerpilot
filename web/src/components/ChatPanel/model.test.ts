@@ -171,6 +171,43 @@ describe('evidence selection', () => {
       toolStepSetIdentity([{ ...current[0], evidence: [item('2', 'Acme', 'applications')] }]),
     );
   });
+
+  it('changes the timeline step-set identity for ID-less rendered tool changes', () => {
+    const base = {
+      name: 'search_knowledge',
+      detail: 'first query',
+      resultText: 'first result',
+      evidenceUnavailable: true,
+      evidence: [
+        {
+          id: '1',
+          source: 'knowledge',
+          kind: 'note' as const,
+          title: 'first title',
+          meta: 'first meta',
+          snippet: 'first snippet',
+        },
+      ],
+    };
+    const identity = toolStepSetIdentity([base]);
+
+    expect(identity).not.toBe(toolStepSetIdentity([{ ...base, name: 'list_applications' }]));
+    expect(identity).not.toBe(toolStepSetIdentity([{ ...base, detail: 'second query' }]));
+    expect(identity).not.toBe(toolStepSetIdentity([{ ...base, resultText: 'second result' }]));
+    expect(identity).not.toBe(toolStepSetIdentity([{ ...base, evidenceUnavailable: false }]));
+    expect(identity).not.toBe(
+      toolStepSetIdentity([{ ...base, evidence: [{ ...base.evidence[0], title: 'second title' }] }]),
+    );
+    expect(identity).not.toBe(
+      toolStepSetIdentity([{ ...base, evidence: [{ ...base.evidence[0], meta: 'second meta' }] }]),
+    );
+    expect(identity).not.toBe(
+      toolStepSetIdentity([{ ...base, evidence: [{ ...base.evidence[0], snippet: 'second snippet' }] }]),
+    );
+    expect(identity).not.toBe(
+      toolStepSetIdentity([{ ...base, evidence: [{ ...base.evidence[0], kind: 'knowledge' as const }] }]),
+    );
+  });
 });
 
 describe('confirmation retry focus lifecycle', () => {
