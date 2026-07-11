@@ -635,6 +635,23 @@ describe('buildTurns evidence normalization', () => {
     });
   });
 
+  it('targets application evidence from a real numeric application id', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([{ id: 'call-app', name: 'list_applications', args: {} }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-app',
+        content: JSON.stringify([{ id: 7, company_name: 'Acme', position_name: 'Engineer' }]),
+      }),
+      msg({ role: 'assistant', content: 'I found an application.' }),
+    ]);
+
+    expect(turns[0].steps?.[0].evidence?.[0]?.target).toEqual({ kind: 'application', id: 7 });
+  });
+
   it('classifies event tool results as event evidence even when company is present', () => {
     const turns = buildTurns([
       msg({
@@ -676,6 +693,35 @@ describe('buildTurns evidence normalization', () => {
           source: 'list_application_events',
         },
       ],
+    });
+  });
+
+  it('targets event evidence with its structured id and scheduled time', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([{ id: 'call-event', name: 'list_application_events', args: {} }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-event',
+        content: JSON.stringify([
+          {
+            record_type: 'application_event',
+            application_event_id: 1,
+            id: 9,
+            company_name: 'Acme',
+            scheduled_at: '2026-07-01T07:00:00Z',
+          },
+        ]),
+      }),
+      msg({ role: 'assistant', content: 'I found an event.' }),
+    ]);
+
+    expect(turns[0].steps?.[0].evidence?.[0]?.target).toEqual({
+      kind: 'event',
+      id: 1,
+      scheduledAt: '2026-07-01T07:00:00Z',
     });
   });
 
@@ -859,6 +905,23 @@ describe('buildTurns evidence normalization', () => {
     });
   });
 
+  it('targets direct resume evidence from its real numeric id', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([{ id: 'call-resume', name: 'list_resumes', args: {} }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-resume',
+        content: JSON.stringify([{ record_type: 'resume', id: 6, name: 'Backend resume' }]),
+      }),
+      msg({ role: 'assistant', content: 'I found a resume.' }),
+    ]);
+
+    expect(turns[0].steps?.[0].evidence?.[0]?.target).toEqual({ kind: 'resume', id: 6 });
+  });
+
   it('classifies resume match results as match evidence instead of generic resume evidence', () => {
     const turns = buildTurns([
       msg({
@@ -897,6 +960,173 @@ describe('buildTurns evidence normalization', () => {
         },
       ],
     });
+  });
+
+  it('targets resume match evidence using resume_id instead of the match row id', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([{ id: 'call-match', name: 'list_resume_matches', args: {} }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-match',
+        content: JSON.stringify([
+          { record_type: 'resume_match', id: 9, resume_match_id: 9, resume_id: 6 },
+        ]),
+      }),
+      msg({ role: 'assistant', content: 'I found a resume match.' }),
+    ]);
+
+    expect(turns[0].steps?.[0].evidence?.[0]?.target).toEqual({ kind: 'resume', id: 6 });
+  });
+
+  it('targets offer evidence from its real numeric id', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([{ id: 'call-offer', name: 'list_offers', args: {} }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-offer',
+        content: JSON.stringify([{ id: 3, company_name: 'Acme', total_cash: 600000 }]),
+      }),
+      msg({ role: 'assistant', content: 'I found an offer.' }),
+    ]);
+
+    expect(turns[0].steps?.[0].evidence?.[0]?.target).toEqual({ kind: 'offer', id: 3 });
+  });
+
+  it('leaves malformed, string, or non-positive record ids targetless', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([
+          { id: 'call-app', name: 'list_applications', args: {} },
+          { id: 'call-offer', name: 'list_offers', args: {} },
+          { id: 'call-resume', name: 'list_resumes', args: {} },
+          { id: 'call-event', name: 'list_application_events', args: {} },
+        ]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-app',
+        content: JSON.stringify([{ id: '7', company_name: 'Acme' }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-offer',
+        content: JSON.stringify([{ id: 0, company_name: 'Acme', total_cash: 600000 }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-resume',
+        content: JSON.stringify([{ record_type: 'resume', id: '6', name: 'Backend resume' }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-event',
+        content: JSON.stringify([
+          {
+            record_type: 'application_event',
+            application_event_id: '1',
+            id: '9',
+            company_name: 'Acme',
+            scheduled_at: '2026-07-01T07:00:00Z',
+          },
+        ]),
+      }),
+      msg({ role: 'assistant', content: 'These records are not safely targetable.' }),
+    ]);
+
+    for (const step of turns[0].steps ?? []) {
+      expect(step.evidence?.[0]?.target).toBeUndefined();
+    }
+  });
+
+  it('leaves event evidence without a valid scheduled time targetless', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([
+          { id: 'call-missing-time', name: 'list_application_events', args: {} },
+          { id: 'call-invalid-time', name: 'list_application_events', args: {} },
+        ]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-missing-time',
+        content: JSON.stringify([
+          { record_type: 'application_event', application_event_id: 1, company_name: 'Acme' },
+        ]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-invalid-time',
+        content: JSON.stringify([
+          {
+            record_type: 'application_event',
+            application_event_id: 2,
+            company_name: 'Acme',
+            scheduled_at: 'not-a-date',
+          },
+        ]),
+      }),
+      msg({ role: 'assistant', content: 'These events are not safely targetable.' }),
+    ]);
+
+    for (const step of turns[0].steps ?? []) {
+      expect(step.evidence?.[0]?.target).toBeUndefined();
+    }
+  });
+
+  it('keeps unsupported, plain-text, and malformed results targetless', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([
+          { id: 'call-knowledge', name: 'search_knowledge', args: {} },
+          { id: 'call-jd', name: 'list_jd_analyses', args: {} },
+          { id: 'call-note', name: 'list_notes', args: {} },
+          { id: 'call-unknown', name: 'unknown_tool', args: {} },
+          { id: 'call-text', name: 'tool_text', args: {} },
+          { id: 'call-json', name: 'tool_json', args: {} },
+        ]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-knowledge',
+        content: JSON.stringify([{ record_type: 'knowledge_document', id: 4, title: 'Knowledge' }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-jd',
+        content: JSON.stringify([{ record_type: 'jd_analysis', id: 5, jd_text: 'Role details' }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-note',
+        content: JSON.stringify([{ id: 6, title: 'A note', company_name: 'Not an application' }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-unknown',
+        content: JSON.stringify([{ record_type: 'unknown', id: 7, company_name: 'Not an application' }]),
+      }),
+      msg({ role: 'tool', tool_call_id: 'call-text', content: 'A plain text result.' }),
+      msg({ role: 'tool', tool_call_id: 'call-json', content: '{bad json' }),
+      msg({ role: 'assistant', content: 'Only structured local records can be targets.' }),
+    ]);
+
+    expect(turns[0].steps?.map((step) => step.evidence?.[0]?.target)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]);
   });
 
   it('attaches evidence from JD analysis payloads', () => {

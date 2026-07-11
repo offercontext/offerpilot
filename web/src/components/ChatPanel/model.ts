@@ -14,9 +14,16 @@ export type EvidenceKind =
   | 'resume'
   | 'unknown';
 
+export type EvidenceTarget =
+  | { kind: 'application'; id: number }
+  | { kind: 'offer'; id: number }
+  | { kind: 'resume'; id: number }
+  | { kind: 'event'; id: number; scheduledAt: string };
+
 export interface EvidenceItem {
   id: string;
   kind: EvidenceKind;
+  target?: EvidenceTarget;
   title: string;
   meta?: string;
   snippet?: string;
@@ -300,10 +307,14 @@ function evidenceFromRecord(row: unknown, source: string, index: number): Eviden
   const recordType = text(record.record_type);
   const isResumeMatch = source.includes('resume_match') || recordType === 'resume_match';
   if (isResumeMatch) {
+    const target = hasCompatibleRecordType(recordType, source, ['resume_match'])
+      ? resumeTarget(record.resume_id)
+      : undefined;
     return [
       {
         id: `${source}-${id}`,
         kind: 'resume',
+        ...(target ? { target } : {}),
         title: `简历匹配 #${id}`,
         meta: compact([numericMeta(record.resume_id, '简历'), numericMeta(record.application_id, '投递')]).join(' · '),
         snippet: previewText(jdSummary(record.result) || text(record.jd_text)),
@@ -314,10 +325,12 @@ function evidenceFromRecord(row: unknown, source: string, index: number): Eviden
   const isResume = source.includes('resume') || recordType === 'resume';
   if (isResume) {
     const title = text(record.name) || `简历 #${id}`;
+    const target = hasCompatibleRecordType(recordType, source, ['resume']) ? resumeTarget(record.id) : undefined;
     return [
       {
         id: `${source}-${id}`,
         kind: 'resume',
+        ...(target ? { target } : {}),
         title,
         meta: text(record.parse_status),
         snippet: previewText(record.parsed_data),
@@ -341,10 +354,14 @@ function evidenceFromRecord(row: unknown, source: string, index: number): Eviden
   const isEvent = source.includes('event') || recordType === 'event' || recordType === 'application_event';
   if (isEvent) {
     const title = text(record.company_name) || text(record.title) || `日程 #${id}`;
+    const target = hasCompatibleRecordType(recordType, source, ['event', 'application_event'])
+      ? eventTarget(record)
+      : undefined;
     return [
       {
         id: `${source}-${id}`,
         kind: 'event',
+        ...(target ? { target } : {}),
         title,
         meta: compact([
           text(record.position_name),
@@ -362,10 +379,12 @@ function evidenceFromRecord(row: unknown, source: string, index: number): Eviden
   if (company) {
     if ('total_cash' in record || 'deadline' in record) {
       const amount = typeof record.total_cash === 'number' ? `${Math.round(record.total_cash / 10000)}w` : '';
+      const target = hasCompatibleRecordType(recordType, source, ['offer']) ? offerTarget(record.id) : undefined;
       return [
         {
           id: `offer-${id}`,
           kind: 'offer',
+          ...(target ? { target } : {}),
           title: company,
           meta: compact([position, amount, text(record.deadline), applicationStatusLabel(record.status)]).join(' \u00b7 '),
           snippet: previewText(text(record.assessment) || text(record.notes)),
@@ -373,10 +392,14 @@ function evidenceFromRecord(row: unknown, source: string, index: number): Eviden
         },
       ];
     }
+    const target = hasCompatibleRecordType(recordType, source, ['application'])
+      ? applicationTarget(record.id)
+      : undefined;
     return [
       {
         id: `application-${id}`,
         kind: 'application',
+        ...(target ? { target } : {}),
         title: company,
         meta: compact([position, applicationStatusLabel(record.status), text(record.applied_at)]).join(' \u00b7 '),
         snippet: previewText(record.notes),
@@ -412,6 +435,39 @@ function evidenceFromRecord(row: unknown, source: string, index: number): Eviden
 
 function text(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function safePositiveRecordId(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
+function hasCompatibleRecordType(recordType: string | undefined, source: string, expected: string[]): boolean {
+  return (
+    expected.includes(recordType ?? '') ||
+    (recordType === undefined && expected.some((type) => source.includes(type === 'application_event' ? 'event' : type)))
+  );
+}
+
+function applicationTarget(value: unknown): EvidenceTarget | undefined {
+  const id = safePositiveRecordId(value);
+  return id === undefined ? undefined : { kind: 'application', id };
+}
+
+function offerTarget(value: unknown): EvidenceTarget | undefined {
+  const id = safePositiveRecordId(value);
+  return id === undefined ? undefined : { kind: 'offer', id };
+}
+
+function resumeTarget(value: unknown): EvidenceTarget | undefined {
+  const id = safePositiveRecordId(value);
+  return id === undefined ? undefined : { kind: 'resume', id };
+}
+
+function eventTarget(record: Record<string, unknown>): EvidenceTarget | undefined {
+  const id = safePositiveRecordId(record.application_event_id) ?? safePositiveRecordId(record.id);
+  const scheduledAt = text(record.scheduled_at);
+  if (id === undefined || !scheduledAt || !dayjs(scheduledAt).isValid()) return undefined;
+  return { kind: 'event', id, scheduledAt };
 }
 
 function isApplicationStatus(value: unknown): value is ApplicationStatus {
