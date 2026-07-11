@@ -251,6 +251,7 @@ export default function ChatPanel({
   const conversationListRequestRef = useRef(0);
   const visibleRequestGenerationRef = useRef(0);
   const showArchivedRef = useRef(showArchived);
+  const handoffAttachmentKeyRef = useRef<PilotAttachmentConversationKey>();
   showArchivedRef.current = showArchived;
   const docked = variant === 'rail';
   const inlinePage = variant === 'page';
@@ -268,6 +269,7 @@ export default function ChatPanel({
 
   useEffect(() => {
     if (attachmentDraftKey) {
+      handoffAttachmentKeyRef.current = attachmentDraftKey;
       setActiveConversationKey(attachmentDraftKey);
       return;
     }
@@ -279,8 +281,16 @@ export default function ChatPanel({
       setActiveConversationKey(`new:${draftContext.requestKey}`);
       return;
     }
+    if (handoffAttachmentKeyRef.current === activeAttachmentKey) return;
     ensureNewAttachmentDraft();
-  }, [attachmentDraftKey, convID, draftContext?.requestKey, ensureNewAttachmentDraft, setActiveConversationKey]);
+  }, [
+    activeAttachmentKey,
+    attachmentDraftKey,
+    convID,
+    draftContext?.requestKey,
+    ensureNewAttachmentDraft,
+    setActiveConversationKey,
+  ]);
 
   useEffect(() => {
     onAttachmentKeyChange?.(activeAttachmentKey);

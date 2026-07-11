@@ -29,6 +29,7 @@ import {
   usePilotAttachmentStore,
   type PilotAttachmentConversationKey,
 } from '@/features/pilot/PilotAttachmentContext';
+import { retainPilotAttachmentKey } from '@/features/pilot/attachmentHandoff';
 import dayjs from 'dayjs';
 
 const { Content } = Layout;
@@ -99,6 +100,7 @@ function AppShellContent() {
   const [chatStartRequest, setChatStartRequest] = useState<ChatStartRequest>();
   const [activePilotAttachmentKey, setActivePilotAttachmentKey] = useState<PilotAttachmentConversationKey>();
   const [pendingAttachmentDraftKey, setPendingAttachmentDraftKey] = useState<PilotAttachmentConversationKey>();
+  const pilotAttachmentDraftKey = pendingAttachmentDraftKey;
   const pendingAttachmentDraftKeyRef = useRef<PilotAttachmentConversationKey>();
   const nextChatStartRequestKey = useRef(0);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -229,6 +231,8 @@ function AppShellContent() {
     const attachmentKey =
       activePilotAttachmentKey ?? pendingAttachmentDraftKeyRef.current ?? pendingAttachmentDraftKey;
     if (attachmentKey) {
+      pendingAttachmentDraftKeyRef.current = attachmentKey;
+      setPendingAttachmentDraftKey(attachmentKey);
       addAttachmentToKey(attachmentKey, attachment);
       return;
     }
@@ -238,11 +242,19 @@ function AppShellContent() {
   };
 
   const syncPilotAttachmentKey = (key?: PilotAttachmentConversationKey) => {
-    setActivePilotAttachmentKey(key);
-    if (key && key === pendingAttachmentDraftKeyRef.current) {
+    setActivePilotAttachmentKey((currentKey) => retainPilotAttachmentKey(currentKey, key));
+    if (key) {
       pendingAttachmentDraftKeyRef.current = undefined;
       setPendingAttachmentDraftKey(undefined);
     }
+  };
+
+  const handoffPilotAttachmentDraft = () => {
+    const attachmentKey =
+      activePilotAttachmentKey ?? pendingAttachmentDraftKeyRef.current ?? pendingAttachmentDraftKey;
+    if (!attachmentKey) return;
+    pendingAttachmentDraftKeyRef.current = attachmentKey;
+    setPendingAttachmentDraftKey(attachmentKey);
   };
 
   const startApplicationChat = (application: Application) => {
@@ -359,7 +371,7 @@ function AppShellContent() {
                 onOpenSettings={() => setAISettingsOpen(true)}
                 startRequest={chatStartRequest}
                 onDataChanged={refreshWorkspaceData}
-                attachmentDraftKey={pendingAttachmentDraftKey}
+                attachmentDraftKey={pilotAttachmentDraftKey}
                 onAttachmentKeyChange={syncPilotAttachmentKey}
               />
             </div>
@@ -412,11 +424,14 @@ function AppShellContent() {
             onClose={() => setCoachOfferId(undefined)}
             offerId={coachOfferId}
             onOpenSettings={() => setAISettingsOpen(true)}
-            onExpand={() => navigateToView('pilot')}
+            onExpand={() => {
+              handoffPilotAttachmentDraft();
+              navigateToView('pilot');
+            }}
             startRequest={chatStartRequest}
             onDataChanged={refreshWorkspaceData}
             pageContext={pageContext}
-            attachmentDraftKey={pendingAttachmentDraftKey}
+            attachmentDraftKey={pilotAttachmentDraftKey}
             onAttachmentKeyChange={syncPilotAttachmentKey}
           />
         </aside>
@@ -456,7 +471,7 @@ function AppShellContent() {
           startRequest={chatStartRequest}
           onDataChanged={refreshWorkspaceData}
           pageContext={pageContext}
-          attachmentDraftKey={pendingAttachmentDraftKey}
+          attachmentDraftKey={pilotAttachmentDraftKey}
           onAttachmentKeyChange={syncPilotAttachmentKey}
         />
       )}

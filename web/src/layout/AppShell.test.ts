@@ -28,7 +28,8 @@ describe('AppShell source contract', () => {
   });
 
   it('routes the docked Pilot expand action into the normal Pilot tab', () => {
-    expect(source).toContain("onExpand={() => navigateToView('pilot')}");
+    expect(source).toContain('handoffPilotAttachmentDraft();');
+    expect(source).toContain("navigateToView('pilot');");
     expect(source).not.toContain('onExpand={() => setPilotDrawerOpen(true)}');
   });
 
@@ -72,5 +73,23 @@ describe('AppShell source contract', () => {
 
     expect(fullPilotSource).toContain('onAttachmentKeyChange={syncPilotAttachmentKey}');
     expect(source).toContain('pendingAttachmentDraftKeyRef.current ?? pendingAttachmentDraftKey');
+  });
+
+  it('hands the active rail attachment draft to drawer and Pilot page replacements', () => {
+    const fullPilotStart = source.indexOf("{view === 'pilot'");
+    const fullPilotEnd = source.indexOf("{view === 'settings'", fullPilotStart);
+    const fullPilotSource = source.slice(fullPilotStart, fullPilotEnd);
+
+    expect(source).toContain(
+      'const pilotAttachmentDraftKey = pendingAttachmentDraftKey;',
+    );
+    expect(source).toContain(
+      "import { retainPilotAttachmentKey } from '@/features/pilot/attachmentHandoff'",
+    );
+    expect(source).toContain('setActivePilotAttachmentKey((currentKey) => retainPilotAttachmentKey(currentKey, key));');
+    expect(source).toContain('const handoffPilotAttachmentDraft = () => {');
+    expect(source).toContain('handoffPilotAttachmentDraft();');
+    expect(fullPilotSource).toContain('attachmentDraftKey={pilotAttachmentDraftKey}');
+    expect(source.match(/attachmentDraftKey=\{pilotAttachmentDraftKey\}/g)).toHaveLength(3);
   });
 });
