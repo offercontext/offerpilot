@@ -3177,53 +3177,53 @@ def _chat_attachment_messages(
         attachment_id = attachment["id"]
         record_id = int(attachment_id)
         if kind == "application":
-            record = applications.get(record_id)
+            application = applications.get(record_id)
             data = (
                 {
-                    "id": record.id,
-                    "company_name": record.company_name,
-                    "position_name": record.position_name,
-                    "status": record.status,
-                    "source": record.source,
-                    "notes": record.notes,
+                    "id": application.id,
+                    "company_name": application.company_name,
+                    "position_name": application.position_name,
+                    "status": application.status,
+                    "source": application.source,
+                    "notes": application.notes,
                 }
-                if record is not None
+                if application is not None
                 else None
             )
         elif kind == "offer":
-            record = offers.get(record_id)
+            offer = offers.get(record_id)
             data = (
                 {
-                    "id": record.id,
-                    "application_id": record.application_id,
-                    "company_name": record.company_name,
-                    "position_name": record.position_name,
-                    "status": record.status,
-                    "base_monthly": record.base_monthly,
-                    "months_per_year": record.months_per_year,
-                    "signing_bonus": record.signing_bonus,
-                    "equity": record.equity,
-                    "perks": record.perks,
-                    "deadline": record.deadline,
-                    "notes": record.notes,
-                    "assessment": record.assessment,
+                    "id": offer.id,
+                    "application_id": offer.application_id,
+                    "company_name": offer.company_name,
+                    "position_name": offer.position_name,
+                    "status": offer.status,
+                    "base_monthly": offer.base_monthly,
+                    "months_per_year": offer.months_per_year,
+                    "signing_bonus": offer.signing_bonus,
+                    "equity": offer.equity,
+                    "perks": offer.perks,
+                    "deadline": offer.deadline,
+                    "notes": offer.notes,
+                    "assessment": offer.assessment,
                 }
-                if record is not None
+                if offer is not None
                 else None
             )
         else:
-            record = resumes.get(record_id)
+            resume = resumes.get(record_id)
             data = (
                 {
-                    "id": record.id,
-                    "title": record.title,
-                    "name": record.name,
-                    "parse_status": record.parse_status,
-                    "is_master": record.is_master,
-                    "parsed_data": record.parsed_data,
-                    "content_json": normalize_resume_content(record.content_json),
+                    "id": resume.id,
+                    "title": resume.title,
+                    "name": resume.name,
+                    "parse_status": resume.parse_status,
+                    "is_master": resume.is_master,
+                    "parsed_data": resume.parsed_data,
+                    "content_json": normalize_resume_content(resume.content_json),
                 }
-                if record is not None
+                if resume is not None
                 else None
             )
 
