@@ -232,7 +232,6 @@ function AppShellContent() {
   };
 
   const attachToPilot = (attachment: PilotContextAttachment) => {
-    openChat();
     const attachmentKey =
       activePilotAttachmentKey ?? pendingAttachmentDraftKeyRef.current ?? pendingAttachmentDraftKey;
     if (attachmentKey) {

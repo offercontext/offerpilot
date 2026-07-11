@@ -79,6 +79,7 @@ import ProposalCard from './ProposalCard';
 import ThinkingIndicator from './ThinkingIndicator';
 import Composer from './Composer';
 import ContextAttachmentRail from './ContextAttachmentRail';
+import NativePilotAttachmentDropSurface from './NativePilotAttachmentDropSurface';
 import ContextPanel from './ContextPanel';
 import PilotContextDropTarget from '@/components/KanbanBoard/PilotContextDropTarget';
 import styles from './ChatPanel.module.css';
@@ -1519,9 +1520,15 @@ export default function ChatPanel({
     </>
   );
 
+  const nativeDropWorkspace = (
+    <NativePilotAttachmentDropSurface disabled={composerDisabled} onNativeDrop={addAttachment}>
+      {workspace}
+    </NativePilotAttachmentDropSurface>
+  );
+
   const panelWorkspace = pilotDropTarget ? (
-    <PilotContextDropTarget>{workspace}</PilotContextDropTarget>
-  ) : workspace;
+    <PilotContextDropTarget>{nativeDropWorkspace}</PilotContextDropTarget>
+  ) : nativeDropWorkspace;
 
   if (docked || inlinePage) return panelWorkspace;
 

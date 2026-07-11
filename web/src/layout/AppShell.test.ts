@@ -98,4 +98,13 @@ describe('AppShell source contract', () => {
     expect(source).toContain('shouldShowContextualPilot && contextualPilotPanelOpen &&');
     expect(source.match(/pilotDropTarget/g)).toHaveLength(2);
   });
+
+  it('keeps a visible Pilot open state unchanged when a card is attached', () => {
+    const attachStart = source.indexOf('const attachToPilot =');
+    const attachEnd = source.indexOf('const syncPilotAttachmentKey =', attachStart);
+    const attachSource = source.slice(attachStart, attachEnd);
+
+    expect(attachSource).not.toContain('openChat();');
+    expect(attachSource).toContain('addAttachmentToKey(attachmentKey, attachment);');
+  });
 });
