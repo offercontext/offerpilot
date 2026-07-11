@@ -67,7 +67,12 @@ function PilotSurface({
       setActiveConversationKey(selectedConversationKey);
       return;
     }
-    if (handoffAttachmentKeyRef.current === activeKey) return;
+    if (
+      handoffAttachmentKeyRef.current !== undefined &&
+      handoffAttachmentKeyRef.current === activeKey
+    ) {
+      return;
+    }
     ensureNewAttachmentDraft();
   }, [
     activeKey,
@@ -134,6 +139,21 @@ function HandoffHarness({ reports }: { reports: string[] }) {
 }
 
 describe('Pilot attachment surface handoff', () => {
+  it('allocates a fresh draft before the first offer or resume attachment on an empty Pilot', () => {
+    const reports: string[] = [];
+    const view = render(
+      <PilotAttachmentProvider>
+        <PilotSurface onAttachmentKeyChange={(key) => reports.push(key ?? 'undefined')} surface="rail" />
+      </PilotAttachmentProvider>,
+    );
+
+    act(() => view.querySelector<HTMLButtonElement>('[data-testid="attach"]')?.click());
+
+    expect(view.querySelector('[data-testid="key"]')?.textContent).toBe('new:draft-1');
+    expect(view.querySelector('[data-testid="count"]')?.textContent).toBe('1');
+    expect(reports).toContain('new:draft-1');
+  });
+
   it('keeps an existing rail conversation attachment through drawer and page handoffs', () => {
     const reports: string[] = [];
     const view = render(

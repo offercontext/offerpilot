@@ -341,6 +341,9 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('setActiveConversationKey(`new:${draftContext.requestKey}`)');
     expect(component).toContain('ensureNewAttachmentDraft()');
     expect(component).toContain('beginNewAttachmentDraft()');
+    expect(component).toMatch(
+      /handoffAttachmentKeyRef\.current !== undefined\s*&&\s*handoffAttachmentKeyRef\.current === activeAttachmentKey/,
+    );
   });
 
   it('clears only the send-time attachment draft after a successful send', () => {

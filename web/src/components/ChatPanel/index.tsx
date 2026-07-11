@@ -285,7 +285,12 @@ export default function ChatPanel({
       setActiveConversationKey(`new:${draftContext.requestKey}`);
       return;
     }
-    if (handoffAttachmentKeyRef.current === activeAttachmentKey) return;
+    if (
+      handoffAttachmentKeyRef.current !== undefined &&
+      handoffAttachmentKeyRef.current === activeAttachmentKey
+    ) {
+      return;
+    }
     ensureNewAttachmentDraft();
   }, [
     activeAttachmentKey,
