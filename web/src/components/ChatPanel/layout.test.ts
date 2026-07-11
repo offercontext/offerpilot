@@ -334,6 +334,23 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).not.toContain('clearAttachments()');
   });
 
+  it('keeps attachment controls in the draft UI without changing the chat stream payload', async () => {
+    const css = await loadCss();
+
+    expect(component).toContain('ContextAttachmentRail');
+    expect(component).toContain('attachments={attachments}');
+    expect(component).toContain('onRemove={removeAttachment}');
+    expect(component).toContain('onNativeDrop={addAttachment}');
+    expect(component).toContain('pilotQuickQuestions(attachments)');
+    expect(component).toContain('suggestions={attachmentSuggestions}');
+    expect(css).toContain('.contextAttachmentRail');
+    expect(css).toContain('.contextAttachmentRemove');
+    expect(css).toContain('.quickQuestion');
+    expect(css).toContain('min-height: 40px;');
+    expect(component).toContain('streamChat(trimmed, convID, requestContext');
+    expect(component).not.toContain('streamChat(trimmed, convID, requestContext, attachments');
+  });
+
   it('lets users manage conversations and remove active context from the Pilot UI', () => {
     expect(threadRail).toContain('PushpinOutlined');
     expect(threadRail).toContain('EditOutlined');

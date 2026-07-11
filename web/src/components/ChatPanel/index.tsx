@@ -69,6 +69,7 @@ import {
   pageContextKey,
   pilotPageContextRemovalReducer,
 } from '@/lib/pilotPageContext';
+import { pilotQuickQuestions } from '@/lib/pilotAttachments';
 import { usePilotAttachments } from '@/features/pilot/PilotAttachmentContext';
 import { capabilitiesForMode, type Capability } from './capabilities';
 import ThreadRail from './ThreadRail';
@@ -76,6 +77,7 @@ import MessageBubble from './MessageBubble';
 import ProposalCard from './ProposalCard';
 import ThinkingIndicator from './ThinkingIndicator';
 import Composer from './Composer';
+import ContextAttachmentRail from './ContextAttachmentRail';
 import ContextPanel from './ContextPanel';
 import styles from './ChatPanel.module.css';
 
@@ -184,6 +186,10 @@ export default function ChatPanel({
   const { message: toast } = AntApp.useApp();
   const {
     activeKey: activeAttachmentKey,
+    attachments,
+    notice: attachmentNotice,
+    addAttachment,
+    removeAttachment,
     setActiveConversationKey,
     clearAttachmentsByKey,
     beginNewAttachmentDraft,
@@ -1147,6 +1153,7 @@ export default function ChatPanel({
   const threadEvidence = collectEvidence(turns);
   const confirmationEvidence = activePending ? pendingActionEvidence(threadEvidence, activePending) : [];
   const activeRequestChips = activePageContext ? pageContextChips(activePageContext) : [];
+  const attachmentSuggestions = pilotQuickQuestions(attachments);
   const contextLabel =
     !convID && draftContext
       ? draftContext.context_label
@@ -1448,11 +1455,19 @@ export default function ChatPanel({
                 </button>
               </div>
             ) : null}
+            <ContextAttachmentRail
+              attachments={attachments}
+              disabled={composerDisabled}
+              onRemove={removeAttachment}
+              onNativeDrop={addAttachment}
+            />
+            {attachmentNotice ? <div className={styles.attachmentNotice} role="status">{attachmentNotice}</div> : null}
              <Composer
                capabilities={capabilities}
                disabled={composerDisabled}
                disabledReason={composerDisabledReason}
                resetKey={composerResetKey}
+               suggestions={attachmentSuggestions}
                onSend={sendMessage}
              />
           </section>

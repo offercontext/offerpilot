@@ -1237,6 +1237,146 @@
   padding: 12px 16px;
   position: relative;
 }
+.contextAttachmentRail {
+  margin: 0 16px 10px;
+  min-width: 0;
+  border: 1px dashed color-mix(in srgb, var(--op-border) 88%, var(--op-primary));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--op-surface) 92%, var(--chat-tint-soft));
+  transition-property: border-color, background-color, box-shadow;
+  transition-duration: 160ms;
+  transition-timing-function: var(--op-ease);
+}
+.contextAttachmentRailDragging {
+  border-color: var(--op-primary);
+  background: var(--chat-tint-soft);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--op-primary) 12%, transparent);
+}
+.contextAttachmentEmpty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 8px 11px;
+  color: var(--op-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.contextAttachmentEmpty :global(.anticon) {
+  color: var(--op-primary);
+  font-size: 14px;
+}
+.contextAttachmentList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px;
+}
+.contextAttachmentChip {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 40px;
+  border: 1px solid var(--op-border);
+  border-radius: 8px;
+  background: var(--op-surface);
+  box-shadow: var(--op-shadow-sm);
+}
+.contextAttachmentKind {
+  flex: 0 0 auto;
+  margin-left: 8px;
+  padding: 3px 6px;
+  border-radius: 5px;
+  background: var(--chat-tint-soft);
+  color: var(--op-primary);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+.contextAttachmentLabel {
+  min-width: 0;
+  margin: 0 3px 0 7px;
+  overflow: hidden;
+  color: var(--op-ink);
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.contextAttachmentRemove {
+  display: inline-flex;
+  flex: 0 0 40px;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  min-width: 40px;
+  min-height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--op-muted);
+  cursor: pointer;
+  transition-property: color, background-color, transform;
+  transition-duration: 150ms;
+  transition-timing-function: var(--op-ease);
+}
+.contextAttachmentRemove:hover:not(:disabled) {
+  background: var(--chat-tint-soft);
+  color: var(--op-primary);
+}
+.contextAttachmentRemove:focus-visible {
+  outline: 2px solid var(--op-primary);
+  outline-offset: -2px;
+}
+.contextAttachmentRemove:active:not(:disabled) {
+  transform: scale(0.96);
+}
+.contextAttachmentRemove:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.attachmentNotice {
+  margin: -3px 16px 9px;
+  color: var(--op-warning);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.quickQuestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 9px;
+}
+.quickQuestion {
+  min-height: 40px;
+  max-width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--op-border);
+  border-radius: 8px;
+  background: var(--chat-tint-soft);
+  color: var(--op-ink);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.35;
+  text-align: left;
+  transition-property: background-color, border-color, color, transform;
+  transition-duration: 150ms;
+  transition-timing-function: var(--op-ease);
+}
+.quickQuestion:hover {
+  border-color: color-mix(in srgb, var(--op-primary) 45%, var(--op-border));
+  background: var(--chat-tint);
+  color: var(--op-primary);
+}
+.quickQuestion:focus-visible {
+  outline: 2px solid var(--op-primary);
+  outline-offset: 2px;
+}
+.quickQuestion:active {
+  transform: scale(0.98);
+}
 .composerBox {
   display: flex;
   align-items: flex-end;
@@ -1811,6 +1951,9 @@
   .evidenceExpand,
   .promptCard,
   .composerBox,
+  .contextAttachmentRail,
+  .contextAttachmentRemove,
+  .quickQuestion,
   .editorDisclosure,
   .reviewBack,
   .confirmRecovery button {
