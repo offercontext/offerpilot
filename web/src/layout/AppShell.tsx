@@ -342,7 +342,7 @@ function AppShellContent() {
             />
           )}
           {view === 'board' && (
-            <KanbanBoard applications={apps} onOpenDetail={openApplicationDetail} onAskPilot={startApplicationChat} onAttachToPilot={attachToPilot} />
+            <KanbanBoard applications={apps} onOpenDetail={openApplicationDetail} onAttachToPilot={attachToPilot} />
           )}
           {view === 'applications-list' && (
             <ApplicationListView

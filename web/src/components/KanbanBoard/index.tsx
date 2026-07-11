@@ -27,11 +27,10 @@ import styles from './KanbanBoard.module.css';
 interface KanbanBoardProps {
   applications: Application[];
   onOpenDetail?: (app: Application) => void;
-  onAskPilot?: (app: Application) => void;
   onAttachToPilot?: (attachment: import('@/types/chat').PilotContextAttachment) => void;
 }
 
-export default function KanbanBoard({ applications, onOpenDetail, onAskPilot, onAttachToPilot }: KanbanBoardProps) {
+export default function KanbanBoard({ applications, onOpenDetail, onAttachToPilot }: KanbanBoardProps) {
   const queryClient = useQueryClient();
   const [activeId, setActiveId] = useState<number | null>(null);
   const [pendingMove, setPendingMove] = useState<{ app: Application; status: ApplicationStatus } | null>(null);
@@ -132,7 +131,6 @@ export default function KanbanBoard({ applications, onOpenDetail, onAskPilot, on
             cards={columns[status]}
             activeId={activeId}
             onOpenDetail={onOpenDetail}
-            onAskPilot={onAskPilot}
             onRequestStatusChange={requestStatusChange}
           />
         ))}

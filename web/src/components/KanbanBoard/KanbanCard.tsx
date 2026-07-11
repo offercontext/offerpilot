@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useDraggable } from '@dnd-kit/core';
 import { Select, message, Popconfirm, Button } from 'antd';
-import { DeleteOutlined, RightOutlined, RobotOutlined } from '@ant-design/icons';
+import { DeleteOutlined, RightOutlined } from '@ant-design/icons';
 import { useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import { deleteApplication } from '@/services/applications';
@@ -18,7 +18,6 @@ interface KanbanCardProps {
   isDragging?: boolean;
   overlay?: boolean;
   onOpenDetail?: (app: Application) => void;
-  onAskPilot?: (app: Application) => void;
   onRequestStatusChange?: (app: Application, status: ApplicationStatus) => void;
 }
 
@@ -27,7 +26,6 @@ export default function KanbanCard({
   isDragging,
   overlay,
   onOpenDetail,
-  onAskPilot,
   onRequestStatusChange,
 }: KanbanCardProps) {
   const queryClient = useQueryClient();
@@ -104,21 +102,6 @@ export default function KanbanCard({
               title="查看详情"
             >
               <RightOutlined />
-            </Button>
-          )}
-          {onAskPilot && (
-            <Button
-              type="text"
-              size="small"
-              icon={<RobotOutlined />}
-              onClick={(e) => {
-                e.stopPropagation();
-                onAskPilot(record);
-              }}
-              onPointerDown={(e) => e.stopPropagation()}
-              style={{ color: '#0284c7', padding: '0 4px' }}
-            >
-              问 Pilot
             </Button>
           )}
           <Popconfirm

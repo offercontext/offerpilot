@@ -28,5 +28,6 @@ describe('application Pilot entry contract', () => {
     expect(kanbanCard).not.toContain('applicationDragBinding');
     expect(kanbanCard).not.toContain('draggable: true');
     expect(kanbanCard).not.toContain('<PilotAttachmentHandle');
+    expect(kanbanCard).not.toContain('问 Pilot');
   });
 });
