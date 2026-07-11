@@ -148,7 +148,7 @@ export default function ResumeLibraryView({
   const resumes = resumesQuery.data ?? [];
 
   useEffect(() => {
-    if (focusResumeId === undefined || resumesQuery.isLoading) return;
+    if (focusResumeId === undefined || resumesQuery.isLoading || resumesQuery.isError) return;
     const resume = findEvidenceFocusRecord(resumes, focusResumeId);
     if (resume) {
       setEditing(resume);
@@ -156,7 +156,7 @@ export default function ResumeLibraryView({
       message.warning('引用的记录已不存在');
     }
     onEvidenceFocusConsumed?.();
-  }, [focusResumeId, resumes, resumesQuery.isLoading, onEvidenceFocusConsumed]);
+  }, [focusResumeId, resumes, resumesQuery.isLoading, resumesQuery.isError, onEvidenceFocusConsumed]);
 
   const kw = keyword.trim().toLowerCase();
   const filtered = resumes.filter((r) => {

@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import source from './AppShell.tsx?raw';
+import calendarView from '@/components/CalendarView.tsx?raw';
+import offerCenterView from '@/components/OfferCenterView.tsx?raw';
+import resumeLibraryView from '@/components/ResumeLibraryView.tsx?raw';
 
 describe('AppShell source contract', () => {
   it('closes stale application detail when a selected application disappears', () => {
@@ -132,5 +135,27 @@ describe('AppShell source contract', () => {
     expect(source).toContain('onEvidenceFocusConsumed={offerEvidenceFocus ? () => clearEvidenceFocus(offerEvidenceFocus) : undefined}');
     expect(source).toContain('onEvidenceFocusConsumed={resumeEvidenceFocus ? () => clearEvidenceFocus(resumeEvidenceFocus) : undefined}');
     expect(source).toContain('onEvidenceFocusConsumed={calendarEvidenceFocus ? () => clearEvidenceFocus(calendarEvidenceFocus) : undefined}');
+  });
+
+  it('closes offer comparison before opening focused evidence in the editor', () => {
+    const focusStart = offerCenterView.indexOf('const offer = findEvidenceFocusRecord(offers, focusOfferId);');
+    const focusEnd = offerCenterView.indexOf('onEvidenceFocusConsumed?.();', focusStart);
+    const focusEffect = offerCenterView.slice(focusStart, focusEnd);
+
+    expect(focusEffect).toContain('setCompareOpen(false);');
+    expect(focusEffect.indexOf('setCompareOpen(false);')).toBeLessThan(focusEffect.indexOf('setEditing(offer);'));
+    expect(focusEffect.indexOf('setEditing(offer);')).toBeLessThan(focusEffect.indexOf('setAddOpen(true);'));
+  });
+
+  it('retains destination focus while its queried data is in an error state', () => {
+    expect(offerCenterView).toContain('const { data: offers = [], isLoading, isError } = useQuery({');
+    expect(offerCenterView).toContain('if (focusOfferId === undefined || isLoading || isError) return;');
+    expect(resumeLibraryView).toContain('if (focusResumeId === undefined || resumesQuery.isLoading || resumesQuery.isError) return;');
+    expect(calendarView).toContain('const { data: rawEntries, isLoading, isError } = useQuery({');
+    expect(calendarView).toContain('if (focusedEventId === null || !selectedDate || isLoading || isError) return;');
+
+    const eventFocusStart = calendarView.indexOf('if (focusedEventId === null || !selectedDate || isLoading || isError) return;');
+    const eventFocusEnd = calendarView.indexOf('const deleteMutation', eventFocusStart);
+    expect(calendarView.slice(eventFocusStart, eventFocusEnd)).toContain('onEvidenceFocusConsumed?.();');
   });
 });

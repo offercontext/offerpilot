@@ -34,22 +34,23 @@ export default function OfferCenterView({
   const [compareOpen, setCompareOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
 
-  const { data: offers = [], isLoading } = useQuery({
+  const { data: offers = [], isLoading, isError } = useQuery({
     queryKey: ['offers'],
     queryFn: () => listOffers(),
   });
 
   useEffect(() => {
-    if (focusOfferId === undefined || isLoading) return;
+    if (focusOfferId === undefined || isLoading || isError) return;
     const offer = findEvidenceFocusRecord(offers, focusOfferId);
     if (offer) {
+      setCompareOpen(false);
       setEditing(offer);
       setAddOpen(true);
     } else {
       message.warning('引用的记录已不存在');
     }
     onEvidenceFocusConsumed?.();
-  }, [focusOfferId, isLoading, offers, onEvidenceFocusConsumed]);
+  }, [focusOfferId, isLoading, isError, offers, onEvidenceFocusConsumed]);
 
   const stats = useMemo(() => {
     if (offers.length === 0) return { avg: 0, maxSigning: 0 };
