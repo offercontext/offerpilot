@@ -15,7 +15,6 @@ const STATUS_OPTIONS = (Object.entries(STATUS_LABELS) as [ApplicationStatus, str
 
 interface KanbanCardProps {
   record: Application;
-  columnStatus?: ApplicationStatus;
   isDragging?: boolean;
   overlay?: boolean;
   onOpenDetail?: (app: Application) => void;
@@ -24,7 +23,6 @@ interface KanbanCardProps {
 
 export default function KanbanCard({
   record,
-  columnStatus,
   isDragging,
   overlay,
   onOpenDetail,
@@ -35,7 +33,6 @@ export default function KanbanCard({
 
   const { attributes, listeners, setNodeRef } = useDraggable({
     id: record.id,
-    data: { status: columnStatus },
     disabled: overlay,
   });
 
@@ -78,17 +75,19 @@ export default function KanbanCard({
     >
       {cardContent}
       <div className={styles.cardFooter}>
-        <Select
-          value={record.status}
-          options={STATUS_OPTIONS}
-          onChange={handleStatusChange}
-          open={selectOpen}
-          onDropdownVisibleChange={setSelectOpen}
-          size="small"
-          popupMatchSelectWidth={false}
-          style={{ minWidth: 90 }}
-          onClick={(e) => e.stopPropagation()}
-        />
+        <span onPointerDown={(e) => e.stopPropagation()}>
+          <Select
+            value={record.status}
+            options={STATUS_OPTIONS}
+            onChange={handleStatusChange}
+            open={selectOpen}
+            onDropdownVisibleChange={setSelectOpen}
+            size="small"
+            popupMatchSelectWidth={false}
+            style={{ minWidth: 90 }}
+            onClick={(e) => e.stopPropagation()}
+          />
+        </span>
         <span style={{ display: 'flex', alignItems: 'center' }}>
           {onOpenDetail && (
             <Button
@@ -98,6 +97,7 @@ export default function KanbanCard({
                 e.stopPropagation();
                 onOpenDetail(record);
               }}
+              onPointerDown={(e) => e.stopPropagation()}
               style={{ color: '#0284c7', marginLeft: 4, padding: '0 4px' }}
               title="查看详情"
             >
@@ -113,6 +113,7 @@ export default function KanbanCard({
             <DeleteOutlined
               style={{ color: '#94a3b8', marginLeft: 8, cursor: 'pointer' }}
               onClick={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
             />
           </Popconfirm>
         </span>

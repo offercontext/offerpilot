@@ -1,6 +1,6 @@
 import dayjs from 'dayjs';
 import type { Application, ApplicationInput, ApplicationStatus } from '@/types/application';
-import { STATUS_LABELS } from '@/types/application';
+import { KANBAN_COLUMNS, STATUS_LABELS } from '@/types/application';
 import type { ScheduleEvent } from '@/types/event';
 import { EVENT_TYPE_LABELS } from '@/types/event';
 
@@ -10,6 +10,20 @@ export interface ApplicationListFilter {
   keyword: string;
   status: ApplicationStatus | 'all';
   sortBy: ApplicationSortBy;
+}
+
+export const PILOT_CONTEXT_DROP_ID = 'pilot-context-drop';
+
+export type KanbanDropDestination =
+  | { kind: 'status'; status: ApplicationStatus }
+  | { kind: 'pilot' };
+
+export function resolveKanbanDropDestination(dropTargetId: string): KanbanDropDestination | null {
+  if (dropTargetId === PILOT_CONTEXT_DROP_ID) return { kind: 'pilot' };
+  if (KANBAN_STATUS_SET.has(dropTargetId as ApplicationStatus)) {
+    return { kind: 'status', status: dropTargetId as ApplicationStatus };
+  }
+  return null;
 }
 
 export function requiresClosedReason(currentStatus: ApplicationStatus, nextStatus: ApplicationStatus): boolean {
@@ -91,6 +105,8 @@ function compareApplications(a: Application, b: Application, sortBy: Application
   if (sortBy === 'applied_asc') return compareDate(a.applied_at, b.applied_at, true, a.id, b.id);
   return compareDate(a.updated_at, b.updated_at, false, a.id, b.id);
 }
+
+const KANBAN_STATUS_SET = new Set(KANBAN_COLUMNS);
 
 function compareDate(aDate: string, bDate: string, asc: boolean, aId: number, bId: number): number {
   const aValue = dayjs(aDate).valueOf();

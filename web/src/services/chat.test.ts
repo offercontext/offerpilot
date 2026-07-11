@@ -120,6 +120,26 @@ describe('settings service v0.1 contract', () => {
     expect(response).toEqual({ type: 'message', conversation_id: 3, message: 'ok' });
   });
 
+  it('serializes the same context attachments for JSON and SSE chat requests', async () => {
+    const attachments = [
+      { kind: 'application' as const, id: '12', label: 'Untrusted display label' },
+      { kind: 'resume' as const, id: '7', label: 'Primary resume' },
+    ];
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      sseResponse(
+        'event: completed\nid: run:1\ndata: {"event":"completed","seq":1,"data":{"response":{"type":"message","conversation_id":3,"message":"ok"}}}\n\n',
+      ),
+    );
+    globalThis.fetch = fetchMock as typeof fetch;
+    postMock.mockResolvedValueOnce({ data: { type: 'message', conversation_id: 3, message: 'ok' } });
+
+    await sendChat('hi', 3, { context_type: 'workspace', attachments });
+    await streamChat('hi', 3, { context_type: 'workspace', attachments });
+
+    expect(postMock.mock.calls[0][1].attachments).toEqual(attachments);
+    expect(JSON.parse(fetchMock.mock.calls[0][1]?.body as string).attachments).toEqual(attachments);
+  });
+
   it('sends page context unchanged through JSON and omits it when absent', async () => {
     const pageContext: PilotPageContext = {
       view: 'board',

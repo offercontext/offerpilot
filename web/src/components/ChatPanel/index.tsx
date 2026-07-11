@@ -69,13 +69,19 @@ import {
   pageContextKey,
   pilotPageContextRemovalReducer,
 } from '@/lib/pilotPageContext';
+import { pilotQuickQuestions } from '@/lib/pilotAttachments';
+import { usePilotAttachments } from '@/features/pilot/PilotAttachmentContext';
+import { type PilotAttachmentConversationKey } from '@/features/pilot/PilotAttachmentContext';
 import { capabilitiesForMode, type Capability } from './capabilities';
 import ThreadRail from './ThreadRail';
 import MessageBubble from './MessageBubble';
 import ProposalCard from './ProposalCard';
 import ThinkingIndicator from './ThinkingIndicator';
 import Composer from './Composer';
+import ContextAttachmentRail from './ContextAttachmentRail';
+import NativePilotAttachmentDropSurface from './NativePilotAttachmentDropSurface';
 import ContextPanel from './ContextPanel';
+import PilotContextDropTarget from '@/components/KanbanBoard/PilotContextDropTarget';
 import styles from './ChatPanel.module.css';
 
 interface Props {
@@ -88,6 +94,9 @@ interface Props {
   onDataChanged?: () => void;
   startRequest?: ChatStartRequest;
   pageContext?: PilotPageContext;
+  attachmentDraftKey?: PilotAttachmentConversationKey;
+  onAttachmentKeyChange?: (key?: PilotAttachmentConversationKey) => void;
+  pilotDropTarget?: boolean;
 }
 
 interface ConfirmationExecution {
@@ -178,9 +187,23 @@ export default function ChatPanel({
   onDataChanged,
   startRequest,
   pageContext,
+  attachmentDraftKey,
+  onAttachmentKeyChange,
+  pilotDropTarget = false,
 }: Props) {
   const queryClient = useQueryClient();
   const { message: toast } = AntApp.useApp();
+  const {
+    activeKey: activeAttachmentKey,
+    attachments,
+    notice: attachmentNotice,
+    addAttachment,
+    removeAttachment,
+    setActiveConversationKey,
+    clearAttachmentsByKey,
+    beginNewAttachmentDraft,
+    ensureNewAttachmentDraft,
+  } = usePilotAttachments();
   const incomingPageContextKey = pageContextKey(pageContext);
   const [turns, setTurns] = useState<UITurn[]>([]);
   const [convID, setConvID] = useState<number | undefined>(undefined);
@@ -232,6 +255,7 @@ export default function ChatPanel({
   const conversationListRequestRef = useRef(0);
   const visibleRequestGenerationRef = useRef(0);
   const showArchivedRef = useRef(showArchived);
+  const handoffAttachmentKeyRef = useRef<PilotAttachmentConversationKey>();
   showArchivedRef.current = showArchived;
   const docked = variant === 'rail';
   const inlinePage = variant === 'page';
@@ -246,6 +270,40 @@ export default function ChatPanel({
     queryFn: getSettings,
     enabled: open,
   });
+
+  useEffect(() => {
+    if (attachmentDraftKey) {
+      handoffAttachmentKeyRef.current = attachmentDraftKey;
+      setActiveConversationKey(attachmentDraftKey);
+      return;
+    }
+    if (convID !== undefined) {
+      setActiveConversationKey(`conversation:${convID}`);
+      return;
+    }
+    if (draftContext) {
+      setActiveConversationKey(`new:${draftContext.requestKey}`);
+      return;
+    }
+    if (
+      handoffAttachmentKeyRef.current !== undefined &&
+      handoffAttachmentKeyRef.current === activeAttachmentKey
+    ) {
+      return;
+    }
+    ensureNewAttachmentDraft();
+  }, [
+    activeAttachmentKey,
+    attachmentDraftKey,
+    convID,
+    draftContext?.requestKey,
+    ensureNewAttachmentDraft,
+    setActiveConversationKey,
+  ]);
+
+  useEffect(() => {
+    onAttachmentKeyChange?.(activeAttachmentKey);
+  }, [activeAttachmentKey, onAttachmentKeyChange]);
 
   useEffect(() => {
     dispatchPageContextRemoval({ type: 'sync', contextKey: incomingPageContextKey });
@@ -431,6 +489,7 @@ export default function ChatPanel({
   }
 
   function startNewChat() {
+    beginNewAttachmentDraft();
     markPendingAutoSelect('suppress');
     conversationSelectionRequestRef.current += 1;
     visibleRequestGenerationRef.current += 1;
@@ -734,6 +793,7 @@ export default function ChatPanel({
   async function sendMessage(text: string): Promise<boolean> {
     const trimmed = text.trim();
     if (!trimmed || loading || activePending) return false;
+    const attachmentDraftKeyAtSend = activeAttachmentKey ?? ensureNewAttachmentDraft();
     if (convID === undefined) markPendingAutoSelect('suppress');
     const visibleRequestGeneration = ++visibleRequestGenerationRef.current;
     lastConfirmationInputRef.current = null;
@@ -755,8 +815,8 @@ export default function ChatPanel({
     let streamConversationId = convID;
     try {
       const isNew = convID === undefined;
-      const requestContext =
-        isNew && draftContext
+      const requestContext = {
+        ...(isNew && draftContext
           ? {
               context_type: draftContext.context_type,
               context_ref: draftContext.context_ref,
@@ -768,7 +828,9 @@ export default function ChatPanel({
               offerApplicationId: offer?.application_id,
               offerId,
               pageContext: activePageContext,
-            });
+            })),
+        ...(attachments.length ? { attachments: [...attachments] } : {}),
+      };
       const resp = await streamChat(trimmed, convID, requestContext, {
         signal: controller.signal,
         onEvent: (event) => {
@@ -794,6 +856,7 @@ export default function ChatPanel({
       });
       if (!isCurrentVisibleRequest(visibleRequestGeneration)) {
         refreshConversations();
+        if (attachmentDraftKeyAtSend) clearAttachmentsByKey(attachmentDraftKeyAtSend);
         return true;
       }
       if (resp.type === 'confirmation_required') {
@@ -817,6 +880,7 @@ export default function ChatPanel({
          refreshConversations();
          scheduleTitleRefresh();
        }
+      if (attachmentDraftKeyAtSend) clearAttachmentsByKey(attachmentDraftKeyAtSend);
       return true;
     } catch (e: any) {
       if (!isCurrentVisibleRequest(visibleRequestGeneration)) {
@@ -1123,6 +1187,7 @@ export default function ChatPanel({
   const threadEvidence = collectEvidence(turns);
   const confirmationEvidence = activePending ? pendingActionEvidence(threadEvidence, activePending) : [];
   const activeRequestChips = activePageContext ? pageContextChips(activePageContext) : [];
+  const attachmentSuggestions = pilotQuickQuestions(attachments);
   const contextLabel =
     !convID && draftContext
       ? draftContext.context_label
@@ -1424,11 +1489,19 @@ export default function ChatPanel({
                 </button>
               </div>
             ) : null}
+            <ContextAttachmentRail
+              attachments={attachments}
+              disabled={composerDisabled}
+              onRemove={removeAttachment}
+              onNativeDrop={addAttachment}
+            />
+            {attachmentNotice ? <div className={styles.attachmentNotice} role="status">{attachmentNotice}</div> : null}
              <Composer
                capabilities={capabilities}
                disabled={composerDisabled}
                disabledReason={composerDisabledReason}
                resetKey={composerResetKey}
+               suggestions={attachmentSuggestions}
                onSend={sendMessage}
              />
           </section>
@@ -1452,7 +1525,19 @@ export default function ChatPanel({
     </>
   );
 
-  if (docked || inlinePage) return workspace;
+  const nativeDropWorkspace = (
+    <NativePilotAttachmentDropSurface disabled={composerDisabled} onNativeDrop={addAttachment}>
+      {workspace}
+    </NativePilotAttachmentDropSurface>
+  );
+
+  const panelWorkspace = pilotDropTarget ? (
+    <PilotContextDropTarget disabled={composerDisabled} onNativeDrop={addAttachment}>
+      {workspace}
+    </PilotContextDropTarget>
+  ) : nativeDropWorkspace;
+
+  if (docked || inlinePage) return panelWorkspace;
 
   return (
     <Drawer
@@ -1465,7 +1550,7 @@ export default function ChatPanel({
       closable={false}
       styles={{ body: { padding: 16, height: '100%', overflow: 'hidden', position: 'relative' } }}
     >
-      {workspace}
+      {panelWorkspace}
     </Drawer>
   );
 }

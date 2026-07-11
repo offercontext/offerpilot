@@ -44,7 +44,6 @@ export default function KanbanColumn({
             <KanbanCard
               key={card.id}
               record={card}
-              columnStatus={status}
               isDragging={card.id === activeId}
               onOpenDetail={onOpenDetail}
               onRequestStatusChange={onRequestStatusChange}

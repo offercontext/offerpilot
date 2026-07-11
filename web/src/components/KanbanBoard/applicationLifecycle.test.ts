@@ -5,6 +5,7 @@ import {
   buildApplicationStatusPayload,
   filterAndSortApplications,
   formatNextApplicationEvent,
+  resolveKanbanDropDestination,
   requiresClosedReason,
   willRecordFirstStatusTimestamp,
 } from './applicationLifecycle';
@@ -55,6 +56,12 @@ describe('application lifecycle helpers', () => {
     expect(requiresClosedReason('interview', 'closed')).toBe(true);
     expect(requiresClosedReason('closed', 'closed')).toBe(false);
     expect(requiresClosedReason('applied', 'offer')).toBe(false);
+  });
+
+  it('routes Kanban drops to either a lifecycle status or the Pilot context', () => {
+    expect(resolveKanbanDropDestination('interview')).toEqual({ kind: 'status', status: 'interview' });
+    expect(resolveKanbanDropDestination('pilot-context-drop')).toEqual({ kind: 'pilot' });
+    expect(resolveKanbanDropDestination('unknown-drop-target')).toBeNull();
   });
 
   it('builds a closed status payload with reason', () => {

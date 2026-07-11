@@ -33,7 +33,17 @@ describe('ChatPanel docked layout contract', () => {
   it('supports a normal Pilot tab page variant that reuses the expanded workspace', () => {
     expect(component).toContain("variant?: 'drawer' | 'rail' | 'page'");
     expect(component).toContain("const inlinePage = variant === 'page'");
-    expect(component).toContain('if (docked || inlinePage) return workspace');
+    expect(component).toContain('if (docked || inlinePage) return panelWorkspace');
+  });
+
+  it('mounts Kanban drop targeting inside the visible rail or drawer surface', () => {
+    expect(component).toContain("from '@/components/KanbanBoard/PilotContextDropTarget'");
+    expect(component).toContain('pilotDropTarget?: boolean');
+    expect(component).toContain('const panelWorkspace = pilotDropTarget ? (');
+    expect(component).toContain('<NativePilotAttachmentDropSurface');
+    expect(component).toContain('<PilotContextDropTarget disabled={composerDisabled} onNativeDrop={addAttachment}>');
+    expect(component).toContain('if (docked || inlinePage) return panelWorkspace');
+    expect(component).toContain('{panelWorkspace}');
   });
 
   it('limits confirmation cards in the full Pilot page without narrowing the rail drawer', async () => {
@@ -88,6 +98,12 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain("event.event === 'assistant_delta'");
     expect(component).not.toContain('sendChat,');
     expect(component).not.toContain('confirmAction,');
+  });
+
+  it('snapshots current context attachments into the chat stream request', () => {
+    expect(component).toContain('attachments: [...attachments]');
+    expect(component).toContain('const requestContext');
+    expect(component).toContain('streamChat(trimmed, convID, requestContext');
   });
 
   it('hides the thinking indicator once assistant text is streaming', () => {
@@ -317,6 +333,41 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('conversationId: convID');
     expect(component).toContain('buildChatRequestContext({');
     expect(component).toContain('streamChat(trimmed, convID, requestContext');
+  });
+
+  it('scopes attachment drafts to the displayed conversation or fresh request', () => {
+    expect(component).toContain("import { usePilotAttachments } from '@/features/pilot/PilotAttachmentContext'");
+    expect(component).toContain('setActiveConversationKey(`conversation:${convID}`)');
+    expect(component).toContain('setActiveConversationKey(`new:${draftContext.requestKey}`)');
+    expect(component).toContain('ensureNewAttachmentDraft()');
+    expect(component).toContain('beginNewAttachmentDraft()');
+    expect(component).toMatch(
+      /handoffAttachmentKeyRef\.current !== undefined\s*&&\s*handoffAttachmentKeyRef\.current === activeAttachmentKey/,
+    );
+  });
+
+  it('clears only the send-time attachment draft after a successful send', () => {
+    expect(component).toContain('activeKey: activeAttachmentKey');
+    expect(component).toContain('const attachmentDraftKeyAtSend =');
+    expect(component).toContain('clearAttachmentsByKey(attachmentDraftKeyAtSend)');
+    expect(component).not.toContain('clearAttachments()');
+  });
+
+  it('keeps attachment controls in the draft UI without changing the chat stream payload', async () => {
+    const css = await loadCss();
+
+    expect(component).toContain('ContextAttachmentRail');
+    expect(component).toContain('attachments={attachments}');
+    expect(component).toContain('onRemove={removeAttachment}');
+    expect(component).toContain('onNativeDrop={addAttachment}');
+    expect(component).toContain('pilotQuickQuestions(attachments)');
+    expect(component).toContain('suggestions={attachmentSuggestions}');
+    expect(css).toContain('.contextAttachmentRail');
+    expect(css).toContain('.contextAttachmentRemove');
+    expect(css).toContain('.quickQuestion');
+    expect(css).toContain('min-height: 40px;');
+    expect(component).toContain('streamChat(trimmed, convID, requestContext');
+    expect(component).not.toContain('streamChat(trimmed, convID, requestContext, attachments');
   });
 
   it('lets users manage conversations and remove active context from the Pilot UI', () => {

@@ -34,7 +34,11 @@ const BLANK_RESUME_CONTENT: ResumeContent = {
   raw_text: '',
 };
 
-export default function ResumeLibraryView() {
+interface ResumeLibraryViewProps {
+  onAttachToPilot?: (attachment: import('@/types/chat').PilotContextAttachment) => void;
+}
+
+export default function ResumeLibraryView({ onAttachToPilot }: ResumeLibraryViewProps) {
   const qc = useQueryClient();
   const [uploadOpen, setUploadOpen] = useState(false);
   const [editing, setEditing] = useState<Resume | null>(null);
@@ -239,6 +243,7 @@ export default function ResumeLibraryView() {
                 onSetMaster={() => setMasterMut.mutate(r.id)}
                 onCopy={() => copyMut.mutate(r.id)}
                 onDelete={() => deleteMut.mutate(r.id)}
+                onAttachToPilot={onAttachToPilot}
               />
             </div>
           ))}

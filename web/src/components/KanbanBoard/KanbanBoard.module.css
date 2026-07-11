@@ -3,6 +3,7 @@
   gap: 12px;
   overflow-x: auto;
   padding-bottom: 16px;
+  height: calc(100dvh - 176px);
   min-height: 420px;
 }
 
@@ -15,6 +16,7 @@
   border-radius: 18px;
   border: 1px solid var(--op-border);
   overflow: hidden;
+  min-height: 0;
   transition: border-color 0.2s, background 0.2s, box-shadow 0.2s;
 }
 
@@ -73,7 +75,9 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
-  min-height: 120px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .emptyColumn {
@@ -107,6 +111,14 @@
 }
 
 .card:active {
+  cursor: grabbing;
+}
+
+.cardDragSurface {
+  cursor: grab;
+}
+
+.cardDragSurface:active {
   cursor: grabbing;
 }
 
@@ -164,11 +176,21 @@
   margin-top: 8px;
 }
 
+.cardAttachmentHandle {
+  border: 0;
+  background: transparent;
+  color: #0284c7;
+  cursor: grab;
+  font-size: 12px;
+  padding: 0 4px;
+}
+
 /* Mobile responsive */
 @media (max-width: 767px) {
   .board {
     flex-direction: column;
     gap: 16px;
+    height: auto;
   }
 
   .column {

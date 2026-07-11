@@ -12,13 +12,14 @@ import OfferCompareDrawer from '@/components/OfferCompareDrawer';
 interface Props {
   applications: Application[];
   onCoach: (offer: Offer) => void;
+  onAttachToPilot?: (attachment: import('@/types/chat').PilotContextAttachment) => void;
 }
 
 function wan(n: number): string {
   return (n / 10000).toFixed(1) + '万';
 }
 
-export default function OfferCenterView({ applications, onCoach }: Props) {
+export default function OfferCenterView({ applications, onCoach, onAttachToPilot }: Props) {
   const [addOpen, setAddOpen] = useState(false);
   const [editing, setEditing] = useState<Offer | null>(null);
   const [compareOpen, setCompareOpen] = useState(false);
@@ -103,6 +104,7 @@ export default function OfferCenterView({ applications, onCoach }: Props) {
                 selected={selectedIds.includes(offer.id)}
                 onToggleSelect={toggleSelect}
                 onCoach={onCoach}
+                onAttachToPilot={onAttachToPilot}
                 onView={(o) => {
                   setEditing(o);
                   setAddOpen(true);
