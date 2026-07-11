@@ -678,12 +678,33 @@
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
-.evidenceItem {
+.evidenceItem,
+.evidenceAction {
   display: flex;
   gap: 9px;
   padding: 9px 10px;
   border-radius: 9px;
   background: var(--chat-tint-soft);
+}
+.evidenceAction {
+  width: 100%;
+  border: 0;
+  box-sizing: border-box;
+  appearance: none;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition-property: background-color;
+  transition-duration: 160ms;
+  transition-timing-function: var(--op-ease);
+}
+.evidenceAction:hover {
+  background: var(--chat-tint);
+}
+.evidenceAction:focus-visible {
+  outline: 2px solid var(--op-primary);
+  outline-offset: 2px;
 }
 .evidenceIcon {
   width: 22px;
@@ -1976,6 +1997,7 @@
   .tlHead,
   .timelineExpand,
   .evidenceExpand,
+  .evidenceAction,
   .promptCard,
   .composerBox,
   .contextAttachmentRail,

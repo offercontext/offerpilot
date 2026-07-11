@@ -55,6 +55,7 @@ import {
   confirmationErrorRequiresSync,
   shouldRestoreConfirmationRetryFocus,
   type EvidenceItem,
+  type EvidenceTarget,
   type ActiveConversationRequestOwner,
   type UITurn,
 } from './model';
@@ -97,6 +98,7 @@ interface Props {
   attachmentDraftKey?: PilotAttachmentConversationKey;
   onAttachmentKeyChange?: (key?: PilotAttachmentConversationKey) => void;
   pilotDropTarget?: boolean;
+  onOpenEvidence?: (target: EvidenceTarget) => void;
 }
 
 interface ConfirmationExecution {
@@ -190,6 +192,7 @@ export default function ChatPanel({
   attachmentDraftKey,
   onAttachmentKeyChange,
   pilotDropTarget = false,
+  onOpenEvidence,
 }: Props) {
   const queryClient = useQueryClient();
   const { message: toast } = AntApp.useApp();
@@ -1327,7 +1330,7 @@ export default function ChatPanel({
                   </div>
                 </div>
               ) : (
-                turns.map((turn, i) => <MessageBubble key={i} turn={turn} index={i} />)
+                turns.map((turn, i) => <MessageBubble key={i} turn={turn} index={i} onOpenEvidence={onOpenEvidence} />)
               )}
 
               {activeRequestChips.length > 0 ? (
@@ -1418,6 +1421,7 @@ export default function ChatPanel({
                   action={activePending}
                   loading={loading || confirmPhase === 'saving'}
                   evidence={confirmationEvidence}
+                  onOpenEvidence={onOpenEvidence}
                   onConfirm={(editedArgs) =>
                     handleConfirm({
                       approved: true,
@@ -1519,6 +1523,7 @@ export default function ChatPanel({
             onCapability={handleCapability}
             onToggleAutoApprove={toggleAutoApprove}
             onOpenSettings={onOpenSettings}
+            onOpenEvidence={onOpenEvidence}
           />
         </div>
       </div>

@@ -6,7 +6,13 @@ import {
   ProfileOutlined,
 } from '@ant-design/icons';
 import { createElement, useEffect, useId, useState } from 'react';
-import { evidenceIdentity, evidenceSetIdentity, formatEvidenceMeta, type EvidenceItem } from './model';
+import {
+  evidenceIdentity,
+  evidenceSetIdentity,
+  formatEvidenceMeta,
+  type EvidenceItem,
+  type EvidenceTarget,
+} from './model';
 import styles from './ChatPanel.module.css';
 
 interface Props {
@@ -16,6 +22,7 @@ interface Props {
   remainingCount?: number;
   compact?: boolean;
   clamped?: boolean;
+  onOpenEvidence?: (target: EvidenceTarget) => void;
 }
 
 const ICONS = {
@@ -29,6 +36,13 @@ const ICONS = {
   unknown: FileTextOutlined,
 } satisfies Record<EvidenceItem['kind'], typeof FileTextOutlined>;
 
+const TARGET_LABELS = {
+  application: '投递',
+  offer: 'Offer',
+  resume: '简历',
+  event: '日程',
+} satisfies Record<EvidenceTarget['kind'], string>;
+
 export default function EvidenceList({
   items,
   similar = [],
@@ -36,6 +50,7 @@ export default function EvidenceList({
   remainingCount,
   compact,
   clamped,
+  onOpenEvidence,
 }: Props) {
   const [expanded, setExpanded] = useState(false);
   const listId = useId();
@@ -59,8 +74,9 @@ export default function EvidenceList({
       >
         {displayedItems.map((item) => {
           const icon = ICONS[item.kind] ?? ICONS.unknown;
-          return (
-            <li key={evidenceIdentity(item)} className={styles.evidenceItem}>
+          const target = item.target;
+          const content = (
+            <>
               <span className={styles.evidenceIcon} aria-hidden="true">
                 {createElement(icon)}
               </span>
@@ -74,6 +90,21 @@ export default function EvidenceList({
                 ) : null}
                 {item.snippet ? <span className={styles.evidenceSnippet}>{item.snippet}</span> : null}
               </span>
+            </>
+          );
+
+          return (
+            <li key={evidenceIdentity(item)} className={target && onOpenEvidence ? undefined : styles.evidenceItem}>
+              {target && onOpenEvidence ? (
+                <button
+                  type="button"
+                  className={styles.evidenceAction}
+                  aria-label={`打开${TARGET_LABELS[target.kind]}：${item.title}`}
+                  onClick={() => onOpenEvidence(target)}
+                >
+                  {content}
+                </button>
+              ) : content}
             </li>
           );
         })}

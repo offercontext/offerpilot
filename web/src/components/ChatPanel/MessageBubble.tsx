@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { UITurn } from './model';
+import type { EvidenceTarget, UITurn } from './model';
 import ProcessTimeline from './ProcessTimeline';
 import styles from './ChatPanel.module.css';
 
@@ -36,9 +36,10 @@ function Pre({ children }: { children?: React.ReactNode }) {
 interface Props {
   turn: UITurn;
   index: number;
+  onOpenEvidence?: (target: EvidenceTarget) => void;
 }
 
-export default function MessageBubble({ turn, index }: Props) {
+export default function MessageBubble({ turn, index, onOpenEvidence }: Props) {
   const isUser = turn.role === 'user';
   const hasContent = turn.content.trim().length > 0;
   return (
@@ -66,7 +67,7 @@ export default function MessageBubble({ turn, index }: Props) {
             )}
           </div>
         ) : null}
-        {!isUser && turn.steps ? <ProcessTimeline steps={turn.steps} /> : null}
+        {!isUser && turn.steps ? <ProcessTimeline steps={turn.steps} onOpenEvidence={onOpenEvidence} /> : null}
       </div>
     </div>
   );

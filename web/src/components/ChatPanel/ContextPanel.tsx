@@ -3,7 +3,7 @@ import { Switch } from 'antd';
 import type { Offer } from '@/types/offer';
 import { OFFER_STATUS_LABELS, OFFER_STATUS_COLORS } from '@/types/offer';
 import type { Capability } from './capabilities';
-import { remainingEvidence, selectEvidence, type EvidenceItem } from './model';
+import { remainingEvidence, selectEvidence, type EvidenceItem, type EvidenceTarget } from './model';
 import EvidenceList from './EvidenceList';
 import styles from './ChatPanel.module.css';
 
@@ -20,6 +20,7 @@ interface Props {
   onCapability: (cap: Capability) => void;
   onToggleAutoApprove: (v: boolean) => void;
   onOpenSettings?: () => void;
+  onOpenEvidence?: (target: EvidenceTarget) => void;
 }
 
 function formatTotal(total: number): string {
@@ -40,6 +41,7 @@ export default function ContextPanel({
   onCapability,
   onToggleAutoApprove,
   onOpenSettings,
+  onOpenEvidence,
 }: Props) {
   const evidenceSelection = selectEvidence(evidence, 5);
 
@@ -77,6 +79,7 @@ export default function ContextPanel({
             remaining={remainingEvidence(evidence, evidenceSelection.visible)}
             remainingCount={evidenceSelection.remainingCount}
             clamped
+            onOpenEvidence={onOpenEvidence}
           />
         ) : (
           <div className={styles.evidenceEmpty}>

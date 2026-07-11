@@ -4,7 +4,7 @@ import dayjs from 'dayjs';
 import type { PendingAction, PendingActionEditableField } from '@/types/chat';
 import { STATUS_LABELS, type ApplicationStatus } from '@/types/application';
 import { EVENT_TYPE_LABELS, type ScheduleEventType } from '@/types/event';
-import { selectEvidence, type EvidenceItem } from './model';
+import { selectEvidence, type EvidenceItem, type EvidenceTarget } from './model';
 import { toolMeta } from './capabilities';
 import EvidenceList from './EvidenceList';
 import {
@@ -23,6 +23,7 @@ interface Props {
   evidence: EvidenceItem[];
   onConfirm: (editedArgs?: Record<string, unknown>) => void;
   onCancel: (rejectionFeedback?: string) => void;
+  onOpenEvidence?: (target: EvidenceTarget) => void;
 }
 
 const FIELD_LABELS: Record<string, string> = {
@@ -127,7 +128,7 @@ function summarizeLongValue(value: unknown, field?: string): string | null {
   return `新增 ${paragraphCount} 段内容 · ${normalized.length} 字`;
 }
 
-export default function ProposalCard({ action, loading, evidence, onConfirm, onCancel }: Props) {
+export default function ProposalCard({ action, loading, evidence, onConfirm, onCancel, onOpenEvidence }: Props) {
   const identity = actionIdentity(action);
   const editorId = `proposal-editor-${useId().replace(/:/g, '')}`;
   const [review, setReview] = useState<ProposalReviewState>(() => createProposalReviewState(action));
@@ -409,7 +410,7 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
         {!thinEvidence ? (
           <div className={styles.prEvidence}>
             <div className={styles.panelLabel}>参考依据</div>
-            <EvidenceList items={visibleEvidence.slice(0, 3)} compact />
+            <EvidenceList items={visibleEvidence.slice(0, 3)} compact onOpenEvidence={onOpenEvidence} />
           </div>
         ) : null}
       </div>

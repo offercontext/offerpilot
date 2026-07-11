@@ -1,15 +1,22 @@
 import { useLayoutEffect, useState, createElement } from 'react';
 import { RightOutlined, ThunderboltOutlined } from '@ant-design/icons';
-import { remainingEvidence, selectEvidence, toolStepSetIdentity, type ToolStep } from './model';
+import {
+  remainingEvidence,
+  selectEvidence,
+  toolStepSetIdentity,
+  type EvidenceTarget,
+  type ToolStep,
+} from './model';
 import { toolMeta } from './capabilities';
 import EvidenceList from './EvidenceList';
 import styles from './ChatPanel.module.css';
 
 interface Props {
   steps: ToolStep[];
+  onOpenEvidence?: (target: EvidenceTarget) => void;
 }
 
-export default function ProcessTimeline({ steps }: Props) {
+export default function ProcessTimeline({ steps, onOpenEvidence }: Props) {
   const [open, setOpen] = useState(false);
   const [expandedSteps, setExpandedSteps] = useState(false);
   const stepSetIdentity = toolStepSetIdentity(steps);
@@ -66,6 +73,7 @@ export default function ProcessTimeline({ steps }: Props) {
                         remainingCount={evidenceSelection.remainingCount}
                         compact
                         clamped
+                        onOpenEvidence={onOpenEvidence}
                       />
                     ) : null}
                     {step.resultText ? <div className={styles.stepFallback}>工具返回：{step.resultText}</div> : null}
