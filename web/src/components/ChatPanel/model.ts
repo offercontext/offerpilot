@@ -54,41 +54,144 @@ export interface TurnPresentation {
 
 const EVIDENCE_SNIPPET_MAX = 180;
 const TASK_TITLE_MAX_LENGTH = 36;
-const PRESENTATION_HEADING = /^ {0,3}#{2,3}[\t ]+(结论|下一步)[\t ]*$/;
-const PRESENTATION_ACTION = /^\s*[-*+][\t ]+(.+?)\s*$/;
+const MARKDOWN_HEADING = /^ {0,3}(#{1,6})[\t ]+(.+?)[\t ]*$/;
+const PRESENTATION_ACTION = /^([\t ]*)[-*+][\t ]+(.+?)\s*$/;
+
+interface MarkdownHeading {
+  level: number;
+  text: string;
+}
 
 /** Reconstruct the structured conclusion and actions from a persisted Pilot reply. */
 export function parseTurnPresentation(content: string): TurnPresentation | undefined {
   const lines = content.replace(/\r\n?/g, '\n').split('\n');
+  const fencedLines = fencedLineIndexes(lines);
   let conclusionIndex = -1;
   let nextStepsIndex = -1;
+  let nextStepsLevel = 0;
 
   for (let index = 0; index < lines.length; index += 1) {
-    const heading = lines[index].match(PRESENTATION_HEADING);
-    if (!heading) continue;
-    if (heading[1] === '结论' && conclusionIndex < 0) conclusionIndex = index;
-    if (heading[1] === '下一步' && nextStepsIndex < 0) nextStepsIndex = index;
+    if (fencedLines[index]) continue;
+    const heading = markdownHeading(lines[index]);
+    if (!heading || heading.level < 2 || heading.level > 3) continue;
+    if (heading.text === '结论' && conclusionIndex < 0) conclusionIndex = index;
+    if (heading.text === '下一步' && nextStepsIndex < 0) {
+      nextStepsIndex = index;
+      nextStepsLevel = heading.level;
+    }
   }
 
   if (conclusionIndex < 0 || nextStepsIndex < 0 || conclusionIndex > nextStepsIndex) return undefined;
 
   const conclusion = lines.slice(conclusionIndex + 1, nextStepsIndex).join('\n').trim();
-  const actions = lines
-    .slice(nextStepsIndex + 1)
-    .flatMap((line) => {
-      const match = line.match(PRESENTATION_ACTION);
-      const action = match?.[1]?.trim();
-      return action ? [action] : [];
-    })
-    .slice(0, 3);
+  const tailIndex = lines.findIndex(
+    (line, index) =>
+      index > nextStepsIndex &&
+      !fencedLines[index] &&
+      (markdownHeading(line)?.level ?? Number.POSITIVE_INFINITY) <= nextStepsLevel,
+  );
+  const actionEndIndex = tailIndex < 0 ? lines.length : tailIndex;
+  const actions = parsePresentationActions(lines, fencedLines, nextStepsIndex + 1, actionEndIndex);
 
   if (!conclusion || actions.length === 0) return undefined;
+
+  const detailMarkdown = [
+    lines.slice(0, conclusionIndex).join('\n').trim(),
+    lines.slice(actionEndIndex).join('\n').trim(),
+  ]
+    .filter(Boolean)
+    .join('\n\n');
 
   return {
     conclusion,
     actions,
-    detailMarkdown: lines.slice(0, conclusionIndex).join('\n').trim(),
+    detailMarkdown,
   };
+}
+
+function markdownHeading(line: string): MarkdownHeading | undefined {
+  const match = line.match(MARKDOWN_HEADING);
+  if (!match) return undefined;
+  return {
+    level: match[1].length,
+    text: match[2].replace(/[\t ]+#+[\t ]*$/, '').trim(),
+  };
+}
+
+function fencedLineIndexes(lines: string[]): boolean[] {
+  const fenced = Array<boolean>(lines.length).fill(false);
+  let marker: string | undefined;
+  let markerLength = 0;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = lines[index].match(/^([\t ]*)(`{3,}|~{3,})(.*)$/);
+    if (!marker) {
+      if (!match || (match[1].length > 3 && !isListNestedFence(lines, index, match[1].length))) continue;
+      fenced[index] = true;
+      marker = match[2][0];
+      markerLength = match[2].length;
+      continue;
+    }
+
+    fenced[index] = true;
+    if (match && match[2][0] === marker && match[2].length >= markerLength && /^[\t ]*$/.test(match[3])) {
+      marker = undefined;
+      markerLength = 0;
+    }
+  }
+
+  return fenced;
+}
+
+function isListNestedFence(lines: string[], index: number, indent: number): boolean {
+  for (let previousIndex = index - 1; previousIndex >= 0; previousIndex -= 1) {
+    const previousLine = lines[previousIndex];
+    if (!previousLine.trim()) continue;
+    const previousIndent = leadingIndent(previousLine);
+    if (previousIndent >= indent) continue;
+    if (/^[\t ]*(?:[-*+]|\d+[.)])[\t ]+/.test(previousLine)) return true;
+    if (previousIndent === 0) return false;
+  }
+  return false;
+}
+
+function parsePresentationActions(
+  lines: string[],
+  fencedLines: boolean[],
+  startIndex: number,
+  endIndex: number,
+): string[] {
+  const actions: string[][] = [];
+  let actionIndent: number | undefined;
+  let currentAction: string[] | undefined;
+
+  for (let index = startIndex; index < endIndex; index += 1) {
+    if (fencedLines[index]) continue;
+    const line = lines[index];
+    const action = line.match(PRESENTATION_ACTION);
+    const indent = action?.[1].length;
+
+    if (action && (actionIndent === undefined || indent === actionIndent)) {
+      actionIndent ??= indent;
+      if (actions.length >= 3) {
+        currentAction = undefined;
+        continue;
+      }
+      currentAction = [action[2].trim()];
+      actions.push(currentAction);
+      continue;
+    }
+
+    if (currentAction && actionIndent !== undefined && line.trim() && leadingIndent(line) > actionIndent) {
+      currentAction.push(line.trimEnd());
+    }
+  }
+
+  return actions.map((action) => action.join('\n').trim());
+}
+
+function leadingIndent(line: string): number {
+  return line.match(/^[\t ]*/)?.[0].length ?? 0;
 }
 
 interface RawToolCall {
@@ -389,8 +492,9 @@ export function buildTurns(stored: ChatMessage[]): UITurn[] {
 function taskTitleFor(content: string | undefined): string {
   const normalized = content?.replace(/\s+/g, ' ').trim() ?? '';
   if (!normalized) return '本轮任务';
-  if (normalized.length <= TASK_TITLE_MAX_LENGTH) return normalized;
-  return `${normalized.slice(0, TASK_TITLE_MAX_LENGTH - 1)}…`;
+  const codePoints = Array.from(normalized);
+  if (codePoints.length <= TASK_TITLE_MAX_LENGTH) return normalized;
+  return `${codePoints.slice(0, TASK_TITLE_MAX_LENGTH - 1).join('')}…`;
 }
 
 function resolveToolResultIndex(

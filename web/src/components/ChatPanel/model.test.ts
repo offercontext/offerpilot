@@ -750,4 +750,121 @@ describe('Pilot turn presentation reconstruction', () => {
     expect(turns[1].steps).toHaveLength(1);
     expect(turns[1].taskTitle).toHaveLength(36);
   });
+
+  it('stops actions at a following peer heading and retains nested list content with the trailing markdown', () => {
+    const presentation = parseTurnPresentation([
+      '前置说明。',
+      '',
+      '## 结论',
+      '',
+      '先完成面试准备。',
+      '',
+      '## 下一步',
+      '',
+      '- 完成项目案例',
+      '  - 用量化指标补充成果',
+      '- 约一次模拟面试',
+      '',
+      '## 备注',
+      '',
+      '提交后跟进反馈。',
+      '- 这不是下一步行动',
+    ].join('\n'));
+
+    expect(presentation).toEqual({
+      conclusion: '先完成面试准备。',
+      actions: ['完成项目案例\n  - 用量化指标补充成果', '约一次模拟面试'],
+      detailMarkdown: '前置说明。\n\n## 备注\n\n提交后跟进反馈。\n- 这不是下一步行动',
+    });
+  });
+
+  it('does not parse fenced historical markdown examples as a Pilot presentation', () => {
+    const historicalExample = [
+      '旧回复模板：',
+      '',
+      '```markdown',
+      '## 结论',
+      '',
+      '这只是示例结论。',
+      '',
+      '## 下一步',
+      '',
+      '- 这只是示例行动',
+      '```',
+    ].join('\n');
+
+    expect(parseTurnPresentation(historicalExample)).toBeUndefined();
+    expect(buildTurns([msg({ role: 'assistant', content: historicalExample })])[0]).toMatchObject({
+      content: historicalExample,
+      presentation: undefined,
+    });
+  });
+
+  it('does not treat fenced list examples as additional actions', () => {
+    const presentation = parseTurnPresentation([
+      '## 结论',
+      '',
+      '按计划推进。',
+      '',
+      '## 下一步',
+      '',
+      '- 准备项目案例',
+      '```markdown',
+      '- 示例列表项',
+      '* 另一条示例',
+      '```',
+      '- 安排模拟面试',
+    ].join('\n'));
+
+    expect(presentation?.actions).toEqual(['准备项目案例', '安排模拟面试']);
+  });
+
+  it('does not append nested fenced list examples to the current action', () => {
+    const presentation = parseTurnPresentation([
+      '## 结论',
+      '',
+      '按计划推进。',
+      '',
+      '## 下一步',
+      '',
+      '- 准备项目案例',
+      '    ```markdown',
+      '    ## 示例结论',
+      '    - 示例列表项',
+      '    ```',
+      '- 安排模拟面试',
+    ].join('\n'));
+
+    expect(presentation?.actions).toEqual(['准备项目案例', '安排模拟面试']);
+  });
+
+  it('does not mistake root indented code for a fence that masks a later presentation', () => {
+    const presentation = parseTurnPresentation([
+      '    ```not-a-fence-at-root',
+      '## 结论',
+      '',
+      '可以推进。',
+      '',
+      '## 下一步',
+      '',
+      '- 准备项目案例',
+    ].join('\n'));
+
+    expect(presentation).toEqual({
+      conclusion: '可以推进。',
+      actions: ['准备项目案例'],
+      detailMarkdown: '```not-a-fence-at-root',
+    });
+  });
+
+  it('truncates task titles at a code-point boundary within the 36-character display limit', () => {
+    const turns = buildTurns([
+      msg({ role: 'user', content: '😀'.repeat(37) }),
+      msg({ role: 'assistant', content: '已处理。' }),
+    ]);
+    const taskTitle = turns[1].taskTitle;
+
+    expect(taskTitle).toBe(`${'😀'.repeat(35)}…`);
+    expect(Array.from(taskTitle ?? '')).toHaveLength(36);
+  });
 });
