@@ -1048,11 +1048,16 @@ def create_app(
                 context_ref=context_ref,
             )
             conversation_id = conversation.id
-        elif chat.get_conversation(conversation_id) is None:
-            return error_response(404, "conversation not found")
+        else:
+            conversation = chat.get_conversation(conversation_id)
+            if conversation is None:
+                return error_response(404, "conversation not found")
 
         chat.append_message(conversation_id, "user", content=message)
-        history = [_chat_response_system_message(), *_stored_messages_to_ai(chat.list_messages(conversation_id))]
+        history = [
+            _chat_response_system_message(conversation.mode),
+            *_stored_messages_to_ai(chat.list_messages(conversation_id)),
+        ]
         try:
             added, reply, pending = run_turn(
                 model,
@@ -1094,8 +1099,9 @@ def create_app(
         conversation_id = int(payload.get("conversation_id") or 0)
         if conversation_id == 0:
             return error_response(400, "conversation_id is required")
+        conversation = chat.get_conversation(conversation_id)
         stored = chat.list_messages(conversation_id)
-        if not stored:
+        if conversation is None or not stored:
             return error_response(404, "conversation not found")
         pending = chat.get_pending_action(conversation_id) or _pending_action_from_stored_messages(stored)
         if pending is None:
@@ -1112,7 +1118,7 @@ def create_app(
                     jd_analyses=jd_analyses,
                     knowledge=knowledge,
                 ),
-                [_chat_response_system_message(), *_stored_messages_to_ai(stored)],
+                [_chat_response_system_message(conversation.mode), *_stored_messages_to_ai(stored)],
                 pending,
                 approved=bool(payload.get("approved")),
                 auto_approve=load_config(resolved_data_dir).chat_auto_approve_writes,
@@ -1485,17 +1491,22 @@ def _persist_ai_messages(repo: ChatRepository, conversation_id: int, messages: l
         )
 
 
-def _chat_response_system_message() -> Message:
+def _chat_response_system_message(conversation_mode: str) -> Message:
+    task_card_instruction = ""
+    if conversation_mode != "mock_interview":
+        task_card_instruction = (
+            " For substantive task replies, put supporting evidence and caveats before the ending, then end "
+            "with `## 结论` followed by one short plain-text conclusion, then `## 下一步` followed by one to "
+            "three follow-up items, each beginning with `- `. Do not add text after the next-step list. "
+            "Greetings and clarification questions do not require these headings."
+        )
     return Message(
         role="system",
         content=(
             "You are OfferPilot, a job-search copilot. Use the user's language. "
             "Keep substantive answers concise. When local tool evidence is thin, say so clearly. "
-            "Do not expose hidden reasoning. For substantive task replies, put supporting evidence "
-            "and caveats before the ending, then end with `## 结论` followed by one short plain-text "
-            "conclusion, then `## 下一步` followed by one to three follow-up items, each beginning with "
-            "`- `. Do not add text after the next-step list. Greetings and clarification questions do not "
-            "require these headings."
+            "Do not expose hidden reasoning."
+            f"{task_card_instruction}"
         ),
     )
 

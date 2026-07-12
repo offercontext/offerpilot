@@ -196,8 +196,12 @@ function parsePresentationActions(
   let currentAction: string[] | undefined;
 
   for (let index = startIndex; index < endIndex; index += 1) {
-    if (fencedLines[index]) continue;
     const line = lines[index];
+    if (fencedLines[index]) {
+      literalLines.push(line);
+      currentAction = undefined;
+      continue;
+    }
     const action = line.match(PRESENTATION_ACTION);
     const indent = action ? visualIndent(action[1]) : undefined;
 
@@ -213,6 +217,7 @@ function parsePresentationActions(
     if (action && (actionIndent === undefined || indent === actionIndent)) {
       actionIndent ??= indent;
       if (actions.length >= 3) {
+        literalLines.push(line);
         currentAction = undefined;
         continue;
       }
@@ -223,7 +228,10 @@ function parsePresentationActions(
 
     if (currentAction && actionIndent !== undefined && line.trim() && visualIndent(line) > actionIndent) {
       currentAction.push(line.trimEnd());
+      continue;
     }
+
+    literalLines.push(line);
   }
 
   return {

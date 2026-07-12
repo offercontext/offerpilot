@@ -778,6 +778,27 @@ describe('Pilot turn presentation reconstruction', () => {
     });
   });
 
+  it('preserves root prose and fenced markdown while retaining nested action continuations', () => {
+    const presentation = parseTurnPresentation([
+      '## 结论',
+      '',
+      '先完成准备。',
+      '',
+      '## 下一步',
+      '',
+      '- 执行 A',
+      '  - 保留的嵌套延续',
+      '补充说明',
+      '```markdown',
+      '- 这是围栏示例，不是行动',
+      '```',
+    ].join('\n'));
+
+    expect(presentation?.actions).toEqual(['执行 A\n  - 保留的嵌套延续']);
+    expect(presentation?.detailMarkdown).toContain('补充说明');
+    expect(presentation?.detailMarkdown).toContain('```markdown\n- 这是围栏示例，不是行动\n```');
+  });
+
   it('does not parse fenced historical markdown examples as a Pilot presentation', () => {
     const historicalExample = [
       '旧回复模板：',

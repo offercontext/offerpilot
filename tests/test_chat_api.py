@@ -72,6 +72,62 @@ def test_chat_injects_response_structure_prompt(tmp_path):
     assert "Do not add text after the next-step list" in system.content
 
 
+def test_chat_omits_task_card_prompt_for_mock_interview_on_new_and_confirm(tmp_path):
+    model = CapturingScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="w1",
+                        name="update_application_status",
+                        args=json.dumps({"id": 1, "status": "interview"}),
+                    )
+                ]
+            ),
+            Assistant(content="Mock interview update confirmed."),
+            Assistant(content="General Pilot reply."),
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    application = client.post(
+        "/api/applications",
+        json={"company_name": "OpenAI", "position_name": "Engineer", "status": "applied"},
+    ).json()
+    session = client.post("/api/mock/sessions", json={"role": "Engineer"}).json()
+    conversation_id = session["conversation_id"]
+
+    pending = client.post(
+        "/api/chat",
+        json={"message": "Start the mock interview", "conversation_id": conversation_id},
+    ).json()
+    confirmed = client.post(
+        "/api/chat/confirm",
+        json={"conversation_id": conversation_id, "approved": True},
+    )
+    general = client.post("/api/chat", json={"message": "What should I do next?", "conversation_id": 0})
+
+    assert pending["type"] == "confirmation_required"
+    assert confirmed.status_code == 200
+    assert general.status_code == 200
+    assert client.get(f"/api/applications/{application['id']}").json()["status"] == "interview"
+
+    mock_system_prompts = [
+        next(message for message in model.calls[call_index] if message.role == "system").content
+        for call_index in (0, 1)
+    ]
+    for prompt in mock_system_prompts:
+        assert "Use the user's language." in prompt
+        assert "When local tool evidence is thin" in prompt
+        assert "Do not expose hidden reasoning." in prompt
+        assert "## 结论" not in prompt
+        assert "## 下一步" not in prompt
+        assert "Do not add text after the next-step list" not in prompt
+
+    general_system = next(message for message in model.calls[2] if message.role == "system")
+    assert "## 结论" in general_system.content
+    assert "## 下一步" in general_system.content
+
+
 def test_chat_allows_wide_read_only_tool_summaries(tmp_path):
     model = ScriptedModel(
         [
