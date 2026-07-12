@@ -1,9 +1,12 @@
+<!-- 超限原因: 本文冻结 Python rewrite 的跨模块兼容面，并保留 Go/旧 Knowledge 历史基线。 -->
+
 # OfferPilot Python Rewrite Contract
 
 > Status: final Python cutover in progress; legacy Go references below are the
 > historical source baseline used to prove compatibility.
 > Baseline branch: `feature/20260705-python-rewrite`.
 > Source baseline: Go backend at `443c933` from `main`.
+> **[KR] Knowledge 模块执行一次性完整重写**：旧 knowledge API / 表 / AI tool / CLI 条目（标记 `[KR-deprecated]`）仅是历史基线。最终契约见末尾 [Knowledge Rewrite (Final Cutover)](#knowledge-rewrite-final-cutover) 和对应 Spec。
 
 This document freezes the compatibility surface for rewriting OfferPilot from Go
 to Python. The Python backend may improve internal structure, but it must keep
@@ -110,13 +113,13 @@ Compatibility footnotes:
 | `GET /api/resumes/{id}/matches` | Path id | `ResumeMatch[]` | `src/offerpilot/api.py` | v0.2/deep JD flow deferred; compatibility endpoint present |
 | `PUT /api/resumes/{id}/text` | Text body | status JSON | `src/offerpilot/api.py` | compatibility endpoint present |
 | `GET /api/resumes/{id}/file` | Path id | File download | `src/offerpilot/api.py` | compatibility endpoint present |
-| `GET /api/knowledge-documents` | Optional query filter | `KnowledgeDocument[]` | `src/offerpilot/api.py` | v0.1 |
-| `POST /api/knowledge-documents` | Document body, no knowledge base id | `KnowledgeDocument` | `src/offerpilot/api.py` | v0.1 |
-| `POST /api/knowledge-documents/import` | Import body | `KnowledgeDocument` | `internal/api/knowledge.go` | Phase 5 |
-| `GET /api/knowledge-documents/{id}` | Path id | `KnowledgeDocument` | `internal/api/knowledge.go` | Phase 5 |
-| `PUT /api/knowledge-documents/{id}` | Document body | `KnowledgeDocument` | `internal/api/knowledge.go` | Phase 5 |
-| `DELETE /api/knowledge-documents/{id}` | Path id | status JSON | `internal/api/knowledge.go` | Phase 5 |
-| `GET /api/knowledge/search` | Query text, optional base/limit | `KnowledgeSearchResult[]` | `internal/api/knowledge.go` | Phase 5 |
+| `GET /api/knowledge-documents` | Optional query filter | `KnowledgeDocument[]` | `src/offerpilot/api.py` | v0.1 **[KR-deprecated]** |
+| `POST /api/knowledge-documents` | Document body, no knowledge base id | `KnowledgeDocument` | `src/offerpilot/api.py` | v0.1 **[KR-deprecated]** |
+| `POST /api/knowledge-documents/import` | Import body | `KnowledgeDocument` | `internal/api/knowledge.go` | Phase 5 **[KR-deprecated]** |
+| `GET /api/knowledge-documents/{id}` | Path id | `KnowledgeDocument` | `internal/api/knowledge.go` | Phase 5 **[KR-deprecated]** |
+| `PUT /api/knowledge-documents/{id}` | Document body | `KnowledgeDocument` | `internal/api/knowledge.go` | Phase 5 **[KR-deprecated]** |
+| `DELETE /api/knowledge-documents/{id}` | Path id | status JSON | `internal/api/knowledge.go` | Phase 5 **[KR-deprecated]** |
+| `GET /api/knowledge/search` | Query text, optional base/limit | `KnowledgeSearchResult[]` | `internal/api/knowledge.go` | Phase 5 **[KR-deprecated]** |
 | `GET /api/questions` | Optional filters | `Question[]` | `internal/api/questions.go` | Phase 5 |
 | `POST /api/questions` | Manual question body | `Question` | `internal/api/questions.go` | Phase 5 |
 | `POST /api/questions/generate` | Source/kb/app/count | Generated result | `internal/api/questions.go` | Phase 5 after AI minimum |
@@ -189,9 +192,9 @@ by this idempotent Go migrator.
 | `offers` | `id`; nullable `application_id` FK set null; `company_name`, `position_name` not null; `status` default `pending`; `base_monthly`, `months_per_year`, `signing_bonus`; `equity`, `perks`, `deadline`, `notes`, `assessment`; timestamps | `idx_offers_app`, `idx_offers_status`; `total_cash` is derived, not stored |
 | `conversations` | `id`; `title` default `新对话`; `mode`; `context_type` default `workspace`; `context_ref` default empty; pending action fields; `created_at`, `updated_at` | Existing local tables with `offer_id` are reset during v0.1 convergence |
 | `chat_messages` | `id`; `conversation_id` FK cascade; `role`; `content`; `tool_calls`; `tool_call_id`; `provider_blocks`; `created_at` | `idx_chat_messages_conv`; `provider_blocks` migration column must be retained |
-| `knowledge_documents` | `id`; `title`; `content`; `tags` JSON text default `[]`; `doc_kind`; `status`; `source_type`; `source_name`; `source_refs`; `summary_type`; `generation_meta`; `superseded_by`; `confirmed_at`; timestamps | Single library + tags; old `knowledge_bases` multi-library model is dropped |
-| `knowledge_chunks` | `id`; `document_id` FK cascade; `chunk_index`; `content`; `embedding`; `embedding_model`; `created_at` | `idx_knowledge_chunks_document` |
-| `knowledge_chunks_fts` | FTS5 virtual table with `chunk_id`, `document_id`, `content` | v0.1 keeps keyword search foundation; embedding fields are present for later hybrid retrieval |
+| `knowledge_documents` | `id`; `title`; `content`; `tags` JSON text default `[]`; `doc_kind`; `status`; `source_type`; `source_name`; `source_refs`; `summary_type`; `generation_meta`; `superseded_by`; `confirmed_at`; timestamps | Single library + tags; old `knowledge_bases` multi-library model is dropped **[KR-deprecated]** |
+| `knowledge_chunks` | `id`; `document_id` FK cascade; `chunk_index`; `content`; `embedding`; `embedding_model`; `created_at` | `idx_knowledge_chunks_document` **[KR-deprecated]** |
+| `knowledge_chunks_fts` | FTS5 virtual table with `chunk_id`, `document_id`, `content` | v0.1 keeps keyword search foundation; embedding fields are present for later hybrid retrieval **[KR-deprecated]** |
 | `questions` | `id`; nullable `application_id`; `topic`; `category`; `difficulty` default `medium`; `question` not null; `reference_answer`; `tags`; `source_type`; `status`; practice fields; `question_hash`; timestamps | `idx_questions_topic`, `idx_questions_status`, `idx_questions_next_review`, `idx_questions_hash`; old `knowledge_base_id` tables are reset |
 | `question_reviews` | `id`; `question_id` FK cascade; `rating`; `note`; `created_at` | `idx_question_reviews_question` |
 | `application_material_kits` | `id`; `application_id` not null unique FK cascade; nullable `resume_id`, `jd_analysis_id`; `jd_snapshot`; `status` default `draft`; `content_json`; timestamps | `idx_material_kits_app`, `idx_material_kits_status` |
@@ -231,7 +234,7 @@ database/config side effects should remain compatible.
 | `oc offer update [id]` | status/base/months/signing | Updates selected fields; no-op update still rewrites and prints success | Phase 5 |
 | `oc offer delete [id]` | id arg | Deletes offer; missing row currently still prints deleted because affected rows are not checked | Phase 5 |
 | `oc offer compare [id1,id2,...]` | comma list arg | Invalid numeric token errors; missing IDs are skipped; all-missing exits success with no-match message | Phase 5 |
-| `oc question generate` | `--source/-s`, `--kb`, `--app/-a`, `--count/-n` | Source `knowledge` requires `--kb`; AI layer clamps count but CLI prints requested count first | Phase 5 |
+| `oc question generate` | `--source/-s`, `--kb`, `--app/-a`, `--count/-n` | Source `knowledge` requires `--kb`; AI layer clamps count but CLI prints requested count first | Phase 5 **[KR-deprecated]** |
 | `oc question list` | `--status`, `--kb` | Prints questions; status has no CLI enum validation | Phase 5 |
 
 CLI compatibility details:
@@ -276,9 +279,9 @@ The agent loop lives in `internal/ai/agent.go`.
 | `list_notes` | read | optional `application_id` | `interview_notes` | Phase 5 |
 | `list_application_events` | read | optional `month`, `application_id`, `event_type` | `application_events` | v0.1 |
 | `get_application_event` | read | `id` | `application_events` | v0.1 |
-| `list_knowledge_documents` | read | optional `query` | `knowledge_documents` | v0.1 |
-| `get_knowledge_document` | read | `id` | `knowledge_documents` | Phase 5 |
-| `search_knowledge` | read | `query`, optional `limit` | `knowledge_chunks_fts` | v0.1 |
+| `list_knowledge_documents` | read | optional `query` | `knowledge_documents` | v0.1 **[KR-deprecated]** |
+| `get_knowledge_document` | read | `id` | `knowledge_documents` | Phase 5 **[KR-deprecated]** |
+| `search_knowledge` | read | `query`, optional `limit` | `knowledge_chunks_fts` | v0.1 **[KR-deprecated]** |
 | `list_offers` | read | optional `status` | `offers` | Phase 5 |
 | `get_offer` | read | `id` | `offers` | Phase 5 |
 | `compare_offers` | read | `ids[]` | `offers` | Phase 5 |
@@ -287,9 +290,9 @@ The agent loop lives in `internal/ai/agent.go`.
 | `add_note` | write | app/company/position/round/date/questions/reflection/difficulty/mood | `interview_notes`, optional `applications` | Phase 5 |
 | `update_note` | write | `id` plus note fields | `interview_notes` | Phase 5 |
 | `delete_note` | write | `id` | `interview_notes` | Phase 5 |
-| `create_knowledge_document` | write | title, content, tags | `knowledge_documents`, chunks | v0.1 |
-| `update_knowledge_document` | write | `id` plus optional fields | `knowledge_documents`, chunks | Phase 5 |
-| `delete_knowledge_document` | write | `id` | `knowledge_documents`, chunks | Phase 5 |
+| `create_knowledge_document` | write | title, content, tags | `knowledge_documents`, chunks | v0.1 **[KR-deprecated]** |
+| `update_knowledge_document` | write | `id` plus optional fields | `knowledge_documents`, chunks | Phase 5 **[KR-deprecated]** |
+| `delete_knowledge_document` | write | `id` | `knowledge_documents`, chunks | Phase 5 **[KR-deprecated]** |
 | `create_application_event` | write | app id, event_type, subtype, tags, round, scheduled_at, duration_minutes, remind_at | `application_events` | v0.1 |
 | `update_application_event` | write | id plus application event fields | `application_events` | v0.1 |
 | `delete_application_event` | write | `id` | `application_events` | v0.1 |
@@ -318,9 +321,17 @@ The agent loop lives in `internal/ai/agent.go`.
 | Risk | Why it matters | Mitigation |
 |---|---|---|
 | Existing user SQLite data can be damaged by non-idempotent migrations | Local database is user-owned product data | Add migration tests against Go-created and legacy-style schemas before any Python startup writes |
-| FTS5 support may vary by Python SQLite build | Knowledge search depends on `knowledge_chunks_fts` | Verify FTS5 in tests; provide clear startup error or fallback |
+| FTS5 support may vary by Python SQLite build | Knowledge 的 P0 检索计划依赖 SQLite FTS | 在后续 Knowledge 实施 Spec 中定义启动检查和降级策略；当前契约不沿用旧 Page FTS 方案 |
 | Chat pending action is stateful across DB messages | A small persistence mismatch can execute or lose writes | Port `agent.go` semantics with tests before adding broad tools |
 | Tool execution and message persistence can diverge | Current Go flow executes a confirmed write before persisting follow-up chat messages | Preserve behavior first; consider transactional hardening only after compatibility tests |
 | Frontend expects some full-object updates | `PUT /api/applications/{id}` is not a patch today | Preserve current behavior for Applications; document any future partial update separately |
 | `npm audit` reports vulnerabilities | Frontend dependency risk exists but is not migration behavior | Track separately; do not mix dependency upgrade into backend rewrite |
 | AI providers differ in tool-call payload shape | OpenAI-compatible and Anthropic paths are both present | Keep provider adapters isolated behind one interface and test both payload parsers |
+
+## Knowledge System
+
+Knowledge 的长期产品职责、领域模型和数据流以
+[Knowledge 系统主文档](./architecture/knowledge-system.md) 为唯一事实源。
+
+当前代码仍包含旧自动 Wiki 方向的实现。后续迁移、API、Schema 和发布门禁必须由新的实施
+Spec 定义；本文不再保留已废弃的 Page、Index、Wikilink 和 Review 契约。

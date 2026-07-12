@@ -5,11 +5,14 @@ description = "Python backend for OfferPilot"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+  "charset-normalizer>=3.3.0",
   "fastapi>=0.115.0",
   "httpx>=0.27.0",
   "langgraph>=1.2.8",
   "langgraph-checkpoint-sqlite>=3.1.0",
   "litellm>=1.91.0",
+  "markdown-it-py>=3.0.0",
+  "Pillow>=10.0.0",
   "pydantic>=2.8.0",
   "pypdf>=5.0.0",
   "python-multipart>=0.0.20",

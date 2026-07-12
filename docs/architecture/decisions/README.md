@@ -5,9 +5,16 @@
 
 ## 当前记录
 
-_(intentional empty registry — 当前无 ADR。首次新增时从 ADR-0001 起编号。)_
+### 当前 Knowledge 架构基线
 
-> **不是 placeholder**:这是真实的"暂无记录"状态。当首条 ADR 落地后,本段会被具体条目替换。
+- [OfferPilot Knowledge 系统：核心方向与架构设计](../knowledge-system.md)
+
+### Accepted
+
+- [ADR-0007: 采用 SQLite 作为 Knowledge 运行时唯一事实源](./0007-use-sqlite-as-knowledge-wiki-ssot.md)
+
+Knowledge 长期架构见 [Knowledge 系统主文档](../knowledge-system.md)。旧自动 Wiki 方向的
+ADR 已删除，其调研结论、否决理由和决策过程保留在主文档 §3、§4、§15 和 §19。
 
 ## 命名约定
 

@@ -45,7 +45,7 @@ build/
 # Local git worktrees
 .worktrees/
 
-# Local design/planning docs (workflow artifacts, not shipped)
+# Design/planning docs default to local workflow artifacts; approved SSOT files are allowlisted below
 docs/*
 !docs/
 !docs/python-rewrite-contract.md
@@ -58,13 +58,21 @@ docs/architecture/*
 !docs/architecture/decisions/
 !docs/architecture/decisions/*.md
 !docs/architecture/*.md
-docs/superpowers/
+!docs/superpowers/
+docs/superpowers/*
+!docs/superpowers/specs/
+docs/superpowers/specs/*
+!docs/superpowers/specs/2026-07-12-knowledge-ingest-rewrite-design.md
+!docs/superpowers/plans/
+docs/superpowers/plans/*
 
 # Local brainstorming companion artifacts
 .superpowers/
 
 # Other tools' local state
 .omc/
+.codegraph/
+.codex/
 
 # Local browser and whiteboard verification artifacts
 .playwright-mcp/
