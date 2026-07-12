@@ -7,14 +7,19 @@ import styles from './ChatPanel.module.css';
 
 interface Props {
   steps: ToolStep[];
+  summary?: string;
+  embedded?: boolean;
 }
 
-export default function ProcessTimeline({ steps }: Props) {
+export default function ProcessTimeline({ steps, summary, embedded = false }: Props) {
   const [open, setOpen] = useState(false);
   if (!steps.length) return null;
 
   return (
-    <div className={`${styles.timeline} ${open ? styles.timelineOpen : ''}`} aria-label="AI 操作摘要">
+    <div
+      className={`${styles.timeline} ${open ? styles.timelineOpen : ''} ${embedded ? styles.timelineEmbedded : ''}`}
+      aria-label="AI 操作摘要"
+    >
       <div
         className={styles.tlHead}
         role="button"
@@ -29,7 +34,7 @@ export default function ProcessTimeline({ steps }: Props) {
         }}
       >
         <ThunderboltOutlined aria-hidden="true" />
-        <span>AI 做了什么 · 共 {steps.length} 步</span>
+        <span>{summary ?? `AI 做了什么 · 共 ${steps.length} 步`}</span>
         <RightOutlined className={styles.tlChev} aria-hidden="true" />
       </div>
       <div className={styles.tlBody}>
