@@ -43,9 +43,9 @@ def test_get_logs_handles_empty_and_invalid_pages(tmp_path):
     assert client.get("/api/logs?limit=20&offset=20").json() == {
         "entries": [], "total": 1, "limit": 20, "offset": 20, "has_more": False,
     }
-    assert client.get("/api/logs?limit=0").status_code == 422
-    assert client.get("/api/logs?limit=101").status_code == 422
-    assert client.get("/api/logs?offset=-1").status_code == 422
+    assert client.get("/api/logs?limit=0").status_code == 400
+    assert client.get("/api/logs?limit=101").status_code == 400
+    assert client.get("/api/logs?offset=-1").status_code == 400
 ```
 
 - [ ] **Step 2: Run the test to verify the red state**
@@ -107,7 +107,7 @@ uv run pytest tests/test_diagnostics_api.py -q
 uv run ruff check src/offerpilot/diagnostics.py src/offerpilot/api.py tests/test_diagnostics_api.py
 ```
 
-Expected: chronological page rows, malformed-row exclusion, `has_more`, out-of-range pages, and query validation all pass.
+Expected: chronological page rows, malformed-row exclusion, `has_more`, out-of-range pages, and query validation all pass. The repository-wide validation handler intentionally maps invalid query parameters to HTTP 400.
 
 - [ ] **Step 5: Commit the API boundary**
 
