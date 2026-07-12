@@ -1,54 +1,81 @@
 import type {
-  KnowledgeDocument,
-  KnowledgeDocumentInput,
-  KnowledgeSearchResult,
+  KnowledgeEvidence,
+  KnowledgeEvidencePage,
+  KnowledgeEvidenceSearchResponse,
+  KnowledgeIngestResponse,
+  KnowledgeSource,
+  KnowledgeSourceJobsResponse,
 } from '@/types/knowledge';
 import { createApiClient } from './http';
 
-const http = createApiClient({ baseURL: '/api', timeout: 10000 });
+const http = createApiClient({ baseURL: '/api', timeout: 30000 });
 
-export async function listKnowledgeDocuments(q?: string): Promise<KnowledgeDocument[]> {
-  const { data } = await http.get<KnowledgeDocument[]>('/knowledge-documents', {
-    params: {
-      ...(q ? { q } : {}),
+export async function fetchKnowledgeSources(): Promise<KnowledgeSource[]> {
+  const { data } = await http.get<KnowledgeSource[]>('/knowledge/sources');
+  return data;
+}
+
+export async function fetchKnowledgeSource(sourceId: number): Promise<KnowledgeSource> {
+  const { data } = await http.get<KnowledgeSource>(`/knowledge/sources/${sourceId}`);
+  return data;
+}
+
+export async function fetchKnowledgeSourceEvidence(
+  sourceId: number,
+  params?: { after_ordinal?: number; limit?: number },
+): Promise<KnowledgeEvidencePage> {
+  const { data } = await http.get<KnowledgeEvidencePage>(
+    `/knowledge/sources/${sourceId}/evidence`,
+    { params },
+  );
+  return data;
+}
+
+export async function fetchKnowledgeSourceJobs(
+  sourceId: number,
+): Promise<KnowledgeSourceJobsResponse> {
+  const { data } = await http.get<KnowledgeSourceJobsResponse>(
+    `/knowledge/sources/${sourceId}/jobs`,
+  );
+  return data;
+}
+
+export async function fetchKnowledgeEvidence(evidenceId: string): Promise<KnowledgeEvidence> {
+  const { data } = await http.get<KnowledgeEvidence>(`/knowledge/evidence/${evidenceId}`);
+  return data;
+}
+
+export async function searchKnowledgeEvidence(
+  query: string,
+  options: { source_ids?: number[]; include_archived?: boolean; limit?: number } = {},
+): Promise<KnowledgeEvidenceSearchResponse> {
+  const { data } = await http.post<KnowledgeEvidenceSearchResponse>(
+    '/knowledge/evidence/search',
+    {
+      query,
+      source_ids: options.source_ids,
+      include_archived: options.include_archived,
+      limit: options.limit,
     },
+  );
+  return data;
+}
+
+export async function uploadKnowledgeSource(
+  file: File,
+  titleHint = '',
+): Promise<KnowledgeIngestResponse> {
+  const form = new FormData();
+  form.append('file', file);
+  if (titleHint) {
+    form.append('title_hint', titleHint);
+  }
+  const { data } = await http.post<KnowledgeIngestResponse>('/knowledge/sources', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
   });
   return data;
 }
 
-export async function getKnowledgeDocument(id: number): Promise<KnowledgeDocument> {
-  const { data } = await http.get<KnowledgeDocument>(`/knowledge-documents/${id}`);
-  return data;
-}
-
-export async function createKnowledgeDocument(input: KnowledgeDocumentInput): Promise<KnowledgeDocument> {
-  const { data } = await http.post<KnowledgeDocument>('/knowledge-documents', input);
-  return data;
-}
-
-export async function updateKnowledgeDocument(
-  id: number,
-  input: KnowledgeDocumentInput,
-): Promise<KnowledgeDocument> {
-  const { data } = await http.put<KnowledgeDocument>(`/knowledge-documents/${id}`, input);
-  return data;
-}
-
-export async function deleteKnowledgeDocument(id: number): Promise<void> {
-  await http.delete(`/knowledge-documents/${id}`);
-}
-
-export async function importKnowledgeDocument(file: File): Promise<KnowledgeDocument> {
-  const formData = new FormData();
-  formData.append('file', file);
-
-  const { data } = await http.post<KnowledgeDocument>('/knowledge-documents/import', formData);
-  return data;
-}
-
-export async function searchKnowledge(q: string): Promise<KnowledgeSearchResult[]> {
-  const { data } = await http.get<KnowledgeSearchResult[]>('/knowledge/search', {
-    params: { q },
-  });
-  return data;
+export function buildKnowledgeSourceContentUrl(sourceId: number): string {
+  return `/api/knowledge/sources/${sourceId}/content`;
 }

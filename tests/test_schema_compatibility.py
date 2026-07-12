@@ -141,23 +141,106 @@ def test_interview_notes_application_foreign_key_sets_null(tmp_path):
     )
 
 
-def test_knowledge_uses_single_library_documents_without_knowledge_bases(tmp_path):
+def test_knowledge_legacy_tables_are_gone_after_reset(tmp_path):
     db_path = tmp_path / "data.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE schema_migrations ("
+            "version TEXT PRIMARY KEY, description TEXT NOT NULL, "
+            "applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+        )
+        for table in _legacy_knowledge_tables():
+            if "fts" in table:
+                conn.execute(f"CREATE VIRTUAL TABLE {table} USING fts5(content)")
+            else:
+                conn.execute(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY)")
+
     init_database(db_path)
 
     with sqlite3.connect(db_path) as conn:
         tables = {
-            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')"
+            ).fetchall()
         }
-        document_columns = {row[1] for row in conn.execute("PRAGMA table_info(knowledge_documents)")}
-        chunk_columns = {row[1] for row in conn.execute("PRAGMA table_info(knowledge_chunks)")}
+        versions = {
+            row[0]
+            for row in conn.execute("SELECT version FROM schema_migrations").fetchall()
+        }
 
-    assert "knowledge_bases" not in tables
-    assert {"doc_kind", "status", "source_refs", "summary_type", "generation_meta"}.issubset(
-        document_columns
+    for table in _legacy_knowledge_tables():
+        assert table not in tables, f"legacy knowledge table {table} still present"
+    assert "knowledge_rewrite_reset" in versions
+
+
+def test_knowledge_reset_is_idempotent(tmp_path):
+    db_path = tmp_path / "data.db"
+    init_database(db_path)
+    init_database(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        versions = [
+            row[0]
+            for row in conn.execute("SELECT version FROM schema_migrations").fetchall()
+        ]
+
+    assert versions.count("knowledge_rewrite_reset") == 1
+
+
+def test_knowledge_reset_preserves_other_modules(tmp_path):
+    db_path = tmp_path / "data.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE schema_migrations ("
+            "version TEXT PRIMARY KEY, description TEXT NOT NULL, "
+            "applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+        )
+        conn.execute(
+            "CREATE TABLE applications ("
+            "id INTEGER PRIMARY KEY, company_name TEXT NOT NULL)"
+        )
+        conn.execute("INSERT INTO applications (company_name) VALUES ('OfferPilot')")
+        conn.execute("CREATE TABLE knowledge_documents (id INTEGER PRIMARY KEY)")
+        conn.execute("CREATE TABLE knowledge_wiki_pages (id INTEGER PRIMARY KEY)")
+
+    init_database(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute("SELECT company_name FROM applications").fetchall()
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')"
+            ).fetchall()
+        }
+
+    assert rows == [("OfferPilot",)]
+    assert "knowledge_documents" not in tables
+    assert "knowledge_wiki_pages" not in tables
+    # KI-02 起新表 knowledge_sources 由本模块创建并维护，不再视为 legacy
+    assert "knowledge_sources" in tables
+
+
+def _legacy_knowledge_tables() -> tuple[str, ...]:
+    # KI-02 起新表 knowledge_sources/origins/snapshots/evidence/evidence_fts/jobs 由本模块
+    # 创建并维护，不再视为 legacy；只保留旧自动 Wiki 占位实现的表名作为破坏性重置对象。
+    return (
+        "knowledge_bases",
+        "knowledge_documents",
+        "knowledge_chunks",
+        "knowledge_chunks_fts",
+        "knowledge_wiki_pages",
+        "knowledge_wiki_pages_fts",
+        "knowledge_page_versions",
+        "knowledge_index_entries",
+        "knowledge_page_evidence",
+        "knowledge_wikilinks",
+        "knowledge_reviews",
+        "knowledge_review_revisions",
+        "knowledge_review_jobs",
+        "knowledge_config_versions",
     )
-    assert "knowledge_base_id" not in document_columns
-    assert "knowledge_base_id" not in chunk_columns
 
 
 def test_init_database_adds_current_chat_context_columns(tmp_path):

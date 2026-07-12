@@ -4,8 +4,6 @@ import aiSettings from '@/components/AISettingsDrawer.tsx?raw';
 import applicationDetail from '@/components/ApplicationDetail.tsx?raw';
 import calendarView from '@/components/CalendarView.tsx?raw';
 import dashboardView from '@/features/dashboard/DashboardView.tsx?raw';
-import knowledgeEditor from '@/components/KnowledgeDocumentEditor.tsx?raw';
-import knowledgeLibrary from '@/components/KnowledgeLibraryView.tsx?raw';
 import materialKit from '@/components/MaterialKitDrawer.tsx?raw';
 import offerCenter from '@/components/OfferCenterView.tsx?raw';
 import offerCompare from '@/components/OfferCompareDrawer.tsx?raw';
@@ -22,7 +20,6 @@ const migratedWorkspaceFlows = [
   ['AI settings', aiSettings],
   ['application detail', applicationDetail],
   ['calendar view', calendarView],
-  ['knowledge document editor', knowledgeEditor],
   ['material kit', materialKit],
   ['offer compare', offerCompare],
   ['question generator', questionBank],
@@ -46,12 +43,6 @@ describe('workspace drill-down layout contract', () => {
     expect(resumeLibrary).toContain('<ResumeEditorDrawer');
     expect(resumeLibrary.indexOf('if (editing) {')).toBeLessThan(resumeLibrary.indexOf('return ('));
     expect(resumeEditor).toContain('返回简历库');
-  });
-
-  it('opens knowledge document editing as a replacement workspace layer with a return path', () => {
-    expect(knowledgeLibrary).toContain('if (editorOpen) {');
-    expect(knowledgeLibrary).toContain('<KnowledgeDocumentEditor');
-    expect(knowledgeEditor).toContain('返回知识库');
   });
 
   it('opens question generation as a replacement workspace layer with a return path', () => {

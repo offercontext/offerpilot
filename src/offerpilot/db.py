@@ -1,12 +1,34 @@
 import json
+import shutil
 from pathlib import Path
 
 from sqlalchemy import create_engine, event, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from offerpilot.models import Base
 
 SessionFactory = sessionmaker[Session]
+
+
+# KI-02 起新表 knowledge_sources/origins/snapshots/evidence/evidence_fts/jobs 由本模块创建并维护，
+# 不再视为 legacy；只保留旧自动 Wiki 占位实现的表名作为破坏性重置对象。
+KNOWLEDGE_LEGACY_TABLES = (
+    "knowledge_bases",
+    "knowledge_documents",
+    "knowledge_chunks",
+    "knowledge_chunks_fts",
+    "knowledge_wiki_pages",
+    "knowledge_wiki_pages_fts",
+    "knowledge_page_versions",
+    "knowledge_index_entries",
+    "knowledge_page_evidence",
+    "knowledge_wikilinks",
+    "knowledge_reviews",
+    "knowledge_review_revisions",
+    "knowledge_review_jobs",
+    "knowledge_config_versions",
+)
 
 
 def init_database(db_path: Path) -> SessionFactory:
@@ -25,8 +47,10 @@ def init_database(db_path: Path) -> SessionFactory:
         cursor.close()
 
     _reset_incompatible_v01_tables(engine)
-    Base.metadata.create_all(engine)
     _ensure_schema_migrations(engine)
+    _reset_knowledge_legacy_tables(engine, db_path.parent)
+    Base.metadata.create_all(engine)
+    _ensure_knowledge_fts(engine)
     _record_migration(engine, "0001_base_schema", "Create current application tables")
 
     chat_migrations = [
@@ -88,8 +112,44 @@ def init_database(db_path: Path) -> SessionFactory:
             "0005_application_lifecycle_columns",
             "Add application lifecycle and soft-delete columns",
         )
-    _ensure_knowledge_fts(engine)
     return sessionmaker(bind=engine, expire_on_commit=False)
+
+
+def _ensure_knowledge_fts(engine) -> None:  # type: ignore[no-untyped-def]
+    """创建 Evidence FTS5 虚拟表并验证 trigram tokenizer 可用。
+
+    FTS5 不可用属于 Spec §13 中 `fts_unavailable` 错误码，必须启动期失败而非静默吞掉。
+    """
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_evidence_fts USING fts5(
+                        evidence_id UNINDEXED,
+                        source_id UNINDEXED,
+                        source_title,
+                        heading_path,
+                        content,
+                        tokenize = 'trigram'
+                    )
+                    """
+                )
+            )
+            probe = conn.execute(
+                text(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='knowledge_evidence_fts'"
+                )
+            ).fetchone()
+            if probe is None:
+                raise RuntimeError("fts_unavailable: knowledge_evidence_fts virtual table missing")
+    except OperationalError as exc:
+        message = str(exc).lower()
+        if "fts5" in message or "no such module" in message:
+            raise RuntimeError(
+                "fts_unavailable: SQLite FTS5 / trigram tokenizer not available"
+            ) from exc
+        raise
 
 
 def _reset_incompatible_v01_tables(engine) -> None:  # type: ignore[no-untyped-def]
@@ -100,11 +160,6 @@ def _reset_incompatible_v01_tables(engine) -> None:  # type: ignore[no-untyped-d
                 text("SELECT name FROM sqlite_master WHERE type='table'")
             ).fetchall()
         }
-        knowledge_columns = (
-            {row[1] for row in conn.execute(text("PRAGMA table_info(knowledge_documents)")).fetchall()}
-            if "knowledge_documents" in tables
-            else set()
-        )
         application_event_columns = (
             {row[1] for row in conn.execute(text("PRAGMA table_info(application_events)")).fetchall()}
             if "application_events" in tables
@@ -125,10 +180,6 @@ def _reset_incompatible_v01_tables(engine) -> None:  # type: ignore[no-untyped-d
             if "mock_sessions" in tables
             else set()
         )
-        reset_knowledge = "knowledge_bases" in tables or (
-            "knowledge_documents" in tables
-            and ("knowledge_base_id" in knowledge_columns or "doc_kind" not in knowledge_columns)
-        )
         reset_application_events = "application_events" in tables and (
             "subtype" not in application_event_columns
             or "tags" not in application_event_columns
@@ -145,15 +196,6 @@ def _reset_incompatible_v01_tables(engine) -> None:  # type: ignore[no-untyped-d
             drop_tables.append("events")
         if reset_application_events:
             drop_tables.append("application_events")
-        if reset_knowledge:
-            drop_tables.extend(
-                [
-                    "knowledge_chunks_fts",
-                    "knowledge_chunks",
-                    "knowledge_documents",
-                    "knowledge_bases",
-                ]
-            )
         if reset_questions:
             drop_tables.extend(["question_reviews", "questions"])
         if reset_conversations:
@@ -166,6 +208,62 @@ def _reset_incompatible_v01_tables(engine) -> None:  # type: ignore[no-untyped-d
         for table in drop_tables:
             conn.execute(text(f"DROP TABLE IF EXISTS {table}"))
         conn.execute(text("PRAGMA foreign_keys=ON"))
+
+
+def _reset_knowledge_legacy_tables(engine, data_dir: Path) -> None:  # type: ignore[no-untyped-def]
+    with engine.begin() as conn:
+        existing = {
+            row[0]
+            for row in conn.execute(
+                text(
+                    "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')"
+                )
+            ).fetchall()
+        }
+        legacy_present = any(table in existing for table in KNOWLEDGE_LEGACY_TABLES)
+        already_migrated = conn.execute(
+            text("SELECT version FROM schema_migrations WHERE version = 'knowledge_rewrite_reset'")
+        ).fetchone() is not None
+
+    knowledge_runtime_dir = data_dir / "knowledge"
+    # KI-02 之后 knowledge/ 目录可能含有合法 Source 原件；只在尚未迁移（首次启动）且目录非空时
+    # 才视为 legacy，避免清空用户已上传的 Source。
+    runtime_legacy_present = (
+        (not already_migrated)
+        and knowledge_runtime_dir.exists()
+        and any(knowledge_runtime_dir.iterdir())
+    )
+
+    if not legacy_present and not runtime_legacy_present:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT OR IGNORE INTO schema_migrations (version, description) "
+                    "VALUES ('knowledge_rewrite_reset', 'Knowledge rewrite base schema applied')"
+                )
+            )
+        return
+
+    if already_migrated and not legacy_present:
+        return
+
+    if legacy_present:
+        with engine.begin() as conn:
+            conn.execute(text("PRAGMA foreign_keys=OFF"))
+            for table in KNOWLEDGE_LEGACY_TABLES:
+                conn.execute(text(f"DROP TABLE IF EXISTS {table}"))
+            conn.execute(text("PRAGMA foreign_keys=ON"))
+
+    if runtime_legacy_present:
+        shutil.rmtree(knowledge_runtime_dir, ignore_errors=True)
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT OR IGNORE INTO schema_migrations (version, description) "
+                "VALUES ('knowledge_rewrite_reset', 'Knowledge rewrite legacy tables dropped')"
+            )
+        )
 
 
 def session_factory_for_data_dir(data_dir: Path) -> SessionFactory:
@@ -383,19 +481,3 @@ def _backfill_application_lifecycle(engine) -> bool:  # type: ignore[no-untyped-
             )
             changed = changed or bool(result.rowcount)
     return changed
-
-
-def _ensure_knowledge_fts(engine) -> None:  # type: ignore[no-untyped-def]
-    try:
-        with engine.begin() as conn:
-            conn.execute(
-                text(
-                    """
-                    CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks_fts
-                    USING fts5(chunk_id, document_id, content)
-                    """
-                )
-            )
-    except Exception:
-        # Some SQLite builds omit FTS5. Search falls back to knowledge_chunks.
-        return

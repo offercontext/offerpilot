@@ -8,10 +8,6 @@ from offerpilot.db import init_database
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
 from offerpilot.repositories.application_events import ApplicationEventCreate, ApplicationEventsRepository
 from offerpilot.repositories.jd import JDAnalysesRepository, JDAnalysisCreate
-from offerpilot.repositories.knowledge import (
-    KnowledgeDocumentCreate,
-    KnowledgeRepository,
-)
 from offerpilot.repositories.notes import NoteCreate, NotesRepository
 from offerpilot.repositories.offers import OfferCreate, OffersRepository
 from offerpilot.repositories.resumes import ResumeCreate, ResumeMatchCreate, ResumesRepository
@@ -432,7 +428,7 @@ def test_offer_tools_distinguish_offer_ids_from_application_ids(tmp_path):
     assert detail["offer_id"] == offer.id
 
 
-def test_offerpilot_tool_registry_covers_resumes_jd_and_knowledge(tmp_path):
+def test_offerpilot_tool_registry_covers_resumes_and_jd(tmp_path):
     session_factory = init_database(tmp_path / "data.db")
     applications = ApplicationsRepository(session_factory)
     events = ApplicationEventsRepository(session_factory)
@@ -440,7 +436,6 @@ def test_offerpilot_tool_registry_covers_resumes_jd_and_knowledge(tmp_path):
     offers = OffersRepository(session_factory)
     resumes = ResumesRepository(session_factory)
     jd_analyses = JDAnalysesRepository(session_factory)
-    knowledge = KnowledgeRepository(session_factory)
     app = applications.create(ApplicationCreate(company_name="ByteDance", position_name="Backend"))
     resume = resumes.create(
         ResumeCreate(name="Backend Resume", parsed_data="Python FastAPI SQLAlchemy", parse_status="text-ready")
@@ -461,13 +456,6 @@ def test_offerpilot_tool_registry_covers_resumes_jd_and_knowledge(tmp_path):
             result='{"summary":"Backend role"}',
         )
     )
-    doc = knowledge.create_document(
-        KnowledgeDocumentCreate(
-            title="FastAPI Review",
-            content="FastAPI dependency injection and SQLAlchemy sessions",
-            tags=["python"],
-        )
-    )
 
     registry = offerpilot_tool_registry(
         applications,
@@ -476,7 +464,6 @@ def test_offerpilot_tool_registry_covers_resumes_jd_and_knowledge(tmp_path):
         offers,
         resumes=resumes,
         jd_analyses=jd_analyses,
-        knowledge=knowledge,
     )
 
     listed_resumes = json.loads(registry["list_resumes"]["handler"](json.dumps({})))
@@ -484,9 +471,6 @@ def test_offerpilot_tool_registry_covers_resumes_jd_and_knowledge(tmp_path):
     resume_matches = json.loads(registry["list_resume_matches"]["handler"](json.dumps({"resume_id": resume.id})))
     listed_jds = json.loads(registry["list_jd_analyses"]["handler"](json.dumps({"application_id": app.id})))
     jd_detail = json.loads(registry["get_jd_analysis"]["handler"](json.dumps({"id": jd.id})))
-    documents = json.loads(registry["list_knowledge_documents"]["handler"](json.dumps({})))
-    document_detail = json.loads(registry["get_knowledge_document"]["handler"](json.dumps({"id": doc.id})))
-    search_results = json.loads(registry["search_knowledge"]["handler"](json.dumps({"query": "FastAPI"})))
 
     assert listed_resumes[0]["id"] == resume.id
     assert listed_resumes[0]["record_type"] == "resume"
@@ -503,16 +487,8 @@ def test_offerpilot_tool_registry_covers_resumes_jd_and_knowledge(tmp_path):
     assert listed_jds[0]["application_id"] == app.id
     assert jd_detail["result"] == '{"summary":"Backend role"}'
     assert jd_detail["jd_analysis_id"] == jd.id
-    assert documents[0]["id"] == doc.id
-    assert documents[0]["record_type"] == "knowledge_document"
-    assert documents[0]["knowledge_document_id"] == doc.id
-    assert "knowledge_base_id" not in documents[0]
-    assert document_detail["title"] == "FastAPI Review"
-    assert document_detail["knowledge_document_id"] == doc.id
-    assert search_results[0]["document_id"] == doc.id
-    assert search_results[0]["record_type"] == "knowledge_search_result"
-    assert search_results[0]["search_result_id"] == search_results[0]["chunk_id"]
-    assert "knowledge_base_id" not in search_results[0]
+    assert "list_knowledge_documents" not in registry
+    assert "search_knowledge" not in registry
 
 
 def test_resume_write_tools_are_marked_and_update_structured_content(tmp_path):

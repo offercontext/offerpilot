@@ -5,7 +5,7 @@ from offerpilot.cli import app
 from offerpilot.config import AIProviderProfile, Config, load_config, save_config
 from offerpilot.db import session_factory_for_data_dir
 from offerpilot.repositories.jd import JDAnalysesRepository
-from offerpilot.repositories.knowledge import KnowledgeDocumentCreate, KnowledgeRepository
+from offerpilot.repositories.notes import NoteCreate, NotesRepository
 from offerpilot.repositories.questions import QuestionsRepository
 from offerpilot.repositories.resumes import ResumeCreate, ResumesRepository
 
@@ -349,14 +349,17 @@ def test_resume_match_cli_persists_match(monkeypatch, tmp_path):
     assert "strong fit" in matches[0].result
 
 
-def test_question_generate_cli_from_knowledge(monkeypatch, tmp_path):
+def test_question_generate_cli_from_notes(monkeypatch, tmp_path):
     monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
     _write_ai_config(tmp_path)
-    knowledge = KnowledgeRepository(session_factory_for_data_dir(tmp_path))
-    knowledge.create_document(
-        KnowledgeDocumentCreate(
-            title="Cache",
-            content="Redis cache invalidation",
+    notes_repo = NotesRepository(session_factory_for_data_dir(tmp_path))
+    notes_repo.create(
+        NoteCreate(
+            company="OfferPilot",
+            position="Backend",
+            round="技术一面",
+            date="2026-07-11",
+            questions="如何设计缓存失效？请结合 Redis 说一下。",
         )
     )
     monkeypatch.setattr(
@@ -373,7 +376,10 @@ def test_question_generate_cli_from_knowledge(monkeypatch, tmp_path):
     )
     runner = CliRunner()
 
-    result = runner.invoke(app, ["question", "generate", "--topic", "system-design", "--count", "1"])
+    result = runner.invoke(
+        app,
+        ["question", "generate", "--source", "notes", "--topic", "system-design", "--count", "1"],
+    )
 
     assert result.exit_code == 0
     assert "Generated 1 questions" in result.output

@@ -1,0 +1,16 @@
+import { describe, expect, it } from 'vitest';
+import source from './knowledge.ts?raw';
+
+describe('knowledge service KI-02 contract', () => {
+  it('exposes upload/list/detail/evidence/search endpoints without legacy wiki helpers', () => {
+    expect(source).toContain('/knowledge/sources');
+    expect(source).toContain('/knowledge/evidence/search');
+    expect(source).toContain('/knowledge/sources/');
+    expect(source).toContain('uploadKnowledgeSource');
+    expect(source).toContain('searchKnowledgeEvidence');
+    expect(source).toContain('buildKnowledgeSourceContentUrl');
+    expect(source).not.toContain('fetchKnowledgePages');
+    expect(source).not.toContain('searchWiki');
+    expect(source).not.toContain('addToWiki');
+  });
+});

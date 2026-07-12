@@ -13,7 +13,6 @@ from offerpilot.repositories.application_events import (
     duration_minutes,
 )
 from offerpilot.repositories.jd import JDAnalysesRepository
-from offerpilot.repositories.knowledge import KnowledgeRepository
 from offerpilot.repositories.notes import NoteCreate, NotesRepository
 from offerpilot.repositories.offers import OfferCreate, OffersRepository
 from offerpilot.repositories.resumes import ResumesRepository
@@ -22,7 +21,6 @@ from offerpilot.schemas import (
     ApplicationEventOut,
     InterviewNoteOut,
     JDAnalysisOut,
-    KnowledgeDocumentOut,
     OfferOut,
     ResumeMatchOut,
     normalize_resume_content,
@@ -42,7 +40,6 @@ def offerpilot_tool_registry(
     *,
     resumes: ResumesRepository | None = None,
     jd_analyses: JDAnalysesRepository | None = None,
-    knowledge: KnowledgeRepository | None = None,
 ) -> dict[str, dict[str, Any]]:
     registry: dict[str, dict[str, Any]] = {}
     registry.update(application_tool_registry(applications))
@@ -53,8 +50,6 @@ def offerpilot_tool_registry(
         registry.update(resume_tool_registry(resumes))
     if jd_analyses is not None:
         registry.update(jd_tool_registry(jd_analyses))
-    if knowledge is not None:
-        registry.update(knowledge_tool_registry(knowledge))
     return registry
 
 
@@ -373,41 +368,6 @@ def jd_tool_registry(repo: JDAnalysesRepository) -> dict[str, dict[str, Any]]:
     }
 
 
-def knowledge_tool_registry(repo: KnowledgeRepository) -> dict[str, dict[str, Any]]:
-    return {
-        "list_knowledge_documents": {
-            "write": False,
-            "description": "List documents in the single v0.1 knowledge library, optionally filtered by query.",
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string"},
-                },
-            },
-            "handler": lambda args: _list_knowledge_documents(repo, args),
-        },
-        "get_knowledge_document": {
-            "write": False,
-            "description": "Get one knowledge document by id.",
-            "schema": _id_schema("Knowledge document id."),
-            "handler": lambda args: _get_knowledge_document(repo, args),
-        },
-        "search_knowledge": {
-            "write": False,
-            "description": "Search knowledge content and return matching snippets.",
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string"},
-                    "limit": {"type": "integer"},
-                },
-                "required": ["query"],
-            },
-            "handler": lambda args: _search_knowledge(repo, args),
-        },
-    }
-
-
 def _list_applications(repo: ApplicationsRepository, args: str) -> str:
     payload = _payload(args)
     apps = repo.list(status=str(payload.get("status") or ""))
@@ -705,34 +665,6 @@ def _get_jd_analysis(repo: JDAnalysesRepository, args: str) -> str:
     return _json(_jd_analysis_json(analysis))
 
 
-def _list_knowledge_documents(repo: KnowledgeRepository, args: str) -> str:
-    payload = _payload(args)
-    rows = repo.list_documents(
-        query=str(payload.get("query") or ""),
-    )
-    return _json([_knowledge_document_json(row) for row in rows])
-
-
-def _get_knowledge_document(repo: KnowledgeRepository, args: str) -> str:
-    payload = _payload(args)
-    document = repo.get_document(_required_int(payload, "id", "get_knowledge_document"))
-    if document is None:
-        raise ValueError("knowledge document not found")
-    return _json(_knowledge_document_json(document))
-
-
-def _search_knowledge(repo: KnowledgeRepository, args: str) -> str:
-    payload = _payload(args)
-    query = str(payload.get("query") or "").strip()
-    if not query:
-        raise ValueError("search_knowledge requires query")
-    rows = repo.search(
-        query,
-        limit=_optional_int(payload, "limit") or 5,
-    )
-    return _json([_knowledge_search_result_json(row) for row in rows])
-
-
 def _describe_create_application(args: str) -> str:
     payload = _payload(args)
     return f"新建投递：{payload.get('company_name', '')} - {payload.get('position_name', '')}"
@@ -957,20 +889,6 @@ def _jd_analysis_json(analysis: Any) -> dict[str, Any]:
     payload = JDAnalysisOut.model_validate(analysis).model_dump(mode="json", exclude_none=False)
     payload["record_type"] = "jd_analysis"
     payload["jd_analysis_id"] = analysis.id
-    return payload
-
-
-def _knowledge_document_json(document: Any) -> dict[str, Any]:
-    payload = KnowledgeDocumentOut.model_validate(document).model_dump(mode="json")
-    payload["record_type"] = "knowledge_document"
-    payload["knowledge_document_id"] = document.id
-    return payload
-
-
-def _knowledge_search_result_json(row: dict[str, Any]) -> dict[str, Any]:
-    payload = dict(row)
-    payload["record_type"] = "knowledge_search_result"
-    payload["search_result_id"] = row["chunk_id"]
     return payload
 
 

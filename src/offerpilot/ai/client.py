@@ -228,7 +228,22 @@ def _get(value: Any, key: str) -> Any:
 
 
 def _openai_message(message: Message) -> dict[str, Any]:
-    out: dict[str, Any] = {"role": message.role, "content": message.content}
+    out: dict[str, Any] = {"role": message.role}
+    if message.role == "user":
+        images = message.provider_blocks.get("images") or []
+        if images:
+            content_parts: list[dict[str, Any]] = [
+                {"type": "text", "text": message.content}
+            ]
+            for url in images:
+                content_parts.append(
+                    {"type": "image_url", "image_url": {"url": url}}
+                )
+            out["content"] = content_parts
+        else:
+            out["content"] = message.content
+    else:
+        out["content"] = message.content
     if message.role == "assistant":
         reasoning_content = message.provider_blocks.get("reasoning_content")
         if reasoning_content is not None:
@@ -256,6 +271,9 @@ def _provider_blocks(message: Any) -> dict[str, Any]:
 
 
 def _openai_tool(tool: dict[str, Any]) -> dict[str, Any]:
+    function = tool.get("function")
+    if tool.get("type") == "function" and isinstance(function, dict):
+        return tool
     schema = tool.get("schema") or {"type": "object", "properties": {}}
     if isinstance(schema, str):
         schema = json.loads(schema)

@@ -41,6 +41,12 @@ from offerpilot.config import (
 )
 from offerpilot.db import session_factory_for_data_dir
 from offerpilot.diagnostics import append_log_entry, read_recent_log_entries
+from offerpilot.knowledge import (
+    IngestRequest,
+    KnowledgeIngestService,
+    KnowledgeRepository,
+)
+from offerpilot.knowledge.service import IngestError as _IngestHttpError
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
 from offerpilot.repositories.chat import ChatRepository
 from offerpilot.repositories.application_events import (
@@ -49,10 +55,6 @@ from offerpilot.repositories.application_events import (
     duration_minutes,
 )
 from offerpilot.repositories.jd import JDAnalysesRepository, JDAnalysisCreate
-from offerpilot.repositories.knowledge import (
-    KnowledgeDocumentCreate,
-    KnowledgeRepository,
-)
 from offerpilot.repositories.material_kits import MaterialKitCreate, MaterialKitsRepository
 from offerpilot.repositories.mock import MockSessionCreate, MockSessionsRepository
 from offerpilot.repositories.notes import NoteCreate, NotesRepository
@@ -68,7 +70,7 @@ from offerpilot.schemas import (
     ApplicationEventOut,
     InterviewNoteOut,
     JDAnalysisOut,
-    KnowledgeDocumentOut,
+    KnowledgeIngestResponse,
     MaterialKitOut,
     MockSessionOut,
     OfferOut,
@@ -102,6 +104,145 @@ class ChatAgentTimedOut(RuntimeError):
     pass
 
 
+def _json_datetime(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    iso = value.isoformat()
+    return str(iso)
+
+
+def _knowledge_source_payload(source: Any) -> dict[str, Any]:
+    title = source.display_title or source.title_hint or source.main_filename
+    return {
+        "id": source.id,
+        "source_kind": source.source_kind,
+        "title": title,
+        "display_title": source.display_title,
+        "title_hint": source.title_hint,
+        "main_filename": source.main_filename,
+        "main_media_type": source.main_media_type,
+        "total_bytes": source.total_bytes,
+        "token_count": source.token_count,
+        "lifecycle": source.lifecycle,
+        "extraction_status": source.extraction_status,
+        "extraction_error_code": source.extraction_error_code,
+        "extraction_error_message": source.extraction_error_message,
+        "brief_status": source.brief_status,
+        "brief_block_reason": source.brief_block_reason,
+        "brief_error_code": source.brief_error_code,
+        "brief_error_message": source.brief_error_message,
+        "active_snapshot_id": source.active_snapshot_id,
+        "archived_at": _json_datetime(source.archived_at),
+        "created_at": _json_datetime(source.created_at),
+        "updated_at": _json_datetime(source.updated_at),
+    }
+
+
+def _knowledge_evidence_payload(evidence: Any) -> dict[str, Any]:
+    return {
+        "id": evidence.id,
+        "source_id": evidence.source_id,
+        "snapshot_id": evidence.snapshot_id,
+        "kind": evidence.kind,
+        "block_kind": evidence.block_kind,
+        "ordinal": evidence.ordinal,
+        "heading_path": list(evidence.heading_path),
+        "char_start": evidence.char_start,
+        "char_end": evidence.char_end,
+        "line_start": evidence.line_start,
+        "line_end": evidence.line_end,
+        "canonical_excerpt": evidence.canonical_excerpt,
+        "search_text": evidence.search_text,
+        "content_hash": evidence.content_hash,
+        "asset_id": evidence.asset_id,
+        "previous_evidence_id": evidence.previous_evidence_id,
+        "next_evidence_id": evidence.next_evidence_id,
+    }
+
+
+def _knowledge_search_hit_payload(hit: Any) -> dict[str, Any]:
+    return {
+        "evidence_id": hit.evidence_id,
+        "source_id": hit.source_id,
+        "snapshot_id": hit.snapshot_id,
+        "block_kind": hit.block_kind,
+        "heading_path": list(hit.heading_path),
+        "char_start": hit.char_start,
+        "char_end": hit.char_end,
+        "line_start": hit.line_start,
+        "line_end": hit.line_end,
+        "canonical_excerpt": hit.canonical_excerpt,
+        "snippet": hit.snippet,
+        "score": hit.score,
+    }
+
+
+def _knowledge_job_payload(job: Any) -> dict[str, Any]:
+    return {
+        "id": job.id,
+        "kind": job.kind,
+        "queue": job.queue,
+        "source_id": job.source_id,
+        "snapshot_id": job.snapshot_id,
+        "stage": job.stage,
+        "status": job.status,
+        "progress": job.progress,
+        "retry_count": job.retry_count,
+        "error_code": job.error_code,
+        "error_message": job.error_message,
+        "canceled": job.canceled,
+        "created_at": _json_datetime(job.created_at),
+        "updated_at": _json_datetime(job.updated_at),
+    }
+
+
+def _knowledge_origin_payload(origin: Any) -> dict[str, Any]:
+    return {
+        "id": origin.id,
+        "source_id": origin.source_id,
+        "import_method": origin.import_method,
+        "original_filename": origin.original_filename,
+        "origin_url": origin.origin_url,
+        "imported_at": _json_datetime(origin.imported_at),
+    }
+
+
+def _knowledge_ingest_payload(result: Any) -> dict[str, Any]:
+    return {
+        "deduplicated": result.deduplicated,
+        "source": _knowledge_source_payload(result.source),
+        "job": _knowledge_job_payload_for_id(result),
+        "extraction_error_code": result.extraction_error_code,
+        "extraction_error_message": result.extraction_error_message,
+    }
+
+
+def _knowledge_job_payload_for_id(result: Any) -> dict[str, Any]:
+    return {
+        "id": result.job_id,
+        "kind": "extract",
+        "queue": "extraction",
+        "source_id": result.source.id,
+        "snapshot_id": None,
+        "stage": "deduplicated" if result.deduplicated else "queued",
+        "status": "succeeded" if not result.extraction_failed else "failed",
+        "progress": 100 if not result.extraction_failed and not result.deduplicated else 0,
+        "retry_count": 0,
+        "error_code": result.extraction_error_code,
+        "error_message": result.extraction_error_message,
+        "canceled": False,
+        "created_at": _json_datetime(result.source.created_at),
+        "updated_at": _json_datetime(result.source.updated_at),
+    }
+
+
+def _safe_download_filename(filename: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", filename).strip("-._")
+    return cleaned or "source.md"
+
+
 def create_app(
     data_dir: Optional[Path] = None,
     chat_model: Optional[ChatModel] = None,
@@ -118,11 +259,14 @@ def create_app(
     offers = OffersRepository(session_factory)
     resumes = ResumesRepository(session_factory)
     jd_analyses = JDAnalysesRepository(session_factory)
-    knowledge = KnowledgeRepository(session_factory)
     questions = QuestionsRepository(session_factory)
     material_kits = MaterialKitsRepository(session_factory)
     mock_sessions = MockSessionsRepository(session_factory)
     wakeups = WakeupsRepository(session_factory)
+    knowledge_repository = KnowledgeRepository(session_factory)
+    knowledge_service = KnowledgeIngestService(
+        knowledge_repository, resolved_data_dir, session_factory
+    )
     app = FastAPI(title="OfferPilot")
 
     @app.middleware("http")
@@ -140,13 +284,151 @@ def create_app(
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(
         _request: Request,
-        _exc: RequestValidationError,
+        exc: RequestValidationError,
     ) -> JSONResponse:
-        return error_response(400, "Invalid ID")
+        errors = exc.errors()
+        if errors and all(
+            err.get("type") == "int_parsing"
+            and isinstance(err.get("loc"), tuple)
+            and err["loc"][:1] == ("path",)
+            for err in errors
+        ):
+            return error_response(400, "Invalid ID")
+        return JSONResponse(
+            status_code=422,
+            content={"error": "validation_failed", "detail": errors},
+        )
 
     @app.get("/api/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/api/knowledge/sources")
+    def list_knowledge_sources() -> list[dict[str, Any]]:
+        sources = knowledge_repository.list_sources()
+        return [_knowledge_source_payload(item) for item in sources]
+
+    @app.post(
+        "/api/knowledge/sources",
+        status_code=202,
+        response_model=KnowledgeIngestResponse,
+    )
+    def upload_knowledge_source(
+        file: UploadFile = File(...),
+        title_hint: str = "",
+    ) -> Any:
+        try:
+            content = file.file.read()
+        finally:
+            file.file.close()
+        filename = file.filename or ""
+        try:
+            result = knowledge_service.ingest(
+                IngestRequest(
+                    filename=filename,
+                    content_bytes=content,
+                    title_hint=title_hint,
+                    import_method="file",
+                )
+            )
+        except _IngestHttpError as exc:
+            return error_response(exc.status_code, exc.message, code=exc.code)
+        status_code = 200 if result.deduplicated else 202
+        return JSONResponse(
+            status_code=status_code,
+            content=_knowledge_ingest_payload(result),
+        )
+
+    @app.get("/api/knowledge/sources/{source_id}")
+    def get_knowledge_source(source_id: int) -> JSONResponse:
+        source = knowledge_repository.get_source(source_id)
+        if source is None:
+            return error_response(404, "Source not found")
+        return JSONResponse(_knowledge_source_payload(source))
+
+    @app.get("/api/knowledge/sources/{source_id}/content")
+    def get_knowledge_source_content(source_id: int) -> Response:
+        source = knowledge_repository.get_source(source_id)
+        if source is None:
+            return error_response(404, "Source not found")
+        path = resolved_data_dir / source.main_relative_path
+        if not path.is_file():
+            return error_response(404, "Source content missing")
+        safe_name = _safe_download_filename(source.main_filename)
+        return FileResponse(
+            path,
+            media_type=source.main_media_type,
+            filename=safe_name,
+        )
+
+    @app.get("/api/knowledge/sources/{source_id}/evidence")
+    def list_knowledge_evidence(
+        source_id: int,
+        snapshot_id: int = 0,
+        after_ordinal: int = 0,
+        limit: int = 50,
+    ) -> JSONResponse:
+        source = knowledge_repository.get_source(source_id)
+        if source is None:
+            return error_response(404, "Source not found")
+        clamped_limit = max(1, min(100, limit))
+        page = knowledge_repository.list_evidence(
+            source_id,
+            snapshot_id=snapshot_id or None,
+            after_ordinal=after_ordinal or None,
+            limit=clamped_limit,
+        )
+        return JSONResponse(
+            {
+                "items": [_knowledge_evidence_payload(item) for item in page.items],
+                "next_cursor": page.next_cursor,
+            }
+        )
+
+    @app.get("/api/knowledge/sources/{source_id}/jobs")
+    def list_knowledge_source_jobs(source_id: int) -> JSONResponse:
+        source = knowledge_repository.get_source(source_id)
+        if source is None:
+            return error_response(404, "Source not found")
+        jobs = knowledge_repository.list_jobs_for_source(source_id)
+        origins = knowledge_repository.list_origins(source_id)
+        return JSONResponse(
+            {
+                "jobs": [_knowledge_job_payload(job) for job in jobs],
+                "origins": [_knowledge_origin_payload(origin) for origin in origins],
+            }
+        )
+
+    @app.get("/api/knowledge/evidence/{evidence_id}")
+    def get_knowledge_evidence(evidence_id: str) -> JSONResponse:
+        evidence = knowledge_repository.get_evidence(evidence_id)
+        if evidence is None:
+            return error_response(404, "Evidence not found")
+        return JSONResponse(_knowledge_evidence_payload(evidence))
+
+    @app.post("/api/knowledge/evidence/search")
+    def search_knowledge_evidence(payload: dict[str, Any] = Body(...)) -> JSONResponse:
+        query = str(payload.get("query") or "")
+        if not query.strip():
+            return error_response(400, "query is required")
+        source_ids_raw = payload.get("source_ids") or []
+        if not isinstance(source_ids_raw, list):
+            return error_response(400, "source_ids must be a list")
+        source_ids = [int(sid) for sid in source_ids_raw if str(sid).isdigit()]
+        include_archived = bool(payload.get("include_archived") or False)
+        limit = int(payload.get("limit") or 10)
+        hits = knowledge_repository.search_evidence(
+            query,
+            source_ids=source_ids or None,
+            include_archived=include_archived,
+            limit=limit,
+        )
+        return JSONResponse(
+            {
+                "query": query,
+                "hits": [_knowledge_search_hit_payload(hit) for hit in hits],
+            }
+        )
 
     @app.get("/api/auth/status")
     def auth_status(request: Request) -> dict[str, bool]:
@@ -595,83 +877,6 @@ def create_app(
             return error_response(404, "JD analysis not found")
         return JSONResponse(_jd_analysis_json(analysis))
 
-    @app.get("/api/knowledge-documents")
-    def list_knowledge_documents(
-        q: str = "",
-    ) -> list[dict[str, Any]]:
-        return [
-            _knowledge_document_json(doc)
-            for doc in knowledge.list_documents(query=q)
-        ]
-
-    @app.post("/api/knowledge-documents", status_code=201)
-    def create_knowledge_document(payload: dict[str, Any] = Body(...)) -> JSONResponse:
-        parsed = _knowledge_document_from_payload(payload)
-        if isinstance(parsed, JSONResponse):
-            return parsed
-        doc = knowledge.create_document(parsed)
-        return JSONResponse(_knowledge_document_json(doc), status_code=201)
-
-    @app.post("/api/knowledge-documents/import", status_code=201)
-    async def import_knowledge_document(
-        file: UploadFile | None = File(default=None),
-    ) -> JSONResponse:
-        if file is None or not file.filename:
-            return error_response(400, "file is required")
-        filename = Path(file.filename).name
-        if Path(filename).suffix.lower() not in {".md", ".txt"}:
-            return error_response(400, "only .md and .txt files are supported")
-        data = await file.read()
-        if len(data) > 1024 * 1024:
-            return error_response(400, "file is too large")
-        doc = knowledge.create_document(
-            KnowledgeDocumentCreate(
-                title=Path(filename).stem,
-                content=data.decode("utf-8", errors="replace"),
-                tags=[],
-                source_type="markdown" if Path(filename).suffix.lower() == ".md" else "paste",
-                source_name=filename,
-            )
-        )
-        return JSONResponse(_knowledge_document_json(doc), status_code=201)
-
-    @app.get("/api/knowledge-documents/{document_id}")
-    def get_knowledge_document(document_id: int) -> JSONResponse:
-        doc = knowledge.get_document(document_id)
-        if doc is None:
-            return error_response(404, "Knowledge document not found")
-        return JSONResponse(_knowledge_document_json(doc))
-
-    @app.put("/api/knowledge-documents/{document_id}")
-    def update_knowledge_document(document_id: int, payload: dict[str, Any] = Body(...)) -> JSONResponse:
-        existing = knowledge.get_document(document_id)
-        if existing is None:
-            return error_response(404, "Knowledge document not found")
-        parsed = _knowledge_document_from_payload(payload)
-        if isinstance(parsed, JSONResponse):
-            return parsed
-        parsed.source_type = existing.source_type
-        parsed.source_name = existing.source_name
-        doc = knowledge.update_document(document_id, parsed)
-        if doc is None:
-            return error_response(404, "Knowledge document not found")
-        return JSONResponse(_knowledge_document_json(doc))
-
-    @app.delete("/api/knowledge-documents/{document_id}")
-    def delete_knowledge_document(document_id: int) -> JSONResponse:
-        if not knowledge.delete_document(document_id):
-            return error_response(404, "Knowledge document not found")
-        return JSONResponse({"message": "Deleted"})
-
-    @app.get("/api/knowledge/search")
-    def search_knowledge(q: str = "", limit: int = 5) -> JSONResponse:
-        query = q.strip()
-        if not query:
-            return error_response(400, "query is required")
-        if limit <= 0:
-            return error_response(400, "Invalid limit")
-        return JSONResponse(knowledge.search(query, limit=limit))
-
     @app.get("/api/questions")
     def list_questions(
         topic: str = "",
@@ -699,18 +904,9 @@ def create_app(
 
     @app.post("/api/questions/generate", status_code=201)
     def generate_questions(payload: dict[str, Any] = Body(...)) -> JSONResponse:
-        source = str(payload.get("source") or "knowledge").strip() or "knowledge"
+        source = str(payload.get("source") or "notes").strip() or "notes"
         application_id: int | None = None
-        if source == "knowledge":
-            documents = knowledge.list_documents()
-            label = "知识库资料"
-            context_text = "\n\n".join(
-                f"## {doc.title}\n{doc.content.strip()}"
-                for doc in documents
-                if doc.content.strip()
-            )
-            source_type = "ai_knowledge"
-        elif source == "notes":
+        if source == "notes":
             raw_app = int(payload.get("application_id") or 0)
             note_rows = notes.list(application_id=raw_app) if raw_app > 0 else notes.list()
             label = "面试复盘真题"
@@ -1132,7 +1328,6 @@ def create_app(
             offers,
             resumes=resumes,
             jd_analyses=jd_analyses,
-            knowledge=knowledge,
         )
         try:
             added, reply, pending = _run_chat_agent_with_timeout(
@@ -1263,7 +1458,6 @@ def create_app(
             offers,
             resumes=resumes,
             jd_analyses=jd_analyses,
-            knowledge=knowledge,
         )
         run = SseRun(
             run_id=str(uuid4()),
@@ -1424,7 +1618,6 @@ def create_app(
             offers,
             resumes=resumes,
             jd_analyses=jd_analyses,
-            knowledge=knowledge,
         )
         try:
             added, reply, new_pending = _run_chat_agent_with_timeout(
@@ -1587,7 +1780,6 @@ def create_app(
             offers,
             resumes=resumes,
             jd_analyses=jd_analyses,
-            knowledge=knowledge,
         )
 
         def stream() -> Any:
@@ -1993,8 +2185,11 @@ def create_app(
     return app
 
 
-def error_response(status_code: int, message: str) -> JSONResponse:
-    return JSONResponse({"error": message}, status_code=status_code)
+def error_response(status_code: int, message: str, code: str = "") -> JSONResponse:
+    payload: dict[str, Any] = {"error": message}
+    if code:
+        payload["error_code"] = code
+    return JSONResponse(payload, status_code=status_code)
 
 
 def _run_chat_agent_with_timeout(call: Any) -> Any:
@@ -3452,27 +3647,6 @@ def _offer_json(offer: Any) -> dict[str, Any]:
 
 def _jd_analysis_json(analysis: Any) -> dict[str, Any]:
     return JDAnalysisOut.model_validate(analysis).model_dump(mode="json", exclude_none=True)
-
-
-def _knowledge_document_from_payload(
-    payload: dict[str, Any],
-) -> KnowledgeDocumentCreate | JSONResponse:
-    title = str(payload.get("title") or "").strip()
-    if not title:
-        return error_response(400, "title is required")
-    tags_value = payload.get("tags") or []
-    tags = [str(item) for item in tags_value] if isinstance(tags_value, list) else []
-    return KnowledgeDocumentCreate(
-        title=title,
-        content=str(payload.get("content") or ""),
-        tags=tags,
-        source_type=str(payload.get("source_type") or "manual"),
-        source_name=str(payload.get("source_name") or ""),
-    )
-
-
-def _knowledge_document_json(document: Any) -> dict[str, Any]:
-    return KnowledgeDocumentOut.model_validate(document).model_dump(mode="json")
 
 
 def _material_kit_json(kit: Any) -> dict[str, Any]:

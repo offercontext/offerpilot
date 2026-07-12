@@ -14,7 +14,7 @@ class JSONModel:
         return Assistant(content=json.dumps(self.payload, ensure_ascii=False))
 
 
-def test_knowledge_to_practice_generation_review_workflow(tmp_path):
+def test_notes_to_practice_generation_review_workflow(tmp_path):
     model = JSONModel(
         {
             "questions": [
@@ -30,24 +30,34 @@ def test_knowledge_to_practice_generation_review_workflow(tmp_path):
     )
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
 
-    doc = client.post(
-        "/api/knowledge-documents",
-        json={
-            "title": "短链系统设计",
-            "content": "短链系统需要发号器、缓存、限流和异步写入。",
-            "tags": ["系统设计"],
-        },
+    application = client.post(
+        "/api/applications",
+        json={"company_name": "牛客网", "position_name": "后端", "status": "interview"},
     ).json()
+    client.post(
+        f"/api/applications/{application['id']}/notes",
+        json={
+            "company": "牛客网",
+            "position": "后端",
+            "round": "技术一面",
+            "date": "2026-07-11",
+            "questions": "短链系统需要发号器、缓存、限流和异步写入。",
+        },
+    )
     generated = client.post(
         "/api/questions/generate",
-        json={"source": "knowledge", "topic": "system-design", "count": 1},
+        json={
+            "source": "notes",
+            "topic": "system-design",
+            "count": 1,
+            "application_id": application["id"],
+        },
     )
 
     assert generated.status_code == 201
     question = generated.json()["questions"][0]
     assert question["question"] == "如何设计一个高并发短链系统？"
-    assert question["source_type"] == "ai_knowledge"
-    assert client.get("/api/knowledge/search?q=短链").json()[0]["document_id"] == doc["id"]
+    assert question["source_type"] == "ai_notes"
     assert client.get("/api/questions/due").json()[0]["id"] == question["id"]
 
     reviewed = client.post(f"/api/questions/{question['id']}/reviews", json={"rating": 3})

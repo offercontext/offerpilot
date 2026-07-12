@@ -59,7 +59,7 @@ def test_question_crud_review_stats_and_delete(tmp_path):
     assert delete_response.content == b""
 
 
-def test_question_validation_and_generate_missing_source(tmp_path):
+def test_question_validation_and_generate_unsupported_source(tmp_path):
     client = TestClient(create_app(data_dir=tmp_path))
 
     empty = client.post("/api/questions", json={"question": "   "})
@@ -68,10 +68,10 @@ def test_question_validation_and_generate_missing_source(tmp_path):
 
     missing_kb = client.post("/api/questions/generate", json={"source": "knowledge"})
     assert missing_kb.status_code == 400
-    assert missing_kb.json() == {"error": "所选来源没有可用于生成题目的内容"}
+    assert missing_kb.json() == {"error": "不支持的来源类型"}
 
 
-def test_question_generate_from_knowledge_persists_questions(tmp_path):
+def test_question_generate_from_notes_persists_questions(tmp_path):
     model = JSONModel(
         {
             "questions": [
@@ -93,24 +93,35 @@ def test_question_generate_from_knowledge_persists_questions(tmp_path):
         }
     )
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    application = client.post(
+        "/api/applications",
+        json={"company_name": "OfferPilot", "position_name": "Backend", "status": "interview"},
+    ).json()
     client.post(
-        "/api/knowledge-documents",
+        f"/api/applications/{application['id']}/notes",
         json={
-            "title": "Scheduler",
-            "content": "goroutine scheduler GMP",
-            "tags": [],
+            "company": "OfferPilot",
+            "position": "Backend",
+            "round": "技术一面",
+            "date": "2026-07-11",
+            "questions": "goroutine scheduler GMP",
         },
     )
 
     response = client.post(
         "/api/questions/generate",
-        json={"source": "knowledge", "topic": "go-runtime", "count": 2},
+        json={
+            "source": "notes",
+            "topic": "go-runtime",
+            "count": 2,
+            "application_id": application["id"],
+        },
     )
 
     assert response.status_code == 201
     generated = response.json()
     assert generated["count"] == 1
     assert generated["skipped"] == 1
-    assert generated["questions"][0]["source_type"] == "ai_knowledge"
+    assert generated["questions"][0]["source_type"] == "ai_notes"
     assert generated["questions"][0]["difficulty"] == "hard"
     assert client.get("/api/questions?topic=go-runtime").json()[0]["question"] == "如何解释 goroutine 调度？"

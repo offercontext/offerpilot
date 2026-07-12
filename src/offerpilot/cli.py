@@ -25,7 +25,6 @@ from offerpilot.db import session_factory_for_data_dir
 from offerpilot.diagnostics import append_log_entry
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
 from offerpilot.repositories.jd import JDAnalysesRepository
-from offerpilot.repositories.knowledge import KnowledgeRepository
 from offerpilot.repositories.notes import NoteCreate, NotesRepository
 from offerpilot.repositories.offers import OfferCreate, OffersRepository
 from offerpilot.repositories.questions import QuestionsRepository
@@ -592,7 +591,7 @@ def question_list(
 
 @question_app.command("generate")
 def question_generate(
-    source: str = typer.Option("knowledge", "--source", "-s", help="knowledge or notes"),
+    source: str = typer.Option("notes", "--source", "-s", help="notes source"),
     topic: str = typer.Option("", "--topic", help="topic label for generated questions"),
     app_id: int = typer.Option(0, "--app", "-a", help="application ID for notes source"),
     count: int = typer.Option(8, "--count", "-n", help="number of questions to generate"),
@@ -601,7 +600,6 @@ def question_generate(
         result = generate_questions(
             _build_ai_model(),
             _questions_repo(),
-            _knowledge_repo(),
             _notes_repo(),
             source=source,
             topic=topic,
@@ -625,10 +623,6 @@ def _applications_repo() -> ApplicationsRepository:
 
 def _jd_repo() -> JDAnalysesRepository:
     return JDAnalysesRepository(session_factory_for_data_dir(resolve_data_dir()))
-
-
-def _knowledge_repo() -> KnowledgeRepository:
-    return KnowledgeRepository(session_factory_for_data_dir(resolve_data_dir()))
 
 
 def _resumes_repo() -> ResumesRepository:

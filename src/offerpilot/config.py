@@ -20,6 +20,9 @@ class AIProviderProfile(BaseModel):
     base_url: str = DEFAULT_BASE_URL
     model: str = DEFAULT_MODEL
     enabled: bool = True
+    context_window: int = 0
+    max_output_tokens: int = 0
+    supports_vision: bool = False
 
 
 class SkillPackage(BaseModel):
@@ -44,6 +47,7 @@ class Config(BaseModel):
     onboarding_force_open: bool = False
     active_provider_id: str = DEFAULT_PROVIDER_ID
     fallback_provider_id: str = ""
+    multimodal_provider_id: str = ""
     providers: list[AIProviderProfile] = Field(default_factory=list)
     runtime_mode: RuntimeMode = "local"
     auth_enabled: bool = False
@@ -87,6 +91,11 @@ class Config(BaseModel):
         if fallback is None or fallback.id == self.active_provider().id:
             return None
         return fallback
+
+    def multimodal_provider(self) -> AIProviderProfile | None:
+        if not self.multimodal_provider_id:
+            return None
+        return self.provider_by_id(self.multimodal_provider_id)
 
 
 def resolve_data_dir() -> Path:

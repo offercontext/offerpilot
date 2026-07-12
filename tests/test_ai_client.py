@@ -68,3 +68,26 @@ def test_reasoning_content_round_trips_for_thinking_models(monkeypatch):
 
     assert captured["messages"][0]["reasoning_content"] == "previous thinking"
     assert assistant.provider_blocks == {"reasoning_content": "looked up the application"}
+
+
+def test_client_accepts_openai_wrapped_tool_schema(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake_completion(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {"choices": [{"message": {"content": ""}}]}
+
+    monkeypatch.setattr(ai_client, "completion", fake_completion)
+    client = ConfiguredAIClient(Config(api_key="sk-test"))
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "submit_analysis",
+            "description": "Submit analysis.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+
+    client.complete([Message(role="user", content="analyse")], [tool])
+
+    assert captured["tools"] == [tool]

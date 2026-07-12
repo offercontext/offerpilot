@@ -160,26 +160,6 @@ class JDAnalysisOut(BaseModel):
     created_at: datetime
 
 
-class KnowledgeDocumentOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    title: str
-    content: str
-    tags: list[str]
-    doc_kind: str = "wiki"
-    status: str = "confirmed"
-    source_type: str
-    source_name: str
-    source_refs: str = "[]"
-    summary_type: str = ""
-    generation_meta: str = "{}"
-    superseded_by: int | None = None
-    confirmed_at: datetime | None = None
-    created_at: datetime
-    updated_at: datetime
-
-
 class QuestionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -249,6 +229,98 @@ class MockSessionOut(BaseModel):
     score_confidence: int | None = None
     feedback: str
     created_at: datetime
+
+
+class KnowledgeSourceOut(BaseModel):
+    id: int
+    source_kind: str
+    display_title: str
+    title_hint: str
+    main_filename: str
+    main_media_type: str
+    total_bytes: int
+    token_count: int
+    lifecycle: str
+    extraction_status: str
+    extraction_error_code: str
+    extraction_error_message: str
+    brief_status: str
+    brief_block_reason: str
+    brief_error_code: str
+    brief_error_message: str
+    active_snapshot_id: int | None = None
+    archived_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class KnowledgeOriginOut(BaseModel):
+    id: int
+    source_id: int
+    import_method: str
+    original_filename: str
+    origin_url: str
+    imported_at: datetime
+
+
+class KnowledgeJobOut(BaseModel):
+    id: int
+    kind: str
+    queue: str
+    source_id: int | None = None
+    snapshot_id: int | None = None
+    stage: str
+    status: str
+    progress: int
+    retry_count: int
+    error_code: str
+    error_message: str
+    canceled: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class KnowledgeEvidenceOut(BaseModel):
+    id: str
+    source_id: int
+    snapshot_id: int
+    kind: str
+    block_kind: str
+    ordinal: int
+    heading_path: list[str]
+    char_start: int
+    char_end: int
+    line_start: int
+    line_end: int
+    canonical_excerpt: str
+    search_text: str
+    content_hash: str
+    asset_id: int | None = None
+    previous_evidence_id: str | None = None
+    next_evidence_id: str | None = None
+
+
+class KnowledgeEvidenceSearchHitOut(BaseModel):
+    evidence_id: str
+    source_id: int
+    snapshot_id: int
+    block_kind: str
+    heading_path: list[str]
+    char_start: int
+    char_end: int
+    line_start: int
+    line_end: int
+    canonical_excerpt: str
+    snippet: str
+    score: float
+
+
+class KnowledgeIngestResponse(BaseModel):
+    deduplicated: bool
+    source: KnowledgeSourceOut
+    job: KnowledgeJobOut
+    extraction_error_code: str = ""
+    extraction_error_message: str = ""
 
 
 RESUME_COMPLETION_SECTIONS = (

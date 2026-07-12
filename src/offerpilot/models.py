@@ -3,7 +3,17 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, func
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -255,72 +265,6 @@ class ApplicationMaterialKit(Base):
     )
 
 
-class KnowledgeDocument(Base):
-    __tablename__ = "knowledge_documents"
-    __table_args__ = (
-        Index("idx_knowledge_documents_kind", "doc_kind"),
-        Index("idx_knowledge_documents_status", "status"),
-    )
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    title: Mapped[str] = mapped_column(String, nullable=False)
-    content: Mapped[str] = mapped_column(String, default="", server_default="")
-    _tags: Mapped[str] = mapped_column("tags", String, default="[]", server_default="[]")
-    doc_kind: Mapped[str] = mapped_column(String, default="wiki", server_default="wiki")
-    status: Mapped[str] = mapped_column(String, default="confirmed", server_default="confirmed")
-    source_type: Mapped[str] = mapped_column(String, default="manual", server_default="manual")
-    source_name: Mapped[str] = mapped_column(String, default="", server_default="")
-    source_refs: Mapped[str] = mapped_column(String, default="[]", server_default="[]")
-    summary_type: Mapped[str] = mapped_column(String, default="", server_default="")
-    generation_meta: Mapped[str] = mapped_column(String, default="{}", server_default="{}")
-    superseded_by: Mapped[int | None] = mapped_column(nullable=True)
-    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.current_timestamp(),
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.current_timestamp(),
-        onupdate=func.current_timestamp(),
-    )
-
-    @property
-    def tags(self) -> list[str]:
-        if not self._tags:
-            return []
-        value = json.loads(self._tags)
-        return value if isinstance(value, list) else []
-
-    @tags.setter
-    def tags(self, value: list[str]) -> None:
-        self._tags = json.dumps(value or [], ensure_ascii=False)
-
-
-class KnowledgeChunk(Base):
-    __tablename__ = "knowledge_chunks"
-    __table_args__ = (
-        Index("idx_knowledge_chunks_document", "document_id"),
-    )
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    document_id: Mapped[int] = mapped_column(
-        ForeignKey("knowledge_documents.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    chunk_index: Mapped[int] = mapped_column(default=0, server_default="0")
-    content: Mapped[str] = mapped_column(String, nullable=False)
-    embedding: Mapped[str] = mapped_column(String, default="", server_default="")
-    embedding_model: Mapped[str] = mapped_column(String, default="", server_default="")
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.current_timestamp(),
-    )
-
-
 class Question(Base):
     __tablename__ = "questions"
     __table_args__ = (
@@ -549,4 +493,269 @@ class ChatMessage(Base):
         DateTime(timezone=True),
         nullable=False,
         server_default=func.current_timestamp(),
+    )
+
+
+class KnowledgeSource(Base):
+    """Knowledge Source 不可变原件 + lifecycle/extraction/brief 独立状态。"""
+
+    __tablename__ = "knowledge_sources"
+    __table_args__ = (
+        Index("idx_knowledge_sources_hash", "source_hash"),
+        Index("idx_knowledge_sources_lifecycle", "lifecycle"),
+        Index("idx_knowledge_sources_extraction", "extraction_status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    source_hash: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    source_kind: Mapped[str] = mapped_column(
+        String, nullable=False, default="markdown", server_default="markdown"
+    )
+    display_title: Mapped[str] = mapped_column(String, default="", server_default="")
+    title_hint: Mapped[str] = mapped_column(String, default="", server_default="")
+    main_filename: Mapped[str] = mapped_column(String, nullable=False)
+    main_media_type: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        default="text/markdown",
+        server_default="text/markdown",
+    )
+    main_relative_path: Mapped[str] = mapped_column(String, nullable=False)
+    manifest_json: Mapped[str] = mapped_column(Text, default="{}", server_default="{}")
+    total_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    token_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    lifecycle: Mapped[str] = mapped_column(
+        String, nullable=False, default="active", server_default="active"
+    )
+    extraction_status: Mapped[str] = mapped_column(
+        String, nullable=False, default="pending", server_default="pending"
+    )
+    extraction_error_code: Mapped[str] = mapped_column(
+        String, default="", server_default=""
+    )
+    extraction_error_message: Mapped[str] = mapped_column(
+        String, default="", server_default=""
+    )
+    brief_status: Mapped[str] = mapped_column(
+        String, nullable=False, default="not_started", server_default="not_started"
+    )
+    brief_block_reason: Mapped[str] = mapped_column(
+        String, default="", server_default=""
+    )
+    brief_error_code: Mapped[str] = mapped_column(
+        String, default="", server_default=""
+    )
+    brief_error_message: Mapped[str] = mapped_column(
+        String, default="", server_default=""
+    )
+    active_snapshot_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    active_brief_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    archived_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+        onupdate=func.current_timestamp(),
+    )
+
+
+class KnowledgeSourceOrigin(Base):
+    """每次导入追加一条 file/paste/bundle 来源记录。"""
+
+    __tablename__ = "knowledge_source_origins"
+    __table_args__ = (
+        Index("idx_knowledge_source_origins_source", "source_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    source_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_sources.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    import_method: Mapped[str] = mapped_column(String, nullable=False)
+    original_filename: Mapped[str] = mapped_column(
+        String, default="", server_default=""
+    )
+    origin_url: Mapped[str] = mapped_column(String, default="", server_default="")
+    imported_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+
+
+class KnowledgeExtractionSnapshot(Base):
+    """确定性 Extraction Snapshot：规范化文本 + 结构清单 + digest。"""
+
+    __tablename__ = "knowledge_extraction_snapshots"
+    __table_args__ = (
+        Index("idx_knowledge_snapshots_source", "source_id"),
+        UniqueConstraint(
+            "source_id",
+            "extractor_version",
+            name="uq_knowledge_snapshots_source_version",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    source_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_sources.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    extractor_version: Mapped[str] = mapped_column(String, nullable=False)
+    parser_version: Mapped[str] = mapped_column(
+        String, nullable=False, default="markdown-it-py-3", server_default="markdown-it-py-3"
+    )
+    normalization_version: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        default="nl-1",
+        server_default="nl-1",
+    )
+    tokenizer_version: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        default="none-1",
+        server_default="none-1",
+    )
+    encoding: Mapped[str] = mapped_column(
+        String, nullable=False, default="utf-8", server_default="utf-8"
+    )
+    detection_method: Mapped[str] = mapped_column(
+        String, default="", server_default=""
+    )
+    canonical_text: Mapped[str] = mapped_column(Text, nullable=False)
+    structure_manifest: Mapped[str] = mapped_column(
+        Text, default="{}", server_default="{}"
+    )
+    digest: Mapped[str] = mapped_column(String, nullable=False)
+    token_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    char_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+
+
+class KnowledgeEvidence(Base):
+    """引用单位，stable ID + 结构位置 + 邻接关系。"""
+
+    __tablename__ = "knowledge_evidence"
+    __table_args__ = (
+        Index("idx_knowledge_evidence_source", "source_id"),
+        Index("idx_knowledge_evidence_snapshot", "snapshot_id"),
+        UniqueConstraint(
+            "snapshot_id",
+            "ordinal",
+            name="uq_knowledge_evidence_snapshot_ordinal",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    source_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_sources.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    snapshot_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_extraction_snapshots.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    block_kind: Mapped[str] = mapped_column(String, nullable=False)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    heading_path_json: Mapped[str] = mapped_column(
+        String, default="[]", server_default="[]"
+    )
+    char_start: Mapped[int] = mapped_column(Integer, nullable=False)
+    char_end: Mapped[int] = mapped_column(Integer, nullable=False)
+    line_start: Mapped[int] = mapped_column(Integer, nullable=False)
+    line_end: Mapped[int] = mapped_column(Integer, nullable=False)
+    canonical_excerpt: Mapped[str] = mapped_column(Text, nullable=False)
+    search_text: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default=""
+    )
+    content_hash: Mapped[str] = mapped_column(String, nullable=False)
+    asset_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    previous_evidence_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    next_evidence_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+
+    @property
+    def heading_path(self) -> list[str]:
+        if not self.heading_path_json:
+            return []
+        value = json.loads(self.heading_path_json)
+        return value if isinstance(value, list) else []
+
+
+class KnowledgeJob(Base):
+    """后台 Job：extract/brief/delete。KI-02 只产生 extract。"""
+
+    __tablename__ = "knowledge_jobs"
+    __table_args__ = (
+        Index("idx_knowledge_jobs_source", "source_id"),
+        Index("idx_knowledge_jobs_status", "status"),
+        Index("idx_knowledge_jobs_queue", "queue"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    queue: Mapped[str] = mapped_column(String, nullable=False)
+    source_id: Mapped[int | None] = mapped_column(
+        ForeignKey("knowledge_sources.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    snapshot_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stage: Mapped[str] = mapped_column(String, default="", server_default="")
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, default="pending", server_default="pending"
+    )
+    progress: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    next_retry_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    canceled: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0"
+    )
+    lease_owner: Mapped[str] = mapped_column(
+        String, default="", server_default=""
+    )
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    error_code: Mapped[str] = mapped_column(
+        String, default="", server_default=""
+    )
+    error_message: Mapped[str] = mapped_column(
+        String, default="", server_default=""
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+        onupdate=func.current_timestamp(),
     )

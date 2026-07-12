@@ -11,7 +11,6 @@ import httpx
 from offerpilot.ai.agent import ChatModel
 from offerpilot.ai.types import Message
 from offerpilot.repositories.jd import JDAnalysesRepository, JDAnalysisCreate
-from offerpilot.repositories.knowledge import KnowledgeRepository
 from offerpilot.repositories.notes import NotesRepository
 from offerpilot.repositories.questions import QuestionCreate, QuestionsRepository, question_hash
 from offerpilot.repositories.resumes import ResumeMatchCreate, ResumesRepository
@@ -116,23 +115,15 @@ def match_resume(
 def generate_questions(
     model: ChatModel,
     questions: QuestionsRepository,
-    knowledge: KnowledgeRepository,
     notes: NotesRepository,
-    source: str = "knowledge",
+    source: str = "notes",
     topic: str = "",
     application_id: int = 0,
     count: int = 8,
 ) -> GeneratedQuestionsResult:
-    source = source.strip() or "knowledge"
+    source = source.strip() or "notes"
     saved_application_id: int | None = None
-    if source == "knowledge":
-        docs = knowledge.list_documents()
-        label = "知识库资料"
-        context_text = "\n\n".join(
-            f"## {doc.title}\n{doc.content.strip()}" for doc in docs if doc.content.strip()
-        )
-        source_type = "ai_knowledge"
-    elif source == "notes":
+    if source == "notes":
         note_rows = notes.list(application_id=application_id) if application_id > 0 else notes.list()
         label = "面试复盘真题"
         context_text = "\n\n".join(note.questions.strip() for note in note_rows if note.questions.strip())

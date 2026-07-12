@@ -673,9 +673,9 @@ def test_chat_exposes_module_tools_to_model(tmp_path):
     assert response.status_code == 200
     captured_tools = {tool["name"] for tool in model.tools[0]}
     assert {"list_applications", "list_notes", "list_application_events", "list_offers"}.issubset(captured_tools)
-    assert {"list_resumes", "list_jd_analyses", "list_knowledge_documents", "search_knowledge"}.issubset(
-        captured_tools
-    )
+    assert {"list_resumes", "list_jd_analyses"}.issubset(captured_tools)
+    assert "list_knowledge_documents" not in captured_tools
+    assert "search_knowledge" not in captured_tools
 
 
 def test_chat_injects_response_structure_prompt(tmp_path):
@@ -704,12 +704,9 @@ def test_chat_allows_wide_read_only_tool_summaries(tmp_path):
             Assistant(tool_calls=[ToolCall(id="r4", name="list_application_events", args="{}")]),
             Assistant(tool_calls=[ToolCall(id="r5", name="list_resumes", args="{}")]),
             Assistant(tool_calls=[ToolCall(id="r6", name="list_jd_analyses", args="{}")]),
-            Assistant(tool_calls=[ToolCall(id="r7", name="list_knowledge_documents", args="{}")]),
-            Assistant(tool_calls=[ToolCall(id="r8", name="search_knowledge", args=json.dumps({"query": "Java"}))]),
-            Assistant(tool_calls=[ToolCall(id="r9", name="compare_offers", args=json.dumps({"ids": []}))]),
-            Assistant(tool_calls=[ToolCall(id="r10", name="list_resume_matches", args=json.dumps({"resume_id": 1}))]),
-            Assistant(tool_calls=[ToolCall(id="r11", name="get_application_event", args=json.dumps({"id": 1}))]),
-            Assistant(tool_calls=[ToolCall(id="r12", name="get_knowledge_document", args=json.dumps({"id": 1}))]),
+            Assistant(tool_calls=[ToolCall(id="r7", name="compare_offers", args=json.dumps({"ids": []}))]),
+            Assistant(tool_calls=[ToolCall(id="r8", name="list_resume_matches", args=json.dumps({"resume_id": 1}))]),
+            Assistant(tool_calls=[ToolCall(id="r9", name="get_application_event", args=json.dumps({"id": 1}))]),
             Assistant(content="summary complete"),
         ]
     )
