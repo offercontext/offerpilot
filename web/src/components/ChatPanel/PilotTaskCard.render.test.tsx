@@ -93,6 +93,46 @@ describe('PilotTaskCard', () => {
     expect(onAction).not.toHaveBeenCalled();
   });
 
+  it('normalizes duplicate and blank next actions before rendering or dispatching', () => {
+    const onAction = vi.fn();
+    const container = renderCard({
+      title: '准备本周求职安排',
+      steps: [],
+      presentation: {
+        conclusion: '建议先完成准备清单。',
+        actions: ['  生成准备清单  ', '', '生成准备清单', '查看日程'],
+        detailMarkdown: '',
+      },
+      disabled: false,
+      onAction,
+    });
+
+    const actions = Array.from(container.querySelectorAll<HTMLButtonElement>('section[aria-label="下一步"] button'));
+    expect(actions).toHaveLength(2);
+    expect(actions.map((action) => action.textContent)).toEqual(['生成准备清单', '查看日程']);
+    expect(actions[0].getAttribute('aria-label')).toBe('继续：生成准备清单');
+
+    act(() => actions[0].click());
+    expect(onAction).toHaveBeenCalledTimes(1);
+    expect(onAction).toHaveBeenCalledWith('生成准备清单');
+  });
+
+  it('omits next actions when every action is blank', () => {
+    const container = renderCard({
+      title: '整理准备事项',
+      steps: [],
+      presentation: {
+        conclusion: '暂时没有可继续的操作。',
+        actions: [' ', '\n\t'],
+        detailMarkdown: '',
+      },
+      disabled: false,
+      onAction: vi.fn(),
+    });
+
+    expect(container.querySelector('section[aria-label="下一步"]')).toBeNull();
+  });
+
   it('keeps the embedded process timeline expandable with its evidence', () => {
     const container = renderCard({
       title: '查看投递进度',

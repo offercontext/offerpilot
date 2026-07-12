@@ -16,8 +16,23 @@ function completionStatus(steps: ToolStep[], presentation?: TurnPresentation): s
   return '等待处理';
 }
 
+function normalizeActions(actions: string[]): string[] {
+  const uniqueActions: string[] = [];
+  const seen = new Set<string>();
+
+  for (const action of actions) {
+    const normalized = action.trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    uniqueActions.push(normalized);
+  }
+
+  return uniqueActions;
+}
+
 export default function PilotTaskCard({ title, steps, presentation, disabled, onAction }: Props) {
   const status = completionStatus(steps, presentation);
+  const actions = normalizeActions(presentation?.actions ?? []);
 
   return (
     <article className={styles.taskCard} aria-label={`本轮任务：${title}`}>
@@ -38,11 +53,11 @@ export default function PilotTaskCard({ title, steps, presentation, disabled, on
         </section>
       ) : null}
 
-      {presentation?.actions.length ? (
+      {actions.length ? (
         <section className={styles.taskActions} aria-label="下一步">
           <h4>下一步</h4>
           <div>
-            {presentation.actions.map((action) => (
+            {actions.map((action) => (
               <button
                 key={action}
                 type="button"
