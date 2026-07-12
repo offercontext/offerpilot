@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { ChatMessage } from '@/types/chat';
-import { buildTurns, collectEvidence, pendingActionForConversation, reloadConversationTurns, toolMeta } from './model';
+import {
+  buildTurns,
+  collectEvidence,
+  parseTurnPresentation,
+  pendingActionForConversation,
+  reloadConversationTurns,
+  toolMeta,
+} from './model';
 
 function msg(patch: Partial<ChatMessage> & Pick<ChatMessage, 'role'>): ChatMessage {
   return {
@@ -630,5 +637,117 @@ describe('buildTurns evidence normalization', () => {
       human: '更新状态',
       args: { id: 1, status: 'offer' },
     });
+  });
+});
+
+describe('Pilot turn presentation reconstruction', () => {
+  it('parses persisted markdown headings and preserves leading detail markdown', () => {
+    const presentation = parseTurnPresentation([
+      '# 投递进展',
+      '',
+      '已核对 **两个**岗位的状态。',
+      '',
+      '   ## 结论',
+      '',
+      '优先准备下一轮技术面。',
+      '',
+      '### 下一步',
+      '',
+      '-  整理项目亮点  ',
+      '- 联系招聘方确认时间',
+    ].join('\n'));
+
+    expect(presentation).toEqual({
+      conclusion: '优先准备下一轮技术面。',
+      actions: ['整理项目亮点', '联系招聘方确认时间'],
+      detailMarkdown: '# 投递进展\n\n已核对 **两个**岗位的状态。',
+    });
+  });
+
+  it('falls back for incomplete or reversed presentation headings', () => {
+    const onlyConclusion = '## 结论\n\n继续跟进。';
+    const noAction = '## 结论\n\n继续跟进。\n\n## 下一步\n\n稍后处理。';
+    const reversed = '## 下一步\n\n- 跟进\n\n## 结论\n\n继续跟进。';
+
+    expect(parseTurnPresentation(onlyConclusion)).toBeUndefined();
+    expect(parseTurnPresentation(noAction)).toBeUndefined();
+    expect(parseTurnPresentation(reversed)).toBeUndefined();
+
+    const turns = buildTurns([msg({ role: 'assistant', content: noAction })]);
+    expect(turns[0]).toMatchObject({
+      content: noAction,
+      taskTitle: '本轮任务',
+      presentation: undefined,
+    });
+  });
+
+  it('keeps at most the first three actionable bullets', () => {
+    const presentation = parseTurnPresentation([
+      '## 结论',
+      '',
+      '可以推进。',
+      '',
+      '## 下一步',
+      '',
+      '* 第一项',
+      '+ 第二项',
+      '- 第三项',
+      '- 第四项',
+    ].join('\n'));
+
+    expect(presentation?.actions).toEqual(['第一项', '第二项', '第三项']);
+  });
+
+  it('attaches real tool steps and structured presentation to the final assistant turn', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'user',
+        content: '   Review    application  pipeline and prepare an exceptionally detailed final summary today  ',
+      }),
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([{ id: 'call-apps', name: 'list_applications', args: {} }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-apps',
+        content: JSON.stringify([{ id: 7, company_name: 'OpenAI', position_name: 'Engineer' }]),
+      }),
+      msg({
+        role: 'assistant',
+        content: [
+          '已查到投递记录。',
+          '',
+          '## 结论',
+          '',
+          '应优先准备 OpenAI 面试。',
+          '',
+          '## 下一步',
+          '',
+          '- 更新项目案例',
+          '- 安排模拟面试',
+        ].join('\n'),
+      }),
+    ]);
+
+    expect(turns).toHaveLength(2);
+    expect(turns[1]).toMatchObject({
+      role: 'assistant',
+      content: '已查到投递记录。',
+      taskTitle: 'Review application pipeline and pre…',
+      presentation: {
+        conclusion: '应优先准备 OpenAI 面试。',
+        actions: ['更新项目案例', '安排模拟面试'],
+        detailMarkdown: '已查到投递记录。',
+      },
+      steps: [
+        {
+          name: 'list_applications',
+          toolCallId: 'call-apps',
+        },
+      ],
+    });
+    expect(turns[1].steps).toHaveLength(1);
+    expect(turns[1].taskTitle).toHaveLength(36);
   });
 });

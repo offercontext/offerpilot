@@ -40,9 +40,56 @@ export interface UITurn {
   content: string;
   /** Tool steps the assistant ran before producing this answer. */
   steps?: ToolStep[];
+  /** Short label reconstructed from the most recent user request. */
+  taskTitle?: string;
+  /** Structured Pilot conclusion and actions reconstructed from persisted Markdown. */
+  presentation?: TurnPresentation;
+}
+
+export interface TurnPresentation {
+  conclusion: string;
+  actions: string[];
+  detailMarkdown: string;
 }
 
 const EVIDENCE_SNIPPET_MAX = 180;
+const TASK_TITLE_MAX_LENGTH = 36;
+const PRESENTATION_HEADING = /^ {0,3}#{2,3}[\t ]+(结论|下一步)[\t ]*$/;
+const PRESENTATION_ACTION = /^\s*[-*+][\t ]+(.+?)\s*$/;
+
+/** Reconstruct the structured conclusion and actions from a persisted Pilot reply. */
+export function parseTurnPresentation(content: string): TurnPresentation | undefined {
+  const lines = content.replace(/\r\n?/g, '\n').split('\n');
+  let conclusionIndex = -1;
+  let nextStepsIndex = -1;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const heading = lines[index].match(PRESENTATION_HEADING);
+    if (!heading) continue;
+    if (heading[1] === '结论' && conclusionIndex < 0) conclusionIndex = index;
+    if (heading[1] === '下一步' && nextStepsIndex < 0) nextStepsIndex = index;
+  }
+
+  if (conclusionIndex < 0 || nextStepsIndex < 0 || conclusionIndex > nextStepsIndex) return undefined;
+
+  const conclusion = lines.slice(conclusionIndex + 1, nextStepsIndex).join('\n').trim();
+  const actions = lines
+    .slice(nextStepsIndex + 1)
+    .flatMap((line) => {
+      const match = line.match(PRESENTATION_ACTION);
+      const action = match?.[1]?.trim();
+      return action ? [action] : [];
+    })
+    .slice(0, 3);
+
+  if (!conclusion || actions.length === 0) return undefined;
+
+  return {
+    conclusion,
+    actions,
+    detailMarkdown: lines.slice(0, conclusionIndex).join('\n').trim(),
+  };
+}
 
 interface RawToolCall {
   id?: string;
@@ -291,9 +338,11 @@ export function buildTurns(stored: ChatMessage[]): UITurn[] {
   let pending: ToolStep[] = [];
   let nextFallbackToolIndex = 0;
   let assignedToolIndexes = new Set<number>();
+  let latestUserContent: string | undefined;
   for (const m of stored) {
     if (m.role === 'user') {
       turns.push({ role: 'user', content: m.content });
+      latestUserContent = m.content;
       pending = [];
       nextFallbackToolIndex = 0;
       assignedToolIndexes = new Set();
@@ -302,10 +351,14 @@ export function buildTurns(stored: ChatMessage[]): UITurn[] {
       if (steps.length) pending = pending.concat(steps);
       if (m.content.trim()) {
         const hasPendingToolResults = pending.length > 0 && steps.length === 0;
+        const isFinalAssistantReply = steps.length === 0;
+        const presentation = isFinalAssistantReply ? parseTurnPresentation(m.content) : undefined;
         turns.push({
           role: 'assistant',
-          content: m.content,
+          content: presentation?.detailMarkdown ?? m.content,
           steps: hasPendingToolResults ? pending : undefined,
+          taskTitle: isFinalAssistantReply ? taskTitleFor(latestUserContent) : undefined,
+          presentation,
         });
         if (hasPendingToolResults) {
           pending = [];
@@ -331,6 +384,13 @@ export function buildTurns(stored: ChatMessage[]): UITurn[] {
     }
   }
   return turns;
+}
+
+function taskTitleFor(content: string | undefined): string {
+  const normalized = content?.replace(/\s+/g, ' ').trim() ?? '';
+  if (!normalized) return '本轮任务';
+  if (normalized.length <= TASK_TITLE_MAX_LENGTH) return normalized;
+  return `${normalized.slice(0, TASK_TITLE_MAX_LENGTH - 1)}…`;
 }
 
 function resolveToolResultIndex(
