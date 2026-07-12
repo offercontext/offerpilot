@@ -62,6 +62,11 @@ interface MarkdownHeading {
   text: string;
 }
 
+interface ParsedPresentationActions {
+  actions: string[];
+  literalMarkdown: string;
+}
+
 /** Reconstruct the structured conclusion and actions from a persisted Pilot reply. */
 export function parseTurnPresentation(content: string): TurnPresentation | undefined {
   const lines = content.replace(/\r\n?/g, '\n').split('\n');
@@ -91,12 +96,13 @@ export function parseTurnPresentation(content: string): TurnPresentation | undef
       (markdownHeading(line)?.level ?? Number.POSITIVE_INFINITY) <= nextStepsLevel,
   );
   const actionEndIndex = tailIndex < 0 ? lines.length : tailIndex;
-  const actions = parsePresentationActions(lines, fencedLines, nextStepsIndex + 1, actionEndIndex);
+  const parsedActions = parsePresentationActions(lines, fencedLines, nextStepsIndex + 1, actionEndIndex);
 
-  if (!conclusion || actions.length === 0) return undefined;
+  if (!conclusion || parsedActions.actions.length === 0) return undefined;
 
   const detailMarkdown = [
     lines.slice(0, conclusionIndex).join('\n').trim(),
+    parsedActions.literalMarkdown,
     lines.slice(actionEndIndex).join('\n').trim(),
   ]
     .filter(Boolean)
@@ -104,7 +110,7 @@ export function parseTurnPresentation(content: string): TurnPresentation | undef
 
   return {
     conclusion,
-    actions,
+    actions: parsedActions.actions,
     detailMarkdown,
   };
 }
@@ -122,21 +128,31 @@ function fencedLineIndexes(lines: string[]): boolean[] {
   const fenced = Array<boolean>(lines.length).fill(false);
   let marker: string | undefined;
   let markerLength = 0;
+  let markerIndent = 0;
+  let nestedFence = false;
 
   for (let index = 0; index < lines.length; index += 1) {
     const match = lines[index].match(/^([\t ]*)(`{3,}|~{3,})(.*)$/);
     if (!marker) {
-      if (!match || (match[1].length > 3 && !isListNestedFence(lines, index, match[1].length))) continue;
+      if (!match) continue;
+      const indent = visualIndent(match[1]);
+      const isNested = indent > 3 && isListNestedFence(lines, index, indent);
+      if (indent > 3 && !isNested) continue;
       fenced[index] = true;
       marker = match[2][0];
       markerLength = match[2].length;
+      markerIndent = indent;
+      nestedFence = isNested;
       continue;
     }
 
     fenced[index] = true;
-    if (match && match[2][0] === marker && match[2].length >= markerLength && /^[\t ]*$/.test(match[3])) {
+    const canClose = match && (nestedFence ? visualIndent(match[1]) === markerIndent : visualIndent(match[1]) <= 3);
+    if (canClose && match[2][0] === marker && match[2].length >= markerLength && /^[\t ]*$/.test(match[3])) {
       marker = undefined;
       markerLength = 0;
+      markerIndent = 0;
+      nestedFence = false;
     }
   }
 
@@ -147,7 +163,7 @@ function isListNestedFence(lines: string[], index: number, indent: number): bool
   for (let previousIndex = index - 1; previousIndex >= 0; previousIndex -= 1) {
     const previousLine = lines[previousIndex];
     if (!previousLine.trim()) continue;
-    const previousIndent = leadingIndent(previousLine);
+    const previousIndent = visualIndent(previousLine);
     if (previousIndent >= indent) continue;
     if (/^[\t ]*(?:[-*+]|\d+[.)])[\t ]+/.test(previousLine)) return true;
     if (previousIndent === 0) return false;
@@ -160,8 +176,9 @@ function parsePresentationActions(
   fencedLines: boolean[],
   startIndex: number,
   endIndex: number,
-): string[] {
+): ParsedPresentationActions {
   const actions: string[][] = [];
+  const literalLines: string[] = [];
   let actionIndent: number | undefined;
   let currentAction: string[] | undefined;
 
@@ -169,7 +186,16 @@ function parsePresentationActions(
     if (fencedLines[index]) continue;
     const line = lines[index];
     const action = line.match(PRESENTATION_ACTION);
-    const indent = action?.[1].length;
+    const indent = action ? visualIndent(action[1]) : undefined;
+
+    if (actionIndent === undefined && indent !== undefined && indent >= 4) {
+      literalLines.push(line);
+      continue;
+    }
+    if (actionIndent === undefined && visualIndent(line) >= 4) {
+      literalLines.push(line);
+      continue;
+    }
 
     if (action && (actionIndent === undefined || indent === actionIndent)) {
       actionIndent ??= indent;
@@ -182,16 +208,32 @@ function parsePresentationActions(
       continue;
     }
 
-    if (currentAction && actionIndent !== undefined && line.trim() && leadingIndent(line) > actionIndent) {
+    if (currentAction && actionIndent !== undefined && line.trim() && visualIndent(line) > actionIndent) {
       currentAction.push(line.trimEnd());
     }
   }
 
-  return actions.map((action) => action.join('\n').trim());
+  return {
+    actions: actions.map((action) => action.join('\n').trim()),
+    literalMarkdown: trimMarkdown(literalLines),
+  };
 }
 
-function leadingIndent(line: string): number {
-  return line.match(/^[\t ]*/)?.[0].length ?? 0;
+function visualIndent(line: string): number {
+  const whitespace = line.match(/^[\t ]*/)?.[0] ?? '';
+  let column = 0;
+  for (const character of whitespace) {
+    column += character === '\t' ? 4 - (column % 4) : 1;
+  }
+  return column;
+}
+
+function trimMarkdown(lines: string[]): string {
+  let first = 0;
+  let last = lines.length;
+  while (first < last && !lines[first].trim()) first += 1;
+  while (last > first && !lines[last - 1].trim()) last -= 1;
+  return lines.slice(first, last).join('\n');
 }
 
 interface RawToolCall {

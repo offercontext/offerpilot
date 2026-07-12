@@ -857,6 +857,47 @@ describe('Pilot turn presentation reconstruction', () => {
     });
   });
 
+  it('does not initialize actions from space- or tab-indented code bullets', () => {
+    const presentation = parseTurnPresentation([
+      '## 结论',
+      '',
+      '需要先区分示例代码。',
+      '',
+      '## 下一步',
+      '',
+      '    - 四空格的示例代码',
+      '\t- 制表符的示例代码',
+      '- 真正的下一步',
+    ].join('\n'));
+
+    expect(presentation).toEqual({
+      conclusion: '需要先区分示例代码。',
+      actions: ['真正的下一步'],
+      detailMarkdown: '    - 四空格的示例代码\n\t- 制表符的示例代码',
+    });
+    expect(parseTurnPresentation('## 结论\n\n只含代码。\n\n## 下一步\n\n\t- 制表示例')).toBeUndefined();
+  });
+
+  it('keeps a root fence open when a four-space marker appears inside it', () => {
+    const fencedExample = [
+      '```markdown',
+      '    ```',
+      '## 结论',
+      '',
+      '这仍在围栏内。',
+      '',
+      '## 下一步',
+      '',
+      '- 这不是实际行动',
+    ].join('\n');
+
+    expect(parseTurnPresentation(fencedExample)).toBeUndefined();
+    expect(buildTurns([msg({ role: 'assistant', content: fencedExample })])[0]).toMatchObject({
+      content: fencedExample,
+      presentation: undefined,
+    });
+  });
+
   it('truncates task titles at a code-point boundary within the 36-character display limit', () => {
     const turns = buildTurns([
       msg({ role: 'user', content: '😀'.repeat(37) }),
