@@ -66,8 +66,12 @@ export interface LogEntry {
   message: string;
 }
 
-export interface LogsResponse {
+export interface LogsPage {
   entries: LogEntry[];
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
 }
 
 export interface AIProviderProfile {
@@ -121,9 +125,15 @@ export function exportBackup(path = '/backups/export'): void {
   window.location.href = `/api${path}`;
 }
 
-export async function getLogs(limit = 20): Promise<LogEntry[]> {
-  const { data } = await http.get<LogsResponse>('/logs', { params: { limit } });
-  return data.entries ?? [];
+export async function getLogs(limit = 20, offset = 0): Promise<LogsPage> {
+  const { data } = await http.get<LogsPage>('/logs', { params: { limit, offset } });
+  return {
+    entries: data.entries ?? [],
+    total: data.total ?? 0,
+    limit: data.limit ?? limit,
+    offset: data.offset ?? offset,
+    has_more: data.has_more ?? false,
+  };
 }
 
 export async function updateAutoApprove(value: boolean): Promise<Settings> {

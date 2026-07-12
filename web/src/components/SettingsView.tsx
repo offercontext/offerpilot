@@ -18,7 +18,7 @@ export default function SettingsView({ onOpenAISettings }: Props) {
     refetchInterval: 15000,
   });
   const settings = settingsQuery.data;
-  const logs = logsQuery.data ?? [];
+  const logs = logsQuery.data?.entries ?? [];
   const backupPath = '/backups/export';
 
   return (
