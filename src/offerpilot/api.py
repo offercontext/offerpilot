@@ -10,7 +10,7 @@ from time import perf_counter
 from typing import Any, Optional
 
 import httpx
-from fastapi import Body, FastAPI, File, Request, UploadFile
+from fastapi import Body, FastAPI, File, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from pypdf import PdfReader
@@ -29,7 +29,7 @@ from offerpilot.config import (
     save_config,
 )
 from offerpilot.db import session_factory_for_data_dir
-from offerpilot.diagnostics import read_recent_log_entries
+from offerpilot.diagnostics import read_recent_log_page
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
 from offerpilot.repositories.chat import ChatRepository
 from offerpilot.repositories.application_events import (
@@ -1308,8 +1308,11 @@ def create_app(
         )
 
     @app.get("/api/logs")
-    def get_logs(limit: int = 100) -> dict[str, Any]:
-        return {"entries": read_recent_log_entries(resolved_data_dir, limit=limit)}
+    def get_logs(
+        limit: int = Query(default=20, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+    ) -> dict[str, Any]:
+        return read_recent_log_page(resolved_data_dir, limit=limit, offset=offset)
 
     @app.get("/api/backups/export")
     def export_backup() -> Response:
