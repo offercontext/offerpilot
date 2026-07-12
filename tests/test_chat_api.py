@@ -66,11 +66,10 @@ def test_chat_injects_response_structure_prompt(tmp_path):
     response = client.post("/api/chat", json={"message": "what should I do next?", "conversation_id": 0})
 
     assert response.status_code == 200
-    system = model.calls[0][0]
-    assert system.role == "system"
-    assert "Conclusion" in system.content
-    assert "Evidence" in system.content
-    assert "Next steps" in system.content
+    system = next(message for message in model.calls[0] if message.role == "system")
+    assert "## 结论" in system.content
+    assert "## 下一步" in system.content
+    assert "Do not add text after the next-step list" in system.content
 
 
 def test_chat_allows_wide_read_only_tool_summaries(tmp_path):
