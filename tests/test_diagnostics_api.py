@@ -54,3 +54,20 @@ def test_get_logs_rejects_invalid_pagination_parameters(tmp_path):
         response = client.get(f"/api/logs?{query}")
 
         assert response.status_code == 400
+
+
+def test_get_logs_returns_empty_page_for_huge_out_of_range_offset(tmp_path):
+    huge_offset = 9_223_372_036_854_775_807
+    append_log_entry(tmp_path, "INFO", "entry-1")
+    client = TestClient(create_app(data_dir=tmp_path))
+
+    response = client.get(f"/api/logs?offset={huge_offset}")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "entries": [],
+        "total": 1,
+        "limit": 20,
+        "offset": huge_offset,
+        "has_more": False,
+    }

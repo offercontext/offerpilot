@@ -38,8 +38,22 @@ def read_recent_log_page(data_dir: Path, *, limit: int, offset: int) -> LogPage:
             "has_more": False,
         }
 
-    recent_entries: deque[LogEntry] = deque(maxlen=offset + limit)
     total = 0
+    with path.open(encoding="utf-8") as handle:
+        for raw in handle:
+            if _is_valid_log_row(raw):
+                total += 1
+
+    if offset >= total:
+        return {
+            "entries": [],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": False,
+        }
+
+    recent_entries: deque[LogEntry] = deque(maxlen=min(total, offset + limit))
     with path.open(encoding="utf-8") as handle:
         for raw in handle:
             try:
@@ -48,7 +62,6 @@ def read_recent_log_page(data_dir: Path, *, limit: int, offset: int) -> LogPage:
                 continue
             if not isinstance(parsed, dict):
                 continue
-            total += 1
             recent_entries.append(
                 {
                     "level": str(parsed.get("level") or "INFO"),
@@ -68,3 +81,11 @@ def read_recent_log_page(data_dir: Path, *, limit: int, offset: int) -> LogPage:
 
 def _log_path(data_dir: Path) -> Path:
     return data_dir / "logs" / "offerpilot.log"
+
+
+def _is_valid_log_row(raw: str) -> bool:
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(parsed, dict)
