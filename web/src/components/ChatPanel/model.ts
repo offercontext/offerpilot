@@ -128,7 +128,7 @@ function fencedLineIndexes(lines: string[]): boolean[] {
   const fenced = Array<boolean>(lines.length).fill(false);
   let marker: string | undefined;
   let markerLength = 0;
-  let markerIndent = 0;
+  let containerContentStart: number | undefined;
   let nestedFence = false;
 
   for (let index = 0; index < lines.length; index += 1) {
@@ -136,22 +136,29 @@ function fencedLineIndexes(lines: string[]): boolean[] {
     if (!marker) {
       if (!match) continue;
       const indent = visualIndent(match[1]);
-      const isNested = indent > 3 && isListNestedFence(lines, index, indent);
-      if (indent > 3 && !isNested) continue;
+      const contentStart = listContainerContentStart(lines, index, indent);
+      if (indent > 3 && contentStart === undefined) continue;
       fenced[index] = true;
       marker = match[2][0];
       markerLength = match[2].length;
-      markerIndent = indent;
-      nestedFence = isNested;
+      containerContentStart = contentStart;
+      nestedFence = contentStart !== undefined;
       continue;
     }
 
     fenced[index] = true;
-    const canClose = match && (nestedFence ? visualIndent(match[1]) === markerIndent : visualIndent(match[1]) <= 3);
+    const closingIndent = match ? visualIndent(match[1]) : 0;
+    const canClose = match && (
+      nestedFence
+        ? containerContentStart !== undefined &&
+          closingIndent >= containerContentStart &&
+          closingIndent <= containerContentStart + 3
+        : closingIndent <= 3
+    );
     if (canClose && match[2][0] === marker && match[2].length >= markerLength && /^[\t ]*$/.test(match[3])) {
       marker = undefined;
       markerLength = 0;
-      markerIndent = 0;
+      containerContentStart = undefined;
       nestedFence = false;
     }
   }
@@ -159,16 +166,22 @@ function fencedLineIndexes(lines: string[]): boolean[] {
   return fenced;
 }
 
-function isListNestedFence(lines: string[], index: number, indent: number): boolean {
+function listContainerContentStart(lines: string[], index: number, indent: number): number | undefined {
   for (let previousIndex = index - 1; previousIndex >= 0; previousIndex -= 1) {
     const previousLine = lines[previousIndex];
     if (!previousLine.trim()) continue;
     const previousIndent = visualIndent(previousLine);
     if (previousIndent >= indent) continue;
-    if (/^[\t ]*(?:[-*+]|\d+[.)])[\t ]+/.test(previousLine)) return true;
-    if (previousIndent === 0) return false;
+    const contentStart = listItemContentStart(previousLine);
+    if (contentStart !== undefined && indent >= contentStart) return contentStart;
+    if (previousIndent === 0) return undefined;
   }
-  return false;
+  return undefined;
+}
+
+function listItemContentStart(line: string): number | undefined {
+  const match = line.match(/^[\t ]*(?:[-*+]|\d+[.)])[\t ]+/);
+  return match ? visualWidth(match[0]) : undefined;
 }
 
 function parsePresentationActions(
@@ -221,8 +234,12 @@ function parsePresentationActions(
 
 function visualIndent(line: string): number {
   const whitespace = line.match(/^[\t ]*/)?.[0] ?? '';
+  return visualWidth(whitespace);
+}
+
+function visualWidth(text: string): number {
   let column = 0;
-  for (const character of whitespace) {
+  for (const character of text) {
     column += character === '\t' ? 4 - (column % 4) : 1;
   }
   return column;

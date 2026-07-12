@@ -898,6 +898,71 @@ describe('Pilot turn presentation reconstruction', () => {
     });
   });
 
+  it('closes a list-contained fence at the shallower content-start column', () => {
+    const presentation = parseTurnPresentation([
+      '- 代码示例容器',
+      '    ```markdown',
+      '    - 围栏内示例',
+      '  ```',
+      '## 结论',
+      '',
+      '围栏已结束。',
+      '',
+      '## 下一步',
+      '',
+      '- 执行真实行动',
+    ].join('\n'));
+
+    expect(presentation).toMatchObject({
+      conclusion: '围栏已结束。',
+      actions: ['执行真实行动'],
+    });
+  });
+
+  it('closes a list-contained fence within three columns past its content start', () => {
+    const presentation = parseTurnPresentation([
+      '- 代码示例容器',
+      '    ```markdown',
+      '    - 围栏内示例',
+      '     ```',
+      '## 结论',
+      '',
+      '围栏已结束。',
+      '',
+      '## 下一步',
+      '',
+      '- 执行真实行动',
+    ].join('\n'));
+
+    expect(presentation).toMatchObject({
+      conclusion: '围栏已结束。',
+      actions: ['执行真实行动'],
+    });
+  });
+
+  it('uses a list container even when its opening fence starts within three root columns', () => {
+    const relativeClose = [
+      '- 代码示例容器',
+      '  ```markdown',
+      '  - 围栏内示例',
+      '     ```',
+      '## 结论',
+      '',
+      '围栏已结束。',
+      '',
+      '## 下一步',
+      '',
+      '- 执行真实行动',
+    ].join('\n');
+    const tooDeepToClose = relativeClose.replace('     ```', '      ```');
+
+    expect(parseTurnPresentation(relativeClose)).toMatchObject({
+      conclusion: '围栏已结束。',
+      actions: ['执行真实行动'],
+    });
+    expect(parseTurnPresentation(tooDeepToClose)).toBeUndefined();
+  });
+
   it('truncates task titles at a code-point boundary within the 36-character display limit', () => {
     const turns = buildTurns([
       msg({ role: 'user', content: '😀'.repeat(37) }),
