@@ -40,4 +40,13 @@ describe('KnowledgeWikiView', () => {
     expect(markup).not.toContain('Protected Page');
     expect(markup).not.toContain('Mutation Review');
   });
+
+  it('exposes KI-05 dedup helper text without legacy wiki surface', () => {
+    const markup = renderWithProviders();
+
+    // KI-05 dedup 提示文案出现在粘贴/上传入口附近,引导用户去已有 Source。
+    expect(markup).toContain('进入已有 Source');
+    expect(markup).toContain('Origin');
+    expect(markup).not.toContain('自动创建 Page');
+  });
 });

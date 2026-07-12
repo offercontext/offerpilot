@@ -401,6 +401,41 @@ def create_app(
             return error_response(404, "Source not found")
         return JSONResponse(_knowledge_source_payload(source))
 
+    @app.patch("/api/knowledge/sources/{source_id}")
+    def patch_knowledge_source(
+        source_id: int, payload: dict[str, Any] = Body(...)
+    ) -> JSONResponse:
+        # Spec §16.1 / KI-05：PATCH 首版只允许 display_title,其他字段保持不可变。
+        # Spec §5.2：用户修改 display_title 不触发 Extraction / Brief / Evidence ID 变化。
+        source = knowledge_repository.get_source(source_id)
+        if source is None:
+            return error_response(404, "Source not found")
+        unknown_keys = set(payload) - {"display_title"}
+        if unknown_keys:
+            return error_response(
+                400,
+                "仅允许修改 display_title",
+                code="unsupported_type",
+            )
+        raw_title = payload.get("display_title")
+        if raw_title is None or not isinstance(raw_title, str):
+            return error_response(
+                400,
+                "display_title 必须是字符串",
+                code="unsupported_type",
+            )
+        cleaned_title = raw_title.strip()
+        if len(cleaned_title.encode("utf-8")) > 255:
+            return error_response(
+                400,
+                "display_title 过长（最多 255 字节）",
+                code="unsupported_type",
+            )
+        updated = knowledge_repository.update_display_title(source_id, cleaned_title)
+        if updated is None:
+            return error_response(404, "Source not found")
+        return JSONResponse(_knowledge_source_payload(updated))
+
     @app.get("/api/knowledge/sources/{source_id}/content")
     def get_knowledge_source_content(source_id: int) -> Response:
         source = knowledge_repository.get_source(source_id)

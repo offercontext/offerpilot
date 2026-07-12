@@ -25,3 +25,12 @@ describe('knowledge service KI-04 contract', () => {
     expect(source).toContain('assets/${assetId}/content');
   });
 });
+
+describe('knowledge service KI-05 contract', () => {
+  it('exposes display_title PATCH endpoint without legacy wiki helpers', () => {
+    expect(source).toContain('updateKnowledgeSourceTitle');
+    expect(source).toContain('`/knowledge/sources/${sourceId}`');
+    expect(source).toContain('display_title');
+    expect(source).toContain('.patch<');
+  });
+});

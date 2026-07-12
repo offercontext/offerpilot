@@ -123,6 +123,17 @@ export async function pasteKnowledgeSource(
   return data;
 }
 
+export async function updateKnowledgeSourceTitle(
+  sourceId: number,
+  displayTitle: string,
+): Promise<KnowledgeSource> {
+  const { data } = await http.patch<KnowledgeSource>(
+    `/knowledge/sources/${sourceId}`,
+    { display_title: displayTitle },
+  );
+  return data;
+}
+
 export function buildKnowledgeSourceContentUrl(sourceId: number): string {
   return `/api/knowledge/sources/${sourceId}/content`;
 }

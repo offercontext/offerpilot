@@ -146,19 +146,19 @@ Brief 事实。
 **Scope boundaries:** 不实现 Collection、标签或多个 Knowledge Base；一个工作区内同一内容只有一个
 有效 Source。
 
-- [ ] 新建 Source 在数据库层以 `source_hash` 保证唯一，并正确处理并发重复请求。
-- [ ] 命中正在处理的 Source 时返回已有 Source/Job，不创建第二个 Job。
-- [ ] 命中 extracted、ready 或 brief failed Source 时返回已有 Source，不自动重跑。
-- [ ] 重复响应使用 `200` 和 `deduplicated=true`，新建仍使用 `202`。
-- [ ] 每次导入都追加 Origin，记录 file、paste 或 bundle、原文件名和导入时间。
-- [ ] 粘贴正文支持可选 HTTP/HTTPS `origin_url`，只保存 provenance，绝不访问网络。
-- [ ] 同内容来自不同 URL 时复用 Source，但保留多条 Origin。
-- [ ] 标题推导顺序稳定，并区分 `title_hint` 与用户可编辑 `display_title`。
-- [ ] 用户修改 `display_title` 不触发 Extraction、Brief 或 Evidence ID 变化。
-- [ ] 标题修改后列表、详情和搜索展示一致，相关 FTS 展示字段及时更新。
-- [ ] 重复提示清楚说明“资料已导入”，并提供进入已有 Source 的操作。
-- [ ] 测试覆盖相同字节不同文件名/标题、不同 URL、并发上传和标题修改。
-- [ ] 独立 Code Review 确认去重不会重复计权，也不会丢失 provenance。
+- [x] 新建 Source 在数据库层以 `source_hash` 保证唯一，并正确处理并发重复请求。
+- [x] 命中正在处理的 Source 时返回已有 Source/Job，不创建第二个 Job。
+- [x] 命中 extracted、ready 或 brief failed Source 时返回已有 Source，不自动重跑。
+- [x] 重复响应使用 `200` 和 `deduplicated=true`，新建仍使用 `202`。
+- [x] 每次导入都追加 Origin，记录 file、paste 或 bundle、原文件名和导入时间。
+- [x] 粘贴正文支持可选 HTTP/HTTPS `origin_url`，只保存 provenance，绝不访问网络。
+- [x] 同内容来自不同 URL 时复用 Source，但保留多条 Origin。
+- [x] 标题推导顺序稳定，并区分 `title_hint` 与用户可编辑 `display_title`。
+- [x] 用户修改 `display_title` 不触发 Extraction、Brief 或 Evidence ID 变化。
+- [x] 标题修改后列表、详情和搜索展示一致，相关 FTS 展示字段及时更新。
+- [x] 重复提示清楚说明“资料已导入”，并提供进入已有 Source 的操作。
+- [x] 测试覆盖相同字节不同文件名/标题、不同 URL、并发上传和标题修改。
+- [x] 独立 Code Review 确认去重不会重复计权，也不会丢失 provenance。
 
 ## KI-06：实现 Source 归档与永久删除
 

@@ -33,7 +33,9 @@ import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from offerpilot.knowledge.assets import (
@@ -61,7 +63,6 @@ from offerpilot.knowledge.extractor import (
 from offerpilot.knowledge.repository import (
     AssetCreateInput,
     EvidenceDraftInput,
-    JobCreateInput,
     KnowledgeRepository,
     OriginCreateInput,
     SnapshotCreateInput,
@@ -134,6 +135,16 @@ class KnowledgeIngestService:
                 "unsupported_type",
                 "当前只支持 .md / .txt 文件、粘贴正文或 Bundle 上传",
             )
+        # Spec §5.1 / KI-05：粘贴正文可选 origin_url 仅作为 provenance 保存;
+        # 系统绝不访问网络,且必须拒绝非 http/https 协议以防止 schema 注入或本地文件读取。
+        # Spec §4.1 仅授权 paste 路径接受 origin_url,file / bundle 路径不允许携带。
+        if request.origin_url:
+            if not is_paste:
+                raise IngestError(
+                    "unsupported_type",
+                    "origin_url 只能在粘贴正文场景下使用",
+                )
+            _validate_origin_url(request.origin_url)
         safe_filename = _safe_filename(filename if not is_paste else _PASTE_DEFAULT_FILENAME)
         if not safe_filename:
             raise IngestError("unsupported_type", "文件名仅含不支持的字符")
@@ -190,6 +201,10 @@ class KnowledgeIngestService:
 
         existing = self._repository.get_source_by_hash(source_hash)
         if existing is not None:
+            # Spec §5.1：命中已有 Source 必须追加 Origin 记录 provenance;
+            # 但**不再**为 dedup 创建第二个 Extract Job,避免重复计权 / 重复排队。
+            # 命中 processing/pending 时复用当前 active extract Job;
+            # 命中 extracted/ready/brief_failed 时返回 Source 自身 (job_id 取 Source 最近一个 extract Job)。
             self._repository.append_origin(
                 OriginCreateInput(
                     source_id=existing.id,
@@ -198,23 +213,24 @@ class KnowledgeIngestService:
                     origin_url=request.origin_url,
                 )
             )
-            job = self._repository.create_job(
-                JobCreateInput(
-                    kind="extract",
-                    queue="extraction",
-                    source_id=existing.id,
-                    stage="deduplicated",
+            refreshed = self._repository.get_source(existing.id)
+            if refreshed is None:
+                raise IngestError(
+                    "source_integrity_mismatch",
+                    "已存在 Source 在重读时丢失",
                 )
-            )
-            self._repository.update_job(
-                job.id,
-                status="succeeded",
-                stage="deduplicated",
-                progress=100,
-            )
+            active_job_id = self._repository.find_latest_extract_job_id(existing.id)
+            if active_job_id is None:
+                # Spec §5.1：dedup 必须复用已有 Extract Job,不创建第二个 Job。
+                # Source 存在但没有任何 Extract Job 属于内部一致性破坏,fail-fast 暴露 bug,
+                # 不掩盖。
+                raise IngestError(
+                    "source_integrity_mismatch",
+                    "已存在 Source 缺少 Extract Job 历史",
+                )
             return IngestResult(
-                source=existing,
-                job_id=job.id,
+                source=refreshed,
+                job_id=active_job_id,
                 deduplicated=True,
                 extraction_failed=False,
                 extraction_error_code="",
@@ -302,23 +318,63 @@ class KnowledgeIngestService:
         if is_bundle:
             source_kind = "bundle"
 
-        source_id, job_id = self._commit_new_source(
-            source_hash=source_hash,
-            source_kind=source_kind,
-            main_media_type=main_media_type,
-            safe_filename=safe_filename,
-            title_hint=title_hint,
-            manifest_json=manifest_json,
-            size=size,
-            token_count=token_count_value,
-            request=request,
-            staging_path=staging_path,
-            staging_source_dir=staging_source_dir,
-            snapshot_input_template=snapshot_input_template,
-            drafts=drafts,
-            verified_assets=verified_assets,
-            staging_asset_paths=staging_asset_paths,
-        )
+        try:
+            source_id, job_id = self._commit_new_source(
+                source_hash=source_hash,
+                source_kind=source_kind,
+                main_media_type=main_media_type,
+                safe_filename=safe_filename,
+                title_hint=title_hint,
+                manifest_json=manifest_json,
+                size=size,
+                token_count=token_count_value,
+                request=request,
+                staging_path=staging_path,
+                staging_source_dir=staging_source_dir,
+                snapshot_input_template=snapshot_input_template,
+                drafts=drafts,
+                verified_assets=verified_assets,
+                staging_asset_paths=staging_asset_paths,
+            )
+        except IntegrityError as exc:
+            # 并发兜底:两个 ingest 同时通过 get_source_by_hash 检查后,UNIQUE 约束
+            # 拦截第二个插入。此时 staging 与 final 目录残留必须由本路径清理,
+            # 然后回退到 dedup 路径,避免半个 Bundle / 孤儿文件。
+            _safe_cleanup(staging_source_dir)
+            existing_after = self._repository.get_source_by_hash(source_hash)
+            if existing_after is None:
+                raise IngestError(
+                    "source_integrity_mismatch",
+                    "并发冲突但未发现已有 Source",
+                ) from exc
+            self._repository.append_origin(
+                OriginCreateInput(
+                    source_id=existing_after.id,
+                    import_method=request.import_method,
+                    original_filename=request.filename,
+                    origin_url=request.origin_url,
+                )
+            )
+            refreshed_existing = self._repository.get_source(existing_after.id)
+            if refreshed_existing is None:
+                raise IngestError(
+                    "source_integrity_mismatch",
+                    "并发兜底重读 Source 失败",
+                ) from exc
+            existing_job_id = self._repository.find_latest_extract_job_id(existing_after.id)
+            if existing_job_id is None:
+                raise IngestError(
+                    "source_integrity_mismatch",
+                    "并发兜底未找到已有 Extract Job",
+                ) from exc
+            return IngestResult(
+                source=refreshed_existing,
+                job_id=existing_job_id,
+                deduplicated=True,
+                extraction_failed=False,
+                extraction_error_code="",
+                extraction_error_message="",
+            )
 
         refreshed_source = self._repository.get_source(source_id)
         refreshed_job = self._repository.get_job(job_id)
@@ -609,3 +665,26 @@ def _safe_cleanup(target: Path) -> None:
             target.unlink(missing_ok=True)
     except OSError:
         pass
+
+
+def _validate_origin_url(origin_url: str) -> None:
+    """Spec §5.1 / KI-05：``origin_url`` 仅作为 provenance 保存,系统绝不访问网络。
+
+    只允许 http/https scheme + 非空 host;拒绝 file://、ftp://、data:、javascript:
+    等协议,也拒绝空 host 或包含 NUL / CR / LF 的 URL,防止 schema 注入与日志注入。
+    """
+    if not origin_url.strip():
+        return
+    if any(ch in origin_url for ch in ("\x00", "\n", "\r")):
+        raise IngestError("unsupported_type", "origin_url 不允许包含控制字符")
+    try:
+        parts = urlsplit(origin_url.strip())
+    except ValueError as exc:
+        raise IngestError("unsupported_type", "origin_url 格式无效") from exc
+    if parts.scheme not in {"http", "https"}:
+        raise IngestError(
+            "unsupported_type",
+            "origin_url 必须使用 http 或 https 协议",
+        )
+    if not parts.netloc or not parts.hostname:
+        raise IngestError("unsupported_type", "origin_url 缺少有效的域名")

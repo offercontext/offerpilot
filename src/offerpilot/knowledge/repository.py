@@ -458,15 +458,63 @@ class KnowledgeRepository:
             session.refresh(row)
             return _to_source_record(row)
 
-    def set_display_title(self, source_id: int, display_title: str) -> Optional[SourceRecord]:
+    def update_display_title(self, source_id: int, display_title: str) -> Optional[SourceRecord]:
+        """KI-05：用户可编辑 display_title,不影响 title_hint、Evidence ID 与 Snapshot digest。
+
+        Spec §5.2：``display_title`` 修改后列表 / 详情 / 搜索展示一致。display_title UPDATE
+        与 FTS ``source_title`` UPDATE 在同一事务内提交,确保二者原子可见;任一失败回滚后
+        Source 标题保持旧值,Spec §15 "FTS 失败必须显式报错" 通过向上层抛出实现。
+        """
+        cleaned = display_title.strip()
         with self._session_factory() as session:
             row = session.get(KnowledgeSource, source_id)
             if row is None or row.deleted_at is not None:
                 return None
-            row.display_title = display_title
+            row.display_title = cleaned
+            session.execute(
+                text(
+                    "UPDATE knowledge_evidence_fts "
+                    "SET source_title = :title WHERE source_id = :sid"
+                ),
+                {"title": cleaned, "sid": source_id},
+            )
             session.commit()
             session.refresh(row)
             return _to_source_record(row)
+
+    def find_latest_extract_job_id(self, source_id: int) -> Optional[int]:
+        """KI-05：去重路径复用 Source 已有的 Extract Job,避免重复排队。
+
+        优先返回状态为 ``pending/running`` 的活跃 Job;若不存在,返回最近一个 extract
+        Job (通常是首次成功的 Job)。Spec §5.1：命中已有 Source 时不创建第二个 Job。
+        """
+        with self._session_factory() as session:
+            active_stmt = (
+                select(KnowledgeJob)
+                .where(
+                    KnowledgeJob.source_id == source_id,
+                    KnowledgeJob.kind == "extract",
+                    KnowledgeJob.queue == "extraction",
+                    KnowledgeJob.status.in_(("pending", "running")),
+                    KnowledgeJob.canceled.is_(False),
+                )
+                .order_by(KnowledgeJob.created_at.desc(), KnowledgeJob.id.desc())
+                .limit(1)
+            )
+            active = session.scalars(active_stmt).first()
+            if active is not None:
+                return active.id
+            latest_stmt = (
+                select(KnowledgeJob)
+                .where(
+                    KnowledgeJob.source_id == source_id,
+                    KnowledgeJob.kind == "extract",
+                )
+                .order_by(KnowledgeJob.created_at.desc(), KnowledgeJob.id.desc())
+                .limit(1)
+            )
+            latest = session.scalars(latest_stmt).first()
+            return latest.id if latest is not None else None
 
     def update_main_relative_path(
         self, source_id: int, main_relative_path: str

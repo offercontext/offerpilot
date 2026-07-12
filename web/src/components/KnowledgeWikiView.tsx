@@ -17,7 +17,13 @@ import {
   message,
 } from 'antd';
 import type { UploadFile } from 'antd';
-import { InboxOutlined, SearchOutlined, FormOutlined, PictureOutlined } from '@ant-design/icons';
+import {
+  InboxOutlined,
+  SearchOutlined,
+  FormOutlined,
+  PictureOutlined,
+  EditOutlined,
+} from '@ant-design/icons';
 import {
   buildKnowledgeAssetContentUrl,
   buildKnowledgeSourceContentUrl,
@@ -27,6 +33,7 @@ import {
   fetchKnowledgeSources,
   pasteKnowledgeSource,
   searchKnowledgeEvidence,
+  updateKnowledgeSourceTitle,
   uploadKnowledgeBundle,
   uploadKnowledgeSource,
 } from '@/services/knowledge';
@@ -77,7 +84,11 @@ export default function KnowledgeWikiView() {
     mutationFn: ({ file, titleHint }: { file: File; titleHint: string }) =>
       uploadKnowledgeSource(file, titleHint),
     onSuccess: (data) => {
-      message.success(data.deduplicated ? '资料已存在，已进入原 Source' : '资料已导入');
+      if (data.deduplicated) {
+        message.success('资料已导入，已进入已有 Source');
+      } else {
+        message.success('资料已导入');
+      }
       queryClient.invalidateQueries({ queryKey: KNOWLEDGE_QUERY_KEY });
       setSelectedSourceId(data.source.id);
       setUploadOpen(false);
@@ -99,9 +110,11 @@ export default function KnowledgeWikiView() {
       titleHint: string;
     }) => uploadKnowledgeBundle(main, assets, titleHint),
     onSuccess: (data) => {
-      message.success(
-        data.deduplicated ? '资料已存在，已进入原 Source' : 'Bundle 已导入，图片以附件形式保留',
-      );
+      if (data.deduplicated) {
+        message.success('资料已导入，已进入已有 Source');
+      } else {
+        message.success('Bundle 已导入，图片以附件形式保留');
+      }
       queryClient.invalidateQueries({ queryKey: KNOWLEDGE_QUERY_KEY });
       setSelectedSourceId(data.source.id);
       setBundleOpen(false);
@@ -123,7 +136,11 @@ export default function KnowledgeWikiView() {
       originUrl: string;
     }) => pasteKnowledgeSource(paste, { titleHint, originUrl }),
     onSuccess: (data) => {
-      message.success(data.deduplicated ? '资料已存在，已进入原 Source' : '正文已导入');
+      if (data.deduplicated) {
+        message.success('资料已导入，已进入已有 Source');
+      } else {
+        message.success('正文已导入');
+      }
       queryClient.invalidateQueries({ queryKey: KNOWLEDGE_QUERY_KEY });
       setSelectedSourceId(data.source.id);
       setPasteOpen(false);
@@ -223,6 +240,7 @@ export default function KnowledgeWikiView() {
           pasteMutation.mutate({ paste, titleHint, originUrl })
         }
       />
+      <DedupHintBanner />
     </div>
   );
 }
@@ -305,6 +323,7 @@ function SourceDetailPanel({ sourceId }: { sourceId: number | null }) {
 }
 
 function SourceDetailContent({ sourceId }: { sourceId: number }) {
+  const queryClient = useQueryClient();
   const sourceQuery = useQuery({
     queryKey: ['knowledge', 'source', sourceId],
     queryFn: () => fetchKnowledgeSource(sourceId),
@@ -317,6 +336,22 @@ function SourceDetailContent({ sourceId }: { sourceId: number }) {
     queryKey: ['knowledge', 'source', sourceId, 'jobs'],
     queryFn: () => fetchKnowledgeSourceJobs(sourceId),
   });
+  const [titleEditorOpen, setTitleEditorOpen] = useState(false);
+  const [editingTitle, setEditingTitle] = useState('');
+  const titleMutation = useMutation({
+    mutationFn: ({ id, title }: { id: number; title: string }) =>
+      updateKnowledgeSourceTitle(id, title),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: KNOWLEDGE_QUERY_KEY });
+      queryClient.invalidateQueries({ queryKey: ['knowledge', 'source', sourceId] });
+      message.success('展示标题已更新');
+      setTitleEditorOpen(false);
+    },
+    onError: (error: unknown) => {
+      const detail = extractErrorMessage(error);
+      message.error(`标题更新失败：${detail}`);
+    },
+  });
   if (sourceQuery.isLoading || !sourceQuery.data) {
     return (
       <div style={{ padding: 24 }}>
@@ -325,14 +360,25 @@ function SourceDetailContent({ sourceId }: { sourceId: number }) {
     );
   }
   const source = sourceQuery.data;
+  const openTitleEditor = () => {
+    setEditingTitle(source.display_title || source.title_hint || '');
+    setTitleEditorOpen(true);
+  };
   return (
     <div style={{ border: '1px solid var(--op-border, #eee)', padding: 16, borderRadius: 8 }}>
-      <Title level={4} style={{ marginTop: 0 }}>
-        {source.title}
-      </Title>
-      <Space direction="vertical" size={4} style={{ marginBottom: 12 }}>
+      <Space align="start" style={{ justifyContent: 'space-between', width: '100%' }}>
+        <Title level={4} style={{ marginTop: 0, marginBottom: 0 }}>
+          {source.title}
+        </Title>
+        <Button size="small" icon={<EditOutlined />} onClick={openTitleEditor}>
+          编辑标题
+        </Button>
+      </Space>
+      <Space direction="vertical" size={4} style={{ marginBottom: 12, marginTop: 8 }}>
         <Text type="secondary">文件名：{source.main_filename}</Text>
         <Text type="secondary">大小：{formatBytes(source.total_bytes)}</Text>
+        <Text type="secondary">展示标题：{source.display_title || '—（使用推导标题）'}</Text>
+        <Text type="secondary">推导标题：{source.title_hint || '—'}</Text>
         <Text type="secondary">导入时间：{formatDateTime(source.created_at)}</Text>
       </Space>
 
@@ -348,6 +394,31 @@ function SourceDetailContent({ sourceId }: { sourceId: number }) {
           loading={jobsQuery.isLoading}
         />
       </Space>
+
+      <Modal
+        title="编辑展示标题"
+        open={titleEditorOpen}
+        onCancel={() => setTitleEditorOpen(false)}
+        onOk={() =>
+          titleMutation.mutate({ id: sourceId, title: editingTitle.trim() })
+        }
+        okButtonProps={{ loading: titleMutation.isPending }}
+        okText="保存"
+        cancelText="取消"
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size="small">
+          <Input
+            placeholder="留空则回退到推导标题"
+            value={editingTitle}
+            onChange={(event) => setEditingTitle(event.target.value)}
+            maxLength={85}
+            showCount
+          />
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            修改展示标题不会触发重新解析或重新生成 Brief,Evidence ID 保持不变。
+          </Text>
+        </Space>
+      </Modal>
     </div>
   );
 }
@@ -570,6 +641,19 @@ function JobsBlock({
         )}
       />
     </div>
+  );
+}
+
+function DedupHintBanner() {
+  // KI-05：内容寻址去重的稳定展示。相同字节、不同文件名 / 不同 URL 都会进入同一 Source;
+  // 上传成功后会自动跳转到已有 Source。此 banner 在 SSR 时也可被 contract 测试发现。
+  return (
+    <Alert
+      type="info"
+      showIcon
+      message="相同内容自动复用已有 Source"
+      description="重复上传相同字节时,系统会让上传结果进入已有 Source,不会创建重复 Evidence;每次导入都会追加一条 Origin 记录。"
+    />
   );
 }
 

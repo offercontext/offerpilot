@@ -65,7 +65,8 @@ def test_legacy_wiki_routes_return_404(client):
         ("GET", "/api/knowledge/jobs/1"),
         ("POST", "/api/knowledge/jobs/1/cancel"),
         ("GET", "/api/knowledge/sources/1"),
-        ("PATCH", "/api/knowledge/sources/1"),
+        # KI-05：PATCH /api/knowledge/sources/{source_id} 是新 Source API,
+        # 不再属于 legacy wiki 路由;它的 404 语义由 KI-05 测试覆盖。
         ("DELETE", "/api/knowledge/sources/1"),
         ("POST", "/api/knowledge/sources/1/rerun"),
         ("POST", "/api/knowledge/export"),
