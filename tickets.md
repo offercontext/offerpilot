@@ -93,23 +93,23 @@ Markdown/Text 自然结构生成稳定 Evidence。列表、表格、引用和代
 **Scope boundaries:** 不处理图片附件或 Brief；本 Ticket 完成所有文本 Source 的正式 Extraction
 契约，并取代 KI-02 的基础段落解析。
 
-- [ ] 支持 `.md`、`.txt` 和粘贴正文；粘贴正文作为虚拟 `main.md` 进入同一 Pipeline。
-- [ ] 固定产品 tokenizer 和 64,000 token 上限，不随 Provider 切换而变化。
-- [ ] 主文件 5 MiB 限制与 token 限制同时执行，错误返回实际值和允许值。
-- [ ] 支持已确认的 UTF 编码和高置信 GBK/GB18030；未知或冲突编码明确拒绝。
-- [ ] 任何解码路径都不使用字符忽略或替换；Snapshot 记录编码和规范化版本。
-- [ ] Markdown 使用固定版本 AST 解析器，不再依赖按空行正则切段。
-- [ ] heading 进入 `heading_path`，不生成孤立标题 Evidence。
-- [ ] paragraph、list item、blockquote、table row 和 fenced code 按 Spec 生成 Evidence。
-- [ ] 表格 Evidence 带表头，代码 Evidence 带语言和行范围，嵌套列表保留父路径。
-- [ ] 超长普通文本按句子边界拆分，超长代码/表格按行拆分，Evidence 之间没有重叠。
-- [ ] 每条 Evidence 保存字符与行范围，并能从 canonical text 精确回读。
-- [ ] Evidence ID 由 Snapshot、结构 locator 和内容 hash 确定，不暴露段落序号。
-- [ ] extractor 升级创建新 Snapshot/Evidence；相同版本重跑幂等，不覆盖旧 Snapshot。
-- [ ] 原文预览安全处理内嵌 HTML，不执行脚本、不加载远程资源。
-- [ ] 单元测试覆盖标题、列表、嵌套列表、引用、表格、代码、长段落、控制字符和各种编码。
-- [ ] 属性或参数化测试证明 Evidence 不越界、不重叠、顺序稳定且可完整回读。
-- [ ] 独立 Code Review 检查解析器是否把检索 Chunk 策略混入 Evidence 身份。
+- [x] 支持 `.md`、`.txt` 和粘贴正文；粘贴正文作为虚拟 `main.md` 进入同一 Pipeline。
+- [x] 固定产品 tokenizer 和 64,000 token 上限，不随 Provider 切换而变化。
+- [x] 主文件 5 MiB 限制与 token 限制同时执行，错误返回实际值和允许值。
+- [x] 支持已确认的 UTF 编码和高置信 GBK/GB18030；未知或冲突编码明确拒绝。
+- [x] 任何解码路径都不使用字符忽略或替换；Snapshot 记录编码和规范化版本。
+- [x] Markdown 使用固定版本 AST 解析器，不再依赖按空行正则切段。
+- [x] heading 进入 `heading_path`，不生成孤立标题 Evidence。
+- [x] paragraph、list item、blockquote、table row 和 fenced code 按 Spec 生成 Evidence。
+- [x] 表格 Evidence 带表头，代码 Evidence 带语言和行范围，嵌套列表保留父路径。
+- [x] 超长普通文本按句子边界拆分，超长代码/表格按行拆分，Evidence 之间没有重叠。
+- [x] 每条 Evidence 保存字符与行范围，并能从 canonical text 精确回读。
+- [x] Evidence ID 由 Snapshot、结构 locator 和内容 hash 确定，不暴露段落序号。
+- [x] extractor 升级创建新 Snapshot/Evidence；相同版本重跑幂等，不覆盖旧 Snapshot。
+- [x] 原文预览安全处理内嵌 HTML，不执行脚本、不加载远程资源。
+- [x] 单元测试覆盖标题、列表、嵌套列表、引用、表格、代码、长段落、控制字符和各种编码。
+- [x] 属性或参数化测试证明 Evidence 不越界、不重叠、顺序稳定且可完整回读。
+- [x] 独立 Code Review 检查解析器是否把检索 Chunk 策略混入 Evidence 身份。
 
 ## KI-04：支持自包含图文 Bundle
 

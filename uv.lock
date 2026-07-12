@@ -1590,6 +1590,7 @@ dependencies = [
     { name = "pypdf" },
     { name = "python-multipart" },
     { name = "sqlalchemy" },
+    { name = "tiktoken" },
     { name = "typer" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -1615,6 +1616,7 @@ requires-dist = [
     { name = "pypdf", specifier = ">=5.0.0" },
     { name = "python-multipart", specifier = ">=0.0.20" },
     { name = "sqlalchemy", specifier = ">=2.0.0" },
+    { name = "tiktoken", specifier = ">=0.7.0" },
     { name = "typer", specifier = ">=0.12.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30.0" },
 ]

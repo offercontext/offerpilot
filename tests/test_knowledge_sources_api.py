@@ -320,7 +320,8 @@ def test_ki02_upload_returns_202_with_source_and_extraction_job(app_client):
 
 
 def test_ki02_upload_rejects_non_markdown(app_client):
-    response = _upload(app_client, "notes.txt", b"hello")
+    # KI-03 扩展支持 .txt；用真正不支持的扩展名验证拒绝路径
+    response = _upload(app_client, "notes.pdf", b"%PDF-1.4 fake content")
     assert response.status_code == 400
     body = response.json()
     assert body.get("error_code") == "unsupported_type"

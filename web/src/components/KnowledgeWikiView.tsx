@@ -17,13 +17,14 @@ import {
   message,
 } from 'antd';
 import type { UploadFile } from 'antd';
-import { InboxOutlined, SearchOutlined } from '@ant-design/icons';
+import { InboxOutlined, SearchOutlined, FormOutlined } from '@ant-design/icons';
 import {
   buildKnowledgeSourceContentUrl,
   fetchKnowledgeSource,
   fetchKnowledgeSourceEvidence,
   fetchKnowledgeSourceJobs,
   fetchKnowledgeSources,
+  pasteKnowledgeSource,
   searchKnowledgeEvidence,
   uploadKnowledgeSource,
 } from '@/services/knowledge';
@@ -65,6 +66,7 @@ export default function KnowledgeWikiView() {
   });
   const [selectedSourceId, setSelectedSourceId] = useState<number | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [pasteOpen, setPasteOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeSearch, setActiveSearch] = useState('');
 
@@ -80,6 +82,28 @@ export default function KnowledgeWikiView() {
     onError: (error: unknown) => {
       const detail = extractErrorMessage(error);
       message.error(`上传失败：${detail}`);
+    },
+  });
+
+  const pasteMutation = useMutation({
+    mutationFn: ({
+      paste,
+      titleHint,
+      originUrl,
+    }: {
+      paste: string;
+      titleHint: string;
+      originUrl: string;
+    }) => pasteKnowledgeSource(paste, { titleHint, originUrl }),
+    onSuccess: (data) => {
+      message.success(data.deduplicated ? '资料已存在，已进入原 Source' : '正文已导入');
+      queryClient.invalidateQueries({ queryKey: KNOWLEDGE_QUERY_KEY });
+      setSelectedSourceId(data.source.id);
+      setPasteOpen(false);
+    },
+    onError: (error: unknown) => {
+      const detail = extractErrorMessage(error);
+      message.error(`粘贴失败：${detail}`);
     },
   });
 
@@ -104,14 +128,16 @@ export default function KnowledgeWikiView() {
         资料来源
       </Title>
       <Paragraph type="secondary" style={{ margin: '6px 0 16px' }}>
-        上传 Markdown 资料，系统会提取可回读的 Evidence 并提供关键词检索。当前为 KI-02 范围，
-        Text/Bundle/粘贴正文将由后续版本扩展。
+        上传 Markdown/Text，或直接粘贴正文；系统按自然结构生成 Evidence，并提供关键词检索。
       </Paragraph>
 
       <Space direction="vertical" size="middle" style={{ width: '100%' }}>
         <Space wrap>
           <Button type="primary" icon={<InboxOutlined />} onClick={() => setUploadOpen(true)}>
-            上传 Markdown
+            上传 Markdown / Text
+          </Button>
+          <Button icon={<FormOutlined />} onClick={() => setPasteOpen(true)}>
+            粘贴正文
           </Button>
           <Input
             placeholder="搜索 Evidence（中文/英文关键词）"
@@ -150,6 +176,14 @@ export default function KnowledgeWikiView() {
         onClose={() => setUploadOpen(false)}
         uploading={uploadMutation.isPending}
         onSubmit={(file, titleHint) => uploadMutation.mutate({ file, titleHint })}
+      />
+      <PasteModal
+        open={pasteOpen}
+        onClose={() => setPasteOpen(false)}
+        submitting={pasteMutation.isPending}
+        onSubmit={(paste, titleHint, originUrl) =>
+          pasteMutation.mutate({ paste, titleHint, originUrl })
+        }
       />
     </div>
   );
@@ -541,7 +575,7 @@ function UploadModal({
 
   const handleUpload = () => {
     if (!pickedFile) {
-      message.warning('请选择一个 Markdown 文件');
+      message.warning('请选择一个 Markdown 或 Text 文件');
       return;
     }
     onSubmit(pickedFile, titleHint);
@@ -549,7 +583,7 @@ function UploadModal({
 
   return (
     <Modal
-      title="上传 Markdown 资料"
+      title="上传 Markdown / Text 资料"
       open={open}
       onCancel={() => {
         setFileList([]);
@@ -562,7 +596,7 @@ function UploadModal({
     >
       <Space direction="vertical" style={{ width: '100%' }} size="middle">
         <Upload.Dragger
-          accept=".md,text/markdown"
+          accept=".md,.markdown,.mdx,.txt,text/markdown,text/plain"
           maxCount={1}
           beforeUpload={() => false}
           fileList={fileList}
@@ -571,13 +605,75 @@ function UploadModal({
           <p className="ant-upload-drag-icon">
             <InboxOutlined />
           </p>
-          <p className="ant-upload-text">点击或拖拽 .md 文件到此处</p>
-          <p className="ant-upload-hint">单文件最大 5 MiB；UTF-8（含 BOM）编码</p>
+          <p className="ant-upload-text">点击或拖拽 .md / .txt 文件到此处</p>
+          <p className="ant-upload-hint">
+            单文件最大 5 MiB / 64,000 tokens；UTF-8（含 BOM）、UTF-16 BOM 或高置信 GBK/GB18030
+          </p>
         </Upload.Dragger>
         <Input
           placeholder="可选：展示标题（不填则用文件名或首个 # 标题）"
           value={titleHint}
           onChange={(event) => setTitleHint(event.target.value)}
+        />
+      </Space>
+    </Modal>
+  );
+}
+
+function PasteModal({
+  open,
+  onClose,
+  submitting,
+  onSubmit,
+}: {
+  open: boolean;
+  onClose: () => void;
+  submitting: boolean;
+  onSubmit: (paste: string, titleHint: string, originUrl: string) => void;
+}) {
+  const [paste, setPaste] = useState('');
+  const [titleHint, setTitleHint] = useState('');
+  const [originUrl, setOriginUrl] = useState('');
+
+  const handleSubmit = () => {
+    if (!paste.trim()) {
+      message.warning('请粘贴正文内容');
+      return;
+    }
+    onSubmit(paste, titleHint, originUrl);
+  };
+
+  return (
+    <Modal
+      title="粘贴正文"
+      open={open}
+      onCancel={() => {
+        setPaste('');
+        setTitleHint('');
+        setOriginUrl('');
+        onClose();
+      }}
+      onOk={handleSubmit}
+      okButtonProps={{ loading: submitting }}
+      okText="开始导入"
+      width={640}
+    >
+      <Space direction="vertical" style={{ width: '100%' }} size="middle">
+        <Input.TextArea
+          placeholder="在此粘贴 Markdown 正文（系统会作为虚拟 main.md 进入同一 Pipeline）"
+          value={paste}
+          onChange={(event) => setPaste(event.target.value)}
+          autoSize={{ minRows: 8, maxRows: 18 }}
+        />
+        <Input
+          placeholder="可选：展示标题（不填则用首个 # 标题或首段内容）"
+          value={titleHint}
+          onChange={(event) => setTitleHint(event.target.value)}
+        />
+        <Input
+          placeholder="可选：来源 URL（仅作为 provenance 保存，系统不会发起网络请求）"
+          value={originUrl}
+          onChange={(event) => setOriginUrl(event.target.value)}
         />
       </Space>
     </Modal>

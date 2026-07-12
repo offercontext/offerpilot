@@ -14,7 +14,7 @@ from typing import Any, Callable, Generator, Optional
 from uuid import uuid4
 
 import httpx
-from fastapi import BackgroundTasks, Body, FastAPI, File, Request, UploadFile
+from fastapi import BackgroundTasks, Body, FastAPI, File, Form, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from pypdf import PdfReader
@@ -314,21 +314,40 @@ def create_app(
         response_model=KnowledgeIngestResponse,
     )
     def upload_knowledge_source(
-        file: UploadFile = File(...),
-        title_hint: str = "",
+        file: Optional[UploadFile] = File(None),
+        title_hint: str = Form(""),
+        paste: str = Form(""),
+        origin_url: str = Form(""),
     ) -> Any:
-        try:
-            content = file.file.read()
-        finally:
-            file.file.close()
-        filename = file.filename or ""
+        # Spec §16.1：multipart 支持 file / bundle / pasted content。file 与 paste
+        # 二选一；同时提供时按 file 优先。
+        if file is not None:
+            try:
+                content = file.file.read()
+            finally:
+                file.file.close()
+            filename = file.filename or ""
+            import_method = "file"
+            content_bytes = content
+        elif paste:
+            content_bytes = paste.encode("utf-8")
+            filename = "main.md"
+            import_method = "paste"
+        else:
+            return error_response(
+                400,
+                "必须提供 file 或 paste 字段",
+                code="unsupported_type",
+            )
+
         try:
             result = knowledge_service.ingest(
                 IngestRequest(
                     filename=filename,
-                    content_bytes=content,
+                    content_bytes=content_bytes,
                     title_hint=title_hint,
-                    import_method="file",
+                    import_method=import_method,
+                    origin_url=origin_url,
                 )
             )
         except _IngestHttpError as exc:

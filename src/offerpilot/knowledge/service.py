@@ -1,12 +1,19 @@
 """Knowledge Ingest 编排服务。
 
 实现 Spec §6 上传协议：
-1. Preflight（解码 + Markdown AST + token 上限）+ hash
+1. Preflight（解码 + Markdown/Text 解析 + token 上限 + 5MiB 上限）+ hash
 2. 去重检查
 3. staging 写入
 4. final 目录创建 + 原子 rename
 5. SQLite 单事务：create_source + origin + job + snapshot + evidence + FTS + extracted
 6. 返回 202
+
+KI-03 范围：
+- 支持 ``.md``、``.txt`` 文件，以及粘贴正文（视为虚拟 ``main.md``）。
+- 编码矩阵：UTF-8 / UTF-8 BOM / UTF-16LE BE BOM / 高置信 GBK·GB18030，禁止
+  ``errors='ignore'`` 或 ``errors='replace'``。
+- 固定 product tokenizer（cl100k_base）+ 64,000 token 上限与 5MiB 字节上限同时执行。
+- 错误返回实际值与允许值。
 
 KI-02 同步触发 Extraction；KI-07 替换为持久队列。事务失败时 final 目录可能残留无数据库
 记录的孤儿原件，由启动恢复负责清理（KI-07 实现完整恢复）。
@@ -23,17 +30,20 @@ from typing import Optional
 
 from sqlalchemy.orm import Session, sessionmaker
 
+from offerpilot.knowledge.encoding import (
+    DecodedContent,
+    EncodingError,
+    decode_source_bytes,
+)
 from offerpilot.knowledge.extractor import (
     EXTRACTOR_VERSION,
     MAX_FILE_BYTES,
+    NORMALIZATION_VERSION,
+    PARSER_VERSION,
     ExtractionError,
     MarkdownExtraction,
     MarkdownExtractor,
-    NORMALIZATION_VERSION,
-    PARSER_VERSION,
-    TOKENIZER_VERSION,
     compute_source_hash,
-    estimate_tokens,
 )
 from offerpilot.knowledge.repository import (
     EvidenceDraftInput,
@@ -44,11 +54,15 @@ from offerpilot.knowledge.repository import (
     SourceRecord,
     commit_extraction,
 )
-from offerpilot.knowledge.worker import decode_markdown_bytes
+from offerpilot.knowledge.tokenizer import max_token_limit
 from offerpilot.models import KnowledgeJob, KnowledgeSource, KnowledgeSourceOrigin
 
 
 _SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+# Spec §4.1 支持的输入文件类型。粘贴正文统一作为虚拟 ``main.md``。
+_SUPPORTED_TEXT_EXTENSIONS = (".md", ".markdown", ".mdx", ".txt")
+_PASTE_DEFAULT_FILENAME = "main.md"
 
 
 @dataclass(frozen=True)
@@ -97,12 +111,13 @@ class KnowledgeIngestService:
         filename = request.filename.strip()
         if not filename:
             raise IngestError("unsupported_type", "缺少文件名")
-        if not filename.lower().endswith(".md"):
+        is_paste = request.import_method == "paste"
+        if not is_paste and not _has_supported_extension(filename):
             raise IngestError(
                 "unsupported_type",
-                "当前只支持 .md 文件；Text/Paste/Bundle 由后续版本扩展",
+                "当前只支持 .md / .txt 文件或粘贴正文；Bundle 由后续版本扩展",
             )
-        safe_filename = _safe_filename(filename)
+        safe_filename = _safe_filename(filename if not is_paste else _PASTE_DEFAULT_FILENAME)
         if not safe_filename:
             raise IngestError("unsupported_type", "文件名仅含不支持的字符")
 
@@ -112,24 +127,28 @@ class KnowledgeIngestService:
         if size > MAX_FILE_BYTES:
             raise IngestError(
                 "source_too_large",
-                f"原文 {size} 字节超出上限 {MAX_FILE_BYTES} 字节",
-            )
-
-        decoded = decode_markdown_bytes(request.content_bytes)
-        if decoded is None:
-            raise IngestError(
-                "encoding_unknown",
-                "原文不是 UTF-8 / UTF-8 BOM；请转换为 UTF-8 后重试",
+                (
+                    f"原文 {size} 字节超出上限 {MAX_FILE_BYTES} 字节；"
+                    "请按主题拆分资料后再上传"
+                ),
             )
 
         try:
-            extraction = self._extractor.extract(
-                decoded.text,
-                encoding=decoded.encoding,
-                detection_method=decoded.detection_method,
-            )
-        except ExtractionError as exc:
+            decoded = decode_source_bytes(request.content_bytes)
+        except EncodingError as exc:
             raise IngestError(exc.code, exc.message) from exc
+
+        extraction = self._run_extraction(decoded)
+        token_count_value = extraction.token_count
+        token_limit = max_token_limit()
+        if token_count_value > token_limit:
+            raise IngestError(
+                "source_too_large",
+                (
+                    f"原文 {token_count_value} tokens 超出上限 {token_limit} tokens；"
+                    "请按主题拆分资料后再上传"
+                ),
+            )
 
         source_hash = compute_source_hash(request.content_bytes)
         existing = self._repository.get_source_by_hash(source_hash)
@@ -174,11 +193,15 @@ class KnowledgeIngestService:
         staging_path.write_bytes(request.content_bytes)
 
         manifest = {
-            "kind": "markdown",
+            "kind": "text" if safe_filename.lower().endswith(".txt") else "markdown",
             "main_filename": safe_filename,
             "total_bytes": size,
             "source_hash": source_hash,
             "extractor_version": EXTRACTOR_VERSION,
+            "encoding": decoded.encoding,
+            "detection_method": decoded.detection_method,
+            "tokenizer_version": extraction.tokenizer_version,
+            "token_count": token_count_value,
         }
         manifest_json = json.dumps(manifest, ensure_ascii=False, sort_keys=True)
 
@@ -204,35 +227,36 @@ class KnowledgeIngestService:
             for draft in extraction.evidence_drafts
         ]
 
-        token_count = estimate_tokens(extraction.canonical_text)
         snapshot_input_template = SnapshotCreateInput(
-            source_id=0,  # 占位，事务内拿到 source.id 后重建
+            source_id=0,
             extractor_version=EXTRACTOR_VERSION,
             parser_version=PARSER_VERSION,
             normalization_version=NORMALIZATION_VERSION,
-            tokenizer_version=TOKENIZER_VERSION,
+            tokenizer_version=extraction.tokenizer_version,
             encoding=extraction.encoding,
             detection_method=extraction.detection_method,
             canonical_text=extraction.canonical_text,
-            structure_manifest=json.dumps(
-                {
-                    "draft_count": len(drafts),
-                    "headings": _top_headings(extraction),
-                },
-                ensure_ascii=False,
-            ),
+            structure_manifest=extraction.structure_manifest,
             digest=extraction.digest,
-            token_count=token_count,
-            char_count=len(extraction.canonical_text),
+            token_count=token_count_value,
+            char_count=extraction.char_count,
         )
+
+        source_kind = "markdown"
+        main_media_type = "text/markdown"
+        if safe_filename.lower().endswith(".txt"):
+            source_kind = "text"
+            main_media_type = "text/plain"
 
         source_id, job_id = self._commit_new_source(
             source_hash=source_hash,
+            source_kind=source_kind,
+            main_media_type=main_media_type,
             safe_filename=safe_filename,
             title_hint=title_hint,
             manifest_json=manifest_json,
             size=size,
-            token_count=token_count,
+            token_count=token_count_value,
             request=request,
             staging_path=staging_path,
             staging_source_dir=staging_source_dir,
@@ -257,10 +281,24 @@ class KnowledgeIngestService:
             extraction_error_message="",
         )
 
+    def _run_extraction(self, decoded: DecodedContent) -> MarkdownExtraction:
+        """Spec §7.1：固定版本 AST 解析，捕获 Extraction/Encoding 错误。"""
+
+        try:
+            return self._extractor.extract(
+                decoded.text,
+                encoding=decoded.encoding,
+                detection_method=decoded.detection_method,
+            )
+        except ExtractionError as exc:
+            raise IngestError(exc.code, exc.message) from exc
+
     def _commit_new_source(
         self,
         *,
         source_hash: str,
+        source_kind: str,
+        main_media_type: str,
         safe_filename: str,
         title_hint: str,
         manifest_json: str,
@@ -277,15 +315,16 @@ class KnowledgeIngestService:
         Spec §6 / §9：数据库提交前完成 final rename；事务失败时无任何 DB 行可见，
         final 目录残留由启动恢复清理。
         """
+
         with self._session_factory() as session:
             with session.begin():
                 source_row = KnowledgeSource(
                     source_hash=source_hash,
-                    source_kind="markdown",
+                    source_kind=source_kind,
                     display_title="",
                     title_hint=title_hint,
                     main_filename=safe_filename,
-                    main_media_type="text/markdown",
+                    main_media_type=main_media_type,
                     main_relative_path="",
                     manifest_json=manifest_json,
                     total_bytes=size,
@@ -377,6 +416,11 @@ class KnowledgeIngestService:
         return source_id, job_id
 
 
+def _has_supported_extension(filename: str) -> bool:
+    lowered = filename.lower()
+    return any(lowered.endswith(ext) for ext in _SUPPORTED_TEXT_EXTENSIONS)
+
+
 def _safe_filename(name: str) -> str:
     collapsed = _SAFE_FILENAME_RE.sub("-", name).strip("-._")
     if not collapsed:
@@ -400,6 +444,9 @@ def _derive_title_from_extraction(extraction: MarkdownExtraction) -> str:
 
 
 def _derive_title_from_filename(filename: str) -> str:
+    for ext in _SUPPORTED_TEXT_EXTENSIONS:
+        if filename.lower().endswith(ext):
+            return filename[: -len(ext)]
     return filename.removesuffix(".md")
 
 
@@ -416,14 +463,3 @@ def _safe_cleanup(target: Path) -> None:
             target.unlink(missing_ok=True)
     except OSError:
         pass
-
-
-def _top_headings(extraction: MarkdownExtraction) -> list[str]:
-    seen: list[str] = []
-    for draft in extraction.evidence_drafts:
-        for heading in draft.heading_path:
-            if heading and heading not in seen:
-                seen.append(heading)
-            if len(seen) >= 10:
-                return seen
-    return seen

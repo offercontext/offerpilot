@@ -1,39 +1,63 @@
-"""Knowledge Markdown Extractor。
+"""Knowledge Markdown/Text Extractor。
 
-KI-02 范围：仅处理 Markdown happy path —— heading_path + paragraph。其他结构（list、
-blockquote、table、fenced_code 等）由 KI-03 扩展。
+KI-03 范围：
+- 支持 Markdown（heading、paragraph、list item、blockquote、table row、fenced code）。
+- 超长 paragraph 按句子边界拆分；超长 fenced code 按行边界拆分。
+- 嵌套 list item 保留父路径；table row 携带表头；fenced code 携带语言和行范围。
+- 固定 product tokenizer（cl100k_base）和 64,000 token 上限。
+- 升级 EXTRACTOR_VERSION 以区分 KI-02 的 paragraph-only 解析。
 
-- `compute_source_hash` 计算主文件字节的内容寻址 hash（KI-02 不考虑附件）。
-- `MarkdownExtractor.extract` 用 markdown-it-py 解析 Markdown，规范化文本，并生成
-  稳定 Evidence 列表（snapshot_digest + extractor_version + locator + content_hash）。
-- 相同输入重复执行得到相同 Snapshot digest 和 Evidence ID。
+Spec §7.1 规范化顺序：严格解码 → 换行 \\n → NUL 拒绝 → 固定版本 AST → canonical text +
+结构节点 + 行/字符位置 → Snapshot digest。
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Iterable, Optional
 
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
 
+from offerpilot.knowledge.tokenizer import (
+    TOKENIZER_VERSION,
+    count_tokens,
+    max_token_limit,
+)
 
-EXTRACTOR_VERSION = "md-ki02-1"
+
+# Spec §7.2：(source_id, extractor_version) 唯一。KI-03 升级 extractor 版本以区分
+# KI-02 的 paragraph-only 输出。新增 list/blockquote/table/fenced_code Evidence 后，
+# 相同 Source 会得到与 KI-02 不同的 Snapshot digest 和 Evidence ID。
+EXTRACTOR_VERSION = "md-ki03-1"
 PARSER_VERSION = "markdown-it-py-3"
 NORMALIZATION_VERSION = "nl-1"
-TOKENIZER_VERSION = "none-1"
+
+# Spec §4.2 主 Markdown/Text 5 MiB；普通文本 Evidence ≤ 2000 Unicode chars，
+# 超长时按句子边界拆分；fenced code / table cell 允许到 8000 chars，超过按行边界拆分。
+MAX_FILE_BYTES = 5 * 1024 * 1024
+PARAGRAPH_TARGET_CHARS = 2_000
+BLOCK_TARGET_CHARS = 8_000
 
 
 _SOURCE_HASH_PREFIX = "sha256:"
-MAX_FILE_BYTES = 5 * 1024 * 1024  # Spec §4.2 主 Markdown/Text 5 MiB
-_MAX_TOKEN_COUNT = 64_000  # Spec §4.2 规范文本 64,000 product tokens
 _TRAILING_WS_RE = re.compile(r"[ \t]+\n")
 _MULTI_NEWLINE_RE = re.compile(r"\n{3,}")
 
+# Spec §7.1 控制字符：禁止 NUL，其他 C0/C1 控制字符保留在 canonical text 中，
+# 但 Snapshot structure_manifest 记录它们的总数。
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
+
+# Spec §8.1 paragraph 拆分按句子边界。中文/英文句号、问号、感叹号都视为句子结束。
+_SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[。！？!?\.])\s+|(?<=\n)")
+
 
 def compute_source_hash(content_bytes: bytes) -> str:
-    """KI-02 主文件字节级 source_hash。KI-05 会扩展到附件字节 + 逻辑路径。"""
+    """KI-02/KI-03 主文件字节级 source_hash。KI-05 会扩展到附件字节 + 逻辑路径。"""
+
     digest = hashlib.sha256(content_bytes).hexdigest()
     return f"{_SOURCE_HASH_PREFIX}{digest}"
 
@@ -52,17 +76,23 @@ class EvidenceDraft:
     search_text: str
     content_hash: str
     locator: str
+    extra: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class MarkdownExtraction:
-    """Extractor 输出：canonical_text + digest + Evidence 草稿列表。"""
+    """Extractor 输出：canonical_text + digest + Evidence 草稿列表 + 元数据。"""
 
     canonical_text: str
     digest: str
     encoding: str
     detection_method: str
     evidence_drafts: list[EvidenceDraft]
+    token_count: int
+    char_count: int
+    control_char_count: int
+    tokenizer_version: str
+    structure_manifest: str
 
 
 class ExtractionError(Exception):
@@ -74,21 +104,20 @@ class ExtractionError(Exception):
         self.message = message
 
 
-def _normalize_text(raw: str) -> str:
-    """Spec §7.1 规范化：换行统一为 \\n，去除行尾空白，压缩多余空行。"""
+def _normalize_text(raw: str) -> tuple[str, int]:
+    """Spec §7.1 规范化：换行统一为 \\n，去除行尾空白，压缩多余空行。
+
+    返回 (canonical_text, control_char_count)。NUL 触发 ExtractionError；其他控制
+    字符保留并计数，由 structure_manifest 记录，不静默删除。
+    """
+
+    if "\x00" in raw:
+        raise ExtractionError("encoding_unknown", "原文中存在 NUL 控制字符，无法安全解析")
     normalized = raw.replace("\r\n", "\n").replace("\r", "\n")
     normalized = _TRAILING_WS_RE.sub("\n", normalized)
     normalized = _MULTI_NEWLINE_RE.sub("\n\n", normalized)
-    return normalized
-
-
-def estimate_tokens(text: str) -> int:
-    """粗略 token 估算，作为 KI-02 上限门禁。
-
-    Spec §4.2 要求固定 product tokenizer；KI-02 还没接入真实 tokenizer，先用 char/4 估
-    算作为 hard cap，KI-03 接入 pinned cl100k_base 时再精确化。
-    """
-    return max(1, len(text) // 4)
+    control_count = len(_CONTROL_CHAR_RE.findall(normalized))
+    return normalized, control_count
 
 
 def _heading_depth(token: Token) -> int:
@@ -102,107 +131,563 @@ def _content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _snapshot_digest(canonical_text: str, structure_summary: str) -> str:
+    payload = (
+        f"{EXTRACTOR_VERSION}|{NORMALIZATION_VERSION}|{PARSER_VERSION}|"
+        f"{TOKENIZER_VERSION}|{canonical_text}|{structure_summary}"
+    )
+    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _line_offset_table(canonical_text: str) -> list[int]:
+    """预计算每行起始 char offset，加速 char↔line 转换。"""
+
+    offsets = [0]
+    for index, char in enumerate(canonical_text):
+        if char == "\n":
+            offsets.append(index + 1)
+    return offsets
+
+
+def _char_to_line(offsets: list[int], char_pos: int) -> int:
+    """Spec §8.2 line range 1-indexed。"""
+
+    import bisect
+
+    return bisect.bisect_right(offsets, char_pos)
+
+
+def _line_range_from_char(
+    offsets: list[int], char_start: int, char_end: int
+) -> tuple[int, int]:
+    line_start = _char_to_line(offsets, char_start)
+    # char_end 是 exclusive end；前一字符所在行是真正的最后一行。
+    last_char_pos = max(0, char_end - 1)
+    line_end = _char_to_line(offsets, last_char_pos)
+    return line_start, max(line_end, line_start)
+
+
+def _inline_text(token: Optional[Token]) -> str:
+    if token is None or token.type != "inline":
+        return ""
+    return token.content.strip()
+
+
 class MarkdownExtractor:
-    """解析 Markdown 并生成稳定 Evidence 草稿。"""
+    """Spec §7.1/§8.1：固定版本 Markdown AST 解析 + 结构感知 Evidence 生成。"""
 
     def __init__(self) -> None:
-        self._parser = MarkdownIt("commonmark", {"html": False}).disable("html_block", True)
+        # Spec §4.4：HTML 作为不可信原文处理。我们禁用 html_block/html_inline，
+        # 这样 markdown-it 会把 HTML 标签当作纯文本保留，不解析、不执行脚本、不加载资源。
+        self._parser = MarkdownIt("commonmark", {"html": False}).enable("table")
 
-    def extract(self, raw_content: str, *, encoding: str = "utf-8", detection_method: str = "bom-strict") -> MarkdownExtraction:
-        canonical = _normalize_text(raw_content)
-        if "\x00" in canonical:
-            raise ExtractionError("encoding_unknown", "原文中存在 NUL 控制字符，无法安全解析")
-
-        token_count = estimate_tokens(canonical)
-        if token_count > _MAX_TOKEN_COUNT:
-            raise ExtractionError(
-                "source_too_large",
-                f"原文估算约 {token_count} product tokens，超出 KI-02 暂行上限 {_MAX_TOKEN_COUNT}",
-            )
+    def extract(
+        self,
+        raw_content: str,
+        *,
+        encoding: str = "utf-8",
+        detection_method: str = "strict-utf8",
+    ) -> MarkdownExtraction:
+        canonical, control_char_count = _normalize_text(raw_content)
 
         tokens = self._parser.parse(canonical)
-        drafts = _walk_tokens(canonical, tokens)
-        digest = _snapshot_digest(canonical)
+        offsets = _line_offset_table(canonical)
+        navigator = _StructureNavigator()
+        drafts: list[EvidenceDraft] = []
+        index = 0
+        while index < len(tokens):
+            advanced = self._emit_block(
+                tokens=tokens,
+                index=index,
+                canonical=canonical,
+                offsets=offsets,
+                navigator=navigator,
+                drafts=drafts,
+            )
+            if advanced <= 0:
+                index += 1
+            else:
+                index += advanced
+
+        token_count_value = count_tokens(canonical)
+        if token_count_value.count > max_token_limit():
+            raise ExtractionError(
+                "source_too_large",
+                (
+                    f"原文约 {token_count_value.count} tokens，"
+                    f"超出 {max_token_limit()} token 上限；请按主题拆分资料"
+                ),
+            )
+
+        structure_summary = json.dumps(
+            {
+                "draft_count": len(drafts),
+                "block_kinds": _count_block_kinds(drafts),
+                "control_char_count": control_char_count,
+                "headings": navigator.top_headings(),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        digest = _snapshot_digest(canonical, structure_summary)
         return MarkdownExtraction(
             canonical_text=canonical,
             digest=digest,
             encoding=encoding,
             detection_method=detection_method,
             evidence_drafts=drafts,
+            token_count=token_count_value.count,
+            char_count=len(canonical),
+            control_char_count=control_char_count,
+            tokenizer_version=token_count_value.tokenizer_version,
+            structure_manifest=structure_summary,
         )
 
-
-def _snapshot_digest(canonical_text: str) -> str:
-    payload = f"{EXTRACTOR_VERSION}|{NORMALIZATION_VERSION}|{PARSER_VERSION}|{canonical_text}"
-    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _walk_tokens(canonical_text: str, tokens: list[Token]) -> list[EvidenceDraft]:
-    drafts: list[EvidenceDraft] = []
-    heading_stack: list[tuple[int, str]] = []
-    ordinal = 0
-    idx = 0
-    while idx < len(tokens):
-        token = tokens[idx]
+    def _emit_block(
+        self,
+        *,
+        tokens: list[Token],
+        index: int,
+        canonical: str,
+        offsets: list[int],
+        navigator: "_StructureNavigator",
+        drafts: list[EvidenceDraft],
+    ) -> int:
+        token = tokens[index]
         if token.type == "heading_open":
-            depth = _heading_depth(token)
-            inline = tokens[idx + 1] if idx + 1 < len(tokens) else None
-            title = _inline_text(inline) if inline is not None else ""
-            if depth > 0 and title:
-                heading_stack = [(d, t) for d, t in heading_stack if d < depth]
-                heading_stack.append((depth, title))
-            idx += 3  # heading_open + inline + heading_close
-            continue
+            return self._consume_heading(tokens, index, navigator)
         if token.type == "paragraph_open":
-            inline = tokens[idx + 1] if idx + 1 < len(tokens) else None
-            if inline is not None and inline.content:
-                excerpt = inline.content
-                start, end = _inline_char_range(inline, canonical_text)
-                line_start, line_end = _line_range(canonical_text, start, end)
-                heading_path = tuple(text for _, text in heading_stack)
-                ordinal += 1
+            return self._consume_paragraph(tokens, index, canonical, offsets, navigator, drafts)
+        if token.type == "bullet_list_open" or token.type == "ordered_list_open":
+            return self._consume_list(
+                tokens, index, canonical, offsets, navigator, drafts
+            )
+        if token.type == "blockquote_open":
+            return self._consume_blockquote(
+                tokens, index, canonical, offsets, navigator, drafts
+            )
+        if token.type == "table_open":
+            return self._consume_table(tokens, index, canonical, offsets, navigator, drafts)
+        if token.type == "fence":
+            self._emit_fence(token, canonical, offsets, navigator, drafts)
+            return 1
+        if token.type == "hr":
+            return 1
+        return 0
+
+    def _consume_heading(
+        self,
+        tokens: list[Token],
+        index: int,
+        navigator: "_StructureNavigator",
+    ) -> int:
+        token = tokens[index]
+        depth = _heading_depth(token)
+        inline = tokens[index + 1] if index + 1 < len(tokens) else None
+        title = _inline_text(inline)
+        if depth > 0 and title:
+            navigator.push_heading(depth, title)
+        # heading_open + inline + heading_close
+        return 3
+
+    def _consume_paragraph(
+        self,
+        tokens: list[Token],
+        index: int,
+        canonical: str,
+        offsets: list[int],
+        navigator: "_StructureNavigator",
+        drafts: list[EvidenceDraft],
+    ) -> int:
+        inline = tokens[index + 1] if index + 1 < len(tokens) else None
+        if inline is None or not inline.content.strip():
+            return 3
+        char_start, char_end = _inline_char_range(inline, canonical)
+        if char_end <= char_start:
+            return 3
+        text = canonical[char_start:char_end]
+        for piece_index, (piece_start, piece_end, piece_text) in enumerate(
+            _split_paragraph(text, char_start)
+        ):
+            line_start, line_end = _line_range_from_char(offsets, piece_start, piece_end)
+            drafts.append(
+                _make_paragraph_draft(
+                    piece_text,
+                    heading_path=navigator.heading_path_tuple(),
+                    list_path=tuple(navigator.list_path()),
+                    char_start=piece_start,
+                    char_end=piece_end,
+                    line_start=line_start,
+                    line_end=line_end,
+                    ordinal_hint=piece_index,
+                )
+            )
+        return 3
+
+    def _consume_list(
+        self,
+        tokens: list[Token],
+        index: int,
+        canonical: str,
+        offsets: list[int],
+        navigator: "_StructureNavigator",
+        drafts: list[EvidenceDraft],
+    ) -> int:
+        open_token = tokens[index]
+        is_ordered = open_token.type == "ordered_list_open"
+        navigator.enter_list_level(open_token.level)
+        # 顺序消费整个 list，遇到对应的 list_X_close 退出。
+        consumed = 1
+        cursor = index + 1
+        while cursor < len(tokens):
+            current = tokens[cursor]
+            if (
+                current.type == ("ordered_list_close" if is_ordered else "bullet_list_close")
+                and current.level == open_token.level
+            ):
+                consumed += 1
+                navigator.exit_list_level(open_token.level)
+                return consumed
+            if current.type == "list_item_open":
+                item_consumed = self._consume_list_item(
+                    tokens, cursor, canonical, offsets, navigator, drafts
+                )
+                cursor += item_consumed
+                consumed += item_consumed
+                continue
+            # 跳过 list 内的非 item token（如 paragraph_open 等已被 item 处理消费）。
+            cursor += 1
+            consumed += 1
+        navigator.exit_list_level(open_token.level)
+        return consumed
+
+    def _consume_list_item(
+        self,
+        tokens: list[Token],
+        index: int,
+        canonical: str,
+        offsets: list[int],
+        navigator: "_StructureNavigator",
+        drafts: list[EvidenceDraft],
+    ) -> int:
+        open_token = tokens[index]
+        inline_text, inline_token, consumed = _collect_list_item_inline(
+            tokens, index, canonical
+        )
+        if inline_token is not None and inline_text.strip():
+            char_start, char_end = _inline_char_range(inline_token, canonical)
+            text = canonical[char_start:char_end] if char_end > char_start else inline_text
+            navigator.push_list_item(open_token.level, inline_text.strip())
+            line_start, line_end = _line_range_from_char(offsets, char_start, char_end)
+            drafts.append(
+                EvidenceDraft(
+                    block_kind="list_item",
+                    heading_path=navigator.heading_path_tuple(),
+                    char_start=char_start,
+                    char_end=char_end,
+                    line_start=line_start,
+                    line_end=line_end,
+                    canonical_excerpt=text,
+                    search_text=_build_search_text(
+                        navigator.heading_path_tuple(),
+                        navigator.list_path(),
+                        text,
+                    ),
+                    content_hash=_content_hash(text),
+                    locator=(
+                        f"list_item:{navigator.list_locator()}:{line_start}:{char_start}"
+                    ),
+                    extra={
+                        "list_path": list(navigator.list_path()),
+                        "list_level": open_token.level,
+                    },
+                )
+            )
+        # 消费掉 list_item 内的 nested list（递归在 _consume_list 中处理）
+        cursor = index + consumed
+        while cursor < len(tokens):
+            current = tokens[cursor]
+            if current.type == "list_item_close" and current.level == open_token.level:
+                navigator.pop_list_item(open_token.level)
+                return consumed + 1
+            if current.type in {"bullet_list_open", "ordered_list_open"}:
+                nested = self._consume_list(
+                    tokens, cursor, canonical, offsets, navigator, drafts
+                )
+                cursor += nested
+                consumed += nested
+                continue
+            cursor += 1
+            consumed += 1
+        navigator.pop_list_item(open_token.level)
+        return consumed
+
+    def _consume_blockquote(
+        self,
+        tokens: list[Token],
+        index: int,
+        canonical: str,
+        offsets: list[int],
+        navigator: "_StructureNavigator",
+        drafts: list[EvidenceDraft],
+    ) -> int:
+        open_token = tokens[index]
+        navigator.enter_blockquote()
+        parts: list[tuple[int, int, str]] = []
+        consumed = 1
+        cursor = index + 1
+        while cursor < len(tokens):
+            current = tokens[cursor]
+            if current.type == "blockquote_close" and current.level == open_token.level:
+                consumed += 1
+                break
+            if current.type == "paragraph_open":
+                inline = tokens[cursor + 1] if cursor + 1 < len(tokens) else None
+                if inline is not None and inline.content:
+                    start, end = _inline_char_range(inline, canonical)
+                    if end > start:
+                        parts.append((start, end, canonical[start:end]))
+                cursor += 3
+                consumed += 3
+                continue
+            cursor += 1
+            consumed += 1
+        navigator.exit_blockquote()
+        if parts:
+            merged_start = parts[0][0]
+            merged_end = parts[-1][1]
+            text = canonical[merged_start:merged_end]
+            # Spec §8.1 blockquote：连续引用块合并为一条 Evidence，超长时按句子拆分。
+            for piece_start, piece_end, _ in _split_paragraph(text, merged_start):
+                excerpt = canonical[piece_start:piece_end]
+                line_start, line_end = _line_range_from_char(offsets, piece_start, piece_end)
                 drafts.append(
                     EvidenceDraft(
-                        block_kind="paragraph",
-                        heading_path=heading_path,
-                        char_start=start,
-                        char_end=end,
+                        block_kind="blockquote",
+                        heading_path=navigator.heading_path_tuple(),
+                        char_start=piece_start,
+                        char_end=piece_end,
                         line_start=line_start,
                         line_end=line_end,
                         canonical_excerpt=excerpt,
-                        search_text=inline.content,
+                        search_text=_build_search_text(
+                            navigator.heading_path_tuple(),
+                            navigator.list_path(),
+                            excerpt,
+                        ),
                         content_hash=_content_hash(excerpt),
-                        locator=f"paragraph:{line_start}:{start}",
+                        locator=(
+                            f"blockquote:{navigator.blockquote_depth()}:{line_start}:{piece_start}"
+                        ),
                     )
                 )
-            idx += 3
-            continue
-        # 其他块类型（list/blockquote/table/fenced_code 等）由 KI-03 处理。
-        idx += 1
-    return drafts
+        return consumed
+
+    def _consume_table(
+        self,
+        tokens: list[Token],
+        index: int,
+        canonical: str,
+        offsets: list[int],
+        navigator: "_StructureNavigator",
+        drafts: list[EvidenceDraft],
+    ) -> int:
+        open_token = tokens[index]
+        headers: list[str] = []
+        rows: list[tuple[list[str], tuple[int, int]]] = []
+        consumed = 1
+        cursor = index + 1
+        # 状态机：thead/tr/th/td
+        current_row_cells: list[str] = []
+        current_row_range: Optional[tuple[int, int]] = None
+        in_thead = False
+        in_tbody = False
+        while cursor < len(tokens):
+            current = tokens[cursor]
+            if current.type == "table_close" and current.level == open_token.level:
+                consumed += 1
+                break
+            if current.type == "thead_open":
+                in_thead = True
+                cursor += 1
+                consumed += 1
+                continue
+            if current.type == "thead_close":
+                in_thead = False
+                cursor += 1
+                consumed += 1
+                continue
+            if current.type == "tbody_open":
+                in_tbody = True
+                cursor += 1
+                consumed += 1
+                continue
+            if current.type == "tbody_close":
+                in_tbody = False
+                cursor += 1
+                consumed += 1
+                continue
+            if current.type == "tr_open":
+                current_row_cells = []
+                current_row_range = (
+                    (current.map[0], current.map[1]) if current.map else None
+                )
+                cursor += 1
+                consumed += 1
+                continue
+            if current.type == "tr_close":
+                if in_thead:
+                    headers = list(current_row_cells)
+                elif in_tbody and current_row_range is not None:
+                    rows.append((list(current_row_cells), current_row_range))
+                cursor += 1
+                consumed += 1
+                continue
+            if current.type in {"th_open", "td_open"}:
+                inline = tokens[cursor + 1] if cursor + 1 < len(tokens) else None
+                current_row_cells.append(_inline_text(inline))
+                cursor += 3
+                consumed += 3
+                continue
+            cursor += 1
+            consumed += 1
+
+        for row_index, (cells, (line_start_idx, line_end_idx)) in enumerate(rows):
+            if not cells:
+                continue
+            char_start = _line_offset(offsets, line_start_idx)
+            char_end = _line_offset(offsets, line_end_idx)
+            char_end = min(char_end, len(canonical))
+            # Spec §8.2 canonical_excerpt 与 char range 严格对齐；表头单独存放在 extra
+            # 和 search_text 中，避免重复原文。
+            excerpt = canonical[char_start:char_end]
+            search = _build_search_text(
+                navigator.heading_path_tuple(),
+                navigator.list_path(),
+                " | ".join([*headers, *cells]) if headers else " | ".join(cells),
+            )
+            line_start, line_end = _line_range_from_char(offsets, char_start, char_end)
+            drafts.append(
+                EvidenceDraft(
+                    block_kind="table_row",
+                    heading_path=navigator.heading_path_tuple(),
+                    char_start=char_start,
+                    char_end=char_end,
+                    line_start=line_start,
+                    line_end=line_end,
+                    canonical_excerpt=excerpt,
+                    search_text=search,
+                    content_hash=_content_hash(excerpt),
+                    locator=f"table_row:{row_index}:{line_start}:{char_start}",
+                    extra={
+                        "row_index": row_index,
+                        "headers": list(headers),
+                        "cells": list(cells),
+                    },
+                )
+            )
+        return consumed
+
+    def _emit_fence(
+        self,
+        token: Token,
+        canonical: str,
+        offsets: list[int],
+        navigator: "_StructureNavigator",
+        drafts: list[EvidenceDraft],
+    ) -> None:
+        info = (token.info or "").strip()
+        line_start_idx, line_end_idx = (
+            (token.map[0], token.map[1]) if token.map else (0, 0)
+        )
+        char_start = _line_offset(offsets, line_start_idx)
+        char_end = _line_offset(offsets, line_end_idx)
+        char_end = min(char_end, len(canonical))
+        # Spec §8.2 canonical_excerpt 与 char range 严格对齐；token.content 是去掉
+        # ``` 行的纯代码，便于拆分与 search_text 使用。
+        full_excerpt = canonical[char_start:char_end]
+        code_content = token.content
+        for piece_index, (piece_start, piece_end, _) in enumerate(
+            _split_code_block(full_excerpt, char_start)
+        ):
+            excerpt = canonical[piece_start:piece_end]
+            # 拆分时 piece_index 对应代码片段索引，用于 locator 区分。
+            search_text = code_content if piece_index == 0 else excerpt
+            line_start, line_end = _line_range_from_char(offsets, piece_start, piece_end)
+            drafts.append(
+                EvidenceDraft(
+                    block_kind="fenced_code",
+                    heading_path=navigator.heading_path_tuple(),
+                    char_start=piece_start,
+                    char_end=piece_end,
+                    line_start=line_start,
+                    line_end=line_end,
+                    canonical_excerpt=excerpt,
+                    search_text=search_text,
+                    content_hash=_content_hash(excerpt),
+                    locator=(
+                        f"fenced_code:{info or 'text'}:{piece_index}:{line_start}:{piece_start}"
+                    ),
+                    extra={
+                        "language": info,
+                        "piece_index": piece_index,
+                    },
+                )
+            )
 
 
-def _inline_text(token: Token) -> str:
-    if token.type == "inline":
-        return token.content.strip()
-    return ""
+def _make_paragraph_draft(
+    text: str,
+    *,
+    heading_path: tuple[str, ...],
+    list_path: tuple[str, ...],
+    char_start: int,
+    char_end: int,
+    line_start: int,
+    line_end: int,
+    ordinal_hint: int,
+) -> EvidenceDraft:
+    return EvidenceDraft(
+        block_kind="paragraph",
+        heading_path=heading_path,
+        char_start=char_start,
+        char_end=char_end,
+        line_start=line_start,
+        line_end=line_end,
+        canonical_excerpt=text,
+        search_text=_build_search_text(heading_path, list_path, text),
+        content_hash=_content_hash(text),
+        locator=f"paragraph:{ordinal_hint}:{line_start}:{char_start}",
+        extra={"list_path": list(list_path)},
+    )
 
 
-def _inline_char_range(token: Token, canonical_text: str) -> tuple[int, int]:
-    start = token.map[0] if token.map else 0
-    end_line = token.map[1] if token.map and len(token.map) > 1 else start + 1
-    char_start = _line_offset(canonical_text, start)
-    char_end = _line_offset(canonical_text, end_line)
+def _build_search_text(
+    heading_path: tuple[str, ...],
+    list_path: tuple[str, ...],
+    text: str,
+) -> str:
+    prefix_parts: list[str] = []
+    if heading_path:
+        prefix_parts.extend(heading_path)
+    if list_path:
+        prefix_parts.extend(list_path)
+    if prefix_parts:
+        return " | ".join(prefix_parts) + " | " + text
+    return text
+
+
+def _inline_char_range(token: Optional[Token], canonical_text: str) -> tuple[int, int]:
+    if token is None or not token.map:
+        return (0, 0)
+    start_line = token.map[0]
+    end_line = token.map[1] if len(token.map) > 1 else start_line + 1
+    char_start = _line_offset_for(canonical_text, start_line)
+    char_end = _line_offset_for(canonical_text, end_line)
     return char_start, min(char_end, len(canonical_text))
 
 
-def _line_range(canonical_text: str, char_start: int, char_end: int) -> tuple[int, int]:
-    line_start = canonical_text.count("\n", 0, char_start) + 1
-    line_end = canonical_text.count("\n", 0, max(char_start, char_end - 1)) + 1
-    return line_start, line_end
-
-
-def _line_offset(canonical_text: str, line_index: int) -> int:
+def _line_offset_for(canonical_text: str, line_index: int) -> int:
     if line_index <= 0:
         return 0
     offset = 0
@@ -212,3 +697,206 @@ def _line_offset(canonical_text: str, line_index: int) -> int:
             return len(canonical_text)
         offset = next_newline + 1
     return offset
+
+
+def _line_offset(offsets: list[int], line_index: int) -> int:
+    if line_index < 0:
+        return 0
+    if line_index >= len(offsets):
+        return offsets[-1] if offsets else 0
+    return offsets[line_index]
+
+
+def _count_block_kinds(drafts: list[EvidenceDraft]) -> dict[str, int]:
+    summary: dict[str, int] = {}
+    for draft in drafts:
+        summary[draft.block_kind] = summary.get(draft.block_kind, 0) + 1
+    return summary
+
+
+def _collect_list_item_inline(
+    tokens: list[Token], index: int, canonical: str
+) -> tuple[str, Optional[Token], int]:
+    """返回 (inline_text, inline_token, consumed_tokens)。
+
+    consumed_tokens 包含 list_item_open 到 list_item 内首个 paragraph_close（或等价位置）
+    的 token 数，但不包含 nested list——nested list 由外层 _consume_list_item 处理。
+    """
+
+    cursor = index + 1
+    end = index + 1
+    while cursor < len(tokens):
+        current = tokens[cursor]
+        if current.type == "list_item_close":
+            end = cursor
+            break
+        if current.type in {"bullet_list_open", "ordered_list_open"}:
+            end = cursor
+            break
+        if current.type == "inline":
+            inline = current
+            # 继续找到 paragraph_close 或 list_item_close
+            scan = cursor + 1
+            while scan < len(tokens):
+                nxt = tokens[scan]
+                if nxt.type in {"paragraph_close", "list_item_close"} or nxt.type in {
+                    "bullet_list_open",
+                    "ordered_list_open",
+                }:
+                    return inline.content.strip(), inline, scan - index
+                scan += 1
+            return inline.content.strip(), inline, scan - index
+        cursor += 1
+    return "", None, max(1, end - index)
+
+
+def _split_paragraph(
+    text: str, base_offset: int
+) -> Iterable[tuple[int, int, str]]:
+    """Spec §8.1：普通文本 Evidence ≤ 2000 chars，超长按句子边界拆分。
+
+    返回 (piece_start, piece_end, piece_text)；piece_text = text[start:end]，
+    保证与 char range 严格对齐。pieces 之间无重叠且无空隙。
+    """
+
+    if len(text) <= PARAGRAPH_TARGET_CHARS:
+        yield (base_offset, base_offset + len(text), text)
+        return
+    cursor = 0
+    while cursor < len(text):
+        remainder = text[cursor:]
+        if len(remainder) <= PARAGRAPH_TARGET_CHARS:
+            yield (base_offset + cursor, base_offset + len(text), remainder)
+            return
+        boundary = _last_sentence_boundary(remainder, PARAGRAPH_TARGET_CHARS)
+        if boundary <= 0:
+            boundary = PARAGRAPH_TARGET_CHARS
+        piece_text = remainder[:boundary]
+        yield (
+            base_offset + cursor,
+            base_offset + cursor + boundary,
+            piece_text,
+        )
+        cursor += boundary
+
+
+def _last_sentence_boundary(text: str, window: int) -> int:
+    """在 text[:window] 中找最后一个句子边界位置（inclusive）。"""
+
+    search_window = min(len(text), window)
+    last = -1
+    for match in _SENTENCE_BOUNDARY_RE.finditer(text, 0, search_window):
+        last = match.end()
+    if last > 0:
+        return last
+    # 找不到句子边界时退化为换行或空格
+    fallback_newline = text.rfind("\n", 0, search_window)
+    if fallback_newline > 0:
+        return fallback_newline + 1
+    fallback_space = text.rfind(" ", 0, search_window)
+    if fallback_space > 0:
+        return fallback_space + 1
+    return search_window
+
+
+def _split_code_block(
+    text: str, base_offset: int
+) -> Iterable[tuple[int, int, str]]:
+    """Spec §8.1：fenced code / table cell 允许到 8000 chars，超长按行边界拆分。
+
+    返回 (piece_start, piece_end, piece_text)；piece_text = text[start:end]，
+    保证与 char range 严格对齐。pieces 之间无重叠且无空隙。
+    """
+
+    if len(text) <= BLOCK_TARGET_CHARS:
+        yield (base_offset, base_offset + len(text), text)
+        return
+    cursor = 0
+    while cursor < len(text):
+        remainder = text[cursor:]
+        if len(remainder) <= BLOCK_TARGET_CHARS:
+            yield (base_offset + cursor, base_offset + len(text), remainder)
+            return
+        last_newline = remainder.rfind("\n", 0, BLOCK_TARGET_CHARS)
+        if last_newline <= 0:
+            cut = BLOCK_TARGET_CHARS
+        else:
+            cut = last_newline + 1
+        piece_text = remainder[:cut]
+        yield (
+            base_offset + cursor,
+            base_offset + cursor + cut,
+            piece_text,
+        )
+        cursor += cut
+
+
+class _StructureNavigator:
+    """跟踪 heading 与 list 嵌套状态，为 Evidence 提供 heading_path 与 list_path。"""
+
+    def __init__(self) -> None:
+        self._headings: list[tuple[int, str]] = []
+        self._list_stack: list[tuple[int, list[str]]] = []
+        self._blockquote_depth = 0
+
+    def push_heading(self, depth: int, title: str) -> None:
+        self._headings = [(d, t) for d, t in self._headings if d < depth]
+        self._headings.append((depth, title))
+
+    def heading_path_tuple(self) -> tuple[str, ...]:
+        return tuple(text for _, text in self._headings)
+
+    def top_headings(self) -> list[str]:
+        seen: list[str] = []
+        for _, text in self._headings:
+            if text and text not in seen:
+                seen.append(text)
+            if len(seen) >= 10:
+                break
+        return seen
+
+    def enter_list_level(self, level: int) -> None:
+        self._list_stack.append((level, []))
+
+    def exit_list_level(self, level: int) -> None:
+        self._list_stack = [
+            (lvl, items)
+            for lvl, items in self._list_stack
+            if lvl != level
+        ]
+
+    def push_list_item(self, level: int, text: str) -> None:
+        for idx in range(len(self._list_stack)):
+            lvl, items = self._list_stack[idx]
+            if lvl == level:
+                items.append(text)
+                return
+        if self._list_stack:
+            self._list_stack[-1][1].append(text)
+
+    def pop_list_item(self, level: int) -> None:
+        for idx in range(len(self._list_stack)):
+            lvl, items = self._list_stack[idx]
+            if lvl == level and items:
+                items.pop()
+                return
+
+    def list_path(self) -> tuple[str, ...]:
+        path: list[str] = []
+        for _, items in self._list_stack:
+            if items:
+                path.append(items[-1])
+        return tuple(path)
+
+    def list_locator(self) -> str:
+        return ".".join(str(idx + 1) for idx, _ in enumerate(self._list_stack))
+
+    def enter_blockquote(self) -> None:
+        self._blockquote_depth += 1
+
+    def exit_blockquote(self) -> None:
+        if self._blockquote_depth > 0:
+            self._blockquote_depth -= 1
+
+    def blockquote_depth(self) -> int:
+        return self._blockquote_depth

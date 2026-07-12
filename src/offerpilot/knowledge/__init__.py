@@ -1,8 +1,13 @@
 """Knowledge Imported Source Ingest 领域服务。
 
-KI-02 范围：Markdown 上传 + Extraction + Evidence + FTS 搜索。
+KI-03 范围：Markdown/Text 上传 + 粘贴正文 + 结构感知 Extraction + Evidence + FTS。
 """
 
+from offerpilot.knowledge.encoding import (
+    DecodedContent,
+    EncodingError,
+    decode_source_bytes,
+)
 from offerpilot.knowledge.extractor import (
     EXTRACTOR_VERSION,
     MarkdownExtraction,
@@ -16,14 +21,18 @@ from offerpilot.knowledge.repository import (
     SourceRecord,
     SourceSnapshotRecord,
 )
-from offerpilot.knowledge.service import IngestRequest, KnowledgeIngestService
+from offerpilot.knowledge.service import IngestError, IngestRequest, KnowledgeIngestService
+from offerpilot.knowledge.tokenizer import TOKENIZER_VERSION, count_tokens
 from offerpilot.knowledge.worker import ExtractionWorker
 
 __all__ = [
+    "DecodedContent",
     "EXTRACTOR_VERSION",
+    "EncodingError",
     "EvidenceRecord",
     "EvidenceSearchHit",
     "ExtractionWorker",
+    "IngestError",
     "IngestRequest",
     "KnowledgeIngestService",
     "KnowledgeRepository",
@@ -31,5 +40,8 @@ __all__ = [
     "MarkdownExtractor",
     "SourceRecord",
     "SourceSnapshotRecord",
+    "TOKENIZER_VERSION",
     "compute_source_hash",
+    "count_tokens",
+    "decode_source_bytes",
 ]

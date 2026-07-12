@@ -76,6 +76,24 @@ export async function uploadKnowledgeSource(
   return data;
 }
 
+export async function pasteKnowledgeSource(
+  paste: string,
+  options: { titleHint?: string; originUrl?: string } = {},
+): Promise<KnowledgeIngestResponse> {
+  const form = new FormData();
+  form.append('paste', paste);
+  if (options.titleHint) {
+    form.append('title_hint', options.titleHint);
+  }
+  if (options.originUrl) {
+    form.append('origin_url', options.originUrl);
+  }
+  const { data } = await http.post<KnowledgeIngestResponse>('/knowledge/sources', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return data;
+}
+
 export function buildKnowledgeSourceContentUrl(sourceId: number): string {
   return `/api/knowledge/sources/${sourceId}/content`;
 }
