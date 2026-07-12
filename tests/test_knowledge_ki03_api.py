@@ -338,9 +338,10 @@ def test_ki03_evidence_id_is_deterministic(app_client):
 
 
 def test_ki03_extractor_version_upgraded_from_ki02():
-    # Spec §7.2 extractor 升级创建新 Snapshot；KI-03 EXTRACTOR_VERSION 必须不同于 KI-02。
+    # Spec §7.2 extractor 升级创建新 Snapshot。KI-04 进一步升级到 md-ki04-*
+    # 以区分新增的 image Asset Evidence。
     assert EXTRACTOR_VERSION != "md-ki02-1"
-    assert EXTRACTOR_VERSION.startswith("md-ki03-")
+    assert EXTRACTOR_VERSION.startswith(("md-ki03-", "md-ki04-"))
 
 
 # ---------------------------------------------------------------------------

@@ -26,6 +26,7 @@ from offerpilot.models import (
     KnowledgeExtractionSnapshot,
     KnowledgeJob,
     KnowledgeSource,
+    KnowledgeSourceAsset,
     KnowledgeSourceOrigin,
 )
 
@@ -83,6 +84,20 @@ class SourceSnapshotRecord:
     structure_manifest: str
     token_count: int
     char_count: int
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class SourceAssetRecord:
+    id: int
+    source_id: int
+    logical_name: str
+    media_type: str
+    relative_path: str
+    bytes_size: int
+    sha256: str
+    width: int
+    height: int
     created_at: datetime
 
 
@@ -190,6 +205,20 @@ class EvidenceDraftInput:
     search_text: str
     content_hash: str
     locator: str
+    kind: str = "text"
+    logical_name: str = ""
+    alt_text: str = ""
+
+
+@dataclass
+class AssetCreateInput:
+    logical_name: str
+    media_type: str
+    relative_path: str
+    bytes_size: int
+    sha256: str
+    width: int
+    height: int
 
 
 @dataclass
@@ -256,6 +285,21 @@ def _to_snapshot_record(row: KnowledgeExtractionSnapshot) -> SourceSnapshotRecor
         structure_manifest=row.structure_manifest,
         token_count=row.token_count,
         char_count=row.char_count,
+        created_at=row.created_at,
+    )
+
+
+def _to_asset_record(row: KnowledgeSourceAsset) -> SourceAssetRecord:
+    return SourceAssetRecord(
+        id=row.id,
+        source_id=row.source_id,
+        logical_name=row.logical_name,
+        media_type=row.media_type,
+        relative_path=row.relative_path,
+        bytes_size=row.bytes,
+        sha256=row.sha256,
+        width=row.width,
+        height=row.height,
         created_at=row.created_at,
     )
 
@@ -459,6 +503,22 @@ class KnowledgeRepository:
                 .order_by(KnowledgeSourceOrigin.imported_at.desc(), KnowledgeSourceOrigin.id.desc())
             )
             return [_to_origin_record(row) for row in session.scalars(stmt)]
+
+    # Asset
+
+    def list_assets(self, source_id: int) -> list[SourceAssetRecord]:
+        with self._session_factory() as session:
+            stmt = (
+                select(KnowledgeSourceAsset)
+                .where(KnowledgeSourceAsset.source_id == source_id)
+                .order_by(KnowledgeSourceAsset.id.asc())
+            )
+            return [_to_asset_record(row) for row in session.scalars(stmt)]
+
+    def get_asset(self, asset_id: int) -> Optional[SourceAssetRecord]:
+        with self._session_factory() as session:
+            row = session.get(KnowledgeSourceAsset, asset_id)
+            return _to_asset_record(row) if row is not None else None
 
     # Snapshot
 
@@ -675,14 +735,19 @@ def commit_extraction(
     source_id: int,
     source_title: str,
     extractor_version: str,
+    asset_inputs: Iterable[AssetCreateInput] = (),
 ) -> tuple[KnowledgeExtractionSnapshot, list[KnowledgeEvidence]]:
-    """单事务提交：Snapshot + Evidence + FTS + Source 状态切换。
+    """单事务提交：Snapshot + Evidence + FTS + Asset + Source 状态切换。
 
     调用方负责包在 Begin/commit 中。Spec §9 要求 Snapshot/Evidence/FTS/extracted 状态
     在同一事务中可见，任一失败回滚后旧 Snapshot 仍可用，首次失败时 Source 不可搜索。
 
     幂等：Spec §7.2 同版本重跑 upsert，不覆盖、不立即删除。若 Snapshot 已存在且 digest
     一致，直接复用现有 Evidence 行（包括 FTS），不重复写入。
+
+    KI-04：``asset_inputs`` 用于写入 ``knowledge_source_assets`` 行；``evidence_drafts``
+    中 ``kind == 'asset'`` 的草稿会通过 ``logical_name`` 关联到本批 Asset 行，写入
+    ``asset_id``，但 **不** 进入 FTS——Spec §4.4 明确图片字节不进 FTS。
     """
     existing_snapshot = session.execute(
         select(KnowledgeExtractionSnapshot).where(
@@ -710,7 +775,6 @@ def commit_extraction(
                 source_row.extraction_error_message = ""
             return existing_snapshot, list(existing_evidence)
         # extractor 版本相同但 digest 不同：内部不一致，应当创建新版本而非覆盖。
-        # KI-02 范围内不会发生（extractor 版本与 digest 同步演进）。
         raise RuntimeError(
             "source_integrity_mismatch: snapshot digest drift within same extractor version"
         )
@@ -732,6 +796,32 @@ def commit_extraction(
     session.add(snapshot_row)
     session.flush()
 
+    # Spec §14.3 先写 Asset 行，再用 logical_name → asset_id 字典关联 Evidence。
+    asset_id_by_logical_name: dict[str, int] = {}
+    for asset_input in asset_inputs:
+        existing_asset = session.execute(
+            select(KnowledgeSourceAsset).where(
+                KnowledgeSourceAsset.source_id == source_id,
+                KnowledgeSourceAsset.logical_name == asset_input.logical_name,
+            )
+        ).scalars().first()
+        if existing_asset is not None:
+            asset_id_by_logical_name[asset_input.logical_name] = existing_asset.id
+            continue
+        asset_row = KnowledgeSourceAsset(
+            source_id=source_id,
+            logical_name=asset_input.logical_name,
+            media_type=asset_input.media_type,
+            relative_path=asset_input.relative_path,
+            bytes=asset_input.bytes_size,
+            sha256=asset_input.sha256,
+            width=asset_input.width,
+            height=asset_input.height,
+        )
+        session.add(asset_row)
+        session.flush()
+        asset_id_by_logical_name[asset_input.logical_name] = asset_row.id
+
     drafts = list(evidence_drafts)
     created: list[KnowledgeEvidence] = []
     previous_id: Optional[str] = None
@@ -743,11 +833,15 @@ def commit_extraction(
             content_hash=draft.content_hash,
         )
         heading_path_json = json.dumps(list(draft.heading_path), ensure_ascii=False)
+        evidence_kind = draft.kind
+        asset_id_value: Optional[int] = None
+        if evidence_kind == "asset":
+            asset_id_value = asset_id_by_logical_name.get(draft.logical_name)
         evidence_row = KnowledgeEvidence(
             id=evidence_id,
             source_id=source_id,
             snapshot_id=snapshot_row.id,
-            kind="text",
+            kind=evidence_kind,
             block_kind=draft.block_kind,
             ordinal=index + 1,
             heading_path_json=heading_path_json,
@@ -758,7 +852,7 @@ def commit_extraction(
             canonical_excerpt=draft.canonical_excerpt,
             search_text=draft.search_text,
             content_hash=draft.content_hash,
-            asset_id=None,
+            asset_id=asset_id_value,
             previous_evidence_id=previous_id,
             next_evidence_id=None,
         )
@@ -771,7 +865,16 @@ def commit_extraction(
                 prev.next_evidence_id = evidence_id
         previous_id = evidence_id
 
+    # Spec §4.4：图片字节不进 FTS。asset Evidence 的 search_text 仅含 alt text，
+    # 用 alt text 进入 FTS 以支持 "alt 命中" 查询；canonical_excerpt 是 image literal，
+    # 不写 FTS 以避免 ![](url) 噪音。
     for evidence_row in created:
+        if evidence_row.kind == "asset":
+            fts_content = evidence_row.search_text
+            if not fts_content:
+                continue
+        else:
+            fts_content = evidence_row.search_text or evidence_row.canonical_excerpt
         session.execute(
             text(
                 """
@@ -785,7 +888,7 @@ def commit_extraction(
                 "sid": evidence_row.source_id,
                 "stitle": source_title,
                 "hpath": evidence_row.heading_path_json,
-                "content": evidence_row.search_text or evidence_row.canonical_excerpt,
+                "content": fts_content,
             },
         )
 

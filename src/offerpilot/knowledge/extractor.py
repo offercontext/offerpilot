@@ -29,10 +29,10 @@ from offerpilot.knowledge.tokenizer import (
 )
 
 
-# Spec §7.2：(source_id, extractor_version) 唯一。KI-03 升级 extractor 版本以区分
-# KI-02 的 paragraph-only 输出。新增 list/blockquote/table/fenced_code Evidence 后，
-# 相同 Source 会得到与 KI-02 不同的 Snapshot digest 和 Evidence ID。
-EXTRACTOR_VERSION = "md-ki03-1"
+# Spec §7.2：(source_id, extractor_version) 唯一。KI-04 升级 extractor 版本以区分
+# KI-03 的纯文本输出。新增 image Asset Evidence 后，相同 Source 会得到与 KI-03 不同的
+# Snapshot digest 和 Evidence ID。
+EXTRACTOR_VERSION = "md-ki04-1"
 PARSER_VERSION = "markdown-it-py-3"
 NORMALIZATION_VERSION = "nl-1"
 
@@ -56,10 +56,48 @@ _SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[。！？!?\.])\s+|(?<=\n)")
 
 
 def compute_source_hash(content_bytes: bytes) -> str:
-    """KI-02/KI-03 主文件字节级 source_hash。KI-05 会扩展到附件字节 + 逻辑路径。"""
+    """单文件 Source hash（KI-02/KI-03 行为）。Bundle 使用 ``compute_bundle_source_hash``。"""
 
     digest = hashlib.sha256(content_bytes).hexdigest()
     return f"{_SOURCE_HASH_PREFIX}{digest}"
+
+
+def compute_bundle_source_hash(
+    main_bytes: bytes,
+    assets: list[tuple[str, bytes]],
+) -> str:
+    """Spec §5.1 Bundle source_hash：主文件字节 + 附件字节 + 附件逻辑路径 manifest。
+
+    ``assets`` 中每项为 ``(logical_name, content_bytes)``。计算顺序：
+    1. 主文件 sha256。
+    2. 附件按 logical_name 字典序排序；逐项取 ``sha256(content_bytes)`` 与 logical_name。
+    3. 组装为带固定字段的 JSON manifest，序列化后再 sha256 得到最终 hash。
+
+    Spec 要求 source_hash 不依赖展示标题、本机路径或 origin_url；本实现只接受原始字节
+    和 logical_name，与 Spec 一致。
+    """
+
+    main_digest = hashlib.sha256(main_bytes).hexdigest()
+    asset_manifest: list[dict[str, str]] = []
+    for logical_name, content in sorted(assets, key=lambda item: item[0]):
+        asset_manifest.append(
+            {
+                "logical_name": logical_name,
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "bytes": str(len(content)),
+            }
+        )
+    payload = json.dumps(
+        {
+            "main_sha256": main_digest,
+            "main_bytes": str(len(main_bytes)),
+            "assets": asset_manifest,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    bundle_digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return f"{_SOURCE_HASH_PREFIX}{bundle_digest}"
 
 
 @dataclass(frozen=True)
@@ -322,7 +360,74 @@ class MarkdownExtractor:
                     ordinal_hint=piece_index,
                 )
             )
+        # Spec §8.1 image reference：扫描 inline 中的 image token，每张图额外产出
+        # 一条 Asset Evidence，记录该次引用的位置。同一 logical name 多次引用会
+        # 产生多条 Evidence，由 Service/Repository 通过 logical_name 关联到 Asset 行。
+        self._emit_inline_images(
+            inline=inline,
+            parent_char_range=(char_start, char_end),
+            canonical=canonical,
+            offsets=offsets,
+            navigator=navigator,
+            drafts=drafts,
+        )
         return 3
+
+    def _emit_inline_images(
+        self,
+        *,
+        inline: Token,
+        parent_char_range: tuple[int, int],
+        canonical: str,
+        offsets: list[int],
+        navigator: "_StructureNavigator",
+        drafts: list[EvidenceDraft],
+    ) -> None:
+        """Spec §8.1：每个 image reference 产出一条 Asset Evidence。
+
+        定位策略：先尝试匹配完整 ``![alt](src)`` 字面值；若失败（alt 包含 markdown
+        转义、emoji 等导致 ``child.content`` 与 canonical 字面值不一致），则回退到
+        按 ``(src)`` 子串定位 URL，再向左查找 ``![``、向右查找 ``)`` 边界。
+        """
+
+        parent_start, parent_end = parent_char_range
+        if not inline.children:
+            return
+        cursor = parent_start
+        for child in inline.children:
+            if child.type != "image":
+                continue
+            src = str(child.attrs.get("src") or "") if child.attrs else ""
+            alt = child.content or ""
+            char_start, char_end, excerpt = _locate_image_token(
+                canonical=canonical,
+                cursor=cursor,
+                parent_end=parent_end,
+                alt=alt,
+                src=src,
+            )
+            if char_end <= char_start:
+                continue
+            line_start, line_end = _line_range_from_char(offsets, char_start, char_end)
+            drafts.append(
+                EvidenceDraft(
+                    block_kind="image",
+                    heading_path=navigator.heading_path_tuple(),
+                    char_start=char_start,
+                    char_end=char_end,
+                    line_start=line_start,
+                    line_end=line_end,
+                    canonical_excerpt=excerpt,
+                    search_text=alt,
+                    content_hash=_content_hash(excerpt),
+                    locator=f"image:{src}:{line_start}:{char_start}",
+                    extra={
+                        "logical_name": src,
+                        "alt_text": alt,
+                    },
+                )
+            )
+            cursor = char_end
 
     def _consume_list(
         self,
@@ -660,6 +765,44 @@ def _make_paragraph_draft(
         locator=f"paragraph:{ordinal_hint}:{line_start}:{char_start}",
         extra={"list_path": list(list_path)},
     )
+
+
+def _locate_image_token(
+    *,
+    canonical: str,
+    cursor: int,
+    parent_end: int,
+    alt: str,
+    src: str,
+) -> tuple[int, int, str]:
+    """Spec §8.1 image Evidence 定位：优先精确匹配字面值，回退到 URL 边界扫描。
+
+    返回 ``(char_start, char_end, excerpt)``；未找到返回 ``(0, 0, "")``。 ``excerpt``
+    永远等于 ``canonical[char_start:char_end]``，保证与 canonical text 对齐。
+    """
+
+    literal = f"![{alt}]({src})"
+    pos = canonical.find(literal, cursor, parent_end)
+    if pos != -1:
+        return pos, pos + len(literal), literal
+
+    if not src:
+        return 0, 0, ""
+
+    # 回退：以 URL 子串为锚点，向左查找最近的 ``![``，向右查找 ``)``。alt 中
+    # 含转义字符或 emoji 时，``child.content`` 与 canonical 字面值可能不同。
+    url_pos = canonical.find(f"]({src})", cursor, parent_end)
+    if url_pos == -1:
+        return 0, 0, ""
+    url_end = url_pos + len(f"]({src})") + 1  # 含右括号
+    if url_end > parent_end:
+        url_end = parent_end
+    # 向左查找最近的 ``![``
+    bang_bracket = canonical.rfind("![", cursor, url_pos)
+    if bang_bracket == -1:
+        return 0, 0, ""
+    excerpt = canonical[bang_bracket:url_end]
+    return bang_bracket, url_end, excerpt
 
 
 def _build_search_text(

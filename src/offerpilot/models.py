@@ -703,6 +703,43 @@ class KnowledgeEvidence(Base):
         return value if isinstance(value, list) else []
 
 
+class KnowledgeSourceAsset(Base):
+    """Source Bundle 中的不可变图片附件。
+
+    Spec §14.3：保存 source_id、逻辑名、媒体类型、相对路径、字节大小、sha256、宽、高。
+    ``(source_id, logical_name)`` 唯一。原始字节保存于 ``knowledge/sources/<id>/assets/`` 下，
+    不写入 SQLite BLOB。
+    """
+
+    __tablename__ = "knowledge_source_assets"
+    __table_args__ = (
+        Index("idx_knowledge_source_assets_source", "source_id"),
+        UniqueConstraint(
+            "source_id",
+            "logical_name",
+            name="uq_knowledge_source_assets_source_logical_name",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    source_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_sources.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    logical_name: Mapped[str] = mapped_column(String, nullable=False)
+    media_type: Mapped[str] = mapped_column(String, nullable=False)
+    relative_path: Mapped[str] = mapped_column(String, nullable=False)
+    bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String, nullable=False)
+    width: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    height: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+
+
 class KnowledgeJob(Base):
     """后台 Job：extract/brief/delete。KI-02 只产生 extract。"""
 

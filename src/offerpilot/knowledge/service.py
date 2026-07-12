@@ -1,7 +1,7 @@
 """Knowledge Ingest 编排服务。
 
 实现 Spec §6 上传协议：
-1. Preflight（解码 + Markdown/Text 解析 + token 上限 + 5MiB 上限）+ hash
+1. Preflight（解码 + Markdown/Text 解析 + token 上限 + 5MiB 上限 + Bundle 限制）+ hash
 2. 去重检查
 3. staging 写入
 4. final 目录创建 + 原子 rename
@@ -15,6 +15,12 @@ KI-03 范围：
 - 固定 product tokenizer（cl100k_base）+ 64,000 token 上限与 5MiB 字节上限同时执行。
 - 错误返回实际值与允许值。
 
+KI-04 范围：
+- 支持 Source Bundle（Markdown 主文件 + PNG/JPEG/WebP 附件）。
+- 图片真实解码、媒体类型校验、扁平路径白名单、像素 / 字节 / 数量限制。
+- Bundle source_hash 包含主文件 + 附件 + 逻辑路径 manifest。
+- 图片引用映射为 Asset Evidence；不调用多模态，不让图片字节进入 FTS。
+
 KI-02 同步触发 Extraction；KI-07 替换为持久队列。事务失败时 final 目录可能残留无数据库
 记录的孤儿原件，由启动恢复负责清理（KI-07 实现完整恢复）。
 """
@@ -24,12 +30,18 @@ from __future__ import annotations
 import json
 import re
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 from sqlalchemy.orm import Session, sessionmaker
 
+from offerpilot.knowledge.assets import (
+    AssetInput,
+    AssetValidationError,
+    VerifiedAsset,
+    verify_bundle,
+)
 from offerpilot.knowledge.encoding import (
     DecodedContent,
     EncodingError,
@@ -43,9 +55,11 @@ from offerpilot.knowledge.extractor import (
     ExtractionError,
     MarkdownExtraction,
     MarkdownExtractor,
+    compute_bundle_source_hash,
     compute_source_hash,
 )
 from offerpilot.knowledge.repository import (
+    AssetCreateInput,
     EvidenceDraftInput,
     JobCreateInput,
     KnowledgeRepository,
@@ -72,6 +86,9 @@ class IngestRequest:
     title_hint: str = ""
     import_method: str = "file"
     origin_url: str = ""
+    # KI-04 Bundle 附件。空列表表示非 Bundle 上传。Service 会在 Bundle 模式下
+    # 强制要求附件非空，并校验 Markdown 中所有图片引用都被覆盖。
+    asset_inputs: tuple[AssetInput, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -115,7 +132,7 @@ class KnowledgeIngestService:
         if not is_paste and not _has_supported_extension(filename):
             raise IngestError(
                 "unsupported_type",
-                "当前只支持 .md / .txt 文件或粘贴正文；Bundle 由后续版本扩展",
+                "当前只支持 .md / .txt 文件、粘贴正文或 Bundle 上传",
             )
         safe_filename = _safe_filename(filename if not is_paste else _PASTE_DEFAULT_FILENAME)
         if not safe_filename:
@@ -150,7 +167,27 @@ class KnowledgeIngestService:
                 ),
             )
 
-        source_hash = compute_source_hash(request.content_bytes)
+        # KI-04：Bundle 模式下校验附件字节 / 像素 / 路径；任何附件错误均按 bundle_invalid
+        # 拒绝整个上传，Spec §4.4 不允许部分 Source。
+        verified_assets: list[VerifiedAsset] = []
+        is_bundle = bool(request.asset_inputs)
+        if is_bundle:
+            try:
+                verified_assets, _ = verify_bundle(
+                    request.content_bytes, list(request.asset_inputs)
+                )
+            except AssetValidationError as exc:
+                raise IngestError(exc.code, exc.message) from exc
+            _validate_image_references(extraction, verified_assets)
+
+        if is_bundle:
+            source_hash = compute_bundle_source_hash(
+                request.content_bytes,
+                [(va.logical_name, va.content_bytes) for va in verified_assets],
+            )
+        else:
+            source_hash = compute_source_hash(request.content_bytes)
+
         existing = self._repository.get_source_by_hash(source_hash)
         if existing is not None:
             self._repository.append_origin(
@@ -191,8 +228,14 @@ class KnowledgeIngestService:
         staging_source_dir.mkdir(parents=True, exist_ok=True)
         staging_path = staging_source_dir / safe_filename
         staging_path.write_bytes(request.content_bytes)
+        staging_asset_paths: list[tuple[VerifiedAsset, Path]] = []
+        if is_bundle:
+            for asset in verified_assets:
+                asset_staging_path = staging_source_dir / asset.logical_name
+                asset_staging_path.write_bytes(asset.content_bytes)
+                staging_asset_paths.append((asset, asset_staging_path))
 
-        manifest = {
+        manifest: dict[str, object] = {
             "kind": "text" if safe_filename.lower().endswith(".txt") else "markdown",
             "main_filename": safe_filename,
             "total_bytes": size,
@@ -203,6 +246,12 @@ class KnowledgeIngestService:
             "tokenizer_version": extraction.tokenizer_version,
             "token_count": token_count_value,
         }
+        if is_bundle:
+            manifest["bundle"] = {
+                "asset_count": len(verified_assets),
+                "asset_bytes": sum(va.bytes_size for va in verified_assets),
+                "asset_logical_names": [va.logical_name for va in verified_assets],
+            }
         manifest_json = json.dumps(manifest, ensure_ascii=False, sort_keys=True)
 
         title_hint = (
@@ -223,6 +272,9 @@ class KnowledgeIngestService:
                 search_text=draft.search_text,
                 content_hash=draft.content_hash,
                 locator=draft.locator,
+                kind="asset" if draft.block_kind == "image" else "text",
+                logical_name=str(draft.extra.get("logical_name", "")),
+                alt_text=str(draft.extra.get("alt_text", "")),
             )
             for draft in extraction.evidence_drafts
         ]
@@ -247,6 +299,8 @@ class KnowledgeIngestService:
         if safe_filename.lower().endswith(".txt"):
             source_kind = "text"
             main_media_type = "text/plain"
+        if is_bundle:
+            source_kind = "bundle"
 
         source_id, job_id = self._commit_new_source(
             source_hash=source_hash,
@@ -262,6 +316,8 @@ class KnowledgeIngestService:
             staging_source_dir=staging_source_dir,
             snapshot_input_template=snapshot_input_template,
             drafts=drafts,
+            verified_assets=verified_assets,
+            staging_asset_paths=staging_asset_paths,
         )
 
         refreshed_source = self._repository.get_source(source_id)
@@ -309,12 +365,18 @@ class KnowledgeIngestService:
         staging_source_dir: Path,
         snapshot_input_template: SnapshotCreateInput,
         drafts: list[EvidenceDraftInput],
+        verified_assets: list[VerifiedAsset] | None = None,
+        staging_asset_paths: list[tuple[VerifiedAsset, Path]] | None = None,
     ) -> tuple[int, int]:
-        """单事务创建 Source/Origin/Job + rename + Snapshot/Evidence/FTS。
+        """单事务创建 Source/Origin/Job + rename + Snapshot/Evidence/FTS/Asset。
 
-        Spec §6 / §9：数据库提交前完成 final rename；事务失败时无任何 DB 行可见，
-        final 目录残留由启动恢复清理。
+        Spec §6 / §9：数据库提交前完成 final rename（主文件 + 附件）；事务失败时
+        无任何 DB 行可见，final 目录残留由启动恢复清理。Bundle 模式下附件落到
+        ``knowledge/sources/<source_id>/assets/`` 子目录，与 Spec §13 一致。
         """
+
+        verified_assets_resolved = verified_assets or []
+        staging_asset_paths_resolved = staging_asset_paths or []
 
         with self._session_factory() as session:
             with session.begin():
@@ -350,10 +412,28 @@ class KnowledgeIngestService:
                 final_dir = self._data_dir / "knowledge" / "sources" / str(source_id)
                 final_dir.mkdir(parents=True, exist_ok=True)
                 final_path = final_dir / safe_filename
+                final_asset_dir = final_dir / "assets"
+                if verified_assets_resolved:
+                    final_asset_dir.mkdir(parents=True, exist_ok=True)
+                moved_asset_files: list[Path] = []
                 try:
                     staging_path.replace(final_path)
+                    for asset, staging_asset_path in staging_asset_paths_resolved:
+                        safe_asset_name = _safe_filename(asset.logical_name)
+                        if not safe_asset_name:
+                            raise OSError(
+                                f"附件逻辑名 {asset.logical_name!r} 无法生成安全文件名"
+                            )
+                        final_asset_path = (
+                            final_asset_dir
+                            / f"{source_id}-{safe_asset_name}"
+                        )
+                        staging_asset_path.replace(final_asset_path)
+                        moved_asset_files.append(final_asset_path)
                 except OSError as exc:
                     _safe_cleanup(staging_source_dir)
+                    for moved in moved_asset_files:
+                        _safe_cleanup(moved)
                     _safe_cleanup(final_dir)
                     raise IngestError(
                         "source_integrity_mismatch",
@@ -399,15 +479,43 @@ class KnowledgeIngestService:
                     char_count=snapshot_input_template.char_count,
                 )
 
+                asset_commit_inputs: list[AssetCreateInput] = []
+                for asset, _ in staging_asset_paths_resolved:
+                    safe_asset_name = _safe_filename(asset.logical_name)
+                    asset_relative_path = (
+                        f"knowledge/sources/{source_id}/assets/"
+                        f"{source_id}-{safe_asset_name}"
+                    )
+                    asset_commit_inputs.append(
+                        AssetCreateInput(
+                            logical_name=asset.logical_name,
+                            media_type=asset.media_type,
+                            relative_path=asset_relative_path,
+                            bytes_size=asset.bytes_size,
+                            sha256=asset.sha256,
+                            width=asset.width,
+                            height=asset.height,
+                        )
+                    )
+
                 title_for_search = title_hint or safe_filename
-                commit_extraction(
-                    session,
-                    snapshot_input=snapshot_input_resolved,
-                    evidence_drafts=drafts,
-                    source_id=source_id,
-                    source_title=title_for_search,
-                    extractor_version=EXTRACTOR_VERSION,
-                )
+                try:
+                    commit_extraction(
+                        session,
+                        snapshot_input=snapshot_input_resolved,
+                        evidence_drafts=drafts,
+                        source_id=source_id,
+                        source_title=title_for_search,
+                        extractor_version=EXTRACTOR_VERSION,
+                        asset_inputs=asset_commit_inputs,
+                    )
+                except RuntimeError as exc:
+                    if "source_integrity_mismatch" in str(exc):
+                        raise IngestError(
+                            "source_integrity_mismatch",
+                            "Snapshot 内部一致性校验失败，请重新上传",
+                        ) from exc
+                    raise
 
                 job_row.status = "succeeded"
                 job_row.stage = "extracted"
@@ -419,6 +527,44 @@ class KnowledgeIngestService:
 def _has_supported_extension(filename: str) -> bool:
     lowered = filename.lower()
     return any(lowered.endswith(ext) for ext in _SUPPORTED_TEXT_EXTENSIONS)
+
+
+def _validate_image_references(
+    extraction: MarkdownExtraction,
+    verified_assets: list[VerifiedAsset],
+) -> None:
+    """Spec §4.4：缺图、重复逻辑名、未使用附件、不支持的媒体类型必须整个 Bundle 失败。
+
+    - 提取 Markdown 中所有 image reference 的 ``logical_name``；
+    - 与上传附件比对：缺图、未使用附件均触发 ``bundle_invalid``。
+    - 远程/绝对/父目录路径：``safe_logical_name`` 在 verify_bundle 阶段已经拒绝；
+      此处只需对剩余的本地引用做完整性比对。
+    """
+
+    uploaded = {va.logical_name for va in verified_assets}
+    referenced: set[str] = set()
+    for draft in extraction.evidence_drafts:
+        if draft.block_kind != "image":
+            continue
+        logical_name = str(draft.extra.get("logical_name") or "")
+        if not logical_name:
+            continue
+        referenced.add(logical_name)
+
+    missing = referenced - uploaded
+    if missing:
+        names = ", ".join(sorted(missing))
+        raise IngestError(
+            "bundle_invalid",
+            f"Markdown 引用的图片未在 Bundle 附件中提供：{names}",
+        )
+    unused = uploaded - referenced
+    if unused:
+        names = ", ".join(sorted(unused))
+        raise IngestError(
+            "bundle_invalid",
+            f"Bundle 附件未被 Markdown 引用：{names}",
+        )
 
 
 def _safe_filename(name: str) -> str:

@@ -4,6 +4,7 @@ import type {
   KnowledgeEvidenceSearchResponse,
   KnowledgeIngestResponse,
   KnowledgeSource,
+  KnowledgeSourceAssetsResponse,
   KnowledgeSourceJobsResponse,
 } from '@/types/knowledge';
 import { createApiClient } from './http';
@@ -27,6 +28,15 @@ export async function fetchKnowledgeSourceEvidence(
   const { data } = await http.get<KnowledgeEvidencePage>(
     `/knowledge/sources/${sourceId}/evidence`,
     { params },
+  );
+  return data;
+}
+
+export async function fetchKnowledgeSourceAssets(
+  sourceId: number,
+): Promise<KnowledgeSourceAssetsResponse> {
+  const { data } = await http.get<KnowledgeSourceAssetsResponse>(
+    `/knowledge/sources/${sourceId}/assets`,
   );
   return data;
 }
@@ -76,6 +86,25 @@ export async function uploadKnowledgeSource(
   return data;
 }
 
+export async function uploadKnowledgeBundle(
+  main: File,
+  assets: File[],
+  titleHint = '',
+): Promise<KnowledgeIngestResponse> {
+  const form = new FormData();
+  form.append('file', main);
+  assets.forEach((asset) => {
+    form.append('files', asset, asset.name);
+  });
+  if (titleHint) {
+    form.append('title_hint', titleHint);
+  }
+  const { data } = await http.post<KnowledgeIngestResponse>('/knowledge/sources', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return data;
+}
+
 export async function pasteKnowledgeSource(
   paste: string,
   options: { titleHint?: string; originUrl?: string } = {},
@@ -96,4 +125,11 @@ export async function pasteKnowledgeSource(
 
 export function buildKnowledgeSourceContentUrl(sourceId: number): string {
   return `/api/knowledge/sources/${sourceId}/content`;
+}
+
+export function buildKnowledgeAssetContentUrl(
+  sourceId: number,
+  assetId: number,
+): string {
+  return `/api/knowledge/sources/${sourceId}/assets/${assetId}/content`;
 }

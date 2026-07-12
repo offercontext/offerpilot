@@ -17,8 +17,9 @@ import {
   message,
 } from 'antd';
 import type { UploadFile } from 'antd';
-import { InboxOutlined, SearchOutlined, FormOutlined } from '@ant-design/icons';
+import { InboxOutlined, SearchOutlined, FormOutlined, PictureOutlined } from '@ant-design/icons';
 import {
+  buildKnowledgeAssetContentUrl,
   buildKnowledgeSourceContentUrl,
   fetchKnowledgeSource,
   fetchKnowledgeSourceEvidence,
@@ -26,6 +27,7 @@ import {
   fetchKnowledgeSources,
   pasteKnowledgeSource,
   searchKnowledgeEvidence,
+  uploadKnowledgeBundle,
   uploadKnowledgeSource,
 } from '@/services/knowledge';
 import type {
@@ -66,6 +68,7 @@ export default function KnowledgeWikiView() {
   });
   const [selectedSourceId, setSelectedSourceId] = useState<number | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [bundleOpen, setBundleOpen] = useState(false);
   const [pasteOpen, setPasteOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeSearch, setActiveSearch] = useState('');
@@ -82,6 +85,30 @@ export default function KnowledgeWikiView() {
     onError: (error: unknown) => {
       const detail = extractErrorMessage(error);
       message.error(`上传失败：${detail}`);
+    },
+  });
+
+  const bundleMutation = useMutation({
+    mutationFn: ({
+      main,
+      assets,
+      titleHint,
+    }: {
+      main: File;
+      assets: File[];
+      titleHint: string;
+    }) => uploadKnowledgeBundle(main, assets, titleHint),
+    onSuccess: (data) => {
+      message.success(
+        data.deduplicated ? '资料已存在，已进入原 Source' : 'Bundle 已导入，图片以附件形式保留',
+      );
+      queryClient.invalidateQueries({ queryKey: KNOWLEDGE_QUERY_KEY });
+      setSelectedSourceId(data.source.id);
+      setBundleOpen(false);
+    },
+    onError: (error: unknown) => {
+      const detail = extractErrorMessage(error);
+      message.error(`Bundle 上传失败：${detail}`);
     },
   });
 
@@ -128,13 +155,16 @@ export default function KnowledgeWikiView() {
         资料来源
       </Title>
       <Paragraph type="secondary" style={{ margin: '6px 0 16px' }}>
-        上传 Markdown/Text，或直接粘贴正文；系统按自然结构生成 Evidence，并提供关键词检索。
+        上传 Markdown/Text、上传图文 Bundle，或直接粘贴正文；系统按自然结构生成 Evidence，并提供关键词检索。
       </Paragraph>
 
       <Space direction="vertical" size="middle" style={{ width: '100%' }}>
         <Space wrap>
           <Button type="primary" icon={<InboxOutlined />} onClick={() => setUploadOpen(true)}>
             上传 Markdown / Text
+          </Button>
+          <Button icon={<PictureOutlined />} onClick={() => setBundleOpen(true)}>
+            上传图文 Bundle
           </Button>
           <Button icon={<FormOutlined />} onClick={() => setPasteOpen(true)}>
             粘贴正文
@@ -176,6 +206,14 @@ export default function KnowledgeWikiView() {
         onClose={() => setUploadOpen(false)}
         uploading={uploadMutation.isPending}
         onSubmit={(file, titleHint) => uploadMutation.mutate({ file, titleHint })}
+      />
+      <BundleModal
+        open={bundleOpen}
+        onClose={() => setBundleOpen(false)}
+        uploading={bundleMutation.isPending}
+        onSubmit={(main, assets, titleHint) =>
+          bundleMutation.mutate({ main, assets, titleHint })
+        }
       />
       <PasteModal
         open={pasteOpen}
@@ -303,6 +341,7 @@ function SourceDetailContent({ sourceId }: { sourceId: number }) {
         <EvidenceBlock
           evidence={evidenceQuery.data?.items ?? []}
           loading={evidenceQuery.isLoading}
+          sourceId={sourceId}
         />
         <JobsBlock
           data={jobsQuery.data ?? { jobs: [], origins: [] }}
@@ -388,9 +427,11 @@ function StatusLine({ label, value }: { label: string; value: string }) {
 function EvidenceBlock({
   evidence,
   loading,
+  sourceId,
 }: {
   evidence: KnowledgeEvidence[];
   loading: boolean;
+  sourceId: number;
 }) {
   if (loading) {
     return <Spin />;
@@ -426,6 +467,9 @@ function EvidenceBlock({
                   路径：{item.heading_path.join(' / ')}
                 </Text>
               ) : null}
+              {item.kind === 'asset' && item.asset_id != null ? (
+                <AssetEvidenceView sourceId={sourceId} assetId={item.asset_id} alt={item.search_text} />
+              ) : null}
               <Text>{item.canonical_excerpt}</Text>
               <Text code style={{ fontSize: 11 }}>
                 {item.id}
@@ -435,6 +479,38 @@ function EvidenceBlock({
         )}
       />
     </div>
+  );
+}
+
+function AssetEvidenceView({
+  sourceId,
+  assetId,
+  alt,
+}: {
+  sourceId: number;
+  assetId: number;
+  alt: string;
+}) {
+  const url = buildKnowledgeAssetContentUrl(sourceId, assetId);
+  return (
+    <Space direction="vertical" size={4} style={{ width: '100%' }}>
+      {/* eslint-disable-next-line jsx-a11y/alt-text */}
+      <img
+        src={url}
+        alt={alt || 'Bundle 附件'}
+        loading="lazy"
+        style={{
+          maxWidth: '100%',
+          maxHeight: 320,
+          border: '1px solid var(--op-border, #eee)',
+          borderRadius: 4,
+          objectFit: 'contain',
+        }}
+      />
+      <Button size="small" href={url} target="_blank" rel="noopener noreferrer">
+        下载原图
+      </Button>
+    </Space>
   );
 }
 
@@ -614,6 +690,108 @@ function UploadModal({
           placeholder="可选：展示标题（不填则用文件名或首个 # 标题）"
           value={titleHint}
           onChange={(event) => setTitleHint(event.target.value)}
+        />
+      </Space>
+    </Modal>
+  );
+}
+
+function BundleModal({
+  open,
+  onClose,
+  uploading,
+  onSubmit,
+}: {
+  open: boolean;
+  onClose: () => void;
+  uploading: boolean;
+  onSubmit: (main: File, assets: File[], titleHint: string) => void;
+}) {
+  const [mainFileList, setMainFileList] = useState<UploadFile[]>([]);
+  const [assetFileList, setAssetFileList] = useState<UploadFile[]>([]);
+  const [titleHint, setTitleHint] = useState('');
+
+  const mainFile = mainFileList[0]?.originFileObj as File | undefined;
+  const assetFiles = assetFileList
+    .map((item) => item.originFileObj as File | undefined)
+    .filter((value): value is File => Boolean(value));
+
+  const handleSubmit = () => {
+    if (!mainFile) {
+      message.warning('请选择 Markdown 主文件');
+      return;
+    }
+    if (assetFiles.length === 0) {
+      message.warning('Bundle 至少需要一张图片附件');
+      return;
+    }
+    onSubmit(mainFile, assetFiles, titleHint);
+  };
+
+  return (
+    <Modal
+      title="上传图文 Bundle"
+      open={open}
+      onCancel={() => {
+        setMainFileList([]);
+        setAssetFileList([]);
+        setTitleHint('');
+        onClose();
+      }}
+      onOk={handleSubmit}
+      okButtonProps={{ loading: uploading }}
+      okText="开始导入"
+      width={640}
+    >
+      <Space direction="vertical" style={{ width: '100%' }} size="middle">
+        <div>
+          <Title level={5} style={{ marginBottom: 4 }}>
+            Markdown 主文件
+          </Title>
+          <Upload.Dragger
+            accept=".md,.markdown,.mdx,text/markdown"
+            maxCount={1}
+            beforeUpload={() => false}
+            fileList={mainFileList}
+            onChange={({ fileList: next }) => setMainFileList(next)}
+          >
+            <p className="ant-upload-drag-icon">
+              <InboxOutlined />
+            </p>
+            <p className="ant-upload-text">点击或拖拽 .md 主文件</p>
+            <p className="ant-upload-hint">主文件最大 5 MiB；图片引用必须使用扁平相对路径</p>
+          </Upload.Dragger>
+        </div>
+        <div>
+          <Title level={5} style={{ marginBottom: 4 }}>
+            图片附件（PNG / JPEG / WebP）
+          </Title>
+          <Upload.Dragger
+            accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
+            multiple
+            beforeUpload={() => false}
+            fileList={assetFileList}
+            onChange={({ fileList: next }) => setAssetFileList(next)}
+          >
+            <p className="ant-upload-drag-icon">
+              <PictureOutlined />
+            </p>
+            <p className="ant-upload-text">点击或拖拽多张图片到此处</p>
+            <p className="ant-upload-hint">
+              单图 ≤ 10 MiB / 40 MP；Bundle 总大小 ≤ 50 MiB；附件数量 ≤ 50
+            </p>
+          </Upload.Dragger>
+        </div>
+        <Input
+          placeholder="可选：展示标题（不填则用文件名或首个 # 标题）"
+          value={titleHint}
+          onChange={(event) => setTitleHint(event.target.value)}
+        />
+        <Alert
+          type="info"
+          showIcon
+          message="系统不会 OCR 图片内容，也不会调用多模态模型"
+          description="alt 文本作为作者原文参与检索；图片字节不会进入 FTS。"
         />
       </Space>
     </Modal>

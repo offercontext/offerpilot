@@ -46,6 +46,7 @@ from offerpilot.knowledge import (
     KnowledgeIngestService,
     KnowledgeRepository,
 )
+from offerpilot.knowledge.assets import AssetInput
 from offerpilot.knowledge.service import IngestError as _IngestHttpError
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
 from offerpilot.repositories.chat import ChatRepository
@@ -159,6 +160,21 @@ def _knowledge_evidence_payload(evidence: Any) -> dict[str, Any]:
         "asset_id": evidence.asset_id,
         "previous_evidence_id": evidence.previous_evidence_id,
         "next_evidence_id": evidence.next_evidence_id,
+    }
+
+
+def _knowledge_asset_payload(asset: Any) -> dict[str, Any]:
+    return {
+        "id": asset.id,
+        "source_id": asset.source_id,
+        "logical_name": asset.logical_name,
+        "media_type": asset.media_type,
+        "relative_path": asset.relative_path,
+        "bytes": asset.bytes_size,
+        "sha256": asset.sha256,
+        "width": asset.width,
+        "height": asset.height,
+        "created_at": _json_datetime(asset.created_at),
     }
 
 
@@ -315,19 +331,20 @@ def create_app(
     )
     def upload_knowledge_source(
         file: Optional[UploadFile] = File(None),
+        files: list[UploadFile] = File(default_factory=list),
         title_hint: str = Form(""),
         paste: str = Form(""),
         origin_url: str = Form(""),
     ) -> Any:
         # Spec §16.1：multipart 支持 file / bundle / pasted content。file 与 paste
-        # 二选一；同时提供时按 file 优先。
+        # 二选一；``files`` 携带 Bundle 附件。
         if file is not None:
             try:
                 content = file.file.read()
             finally:
                 file.file.close()
             filename = file.filename or ""
-            import_method = "file"
+            import_method = "bundle" if files else "file"
             content_bytes = content
         elif paste:
             content_bytes = paste.encode("utf-8")
@@ -340,6 +357,24 @@ def create_app(
                 code="unsupported_type",
             )
 
+        asset_inputs: list[AssetInput] = []
+        if files:
+            for item in files:
+                try:
+                    asset_bytes = item.file.read()
+                finally:
+                    item.file.close()
+                asset_logical = item.filename or ""
+                if not asset_logical:
+                    return error_response(
+                        400,
+                        "Bundle 附件缺少文件名",
+                        code="bundle_invalid",
+                    )
+                asset_inputs.append(
+                    AssetInput(logical_name=asset_logical, content_bytes=asset_bytes)
+                )
+
         try:
             result = knowledge_service.ingest(
                 IngestRequest(
@@ -348,6 +383,7 @@ def create_app(
                     title_hint=title_hint,
                     import_method=import_method,
                     origin_url=origin_url,
+                    asset_inputs=tuple(asset_inputs),
                 )
             )
         except _IngestHttpError as exc:
@@ -377,6 +413,37 @@ def create_app(
         return FileResponse(
             path,
             media_type=source.main_media_type,
+            filename=safe_name,
+        )
+
+    @app.get("/api/knowledge/sources/{source_id}/assets")
+    def list_knowledge_source_assets(source_id: int) -> JSONResponse:
+        source = knowledge_repository.get_source(source_id)
+        if source is None:
+            return error_response(404, "Source not found")
+        assets = knowledge_repository.list_assets(source_id)
+        return JSONResponse(
+            {"items": [_knowledge_asset_payload(item) for item in assets]}
+        )
+
+    @app.get("/api/knowledge/sources/{source_id}/assets/{asset_id}/content")
+    def get_knowledge_source_asset_content(source_id: int, asset_id: int) -> Response:
+        source = knowledge_repository.get_source(source_id)
+        if source is None:
+            return error_response(404, "Source not found")
+        asset = knowledge_repository.get_asset(asset_id)
+        if asset is None or asset.source_id != source_id:
+            return error_response(404, "Asset not found")
+        path = resolved_data_dir / asset.relative_path
+        if not path.is_file():
+            return error_response(404, "Asset content missing")
+        # Spec §13：Asset 原始字节按原始 bytes 下载，安全文件名，正确媒体类型，
+        # 不暴露本机绝对路径。Bundle 内部 ``relative_path`` 在数据库中已固定为
+        # ``knowledge/sources/<id>/assets/<id>-<safe>``，此处只取 safe base。
+        safe_name = _safe_download_filename(asset.logical_name)
+        return FileResponse(
+            path,
+            media_type=asset.media_type,
             filename=safe_name,
         )
 

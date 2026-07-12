@@ -18,11 +18,12 @@ function renderWithProviders() {
 }
 
 describe('KnowledgeWikiView', () => {
-  it('renders Source library surface with upload, paste entries and search box', () => {
+  it('renders Source library surface with upload, bundle, paste entries and search box', () => {
     const markup = renderWithProviders();
 
     expect(markup).toContain('资料来源');
     expect(markup).toContain('上传 Markdown / Text');
+    expect(markup).toContain('上传图文 Bundle');
     expect(markup).toContain('粘贴正文');
     expect(markup).toContain('Evidence');
     // SSR 阶段 React Query 处于 loading 状态；右栏空状态提供引导文案。

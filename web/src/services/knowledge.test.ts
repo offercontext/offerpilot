@@ -15,3 +15,13 @@ describe('knowledge service KI-03 contract', () => {
     expect(source).not.toContain('addToWiki');
   });
 });
+
+describe('knowledge service KI-04 contract', () => {
+  it('exposes bundle upload and asset download endpoints', () => {
+    expect(source).toContain('uploadKnowledgeBundle');
+    expect(source).toContain('fetchKnowledgeSourceAssets');
+    expect(source).toContain('buildKnowledgeAssetContentUrl');
+    expect(source).toContain('/assets/');
+    expect(source).toContain('assets/${assetId}/content');
+  });
+});

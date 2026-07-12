@@ -23,6 +23,23 @@ export interface KnowledgeEvidencePage {
   next_cursor: number | null;
 }
 
+export interface KnowledgeSourceAsset {
+  id: number;
+  source_id: number;
+  logical_name: string;
+  media_type: string;
+  relative_path: string;
+  bytes: number;
+  sha256: string;
+  width: number;
+  height: number;
+  created_at: string;
+}
+
+export interface KnowledgeSourceAssetsResponse {
+  items: KnowledgeSourceAsset[];
+}
+
 export interface KnowledgeSource {
   id: number;
   source_kind: string;
