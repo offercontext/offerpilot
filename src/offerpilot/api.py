@@ -7,7 +7,7 @@ from io import BytesIO
 from pathlib import Path
 from secrets import compare_digest
 from time import perf_counter
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 import httpx
 from fastapi import Body, FastAPI, File, Query, Request, UploadFile
@@ -1312,7 +1312,7 @@ def create_app(
         limit: int = Query(default=20, ge=1, le=100),
         offset: int = Query(default=0, ge=0),
     ) -> dict[str, Any]:
-        return read_recent_log_page(resolved_data_dir, limit=limit, offset=offset)
+        return cast(dict[str, Any], read_recent_log_page(resolved_data_dir, limit=limit, offset=offset))
 
     @app.get("/api/backups/export")
     def export_backup() -> Response:
