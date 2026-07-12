@@ -456,7 +456,16 @@ export default function ChatPanel({
                   </div>
                 </div>
               ) : (
-                turns.map((turn, i) => <MessageBubble key={i} turn={turn} index={i} />)
+                turns.map((turn, i) => (
+                  <MessageBubble
+                    key={i}
+                    turn={turn}
+                    index={i}
+                    actionsDisabled={composerDisabled}
+                    onAction={(action) => void sendMessage(`继续处理：${action}`)}
+                    taskCardsEnabled
+                  />
+                ))
               )}
 
               {pending && (

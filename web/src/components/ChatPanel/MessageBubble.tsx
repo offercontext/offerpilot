@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { UITurn } from './model';
 import ProcessTimeline from './ProcessTimeline';
+import PilotTaskCard from './PilotTaskCard';
 import styles from './ChatPanel.module.css';
 
 /** Code block with a hover copy button. */
@@ -36,10 +37,14 @@ function Pre({ children }: { children?: React.ReactNode }) {
 interface Props {
   turn: UITurn;
   index: number;
+  actionsDisabled: boolean;
+  onAction: (action: string) => void;
+  taskCardsEnabled?: boolean;
 }
 
-export default function MessageBubble({ turn, index }: Props) {
+export default function MessageBubble({ turn, index, actionsDisabled, onAction, taskCardsEnabled = true }: Props) {
   const isUser = turn.role === 'user';
+  const hasTaskCard = taskCardsEnabled && !isUser && Boolean(turn.steps?.length || turn.presentation);
   return (
     <div
       className={`${styles.msg} ${isUser ? styles.msgUser : ''}`}
@@ -52,18 +57,29 @@ export default function MessageBubble({ turn, index }: Props) {
         {isUser ? '我' : '✦'}
       </div>
       <div className={styles.msgCol}>
-        <div className={`${styles.bubble} ${isUser ? styles.bubbleUser : styles.bubbleAssistant}`}>
-          {isUser ? (
-            turn.content
-          ) : (
-            <div className={styles.markdown}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ pre: Pre }}>
-                {turn.content}
-              </ReactMarkdown>
-            </div>
-          )}
-        </div>
-        {!isUser && turn.steps ? <ProcessTimeline steps={turn.steps} /> : null}
+        {hasTaskCard ? (
+          <PilotTaskCard
+            title={turn.taskTitle ?? '本轮任务'}
+            steps={turn.steps ?? []}
+            presentation={turn.presentation}
+            disabled={actionsDisabled}
+            onAction={onAction}
+          />
+        ) : null}
+        {(isUser || turn.content.trim()) && (
+          <div className={`${styles.bubble} ${isUser ? styles.bubbleUser : styles.bubbleAssistant}`}>
+            {isUser ? (
+              turn.content
+            ) : (
+              <div className={styles.markdown}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ pre: Pre }}>
+                  {turn.content}
+                </ReactMarkdown>
+              </div>
+            )}
+          </div>
+        )}
+        {!isUser && turn.steps?.length && !hasTaskCard ? <ProcessTimeline steps={turn.steps} /> : null}
       </div>
     </div>
   );

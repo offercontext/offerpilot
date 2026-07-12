@@ -94,7 +94,14 @@ export default function MockChat({
           </div>
         )}
         {turns.map((t, i) => (
-          <MessageBubble key={i} turn={t} index={i} />
+          <MessageBubble
+            key={i}
+            turn={t}
+            index={i}
+            actionsDisabled={loading || !!disabled}
+            onAction={() => undefined}
+            taskCardsEnabled={false}
+          />
         ))}
         {loading && <ThinkingIndicator />}
         <div ref={endRef} />

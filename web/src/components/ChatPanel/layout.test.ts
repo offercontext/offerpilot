@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import component from './index.tsx?raw';
 import thinking from './ThinkingIndicator.tsx?raw';
+import messageBubble from './MessageBubble.tsx?raw';
+import mockChat from '../MockStudio/MockChat.tsx?raw';
 
 describe('ChatPanel docked layout contract', () => {
   it('keeps a new-chat control visible when the docked layout hides the thread rail', () => {
@@ -39,5 +41,18 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('onDataChanged?: () => void');
     expect(component).toContain('if (autoApprove) onDataChanged?.();');
     expect(component).toContain('if (approved) onDataChanged?.();');
+  });
+
+  it('routes Pilot task actions through the guarded chat send flow', () => {
+    expect(messageBubble).toContain('PilotTaskCard');
+    expect(messageBubble).toContain('actionsDisabled');
+    expect(messageBubble).toContain('taskCardsEnabled');
+    expect(component).toContain('actionsDisabled={composerDisabled}');
+    expect(component).toContain('继续处理：${action}');
+  });
+
+  it('keeps Mock Studio outside Pilot task-card action flows', () => {
+    expect(mockChat).toContain('taskCardsEnabled={false}');
+    expect(mockChat).toContain('onAction={() => undefined}');
   });
 });
