@@ -121,20 +121,20 @@ Asset；Evidence 能定位图片引用，用户可安全查看和下载图片，
 **Scope boundaries:** 图片只作为 Asset Evidence；不调用多模态 Provider，不让图片内容进入 FTS 或
 Brief 事实。
 
-- [ ] Bundle 上传接受一个 Markdown 主文件和 PNG/JPEG/WebP 附件。
-- [ ] 强制执行 5 MiB 主文件、10 MiB 单图、50 MiB Bundle、50 图和 40MP 限制。
-- [ ] 根据实际图片解码和媒体类型验证内容，不能只信扩展名或请求头。
-- [ ] 图片引用只允许扁平相对路径；远程、绝对、父目录和跨目录路径明确拒绝。
-- [ ] 缺图、重复逻辑名、未使用附件和不支持媒体类型使整个 Bundle 失败，无部分 Source。
-- [ ] Source hash 包含主文件字节、附件字节和附件逻辑路径的规范 manifest。
-- [ ] Asset 保存 bytes、sha256、媒体类型、尺寸和相对路径，不存 SQLite BLOB。
-- [ ] 每个图片 Asset 生成稳定 Asset Evidence，并记录其全部 Markdown 引用位置。
-- [ ] Markdown alt text 作为作者原文参与文本 Evidence；模型生成 caption 不存在。
-- [ ] Source 详情能在 Evidence 上下文中安全预览图片，并按原始字节下载单个附件。
-- [ ] 浏览器不会执行图片附近的 HTML，也不会请求 Source 中的远程资源。
-- [ ] 删除或事务失败不会遗留半个 Bundle、孤儿 Asset 行或未引用文件。
-- [ ] 测试覆盖正常 Bundle、媒体伪装、坏图、像素炸弹、缺图、重复图、未使用图和路径穿越。
-- [ ] 独立 Code Review 检查路径白名单、图片解码资源限制和数据目录逃逸风险。
+- [x] Bundle 上传接受一个 Markdown 主文件和 PNG/JPEG/WebP 附件。
+- [x] 强制执行 5 MiB 主文件、10 MiB 单图、50 MiB Bundle、50 图和 40MP 限制。
+- [x] 根据实际图片解码和媒体类型验证内容，不能只信扩展名或请求头。
+- [x] 图片引用只允许扁平相对路径；远程、绝对、父目录和跨目录路径明确拒绝。
+- [x] 缺图、重复逻辑名、未使用附件和不支持媒体类型使整个 Bundle 失败，无部分 Source。
+- [x] Source hash 包含主文件字节、附件字节和附件逻辑路径的规范 manifest。
+- [x] Asset 保存 bytes、sha256、媒体类型、尺寸和相对路径，不存 SQLite BLOB。
+- [x] 每个图片 Asset 生成稳定 Asset Evidence，并记录其全部 Markdown 引用位置。
+- [x] Markdown alt text 作为作者原文参与文本 Evidence；模型生成 caption 不存在。
+- [x] Source 详情能在 Evidence 上下文中安全预览图片，并按原始字节下载单个附件。
+- [x] 浏览器不会执行图片附近的 HTML，也不会请求 Source 中的远程资源。
+- [x] 删除或事务失败不会遗留半个 Bundle、孤儿 Asset 行或未引用文件。
+- [x] 测试覆盖正常 Bundle、媒体伪装、坏图、像素炸弹、缺图、重复图、未使用图和路径穿越。
+- [x] 独立 Code Review 检查路径白名单、图片解码资源限制和数据目录逃逸风险。
 
 ## KI-05：实现内容去重、来源记录与标题整理
 
