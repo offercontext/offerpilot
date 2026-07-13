@@ -283,7 +283,7 @@ export interface Settings {
   data_dir: string;
   chat_auto_approve_writes: boolean;
   active_provider_id: string;
-  fallback_provider_id: string;
+  fallback_provider_ids: string[];
   providers: AIProviderProfile[];
   base_url: string;
   model: string;
@@ -316,7 +316,7 @@ export interface AIProviderProfile {
 export interface UpdateSettingsPayload {
   chat_auto_approve_writes: boolean;
   active_provider_id?: string;
-  fallback_provider_id?: string;
+  fallback_provider_ids?: string[];
   providers?: Array<Omit<AIProviderProfile, 'has_api_key'> & { api_key?: string }>;
   base_url?: string;
   model?: string;
@@ -346,7 +346,7 @@ export interface SettingsBackup {
   log_level: Settings['log_level'];
   chat_auto_approve_writes: boolean;
   active_provider_id: string;
-  fallback_provider_id: string;
+  fallback_provider_ids: string[];
   providers: AIProviderProfile[];
 }
 
@@ -370,6 +370,10 @@ export async function testProviderConnection(
 export async function getSettingsBackup(): Promise<SettingsBackup> {
   const { data } = await http.get<SettingsBackup>('/settings/backup');
   return data;
+}
+
+export function exportBackup(path = '/backups/export'): void {
+  window.location.href = `/api${path}`;
 }
 
 export async function getLogs(limit = 20, level = ''): Promise<LogEntry[]> {

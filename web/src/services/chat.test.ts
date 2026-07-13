@@ -56,8 +56,8 @@ afterEach(() => {
 });
 
 describe('settings service v0.1 contract', () => {
-  it('exposes provider testing, fallback provider, and safe backup endpoints', () => {
-    expect(source).toContain('fallback_provider_id');
+  it('exposes provider testing, ordered fallbacks, and safe backup endpoints', () => {
+    expect(source).toContain('fallback_provider_ids');
     expect(source).toContain('/settings/providers/test');
     expect(source).toContain('/settings/backup');
     expect(source).toContain('testProviderConnection');

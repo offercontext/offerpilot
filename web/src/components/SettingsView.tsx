@@ -1,7 +1,7 @@
 import { ApiOutlined, CopyOutlined, DownloadOutlined, FileSearchOutlined, ReloadOutlined, SettingOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button, Divider, Empty, Input, Modal, Select, Skeleton, Space, Tag, Typography, message } from 'antd';
-import { getLogs, getSettings, getSettingsBackup, type LogEntry, type Settings } from '@/services/chat';
+import { exportBackup, getLogs, getSettings, getSettingsBackup, type LogEntry, type Settings } from '@/services/chat';
 import { ONBOARDING_QUERY_KEY, setOnboardingForceOpen } from '@/services/onboarding';
 import { buildDiagnosticsText } from '@/lib/diagnostics';
 import { useMemo, useState } from 'react';
@@ -124,6 +124,9 @@ export default function SettingsView({ onOpenAISettings }: Props) {
               onClick={() => backupMutation.mutate()}
             >
               导出备份
+            </Button>
+            <Button icon={<DownloadOutlined />} onClick={() => exportBackup('/backups/export')}>
+              导出完整数据
             </Button>
             <Button
               loading={reopenOnboardingMutation.isPending}
@@ -273,7 +276,8 @@ function formatRuntimeMode(value: string | undefined) {
 }
 
 function fallbackLabel(settings?: Settings) {
-  if (!settings?.fallback_provider_id) return '未启用';
-  const provider = settings.providers.find((item) => item.id === settings.fallback_provider_id);
-  return provider?.label || settings.fallback_provider_id;
+  if (!settings?.fallback_provider_ids.length) return '未启用';
+  return settings.fallback_provider_ids
+    .map((providerId) => settings.providers.find((item) => item.id === providerId)?.label || providerId)
+    .join(' → ');
 }

@@ -221,7 +221,7 @@ def test_put_settings_without_providers_preserves_existing_provider_profiles(tmp
     ]
 
 
-def test_put_settings_persists_fallback_provider_id(tmp_path):
+def test_put_settings_persists_ordered_fallback_providers(tmp_path):
     save_config(
         tmp_path,
         Config(
@@ -239,7 +239,7 @@ def test_put_settings_persists_fallback_provider_id(tmp_path):
         json={
             "chat_auto_approve_writes": False,
             "active_provider_id": "openai",
-            "fallback_provider_id": "openrouter",
+            "fallback_provider_ids": ["openrouter"],
             "providers": [
                 {
                     "id": "openai",
@@ -264,8 +264,8 @@ def test_put_settings_persists_fallback_provider_id(tmp_path):
     )
 
     assert response.status_code == 200
-    assert response.json()["fallback_provider_id"] == "openrouter"
-    assert load_config(tmp_path).fallback_provider_id == "openrouter"
+    assert response.json()["fallback_provider_ids"] == ["openrouter"]
+    assert load_config(tmp_path).fallback_provider_ids == ["openrouter"]
 
 
 def test_provider_connection_test_uses_saved_profile(monkeypatch, tmp_path):
@@ -385,7 +385,7 @@ def test_settings_backup_omits_plaintext_api_keys(tmp_path):
         tmp_path,
         Config(
             active_provider_id="openai",
-            fallback_provider_id="openrouter",
+            fallback_provider_ids=["openrouter"],
             providers=[
                 AIProviderProfile(id="openai", label="OpenAI", api_key="sk-openai"),
                 AIProviderProfile(id="openrouter", label="OpenRouter", api_key="sk-openrouter"),
@@ -403,8 +403,25 @@ def test_settings_backup_omits_plaintext_api_keys(tmp_path):
     body = response.json()
     assert body["version"] == 1
     assert body["active_provider_id"] == "openai"
-    assert body["fallback_provider_id"] == "openrouter"
+    assert body["fallback_provider_ids"] == ["openrouter"]
     assert body["providers"][0]["has_api_key"] is True
     assert "api_key" not in body["providers"][0]
     assert "sk-openai" not in response.text
     assert "sk-openrouter" not in response.text
+
+
+def test_backup_export_returns_local_data_archive(tmp_path):
+    from io import BytesIO
+    import zipfile
+
+    save_config(tmp_path, Config(api_key="sk-secret"))
+    (tmp_path / "offerpilot.log").write_text("log line\n", encoding="utf-8")
+    client = TestClient(create_app(data_dir=tmp_path))
+
+    response = client.get("/api/backups/export")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/zip"
+    assert "offerpilot-backup-" in response.headers["content-disposition"]
+    with zipfile.ZipFile(BytesIO(response.content)) as archive:
+        assert {"config.json", "data.db", "offerpilot.log"}.issubset(archive.namelist())

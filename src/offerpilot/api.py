@@ -1,5 +1,6 @@
 import json
 import re
+import zipfile
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from datetime import datetime, timedelta, timezone
 from html import unescape
@@ -2352,6 +2353,17 @@ def create_app(
             return error_response(422, "invalid log level")
         return {"entries": read_recent_log_entries(resolved_data_dir, limit=limit, level=normalized_level)}
 
+    @app.get("/api/backups/export")
+    def export_backup() -> Response:
+        archive = _build_backup_archive(resolved_data_dir)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        filename = f"offerpilot-backup-{stamp}.zip"
+        return Response(
+            content=archive,
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
     @app.get("/api/skills")
     def list_skills() -> dict[str, Any]:
         return skills_payload(load_config(resolved_data_dir))
@@ -2424,8 +2436,9 @@ def create_app(
         providers = _settings_providers_from_payload(payload, current)
         active_provider_id = str(payload.get("active_provider_id") or current.active_provider_id)
         active = _active_provider_from(providers, active_provider_id)
-        fallback_provider_id = _settings_fallback_provider_id(
-            payload.get("fallback_provider_id", current.fallback_provider_id),
+        fallback_provider_ids = _settings_fallback_provider_ids_from_payload(
+            payload,
+            current,
             providers,
             active.id,
         )
@@ -2438,8 +2451,8 @@ def create_app(
                 payload.get("chat_auto_approve_writes", current.chat_auto_approve_writes)
             ),
             active_provider_id=active.id,
-            fallback_provider_id=fallback_provider_id,
             providers=providers,
+            fallback_provider_ids=fallback_provider_ids,
             runtime_mode=normalize_runtime_mode(
                 str(payload.get("runtime_mode") or current.runtime_mode),
                 current.runtime_mode,
@@ -4199,7 +4212,7 @@ def _settings_payload(cfg: Config, data_dir: Path | None = None) -> dict[str, An
         "data_dir": str((data_dir or resolve_data_dir()).resolve()),
         "chat_auto_approve_writes": cfg.chat_auto_approve_writes,
         "active_provider_id": active.id,
-        "fallback_provider_id": cfg.fallback_provider_id,
+        "fallback_provider_ids": cfg.fallback_provider_ids,
         "providers": [_provider_payload(profile) for profile in cfg.provider_profiles()],
         "base_url": active.base_url,
         "model": active.model,
@@ -4221,7 +4234,7 @@ def _settings_backup_payload(cfg: Config) -> dict[str, Any]:
         "log_level": cfg.log_level,
         "chat_auto_approve_writes": cfg.chat_auto_approve_writes,
         "active_provider_id": cfg.active_provider().id,
-        "fallback_provider_id": cfg.fallback_provider_id,
+        "fallback_provider_ids": cfg.fallback_provider_ids,
         "providers": [_provider_payload(profile) for profile in cfg.provider_profiles()],
     }
 
@@ -4286,16 +4299,25 @@ def _active_provider_from(
     return providers[0]
 
 
-def _settings_fallback_provider_id(
-    value: Any,
+def _settings_fallback_provider_ids_from_payload(
+    payload: dict[str, Any],
+    current: Config,
     providers: list[AIProviderProfile],
     active_provider_id: str,
-) -> str:
-    requested = str(value or "")
-    if not requested or requested == active_provider_id:
-        return ""
+) -> list[str]:
+    raw_ids = payload.get("fallback_provider_ids", current.fallback_provider_ids)
+    if not isinstance(raw_ids, list):
+        raw_ids = []
     provider_ids = {profile.id for profile in providers}
-    return requested if requested in provider_ids else ""
+    fallback_ids: list[str] = []
+    seen: set[str] = {active_provider_id}
+    for raw_id in raw_ids:
+        provider_id = str(raw_id)
+        if provider_id not in provider_ids or provider_id in seen:
+            continue
+        fallback_ids.append(provider_id)
+        seen.add(provider_id)
+    return fallback_ids
 
 
 def _provider_payload(profile: AIProviderProfile) -> dict[str, Any]:
@@ -4340,6 +4362,16 @@ def _safe_provider_error(error: Exception, providers: list[AIProviderProfile]) -
         if provider.api_key:
             message = message.replace(provider.api_key, "***")
     return message or "模型供应商连接失败"
+
+
+def _build_backup_archive(data_dir: Path) -> bytes:
+    buffer = BytesIO()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path in sorted(data_dir.rglob("*")):
+            if path.is_file():
+                archive.write(path, path.relative_to(data_dir).as_posix())
+    return buffer.getvalue()
 
 
 def _valid_event_type(event_type: str) -> bool:

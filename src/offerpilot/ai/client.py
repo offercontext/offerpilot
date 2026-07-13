@@ -12,10 +12,9 @@ from offerpilot.config import AIProviderProfile, Config
 
 class ConfiguredAIClient:
     def __init__(self, config: Config, on_provider_event: Callable[[str, str], None] | None = None):
-        self._active_provider = config.active_provider()
-        self._fallback_provider = config.fallback_provider()
+        self._providers = config.ordered_provider_profiles()
         self._on_provider_event = on_provider_event
-        if not any(provider.api_key for provider in self._candidate_providers()):
+        if not any(provider.api_key for provider in self._providers):
             raise ValueError("AI is not configured: run `oc config` to set your API key")
 
     def complete(self, messages: list[Message], tools: list[dict[str, Any]]) -> Assistant:
@@ -31,10 +30,10 @@ class ConfiguredAIClient:
                 return assistant
             except Exception as exc:
                 last_error = exc
-                if index == 0 and len(providers) > 1:
+                if index + 1 < len(providers):
                     self._emit(
                         "WARNING",
-                        f"AI provider {provider.id} failed; trying fallback {providers[1].id}",
+                        f"AI provider {provider.id} failed; trying fallback {providers[index + 1].id}",
                     )
                     continue
                 raise
@@ -69,10 +68,10 @@ class ConfiguredAIClient:
                 last_error = exc
                 if emitted_delta:
                     raise
-                if index == 0 and len(providers) > 1:
+                if index + 1 < len(providers):
                     self._emit(
                         "WARNING",
-                        f"AI provider {provider.id} failed; trying fallback {providers[1].id}",
+                        f"AI provider {provider.id} failed; trying fallback {providers[index + 1].id}",
                     )
                     continue
                 raise
@@ -81,10 +80,7 @@ class ConfiguredAIClient:
         raise ValueError("AI is not configured: run `oc config` to set your API key")
 
     def _candidate_providers(self) -> list[AIProviderProfile]:
-        providers = [self._active_provider]
-        if self._fallback_provider is not None:
-            providers.append(self._fallback_provider)
-        return [provider for provider in providers if provider.enabled]
+        return [provider for provider in self._providers if provider.enabled]
 
     def _complete_with_provider(
         self,

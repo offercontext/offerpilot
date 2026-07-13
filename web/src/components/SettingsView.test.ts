@@ -20,4 +20,10 @@ describe('SettingsView localization', () => {
     expect(source).not.toContain('Configure AI');
     expect(source).not.toContain('Details unavailable');
   });
+
+  it('exposes local backup export from the settings page', () => {
+    expect(source).toContain('exportBackup');
+    expect(source).toContain('导出备份');
+    expect(source).toContain('/backups/export');
+  });
 });
