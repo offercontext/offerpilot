@@ -84,6 +84,7 @@
 }
 
 .stepLabel {
+  display: block;
   color: var(--op-ink, #0f172a);
   font-size: 13px;
   line-height: 1.45;

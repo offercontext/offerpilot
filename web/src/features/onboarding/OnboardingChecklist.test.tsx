@@ -1,6 +1,9 @@
+import { readFileSync } from 'node:fs';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import OnboardingChecklist from './OnboardingChecklist';
+
+const cssSource = readFileSync(new URL('./OnboardingChecklist.module.css', import.meta.url), 'utf8');
 
 describe('OnboardingChecklist', () => {
   it('shows all four milestones and progress', () => {
@@ -31,5 +34,9 @@ describe('OnboardingChecklist', () => {
     expect(html).toContain('创建主简历');
     expect(html).toContain('添加第一条投递');
     expect(html).toContain('向 Pilot 发出第一条消息');
+  });
+
+  it('keeps card labels on their own line', () => {
+    expect(cssSource).toMatch(/\.stepLabel\s*\{[^}]*display:\s*block;/);
   });
 });
