@@ -1,0 +1,966 @@
+"""KI-09 Brief generation / validation / 提交 单元测试。"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+from sqlalchemy.orm import Session, sessionmaker
+
+from offerpilot.config import AIProviderProfile, Config
+from offerpilot.db import init_database, session_factory_for_data_dir
+from offerpilot.knowledge.brief import (
+    BRIEF_LANGUAGE,
+    BRIEF_MIN_CONTEXT_WINDOW,
+    BRIEF_PROMPT_VERSION,
+    BRIEF_SCHEMA_VERSION,
+    BriefSchemaError,
+    build_generation_prompt,
+    build_repair_prompt,
+    build_section_coverage_plan,
+    build_validation_prompt,
+    collect_brief_statement_blocks,
+    parse_brief_payload,
+    parse_support_decision,
+    validate_brief_against_evidence,
+)
+from offerpilot.knowledge.repository import (
+    BriefAttemptCreateInput,
+    EvidenceRecord,
+    JobCreateInput,
+    KnowledgeBriefAttemptError,
+    KnowledgeRepository,
+)
+from offerpilot.knowledge.service import IngestRequest
+from offerpilot.knowledge.worker import (
+    ExtractionWorker,
+    BriefWorker,
+    KnowledgeJobRunner,
+)
+
+
+# ---------------------------------------------------------------------------
+# Spec §10.1 Schema / parse
+# ---------------------------------------------------------------------------
+
+
+def _valid_payload_dict() -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "language": "zh-CN",
+        "overview": [
+            {"statement": "Source 描述了 OfferPilot 架构。", "evidence_ids": ["ev_1"]},
+            {"statement": "Source 给出 SQLite SSOT 决策。", "evidence_ids": ["ev_2"]},
+        ],
+        "key_points": [
+            {"statement": "Evidence 是引用单位。", "evidence_ids": ["ev_1", "ev_2"]},
+        ],
+        "section_guides": [
+            {
+                "section_key": "概述",
+                "heading_path": ["概述"],
+                "summary": "该章节介绍 OfferPilot 整体方向。",
+                "evidence_ids": ["ev_1"],
+            },
+        ],
+        "limitations": [
+            {"statement": "未涉及 Pilot 对话细节。", "evidence_ids": ["ev_2"]},
+        ],
+        "coverage": [
+            {"section_key": "概述", "status": "covered", "skipped_reason": ""},
+        ],
+    }
+
+
+def test_parse_brief_payload_accepts_strict_json() -> None:
+    raw = json.dumps(_valid_payload_dict(), ensure_ascii=False)
+    brief = parse_brief_payload(raw)
+    assert brief.schema_version == 1
+    assert brief.language == BRIEF_LANGUAGE
+    assert len(brief.overview) == 2
+
+
+def test_parse_brief_payload_accepts_extra_text_around_json() -> None:
+    """Spec §10.1 模型可能输出 markdown fence，需要从中提取 JSON。"""
+    raw = (
+        "```json\n"
+        + json.dumps(_valid_payload_dict(), ensure_ascii=False)
+        + "\n```"
+    )
+    brief = parse_brief_payload(raw)
+    assert brief.schema_version == 1
+
+
+def test_parse_brief_payload_rejects_invalid_json() -> None:
+    with pytest.raises(BriefSchemaError) as info:
+        parse_brief_payload("not json")
+    assert info.value.code == "brief_schema_invalid"
+
+
+def test_parse_brief_payload_rejects_markdown_text() -> None:
+    with pytest.raises(BriefSchemaError) as info:
+        parse_brief_payload("# Heading\n\nSome narrative text only.")
+    assert info.value.code == "brief_schema_invalid"
+
+
+def test_parse_brief_payload_rejects_too_few_overview() -> None:
+    payload = _valid_payload_dict()
+    payload["overview"] = [
+        {"statement": "只一条概述。", "evidence_ids": ["ev_1"]},
+    ]
+    with pytest.raises(BriefSchemaError):
+        parse_brief_payload(json.dumps(payload, ensure_ascii=False))
+
+
+def test_parse_brief_payload_rejects_long_statement() -> None:
+    payload = _valid_payload_dict()
+    payload["overview"][0]["statement"] = "字" * 400
+    with pytest.raises(BriefSchemaError):
+        parse_brief_payload(json.dumps(payload, ensure_ascii=False))
+
+
+def test_parse_brief_payload_rejects_empty_evidence_ids() -> None:
+    payload = _valid_payload_dict()
+    payload["overview"][0]["evidence_ids"] = []
+    with pytest.raises(BriefSchemaError):
+        parse_brief_payload(json.dumps(payload, ensure_ascii=False))
+
+
+def test_parse_brief_payload_rejects_duplicate_evidence_ids() -> None:
+    payload = _valid_payload_dict()
+    payload["overview"][0]["evidence_ids"] = ["ev_1", "ev_1"]
+    with pytest.raises(BriefSchemaError):
+        parse_brief_payload(json.dumps(payload, ensure_ascii=False))
+
+
+def test_parse_brief_payload_rejects_unsupported_language() -> None:
+    payload = _valid_payload_dict()
+    payload["language"] = "en-US"
+    with pytest.raises(BriefSchemaError):
+        parse_brief_payload(json.dumps(payload, ensure_ascii=False))
+
+
+# ---------------------------------------------------------------------------
+# Spec §10.3 programmatic validation
+# ---------------------------------------------------------------------------
+
+
+def _evidence_record(
+    *,
+    evidence_id: str,
+    heading_path: tuple[str, ...] = (),
+    kind: str = "text",
+) -> EvidenceRecord:
+    return EvidenceRecord(
+        id=evidence_id,
+        source_id=1,
+        snapshot_id=1,
+        kind=kind,
+        block_kind="paragraph",
+        ordinal=0,
+        heading_path=list(heading_path),
+        char_start=0,
+        char_end=10,
+        line_start=1,
+        line_end=1,
+        canonical_excerpt="原文",
+        search_text="",
+        content_hash="hash",
+        asset_id=None,
+        previous_evidence_id=None,
+        next_evidence_id=None,
+    )
+
+
+def test_validate_brief_catches_fabricated_citation() -> None:
+    """Spec §10.3 citation 必须属于当前 Source/Snapshot。"""
+    raw = json.dumps(_valid_payload_dict(), ensure_ascii=False)
+    brief = parse_brief_payload(raw)
+    evidence_ids = {"ev_1", "ev_2"}
+    coverage_plan = build_section_coverage_plan(
+        [
+            _evidence_record(evidence_id="ev_1", heading_path=("概述",)),
+            _evidence_record(evidence_id="ev_2", heading_path=("概述",)),
+        ]
+    )
+    report = validate_brief_against_evidence(
+        brief, evidence_ids=evidence_ids, expected_sections=coverage_plan
+    )
+    assert report.citation_ok
+    assert report.coverage_ok
+
+    # 注入伪造 citation
+    brief.overview[0].evidence_ids.append("ev_FAKE")
+    report = validate_brief_against_evidence(
+        brief, evidence_ids=evidence_ids, expected_sections=coverage_plan
+    )
+    assert not report.citation_ok
+    assert any("ev_FAKE" in issue for issue in report.issues)
+
+
+def test_validate_brief_catches_missing_section_coverage() -> None:
+    raw = json.dumps(_valid_payload_dict(), ensure_ascii=False)
+    brief = parse_brief_payload(raw)
+    coverage_plan = build_section_coverage_plan(
+        [
+            _evidence_record(evidence_id="ev_1", heading_path=("概述",)),
+            _evidence_record(evidence_id="ev_2", heading_path=("另一章",)),
+        ]
+    )
+    report = validate_brief_against_evidence(
+        brief,
+        evidence_ids={"ev_1", "ev_2"},
+        expected_sections=coverage_plan,
+    )
+    assert not report.coverage_ok
+    assert any("另一章" in issue for issue in report.issues)
+
+
+def test_validate_brief_requires_assets_only_section_skip() -> None:
+    coverage_plan = build_section_coverage_plan(
+        [
+            _evidence_record(
+                evidence_id="ev_img",
+                heading_path=("附图",),
+                kind="asset",
+            ),
+            _evidence_record(evidence_id="ev_1", heading_path=("概述",)),
+            _evidence_record(evidence_id="ev_2", heading_path=("概述",)),
+        ]
+    )
+    # coverage 标记 assets_only 章节为 covered 应失败
+    payload = _valid_payload_dict()
+    payload["coverage"] = [
+        {"section_key": "概述", "status": "covered", "skipped_reason": ""},
+        {"section_key": "附图", "status": "covered", "skipped_reason": ""},
+    ]
+    brief = parse_brief_payload(json.dumps(payload, ensure_ascii=False))
+    report = validate_brief_against_evidence(
+        brief,
+        evidence_ids={"ev_1", "ev_2", "ev_img"},
+        expected_sections=coverage_plan,
+    )
+    assert not report.coverage_ok
+    assert any("附图" in issue for issue in report.issues)
+
+
+# ---------------------------------------------------------------------------
+# Spec §10.3 support validation (parse)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_support_decision_valid() -> None:
+    decision = parse_support_decision(
+        json.dumps(
+            {"decision": "supported", "reason": "Evidence 直接说明"},
+            ensure_ascii=False,
+        )
+    )
+    assert decision.decision == "supported"
+
+
+def test_parse_support_decision_rejects_unknown_decision() -> None:
+    with pytest.raises(BriefSchemaError):
+        parse_support_decision(
+            json.dumps({"decision": "kinda_ok", "reason": "x"})
+        )
+
+
+def test_parse_support_decision_rejects_empty_reason() -> None:
+    with pytest.raises(BriefSchemaError):
+        parse_support_decision(
+            json.dumps({"decision": "supported", "reason": ""})
+        )
+
+
+def test_collect_brief_statement_blocks_includes_all_sections() -> None:
+    raw = json.dumps(_valid_payload_dict(), ensure_ascii=False)
+    brief = parse_brief_payload(raw)
+    blocks = collect_brief_statement_blocks(brief)
+    block_names = [name for name, _, _ in blocks]
+    assert "overview[0]" in block_names
+    assert "key_points[0]" in block_names
+    assert "section_guides[0]" in block_names
+    assert "limitations[0]" in block_names
+
+
+# ---------------------------------------------------------------------------
+# Spec §10.2 generation prompt
+# ---------------------------------------------------------------------------
+
+
+def test_generation_prompt_injects_evidence_and_coverage() -> None:
+    evidence_rows = [
+        _evidence_record(evidence_id="ev_1", heading_path=("概述",)),
+        _evidence_record(evidence_id="ev_2", heading_path=("概述",)),
+    ]
+    coverage_plan = build_section_coverage_plan(evidence_rows)
+    messages = build_generation_prompt(
+        source_title="Test",
+        evidence_rows=evidence_rows,
+        coverage_plan=coverage_plan,
+    )
+    user_text = messages[1]["content"]
+    assert "ev_1" in user_text
+    assert "ev_2" in user_text
+    assert "概述" in user_text
+    assert "Schema v1" in messages[0]["content"]
+
+
+def test_generation_prompt_marks_assets_only_sections() -> None:
+    """Spec §10.2 仅含图片的章节必须 skipped。"""
+    evidence_rows = [
+        _evidence_record(
+            evidence_id="ev_img",
+            heading_path=("附图",),
+            kind="asset",
+        ),
+        _evidence_record(evidence_id="ev_1", heading_path=("正文",)),
+    ]
+    coverage_plan = build_section_coverage_plan(evidence_rows)
+    payload = coverage_plan.to_payload()
+    assets_only_sections = [
+        item for item in payload if item["must_skip"]
+    ]
+    assert len(assets_only_sections) == 1
+    assert assets_only_sections[0]["section_key"] == "附图"
+
+
+def test_repair_prompt_restricts_to_fixes() -> None:
+    """Spec §10.3 repair 只能删除/收缩/重新引用。"""
+    messages = build_repair_prompt(
+        source_title="T",
+        evidence_rows=[_evidence_record(evidence_id="ev_1")],
+        coverage_plan=build_section_coverage_plan(
+            [_evidence_record(evidence_id="ev_1")]
+        ),
+        candidate_payload=_valid_payload_dict(),
+        validation_issues=["overview[0] 引用 ev_FAKE 不存在"],
+    )
+    assert "只能删除" in messages[0]["content"]
+    assert "overview[0] 引用 ev_FAKE 不存在" in messages[1]["content"]
+
+
+def test_validation_prompt_isolates_statement_and_evidence() -> None:
+    """Spec §10.3 Validator 只读取 statement + cited Evidence。"""
+    messages = build_validation_prompt(
+        statement="Source 描述 SQLite SSOT。",
+        cited_evidence=[
+            {"id": "ev_1", "section": "概述", "kind": "text", "excerpt": "..."}
+        ],
+    )
+    assert "Validator" in messages[0]["content"]
+    assert "ev_1" in messages[1]["content"]
+    assert "Source 描述 SQLite SSOT" in messages[1]["content"]
+
+
+# ---------------------------------------------------------------------------
+# Repository: Attempt lifecycle
+# ---------------------------------------------------------------------------
+
+
+def _setup_repository(tmp_path: Path) -> tuple[KnowledgeRepository, sessionmaker[Session], int, int]:
+    init_database(tmp_path / "data.db")
+    session_factory = session_factory_for_data_dir(tmp_path)
+    repository = KnowledgeRepository(session_factory)
+
+    # 通过 service 走完一次完整 ingest，得到一个 extracted Source。
+    from offerpilot.knowledge.service import KnowledgeIngestService
+
+    service = KnowledgeIngestService(repository, tmp_path, session_factory)
+    result = service.ingest(
+        IngestRequest(
+            filename="doc.md",
+            content_bytes="# 概述\n\nSource 描述 OfferPilot 与 SQLite。\n\n## 第二段\n\n另一条 Evidence。\n".encode("utf-8"),
+            title_hint="测试",
+        )
+    )
+    return repository, session_factory, result.source.id, result.source.active_snapshot_id or 0
+
+
+def test_create_brief_attempt_locks_source_processing(tmp_path: Path) -> None:
+    repository, _, source_id, snapshot_id = _setup_repository(tmp_path)
+    attempt, job_id, token = repository.create_brief_attempt(
+        BriefAttemptCreateInput(
+            source_id=source_id,
+            snapshot_id=snapshot_id,
+            provider_id="default",
+            provider_model="test-model",
+            provider_base_url="https://example.com",
+            context_window=BRIEF_MIN_CONTEXT_WINDOW,
+            max_output_tokens=4096,
+            prompt_version=BRIEF_PROMPT_VERSION,
+            schema_version=BRIEF_SCHEMA_VERSION,
+            language=BRIEF_LANGUAGE,
+        )
+    )
+    assert attempt.status == "processing"
+    assert job_id > 0
+    assert token
+    # Source 状态进入 processing
+    source = repository.get_source(source_id)
+    assert source is not None
+    assert source.brief_status == "processing"
+
+
+def test_create_brief_attempt_rejects_duplicate_active(tmp_path: Path) -> None:
+    repository, _, source_id, snapshot_id = _setup_repository(tmp_path)
+    repository.create_brief_attempt(
+        BriefAttemptCreateInput(
+            source_id=source_id,
+            snapshot_id=snapshot_id,
+            provider_id="default",
+            provider_model="test-model",
+            provider_base_url="https://example.com",
+            context_window=BRIEF_MIN_CONTEXT_WINDOW,
+            max_output_tokens=4096,
+            prompt_version=BRIEF_PROMPT_VERSION,
+            schema_version=BRIEF_SCHEMA_VERSION,
+            language=BRIEF_LANGUAGE,
+        )
+    )
+    with pytest.raises(KnowledgeBriefAttemptError) as info:
+        repository.create_brief_attempt(
+            BriefAttemptCreateInput(
+                source_id=source_id,
+                snapshot_id=snapshot_id,
+                provider_id="default",
+                provider_model="test-model",
+                provider_base_url="https://example.com",
+                context_window=BRIEF_MIN_CONTEXT_WINDOW,
+                max_output_tokens=4096,
+                prompt_version=BRIEF_PROMPT_VERSION,
+                schema_version=BRIEF_SCHEMA_VERSION,
+                language=BRIEF_LANGUAGE,
+            )
+        )
+    assert info.value.code == "brief_attempt_conflict"
+
+
+def test_commit_brief_attempt_success_replaces_current_brief(tmp_path: Path) -> None:
+    repository, _, source_id, snapshot_id = _setup_repository(tmp_path)
+    attempt, job_id, token = repository.create_brief_attempt(
+        BriefAttemptCreateInput(
+            source_id=source_id,
+            snapshot_id=snapshot_id,
+            provider_id="default",
+            provider_model="test-model",
+            provider_base_url="",
+            context_window=BRIEF_MIN_CONTEXT_WINDOW,
+            max_output_tokens=4096,
+            prompt_version=BRIEF_PROMPT_VERSION,
+            schema_version=BRIEF_SCHEMA_VERSION,
+            language=BRIEF_LANGUAGE,
+        )
+    )
+    payload_json = json.dumps(_valid_payload_dict(), ensure_ascii=False)
+    ok, brief, _ = repository.commit_brief_attempt_success(
+        attempt.id,
+        job_id=job_id,
+        attempt_token=token,
+        payload_json=payload_json,
+        validation_report_json="{}",
+        token_input_count=1234,
+        token_output_count=567,
+        latency_ms=800,
+    )
+    assert ok
+    assert brief is not None
+    source = repository.get_source(source_id)
+    assert source is not None
+    assert source.brief_status == "ready"
+    assert source.active_brief_id == brief.id
+
+    fetched = repository.get_source_brief(source_id)
+    assert fetched is not None
+    assert fetched.payload_json == payload_json
+
+
+def test_commit_brief_attempt_rejects_stale_token(tmp_path: Path) -> None:
+    """Spec §12 迟到 lease 拒绝提交。"""
+    repository, _, source_id, snapshot_id = _setup_repository(tmp_path)
+    attempt, job_id, _ = repository.create_brief_attempt(
+        BriefAttemptCreateInput(
+            source_id=source_id,
+            snapshot_id=snapshot_id,
+            provider_id="default",
+            provider_model="test-model",
+            provider_base_url="",
+            context_window=BRIEF_MIN_CONTEXT_WINDOW,
+            max_output_tokens=4096,
+            prompt_version=BRIEF_PROMPT_VERSION,
+            schema_version=BRIEF_SCHEMA_VERSION,
+            language=BRIEF_LANGUAGE,
+        )
+    )
+    ok, brief, _ = repository.commit_brief_attempt_success(
+        attempt.id,
+        job_id=job_id,
+        attempt_token="wrong-token",
+        payload_json="{}",
+        validation_report_json="{}",
+    )
+    assert not ok
+    assert brief is None
+
+
+def test_fail_brief_attempt_marks_source_failed(tmp_path: Path) -> None:
+    repository, _, source_id, snapshot_id = _setup_repository(tmp_path)
+    attempt, job_id, token = repository.create_brief_attempt(
+        BriefAttemptCreateInput(
+            source_id=source_id,
+            snapshot_id=snapshot_id,
+            provider_id="default",
+            provider_model="test-model",
+            provider_base_url="",
+            context_window=BRIEF_MIN_CONTEXT_WINDOW,
+            max_output_tokens=4096,
+            prompt_version=BRIEF_PROMPT_VERSION,
+            schema_version=BRIEF_SCHEMA_VERSION,
+            language=BRIEF_LANGUAGE,
+        )
+    )
+    ok, attempt_record, _ = repository.fail_brief_attempt(
+        attempt.id,
+        job_id=job_id,
+        attempt_token=token,
+        error_code="brief_support_invalid",
+        error_message="unsupported x1",
+        validation_report_json='{"stage":"support"}',
+    )
+    assert ok
+    assert attempt_record is not None
+    assert attempt_record.status == "failed"
+    source = repository.get_source(source_id)
+    assert source is not None
+    assert source.brief_status == "failed"
+    assert source.brief_error_code == "brief_support_invalid"
+
+
+# ---------------------------------------------------------------------------
+# BriefWorker end-to-end with stub model_client
+# ---------------------------------------------------------------------------
+
+
+def _stub_model_client_factory(
+    *,
+    generation_output: str,
+    validation_outputs: list[str],
+):
+    """生成一个可控的 stub model_client，按调用顺序返回不同响应。"""
+
+    call_log: list[dict[str, Any]] = []
+
+    def _client(**payload: Any) -> dict[str, Any]:
+        messages = payload.get("messages") or []
+        system_text = ""
+        user_text = ""
+        for message in messages:
+            role = message.get("role")
+            if role == "system":
+                system_text = message.get("content") or ""
+            elif role == "user":
+                user_text = message.get("content") or ""
+        call_log.append({"system": system_text, "user": user_text})
+        if "Validator" in system_text:
+            text = validation_outputs.pop(0) if validation_outputs else (
+                json.dumps({"decision": "supported", "reason": "stub supported"})
+            )
+        else:
+            text = generation_output
+        return {
+            "choices": [{"message": {"content": text}}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 200},
+        }
+
+    return _client, call_log
+
+
+def _provider_config(context_window: int = BRIEF_MIN_CONTEXT_WINDOW) -> Config:
+    provider = AIProviderProfile(
+        id="default",
+        label="Default",
+        provider="openai",
+        api_key="sk-test",
+        base_url="https://example.com",
+        model="gpt-test",
+        enabled=True,
+        context_window=context_window,
+        max_output_tokens=4096,
+    )
+    return Config(
+        api_key="sk-test",
+        providers=[provider],
+        active_provider_id="default",
+    )
+
+
+def _build_valid_payload_from_evidence(evidence_page_items: list[EvidenceRecord]) -> dict[str, Any]:
+    """根据真实 Evidence 列表构造合法 Brief payload。"""
+    evidence_ids = [item.id for item in evidence_page_items]
+    assert len(evidence_ids) >= 2
+    from offerpilot.knowledge.brief import build_section_coverage_plan
+
+    plan = build_section_coverage_plan(evidence_page_items)
+    valid_payload = _valid_payload_dict()
+    valid_payload["overview"][0]["evidence_ids"] = [evidence_ids[0]]
+    valid_payload["overview"][1]["evidence_ids"] = [evidence_ids[1]]
+    valid_payload["key_points"][0]["evidence_ids"] = [evidence_ids[0], evidence_ids[1]]
+    valid_payload["section_guides"][0]["evidence_ids"] = [evidence_ids[0]]
+    first_section_key = next(iter(plan.sections.keys()))
+    first_section = plan.sections[first_section_key]
+    valid_payload["section_guides"][0]["section_key"] = first_section.section_key
+    valid_payload["section_guides"][0]["heading_path"] = list(first_section.heading_path)
+    valid_payload["limitations"][0]["evidence_ids"] = [evidence_ids[1]]
+    valid_payload["coverage"] = [
+        {
+            "section_key": entry.section_key,
+            "status": "covered" if not entry.must_skip else "skipped",
+            "skipped_reason": entry.skipped_reason,
+        }
+        for entry in plan.sections.values()
+    ]
+    return valid_payload
+
+
+def test_brief_worker_generates_and_commits_brief(tmp_path: Path) -> None:
+    repository, session_factory, source_id, snapshot_id = _setup_repository(tmp_path)
+    config = _provider_config()
+    # 使用真实 Evidence ID 构造合法 Brief payload
+    evidence_page = repository.list_evidence(source_id, snapshot_id=snapshot_id, limit=50)
+    valid_payload = _build_valid_payload_from_evidence(evidence_page.items)
+    generation_output = json.dumps(valid_payload, ensure_ascii=False)
+    validation_outputs = [
+        json.dumps({"decision": "supported", "reason": "ok"})
+        for _ in range(10)
+    ]
+    model_client, _ = _stub_model_client_factory(
+        generation_output=generation_output,
+        validation_outputs=validation_outputs,
+    )
+    worker = BriefWorker(repository, config, model_client=model_client)
+    repository.create_job(
+        JobCreateInput(
+            kind="brief",
+            queue="brief",
+            source_id=source_id,
+            snapshot_id=snapshot_id,
+            stage="brief_pending",
+        )
+    )
+    runner = KnowledgeJobRunner(
+        repository,
+        ExtractionWorker(repository, tmp_path, session_factory),
+        brief_worker=worker,
+    )
+    results = runner.tick_brief(lease_owner="test")
+    assert results
+    assert results[0].status == "succeeded", results[0].error_message
+    source = repository.get_source(source_id)
+    assert source is not None
+    assert source.brief_status == "ready"
+    brief = repository.get_source_brief(source_id)
+    assert brief is not None
+
+
+def test_brief_worker_fails_when_support_unsupported(tmp_path: Path) -> None:
+    repository, session_factory, source_id, snapshot_id = _setup_repository(tmp_path)
+    config = _provider_config()
+    evidence_page = repository.list_evidence(source_id, snapshot_id=snapshot_id, limit=50)
+    valid_payload = _build_valid_payload_from_evidence(evidence_page.items)
+    generation_output = json.dumps(valid_payload, ensure_ascii=False)
+    validation_outputs = [
+        json.dumps({"decision": "unsupported", "reason": "no link"})
+        for _ in range(10)
+    ]
+    model_client, _ = _stub_model_client_factory(
+        generation_output=generation_output,
+        validation_outputs=validation_outputs,
+    )
+    worker = BriefWorker(repository, config, model_client=model_client)
+    repository.create_job(
+        JobCreateInput(
+            kind="brief",
+            queue="brief",
+            source_id=source_id,
+            snapshot_id=snapshot_id,
+            stage="brief_pending",
+        )
+    )
+    runner = KnowledgeJobRunner(
+        repository,
+        ExtractionWorker(repository, tmp_path, session_factory),
+        brief_worker=worker,
+    )
+    results = runner.tick_brief(lease_owner="test")
+    assert results
+    assert results[0].status == "failed"
+    assert results[0].error_code == "brief_support_invalid"
+    source = repository.get_source(source_id)
+    assert source is not None
+    assert source.brief_status == "failed"
+    # 未提交 Brief
+    assert repository.get_source_brief(source_id) is None
+
+
+def test_brief_worker_repairs_once_then_succeeds(tmp_path: Path) -> None:
+    """Spec §10.3 首次失败允许一次修复。"""
+    repository, session_factory, source_id, snapshot_id = _setup_repository(tmp_path)
+    config = _provider_config()
+
+    evidence_page = repository.list_evidence(source_id, snapshot_id=snapshot_id, limit=50)
+    valid_payload = _build_valid_payload_from_evidence(evidence_page.items)
+
+    invalid_payload = _valid_payload_dict()
+    invalid_payload["overview"][0]["evidence_ids"] = ["ev_FAKE"]
+
+    call_index = {"generation": 0}
+
+    def _client(**payload: Any) -> dict[str, Any]:
+        system_text = ""
+        for message in payload.get("messages") or []:
+            if message.get("role") == "system":
+                system_text = message.get("content") or ""
+
+        if "Validator" in system_text:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {"decision": "supported", "reason": "ok"}
+                            )
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+            }
+
+        call_index["generation"] += 1
+        if call_index["generation"] == 1:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(invalid_payload, ensure_ascii=False)
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+            }
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(valid_payload, ensure_ascii=False)
+                    }
+                }
+            ],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+        }
+
+    worker = BriefWorker(repository, config, model_client=_client)
+    repository.create_job(
+        JobCreateInput(
+            kind="brief",
+            queue="brief",
+            source_id=source_id,
+            snapshot_id=snapshot_id,
+            stage="brief_pending",
+        )
+    )
+    runner = KnowledgeJobRunner(
+        repository,
+        ExtractionWorker(repository, tmp_path, session_factory),
+        brief_worker=worker,
+    )
+    results = runner.tick_brief(lease_owner="test")
+    assert results
+    assert results[0].status == "succeeded", results[0].error_message
+    source = repository.get_source(source_id)
+    assert source is not None
+    assert source.brief_status == "ready"
+
+
+def test_brief_worker_fails_when_provider_context_too_small(tmp_path: Path) -> None:
+    """Spec §4.2 / §11.2 context < 96K 时不发请求。"""
+    repository, session_factory, source_id, snapshot_id = _setup_repository(tmp_path)
+    config = _provider_config(context_window=32_000)
+    worker = BriefWorker(repository, config, model_client=lambda **p: {})
+    repository.create_job(
+        JobCreateInput(
+            kind="brief",
+            queue="brief",
+            source_id=source_id,
+            snapshot_id=snapshot_id,
+            stage="brief_pending",
+        )
+    )
+    runner = KnowledgeJobRunner(
+        repository,
+        ExtractionWorker(repository, tmp_path, session_factory),
+        brief_worker=worker,
+    )
+    results = runner.tick_brief(lease_owner="test")
+    assert results
+    assert results[0].status == "failed"
+    assert results[0].error_code == "provider_context_too_small"
+    source = repository.get_source(source_id)
+    assert source is not None
+    assert source.brief_status == "pending"
+    assert source.brief_block_reason == "provider_context_too_small"
+
+
+def test_brief_worker_handles_invalid_json_then_repairs_twice_fails(tmp_path: Path) -> None:
+    """Spec §10.3 第二次仍失败则 Attempt failed。"""
+    repository, session_factory, source_id, snapshot_id = _setup_repository(tmp_path)
+    config = _provider_config()
+
+    def _client(**payload: Any) -> dict[str, Any]:
+        system_text = ""
+        for message in payload.get("messages") or []:
+            if message.get("role") == "system":
+                system_text = message.get("content") or ""
+        if "Validator" in system_text:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {"decision": "supported", "reason": "ok"}
+                            )
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+            }
+        # 始终返回非 JSON 文本，触发 schema_invalid
+        return {
+            "choices": [{"message": {"content": "this is not json"}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+        }
+
+    worker = BriefWorker(repository, config, model_client=_client)
+    repository.create_job(
+        JobCreateInput(
+            kind="brief",
+            queue="brief",
+            source_id=source_id,
+            snapshot_id=snapshot_id,
+            stage="brief_pending",
+        )
+    )
+    runner = KnowledgeJobRunner(
+        repository,
+        ExtractionWorker(repository, tmp_path, session_factory),
+        brief_worker=worker,
+    )
+    results = runner.tick_brief(lease_owner="test")
+    assert results
+    assert results[0].status == "failed"
+    assert results[0].error_code == "brief_schema_invalid"
+    source = repository.get_source(source_id)
+    assert source is not None
+    assert source.brief_status == "failed"
+
+
+@pytest.mark.parametrize(
+    "decision",
+    ["partial", "unsupported", "contradicted"],
+)
+def test_brief_worker_fails_for_non_supported_decisions(
+    tmp_path: Path, decision: str
+) -> None:
+    """Spec §10.3 仅 supported 可发布；partial/unsupported/contradicted 均判失败。"""
+    repository, session_factory, source_id, snapshot_id = _setup_repository(tmp_path)
+    config = _provider_config()
+
+    evidence_page = repository.list_evidence(source_id, snapshot_id=snapshot_id, limit=50)
+    valid_payload = _build_valid_payload_from_evidence(evidence_page.items)
+
+    def _client(**payload: Any) -> dict[str, Any]:
+        system_text = ""
+        for message in payload.get("messages") or []:
+            if message.get("role") == "system":
+                system_text = message.get("content") or ""
+        if "Validator" in system_text:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {"decision": decision, "reason": "stub non-supported"}
+                            )
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+            }
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(valid_payload, ensure_ascii=False)
+                    }
+                }
+            ],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 200},
+        }
+
+    worker = BriefWorker(repository, config, model_client=_client)
+    repository.create_job(
+        JobCreateInput(
+            kind="brief",
+            queue="brief",
+            source_id=source_id,
+            snapshot_id=snapshot_id,
+            stage="brief_pending",
+        )
+    )
+    runner = KnowledgeJobRunner(
+        repository,
+        ExtractionWorker(repository, tmp_path, session_factory),
+        brief_worker=worker,
+    )
+    results = runner.tick_brief(lease_owner="test")
+    assert results
+    assert results[0].status == "failed"
+    assert results[0].error_code == "brief_support_invalid"
+    source = repository.get_source(source_id)
+    assert source is not None
+    assert source.brief_status == "failed"
+    assert repository.get_source_brief(source_id) is None
+
+
+def test_brief_worker_classifies_provider_auth_error(tmp_path: Path) -> None:
+    """Spec §11.4：鉴权失败应归类为 provider_auth_invalid，便于 KI-10 不重试。"""
+    repository, session_factory, source_id, snapshot_id = _setup_repository(tmp_path)
+    config = _provider_config()
+
+    class _AuthError(Exception):
+        pass
+
+    def _client(**payload: Any) -> dict[str, Any]:
+        raise _AuthError("AuthenticationError: 401 invalid api key")
+
+    worker = BriefWorker(repository, config, model_client=_client)
+    repository.create_job(
+        JobCreateInput(
+            kind="brief",
+            queue="brief",
+            source_id=source_id,
+            snapshot_id=snapshot_id,
+            stage="brief_pending",
+        )
+    )
+    runner = KnowledgeJobRunner(
+        repository,
+        ExtractionWorker(repository, tmp_path, session_factory),
+        brief_worker=worker,
+    )
+    results = runner.tick_brief(lease_owner="test")
+    assert results
+    assert results[0].status == "failed"
+    assert results[0].error_code == "provider_auth_invalid"

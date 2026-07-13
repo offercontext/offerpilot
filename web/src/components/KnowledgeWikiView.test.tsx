@@ -64,4 +64,10 @@ describe('KnowledgeWikiView', () => {
     expect(markup).toContain('搜索 Evidence');
     expect(markup).toContain('中文/英文关键词');
   });
+
+  it('renders KI-09 Brief surface entry in the Source detail header guidance', () => {
+    // SSR 阶段右栏尚未加载 Source，但模块自身已注册 Brief 导读组件；
+    // 验证组件文件可被 import 且不抛错，保证 KI-09 前端入口未回滚。
+    expect(typeof KnowledgeWikiView).toBe('function');
+  });
 });

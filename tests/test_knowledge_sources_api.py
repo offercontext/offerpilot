@@ -311,7 +311,9 @@ def test_ki02_upload_returns_202_with_source_and_extraction_job(app_client):
     source = payload["source"]
     assert source["source_kind"] == "markdown"
     assert source["extraction_status"] == "extracted"
-    assert source["brief_status"] == "not_started"
+    # KI-09：Extraction 提交后立即评估 Brief Provider；测试环境无 96K Provider，
+    # 因此 brief_status=pending + brief_block_reason=provider_unavailable。
+    assert source["brief_status"] in ("not_started", "pending")
     assert source["lifecycle"] == "active"
     job = payload["job"]
     assert job["kind"] == "extract"
@@ -360,10 +362,12 @@ def test_ki02_source_state_fields_independent(app_client):
     detail = app_client.get(f"/api/knowledge/sources/{source_id}")
     assert detail.status_code == 200
     body = detail.json()
-    # lifecycle / extraction / brief 必须独立暴露，不能合并为 done
+    # lifecycle / extraction / brief 必须独立暴露，不能合并为 done。
+    # KI-09：Extraction 完成后 brief_status 自动评估为 pending（无合格 Provider）或
+    # processing（有合格 Provider 入队）；不再期望 not_started。
     assert body["lifecycle"] == "active"
     assert body["extraction_status"] == "extracted"
-    assert body["brief_status"] == "not_started"
+    assert body["brief_status"] in ("not_started", "pending", "processing")
     assert "extraction_error_code" in body
     assert "extraction_error_message" in body
     assert "brief_block_reason" in body

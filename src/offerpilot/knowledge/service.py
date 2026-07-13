@@ -45,6 +45,7 @@ from urllib.parse import urlsplit
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from offerpilot.config import Config
 from offerpilot.knowledge.assets import (
     AssetInput,
     AssetValidationError,
@@ -71,6 +72,7 @@ from offerpilot.knowledge.repository import (
     AssetCreateInput,
     DeleteJobSnapshot,
     EvidenceDraftInput,
+    JobCreateInput,
     KnowledgeRepository,
     OriginCreateInput,
     SnapshotCreateInput,
@@ -141,11 +143,13 @@ class KnowledgeIngestService:
         data_dir: Path,
         session_factory: "sessionmaker[Session]",
         extractor: Optional[MarkdownExtractor] = None,
+        config: Optional[Config] = None,
     ) -> None:
         self._repository = repository
         self._data_dir = data_dir
         self._session_factory = session_factory
         self._extractor = extractor or MarkdownExtractor()
+        self._config = config
 
     def ingest(self, request: IngestRequest) -> IngestResult:
         filename = request.filename.strip()
@@ -406,6 +410,15 @@ class KnowledgeIngestService:
                 "事务提交后无法读取 Source / Job",
             )
 
+        # KI-09：Spec §10.2 Source 完成 Evidence 提交后立即可搜索，不等待 Brief；
+        # enqueue Brief Job 或设置 block reason 是非阻塞操作，失败不回滚 Extraction。
+        try:
+            self.enqueue_or_block_brief(refreshed_source.id)
+        except Exception:
+            # 入队失败不应让已成功的 ingest 报错；启动恢复 / 手动 rebuild 可补偿。
+            pass
+        refreshed_source = self._repository.get_source(source_id) or refreshed_source
+
         return IngestResult(
             source=refreshed_source,
             job_id=refreshed_job.id,
@@ -435,6 +448,105 @@ class KnowledgeIngestService:
         原文 / 附件仍可读;归档不会自动过期或后台清理。
         """
         return self._repository.archive_source(source_id)
+
+    def enqueue_or_block_brief(self, source_id: int) -> Optional[SourceRecord]:
+        """KI-09：Source 进入 ``extracted`` 后，根据 Provider 状态决定 enqueue 或 block。
+
+        Spec §11.2：
+        - 配置合格 Provider → 创建 ``kind=brief, queue=brief, status=pending`` Job。
+        - 无合格 Provider → ``brief_status=pending`` + ``brief_block_reason=provider_unavailable``
+          或 ``provider_context_too_small``。
+
+        Spec §11.2 "配置变化不自动批量生成"：用户显式重建由 ``rebuild_brief`` 触发，
+        本方法只用于首次 ingest 时自动入队。
+        """
+        source = self._repository.get_source(source_id)
+        if source is None or source.lifecycle == "deleting":
+            return None
+        if source.extraction_status != "extracted":
+            return source
+        if source.brief_status in ("processing", "ready"):
+            return source
+        block_reason = self._brief_provider_block_reason()
+        if block_reason:
+            return self._repository.update_source_state(
+                source_id,
+                brief_status="pending",
+                brief_block_reason=block_reason,
+                brief_error_code=block_reason,
+                brief_error_message=(
+                    "未配置满足 Brief 96K context 的 Provider，请先在设置中配置"
+                ),
+            )
+        self._repository.create_job(
+            JobCreateInput(
+                kind="brief",
+                queue="brief",
+                source_id=source_id,
+                snapshot_id=source.active_snapshot_id,
+                stage="brief_pending",
+            )
+        )
+        return self._repository.update_source_state(
+            source_id,
+            brief_status="pending",
+            brief_block_reason="",
+            brief_error_code="",
+            brief_error_message="",
+        )
+
+    def rebuild_brief(self, source_id: int) -> tuple[Optional[SourceRecord], str]:
+        """KI-09：用户显式触发 Brief 重建（Spec §16.1 ``POST /sources/{id}/brief/rebuild``）。
+
+        返回 ``(source, status_message)``。``source=None`` 表示 Source 不存在或处于
+        不可重建状态，由 API 层映射 4xx 错误。
+
+        Spec §10.4 "用户使用当前配置重建会创建新 Attempt 和独立重试预算"。
+        Spec §11.2 无合格 Provider 时不创建 Attempt，仅返回 block reason。
+        """
+        source = self._repository.get_source(source_id)
+        if source is None or source.lifecycle == "deleting":
+            return None, "Source 不存在"
+        if source.extraction_status != "extracted":
+            return source, "Source 尚未完成 Extraction"
+        block_reason = self._brief_provider_block_reason()
+        if block_reason:
+            updated = self._repository.update_source_state(
+                source_id,
+                brief_status="pending",
+                brief_block_reason=block_reason,
+                brief_error_code=block_reason,
+                brief_error_message=(
+                    "未配置满足 Brief 96K context 的 Provider，请先在设置中配置"
+                ),
+            )
+            return updated, block_reason
+        self._repository.create_job(
+            JobCreateInput(
+                kind="brief",
+                queue="brief",
+                source_id=source_id,
+                snapshot_id=source.active_snapshot_id,
+                stage="brief_rebuild_pending",
+            )
+        )
+        updated = self._repository.get_source(source_id)
+        return updated, "brief_rebuild_queued"
+
+    def _brief_provider_block_reason(self) -> str:
+        """Spec §11.2：根据当前 Config 判断 Brief Provider 是否可用。
+
+        没有传入 Config 时（旧调用方）默认认为 Provider 可用，便于早期测试在 worker
+        端单独校验；正式启用 Brief 后 service 一定传入 Config。
+        """
+        if self._config is None:
+            return ""
+        provider = self._config.active_provider()
+        if not provider.enabled or not provider.api_key:
+            return "provider_unavailable"
+        if provider.context_window < 96_000:
+            return "provider_context_too_small"
+        return ""
 
     def unarchive_source(self, source_id: int) -> Optional[SourceRecord]:
         """KI-06：取消归档 Source。

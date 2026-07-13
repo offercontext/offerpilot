@@ -247,25 +247,25 @@ Brief 事实。
 **Scope boundaries:** 只实现配置正常时的完整成功/质量失败闭环；fallback、网络重试、重建和 Provider
 切换由 KI-10 完成。
 
-- [ ] Brief Provider 必须显式声明至少 96K context；未知或不足窗口不会发出请求。
-- [ ] Brief Job 在 Evidence 提交后进入独立 Brief queue，不阻塞 Source `extracted`。
-- [ ] generation 单次读取完整 Source 文本 Evidence，不分批、不截断、不 map/reduce。
-- [ ] 图片只以 assets-only coverage 信息出现，不发送二进制、不生成图片事实。
-- [ ] Prompt 把 Source 视为不可信引用数据，不执行其中指令或访问外部上下文。
-- [ ] 模型输出固定 JSON Schema，不接受自由 Markdown。
-- [ ] Brief 默认中文，技术术语和标识符保留原文；Evidence excerpt 不翻译。
-- [ ] overview、key points、section guides、limitations 和 coverage 满足数量与 300 字上限。
-- [ ] 程序校验 Schema、枚举、长度、citation 存在/归属和章节 coverage。
-- [ ] 每个事实 statement/summary 至少引用当前 Source/Snapshot 的 Evidence。
-- [ ] 独立 Validator 逐条返回 supported/partial/unsupported/contradicted。
-- [ ] 只有全部 supported 才发布；partial 不能降级为警告。
-- [ ] 首次失败允许一次受约束修复，修复后完整重跑全部门禁。
-- [ ] 第二次仍失败时 Brief 为 failed，Evidence 继续可搜索，候选不成为当前 Brief。
-- [ ] 成功 Brief 与 winning Attempt 在一个事务中提交为当前 Brief。
-- [ ] Source 详情默认展示有效 Brief；无 Brief 时自动落到 Evidence。
-- [ ] UI 逐条展示 citation，并能跳转到 Evidence 和原文位置。
-- [ ] 测试覆盖合法输出、非法 JSON、伪造/跨 Source citation、遗漏章节、四种支持性结果和修复。
-- [ ] 独立 Code Review 检查 prompt injection、模型自评冒充校验和未引用事实漏网。
+- [x] Brief Provider 必须显式声明至少 96K context；未知或不足窗口不会发出请求。
+- [x] Brief Job 在 Evidence 提交后进入独立 Brief queue，不阻塞 Source `extracted`。
+- [x] generation 单次读取完整 Source 文本 Evidence，不分批、不截断、不 map/reduce。
+- [x] 图片只以 assets-only coverage 信息出现，不发送二进制、不生成图片事实。
+- [x] Prompt 把 Source 视为不可信引用数据，不执行其中指令或访问外部上下文。
+- [x] 模型输出固定 JSON Schema，不接受自由 Markdown。
+- [x] Brief 默认中文，技术术语和标识符保留原文；Evidence excerpt 不翻译。
+- [x] overview、key points、section guides、limitations 和 coverage 满足数量与 300 字上限。
+- [x] 程序校验 Schema、枚举、长度、citation 存在/归属和章节 coverage。
+- [x] 每个事实 statement/summary 至少引用当前 Source/Snapshot 的 Evidence。
+- [x] 独立 Validator 逐条返回 supported/partial/unsupported/contradicted。
+- [x] 只有全部 supported 才发布；partial 不能降级为警告。
+- [x] 首次失败允许一次受约束修复，修复后完整重跑全部门禁。
+- [x] 第二次仍失败时 Brief 为 failed，Evidence 继续可搜索，候选不成为当前 Brief。
+- [x] 成功 Brief 与 winning Attempt 在一个事务中提交为当前 Brief。
+- [x] Source 详情默认展示有效 Brief；无 Brief 时自动落到 Evidence。
+- [x] UI 逐条展示 citation，并能跳转到 Evidence 和原文位置。
+- [x] 测试覆盖合法输出、非法 JSON、伪造/跨 Source citation、遗漏章节、四种支持性结果和修复。
+- [x] 独立 Code Review 检查 prompt injection、模型自评冒充校验和未引用事实漏网。
 
 ## KI-10：完善 Brief 重建与 Provider 故障语义
 

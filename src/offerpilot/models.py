@@ -835,6 +835,132 @@ class KnowledgeLog(Base):
     )
 
 
+class KnowledgeSourceBrief(Base):
+    """Spec §10 / §14.7：每个 Source 的当前 Brief（单行）。
+
+    一个 Source 至多一条当前 Brief 行；重建流程在新 Attempt 全部门禁通过后，
+    于同一 SQLite 事务中以新 Brief 替换旧行并更新 Source.active_brief_id。
+    payload_json 严格遵循 Brief Schema v1（Spec §10.1）。
+    """
+
+    __tablename__ = "knowledge_source_briefs"
+    __table_args__ = (
+        Index("idx_knowledge_source_briefs_source", "source_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    source_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_sources.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    snapshot_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_extraction_snapshots.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    winning_attempt_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    schema_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    language: Mapped[str] = mapped_column(
+        String, nullable=False, default="zh-CN", server_default="zh-CN"
+    )
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    outdated: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+        onupdate=func.current_timestamp(),
+    )
+
+
+class KnowledgeBriefAttempt(Base):
+    """Spec §10 / §14.8 / §11.1：Brief Attempt 历史与诊断数据。
+
+    Attempt 在创建时固定 Provider/Model/参数/Prompt 版本/Schema 版本/Snapshot；
+    不保存 API Key、完整 Prompt 或不可解析原始响应（Spec §18 / §11.1）。
+    候选 payload 与 validation 报告可持久化，便于排查与 KI-11 评估。
+    """
+
+    __tablename__ = "knowledge_brief_attempts"
+    __table_args__ = (
+        Index("idx_knowledge_brief_attempts_source", "source_id"),
+        Index("idx_knowledge_brief_attempts_status", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    source_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_sources.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    snapshot_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_extraction_snapshots.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, default="pending", server_default="pending"
+    )
+    provider_id: Mapped[str] = mapped_column(String, nullable=False)
+    provider_model: Mapped[str] = mapped_column(String, nullable=False)
+    provider_base_url: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default=""
+    )
+    context_window: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_output_tokens: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    prompt_version: Mapped[str] = mapped_column(String, nullable=False)
+    schema_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    language: Mapped[str] = mapped_column(
+        String, nullable=False, default="zh-CN", server_default="zh-CN"
+    )
+    candidate_payload_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+    validation_report_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="{}", server_default="{}"
+    )
+    error_code: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default=""
+    )
+    error_message: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+    repair_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    token_input_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    token_output_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    latency_ms: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+        onupdate=func.current_timestamp(),
+    )
+
+
 class KnowledgeRetrievalTrace(Base):
     """Spec §14.10 Retrieval Trace：本地评估数据，不参与召回。
 

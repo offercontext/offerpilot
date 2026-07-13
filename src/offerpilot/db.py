@@ -451,6 +451,21 @@ def _recover_knowledge_deletions(engine, data_dir: Path) -> None:  # type: ignor
                     text("DELETE FROM knowledge_source_origins WHERE source_id = :sid"),
                     {"sid": source_id},
                 )
+                # KI-09：Spec §5.4 删除时清理 Brief / Attempt；存在性检查避免旧库未建表。
+                if "knowledge_source_briefs" in tables:
+                    conn.execute(
+                        text(
+                            "DELETE FROM knowledge_source_briefs WHERE source_id = :sid"
+                        ),
+                        {"sid": source_id},
+                    )
+                if "knowledge_brief_attempts" in tables:
+                    conn.execute(
+                        text(
+                            "DELETE FROM knowledge_brief_attempts WHERE source_id = :sid"
+                        ),
+                        {"sid": source_id},
+                    )
                 conn.execute(
                     text("DELETE FROM knowledge_jobs WHERE source_id = :sid"),
                     {"sid": source_id},

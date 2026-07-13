@@ -154,3 +154,88 @@ export interface KnowledgeDeleteResponse {
   source_id: number;
   job: KnowledgeDeleteJob;
 }
+
+export interface BriefStatement {
+  statement: string;
+  evidence_ids: string[];
+}
+
+export interface BriefSectionGuide {
+  section_key: string;
+  heading_path: string[];
+  summary: string;
+  evidence_ids: string[];
+}
+
+export interface BriefCoverage {
+  section_key: string;
+  status: 'covered' | 'skipped';
+  skipped_reason: string;
+}
+
+export interface BriefPayload {
+  schema_version: number;
+  language: string;
+  overview: BriefStatement[];
+  key_points: BriefStatement[];
+  section_guides: BriefSectionGuide[];
+  limitations: BriefStatement[];
+  coverage: BriefCoverage[];
+}
+
+export interface KnowledgeSourceBrief {
+  id: number;
+  source_id: number;
+  snapshot_id: number;
+  winning_attempt_id: number;
+  schema_version: number;
+  language: string;
+  payload: BriefPayload;
+  outdated: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface KnowledgeBriefAttempt {
+  id: number;
+  source_id: number;
+  snapshot_id: number;
+  status: string;
+  provider_id: string;
+  provider_model: string;
+  context_window: number;
+  max_output_tokens: number;
+  prompt_version: string;
+  schema_version: number;
+  language: string;
+  candidate_payload: BriefPayload | null;
+  validation_report: Record<string, unknown>;
+  error_code: string;
+  error_message: string;
+  repair_count: number;
+  token_input_count: number;
+  token_output_count: number;
+  latency_ms: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface KnowledgeSourceBriefResponse {
+  source_id: number;
+  brief_status: string;
+  brief_block_reason: string;
+  brief_error_code: string;
+  brief_error_message: string;
+  brief: KnowledgeSourceBrief | null;
+  latest_attempt: KnowledgeBriefAttempt | null;
+  attempts: KnowledgeBriefAttempt[];
+}
+
+export interface KnowledgeBriefRebuildResponse {
+  source_id: number;
+  brief_status: string;
+  brief_block_reason: string;
+  brief_error_code: string;
+  brief_error_message: string;
+  status: string;
+}

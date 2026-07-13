@@ -1,4 +1,5 @@
 import type {
+  KnowledgeBriefRebuildResponse,
   KnowledgeDeleteResponse,
   KnowledgeEvidence,
   KnowledgeEvidencePage,
@@ -7,6 +8,7 @@ import type {
   KnowledgeJob,
   KnowledgeSource,
   KnowledgeSourceAssetsResponse,
+  KnowledgeSourceBriefResponse,
   KnowledgeSourceJobsResponse,
 } from '@/types/knowledge';
 import { createApiClient } from './http';
@@ -187,5 +189,23 @@ export async function cancelKnowledgeJob(jobId: number): Promise<KnowledgeJob> {
 
 export async function fetchKnowledgeJob(jobId: number): Promise<KnowledgeJob> {
   const { data } = await http.get<KnowledgeJob>(`/knowledge/jobs/${jobId}`);
+  return data;
+}
+
+export async function fetchKnowledgeSourceBrief(
+  sourceId: number,
+): Promise<KnowledgeSourceBriefResponse> {
+  const { data } = await http.get<KnowledgeSourceBriefResponse>(
+    `/knowledge/sources/${sourceId}/brief`,
+  );
+  return data;
+}
+
+export async function rebuildKnowledgeSourceBrief(
+  sourceId: number,
+): Promise<KnowledgeBriefRebuildResponse> {
+  const { data } = await http.post<KnowledgeBriefRebuildResponse>(
+    `/knowledge/sources/${sourceId}/brief/rebuild`,
+  );
   return data;
 }

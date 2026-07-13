@@ -1,0 +1,292 @@
+"""KI-09 Brief HTTP API 契约测试。"""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+import pytest
+from fastapi.testclient import TestClient
+
+from offerpilot.api import create_app
+from offerpilot.config import AIProviderProfile, Config
+from offerpilot.db import init_database, session_factory_for_data_dir
+from offerpilot.knowledge.brief import (
+    BRIEF_LANGUAGE,
+    BRIEF_MIN_CONTEXT_WINDOW,
+    BRIEF_PROMPT_VERSION,
+    BRIEF_SCHEMA_VERSION,
+)
+from offerpilot.knowledge.repository import (
+    BriefAttemptCreateInput,
+    JobCreateInput,
+    KnowledgeRepository,
+)
+from offerpilot.knowledge.worker import BriefWorker, KnowledgeJobRunner, ExtractionWorker
+
+
+@pytest.fixture
+def app_client(tmp_path):
+    return TestClient(create_app(data_dir=tmp_path))
+
+
+def _upload(client: TestClient, filename: str, content: bytes) -> Any:
+    files = {"file": (filename, content, "text/markdown")}
+    return client.post("/api/knowledge/sources", files=files)
+
+
+def _upload(client, filename: str, content: bytes) -> Any:
+    files = {"file": (filename, content, "text/markdown")}
+    return client.post("/api/knowledge/sources", files=files)
+
+
+def _valid_payload(evidence_ids: list[str], section_keys: list[str]) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "language": "zh-CN",
+        "overview": [
+            {"statement": "Source 描述 OfferPilot。", "evidence_ids": [evidence_ids[0]]},
+            {"statement": "Source 涉及 SQLite。", "evidence_ids": [evidence_ids[1]]},
+        ],
+        "key_points": [
+            {"statement": "Evidence 是引用单位。", "evidence_ids": evidence_ids[:2]},
+        ],
+        "section_guides": [
+            {
+                "section_key": section_keys[0],
+                "heading_path": [section_keys[0]],
+                "summary": "介绍 OfferPilot。",
+                "evidence_ids": [evidence_ids[0]],
+            }
+        ],
+        "limitations": [
+            {"statement": "未涉及细节。", "evidence_ids": [evidence_ids[1]]},
+        ],
+        "coverage": [
+            {"section_key": key, "status": "covered", "skipped_reason": ""}
+            for key in section_keys
+        ],
+    }
+
+
+def test_ki09_brief_endpoint_returns_empty_without_brief(app_client) -> None:
+    upload = _upload(app_client, "doc.md", "# 概述\n\n正文。\n".encode("utf-8"))
+    source_id = upload.json()["source"]["id"]
+    response = app_client.get(f"/api/knowledge/sources/{source_id}/brief")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source_id"] == source_id
+    # 测试环境无 96K Provider，brief_block_reason 必须显式说明
+    assert body["brief_status"] in ("pending", "processing", "failed")
+    assert body["brief"] is None
+
+
+def test_ki09_brief_endpoint_returns_404_for_unknown_source(app_client) -> None:
+    response = app_client.get("/api/knowledge/sources/99991/brief")
+    assert response.status_code == 404
+
+
+def test_ki09_brief_rebuild_returns_202_with_block_reason(app_client) -> None:
+    upload = _upload(app_client, "doc.md", "# 概述\n\n正文。\n".encode("utf-8"))
+    source_id = upload.json()["source"]["id"]
+    response = app_client.post(f"/api/knowledge/sources/{source_id}/brief/rebuild")
+    assert response.status_code == 202
+    body = response.json()
+    assert body["source_id"] == source_id
+    # 测试环境无合格 Provider，必然返回 block reason
+    assert body["brief_block_reason"] in (
+        "provider_unavailable",
+        "provider_context_too_small",
+    )
+
+
+def test_ki09_brief_rebuild_returns_404_for_unknown_source(app_client) -> None:
+    response = app_client.post("/api/knowledge/sources/99991/brief/rebuild")
+    assert response.status_code == 404
+
+
+def test_ki09_brief_endpoint_exposes_committed_brief_payload(
+    app_client, tmp_path
+) -> None:
+    """Spec §10 / §16.1：成功 Brief 通过 endpoint 暴露 payload；前端展示用。"""
+    upload = _upload(
+        app_client,
+        "doc.md",
+        "# 概述\n\n正文一段。\n\n## 第二段\n\n正文二段。\n".encode("utf-8"),
+    )
+    source_id = upload.json()["source"]["id"]
+
+    # 通过 repository + worker 直接构造一个成功 Brief，跳过模型调用
+    init_database(tmp_path / "data.db")
+    session_factory = session_factory_for_data_dir(tmp_path)
+    repository = KnowledgeRepository(session_factory)
+    evidence_page = repository.list_evidence(source_id, limit=50)
+    evidence_ids = [item.id for item in evidence_page.items]
+    assert len(evidence_ids) >= 2
+
+    # 使用 endpoint client 的同一个进程内 repository 提交一次成功 Brief
+    section_keys = ["概述"]
+    if len({tuple(ev.heading_path) for ev in evidence_page.items}) > 1:
+        section_keys.append("概述 / 第二段")
+    payload_dict = _valid_payload(evidence_ids, section_keys)
+    attempt, job_id, token = repository.create_brief_attempt(
+        BriefAttemptCreateInput(
+            source_id=source_id,
+            snapshot_id=evidence_page.items[0].snapshot_id,
+            provider_id="default",
+            provider_model="test-model",
+            provider_base_url="",
+            context_window=BRIEF_MIN_CONTEXT_WINDOW,
+            max_output_tokens=4096,
+            prompt_version=BRIEF_PROMPT_VERSION,
+            schema_version=BRIEF_SCHEMA_VERSION,
+            language=BRIEF_LANGUAGE,
+        )
+    )
+    ok, _, _ = repository.commit_brief_attempt_success(
+        attempt.id,
+        job_id=job_id,
+        attempt_token=token,
+        payload_json=json.dumps(payload_dict, ensure_ascii=False),
+        validation_report_json='{"stage":"ok"}',
+        token_input_count=100,
+        token_output_count=200,
+        latency_ms=500,
+    )
+    assert ok
+
+    response = app_client.get(f"/api/knowledge/sources/{source_id}/brief")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["brief"] is not None
+    assert body["brief"]["payload"]["schema_version"] == 1
+    assert body["brief"]["payload"]["language"] == "zh-CN"
+    assert len(body["brief"]["payload"]["overview"]) == 2
+
+
+def test_ki09_brief_endpoint_lists_attempts_with_redacted_secrets(
+    app_client, tmp_path
+) -> None:
+    """Spec §18：Attempt 不暴露 API Key 或原始 Prompt。"""
+    upload = _upload(app_client, "doc.md", "# 概述\n\n正文。\n".encode("utf-8"))
+    source_id = upload.json()["source"]["id"]
+    init_database(tmp_path / "data.db")
+    session_factory = session_factory_for_data_dir(tmp_path)
+    repository = KnowledgeRepository(session_factory)
+    evidence_page = repository.list_evidence(source_id, limit=10)
+    attempt, _, _ = repository.create_brief_attempt(
+        BriefAttemptCreateInput(
+            source_id=source_id,
+            snapshot_id=evidence_page.items[0].snapshot_id,
+            provider_id="default",
+            provider_model="test-model",
+            provider_base_url="https://secret.example.com",
+            context_window=BRIEF_MIN_CONTEXT_WINDOW,
+            max_output_tokens=4096,
+            prompt_version=BRIEF_PROMPT_VERSION,
+            schema_version=BRIEF_SCHEMA_VERSION,
+            language=BRIEF_LANGUAGE,
+        )
+    )
+    assert attempt.id > 0
+
+    response = app_client.get(f"/api/knowledge/sources/{source_id}/brief")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["latest_attempt"] is not None
+    serialized = json.dumps(body)
+    # Spec §18 安全检查：API Key 与 base URL 都不得出现在响应中
+    assert "sk-" not in serialized
+    assert "secret.example.com" not in serialized
+
+
+def test_ki09_brief_worker_processes_real_queue_with_stub_provider(
+    app_client, tmp_path
+) -> None:
+    """Spec §10.4：tick_brief 触发完整 generation/validation/commit 流程。"""
+    upload = _upload(
+        app_client,
+        "doc.md",
+        "# 概述\n\n正文一段。\n\n## 第二段\n\n正文二段。\n".encode("utf-8"),
+    )
+    source_id = upload.json()["source"]["id"]
+
+    init_database(tmp_path / "data.db")
+    session_factory = session_factory_for_data_dir(tmp_path)
+    repository = KnowledgeRepository(session_factory)
+
+    # 配置合格 Provider
+    provider = AIProviderProfile(
+        id="default",
+        label="Default",
+        provider="openai",
+        api_key="sk-test",
+        base_url="https://example.com",
+        model="gpt-test",
+        enabled=True,
+        context_window=BRIEF_MIN_CONTEXT_WINDOW,
+        max_output_tokens=4096,
+    )
+    config = Config(
+        api_key="sk-test",
+        providers=[provider],
+        active_provider_id="default",
+    )
+    evidence_page = repository.list_evidence(source_id, limit=50)
+    from offerpilot.knowledge.brief import build_section_coverage_plan
+
+    plan = build_section_coverage_plan(evidence_page.items)
+    section_keys = list(plan.sections.keys())
+    valid_payload = _valid_payload(
+        [ev.id for ev in evidence_page.items], section_keys
+    )
+
+    def _stub_client(**payload: Any) -> dict[str, Any]:
+        system_text = ""
+        for message in payload.get("messages") or []:
+            if message.get("role") == "system":
+                system_text = message.get("content") or ""
+        if "Validator" in system_text:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {"decision": "supported", "reason": "ok"}
+                            )
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+            }
+        return {
+            "choices": [
+                {"message": {"content": json.dumps(valid_payload, ensure_ascii=False)}}
+            ],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 200},
+        }
+
+    worker = BriefWorker(repository, config, model_client=_stub_client)
+    repository.create_job(
+        JobCreateInput(
+            kind="brief",
+            queue="brief",
+            source_id=source_id,
+            snapshot_id=evidence_page.items[0].snapshot_id,
+            stage="brief_pending",
+        )
+    )
+    runner = KnowledgeJobRunner(
+        repository,
+        ExtractionWorker(repository, tmp_path, session_factory),
+        brief_worker=worker,
+    )
+    results = runner.tick_brief(lease_owner="test")
+    assert results
+    assert results[0].status == "succeeded", results[0].error_message
+
+    # API 应该能读取到已提交 Brief
+    response = app_client.get(f"/api/knowledge/sources/{source_id}/brief")
+    body = response.json()
+    assert body["brief_status"] == "ready"
+    assert body["brief"] is not None

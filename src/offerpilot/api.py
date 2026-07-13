@@ -235,6 +235,70 @@ def _knowledge_origin_payload(origin: Any) -> dict[str, Any]:
     }
 
 
+def _knowledge_brief_payload(brief: Any) -> Optional[dict[str, Any]]:
+    # KI-09 / Spec §10.1：当前 Brief payload 直接转发 JSON 字符串；前端解析。
+    # ``payload`` 不包含 Source 原文或 Prompt，仅 Schema v1 结构化导读。
+    if brief is None:
+        return None
+    try:
+        payload = json.loads(brief.payload_json or "{}")
+    except json.JSONDecodeError:
+        payload = {}
+    return {
+        "id": brief.id,
+        "source_id": brief.source_id,
+        "snapshot_id": brief.snapshot_id,
+        "winning_attempt_id": brief.winning_attempt_id,
+        "schema_version": brief.schema_version,
+        "language": brief.language,
+        "payload": payload,
+        "outdated": bool(brief.outdated),
+        "created_at": _json_datetime(brief.created_at),
+        "updated_at": _json_datetime(brief.updated_at),
+    }
+
+
+def _knowledge_brief_attempt_payload(attempt: Any) -> Optional[dict[str, Any]]:
+    # KI-09 / Spec §10.4 / §18：Attempt 不暴露 API Key、完整 Prompt 或不可解析原始响应。
+    # candidate_payload 仅在非 succeeded 时返回，便于 UI 展示校验失败候选。
+    if attempt is None:
+        return None
+    show_candidate = attempt.status != "succeeded"
+    try:
+        validation_report = json.loads(attempt.validation_report_json or "{}")
+    except json.JSONDecodeError:
+        validation_report = {}
+    candidate_payload: Any = None
+    if show_candidate and attempt.candidate_payload_json:
+        try:
+            candidate_payload = json.loads(attempt.candidate_payload_json)
+        except json.JSONDecodeError:
+            candidate_payload = None
+    return {
+        "id": attempt.id,
+        "source_id": attempt.source_id,
+        "snapshot_id": attempt.snapshot_id,
+        "status": attempt.status,
+        "provider_id": attempt.provider_id,
+        "provider_model": attempt.provider_model,
+        "context_window": attempt.context_window,
+        "max_output_tokens": attempt.max_output_tokens,
+        "prompt_version": attempt.prompt_version,
+        "schema_version": attempt.schema_version,
+        "language": attempt.language,
+        "candidate_payload": candidate_payload,
+        "validation_report": validation_report,
+        "error_code": attempt.error_code,
+        "error_message": attempt.error_message,
+        "repair_count": attempt.repair_count,
+        "token_input_count": attempt.token_input_count,
+        "token_output_count": attempt.token_output_count,
+        "latency_ms": attempt.latency_ms,
+        "created_at": _json_datetime(attempt.created_at),
+        "updated_at": _json_datetime(attempt.updated_at),
+    }
+
+
 def _knowledge_ingest_payload(result: Any) -> dict[str, Any]:
     return {
         "deduplicated": result.deduplicated,
@@ -294,8 +358,12 @@ def create_app(
     mock_sessions = MockSessionsRepository(session_factory)
     wakeups = WakeupsRepository(session_factory)
     knowledge_repository = KnowledgeRepository(session_factory)
+    knowledge_config = load_config(resolved_data_dir)
     knowledge_service = KnowledgeIngestService(
-        knowledge_repository, resolved_data_dir, session_factory
+        knowledge_repository,
+        resolved_data_dir,
+        session_factory,
+        config=knowledge_config,
     )
     app = FastAPI(title="OfferPilot")
 
@@ -572,6 +640,51 @@ def create_app(
                 "items": [_knowledge_evidence_payload(item) for item in page.items],
                 "next_cursor": page.next_cursor,
             }
+        )
+
+    @app.get("/api/knowledge/sources/{source_id}/brief")
+    def get_knowledge_source_brief(source_id: int) -> JSONResponse:
+        # KI-09 / Spec §10 / §16.1：Source 详情默认展示有效 Brief；无 Brief 时返回
+        # ``brief=None`` + 最近 Attempt 错误信息，前端自动落到 Evidence。
+        source = knowledge_repository.get_source(source_id)
+        if source is None:
+            return error_response(404, "Source not found")
+        brief = knowledge_repository.get_source_brief(source_id)
+        latest_attempt = knowledge_repository.find_latest_brief_attempt(source_id)
+        attempts = knowledge_repository.list_brief_attempts(source_id, limit=10)
+        return JSONResponse(
+            {
+                "source_id": source_id,
+                "brief_status": source.brief_status,
+                "brief_block_reason": source.brief_block_reason,
+                "brief_error_code": source.brief_error_code,
+                "brief_error_message": source.brief_error_message,
+                "brief": _knowledge_brief_payload(brief),
+                "latest_attempt": _knowledge_brief_attempt_payload(latest_attempt),
+                "attempts": [
+                    _knowledge_brief_attempt_payload(item) for item in attempts
+                ],
+            }
+        )
+
+    @app.post("/api/knowledge/sources/{source_id}/brief/rebuild")
+    def rebuild_knowledge_source_brief(source_id: int) -> JSONResponse:
+        # KI-09 / Spec §16.1：用户显式触发 Brief 重建；无合格 Provider 时返回 202 +
+        # block reason。Spec §11.2 "配置 Provider 后不自动批量生成；用户显式操作才创建
+        # 新 Attempt"。
+        source, status = knowledge_service.rebuild_brief(source_id)
+        if source is None:
+            return error_response(404, "Source not found")
+        return JSONResponse(
+            status_code=202,
+            content={
+                "source_id": source.id,
+                "brief_status": source.brief_status,
+                "brief_block_reason": source.brief_block_reason,
+                "brief_error_code": source.brief_error_code,
+                "brief_error_message": source.brief_error_message,
+                "status": status,
+            },
         )
 
     @app.get("/api/knowledge/sources/{source_id}/jobs")

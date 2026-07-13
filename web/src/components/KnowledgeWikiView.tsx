@@ -33,10 +33,12 @@ import {
   cancelKnowledgeJob,
   deleteKnowledgeSource,
   fetchKnowledgeSource,
+  fetchKnowledgeSourceBrief,
   fetchKnowledgeSourceEvidence,
   fetchKnowledgeSourceJobs,
   fetchKnowledgeSources,
   pasteKnowledgeSource,
+  rebuildKnowledgeSourceBrief,
   searchKnowledgeEvidence,
   unarchiveKnowledgeSource,
   updateKnowledgeSourceTitle,
@@ -44,9 +46,13 @@ import {
   uploadKnowledgeSource,
 } from '@/services/knowledge';
 import type {
+  BriefStatement,
+  KnowledgeBriefAttempt,
   KnowledgeEvidence,
   KnowledgeJob,
   KnowledgeSource,
+  KnowledgeSourceBrief,
+  KnowledgeSourceBriefResponse,
   KnowledgeSourceJobsResponse,
 } from '@/types/knowledge';
 
@@ -383,10 +389,35 @@ function SourceDetailContent({
     queryKey: ['knowledge', 'source', sourceId, 'evidence'],
     queryFn: () => fetchKnowledgeSourceEvidence(sourceId, { limit: 50 }),
   });
+  const briefQuery = useQuery({
+    queryKey: ['knowledge', 'source', sourceId, 'brief'],
+    queryFn: () => fetchKnowledgeSourceBrief(sourceId),
+    refetchInterval: false,
+  });
   const jobsQuery = useQuery({
     queryKey: ['knowledge', 'source', sourceId, 'jobs'],
     queryFn: () => fetchKnowledgeSourceJobs(sourceId),
   });
+  const briefRebuildMutation = useMutation({
+    mutationFn: (id: number) => rebuildKnowledgeSourceBrief(id),
+    onSuccess: () => {
+      message.success('已请求重新生成 Brief');
+      queryClient.invalidateQueries({ queryKey: ['knowledge', 'source', sourceId] });
+      queryClient.invalidateQueries({
+        queryKey: ['knowledge', 'source', sourceId, 'brief'],
+      });
+    },
+    onError: (error: unknown) => {
+      const detail = extractErrorMessage(error);
+      message.error(`Brief 重建失败：${detail}`);
+    },
+  });
+  const [briefCitationTarget, setBriefCitationTarget] = useState<string | null>(
+    null,
+  );
+  const handleCitationJump = (evidenceId: string) => {
+    setBriefCitationTarget(evidenceId);
+  };
   const [titleEditorOpen, setTitleEditorOpen] = useState(false);
   const [editingTitle, setEditingTitle] = useState('');
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
@@ -497,12 +528,24 @@ function SourceDetailContent({
 
       <Space direction="vertical" size={8} style={{ width: '100%' }}>
         <StatusBlock source={source} />
+        <BriefBlock
+          sourceId={sourceId}
+          briefStatus={source.brief_status}
+          data={briefQuery.data}
+          loading={briefQuery.isLoading}
+          onRebuild={() => briefRebuildMutation.mutate(sourceId)}
+          rebuilding={briefRebuildMutation.isPending}
+          onCitationJump={handleCitationJump}
+        />
         <EvidenceBlock
           evidence={evidenceQuery.data?.items ?? []}
           loading={evidenceQuery.isLoading}
           sourceId={sourceId}
-          highlightEvidenceId={highlightEvidenceId}
-          onHighlightConsumed={onHighlightConsumed}
+          highlightEvidenceId={highlightEvidenceId ?? briefCitationTarget}
+          onHighlightConsumed={() => {
+            onHighlightConsumed();
+            setBriefCitationTarget(null);
+          }}
         />
         <JobsBlock
           data={jobsQuery.data ?? { jobs: [], origins: [] }}
@@ -669,6 +712,254 @@ function StatusLine({ label, value }: { label: string; value: string }) {
       </Text>
       <Text>{value}</Text>
     </Space>
+  );
+}
+
+function BriefBlock({
+  sourceId,
+  briefStatus,
+  data,
+  loading,
+  onRebuild,
+  rebuilding,
+  onCitationJump,
+}: {
+  sourceId: number;
+  briefStatus: string;
+  data: KnowledgeSourceBriefResponse | undefined;
+  loading: boolean;
+  onRebuild: () => void;
+  rebuilding: boolean;
+  onCitationJump: (evidenceId: string) => void;
+}) {
+  if (loading) {
+    return <Spin />;
+  }
+  const brief: KnowledgeSourceBrief | null = data?.brief ?? null;
+  const latestAttempt: KnowledgeBriefAttempt | null = data?.latest_attempt ?? null;
+  const blockReason = data?.brief_block_reason ?? '';
+  const errorMessage = data?.brief_error_message ?? '';
+  const showEmpty = briefStatus === 'not_started' || (!brief && !latestAttempt);
+
+  return (
+    <div
+      style={{
+        border: '1px solid var(--op-border, #eee)',
+        borderRadius: 8,
+        padding: 12,
+      }}
+    >
+      <Space
+        align="start"
+        style={{ justifyContent: 'space-between', width: '100%', marginBottom: 8 }}
+      >
+        <Title level={5} style={{ margin: 0 }}>
+          Brief 导读
+        </Title>
+        <Space size={6} wrap>
+          <Badge color="purple" text={BRIEF_LABEL[briefStatus] ?? briefStatus} />
+          <Button
+            size="small"
+            onClick={onRebuild}
+            loading={rebuilding}
+            disabled={briefStatus === 'processing'}
+          >
+            {brief ? '重建 Brief' : '生成 Brief'}
+          </Button>
+        </Space>
+      </Space>
+      {blockReason ? (
+        <Alert
+          type="warning"
+          showIcon
+          message={`Brief 暂缓：${blockReason}`}
+          description="请先在设置中配置满足 96K context 的 Provider，然后点击生成 Brief。"
+        />
+      ) : null}
+      {errorMessage && briefStatus === 'failed' ? (
+        <Alert
+          type="error"
+          showIcon
+          message="最近一次 Brief 校验未通过"
+          description={errorMessage}
+          style={{ marginTop: 8 }}
+        />
+      ) : null}
+      {showEmpty && !blockReason ? (
+        <Empty description="尚未生成 Brief，可在上方点击「生成 Brief」" />
+      ) : null}
+      {brief ? (
+        <BriefPayloadView brief={brief} onCitationJump={onCitationJump} />
+      ) : null}
+      {latestAttempt && latestAttempt.status !== 'succeeded' ? (
+        <BriefAttemptInspector attempt={latestAttempt} />
+      ) : null}
+      <Text type="secondary" style={{ fontSize: 11 }}>
+        Source ID：{sourceId}
+      </Text>
+    </div>
+  );
+}
+
+function BriefPayloadView({
+  brief,
+  onCitationJump,
+}: {
+  brief: KnowledgeSourceBrief;
+  onCitationJump: (evidenceId: string) => void;
+}) {
+  const { payload } = brief;
+  return (
+    <Space direction="vertical" size={10} style={{ width: '100%', marginTop: 8 }}>
+      <BriefStatementList
+        title="概述"
+        items={payload.overview}
+        onCitationJump={onCitationJump}
+      />
+      <BriefStatementList
+        title="关键要点"
+        items={payload.key_points}
+        onCitationJump={onCitationJump}
+      />
+      <div>
+        <Title level={5}>章节导读</Title>
+        <Space direction="vertical" size={6} style={{ width: '100%' }}>
+          {payload.section_guides.map((item, index) => (
+            <div
+              key={`${item.section_key}-${index}`}
+              style={{
+                border: '1px solid var(--op-border, #eee)',
+                borderRadius: 4,
+                padding: 8,
+              }}
+            >
+              <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                <Space size={6} wrap>
+                  <Badge color="blue" text={item.heading_path.join(' / ')} />
+                </Space>
+                <Text>{item.summary}</Text>
+                <BriefCitationChips
+                  evidenceIds={item.evidence_ids}
+                  onJump={onCitationJump}
+                />
+              </Space>
+            </div>
+          ))}
+        </Space>
+      </div>
+      <BriefStatementList
+        title="局限与未覆盖"
+        items={payload.limitations}
+        onCitationJump={onCitationJump}
+      />
+      <div>
+        <Title level={5}>章节覆盖</Title>
+        <Space wrap>
+          {payload.coverage.map((item) => (
+            <Badge
+              key={item.section_key}
+              color={item.status === 'covered' ? 'green' : 'default'}
+              text={`${item.section_key}${
+                item.status === 'skipped' ? `（已跳过：${item.skipped_reason || '—'}）` : ''
+              }`}
+            />
+          ))}
+        </Space>
+      </div>
+    </Space>
+  );
+}
+
+function BriefStatementList({
+  title,
+  items,
+  onCitationJump,
+}: {
+  title: string;
+  items: BriefStatement[];
+  onCitationJump: (evidenceId: string) => void;
+}) {
+  if (!items.length) {
+    return null;
+  }
+  return (
+    <div>
+      <Title level={5}>{title}</Title>
+      <Space direction="vertical" size={6} style={{ width: '100%' }}>
+        {items.map((item, index) => (
+          <div
+            key={`${title}-${index}`}
+            style={{
+              border: '1px solid var(--op-border, #eee)',
+              borderRadius: 4,
+              padding: 8,
+            }}
+          >
+            <Space direction="vertical" size={4} style={{ width: '100%' }}>
+              <Text>{item.statement}</Text>
+              <BriefCitationChips
+                evidenceIds={item.evidence_ids}
+                onJump={onCitationJump}
+              />
+            </Space>
+          </div>
+        ))}
+      </Space>
+    </div>
+  );
+}
+
+function BriefCitationChips({
+  evidenceIds,
+  onJump,
+}: {
+  evidenceIds: string[];
+  onJump: (evidenceId: string) => void;
+}) {
+  if (!evidenceIds.length) {
+    return null;
+  }
+  return (
+    <Space size={4} wrap>
+      {evidenceIds.map((id) => (
+        <Button
+          key={id}
+          size="small"
+          type="link"
+          style={{ padding: 0, height: 'auto', fontSize: 11 }}
+          onClick={() => onJump(id)}
+        >
+          {id}
+        </Button>
+      ))}
+    </Space>
+  );
+}
+
+function BriefAttemptInspector({ attempt }: { attempt: KnowledgeBriefAttempt }) {
+  return (
+    <Alert
+      type={attempt.status === 'failed' ? 'error' : 'info'}
+      showIcon
+      message={`最近 Attempt 状态：${attempt.status}${
+        attempt.repair_count ? `（修复 ${attempt.repair_count} 次）` : ''
+      }`}
+      description={
+        <Space direction="vertical" size={2} style={{ width: '100%' }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            Provider: {attempt.provider_id} / {attempt.provider_model}
+          </Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            Context: {attempt.context_window} · Prompt: {attempt.prompt_version}
+          </Text>
+          {attempt.error_message ? (
+            <Text type="danger" style={{ fontSize: 12 }}>
+              {attempt.error_message}
+            </Text>
+          ) : null}
+        </Space>
+      }
+    />
   );
 }
 

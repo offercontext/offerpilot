@@ -77,9 +77,10 @@ def test_ki06_archive_changes_lifecycle_only(app_client):
     body = archive.json()
     assert body["lifecycle"] == "archived"
     assert body["archived_at"]
-    # Extraction/Brief 状态保持不变
+    # Extraction/Brief 状态保持不变（KI-09 之后 extracted Source 的 brief_status 至少
+    # 进入 pending；测试环境无 96K Provider 会显示 provider_unavailable block reason）。
     assert body["extraction_status"] == "extracted"
-    assert body["brief_status"] == "not_started"
+    assert body["brief_status"] in ("not_started", "pending", "processing")
 
 
 def test_ki06_archive_does_not_delete_files_or_evidence(app_client, tmp_path):

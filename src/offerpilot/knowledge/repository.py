@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from offerpilot.knowledge.search import ParsedQuery, SearchError, parse_query
 from offerpilot.models import (
+    KnowledgeBriefAttempt,
     KnowledgeEvidence,
     KnowledgeExtractionSnapshot,
     KnowledgeJob,
@@ -33,11 +34,21 @@ from offerpilot.models import (
     KnowledgeRetrievalTrace,
     KnowledgeSource,
     KnowledgeSourceAsset,
+    KnowledgeSourceBrief,
     KnowledgeSourceOrigin,
 )
 
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class KnowledgeBriefAttemptError(Exception):
+    """Spec §10.3 Brief Attempt 创建/提交时拒绝的稳定错误。"""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
 
 
 @dataclass(frozen=True)
@@ -203,6 +214,113 @@ class RetrievalTraceRecord:
     evaluation_label: str
     error_code: str
     created_at: datetime
+
+
+@dataclass(frozen=True)
+class SourceBriefRecord:
+    """Spec §10 / §14.7：Source 当前 Brief 读出视图。"""
+
+    id: int
+    source_id: int
+    snapshot_id: int
+    winning_attempt_id: int
+    schema_version: int
+    language: str
+    payload_json: str
+    outdated: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class BriefAttemptRecord:
+    """Spec §10 / §14.8：Brief Attempt 读出视图。
+
+    Attempt 不暴露 API Key；``validation_report_json`` 与 ``candidate_payload_json``
+    持久化便于 KI-11 评估，但 API 层只暴露脱敏后的字段。
+    """
+
+    id: int
+    source_id: int
+    snapshot_id: int
+    status: str
+    provider_id: str
+    provider_model: str
+    provider_base_url: str
+    context_window: int
+    max_output_tokens: int
+    prompt_version: str
+    schema_version: int
+    language: str
+    candidate_payload_json: str
+    validation_report_json: str
+    error_code: str
+    error_message: str
+    repair_count: int
+    token_input_count: int
+    token_output_count: int
+    latency_ms: int
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass
+class BriefAttemptCreateInput:
+    """Spec §11.1 Attempt 创建时固定的 Provider/Prompt/Schema 快照。"""
+
+    source_id: int
+    snapshot_id: int
+    provider_id: str
+    provider_model: str
+    provider_base_url: str
+    context_window: int
+    max_output_tokens: int
+    prompt_version: str
+    schema_version: int
+    language: str = "zh-CN"
+    status: str = "pending"
+
+
+def _to_source_brief_record(row: KnowledgeSourceBrief) -> SourceBriefRecord:
+    return SourceBriefRecord(
+        id=row.id,
+        source_id=row.source_id,
+        snapshot_id=row.snapshot_id,
+        winning_attempt_id=row.winning_attempt_id,
+        schema_version=row.schema_version,
+        language=row.language,
+        payload_json=row.payload_json,
+        outdated=bool(row.outdated),
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def _to_brief_attempt_record(row: KnowledgeBriefAttempt) -> BriefAttemptRecord:
+    return BriefAttemptRecord(
+        id=row.id,
+        source_id=row.source_id,
+        snapshot_id=row.snapshot_id,
+        status=row.status,
+        provider_id=row.provider_id,
+        provider_model=row.provider_model,
+        provider_base_url=row.provider_base_url,
+        context_window=row.context_window,
+        max_output_tokens=row.max_output_tokens,
+        prompt_version=row.prompt_version,
+        schema_version=row.schema_version,
+        language=row.language,
+        candidate_payload_json=row.candidate_payload_json or "",
+        validation_report_json=row.validation_report_json or "{}",
+        error_code=row.error_code,
+        error_message=row.error_message,
+        repair_count=row.repair_count,
+        token_input_count=row.token_input_count,
+        token_output_count=row.token_output_count,
+        latency_ms=row.latency_ms,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
 
 
 @dataclass
@@ -686,6 +804,16 @@ class KnowledgeRepository:
             )
             session.execute(
                 text("DELETE FROM knowledge_source_origins WHERE source_id = :sid"),
+                {"sid": source_id},
+            )
+            # KI-09：Spec §5.4 删除会清理 Brief/Attempt；外键 CASCADE 也会自动处理，
+            # 但显式 DELETE 保证表结构未启用外键时仍清理（SQLite 默认不开 PRAGMA）。
+            session.execute(
+                text("DELETE FROM knowledge_source_briefs WHERE source_id = :sid"),
+                {"sid": source_id},
+            )
+            session.execute(
+                text("DELETE FROM knowledge_brief_attempts WHERE source_id = :sid"),
                 {"sid": source_id},
             )
             session.execute(
@@ -1439,6 +1567,396 @@ class KnowledgeRepository:
                 .limit(clamped)
             )
             return [_to_retrieval_trace_record(row) for row in session.scalars(stmt)]
+
+    # KI-09：Brief Attempt / Source Brief 持久化。
+
+    def create_brief_attempt(
+        self, data: BriefAttemptCreateInput
+    ) -> tuple[BriefAttemptRecord, int, str]:
+        """Spec §11.1 / §10.3：创建 Brief Attempt，固定 Provider/Schema/Snapshot。
+
+        返回 ``(attempt_record, job_id, attempt_token)``。``attempt_token`` 是 lease
+        凭证，调用方必须在 ``commit_*`` 时原样传回；持久化或日志中不得保留。
+        """
+        moment = datetime.now(timezone.utc)
+        attempt_token = _new_attempt_token()
+        with self._session_factory() as session:
+            with session.begin():
+                source_row = session.get(KnowledgeSource, data.source_id)
+                if source_row is None or source_row.deleted_at is not None:
+                    raise KnowledgeBriefAttemptError(
+                        "source_integrity_mismatch",
+                        "Source 不存在或已被删除",
+                    )
+                if source_row.lifecycle == "deleting":
+                    raise KnowledgeBriefAttemptError(
+                        "source_integrity_mismatch",
+                        "Source 处于 deleting 状态",
+                    )
+                existing_active = session.execute(
+                    select(KnowledgeBriefAttempt).where(
+                        KnowledgeBriefAttempt.source_id == data.source_id,
+                        KnowledgeBriefAttempt.status.in_(("pending", "processing")),
+                    )
+                ).scalars().first()
+                if existing_active is not None:
+                    raise KnowledgeBriefAttemptError(
+                        "brief_attempt_conflict",
+                        "Source 已有进行中 Brief Attempt",
+                    )
+                attempt_row = KnowledgeBriefAttempt(
+                    source_id=data.source_id,
+                    snapshot_id=data.snapshot_id,
+                    status="processing",
+                    provider_id=data.provider_id,
+                    provider_model=data.provider_model,
+                    provider_base_url=data.provider_base_url,
+                    context_window=data.context_window,
+                    max_output_tokens=data.max_output_tokens,
+                    prompt_version=data.prompt_version,
+                    schema_version=data.schema_version,
+                    language=data.language,
+                    candidate_payload_json="",
+                    validation_report_json="{}",
+                    error_code="",
+                    error_message="",
+                )
+                session.add(attempt_row)
+                session.flush()
+                job_row = KnowledgeJob(
+                    kind="brief",
+                    queue="brief",
+                    source_id=data.source_id,
+                    snapshot_id=data.snapshot_id,
+                    stage="brief_processing",
+                    status="running",
+                )
+                job_row.lease_owner = "brief-attempt"
+                job_row.lease_expires_at = moment + timedelta(seconds=600)
+                job_row.heartbeat_at = moment
+                job_row.attempt_token = attempt_token
+                session.add(job_row)
+                session.flush()
+                source_row.brief_status = "processing"
+                source_row.brief_block_reason = ""
+                source_row.brief_error_code = ""
+                source_row.brief_error_message = ""
+                attempt_id_value = attempt_row.id
+                job_id_value = job_row.id
+            refreshed = session.get(KnowledgeBriefAttempt, attempt_id_value)
+            assert refreshed is not None
+            return (
+                _to_brief_attempt_record(refreshed),
+                job_id_value,
+                attempt_token,
+            )
+
+    def get_brief_attempt(self, attempt_id: int) -> Optional[BriefAttemptRecord]:
+        with self._session_factory() as session:
+            row = session.get(KnowledgeBriefAttempt, attempt_id)
+            return _to_brief_attempt_record(row) if row is not None else None
+
+    def find_active_brief_attempt(
+        self, source_id: int
+    ) -> Optional[BriefAttemptRecord]:
+        """Spec §10.4：返回当前 Source 未完成 Attempt。
+
+        重建期间旧 Brief 继续可见，新候选 Attempt 独立写入 validation_report。
+        本方法返回最近一个 pending/processing Attempt，避免重复创建。
+        """
+        with self._session_factory() as session:
+            stmt = (
+                select(KnowledgeBriefAttempt)
+                .where(
+                    KnowledgeBriefAttempt.source_id == source_id,
+                    KnowledgeBriefAttempt.status.in_(("pending", "processing")),
+                )
+                .order_by(
+                    KnowledgeBriefAttempt.created_at.desc(),
+                    KnowledgeBriefAttempt.id.desc(),
+                )
+                .limit(1)
+            )
+            row = session.scalars(stmt).first()
+            return _to_brief_attempt_record(row) if row is not None else None
+
+    def find_latest_brief_attempt(
+        self, source_id: int
+    ) -> Optional[BriefAttemptRecord]:
+        """Spec §10.4：返回最近一次 Brief Attempt（无论状态）。
+
+        供 API 展示最近错误与诊断信息，与 active_brief_id 区分。
+        """
+        with self._session_factory() as session:
+            stmt = (
+                select(KnowledgeBriefAttempt)
+                .where(KnowledgeBriefAttempt.source_id == source_id)
+                .order_by(
+                    KnowledgeBriefAttempt.created_at.desc(),
+                    KnowledgeBriefAttempt.id.desc(),
+                )
+                .limit(1)
+            )
+            row = session.scalars(stmt).first()
+            return _to_brief_attempt_record(row) if row is not None else None
+
+    def find_brief_job_for_attempt(
+        self, attempt_id: int
+    ) -> Optional[JobRecord]:
+        """Spec §12：Brief Attempt 与 brief Job 关联查询。
+
+        KI-09 创建 Attempt 时同时创建 Job；通过 source_id + 状态 running 锁定。
+        """
+        with self._session_factory() as session:
+            attempt = session.get(KnowledgeBriefAttempt, attempt_id)
+            if attempt is None:
+                return None
+            stmt = (
+                select(KnowledgeJob)
+                .where(
+                    KnowledgeJob.source_id == attempt.source_id,
+                    KnowledgeJob.kind == "brief",
+                    KnowledgeJob.status.in_(("running",)),
+                )
+                .order_by(KnowledgeJob.created_at.desc(), KnowledgeJob.id.desc())
+                .limit(1)
+            )
+            row = session.scalars(stmt).first()
+            return _to_job_record(row) if row is not None else None
+
+    def update_brief_attempt_progress(
+        self,
+        attempt_id: int,
+        *,
+        candidate_payload_json: str = "",
+        validation_report_json: str = "",
+        error_code: str = "",
+        error_message: str = "",
+        repair_count: Optional[int] = None,
+        token_input_count: Optional[int] = None,
+        token_output_count: Optional[int] = None,
+        latency_ms: Optional[int] = None,
+    ) -> Optional[BriefAttemptRecord]:
+        """Spec §10.3：更新 Attempt 候选 payload / 校验报告 / 错误。"""
+        with self._session_factory() as session:
+            row = session.get(KnowledgeBriefAttempt, attempt_id)
+            if row is None:
+                return None
+            if candidate_payload_json:
+                row.candidate_payload_json = candidate_payload_json
+            if validation_report_json:
+                row.validation_report_json = validation_report_json
+            if error_code:
+                row.error_code = error_code
+            if error_message:
+                row.error_message = error_message
+            if repair_count is not None:
+                row.repair_count = repair_count
+            if token_input_count is not None:
+                row.token_input_count = token_input_count
+            if token_output_count is not None:
+                row.token_output_count = token_output_count
+            if latency_ms is not None:
+                row.latency_ms = latency_ms
+            session.commit()
+            session.refresh(row)
+            return _to_brief_attempt_record(row)
+
+    def fail_brief_attempt(
+        self,
+        attempt_id: int,
+        *,
+        job_id: int,
+        attempt_token: str,
+        error_code: str,
+        error_message: str,
+        validation_report_json: str = "",
+        candidate_payload_json: str = "",
+        token_input_count: int = 0,
+        token_output_count: int = 0,
+        latency_ms: int = 0,
+        repair_count: Optional[int] = None,
+    ) -> tuple[bool, Optional[BriefAttemptRecord], Optional[JobRecord]]:
+        """Spec §10.3 / §10.4：Brief Attempt 失败，Source brief_status=failed。
+
+        事务内：
+        1. Brief Attempt 标记 failed + 错误码 + validation 报告。
+        2. Brief Job ``complete_job`` 状态 succeeded（Job 自身完成；result 是失败）。
+           ``complete_job`` 必须验证 attempt_token，迟到 lease 拒绝提交。
+        3. Source ``brief_status=failed`` + brief_error_*；``active_brief_id`` 不变。
+        """
+        moment = datetime.now(timezone.utc)
+        with self._session_factory() as session:
+            with session.begin():
+                attempt_row = session.get(KnowledgeBriefAttempt, attempt_id)
+                if attempt_row is None:
+                    return False, None, None
+                job_row = session.get(KnowledgeJob, job_id)
+                if job_row is None:
+                    return False, None, None
+                if job_row.attempt_token != attempt_token:
+                    return False, None, None
+                if job_row.status != "running":
+                    return False, None, None
+                attempt_row.status = "failed"
+                attempt_row.error_code = error_code
+                attempt_row.error_message = error_message[:500]
+                if validation_report_json:
+                    attempt_row.validation_report_json = validation_report_json
+                if candidate_payload_json:
+                    attempt_row.candidate_payload_json = candidate_payload_json
+                if repair_count is not None:
+                    attempt_row.repair_count = repair_count
+                attempt_row.token_input_count = token_input_count
+                attempt_row.token_output_count = token_output_count
+                attempt_row.latency_ms = latency_ms
+                attempt_row.updated_at = moment
+                job_row.status = "succeeded"
+                job_row.stage = "brief_attempt_failed"
+                job_row.progress = 100
+                job_row.error_code = ""
+                job_row.error_message = ""
+                job_row.lease_expires_at = None
+                job_row.updated_at = moment
+                source_row = session.get(KnowledgeSource, attempt_row.source_id)
+                if source_row is not None and source_row.lifecycle != "deleting":
+                    source_row.brief_status = "failed"
+                    source_row.brief_error_code = error_code
+                    source_row.brief_error_message = error_message[:500]
+                    source_row.brief_block_reason = ""
+                attempt_id_value = attempt_row.id
+                job_id_value = job_row.id
+            refreshed_attempt = session.get(KnowledgeBriefAttempt, attempt_id_value)
+            refreshed_job = session.get(KnowledgeJob, job_id_value)
+            return (
+                True,
+                _to_brief_attempt_record(refreshed_attempt)
+                if refreshed_attempt is not None
+                else None,
+                _to_job_record(refreshed_job) if refreshed_job is not None else None,
+            )
+
+    def commit_brief_attempt_success(
+        self,
+        attempt_id: int,
+        *,
+        job_id: int,
+        attempt_token: str,
+        payload_json: str,
+        validation_report_json: str,
+        token_input_count: int = 0,
+        token_output_count: int = 0,
+        latency_ms: int = 0,
+    ) -> tuple[bool, Optional[SourceBriefRecord], Optional[JobRecord]]:
+        """Spec §10.3 / §10.4：成功 Brief 与 winning Attempt 在同一事务中提交。
+
+        事务步骤：
+        1. 验证 brief Job attempt_token 匹配；迟到 lease 拒绝。
+        2. upsert ``knowledge_source_briefs`` 单行（Source UNIQUE）：
+           - 替换 payload / winning_attempt_id / schema_version / language / snapshot_id。
+        3. Brief Attempt 标记 succeeded + validation 报告。
+        4. Brief Job complete_job(succeeded)。
+        5. Source ``brief_status=ready``、``active_brief_id=brief.id``、清空 error 字段。
+        """
+        moment = datetime.now(timezone.utc)
+        with self._session_factory() as session:
+            with session.begin():
+                attempt_row = session.get(KnowledgeBriefAttempt, attempt_id)
+                if attempt_row is None:
+                    return False, None, None
+                job_row = session.get(KnowledgeJob, job_id)
+                if job_row is None:
+                    return False, None, None
+                if job_row.attempt_token != attempt_token or job_row.status != "running":
+                    return False, None, None
+                source_id_value = attempt_row.source_id
+                snapshot_id_value = attempt_row.snapshot_id
+                brief_row = session.execute(
+                    select(KnowledgeSourceBrief).where(
+                        KnowledgeSourceBrief.source_id == source_id_value
+                    )
+                ).scalars().first()
+                if brief_row is None:
+                    brief_row = KnowledgeSourceBrief(
+                        source_id=source_id_value,
+                        snapshot_id=snapshot_id_value,
+                        winning_attempt_id=attempt_id,
+                        schema_version=attempt_row.schema_version,
+                        language=attempt_row.language,
+                        payload_json=payload_json,
+                        outdated=False,
+                    )
+                    session.add(brief_row)
+                else:
+                    brief_row.snapshot_id = snapshot_id_value
+                    brief_row.winning_attempt_id = attempt_id
+                    brief_row.schema_version = attempt_row.schema_version
+                    brief_row.language = attempt_row.language
+                    brief_row.payload_json = payload_json
+                    brief_row.outdated = False
+                    brief_row.updated_at = moment
+                session.flush()
+                attempt_row.status = "succeeded"
+                attempt_row.validation_report_json = validation_report_json
+                attempt_row.error_code = ""
+                attempt_row.error_message = ""
+                attempt_row.token_input_count = token_input_count
+                attempt_row.token_output_count = token_output_count
+                attempt_row.latency_ms = latency_ms
+                attempt_row.updated_at = moment
+                job_row.status = "succeeded"
+                job_row.stage = "brief_ready"
+                job_row.progress = 100
+                job_row.lease_expires_at = None
+                job_row.updated_at = moment
+                source_row = session.get(KnowledgeSource, source_id_value)
+                if source_row is not None and source_row.lifecycle != "deleting":
+                    source_row.brief_status = "ready"
+                    source_row.brief_error_code = ""
+                    source_row.brief_error_message = ""
+                    source_row.brief_block_reason = ""
+                    source_row.active_brief_id = brief_row.id
+                    source_row.updated_at = moment
+                brief_id_value = brief_row.id
+                job_id_value = job_row.id
+            refreshed_brief = session.get(KnowledgeSourceBrief, brief_id_value)
+            refreshed_job = session.get(KnowledgeJob, job_id_value)
+            return (
+                True,
+                _to_source_brief_record(refreshed_brief)
+                if refreshed_brief is not None
+                else None,
+                _to_job_record(refreshed_job) if refreshed_job is not None else None,
+            )
+
+    def get_source_brief(self, source_id: int) -> Optional[SourceBriefRecord]:
+        """Spec §10.4：读取当前 Brief（每 Source 至多一行）。"""
+        with self._session_factory() as session:
+            stmt = select(KnowledgeSourceBrief).where(
+                KnowledgeSourceBrief.source_id == source_id
+            )
+            row = session.scalars(stmt).first()
+            return _to_source_brief_record(row) if row is not None else None
+
+    def list_brief_attempts(
+        self, source_id: int, *, limit: int = 20
+    ) -> list[BriefAttemptRecord]:
+        """Spec §10.4：列出 Source 最近 Attempt 历史。
+
+        API 层默认不暴露 candidate_payload / validation_report；KI-11 评估工具可读取。
+        """
+        clamped = max(1, min(50, limit))
+        with self._session_factory() as session:
+            stmt = (
+                select(KnowledgeBriefAttempt)
+                .where(KnowledgeBriefAttempt.source_id == source_id)
+                .order_by(
+                    KnowledgeBriefAttempt.created_at.desc(),
+                    KnowledgeBriefAttempt.id.desc(),
+                )
+                .limit(clamped)
+            )
+            return [_to_brief_attempt_record(row) for row in session.scalars(stmt)]
 
 
 def _decode_heading_path(heading_path_json: Optional[str]) -> list[str]:
