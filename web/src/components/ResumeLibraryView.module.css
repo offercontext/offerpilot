@@ -30,7 +30,7 @@
   animation: onboardingResumePulse 800ms var(--op-ease) 3;
 }
 @keyframes onboardingResumePulse {
-  50% { outline-color: transparent; }
+  50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--op-primary) 24%, transparent); }
 }
 .grid {
   display: grid;
