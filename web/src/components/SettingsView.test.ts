@@ -26,4 +26,11 @@ describe('SettingsView localization', () => {
     expect(source).toContain('导出备份');
     expect(source).toContain('/backups/export');
   });
+
+  it('declares the paginated diagnostics controls and recovery copy', () => {
+    expect(source).toContain('Pagination');
+    expect(source).toContain('LOG_PAGE_SIZE');
+    expect(source).toContain('重试日志加载');
+    expect(source).toContain('360');
+  });
 });

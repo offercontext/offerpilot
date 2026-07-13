@@ -1,26 +1,32 @@
 import { ApiOutlined, CopyOutlined, DownloadOutlined, FileSearchOutlined, ReloadOutlined, SettingOutlined } from '@ant-design/icons';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Button, Divider, Empty, Input, Modal, Select, Skeleton, Space, Tag, Typography, message } from 'antd';
-import { exportBackup, getLogs, getSettings, getSettingsBackup, type LogEntry, type Settings } from '@/services/chat';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Alert, Button, Divider, Empty, Input, Modal, Pagination, Select, Skeleton, Space, Spin, Tag, Typography, message } from 'antd';
+import { exportBackup, getLogs, getSettings, getSettingsBackup, type LogEntry, type LogsPage, type Settings } from '@/services/chat';
 import { ONBOARDING_QUERY_KEY, setOnboardingForceOpen } from '@/services/onboarding';
 import { buildDiagnosticsText } from '@/lib/diagnostics';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 interface Props {
   onOpenAISettings: () => void;
 }
 
+const LOG_PAGE_SIZE = 20;
+
 export default function SettingsView({ onOpenAISettings }: Props) {
   const queryClient = useQueryClient();
   const [logLevel, setLogLevel] = useState('');
+  const [logPage, setLogPage] = useState(1);
+  const [lastLogsPage, setLastLogsPage] = useState<LogsPage>();
+  const logOffset = (logPage - 1) * LOG_PAGE_SIZE;
   const settingsQuery = useQuery({
     queryKey: ['settings-summary'],
     queryFn: getSettings,
   });
   const logsQuery = useQuery({
-    queryKey: ['runtime-logs', 20, logLevel],
-    queryFn: () => getLogs(20, logLevel),
-    refetchInterval: 15000,
+    queryKey: ['runtime-logs', LOG_PAGE_SIZE, logOffset, logLevel],
+    queryFn: () => getLogs(LOG_PAGE_SIZE, logOffset, logLevel),
+    placeholderData: keepPreviousData,
+    refetchInterval: logPage === 1 ? 15000 : false,
   });
   const reopenOnboardingMutation = useMutation({
     mutationFn: () => setOnboardingForceOpen(true),
@@ -46,8 +52,12 @@ export default function SettingsView({ onOpenAISettings }: Props) {
       message.error('设置备份导出失败');
     },
   });
+  useEffect(() => {
+    if (logsQuery.data) setLastLogsPage(logsQuery.data);
+  }, [logsQuery.data]);
   const settings = settingsQuery.data;
-  const logs = logsQuery.data ?? [];
+  const logsPage = logsQuery.data ?? lastLogsPage;
+  const logs = logsPage?.entries ?? [];
   const diagnosticsText = useMemo(
     () => (settings ? buildDiagnosticsText(settings, logs) : ''),
     [settings, logs],
@@ -66,6 +76,14 @@ export default function SettingsView({ onOpenAISettings }: Props) {
         width: 720,
       });
     }
+  }
+
+  function refreshLogs() {
+    setLogPage(1);
+    void queryClient.invalidateQueries({
+      queryKey: ['runtime-logs', LOG_PAGE_SIZE, 0, logLevel],
+      exact: true,
+    });
   }
 
   return (
@@ -155,7 +173,10 @@ export default function SettingsView({ onOpenAISettings }: Props) {
             <Select
               aria-label="日志筛选"
               value={logLevel}
-              onChange={setLogLevel}
+              onChange={(value) => {
+                setLogLevel(value);
+                setLogPage(1);
+              }}
               options={[
                 { value: '', label: '全部日志' },
                 { value: 'DEBUG', label: 'DEBUG' },
@@ -171,13 +192,58 @@ export default function SettingsView({ onOpenAISettings }: Props) {
           </Space>
           <Button
             icon={<ReloadOutlined />}
-            onClick={() => logsQuery.refetch()}
+            onClick={refreshLogs}
             loading={logsQuery.isFetching}
             aria-label="刷新日志"
           />
         </Space>
         <Divider style={{ margin: 0 }} />
-        {logsQuery.isLoading ? <Skeleton active paragraph={{ rows: 3 }} /> : <LogList entries={logs} />}
+        {!logsPage ? (
+          logsQuery.isError ? (
+            <Alert
+              type="error"
+              showIcon
+              message="日志加载失败"
+              action={
+                <Button aria-label="重试日志加载" onClick={() => void logsQuery.refetch()}>
+                  重试日志加载
+                </Button>
+              }
+            />
+          ) : (
+            <Skeleton active paragraph={{ rows: 3 }} />
+          )
+        ) : (
+          <>
+            {logsQuery.isError ? (
+              <Alert
+                type="warning"
+                showIcon
+                message="日志刷新失败，正在显示上一页结果"
+                action={
+                  <Button aria-label="重试日志加载" onClick={() => void logsQuery.refetch()}>
+                    重试日志加载
+                  </Button>
+                }
+              />
+            ) : null}
+            {logsQuery.isFetching ? <Spin size="small" aria-label="正在加载日志页" /> : null}
+            <div
+              aria-label="运行日志列表"
+              role="region"
+              style={{ height: 360, overflowY: 'auto', overscrollBehavior: 'contain' }}
+            >
+              <LogList entries={logsPage.entries} />
+            </div>
+            <Pagination
+              current={logPage}
+              pageSize={LOG_PAGE_SIZE}
+              total={logsPage.total}
+              showSizeChanger={false}
+              onChange={(page) => setLogPage(page)}
+            />
+          </>
+        )}
       </section>
     </section>
   );

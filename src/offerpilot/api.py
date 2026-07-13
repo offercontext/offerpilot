@@ -12,11 +12,11 @@ from queue import Empty, Queue
 from secrets import compare_digest
 from threading import Event, Lock
 from time import perf_counter
-from typing import Any, Callable, Generator, Optional
+from typing import Any, Callable, Generator, Optional, cast
 from uuid import uuid4
 
 import httpx
-from fastapi import BackgroundTasks, Body, FastAPI, File, Request, UploadFile
+from fastapi import BackgroundTasks, Body, FastAPI, File, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from pypdf import PdfReader
@@ -45,7 +45,7 @@ from offerpilot.config import (
     save_config,
 )
 from offerpilot.db import session_factory_for_data_dir
-from offerpilot.diagnostics import append_log_entry, read_recent_log_entries
+from offerpilot.diagnostics import append_log_entry, read_recent_log_page
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
 from offerpilot.repositories.chat import ChatRepository
 from offerpilot.repositories.application_events import (
@@ -2347,11 +2347,23 @@ def create_app(
         return JSONResponse({"status": "deleted"})
 
     @app.get("/api/logs")
-    def get_logs(limit: int = 100, level: str = "") -> Any:
+    def get_logs(
+        limit: int = Query(default=20, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+        level: str = "",
+    ) -> Any:
         normalized_level = level.strip().upper()
         if normalized_level not in {"", "DEBUG", "INFO", "WARNING", "ERROR"}:
             return error_response(422, "invalid log level")
-        return {"entries": read_recent_log_entries(resolved_data_dir, limit=limit, level=normalized_level)}
+        return cast(
+            dict[str, Any],
+            read_recent_log_page(
+                resolved_data_dir,
+                limit=limit,
+                offset=offset,
+                level=normalized_level,
+            ),
+        )
 
     @app.get("/api/backups/export")
     def export_backup() -> Response:
