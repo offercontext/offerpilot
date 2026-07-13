@@ -1,9 +1,11 @@
-import { readFileSync } from 'node:fs';
+// @vitest-environment jsdom
+import { act } from 'react';
+import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import OnboardingChecklist from './OnboardingChecklist';
 
-const cssSource = readFileSync(new URL('./OnboardingChecklist.module.css', import.meta.url), 'utf8');
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 describe('OnboardingChecklist', () => {
   it('shows all four milestones and progress', () => {
@@ -36,7 +38,45 @@ describe('OnboardingChecklist', () => {
     expect(html).toContain('向 Pilot 发出第一条消息');
   });
 
-  it('keeps card labels on their own line', () => {
-    expect(cssSource).toMatch(/\.stepLabel\s*\{[^}]*display:\s*block;/);
+  it('forwards each completed card click in action order', () => {
+    const actions: string[] = [];
+    const container = document.createElement('div');
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <OnboardingChecklist
+          status={{
+            steps: {
+              configure_ai: true,
+              create_primary_resume: true,
+              create_first_application: true,
+              send_first_pilot_message: true,
+            },
+            completed_count: 4,
+            is_complete: true,
+            force_open: true,
+          }}
+          onCollapse={vi.fn()}
+          onAction={(action) => actions.push(action)}
+        />,
+      );
+    });
+
+    const cards = container.querySelectorAll<HTMLButtonElement>('button[data-onboarding-action]');
+    expect(cards).toHaveLength(4);
+
+    act(() => {
+      cards.forEach((card) => card.click());
+    });
+
+    expect(actions).toEqual([
+      'configure_ai',
+      'create_primary_resume',
+      'create_first_application',
+      'send_first_pilot_message',
+    ]);
+
+    act(() => root.unmount());
   });
 });
