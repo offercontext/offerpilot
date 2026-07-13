@@ -196,6 +196,9 @@ def _knowledge_search_hit_payload(hit: Any) -> dict[str, Any]:
 
 
 def _knowledge_job_payload(job: Any) -> dict[str, Any]:
+    # Spec §16.3：Job 响应公开 kind、stage、status、progress、retry、error 和时间，
+    # 不返回 Prompt、Provider secret 或 Source 正文。``attempt_token`` 是 lease 鉴权
+    # 凭证，等同 secret，不暴露给前端；仅 ``lease_owner`` 用于展示当前 worker。
     return {
         "id": job.id,
         "kind": job.kind,
@@ -206,9 +209,13 @@ def _knowledge_job_payload(job: Any) -> dict[str, Any]:
         "status": job.status,
         "progress": job.progress,
         "retry_count": job.retry_count,
+        "next_retry_at": _json_datetime(getattr(job, "next_retry_at", None)),
         "error_code": job.error_code,
         "error_message": job.error_message,
         "canceled": job.canceled,
+        "lease_owner": getattr(job, "lease_owner", "") or "",
+        "lease_expires_at": _json_datetime(getattr(job, "lease_expires_at", None)),
+        "heartbeat_at": _json_datetime(getattr(job, "heartbeat_at", None)),
         "created_at": _json_datetime(job.created_at),
         "updated_at": _json_datetime(job.updated_at),
     }
@@ -246,9 +253,13 @@ def _knowledge_job_payload_for_id(result: Any) -> dict[str, Any]:
         "status": "succeeded" if not result.extraction_failed else "failed",
         "progress": 100 if not result.extraction_failed and not result.deduplicated else 0,
         "retry_count": 0,
+        "next_retry_at": None,
         "error_code": result.extraction_error_code,
         "error_message": result.extraction_error_message,
         "canceled": False,
+        "lease_owner": "",
+        "lease_expires_at": None,
+        "heartbeat_at": None,
         "created_at": _json_datetime(result.source.created_at),
         "updated_at": _json_datetime(result.source.updated_at),
     }
@@ -604,6 +615,32 @@ def create_app(
                 "hits": [_knowledge_search_hit_payload(hit) for hit in hits],
             }
         )
+
+    @app.get("/api/knowledge/jobs/{job_id}")
+    def get_knowledge_job(job_id: int) -> JSONResponse:
+        # Spec §16.3：Job detail 返回稳定、用户安全的状态和错误。
+        # 不返回 Prompt、Provider secret、attempt_token 或 Source 正文。
+        job = knowledge_repository.get_job(job_id)
+        if job is None:
+            return error_response(404, "Job not found")
+        return JSONResponse(_knowledge_job_payload(job))
+
+    @app.post("/api/knowledge/jobs/{job_id}/cancel")
+    def cancel_knowledge_job(job_id: int) -> JSONResponse:
+        # Spec §12 取消规则：
+        # - pending Job 直接标记 canceled。
+        # - running Job 设置 canceled=True，本地任务在安全点检查并停止。
+        # - succeeded/failed/canceled 终态 Job 重复 cancel 不复活，返回当前状态。
+        # 安全：cancel 不需要 attempt_token（用户层语义），但只允许 owner / 用户操作。
+        job = knowledge_repository.get_job(job_id)
+        if job is None:
+            return error_response(404, "Job not found")
+        if job.status in ("succeeded", "failed", "canceled"):
+            return JSONResponse(_knowledge_job_payload(job))
+        updated = knowledge_repository.mark_canceled(job_id)
+        if updated is None:
+            return error_response(404, "Job not found")
+        return JSONResponse(_knowledge_job_payload(updated))
 
     @app.get("/api/auth/status")
     def auth_status(request: Request) -> dict[str, bool]:

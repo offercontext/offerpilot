@@ -30,6 +30,7 @@ import {
   archiveKnowledgeSource,
   buildKnowledgeAssetContentUrl,
   buildKnowledgeSourceContentUrl,
+  cancelKnowledgeJob,
   deleteKnowledgeSource,
   fetchKnowledgeSource,
   fetchKnowledgeSourceEvidence,
@@ -44,6 +45,7 @@ import {
 } from '@/services/knowledge';
 import type {
   KnowledgeEvidence,
+  KnowledgeJob,
   KnowledgeSource,
   KnowledgeSourceJobsResponse,
 } from '@/types/knowledge';
@@ -730,6 +732,18 @@ function JobsBlock({
   data: KnowledgeSourceJobsResponse;
   loading: boolean;
 }) {
+  const queryClient = useQueryClient();
+  const cancelMutation = useMutation({
+    mutationFn: (jobId: number) => cancelKnowledgeJob(jobId),
+    onSuccess: () => {
+      message.success('已请求取消');
+      queryClient.invalidateQueries({ queryKey: ['knowledge'] });
+    },
+    onError: (error) => {
+      const text = error instanceof Error ? error.message : '取消失败';
+      message.error(text);
+    },
+  });
   if (loading) {
     return <Spin />;
   }
@@ -742,17 +756,49 @@ function JobsBlock({
         renderItem={(item) => (
           <List.Item>
             <Space direction="vertical" size={2} style={{ width: '100%' }}>
-              <Space size={8}>
+              <Space size={8} wrap>
                 <Badge color="gold" text={item.kind} />
-                <Badge color="blue" text={item.status} />
-                <Text type="secondary">{item.queue}</Text>
+                <Badge color="blue" text={JOB_STATUS_LABEL[item.status] ?? item.status} />
+                <Text type="secondary">队列：{item.queue}</Text>
+                {item.canceled ? (
+                  <Badge color="red" text="已取消" />
+                ) : null}
               </Space>
               {item.progress > 0 ? <Progress percent={item.progress} size="small" /> : null}
               <Text type="secondary" style={{ fontSize: 12 }}>
-                {item.stage || '—'} · 创建于 {formatDateTime(item.created_at)}
+                阶段：{item.stage || '—'} · 创建于 {formatDateTime(item.created_at)}
               </Text>
+              {(item.retry_count ?? 0) > 0 ? (
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  重试次数：{item.retry_count}
+                  {item.next_retry_at
+                    ? ` · 下次重试 ${formatDateTime(item.next_retry_at)}`
+                    : ''}
+                </Text>
+              ) : null}
+              {item.lease_owner ? (
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  Worker：{item.lease_owner}
+                  {item.heartbeat_at ? ` · 心跳 ${formatDateTime(item.heartbeat_at)}` : ''}
+                </Text>
+              ) : null}
               {item.error_message ? (
-                <Alert type="error" showIcon message={item.error_message} />
+                <Alert
+                  type="error"
+                  showIcon
+                  message={item.error_message}
+                  description={item.error_code ? `错误码：${item.error_code}` : undefined}
+                />
+              ) : null}
+              {isJobCancellable(item) ? (
+                <Button
+                  size="small"
+                  danger
+                  loading={cancelMutation.isPending}
+                  onClick={() => cancelMutation.mutate(item.id)}
+                >
+                  取消任务
+                </Button>
               ) : null}
             </Space>
           </List.Item>
@@ -780,6 +826,18 @@ function JobsBlock({
       />
     </div>
   );
+}
+
+const JOB_STATUS_LABEL: Record<string, string> = {
+  pending: '排队中',
+  running: '运行中',
+  succeeded: '已完成',
+  failed: '已失败',
+  canceled: '已取消',
+};
+
+function isJobCancellable(job: KnowledgeJob): boolean {
+  return !job.canceled && job.status !== 'succeeded' && job.status !== 'failed' && job.status !== 'canceled';
 }
 
 function DedupHintBanner() {

@@ -1,5 +1,6 @@
 import json
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import create_engine, event, text
@@ -52,6 +53,20 @@ def init_database(db_path: Path) -> SessionFactory:
     Base.metadata.create_all(engine)
     _ensure_knowledge_fts(engine)
     _recover_knowledge_deletions(engine, db_path.parent)
+    # KI-07：补齐 KnowledgeJob 持久队列所需列；旧库升级保证 attempt_token 存在，
+    # 否则 lease claim 无法防迟到提交。
+    knowledge_job_migrations = [
+        _ensure_column(
+            engine, "knowledge_jobs", "attempt_token", "TEXT DEFAULT ''"
+        ),
+    ]
+    if any(knowledge_job_migrations):
+        _record_migration(
+            engine,
+            "0006_knowledge_job_attempt_token",
+            "Add knowledge_jobs.attempt_token for KI-07 lease correctness",
+        )
+    _recover_knowledge_runtime(engine, db_path.parent)
     _record_migration(engine, "0001_base_schema", "Create current application tables")
 
     chat_migrations = [
@@ -269,6 +284,100 @@ def _reset_knowledge_legacy_tables(engine, data_dir: Path) -> None:  # type: ign
 
 def session_factory_for_data_dir(data_dir: Path) -> SessionFactory:
     return init_database(data_dir / "data.db")
+
+
+def _recover_knowledge_runtime(engine, data_dir: Path) -> None:  # type: ignore[no-untyped-def]
+    """KI-07：Spec §6 / §12 启动恢复。
+
+    职责：
+    1. 清理 ``knowledge/staging/`` 残留目录（任何进程崩溃都可能留下半写入的 staging）。
+    2. 清理 ``knowledge/sources/<source_id>/`` 中无 ``knowledge_sources`` 记录的孤儿
+       目录（rename 后、commit 前崩溃）。
+    3. 把过期 running Job 标记为 failed，并保留 ``retry_count`` / ``next_retry_at`` 以便
+       手动重试。Spec §12 "已提交阶段不会重复执行"——同步 Extraction 路径下 Job 一次性
+       事务提交为 succeeded，过期 running 只可能是故障注入或 KI-09 Brief Job 中崩溃。
+
+    必须在 ``_recover_knowledge_deletions`` 之后执行——delete Job 的恢复由后者负责
+    （连 Source 行 + 所有 Job 一并清理）。本函数只处理 extract/brief Job。
+    """
+
+    knowledge_dir = data_dir / "knowledge"
+    staging_root = knowledge_dir / "staging"
+    if staging_root.exists():
+        for child in staging_root.iterdir():
+            if child.is_dir():
+                shutil.rmtree(child, ignore_errors=True)
+
+    sources_root = knowledge_dir / "sources"
+    if sources_root.exists():
+        with engine.begin() as conn:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    text("SELECT name FROM sqlite_master WHERE type='table'")
+                ).fetchall()
+            }
+            if "knowledge_sources" not in tables:
+                return
+            existing_ids = {
+                int(row[0])
+                for row in conn.execute(
+                    text("SELECT id FROM knowledge_sources")
+                ).fetchall()
+            }
+        for child in sources_root.iterdir():
+            if not child.is_dir():
+                continue
+            try:
+                child_id = int(child.name)
+            except ValueError:
+                continue
+            if child_id not in existing_ids:
+                shutil.rmtree(child, ignore_errors=True)
+
+    with engine.begin() as conn:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            ).fetchall()
+        }
+        if "knowledge_jobs" not in tables:
+            return
+        # 用 Python 端 now.isoformat() 与写入侧 datetime.now(timezone.utc) 保持时区与
+        # 格式一致；CURRENT_TIMESTAMP 在 SQLite 返回无 tz 的 "YYYY-MM-DD HH:MM:SS"，
+        # 与带 +00:00 的 ISO 字符串按字节比较时结果不稳定。
+        now_iso = datetime.now(timezone.utc).isoformat()
+        stale_jobs = conn.execute(
+            text(
+                """
+                SELECT id FROM knowledge_jobs
+                WHERE status = 'running'
+                  AND kind != 'delete'
+                  AND lease_expires_at IS NOT NULL
+                  AND lease_expires_at < :now
+                """
+            ),
+            {"now": now_iso},
+        ).fetchall()
+        if not stale_jobs:
+            return
+        for (job_id,) in stale_jobs:
+            conn.execute(
+                text(
+                    """
+                    UPDATE knowledge_jobs
+                    SET status = 'failed',
+                        stage = 'expired_lease',
+                        error_code = 'job_lease_expired',
+                        error_message = 'lease expired before completion; runtime marked job failed',
+                        lease_expires_at = NULL,
+                        updated_at = :now
+                    WHERE id = :jid
+                    """
+                ),
+                {"jid": job_id, "now": now_iso},
+            )
 
 
 def _recover_knowledge_deletions(engine, data_dir: Path) -> None:  # type: ignore[no-untyped-def]

@@ -74,9 +74,13 @@ export interface KnowledgeJob {
   status: string;
   progress: number;
   retry_count: number;
+  next_retry_at: string | null;
   error_code: string;
   error_message: string;
   canceled: boolean;
+  lease_owner: string;
+  lease_expires_at: string | null;
+  heartbeat_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -133,9 +137,13 @@ export interface KnowledgeDeleteJob {
   status: string;
   progress: number;
   retry_count: number;
+  next_retry_at: string | null;
   error_code: string;
   error_message: string;
   canceled: boolean;
+  lease_owner: string;
+  lease_expires_at: string | null;
+  heartbeat_at: string | null;
   created_at: string;
   updated_at: string;
 }

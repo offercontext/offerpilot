@@ -780,6 +780,12 @@ class KnowledgeJob(Base):
     heartbeat_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # KI-07：每次 claim 生成新 attempt_token；complete/heartbeat 必须验证 token 匹配，
+    # 防止迟到 lease 结果提交。Spec §12 "迟到的旧 lease 结果因 owner/Attempt 不匹配
+    # 而拒绝提交"。
+    attempt_token: Mapped[str] = mapped_column(
+        String, default="", server_default=""
+    )
     error_code: Mapped[str] = mapped_column(
         String, default="", server_default=""
     )

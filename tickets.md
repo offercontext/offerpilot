@@ -195,22 +195,22 @@ Brief 事实。
 **Scope boundaries:** Brief 业务逻辑仍由后续 Ticket 实现；本 Ticket 提供 Brief queue 的稳定执行
 契约和可测试调度能力。
 
-- [ ] Extraction queue 和 Brief queue 各自并发固定为 1，两条队列可以并行。
-- [ ] Extraction queue 同时承载 Source 永久删除等本地维护 Job，不增加第三个可配置队列。
-- [ ] 队列按创建时间和 ID FIFO；手动重试进入队尾。
-- [ ] Job 持久化 kind、queue、stage、status、retry、next retry、cancel 和错误字段。
-- [ ] Job claim 使用 lease owner、expiry 和 heartbeat，防止两个 worker 同时提交。
-- [ ] 应用重启后，过期 running Job 能恢复；已提交阶段不会重复执行。
-- [ ] 迟到的旧 lease 结果因 owner/Attempt 不匹配而拒绝提交。
-- [ ] pending Job 可立即取消；running 本地任务在安全点停止。
-- [ ] 已发出的模型调用即使无法中止，其返回也不能在取消后提交。
-- [ ] Job detail 和 cancel API 返回稳定、用户安全的状态和错误。
-- [ ] 前端处理记录展示队列、阶段、进度、重试、取消和最近错误。
-- [ ] 启动恢复清理无数据库记录的 staging/final orphan，并完成或恢复 quarantine 删除。
-- [ ] Worker 每次读取正式 Source 时核验 manifest/hash，不一致时以稳定错误失败。
-- [ ] 自动重试计数和 `next_retry_at` 在重启后保持，不从零开始。
-- [ ] 并发与故障注入测试覆盖重复 claim、进程中断、事务前后崩溃、取消和迟到结果。
-- [ ] 独立 Code Review 检查幂等性、lease 竞争和无法真正原子化的文件系统边界。
+- [x] Extraction queue 和 Brief queue 各自并发固定为 1，两条队列可以并行。
+- [x] Extraction queue 同时承载 Source 永久删除等本地维护 Job，不增加第三个可配置队列。
+- [x] 队列按创建时间和 ID FIFO；手动重试进入队尾。
+- [x] Job 持久化 kind、queue、stage、status、retry、next retry、cancel 和错误字段。
+- [x] Job claim 使用 lease owner、expiry 和 heartbeat，防止两个 worker 同时提交。
+- [x] 应用重启后，过期 running Job 能恢复；已提交阶段不会重复执行。
+- [x] 迟到的旧 lease 结果因 owner/Attempt 不匹配而拒绝提交。
+- [x] pending Job 可立即取消；running 本地任务在安全点停止。
+- [x] 已发出的模型调用即使无法中止，其返回也不能在取消后提交。
+- [x] Job detail 和 cancel API 返回稳定、用户安全的状态和错误。
+- [x] 前端处理记录展示队列、阶段、进度、重试、取消和最近错误。
+- [x] 启动恢复清理无数据库记录的 staging/final orphan，并完成或恢复 quarantine 删除。
+- [x] Worker 每次读取正式 Source 时核验 manifest/hash，不一致时以稳定错误失败。
+- [x] 自动重试计数和 `next_retry_at` 在重启后保持，不从零开始。
+- [x] 并发与故障注入测试覆盖重复 claim、进程中断、事务前后崩溃、取消和迟到结果。
+- [x] 独立 Code Review 检查幂等性、lease 竞争和无法真正原子化的文件系统边界。
 
 ## KI-08：交付可评估的 Evidence FTS 检索
 

@@ -4,6 +4,7 @@ import type {
   KnowledgeEvidencePage,
   KnowledgeEvidenceSearchResponse,
   KnowledgeIngestResponse,
+  KnowledgeJob,
   KnowledgeSource,
   KnowledgeSourceAssetsResponse,
   KnowledgeSourceJobsResponse,
@@ -175,4 +176,16 @@ export function buildKnowledgeAssetContentUrl(
   assetId: number,
 ): string {
   return `/api/knowledge/sources/${sourceId}/assets/${assetId}/content`;
+}
+
+export async function cancelKnowledgeJob(jobId: number): Promise<KnowledgeJob> {
+  const { data } = await http.post<KnowledgeJob>(
+    `/knowledge/jobs/${jobId}/cancel`,
+  );
+  return data;
+}
+
+export async function fetchKnowledgeJob(jobId: number): Promise<KnowledgeJob> {
+  const { data } = await http.get<KnowledgeJob>(`/knowledge/jobs/${jobId}`);
+  return data;
 }

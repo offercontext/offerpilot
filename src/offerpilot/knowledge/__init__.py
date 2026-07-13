@@ -2,6 +2,8 @@
 
 KI-03 范围：Markdown/Text 上传 + 粘贴正文 + 结构感知 Extraction + Evidence + FTS。
 KI-04 范围：Source Bundle（Markdown 主文件 + PNG/JPEG/WebP 附件）+ Asset Evidence。
+KI-07 范围：持久队列 / lease / 取消 / 恢复契约（``KnowledgeJobRunner``、扩展的
+``ExtractionWorker.execute``）。
 """
 
 from offerpilot.knowledge.assets import (
@@ -25,6 +27,7 @@ from offerpilot.knowledge.repository import (
     AssetCreateInput,
     EvidenceRecord,
     EvidenceSearchHit,
+    JobRecord,
     KnowledgeRepository,
     SourceAssetRecord,
     SourceRecord,
@@ -32,7 +35,11 @@ from offerpilot.knowledge.repository import (
 )
 from offerpilot.knowledge.service import IngestError, IngestRequest, KnowledgeIngestService
 from offerpilot.knowledge.tokenizer import TOKENIZER_VERSION, count_tokens
-from offerpilot.knowledge.worker import ExtractionWorker
+from offerpilot.knowledge.worker import (
+    ExtractionWorker,
+    JobExecutionResult,
+    KnowledgeJobRunner,
+)
 
 __all__ = [
     "AssetCreateInput",
@@ -46,7 +53,10 @@ __all__ = [
     "ExtractionWorker",
     "IngestError",
     "IngestRequest",
+    "JobExecutionResult",
+    "JobRecord",
     "KnowledgeIngestService",
+    "KnowledgeJobRunner",
     "KnowledgeRepository",
     "MarkdownExtraction",
     "MarkdownExtractor",

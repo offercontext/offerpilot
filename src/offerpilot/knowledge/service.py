@@ -622,6 +622,13 @@ class KnowledgeIngestService:
                     stage="extracting",
                     status="running",
                 )
+                # KI-07：同步路径下 Extraction 仍一次性提交为 succeeded，但 lease 字段
+                # 必须在创建时即填全，便于未来改异步 / 故障注入测试 / 启动恢复时识别。
+                # Spec §12 "Job claim 使用 lease owner、expiry 和 heartbeat"。
+                job_row.lease_owner = "ingest-sync"
+                job_row.lease_expires_at = datetime.now(timezone.utc)
+                job_row.heartbeat_at = datetime.now(timezone.utc)
+                job_row.attempt_token = secrets.token_hex(16)
                 session.add(job_row)
                 session.flush()
                 job_id = job_row.id

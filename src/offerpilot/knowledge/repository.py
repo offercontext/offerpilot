@@ -15,7 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Optional, Sequence
 
 from sqlalchemy import select, text
@@ -134,9 +134,14 @@ class JobRecord:
     status: str
     progress: int
     retry_count: int
+    next_retry_at: Optional[datetime]
     error_code: str
     error_message: str
     canceled: bool
+    lease_owner: str
+    lease_expires_at: Optional[datetime]
+    heartbeat_at: Optional[datetime]
+    attempt_token: str
     created_at: datetime
     updated_at: datetime
 
@@ -363,12 +368,27 @@ def _to_job_record(row: KnowledgeJob) -> JobRecord:
         status=row.status,
         progress=row.progress,
         retry_count=row.retry_count,
+        next_retry_at=row.next_retry_at,
         error_code=row.error_code,
         error_message=row.error_message,
         canceled=row.canceled,
+        lease_owner=row.lease_owner,
+        lease_expires_at=row.lease_expires_at,
+        heartbeat_at=row.heartbeat_at,
+        attempt_token=row.attempt_token,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
+
+
+def _new_attempt_token() -> str:
+    """Spec §12 "Job claim 使用 lease owner、expiry 和 heartbeat"。
+
+    每次生成新 token；complete/heartbeat 必须验证 token 匹配，拒绝迟到 lease。
+    """
+    import secrets as _secrets
+
+    return _secrets.token_hex(16)
 
 
 @dataclass(frozen=True)
@@ -590,6 +610,11 @@ class KnowledgeRepository:
                 status="running",
                 progress=0,
             )
+            # KI-07：delete Job 同样填全 lease 字段，避免被启动恢复误判为过期。
+            delete_job.lease_owner = "purge-sync"
+            delete_job.lease_expires_at = now
+            delete_job.heartbeat_at = now
+            delete_job.attempt_token = _new_attempt_token()
             session.add(delete_job)
             session.flush()
             delete_job_id = delete_job.id
@@ -815,6 +840,263 @@ class KnowledgeRepository:
             session.commit()
             session.refresh(row)
             return _to_job_record(row)
+
+    # KI-07：Spec §12 持久队列 / lease / 取消 / 恢复。
+
+    def claim_next_job(
+        self,
+        queue: str,
+        *,
+        lease_owner: str,
+        lease_duration_seconds: int = 30,
+        now: Optional[datetime] = None,
+    ) -> Optional[JobRecord]:
+        """Spec §12：单并发 FIFO (created_at, id)。
+
+        本方法在一个事务中：
+        1. SELECT 队列里最早一个 ``pending`` Job（按 created_at, id）。
+        2. UPDATE 设置 ``status=running, lease_owner, lease_expires_at=now+duration,
+           heartbeat_at=now, attempt_token=new_uuid``。
+
+        单并发由调用方驱动（每个 worker 串行调用本方法 + execute + complete）。
+        并发安全通过乐观 UPDATE 守卫实现：UPDATE 子句带 ``status='pending'`` 条件，
+        被并发抢走的 Job 因 status 已变 running 而 rowcount=0，第二个 caller 看不到。
+        SQLite 不真正实现 ``SELECT FOR UPDATE``，因此乐观守卫是 lease 正确性的关键。
+        """
+
+        moment = now or datetime.now(timezone.utc)
+        expires_at = moment + timedelta(seconds=max(1, lease_duration_seconds))
+        token = _new_attempt_token()
+        with self._session_factory() as session:
+            stmt = (
+                select(KnowledgeJob)
+                .where(
+                    KnowledgeJob.queue == queue,
+                    KnowledgeJob.status == "pending",
+                    KnowledgeJob.canceled.is_(False),
+                )
+                .order_by(KnowledgeJob.created_at.asc(), KnowledgeJob.id.asc())
+                .limit(1)
+            )
+            row = session.scalars(stmt).first()
+            if row is None:
+                return None
+            optimistic = session.execute(
+                text(
+                    """
+                    UPDATE knowledge_jobs
+                    SET status = 'running',
+                        lease_owner = :owner,
+                        lease_expires_at = :expires,
+                        heartbeat_at = :moment,
+                        attempt_token = :token,
+                        updated_at = :moment
+                    WHERE id = :jid
+                      AND status = 'pending'
+                      AND canceled = 0
+                    """
+                ),
+                {
+                    "owner": lease_owner,
+                    "expires": expires_at,
+                    "moment": moment,
+                    "token": token,
+                    "jid": row.id,
+                },
+            )
+            affected = int(getattr(optimistic, "rowcount", 0) or 0)
+            if affected == 0:
+                # 被并发抢走；递归找下一个候选，避免漏掉队列。
+                session.commit()
+                return self.claim_next_job(
+                    queue,
+                    lease_owner=lease_owner,
+                    lease_duration_seconds=lease_duration_seconds,
+                    now=now,
+                )
+            # 同步 ORM 对象状态，避免 expire_on_commit=False 保留旧 status='pending'。
+            row.status = "running"
+            row.lease_owner = lease_owner
+            row.lease_expires_at = expires_at
+            row.heartbeat_at = moment
+            row.attempt_token = token
+            row.updated_at = moment
+            session.commit()
+            session.refresh(row)
+            return _to_job_record(row)
+
+    def heartbeat_job(
+        self,
+        job_id: int,
+        *,
+        attempt_token: str,
+        lease_duration_seconds: int = 30,
+        now: Optional[datetime] = None,
+    ) -> Optional[JobRecord]:
+        """更新 heartbeat_at + lease_expires_at。
+
+        Spec §12 "Job claim 使用 lease owner、expiry 和 heartbeat"。token 不匹配
+        返回 ``None``——可能是同一 job 已被另一个 lease 重 claim，旧 worker 应停止。
+        """
+        moment = now or datetime.now(timezone.utc)
+        expires_at = moment + timedelta(seconds=max(1, lease_duration_seconds))
+        with self._session_factory() as session:
+            row = session.get(KnowledgeJob, job_id)
+            if row is None:
+                return None
+            if row.attempt_token != attempt_token:
+                return None
+            if row.status != "running":
+                return None
+            row.heartbeat_at = moment
+            row.lease_expires_at = expires_at
+            row.updated_at = moment
+            session.commit()
+            session.refresh(row)
+            return _to_job_record(row)
+
+    def complete_job(
+        self,
+        job_id: int,
+        *,
+        attempt_token: str,
+        status: str,
+        stage: Optional[str] = None,
+        progress: Optional[int] = None,
+        error_code: str = "",
+        error_message: str = "",
+        next_retry_at: Optional[datetime] = None,
+        increment_retry: bool = False,
+        now: Optional[datetime] = None,
+    ) -> tuple[bool, Optional[JobRecord]]:
+        """提交 Job 结果；验证 attempt_token；不匹配返回 ``(False, None)``。
+
+        Spec §12 "迟到的旧 lease 结果因 owner/Attempt 不匹配而拒绝提交"。
+
+        ``status`` 应为 ``succeeded`` / ``failed`` / ``canceled``。``increment_retry``
+        为 True 时 ``retry_count`` 加 1（用于 Brief 重试计数）。
+        """
+
+        moment = now or datetime.now(timezone.utc)
+        with self._session_factory() as session:
+            row = session.get(KnowledgeJob, job_id)
+            if row is None:
+                return False, None
+            if row.attempt_token != attempt_token:
+                return False, None
+            if row.status != "running":
+                # Spec §12 "已发出的模型调用即使无法中止，其返回也不能在取消后提交"。
+                # 只允许 running→终态；pending Job 必须先 claim 才能提交。
+                return False, None
+            row.status = status
+            if stage is not None:
+                row.stage = stage
+            if progress is not None:
+                row.progress = progress
+            row.error_code = error_code
+            row.error_message = error_message
+            if next_retry_at is not None:
+                row.next_retry_at = next_retry_at
+            if increment_retry:
+                row.retry_count = (row.retry_count or 0) + 1
+            row.lease_expires_at = None
+            row.updated_at = moment
+            session.commit()
+            session.refresh(row)
+            return True, _to_job_record(row)
+
+    def mark_canceled(self, job_id: int) -> Optional[JobRecord]:
+        """Spec §12 取消规则：
+        - pending Job 直接标记 canceled。
+        - running Job 设置 ``canceled=True`` 并清空 lease_expires_at，本地任务在
+          安全点检查并停止；完整状态由 worker 在安全点写入（``status=canceled``）。
+          清空 lease_expires_at 防止启动恢复把已 cancel 的 running Job 误判为
+          过期失败。
+
+        幂等：重复 cancel 不会复活 Job。
+        """
+        with self._session_factory() as session:
+            row = session.get(KnowledgeJob, job_id)
+            if row is None:
+                return None
+            if row.status in ("succeeded", "failed", "canceled"):
+                return _to_job_record(row)
+            row.canceled = True
+            if row.status == "pending":
+                row.status = "canceled"
+                row.stage = "canceled"
+                row.lease_expires_at = None
+            else:
+                # running：worker 在安全点检查 canceled 标记并完成清理。Spec §12
+                # "running 本地任务在安全点停止；已发出的模型调用即使无法中止，
+                # 其返回也不能在取消后提交"。
+                # 清空 lease_expires_at → recover_stale_running_jobs 不会触碰它。
+                row.stage = "canceling"
+                row.lease_expires_at = None
+            row.updated_at = datetime.now(timezone.utc)
+            session.commit()
+            session.refresh(row)
+            return _to_job_record(row)
+
+    def is_job_canceled(self, job_id: int) -> bool:
+        """供 worker 在安全点查询取消标记。"""
+        with self._session_factory() as session:
+            row = session.get(KnowledgeJob, job_id)
+            if row is None:
+                return True
+            return bool(row.canceled) or row.status == "canceled"
+
+    def list_pending_jobs(self, queue: str) -> list[JobRecord]:
+        """列出队列所有 ``pending`` Job，按 FIFO 排序；测试与调度器使用。"""
+        with self._session_factory() as session:
+            stmt = (
+                select(KnowledgeJob)
+                .where(
+                    KnowledgeJob.queue == queue,
+                    KnowledgeJob.status == "pending",
+                    KnowledgeJob.canceled.is_(False),
+                )
+                .order_by(KnowledgeJob.created_at.asc(), KnowledgeJob.id.asc())
+            )
+            return [_to_job_record(row) for row in session.scalars(stmt)]
+
+    def recover_stale_running_jobs(self, now: Optional[datetime] = None) -> list[int]:
+        """KI-07 启动恢复：把过期 running Job 标记为 failed。
+
+        Spec §12 "应用重启后，过期 running Job 能恢复；已提交阶段不会重复执行"。
+        选择 failed 而非 re-queue 是因为：同步 Extraction 路径下 Job 一次性事务提交为
+        succeeded，过期 running 必然意味着故障注入或 Brief 中途崩溃；由 retry_extract
+        显式重建 Job 比隐式重跑更安全。
+
+        返回被恢复的 job_id 列表，便于日志与测试。
+        """
+        moment = now or datetime.now(timezone.utc)
+        recovered: list[int] = []
+        with self._session_factory() as session:
+            stale = (
+                select(KnowledgeJob)
+                .where(
+                    KnowledgeJob.status == "running",
+                    KnowledgeJob.kind != "delete",
+                    KnowledgeJob.lease_expires_at.is_not(None),
+                    KnowledgeJob.lease_expires_at < moment,
+                )
+                .order_by(KnowledgeJob.id.asc())
+            )
+            for row in session.scalars(stale):
+                row.status = "failed"
+                # 明确覆盖 stage，避免遗留 "extracting" 等描述性阶段与 failed 状态混淆。
+                row.stage = "expired_lease"
+                row.error_code = "job_lease_expired"
+                row.error_message = (
+                    "lease expired before completion; runtime marked job failed"
+                )
+                row.lease_expires_at = None
+                row.updated_at = moment
+                recovered.append(row.id)
+            if recovered:
+                session.commit()
+        return recovered
 
     # Evidence
 
