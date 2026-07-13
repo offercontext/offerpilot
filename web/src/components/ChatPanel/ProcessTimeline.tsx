@@ -14,9 +14,11 @@ import styles from './ChatPanel.module.css';
 interface Props {
   steps: ToolStep[];
   onOpenEvidence?: (target: EvidenceTarget) => void;
+  summary?: string;
+  embedded?: boolean;
 }
 
-export default function ProcessTimeline({ steps, onOpenEvidence }: Props) {
+export default function ProcessTimeline({ steps, onOpenEvidence, summary, embedded = false }: Props) {
   const [open, setOpen] = useState(false);
   const [expandedSteps, setExpandedSteps] = useState(false);
   const stepSetIdentity = toolStepSetIdentity(steps);
@@ -31,7 +33,10 @@ export default function ProcessTimeline({ steps, onOpenEvidence }: Props) {
   const remainingSteps = Math.max(0, steps.length - visibleSteps.length);
 
   return (
-    <div className={`${styles.timeline} ${open ? styles.timelineOpen : ''}`} aria-label="AI 操作摘要">
+    <div
+      className={`${styles.timeline} ${open ? styles.timelineOpen : ''} ${embedded ? styles.timelineEmbedded : ''}`}
+      aria-label="AI 操作摘要"
+    >
       <button
         type="button"
         className={styles.tlHead}
@@ -39,7 +44,7 @@ export default function ProcessTimeline({ steps, onOpenEvidence }: Props) {
         onClick={() => setOpen((value) => !value)}
       >
         <ThunderboltOutlined aria-hidden="true" />
-        <span>AI 做了什么 · 共 {steps.length} 步</span>
+        <span>{summary ?? `AI 做了什么 · 共 ${steps.length} 步`}</span>
         <RightOutlined className={styles.tlChev} aria-hidden="true" />
       </button>
       {open ? (

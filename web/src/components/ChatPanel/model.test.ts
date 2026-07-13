@@ -12,6 +12,7 @@ import {
   collectEvidence,
   evidenceSetIdentity,
   formatEvidenceMeta,
+  parseTurnPresentation,
   hydrateMissingPendingAction,
   pendingActionForConversation,
   pendingComposerDisabledReason,
@@ -1617,4 +1618,360 @@ describe('buildTurns evidence normalization', () => {
     expect(pending).toEqual(current);
   });
 
+});
+
+describe('Pilot turn presentation reconstruction', () => {
+  it('parses persisted markdown headings and preserves leading detail markdown', () => {
+    const presentation = parseTurnPresentation([
+      '# 投递进展',
+      '',
+      '已核对 **两个**岗位的状态。',
+      '',
+      '   ## 结论',
+      '',
+      '优先准备下一轮技术面。',
+      '',
+      '### 下一步',
+      '',
+      '-  整理项目亮点  ',
+      '- 联系招聘方确认时间',
+    ].join('\n'));
+
+    expect(presentation).toEqual({
+      conclusion: '优先准备下一轮技术面。',
+      actions: ['整理项目亮点', '联系招聘方确认时间'],
+      detailMarkdown: '# 投递进展\n\n已核对 **两个**岗位的状态。',
+    });
+  });
+
+  it('falls back for incomplete or reversed presentation headings', () => {
+    const onlyConclusion = '## 结论\n\n继续跟进。';
+    const noAction = '## 结论\n\n继续跟进。\n\n## 下一步\n\n稍后处理。';
+    const reversed = '## 下一步\n\n- 跟进\n\n## 结论\n\n继续跟进。';
+
+    expect(parseTurnPresentation(onlyConclusion)).toBeUndefined();
+    expect(parseTurnPresentation(noAction)).toBeUndefined();
+    expect(parseTurnPresentation(reversed)).toBeUndefined();
+
+    const turns = buildTurns([msg({ role: 'assistant', content: noAction })]);
+    expect(turns[0]).toMatchObject({
+      content: noAction,
+      taskTitle: '本轮任务',
+      presentation: undefined,
+    });
+  });
+
+  it('keeps at most the first three actionable bullets', () => {
+    const presentation = parseTurnPresentation([
+      '## 结论',
+      '',
+      '可以推进。',
+      '',
+      '## 下一步',
+      '',
+      '* 第一项',
+      '+ 第二项',
+      '- 第三项',
+      '- 第四项',
+    ].join('\n'));
+
+    expect(presentation?.actions).toEqual(['第一项', '第二项', '第三项']);
+  });
+
+  it('attaches real tool steps and structured presentation to the final assistant turn', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'user',
+        content: '   Review    application  pipeline and prepare an exceptionally detailed final summary today  ',
+      }),
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([{ id: 'call-apps', name: 'list_applications', args: {} }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-apps',
+        content: JSON.stringify([{ id: 7, company_name: 'OpenAI', position_name: 'Engineer' }]),
+      }),
+      msg({
+        role: 'assistant',
+        content: [
+          '已查到投递记录。',
+          '',
+          '## 结论',
+          '',
+          '应优先准备 OpenAI 面试。',
+          '',
+          '## 下一步',
+          '',
+          '- 更新项目案例',
+          '- 安排模拟面试',
+        ].join('\n'),
+      }),
+    ]);
+
+    expect(turns).toHaveLength(2);
+    expect(turns[1]).toMatchObject({
+      role: 'assistant',
+      content: '已查到投递记录。',
+      taskTitle: 'Review application pipeline and pre…',
+      presentation: {
+        conclusion: '应优先准备 OpenAI 面试。',
+        actions: ['更新项目案例', '安排模拟面试'],
+        detailMarkdown: '已查到投递记录。',
+      },
+      steps: [
+        {
+          name: 'list_applications',
+          toolCallId: 'call-apps',
+        },
+      ],
+    });
+    expect(turns[1].steps).toHaveLength(1);
+    expect(turns[1].taskTitle).toHaveLength(36);
+  });
+
+  it('stops actions at a following peer heading and retains nested list content with the trailing markdown', () => {
+    const presentation = parseTurnPresentation([
+      '前置说明。',
+      '',
+      '## 结论',
+      '',
+      '先完成面试准备。',
+      '',
+      '## 下一步',
+      '',
+      '- 完成项目案例',
+      '  - 用量化指标补充成果',
+      '- 约一次模拟面试',
+      '',
+      '## 备注',
+      '',
+      '提交后跟进反馈。',
+      '- 这不是下一步行动',
+    ].join('\n'));
+
+    expect(presentation).toEqual({
+      conclusion: '先完成面试准备。',
+      actions: ['完成项目案例\n  - 用量化指标补充成果', '约一次模拟面试'],
+      detailMarkdown: '前置说明。\n\n## 备注\n\n提交后跟进反馈。\n- 这不是下一步行动',
+    });
+  });
+
+  it('preserves root prose and fenced markdown while retaining nested action continuations', () => {
+    const presentation = parseTurnPresentation([
+      '## 结论',
+      '',
+      '先完成准备。',
+      '',
+      '## 下一步',
+      '',
+      '- 执行 A',
+      '  - 保留的嵌套延续',
+      '补充说明',
+      '```markdown',
+      '- 这是围栏示例，不是行动',
+      '```',
+    ].join('\n'));
+
+    expect(presentation?.actions).toEqual(['执行 A\n  - 保留的嵌套延续']);
+    expect(presentation?.detailMarkdown).toContain('补充说明');
+    expect(presentation?.detailMarkdown).toContain('```markdown\n- 这是围栏示例，不是行动\n```');
+  });
+
+  it('does not parse fenced historical markdown examples as a Pilot presentation', () => {
+    const historicalExample = [
+      '旧回复模板：',
+      '',
+      '```markdown',
+      '## 结论',
+      '',
+      '这只是示例结论。',
+      '',
+      '## 下一步',
+      '',
+      '- 这只是示例行动',
+      '```',
+    ].join('\n');
+
+    expect(parseTurnPresentation(historicalExample)).toBeUndefined();
+    expect(buildTurns([msg({ role: 'assistant', content: historicalExample })])[0]).toMatchObject({
+      content: historicalExample,
+      presentation: undefined,
+    });
+  });
+
+  it('does not treat fenced list examples as additional actions', () => {
+    const presentation = parseTurnPresentation([
+      '## 结论',
+      '',
+      '按计划推进。',
+      '',
+      '## 下一步',
+      '',
+      '- 准备项目案例',
+      '```markdown',
+      '- 示例列表项',
+      '* 另一条示例',
+      '```',
+      '- 安排模拟面试',
+    ].join('\n'));
+
+    expect(presentation?.actions).toEqual(['准备项目案例', '安排模拟面试']);
+  });
+
+  it('does not append nested fenced list examples to the current action', () => {
+    const presentation = parseTurnPresentation([
+      '## 结论',
+      '',
+      '按计划推进。',
+      '',
+      '## 下一步',
+      '',
+      '- 准备项目案例',
+      '    ```markdown',
+      '    ## 示例结论',
+      '    - 示例列表项',
+      '    ```',
+      '- 安排模拟面试',
+    ].join('\n'));
+
+    expect(presentation?.actions).toEqual(['准备项目案例', '安排模拟面试']);
+  });
+
+  it('does not mistake root indented code for a fence that masks a later presentation', () => {
+    const presentation = parseTurnPresentation([
+      '    ```not-a-fence-at-root',
+      '## 结论',
+      '',
+      '可以推进。',
+      '',
+      '## 下一步',
+      '',
+      '- 准备项目案例',
+    ].join('\n'));
+
+    expect(presentation).toEqual({
+      conclusion: '可以推进。',
+      actions: ['准备项目案例'],
+      detailMarkdown: '```not-a-fence-at-root',
+    });
+  });
+
+  it('does not initialize actions from space- or tab-indented code bullets', () => {
+    const presentation = parseTurnPresentation([
+      '## 结论',
+      '',
+      '需要先区分示例代码。',
+      '',
+      '## 下一步',
+      '',
+      '    - 四空格的示例代码',
+      '\t- 制表符的示例代码',
+      '- 真正的下一步',
+    ].join('\n'));
+
+    expect(presentation).toEqual({
+      conclusion: '需要先区分示例代码。',
+      actions: ['真正的下一步'],
+      detailMarkdown: '    - 四空格的示例代码\n\t- 制表符的示例代码',
+    });
+    expect(parseTurnPresentation('## 结论\n\n只含代码。\n\n## 下一步\n\n\t- 制表示例')).toBeUndefined();
+  });
+
+  it('keeps a root fence open when a four-space marker appears inside it', () => {
+    const fencedExample = [
+      '```markdown',
+      '    ```',
+      '## 结论',
+      '',
+      '这仍在围栏内。',
+      '',
+      '## 下一步',
+      '',
+      '- 这不是实际行动',
+    ].join('\n');
+
+    expect(parseTurnPresentation(fencedExample)).toBeUndefined();
+    expect(buildTurns([msg({ role: 'assistant', content: fencedExample })])[0]).toMatchObject({
+      content: fencedExample,
+      presentation: undefined,
+    });
+  });
+
+  it('closes a list-contained fence at the shallower content-start column', () => {
+    const presentation = parseTurnPresentation([
+      '- 代码示例容器',
+      '    ```markdown',
+      '    - 围栏内示例',
+      '  ```',
+      '## 结论',
+      '',
+      '围栏已结束。',
+      '',
+      '## 下一步',
+      '',
+      '- 执行真实行动',
+    ].join('\n'));
+
+    expect(presentation).toMatchObject({
+      conclusion: '围栏已结束。',
+      actions: ['执行真实行动'],
+    });
+  });
+
+  it('closes a list-contained fence within three columns past its content start', () => {
+    const presentation = parseTurnPresentation([
+      '- 代码示例容器',
+      '    ```markdown',
+      '    - 围栏内示例',
+      '     ```',
+      '## 结论',
+      '',
+      '围栏已结束。',
+      '',
+      '## 下一步',
+      '',
+      '- 执行真实行动',
+    ].join('\n'));
+
+    expect(presentation).toMatchObject({
+      conclusion: '围栏已结束。',
+      actions: ['执行真实行动'],
+    });
+  });
+
+  it('uses a list container even when its opening fence starts within three root columns', () => {
+    const relativeClose = [
+      '- 代码示例容器',
+      '  ```markdown',
+      '  - 围栏内示例',
+      '     ```',
+      '## 结论',
+      '',
+      '围栏已结束。',
+      '',
+      '## 下一步',
+      '',
+      '- 执行真实行动',
+    ].join('\n');
+    const tooDeepToClose = relativeClose.replace('     ```', '      ```');
+
+    expect(parseTurnPresentation(relativeClose)).toMatchObject({
+      conclusion: '围栏已结束。',
+      actions: ['执行真实行动'],
+    });
+    expect(parseTurnPresentation(tooDeepToClose)).toBeUndefined();
+  });
+
+  it('truncates task titles at a code-point boundary within the 36-character display limit', () => {
+    const turns = buildTurns([
+      msg({ role: 'user', content: '😀'.repeat(37) }),
+      msg({ role: 'assistant', content: '已处理。' }),
+    ]);
+    const taskTitle = turns[1].taskTitle;
+
+    expect(taskTitle).toBe(`${'😀'.repeat(35)}…`);
+    expect(Array.from(taskTitle ?? '')).toHaveLength(36);
+  });
 });

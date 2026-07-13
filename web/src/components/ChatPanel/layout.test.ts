@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 import component from './index.tsx?raw';
 import proposalCard from './ProposalCard.tsx?raw';
 import thinking from './ThinkingIndicator.tsx?raw';
+import messageBubble from './MessageBubble.tsx?raw';
 import contextPanel from './ContextPanel.tsx?raw';
 import evidenceList from './EvidenceList.tsx?raw';
 import processTimeline from './ProcessTimeline.tsx?raw';
 import threadRail from './ThreadRail.tsx?raw';
+import mockChat from '../MockStudio/MockChat.tsx?raw';
 
 async function loadCss(): Promise<string> {
   const fsModule = 'node:fs';
@@ -583,5 +585,18 @@ describe('ChatPanel docked layout contract', () => {
     expect(css).toMatch(/\.evidenceControlsCompact\s*\{\s*margin-left:\s*0;/);
     expect(css).toMatch(/\.tlHead,\s*\.timelineExpand,\s*\.evidenceExpand,/);
     expect(css).toContain('@media (prefers-reduced-motion: reduce)');
+  });
+
+  it('routes Pilot task actions through the guarded chat send flow', () => {
+    expect(messageBubble).toContain('PilotTaskCard');
+    expect(messageBubble).toContain('actionsDisabled');
+    expect(messageBubble).toContain('taskCardsEnabled');
+    expect(component).toContain('actionsDisabled={composerDisabled}');
+    expect(component).toContain('继续处理：${action}');
+  });
+
+  it('keeps Mock Studio outside Pilot task-card action flows', () => {
+    expect(mockChat).toContain('taskCardsEnabled={false}');
+    expect(mockChat).toContain('onAction={() => undefined}');
   });
 });

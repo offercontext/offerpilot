@@ -1511,7 +1511,7 @@ def create_app(
         if conversation is None:
             return error_response(404, "conversation not found")
         stored = chat.list_messages(conversation_id)
-        if not stored:
+        if conversation is None or not stored:
             return error_response(404, "conversation not found")
         pending = chat.get_pending_action(conversation_id)
         if pending is None:
@@ -2801,6 +2801,9 @@ def _chat_response_system_message() -> Message:
             "你是 OfferPilot，一个求职领航助手。始终使用用户的语言回复。"
             "当前对话界面支持助手文本增量流式输出。"
             "对于实质性回答，请保持简洁，并优先按「结论、依据、下一步」组织。"
+            "对于需要结论和后续行动的实质任务，请先给出证据与注意事项，再以 `## 结论` 收束为一条简短结论，"
+            "并以 `## 下一步` 结尾，列出一到三条以 `- ` 开头的后续行动；该列表后不要追加文本。"
+            "问候语和澄清问题不需要使用这两个标题。"
             "如果本地工具依据较少，要明确说明。"
             "不要暴露隐藏推理。不要提到 update_application_status、create_application_event "
             "等内部工具或 API 名称；请改用用户能理解的动作描述。"

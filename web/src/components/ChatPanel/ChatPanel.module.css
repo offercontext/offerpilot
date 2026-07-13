@@ -533,6 +533,10 @@
 .tlHead:hover {
   background: var(--chat-tint-soft);
 }
+.tlHead:focus-visible {
+  outline: 2px solid var(--op-primary);
+  outline-offset: -2px;
+}
 .tlChev {
   margin-left: auto;
   transition-property: transform;
@@ -541,6 +545,19 @@
 }
 .timelineOpen .tlChev {
   transform: rotate(90deg);
+}
+.timelineEmbedded {
+  margin-top: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.timelineEmbedded .tlHead {
+  padding: 8px 14px;
+  border-top: 1px solid var(--op-border);
+}
+.timelineEmbedded .tlBody {
+  background: var(--chat-tint-soft);
 }
 .tlBody {
   display: grid;
@@ -656,6 +673,115 @@
 .step b {
   font-weight: 600;
   color: var(--op-ink);
+}
+
+/* ---------- Pilot 任务卡 ---------- */
+.taskCard {
+  overflow: hidden;
+  border: 1px solid var(--op-border);
+  border-radius: 12px;
+  background: var(--op-surface);
+  box-shadow: var(--op-shadow-sm);
+  color: var(--op-ink);
+}
+.taskHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 11px 14px 10px;
+  background: var(--chat-tint-soft);
+}
+.taskLabel,
+.taskConclusion h4,
+.taskActions h4 {
+  display: block;
+  margin: 0;
+  color: var(--op-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.taskTitle {
+  margin: 3px 0 0;
+  color: var(--op-ink);
+  font-size: 14px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.taskStatus {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 7px;
+  border: 1px solid var(--op-border);
+  border-radius: 999px;
+  background: var(--op-surface);
+  color: var(--op-ink);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.taskStatus::before {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--op-primary);
+  content: '';
+}
+.taskConclusion,
+.taskActions {
+  padding: 11px 14px;
+}
+.taskConclusion {
+  border-top: 1px solid var(--op-border);
+}
+.taskConclusion p {
+  margin: 5px 0 0;
+  color: var(--op-ink);
+  font-size: 13px;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+.taskActions {
+  border-top: 1px solid var(--op-border);
+}
+.taskActions > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 8px;
+}
+.taskActions button {
+  min-width: 0;
+  border: 1px solid var(--op-border);
+  border-radius: 8px;
+  padding: 6px 9px;
+  background: var(--op-surface);
+  color: var(--op-primary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  transition: background 0.18s var(--op-ease), border-color 0.18s var(--op-ease);
+}
+.taskActions button:hover:not(:disabled) {
+  border-color: var(--op-primary);
+  background: var(--chat-tint-soft);
+}
+.taskActions button:focus-visible {
+  outline: 2px solid var(--op-primary);
+  outline-offset: 2px;
+}
+.taskActions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 .evidenceList {
   list-style: none;

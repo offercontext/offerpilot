@@ -1330,7 +1330,16 @@ export default function ChatPanel({
                   </div>
                 </div>
               ) : (
-                turns.map((turn, i) => <MessageBubble key={i} turn={turn} index={i} onOpenEvidence={onOpenEvidence} />)
+                turns.map((turn, i) => (
+                  <MessageBubble
+                    key={i}
+                    turn={turn}
+                    index={i}
+                    onOpenEvidence={onOpenEvidence}
+                    actionsDisabled={composerDisabled}
+                    onAction={(action) => void sendMessage(`继续处理：${action}`)}
+                  />
+                ))
               )}
 
               {activeRequestChips.length > 0 ? (

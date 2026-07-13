@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { EvidenceTarget, UITurn } from './model';
 import ProcessTimeline from './ProcessTimeline';
+import PilotTaskCard from './PilotTaskCard';
 import styles from './ChatPanel.module.css';
 
 /** Code block with a hover copy button. */
@@ -37,11 +38,21 @@ interface Props {
   turn: UITurn;
   index: number;
   onOpenEvidence?: (target: EvidenceTarget) => void;
+  actionsDisabled?: boolean;
+  onAction?: (action: string) => void;
+  taskCardsEnabled?: boolean;
 }
 
-export default function MessageBubble({ turn, index, onOpenEvidence }: Props) {
+export default function MessageBubble({
+  turn,
+  index,
+  onOpenEvidence,
+  actionsDisabled = false,
+  onAction = () => undefined,
+  taskCardsEnabled = true,
+}: Props) {
   const isUser = turn.role === 'user';
-  const hasContent = turn.content.trim().length > 0;
+  const hasTaskCard = taskCardsEnabled && !isUser && Boolean(turn.steps?.length || turn.presentation);
   return (
     <div
       className={`${styles.msg} ${isUser ? styles.msgUser : ''}`}
@@ -54,7 +65,17 @@ export default function MessageBubble({ turn, index, onOpenEvidence }: Props) {
         {isUser ? '我' : '✦'}
       </div>
       <div className={styles.msgCol}>
-        {hasContent ? (
+        {hasTaskCard ? (
+          <PilotTaskCard
+            title={turn.taskTitle ?? '本轮任务'}
+            steps={turn.steps ?? []}
+            presentation={turn.presentation}
+            disabled={actionsDisabled}
+            onAction={onAction}
+            onOpenEvidence={onOpenEvidence}
+          />
+        ) : null}
+        {(isUser || turn.content.trim()) ? (
           <div className={`${styles.bubble} ${isUser ? styles.bubbleUser : styles.bubbleAssistant}`}>
             {isUser ? (
               turn.content
@@ -67,7 +88,9 @@ export default function MessageBubble({ turn, index, onOpenEvidence }: Props) {
             )}
           </div>
         ) : null}
-        {!isUser && turn.steps ? <ProcessTimeline steps={turn.steps} onOpenEvidence={onOpenEvidence} /> : null}
+        {!isUser && turn.steps?.length && !hasTaskCard ? (
+          <ProcessTimeline steps={turn.steps} onOpenEvidence={onOpenEvidence} />
+        ) : null}
       </div>
     </div>
   );
