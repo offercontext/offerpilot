@@ -235,6 +235,23 @@ def test_start_uses_configured_port_by_default(monkeypatch, tmp_path):
     assert captured == {"host": "127.0.0.1", "port": 9099}
 
 
+def test_start_accepts_an_explicit_host(monkeypatch, tmp_path):
+    monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
+    captured = {}
+
+    def fake_run(app, host, port):  # type: ignore[no-untyped-def]
+        captured["host"] = host
+        captured["port"] = port
+
+    monkeypatch.setattr("offerpilot.cli.uvicorn.run", fake_run)
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["start", "--host", "0.0.0.0", "--port", "8080"])
+
+    assert result.exit_code == 0
+    assert captured == {"host": "0.0.0.0", "port": 8080}
+
+
 def test_resume_add_and_list(monkeypatch, tmp_path):
     monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path / "data"))
     resume_file = tmp_path / "resume.txt"

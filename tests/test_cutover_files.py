@@ -13,6 +13,7 @@ def test_dockerfile_uses_python_runtime_not_go_builder():
     assert "go build" not in dockerfile
     assert "golang:" not in dockerfile
     assert 'ENTRYPOINT ["oc"]' in dockerfile
+    assert 'CMD ["start", "--host", "0.0.0.0", "--port", "8080"]' in dockerfile
 
 
 def test_install_script_installs_python_tool_not_go_binary():

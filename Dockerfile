@@ -30,4 +30,4 @@ USER offerpilot
 EXPOSE 8080
 VOLUME ["/data"]
 ENTRYPOINT ["oc"]
-CMD ["start", "--port", "8080"]
+CMD ["start", "--host", "0.0.0.0", "--port", "8080"]
