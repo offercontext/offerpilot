@@ -1049,9 +1049,10 @@ def create_app(
             )
             conversation_id = conversation.id
         else:
-            conversation = chat.get_conversation(conversation_id)
-            if conversation is None:
+            existing_conversation = chat.get_conversation(conversation_id)
+            if existing_conversation is None:
                 return error_response(404, "conversation not found")
+            conversation = existing_conversation
 
         chat.append_message(conversation_id, "user", content=message)
         history = [
