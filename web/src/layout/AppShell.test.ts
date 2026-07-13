@@ -157,7 +157,7 @@ describe('AppShell source contract', () => {
 
   it('keeps missing calendar-event cleanup local after handing off valid focus', () => {
     const initialFocusStart = calendarView.indexOf('const date = eventFocusDate(focusEvent.scheduledAt);');
-    const verificationStart = calendarView.indexOf('useEffect(() => {\n    if (focusedEventId === null', initialFocusStart);
+    const verificationStart = calendarView.indexOf('if (focusedEventId === null', initialFocusStart);
     const verificationEnd = calendarView.indexOf('const deleteMutation', verificationStart);
     const initialFocus = calendarView.slice(initialFocusStart, verificationStart);
     const verification = calendarView.slice(verificationStart, verificationEnd);
