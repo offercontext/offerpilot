@@ -213,6 +213,13 @@ export interface KnowledgeBriefAttempt {
   error_code: string;
   error_message: string;
   repair_count: number;
+  // KI-10：fallback 候选、实际成功 Provider、Provider 层重试进度。
+  fallback_provider_id: string;
+  fallback_provider_model: string;
+  actual_provider_id: string;
+  actual_provider_model: string;
+  provider_retry_count: number;
+  next_retry_at: string | null;
   token_input_count: number;
   token_output_count: number;
   latency_ms: number;

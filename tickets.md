@@ -276,23 +276,23 @@ Brief 事实。
 
 **Scope boundaries:** 不引入第二个强制 Validator Provider，不自动批量重建所有 Source。
 
-- [ ] 没有满足条件的 Provider 时 Source 保持 extracted，Brief pending 并显示 provider block reason。
-- [ ] 配置 Provider 后不自动批量生成；用户显式操作才创建新 Attempt。
-- [ ] Attempt 固定 Provider/Model/参数、context、Prompt/Schema/Snapshot 和 fallback 候选。
-- [ ] Attempt 不保存 API Key、完整 Prompt、chain-of-thought 或不可解析原始响应。
-- [ ] 网络、超时、限流和 5xx 每个 Provider 最多调用 3 次，并遵守 Retry-After 或 2/10 秒退避。
-- [ ] 鉴权、模型不存在、上下文超限、非法 JSON和 validation 失败不走网络重试。
-- [ ] 只有基础设施失败切换已配置 fallback；内容质量失败不换 Provider。
-- [ ] fallback 必须满足上下文要求，并记录实际成功 Provider。
-- [ ] 重建期间旧 Brief 继续可见，并标记“正在重建”。
-- [ ] 新候选全部通过后原子替换；失败或取消保留旧 Brief 和最近错误。
-- [ ] Provider、Prompt、Schema 或 Snapshot 变化标记 Brief outdated，不自动调用模型。
-- [ ] 用户使用当前配置重建会创建新 Attempt 和独立重试预算。
-- [ ] 应用重启保留 Attempt 的重试次数、next retry 和候选状态。
-- [ ] 处理记录展示实际 Provider、模型、token、耗时、重试和结构化 validation 结果。
-- [ ] 日志只记录 ID、版本、时延和错误类别，不打印 Source、Evidence、Brief 或查询正文。
-- [ ] 测试覆盖无 AI、小窗口、429/5xx、鉴权失败、fallback、重建失败、取消和旧 Brief 保留。
-- [ ] 独立 Code Review 检查数据是否被未经授权发送给 fallback，以及重试是否可能无限循环。
+- [x] 没有满足条件的 Provider 时 Source 保持 extracted，Brief pending 并显示 provider block reason。
+- [x] 配置 Provider 后不自动批量生成；用户显式操作才创建新 Attempt。
+- [x] Attempt 固定 Provider/Model/参数、context、Prompt/Schema/Snapshot 和 fallback 候选。
+- [x] Attempt 不保存 API Key、完整 Prompt、chain-of-thought 或不可解析原始响应。
+- [x] 网络、超时、限流和 5xx 每个 Provider 最多调用 3 次，并遵守 Retry-After 或 2/10 秒退避。
+- [x] 鉴权、模型不存在、上下文超限、非法 JSON和 validation 失败不走网络重试。
+- [x] 只有基础设施失败切换已配置 fallback；内容质量失败不换 Provider。
+- [x] fallback 必须满足上下文要求，并记录实际成功 Provider。
+- [x] 重建期间旧 Brief 继续可见，并标记“正在重建”。
+- [x] 新候选全部通过后原子替换；失败或取消保留旧 Brief 和最近错误。
+- [x] Provider、Prompt、Schema 或 Snapshot 变化标记 Brief outdated，不自动调用模型。
+- [x] 用户使用当前配置重建会创建新 Attempt 和独立重试预算。
+- [x] 应用重启保留 Attempt 的重试次数、next retry 和候选状态。
+- [x] 处理记录展示实际 Provider、模型、token、耗时、重试和结构化 validation 结果。
+- [x] 日志只记录 ID、版本、时延和错误类别，不打印 Source、Evidence、Brief 或查询正文。
+- [x] 测试覆盖无 AI、小窗口、429/5xx、鉴权失败、fallback、重建失败、取消和旧 Brief 保留。
+- [x] 独立 Code Review 检查数据是否被未经授权发送给 fallback，以及重试是否可能无限循环。
 
 ## KI-11：建立真实 Source 与检索质量门禁
 

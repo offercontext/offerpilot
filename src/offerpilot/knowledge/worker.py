@@ -27,8 +27,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -418,6 +420,68 @@ def _hash_main_bytes(raw_bytes: bytes) -> str:
 
 BriefModelClient = Callable[..., Any]
 
+# KI-10 / Spec §11.4：Provider 层重试与退避参数。
+# 每个 Provider 最多调用 3 次（首次 + 2 次自动重试）；退避优先 Retry-After，否则 2s/10s。
+BRIEF_PROVIDER_MAX_ATTEMPTS = 3
+BRIEF_RETRY_BACKOFF_SECONDS = (2.0, 10.0)
+BRIEF_RETRY_MAX_DELAY_SECONDS = 60.0  # Retry-After 上限，避免 Provider 要求过长等待
+
+# Spec §13 / §11.4：Brief Provider 错误归类。permanent（auth/model）不重试不切 fallback；
+# transient（timeout/ratelimit/5xx）重试且可在耗尽后切 fallback。内容质量错误
+# （brief_schema_invalid 等）由程序校验产生，不走 Provider 重试/failover 路径。
+BRIEF_PROVIDER_TRANSIENT_ERRORS = frozenset({"provider_transient_error"})
+
+
+def _is_transient(error_code: str) -> bool:
+    return error_code in BRIEF_PROVIDER_TRANSIENT_ERRORS
+
+
+def _extract_retry_after_seconds(exc: BaseException) -> Optional[float]:
+    """Spec §11.4 优先使用 Retry-After。
+
+    litellm 异常族未统一导出响应头，尝试常见属性；解析失败返回 ``None``。
+    """
+    for attr in ("retry_after", "response_headers", "headers"):
+        value = getattr(exc, attr, None)
+        if value is None:
+            continue
+        if isinstance(value, (int, float)):
+            return float(max(0.0, value))
+        candidate: Optional[str] = None
+        if isinstance(value, dict):
+            for key in ("Retry-After", "retry-after", "RetryAfter"):
+                if key in value:
+                    candidate = value[key]
+                    break
+        elif isinstance(value, str):
+            candidate = value
+        if candidate is None:
+            continue
+        try:
+            return float(max(0.0, float(candidate)))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _retry_delay_seconds(exc: BaseException, attempt_index: int) -> float:
+    """Spec §11.4：Retry-After 优先；否则 2s/10s 退避 + 少量抖动。
+
+    ``attempt_index`` 从 1 开始（即将进行的第几次重试）。
+    """
+    retry_after = _extract_retry_after_seconds(exc)
+    if retry_after is not None:
+        return min(retry_after, BRIEF_RETRY_MAX_DELAY_SECONDS)
+    # attempt_index 1 → 第 1 次重试退避 2s；attempt_index 2 → 10s。
+    idx = max(1, min(attempt_index, len(BRIEF_RETRY_BACKOFF_SECONDS)))
+    base = BRIEF_RETRY_BACKOFF_SECONDS[idx - 1]
+    jitter = random.uniform(0.0, 0.25)
+    return base + jitter
+
+
+def _provider_label(provider: AIProviderProfile) -> str:
+    return f"{provider.id}/{provider.model}"
+
 
 @dataclass(frozen=True)
 class BriefGenerationResult:
@@ -429,18 +493,65 @@ class BriefGenerationResult:
     token_input_count: int
     token_output_count: int
     latency_ms: int
+    # KI-10 / Spec §11.3：实际成功 Provider（可能为 fallback）与 Provider 层重试总次数。
+    actual_provider_id: str = ""
+    actual_provider_model: str = ""
+    provider_retry_count: int = 0
+
+
+@dataclass
+class _RetryState:
+    """Spec §11.4 Provider 层重试进度的可变累积器。
+
+    ``total_retries`` 跨 primary/fallback 与 generation/validation 累计，持久化到
+    Attempt.provider_retry_count，保证重启后不从零开始。实际成功 Provider 由
+    ``_run_generation_with_repair`` 单独跟踪并传给 validation 与 commit。
+    """
+
+    attempt_id: int
+    total_retries: int = 0
+    next_retry_at: Optional[datetime] = None
+    last_error_code: str = ""
+
+    def bump(
+        self,
+        repository: KnowledgeRepository,
+        *,
+        error_code: str,
+        error_message: str,
+        delay_seconds: float,
+        sleeper: Callable[[float], None],
+    ) -> None:
+        """持久化重试进度并执行退避 sleep。"""
+        self.total_retries += 1
+        self.last_error_code = error_code
+        self.next_retry_at = datetime.now(timezone.utc) + timedelta(
+            seconds=delay_seconds
+        )
+        repository.bump_brief_attempt_retry(
+            self.attempt_id,
+            provider_retry_count=self.total_retries,
+            next_retry_at=self.next_retry_at,
+            error_code=error_code,
+            error_message=error_message,
+        )
+        sleeper(delay_seconds)
 
 
 class BriefWorker:
-    """Spec §10 / §11.1 / §10.3：单 Source Brief 生成与校验。
+    """Spec §10 / §11.1 / §10.3 / §11.3 / §11.4：单 Source Brief 生成与校验。
 
-    KI-09 范围（不含 KI-10 fallback / 网络重试）：
-    - 启动时校验 Provider ``context_window >= 96_000``；不满足拒绝创建 Attempt。
-    - generation 单次完整 Evidence 输入；repair 单次重写。
-    - 程序校验 Schema、citation、coverage；独立 Validator 逐条返回 supported/partial/
-      unsupported/contradicted；只有全部 supported 才发布。
-    - 成功 Brief + winning Attempt + Source ``brief_status=ready`` 单事务提交。
-    - 第二次仍失败标记 Attempt failed，Source ``brief_status=failed``，旧 Brief 保留。
+    KI-09 已交付：固定 JSON Schema、单次 generation + 一次 repair、程序校验、
+    独立 Validator、单事务提交当前 Brief。
+
+    KI-10 在此之上：
+    - Provider 层重试（Spec §11.4）：每个 Provider 最多 3 次，只重试 transient，
+      Retry-After 优先，否则 2s/10s 退避；重试计数与 next_retry_at 持久化。
+    - fallback（Spec §11.3）：只有 transient 基础设施失败切到已配置 fallback；
+      鉴权 / 模型不存在 / 上下文超限 / 非法 JSON / 内容质量失败不切。
+    - 重建失败保留旧 Brief（Spec §10.4）。
+    - Provider/Prompt/Schema/Snapshot 变化由 service 层标记 outdated，本 worker
+      不自动重建。
     """
 
     def __init__(
@@ -449,36 +560,67 @@ class BriefWorker:
         config: Config,
         *,
         model_client: Optional[BriefModelClient] = None,
+        sleeper: Optional[Callable[[float], None]] = None,
     ) -> None:
         self._repository = repository
         self._config = config
         self._model_client = model_client or litellm_completion
+        # Spec §11.4 退避 sleep；测试注入同步 no-op 以避免真实等待。
+        self._sleep = sleeper or time.sleep
 
     # ------------------------------------------------------------------
     # Provider 适配
     # ------------------------------------------------------------------
 
+    def _candidate_provider(
+        self, profile: Optional[AIProviderProfile]
+    ) -> Optional[AIProviderProfile]:
+        """Spec §4.2 / §11.2：校验单个 profile 是否满足 96K context 与启用状态。
+
+        ``context_window == 0`` 视为未知，不得根据模型名称猜测；不满足直接淘汰。
+        """
+        if profile is None or not profile.enabled or not profile.api_key:
+            return None
+        if profile.context_window < BRIEF_MIN_CONTEXT_WINDOW:
+            return None
+        return profile
+
     def resolve_provider(self) -> Optional[AIProviderProfile]:
-        """Spec §4.2 / §11.2：返回满足 96K context 的 active Provider。
+        """Spec §4.2 / §11.2：返回满足 96K context 的 active Provider（primary）。
 
         - ``context_window == 0`` 视为未知，按 Spec §4.2 不得根据模型名称猜测。
         - ``context_window < BRIEF_MIN_CONTEXT_WINDOW`` 视为不足窗口，拒绝发出请求。
         """
-        provider = self._config.active_provider()
-        if not provider.enabled or not provider.api_key:
+        return self._candidate_provider(self._config.active_provider())
+
+    def resolve_fallback_provider(self) -> Optional[AIProviderProfile]:
+        """Spec §11.3：返回满足 96K context 的 fallback Provider 候选。
+
+        fallback 必须与 active 不同；否则返回 ``None``，避免 self-failover。
+        """
+        fallback = self._config.fallback_provider()
+        candidate = self._candidate_provider(fallback)
+        if candidate is None:
             return None
-        if provider.context_window < BRIEF_MIN_CONTEXT_WINDOW:
+        active = self._config.active_provider()
+        if active is not None and candidate.id == active.id:
             return None
-        return provider
+        return candidate
 
     def provider_block_reason(self) -> str:
-        """Spec §11.2：返回稳定 block reason 文案，用于 Source.brief_block_reason。"""
-        provider = self._config.active_provider()
-        if not provider.api_key:
+        """Spec §11.2：active 与 fallback 都不满足 96K 时返回稳定 block reason。"""
+        primary = self.resolve_provider()
+        fallback = self.resolve_fallback_provider()
+        if primary is not None or fallback is not None:
+            return ""
+        # 两者均不可用：区分"未配置 api_key"与"上下文窗口不足"。
+        active = self._config.active_provider()
+        any_api_key = bool(active and active.api_key) or any(
+            profile.api_key for profile in self._config.provider_profiles()
+        )
+        if not any_api_key:
             return "provider_unavailable"
-        if provider.context_window < BRIEF_MIN_CONTEXT_WINDOW:
-            return "provider_context_too_small"
-        return ""
+        return "provider_context_too_small"
 
     # ------------------------------------------------------------------
     # 主入口：消费一个 brief Job
@@ -576,8 +718,9 @@ class BriefWorker:
                 error_message="Source 尚未完成 Extraction",
             )
 
-        provider = self.resolve_provider()
-        if provider is None:
+        primary_provider = self.resolve_provider()
+        fallback_provider = self.resolve_fallback_provider()
+        if primary_provider is None and fallback_provider is None:
             block_reason = self.provider_block_reason() or "provider_unavailable"
             ok, _ = self._repository.complete_job(
                 job.id,
@@ -605,6 +748,15 @@ class BriefWorker:
                 error_code=block_reason,
                 error_message="Brief Provider 不可用",
             )
+        # KI-10 / Spec §11.2：active 不满足 96K 但 fallback 满足时，用 fallback 作为
+        # primary（无第二个 failover 候选）；两者都满足时 active=primary、fallback=候选。
+        if primary_provider is None:
+            generation_primary = fallback_provider
+            generation_fallback: Optional[AIProviderProfile] = None
+        else:
+            generation_primary = primary_provider
+            generation_fallback = fallback_provider
+        assert generation_primary is not None
 
         snapshot_id = source.active_snapshot_id
         assert snapshot_id is not None
@@ -614,14 +766,20 @@ class BriefWorker:
                     BriefAttemptCreateInput(
                         source_id=source_id,
                         snapshot_id=snapshot_id,
-                        provider_id=provider.id,
-                        provider_model=provider.model,
-                        provider_base_url=provider.base_url,
-                        context_window=provider.context_window,
-                        max_output_tokens=provider.max_output_tokens,
+                        provider_id=generation_primary.id,
+                        provider_model=generation_primary.model,
+                        provider_base_url=generation_primary.base_url,
+                        context_window=generation_primary.context_window,
+                        max_output_tokens=generation_primary.max_output_tokens,
                         prompt_version=BRIEF_PROMPT_VERSION,
                         schema_version=BRIEF_SCHEMA_VERSION,
                         language=BRIEF_LANGUAGE,
+                        fallback_provider_id=(
+                            generation_fallback.id if generation_fallback else ""
+                        ),
+                        fallback_provider_model=(
+                            generation_fallback.model if generation_fallback else ""
+                        ),
                     )
                 )
             )
@@ -707,7 +865,8 @@ class BriefWorker:
             attempt_id=attempt_id,
             brief_job_id=brief_job_id,
             attempt_token=attempt_token,
-            provider=provider,
+            primary_provider=generation_primary,
+            fallback_provider=generation_fallback,
             source_title=title_for_prompt,
             evidence_rows=evidence_rows,
             coverage_plan=coverage_plan,
@@ -800,6 +959,9 @@ class BriefWorker:
             token_input_count=generation_result.token_input_count,
             token_output_count=generation_result.token_output_count,
             latency_ms=generation_result.latency_ms,
+            actual_provider_id=generation_result.actual_provider_id,
+            actual_provider_model=generation_result.actual_provider_model,
+            provider_retry_count=generation_result.provider_retry_count,
         )
         if not ok:
             # lease 失效或 attempt_token 不匹配（迟到结果）；保留 Attempt 状态不变。
@@ -862,12 +1024,18 @@ class BriefWorker:
         attempt_id: int,
         brief_job_id: int,
         attempt_token: str,
-        provider: AIProviderProfile,
+        primary_provider: AIProviderProfile,
+        fallback_provider: Optional[AIProviderProfile],
         source_title: str,
         evidence_rows: list[EvidenceRecord],
         coverage_plan: SectionCoveragePlan,
     ) -> tuple[Optional[BriefGenerationResult], Optional[tuple[str, str]]]:
-        """Spec §10.3：generation + 程序校验；失败允许一次 repair。
+        """Spec §10.3 / §11.3 / §11.4：generation + 程序校验；失败允许一次 repair。
+
+        KI-10：generation 与 repair 均通过 ``_call_model_with_failover`` 调用，
+        primary transient 失败可切 fallback；内容质量失败（schema/citation/coverage）
+        不切换 Provider。实际成功 Provider 写入 ``actual_provider_*`` 供 validation 与
+        Attempt 持久化。
 
         返回 ``(generation_result, failure)``：
         - 成功：``(BriefGenerationResult, None)``。
@@ -881,6 +1049,8 @@ class BriefWorker:
         last_token_in = 0
         last_token_out = 0
         last_latency_ms = 0
+        retry_state = _RetryState(attempt_id=attempt_id)
+        actual_provider = primary_provider
 
         while True:
             if candidate_payload_dict is None:
@@ -899,8 +1069,17 @@ class BriefWorker:
                 )
 
             try:
-                raw_text, token_in, token_out, latency_ms = self._call_model(
-                    provider, messages
+                (
+                    raw_text,
+                    token_in,
+                    token_out,
+                    latency_ms,
+                    actual_provider,
+                ) = self._call_model_with_failover(
+                    primary_provider,
+                    fallback_provider,
+                    messages,
+                    state=retry_state,
                 )
             except BriefModelCallError as exc:
                 self._repository.fail_brief_attempt(
@@ -910,6 +1089,9 @@ class BriefWorker:
                     error_code=exc.code,
                     error_message=exc.message,
                     repair_count=repair_count,
+                    actual_provider_id=actual_provider.id,
+                    actual_provider_model=actual_provider.model,
+                    provider_retry_count=retry_state.total_retries,
                 )
                 return None, (exc.code, exc.message)
 
@@ -936,6 +1118,9 @@ class BriefWorker:
                         token_input_count=token_in,
                         token_output_count=token_out,
                         latency_ms=latency_ms,
+                        actual_provider_id=actual_provider.id,
+                        actual_provider_model=actual_provider.model,
+                        provider_retry_count=retry_state.total_retries,
                     )
                     return None, (exc.code, exc.message)
                 repair_count += 1
@@ -972,6 +1157,9 @@ class BriefWorker:
                         token_input_count=token_in,
                         token_output_count=token_out,
                         latency_ms=latency_ms,
+                        actual_provider_id=actual_provider.id,
+                        actual_provider_model=actual_provider.model,
+                        provider_retry_count=retry_state.total_retries,
                     )
                     return None, (error_code, "; ".join(report.issues)[:500])
                 repair_count += 1
@@ -993,7 +1181,8 @@ class BriefWorker:
         support_results = self._run_support_validation(
             brief=last_brief,
             evidence_index={row.id: row for row in evidence_rows},
-            provider=provider,
+            provider=actual_provider,
+            retry_state=retry_state,
         )
         validation_report_payload = {
             "stage": "support_validation",
@@ -1011,6 +1200,9 @@ class BriefWorker:
                 token_input_count=last_token_in,
                 token_output_count=last_token_out,
                 latency_ms=last_latency_ms,
+                actual_provider_id=actual_provider.id,
+                actual_provider_model=actual_provider.model,
+                provider_retry_count=retry_state.total_retries,
             ),
             None,
         )
@@ -1021,8 +1213,15 @@ class BriefWorker:
         brief: BriefPayload,
         evidence_index: dict[str, EvidenceRecord],
         provider: AIProviderProfile,
+        retry_state: "_RetryState",
     ) -> list[dict[str, Any]]:
-        """Spec §10.3 独立 Validator：逐条 statement 判定 supported/partial/..."""
+        """Spec §10.3 独立 Validator：逐条 statement 判定 supported/partial/...
+
+        KI-10：Validator 调用也走 Provider 重试（Spec §11.4 仍适用），但**不切换
+        fallback**——generation 已成功证明该 Provider 可用，Validator 的 unsupported 等
+        内容判定属于质量结论，不是基础设施失败。Validator 调用 transient 失败时计入
+        同一 ``retry_state``，保证诊断完整。
+        """
         results: list[dict[str, Any]] = []
         for block_name, statement, evidence_ids in collect_brief_statement_blocks(
             brief
@@ -1042,11 +1241,12 @@ class BriefWorker:
                 )
                 continue
             try:
-                raw_text, _, _, _ = self._call_model(
+                raw_text, _, _, _ = self._call_model_with_retry(
                     provider,
                     build_validation_prompt(
                         statement=statement, cited_evidence=cited
                     ),
+                    state=retry_state,
                 )
                 decision = parse_support_decision(raw_text)
             except BriefSchemaError as exc:
@@ -1095,18 +1295,18 @@ class BriefWorker:
         )
         return f"Brief 存在 {len(items)} 条 statement 未通过 support 校验：{summary}"
 
-    def _call_model(
+    def _call_model_once(
         self, provider: AIProviderProfile, messages: list[dict[str, str]]
     ) -> tuple[str, int, int, int]:
-        """Spec §11 / §18：调用 litellm.completion，返回 (text, in_tokens, out_tokens, ms)。
+        """Spec §11 / §18：单次调用 litellm.completion，返回 (text, in, out, ms)。
 
-        不持久化原始响应；只保留稳定错误类别与 token/延时元数据。KI-09 不实现重试，
-        KI-10 在此入口加包装。
+        不持久化原始响应；只保留稳定错误类别与 token/延时元数据。重试与 failover 由
+        ``_call_model_with_retry`` / ``_call_model_with_failover`` 包装。
 
-        错误归类（KI-09 基线，KI-10 进一步细化）：
-        - ``provider_auth_invalid``：401/403 鉴权失败（不重试）。
-        - ``provider_model_unavailable``：404 模型不存在 / 上下文超限（不重试）。
-        - ``provider_transient_error``：超时 / 连接 / 限流 / 5xx（KI-10 重试）。
+        错误归类（Spec §11.4）：
+        - ``provider_auth_invalid``：401/403 鉴权失败（permanent，不重试不切换）。
+        - ``provider_model_unavailable``：404 模型不存在 / 上下文超限（permanent）。
+        - ``provider_transient_error``：超时 / 连接 / 限流 / 5xx（重试，可切换 fallback）。
         """
         started = time.monotonic()
         payload: dict[str, Any] = {
@@ -1120,7 +1320,6 @@ class BriefWorker:
         try:
             response = self._model_client(**payload)
         except Exception as exc:  # noqa: BLE001 - litellm 错误族未导出统一基类
-            latency_ms = int((time.monotonic() - started) * 1000)
             code = _classify_model_error(exc)
             raise BriefModelCallError(
                 code,
@@ -1132,6 +1331,71 @@ class BriefWorker:
         token_in = int(_get(response, "usage.prompt_tokens") or 0)
         token_out = int(_get(response, "usage.completion_tokens") or 0)
         return content, token_in, token_out, latency_ms
+
+    def _call_model_with_retry(
+        self,
+        provider: AIProviderProfile,
+        messages: list[dict[str, str]],
+        *,
+        state: "_RetryState",
+    ) -> tuple[str, int, int, int]:
+        """Spec §11.4：单 Provider 最多 ``BRIEF_PROVIDER_MAX_ATTEMPTS`` 次调用。
+
+        只重试 transient 错误；permanent 错误立即抛出。每次 transient 失败后：
+        1. 通过 ``state.bump`` 持久化累计重试计数与 ``next_retry_at``（重启保留）。
+        2. 按 Retry-After / 2s/10s 退避 sleep。
+        """
+        last_error: Optional[BriefModelCallError] = None
+        for attempt_index in range(1, BRIEF_PROVIDER_MAX_ATTEMPTS + 1):
+            try:
+                return self._call_model_once(provider, messages)
+            except BriefModelCallError as exc:
+                last_error = exc
+                if not _is_transient(exc.code):
+                    raise  # permanent：不重试
+                if attempt_index >= BRIEF_PROVIDER_MAX_ATTEMPTS:
+                    raise  # 该 Provider 重试预算耗尽
+                delay = _retry_delay_seconds(exc, attempt_index)
+                state.bump(
+                    self._repository,
+                    error_code=exc.code,
+                    error_message=(
+                        f"Provider {_provider_label(provider)} 第 {attempt_index} 次"
+                        f"调用失败（{exc.code}），{delay:.1f}s 后重试"
+                    ),
+                    delay_seconds=delay,
+                    sleeper=self._sleep,
+                )
+        # 不可达：循环要么 return，要么 raise。
+        assert last_error is not None
+        raise last_error
+
+    def _call_model_with_failover(
+        self,
+        primary: AIProviderProfile,
+        fallback: Optional[AIProviderProfile],
+        messages: list[dict[str, str]],
+        *,
+        state: "_RetryState",
+    ) -> tuple[str, int, int, int, AIProviderProfile]:
+        """Spec §11.3 / §11.4：primary 重试耗尽后切 fallback。
+
+        - 只有 transient 错误切换 fallback；permanent（鉴权 / 模型 / 上下文超限）立即抛出。
+        - fallback 必须已由 ``resolve_fallback_provider`` 校验 96K；此处不再重复。
+        - 返回 ``(text, in, out, ms, actual_provider)``，actual 可能是 fallback。
+        """
+        try:
+            text, tin, tout, ms = self._call_model_with_retry(
+                primary, messages, state=state
+            )
+            return text, tin, tout, ms, primary
+        except BriefModelCallError as exc:
+            if not _is_transient(exc.code) or fallback is None:
+                raise
+            text, tin, tout, ms = self._call_model_with_retry(
+                fallback, messages, state=state
+            )
+            return text, tin, tout, ms, fallback
 
 
 class BriefModelCallError(Exception):

@@ -939,6 +939,27 @@ class KnowledgeBriefAttempt(Base):
     repair_count: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
+    # KI-10 / Spec §11.1 / §11.4：Attempt 固定 fallback 候选；actual_* 记录实际成功
+    # Provider（可能为 fallback）；provider_retry_count 与 next_retry_at 持久化 Provider
+    # 层重试进度，重启后保留。repair_count 仍是程序级 repair 次数，与之区分。
+    fallback_provider_id: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default=""
+    )
+    fallback_provider_model: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default=""
+    )
+    actual_provider_id: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default=""
+    )
+    actual_provider_model: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default=""
+    )
+    provider_retry_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    next_retry_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     token_input_count: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )

@@ -52,6 +52,11 @@ from offerpilot.knowledge.assets import (
     VerifiedAsset,
     verify_bundle,
 )
+from offerpilot.knowledge.brief import (
+    BRIEF_MIN_CONTEXT_WINDOW,
+    BRIEF_PROMPT_VERSION,
+    BRIEF_SCHEMA_VERSION,
+)
 from offerpilot.knowledge.encoding import (
     DecodedContent,
     EncodingError,
@@ -149,6 +154,12 @@ class KnowledgeIngestService:
         self._data_dir = data_dir
         self._session_factory = session_factory
         self._extractor = extractor or MarkdownExtractor()
+        self._config = config
+
+    def update_config(self, config: Config) -> None:
+        """KI-10：settings 更新后刷新内存 config，确保后续 rebuild / outdated 检测、
+        enqueue block 判断使用最新 Provider 配置，而非启动时的快照。
+        """
         self._config = config
 
     def ingest(self, request: IngestRequest) -> IngestResult:
@@ -534,19 +545,63 @@ class KnowledgeIngestService:
         return updated, "brief_rebuild_queued"
 
     def _brief_provider_block_reason(self) -> str:
-        """Spec §11.2：根据当前 Config 判断 Brief Provider 是否可用。
+        """Spec §11.2 / §11.3：active 与 fallback 都不满足 96K 时返回 block reason。
 
+        只要任一满足即视为可用（fallback 可在 primary 不可用时承接）。两者均不可用时，
+        区分 ``provider_unavailable``（无 api_key）与 ``provider_context_too_small``。
         没有传入 Config 时（旧调用方）默认认为 Provider 可用，便于早期测试在 worker
         端单独校验；正式启用 Brief 后 service 一定传入 Config。
         """
         if self._config is None:
             return ""
-        provider = self._config.active_provider()
-        if not provider.enabled or not provider.api_key:
+        primary = self._config.active_provider()
+        fallback = self._config.fallback_provider()
+        primary_ok = (
+            primary is not None
+            and primary.enabled
+            and bool(primary.api_key)
+            and primary.context_window >= BRIEF_MIN_CONTEXT_WINDOW
+        )
+        fallback_ok = (
+            fallback is not None
+            and fallback.enabled
+            and bool(fallback.api_key)
+            and fallback.context_window >= BRIEF_MIN_CONTEXT_WINDOW
+        )
+        if primary_ok or fallback_ok:
+            return ""
+        any_api_key = bool(primary and primary.api_key) or any(
+            profile.api_key for profile in self._config.provider_profiles()
+        )
+        if not any_api_key:
             return "provider_unavailable"
-        if provider.context_window < 96_000:
-            return "provider_context_too_small"
-        return ""
+        return "provider_context_too_small"
+
+    def refresh_brief_outdated(self, source_id: int) -> Optional[SourceRecord]:
+        """KI-10 / Spec §10.4：检测当前 Brief 是否相对活跃配置过期。
+
+        比较 winning Attempt 的 Provider/Model/Prompt/Schema 与当前 active provider，
+        以及 Brief.snapshot_id 与 Source.active_snapshot_id。任一不一致则标记
+        ``outdated=True``；完全一致则清除标记（rebuild 成功后自然匹配）。
+
+        Spec §10.4 "不自动批量调用模型"：本方法只更新标记，不创建 rebuild Job，
+        也不通知任何 Provider。返回更新后的 Source（便于 API 反映最新 outdated 状态）。
+        """
+        source = self._repository.get_source(source_id)
+        if source is None:
+            return None
+        provider = self._config.active_provider() if self._config is not None else None
+        provider_id = provider.id if provider is not None else ""
+        provider_model = provider.model if provider is not None else ""
+        self._repository.mark_brief_outdated_if_stale(
+            source_id,
+            provider_id=provider_id,
+            provider_model=provider_model,
+            prompt_version=BRIEF_PROMPT_VERSION,
+            schema_version=BRIEF_SCHEMA_VERSION,
+            snapshot_id=source.active_snapshot_id or 0,
+        )
+        return self._repository.get_source(source_id)
 
     def unarchive_source(self, source_id: int) -> Optional[SourceRecord]:
         """KI-06：取消归档 Source。

@@ -291,6 +291,14 @@ def _knowledge_brief_attempt_payload(attempt: Any) -> Optional[dict[str, Any]]:
         "error_code": attempt.error_code,
         "error_message": attempt.error_message,
         "repair_count": attempt.repair_count,
+        # KI-10 / Spec §11.1 / §11.3 / §11.4：暴露 fallback 候选、实际成功 Provider、
+        # Provider 层重试进度与下次重试时间，供处理记录透明展示。
+        "fallback_provider_id": attempt.fallback_provider_id,
+        "fallback_provider_model": attempt.fallback_provider_model,
+        "actual_provider_id": attempt.actual_provider_id,
+        "actual_provider_model": attempt.actual_provider_model,
+        "provider_retry_count": attempt.provider_retry_count,
+        "next_retry_at": _json_datetime(attempt.next_retry_at),
         "token_input_count": attempt.token_input_count,
         "token_output_count": attempt.token_output_count,
         "latency_ms": attempt.latency_ms,
@@ -649,6 +657,9 @@ def create_app(
         source = knowledge_repository.get_source(source_id)
         if source is None:
             return error_response(404, "Source not found")
+        # KI-10 / Spec §10.4：读取时检测 Brief 是否相对当前 active provider / Snapshot
+        # 过期；只标记 outdated，不自动重建。无 Brief 时为 no-op。
+        knowledge_service.refresh_brief_outdated(source_id)
         brief = knowledge_repository.get_source_brief(source_id)
         latest_attempt = knowledge_repository.find_latest_brief_attempt(source_id)
         attempts = knowledge_repository.list_brief_attempts(source_id, limit=10)
@@ -2508,6 +2519,9 @@ def create_app(
         if auth_token:
             next_config.auth_token = str(auth_token)
         save_config(resolved_data_dir, next_config)
+        # KI-10：settings 更新后刷新 knowledge_service 内存 config，确保后续 rebuild、
+        # outdated 检测与 enqueue block 判断使用最新 Provider，而非启动快照。
+        knowledge_service.update_config(next_config)
         return _settings_payload(next_config, resolved_data_dir)
 
     @app.get("/{full_path:path}", include_in_schema=False)

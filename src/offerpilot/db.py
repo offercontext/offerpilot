@@ -66,6 +66,52 @@ def init_database(db_path: Path) -> SessionFactory:
             "0006_knowledge_job_attempt_token",
             "Add knowledge_jobs.attempt_token for KI-07 lease correctness",
         )
+    # KI-10 / Spec §11.1 / §11.4：Brief Attempt 固定 fallback 候选、记录实际成功
+    # Provider，并持久化 Provider 层重试计数与 next retry，保证重启后不从零开始。
+    knowledge_brief_attempt_migrations = [
+        _ensure_column(
+            engine,
+            "knowledge_brief_attempts",
+            "fallback_provider_id",
+            "TEXT DEFAULT ''",
+        ),
+        _ensure_column(
+            engine,
+            "knowledge_brief_attempts",
+            "fallback_provider_model",
+            "TEXT DEFAULT ''",
+        ),
+        _ensure_column(
+            engine,
+            "knowledge_brief_attempts",
+            "actual_provider_id",
+            "TEXT DEFAULT ''",
+        ),
+        _ensure_column(
+            engine,
+            "knowledge_brief_attempts",
+            "actual_provider_model",
+            "TEXT DEFAULT ''",
+        ),
+        _ensure_column(
+            engine,
+            "knowledge_brief_attempts",
+            "provider_retry_count",
+            "INTEGER NOT NULL DEFAULT 0",
+        ),
+        _ensure_column(
+            engine,
+            "knowledge_brief_attempts",
+            "next_retry_at",
+            "DATETIME",
+        ),
+    ]
+    if any(knowledge_brief_attempt_migrations):
+        _record_migration(
+            engine,
+            "0007_knowledge_brief_attempt_ki10",
+            "Add fallback/actual provider and retry fields for KI-10",
+        )
     _recover_knowledge_runtime(engine, db_path.parent)
     _record_migration(engine, "0001_base_schema", "Create current application tables")
 

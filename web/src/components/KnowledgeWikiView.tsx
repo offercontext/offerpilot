@@ -740,6 +740,12 @@ function BriefBlock({
   const blockReason = data?.brief_block_reason ?? '';
   const errorMessage = data?.brief_error_message ?? '';
   const showEmpty = briefStatus === 'not_started' || (!brief && !latestAttempt);
+  // KI-10：旧 Brief 存在时 processing 表示"正在重建"；outdated 表示配置已变化；
+  // rebuildFailed 表示最近重建未通过但旧 Brief 已保留（Spec §10.4）。
+  const isRebuilding = briefStatus === 'processing' && brief != null;
+  const outdated = brief?.outdated === true && !isRebuilding;
+  const rebuildFailed =
+    brief != null && latestAttempt?.status === 'failed' && !!latestAttempt.error_message;
 
   return (
     <div
@@ -757,7 +763,10 @@ function BriefBlock({
           Brief 导读
         </Title>
         <Space size={6} wrap>
-          <Badge color="purple" text={BRIEF_LABEL[briefStatus] ?? briefStatus} />
+          <Badge
+            color={outdated || rebuildFailed ? 'orange' : 'purple'}
+            text={isRebuilding ? '正在重建' : BRIEF_LABEL[briefStatus] ?? briefStatus}
+          />
           <Button
             size="small"
             onClick={onRebuild}
@@ -776,12 +785,30 @@ function BriefBlock({
           description="请先在设置中配置满足 96K context 的 Provider，然后点击生成 Brief。"
         />
       ) : null}
+      {outdated ? (
+        <Alert
+          type="warning"
+          showIcon
+          message="Brief 已相对当前配置过期"
+          description="Provider / Prompt / Schema / Snapshot 已变化，旧 Brief 仍可查看，建议重建。"
+          style={{ marginTop: 8 }}
+        />
+      ) : null}
       {errorMessage && briefStatus === 'failed' ? (
         <Alert
           type="error"
           showIcon
           message="最近一次 Brief 校验未通过"
           description={errorMessage}
+          style={{ marginTop: 8 }}
+        />
+      ) : null}
+      {rebuildFailed ? (
+        <Alert
+          type="warning"
+          showIcon
+          message="最近一次重建未通过，已保留旧 Brief"
+          description={latestAttempt?.error_message ?? ''}
           style={{ marginTop: 8 }}
         />
       ) : null}
@@ -937,20 +964,41 @@ function BriefCitationChips({
 }
 
 function BriefAttemptInspector({ attempt }: { attempt: KnowledgeBriefAttempt }) {
+  // KI-10：实际成功 Provider 可能是 fallback；只有与默认 Provider 不同时才额外展示。
+  const usedFallback =
+    attempt.actual_provider_id !== '' &&
+    attempt.actual_provider_id !== attempt.provider_id;
   return (
     <Alert
       type={attempt.status === 'failed' ? 'error' : 'info'}
       showIcon
       message={`最近 Attempt 状态：${attempt.status}${
         attempt.repair_count ? `（修复 ${attempt.repair_count} 次）` : ''
-      }`}
+      }${attempt.provider_retry_count ? `· Provider 重试 ${attempt.provider_retry_count} 次` : ''}`}
       description={
         <Space direction="vertical" size={2} style={{ width: '100%' }}>
           <Text type="secondary" style={{ fontSize: 12 }}>
             Provider: {attempt.provider_id} / {attempt.provider_model}
           </Text>
+          {usedFallback ? (
+            <Text type="warning" style={{ fontSize: 12 }}>
+              实际成功 Provider（fallback）：{attempt.actual_provider_id} /{' '}
+              {attempt.actual_provider_model}
+            </Text>
+          ) : null}
+          {attempt.fallback_provider_id ? (
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              Fallback 候选：{attempt.fallback_provider_id} /{' '}
+              {attempt.fallback_provider_model}
+            </Text>
+          ) : null}
           <Text type="secondary" style={{ fontSize: 12 }}>
-            Context: {attempt.context_window} · Prompt: {attempt.prompt_version}
+            Context: {attempt.context_window} · Prompt: {attempt.prompt_version} ·
+            Schema v{attempt.schema_version}
+          </Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            Token：入 {attempt.token_input_count} / 出 {attempt.token_output_count}
+            {attempt.latency_ms ? ` · 耗时 ${(attempt.latency_ms / 1000).toFixed(1)}s` : ''}
           </Text>
           {attempt.error_message ? (
             <Text type="danger" style={{ fontSize: 12 }}>

@@ -257,6 +257,12 @@ class BriefAttemptRecord:
     error_code: str
     error_message: str
     repair_count: int
+    fallback_provider_id: str
+    fallback_provider_model: str
+    actual_provider_id: str
+    actual_provider_model: str
+    provider_retry_count: int
+    next_retry_at: Optional[datetime]
     token_input_count: int
     token_output_count: int
     latency_ms: int
@@ -266,7 +272,10 @@ class BriefAttemptRecord:
 
 @dataclass
 class BriefAttemptCreateInput:
-    """Spec §11.1 Attempt 创建时固定的 Provider/Prompt/Schema 快照。"""
+    """Spec §11.1 Attempt 创建时固定的 Provider/Prompt/Schema 快照。
+
+    KI-10：同时固定 fallback 候选 Provider，运行途中设置变化不改变本 Attempt。
+    """
 
     source_id: int
     snapshot_id: int
@@ -279,6 +288,8 @@ class BriefAttemptCreateInput:
     schema_version: int
     language: str = "zh-CN"
     status: str = "pending"
+    fallback_provider_id: str = ""
+    fallback_provider_model: str = ""
 
 
 def _to_source_brief_record(row: KnowledgeSourceBrief) -> SourceBriefRecord:
@@ -315,6 +326,12 @@ def _to_brief_attempt_record(row: KnowledgeBriefAttempt) -> BriefAttemptRecord:
         error_code=row.error_code,
         error_message=row.error_message,
         repair_count=row.repair_count,
+        fallback_provider_id=row.fallback_provider_id or "",
+        fallback_provider_model=row.fallback_provider_model or "",
+        actual_provider_id=row.actual_provider_id or "",
+        actual_provider_model=row.actual_provider_model or "",
+        provider_retry_count=row.provider_retry_count or 0,
+        next_retry_at=row.next_retry_at,
         token_input_count=row.token_input_count,
         token_output_count=row.token_output_count,
         latency_ms=row.latency_ms,
@@ -1620,6 +1637,8 @@ class KnowledgeRepository:
                     validation_report_json="{}",
                     error_code="",
                     error_message="",
+                    fallback_provider_id=data.fallback_provider_id,
+                    fallback_provider_model=data.fallback_provider_model,
                 )
                 session.add(attempt_row)
                 session.flush()
@@ -1776,6 +1795,9 @@ class KnowledgeRepository:
         token_output_count: int = 0,
         latency_ms: int = 0,
         repair_count: Optional[int] = None,
+        actual_provider_id: str = "",
+        actual_provider_model: str = "",
+        provider_retry_count: Optional[int] = None,
     ) -> tuple[bool, Optional[BriefAttemptRecord], Optional[JobRecord]]:
         """Spec §10.3 / §10.4：Brief Attempt 失败，Source brief_status=failed。
 
@@ -1783,7 +1805,11 @@ class KnowledgeRepository:
         1. Brief Attempt 标记 failed + 错误码 + validation 报告。
         2. Brief Job ``complete_job`` 状态 succeeded（Job 自身完成；result 是失败）。
            ``complete_job`` 必须验证 attempt_token，迟到 lease 拒绝提交。
-        3. Source ``brief_status=failed`` + brief_error_*；``active_brief_id`` 不变。
+        3. Source 已有有效当前 Brief 时保持 ``ready``（旧 Brief 继续可见），仅记录
+           最近 Attempt 错误；首次失败（无旧 Brief）才 ``failed``。
+        4. KI-10：actual_provider_* / provider_retry_count 持久化；next_retry_at 保留
+           ``bump_brief_attempt_retry`` 写入的最近一次预计重试时间，便于诊断与
+           Spec §11.4 "重启后保留"，不在失败时清空。
         """
         moment = datetime.now(timezone.utc)
         with self._session_factory() as session:
@@ -1810,6 +1836,12 @@ class KnowledgeRepository:
                 attempt_row.token_input_count = token_input_count
                 attempt_row.token_output_count = token_output_count
                 attempt_row.latency_ms = latency_ms
+                if actual_provider_id:
+                    attempt_row.actual_provider_id = actual_provider_id
+                if actual_provider_model:
+                    attempt_row.actual_provider_model = actual_provider_model
+                if provider_retry_count is not None:
+                    attempt_row.provider_retry_count = provider_retry_count
                 attempt_row.updated_at = moment
                 job_row.status = "succeeded"
                 job_row.stage = "brief_attempt_failed"
@@ -1820,7 +1852,18 @@ class KnowledgeRepository:
                 job_row.updated_at = moment
                 source_row = session.get(KnowledgeSource, attempt_row.source_id)
                 if source_row is not None and source_row.lifecycle != "deleting":
-                    source_row.brief_status = "failed"
+                    # Spec §10.4：新候选失败时保留旧 Brief。如果 Source 已有有效当前
+                    # Brief，保持 ``ready`` 让旧 Brief 继续可见，仅记录最近 Attempt
+                    # 错误；首次失败（无旧 Brief）才进入 ``failed``。
+                    existing_brief = session.execute(
+                        select(KnowledgeSourceBrief).where(
+                            KnowledgeSourceBrief.source_id == attempt_row.source_id
+                        )
+                    ).scalars().first()
+                    if existing_brief is not None:
+                        source_row.brief_status = "ready"
+                    else:
+                        source_row.brief_status = "failed"
                     source_row.brief_error_code = error_code
                     source_row.brief_error_message = error_message[:500]
                     source_row.brief_block_reason = ""
@@ -1847,6 +1890,9 @@ class KnowledgeRepository:
         token_input_count: int = 0,
         token_output_count: int = 0,
         latency_ms: int = 0,
+        actual_provider_id: str = "",
+        actual_provider_model: str = "",
+        provider_retry_count: int = 0,
     ) -> tuple[bool, Optional[SourceBriefRecord], Optional[JobRecord]]:
         """Spec §10.3 / §10.4：成功 Brief 与 winning Attempt 在同一事务中提交。
 
@@ -1903,6 +1949,12 @@ class KnowledgeRepository:
                 attempt_row.token_input_count = token_input_count
                 attempt_row.token_output_count = token_output_count
                 attempt_row.latency_ms = latency_ms
+                # KI-10 / Spec §11.3：记录实际成功 Provider（可能为 fallback）与 Provider
+                # 层重试总次数，供诊断与评估展示。
+                attempt_row.actual_provider_id = actual_provider_id
+                attempt_row.actual_provider_model = actual_provider_model
+                attempt_row.provider_retry_count = provider_retry_count
+                attempt_row.next_retry_at = None
                 attempt_row.updated_at = moment
                 job_row.status = "succeeded"
                 job_row.stage = "brief_ready"
@@ -1957,6 +2009,83 @@ class KnowledgeRepository:
                 .limit(clamped)
             )
             return [_to_brief_attempt_record(row) for row in session.scalars(stmt)]
+
+    def bump_brief_attempt_retry(
+        self,
+        attempt_id: int,
+        *,
+        provider_retry_count: int,
+        next_retry_at: Optional[datetime],
+        error_code: str,
+        error_message: str = "",
+    ) -> Optional[BriefAttemptRecord]:
+        """Spec §11.4：持久化 Provider 层重试进度。
+
+        worker 在两次 Provider 调用之间调用本方法写入重试计数与预计下次重试时间，
+        保证进程崩溃或重启后 Attempt 仍保留进度，不从零开始。``status`` 不变
+        （仍 ``processing``），由 ``fail_brief_attempt`` / ``commit_brief_attempt_success``
+        在终态写入。
+        """
+        moment = datetime.now(timezone.utc)
+        with self._session_factory() as session:
+            row = session.get(KnowledgeBriefAttempt, attempt_id)
+            if row is None:
+                return None
+            if row.status not in ("pending", "processing"):
+                return _to_brief_attempt_record(row)
+            row.provider_retry_count = provider_retry_count
+            row.next_retry_at = next_retry_at
+            row.error_code = error_code
+            if error_message:
+                row.error_message = error_message[:500]
+            row.updated_at = moment
+            session.commit()
+            session.refresh(row)
+            return _to_brief_attempt_record(row)
+
+    def mark_brief_outdated_if_stale(
+        self,
+        source_id: int,
+        *,
+        provider_id: str,
+        provider_model: str,
+        prompt_version: str,
+        schema_version: int,
+        snapshot_id: int,
+    ) -> Optional[SourceBriefRecord]:
+        """Spec §10.4：检测当前 Brief 是否相对活跃配置过期。
+
+        比较 winning Attempt 的 Provider/Model/Prompt/Schema 与当前 active provider，
+        以及 Brief.snapshot_id 与 Source.active_snapshot_id。任一不一致则
+        ``outdated=True``；完全一致则清除 ``outdated``（rebuild 成功后新 Brief 自然匹配）。
+
+        Spec §10.4 "不自动批量调用模型"：本方法只更新标记，不创建 rebuild Job。
+        """
+        moment = datetime.now(timezone.utc)
+        with self._session_factory() as session:
+            brief_row = session.execute(
+                select(KnowledgeSourceBrief).where(
+                    KnowledgeSourceBrief.source_id == source_id
+                )
+            ).scalars().first()
+            if brief_row is None:
+                return None
+            attempt_row = session.get(KnowledgeBriefAttempt, brief_row.winning_attempt_id)
+            stale = (
+                attempt_row is None
+                or attempt_row.provider_id != provider_id
+                or attempt_row.provider_model != provider_model
+                or attempt_row.prompt_version != prompt_version
+                or attempt_row.schema_version != schema_version
+                or brief_row.snapshot_id != snapshot_id
+            )
+            previous = bool(brief_row.outdated)
+            if stale != previous:
+                brief_row.outdated = stale
+                brief_row.updated_at = moment
+                session.commit()
+                session.refresh(brief_row)
+            return _to_source_brief_record(brief_row)
 
 
 def _decode_heading_path(heading_path_json: Optional[str]) -> list[str]:
