@@ -11,6 +11,7 @@ import {
   Progress,
   Space,
   Spin,
+  Switch,
   Tabs,
   Typography,
   Upload,
@@ -18,21 +19,25 @@ import {
 } from 'antd';
 import type { UploadFile } from 'antd';
 import {
-  InboxOutlined,
-  SearchOutlined,
-  FormOutlined,
-  PictureOutlined,
+  DeleteOutlined,
   EditOutlined,
+  FormOutlined,
+  InboxOutlined,
+  PictureOutlined,
+  SearchOutlined,
 } from '@ant-design/icons';
 import {
+  archiveKnowledgeSource,
   buildKnowledgeAssetContentUrl,
   buildKnowledgeSourceContentUrl,
+  deleteKnowledgeSource,
   fetchKnowledgeSource,
   fetchKnowledgeSourceEvidence,
   fetchKnowledgeSourceJobs,
   fetchKnowledgeSources,
   pasteKnowledgeSource,
   searchKnowledgeEvidence,
+  unarchiveKnowledgeSource,
   updateKnowledgeSourceTitle,
   uploadKnowledgeBundle,
   uploadKnowledgeSource,
@@ -69,9 +74,10 @@ const BRIEF_LABEL: Record<string, string> = {
 
 export default function KnowledgeWikiView() {
   const queryClient = useQueryClient();
+  const [includeArchived, setIncludeArchived] = useState(false);
   const sourcesQuery = useQuery({
     queryKey: KNOWLEDGE_QUERY_KEY,
-    queryFn: fetchKnowledgeSources,
+    queryFn: () => fetchKnowledgeSources({ includeArchived }),
   });
   const [selectedSourceId, setSelectedSourceId] = useState<number | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
@@ -197,6 +203,14 @@ export default function KnowledgeWikiView() {
           <Button onClick={handleSearch} loading={searchMutation.isPending}>
             搜索
           </Button>
+          <Space size={6} align="center">
+            <Switch
+              checked={includeArchived}
+              onChange={(checked) => setIncludeArchived(checked)}
+              aria-label="显示归档资料"
+            />
+            <Text type="secondary">显示归档资料</Text>
+          </Space>
         </Space>
 
         {searchMutation.data ? (
@@ -338,6 +352,8 @@ function SourceDetailContent({ sourceId }: { sourceId: number }) {
   });
   const [titleEditorOpen, setTitleEditorOpen] = useState(false);
   const [editingTitle, setEditingTitle] = useState('');
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [deleteConfirmationText, setDeleteConfirmationText] = useState('');
   const titleMutation = useMutation({
     mutationFn: ({ id, title }: { id: number; title: string }) =>
       updateKnowledgeSourceTitle(id, title),
@@ -352,6 +368,43 @@ function SourceDetailContent({ sourceId }: { sourceId: number }) {
       message.error(`标题更新失败：${detail}`);
     },
   });
+  const archiveMutation = useMutation({
+    mutationFn: (id: number) => archiveKnowledgeSource(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: KNOWLEDGE_QUERY_KEY });
+      queryClient.invalidateQueries({ queryKey: ['knowledge', 'source', sourceId] });
+      message.success('资料已归档');
+    },
+    onError: (error: unknown) => {
+      const detail = extractErrorMessage(error);
+      message.error(`归档失败：${detail}`);
+    },
+  });
+  const unarchiveMutation = useMutation({
+    mutationFn: (id: number) => unarchiveKnowledgeSource(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: KNOWLEDGE_QUERY_KEY });
+      queryClient.invalidateQueries({ queryKey: ['knowledge', 'source', sourceId] });
+      message.success('资料已取消归档');
+    },
+    onError: (error: unknown) => {
+      const detail = extractErrorMessage(error);
+      message.error(`取消归档失败：${detail}`);
+    },
+  });
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) => deleteKnowledgeSource(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: KNOWLEDGE_QUERY_KEY });
+      message.success('资料已永久删除');
+      setDeleteConfirmOpen(false);
+      setDeleteConfirmationText('');
+    },
+    onError: (error: unknown) => {
+      const detail = extractErrorMessage(error);
+      message.error(`删除失败：${detail}`);
+    },
+  });
   if (sourceQuery.isLoading || !sourceQuery.data) {
     return (
       <div style={{ padding: 24 }}>
@@ -364,15 +417,35 @@ function SourceDetailContent({ sourceId }: { sourceId: number }) {
     setEditingTitle(source.display_title || source.title_hint || '');
     setTitleEditorOpen(true);
   };
+  const isArchived = source.lifecycle === 'archived';
   return (
     <div style={{ border: '1px solid var(--op-border, #eee)', padding: 16, borderRadius: 8 }}>
       <Space align="start" style={{ justifyContent: 'space-between', width: '100%' }}>
         <Title level={4} style={{ marginTop: 0, marginBottom: 0 }}>
           {source.title}
         </Title>
-        <Button size="small" icon={<EditOutlined />} onClick={openTitleEditor}>
-          编辑标题
-        </Button>
+        <Space size={6} wrap>
+          <Button size="small" icon={<EditOutlined />} onClick={openTitleEditor}>
+            编辑标题
+          </Button>
+          {isArchived ? (
+            <Button
+              size="small"
+              onClick={() => unarchiveMutation.mutate(sourceId)}
+              loading={unarchiveMutation.isPending}
+            >
+              取消归档
+            </Button>
+          ) : (
+            <Button
+              size="small"
+              onClick={() => archiveMutation.mutate(sourceId)}
+              loading={archiveMutation.isPending}
+            >
+              归档
+            </Button>
+          )}
+        </Space>
       </Space>
       <Space direction="vertical" size={4} style={{ marginBottom: 12, marginTop: 8 }}>
         <Text type="secondary">文件名：{source.main_filename}</Text>
@@ -380,6 +453,9 @@ function SourceDetailContent({ sourceId }: { sourceId: number }) {
         <Text type="secondary">展示标题：{source.display_title || '—（使用推导标题）'}</Text>
         <Text type="secondary">推导标题：{source.title_hint || '—'}</Text>
         <Text type="secondary">导入时间：{formatDateTime(source.created_at)}</Text>
+        {source.archived_at ? (
+          <Text type="secondary">归档时间：{formatDateTime(source.archived_at)}</Text>
+        ) : null}
       </Space>
 
       <Space direction="vertical" size={8} style={{ width: '100%' }}>
@@ -394,6 +470,34 @@ function SourceDetailContent({ sourceId }: { sourceId: number }) {
           loading={jobsQuery.isLoading}
         />
       </Space>
+
+      <div
+        style={{
+          marginTop: 16,
+          padding: 12,
+          border: '1px solid var(--op-danger-border, #ffccc7)',
+          background: 'var(--op-danger-bg, #fff2f0)',
+          borderRadius: 8,
+        }}
+      >
+        <Title level={5} style={{ color: '#cf1322', marginTop: 0 }}>
+          危险操作
+        </Title>
+        <Paragraph type="secondary" style={{ marginBottom: 8 }}>
+          永久删除会清除原件、附件、Evidence、Snapshot、Brief 与 Job 历史,不可恢复。
+          删除后相同内容可作为新 Source 重新导入。
+        </Paragraph>
+        <Button
+          danger
+          icon={<DeleteOutlined />}
+          onClick={() => {
+            setDeleteConfirmationText('');
+            setDeleteConfirmOpen(true);
+          }}
+        >
+          永久删除该资料
+        </Button>
+      </div>
 
       <Modal
         title="编辑展示标题"
@@ -417,6 +521,40 @@ function SourceDetailContent({ sourceId }: { sourceId: number }) {
           <Text type="secondary" style={{ fontSize: 12 }}>
             修改展示标题不会触发重新解析或重新生成 Brief,Evidence ID 保持不变。
           </Text>
+        </Space>
+      </Modal>
+
+      <Modal
+        title="永久删除该资料"
+        open={deleteConfirmOpen}
+        onCancel={() => {
+          setDeleteConfirmOpen(false);
+          setDeleteConfirmationText('');
+        }}
+        okText="我已确认,永久删除"
+        cancelText="取消"
+        okButtonProps={{
+          danger: true,
+          loading: deleteMutation.isPending,
+          disabled: deleteConfirmationText.trim() !== '删除',
+        }}
+        onOk={() => deleteMutation.mutate(sourceId)}
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size="small">
+          <Alert
+            type="error"
+            showIcon
+            message="此操作不可恢复"
+            description="删除后原件、Evidence、附件和 Job 历史都会被清除。如果之后再次上传相同内容,会得到全新的 Source。"
+          />
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            为防止误操作,请在下方输入框中输入"删除"以确认。
+          </Text>
+          <Input
+            placeholder='输入"删除"以确认'
+            value={deleteConfirmationText}
+            onChange={(event) => setDeleteConfirmationText(event.target.value)}
+          />
         </Space>
       </Modal>
     </div>

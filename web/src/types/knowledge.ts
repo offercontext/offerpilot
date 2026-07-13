@@ -122,3 +122,25 @@ export interface KnowledgeSourceJobsResponse {
   jobs: KnowledgeJob[];
   origins: KnowledgeOrigin[];
 }
+
+export interface KnowledgeDeleteJob {
+  id: number;
+  kind: 'delete';
+  queue: 'extraction';
+  source_id: number;
+  snapshot_id: number | null;
+  stage: string;
+  status: string;
+  progress: number;
+  retry_count: number;
+  error_code: string;
+  error_message: string;
+  canceled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface KnowledgeDeleteResponse {
+  source_id: number;
+  job: KnowledgeDeleteJob;
+}

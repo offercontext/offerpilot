@@ -49,4 +49,12 @@ describe('KnowledgeWikiView', () => {
     expect(markup).toContain('Origin');
     expect(markup).not.toContain('自动创建 Page');
   });
+
+  it('renders KI-06 archive filter switch without legacy wiki surface', () => {
+    const markup = renderWithProviders();
+
+    expect(markup).toContain('显示归档资料');
+    // 危险区永久删除入口在 Source 详情中,SSR 时不会出现(需要选中 Source),
+    // 但服务契约由 services/knowledge.test.ts 验证。
+  });
 });

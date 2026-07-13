@@ -320,8 +320,13 @@ def create_app(
         return {"status": "ok"}
 
     @app.get("/api/knowledge/sources")
-    def list_knowledge_sources() -> list[dict[str, Any]]:
-        sources = knowledge_repository.list_sources()
+    def list_knowledge_sources(
+        include_archived: bool = False,
+    ) -> list[dict[str, Any]]:
+        # Spec §5.3 / KI-06：默认只返回 active Source;显式 include_archived=true
+        # 同时返回 archived 资料。``deleting`` lifecycle 始终排除——这是过渡态,正常
+        # 用户路径不应看到。
+        sources = knowledge_repository.list_sources(include_archived=include_archived)
         return [_knowledge_source_payload(item) for item in sources]
 
     @app.post(
@@ -435,6 +440,55 @@ def create_app(
         if updated is None:
             return error_response(404, "Source not found")
         return JSONResponse(_knowledge_source_payload(updated))
+
+    @app.post("/api/knowledge/sources/{source_id}/archive")
+    def archive_knowledge_source(source_id: int) -> JSONResponse:
+        # Spec §5.3 / KI-06：归档只改 lifecycle + archived_at,不删文件 / Evidence /
+        # Brief / Job 历史。Source 不存在或处于 deleting 时返回 404。
+        archived = knowledge_service.archive_source(source_id)
+        if archived is None:
+            return error_response(404, "Source not found")
+        return JSONResponse(_knowledge_source_payload(archived))
+
+    @app.post("/api/knowledge/sources/{source_id}/unarchive")
+    def unarchive_knowledge_source(source_id: int) -> JSONResponse:
+        # Spec §5.3 / KI-06：取消归档恢复 ``active`` lifecycle,archived_at 清空,不触发
+        # Extraction / Brief / Evidence 重建。
+        restored = knowledge_service.unarchive_source(source_id)
+        if restored is None:
+            return error_response(404, "Source not found")
+        return JSONResponse(_knowledge_source_payload(restored))
+
+    @app.delete("/api/knowledge/sources/{source_id}")
+    def delete_knowledge_source(source_id: int) -> JSONResponse:
+        # Spec §5.4 / §16.1：永久删除是异步危险操作,返回 202 与 Delete Job。
+        # 前端必须二次确认;后端不复权 Source,删除后相同内容可重新作为新 Source 上传。
+        result = knowledge_service.purge_source(source_id)
+        if result is None:
+            return error_response(404, "Source not found")
+        snapshot = result.job_snapshot
+        return JSONResponse(
+            status_code=202,
+            content={
+                "source_id": snapshot.source_id,
+                "job": {
+                    "id": snapshot.job_id,
+                    "kind": "delete",
+                    "queue": "extraction",
+                    "source_id": snapshot.source_id,
+                    "snapshot_id": None,
+                    "stage": snapshot.stage,
+                    "status": snapshot.status,
+                    "progress": 100,
+                    "retry_count": 0,
+                    "error_code": "",
+                    "error_message": "",
+                    "canceled": False,
+                    "created_at": _json_datetime(snapshot.created_at),
+                    "updated_at": _json_datetime(result.occurred_at),
+                },
+            },
+        )
 
     @app.get("/api/knowledge/sources/{source_id}/content")
     def get_knowledge_source_content(source_id: int) -> Response:

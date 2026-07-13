@@ -504,9 +504,10 @@ class KnowledgeSource(Base):
         Index("idx_knowledge_sources_hash", "source_hash"),
         Index("idx_knowledge_sources_lifecycle", "lifecycle"),
         Index("idx_knowledge_sources_extraction", "extraction_status"),
+        {"sqlite_autoincrement": True},
     )
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     source_hash: Mapped[str] = mapped_column(String, nullable=False, unique=True)
     source_kind: Mapped[str] = mapped_column(
         String, nullable=False, default="markdown", server_default="markdown"
@@ -795,4 +796,34 @@ class KnowledgeJob(Base):
         nullable=False,
         server_default=func.current_timestamp(),
         onupdate=func.current_timestamp(),
+    )
+
+
+class KnowledgeLog(Base):
+    """Knowledge 操作日志。
+
+    Spec §5.4 / §18：删除日志只保留 Source ID、action、result 和时间,严禁保留标题、
+    正文、URL、路径或 Provider 密钥。KI-06 仅使用 ``source_deleted`` action;后续 Ticket
+    可在此基础上追加 Brief、Extraction 相关 action,但不得放宽数据最小化原则。
+    """
+
+    __tablename__ = "knowledge_logs"
+    __table_args__ = (
+        Index("idx_knowledge_logs_source", "source_id"),
+        Index("idx_knowledge_logs_action", "action"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    source_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    action: Mapped[str] = mapped_column(String, nullable=False)
+    result: Mapped[str] = mapped_column(
+        String, nullable=False, default="succeeded", server_default="succeeded"
+    )
+    error_code: Mapped[str] = mapped_column(
+        String, default="", server_default=""
+    )
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
     )

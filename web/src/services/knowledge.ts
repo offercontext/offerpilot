@@ -1,4 +1,5 @@
 import type {
+  KnowledgeDeleteResponse,
   KnowledgeEvidence,
   KnowledgeEvidencePage,
   KnowledgeEvidenceSearchResponse,
@@ -11,8 +12,12 @@ import { createApiClient } from './http';
 
 const http = createApiClient({ baseURL: '/api', timeout: 30000 });
 
-export async function fetchKnowledgeSources(): Promise<KnowledgeSource[]> {
-  const { data } = await http.get<KnowledgeSource[]>('/knowledge/sources');
+export async function fetchKnowledgeSources(
+  options: { includeArchived?: boolean } = {},
+): Promise<KnowledgeSource[]> {
+  const { data } = await http.get<KnowledgeSource[]>('/knowledge/sources', {
+    params: options.includeArchived ? { include_archived: true } : undefined,
+  });
   return data;
 }
 
@@ -130,6 +135,33 @@ export async function updateKnowledgeSourceTitle(
   const { data } = await http.patch<KnowledgeSource>(
     `/knowledge/sources/${sourceId}`,
     { display_title: displayTitle },
+  );
+  return data;
+}
+
+export async function archiveKnowledgeSource(
+  sourceId: number,
+): Promise<KnowledgeSource> {
+  const { data } = await http.post<KnowledgeSource>(
+    `/knowledge/sources/${sourceId}/archive`,
+  );
+  return data;
+}
+
+export async function unarchiveKnowledgeSource(
+  sourceId: number,
+): Promise<KnowledgeSource> {
+  const { data } = await http.post<KnowledgeSource>(
+    `/knowledge/sources/${sourceId}/unarchive`,
+  );
+  return data;
+}
+
+export async function deleteKnowledgeSource(
+  sourceId: number,
+): Promise<KnowledgeDeleteResponse> {
+  const { data } = await http.delete<KnowledgeDeleteResponse>(
+    `/knowledge/sources/${sourceId}`,
   );
   return data;
 }

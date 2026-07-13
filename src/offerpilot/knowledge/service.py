@@ -21,6 +21,11 @@ KI-04 范围：
 - Bundle source_hash 包含主文件 + 附件 + 逻辑路径 manifest。
 - 图片引用映射为 Asset Evidence；不调用多模态，不让图片字节进入 FTS。
 
+KI-06 范围：
+- 同步 archive / unarchive 操作：只动 lifecycle 与 archived_at。
+- 永久删除 ``purge_source``：begin_delete → 文件目录移到 quarantine → complete_purge
+  → 物理删除 quarantine 目录 → 写 KnowledgeLog。
+
 KI-02 同步触发 Extraction；KI-07 替换为持久队列。事务失败时 final 目录可能残留无数据库
 记录的孤儿原件，由启动恢复负责清理（KI-07 实现完整恢复）。
 """
@@ -30,7 +35,9 @@ from __future__ import annotations
 import json
 import re
 import secrets
+import shutil
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlsplit
@@ -62,6 +69,7 @@ from offerpilot.knowledge.extractor import (
 )
 from offerpilot.knowledge.repository import (
     AssetCreateInput,
+    DeleteJobSnapshot,
     EvidenceDraftInput,
     KnowledgeRepository,
     OriginCreateInput,
@@ -100,6 +108,20 @@ class IngestResult:
     extraction_failed: bool
     extraction_error_code: str
     extraction_error_message: str
+
+
+@dataclass(frozen=True)
+class PurgeResult:
+    """KI-06：永久删除返回的 Delete Job 快照。
+
+    Spec §16.1：永久删除返回 202 与 Delete Job。``DeleteJobSnapshot`` 是事务提交前的
+    内存快照——``complete_purge`` 提交后,``knowledge_jobs`` 表中该 Delete Job 行已与
+    Source 一并清理(KI-06 §5.4 "Job 和文件均无残留")。``occurred_at`` 用于 KnowledgeLog
+    时间戳对齐。
+    """
+
+    job_snapshot: DeleteJobSnapshot
+    occurred_at: datetime
 
 
 class IngestError(Exception):
@@ -404,6 +426,90 @@ class KnowledgeIngestService:
             )
         except ExtractionError as exc:
             raise IngestError(exc.code, exc.message) from exc
+
+    def archive_source(self, source_id: int) -> Optional[SourceRecord]:
+        """KI-06：归档 Source。
+
+        Spec §5.3：归档是同步 SQLite 操作,只动 lifecycle + archived_at;不删除文件、
+        Evidence、Brief、Job 历史;归档默认不出现在列表和普通 Evidence 检索中。详情 /
+        原文 / 附件仍可读;归档不会自动过期或后台清理。
+        """
+        return self._repository.archive_source(source_id)
+
+    def unarchive_source(self, source_id: int) -> Optional[SourceRecord]:
+        """KI-06：取消归档 Source。
+
+        Spec §5.3：取消归档同样是同步 SQLite 操作,lifecycle 改回 ``active``,archived_at
+        清空。不触发 Extraction / Brief / Evidence 重建。
+        """
+        return self._repository.unarchive_source(source_id)
+
+    def purge_source(self, source_id: int) -> Optional[PurgeResult]:
+        """KI-06：永久删除 Source。
+
+        Spec §5.4 删除流程:
+        1. ``begin_delete``:lifecycle=deleting,cancel pending/running jobs,create
+           delete Job。
+        2. Source 目录原子移动到 ``knowledge/quarantine/<source_id>/``。
+        3. ``complete_purge``:单 SQLite 事务清理 FTS / Evidence / Snapshot / Asset /
+           Origin / Job / Source。
+        4. 物理删除 quarantine 目录。
+        5. 写 ``knowledge_logs`` (source_id, action, result)。
+
+        返回 ``PurgeResult``,含 Delete Job 内存快照与 KnowledgeLog 时间戳。
+
+        幂等:source_id 不存在或已删除 → 返回 ``None``,由 API 层返回 404。
+        ``lifecycle=deleting`` 重复调用 → 返回 ``None``(避免重复扣费 / 重复 IO)。
+        """
+        begin_result = self._repository.begin_delete(source_id)
+        if begin_result is None:
+            return None
+        _, delete_job_id = begin_result
+        source_dir = self._data_dir / "knowledge" / "sources" / str(source_id)
+        quarantine_root = self._data_dir / "knowledge" / "quarantine"
+        quarantine_root.mkdir(parents=True, exist_ok=True)
+        quarantine_dir = quarantine_root / str(source_id)
+
+        moved_to_quarantine = False
+        try:
+            if source_dir.exists():
+                # ``shutil.move`` 同文件系统走 rename(原子),跨文件系统走 copy+unlink。
+                # 若 staging 异常残留同名 quarantine 目录,先清空再 move。
+                if quarantine_dir.exists():
+                    shutil.rmtree(quarantine_dir, ignore_errors=True)
+                shutil.move(str(source_dir), str(quarantine_dir))
+                moved_to_quarantine = True
+        except OSError:
+            # 文件系统协调失败:权限不足或 source_dir 被外部进程占用等。仍尝试
+            # complete_purge 以保证事务一致性;quarantine 物理目录缺失时,启动恢复
+            # 负责 quarantine 残留清理(Source 行已不存在则物理删除对应 quarantine)。
+            moved_to_quarantine = False
+
+        try:
+            committed = self._repository.complete_purge(source_id)
+        except Exception:
+            # 事务回滚 → quarantine 保留供启动恢复;不写 KnowledgeLog。
+            raise
+
+        if not committed:
+            # 并发路径:source 已被其他事务清理。此时 quarantine 也应当不存在。
+            if moved_to_quarantine and quarantine_dir.exists():
+                shutil.rmtree(quarantine_dir, ignore_errors=True)
+            return None
+
+        # 事务提交成功 → 清理 quarantine 物理目录。
+        if quarantine_dir.exists():
+            shutil.rmtree(quarantine_dir, ignore_errors=True)
+
+        occurred_at = datetime.now(timezone.utc)
+        snapshot = DeleteJobSnapshot(
+            job_id=delete_job_id,
+            source_id=source_id,
+            status="succeeded",
+            stage="purged",
+            created_at=occurred_at,
+        )
+        return PurgeResult(job_snapshot=snapshot, occurred_at=occurred_at)
 
     def _commit_new_source(
         self,

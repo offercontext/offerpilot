@@ -51,6 +51,7 @@ def init_database(db_path: Path) -> SessionFactory:
     _reset_knowledge_legacy_tables(engine, db_path.parent)
     Base.metadata.create_all(engine)
     _ensure_knowledge_fts(engine)
+    _recover_knowledge_deletions(engine, db_path.parent)
     _record_migration(engine, "0001_base_schema", "Create current application tables")
 
     chat_migrations = [
@@ -268,6 +269,106 @@ def _reset_knowledge_legacy_tables(engine, data_dir: Path) -> None:  # type: ign
 
 def session_factory_for_data_dir(data_dir: Path) -> SessionFactory:
     return init_database(data_dir / "data.db")
+
+
+def _recover_knowledge_deletions(engine, data_dir: Path) -> None:  # type: ignore[no-untyped-def]
+    """KI-06：启动恢复完成 Spec §5.4 异常中断的删除流程。
+
+    场景:
+    1. ``complete_purge`` 事务已提交 → Source 行不存在,但 quarantine 目录残留(物理
+       删除失败或进程崩溃)。本函数物理删除 quarantine 子目录。
+    2. ``begin_delete`` 已标记 lifecycle=deleting,但 ``complete_purge`` 未执行(进程
+       崩溃)。本函数:
+       a. 尝试完成事务清理:删除 FTS / Evidence / Snapshot / Asset / Origin / Job /
+          Source 行。
+       b. 物理删除 quarantine 目录。
+       c. 写入 ``knowledge_logs``(source_deleted, succeeded)。
+
+    Spec §6 / §12：启动恢复负责完成异常中断的删除。任何 quarantine 子目录对应的
+    Source 行若不存在 → 物理删除 quarantine。
+    """
+    knowledge_dir = data_dir / "knowledge"
+    quarantine_root = knowledge_dir / "quarantine"
+    if not quarantine_root.exists():
+        return
+
+    with engine.begin() as conn:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            ).fetchall()
+        }
+        if "knowledge_sources" not in tables:
+            return
+        deleting_sources = [
+            row[0]
+            for row in conn.execute(
+                text(
+                    "SELECT id FROM knowledge_sources WHERE lifecycle = 'deleting'"
+                )
+            ).fetchall()
+        ]
+
+    # 处理 lifecycle=deleting 的 Source:完成事务清理 + quarantine 删除 + KnowledgeLog。
+    for source_id in deleting_sources:
+        source_dir = knowledge_dir / "sources" / str(source_id)
+        if source_dir.exists():
+            shutil.rmtree(source_dir, ignore_errors=True)
+        quarantine_dir = quarantine_root / str(source_id)
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "DELETE FROM knowledge_evidence_fts WHERE source_id = :sid"
+                    ),
+                    {"sid": source_id},
+                )
+                conn.execute(
+                    text("DELETE FROM knowledge_evidence WHERE source_id = :sid"),
+                    {"sid": source_id},
+                )
+                conn.execute(
+                    text(
+                        "DELETE FROM knowledge_extraction_snapshots WHERE source_id = :sid"
+                    ),
+                    {"sid": source_id},
+                )
+                conn.execute(
+                    text("DELETE FROM knowledge_source_assets WHERE source_id = :sid"),
+                    {"sid": source_id},
+                )
+                conn.execute(
+                    text("DELETE FROM knowledge_source_origins WHERE source_id = :sid"),
+                    {"sid": source_id},
+                )
+                conn.execute(
+                    text("DELETE FROM knowledge_jobs WHERE source_id = :sid"),
+                    {"sid": source_id},
+                )
+                conn.execute(
+                    text("DELETE FROM knowledge_sources WHERE id = :sid"),
+                    {"sid": source_id},
+                )
+                if "knowledge_logs" in tables:
+                    conn.execute(
+                        text(
+                            "INSERT INTO knowledge_logs (source_id, action, result) "
+                            "VALUES (:sid, 'source_deleted', 'succeeded')"
+                        ),
+                        {"sid": source_id},
+                    )
+        except OperationalError:
+            # 事务失败 → 留给下次启动重试。
+            continue
+        if quarantine_dir.exists():
+            shutil.rmtree(quarantine_dir, ignore_errors=True)
+
+    # 处理孤儿 quarantine 目录(Source 行不存在,通常是事务已提交但物理删除失败)。
+    if quarantine_root.exists():
+        for child in quarantine_root.iterdir():
+            if child.is_dir():
+                shutil.rmtree(child, ignore_errors=True)
 
 
 def _ensure_schema_migrations(engine) -> None:  # type: ignore[no-untyped-def]

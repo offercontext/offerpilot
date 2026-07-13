@@ -34,3 +34,16 @@ describe('knowledge service KI-05 contract', () => {
     expect(source).toContain('.patch<');
   });
 });
+
+describe('knowledge service KI-06 contract', () => {
+  it('exposes archive / unarchive / delete endpoints with include_archived filter', () => {
+    expect(source).toContain('archiveKnowledgeSource');
+    expect(source).toContain('unarchiveKnowledgeSource');
+    expect(source).toContain('deleteKnowledgeSource');
+    expect(source).toContain('/archive');
+    expect(source).toContain('/unarchive');
+    expect(source).toContain('.delete<');
+    expect(source).toContain('includeArchived');
+    expect(source).toContain('include_archived');
+  });
+});

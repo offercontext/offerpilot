@@ -170,20 +170,20 @@ Brief 事实。
 **Scope boundaries:** 本轮没有 Note，因此不实现受 Note 引用的冲突 UI；领域服务保留未来
 `SourceReferenced` 检查边界，不创建空 Note 表。
 
-- [ ] 归档和取消归档只修改 lifecycle，不删除文件、Evidence、Brief 或 Job 历史。
-- [ ] 默认 Source 列表和普通搜索排除 archived；显式筛选可以查看归档资料。
-- [ ] 归档 Source 仍可查看详情、Evidence、原文和附件。
-- [ ] 归档不会自动过期或后台清理。
-- [ ] 永久删除前端入口位于危险操作区，并要求明确的不可恢复确认。
-- [ ] 删除请求返回 Delete Job，Source 立即进入 `deleting` 并拒绝新 Job。
-- [ ] 删除会取消未完成任务，迟到结果无法重新写回 Source。
-- [ ] Source 目录先移动到 quarantine，再在事务中清理全部数据库关系和 FTS。
-- [ ] 正常删除完成后，Source、Origin、Asset、Snapshot、Evidence、FTS、Brief/Attempt、Job 和文件均无残留。
-- [ ] 删除日志只保留 Source ID、时间和结果，不保留标题、正文、URL 或路径。
-- [ ] 删除不保留 source hash 墓碑；重新上传相同内容创建新 ID 和新 Job。
-- [ ] 未来 Note 引用保护使用限制删除语义；当前代码不得预设 CASCADE 或 SET NULL。
-- [ ] 测试覆盖归档过滤、取消归档、处理中删除、Bundle 删除、重复删除和删除后重导入。
-- [ ] 独立 Code Review 检查隐私清除语义和文件/数据库协调顺序。
+- [x] 归档和取消归档只修改 lifecycle，不删除文件、Evidence、Brief 或 Job 历史。
+- [x] 默认 Source 列表和普通搜索排除 archived；显式筛选可以查看归档资料。
+- [x] 归档 Source 仍可查看详情、Evidence、原文和附件。
+- [x] 归档不会自动过期或后台清理。
+- [x] 永久删除前端入口位于危险操作区，并要求明确的不可恢复确认。
+- [x] 删除请求返回 Delete Job，Source 立即进入 `deleting` 并拒绝新 Job。
+- [x] 删除会取消未完成任务，迟到结果无法重新写回 Source。
+- [x] Source 目录先移动到 quarantine，再在事务中清理全部数据库关系和 FTS。
+- [x] 正常删除完成后，Source、Origin、Asset、Snapshot、Evidence、FTS、Brief/Attempt、Job 和文件均无残留。
+- [x] 删除日志只保留 Source ID、时间和结果，不保留标题、正文、URL 或路径。
+- [x] 删除不保留 source hash 墓碑；重新上传相同内容创建新 ID 和新 Job。
+- [x] 未来 Note 引用保护使用限制删除语义；当前代码不得预设 CASCADE 或 SET NULL。
+- [x] 测试覆盖归档过滤、取消归档、处理中删除、Bundle 删除、重复删除和删除后重导入。
+- [x] 独立 Code Review 检查隐私清除语义和文件/数据库协调顺序。
 
 ## KI-07：加固持久队列、取消与崩溃恢复
 

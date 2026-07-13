@@ -15,7 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Iterable, Optional, Sequence
 
 from sqlalchemy import select, text
@@ -25,6 +25,7 @@ from offerpilot.models import (
     KnowledgeEvidence,
     KnowledgeExtractionSnapshot,
     KnowledgeJob,
+    KnowledgeLog,
     KnowledgeSource,
     KnowledgeSourceAsset,
     KnowledgeSourceOrigin,
@@ -154,6 +155,21 @@ class EvidenceSearchHit:
     canonical_excerpt: str
     snippet: str
     score: float
+
+
+@dataclass(frozen=True)
+class DeleteJobSnapshot:
+    """Spec §16.1: 永久删除返回 202 与 Delete Job。
+
+    Job 在事务提交后已从 ``knowledge_jobs`` 表中清理,本快照用于 HTTP 响应,不重新
+    查询数据库。
+    """
+
+    job_id: int
+    source_id: int
+    status: str
+    stage: str
+    created_at: datetime
 
 
 @dataclass
@@ -404,20 +420,35 @@ class KnowledgeRepository:
             return _to_source_record(row)
 
     def get_source_by_hash(self, source_hash: str) -> Optional[SourceRecord]:
+        """KI-06：去重查询必须排除 ``lifecycle=deleting`` 的 Source。
+
+        Spec §5.4：删除不保留 source_hash 墓碑;再次上传相同内容必须创建新 Source。``deleting``
+        期间的 Source 行仍存在,但语义上等价于已删除,dedup 不应命中。
+        """
         with self._session_factory() as session:
             stmt = select(KnowledgeSource).where(
                 KnowledgeSource.source_hash == source_hash,
                 KnowledgeSource.deleted_at.is_(None),
+                KnowledgeSource.lifecycle != "deleting",
             )
             row = session.scalars(stmt).first()
             return _to_source_record(row) if row is not None else None
 
-    def list_sources(self) -> list[SourceRecord]:
+    def list_sources(self, *, include_archived: bool = False) -> list[SourceRecord]:
+        """KI-06：默认只返回 ``active`` Source;显式筛选可查看归档资料。
+
+        Spec §5.3：归档 Source 默认不出现在列表和普通 Evidence 检索中。``deleting``
+        lifecycle 在 Spec §13 中是过渡态,正常运行时不可见,本方法始终排除。
+        """
         with self._session_factory() as session:
-            stmt = (
-                select(KnowledgeSource)
-                .where(KnowledgeSource.deleted_at.is_(None))
-                .order_by(KnowledgeSource.created_at.desc(), KnowledgeSource.id.desc())
+            stmt = select(KnowledgeSource).where(
+                KnowledgeSource.deleted_at.is_(None),
+                KnowledgeSource.lifecycle != "deleting",
+            )
+            if not include_archived:
+                stmt = stmt.where(KnowledgeSource.lifecycle == "active")
+            stmt = stmt.order_by(
+                KnowledgeSource.created_at.desc(), KnowledgeSource.id.desc()
             )
             return [_to_source_record(row) for row in session.scalars(stmt)]
 
@@ -468,7 +499,7 @@ class KnowledgeRepository:
         cleaned = display_title.strip()
         with self._session_factory() as session:
             row = session.get(KnowledgeSource, source_id)
-            if row is None or row.deleted_at is not None:
+            if row is None or row.deleted_at is not None or row.lifecycle == "deleting":
                 return None
             row.display_title = cleaned
             session.execute(
@@ -481,6 +512,146 @@ class KnowledgeRepository:
             session.commit()
             session.refresh(row)
             return _to_source_record(row)
+
+    def archive_source(self, source_id: int) -> Optional[SourceRecord]:
+        """KI-06：归档 Source。
+
+        Spec §5.3：归档是同步 SQLite 操作,只改 lifecycle + archived_at,不删除文件、
+        Evidence、Brief、Job 历史。归档 Source 默认不在列表与普通搜索中可见,但详情 /
+        原文 / 附件仍可读。归档不会自动过期或后台清理。
+        """
+        with self._session_factory() as session:
+            row = session.get(KnowledgeSource, source_id)
+            if row is None or row.deleted_at is not None or row.lifecycle == "deleting":
+                return None
+            if row.lifecycle == "archived":
+                return _to_source_record(row)
+            row.lifecycle = "archived"
+            row.archived_at = datetime.now(timezone.utc)
+            session.commit()
+            session.refresh(row)
+            return _to_source_record(row)
+
+    def unarchive_source(self, source_id: int) -> Optional[SourceRecord]:
+        """KI-06：取消归档 Source。
+
+        Spec §5.3：取消归档同样是同步 SQLite 操作,lifecycle 改回 ``active``,
+        archived_at 清空。不触发 Extraction / Brief / Evidence 重建。
+        """
+        with self._session_factory() as session:
+            row = session.get(KnowledgeSource, source_id)
+            if row is None or row.deleted_at is not None or row.lifecycle == "deleting":
+                return None
+            if row.lifecycle == "active":
+                return _to_source_record(row)
+            row.lifecycle = "active"
+            row.archived_at = None
+            session.commit()
+            session.refresh(row)
+            return _to_source_record(row)
+
+    def begin_delete(self, source_id: int) -> Optional[tuple[SourceRecord, int]]:
+        """KI-06：开始永久删除流程。
+
+        Spec §5.4：删除请求返回 Delete Job,Source 立即进入 ``deleting`` 并拒绝新 Job。
+        本方法在单个事务中:
+        1. 将 Source lifecycle 改为 ``deleting``;
+        2. 取消该 Source 所有 pending / running extract / brief Job;
+        3. 创建一个 ``kind=delete, queue=extraction, status=running`` Delete Job。
+
+        返回 ``Source`` 当前快照与新建 Delete Job 的 ID。
+        """
+        with self._session_factory() as session:
+            row = session.get(KnowledgeSource, source_id)
+            if row is None or row.deleted_at is not None:
+                return None
+            if row.lifecycle == "deleting":
+                return None
+            row.lifecycle = "deleting"
+            active_jobs = session.scalars(
+                select(KnowledgeJob).where(
+                    KnowledgeJob.source_id == source_id,
+                    KnowledgeJob.kind.in_(("extract", "brief")),
+                    KnowledgeJob.status.in_(("pending", "running")),
+                    KnowledgeJob.canceled.is_(False),
+                )
+            ).all()
+            now = datetime.now(timezone.utc)
+            for job in active_jobs:
+                job.status = "canceled"
+                job.canceled = True
+                job.stage = "canceled_by_delete"
+                job.updated_at = now
+            delete_job = KnowledgeJob(
+                kind="delete",
+                queue="extraction",
+                source_id=source_id,
+                stage="deleting",
+                status="running",
+                progress=0,
+            )
+            session.add(delete_job)
+            session.flush()
+            delete_job_id = delete_job.id
+            session.commit()
+            session.refresh(row)
+            return _to_source_record(row), delete_job_id
+
+    def complete_purge(self, source_id: int) -> bool:
+        """KI-06：在调用方提供的事务外执行完整删除事务。
+
+        Spec §5.4：单 SQLite 事务删除 FTS、Evidence、Snapshot、Asset、Origin、Job 与
+        Source 行。本方法不接触文件系统,Service 层负责目录 rename 与 quarantine 清理。
+        成功提交返回 True;若 Source 不在 ``deleting`` 状态(已被并发清理)返回 False。
+
+        同一事务内插入 ``knowledge_logs`` 行,确保删除结果与日志原子可见——Spec §5.4
+        验收点 10 要求日志必须存在,不允许"Source 已删但日志丢失"的中间态。
+        """
+        with self._session_factory() as session:
+            row = session.get(KnowledgeSource, source_id)
+            if row is None:
+                return False
+            session.execute(
+                text(
+                    "DELETE FROM knowledge_evidence_fts WHERE source_id = :sid"
+                ),
+                {"sid": source_id},
+            )
+            session.execute(
+                text("DELETE FROM knowledge_evidence WHERE source_id = :sid"),
+                {"sid": source_id},
+            )
+            session.execute(
+                text(
+                    "DELETE FROM knowledge_extraction_snapshots WHERE source_id = :sid"
+                ),
+                {"sid": source_id},
+            )
+            session.execute(
+                text("DELETE FROM knowledge_source_assets WHERE source_id = :sid"),
+                {"sid": source_id},
+            )
+            session.execute(
+                text("DELETE FROM knowledge_source_origins WHERE source_id = :sid"),
+                {"sid": source_id},
+            )
+            session.execute(
+                text(
+                    "DELETE FROM knowledge_jobs WHERE source_id = :sid"
+                ),
+                {"sid": source_id},
+            )
+            session.delete(row)
+            session.add(
+                KnowledgeLog(
+                    source_id=source_id,
+                    action="source_deleted",
+                    result="succeeded",
+                    error_code="",
+                )
+            )
+            session.commit()
+            return True
 
     def find_latest_extract_job_id(self, source_id: int) -> Optional[int]:
         """KI-05：去重路径复用 Source 已有的 Extract Job,避免重复排队。
