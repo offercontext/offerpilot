@@ -304,24 +304,24 @@ Evidence、Brief 和检索指标报告；任何硬门禁失败都会让验收失
 **Scope boundaries:** 私有或受版权保护的真实原文不提交仓库；仓库只保存安全 fixtures、fixture hash、
 查询和预期 Evidence 标识规则。
 
-- [ ] 建立可从外部 fixture 目录读取真实 Source 的验收入口。
-- [ ] 5 份真实 Source 通过内容 hash 标识，缺失或被修改时明确失败。
-- [ ] 每份 Source 至少 4 条人工确认查询，总数至少 20 条。
-- [ ] 查询集覆盖中文术语、英文技术词、代码标识符和自然语言问题。
-- [ ] 另提供可提交仓库的编码、空文件、超限、Markdown 结构和 Bundle 边界 fixtures。
-- [ ] 故障 fixtures 覆盖非法 JSON、伪造 citation、引用不支持、章节遗漏、超时、限流和 fallback。
-- [ ] 验收报告列出每份 Source 的 Snapshot digest、Evidence 数量、回读结果和 Brief 状态。
-- [ ] 相同 extractor 重跑的 Snapshot digest、Evidence ID、位置和内容完全一致。
-- [ ] Evidence 回读成功率必须为 100%。
-- [ ] Brief Schema、citation、support 和 coverage 通过率必须为 100%。
-- [ ] Lexical 查询 `Recall@5 = 100%`、`MRR >= 0.9`。
-- [ ] 自然语言查询 `Recall@5 >= 80%`。
-- [ ] Provider/Brief 失败场景明确证明 Evidence 仍可搜索。
-- [ ] 指标低于门禁时进程非零退出，并输出可定位 bad case 的 Evidence ID。
-- [ ] 验收工具不得把真实 Source 正文、API Key、完整 Prompt 或 Provider 原始响应写入报告。
-- [ ] 指标未达标时不得在本 Ticket 偷加向量、rerank 或 LLM query rewrite。
+- [x] 建立可从外部 fixture 目录读取真实 Source 的验收入口。
+- [x] 5 份真实 Source 通过内容 hash 标识，缺失或被修改时明确失败。
+- [x] 每份 Source 至少 4 条人工确认查询，总数至少 20 条。
+- [x] 查询集覆盖中文术语、英文技术词、代码标识符和自然语言问题。
+- [x] 另提供可提交仓库的编码、空文件、超限、Markdown 结构和 Bundle 边界 fixtures。
+- [x] 故障 fixtures 覆盖非法 JSON、伪造 citation、引用不支持、章节遗漏、超时、限流和 fallback。
+- [x] 验收报告列出每份 Source 的 Snapshot digest、Evidence 数量、回读结果和 Brief 状态。
+- [x] 相同 extractor 重跑的 Snapshot digest、Evidence ID、位置和内容完全一致。
+- [x] Evidence 回读成功率必须为 100%。
+- [x] Brief Schema、citation、support 和 coverage 通过率必须为 100%。
+- [x] Lexical 查询 `Recall@5 = 100%`、`MRR >= 0.9`。
+- [x] 自然语言查询 `Recall@5 >= 80%`。
+- [x] Provider/Brief 失败场景明确证明 Evidence 仍可搜索。
+- [x] 指标低于门禁时进程非零退出，并输出可定位 bad case 的 Evidence ID。
+- [x] 验收工具不得把真实 Source 正文、API Key、完整 Prompt 或 Provider 原始响应写入报告。
+- [x] 指标未达标时不得在本 Ticket 偷加向量、rerank 或 LLM query rewrite。
 - [ ] 使用至少一个真实 Provider 完成 Brief 验收，并记录模型、版本、耗时和费用摘要。
-- [ ] 独立 Code Review 检查指标实现、数据泄漏和“通过率被空样本抬高”等评估漏洞。
+- [x] 独立 Code Review 检查指标实现、数据泄漏和“通过率被空样本抬高”等评估漏洞。
 
 ## KI-12：完成全量回归与旧架构清场
 
