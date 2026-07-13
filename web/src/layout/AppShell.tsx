@@ -103,7 +103,6 @@ function AppShellContent() {
   const [aiSettingsOpen, setAISettingsOpen] = useState(false);
   const [resumeOnboardingFocusToken, setResumeOnboardingFocusToken] = useState(0);
   const [pilotOnboardingFocusToken, setPilotOnboardingFocusToken] = useState(0);
-  void pilotOnboardingFocusToken;
   const [selected, setSelected] = useState<Application | null>(null);
   const [evidenceFocus, setEvidenceFocus] = useState<Exclude<EvidenceTarget, { kind: 'application' }> | null>(null);
   const [coachOfferId, setCoachOfferId] = useState<number | undefined>(undefined);
@@ -449,6 +448,7 @@ function AppShellContent() {
               <ChatPanel
                 variant="page"
                 open
+                onboardingFocusToken={pilotOnboardingFocusToken}
                 onClose={() => undefined}
                 onOpenSettings={() => setAISettingsOpen(true)}
                 startRequest={chatStartRequest}
@@ -505,6 +505,7 @@ function AppShellContent() {
           <ChatPanel
             variant="rail"
             open
+            onboardingFocusToken={pilotOnboardingFocusToken}
             pilotDropTarget
             onClose={() => setCoachOfferId(undefined)}
             offerId={coachOfferId}
@@ -547,6 +548,7 @@ function AppShellContent() {
       {shouldShowContextualPilot && contextualPilotPanelOpen && (
         <ChatPanel
           open={contextualPilotPanelOpen}
+          onboardingFocusToken={pilotOnboardingFocusToken}
           pilotDropTarget
           onClose={() => {
             setChatOpen(false);

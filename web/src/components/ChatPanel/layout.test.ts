@@ -8,6 +8,7 @@ import evidenceList from './EvidenceList.tsx?raw';
 import processTimeline from './ProcessTimeline.tsx?raw';
 import threadRail from './ThreadRail.tsx?raw';
 import mockChat from '../MockStudio/MockChat.tsx?raw';
+import composer from './Composer.tsx?raw';
 
 async function loadCss(): Promise<string> {
   const fsModule = 'node:fs';
@@ -598,5 +599,25 @@ describe('ChatPanel docked layout contract', () => {
   it('keeps Mock Studio outside Pilot task-card action flows', () => {
     expect(mockChat).toContain('taskCardsEnabled={false}');
     expect(mockChat).toContain('onAction={() => undefined}');
+  });
+
+  it('focuses and highlights the Pilot composer from an onboarding token without sending a message', async () => {
+    const css = await loadCss();
+
+    expect(component).toContain('onboardingFocusToken?: number;');
+    expect(component).toContain('data-onboarding-target="pilot"');
+    expect(component).toContain('styles.onboardingFocus');
+    expect(component).toContain('onboardingFocusToken={onboardingFocusToken}');
+    expect(component).toContain('role="status"');
+    expect(component).toContain('aria-live="polite"');
+    expect(component).toContain('Pilot 输入框已就绪');
+    expect(composer).toContain('onboardingFocusToken?: number;');
+    expect(composer).toContain('styles.composerOnboardingFocus');
+    expect(composer).toContain("composerRef.current?.querySelector('textarea')?.focus()");
+    expect(composer).not.toContain('onSend(onboardingFocusToken');
+    expect(css).toContain('@keyframes onboardingPilotPulse');
+    expect(css).toContain('.onboardingFocus');
+    expect(css).toContain('.composerOnboardingFocus');
+    expect(css).toContain('@media (prefers-reduced-motion: reduce)');
   });
 });

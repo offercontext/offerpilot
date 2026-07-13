@@ -99,6 +99,7 @@ interface Props {
   onAttachmentKeyChange?: (key?: PilotAttachmentConversationKey) => void;
   pilotDropTarget?: boolean;
   onOpenEvidence?: (target: EvidenceTarget) => void;
+  onboardingFocusToken?: number;
 }
 
 interface ConfirmationExecution {
@@ -193,6 +194,7 @@ export default function ChatPanel({
   onAttachmentKeyChange,
   pilotDropTarget = false,
   onOpenEvidence,
+  onboardingFocusToken,
 }: Props) {
   const queryClient = useQueryClient();
   const { message: toast } = AntApp.useApp();
@@ -228,6 +230,7 @@ export default function ChatPanel({
   const [lastUndo, setLastUndo] = useState<ChatUndo | null>(null);
   const [loadingLabel, setLoadingLabel] = useState<string | undefined>(undefined);
   const [hasStreamingAssistantContent, setHasStreamingAssistantContent] = useState(false);
+  const [onboardingFocusActive, setOnboardingFocusActive] = useState(false);
   const [pageContextRemovalState, dispatchPageContextRemoval] = useReducer(
     pilotPageContextRemovalReducer,
     incomingPageContextKey,
@@ -273,6 +276,17 @@ export default function ChatPanel({
     queryFn: getSettings,
     enabled: open,
   });
+
+  useEffect(() => {
+    if (!onboardingFocusToken || !open) {
+      setOnboardingFocusActive(false);
+      return;
+    }
+
+    setOnboardingFocusActive(true);
+    const timeoutId = window.setTimeout(() => setOnboardingFocusActive(false), 2400);
+    return () => window.clearTimeout(timeoutId);
+  }, [onboardingFocusToken, open]);
 
   useEffect(() => {
     if (attachmentDraftKey) {
@@ -1232,8 +1246,14 @@ export default function ChatPanel({
       <div
         className={`${styles.workspace} ${docked ? styles.workspaceDocked : ''} ${
           inlinePage ? styles.workspacePage : ''
-        }`}
+        } ${onboardingFocusActive ? styles.onboardingFocus : ''}`}
+        data-onboarding-target="pilot"
       >
+        {onboardingFocusActive ? (
+          <div className={styles.srOnly} role="status" aria-live="polite">
+            Pilot 输入框已就绪
+          </div>
+        ) : null}
         <header className={styles.header}>
           <div className={styles.avatar} aria-hidden="true">
             <RobotOutlined />
@@ -1509,14 +1529,15 @@ export default function ChatPanel({
               onNativeDrop={addAttachment}
             />
             {attachmentNotice ? <div className={styles.attachmentNotice} role="status">{attachmentNotice}</div> : null}
-             <Composer
-               capabilities={capabilities}
-               disabled={composerDisabled}
-               disabledReason={composerDisabledReason}
-               resetKey={composerResetKey}
-               suggestions={attachmentSuggestions}
-               onSend={sendMessage}
-             />
+              <Composer
+                capabilities={capabilities}
+                disabled={composerDisabled}
+                disabledReason={composerDisabledReason}
+                resetKey={composerResetKey}
+                suggestions={attachmentSuggestions}
+                onboardingFocusToken={onboardingFocusToken}
+                onSend={sendMessage}
+              />
           </section>
 
           <ContextPanel
