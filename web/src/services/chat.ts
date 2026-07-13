@@ -376,8 +376,15 @@ export async function getSettingsBackup(): Promise<SettingsBackup> {
   return data;
 }
 
-export function exportBackup(path = '/backups/export'): void {
-  window.location.href = `/api${path}`;
+export async function exportBackup(path = '/backups/export'): Promise<void> {
+  const { data } = await http.get<Blob>(path, { responseType: 'blob' });
+  const archive = data instanceof Blob ? data : new Blob([data], { type: 'application/zip' });
+  const url = URL.createObjectURL(archive);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = 'offerpilot-backup.zip';
+  anchor.click();
+  URL.revokeObjectURL(url);
 }
 
 export async function getLogs(limit = 20, offset = 0, level = ''): Promise<LogsPage> {

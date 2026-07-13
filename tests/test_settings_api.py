@@ -1,3 +1,5 @@
+import json
+
 from fastapi.testclient import TestClient
 
 from offerpilot.ai import client as ai_client
@@ -410,11 +412,11 @@ def test_settings_backup_omits_plaintext_api_keys(tmp_path):
     assert "sk-openrouter" not in response.text
 
 
-def test_backup_export_returns_local_data_archive(tmp_path):
+def test_backup_export_returns_local_data_archive_without_credentials(tmp_path):
     from io import BytesIO
     import zipfile
 
-    save_config(tmp_path, Config(api_key="sk-secret"))
+    save_config(tmp_path, Config(api_key="sk-secret", auth_token="local-secret"))
     (tmp_path / "offerpilot.log").write_text("log line\n", encoding="utf-8")
     client = TestClient(create_app(data_dir=tmp_path))
 
@@ -425,3 +427,46 @@ def test_backup_export_returns_local_data_archive(tmp_path):
     assert "offerpilot-backup-" in response.headers["content-disposition"]
     with zipfile.ZipFile(BytesIO(response.content)) as archive:
         assert {"config.json", "data.db", "offerpilot.log"}.issubset(archive.namelist())
+        config = archive.read("config.json").decode("utf-8")
+        assert "sk-secret" not in config
+        assert "local-secret" not in config
+        assert json.loads(config)["api_key"] == ""
+        assert json.loads(config)["auth_token"] == ""
+
+
+def test_settings_reports_a_keyed_enabled_fallback_as_available(tmp_path):
+    save_config(
+        tmp_path,
+        Config(
+            active_provider_id="primary",
+            fallback_provider_ids=["fallback"],
+            providers=[
+                AIProviderProfile(id="primary", label="Primary", api_key="", enabled=True),
+                AIProviderProfile(id="fallback", label="Fallback", api_key="sk-fallback", enabled=True),
+            ],
+        ),
+    )
+
+    response = TestClient(create_app(data_dir=tmp_path)).get("/api/settings")
+
+    assert response.status_code == 200
+    assert response.json()["has_api_key"] is True
+
+
+def test_settings_does_not_report_a_disabled_keyed_fallback_as_available(tmp_path):
+    save_config(
+        tmp_path,
+        Config(
+            active_provider_id="primary",
+            fallback_provider_ids=["fallback"],
+            providers=[
+                AIProviderProfile(id="primary", label="Primary", api_key="", enabled=True),
+                AIProviderProfile(id="fallback", label="Fallback", api_key="sk-fallback", enabled=False),
+            ],
+        ),
+    )
+
+    response = TestClient(create_app(data_dir=tmp_path)).get("/api/settings")
+
+    assert response.status_code == 200
+    assert response.json()["has_api_key"] is False

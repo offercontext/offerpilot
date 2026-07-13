@@ -14,7 +14,7 @@ class ConfiguredAIClient:
     def __init__(self, config: Config, on_provider_event: Callable[[str, str], None] | None = None):
         self._providers = config.ordered_provider_profiles()
         self._on_provider_event = on_provider_event
-        if not any(provider.api_key for provider in self._providers):
+        if not any(provider.enabled and provider.api_key for provider in self._providers):
             raise ValueError("AI is not configured: run `oc config` to set your API key")
 
     def complete(self, messages: list[Message], tools: list[dict[str, Any]]) -> Assistant:

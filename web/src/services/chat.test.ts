@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { confirmAction, createSseParser, sendChat, streamChat, streamConfirmAction } from './chat';
+import { confirmAction, createSseParser, exportBackup, sendChat, streamChat, streamConfirmAction } from './chat';
 import source from './chat.ts?raw';
 import type { ChatStreamEvent, PilotPageContext } from '@/types/chat';
 import type { ConfirmationInput } from './chat';
@@ -29,10 +29,10 @@ void [
   invalidRejectionInput,
 ];
 
-const { postMock } = vi.hoisted(() => ({ postMock: vi.fn() }));
+const { getMock, postMock } = vi.hoisted(() => ({ getMock: vi.fn(), postMock: vi.fn() }));
 
 vi.mock('./http', () => ({
-  createApiClient: () => ({ post: postMock }),
+  createApiClient: () => ({ get: getMock, post: postMock }),
 }));
 
 const originalFetch = globalThis.fetch;
@@ -62,7 +62,41 @@ describe('settings service v0.1 contract', () => {
     expect(source).toContain('/settings/backup');
     expect(source).toContain('testProviderConnection');
     expect(source).toContain('getSettingsBackup');
+    expect(source).toContain("responseType: 'blob'");
+    expect(source).not.toContain('window.location.href');
     expect(source).not.toContain('api_key: string;');
+  });
+
+  it('downloads the full backup through the authenticated API client', async () => {
+    const createObjectURL = vi.fn(() => 'blob:backup');
+    const revokeObjectURL = vi.fn();
+    const anchor = { click: vi.fn(), download: '', href: '' };
+    const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'document');
+    const createObjectURLDescriptor = Object.getOwnPropertyDescriptor(URL, 'createObjectURL');
+    const revokeObjectURLDescriptor = Object.getOwnPropertyDescriptor(URL, 'revokeObjectURL');
+    Object.defineProperty(globalThis, 'document', {
+      configurable: true,
+      value: { createElement: vi.fn(() => anchor) },
+    });
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL });
+    getMock.mockResolvedValue({ data: new Blob(['backup'], { type: 'application/zip' }) });
+
+    try {
+      await exportBackup();
+
+      expect(getMock).toHaveBeenCalledWith('/backups/export', { responseType: 'blob' });
+      expect(createObjectURL).toHaveBeenCalledTimes(1);
+      expect(anchor.click).toHaveBeenCalledTimes(1);
+      expect(revokeObjectURL).toHaveBeenCalledWith('blob:backup');
+    } finally {
+      if (documentDescriptor) Object.defineProperty(globalThis, 'document', documentDescriptor);
+      else delete (globalThis as { document?: Document }).document;
+      if (createObjectURLDescriptor) Object.defineProperty(URL, 'createObjectURL', createObjectURLDescriptor);
+      else Reflect.deleteProperty(URL, 'createObjectURL');
+      if (revokeObjectURLDescriptor) Object.defineProperty(URL, 'revokeObjectURL', revokeObjectURLDescriptor);
+      else Reflect.deleteProperty(URL, 'revokeObjectURL');
+    }
   });
 
   it('allows chat requests and confirmations to be interrupted', () => {

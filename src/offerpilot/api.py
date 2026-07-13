@@ -171,11 +171,14 @@ def create_app(
         else:
             auth_response = _auth_guard_response(request, resolved_data_dir)
             response = auth_response if auth_response is not None else await call_next(request)
-        response.headers["Access-Control-Allow-Origin"] = "*"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
-        response.headers["Access-Control-Allow-Headers"] = (
-            "Content-Type, Authorization, X-OfferPilot-Token"
-        )
+        origin = request.headers.get("origin")
+        same_origin = f"{request.url.scheme}://{request.url.netloc}"
+        if origin == same_origin:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+            response.headers["Access-Control-Allow-Headers"] = (
+                "Content-Type, Authorization, X-OfferPilot-Token"
+            )
         return response
 
     @app.exception_handler(RequestValidationError)
@@ -4222,6 +4225,7 @@ def _dev_placeholder_html() -> str:
 
 def _settings_payload(cfg: Config, data_dir: Path | None = None) -> dict[str, Any]:
     active = cfg.active_provider()
+    configured_chain = cfg.ordered_provider_profiles()
     return {
         "version": APP_VERSION,
         "data_dir": str((data_dir or resolve_data_dir()).resolve()),
@@ -4231,7 +4235,7 @@ def _settings_payload(cfg: Config, data_dir: Path | None = None) -> dict[str, An
         "providers": [_provider_payload(profile) for profile in cfg.provider_profiles()],
         "base_url": active.base_url,
         "model": active.model,
-        "has_api_key": bool(active.api_key),
+        "has_api_key": any(profile.enabled and profile.api_key for profile in configured_chain),
         "runtime_mode": cfg.runtime_mode,
         "auth_enabled": cfg.auth_enabled,
         "has_auth_token": bool(cfg.auth_token),
@@ -4384,9 +4388,23 @@ def _build_backup_archive(data_dir: Path) -> bytes:
     data_dir.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
         for path in sorted(data_dir.rglob("*")):
-            if path.is_file():
-                archive.write(path, path.relative_to(data_dir).as_posix())
+            if not path.is_file() or path.is_symlink():
+                continue
+            archive_path = path.relative_to(data_dir).as_posix()
+            if archive_path == "config.json":
+                archive.writestr(archive_path, _redacted_backup_config(data_dir))
+                continue
+            archive.write(path, archive_path)
     return buffer.getvalue()
+
+
+def _redacted_backup_config(data_dir: Path) -> str:
+    payload = load_config(data_dir).model_dump()
+    payload["api_key"] = ""
+    payload["auth_token"] = ""
+    for provider in payload["providers"]:
+        provider["api_key"] = ""
+    return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
 
 
 def _valid_event_type(event_type: str) -> bool:

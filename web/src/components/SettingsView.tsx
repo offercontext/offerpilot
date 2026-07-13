@@ -143,7 +143,10 @@ export default function SettingsView({ onOpenAISettings }: Props) {
             >
               导出备份
             </Button>
-            <Button icon={<DownloadOutlined />} onClick={() => exportBackup('/backups/export')}>
+            <Button
+              icon={<DownloadOutlined />}
+              onClick={() => void exportBackup('/backups/export').catch(() => message.error('完整数据导出失败'))}
+            >
               导出完整数据
             </Button>
             <Button
