@@ -30,7 +30,7 @@ const { Content } = Layout;
 const KanbanBoard = lazy(() => import('@/components/KanbanBoard'));
 const ApplicationListView = lazy(() => import('@/components/ApplicationListView'));
 const CalendarView = lazy(() => import('@/components/CalendarView'));
-const KnowledgeWikiView = lazy(() => import('@/components/KnowledgeWikiView'));
+const KnowledgeSourcesView = lazy(() => import('@/components/KnowledgeSourcesView'));
 const QuestionBankView = lazy(() => import('@/components/QuestionBankView'));
 const OfferCenterView = lazy(() => import('@/components/OfferCenterView'));
 const DashboardView = lazy(() => import('@/features/dashboard/DashboardView'));
@@ -295,7 +295,7 @@ export default function AppShell() {
           {view === 'offers' && (
             <OfferCenterView applications={apps} onCoach={(offer) => openChat(offer.id)} />
           )}
-          {view === 'knowledge' && <KnowledgeWikiView />}
+          {view === 'knowledge' && <KnowledgeSourcesView />}
           {view === 'questions' && <QuestionBankView />}
           {view === 'interview' && <InterviewV01View />}
           {view === 'resumes' && <ResumeLibraryView />}

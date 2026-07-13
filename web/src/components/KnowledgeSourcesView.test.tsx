@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { App as AntApp } from 'antd';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, expect, it } from 'vitest';
-import KnowledgeWikiView from './KnowledgeWikiView';
+import KnowledgeSourcesView from './KnowledgeSourcesView';
 
 function renderWithProviders() {
   const queryClient = new QueryClient({
@@ -11,13 +11,13 @@ function renderWithProviders() {
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
       <AntApp>
-        <KnowledgeWikiView />
+        <KnowledgeSourcesView />
       </AntApp>
     </QueryClientProvider>
   );
 }
 
-describe('KnowledgeWikiView', () => {
+describe('KnowledgeSourcesView', () => {
   it('renders Source library surface with upload, bundle, paste entries and search box', () => {
     const markup = renderWithProviders();
 
@@ -68,6 +68,6 @@ describe('KnowledgeWikiView', () => {
   it('renders KI-09 Brief surface entry in the Source detail header guidance', () => {
     // SSR 阶段右栏尚未加载 Source，但模块自身已注册 Brief 导读组件；
     // 验证组件文件可被 import 且不抛错，保证 KI-09 前端入口未回滚。
-    expect(typeof KnowledgeWikiView).toBe('function');
+    expect(typeof KnowledgeSourcesView).toBe('function');
   });
 });

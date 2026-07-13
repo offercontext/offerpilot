@@ -320,7 +320,7 @@ Evidence、Brief 和检索指标报告；任何硬门禁失败都会让验收失
 - [x] 指标低于门禁时进程非零退出，并输出可定位 bad case 的 Evidence ID。
 - [x] 验收工具不得把真实 Source 正文、API Key、完整 Prompt 或 Provider 原始响应写入报告。
 - [x] 指标未达标时不得在本 Ticket 偷加向量、rerank 或 LLM query rewrite。
-- [ ] 使用至少一个真实 Provider 完成 Brief 验收，并记录模型、版本、耗时和费用摘要。
+- [x] 使用至少一个真实 Provider 完成 Brief 验收，并记录模型、版本、耗时和费用摘要。
 - [x] 独立 Code Review 检查指标实现、数据泄漏和“通过率被空样本抬高”等评估漏洞。
 
 ## KI-12：完成全量回归与旧架构清场
@@ -333,21 +333,21 @@ Evidence、Brief 和检索指标报告；任何硬门禁失败都会让验收失
 **Scope boundaries:** 本 Ticket 只做整合修复、清场和验收，不新增未在 Spec 或前序 Ticket 中定义的
 产品能力。
 
-- [ ] 全仓搜索确认旧 Page、Review、Index、Wikilink、Purpose/Schema、Lint 和 Wiki Export 运行代码已删除。
-- [ ] 所有旧 Knowledge 路由、AI Tool、CLI、前端入口和测试 fixture 已删除或改为新领域语言。
-- [ ] 数据库初始化只创建新 Knowledge 表族和 Evidence FTS，不创建旧表或兼容视图。
-- [ ] 旧占位 Knowledge 数据静默重置，新数据目录从零初始化，两种路径均通过 smoke。
-- [ ] 完整后端测试通过。
-- [ ] Python lint 和类型检查通过。
-- [ ] 完整前端测试和生产构建通过。
-- [ ] 静态目录 smoke 通过；Docker 可用时运行 Docker smoke，不可用时明确记录未执行。
-- [ ] 5 份真实 Source、20 条查询和所有硬指标通过。
-- [ ] 使用真实 Provider 完成 Brief generation、validation、repair/failure isolation 验收。
-- [ ] 浏览器走查上传、搜索、Brief、Evidence、原文、归档、删除、错误恢复和重启恢复。
-- [ ] 桌面与窄屏页面不存在状态、正文、按钮或下载控件重叠。
-- [ ] 下载和 Markdown 预览验证无远程资源加载、脚本执行或路径泄漏。
-- [ ] 应用日志、Attempt、Trace 和验收报告抽查确认不泄露 secret 或不允许保存的内容。
-- [ ] 独立子代理对最终 diff 做 Standards 和 Spec 双轴 Review。
-- [ ] Review 发现的问题已修复，或以明确理由记录为剩余风险。
-- [ ] 最终报告包含改了什么、破坏性变化、剩余风险、所有验证结果和严格 Go/No-Go。
-- [ ] 所有 Ticket 验收完成后，不保留临时实施计划或未决占位文档。
+- [x] 全仓搜索确认旧 Page、Review、Index、Wikilink、Purpose/Schema、Lint 和 Wiki Export 运行代码已删除。
+- [x] 所有旧 Knowledge 路由、AI Tool、CLI、前端入口和测试 fixture 已删除或改为新领域语言。
+- [x] 数据库初始化只创建新 Knowledge 表族和 Evidence FTS，不创建旧表或兼容视图。
+- [x] 旧占位 Knowledge 数据静默重置，新数据目录从零初始化，两种路径均通过 smoke。
+- [x] 完整后端测试通过。
+- [x] Python lint 和类型检查通过。
+- [x] 完整前端测试和生产构建通过。
+- [x] 静态目录 smoke 通过；Docker 可用时运行 Docker smoke，不可用时明确记录未执行。
+- [x] 5 份真实 Source、20 条查询和所有硬指标通过。
+- [x] 使用真实 Provider 完成 Brief generation、validation、repair/failure isolation 验收。
+- [x] 浏览器走查上传、搜索、Brief、Evidence、原文、归档、删除、错误恢复和重启恢复。
+- [x] 桌面与窄屏页面不存在状态、正文、按钮或下载控件重叠。
+- [x] 下载和 Markdown 预览验证无远程资源加载、脚本执行或路径泄漏。
+- [x] 应用日志、Attempt、Trace 和验收报告抽查确认不泄露 secret 或不允许保存的内容。
+- [x] 独立子代理对最终 diff 做 Standards 和 Spec 双轴 Review。
+- [x] Review 发现的问题已修复，或以明确理由记录为剩余风险。
+- [x] 最终报告包含改了什么、破坏性变化、剩余风险、所有验证结果和严格 Go/No-Go。
+- [x] 所有 Ticket 验收完成后，不保留临时实施计划或未决占位文档。

@@ -934,6 +934,80 @@ def test_brief_worker_fails_for_non_supported_decisions(
     assert repository.get_source_brief(source_id) is None
 
 
+def test_brief_worker_repairs_support_failure_then_succeeds(tmp_path: Path) -> None:
+    """Spec §10.3 support validation 首次失败也允许一次受约束 repair。
+
+    Spec §10.3 门禁顺序第 5 步 support validation 属于"首次校验失败允许一次受约束
+    修复"覆盖范围；repair prompt 已约束"删除/收缩/重新引用"，正适合 partial
+    statement。KI-12 真实 Provider 验收暴露：原实现只在 schema/citation/coverage 失败
+    时 repair，support validation 在循环外直接 fail，真实模型生成的 Brief 因少量
+    partial statement 被直接拒绝，没有获得 repair 机会。
+    """
+    repository, session_factory, source_id, snapshot_id = _setup_repository(tmp_path)
+    config = _provider_config()
+
+    evidence_page = repository.list_evidence(source_id, snapshot_id=snapshot_id, limit=50)
+    valid_payload = _build_valid_payload_from_evidence(evidence_page.items)
+
+    call_state = {"generation_count": 0, "validation_phase": 0}
+
+    def _client(**payload: Any) -> dict[str, Any]:
+        system_text = ""
+        for message in payload.get("messages") or []:
+            if message.get("role") == "system":
+                system_text = message.get("content") or ""
+        if "Validator" in system_text:
+            decision = "partial" if call_state["validation_phase"] == 0 else "supported"
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {"decision": decision, "reason": "stub support phase"}
+                            )
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+            }
+        call_state["generation_count"] += 1
+        call_state["validation_phase"] = call_state["generation_count"] - 1
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(valid_payload, ensure_ascii=False)
+                    }
+                }
+            ],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+        }
+
+    worker = BriefWorker(repository, config, model_client=_client)
+    repository.create_job(
+        JobCreateInput(
+            kind="brief",
+            queue="brief",
+            source_id=source_id,
+            snapshot_id=snapshot_id,
+            stage="brief_pending",
+        )
+    )
+    runner = KnowledgeJobRunner(
+        repository,
+        ExtractionWorker(repository, tmp_path, session_factory),
+        brief_worker=worker,
+    )
+    results = runner.tick_brief(lease_owner="test")
+    assert results
+    assert results[0].status == "succeeded", results[0].error_message
+    # generation 首次 + repair 第二次。
+    assert call_state["generation_count"] == 2
+    source = repository.get_source(source_id)
+    assert source is not None
+    assert source.brief_status == "ready"
+
+
 def test_brief_worker_classifies_provider_auth_error(tmp_path: Path) -> None:
     """Spec §11.4：鉴权失败应归类为 provider_auth_invalid，便于 KI-10 不重试。"""
     repository, session_factory, source_id, snapshot_id = _setup_repository(tmp_path)

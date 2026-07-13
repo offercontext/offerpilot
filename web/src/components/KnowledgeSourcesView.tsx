@@ -80,7 +80,7 @@ const BRIEF_LABEL: Record<string, string> = {
   outdated: '已过期',
 };
 
-export default function KnowledgeWikiView() {
+export default function KnowledgeSourcesView() {
   const queryClient = useQueryClient();
   const [includeArchived, setIncludeArchived] = useState(false);
   const sourcesQuery = useQuery({

@@ -497,6 +497,8 @@ class BriefGenerationResult:
     actual_provider_id: str = ""
     actual_provider_model: str = ""
     provider_retry_count: int = 0
+    # Spec §10.3：到达当前 Brief 所经历的 repair 次数（含 support repair）。
+    repair_count: int = 0
 
 
 @dataclass
@@ -907,6 +909,10 @@ class BriefWorker:
                 token_input_count=generation_result.token_input_count,
                 token_output_count=generation_result.token_output_count,
                 latency_ms=generation_result.latency_ms,
+                repair_count=generation_result.repair_count,
+                actual_provider_id=generation_result.actual_provider_id,
+                actual_provider_model=generation_result.actual_provider_model,
+                provider_retry_count=generation_result.provider_retry_count,
             )
             self._repository.complete_job(
                 job.id,
@@ -1045,10 +1051,6 @@ class BriefWorker:
         repair_count = 0
         candidate_payload_dict: Optional[dict[str, Any]] = None
         last_issues: list[str] = []
-        last_brief: Optional[BriefPayload] = None
-        last_token_in = 0
-        last_token_out = 0
-        last_latency_ms = 0
         retry_state = _RetryState(attempt_id=attempt_id)
         actual_provider = primary_provider
 
@@ -1165,47 +1167,57 @@ class BriefWorker:
                 repair_count += 1
                 candidate_payload_dict = brief.model_dump(mode="json")
                 last_issues = list(report.issues)
-                last_brief = brief
-                last_token_in = token_in
-                last_token_out = token_out
-                last_latency_ms = latency_ms
                 continue
 
-            last_brief = brief
-            last_token_in = token_in
-            last_token_out = token_out
-            last_latency_ms = latency_ms
-            break
-
-        assert last_brief is not None
-        support_results = self._run_support_validation(
-            brief=last_brief,
-            evidence_index={row.id: row for row in evidence_rows},
-            provider=actual_provider,
-            retry_state=retry_state,
-        )
-        validation_report_payload = {
-            "stage": "support_validation",
-            "support_results": support_results,
-            "repair_count": repair_count,
-            "programmatic_issues": last_issues,
-        }
-        return (
-            BriefGenerationResult(
-                payload=last_brief,
-                validation_report_json=json.dumps(
-                    validation_report_payload, ensure_ascii=False
-                ),
+            # Spec §10.3：schema/citation/coverage 全通过后做 support validation。
+            # support 失败同样属于"首次校验失败允许一次受约束修复"——repair prompt 的
+            # "删除/收缩/重新引用"约束正适合 partial/unsupported statement。
+            support_results = self._run_support_validation(
+                brief=brief,
+                evidence_index={row.id: row for row in evidence_rows},
+                provider=actual_provider,
+                retry_state=retry_state,
+            )
+            validation_report_payload = {
+                "stage": "support_validation",
+                "support_results": support_results,
+                "repair_count": repair_count,
+                "programmatic_issues": last_issues,
+            }
+            validation_report_json = json.dumps(
+                validation_report_payload, ensure_ascii=False
+            )
+            non_supported = [
+                item for item in support_results if item["decision"] != "supported"
+            ]
+            # 第二次 support 失败与全门禁通过共用同一 generation_result；区别只在
+            # non_supported 非空且已用完 repair 时，由外层记录 brief_support_invalid
+            # 并保留 Evidence 可搜索（Spec §8）。
+            result = BriefGenerationResult(
+                payload=brief,
+                validation_report_json=validation_report_json,
                 support_results=support_results,
-                token_input_count=last_token_in,
-                token_output_count=last_token_out,
-                latency_ms=last_latency_ms,
+                token_input_count=token_in,
+                token_output_count=token_out,
+                latency_ms=latency_ms,
                 actual_provider_id=actual_provider.id,
                 actual_provider_model=actual_provider.model,
                 provider_retry_count=retry_state.total_retries,
-            ),
-            None,
-        )
+                repair_count=repair_count,
+            )
+            if non_supported:
+                if repair_count >= 1:
+                    return result, None
+                # 首次 support 失败：受约束 repair。
+                repair_count += 1
+                candidate_payload_dict = brief.model_dump(mode="json")
+                last_issues = [
+                    self._format_one_support_issue(item) for item in non_supported
+                ]
+                continue
+
+            # 全部门禁通过。
+            return result, None
 
     def _run_support_validation(
         self,
@@ -1288,10 +1300,13 @@ class BriefWorker:
             "alt_text": evidence.search_text if evidence.kind == "asset" else "",
         }
 
+    def _format_one_support_issue(self, item: dict[str, Any]) -> str:
+        """Spec §10.3 单条 support 失败项，repair validation_issues 与聚合 failure 共用。"""
+        return f"{item.get('block')}: {item.get('decision')} ({item.get('reason')})"
+
     def _format_support_failure(self, items: list[dict[str, Any]]) -> str:
         summary = "; ".join(
-            f"{item.get('block')}: {item.get('decision')} ({item.get('reason')})"
-            for item in items[:5]
+            self._format_one_support_issue(item) for item in items[:5]
         )
         return f"Brief 存在 {len(items)} 条 statement 未通过 support 校验：{summary}"
 
