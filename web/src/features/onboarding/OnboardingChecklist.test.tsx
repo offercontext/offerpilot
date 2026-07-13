@@ -18,9 +18,15 @@ describe('OnboardingChecklist', () => {
           force_open: false,
         }}
         onCollapse={vi.fn()}
+        onAction={vi.fn()}
       />,
     );
     expect(html).toContain('1 / 4');
+    expect(html).toContain('<button');
+    expect(html).toContain('data-onboarding-action="configure_ai"');
+    expect(html).toContain('data-onboarding-action="create_primary_resume"');
+    expect(html).toContain('data-onboarding-action="create_first_application"');
+    expect(html).toContain('data-onboarding-action="send_first_pilot_message"');
     expect(html).toContain('配置 AI');
     expect(html).toContain('创建主简历');
     expect(html).toContain('添加第一条投递');

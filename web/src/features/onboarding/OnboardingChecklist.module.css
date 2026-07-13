@@ -41,11 +41,27 @@
 }
 
 .step {
+  width: 100%;
   min-height: 72px;
   padding: 12px;
   border: 1px solid var(--op-border, #e2e8f0);
   border-radius: 12px;
   background: #f8fafc;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 160ms ease, transform 160ms ease;
+}
+
+.step:hover {
+  border-color: var(--op-accent, #2563eb);
+  transform: translateY(-2px);
+}
+
+.step:focus-visible {
+  outline: 3px solid rgb(37 99 235 / 45%);
+  outline-offset: 2px;
 }
 
 .completed {
@@ -63,6 +79,10 @@
   color: #16a34a;
 }
 
+.completed:hover {
+  border-color: #86efac;
+}
+
 .stepLabel {
   color: var(--op-ink, #0f172a);
   font-size: 13px;
@@ -78,5 +98,15 @@
 @media (max-width: 480px) {
   .steps {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .step {
+    transition: none;
+  }
+
+  .step:hover {
+    transform: none;
   }
 }
