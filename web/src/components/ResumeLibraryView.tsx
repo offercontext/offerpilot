@@ -39,12 +39,14 @@ interface ResumeLibraryViewProps {
   onAttachToPilot?: (attachment: import('@/types/chat').PilotContextAttachment) => void;
   focusResumeId?: number;
   onEvidenceFocusConsumed?: () => void;
+  onboardingFocusToken?: number;
 }
 
 export default function ResumeLibraryView({
   onAttachToPilot,
   focusResumeId,
   onEvidenceFocusConsumed,
+  onboardingFocusToken,
 }: ResumeLibraryViewProps) {
   const qc = useQueryClient();
   const [uploadOpen, setUploadOpen] = useState(false);
@@ -52,6 +54,8 @@ export default function ResumeLibraryView({
   const [keyword, setKeyword] = useState('');
   const [dragActive, setDragActive] = useState(false);
   const dragCounter = useRef(0);
+  const onboardingEntryRef = useRef<HTMLDivElement>(null);
+  const [onboardingFocusActive, setOnboardingFocusActive] = useState(false);
 
   const resumesQuery = useQuery({ queryKey: ['resumes'], queryFn: listResumes });
 
@@ -176,6 +180,21 @@ export default function ResumeLibraryView({
     }
   }, [editing]);
 
+  useEffect(() => {
+    if (!onboardingFocusToken || resumesQuery.isLoading) return;
+
+    setOnboardingFocusActive(true);
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    onboardingEntryRef.current?.scrollIntoView({
+      behavior: reducedMotion ? 'auto' : 'smooth',
+      block: 'center',
+      inline: 'nearest',
+    });
+    onboardingEntryRef.current?.focus({ preventScroll: true });
+    const timeout = window.setTimeout(() => setOnboardingFocusActive(false), 2400);
+    return () => window.clearTimeout(timeout);
+  }, [onboardingFocusToken, resumesQuery.isLoading]);
+
   if (resumesQuery.isLoading) {
     return (
       <div role="status" style={{ textAlign: 'center', padding: 48 }}>
@@ -228,7 +247,13 @@ export default function ResumeLibraryView({
           <div className={styles.title}>简历库</div>
           <div className={styles.subtitle}>共 {filtered.length} 份 · 拖入 PDF 至任意位置可上传</div>
         </div>
-        <div className={styles.headerActions}>
+        <div
+          ref={onboardingEntryRef}
+          className={`${styles.headerActions} ${onboardingFocusActive ? styles.onboardingFocus : ''}`}
+          tabIndex={-1}
+          data-onboarding-target="resume-create"
+          aria-label="创建主简历入口"
+        >
           <Input.Search
             placeholder="搜索简历"
             value={keyword}

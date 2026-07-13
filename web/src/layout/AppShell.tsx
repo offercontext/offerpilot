@@ -32,6 +32,10 @@ import {
   type PilotAttachmentConversationKey,
 } from '@/features/pilot/PilotAttachmentContext';
 import { retainPilotAttachmentKey } from '@/features/pilot/attachmentHandoff';
+import {
+  type OnboardingAction,
+  onboardingActionIntent,
+} from '@/features/onboarding/actionRouting';
 import dayjs from 'dayjs';
 
 const { Content } = Layout;
@@ -97,6 +101,9 @@ function AppShellContent() {
   const [chatOpen, setChatOpen] = useState(false);
   const [pilotDrawerOpen, setPilotDrawerOpen] = useState(false);
   const [aiSettingsOpen, setAISettingsOpen] = useState(false);
+  const [resumeOnboardingFocusToken, setResumeOnboardingFocusToken] = useState(0);
+  const [pilotOnboardingFocusToken, setPilotOnboardingFocusToken] = useState(0);
+  void pilotOnboardingFocusToken;
   const [selected, setSelected] = useState<Application | null>(null);
   const [evidenceFocus, setEvidenceFocus] = useState<Exclude<EvidenceTarget, { kind: 'application' }> | null>(null);
   const [coachOfferId, setCoachOfferId] = useState<number | undefined>(undefined);
@@ -291,6 +298,16 @@ function AppShellContent() {
     setView(nextView);
   };
 
+  const handleOnboardingAction = (action: OnboardingAction) => {
+    const intent = onboardingActionIntent(action, pilotRailAvailable);
+    if (intent.view) navigateToView(intent.view);
+    if (intent.openAISettings) setAISettingsOpen(true);
+    if (intent.openApplicationForm) setAddOpen(true);
+    if (intent.focusResumeEntry) setResumeOnboardingFocusToken((token) => token + 1);
+    if (intent.openPilotDrawer) setChatOpen(true);
+    if (intent.focusPilot) setPilotOnboardingFocusToken((token) => token + 1);
+  };
+
   const openApplicationDetail = (app: Application) => {
     setAISettingsOpen(false);
     setSelected(app);
@@ -381,6 +398,7 @@ function AppShellContent() {
               onNavigate={navigateToView}
               onOpenDetailById={goDetailById}
               onAddApplication={() => setAddOpen(true)}
+              onOnboardingAction={handleOnboardingAction}
             />
           )}
           {view === 'board' && (
@@ -423,6 +441,7 @@ function AppShellContent() {
               onAttachToPilot={attachToPilot}
               focusResumeId={resumeEvidenceFocus?.id}
               onEvidenceFocusConsumed={resumeEvidenceFocus ? () => clearEvidenceFocus(resumeEvidenceFocus) : undefined}
+              onboardingFocusToken={resumeOnboardingFocusToken}
             />
           )}
           {view === 'pilot' && (

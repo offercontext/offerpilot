@@ -167,4 +167,14 @@ describe('AppShell source contract', () => {
     expect(verification).toContain('setFocusedEventId(null);');
     expect(verification).not.toContain('onEvidenceFocusConsumed?.();');
   });
+
+  it('routes onboarding setup actions through their declared intents', () => {
+    expect(source).toContain('const handleOnboardingAction = (action: OnboardingAction) => {');
+    expect(source).toContain('const intent = onboardingActionIntent(action, pilotRailAvailable);');
+    expect(source).toContain('navigateToView(intent.view);');
+    expect(source).toContain('setAISettingsOpen(true);');
+    expect(source).toContain('setAddOpen(true);');
+    expect(source).toContain('setResumeOnboardingFocusToken((token) => token + 1);');
+    expect(source).toContain('onOnboardingAction={handleOnboardingAction}');
+  });
 });
