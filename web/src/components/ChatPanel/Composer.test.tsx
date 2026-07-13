@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Composer from './Composer';
 
 declare global {
@@ -68,5 +68,57 @@ describe('Composer quick questions', () => {
 
     act(() => root?.render(<Composer capabilities={[]} suggestions={['Question one']} disabled onSend={vi.fn()} />));
     expect(view.querySelector('[data-testid="quick-question-0"]')).toBeNull();
+  });
+});
+
+describe('Composer onboarding focus', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('focuses the local textarea without changing a draft or sending a message', () => {
+    const onSend = vi.fn();
+    const view = render(<Composer capabilities={[]} onboardingFocusToken={1} onSend={onSend} />);
+    const input = view.querySelector<HTMLTextAreaElement>('textarea');
+
+    act(() => vi.advanceTimersByTime(1));
+    expect(document.activeElement).toBe(input);
+
+    act(() => changeValue(input!, 'Keep this draft'));
+    expect(input?.value).toBe('Keep this draft');
+    expect(onSend).not.toHaveBeenCalled();
+    expect(view.firstElementChild?.className).toContain('composerOnboardingFocus');
+
+    act(() => vi.advanceTimersByTime(2399));
+    expect(view.firstElementChild?.className).not.toContain('composerOnboardingFocus');
+  });
+
+  it('does not replay a consumed token after remounting and accepts a newer token', () => {
+    const onSend = vi.fn();
+    const firstView = render(<Composer capabilities={[]} onboardingFocusToken={1} onSend={onSend} />);
+    const firstInput = firstView.querySelector<HTMLTextAreaElement>('textarea');
+
+    act(() => vi.advanceTimersByTime(1));
+    expect(document.activeElement).toBe(firstInput);
+
+    act(() => root?.render(<Composer capabilities={[]} onboardingFocusToken={0} onSend={onSend} />));
+    act(() => root?.unmount());
+    container?.remove();
+    root = undefined;
+    container = undefined;
+
+    const remountedView = render(<Composer capabilities={[]} onboardingFocusToken={0} onSend={onSend} />);
+    const remountedInput = remountedView.querySelector<HTMLTextAreaElement>('textarea');
+    act(() => vi.advanceTimersByTime(1));
+    expect(document.activeElement).not.toBe(remountedInput);
+
+    act(() => root?.render(<Composer capabilities={[]} onboardingFocusToken={2} onSend={onSend} />));
+    act(() => vi.advanceTimersByTime(1));
+    expect(document.activeElement).toBe(remountedInput);
+    expect(onSend).not.toHaveBeenCalled();
   });
 });

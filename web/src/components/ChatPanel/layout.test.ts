@@ -605,9 +605,13 @@ describe('ChatPanel docked layout contract', () => {
     const css = await loadCss();
 
     expect(component).toContain('onboardingFocusToken?: number;');
+    expect(component).toContain('onOnboardingFocusConsumed?: (token: number) => void;');
     expect(component).toContain('data-onboarding-target="pilot"');
     expect(component).toContain('styles.onboardingFocus');
-    expect(component).toContain('onboardingFocusToken={onboardingFocusToken}');
+    expect(component).toContain('onboardingFocusEventToken');
+    expect(component).toContain('onboardingFocusToken={onboardingFocusEventToken}');
+    expect(component).toContain('onOnboardingFocusConsumed?.(onboardingFocusToken);');
+    expect(component).toContain('}, [onboardingFocusEventToken]);');
     expect(component).toContain('role="status"');
     expect(component).toContain('aria-live="polite"');
     expect(component).toContain('Pilot 输入框已就绪');

@@ -175,6 +175,11 @@ describe('AppShell source contract', () => {
     expect(source).toContain('setAISettingsOpen(true);');
     expect(source).toContain('setAddOpen(true);');
     expect(source).toContain('setResumeOnboardingFocusToken((token) => token + 1);');
+    expect(source).toContain('const nextPilotOnboardingFocusToken = useRef(0);');
+    expect(source).toContain('nextPilotOnboardingFocusToken.current += 1;');
+    expect(source).toContain('const consumePilotOnboardingFocus = (token: number) => {');
+    expect(source).toContain('setPilotOnboardingFocusToken((current) => (current === token ? 0 : current));');
+    expect(source).toContain('onOnboardingFocusConsumed={consumePilotOnboardingFocus}');
     expect(source).toContain('onOnboardingAction={handleOnboardingAction}');
   });
 });

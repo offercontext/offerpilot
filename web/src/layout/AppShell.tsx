@@ -103,6 +103,7 @@ function AppShellContent() {
   const [aiSettingsOpen, setAISettingsOpen] = useState(false);
   const [resumeOnboardingFocusToken, setResumeOnboardingFocusToken] = useState(0);
   const [pilotOnboardingFocusToken, setPilotOnboardingFocusToken] = useState(0);
+  const nextPilotOnboardingFocusToken = useRef(0);
   const [selected, setSelected] = useState<Application | null>(null);
   const [evidenceFocus, setEvidenceFocus] = useState<Exclude<EvidenceTarget, { kind: 'application' }> | null>(null);
   const [coachOfferId, setCoachOfferId] = useState<number | undefined>(undefined);
@@ -297,6 +298,10 @@ function AppShellContent() {
     setView(nextView);
   };
 
+  const consumePilotOnboardingFocus = (token: number) => {
+    setPilotOnboardingFocusToken((current) => (current === token ? 0 : current));
+  };
+
   const handleOnboardingAction = (action: OnboardingAction) => {
     const intent = onboardingActionIntent(action, pilotRailAvailable);
     if (intent.view) navigateToView(intent.view);
@@ -304,7 +309,10 @@ function AppShellContent() {
     if (intent.openApplicationForm) setAddOpen(true);
     if (intent.focusResumeEntry) setResumeOnboardingFocusToken((token) => token + 1);
     if (intent.openPilotDrawer) setChatOpen(true);
-    if (intent.focusPilot) setPilotOnboardingFocusToken((token) => token + 1);
+    if (intent.focusPilot) {
+      nextPilotOnboardingFocusToken.current += 1;
+      setPilotOnboardingFocusToken(nextPilotOnboardingFocusToken.current);
+    }
   };
 
   const openApplicationDetail = (app: Application) => {
@@ -449,6 +457,7 @@ function AppShellContent() {
                 variant="page"
                 open
                 onboardingFocusToken={pilotOnboardingFocusToken}
+                onOnboardingFocusConsumed={consumePilotOnboardingFocus}
                 onClose={() => undefined}
                 onOpenSettings={() => setAISettingsOpen(true)}
                 startRequest={chatStartRequest}
@@ -506,6 +515,7 @@ function AppShellContent() {
             variant="rail"
             open
             onboardingFocusToken={pilotOnboardingFocusToken}
+            onOnboardingFocusConsumed={consumePilotOnboardingFocus}
             pilotDropTarget
             onClose={() => setCoachOfferId(undefined)}
             offerId={coachOfferId}
@@ -549,6 +559,7 @@ function AppShellContent() {
         <ChatPanel
           open={contextualPilotPanelOpen}
           onboardingFocusToken={pilotOnboardingFocusToken}
+          onOnboardingFocusConsumed={consumePilotOnboardingFocus}
           pilotDropTarget
           onClose={() => {
             setChatOpen(false);

@@ -100,6 +100,7 @@ interface Props {
   pilotDropTarget?: boolean;
   onOpenEvidence?: (target: EvidenceTarget) => void;
   onboardingFocusToken?: number;
+  onOnboardingFocusConsumed?: (token: number) => void;
 }
 
 interface ConfirmationExecution {
@@ -195,6 +196,7 @@ export default function ChatPanel({
   pilotDropTarget = false,
   onOpenEvidence,
   onboardingFocusToken,
+  onOnboardingFocusConsumed,
 }: Props) {
   const queryClient = useQueryClient();
   const { message: toast } = AntApp.useApp();
@@ -231,6 +233,7 @@ export default function ChatPanel({
   const [loadingLabel, setLoadingLabel] = useState<string | undefined>(undefined);
   const [hasStreamingAssistantContent, setHasStreamingAssistantContent] = useState(false);
   const [onboardingFocusActive, setOnboardingFocusActive] = useState(false);
+  const [onboardingFocusEventToken, setOnboardingFocusEventToken] = useState<number>();
   const [pageContextRemovalState, dispatchPageContextRemoval] = useReducer(
     pilotPageContextRemovalReducer,
     incomingPageContextKey,
@@ -262,6 +265,7 @@ export default function ChatPanel({
   const visibleRequestGenerationRef = useRef(0);
   const showArchivedRef = useRef(showArchived);
   const handoffAttachmentKeyRef = useRef<PilotAttachmentConversationKey>();
+  const consumedOnboardingFocusTokenRef = useRef(0);
   showArchivedRef.current = showArchived;
   const docked = variant === 'rail';
   const inlinePage = variant === 'page';
@@ -278,15 +282,20 @@ export default function ChatPanel({
   });
 
   useEffect(() => {
-    if (!onboardingFocusToken || !open) {
-      setOnboardingFocusActive(false);
-      return;
-    }
+    if (!onboardingFocusToken || !open || onboardingFocusToken === consumedOnboardingFocusTokenRef.current) return;
+
+    consumedOnboardingFocusTokenRef.current = onboardingFocusToken;
+    setOnboardingFocusEventToken(onboardingFocusToken);
+    onOnboardingFocusConsumed?.(onboardingFocusToken);
+  }, [onboardingFocusToken, onOnboardingFocusConsumed, open]);
+
+  useEffect(() => {
+    if (!onboardingFocusEventToken) return;
 
     setOnboardingFocusActive(true);
     const timeoutId = window.setTimeout(() => setOnboardingFocusActive(false), 2400);
     return () => window.clearTimeout(timeoutId);
-  }, [onboardingFocusToken, open]);
+  }, [onboardingFocusEventToken]);
 
   useEffect(() => {
     if (attachmentDraftKey) {
@@ -1535,7 +1544,7 @@ export default function ChatPanel({
                 disabledReason={composerDisabledReason}
                 resetKey={composerResetKey}
                 suggestions={attachmentSuggestions}
-                onboardingFocusToken={onboardingFocusToken}
+                onboardingFocusToken={onboardingFocusEventToken}
                 onSend={sendMessage}
               />
           </section>
