@@ -6,7 +6,7 @@
 - Snapshot 幂等 upsert（按 source_id+extractor_version 唯一）。
 - Evidence 批量插入（含稳定 opaque ID 生成）。
 - FTS 单事务重建。
-- Evidence 搜索（FTS5 MATCH + bm25）。
+- Evidence 搜索（FTS5 MATCH + bm25 加权 + Retrieval Trace）。
 - Job 持久化与状态机。
 """
 
@@ -14,22 +14,30 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Optional, Sequence
 
 from sqlalchemy import select, text
+from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
+from offerpilot.knowledge.search import ParsedQuery, SearchError, parse_query
 from offerpilot.models import (
     KnowledgeEvidence,
     KnowledgeExtractionSnapshot,
     KnowledgeJob,
     KnowledgeLog,
+    KnowledgeRetrievalTrace,
     KnowledgeSource,
     KnowledgeSourceAsset,
     KnowledgeSourceOrigin,
 )
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -160,6 +168,8 @@ class EvidenceSearchHit:
     canonical_excerpt: str
     snippet: str
     score: float
+    previous_evidence_id: Optional[str]
+    next_evidence_id: Optional[str]
 
 
 @dataclass(frozen=True)
@@ -174,6 +184,24 @@ class DeleteJobSnapshot:
     source_id: int
     status: str
     stage: str
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class RetrievalTraceRecord:
+    """Spec §14.10 Retrieval Trace 读出视图。
+
+    KI-08 验收点：每次搜索本地记录 query/filters/hits/duration_ms/label/error_code。
+    ``hits`` 只保存稳定 ID + score，禁止保留 Evidence 原文。
+    """
+
+    id: int
+    query: str
+    filters: dict[str, Any]
+    hits: list[dict[str, Any]]
+    duration_ms: int
+    evaluation_label: str
+    error_code: str
     created_at: datetime
 
 
@@ -1143,37 +1171,91 @@ class KnowledgeRepository:
         source_ids: Optional[Sequence[int]] = None,
         include_archived: bool = False,
         limit: int = 10,
+        evaluation_label: str = "",
     ) -> list[EvidenceSearchHit]:
-        if not query.strip():
+        """Spec §15 Evidence 检索入口。
+
+        实现：
+        - 启动时校验 FTS5 + trigram（``db._ensure_knowledge_fts``）。
+        - ``parse_query`` 区分 ``fts`` / ``substring`` / ``empty`` 三种模式，避免整句
+          作为强制精确短语。
+        - FTS 模式使用 ``bm25(table, 0, 0, 8.0, 4.0, 1.0)`` 为 source_title 给最高
+          权重，heading_path 中等，content 基础。
+        - 短查询 (< 3 字符) 走 LIKE + LIMIT 有界回退。
+        - 错误显式抛 ``SearchError``，禁止静默吞掉变成空结果。
+        - 每次搜索写一条 Retrieval Trace（含失败路径）。
+        """
+        parsed = parse_query(query)
+        if parsed.mode == "empty":
             return []
         clamped_limit = max(1, min(50, limit))
-        with self._session_factory() as session:
-            params: dict[str, Any] = {
-                "query": query,
-                "limit": clamped_limit,
-            }
-            sql = (
-                "SELECT fts.evidence_id, fts.source_id, fts.heading_path, fts.content, "
-                "bm25(knowledge_evidence_fts) AS score "
-                "FROM knowledge_evidence_fts fts "
-                "JOIN knowledge_sources ks ON ks.id = fts.source_id "
-                "WHERE knowledge_evidence_fts MATCH :query "
+        started = time.monotonic()
+        try:
+            hits = self._execute_search(
+                parsed,
+                source_ids=source_ids,
+                include_archived=include_archived,
+                limit=clamped_limit,
             )
-            if source_ids:
-                placeholders = ",".join(f":sid_{i}" for i in range(len(source_ids)))
-                sql += f"AND fts.source_id IN ({placeholders}) "
-                for i, sid in enumerate(source_ids):
-                    params[f"sid_{i}"] = sid
-            if not include_archived:
-                sql += "AND ks.lifecycle = 'active' AND ks.deleted_at IS NULL "
-            sql += "ORDER BY score ASC LIMIT :limit"
-            rows = session.execute(text(sql), params).fetchall()
+        except SearchError as exc:
+            duration_ms = int((time.monotonic() - started) * 1000)
+            self._safe_record_trace(
+                query=query,
+                source_ids=source_ids,
+                include_archived=include_archived,
+                hits=[],
+                duration_ms=duration_ms,
+                evaluation_label=evaluation_label,
+                error_code=exc.code,
+            )
+            raise
+        duration_ms = int((time.monotonic() - started) * 1000)
+        self._safe_record_trace(
+            query=query,
+            source_ids=source_ids,
+            include_archived=include_archived,
+            hits=hits,
+            duration_ms=duration_ms,
+            evaluation_label=evaluation_label,
+            error_code="",
+        )
+        return hits
 
+    def _execute_search(
+        self,
+        parsed: ParsedQuery,
+        *,
+        source_ids: Optional[Sequence[int]],
+        include_archived: bool,
+        limit: int,
+    ) -> list[EvidenceSearchHit]:
+        with self._session_factory() as session:
+            if parsed.mode == "fts":
+                raw_rows = self._run_fts_match(
+                    session,
+                    parsed.match_expr,
+                    source_ids=source_ids,
+                    include_archived=include_archived,
+                    limit=limit,
+                )
+            elif parsed.mode == "substring":
+                raw_rows = self._run_substring_match(
+                    session,
+                    parsed.terms,
+                    source_ids=source_ids,
+                    include_archived=include_archived,
+                    limit=limit,
+                )
+            else:
+                return []
+
+            terms_for_snippet = parsed.terms + (parsed.original,)
             hits: list[EvidenceSearchHit] = []
-            for row in rows:
-                fts_evidence_id = row[0]
-                score = row[4] if len(row) > 4 else 0.0
-                ev_row = session.get(KnowledgeEvidence, str(fts_evidence_id))
+            for row in raw_rows:
+                mapping = row._mapping if hasattr(row, "_mapping") else row
+                evidence_id_value = str(mapping["evidence_id"])
+                score_value = float(mapping["score"])
+                ev_row = session.get(KnowledgeEvidence, evidence_id_value)
                 if ev_row is None:
                     continue
                 hits.append(
@@ -1182,38 +1264,250 @@ class KnowledgeRepository:
                         source_id=ev_row.source_id,
                         snapshot_id=ev_row.snapshot_id,
                         block_kind=ev_row.block_kind,
-                        heading_path=json.loads(ev_row.heading_path_json or "[]")
-                        if ev_row.heading_path_json
-                        else [],
+                        heading_path=_decode_heading_path(ev_row.heading_path_json),
                         char_start=ev_row.char_start,
                         char_end=ev_row.char_end,
                         line_start=ev_row.line_start,
                         line_end=ev_row.line_end,
                         canonical_excerpt=ev_row.canonical_excerpt,
-                        snippet=_build_snippet(query, ev_row.canonical_excerpt),
-                        score=float(score),
+                        snippet=_build_snippet_from_terms(
+                            terms_for_snippet, ev_row.canonical_excerpt
+                        ),
+                        score=score_value,
+                        previous_evidence_id=ev_row.previous_evidence_id,
+                        next_evidence_id=ev_row.next_evidence_id,
                     )
                 )
             return hits
 
+    def _run_fts_match(
+        self,
+        session: Session,
+        match_expr: str,
+        *,
+        source_ids: Optional[Sequence[int]],
+        include_archived: bool,
+        limit: int,
+    ) -> list[Any]:
+        # bm25 列权重按 FTS5 表定义顺序：evidence_id(0), source_id(1), source_title(2),
+        # heading_path(3), content(4)。UNINDEXED 列权重无效，但参数位置必须保留。
+        # Spec §15 "source title、heading path 和 content 使用分列权重"。
+        params: dict[str, Any] = {"query": match_expr, "limit": limit}
+        sql = (
+            "SELECT fts.evidence_id AS evidence_id, "
+            "bm25(knowledge_evidence_fts, 0.0, 0.0, 8.0, 4.0, 1.0) AS score "
+            "FROM knowledge_evidence_fts fts "
+            "JOIN knowledge_sources ks ON ks.id = fts.source_id "
+            "WHERE knowledge_evidence_fts MATCH :query "
+        )
+        if source_ids:
+            placeholders = ",".join(f":sid_{i}" for i in range(len(source_ids)))
+            sql += f"AND fts.source_id IN ({placeholders}) "
+            for i, sid in enumerate(source_ids):
+                params[f"sid_{i}"] = sid
+        if not include_archived:
+            sql += "AND ks.lifecycle = 'active' AND ks.deleted_at IS NULL "
+        # bm25 返回负数（越小越相关），ASC 即最相关在前
+        sql += "ORDER BY score ASC LIMIT :limit"
+        try:
+            return list(session.execute(text(sql), params).fetchall())
+        except OperationalError as exc:
+            message = str(exc).lower()
+            if (
+                "fts5" in message
+                or "syntax" in message
+                or "match" in message
+                or "tokenizer" in message
+                or "no such" in message
+            ):
+                raise SearchError(
+                    "fts_query_invalid",
+                    "搜索表达式无法解析，请简化关键词后重试",
+                ) from exc
+            raise
 
-def _build_snippet(query: str, content: str, *, window: int = 80) -> str:
+    def _run_substring_match(
+        self,
+        session: Session,
+        terms: tuple[str, ...],
+        *,
+        source_ids: Optional[Sequence[int]],
+        include_archived: bool,
+        limit: int,
+    ) -> list[Any]:
+        # Spec §15 "少于 3 字符查询使用有上限的精确/子串回退，避免全库无界扫描"。
+        # 通过 source_title / content 双列 LIKE，并强制 LIMIT；不引入无界 LIKE 子查询。
+        if not terms:
+            return []
+        where_parts: list[str] = []
+        params: dict[str, Any] = {"limit": limit}
+        for i, term in enumerate(terms):
+            key = f"term_{i}"
+            where_parts.append(
+                "(fts.source_title LIKE :{k} ESCAPE '\\' OR fts.content LIKE :{k} ESCAPE '\\')".format(
+                    k=key
+                )
+            )
+            # Spec §15 "查询注入"：使用参数化绑定，term 内的 %/_ 需要转义避免通配符注入。
+            escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            params[key] = f"%{escaped}%"
+        sql = (
+            "SELECT fts.evidence_id AS evidence_id, "
+            "-1.0 AS score "
+            "FROM knowledge_evidence_fts fts "
+            "JOIN knowledge_sources ks ON ks.id = fts.source_id "
+            "WHERE (" + " OR ".join(where_parts) + ") "
+        )
+        if source_ids:
+            placeholders = ",".join(f":sid_{i}" for i in range(len(source_ids)))
+            sql += f"AND fts.source_id IN ({placeholders}) "
+            for i, sid in enumerate(source_ids):
+                params[f"sid_{i}"] = sid
+        if not include_archived:
+            sql += "AND ks.lifecycle = 'active' AND ks.deleted_at IS NULL "
+        sql += "ORDER BY fts.rowid ASC LIMIT :limit"
+        try:
+            return list(session.execute(text(sql), params).fetchall())
+        except OperationalError as exc:
+            raise SearchError(
+                "fts_query_invalid",
+                "短查询执行失败，请稍后重试",
+            ) from exc
+
+    def _safe_record_trace(
+        self,
+        *,
+        query: str,
+        source_ids: Optional[Sequence[int]],
+        include_archived: bool,
+        hits: list[EvidenceSearchHit],
+        duration_ms: int,
+        evaluation_label: str,
+        error_code: str,
+    ) -> None:
+        """Spec §14.10 / §18：Trace 只保存 ID/score/时长,不写 Evidence 原文。
+
+        Spec §15 "Retrieval Trace 不参与 Knowledge 召回,也不写普通应用日志或外部 Trace"：
+        trace 写入失败时不能阻塞 search 返回;warning 不携带 query/原文。
+        """
+        filters_payload: dict[str, Any] = {
+            "source_ids": list(source_ids) if source_ids else [],
+            "include_archived": bool(include_archived),
+        }
+        hits_payload = [
+            {
+                "evidence_id": hit.evidence_id,
+                "source_id": hit.source_id,
+                "score": float(hit.score),
+            }
+            for hit in hits
+        ]
+        try:
+            with self._session_factory() as session:
+                session.add(
+                    KnowledgeRetrievalTrace(
+                        query=query,
+                        filters_json=json.dumps(filters_payload, ensure_ascii=False),
+                        hits_json=json.dumps(hits_payload, ensure_ascii=False),
+                        duration_ms=duration_ms,
+                        evaluation_label=evaluation_label,
+                        error_code=error_code,
+                    )
+                )
+                session.commit()
+        except (OperationalError, SQLAlchemyError):
+            # Spec §15 "Retrieval Trace 不参与 Knowledge 召回,也不写普通应用日志或外部 Trace"：
+            # 仅捕获 SQLAlchemy 错误族（连接 / 约束 / 死锁），其他异常（代码 bug）应上抛暴露。
+            # warning 仅含 duration_ms，不携带 query / 原文，避免评估数据泄漏到日志。
+            _LOGGER.warning(
+                "knowledge_retrieval_trace_write_failed duration_ms=%d",
+                duration_ms,
+            )
+
+    def list_retrieval_traces(
+        self, *, limit: int = 100
+    ) -> list[RetrievalTraceRecord]:
+        """KI-11 评估工具使用,普通用户路径不暴露。"""
+        clamped = max(1, min(500, limit))
+        with self._session_factory() as session:
+            stmt = (
+                select(KnowledgeRetrievalTrace)
+                .order_by(
+                    KnowledgeRetrievalTrace.created_at.desc(),
+                    KnowledgeRetrievalTrace.id.desc(),
+                )
+                .limit(clamped)
+            )
+            return [_to_retrieval_trace_record(row) for row in session.scalars(stmt)]
+
+
+def _decode_heading_path(heading_path_json: Optional[str]) -> list[str]:
+    if not heading_path_json:
+        return []
+    try:
+        value = json.loads(heading_path_json)
+    except json.JSONDecodeError:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    return []
+
+
+def _build_snippet_from_terms(
+    terms: Sequence[str], content: str, *, window: int = 80
+) -> str:
+    """Spec §15：snippet 围绕首个命中 term 截取。
+
+    terms 通常是 ``parse_query`` 输出的 ascii_tokens + cjk_grams + 原始 query。
+    对 ASCII token 使用大小写不敏感匹配;对 CJK trigram 直接子串匹配。
+    """
     if not content:
         return ""
-    needle = query.strip()
-    if not needle:
+    if not terms:
         return content[:window]
-    pos = content.lower().find(needle.lower())
-    if pos == -1:
+    lowered = content.lower()
+    needle_pos = -1
+    needle_len = 0
+    for term in terms:
+        if not term:
+            continue
+        candidate = lowered.find(term.lower())
+        if candidate == -1:
+            continue
+        if needle_pos == -1 or candidate < needle_pos:
+            needle_pos = candidate
+            needle_len = len(term)
+    if needle_pos == -1:
         return content[:window]
-    start = max(0, pos - window // 4)
-    end = min(len(content), pos + len(needle) + window)
+    start = max(0, needle_pos - window // 4)
+    end = min(len(content), needle_pos + needle_len + window)
     snippet = content[start:end]
     if start > 0:
         snippet = "…" + snippet
     if end < len(content):
         snippet = snippet + "…"
     return snippet
+
+
+def _to_retrieval_trace_record(row: KnowledgeRetrievalTrace) -> RetrievalTraceRecord:
+    try:
+        filters = json.loads(row.filters_json or "{}")
+    except json.JSONDecodeError:
+        filters = {}
+    try:
+        hits = json.loads(row.hits_json or "[]")
+    except json.JSONDecodeError:
+        hits = []
+    return RetrievalTraceRecord(
+        id=row.id,
+        query=row.query,
+        filters=filters if isinstance(filters, dict) else {},
+        hits=hits if isinstance(hits, list) else [],
+        duration_ms=row.duration_ms,
+        evaluation_label=row.evaluation_label,
+        error_code=row.error_code,
+        created_at=row.created_at,
+    )
 
 
 def make_evidence_id(

@@ -115,6 +115,8 @@ export interface KnowledgeEvidenceSearchHit {
   canonical_excerpt: string;
   snippet: string;
   score: number;
+  previous_evidence_id: string | null;
+  next_evidence_id: string | null;
 }
 
 export interface KnowledgeEvidenceSearchResponse {

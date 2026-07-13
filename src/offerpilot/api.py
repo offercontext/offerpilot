@@ -47,6 +47,7 @@ from offerpilot.knowledge import (
     KnowledgeRepository,
 )
 from offerpilot.knowledge.assets import AssetInput
+from offerpilot.knowledge.search import SearchError as _KnowledgeSearchError
 from offerpilot.knowledge.service import IngestError as _IngestHttpError
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
 from offerpilot.repositories.chat import ChatRepository
@@ -192,6 +193,8 @@ def _knowledge_search_hit_payload(hit: Any) -> dict[str, Any]:
         "canonical_excerpt": hit.canonical_excerpt,
         "snippet": hit.snippet,
         "score": hit.score,
+        "previous_evidence_id": hit.previous_evidence_id,
+        "next_evidence_id": hit.next_evidence_id,
     }
 
 
@@ -602,13 +605,29 @@ def create_app(
             return error_response(400, "source_ids must be a list")
         source_ids = [int(sid) for sid in source_ids_raw if str(sid).isdigit()]
         include_archived = bool(payload.get("include_archived") or False)
-        limit = int(payload.get("limit") or 10)
-        hits = knowledge_repository.search_evidence(
-            query,
-            source_ids=source_ids or None,
-            include_archived=include_archived,
-            limit=limit,
-        )
+        # Spec §15 "FTS MATCH、bm25 或查询语法错误显式返回稳定错误"：limit 非数字也
+        # 必须返回 400，而不是 ValueError → 500。
+        raw_limit = payload.get("limit")
+        try:
+            limit = int(raw_limit) if raw_limit is not None else 10
+        except (TypeError, ValueError):
+            return error_response(
+                400, "limit must be an integer", code="invalid_payload"
+            )
+        # Spec §14.10 / KI-08：evaluation_label 供 KI-11 评估工具区分 fixture 查询。
+        # 普通用户路径不传，Trace 仍会记录命中 ID/score/耗时。
+        evaluation_label = str(payload.get("evaluation_label") or "")
+        try:
+            hits = knowledge_repository.search_evidence(
+                query,
+                source_ids=source_ids or None,
+                include_archived=include_archived,
+                limit=limit,
+                evaluation_label=evaluation_label,
+            )
+        except _KnowledgeSearchError as exc:
+            # Spec §15 "FTS MATCH、bm25 或查询语法错误显式返回稳定错误，不静默变成空结果"。
+            return error_response(400, exc.message, code=exc.code)
         return JSONResponse(
             {
                 "query": query,

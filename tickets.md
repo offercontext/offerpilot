@@ -221,21 +221,21 @@ Brief 事实。
 
 **Scope boundaries:** 只实现 SQLite FTS5；不添加 embedding、rerank、图扩展或 LLM 查询改写。
 
-- [ ] 启动时验证 SQLite FTS5 和 trigram tokenizer；缺失时 Knowledge 明确失败。
-- [ ] FTS 只索引 active Snapshot 的文本 Evidence，不索引旧 Snapshot 或图片二进制。
-- [ ] source title、heading path 和 content 使用分列权重，结果仍以 Evidence 为单位。
-- [ ] Query parser 正确处理中文长问句、ASCII identifier、英文词组和混合输入。
-- [ ] 不再把无空格中文整句作为一个强制精确短语。
-- [ ] 少于 3 字符查询使用有上限的精确/子串回退，避免全库无界扫描。
-- [ ] 默认只搜索 active Source；`include_archived` 和 source filter 行为可测试。
-- [ ] 结果返回 Evidence 原文、Source、Snapshot、heading、line/char 位置、snippet、score 和相邻 ID。
-- [ ] 点击搜索结果进入 Source 详情并定位、高亮 Evidence 和原文位置。
-- [ ] FTS MATCH、bm25 或查询语法错误显式返回稳定错误，不静默变成空结果。
-- [ ] 每次搜索本地记录 query、filters、命中 ID/score、耗时和可选评估标签。
-- [ ] Retrieval Trace 不参与 Knowledge 召回，也不写普通应用日志或外部 Trace。
-- [ ] 测试覆盖中文、英文、代码、短词、无结果、归档、Source filter 和 FTS 故障。
-- [ ] 建立一组小型确定性查询样本，为 KI-11 的正式指标工具提供接口契约。
-- [ ] 独立 Code Review 检查查询注入、无界 LIKE 和异常吞噬。
+- [x] 启动时验证 SQLite FTS5 和 trigram tokenizer；缺失时 Knowledge 明确失败。
+- [x] FTS 只索引 active Snapshot 的文本 Evidence，不索引旧 Snapshot 或图片二进制。
+- [x] source title、heading path 和 content 使用分列权重，结果仍以 Evidence 为单位。
+- [x] Query parser 正确处理中文长问句、ASCII identifier、英文词组和混合输入。
+- [x] 不再把无空格中文整句作为一个强制精确短语。
+- [x] 少于 3 字符查询使用有上限的精确/子串回退，避免全库无界扫描。
+- [x] 默认只搜索 active Source；`include_archived` 和 source filter 行为可测试。
+- [x] 结果返回 Evidence 原文、Source、Snapshot、heading、line/char 位置、snippet、score 和相邻 ID。
+- [x] 点击搜索结果进入 Source 详情并定位、高亮 Evidence 和原文位置。
+- [x] FTS MATCH、bm25 或查询语法错误显式返回稳定错误，不静默变成空结果。
+- [x] 每次搜索本地记录 query、filters、命中 ID/score、耗时和可选评估标签。
+- [x] Retrieval Trace 不参与 Knowledge 召回，也不写普通应用日志或外部 Trace。
+- [x] 测试覆盖中文、英文、代码、短词、无结果、归档、Source filter 和 FTS 故障。
+- [x] 建立一组小型确定性查询样本，为 KI-11 的正式指标工具提供接口契约。
+- [x] 独立 Code Review 检查查询注入、无界 LIKE 和异常吞噬。
 
 ## KI-09：生成并验证首个 Source Brief
 

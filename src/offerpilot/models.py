@@ -833,3 +833,41 @@ class KnowledgeLog(Base):
         nullable=False,
         server_default=func.current_timestamp(),
     )
+
+
+class KnowledgeRetrievalTrace(Base):
+    """Spec §14.10 Retrieval Trace：本地评估数据，不参与召回。
+
+    KI-08 验收点：每次搜索本地记录 query、filters、命中 ID/score、耗时和可选评估标签。
+    Trace 只保存稳定标识符与元数据，禁止保留 Evidence 原文、prompt 或外部 trace。
+    ``hits_json`` 结构：``[{"evidence_id": "ev_...", "source_id": int, "score": float}, ...]``。
+    """
+
+    __tablename__ = "knowledge_retrieval_traces"
+    __table_args__ = (
+        Index("idx_knowledge_retrieval_traces_created", "created_at"),
+        Index("idx_knowledge_retrieval_traces_label", "evaluation_label"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    query: Mapped[str] = mapped_column(Text, nullable=False)
+    filters_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="{}", server_default="{}"
+    )
+    hits_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default="[]"
+    )
+    duration_ms: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    evaluation_label: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default=""
+    )
+    error_code: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default=""
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )

@@ -57,4 +57,11 @@ describe('KnowledgeWikiView', () => {
     // 危险区永久删除入口在 Source 详情中,SSR 时不会出现(需要选中 Source),
     // 但服务契约由 services/knowledge.test.ts 验证。
   });
+
+  it('exposes KI-08 evidence search entry with CJK-friendly placeholder', () => {
+    const markup = renderWithProviders();
+
+    expect(markup).toContain('搜索 Evidence');
+    expect(markup).toContain('中文/英文关键词');
+  });
 });

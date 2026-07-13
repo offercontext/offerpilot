@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Alert,
@@ -82,6 +82,9 @@ export default function KnowledgeWikiView() {
     queryFn: () => fetchKnowledgeSources({ includeArchived }),
   });
   const [selectedSourceId, setSelectedSourceId] = useState<number | null>(null);
+  // KI-08：搜索结果点击后，进入 Source 详情时定位/高亮对应 Evidence。
+  // 保留 evidenceId + 命中片段用于详情面板滚动与高亮；定位完成后清空。
+  const [highlightEvidenceId, setHighlightEvidenceId] = useState<string | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [bundleOpen, setBundleOpen] = useState(false);
   const [pasteOpen, setPasteOpen] = useState(false);
@@ -219,7 +222,10 @@ export default function KnowledgeWikiView() {
           <SearchResultsPanel
             query={activeSearch}
             hits={searchMutation.data.hits}
-            onPick={(sourceId) => setSelectedSourceId(sourceId)}
+            onPick={(sourceId, evidenceId) => {
+              setSelectedSourceId(sourceId);
+              setHighlightEvidenceId(evidenceId);
+            }}
           />
         ) : null}
 
@@ -228,9 +234,16 @@ export default function KnowledgeWikiView() {
             sources={sourcesQuery.data ?? []}
             loading={sourcesQuery.isLoading}
             selectedId={selectedSourceId}
-            onSelect={setSelectedSourceId}
+            onSelect={(id) => {
+              setSelectedSourceId(id);
+              setHighlightEvidenceId(null);
+            }}
           />
-          <SourceDetailPanel sourceId={selectedSourceId} />
+          <SourceDetailPanel
+            sourceId={selectedSourceId}
+            highlightEvidenceId={highlightEvidenceId}
+            onHighlightConsumed={() => setHighlightEvidenceId(null)}
+          />
         </div>
       </Space>
 
@@ -327,7 +340,15 @@ function SourceListPanel({
   );
 }
 
-function SourceDetailPanel({ sourceId }: { sourceId: number | null }) {
+function SourceDetailPanel({
+  sourceId,
+  highlightEvidenceId,
+  onHighlightConsumed,
+}: {
+  sourceId: number | null;
+  highlightEvidenceId: string | null;
+  onHighlightConsumed: () => void;
+}) {
   if (sourceId == null) {
     return (
       <div style={{ border: '1px solid var(--op-border, #eee)', padding: 24, borderRadius: 8 }}>
@@ -335,10 +356,24 @@ function SourceDetailPanel({ sourceId }: { sourceId: number | null }) {
       </div>
     );
   }
-  return <SourceDetailContent sourceId={sourceId} />;
+  return (
+    <SourceDetailContent
+      sourceId={sourceId}
+      highlightEvidenceId={highlightEvidenceId}
+      onHighlightConsumed={onHighlightConsumed}
+    />
+  );
 }
 
-function SourceDetailContent({ sourceId }: { sourceId: number }) {
+function SourceDetailContent({
+  sourceId,
+  highlightEvidenceId,
+  onHighlightConsumed,
+}: {
+  sourceId: number;
+  highlightEvidenceId: string | null;
+  onHighlightConsumed: () => void;
+}) {
   const queryClient = useQueryClient();
   const sourceQuery = useQuery({
     queryKey: ['knowledge', 'source', sourceId],
@@ -466,6 +501,8 @@ function SourceDetailContent({ sourceId }: { sourceId: number }) {
           evidence={evidenceQuery.data?.items ?? []}
           loading={evidenceQuery.isLoading}
           sourceId={sourceId}
+          highlightEvidenceId={highlightEvidenceId}
+          onHighlightConsumed={onHighlightConsumed}
         />
         <JobsBlock
           data={jobsQuery.data ?? { jobs: [], origins: [] }}
@@ -639,11 +676,23 @@ function EvidenceBlock({
   evidence,
   loading,
   sourceId,
+  highlightEvidenceId,
+  onHighlightConsumed,
 }: {
   evidence: KnowledgeEvidence[];
   loading: boolean;
   sourceId: number;
+  highlightEvidenceId: string | null;
+  onHighlightConsumed: () => void;
 }) {
+  const highlightRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!highlightEvidenceId) return;
+    if (highlightRef.current) {
+      highlightRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    onHighlightConsumed();
+  }, [highlightEvidenceId, onHighlightConsumed]);
   if (loading) {
     return <Spin />;
   }
@@ -661,33 +710,59 @@ function EvidenceBlock({
       <List
         dataSource={evidence}
         rowKey={(item) => item.id}
-        renderItem={(item) => (
-          <List.Item>
-            <Space direction="vertical" size={2} style={{ width: '100%' }}>
-              <Space size={8}>
-                <Badge color="cyan" text={item.block_kind} />
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  行 {item.line_start}-{item.line_end}
-                </Text>
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  字符 {item.char_start}-{item.char_end}
-                </Text>
-              </Space>
-              {item.heading_path.length ? (
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  路径：{item.heading_path.join(' / ')}
-                </Text>
-              ) : null}
-              {item.kind === 'asset' && item.asset_id != null ? (
-                <AssetEvidenceView sourceId={sourceId} assetId={item.asset_id} alt={item.search_text} />
-              ) : null}
-              <Text>{item.canonical_excerpt}</Text>
-              <Text code style={{ fontSize: 11 }}>
-                {item.id}
-              </Text>
-            </Space>
-          </List.Item>
-        )}
+        renderItem={(item) => {
+          const isHighlighted = highlightEvidenceId === item.id;
+          return (
+            <List.Item>
+              <div
+                ref={isHighlighted ? highlightRef : undefined}
+                style={{
+                  width: '100%',
+                  padding: 8,
+                  borderRadius: 4,
+                  background: isHighlighted
+                    ? 'var(--op-highlight-bg, #fffbe6)'
+                    : 'transparent',
+                  border: isHighlighted
+                    ? '1px solid var(--op-highlight-border, #ffe58f)'
+                    : '1px solid transparent',
+                  transition: 'background 200ms ease',
+                }}
+              >
+                <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                  <Space size={8}>
+                    <Badge color="cyan" text={item.block_kind} />
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      行 {item.line_start}-{item.line_end}
+                    </Text>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      字符 {item.char_start}-{item.char_end}
+                    </Text>
+                    {isHighlighted ? (
+                      <Badge color="gold" text="搜索命中" />
+                    ) : null}
+                  </Space>
+                  {item.heading_path.length ? (
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      路径：{item.heading_path.join(' / ')}
+                    </Text>
+                  ) : null}
+                  {item.kind === 'asset' && item.asset_id != null ? (
+                    <AssetEvidenceView
+                      sourceId={sourceId}
+                      assetId={item.asset_id}
+                      alt={item.search_text}
+                    />
+                  ) : null}
+                  <Text>{item.canonical_excerpt}</Text>
+                  <Text code style={{ fontSize: 11 }}>
+                    {item.id}
+                  </Text>
+                </Space>
+              </div>
+            </List.Item>
+          );
+        }}
       />
     </div>
   );
@@ -860,7 +935,7 @@ function SearchResultsPanel({
 }: {
   query: string;
   hits: import('@/types/knowledge').KnowledgeEvidenceSearchHit[];
-  onPick: (sourceId: number) => void;
+  onPick: (sourceId: number, evidenceId: string) => void;
 }) {
   if (!hits.length) {
     return (
@@ -884,8 +959,12 @@ function SearchResultsPanel({
           renderItem={(item) => (
             <List.Item
               actions={[
-                <Button key="open" size="small" onClick={() => onPick(item.source_id)}>
-                  打开 Source
+                <Button
+                  key="open"
+                  size="small"
+                  onClick={() => onPick(item.source_id, item.evidence_id)}
+                >
+                  打开并定位
                 </Button>,
               ]}
             >
@@ -900,6 +979,9 @@ function SearchResultsPanel({
                       {item.heading_path.join(' / ')}
                     </Text>
                   ) : null}
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    行 {item.line_start}-{item.line_end}
+                  </Text>
                 </Space>
                 <Text>{item.snippet}</Text>
                 <Text code style={{ fontSize: 11 }}>
