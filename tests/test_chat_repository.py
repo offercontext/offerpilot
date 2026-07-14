@@ -208,6 +208,41 @@ def test_clear_last_write_undo_if_matches_preserves_newer_undo(tmp_path):
     assert repo.get_last_write_undo(conversation.id) is None
 
 
+def test_confirmation_continuation_survives_generated_title_update(tmp_path):
+    repo = ChatRepository(init_database(tmp_path / "data.db"))
+    conversation = repo.create_conversation("confirm")
+    pending = PendingAction("write-1", "update_application_status", '{"id":1}', "first")
+    repo.set_pending_action(conversation.id, pending)
+    generation = repo.resolve_pending_confirmation(
+        conversation.id,
+        pending,
+        Message(role="tool", content='{"ok":true}', tool_call_id="write-1"),
+        {"kind": "undo"},
+    )
+    repo.apply_generated_title(conversation.id, "Generated title")
+
+    persisted = repo.persist_confirmation_continuation(
+        conversation.id,
+        generation,
+        [
+            {
+                "role": "assistant",
+                "content": "next",
+                "tool_calls": "",
+                "tool_call_id": "",
+                "provider_blocks": "",
+            }
+        ],
+    )
+
+    assert persisted is not None
+    assert repo.get_conversation(conversation.id).title == "Generated title"
+    assert [message.content for message in repo.list_messages(conversation.id)] == [
+        '{"ok":true}',
+        "next",
+    ]
+
+
 def test_confirmation_continuation_rejects_stale_conversation_generation(tmp_path):
     repo = ChatRepository(init_database(tmp_path / "data.db"))
     conversation = repo.create_conversation("confirm")

@@ -88,7 +88,7 @@ class ChatRepository:
                 .values(
                     title=title,
                     title_source="generated",
-                    updated_at=datetime.now(timezone.utc),
+                    updated_at=Conversation.updated_at,
                 )
             )
             session.commit()
