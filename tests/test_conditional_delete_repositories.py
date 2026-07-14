@@ -6,6 +6,7 @@ from offerpilot.db import init_database
 from offerpilot.models import (
     APPLICATION_FOREIGN_KEY_MODELS,
     ApplicationEvent,
+    ApplicationEvidenceBundle,
     ApplicationMaterialKit,
     Base,
     Conversation,
@@ -36,6 +37,17 @@ def _application_dependency(model, application_id):
         return model(application_id=application_id, jd_text="JD", result="{}")
     if model is ApplicationMaterialKit:
         return model(application_id=application_id)
+    if model is ApplicationEvidenceBundle:
+        return model(
+            application_id=application_id,
+            sequence=1,
+            submitted_at=datetime(2026, 7, 14, tzinfo=timezone.utc),
+            confirmed_at=datetime(2026, 7, 14, tzinfo=timezone.utc),
+            confirmation_kind="user_asserted",
+            idempotency_key="8f4a6b48-b554-49a0-bccf-b1bf211ef824",
+            snapshot_json="{}",
+            bundle_sha256="0" * 64,
+        )
     if model is Question:
         return model(application_id=application_id, question="Why?")
     raise AssertionError(f"dependency {model.__name__} needs related rows")

@@ -88,6 +88,11 @@ def init_database(db_path: Path) -> SessionFactory:
             "0005_application_lifecycle_columns",
             "Add application lifecycle and soft-delete columns",
         )
+    _record_migration(
+        engine,
+        "0006_application_evidence_bundles",
+        "Add immutable application evidence bundles",
+    )
     _ensure_knowledge_fts(engine)
     return sessionmaker(bind=engine, expire_on_commit=False)
 
