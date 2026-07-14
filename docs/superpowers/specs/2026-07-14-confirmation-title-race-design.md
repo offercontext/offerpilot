@@ -1,7 +1,7 @@
 # Confirmation Continuation Title Race Design
 
 Date: 2026-07-14  
-Status: approved for specification review  
+Status: approved and implemented
 Scope: chat confirmation persistence only
 
 ## Problem
