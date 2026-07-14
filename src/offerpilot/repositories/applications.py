@@ -7,7 +7,11 @@ from typing import Any, Optional
 from sqlalchemy import exists, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
-from offerpilot.application_status import normalize_application_status
+from offerpilot.application_status import (
+    FIRST_STATUS_TIMESTAMP_ATTR,
+    mark_first_status_timestamp,
+    normalize_application_status,
+)
 from offerpilot.models import APPLICATION_FOREIGN_KEY_MODELS, Application
 
 
@@ -45,7 +49,7 @@ class ApplicationsRepository:
             closed_reason=closed_reason,
             updated_at=now,
         )
-        _mark_first_status_timestamp(app, status, now)
+        mark_first_status_timestamp(app, status, now)
         with self._session_factory() as session:
             session.add(app)
             session.commit()
@@ -92,7 +96,7 @@ class ApplicationsRepository:
             else:
                 app.closed_reason = ""
             now = datetime.now(timezone.utc)
-            _mark_first_status_timestamp(app, status, now)
+            mark_first_status_timestamp(app, status, now)
             app.updated_at = now
             session.commit()
             session.refresh(app)
@@ -169,18 +173,8 @@ class ApplicationsRepository:
 
 def _normalize_model_status(app: Application) -> Application:
     app.status = normalize_application_status(app.status)
+    for attr in FIRST_STATUS_TIMESTAMP_ATTR.values():
+        value = getattr(app, attr)
+        if value is not None and value.tzinfo is None:
+            setattr(app, attr, value.replace(tzinfo=timezone.utc))
     return app
-
-
-def _mark_first_status_timestamp(app: Application, status: str, now: datetime) -> None:
-    attr_by_status = {
-        "pending": "first_pending_at",
-        "applied": "first_applied_at",
-        "written_test": "first_written_test_at",
-        "interview": "first_interview_at",
-        "offer": "first_offer_at",
-        "closed": "closed_at",
-    }
-    attr = attr_by_status[status]
-    if getattr(app, attr) is None:
-        setattr(app, attr, now)

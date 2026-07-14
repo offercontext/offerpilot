@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -255,6 +255,38 @@ class ApplicationMaterialKit(Base):
     )
 
 
+class ApplicationEvidenceBundle(Base):
+    __tablename__ = "application_evidence_bundles"
+    __table_args__ = (
+        UniqueConstraint("application_id", "sequence", name="uq_evidence_bundle_sequence"),
+        UniqueConstraint("application_id", "idempotency_key", name="uq_evidence_bundle_idempotency"),
+        Index("idx_evidence_bundles_application", "application_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    application_id: Mapped[int] = mapped_column(
+        ForeignKey("applications.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    confirmation_kind: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        default="user_asserted",
+        server_default="user_asserted",
+    )
+    idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
+    snapshot_json: Mapped[str] = mapped_column(String, nullable=False)
+    bundle_sha256: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+
+
 class KnowledgeDocument(Base):
     __tablename__ = "knowledge_documents"
     __table_args__ = (
@@ -443,6 +475,7 @@ APPLICATION_FOREIGN_KEY_MODELS = (
     ResumeMatch,
     JDAnalysis,
     ApplicationMaterialKit,
+    ApplicationEvidenceBundle,
     Question,
     MockSession,
 )

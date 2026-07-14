@@ -13,7 +13,7 @@ from secrets import compare_digest
 from threading import Event, Lock
 from time import perf_counter
 from typing import Any, Callable, Generator, Optional, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 from fastapi import BackgroundTasks, Body, FastAPI, File, Query, Request, UploadFile
@@ -53,6 +53,12 @@ from offerpilot.repositories.application_events import (
     ApplicationEventsRepository,
     duration_minutes,
 )
+from offerpilot.repositories.evidence_bundles import (
+    EvidenceBundleConflictError,
+    EvidenceBundleNotFound,
+    EvidenceBundleValidationError,
+    EvidenceBundlesRepository,
+)
 from offerpilot.repositories.jd import JDAnalysesRepository, JDAnalysisCreate
 from offerpilot.repositories.knowledge import (
     KnowledgeDocumentCreate,
@@ -68,8 +74,11 @@ from offerpilot.repositories.wakeups import WakeupCreate, WakeupsRepository, wak
 from offerpilot.onboarding import onboarding_payload
 from offerpilot.schemas import (
     ApplicationOut,
+    ApplicationEvidenceBundleOut,
+    ApplicationEvidenceBundleSummaryOut,
     ChatMessageOut,
     ConversationOut,
+    EvidenceBundlePreviewOut,
     ApplicationEventOut,
     InterviewNoteOut,
     JDAnalysisOut,
@@ -160,6 +169,7 @@ def create_app(
     knowledge = KnowledgeRepository(session_factory)
     questions = QuestionsRepository(session_factory)
     material_kits = MaterialKitsRepository(session_factory)
+    evidence_bundles = EvidenceBundlesRepository(session_factory)
     mock_sessions = MockSessionsRepository(session_factory)
     wakeups = WakeupsRepository(session_factory)
     app = FastAPI(title="OfferPilot")
@@ -408,6 +418,51 @@ def create_app(
         if kit is None:
             return error_response(404, "Material kit not found")
         return JSONResponse(_material_kit_json(kit))
+
+    @app.get("/api/applications/{app_id}/evidence-bundles/preview")
+    def preview_application_evidence_bundle(app_id: int) -> JSONResponse:
+        try:
+            preview = evidence_bundles.preview(app_id)
+        except EvidenceBundleNotFound:
+            return error_response(404, "Application not found")
+        return JSONResponse(_evidence_bundle_preview_json(preview))
+
+    @app.post("/api/applications/{app_id}/evidence-bundles", status_code=201)
+    def confirm_application_evidence_bundle(
+        app_id: int, payload: dict[str, Any] = Body(...)
+    ) -> JSONResponse:
+        try:
+            submitted_at = _evidence_bundle_submitted_at(payload)
+            idempotency_key = _evidence_bundle_idempotency_key(payload)
+            expected_bundle_sha256 = _required_text(payload, "expected_bundle_sha256")
+            bundle, created = evidence_bundles.confirm(
+                app_id,
+                submitted_at,
+                idempotency_key,
+                expected_bundle_sha256,
+            )
+        except EvidenceBundleNotFound:
+            return error_response(404, "Application not found")
+        except EvidenceBundleValidationError as exc:
+            return error_response(422, str(exc))
+        except EvidenceBundleConflictError as exc:
+            return error_response(409, str(exc))
+        return JSONResponse(_evidence_bundle_detail_json(bundle), status_code=201 if created else 200)
+
+    @app.get("/api/applications/{app_id}/evidence-bundles")
+    def list_application_evidence_bundles(app_id: int) -> JSONResponse:
+        if applications.get(app_id) is None:
+            return error_response(404, "Application not found")
+        return JSONResponse(
+            [_evidence_bundle_summary_json(bundle) for bundle in evidence_bundles.list(app_id)]
+        )
+
+    @app.get("/api/applications/{app_id}/evidence-bundles/{bundle_id}")
+    def get_application_evidence_bundle(app_id: int, bundle_id: int) -> JSONResponse:
+        bundle = evidence_bundles.get(app_id, bundle_id)
+        if bundle is None:
+            return error_response(404, "Evidence bundle not found")
+        return JSONResponse(_evidence_bundle_detail_json(bundle))
 
     @app.get("/api/application-events")
     def list_application_events(
@@ -4653,6 +4708,101 @@ def _knowledge_document_json(document: Any) -> dict[str, Any]:
 
 def _material_kit_json(kit: Any) -> dict[str, Any]:
     return MaterialKitOut.model_validate(kit).model_dump(mode="json", exclude_none=True)
+
+
+def _evidence_bundle_summary_json(bundle: Any) -> dict[str, Any]:
+    return ApplicationEvidenceBundleSummaryOut.model_validate(bundle).model_dump(mode="json")
+
+
+def _evidence_bundle_detail_json(bundle: Any) -> dict[str, Any]:
+    summary = _evidence_bundle_summary_json(bundle)
+    return ApplicationEvidenceBundleOut.model_validate(
+        {**summary, "snapshot": json.loads(bundle.snapshot_json)}
+    ).model_dump(mode="json")
+
+
+def _evidence_bundle_preview_json(preview: Any) -> dict[str, Any]:
+    if not preview.ready:
+        return EvidenceBundlePreviewOut(
+            application_id=preview.application_id,
+            ready=False,
+            issues=preview.issues,
+            sources={},
+        ).model_dump(mode="json", exclude_none=True)
+
+    snapshot = preview.snapshot
+    assert isinstance(snapshot, dict)
+    jd = snapshot["jd"]
+    resume = snapshot["resume"]
+    material_kit = snapshot["material_kit"]
+    return EvidenceBundlePreviewOut(
+        application_id=preview.application_id,
+        ready=True,
+        issues=preview.issues,
+        bundle_sha256=preview.bundle_sha256,
+        sources={
+            "application": snapshot["application"],
+            "jd": {
+                "sha256": jd["sha256"],
+                "characters": len(jd["text"]),
+            },
+            "resume": {
+                "id": resume["resume_id"],
+                "title": resume["title"],
+                "sha256": resume["sha256"],
+            },
+            "material_kit": {
+                "id": material_kit["material_kit_id"],
+                "sha256": material_kit["sha256"],
+            },
+        },
+    ).model_dump(mode="json", exclude_none=True)
+
+
+def _required_text(payload: dict[str, Any], name: str) -> str:
+    value = payload.get(name)
+    if not isinstance(value, str) or not value.strip():
+        raise EvidenceBundleValidationError(f"{name} is required")
+    return value.strip()
+
+
+def _evidence_bundle_idempotency_key(payload: dict[str, Any]) -> str:
+    value = _required_text(payload, "idempotency_key")
+    try:
+        return str(UUID(value))
+    except ValueError as exc:
+        raise EvidenceBundleValidationError("idempotency_key must be a UUID") from exc
+
+
+def _evidence_bundle_submitted_at(payload: dict[str, Any]) -> datetime:
+    value = payload.get("submitted_at")
+    if value is None:
+        return datetime.now(timezone.utc)
+    if not isinstance(value, str):
+        raise EvidenceBundleValidationError("submitted_at must be an RFC3339 timestamp")
+    timestamp = value.strip()
+    if not timestamp:
+        return datetime.now(timezone.utc)
+    if "T" not in timestamp and "t" not in timestamp:
+        raise EvidenceBundleValidationError("submitted_at must be an RFC3339 timestamp")
+    normalized_timestamp = timestamp.replace("t", "T", 1)
+    if normalized_timestamp.endswith(("Z", "z")):
+        normalized_timestamp = f"{normalized_timestamp[:-1]}+00:00"
+    try:
+        submitted_at = datetime.fromisoformat(normalized_timestamp)
+    except ValueError as exc:
+        raise EvidenceBundleValidationError("submitted_at must be an RFC3339 timestamp") from exc
+    if submitted_at.tzinfo is None or submitted_at.utcoffset() is None:
+        raise EvidenceBundleValidationError("submitted_at must include a timezone")
+    if re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:[Zz]|[+-]\d{2}:\d{2})",
+        timestamp,
+    ) is None:
+        raise EvidenceBundleValidationError("submitted_at must be an RFC3339 timestamp")
+    submitted_at = submitted_at.astimezone(timezone.utc)
+    if submitted_at > datetime.now(timezone.utc):
+        raise EvidenceBundleValidationError("submitted_at cannot be in the future")
+    return submitted_at
 
 
 def _mock_session_json(session_model: Any) -> dict[str, Any]:
