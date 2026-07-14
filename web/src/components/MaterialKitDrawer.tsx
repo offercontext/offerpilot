@@ -22,6 +22,7 @@ import type {
   MaterialKitContent,
   MaterialKitMessage,
   MaterialKitStatus,
+  EditableMaterialKitStatus,
   MaterialKitViewModel,
 } from '@/types/materialKit';
 import type { Resume } from '@/types/resume';
@@ -32,6 +33,7 @@ import {
 } from '@/services/materialKits';
 import { listResumes } from '@/services/resumes';
 import styles from './MaterialKitDrawer.module.css';
+import { getMaterialKitStatusForSave } from './materialKitStatus';
 
 interface Props {
   application: Application | null;
@@ -51,7 +53,7 @@ interface SaveVariables {
   kitID: number;
   resumeID: number | undefined;
   jdSnapshot: string;
-  status: MaterialKitStatus;
+  status: EditableMaterialKitStatus | undefined;
   content: MaterialKitContent;
 }
 
@@ -60,6 +62,10 @@ const STATUS_OPTIONS: Array<{ label: string; value: MaterialKitStatus }> = [
   { label: '已准备', value: 'ready' },
   { label: '已投递', value: 'submitted' },
 ];
+
+const EDITABLE_STATUS_OPTIONS: Array<{ label: string; value: EditableMaterialKitStatus }> = STATUS_OPTIONS.filter(
+  (option): option is { label: string; value: EditableMaterialKitStatus } => option.value !== 'submitted',
+);
 
 function createDefaultContent(): MaterialKitContent {
   return {
@@ -124,7 +130,7 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
   const [existingKit, setExistingKit] = useState<MaterialKitViewModel | null>(null);
   const [resumeID, setResumeID] = useState<number | undefined>();
   const [jdSnapshot, setJdSnapshot] = useState('');
-  const [status, setStatus] = useState<MaterialKitStatus>('draft');
+  const [status, setStatus] = useState<EditableMaterialKitStatus>('draft');
   const [content, setContent] = useState<MaterialKitContent>(() => createDefaultContent());
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -141,7 +147,7 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
     setExistingKit(kit);
     setResumeID(kit.resume_id);
     setJdSnapshot(kit.jd_snapshot);
-    setStatus(kit.status);
+    setStatus(kit.status === 'submitted' ? 'draft' : kit.status);
     setContent(cloneContent(kit.content));
     setActionError(null);
   };
@@ -244,6 +250,7 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
   }));
 
   const canSave = Boolean(existingKit && applicationID && existingKit.application_id === applicationID);
+  const displayedStatus: MaterialKitStatus = existingKit?.status === 'submitted' ? 'submitted' : status;
   const generateDisabled = !applicationID || !resumeID || !jdSnapshot.trim();
   const busy = kitQuery.isFetching || generateMutation.isPending || saveMutation.isPending;
 
@@ -266,7 +273,7 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
       kitID: existingKit.id,
       resumeID,
       jdSnapshot,
-      status,
+      status: getMaterialKitStatusForSave(existingKit.status, status),
       content: cloneContent(content),
     });
   };
@@ -362,7 +369,12 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
               </Form.Item>
 
               <Form.Item label="材料状态">
-                <Select value={status} onChange={setStatus} options={STATUS_OPTIONS} disabled={!canSave} />
+                <Select
+                  value={existingKit?.status === 'submitted' ? undefined : status}
+                  onChange={(nextStatus: EditableMaterialKitStatus) => setStatus(nextStatus)}
+                  options={EDITABLE_STATUS_OPTIONS}
+                  disabled={!canSave}
+                />
               </Form.Item>
             </Form>
 
@@ -415,8 +427,8 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
                       </Typography.Title>
                       <Typography.Text className={styles.sectionHint}>把 AI 建议整理成可执行的修改清单</Typography.Text>
                     </div>
-                    <Tag color={status === 'submitted' ? 'green' : status === 'ready' ? 'blue' : 'default'}>
-                      {STATUS_OPTIONS.find((item) => item.value === status)?.label}
+                    <Tag color={displayedStatus === 'submitted' ? 'green' : displayedStatus === 'ready' ? 'blue' : 'default'}>
+                      {STATUS_OPTIONS.find((item) => item.value === displayedStatus)?.label}
                     </Tag>
                   </div>
 
