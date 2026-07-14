@@ -104,6 +104,17 @@
   font-weight: 600;
 }
 
+.evidenceHistorySummary,
+.evidenceDetailSummary {
+  background: var(--op-layout-bg);
+  border: 1px solid var(--op-border);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px;
+}
+
 .evidenceEmpty,
 .evidenceTime {
   color: var(--op-muted);
@@ -139,6 +150,33 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 11px;
   overflow-wrap: anywhere;
+}
+
+.evidenceDetailButton {
+  align-self: flex-start;
+  margin-top: 3px;
+}
+
+.evidenceDetailBody {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.evidenceSnapshot {
+  background: var(--op-layout-bg);
+  border: 1px solid var(--op-border);
+  border-radius: 8px;
+  color: var(--op-ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .confirmationBody {

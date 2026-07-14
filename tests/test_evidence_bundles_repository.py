@@ -4,10 +4,11 @@ import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session, sessionmaker
 
 from offerpilot.db import init_database
-from offerpilot.models import ApplicationEvent
+from offerpilot.models import ApplicationEvidenceBundle, ApplicationEvent
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
 from offerpilot.repositories.evidence_bundles import (
     EvidenceBundleConflictError,
@@ -262,6 +263,66 @@ def test_confirm_preserves_later_statuses_and_uses_descending_monotonic_sequence
     after_closed = applications.get(app.id)
     assert after_closed is not None
     assert after_closed.status == "closed"
+
+
+def test_confirm_retries_a_distinct_key_after_an_injected_sequence_collision(tmp_path, monkeypatch):
+    session_factory, applications, _material_kits, app, _kit = _create_ready_application(tmp_path)
+    bundles = EvidenceBundlesRepository(session_factory)
+    preview = bundles.preview(app.id)
+    competing_engine = create_engine(f"sqlite:///{tmp_path / 'data.db'}")
+    competing_factory = sessionmaker(bind=competing_engine, expire_on_commit=False)
+    competing_bundles = EvidenceBundlesRepository(competing_factory)
+    original_flush = Session.flush
+    collision_injected = False
+
+    def inject_competing_confirmation(session, *args, **kwargs):
+        nonlocal collision_injected
+        if (
+            not collision_injected
+            and session.get_bind() is session_factory.kw["bind"]
+            and any(isinstance(pending, ApplicationEvidenceBundle) for pending in session.new)
+        ):
+            collision_injected = True
+            competing_bundle, created = competing_bundles.confirm(
+                app.id,
+                SUBMITTED_AT,
+                "20c338af-95b8-46b5-adc4-3fb037ac144d",
+                preview.bundle_sha256,
+            )
+            assert created is True
+            assert competing_bundle.sequence == 1
+        return original_flush(session, *args, **kwargs)
+
+    monkeypatch.setattr(Session, "flush", inject_competing_confirmation)
+
+    retried_bundle, created = bundles.confirm(
+        app.id,
+        SUBMITTED_AT,
+        "d80d1982-74fd-40ca-859a-f2d1b08d7e22",
+        preview.bundle_sha256,
+    )
+
+    assert collision_injected is True
+    assert created is True
+    assert retried_bundle.sequence == 2
+    assert [bundle.sequence for bundle in bundles.list(app.id)] == [2, 1]
+    current_app = applications.get(app.id)
+    assert current_app is not None
+    assert current_app.status == "applied"
+    with session_factory() as session:
+        events = list(
+            session.scalars(
+                select(ApplicationEvent).where(ApplicationEvent.application_id == app.id)
+            )
+        )
+    assert len(events) == 2
+    assert {(event.event_type, event.subtype) for event in events} == {
+        ("custom", "submission_confirmed"),
+    }
+    assert sorted(event.tags for event in events) == sorted([
+        ["submission_evidence", "bundle:1"],
+        ["submission_evidence", "bundle:2"],
+    ])
 
 
 def test_confirm_normalizes_aware_submission_times_and_rejects_naive_times(tmp_path):

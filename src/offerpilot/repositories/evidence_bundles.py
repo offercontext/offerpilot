@@ -20,6 +20,9 @@ from offerpilot.models import (
 )
 
 
+_SEQUENCE_CONFLICT_ATTEMPTS = 3
+
+
 class EvidenceBundleNotFound(Exception):
     pass
 
@@ -79,6 +82,31 @@ class EvidenceBundlesRepository:
             return _build_preview(session, application_id)
 
     def confirm(
+        self,
+        application_id: int,
+        submitted_at: datetime,
+        idempotency_key: str,
+        expected_bundle_sha256: str,
+    ) -> tuple[ApplicationEvidenceBundle, bool]:
+        submitted_at = _normalize_submitted_at(submitted_at)
+        for attempt in range(_SEQUENCE_CONFLICT_ATTEMPTS):
+            try:
+                return self._confirm_once(
+                    application_id,
+                    submitted_at,
+                    idempotency_key,
+                    expected_bundle_sha256,
+                )
+            except IntegrityError as exc:
+                existing = self._find_by_idempotency_key(application_id, idempotency_key)
+                if existing is not None:
+                    return existing, False
+                if not _is_sequence_conflict(exc) or attempt == _SEQUENCE_CONFLICT_ATTEMPTS - 1:
+                    raise
+
+        raise AssertionError("unreachable")
+
+    def _confirm_once(
         self,
         application_id: int,
         submitted_at: datetime,
@@ -156,6 +184,18 @@ class EvidenceBundlesRepository:
                     return _normalize_bundle_timestamps(existing), False
                 raise
 
+    def _find_by_idempotency_key(
+        self, application_id: int, idempotency_key: str
+    ) -> ApplicationEvidenceBundle | None:
+        with self._session_factory() as session:
+            bundle = session.scalar(
+                select(ApplicationEvidenceBundle).where(
+                    ApplicationEvidenceBundle.application_id == application_id,
+                    ApplicationEvidenceBundle.idempotency_key == idempotency_key,
+                )
+            )
+            return _normalize_bundle_timestamps(bundle) if bundle is not None else None
+
     def list(self, application_id: int) -> list[ApplicationEvidenceBundle]:
         statement = (
             select(ApplicationEvidenceBundle)
@@ -188,6 +228,13 @@ def _normalize_submitted_at(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise EvidenceBundleValidationError("submitted_at must be timezone-aware")
     return value.astimezone(timezone.utc)
+
+
+def _is_sequence_conflict(exc: IntegrityError) -> bool:
+    return (
+        "application_evidence_bundles.application_id, application_evidence_bundles.sequence"
+        in str(exc.orig)
+    )
 
 
 def _normalize_bundle_timestamps(bundle: ApplicationEvidenceBundle) -> ApplicationEvidenceBundle:

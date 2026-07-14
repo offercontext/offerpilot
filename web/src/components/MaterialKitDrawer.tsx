@@ -28,9 +28,15 @@ import type {
   MaterialKitViewModel,
 } from '@/types/materialKit';
 import type { Resume } from '@/types/resume';
-import type { ConfirmEvidenceBundleInput, EvidenceBundlePreview } from '@/types/evidenceBundle';
+import type {
+  ConfirmEvidenceBundleInput,
+  EvidenceBundleDetail,
+  EvidenceBundlePreview,
+  EvidenceBundleSummary,
+} from '@/types/evidenceBundle';
 import {
   confirmEvidenceBundle,
+  getEvidenceBundle,
   getEvidenceBundlePreview,
   listEvidenceBundles,
 } from '@/services/evidenceBundles';
@@ -146,6 +152,10 @@ function formatEvidenceTimestamp(value: string): string {
   return dayjs(value).format('YYYY-MM-DD HH:mm');
 }
 
+function formatConfirmationKind(value: string): string {
+  return value === 'user_asserted' ? '用户确认' : value;
+}
+
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
   return '操作失败，请稍后重试';
@@ -172,6 +182,10 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
   const [confirmationError, setConfirmationError] = useState<string | null>(null);
   const [confirmationRefreshing, setConfirmationRefreshing] = useState(false);
   const [confirmationPreviewValid, setConfirmationPreviewValid] = useState(true);
+  const [evidenceDetailOpen, setEvidenceDetailOpen] = useState(false);
+  const [evidenceDetail, setEvidenceDetail] = useState<EvidenceBundleDetail | null>(null);
+  const [evidenceDetailError, setEvidenceDetailError] = useState<string | null>(null);
+  const [evidenceDetailLoading, setEvidenceDetailLoading] = useState(false);
 
   const isCurrentConfirmationSession = (requestedApplicationID: number, sessionID: string) =>
     activeApplicationIDRef.current === requestedApplicationID && confirmationSessionRef.current === sessionID;
@@ -189,6 +203,10 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
     setConfirmationError(null);
     setConfirmationRefreshing(false);
     setConfirmationPreviewValid(true);
+    setEvidenceDetailOpen(false);
+    setEvidenceDetail(null);
+    setEvidenceDetailError(null);
+    setEvidenceDetailLoading(false);
     confirmationSessionRef.current = null;
     blockedPreviewUpdatedAtRef.current = null;
   };
@@ -374,7 +392,8 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
     onSuccess: (_bundle, variables) => {
       queryClient.invalidateQueries({ queryKey: ['application-evidence-bundle-preview', variables.applicationID] });
       queryClient.invalidateQueries({ queryKey: ['application-evidence-bundles', variables.applicationID] });
-      queryClient.invalidateQueries({ queryKey: ['application-events', variables.applicationID] });
+      queryClient.invalidateQueries({ queryKey: ['events'] });
+      queryClient.invalidateQueries({ queryKey: ['events', variables.applicationID] });
       queryClient.invalidateQueries({ queryKey: ['applications'] });
       if (!isCurrentConfirmationSession(variables.applicationID, variables.sessionID)) return;
 
@@ -412,7 +431,7 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
 
   const canSave = Boolean(existingKit && applicationID && existingKit.application_id === applicationID);
   const legacySubmitted = existingKit?.status === 'submitted';
-  const canConfirm = Boolean(canSave && !legacySubmitted);
+  const canConfirm = Boolean(canSave);
   const displayedStatus: MaterialKitStatus = legacySubmitted ? 'submitted' : status;
   const generateDisabled = !applicationID || !resumeID || !jdSnapshot.trim();
   const busy = kitQuery.isFetching || generateMutation.isPending || saveMutation.isPending || confirmMutation.isPending || confirmationRefreshing;
@@ -460,6 +479,38 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
     setConfirmationSubmittedAt('');
     setConfirmationError(null);
     confirmationSessionRef.current = null;
+  };
+
+  const openEvidenceDetail = async (bundleID: number) => {
+    if (!applicationID || evidenceDetailLoading) return;
+
+    const requestedApplicationID = applicationID;
+    setEvidenceDetailOpen(true);
+    setEvidenceDetail(null);
+    setEvidenceDetailError(null);
+    setEvidenceDetailLoading(true);
+    try {
+      const detail = await getEvidenceBundle(requestedApplicationID, bundleID);
+      if (activeApplicationIDRef.current === requestedApplicationID) {
+        setEvidenceDetail(detail);
+      }
+    } catch (error) {
+      if (activeApplicationIDRef.current === requestedApplicationID) {
+        setEvidenceDetailError(getErrorMessage(error));
+      }
+    } finally {
+      if (activeApplicationIDRef.current === requestedApplicationID) {
+        setEvidenceDetailLoading(false);
+      }
+    }
+  };
+
+  const closeEvidenceDetail = () => {
+    if (evidenceDetailLoading) return;
+
+    setEvidenceDetailOpen(false);
+    setEvidenceDetail(null);
+    setEvidenceDetailError(null);
   };
 
   const handleConfirm = () => {
@@ -526,6 +577,13 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
 
   const evidencePreviewLoading = evidencePreviewQuery.isFetching && !evidencePreviewQuery.data;
   const evidenceHistoryLoading = evidenceHistoryQuery.isFetching && !evidenceHistoryQuery.data;
+  const evidenceHistory: EvidenceBundleSummary[] = evidenceHistoryQuery.data || [];
+  const latestEvidenceConfirmation = evidenceHistory.reduce<EvidenceBundleSummary | null>(
+    (latest, entry) => (
+      latest === null || dayjs(entry.confirmed_at).isAfter(dayjs(latest.confirmed_at)) ? entry : latest
+    ),
+    null,
+  );
   const confirmationPreview = confirmationPreviewValid && !confirmationRefreshing && !evidencePreviewQuery.isError
     ? evidencePreviewQuery.data
     : undefined;
@@ -646,19 +704,38 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
                 </div>
               ) : evidenceHistoryLoading ? (
                 <Typography.Text className={styles.evidenceEmpty}>正在加载投递证据历史，请稍候</Typography.Text>
-              ) : (evidenceHistoryQuery.data || []).length === 0 ? (
+              ) : evidenceHistory.length === 0 ? (
                 <Typography.Text className={styles.evidenceEmpty}>尚无已确认的投递证据</Typography.Text>
               ) : (
-                <div className={styles.evidenceHistoryList}>
-                  {(evidenceHistoryQuery.data || []).map((entry) => (
-                    <div className={styles.evidenceHistoryItem} key={entry.id}>
-                      <Typography.Text>第 {entry.sequence} 次</Typography.Text>
-                      <Typography.Text className={styles.evidenceTime}>投递（本地）：{formatEvidenceTimestamp(entry.submitted_at)}</Typography.Text>
-                      <Typography.Text className={styles.evidenceTime}>确认（本地）：{formatEvidenceTimestamp(entry.confirmed_at)}</Typography.Text>
-                      <Typography.Text className={styles.evidenceHash}>{entry.bundle_sha256}</Typography.Text>
-                    </div>
-                  ))}
-                </div>
+                <>
+                  <div className={styles.evidenceHistorySummary}>
+                    <Typography.Text>已确认投递 {evidenceHistory.length} 次</Typography.Text>
+                    {latestEvidenceConfirmation ? (
+                      <Typography.Text className={styles.evidenceTime}>
+                        最近确认（本地）：{formatEvidenceTimestamp(latestEvidenceConfirmation.confirmed_at)}
+                      </Typography.Text>
+                    ) : null}
+                  </div>
+                  <div className={styles.evidenceHistoryList}>
+                    {evidenceHistory.map((entry) => (
+                      <div className={styles.evidenceHistoryItem} key={entry.id}>
+                        <Typography.Text>第 {entry.sequence} 次</Typography.Text>
+                        <Typography.Text className={styles.evidenceTime}>投递（本地）：{formatEvidenceTimestamp(entry.submitted_at)}</Typography.Text>
+                        <Typography.Text className={styles.evidenceTime}>确认（本地）：{formatEvidenceTimestamp(entry.confirmed_at)}</Typography.Text>
+                        <Typography.Text className={styles.evidenceTime}>确认方式：{formatConfirmationKind(entry.confirmation_kind)}</Typography.Text>
+                        <Typography.Text className={styles.evidenceHash}>{entry.bundle_sha256}</Typography.Text>
+                        <Button
+                          className={styles.evidenceDetailButton}
+                          size="small"
+                          onClick={() => void openEvidenceDetail(entry.id)}
+                          disabled={evidenceDetailLoading}
+                        >
+                          查看详情
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                </>
               )}
             </section>
           </aside>
@@ -882,6 +959,37 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
           </Form>
 
           {confirmationError ? <Alert type="error" showIcon message={confirmationError} /> : null}
+        </div>
+      </Modal>
+      <Modal
+        open={evidenceDetailOpen}
+        title="投递证据详情"
+        onCancel={closeEvidenceDetail}
+        destroyOnClose
+        footer={(
+          <Button onClick={closeEvidenceDetail} disabled={evidenceDetailLoading}>
+            关闭
+          </Button>
+        )}
+      >
+        <div className={styles.evidenceDetailBody}>
+          <Typography.Text className={styles.confirmationKind}>只读证据快照</Typography.Text>
+          {evidenceDetailLoading ? (
+            <Typography.Text className={styles.evidenceEmpty}>正在加载投递证据详情，请稍候</Typography.Text>
+          ) : evidenceDetailError ? (
+            <Alert type="error" showIcon message={evidenceDetailError} />
+          ) : evidenceDetail ? (
+            <>
+              <div className={styles.evidenceDetailSummary}>
+                <Typography.Text>第 {evidenceDetail.sequence} 次</Typography.Text>
+                <Typography.Text className={styles.evidenceTime}>投递（本地）：{formatEvidenceTimestamp(evidenceDetail.submitted_at)}</Typography.Text>
+                <Typography.Text className={styles.evidenceTime}>确认（本地）：{formatEvidenceTimestamp(evidenceDetail.confirmed_at)}</Typography.Text>
+                <Typography.Text className={styles.evidenceTime}>确认方式：{formatConfirmationKind(evidenceDetail.confirmation_kind)}</Typography.Text>
+                <Typography.Text className={styles.evidenceHash}>{evidenceDetail.bundle_sha256}</Typography.Text>
+              </div>
+              <pre className={styles.evidenceSnapshot}>{JSON.stringify(evidenceDetail.snapshot, null, 2)}</pre>
+            </>
+          ) : null}
         </div>
       </Modal>
     </section>

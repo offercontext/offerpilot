@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import dayjs from 'dayjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Application } from '@/types/application';
 import type { EvidenceBundlePreview, EvidenceBundleSummary } from '@/types/evidenceBundle';
@@ -25,6 +26,7 @@ const queryState = vi.hoisted(() => ({
 
 const evidenceService = vi.hoisted(() => ({
   confirmEvidenceBundle: vi.fn(),
+  getEvidenceBundle: vi.fn(),
   getEvidenceBundlePreview: vi.fn(),
   listEvidenceBundles: vi.fn(),
 }));
@@ -241,6 +243,7 @@ beforeEach(() => {
   queryState.queryClient.invalidateQueries.mockReset();
   queryState.queryClient.setQueryData.mockReset();
   evidenceService.confirmEvidenceBundle.mockReset();
+  evidenceService.getEvidenceBundle.mockReset();
   evidenceService.getEvidenceBundlePreview.mockReset();
   evidenceService.listEvidenceBundles.mockReset();
   vi.stubGlobal('crypto', { randomUUID: vi.fn(() => 'e2ddc6c1-2a4d-4bd6-8969-7c0bc29cc771') });
@@ -290,15 +293,34 @@ describe('MaterialKitDrawer evidence confirmation', () => {
     expect(confirmButton?.disabled).toBe(true);
   });
 
-  it('keeps a legacy submitted kit readable without exposing submitted as an editable status', async () => {
+  it('keeps a legacy submitted kit readable, warned, and eligible for historical re-confirmation', async () => {
     queryState.kit = materialKit('submitted');
+    evidenceService.confirmEvidenceBundle.mockResolvedValue({ id: 2 });
     const view = render();
     await flush();
 
     expect(view.textContent).toContain('旧投递标记，缺少证据快照');
     expect(view.textContent).not.toContain('状态：已投递');
     expect(view.querySelector('option[value="submitted"]')).toBeNull();
-    expect([...view.querySelectorAll('button')].some((item) => item.textContent?.includes('确认已投递'))).toBe(false);
+    clickByText(view, '确认已投递');
+
+    const submittedAt = view.querySelector<HTMLInputElement>('input[type="datetime-local"]');
+    expect(submittedAt).toBeInstanceOf(HTMLInputElement);
+    const historicalLocalTime = '2024-06-03T09:15';
+    act(() => {
+      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setValue?.call(submittedAt, historicalLocalTime);
+      submittedAt?.dispatchEvent(new Event('input', { bubbles: true }));
+      submittedAt?.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    clickByText(view, '确认投递');
+    await flush();
+
+    expect(evidenceService.confirmEvidenceBundle).toHaveBeenCalledWith(7, expect.objectContaining({
+      expected_bundle_sha256: 'a'.repeat(64),
+      idempotency_key: 'e2ddc6c1-2a4d-4bd6-8969-7c0bc29cc771',
+      submitted_at: new Date(historicalLocalTime).toISOString(),
+    }));
   });
 
   it('defaults to local civil time and confirms its ISO instant with one idempotency key per modal opening', async () => {
@@ -458,7 +480,7 @@ describe('MaterialKitDrawer evidence confirmation', () => {
     expect(confirmButton?.disabled).toBe(false);
   });
 
-  it('invalidates all evidence-dependent queries after success and presents persisted history as read-only', async () => {
+  it('invalidates all actual event consumers after confirmation succeeds', async () => {
     queryState.history = [{
       id: 1,
       application_id: 7,
@@ -478,7 +500,7 @@ describe('MaterialKitDrawer evidence confirmation', () => {
     expect(history?.textContent).toContain('投递（本地）');
     expect(history?.textContent).toContain('a'.repeat(64));
     expect(history?.textContent).not.toContain('2026-07-14T09:00:00.000Z');
-    expect(history?.querySelector('button, input, select, textarea')).toBeNull();
+    expect(history?.querySelector('input, select, textarea')).toBeNull();
 
     clickByText(view, '确认已投递');
     clickByText(view, '确认投递');
@@ -486,7 +508,56 @@ describe('MaterialKitDrawer evidence confirmation', () => {
 
     expect(queryState.queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['application-evidence-bundle-preview', 7] });
     expect(queryState.queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['application-evidence-bundles', 7] });
-    expect(queryState.queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['application-events', 7] });
+    expect(queryState.queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['events'] });
+    expect(queryState.queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['events', 7] });
+    expect(queryState.queryClient.invalidateQueries).not.toHaveBeenCalledWith({ queryKey: ['application-events', 7] });
     expect(queryState.queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['applications'] });
+  });
+
+  it('summarizes confirmations and opens an immutable evidence detail', async () => {
+    queryState.history = [
+      {
+        id: 2,
+        application_id: 7,
+        sequence: 2,
+        submitted_at: '2026-07-14T09:00:00.000Z',
+        confirmed_at: '2026-07-14T09:02:00.000Z',
+        confirmation_kind: 'user_asserted',
+        bundle_sha256: 'b'.repeat(64),
+        created_at: '2026-07-14T09:02:00.000Z',
+      },
+      {
+        id: 1,
+        application_id: 7,
+        sequence: 1,
+        submitted_at: '2026-07-13T09:00:00.000Z',
+        confirmed_at: '2026-07-13T09:02:00.000Z',
+        confirmation_kind: 'user_asserted',
+        bundle_sha256: 'a'.repeat(64),
+        created_at: '2026-07-13T09:02:00.000Z',
+      },
+    ];
+    evidenceService.getEvidenceBundle.mockResolvedValue({
+      ...queryState.history[0],
+      snapshot: { jd: { text: 'Immutable job description' } },
+    });
+    const view = render();
+    await flush();
+
+    const history = view.querySelector<HTMLElement>('[data-testid="evidence-history"]');
+    expect(history?.textContent).toContain('已确认投递 2 次');
+    expect(history?.textContent).toContain(`最近确认（本地）：${dayjs(queryState.history[0].confirmed_at).format('YYYY-MM-DD HH:mm')}`);
+    expect(history?.textContent).toContain('第 2 次');
+    expect(history?.textContent).toContain('用户确认');
+    expect(history?.textContent).toContain('b'.repeat(64));
+
+    clickByText(view, '查看详情');
+    await flush();
+
+    expect(evidenceService.getEvidenceBundle).toHaveBeenCalledWith(7, 2);
+    const detailModal = view.querySelector<HTMLElement>('[role="dialog"]');
+    expect(detailModal?.textContent).toContain('用户确认');
+    expect(detailModal?.textContent).toContain('Immutable job description');
+    expect(detailModal?.querySelector('input, textarea, select')).toBeNull();
   });
 });
