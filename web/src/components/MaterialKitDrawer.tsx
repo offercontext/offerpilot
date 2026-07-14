@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import dayjs from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Alert,
@@ -7,6 +8,7 @@ import {
   Empty,
   Form,
   Input,
+  Modal,
   Progress,
   Select,
   Space,
@@ -26,6 +28,12 @@ import type {
   MaterialKitViewModel,
 } from '@/types/materialKit';
 import type { Resume } from '@/types/resume';
+import type { ConfirmEvidenceBundleInput, EvidenceBundlePreview } from '@/types/evidenceBundle';
+import {
+  confirmEvidenceBundle,
+  getEvidenceBundlePreview,
+  listEvidenceBundles,
+} from '@/services/evidenceBundles';
 import {
   generateApplicationMaterialKit,
   getApplicationMaterialKit,
@@ -57,15 +65,22 @@ interface SaveVariables {
   content: MaterialKitContent;
 }
 
-const STATUS_OPTIONS: Array<{ label: string; value: MaterialKitStatus }> = [
-  { label: '草稿', value: 'draft' },
-  { label: '已准备', value: 'ready' },
-  { label: '已投递', value: 'submitted' },
-];
+interface ConfirmVariables {
+  applicationID: number;
+  sessionID: string;
+  input: ConfirmEvidenceBundleInput;
+}
 
-const EDITABLE_STATUS_OPTIONS: Array<{ label: string; value: EditableMaterialKitStatus }> = STATUS_OPTIONS.filter(
-  (option): option is { label: string; value: EditableMaterialKitStatus } => option.value !== 'submitted',
-);
+const STATUS_LABELS: Record<MaterialKitStatus, string> = {
+  draft: '草稿',
+  ready: '已准备',
+  submitted: '已投递',
+};
+
+const EDITABLE_STATUS_OPTIONS: Array<{ label: string; value: EditableMaterialKitStatus }> = [
+  { label: STATUS_LABELS.draft, value: 'draft' },
+  { label: STATUS_LABELS.ready, value: 'ready' },
+];
 
 function createDefaultContent(): MaterialKitContent {
   return {
@@ -117,6 +132,20 @@ function linesToText(value: string[]): string {
   return value.join('\n');
 }
 
+function toLocalDateTimeInputValue(date: Date): string {
+  const pad = (value: number) => String(value).padStart(2, '0');
+
+  return [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+  ].join('-') + `T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function formatEvidenceTimestamp(value: string): string {
+  return dayjs(value).format('YYYY-MM-DD HH:mm');
+}
+
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
   return '操作失败，请稍后重试';
@@ -126,6 +155,10 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
   const { message } = AntApp.useApp();
   const queryClient = useQueryClient();
   const applicationID = application?.id;
+  const activeApplicationIDRef = useRef<number | undefined>(applicationID);
+  const confirmationSessionRef = useRef<string | null>(null);
+  const blockedPreviewUpdatedAtRef = useRef<number | null>(null);
+  activeApplicationIDRef.current = applicationID;
 
   const [existingKit, setExistingKit] = useState<MaterialKitViewModel | null>(null);
   const [resumeID, setResumeID] = useState<number | undefined>();
@@ -133,6 +166,15 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
   const [status, setStatus] = useState<EditableMaterialKitStatus>('draft');
   const [content, setContent] = useState<MaterialKitContent>(() => createDefaultContent());
   const [actionError, setActionError] = useState<string | null>(null);
+  const [confirmationOpen, setConfirmationOpen] = useState(false);
+  const [confirmationKey, setConfirmationKey] = useState<string | null>(null);
+  const [confirmationSubmittedAt, setConfirmationSubmittedAt] = useState('');
+  const [confirmationError, setConfirmationError] = useState<string | null>(null);
+  const [confirmationRefreshing, setConfirmationRefreshing] = useState(false);
+  const [confirmationPreviewValid, setConfirmationPreviewValid] = useState(true);
+
+  const isCurrentConfirmationSession = (requestedApplicationID: number, sessionID: string) =>
+    activeApplicationIDRef.current === requestedApplicationID && confirmationSessionRef.current === sessionID;
 
   const resetEditor = (nextApplication: Application | null) => {
     setExistingKit(null);
@@ -141,6 +183,14 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
     setStatus('draft');
     setContent(createDefaultContent());
     setActionError(null);
+    setConfirmationOpen(false);
+    setConfirmationKey(null);
+    setConfirmationSubmittedAt('');
+    setConfirmationError(null);
+    setConfirmationRefreshing(false);
+    setConfirmationPreviewValid(true);
+    confirmationSessionRef.current = null;
+    blockedPreviewUpdatedAtRef.current = null;
   };
 
   const applyKitToEditor = (kit: MaterialKitViewModel) => {
@@ -164,9 +214,56 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
     enabled: open,
   });
 
+  const evidencePreviewQuery = useQuery<EvidenceBundlePreview>({
+    queryKey: ['application-evidence-bundle-preview', applicationID],
+    queryFn: () => getEvidenceBundlePreview(applicationID!),
+    enabled: open && Boolean(applicationID),
+  });
+
+  const evidenceHistoryQuery = useQuery({
+    queryKey: ['application-evidence-bundles', applicationID],
+    queryFn: () => listEvidenceBundles(applicationID!),
+    enabled: open && Boolean(applicationID),
+  });
+
   useEffect(() => {
     resetEditor(open ? application : null);
   }, [applicationID, application?.notes, open]);
+
+  useEffect(() => {
+    if (evidencePreviewQuery.isError) {
+      setConfirmationPreviewValid(false);
+      return;
+    }
+
+    if (!evidencePreviewQuery.isSuccess || !evidencePreviewQuery.data.ready || confirmationRefreshing) return;
+
+    if (
+      blockedPreviewUpdatedAtRef.current !== null
+      && evidencePreviewQuery.dataUpdatedAt <= blockedPreviewUpdatedAtRef.current
+    ) {
+      return;
+    }
+
+    if (
+      confirmationOpen
+      && (!applicationID || !confirmationKey || !isCurrentConfirmationSession(applicationID, confirmationKey))
+    ) {
+      return;
+    }
+
+    setConfirmationPreviewValid(true);
+    blockedPreviewUpdatedAtRef.current = null;
+  }, [
+    applicationID,
+    confirmationKey,
+    confirmationOpen,
+    confirmationRefreshing,
+    evidencePreviewQuery.data,
+    evidencePreviewQuery.dataUpdatedAt,
+    evidencePreviewQuery.isError,
+    evidencePreviewQuery.isSuccess,
+  ]);
 
   useEffect(() => {
     if (!open || !applicationID || !kitQuery.isSuccess) return;
@@ -244,15 +341,81 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
     },
   });
 
+  const refreshEvidencePreview = async (requestedApplicationID: number, sessionID: string) => {
+    if (!isCurrentConfirmationSession(requestedApplicationID, sessionID)) return;
+
+    setConfirmationRefreshing(true);
+    setConfirmationPreviewValid(false);
+    try {
+      const result = await evidencePreviewQuery.refetch();
+      if (!isCurrentConfirmationSession(requestedApplicationID, sessionID)) return;
+
+      if (result.isSuccess && result.data.ready) {
+        setConfirmationPreviewValid(true);
+        blockedPreviewUpdatedAtRef.current = null;
+        return;
+      }
+
+      setConfirmationError('材料证据刷新失败，请重试刷新后再确认');
+    } catch {
+      if (isCurrentConfirmationSession(requestedApplicationID, sessionID)) {
+        setConfirmationError('材料证据刷新失败，请重试刷新后再确认');
+      }
+    } finally {
+      if (isCurrentConfirmationSession(requestedApplicationID, sessionID)) {
+        setConfirmationRefreshing(false);
+      }
+    }
+  };
+
+  const confirmMutation = useMutation({
+    mutationFn: ({ applicationID: requestedApplicationID, input }: ConfirmVariables) =>
+      confirmEvidenceBundle(requestedApplicationID, input),
+    onSuccess: (_bundle, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['application-evidence-bundle-preview', variables.applicationID] });
+      queryClient.invalidateQueries({ queryKey: ['application-evidence-bundles', variables.applicationID] });
+      queryClient.invalidateQueries({ queryKey: ['application-events', variables.applicationID] });
+      queryClient.invalidateQueries({ queryKey: ['applications'] });
+      if (!isCurrentConfirmationSession(variables.applicationID, variables.sessionID)) return;
+
+      setConfirmationOpen(false);
+      setConfirmationKey(null);
+      setConfirmationError(null);
+      setConfirmationRefreshing(false);
+      setConfirmationPreviewValid(true);
+      confirmationSessionRef.current = null;
+      blockedPreviewUpdatedAtRef.current = null;
+      message.success('投递证据已确认');
+    },
+    onError: (error: unknown, variables) => {
+      if (!isCurrentConfirmationSession(variables.applicationID, variables.sessionID)) return;
+
+      if (typeof error === 'object' && error !== null && 'response' in error) {
+        const response = error.response as { status?: number } | undefined;
+        if (response?.status === 409) {
+          setConfirmationError('提交材料已变化，请重新核对');
+          setConfirmationPreviewValid(false);
+          blockedPreviewUpdatedAtRef.current = evidencePreviewQuery.dataUpdatedAt;
+          void refreshEvidencePreview(variables.applicationID, variables.sessionID);
+          return;
+        }
+      }
+
+      setConfirmationError(getErrorMessage(error));
+    },
+  });
+
   const resumeOptions = (resumesQuery.data || []).map((resume: Resume) => ({
     label: resume.name,
     value: resume.id,
   }));
 
   const canSave = Boolean(existingKit && applicationID && existingKit.application_id === applicationID);
-  const displayedStatus: MaterialKitStatus = existingKit?.status === 'submitted' ? 'submitted' : status;
+  const legacySubmitted = existingKit?.status === 'submitted';
+  const canConfirm = Boolean(canSave && !legacySubmitted);
+  const displayedStatus: MaterialKitStatus = legacySubmitted ? 'submitted' : status;
   const generateDisabled = !applicationID || !resumeID || !jdSnapshot.trim();
-  const busy = kitQuery.isFetching || generateMutation.isPending || saveMutation.isPending;
+  const busy = kitQuery.isFetching || generateMutation.isPending || saveMutation.isPending || confirmMutation.isPending || confirmationRefreshing;
 
   const handleGenerate = () => {
     if (!applicationID || !resumeID || !jdSnapshot.trim()) return;
@@ -275,6 +438,48 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
       jdSnapshot,
       status: getMaterialKitStatusForSave(existingKit.status, status),
       content: cloneContent(content),
+    });
+  };
+
+  const openConfirmation = () => {
+    if (!canConfirm || confirmationOpen) return;
+
+    const sessionID = crypto.randomUUID();
+    confirmationSessionRef.current = sessionID;
+    setConfirmationKey(sessionID);
+    setConfirmationSubmittedAt(toLocalDateTimeInputValue(new Date()));
+    setConfirmationError(null);
+    setConfirmationOpen(true);
+  };
+
+  const closeConfirmation = () => {
+    if (confirmMutation.isPending) return;
+
+    setConfirmationOpen(false);
+    setConfirmationKey(null);
+    setConfirmationSubmittedAt('');
+    setConfirmationError(null);
+    confirmationSessionRef.current = null;
+  };
+
+  const handleConfirm = () => {
+    const preview = evidencePreviewQuery.data;
+    if (!applicationID || confirmationRefreshing || !confirmationPreviewValid || !preview?.ready || !confirmationKey || !confirmationSubmittedAt) return;
+
+    const submittedDate = new Date(confirmationSubmittedAt);
+    if (Number.isNaN(submittedDate.getTime())) {
+      setConfirmationError('请选择有效的投递时间');
+      return;
+    }
+
+    confirmMutation.mutate({
+      applicationID,
+      sessionID: confirmationKey,
+      input: {
+        submitted_at: submittedDate.toISOString(),
+        idempotency_key: confirmationKey,
+        expected_bundle_sha256: preview.bundle_sha256,
+      },
     });
   };
 
@@ -318,6 +523,12 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
       message.error('复制失败，请手动复制');
     }
   };
+
+  const evidencePreviewLoading = evidencePreviewQuery.isFetching && !evidencePreviewQuery.data;
+  const evidenceHistoryLoading = evidenceHistoryQuery.isFetching && !evidenceHistoryQuery.data;
+  const confirmationPreview = confirmationPreviewValid && !confirmationRefreshing && !evidencePreviewQuery.isError
+    ? evidencePreviewQuery.data
+    : undefined;
 
   if (!open) return null;
 
@@ -370,10 +581,10 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
 
               <Form.Item label="材料状态">
                 <Select
-                  value={existingKit?.status === 'submitted' ? undefined : status}
+                  value={legacySubmitted ? undefined : status}
                   onChange={(nextStatus: EditableMaterialKitStatus) => setStatus(nextStatus)}
                   options={EDITABLE_STATUS_OPTIONS}
-                  disabled={!canSave}
+                  disabled={!canSave || legacySubmitted}
                 />
               </Form.Item>
             </Form>
@@ -388,6 +599,15 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
 
             {actionError ? (
               <Alert type="error" showIcon message={actionError} className={styles.alert} />
+            ) : null}
+
+            {legacySubmitted ? (
+              <Alert
+                type="warning"
+                showIcon
+                message="旧投递标记，缺少证据快照"
+                className={styles.legacyWarning}
+              />
             ) : null}
 
             <Space className={styles.actionBar}>
@@ -408,7 +628,39 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
               >
                 保存
               </Button>
+              {canConfirm ? (
+                <Button type="primary" onClick={openConfirmation} disabled={busy}>
+                  确认已投递
+                </Button>
+              ) : null}
             </Space>
+
+            <section className={styles.evidenceHistory} data-testid="evidence-history" aria-label="投递证据历史">
+              <Typography.Text className={styles.evidenceHistoryTitle}>投递证据历史</Typography.Text>
+              {evidenceHistoryQuery.isError ? (
+                <div className={styles.historyError}>
+                  <Typography.Text>投递证据历史加载失败</Typography.Text>
+                  <Button size="small" onClick={() => void evidenceHistoryQuery.refetch()}>
+                    重新加载历史
+                  </Button>
+                </div>
+              ) : evidenceHistoryLoading ? (
+                <Typography.Text className={styles.evidenceEmpty}>正在加载投递证据历史，请稍候</Typography.Text>
+              ) : (evidenceHistoryQuery.data || []).length === 0 ? (
+                <Typography.Text className={styles.evidenceEmpty}>尚无已确认的投递证据</Typography.Text>
+              ) : (
+                <div className={styles.evidenceHistoryList}>
+                  {(evidenceHistoryQuery.data || []).map((entry) => (
+                    <div className={styles.evidenceHistoryItem} key={entry.id}>
+                      <Typography.Text>第 {entry.sequence} 次</Typography.Text>
+                      <Typography.Text className={styles.evidenceTime}>投递（本地）：{formatEvidenceTimestamp(entry.submitted_at)}</Typography.Text>
+                      <Typography.Text className={styles.evidenceTime}>确认（本地）：{formatEvidenceTimestamp(entry.confirmed_at)}</Typography.Text>
+                      <Typography.Text className={styles.evidenceHash}>{entry.bundle_sha256}</Typography.Text>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
           </aside>
 
           <main className={styles.editorPanel}>
@@ -428,7 +680,7 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
                       <Typography.Text className={styles.sectionHint}>把 AI 建议整理成可执行的修改清单</Typography.Text>
                     </div>
                     <Tag color={displayedStatus === 'submitted' ? 'green' : displayedStatus === 'ready' ? 'blue' : 'default'}>
-                      {STATUS_OPTIONS.find((item) => item.value === displayedStatus)?.label}
+                      {STATUS_LABELS[displayedStatus]}
                     </Tag>
                   </div>
 
@@ -538,6 +790,100 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
           </main>
         </div>
       </Spin>
+      <Modal
+        open={confirmationOpen}
+        title="确认投递证据"
+        onCancel={closeConfirmation}
+        destroyOnClose
+        footer={(
+          <Space className={styles.confirmationActions}>
+            <Button onClick={closeConfirmation} disabled={confirmMutation.isPending}>
+              取消
+            </Button>
+            {!confirmationPreviewValid || evidencePreviewQuery.isError ? (
+              <Button
+                onClick={() => {
+                  if (applicationID && confirmationKey) {
+                    void refreshEvidencePreview(applicationID, confirmationKey);
+                  }
+                }}
+                loading={confirmationRefreshing}
+                disabled={confirmationRefreshing || !applicationID || !confirmationKey}
+              >
+                重新刷新证据
+              </Button>
+            ) : null}
+            <Button
+              type="primary"
+              onClick={handleConfirm}
+              loading={confirmMutation.isPending}
+              disabled={confirmationRefreshing || evidencePreviewQuery.isError || !confirmationPreviewValid || !confirmationPreview?.ready || !confirmationKey || !confirmationSubmittedAt}
+            >
+              确认投递
+            </Button>
+          </Space>
+        )}
+      >
+        <div className={styles.confirmationBody}>
+          <Typography.Text className={styles.confirmationKind}>用户确认，非平台回执</Typography.Text>
+          <Typography.Paragraph className={styles.confirmationHint}>
+            请根据下方只读来源摘要核对本次投递；确认后会保留这份材料快照的哈希。
+          </Typography.Paragraph>
+
+          {confirmationPreview?.ready ? (
+            <div className={styles.sourceSummary}>
+              <div className={styles.sourceRow}>
+                <Typography.Text>岗位：{confirmationPreview.sources.application.company_name} · {confirmationPreview.sources.application.position_name}</Typography.Text>
+              </div>
+              <div className={styles.sourceRow}>
+                <Typography.Text>简历：{confirmationPreview.sources.resume.title}</Typography.Text>
+                <Typography.Text className={styles.evidenceHash}>{confirmationPreview.sources.resume.sha256}</Typography.Text>
+              </div>
+              <div className={styles.sourceRow}>
+                <Typography.Text>JD：{confirmationPreview.sources.jd.characters} 字符</Typography.Text>
+                <Typography.Text className={styles.evidenceHash}>{confirmationPreview.sources.jd.sha256}</Typography.Text>
+              </div>
+              <div className={styles.sourceRow}>
+                <Typography.Text>材料包：#{confirmationPreview.sources.material_kit.id}</Typography.Text>
+                <Typography.Text className={styles.evidenceHash}>{confirmationPreview.sources.material_kit.sha256}</Typography.Text>
+              </div>
+              <div className={styles.bundleHash}>
+                <Typography.Text>证据哈希</Typography.Text>
+                <Typography.Text className={styles.evidenceHash}>{confirmationPreview.bundle_sha256}</Typography.Text>
+              </div>
+            </div>
+          ) : (
+            <div className={styles.previewIssues}>
+              {confirmationRefreshing ? (
+                <Typography.Text>正在刷新材料证据，请稍候</Typography.Text>
+              ) : evidencePreviewLoading ? (
+                <Typography.Text>正在加载材料证据，请稍候</Typography.Text>
+              ) : evidencePreviewQuery.isError ? (
+                <Typography.Text>材料证据加载失败，请刷新后再确认</Typography.Text>
+              ) : (confirmationPreview?.issues || []).length > 0 ? (
+                <ul>
+                  {(confirmationPreview?.issues || []).map((issue) => <li key={issue}>{issue}</li>)}
+                </ul>
+              ) : (
+                <Typography.Text>材料证据尚未准备完成</Typography.Text>
+              )}
+            </div>
+          )}
+
+          <Form layout="vertical">
+            <Form.Item label="投递时间">
+              <Input
+                type="datetime-local"
+                value={confirmationSubmittedAt}
+                onChange={(event) => setConfirmationSubmittedAt(event.target.value)}
+                disabled={confirmationRefreshing || !confirmationPreview?.ready || confirmMutation.isPending}
+              />
+            </Form.Item>
+          </Form>
+
+          {confirmationError ? <Alert type="error" showIcon message={confirmationError} /> : null}
+        </div>
+      </Modal>
     </section>
   );
 }
