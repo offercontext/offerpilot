@@ -224,6 +224,31 @@ class MaterialKitOut(BaseModel):
     updated_at: datetime
 
 
+class ApplicationEvidenceBundleSummaryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    application_id: int
+    sequence: int
+    submitted_at: datetime
+    confirmed_at: datetime
+    confirmation_kind: str
+    bundle_sha256: str
+    created_at: datetime
+
+
+class ApplicationEvidenceBundleOut(ApplicationEvidenceBundleSummaryOut):
+    snapshot: dict[str, Any]
+
+
+class EvidenceBundlePreviewOut(BaseModel):
+    application_id: int
+    ready: bool
+    issues: list[str]
+    bundle_sha256: str | None = None
+    sources: dict[str, Any]
+
+
 class MockSessionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
