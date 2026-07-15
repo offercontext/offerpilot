@@ -1788,6 +1788,9 @@ class BriefWorker:
 
             # KBR-06：quality repair 路径把响应解析为 patch 并原子应用。
             if quality_repair_context is not None:
+                # 显式重新解包：apply_repair_patch 用的 candidate_brief/failed_block_set
+                # 在本块内显式绑定，不依赖 1738 块的跨 if 控制流推理。
+                candidate_brief, _failed_issues, failed_block_set = quality_repair_context
                 try:
                     patch = parse_repair_patch(raw_text)
                     brief = apply_repair_patch(

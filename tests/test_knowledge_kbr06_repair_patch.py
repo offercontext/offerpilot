@@ -381,6 +381,34 @@ def test_apply_unknown_block_rejected() -> None:
     assert exc_info.value.code == BRIEF_REPAIR_UNAUTHORIZED
 
 
+def test_apply_invalid_action_rejected() -> None:
+    """非法 action（如 modify/add/未知字符串）被拒。
+
+    与未知 block/重复操作/已通过 block/跨 Source Evidence 越权分支对称：
+    block_path 合法且在失败集合内，但 action 不在 VALID_REPAIR_ACTIONS 内
+    → brief_repair_invalid。
+    """
+    brief = _brief()
+    with pytest.raises(BriefSchemaError) as exc_info:
+        apply_repair_patch(
+            brief,
+            parse_repair_patch(
+                _patch(
+                    [
+                        {
+                            "block_path": "key_points[0]",
+                            "action": "modify",  # 非法 action
+                            "payload": {"statement": "新陈述。", "evidence_ids": ["ev_1"]},
+                        }
+                    ]
+                )
+            ),
+            failed_block_paths={"key_points[0]"},
+            source_evidence_ids=_source_evidence_ids(),
+        )
+    assert exc_info.value.code == BRIEF_REPAIR_INVALID
+
+
 def test_apply_malformed_block_path_rejected() -> None:
     """block_path 不匹配 ``name[idx]`` 形式（如 coverage[X]）被拒。"""
     brief = _brief()
@@ -597,7 +625,6 @@ def test_repair_delete_fixes_failure_then_succeeds(tmp_path: Path) -> None:
         source_id, snapshot_id=snapshot_id, limit=50
     ).items
     brief_json = build_supported_brief_json(evidence)
-    json.loads(brief_json)
     # validation 顺序：overview...→key_points...→section_guides[0]→limitations[0]（最后）。
     block_count = expected_validation_count(brief_json)
     unsupported_at = block_count - 1  # limitations[0] 是最后一个 block
@@ -640,7 +667,6 @@ def test_repair_split_fixes_compound_partial_then_succeeds(tmp_path: Path) -> No
     ).items
     brief_json = build_supported_brief_json(evidence)
     payload = json.loads(brief_json)
-    list(payload["key_points"][0]["evidence_ids"])
     # 用两条文本 Evidence 各支撑一条原子陈述。
     text_evs = [e.id for e in evidence if e.kind != "asset"]
     atom_a = text_evs[0]
