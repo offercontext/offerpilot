@@ -166,3 +166,12 @@ def test_strict_json_parser_rejects_fenced_markdown() -> None:
 
 def test_general_json_parser_preserves_legacy_fenced_json_support() -> None:
     assert parse_json_reply("```json\n{}\n```") == {}
+
+
+def test_strict_json_parser_rejects_non_finite_constants() -> None:
+    with pytest.raises(ValueError):
+        parse_json_reply(
+            '{"summary":"x","changes":[],"ignored":NaN}',
+            allow_fenced=False,
+            reject_non_finite=True,
+        )

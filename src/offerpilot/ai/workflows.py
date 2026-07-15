@@ -170,12 +170,21 @@ def complete_json(
             [Message(role="system", content=system), Message(role="user", content=user)],
             [],
         )
-        return parse_json_reply(assistant.content, allow_fenced=not strict_json)
+        return parse_json_reply(
+            assistant.content,
+            allow_fenced=not strict_json,
+            reject_non_finite=strict_json,
+        )
     except Exception as exc:
         raise RuntimeError(str(exc)) from exc
 
 
-def parse_json_reply(reply: str, *, allow_fenced: bool = True) -> dict[str, Any]:
+def parse_json_reply(
+    reply: str,
+    *,
+    allow_fenced: bool = True,
+    reject_non_finite: bool = False,
+) -> dict[str, Any]:
     text = reply.strip()
     if not allow_fenced and (text.startswith("```") or text.endswith("```")):
         raise RuntimeError("AI response must be raw JSON without Markdown fences")
@@ -186,10 +195,17 @@ def parse_json_reply(reply: str, *, allow_fenced: bool = True) -> dict[str, Any]
         fence = text.rfind("```")
         if fence >= 0:
             text = text[:fence].strip()
-    value = json.loads(text)
+    json_options: dict[str, Any] = {}
+    if reject_non_finite:
+        json_options["parse_constant"] = _reject_non_finite_json_constant
+    value = json.loads(text, **json_options)
     if not isinstance(value, dict):
         raise RuntimeError("AI response must be a JSON object")
     return value
+
+
+def _reject_non_finite_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant is not allowed: {value}")
 
 
 def structured_ai_system() -> str:
