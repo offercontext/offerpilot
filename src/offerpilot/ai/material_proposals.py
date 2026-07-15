@@ -6,7 +6,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from offerpilot.ai.agent import ChatModel
-from offerpilot.ai.workflows import complete_json
+from offerpilot.ai.types import Message
+from offerpilot.ai.workflows import parse_json_reply
 
 ALLOWED_PATH_PREFIXES = (
     ("career_intent", "target_roles"),
@@ -16,10 +17,25 @@ ALLOWED_PATH_PREFIXES = (
     ("raw_text",),
 )
 EVIDENCE_SOURCES = {"resume", "evidence_bundle", "user_assertion"}
+PROPOSAL_FIELDS = {"summary", "changes"}
+CHANGE_FIELDS = {"id", "path", "before", "after", "rationale", "evidence_refs"}
+EVIDENCE_REF_FIELDS = {"source", "path", "excerpt"}
 
 
 class MaterialProposalModelError(ValueError):
+    def __init__(self, message: str, *, failure_category: str = "invalid_change_shape") -> None:
+        super().__init__(message)
+        self.failure_category = failure_category
+
+
+class _MaterialProposalProviderError(Exception):
     pass
+
+
+class _MaterialProposalFormatError(Exception):
+    def __init__(self, failure_category: str) -> None:
+        super().__init__(failure_category)
+        self.failure_category = failure_category
 
 
 @dataclass(frozen=True)
@@ -33,6 +49,8 @@ def validate_material_proposal(
 ) -> ValidatedProposal:
     if not isinstance(payload, dict):
         raise MaterialProposalModelError("model output must be a JSON object")
+    if set(payload) != PROPOSAL_FIELDS:
+        raise MaterialProposalModelError("top-level fields must be exactly summary and changes")
     summary = payload.get("summary")
     changes = payload.get("changes")
     if not isinstance(summary, str) or not summary.strip():
@@ -50,6 +68,8 @@ def validate_material_proposal(
     for raw_change in changes:
         if not isinstance(raw_change, dict):
             raise MaterialProposalModelError("each change must be an object")
+        if set(raw_change) != CHANGE_FIELDS:
+            raise MaterialProposalModelError("change fields must be exactly the defined contract")
         change_id = raw_change.get("id")
         path = raw_change.get("path")
         before = raw_change.get("before")
@@ -103,18 +123,56 @@ def generate_material_proposal(
     source_snapshot: dict[str, Any],
     instructions: str,
 ) -> ValidatedProposal:
-    try:
-        result = complete_json(
-            model,
-            system=_material_proposal_system(),
-            user=_material_proposal_prompt(source_snapshot, instructions),
-            strict_json=True,
+    system = _material_proposal_system()
+    prompt = _material_proposal_prompt(source_snapshot, instructions)
+    repair_category = ""
+    for attempt in range(2):
+        user = prompt if attempt == 0 else _material_proposal_repair_prompt(
+            source_snapshot,
+            instructions,
+            repair_category,
         )
-        return validate_material_proposal(result, source_snapshot)
-    except MaterialProposalModelError:
-        raise
+        try:
+            result = _complete_material_json(model, system, user)
+            return validate_material_proposal(result, source_snapshot)
+        except _MaterialProposalProviderError as exc:
+            raise MaterialProposalModelError(
+                "model provider request failed",
+                failure_category="provider_error",
+            ) from exc
+        except _MaterialProposalFormatError as exc:
+            repair_category = exc.failure_category
+        except MaterialProposalModelError as exc:
+            repair_category = _model_failure_category(str(exc))
+
+    raise MaterialProposalModelError(
+        "model output could not be verified",
+        failure_category=repair_category or "invalid_change_shape",
+    )
+
+
+def _complete_material_json(model: ChatModel, system: str, user: str) -> dict[str, Any]:
+    try:
+        assistant = model.complete(
+            [Message(role="system", content=system), Message(role="user", content=user)],
+            [],
+        )
     except Exception as exc:
-        raise MaterialProposalModelError("model output could not be parsed") from exc
+        raise _MaterialProposalProviderError() from exc
+    try:
+        return parse_json_reply(
+            assistant.content,
+            allow_fenced=False,
+            reject_non_finite=True,
+        )
+    except Exception as exc:
+        raise _MaterialProposalFormatError("invalid_json") from exc
+
+
+def _model_failure_category(message: str) -> str:
+    if "evidence" in message or "excerpt" in message:
+        return "invalid_evidence_reference"
+    return "invalid_change_shape"
 
 
 def _parse_allowed_pointer(path: str) -> tuple[str, ...]:
@@ -198,6 +256,8 @@ def _set_pointer(root: Any, pointer: tuple[str, ...], value: str) -> None:
 def _validate_evidence_ref(ref: Any, snapshot: dict[str, Any], change_pointer: tuple[str, ...]) -> None:
     if not isinstance(ref, dict):
         raise MaterialProposalModelError("evidence reference must be an object")
+    if set(ref) != EVIDENCE_REF_FIELDS:
+        raise MaterialProposalModelError("evidence reference fields must be exactly source, path, and excerpt")
     source = ref.get("source")
     path = ref.get("path")
     excerpt = ref.get("excerpt")
@@ -245,13 +305,33 @@ def _parse_pointer(path: str) -> tuple[str, ...]:
 
 
 def _material_proposal_system() -> str:
-    return (
-        "You are an evidence-gated resume editor. Return only a JSON object with "
-        "summary and changes. Every change must cite an exact internal source excerpt. "
-        "The JD is only a rewrite direction, never a candidate-fact source. Do not invent "
-        "numbers, dates, employers, roles, technologies, responsibilities, or outcomes. "
-        "User assertions are explicitly supplied but are not platform-verified facts."
-    )
+    return """You are an evidence-gated resume editor. Return raw JSON only, never Markdown fences.
+The top-level object must be exactly {"summary": string, "changes": array}.
+Each change must contain string fields: id, path, before, after, rationale.
+Each change must contain a non-empty evidence_refs array. Each evidence_refs item must be exactly
+{"source": string, "path": string, "excerpt": string}.
+Allowed change paths are only:
+/raw_text
+/skills/<index>
+/career_intent/target_roles/<index>
+/experience/<index>/highlights/<index>
+/projects/<index>/highlights/<index>
+The path must exist in the supplied editable-field inventory, and before must equal that field's
+current value exactly. after must be a non-empty string.
+Evidence rules:
+- source=resume may cite only a relative path in resume content_json.
+- source=evidence_bundle may cite only /resume/content_json/... in the confirmed bundle snapshot.
+- source=user_assertion may cite only /user_assertions/<index>/text.
+- Every excerpt must be a non-empty string exactly equal to the frozen snapshot value at its path.
+The JD only determines rewrite direction; it is never candidate evidence. Do not invent numbers,
+dates, employers, roles, technologies, responsibilities, or outcomes. User assertions are supplied
+by the candidate but are not platform-verified facts.
+
+Valid empty proposal:
+{"summary":"No safe evidence-backed changes are available.","changes":[]}
+
+Valid single-change proposal:
+{"summary":"Make the existing API work more specific.","changes":[{"id":"change-1","path":"/experience/0/highlights/0","before":"Built APIs","after":"Built FastAPI APIs","rationale":"Clarify an existing candidate statement.","evidence_refs":[{"source":"resume","path":"/experience/0/highlights/0","excerpt":"Built APIs"}]}]}"""
 
 
 def _material_proposal_prompt(source_snapshot: dict[str, Any], instructions: str) -> str:
@@ -259,6 +339,62 @@ def _material_proposal_prompt(source_snapshot: dict[str, Any], instructions: str
         "Create a reviewable proposal from this frozen source snapshot. Empty changes are "
         "valid when no safe evidence-backed edit exists. Use only the allowed paths and "
         "the exact JSON shape described by the system message.\n"
+        "Editable string fields and exact current before values:\n"
+        f"{_editable_field_inventory(source_snapshot)}\n"
         f"User instructions: {instructions.strip()}\n"
         f"Frozen source snapshot:\n{json.dumps(source_snapshot, ensure_ascii=False, sort_keys=True)}"
     )
+
+
+def _material_proposal_repair_prompt(
+    source_snapshot: dict[str, Any],
+    instructions: str,
+    failure_category: str,
+) -> str:
+    return (
+        "Repair the previous material proposal attempt. The safe failure category is "
+        f"{failure_category}. Return only raw JSON that follows the established contract; "
+        "do not explain the repair, do not include Markdown fences, and do not repeat invalid "
+        "field shapes. Use an empty changes array if no safe evidence-backed edit can be made.\n"
+        "Editable string fields and exact current before values:\n"
+        f"{_editable_field_inventory(source_snapshot)}\n"
+        f"User instructions: {instructions.strip()}\n"
+        f"Frozen source snapshot:\n{json.dumps(source_snapshot, ensure_ascii=False, sort_keys=True)}"
+    )
+
+
+def _editable_field_inventory(source_snapshot: dict[str, Any]) -> str:
+    resume = source_snapshot.get("resume")
+    content = resume.get("content_json") if isinstance(resume, dict) else None
+    if not isinstance(content, dict):
+        return "(none)"
+
+    fields: list[str] = []
+
+    def add(path: str, value: Any) -> None:
+        if isinstance(value, str):
+            fields.append(f"{path} -> {value}")
+
+    add("/raw_text", content.get("raw_text"))
+    skills = content.get("skills")
+    if isinstance(skills, list):
+        for index, value in enumerate(skills):
+            add(f"/skills/{index}", value)
+
+    career_intent = content.get("career_intent")
+    target_roles = career_intent.get("target_roles") if isinstance(career_intent, dict) else None
+    if isinstance(target_roles, list):
+        for index, value in enumerate(target_roles):
+            add(f"/career_intent/target_roles/{index}", value)
+
+    for section in ("experience", "projects"):
+        entries = content.get(section)
+        if not isinstance(entries, list):
+            continue
+        for item_index, entry in enumerate(entries):
+            highlights = entry.get("highlights") if isinstance(entry, dict) else None
+            if isinstance(highlights, list):
+                for highlight_index, value in enumerate(highlights):
+                    add(f"/{section}/{item_index}/highlights/{highlight_index}", value)
+
+    return "\n".join(fields) if fields else "(none)"

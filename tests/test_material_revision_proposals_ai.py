@@ -4,8 +4,10 @@ import json
 
 import pytest
 
+from offerpilot.ai.types import Assistant
 from offerpilot.ai.material_proposals import (
     MaterialProposalModelError,
+    generate_material_proposal,
     validate_material_proposal,
 )
 from offerpilot.ai.workflows import parse_json_reply
@@ -176,3 +178,134 @@ def test_strict_json_parser_rejects_non_finite_constants(constant: str) -> None:
             allow_fenced=False,
             reject_non_finite=True,
         )
+
+
+def test_generate_material_proposal_repairs_one_invalid_change_shape() -> None:
+    invalid = _payload()
+    invalid["changes"][0] = dict(invalid["changes"][0])  # type: ignore[index]
+    invalid["changes"][0]["before"] = {"not": "a string"}  # type: ignore[index]
+    valid = _payload()
+
+    class RepairingModel:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.messages: list[str] = []
+
+        def complete(self, messages, tools):  # type: ignore[no-untyped-def]
+            self.calls += 1
+            self.messages.append(messages[-1].content)
+            return Assistant(content=json.dumps(invalid if self.calls == 1 else valid))
+
+    model = RepairingModel()
+    result = generate_material_proposal(model, _snapshot(), "Highlight API experience")
+
+    assert model.calls == 2
+    assert result.proposal == valid
+    assert "invalid_change_shape" in model.messages[1]
+    assert "not a string" not in model.messages[1]
+
+
+def test_generate_material_proposal_fails_after_one_invalid_repair() -> None:
+    invalid = {"summary": "bad", "changes": [{"before": {"not": "a string"}}]}
+
+    class InvalidModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, messages, tools):  # type: ignore[no-untyped-def]
+            self.calls += 1
+            return Assistant(content=json.dumps(invalid))
+
+    model = InvalidModel()
+    with pytest.raises(MaterialProposalModelError):
+        generate_material_proposal(model, _snapshot(), "")
+
+    assert model.calls == 2
+
+
+def test_generate_material_proposal_does_not_retry_provider_errors() -> None:
+    class ProviderFailure:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, messages, tools):  # type: ignore[no-untyped-def]
+            self.calls += 1
+            raise RuntimeError("provider unavailable")
+
+    model = ProviderFailure()
+    with pytest.raises(MaterialProposalModelError):
+        generate_material_proposal(model, _snapshot(), "")
+
+    assert model.calls == 1
+
+
+def test_material_proposal_prompt_lists_contract_and_editable_before_values() -> None:
+    from offerpilot.ai.material_proposals import _material_proposal_prompt, _material_proposal_system
+
+    system = _material_proposal_system()
+    prompt = _material_proposal_prompt(_snapshot(), "")
+
+    assert '"summary": string' in system
+    assert "non-empty evidence_refs array" in system
+    assert "/experience/0/highlights/0 -> Built APIs" in prompt
+    assert "/skills/0 -> Python" in prompt
+
+
+@pytest.mark.parametrize(
+    "payload, message",
+    [
+        (
+            {
+                "summary": "No safe changes.",
+                "changes": [],
+                "source_snapshot": "must not be accepted",
+            },
+            "top-level fields",
+        ),
+        (
+            {
+                "summary": "Tailor the API experience.",
+                "changes": [
+                    {
+                        "id": "change-1",
+                        "path": "/experience/0/highlights/0",
+                        "before": "Built APIs",
+                        "after": "Built FastAPI APIs",
+                        "rationale": "Clarify the existing work.",
+                        "evidence_refs": [
+                            {
+                                "source": "resume",
+                                "path": "/experience/0/highlights/0",
+                                "excerpt": "Built APIs",
+                                "raw_snapshot": "must not be accepted",
+                            }
+                        ],
+                    }
+                ],
+            },
+            "evidence reference fields",
+        ),
+        (
+            {
+                "summary": "Tailor the API experience.",
+                "changes": [
+                    {
+                        "id": "change-1",
+                        "path": "/experience/0/highlights/0",
+                        "before": "Built APIs",
+                        "after": "Built FastAPI APIs",
+                        "rationale": "Clarify the existing work.",
+                        "evidence_refs": [],
+                        "debug": "must not be accepted",
+                    }
+                ],
+            },
+            "change fields",
+        ),
+    ],
+)
+def test_validator_rejects_extra_contract_fields(
+    payload: dict[str, object], message: str
+) -> None:
+    with pytest.raises(MaterialProposalModelError, match=message):
+        validate_material_proposal(payload, _snapshot())

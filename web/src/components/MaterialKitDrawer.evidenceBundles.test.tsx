@@ -319,6 +319,29 @@ describe('MaterialKitDrawer evidence confirmation', () => {
     expect(proposalService.createMaterialRevisionProposal).not.toHaveBeenCalled();
   });
 
+  it('shows a product error when the proposal cannot be verified', async () => {
+    proposalService.createMaterialRevisionProposal.mockRejectedValue({
+      response: {
+        data: {
+          code: 'material_proposal_unverifiable',
+          error: 'AI returned a proposal that could not be verified. Please retry.',
+        },
+      },
+    });
+    const view = render();
+    await flush();
+
+    setProposalAssertions(view, 'I led the migration.');
+    clickByText(view, 'Generate evidence-gated resume proposal');
+    await flush();
+
+    expect(view.textContent).toContain(
+      'AI output did not pass evidence verification. Please retry; your original resume is protected and no draft was created.',
+    );
+    expect(view.textContent).not.toContain('Request failed with status code 502');
+    expect(buttonByText(view, 'Generate evidence-gated resume proposal')?.disabled).toBe(false);
+  });
+
   it('shows the user-attestation statement and concrete unready preview issues before confirmation', async () => {
     queryState.preview = {
       application_id: 7,

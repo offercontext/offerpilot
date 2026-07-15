@@ -500,8 +500,17 @@ def create_app(
             return error_response(404, "Application not found")
         except MaterialProposalValidationError as exc:
             return error_response(422, str(exc))
-        except MaterialProposalModelError:
-            return error_response(502, "Model returned an unverifiable material proposal, please retry")
+        except MaterialProposalModelError as exc:
+            append_log_entry(
+                resolved_data_dir,
+                "WARNING",
+                f"material_proposal_{exc.failure_category}",
+            )
+            return error_response(
+                502,
+                "AI returned a proposal that could not be verified. Please retry.",
+                code="material_proposal_unverifiable",
+            )
         return JSONResponse(_material_revision_proposal_detail_json(proposal), status_code=201)
 
     @app.get("/api/applications/{app_id}/material-revision-proposals")
@@ -2663,8 +2672,11 @@ def create_app(
     return app
 
 
-def error_response(status_code: int, message: str) -> JSONResponse:
-    return JSONResponse({"error": message}, status_code=status_code)
+def error_response(status_code: int, message: str, *, code: str | None = None) -> JSONResponse:
+    payload: dict[str, str] = {"error": message}
+    if code:
+        payload["code"] = code
+    return JSONResponse(payload, status_code=status_code)
 
 
 def _confirmation_input(

@@ -166,6 +166,15 @@ function formatConfirmationKind(value: string): string {
 }
 
 function getErrorMessage(error: unknown): string {
+  const responseData = (
+    error as { response?: { data?: { code?: unknown; error?: unknown } } }
+  )?.response?.data;
+  if (responseData?.code === 'material_proposal_unverifiable') {
+    return 'AI output did not pass evidence verification. Please retry; your original resume is protected and no draft was created.';
+  }
+  if (typeof responseData?.error === 'string' && responseData.error) {
+    return responseData.error;
+  }
   if (error instanceof Error && error.message) return error.message;
   return '操作失败，请稍后重试';
 }

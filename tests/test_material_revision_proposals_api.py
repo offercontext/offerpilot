@@ -107,6 +107,10 @@ def test_api_rejects_invalid_model_without_writing_and_hides_deleted_application
         json={"instructions": "", "user_assertions": []},
     )
     assert response.status_code == 502
+    assert response.json() == {
+        "code": "material_proposal_unverifiable",
+        "error": "AI returned a proposal that could not be verified. Please retry.",
+    }
     assert client.get(f"/api/applications/{app['id']}/material-revision-proposals").json() == []
 
     deleted = client.delete(f"/api/applications/{app['id']}")
