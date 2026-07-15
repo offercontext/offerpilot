@@ -170,6 +170,25 @@ function getErrorMessage(error: unknown): string {
   return '操作失败，请稍后重试';
 }
 
+interface ProposalAssertionsValidation {
+  values: string[];
+  error: string | null;
+}
+
+function validateProposalAssertions(raw: string): ProposalAssertionsValidation {
+  const values = raw
+    .split(/\r?\n/)
+    .map((assertion) => assertion.trim())
+    .filter(Boolean);
+  if (values.length > 10) {
+    return { values, error: 'At most 10 non-empty assertions.' };
+  }
+  if (values.some((assertion) => assertion.length > 500)) {
+    return { values, error: 'Each assertion must be 500 characters or fewer.' };
+  }
+  return { values, error: null };
+}
+
 export default function MaterialKitDrawer({ application, open, onClose }: Props) {
   const { message } = AntApp.useApp();
   const queryClient = useQueryClient();
@@ -198,6 +217,10 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
   const [proposalReviewOpen, setProposalReviewOpen] = useState(false);
   const [proposal, setProposal] = useState<MaterialRevisionProposal | null>(null);
   const [proposalAssertions, setProposalAssertions] = useState('');
+  const proposalAssertionsValidation = useMemo(
+    () => validateProposalAssertions(proposalAssertions),
+    [proposalAssertions],
+  );
 
   const isCurrentConfirmationSession = (requestedApplicationID: number, sessionID: string) =>
     activeApplicationIDRef.current === requestedApplicationID && confirmationSessionRef.current === sessionID;
@@ -494,11 +517,12 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
 
   const handleGenerateProposal = () => {
     if (proposalDisabled || !applicationID) return;
-    const userAssertions = proposalAssertions
-      .split(/\r?\n/)
-      .map((assertion) => assertion.trim())
-      .filter(Boolean);
-    proposalMutation.mutate({ applicationID, instructions: '', userAssertions });
+    if (proposalAssertionsValidation.error) return;
+    proposalMutation.mutate({
+      applicationID,
+      instructions: '',
+      userAssertions: proposalAssertionsValidation.values,
+    });
   };
 
   const handleProposalAccepted = () => {
@@ -701,6 +725,9 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
                   rows={4}
                   disabled={!application}
                 />
+                {proposalAssertionsValidation.error ? (
+                  <Typography.Text type="danger">{proposalAssertionsValidation.error}</Typography.Text>
+                ) : null}
               </Form.Item>
 
               <Form.Item label="材料状态">
@@ -755,7 +782,7 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
               <Button
                 onClick={handleGenerateProposal}
                 loading={proposalMutation.isPending}
-                disabled={proposalDisabled || busy}
+                disabled={proposalDisabled || busy || Boolean(proposalAssertionsValidation.error)}
               >
                 Generate evidence-gated resume proposal
               </Button>

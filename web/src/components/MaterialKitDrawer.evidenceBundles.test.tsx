@@ -222,11 +222,28 @@ async function flush() {
   });
 }
 
+function buttonByText(view: HTMLDivElement, text: string) {
+  return [...view.querySelectorAll('button')].find((item) => item.textContent?.includes(text)) as HTMLButtonElement | undefined;
+}
+
 function clickByText(view: HTMLDivElement, text: string) {
-  const button = [...view.querySelectorAll('button')].find((item) => item.textContent?.includes(text));
+  const button = buttonByText(view, text);
   expect(button, `expected button ${text}`).toBeInstanceOf(HTMLButtonElement);
   act(() => button?.click());
   return button as HTMLButtonElement;
+}
+
+function setProposalAssertions(view: HTMLDivElement, value: string) {
+  const input = view.querySelector<HTMLTextAreaElement>(
+    'textarea[placeholder="One candidate fact per line"]',
+  );
+  expect(input).toBeInstanceOf(HTMLTextAreaElement);
+  act(() => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+    setter?.call(input, value);
+    input?.dispatchEvent(new Event('input', { bubbles: true }));
+    input?.dispatchEvent(new Event('change', { bubbles: true }));
+  });
 }
 
 function formatLocalDateTime(date: Date) {
@@ -271,16 +288,7 @@ describe('MaterialKitDrawer evidence confirmation', () => {
     const view = render();
     await flush();
 
-    const assertions = view.querySelector<HTMLTextAreaElement>(
-      'textarea[placeholder="One candidate fact per line"]',
-    );
-    expect(assertions).toBeInstanceOf(HTMLTextAreaElement);
-    act(() => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
-      setter?.call(assertions, 'I led the migration.\nI shipped the API.');
-      assertions?.dispatchEvent(new Event('input', { bubbles: true }));
-      assertions?.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    setProposalAssertions(view, 'I led the migration.\nI shipped the API.');
 
     clickByText(view, 'Generate evidence-gated resume proposal');
     await flush();
@@ -289,6 +297,26 @@ describe('MaterialKitDrawer evidence confirmation', () => {
       instructions: '',
       user_assertions: ['I led the migration.', 'I shipped the API.'],
     });
+  });
+
+  it('blocks proposal generation when there are more than ten assertions', async () => {
+    const view = render();
+    await flush();
+    setProposalAssertions(view, Array.from({ length: 11 }, (_, index) => `Fact ${index + 1}`).join('\n'));
+
+    expect(view.textContent).toContain('At most 10 non-empty assertions.');
+    expect(buttonByText(view, 'Generate evidence-gated resume proposal')?.disabled).toBe(true);
+    expect(proposalService.createMaterialRevisionProposal).not.toHaveBeenCalled();
+  });
+
+  it('blocks proposal generation when an assertion exceeds 500 characters', async () => {
+    const view = render();
+    await flush();
+    setProposalAssertions(view, 'x'.repeat(501));
+
+    expect(view.textContent).toContain('Each assertion must be 500 characters or fewer.');
+    expect(buttonByText(view, 'Generate evidence-gated resume proposal')?.disabled).toBe(true);
+    expect(proposalService.createMaterialRevisionProposal).not.toHaveBeenCalled();
   });
 
   it('shows the user-attestation statement and concrete unready preview issues before confirmation', async () => {
