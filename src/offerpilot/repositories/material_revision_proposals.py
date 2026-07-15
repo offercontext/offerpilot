@@ -9,7 +9,6 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from offerpilot.ai.agent import ChatModel
 from offerpilot.ai.material_proposals import (
-    MaterialProposalModelError,
     generate_material_proposal,
     validate_material_proposal,
 )
@@ -54,11 +53,13 @@ class MaterialRevisionProposalsRepository:
     ) -> MaterialRevisionProposal:
         with self._session_factory() as session:
             snapshot, fingerprint = build_source_snapshot(session, application_id, user_assertions)
-            try:
-                validated = generate_material_proposal(model, snapshot, instructions)
-            except MaterialProposalModelError:
-                raise
-            proposal_json = canonical_json(validated.proposal)
+
+        # Do not keep a database connection checked out while waiting for the AI
+        # provider. Acceptance rechecks the fingerprint and returns 409 if this
+        # frozen source changed during generation.
+        validated = generate_material_proposal(model, snapshot, instructions)
+        proposal_json = canonical_json(validated.proposal)
+        with self._session_factory() as session:
             proposal = MaterialRevisionProposal(
                 application_id=application_id,
                 material_kit_id=int(snapshot["material_kit"]["id"]),

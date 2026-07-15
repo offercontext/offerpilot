@@ -31,6 +31,10 @@ const evidenceService = vi.hoisted(() => ({
   listEvidenceBundles: vi.fn(),
 }));
 
+const proposalService = vi.hoisted(() => ({
+  createMaterialRevisionProposal: vi.fn(),
+}));
+
 vi.mock('@tanstack/react-query', () => ({
   useMutation: (options: any) => ({
     isPending: false,
@@ -130,6 +134,7 @@ vi.mock('@ant-design/icons', () => ({
 }));
 
 vi.mock('@/services/evidenceBundles', () => evidenceService);
+vi.mock('@/services/materialRevisionProposals', () => proposalService);
 vi.mock('@/services/materialKits', () => ({
   generateApplicationMaterialKit: vi.fn(),
   getApplicationMaterialKit: vi.fn(),
@@ -246,6 +251,8 @@ beforeEach(() => {
   evidenceService.getEvidenceBundle.mockReset();
   evidenceService.getEvidenceBundlePreview.mockReset();
   evidenceService.listEvidenceBundles.mockReset();
+  proposalService.createMaterialRevisionProposal.mockReset();
+  proposalService.createMaterialRevisionProposal.mockResolvedValue(null);
   vi.stubGlobal('crypto', { randomUUID: vi.fn(() => 'e2ddc6c1-2a4d-4bd6-8969-7c0bc29cc771') });
 });
 
@@ -260,6 +267,30 @@ afterEach(() => {
 });
 
 describe('MaterialKitDrawer evidence confirmation', () => {
+  it('sends user-supplied candidate assertions with a generated proposal', async () => {
+    const view = render();
+    await flush();
+
+    const assertions = view.querySelector<HTMLTextAreaElement>(
+      'textarea[placeholder="One candidate fact per line"]',
+    );
+    expect(assertions).toBeInstanceOf(HTMLTextAreaElement);
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+      setter?.call(assertions, 'I led the migration.\nI shipped the API.');
+      assertions?.dispatchEvent(new Event('input', { bubbles: true }));
+      assertions?.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+
+    clickByText(view, 'Generate evidence-gated resume proposal');
+    await flush();
+
+    expect(proposalService.createMaterialRevisionProposal).toHaveBeenCalledWith(7, {
+      instructions: '',
+      user_assertions: ['I led the migration.', 'I shipped the API.'],
+    });
+  });
+
   it('shows the user-attestation statement and concrete unready preview issues before confirmation', async () => {
     queryState.preview = {
       application_id: 7,

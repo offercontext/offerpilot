@@ -8,6 +8,7 @@ from offerpilot.ai.material_proposals import (
     MaterialProposalModelError,
     validate_material_proposal,
 )
+from offerpilot.ai.workflows import parse_json_reply
 
 
 def _snapshot() -> dict[str, object]:
@@ -108,3 +109,60 @@ def test_validator_accepts_empty_changes_without_inventing_content() -> None:
 def test_validator_rejects_non_object_model_output() -> None:
     with pytest.raises(MaterialProposalModelError):
         validate_material_proposal(json.loads("[]"), _snapshot())
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/jd/text", "/application/company_name", "/application/position_name"],
+)
+def test_validator_rejects_jd_and_application_evidence_bundle_paths(path: str) -> None:
+    snapshot = _snapshot()
+    snapshot["latest_evidence_bundle"] = {
+        "id": 4,
+        "bundle_sha256": "bundle",
+        "snapshot": {
+            "jd": {"text": "FastAPI backend"},
+            "application": {"company_name": "Acme", "position_name": "Backend"},
+        },
+    }
+    payload = _payload()
+    change = dict(payload["changes"][0])  # type: ignore[index]
+    change["evidence_refs"] = [{"source": "evidence_bundle", "path": path, "excerpt": "Acme"}]
+    if path == "/jd/text":
+        change["evidence_refs"][0]["excerpt"] = "FastAPI backend"  # type: ignore[index]
+    payload["changes"] = [change]
+
+    with pytest.raises(MaterialProposalModelError):
+        validate_material_proposal(payload, snapshot)
+
+
+def test_validator_rejects_empty_evidence_excerpt() -> None:
+    snapshot = _snapshot()
+    snapshot["resume"]["content_json"]["skills"] = [""]  # type: ignore[index]
+    payload = {
+        "summary": "Fill a missing skill.",
+        "changes": [
+            {
+                "id": "change-empty-skill",
+                "path": "/skills/0",
+                "before": "",
+                "after": "Kubernetes",
+                "rationale": "Use only an explicit candidate fact.",
+                "evidence_refs": [
+                    {"source": "resume", "path": "/skills/0", "excerpt": ""}
+                ],
+            }
+        ],
+    }
+
+    with pytest.raises(MaterialProposalModelError):
+        validate_material_proposal(payload, snapshot)
+
+
+def test_strict_json_parser_rejects_fenced_markdown() -> None:
+    with pytest.raises(RuntimeError):
+        parse_json_reply("```json\n{}\n```", allow_fenced=False)
+
+
+def test_general_json_parser_preserves_legacy_fenced_json_support() -> None:
+    assert parse_json_reply("```json\n{}\n```") == {}

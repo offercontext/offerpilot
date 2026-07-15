@@ -108,6 +108,7 @@ def generate_material_proposal(
             model,
             system=_material_proposal_system(),
             user=_material_proposal_prompt(source_snapshot, instructions),
+            strict_json=True,
         )
         return validate_material_proposal(result, source_snapshot)
     except MaterialProposalModelError:
@@ -202,6 +203,8 @@ def _validate_evidence_ref(ref: Any, snapshot: dict[str, Any], change_pointer: t
     excerpt = ref.get("excerpt")
     if source not in EVIDENCE_SOURCES or not isinstance(path, str) or not isinstance(excerpt, str):
         raise MaterialProposalModelError("evidence reference is invalid")
+    if not excerpt.strip():
+        raise MaterialProposalModelError("evidence excerpt must be non-empty")
     if source == "resume":
         pointer = _parse_pointer(path)
         value = _get_pointer(snapshot["resume"]["content_json"], pointer)
@@ -212,7 +215,7 @@ def _validate_evidence_ref(ref: Any, snapshot: dict[str, Any], change_pointer: t
         bundle = snapshot.get("latest_evidence_bundle")
         if not isinstance(bundle, dict) or not isinstance(bundle.get("snapshot"), dict):
             raise MaterialProposalModelError("evidence bundle reference is unavailable")
-        value = _get_pointer(bundle["snapshot"], _parse_pointer(path))
+        value = _get_pointer(bundle["snapshot"], _parse_evidence_bundle_pointer(path))
     if not isinstance(value, str) or value != excerpt:
         raise MaterialProposalModelError("evidence excerpt does not match the cited source")
 
@@ -223,6 +226,15 @@ def _parse_assertion_pointer(path: str) -> tuple[str, ...]:
     parts = _parse_pointer(path)
     if len(parts) != 3 or parts[0] != "user_assertions" or not _is_canonical_index(parts[1]) or parts[2] != "text":
         raise MaterialProposalModelError("user assertion path is not allowed")
+    return parts
+
+
+def _parse_evidence_bundle_pointer(path: str) -> tuple[str, ...]:
+    parts = _parse_pointer(path)
+    if len(parts) < 3 or parts[:2] != ("resume", "content_json"):
+        raise MaterialProposalModelError(
+            "evidence bundle references must point to confirmed resume content"
+        )
     return parts
 
 

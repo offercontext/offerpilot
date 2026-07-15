@@ -197,6 +197,7 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
   const [evidenceDetailLoading, setEvidenceDetailLoading] = useState(false);
   const [proposalReviewOpen, setProposalReviewOpen] = useState(false);
   const [proposal, setProposal] = useState<MaterialRevisionProposal | null>(null);
+  const [proposalAssertions, setProposalAssertions] = useState('');
 
   const isCurrentConfirmationSession = (requestedApplicationID: number, sessionID: string) =>
     activeApplicationIDRef.current === requestedApplicationID && confirmationSessionRef.current === sessionID;
@@ -220,6 +221,7 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
     setEvidenceDetailLoading(false);
     setProposalReviewOpen(false);
     setProposal(null);
+    setProposalAssertions('');
     confirmationSessionRef.current = null;
     blockedPreviewUpdatedAtRef.current = null;
   };
@@ -492,7 +494,11 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
 
   const handleGenerateProposal = () => {
     if (proposalDisabled || !applicationID) return;
-    proposalMutation.mutate({ applicationID, instructions: '', userAssertions: [] });
+    const userAssertions = proposalAssertions
+      .split(/\r?\n/)
+      .map((assertion) => assertion.trim())
+      .filter(Boolean);
+    proposalMutation.mutate({ applicationID, instructions: '', userAssertions });
   };
 
   const handleProposalAccepted = () => {
@@ -683,6 +689,16 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
                   onChange={(event) => setJdSnapshot(event.target.value)}
                   placeholder="粘贴岗位 JD，或使用投递备注作为默认内容"
                   rows={8}
+                  disabled={!application}
+                />
+              </Form.Item>
+
+              <Form.Item label="Additional candidate facts (one per line)">
+                <Input.TextArea
+                  value={proposalAssertions}
+                  onChange={(event) => setProposalAssertions(event.target.value)}
+                  placeholder="One candidate fact per line"
+                  rows={4}
                   disabled={!application}
                 />
               </Form.Item>

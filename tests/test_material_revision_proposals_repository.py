@@ -18,6 +18,32 @@ from offerpilot.repositories.material_revision_proposals import (
 from offerpilot.repositories.resumes import ResumeCreate, ResumesRepository
 
 
+class _TrackedSession:
+    def __init__(self, session, tracker):  # type: ignore[no-untyped-def]
+        self._session = session
+        self._tracker = tracker
+
+    def __enter__(self):  # type: ignore[no-untyped-def]
+        self._session.__enter__()
+        return self._session
+
+    def __exit__(self, *args):  # type: ignore[no-untyped-def]
+        try:
+            return self._session.__exit__(*args)
+        finally:
+            self._tracker.open_sessions -= 1
+
+
+class _TrackedSessionFactory:
+    def __init__(self, factory):  # type: ignore[no-untyped-def]
+        self._factory = factory
+        self.open_sessions = 0
+
+    def __call__(self):  # type: ignore[no-untyped-def]
+        self.open_sessions += 1
+        return _TrackedSession(self._factory(), self)
+
+
 class ProposalModel:
     def complete(self, messages, tools):  # type: ignore[no-untyped-def]
         return Assistant(
@@ -124,6 +150,23 @@ def test_repository_generates_and_accepts_one_child_resume_transactionally(tmp_p
     assert [(event.subtype, event.tags) for event in events] == [
         ("material_proposal_accepted", ["material_proposal", f"proposal:{proposal.id}", f"resume:{child.id}"])
     ]
+
+
+def test_repository_closes_snapshot_session_before_model_generation(tmp_path) -> None:
+    base_factory, app, _resume, _kit = _ready(tmp_path)
+    tracked_factory = _TrackedSessionFactory(base_factory)
+
+    class NoSessionModel(ProposalModel):
+        def complete(self, messages, tools):  # type: ignore[no-untyped-def]
+            assert tracked_factory.open_sessions == 0
+            return super().complete(messages, tools)
+
+    repository = MaterialRevisionProposalsRepository(tracked_factory)  # type: ignore[arg-type]
+
+    proposal = repository.create_generated(app.id, "", ["I led the migration."], NoSessionModel())
+
+    assert proposal.status == "draft"
+    assert tracked_factory.open_sessions == 0
 
 
 def test_repository_accepts_empty_selection_only_as_validation_error_and_replays_accept(tmp_path) -> None:

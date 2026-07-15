@@ -158,20 +158,28 @@ def generate_questions(
     return GeneratedQuestionsResult(count=len(saved), skipped=skipped, questions=saved)
 
 
-def complete_json(model: ChatModel, system: str, user: str) -> dict[str, Any]:
+def complete_json(
+    model: ChatModel,
+    system: str,
+    user: str,
+    *,
+    strict_json: bool = False,
+) -> dict[str, Any]:
     try:
         assistant = model.complete(
             [Message(role="system", content=system), Message(role="user", content=user)],
             [],
         )
-        return parse_json_reply(assistant.content)
+        return parse_json_reply(assistant.content, allow_fenced=not strict_json)
     except Exception as exc:
         raise RuntimeError(str(exc)) from exc
 
 
-def parse_json_reply(reply: str) -> dict[str, Any]:
+def parse_json_reply(reply: str, *, allow_fenced: bool = True) -> dict[str, Any]:
     text = reply.strip()
-    if text.startswith("```"):
+    if not allow_fenced and (text.startswith("```") or text.endswith("```")):
+        raise RuntimeError("AI response must be raw JSON without Markdown fences")
+    if allow_fenced and text.startswith("```"):
         first_newline = text.find("\n")
         if first_newline >= 0:
             text = text[first_newline + 1 :].strip()
