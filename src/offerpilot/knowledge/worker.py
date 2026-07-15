@@ -28,7 +28,6 @@ import hashlib
 import inspect
 import json
 import logging
-import os
 import random
 import re
 import shutil
@@ -69,7 +68,6 @@ from offerpilot.knowledge.brief import (
     parse_repair_patch,
     parse_support_decision,
     validate_brief_against_evidence,
-    _extract_all_json_objects,
 )
 from offerpilot.knowledge.encoding import DecodedContent, decode_source_bytes
 from offerpilot.knowledge.extractor import (
@@ -2297,7 +2295,6 @@ class BriefWorker:
                 f"Provider 调用失败：{type(exc).__name__}",
                 retry_after=_extract_retry_after_seconds(exc),
             ) from exc
-        _dump_raw_response(provider, response)
         latency_ms = int((time.monotonic() - started) * 1000)
         message = _first_choice_message(response)
         content = str(_get(message, "content") or "")
@@ -2484,46 +2481,6 @@ def _get(value: Any, key: str) -> Any:
     if isinstance(value, dict):
         return value.get(key)
     return getattr(value, key, None)
-
-
-def _dump_raw_response(provider: AIProviderProfile, response: Any) -> None:
-    """临时诊断：把 litellm 原始 response 的 message 原样写入日志，排查推理模型
-    content 提取问题（``reasoning_content`` 是否被合并进 ``content``、思考草稿是否
-    含 JSON 候选）。
-
-    设置环境变量 ``OFFERPILOT_BRIEF_RAW_LOG`` 为日志文件路径即启用；不设置则不写，
-    避免影响生产。诊断完成后应移除本函数与调用点。
-    """
-    log_path = os.environ.get("OFFERPILOT_BRIEF_RAW_LOG")
-    if not log_path:
-        return
-    try:
-        message = _first_choice_message(response)
-        content = str(_get(message, "content") or "")
-        reasoning = _get(message, "reasoning_content")
-        reasoning_text = str(reasoning) if reasoning is not None else ""
-        choices = _get(response, "choices") or []
-        finish_reason = (
-            _get(choices[0], "finish_reason") if choices else None
-        )
-        usage = _get(response, "usage")
-        record = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "model": provider.model,
-            "finish_reason": finish_reason,
-            "content": content,
-            "content_len": len(content),
-            "content_json_candidates": len(_extract_all_json_objects(content)),
-            "has_reasoning_content": reasoning is not None,
-            "reasoning_content": reasoning_text,
-            "reasoning_len": len(reasoning_text),
-            "prompt_tokens": _get(usage, "prompt_tokens"),
-            "completion_tokens": _get(usage, "completion_tokens"),
-        }
-        with open(log_path, "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-    except Exception:  # noqa: BLE001 - 诊断日志不得影响主流程
-        _LOGGER.debug("dump_raw_response failed", exc_info=True)
 
 
 class KnowledgeJobRunner:

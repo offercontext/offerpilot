@@ -422,6 +422,7 @@ def test_async_replay_aggregated_one_repair_picks_direct_evidence_then_ready(
     assert outcome.source is not None
     assert outcome.source.brief_status == "ready", outcome.source.brief_error_message
     assert outcome.brief is not None
+    assert outcome.attempt is not None
     assert outcome.attempt.status == "succeeded"
     assert outcome.attempt.repair_count == 1
 

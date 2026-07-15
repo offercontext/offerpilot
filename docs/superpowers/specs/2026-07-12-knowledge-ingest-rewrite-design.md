@@ -254,6 +254,8 @@ Extraction Worker 在单个 SQLite 事务中：
 
 ### 10.1 输出 Schema
 
+**注：coverage 生成契约已被 [2026-07-15 spec](2026-07-15-knowledge-evidence-metadata-and-brief-repair-design.md) 取代——模型不再输出 coverage 字段，程序根据候选 Brief 的实际 citations 派生 coverage；Brief Schema 已升至 v2，不保留 v1 模型 coverage 兼容分支。下方 payload 示例保留 v1 结构作历史快照，coverage 字段以新 spec 为准。**
+
 Brief 使用固定 JSON Schema，前端负责渲染，模型不得直接生成自由 Markdown：
 
 ```json
