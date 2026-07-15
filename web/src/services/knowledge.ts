@@ -173,6 +173,32 @@ export function buildKnowledgeSourceContentUrl(sourceId: number): string {
   return `/api/knowledge/sources/${sourceId}/content`;
 }
 
+export async function fetchKnowledgeSourceContent(sourceId: number): Promise<string> {
+  const { data } = await http.get<ArrayBuffer>(`/knowledge/sources/${sourceId}/content`, {
+    responseType: 'arraybuffer',
+  });
+  return decodeKnowledgeSourceContent(data);
+}
+
+export function decodeKnowledgeSourceContent(content: ArrayBuffer): string {
+  const bytes = new Uint8Array(content);
+  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(3));
+  }
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) {
+    return new TextDecoder('utf-16le', { fatal: true }).decode(bytes.subarray(2));
+  }
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) {
+    return new TextDecoder('utf-16be', { fatal: true }).decode(bytes.subarray(2));
+  }
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    // Source 已由后端严格校验，剩余合法来源仅可能是 GBK/GB18030 家族。
+    return new TextDecoder('gb18030', { fatal: true }).decode(bytes);
+  }
+}
+
 export function buildKnowledgeAssetContentUrl(
   sourceId: number,
   assetId: number,

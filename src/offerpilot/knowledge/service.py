@@ -1,11 +1,11 @@
 """Knowledge Ingest 编排服务。
 
 实现 Spec §6 上传协议：
-1. Preflight（解码 + Markdown/Text 解析 + token 上限 + 5MiB 上限 + Bundle 限制）+ hash
+1. Preflight（严格解码 + token 上限 + 5MiB 上限 + Bundle 限制）+ hash
 2. 去重检查
 3. staging 写入
 4. final 目录创建 + 原子 rename
-5. SQLite 单事务：create_source + origin + job + snapshot + evidence + FTS + extracted
+5. SQLite 单事务：create_source + origin + pending extraction job
 6. 返回 202
 
 KI-03 范围：
@@ -23,11 +23,11 @@ KI-04 范围：
 
 KI-06 范围：
 - 同步 archive / unarchive 操作：只动 lifecycle 与 archived_at。
-- 永久删除 ``purge_source``：begin_delete → 文件目录移到 quarantine → complete_purge
-  → 物理删除 quarantine 目录 → 写 KnowledgeLog。
+- 永久删除 ``purge_source``：只创建持久 Delete Job；quarantine、SQLite 清理和物理删除
+  由 Extraction Worker 执行。
 
-KI-02 同步触发 Extraction；KI-07 替换为持久队列。事务失败时 final 目录可能残留无数据库
-记录的孤儿原件，由启动恢复负责清理（KI-07 实现完整恢复）。
+Extraction 由持久队列异步触发。事务失败时 final 目录可能残留无数据库记录的孤儿原件，
+由启动恢复负责清理（KI-07 实现完整恢复）。
 """
 
 from __future__ import annotations
@@ -35,10 +35,11 @@ from __future__ import annotations
 import json
 import re
 import secrets
-import shutil
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from collections.abc import Callable, Iterator
 from typing import Optional
 from urllib.parse import urlsplit
 
@@ -58,17 +59,12 @@ from offerpilot.knowledge.brief import (
     BRIEF_SCHEMA_VERSION,
 )
 from offerpilot.knowledge.encoding import (
-    DecodedContent,
     EncodingError,
     decode_source_bytes,
 )
 from offerpilot.knowledge.extractor import (
     EXTRACTOR_VERSION,
     MAX_FILE_BYTES,
-    NORMALIZATION_VERSION,
-    PARSER_VERSION,
-    ExtractionError,
-    MarkdownExtraction,
     MarkdownExtractor,
     compute_bundle_source_hash,
     compute_source_hash,
@@ -76,22 +72,29 @@ from offerpilot.knowledge.extractor import (
 from offerpilot.knowledge.repository import (
     AssetCreateInput,
     DeleteJobSnapshot,
-    EvidenceDraftInput,
     JobCreateInput,
     KnowledgeRepository,
     OriginCreateInput,
-    SnapshotCreateInput,
     SourceRecord,
-    commit_extraction,
 )
-from offerpilot.knowledge.tokenizer import max_token_limit
-from offerpilot.models import KnowledgeJob, KnowledgeSource, KnowledgeSourceOrigin
+from offerpilot.knowledge.tokenizer import (
+    TOKENIZER_VERSION,
+    TokenizerUnavailableError,
+    count_tokens,
+    max_token_limit,
+)
+from offerpilot.models import (
+    KnowledgeJob,
+    KnowledgeSource,
+    KnowledgeSourceAsset,
+    KnowledgeSourceOrigin,
+)
 
 
 _SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 # Spec §4.1 支持的输入文件类型。粘贴正文统一作为虚拟 ``main.md``。
-_SUPPORTED_TEXT_EXTENSIONS = (".md", ".markdown", ".mdx", ".txt")
+_SUPPORTED_TEXT_EXTENSIONS = (".md", ".txt")
 _PASTE_DEFAULT_FILENAME = "main.md"
 
 
@@ -121,10 +124,8 @@ class IngestResult:
 class PurgeResult:
     """KI-06：永久删除返回的 Delete Job 快照。
 
-    Spec §16.1：永久删除返回 202 与 Delete Job。``DeleteJobSnapshot`` 是事务提交前的
-    内存快照——``complete_purge`` 提交后,``knowledge_jobs`` 表中该 Delete Job 行已与
-    Source 一并清理(KI-06 §5.4 "Job 和文件均无残留")。``occurred_at`` 用于 KnowledgeLog
-    时间戳对齐。
+    Spec §16.1：永久删除返回 202 与 pending Delete Job。Job 会由 Extraction Worker
+    在完成 SQLite 与文件清理时一并删除；``occurred_at`` 是请求入队时间。
     """
 
     job_snapshot: DeleteJobSnapshot
@@ -200,11 +201,16 @@ class KnowledgeIngestService:
 
         try:
             decoded = decode_source_bytes(request.content_bytes)
+            if "\x00" in decoded.text:
+                raise IngestError(
+                    "encoding_unknown",
+                    "原文中存在 NUL 控制字符，无法安全解析",
+                )
+            token_count_value = count_tokens(decoded.text).count
         except EncodingError as exc:
             raise IngestError(exc.code, exc.message) from exc
-
-        extraction = self._run_extraction(decoded)
-        token_count_value = extraction.token_count
+        except TokenizerUnavailableError as exc:
+            raise IngestError("tokenizer_unavailable", str(exc)) from exc
         token_limit = max_token_limit()
         if token_count_value > token_limit:
             raise IngestError(
@@ -219,6 +225,12 @@ class KnowledgeIngestService:
         # 拒绝整个上传，Spec §4.4 不允许部分 Source。
         verified_assets: list[VerifiedAsset] = []
         is_bundle = bool(request.asset_inputs)
+        extension = Path(safe_filename).suffix.lower()
+        if is_bundle and extension != ".md":
+            raise IngestError(
+                "unsupported_type",
+                "Bundle 主文件必须是 .md",
+            )
         if is_bundle:
             try:
                 verified_assets, _ = verify_bundle(
@@ -226,7 +238,10 @@ class KnowledgeIngestService:
                 )
             except AssetValidationError as exc:
                 raise IngestError(exc.code, exc.message) from exc
-            _validate_image_references(extraction, verified_assets)
+            _validate_asset_final_names(verified_assets)
+            _validate_image_references(
+                self._extractor.image_references(decoded.text), verified_assets
+            )
 
         if is_bundle:
             source_hash = compute_bundle_source_hash(
@@ -274,8 +289,24 @@ class KnowledgeIngestService:
                 extraction_error_message="",
             )
 
-        staging_dir = self._data_dir / "knowledge" / "staging"
+        deleting = self._repository.get_deleting_source_by_hash(source_hash)
+        if deleting is not None:
+            # deleting Source 仍暂时占用 source_hash 唯一约束；不能把这个可预期的
+            # 并发窗口伪装成内部 IntegrityError。删除完成后客户端可安全重试。
+            raise IngestError(
+                "source_deleting",
+                "相同内容的 Source 正在删除，请稍后重试",
+                status_code=409,
+            )
+
+        knowledge_root = self._data_dir / "knowledge"
+        knowledge_root.mkdir(parents=True, exist_ok=True)
+        if knowledge_root.is_symlink():
+            raise IngestError("source_integrity_mismatch", "Knowledge 根目录不能是符号链接")
+        staging_dir = knowledge_root / "staging"
         staging_dir.mkdir(parents=True, exist_ok=True)
+        if staging_dir.is_symlink():
+            raise IngestError("source_integrity_mismatch", "staging 目录不能是符号链接")
         upload_id = secrets.token_urlsafe(12)
         staging_source_dir = staging_dir / upload_id
         staging_source_dir.mkdir(parents=True, exist_ok=True)
@@ -296,7 +327,7 @@ class KnowledgeIngestService:
             "extractor_version": EXTRACTOR_VERSION,
             "encoding": decoded.encoding,
             "detection_method": decoded.detection_method,
-            "tokenizer_version": extraction.tokenizer_version,
+            "tokenizer_version": TOKENIZER_VERSION,
             "token_count": token_count_value,
         }
         if is_bundle:
@@ -309,43 +340,9 @@ class KnowledgeIngestService:
 
         title_hint = (
             request.title_hint
-            or _derive_title_from_extraction(extraction)
+            or _derive_title_from_text(decoded.text)
             or _derive_title_from_filename(safe_filename)
         ).strip()
-
-        drafts = [
-            EvidenceDraftInput(
-                block_kind=draft.block_kind,
-                heading_path=tuple(draft.heading_path),
-                char_start=draft.char_start,
-                char_end=draft.char_end,
-                line_start=draft.line_start,
-                line_end=draft.line_end,
-                canonical_excerpt=draft.canonical_excerpt,
-                search_text=draft.search_text,
-                content_hash=draft.content_hash,
-                locator=draft.locator,
-                kind="asset" if draft.block_kind == "image" else "text",
-                logical_name=str(draft.extra.get("logical_name", "")),
-                alt_text=str(draft.extra.get("alt_text", "")),
-            )
-            for draft in extraction.evidence_drafts
-        ]
-
-        snapshot_input_template = SnapshotCreateInput(
-            source_id=0,
-            extractor_version=EXTRACTOR_VERSION,
-            parser_version=PARSER_VERSION,
-            normalization_version=NORMALIZATION_VERSION,
-            tokenizer_version=extraction.tokenizer_version,
-            encoding=extraction.encoding,
-            detection_method=extraction.detection_method,
-            canonical_text=extraction.canonical_text,
-            structure_manifest=extraction.structure_manifest,
-            digest=extraction.digest,
-            token_count=token_count_value,
-            char_count=extraction.char_count,
-        )
 
         source_kind = "markdown"
         main_media_type = "text/markdown"
@@ -368,8 +365,6 @@ class KnowledgeIngestService:
                 request=request,
                 staging_path=staging_path,
                 staging_source_dir=staging_source_dir,
-                snapshot_input_template=snapshot_input_template,
-                drafts=drafts,
                 verified_assets=verified_assets,
                 staging_asset_paths=staging_asset_paths,
             )
@@ -378,8 +373,19 @@ class KnowledgeIngestService:
             # 拦截第二个插入。此时 staging 与 final 目录残留必须由本路径清理,
             # 然后回退到 dedup 路径,避免半个 Bundle / 孤儿文件。
             _safe_cleanup(staging_source_dir)
+            if "source_hash" not in str(exc).lower():
+                # 其他约束失败是实现或数据库一致性错误，不能误当成重复上传并
+                # 静默降级为已有 Source。
+                raise
             existing_after = self._repository.get_source_by_hash(source_hash)
             if existing_after is None:
+                deleting_after = self._repository.get_deleting_source_by_hash(source_hash)
+                if deleting_after is not None:
+                    raise IngestError(
+                        "source_deleting",
+                        "相同内容的 Source 正在删除，请稍后重试",
+                        status_code=409,
+                    ) from exc
                 raise IngestError(
                     "source_integrity_mismatch",
                     "并发冲突但未发现已有 Source",
@@ -425,10 +431,24 @@ class KnowledgeIngestService:
         # enqueue Brief Job 或设置 block reason 是非阻塞操作，失败不回滚 Extraction。
         try:
             self.enqueue_or_block_brief(refreshed_source.id)
-        except Exception:
-            # 入队失败不应让已成功的 ingest 报错；启动恢复 / 手动 rebuild 可补偿。
-            pass
-        refreshed_source = self._repository.get_source(source_id) or refreshed_source
+        except Exception as exc:
+            # Brief 入队不是 Extraction 的提交条件，但不能吞掉异常；持久化稳定
+            # 错误让 UI 和后续手动 rebuild 看见补偿状态，同时保持 Evidence 可检索。
+            persisted = self._repository.update_source_state(
+                source_id,
+                brief_status="failed",
+                brief_block_reason="",
+                brief_error_code="brief_enqueue_failed",
+                brief_error_message=str(exc)[:500] or "Brief Job 入队失败",
+            )
+            if persisted is None:
+                raise IngestError(
+                    "source_integrity_mismatch",
+                    "Extraction 已提交，但 Brief 状态无法持久化",
+                ) from exc
+            refreshed_source = persisted
+        else:
+            refreshed_source = self._repository.get_source(source_id) or refreshed_source
 
         return IngestResult(
             source=refreshed_source,
@@ -438,18 +458,6 @@ class KnowledgeIngestService:
             extraction_error_code="",
             extraction_error_message="",
         )
-
-    def _run_extraction(self, decoded: DecodedContent) -> MarkdownExtraction:
-        """Spec §7.1：固定版本 AST 解析，捕获 Extraction/Encoding 错误。"""
-
-        try:
-            return self._extractor.extract(
-                decoded.text,
-                encoding=decoded.encoding,
-                detection_method=decoded.detection_method,
-            )
-        except ExtractionError as exc:
-            raise IngestError(exc.code, exc.message) from exc
 
     def archive_source(self, source_id: int) -> Optional[SourceRecord]:
         """KI-06：归档 Source。
@@ -616,14 +624,14 @@ class KnowledgeIngestService:
 
         Spec §5.4 删除流程:
         1. ``begin_delete``:lifecycle=deleting,cancel pending/running jobs,create
-           delete Job。
-        2. Source 目录原子移动到 ``knowledge/quarantine/<source_id>/``。
-        3. ``complete_purge``:单 SQLite 事务清理 FTS / Evidence / Snapshot / Asset /
-           Origin / Job / Source。
-        4. 物理删除 quarantine 目录。
-        5. 写 ``knowledge_logs`` (source_id, action, result)。
+           pending delete Job。
+        2. Extraction Worker 原子移动 Source 目录到 quarantine。
+        3. Worker 调用 ``complete_purge``，单 SQLite 事务清理 FTS / Evidence /
+           Snapshot / Asset / Origin / Job / Source。
+        4. Worker 在事务提交后物理删除 quarantine 目录并写 KnowledgeLog。
 
-        返回 ``PurgeResult``,含 Delete Job 内存快照与 KnowledgeLog 时间戳。
+        返回 ``PurgeResult``，仅包含待处理 Delete Job 快照；请求线程不执行文件 IO 或
+        永久删除事务。
 
         幂等:source_id 不存在或已删除 → 返回 ``None``,由 API 层返回 404。
         ``lifecycle=deleting`` 重复调用 → 返回 ``None``(避免重复扣费 / 重复 IO)。
@@ -632,48 +640,14 @@ class KnowledgeIngestService:
         if begin_result is None:
             return None
         _, delete_job_id = begin_result
-        source_dir = self._data_dir / "knowledge" / "sources" / str(source_id)
-        quarantine_root = self._data_dir / "knowledge" / "quarantine"
-        quarantine_root.mkdir(parents=True, exist_ok=True)
-        quarantine_dir = quarantine_root / str(source_id)
-
-        moved_to_quarantine = False
-        try:
-            if source_dir.exists():
-                # ``shutil.move`` 同文件系统走 rename(原子),跨文件系统走 copy+unlink。
-                # 若 staging 异常残留同名 quarantine 目录,先清空再 move。
-                if quarantine_dir.exists():
-                    shutil.rmtree(quarantine_dir, ignore_errors=True)
-                shutil.move(str(source_dir), str(quarantine_dir))
-                moved_to_quarantine = True
-        except OSError:
-            # 文件系统协调失败:权限不足或 source_dir 被外部进程占用等。仍尝试
-            # complete_purge 以保证事务一致性;quarantine 物理目录缺失时,启动恢复
-            # 负责 quarantine 残留清理(Source 行已不存在则物理删除对应 quarantine)。
-            moved_to_quarantine = False
-
-        try:
-            committed = self._repository.complete_purge(source_id)
-        except Exception:
-            # 事务回滚 → quarantine 保留供启动恢复;不写 KnowledgeLog。
-            raise
-
-        if not committed:
-            # 并发路径:source 已被其他事务清理。此时 quarantine 也应当不存在。
-            if moved_to_quarantine and quarantine_dir.exists():
-                shutil.rmtree(quarantine_dir, ignore_errors=True)
-            return None
-
-        # 事务提交成功 → 清理 quarantine 物理目录。
-        if quarantine_dir.exists():
-            shutil.rmtree(quarantine_dir, ignore_errors=True)
-
         occurred_at = datetime.now(timezone.utc)
         snapshot = DeleteJobSnapshot(
             job_id=delete_job_id,
             source_id=source_id,
-            status="succeeded",
-            stage="purged",
+            # begin_delete 已在同一事务中创建 pending Job；不再回读 Job，避免 Worker
+            # 在请求返回前极快完成删除时把成功请求误报为 500。
+            status="pending",
+            stage="delete_pending",
             created_at=occurred_at,
         )
         return PurgeResult(job_snapshot=snapshot, occurred_at=occurred_at)
@@ -692,12 +666,10 @@ class KnowledgeIngestService:
         request: IngestRequest,
         staging_path: Path,
         staging_source_dir: Path,
-        snapshot_input_template: SnapshotCreateInput,
-        drafts: list[EvidenceDraftInput],
         verified_assets: list[VerifiedAsset] | None = None,
         staging_asset_paths: list[tuple[VerifiedAsset, Path]] | None = None,
     ) -> tuple[int, int]:
-        """单事务创建 Source/Origin/Job + rename + Snapshot/Evidence/FTS/Asset。
+        """单事务创建 Source/Origin/Job + rename + Asset 元数据。
 
         Spec §6 / §9：数据库提交前完成 final rename（主文件 + 附件）；事务失败时
         无任何 DB 行可见，final 目录残留由启动恢复清理。Bundle 模式下附件落到
@@ -706,9 +678,17 @@ class KnowledgeIngestService:
 
         verified_assets_resolved = verified_assets or []
         staging_asset_paths_resolved = staging_asset_paths or []
+        # ``session.begin`` 的退出阶段才真正提交事务；此时 final rename 已完成。
+        # 用闭包让异常处理能够拿到事务体内创建的 final_dir，避免 IntegrityError/FTS
+        # 提交失败后仅清理空 staging、却遗留正式目录。
+        final_dir: Optional[Path] = None
 
         with self._session_factory() as session:
-            with session.begin():
+            with _knowledge_commit_transaction(
+                session,
+                staging_source_dir,
+                lambda: final_dir,
+            ):
                 source_row = KnowledgeSource(
                     source_hash=source_hash,
                     source_kind=source_kind,
@@ -721,7 +701,7 @@ class KnowledgeIngestService:
                     total_bytes=size,
                     token_count=token_count,
                     lifecycle="active",
-                    extraction_status="processing",
+                    extraction_status="pending",
                     extraction_error_code="",
                     extraction_error_message="",
                     brief_status="not_started",
@@ -738,12 +718,20 @@ class KnowledgeIngestService:
                 )
                 source_row.main_relative_path = final_relative_path
 
-                final_dir = self._data_dir / "knowledge" / "sources" / str(source_id)
+                sources_root = self._data_dir / "knowledge" / "sources"
+                sources_root.mkdir(parents=True, exist_ok=True)
+                if sources_root.is_symlink():
+                    raise OSError("正式 Source 根目录不能是符号链接")
+                final_dir = sources_root / str(source_id)
                 final_dir.mkdir(parents=True, exist_ok=True)
+                if final_dir.is_symlink():
+                    raise OSError("正式 Source 目录不能是符号链接")
                 final_path = final_dir / safe_filename
                 final_asset_dir = final_dir / "assets"
                 if verified_assets_resolved:
                     final_asset_dir.mkdir(parents=True, exist_ok=True)
+                    if final_asset_dir.is_symlink():
+                        raise OSError("正式 Asset 目录不能是符号链接")
                 moved_asset_files: list[Path] = []
                 try:
                     staging_path.replace(final_path)
@@ -786,35 +774,15 @@ class KnowledgeIngestService:
                     kind="extract",
                     queue="extraction",
                     source_id=source_id,
-                    stage="extracting",
-                    status="running",
+                    stage="pending",
+                    status="pending",
                 )
-                # KI-07：同步路径下 Extraction 仍一次性提交为 succeeded，但 lease 字段
-                # 必须在创建时即填全，便于未来改异步 / 故障注入测试 / 启动恢复时识别。
-                # Spec §12 "Job claim 使用 lease owner、expiry 和 heartbeat"。
-                job_row.lease_owner = "ingest-sync"
-                job_row.lease_expires_at = datetime.now(timezone.utc)
-                job_row.heartbeat_at = datetime.now(timezone.utc)
-                job_row.attempt_token = secrets.token_hex(16)
                 session.add(job_row)
                 session.flush()
                 job_id = job_row.id
 
-                snapshot_input_resolved = SnapshotCreateInput(
-                    source_id=source_id,
-                    extractor_version=snapshot_input_template.extractor_version,
-                    parser_version=snapshot_input_template.parser_version,
-                    normalization_version=snapshot_input_template.normalization_version,
-                    tokenizer_version=snapshot_input_template.tokenizer_version,
-                    encoding=snapshot_input_template.encoding,
-                    detection_method=snapshot_input_template.detection_method,
-                    canonical_text=snapshot_input_template.canonical_text,
-                    structure_manifest=snapshot_input_template.structure_manifest,
-                    digest=snapshot_input_template.digest,
-                    token_count=snapshot_input_template.token_count,
-                    char_count=snapshot_input_template.char_count,
-                )
-
+                # Asset 元数据随 Source 一起提交，Evidence 在 Worker 中根据固定
+                # Snapshot 生成并关联到这些不可变 Asset 行。
                 asset_commit_inputs: list[AssetCreateInput] = []
                 for asset, _ in staging_asset_paths_resolved:
                     safe_asset_name = _safe_filename(asset.logical_name)
@@ -834,28 +802,20 @@ class KnowledgeIngestService:
                         )
                     )
 
-                title_for_search = title_hint or safe_filename
-                try:
-                    commit_extraction(
-                        session,
-                        snapshot_input=snapshot_input_resolved,
-                        evidence_drafts=drafts,
-                        source_id=source_id,
-                        source_title=title_for_search,
-                        extractor_version=EXTRACTOR_VERSION,
-                        asset_inputs=asset_commit_inputs,
+                for asset_input in asset_commit_inputs:
+                    session.add(
+                        # Asset 行只保存元数据；原始字节已在正式 Source 目录中。
+                        KnowledgeSourceAsset(
+                            source_id=source_id,
+                            logical_name=asset_input.logical_name,
+                            media_type=asset_input.media_type,
+                            relative_path=asset_input.relative_path,
+                            bytes=asset_input.bytes_size,
+                            sha256=asset_input.sha256,
+                            width=asset_input.width,
+                            height=asset_input.height,
+                        )
                     )
-                except RuntimeError as exc:
-                    if "source_integrity_mismatch" in str(exc):
-                        raise IngestError(
-                            "source_integrity_mismatch",
-                            "Snapshot 内部一致性校验失败，请重新上传",
-                        ) from exc
-                    raise
-
-                job_row.status = "succeeded"
-                job_row.stage = "extracted"
-                job_row.progress = 100
 
         return source_id, job_id
 
@@ -866,7 +826,7 @@ def _has_supported_extension(filename: str) -> bool:
 
 
 def _validate_image_references(
-    extraction: MarkdownExtraction,
+    references: tuple[str, ...],
     verified_assets: list[VerifiedAsset],
 ) -> None:
     """Spec §4.4：缺图、重复逻辑名、未使用附件、不支持的媒体类型必须整个 Bundle 失败。
@@ -879,10 +839,8 @@ def _validate_image_references(
 
     uploaded = {va.logical_name for va in verified_assets}
     referenced: set[str] = set()
-    for draft in extraction.evidence_drafts:
-        if draft.block_kind != "image":
-            continue
-        logical_name = str(draft.extra.get("logical_name") or "")
+    for logical_name in references:
+        logical_name = str(logical_name or "")
         if not logical_name:
             continue
         referenced.add(logical_name)
@@ -903,6 +861,33 @@ def _validate_image_references(
         )
 
 
+def _validate_asset_final_names(verified_assets: list[VerifiedAsset]) -> None:
+    """拒绝不同逻辑名被物理文件名规范化为同一路径。
+
+    Bundle 的逻辑名允许空格和前导点，而正式目录使用 ``_safe_filename`` 生成
+    ASCII 文件名；例如 ``.a.png`` 与 ``a.png`` 会发生碰撞。若不在 staging 阶段
+    拦截，后续 ``Path.replace`` 会静默覆盖第一个附件，数据库却仍保留两条 Asset。
+    """
+    seen: dict[str, str] = {}
+    for asset in verified_assets:
+        safe_name = _safe_filename(asset.logical_name)
+        if not safe_name:
+            raise IngestError(
+                "bundle_invalid",
+                f"附件逻辑名 {asset.logical_name!r} 无法生成安全文件名",
+            )
+        previous = seen.get(safe_name)
+        if previous is not None and previous != asset.logical_name:
+            raise IngestError(
+                "bundle_invalid",
+                (
+                    "附件逻辑名规范化后发生文件名冲突："
+                    f"{previous!r} 与 {asset.logical_name!r} 都映射为 {safe_name!r}"
+                ),
+            )
+        seen[safe_name] = asset.logical_name
+
+
 def _safe_filename(name: str) -> str:
     collapsed = _SAFE_FILENAME_RE.sub("-", name).strip("-._")
     if not collapsed:
@@ -915,16 +900,6 @@ def _safe_filename(name: str) -> str:
     return collapsed
 
 
-def _derive_title_from_extraction(extraction: MarkdownExtraction) -> str:
-    for draft in extraction.evidence_drafts:
-        if draft.heading_path:
-            return draft.heading_path[0][:120]
-    for draft in extraction.evidence_drafts:
-        if draft.canonical_excerpt.strip():
-            return draft.canonical_excerpt.strip()[:120]
-    return ""
-
-
 def _derive_title_from_filename(filename: str) -> str:
     for ext in _SUPPORTED_TEXT_EXTENSIONS:
         if filename.lower().endswith(ext):
@@ -932,19 +907,58 @@ def _derive_title_from_filename(filename: str) -> str:
     return filename.removesuffix(".md")
 
 
+def _derive_title_from_text(text: str) -> str:
+    """从原文轻量推导展示标题，不运行 Extraction。"""
+    for line in text.replace("\r\n", "\n").replace("\r", "\n").splitlines():
+        match = re.match(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$", line)
+        if match:
+            candidate = match.group(1).strip()
+            if candidate:
+                return candidate[:120]
+    for line in text.splitlines():
+        candidate = line.strip()
+        if candidate:
+            return candidate[:120]
+    return ""
+
+
 def _safe_cleanup(target: Path) -> None:
     try:
-        if target.is_dir():
+        # 清理失败事务产生的目录时不能跟随外部注入的符号链接，否则会把
+        # data_dir 之外的文件当作 staging/final 内容递归删除。
+        if target.is_symlink():
+            target.unlink(missing_ok=True)
+        elif target.is_dir():
             for child in target.iterdir():
-                if child.is_dir():
-                    _safe_cleanup(child)
-                else:
-                    child.unlink(missing_ok=True)
+                _safe_cleanup(child)
             target.rmdir()
         else:
             target.unlink(missing_ok=True)
     except OSError:
         pass
+
+
+@contextmanager
+def _knowledge_commit_transaction(
+    session: Session,
+    staging_source_dir: Path,
+    final_dir_getter: Callable[[], Optional[Path]],
+) -> Iterator[None]:
+    """事务提交失败时清理上传原件，避免 final 目录成为孤儿。
+
+    文件 rename 必须发生在 SQLite commit 之前。``session.begin`` 的上下文退出才
+    会执行 commit，因此 IntegrityError 可能在业务代码已结束后才抛出；统一在这里
+    清理 staging 和已移动的 final 目录，随后仍由调用方决定错误码/并发去重语义。
+    """
+    try:
+        with session.begin():
+            yield
+    except Exception:
+        _safe_cleanup(staging_source_dir)
+        final_dir = final_dir_getter()
+        if final_dir is not None:
+            _safe_cleanup(final_dir)
+        raise
 
 
 def _validate_origin_url(origin_url: str) -> None:

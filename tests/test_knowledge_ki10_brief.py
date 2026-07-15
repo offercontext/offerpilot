@@ -16,6 +16,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from sqlalchemy.orm import Session, sessionmaker
 
 from offerpilot.config import AIProviderProfile, Config
@@ -26,7 +27,10 @@ from offerpilot.knowledge.brief import (
     BRIEF_PROMPT_VERSION,
     BRIEF_SCHEMA_VERSION,
     build_section_coverage_plan,
+    parse_brief_payload,
+    validate_brief_against_evidence,
 )
+from offerpilot.knowledge.brief import BriefSchemaError
 from offerpilot.knowledge.repository import (
     BriefAttemptCreateInput,
     EvidenceRecord,
@@ -46,6 +50,51 @@ _CONTENT = (
     "## 第二段\n\n"
     "Evidence 是引用单位，Evidence 不重叠。\n"
 )
+
+
+def test_text_section_cannot_be_marked_skipped_with_arbitrary_reason() -> None:
+    """带文本 Evidence 的章节必须 covered，不能靠 skipped_reason 绕过 coverage。"""
+    evidence = [
+        SimpleNamespace(
+            id="ev_text",
+            heading_path=["正文"],
+            kind="text",
+            canonical_excerpt="正文内容",
+            search_text="正文内容",
+        )
+    ]
+    plan = build_section_coverage_plan(evidence)
+    payload = {
+        "schema_version": 1,
+        "language": "zh-CN",
+        "overview": [
+            {"statement": "概述一", "evidence_ids": ["ev_text"]},
+            {"statement": "概述二", "evidence_ids": ["ev_text"]},
+        ],
+        "key_points": [{"statement": "要点", "evidence_ids": ["ev_text"]}],
+        "section_guides": [
+            {
+                "section_key": "正文",
+                "heading_path": ["正文"],
+                "summary": "正文摘要",
+                "evidence_ids": ["ev_text"],
+            }
+        ],
+        "limitations": [],
+        "coverage": [
+            {
+                "section_key": "正文",
+                "status": "skipped",
+                "skipped_reason": "模型认为不重要",
+            }
+        ],
+    }
+    brief = parse_brief_payload(json.dumps(payload, ensure_ascii=False))
+    report = validate_brief_against_evidence(
+        brief, evidence_ids={"ev_text"}, expected_sections=plan
+    )
+    assert report.coverage_ok is False
+    assert any("必须标记 covered" in issue for issue in report.issues)
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +158,17 @@ def _build_payload_for_evidence(items: list[EvidenceRecord]) -> dict[str, Any]:
         for entry in plan.sections.values()
     ]
     return payload
+
+
+def test_duplicate_section_guides_are_rejected() -> None:
+    """Spec §10.1：同一实质章节最多生成一条 section guide。"""
+    payload = _valid_payload_dict()
+    for block_name in ("overview", "key_points", "section_guides", "limitations"):
+        for item in payload[block_name]:
+            item["evidence_ids"] = ["ev"]
+    payload["section_guides"].append(dict(payload["section_guides"][0]))
+    with pytest.raises(BriefSchemaError, match="section_guides section_key 重复"):
+        parse_brief_payload(json.dumps(payload, ensure_ascii=False))
 
 
 def _primary_config(
@@ -428,6 +488,21 @@ def test_model_not_found_does_not_retry(tmp_path: Path) -> None:
     assert results[0].error_code == "provider_model_unavailable"
 
 
+def test_context_window_error_does_not_retry_or_fallback(tmp_path: Path) -> None:
+    """Spec §11.3/§11.4：上下文超限是确定性错误，不重试、不切 fallback。"""
+    config = _primary_fallback_config()
+    repository, session_factory, source_id, _ = _setup(tmp_path, config=config)
+    behaviors = [RuntimeError("maximum context window exceeded")]
+    results, call_log = _tick_brief(
+        repository, session_factory, config, behaviors, tmp_path=tmp_path
+    )
+    assert results[0].status == "failed"
+    assert results[0].error_code == "provider_model_unavailable"
+    generation_calls = [item for item in call_log if not item["is_validation"]]
+    assert len(generation_calls) == 1
+    assert "gpt-primary" in generation_calls[0]["model"]
+
+
 def test_retry_delay_prefers_retry_after_header() -> None:
     """Spec §11.4：优先 Retry-After，否则 2s/10s 退避。"""
     from offerpilot.knowledge.worker import (
@@ -683,6 +758,9 @@ def test_brief_marked_outdated_on_provider_change(tmp_path: Path) -> None:
     brief = repository.get_source_brief(source_id)
     assert brief is not None
     assert brief.outdated is True
+    source = repository.get_source(source_id)
+    assert source is not None
+    assert source.brief_status == "outdated"
     # 没有自动创建新的 brief job。
     pending_jobs = repository.list_pending_jobs("brief")
     assert not any(job.source_id == source_id for job in pending_jobs)
@@ -697,7 +775,7 @@ def test_brief_marked_outdated_on_snapshot_change(tmp_path: Path) -> None:
     _seed_ready_brief(
         repository, config, tmp_path, session_factory, source_id, snapshot_id
     )
-    # 模拟 extractor 升级切换 active_snapshot_id 到一个不存在的 id。
+    # 模拟 extractor 升级切换 active_snapshot_id。
     repository.update_source_state(source_id, active_snapshot_id=snapshot_id + 9999)
     service = KnowledgeIngestService(
         repository, tmp_path, session_factory, config=config
@@ -706,6 +784,9 @@ def test_brief_marked_outdated_on_snapshot_change(tmp_path: Path) -> None:
     brief = repository.get_source_brief(source_id)
     assert brief is not None
     assert brief.outdated is True
+    source = repository.get_source(source_id)
+    assert source is not None
+    assert source.brief_status == "outdated"
 
 
 def test_outdated_cleared_after_successful_rebuild(tmp_path: Path) -> None:
@@ -880,6 +961,34 @@ def test_attempt_fixed_with_fallback_candidate(tmp_path: Path) -> None:
     )
     assert attempt.fallback_provider_id == "fallback"
     assert attempt.fallback_provider_model == "gpt-fallback"
+
+
+def test_validator_transient_uses_configured_fallback(tmp_path: Path) -> None:
+    """Validator 的基础设施失败可切 fallback，内容质量失败不走该路径。"""
+
+    config = _primary_fallback_config()
+    repository, session_factory, source_id, snapshot_id = _setup(
+        tmp_path, config=config
+    )
+    evidence_page = repository.list_evidence(source_id, snapshot_id=snapshot_id, limit=50)
+    payload = _build_payload_for_evidence(evidence_page.items)
+    generation_json = json.dumps(payload, ensure_ascii=False)
+    validation_count = _count_validations(payload)
+    behaviors = (
+        [generation_json]
+        # 首个 Validator 在 primary 上 3 次 transient，随后 fallback 成功。
+        + [RuntimeError("503 Service Unavailable")] * BRIEF_PROVIDER_MAX_ATTEMPTS
+        + [_supported_json()] * validation_count
+    )
+    results, call_log = _tick_brief(
+        repository, session_factory, config, behaviors, tmp_path=tmp_path
+    )
+    assert results[0].status == "succeeded", results[0].error_message
+    validation_calls = [call for call in call_log if call["is_validation"]]
+    assert sum("gpt-primary" in call["model"] for call in validation_calls) == (
+        BRIEF_PROVIDER_MAX_ATTEMPTS
+    )
+    assert any("gpt-fallback" in call["model"] for call in validation_calls)
 
 
 # ---------------------------------------------------------------------------

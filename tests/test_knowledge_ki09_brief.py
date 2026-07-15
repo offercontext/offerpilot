@@ -93,6 +93,56 @@ def test_parse_brief_payload_accepts_extra_text_around_json() -> None:
     assert brief.schema_version == 1
 
 
+def test_parse_brief_payload_picks_final_over_reasoning_draft() -> None:
+    """推理模型（如 deepseek-v4-flash）把思考草稿和最终答案都写进 content：草稿
+    overview 超限（8 条），最终答案合法（2 条）。parse 必须从多个 JSON 候选中
+    选中最终合法 brief，而非首个草稿——否则会误报 overview 超限。"""
+
+    draft = _valid_payload_dict()
+    draft["overview"] = [
+        {"statement": f"草稿概述 {i}", "evidence_ids": ["ev_1"]} for i in range(8)
+    ]
+    final = _valid_payload_dict()  # 合法 2 条 overview
+    raw = (
+        "先分析文档结构。\n草稿："
+        + json.dumps(draft, ensure_ascii=False)
+        + "\n修正后的最终 Brief：\n"
+        + json.dumps(final, ensure_ascii=False)
+    )
+    brief = parse_brief_payload(raw)
+    assert len(brief.overview) == 2
+
+
+def test_parse_brief_payload_allows_document_toplevel_empty_heading_path() -> None:
+    """``__document__``（文档顶层）天然无标题，heading_path 允许为空。coverage_plan
+    对空 heading_path 的 Evidence 归入 ``__document__`` 并给出空 heading_path，模型
+    照填后必须通过 schema——否则每次 generation 都因 section_guides[0] 误触 repair。"""
+
+    payload = _valid_payload_dict()
+    payload["section_guides"][0] = {
+        "section_key": "__document__",
+        "heading_path": [],
+        "summary": "文档顶层摘要。",
+        "evidence_ids": ["ev_1"],
+    }
+    payload["coverage"][0] = {
+        "section_key": "__document__",
+        "status": "covered",
+        "skipped_reason": "",
+    }
+    brief = parse_brief_payload(json.dumps(payload, ensure_ascii=False))
+    assert brief.section_guides[0].heading_path == []
+
+
+def test_parse_brief_payload_rejects_empty_heading_path_for_named_section() -> None:
+    """非 ``__document__`` 章节的 heading_path 仍必须非空（model_validator 兜底）。"""
+
+    payload = _valid_payload_dict()
+    payload["section_guides"][0]["heading_path"] = []
+    with pytest.raises(BriefSchemaError):
+        parse_brief_payload(json.dumps(payload, ensure_ascii=False))
+
+
 def test_parse_brief_payload_rejects_invalid_json() -> None:
     with pytest.raises(BriefSchemaError) as info:
         parse_brief_payload("not json")
@@ -399,6 +449,10 @@ def test_create_brief_attempt_locks_source_processing(tmp_path: Path) -> None:
     assert attempt.status == "processing"
     assert job_id > 0
     assert token
+    job = repository.get_job(job_id)
+    assert job is not None
+    assert job.attempt_id == attempt.id
+    assert repository.find_brief_job_for_attempt(attempt.id).id == job_id  # type: ignore[union-attr]
     # Source 状态进入 processing
     source = repository.get_source(source_id)
     assert source is not None
@@ -437,6 +491,45 @@ def test_create_brief_attempt_rejects_duplicate_active(tmp_path: Path) -> None:
             )
         )
     assert info.value.code == "brief_attempt_conflict"
+
+
+def test_find_brief_job_for_attempt_does_not_cross_old_attempts(tmp_path: Path) -> None:
+    """同一 Source 的新旧 Attempt 必须各自回读自己的 Job。"""
+    repository, _, source_id, snapshot_id = _setup_repository(tmp_path)
+    data = BriefAttemptCreateInput(
+        source_id=source_id,
+        snapshot_id=snapshot_id,
+        provider_id="default",
+        provider_model="test-model",
+        provider_base_url="https://example.com",
+        context_window=BRIEF_MIN_CONTEXT_WINDOW,
+        max_output_tokens=4096,
+        prompt_version=BRIEF_PROMPT_VERSION,
+        schema_version=BRIEF_SCHEMA_VERSION,
+        language=BRIEF_LANGUAGE,
+    )
+
+    first, first_job_id, first_token = repository.create_brief_attempt(data)
+    failed, _, _ = repository.fail_brief_attempt(
+        first.id,
+        job_id=first_job_id,
+        attempt_token=first_token,
+        error_code="brief_schema_invalid",
+        error_message="first candidate rejected",
+    )
+    assert failed is True
+
+    second, second_job_id, second_token = repository.create_brief_attempt(data)
+    assert second_job_id != first_job_id
+    assert second_token
+    first_job = repository.find_brief_job_for_attempt(first.id)
+    second_job = repository.find_brief_job_for_attempt(second.id)
+    assert first_job is not None
+    assert first_job.id == first_job_id
+    assert first_job.status == "failed"
+    assert second_job is not None
+    assert second_job.id == second_job_id
+    assert second_job.attempt_id == second.id
 
 
 def test_commit_brief_attempt_success_replaces_current_brief(tmp_path: Path) -> None:

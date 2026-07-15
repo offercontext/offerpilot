@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   Alert,
-  Badge,
   Button,
   Empty,
   Input,
@@ -13,6 +14,7 @@ import {
   Spin,
   Switch,
   Tabs,
+  Tooltip,
   Typography,
   Upload,
   message,
@@ -24,6 +26,8 @@ import {
   FormOutlined,
   InboxOutlined,
   PictureOutlined,
+  QuestionCircleOutlined,
+  ReadOutlined,
   SearchOutlined,
 } from '@ant-design/icons';
 import {
@@ -34,6 +38,7 @@ import {
   deleteKnowledgeSource,
   fetchKnowledgeSource,
   fetchKnowledgeSourceBrief,
+  fetchKnowledgeSourceContent,
   fetchKnowledgeSourceEvidence,
   fetchKnowledgeSourceJobs,
   fetchKnowledgeSources,
@@ -79,6 +84,74 @@ const BRIEF_LABEL: Record<string, string> = {
   failed: '生成失败',
   outdated: '已过期',
 };
+
+// Status Pill 变体：替换 antd 彩色圆点 Badge，统一精致化状态标识
+type PillVariant = 'indigo' | 'green' | 'amber' | 'rose' | 'gray' | 'violet' | 'cyan';
+
+function Pill({ variant, children }: { variant: PillVariant; children: ReactNode }) {
+  return (
+    <span className={`op-pill op-pill--${variant}`}>
+      <span className="op-pill-dot" />
+      {children}
+    </span>
+  );
+}
+
+function lifecycleVariant(status: string): PillVariant {
+  switch (status) {
+    case 'active':
+      return 'green';
+    case 'archived':
+      return 'gray';
+    case 'deleting':
+      return 'rose';
+    default:
+      return 'gray';
+  }
+}
+
+function extractionVariant(status: string): PillVariant {
+  switch (status) {
+    case 'extracted':
+      return 'indigo';
+    case 'processing':
+      return 'amber';
+    case 'failed':
+      return 'rose';
+    default:
+      return 'gray';
+  }
+}
+
+function briefVariant(status: string): PillVariant {
+  switch (status) {
+    case 'ready':
+      return 'violet';
+    case 'processing':
+    case 'pending':
+    case 'outdated':
+      return 'amber';
+    case 'failed':
+      return 'rose';
+    default:
+      return 'gray';
+  }
+}
+
+function jobStatusVariant(status: string): PillVariant {
+  switch (status) {
+    case 'succeeded':
+      return 'green';
+    case 'running':
+      return 'indigo';
+    case 'pending':
+      return 'amber';
+    case 'failed':
+      return 'rose';
+    default:
+      return 'gray';
+  }
+}
 
 export default function KnowledgeSourcesView() {
   const queryClient = useQueryClient();
@@ -185,16 +258,29 @@ export default function KnowledgeSourcesView() {
 
   return (
     <div style={{ padding: 24 }}>
-      <Title level={3} style={{ margin: 0 }}>
-        资料来源
-      </Title>
-      <Paragraph type="secondary" style={{ margin: '6px 0 16px' }}>
-        上传 Markdown/Text、上传图文 Bundle，或直接粘贴正文；系统按自然结构生成 Evidence，并提供关键词检索。
-      </Paragraph>
+      <div className="knowledge-page-header">
+        <div className="knowledge-page-header-row">
+          <span className="knowledge-page-mark" />
+          <Title level={3} className="knowledge-page-title">
+            资料来源
+          </Title>
+          <span className="knowledge-page-count">
+            共 <b>{sourcesQuery.data?.length ?? 0}</b> 个来源
+          </span>
+        </div>
+        <Paragraph type="secondary" className="knowledge-page-subtitle">
+          上传 Markdown/Text、上传图文 Bundle，或直接粘贴正文；系统按自然结构生成 Evidence，并提供关键词检索。
+        </Paragraph>
+      </div>
 
       <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-        <Space wrap>
-          <Button type="primary" icon={<InboxOutlined />} onClick={() => setUploadOpen(true)}>
+        <div className="knowledge-sources-toolbar">
+          <Button
+            type="primary"
+            className="op-ai-btn"
+            icon={<InboxOutlined />}
+            onClick={() => setUploadOpen(true)}
+          >
             上传 Markdown / Text
           </Button>
           <Button icon={<PictureOutlined />} onClick={() => setBundleOpen(true)}>
@@ -203,9 +289,11 @@ export default function KnowledgeSourcesView() {
           <Button icon={<FormOutlined />} onClick={() => setPasteOpen(true)}>
             粘贴正文
           </Button>
+          <span className="knowledge-toolbar-spacer" />
           <Input
             placeholder="搜索 Evidence（中文/英文关键词）"
-            style={{ width: 320 }}
+            className="knowledge-sources-search-input"
+            style={{ width: 'min(320px, 100%)' }}
             value={searchQuery}
             onChange={(event) => setSearchQuery(event.target.value)}
             onPressEnter={handleSearch}
@@ -222,7 +310,7 @@ export default function KnowledgeSourcesView() {
             />
             <Text type="secondary">显示归档资料</Text>
           </Space>
-        </Space>
+        </div>
 
         {searchMutation.data ? (
           <SearchResultsPanel
@@ -235,7 +323,10 @@ export default function KnowledgeSourcesView() {
           />
         ) : null}
 
-        <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: 16 }}>
+        <div
+          className="knowledge-sources-layout"
+          style={{ display: 'grid', gridTemplateColumns: 'minmax(240px, 320px) minmax(0, 1fr)', gap: 16 }}
+        >
           <SourceListPanel
             sources={sourcesQuery.data ?? []}
             loading={sourcesQuery.isLoading}
@@ -249,6 +340,7 @@ export default function KnowledgeSourcesView() {
             sourceId={selectedSourceId}
             highlightEvidenceId={highlightEvidenceId}
             onHighlightConsumed={() => setHighlightEvidenceId(null)}
+            onDeleted={() => setSelectedSourceId(null)}
           />
         </div>
       </Space>
@@ -275,7 +367,6 @@ export default function KnowledgeSourcesView() {
           pasteMutation.mutate({ paste, titleHint, originUrl })
         }
       />
-      <DedupHintBanner />
     </div>
   );
 }
@@ -306,39 +397,39 @@ function SourceListPanel({
     );
   }
   return (
-    <div style={{ border: '1px solid var(--op-border, #eee)', borderRadius: 8, padding: 8 }}>
+    <div className="knowledge-source-list">
+      <div className="knowledge-source-list-head">
+        <span>资料列表</span>
+        <span>{sources.length}</span>
+      </div>
       <List
         dataSource={sources}
         rowKey={(item) => item.id}
+        split={false}
         renderItem={(item) => (
-          <List.Item
-            key={item.id}
-            onClick={() => onSelect(item.id)}
-            style={{
-              cursor: 'pointer',
-              padding: '8px 12px',
-              background:
-                selectedId === item.id ? 'var(--op-active-bg, #e6f4ff)' : 'transparent',
-              borderRadius: 4,
-            }}
-          >
-            <Space direction="vertical" size={2} style={{ width: '100%' }}>
-              <Text strong>{item.title}</Text>
-              <Space size={6} wrap>
-                <Badge color="blue" text={STATUS_LABEL[item.lifecycle] ?? item.lifecycle} />
-                <Badge
-                  color="gold"
-                  text={EXTRACTION_LABEL[item.extraction_status] ?? item.extraction_status}
-                />
-                <Badge
-                  color="purple"
-                  text={BRIEF_LABEL[item.brief_status] ?? item.brief_status}
-                />
-              </Space>
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                {item.main_filename} · {formatBytes(item.total_bytes)}
-              </Text>
-            </Space>
+          <List.Item key={item.id}>
+            <div
+              className={`knowledge-source-item${selectedId === item.id ? ' is-selected' : ''}`}
+              onClick={() => onSelect(item.id)}
+            >
+              <div className="knowledge-source-item-body">
+                <Text className="knowledge-source-item-title">{item.title}</Text>
+                <div className="knowledge-pill-row">
+                  <Pill variant={lifecycleVariant(item.lifecycle)}>
+                    {STATUS_LABEL[item.lifecycle] ?? item.lifecycle}
+                  </Pill>
+                  <Pill variant={extractionVariant(item.extraction_status)}>
+                    {EXTRACTION_LABEL[item.extraction_status] ?? item.extraction_status}
+                  </Pill>
+                  <Pill variant={briefVariant(item.brief_status)}>
+                    {BRIEF_LABEL[item.brief_status] ?? item.brief_status}
+                  </Pill>
+                </div>
+                <Text className="knowledge-source-item-meta">
+                  {item.main_filename} · {formatBytes(item.total_bytes)}
+                </Text>
+              </div>
+            </div>
           </List.Item>
         )}
       />
@@ -350,10 +441,12 @@ function SourceDetailPanel({
   sourceId,
   highlightEvidenceId,
   onHighlightConsumed,
+  onDeleted,
 }: {
   sourceId: number | null;
   highlightEvidenceId: string | null;
   onHighlightConsumed: () => void;
+  onDeleted: () => void;
 }) {
   if (sourceId == null) {
     return (
@@ -367,6 +460,7 @@ function SourceDetailPanel({
       sourceId={sourceId}
       highlightEvidenceId={highlightEvidenceId}
       onHighlightConsumed={onHighlightConsumed}
+      onDeleted={onDeleted}
     />
   );
 }
@@ -375,10 +469,12 @@ function SourceDetailContent({
   sourceId,
   highlightEvidenceId,
   onHighlightConsumed,
+  onDeleted,
 }: {
   sourceId: number;
   highlightEvidenceId: string | null;
   onHighlightConsumed: () => void;
+  onDeleted: () => void;
 }) {
   const queryClient = useQueryClient();
   const sourceQuery = useQuery({
@@ -389,14 +485,27 @@ function SourceDetailContent({
     queryKey: ['knowledge', 'source', sourceId, 'evidence'],
     queryFn: () => fetchKnowledgeSourceEvidence(sourceId, { limit: 50 }),
   });
+  const contentQuery = useQuery({
+    queryKey: ['knowledge', 'source', sourceId, 'content'],
+    queryFn: () => fetchKnowledgeSourceContent(sourceId),
+  });
   const briefQuery = useQuery({
     queryKey: ['knowledge', 'source', sourceId, 'brief'],
     queryFn: () => fetchKnowledgeSourceBrief(sourceId),
-    refetchInterval: false,
+    refetchInterval: (query) => {
+      const status = query.state.data?.brief_status;
+      return status === 'pending' || status === 'processing' ? 2000 : false;
+    },
   });
   const jobsQuery = useQuery({
     queryKey: ['knowledge', 'source', sourceId, 'jobs'],
     queryFn: () => fetchKnowledgeSourceJobs(sourceId),
+    refetchInterval: (query) => {
+      const jobs = query.state.data?.jobs ?? [];
+      return jobs.some((job) => job.status === 'pending' || job.status === 'running')
+        ? 2000
+        : false;
+    },
   });
   const briefRebuildMutation = useMutation({
     mutationFn: (id: number) => rebuildKnowledgeSourceBrief(id),
@@ -415,9 +524,16 @@ function SourceDetailContent({
   const [briefCitationTarget, setBriefCitationTarget] = useState<string | null>(
     null,
   );
+  const [activeDetailTab, setActiveDetailTab] = useState('status');
   const handleCitationJump = (evidenceId: string) => {
     setBriefCitationTarget(evidenceId);
+    setActiveDetailTab('evidence');
   };
+  useEffect(() => {
+    if (highlightEvidenceId) {
+      setActiveDetailTab('evidence');
+    }
+  }, [highlightEvidenceId]);
   const [titleEditorOpen, setTitleEditorOpen] = useState(false);
   const [editingTitle, setEditingTitle] = useState('');
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
@@ -464,19 +580,32 @@ function SourceDetailContent({
     mutationFn: (id: number) => deleteKnowledgeSource(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: KNOWLEDGE_QUERY_KEY });
-      message.success('资料已永久删除');
+      message.success('已提交永久删除，后台任务完成后资料将被移除');
       setDeleteConfirmOpen(false);
       setDeleteConfirmationText('');
+      onDeleted();
     },
     onError: (error: unknown) => {
       const detail = extractErrorMessage(error);
       message.error(`删除失败：${detail}`);
     },
   });
-  if (sourceQuery.isLoading || !sourceQuery.data) {
+  if (sourceQuery.isLoading) {
     return (
       <div style={{ padding: 24 }}>
         <Spin />
+      </div>
+    );
+  }
+  if (sourceQuery.isError || !sourceQuery.data) {
+    return (
+      <div style={{ padding: 24 }}>
+        <Alert
+          type="warning"
+          showIcon
+          message="资料详情不可用"
+          description="该资料可能已删除或暂时无法读取，请从左侧选择其他资料。"
+        />
       </div>
     );
   }
@@ -487,12 +616,25 @@ function SourceDetailContent({
   };
   const isArchived = source.lifecycle === 'archived';
   return (
-    <div style={{ border: '1px solid var(--op-border, #eee)', padding: 16, borderRadius: 8 }}>
-      <Space align="start" style={{ justifyContent: 'space-between', width: '100%' }}>
-        <Title level={4} style={{ marginTop: 0, marginBottom: 0 }}>
-          {source.title}
-        </Title>
-        <Space size={6} wrap>
+    <div className="knowledge-source-detail">
+      <div className="knowledge-source-detail-header">
+        <div>
+          <Title level={4} className="knowledge-source-detail-title">
+            {source.title}
+          </Title>
+          <div className="knowledge-source-detail-statuses">
+            <Pill variant={lifecycleVariant(source.lifecycle)}>
+              {STATUS_LABEL[source.lifecycle] ?? source.lifecycle}
+            </Pill>
+            <Pill variant={extractionVariant(source.extraction_status)}>
+              {EXTRACTION_LABEL[source.extraction_status] ?? source.extraction_status}
+            </Pill>
+            <Pill variant={briefVariant(source.brief_status)}>
+              {BRIEF_LABEL[source.brief_status] ?? source.brief_status}
+            </Pill>
+          </div>
+        </div>
+        <Space size={6} wrap className="knowledge-source-actions">
           <Button size="small" icon={<EditOutlined />} onClick={openTitleEditor}>
             编辑标题
           </Button>
@@ -513,73 +655,92 @@ function SourceDetailContent({
               归档
             </Button>
           )}
+          <Button
+            size="small"
+            danger
+            icon={<DeleteOutlined />}
+            onClick={() => {
+              setDeleteConfirmationText('');
+              setDeleteConfirmOpen(true);
+            }}
+          >
+            永久删除该资料
+          </Button>
         </Space>
-      </Space>
-      <Space direction="vertical" size={4} style={{ marginBottom: 12, marginTop: 8 }}>
-        <Text type="secondary">文件名：{source.main_filename}</Text>
-        <Text type="secondary">大小：{formatBytes(source.total_bytes)}</Text>
-        <Text type="secondary">展示标题：{source.display_title || '—（使用推导标题）'}</Text>
-        <Text type="secondary">推导标题：{source.title_hint || '—'}</Text>
-        <Text type="secondary">导入时间：{formatDateTime(source.created_at)}</Text>
-        {source.archived_at ? (
-          <Text type="secondary">归档时间：{formatDateTime(source.archived_at)}</Text>
-        ) : null}
-      </Space>
-
-      <Space direction="vertical" size={8} style={{ width: '100%' }}>
-        <StatusBlock source={source} />
-        <BriefBlock
-          sourceId={sourceId}
-          briefStatus={source.brief_status}
-          data={briefQuery.data}
-          loading={briefQuery.isLoading}
-          onRebuild={() => briefRebuildMutation.mutate(sourceId)}
-          rebuilding={briefRebuildMutation.isPending}
-          onCitationJump={handleCitationJump}
-        />
-        <EvidenceBlock
-          evidence={evidenceQuery.data?.items ?? []}
-          loading={evidenceQuery.isLoading}
-          sourceId={sourceId}
-          highlightEvidenceId={highlightEvidenceId ?? briefCitationTarget}
-          onHighlightConsumed={() => {
-            onHighlightConsumed();
-            setBriefCitationTarget(null);
-          }}
-        />
-        <JobsBlock
-          data={jobsQuery.data ?? { jobs: [], origins: [] }}
-          loading={jobsQuery.isLoading}
-        />
-      </Space>
-
-      <div
-        style={{
-          marginTop: 16,
-          padding: 12,
-          border: '1px solid var(--op-danger-border, #ffccc7)',
-          background: 'var(--op-danger-bg, #fff2f0)',
-          borderRadius: 8,
-        }}
-      >
-        <Title level={5} style={{ color: '#cf1322', marginTop: 0 }}>
-          危险操作
-        </Title>
-        <Paragraph type="secondary" style={{ marginBottom: 8 }}>
-          永久删除会清除原件、附件、Evidence、Snapshot、Brief 与 Job 历史,不可恢复。
-          删除后相同内容可作为新 Source 重新导入。
-        </Paragraph>
-        <Button
-          danger
-          icon={<DeleteOutlined />}
-          onClick={() => {
-            setDeleteConfirmationText('');
-            setDeleteConfirmOpen(true);
-          }}
-        >
-          永久删除该资料
-        </Button>
       </div>
+
+      <div className="knowledge-source-metadata">
+        <SourceMetadataItem label="文件名" value={source.main_filename} />
+        <SourceMetadataItem label="大小" value={formatBytes(source.total_bytes)} />
+        <SourceMetadataItem label="展示标题" value={source.display_title || '使用推导标题'} />
+        <SourceMetadataItem label="推导标题" value={source.title_hint || '无'} />
+        <SourceMetadataItem label="导入时间" value={formatDateTime(source.created_at)} />
+        <SourceMetadataItem
+          label="Evidence"
+          value={evidenceQuery.isLoading ? '—' : `${evidenceQuery.data?.items.length ?? 0} 条`}
+        />
+      </div>
+
+      <BriefBlock
+        sourceId={sourceId}
+        briefStatus={source.brief_status}
+        data={briefQuery.data}
+        loading={briefQuery.isLoading}
+        onRebuild={() => briefRebuildMutation.mutate(sourceId)}
+        rebuilding={briefRebuildMutation.isPending}
+        onCitationJump={handleCitationJump}
+      />
+
+      <Tabs
+        className="knowledge-source-tabs"
+        activeKey={activeDetailTab}
+        onChange={setActiveDetailTab}
+        items={[
+          {
+            key: 'status',
+            label: '处理记录',
+            children: <StatusBlock source={source} origins={jobsQuery.data?.origins ?? []} />,
+          },
+          {
+            key: 'evidence',
+            label: `Evidence${evidenceQuery.data?.items.length ? ` (${evidenceQuery.data.items.length})` : ''}`,
+            children: (
+              <EvidenceBlock
+                evidence={evidenceQuery.data?.items ?? []}
+                loading={evidenceQuery.isLoading}
+                sourceId={sourceId}
+                highlightEvidenceId={highlightEvidenceId ?? briefCitationTarget}
+                onHighlightConsumed={() => {
+                  onHighlightConsumed();
+                  setBriefCitationTarget(null);
+                }}
+              />
+            ),
+          },
+          {
+            key: 'original',
+            label: '原始 Markdown',
+            children: (
+              <OriginalMarkdownBlock
+                sourceId={sourceId}
+                content={contentQuery.data}
+                loading={contentQuery.isLoading}
+                error={contentQuery.isError}
+              />
+            ),
+          },
+          {
+            key: 'jobs',
+            label: '后台任务',
+            children: (
+              <JobsBlock
+                data={jobsQuery.data ?? { jobs: [], origins: [] }}
+                loading={jobsQuery.isLoading}
+              />
+            ),
+          },
+        ]}
+      />
 
       <Modal
         title="编辑展示标题"
@@ -623,6 +784,13 @@ function SourceDetailContent({
         onOk={() => deleteMutation.mutate(sourceId)}
       >
         <Space direction="vertical" style={{ width: '100%' }} size="small">
+          <div className="knowledge-delete-warning">
+            <Title level={5}>危险操作</Title>
+            <Paragraph type="secondary">
+              永久删除会清除原件、附件、Evidence、Snapshot、Brief 与 Job 历史,不可恢复。
+              删除后相同内容可作为新 Source 重新导入。
+            </Paragraph>
+          </div>
           <Alert
             type="error"
             showIcon
@@ -643,75 +811,80 @@ function SourceDetailContent({
   );
 }
 
-function StatusBlock({ source }: { source: KnowledgeSource }) {
+function SourceMetadataItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="knowledge-source-metadata-item">
+      <span className="knowledge-meta-label">{label}</span>
+      <span className="knowledge-meta-value">{value}</span>
+    </div>
+  );
+}
+
+function StatusBlock({
+  source,
+  origins,
+}: {
+  source: KnowledgeSource;
+  origins: KnowledgeSourceJobsResponse['origins'];
+}) {
   const extractionError =
     source.extraction_status === 'failed' && source.extraction_error_message
       ? source.extraction_error_message
       : '';
-  const briefError =
-    source.brief_status === 'failed' && source.brief_error_message
-      ? source.brief_error_message
-      : '';
   return (
-    <div>
-      <Tabs
-        defaultActiveKey="status"
-        items={[
-          {
-            key: 'status',
-            label: '处理记录',
-            children: (
-              <Space direction="vertical" style={{ width: '100%' }}>
-                <StatusLine label="生命周期" value={STATUS_LABEL[source.lifecycle] ?? source.lifecycle} />
-                <StatusLine
-                  label="Extraction"
-                  value={EXTRACTION_LABEL[source.extraction_status] ?? source.extraction_status}
-                />
-                <StatusLine
-                  label="Brief"
-                  value={BRIEF_LABEL[source.brief_status] ?? source.brief_status}
-                />
-                <StatusLine
-                  label="Brief 暂缓原因"
-                  value={source.brief_block_reason || '—'}
-                />
-                {extractionError ? (
-                  <Alert type="error" showIcon message="Extraction 失败" description={extractionError} />
-                ) : null}
-                {briefError ? (
-                  <Alert type="error" showIcon message="Brief 失败" description={briefError} />
-                ) : null}
-              </Space>
-            ),
-          },
-          {
-            key: 'original',
-            label: '原始 Markdown',
-            children: (
-              <Space direction="vertical" style={{ width: '100%' }}>
-                <Button href={buildKnowledgeSourceContentUrl(source.id)} target="_blank">
-                  下载原件
-                </Button>
-                <Text type="secondary">
-                  原始 Markdown 按字节流下载，不经过模型改写。
+    <div className="knowledge-status-record">
+      <StatusLine label="生命周期" value={STATUS_LABEL[source.lifecycle] ?? source.lifecycle} />
+      <StatusLine
+        label="Extraction"
+        value={EXTRACTION_LABEL[source.extraction_status] ?? source.extraction_status}
+      />
+      <StatusLine label="Brief" value={BRIEF_LABEL[source.brief_status] ?? source.brief_status} />
+      <StatusLine label="Brief 暂缓原因" value={source.brief_block_reason || '无'} />
+      {extractionError ? (
+        <Alert type="error" showIcon message="Extraction 失败" description={extractionError} />
+      ) : null}
+      <div className="knowledge-jobs-origins">
+        <Space size={4} align="center" className="knowledge-jobs-origins-title">
+          <Title level={5}>导入记录</Title>
+          <Tooltip
+            title="相同内容自动复用已有 Source。重复上传相同字节时，系统会让上传结果进入已有 Source，不会创建重复 Evidence；每次导入都会追加一条 Origin 记录。"
+          >
+            <Button
+              type="text"
+              size="small"
+              icon={<QuestionCircleOutlined />}
+              aria-label="查看去重说明"
+            />
+          </Tooltip>
+        </Space>
+        <List
+          dataSource={origins}
+          rowKey={(item) => item.id}
+          renderItem={(item) => (
+            <List.Item>
+              <Space direction="vertical" size={2}>
+                <Text>
+                  {item.import_method}：{item.original_filename || '未提供文件名'}
+                </Text>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  {item.origin_url ? `URL：${item.origin_url} · ` : ''}
+                  {formatDateTime(item.imported_at)}
                 </Text>
               </Space>
-            ),
-          },
-        ]}
-      />
+            </List.Item>
+          )}
+        />
+      </div>
     </div>
   );
 }
 
 function StatusLine({ label, value }: { label: string; value: string }) {
   return (
-    <Space size={12}>
-      <Text type="secondary" style={{ width: 96 }}>
-        {label}
-      </Text>
-      <Text>{value}</Text>
-    </Space>
+    <div className="knowledge-status-line">
+      <span className="knowledge-status-line-label">{label}</span>
+      <span>{value}</span>
+    </div>
   );
 }
 
@@ -748,25 +921,18 @@ function BriefBlock({
     brief != null && latestAttempt?.status === 'failed' && !!latestAttempt.error_message;
 
   return (
-    <div
-      style={{
-        border: '1px solid var(--op-border, #eee)',
-        borderRadius: 8,
-        padding: 12,
-      }}
-    >
-      <Space
-        align="start"
-        style={{ justifyContent: 'space-between', width: '100%', marginBottom: 8 }}
-      >
-        <Title level={5} style={{ margin: 0 }}>
+    <div className="knowledge-brief-block">
+      <div className="knowledge-brief-head">
+        <Title level={5} className="knowledge-brief-title">
+          <span className="knowledge-brief-spark">
+            <ReadOutlined />
+          </span>
           Brief 导读
         </Title>
         <Space size={6} wrap>
-          <Badge
-            color={outdated || rebuildFailed ? 'orange' : 'purple'}
-            text={isRebuilding ? '正在重建' : BRIEF_LABEL[briefStatus] ?? briefStatus}
-          />
+          <Pill variant={isRebuilding || outdated || rebuildFailed ? 'amber' : 'violet'}>
+            {isRebuilding ? '正在重建' : BRIEF_LABEL[briefStatus] ?? briefStatus}
+          </Pill>
           <Button
             size="small"
             onClick={onRebuild}
@@ -776,7 +942,7 @@ function BriefBlock({
             {brief ? '重建 Brief' : '生成 Brief'}
           </Button>
         </Space>
-      </Space>
+      </div>
       {blockReason ? (
         <Alert
           type="warning"
@@ -818,12 +984,7 @@ function BriefBlock({
       {brief ? (
         <BriefPayloadView brief={brief} onCitationJump={onCitationJump} />
       ) : null}
-      {latestAttempt && latestAttempt.status !== 'succeeded' ? (
-        <BriefAttemptInspector attempt={latestAttempt} />
-      ) : null}
-      <Text type="secondary" style={{ fontSize: 11 }}>
-        Source ID：{sourceId}
-      </Text>
+      <div className="knowledge-brief-footer">Source ID：{sourceId}</div>
     </div>
   );
 }
@@ -837,7 +998,7 @@ function BriefPayloadView({
 }) {
   const { payload } = brief;
   return (
-    <Space direction="vertical" size={10} style={{ width: '100%', marginTop: 8 }}>
+    <div style={{ width: '100%' }}>
       <BriefStatementList
         title="概述"
         items={payload.overview}
@@ -848,61 +1009,65 @@ function BriefPayloadView({
         items={payload.key_points}
         onCitationJump={onCitationJump}
       />
-      <div>
-        <Title level={5}>章节导读</Title>
-        <Space direction="vertical" size={6} style={{ width: '100%' }}>
-          {payload.section_guides.map((item, index) => (
-            <div
-              key={`${item.section_key}-${index}`}
-              style={{
-                border: '1px solid var(--op-border, #eee)',
-                borderRadius: 4,
-                padding: 8,
-              }}
-            >
-              <Space direction="vertical" size={4} style={{ width: '100%' }}>
-                <Space size={6} wrap>
-                  <Badge color="blue" text={item.heading_path.join(' / ')} />
-                </Space>
-                <Text>{item.summary}</Text>
-                <BriefCitationChips
-                  evidenceIds={item.evidence_ids}
-                  onJump={onCitationJump}
-                />
-              </Space>
-            </div>
-          ))}
-        </Space>
+      <div className="knowledge-brief-section">
+        <Title level={5} className="knowledge-brief-section-label">
+          章节导读
+        </Title>
+        {payload.section_guides.map((item, index) => (
+          <div key={`${item.section_key}-${index}`} className="knowledge-section-guide">
+            <span className="knowledge-section-guide-path">
+              {item.heading_path.map((segment, segmentIndex) => (
+                <Fragment key={segmentIndex}>
+                  {segmentIndex > 0 && (
+                    <span className="knowledge-section-guide-sep">/</span>
+                  )}
+                  {segment}
+                </Fragment>
+              ))}
+            </span>
+            <div className="knowledge-section-guide-summary">{item.summary}</div>
+            <BriefCitationChips evidenceIds={item.evidence_ids} onJump={onCitationJump} />
+          </div>
+        ))}
       </div>
       <BriefStatementList
         title="局限与未覆盖"
+        accent="warning"
         items={payload.limitations}
         onCitationJump={onCitationJump}
       />
-      <div>
-        <Title level={5}>章节覆盖</Title>
-        <Space wrap>
+      <div className="knowledge-brief-section">
+        <Title level={5} className="knowledge-brief-section-label">
+          章节覆盖
+        </Title>
+        <div className="knowledge-coverage-row">
           {payload.coverage.map((item) => (
-            <Badge
+            <span
               key={item.section_key}
-              color={item.status === 'covered' ? 'green' : 'default'}
-              text={`${item.section_key}${
-                item.status === 'skipped' ? `（已跳过：${item.skipped_reason || '—'}）` : ''
+              className={`knowledge-chip-coverage${
+                item.status === 'covered' ? ' is-covered' : ' is-skipped'
               }`}
-            />
+            >
+              {item.section_key}
+              {item.status === 'skipped'
+                ? `（已跳过：${item.skipped_reason || '—'}）`
+                : ''}
+            </span>
           ))}
-        </Space>
+        </div>
       </div>
-    </Space>
+    </div>
   );
 }
 
 function BriefStatementList({
   title,
+  accent,
   items,
   onCitationJump,
 }: {
   title: string;
+  accent?: 'warning';
   items: BriefStatement[];
   onCitationJump: (evidenceId: string) => void;
 }) {
@@ -910,28 +1075,19 @@ function BriefStatementList({
     return null;
   }
   return (
-    <div>
-      <Title level={5}>{title}</Title>
-      <Space direction="vertical" size={6} style={{ width: '100%' }}>
-        {items.map((item, index) => (
-          <div
-            key={`${title}-${index}`}
-            style={{
-              border: '1px solid var(--op-border, #eee)',
-              borderRadius: 4,
-              padding: 8,
-            }}
-          >
-            <Space direction="vertical" size={4} style={{ width: '100%' }}>
-              <Text>{item.statement}</Text>
-              <BriefCitationChips
-                evidenceIds={item.evidence_ids}
-                onJump={onCitationJump}
-              />
-            </Space>
-          </div>
-        ))}
-      </Space>
+    <div className="knowledge-brief-section">
+      <Title level={5} className="knowledge-brief-section-label">
+        {title}
+      </Title>
+      {items.map((item, index) => (
+        <div
+          key={`${title}-${index}`}
+          className={`knowledge-brief-statement${accent ? ` knowledge-brief-statement--${accent}` : ''}`}
+        >
+          <div className="knowledge-brief-statement-text">{item.statement}</div>
+          <BriefCitationChips evidenceIds={item.evidence_ids} onJump={onCitationJump} />
+        </div>
+      ))}
     </div>
   );
 }
@@ -947,67 +1103,13 @@ function BriefCitationChips({
     return null;
   }
   return (
-    <Space size={4} wrap>
+    <div className="knowledge-citation-chips">
       {evidenceIds.map((id) => (
-        <Button
-          key={id}
-          size="small"
-          type="link"
-          style={{ padding: 0, height: 'auto', fontSize: 11 }}
-          onClick={() => onJump(id)}
-        >
+        <button key={id} type="button" className="knowledge-chip-cite" onClick={() => onJump(id)}>
           {id}
-        </Button>
+        </button>
       ))}
-    </Space>
-  );
-}
-
-function BriefAttemptInspector({ attempt }: { attempt: KnowledgeBriefAttempt }) {
-  // KI-10：实际成功 Provider 可能是 fallback；只有与默认 Provider 不同时才额外展示。
-  const usedFallback =
-    attempt.actual_provider_id !== '' &&
-    attempt.actual_provider_id !== attempt.provider_id;
-  return (
-    <Alert
-      type={attempt.status === 'failed' ? 'error' : 'info'}
-      showIcon
-      message={`最近 Attempt 状态：${attempt.status}${
-        attempt.repair_count ? `（修复 ${attempt.repair_count} 次）` : ''
-      }${attempt.provider_retry_count ? `· Provider 重试 ${attempt.provider_retry_count} 次` : ''}`}
-      description={
-        <Space direction="vertical" size={2} style={{ width: '100%' }}>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            Provider: {attempt.provider_id} / {attempt.provider_model}
-          </Text>
-          {usedFallback ? (
-            <Text type="warning" style={{ fontSize: 12 }}>
-              实际成功 Provider（fallback）：{attempt.actual_provider_id} /{' '}
-              {attempt.actual_provider_model}
-            </Text>
-          ) : null}
-          {attempt.fallback_provider_id ? (
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              Fallback 候选：{attempt.fallback_provider_id} /{' '}
-              {attempt.fallback_provider_model}
-            </Text>
-          ) : null}
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            Context: {attempt.context_window} · Prompt: {attempt.prompt_version} ·
-            Schema v{attempt.schema_version}
-          </Text>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            Token：入 {attempt.token_input_count} / 出 {attempt.token_output_count}
-            {attempt.latency_ms ? ` · 耗时 ${(attempt.latency_ms / 1000).toFixed(1)}s` : ''}
-          </Text>
-          {attempt.error_message ? (
-            <Text type="danger" style={{ fontSize: 12 }}>
-              {attempt.error_message}
-            </Text>
-          ) : null}
-        </Space>
-      }
-    />
+    </div>
   );
 }
 
@@ -1037,16 +1139,13 @@ function EvidenceBlock({
   }
   if (!evidence.length) {
     return (
-      <div>
-        <Title level={5}>Evidence</Title>
-        <Empty description="尚未生成 Evidence" />
-      </div>
+      <Empty description="尚未生成 Evidence" />
     );
   }
   return (
     <div>
-      <Title level={5}>Evidence（共 {evidence.length} 条）</Title>
       <List
+        className="knowledge-evidence-list"
         dataSource={evidence}
         rowKey={(item) => item.id}
         renderItem={(item) => {
@@ -1055,54 +1154,86 @@ function EvidenceBlock({
             <List.Item>
               <div
                 ref={isHighlighted ? highlightRef : undefined}
-                style={{
-                  width: '100%',
-                  padding: 8,
-                  borderRadius: 4,
-                  background: isHighlighted
-                    ? 'var(--op-highlight-bg, #fffbe6)'
-                    : 'transparent',
-                  border: isHighlighted
-                    ? '1px solid var(--op-highlight-border, #ffe58f)'
-                    : '1px solid transparent',
-                  transition: 'background 200ms ease',
-                }}
+                className={`knowledge-evidence-item${isHighlighted ? ' is-hit' : ''}`}
               >
-                <Space direction="vertical" size={2} style={{ width: '100%' }}>
-                  <Space size={8}>
-                    <Badge color="cyan" text={item.block_kind} />
-                    <Text type="secondary" style={{ fontSize: 12 }}>
-                      行 {item.line_start}-{item.line_end}
-                    </Text>
-                    <Text type="secondary" style={{ fontSize: 12 }}>
-                      字符 {item.char_start}-{item.char_end}
-                    </Text>
-                    {isHighlighted ? (
-                      <Badge color="gold" text="搜索命中" />
-                    ) : null}
-                  </Space>
-                  {item.heading_path.length ? (
-                    <Text type="secondary" style={{ fontSize: 12 }}>
-                      路径：{item.heading_path.join(' / ')}
-                    </Text>
-                  ) : null}
-                  {item.kind === 'asset' && item.asset_id != null ? (
-                    <AssetEvidenceView
-                      sourceId={sourceId}
-                      assetId={item.asset_id}
-                      alt={item.search_text}
-                    />
-                  ) : null}
-                  <Text>{item.canonical_excerpt}</Text>
-                  <Text code style={{ fontSize: 11 }}>
-                    {item.id}
-                  </Text>
-                </Space>
+                <div className="knowledge-evidence-meta">
+                  <span className="knowledge-evidence-kind">{item.block_kind}</span>
+                  <span className="knowledge-evidence-loc">
+                    行 {item.line_start}-{item.line_end} · 字符 {item.char_start}-{item.char_end}
+                  </span>
+                  {isHighlighted ? <Pill variant="amber">搜索命中</Pill> : null}
+                </div>
+                {item.heading_path.length ? (
+                  <div className="knowledge-evidence-path">
+                    {item.heading_path.map((segment, segmentIndex) => (
+                      <Fragment key={segmentIndex}>
+                        {segmentIndex > 0 && (
+                          <span className="knowledge-evidence-path-sep">›</span>
+                        )}
+                        {segment}
+                      </Fragment>
+                    ))}
+                  </div>
+                ) : null}
+                {item.kind === 'asset' && item.asset_id != null ? (
+                  <AssetEvidenceView
+                    sourceId={sourceId}
+                    assetId={item.asset_id}
+                    alt={item.search_text}
+                  />
+                ) : null}
+                <MarkdownContent content={item.canonical_excerpt} />
+                <span className="knowledge-evidence-id">{item.id}</span>
               </div>
             </List.Item>
           );
         }}
       />
+    </div>
+  );
+}
+
+function OriginalMarkdownBlock({
+  sourceId,
+  content,
+  loading,
+  error,
+}: {
+  sourceId: number;
+  content: string | undefined;
+  loading: boolean;
+  error: boolean;
+}) {
+  if (loading) {
+    return <Spin />;
+  }
+  if (error || content === undefined) {
+    return (
+      <Alert
+        type="warning"
+        showIcon
+        message="无法读取原始 Markdown"
+        description="可以下载原件后在本地查看。"
+      />
+    );
+  }
+  return (
+    <div className="knowledge-original-markdown">
+      <div className="knowledge-original-markdown-toolbar">
+        <Text type="secondary">以下内容按原始 Markdown 渲染，未经过模型改写。</Text>
+        <Button size="small" href={buildKnowledgeSourceContentUrl(sourceId)} target="_blank">
+          下载原件
+        </Button>
+      </div>
+      <MarkdownContent content={content} />
+    </div>
+  );
+}
+
+function MarkdownContent({ content }: { content: string }) {
+  return (
+    <div className="knowledge-markdown">
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
     </div>
   );
 }
@@ -1124,13 +1255,7 @@ function AssetEvidenceView({
         src={url}
         alt={alt || 'Bundle 附件'}
         loading="lazy"
-        style={{
-          maxWidth: '100%',
-          maxHeight: 320,
-          border: '1px solid var(--op-border, #eee)',
-          borderRadius: 4,
-          objectFit: 'contain',
-        }}
+        className="knowledge-evidence-asset"
       />
       <Button size="small" href={url} target="_blank" rel="noopener noreferrer">
         下载原图
@@ -1163,20 +1288,20 @@ function JobsBlock({
   }
   return (
     <div>
-      <Title level={5}>后台任务</Title>
       <List
+        className="knowledge-jobs-list"
         dataSource={data.jobs}
         rowKey={(item) => item.id}
         renderItem={(item) => (
           <List.Item>
             <Space direction="vertical" size={2} style={{ width: '100%' }}>
               <Space size={8} wrap>
-                <Badge color="gold" text={item.kind} />
-                <Badge color="blue" text={JOB_STATUS_LABEL[item.status] ?? item.status} />
+                <span className="knowledge-evidence-kind">{item.kind}</span>
+                <Pill variant={jobStatusVariant(item.status)}>
+                  {JOB_STATUS_LABEL[item.status] ?? item.status}
+                </Pill>
                 <Text type="secondary">队列：{item.queue}</Text>
-                {item.canceled ? (
-                  <Badge color="red" text="已取消" />
-                ) : null}
+                {item.canceled ? <Pill variant="rose">已取消</Pill> : null}
               </Space>
               {item.progress > 0 ? <Progress percent={item.progress} size="small" /> : null}
               <Text type="secondary" style={{ fontSize: 12 }}>
@@ -1218,26 +1343,6 @@ function JobsBlock({
           </List.Item>
         )}
       />
-      <Title level={5} style={{ marginTop: 16 }}>
-        导入记录
-      </Title>
-      <List
-        dataSource={data.origins}
-        rowKey={(item) => item.id}
-        renderItem={(item) => (
-          <List.Item>
-            <Space direction="vertical" size={2}>
-              <Text>
-                {item.import_method}：{item.original_filename || '未提供文件名'}
-              </Text>
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                {item.origin_url ? `URL：${item.origin_url} · ` : ''}
-                {formatDateTime(item.imported_at)}
-              </Text>
-            </Space>
-          </List.Item>
-        )}
-      />
     </div>
   );
 }
@@ -1252,19 +1357,6 @@ const JOB_STATUS_LABEL: Record<string, string> = {
 
 function isJobCancellable(job: KnowledgeJob): boolean {
   return !job.canceled && job.status !== 'succeeded' && job.status !== 'failed' && job.status !== 'canceled';
-}
-
-function DedupHintBanner() {
-  // KI-05：内容寻址去重的稳定展示。相同字节、不同文件名 / 不同 URL 都会进入同一 Source;
-  // 上传成功后会自动跳转到已有 Source。此 banner 在 SSR 时也可被 contract 测试发现。
-  return (
-    <Alert
-      type="info"
-      showIcon
-      message="相同内容自动复用已有 Source"
-      description="重复上传相同字节时,系统会让上传结果进入已有 Source,不会创建重复 Evidence;每次导入都会追加一条 Origin 记录。"
-    />
-  );
 }
 
 function SearchResultsPanel({
@@ -1312,7 +1404,7 @@ function SearchResultsPanel({
                   <Text type="secondary" style={{ fontSize: 12 }}>
                     Source #{item.source_id}
                   </Text>
-                  <Badge color="cyan" text={item.block_kind} />
+                  <span className="knowledge-evidence-kind">{item.block_kind}</span>
                   {item.heading_path.length ? (
                     <Text type="secondary" style={{ fontSize: 12 }}>
                       {item.heading_path.join(' / ')}
@@ -1323,9 +1415,7 @@ function SearchResultsPanel({
                   </Text>
                 </Space>
                 <Text>{item.snippet}</Text>
-                <Text code style={{ fontSize: 11 }}>
-                  {item.evidence_id}
-                </Text>
+                <span className="knowledge-evidence-id">{item.evidence_id}</span>
               </Space>
             </List.Item>
           )}
@@ -1373,7 +1463,7 @@ function UploadModal({
     >
       <Space direction="vertical" style={{ width: '100%' }} size="middle">
         <Upload.Dragger
-          accept=".md,.markdown,.mdx,.txt,text/markdown,text/plain"
+          accept=".md,.txt,text/markdown,text/plain"
           maxCount={1}
           beforeUpload={() => false}
           fileList={fileList}
@@ -1450,7 +1540,7 @@ function BundleModal({
             Markdown 主文件
           </Title>
           <Upload.Dragger
-            accept=".md,.markdown,.mdx,text/markdown"
+            accept=".md,text/markdown"
             maxCount={1}
             beforeUpload={() => false}
             fileList={mainFileList}

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import source from './knowledge.ts?raw';
+import { decodeKnowledgeSourceContent } from './knowledge';
 
 describe('knowledge service KI-03 contract', () => {
   it('exposes upload/paste/list/detail/evidence/search endpoints without legacy wiki helpers', () => {
@@ -10,9 +11,23 @@ describe('knowledge service KI-03 contract', () => {
     expect(source).toContain('pasteKnowledgeSource');
     expect(source).toContain('searchKnowledgeEvidence');
     expect(source).toContain('buildKnowledgeSourceContentUrl');
+    expect(source).toContain('fetchKnowledgeSourceContent');
+    expect(source).toContain("responseType: 'arraybuffer'");
     expect(source).not.toContain('fetchKnowledgePages');
     expect(source).not.toContain('searchWiki');
     expect(source).not.toContain('addToWiki');
+  });
+});
+
+describe('knowledge source content decoding', () => {
+  it('decodes UTF-8, UTF-16 BOM and GB18030 source bytes for the Markdown preview', () => {
+    const utf8 = new TextEncoder().encode('# UTF-8\n中文').buffer;
+    const utf16le = new Uint8Array([0xff, 0xfe, 0x2d, 0x4e, 0x87, 0x65]).buffer;
+    const gb18030 = new Uint8Array([0xd6, 0xd0, 0xce, 0xc4]).buffer;
+
+    expect(decodeKnowledgeSourceContent(utf8)).toBe('# UTF-8\n中文');
+    expect(decodeKnowledgeSourceContent(utf16le)).toBe('中文');
+    expect(decodeKnowledgeSourceContent(gb18030)).toBe('中文');
   });
 });
 

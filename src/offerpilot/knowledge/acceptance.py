@@ -72,6 +72,9 @@ class QuerySpec:
     source_key: str
     expect_hit: bool
     content_keywords: tuple[str, ...] = ()
+    # 优先使用稳定 Evidence ID；旧版 fixture 没有该字段时，content_keywords
+    # 作为人工预期 Evidence 的最小可验证定位规则。
+    expected_evidence_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -102,6 +105,7 @@ class QueryResult:
     mrr_score: float
     content_keyword_hit: bool
     retrieval_method: str = "fts"
+    matched_evidence_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -153,6 +157,26 @@ class FailureCase:
     query: str
     evidence_id: str
     reason: str
+
+
+_EXPECTED_SOURCE_COUNT = 5
+_MIN_EXPECTED_HIT_QUERIES = 20
+_MIN_QUERIES_PER_SOURCE = 4
+_EXPECTED_QUERY_TYPES = {
+    "lexical_chinese",
+    "lexical_english",
+    "lexical_code",
+    "natural_language",
+}
+_EXPECTED_BRIEF_SCENARIOS = {
+    "invalid_json",
+    "forged_citation",
+    "unsupported_support",
+    "coverage_missing",
+    "timeout",
+    "rate_limit",
+    "fallback_success",
+}
 
 
 class AcceptanceReport:
@@ -219,6 +243,7 @@ class AcceptanceReport:
                     "mrr_score": q.mrr_score,
                     "content_keyword_hit": q.content_keyword_hit,
                     "retrieval_method": q.retrieval_method,
+                    "matched_evidence_ids": list(q.matched_evidence_ids),
                 }
                 for q in self.query_results
             ],
@@ -298,9 +323,55 @@ def load_queries(fixtures_dir: Path) -> list[QuerySpec]:
                 source_key=str(row.get("source_key", "")),
                 expect_hit=bool(row["expect_hit"]),
                 content_keywords=tuple(row.get("content_keywords", ())),
+                expected_evidence_ids=tuple(row.get("expected_evidence_ids", ())),
             )
         )
     return queries
+
+
+def validate_acceptance_contract(
+    specs: list[SourceFixtureSpec], queries: list[QuerySpec]
+) -> list[str]:
+    """验证 KI-11 样本数量和每条正向查询的人工预期定位。"""
+
+    errors: list[str] = []
+    if len(specs) != _EXPECTED_SOURCE_COUNT:
+        errors.append(
+            f"manifest 必须包含正好 {_EXPECTED_SOURCE_COUNT} 份 Source，实际 {len(specs)} 份"
+        )
+    source_keys = [spec.source_key for spec in specs]
+    duplicate_keys = sorted({key for key in source_keys if source_keys.count(key) > 1})
+    if duplicate_keys:
+        errors.append(f"manifest source_key 重复：{', '.join(duplicate_keys)}")
+    source_key_set = set(source_keys)
+
+    positive = [query for query in queries if query.expect_hit]
+    if len(positive) < _MIN_EXPECTED_HIT_QUERIES:
+        errors.append(
+            f"expect_hit 查询至少 {_MIN_EXPECTED_HIT_QUERIES} 条，实际 {len(positive)} 条"
+        )
+    counts = {key: 0 for key in source_key_set}
+    for query in positive:
+        if query.source_key not in source_key_set:
+            errors.append(
+                f"正向查询 {query.query!r} 引用了未知 Source {query.source_key!r}"
+            )
+        else:
+            counts[query.source_key] += 1
+        if query.query_type not in _EXPECTED_QUERY_TYPES:
+            errors.append(
+                f"查询 {query.query!r} 类型不受支持：{query.query_type!r}"
+            )
+        if not query.expected_evidence_ids and not query.content_keywords:
+            errors.append(
+                f"正向查询 {query.query!r} 缺少 expected_evidence_ids 或 content_keywords"
+            )
+    for source_key, count in sorted(counts.items()):
+        if count < _MIN_QUERIES_PER_SOURCE:
+            errors.append(
+                f"Source {source_key!r} 的正向查询至少 {_MIN_QUERIES_PER_SOURCE} 条，实际 {count} 条"
+            )
+    return errors
 
 
 # ---------------------------------------------------------------------------
@@ -687,16 +758,25 @@ def _evaluate_queries(
         hit_source_keys = tuple(id_to_key.get(h.source_id, "") for h in hits)
         if q.expect_hit:
             expected_id = source_id_by_key.get(q.source_key)
-            ranks = [i + 1 for i, h in enumerate(hits) if h.source_id == expected_id]
+            matching_hits = [
+                h for h in hits if _hit_matches_expected_evidence(h, q, expected_id)
+            ]
+            ranks = [i + 1 for i, h in enumerate(hits) if h in matching_hits]
             first_rank: Optional[int] = ranks[0] if ranks else None
             recall_hit = first_rank is not None
             mrr_score = 1.0 / first_rank if first_rank else 0.0
-            content_keyword_hit = _check_content_keywords(hits, expected_id, q.content_keywords)
+            content_keyword_hit = bool(matching_hits)
+            matched_evidence_ids = tuple(
+                str(getattr(hit, "evidence_id", ""))
+                for hit in matching_hits
+                if getattr(hit, "evidence_id", "")
+            )
         else:
             first_rank = None
             recall_hit = False
             mrr_score = 0.0
             content_keyword_hit = False
+            matched_evidence_ids = ()
         results.append(
             QueryResult(
                 query=q.query,
@@ -709,9 +789,26 @@ def _evaluate_queries(
                 mrr_score=mrr_score,
                 content_keyword_hit=content_keyword_hit,
                 retrieval_method="fts",
+                matched_evidence_ids=matched_evidence_ids,
             )
         )
     return results
+
+
+def _hit_matches_expected_evidence(
+    hit: Any, query: QuerySpec, expected_source_id: Optional[int]
+) -> bool:
+    """判断命中是否是查询声明的预期 Evidence，而非仅属于同一 Source。"""
+
+    if expected_source_id is None or hit.source_id != expected_source_id:
+        return False
+    if query.expected_evidence_ids:
+        return str(getattr(hit, "evidence_id", "")) in set(query.expected_evidence_ids)
+    # 兼容现有安全 fixture：content_keywords 是人工标注的 Evidence 定位规则。
+    # 没有任何定位规则的正向查询必须失败，避免 Source 级命中伪造 Recall。
+    if not query.content_keywords:
+        return False
+    return _check_content_keywords([hit], expected_source_id, query.content_keywords)
 
 
 def _check_content_keywords(
@@ -723,7 +820,9 @@ def _check_content_keywords(
         if hit.source_id != expected_id:
             continue
         excerpt = getattr(hit, "canonical_excerpt", "") or ""
-        if any(kw in excerpt for kw in keywords):
+        search_text = getattr(hit, "search_text", "") or ""
+        haystack = f"{excerpt}\n{search_text}"
+        if any(kw and kw in haystack for kw in keywords):
             return True
     return False
 
@@ -758,12 +857,41 @@ def _aggregate_metrics(
     }
 
 
+def _brief_failure_scenario_ok(result: BriefFailureResult) -> bool:
+    expected_status = "ready" if result.scenario == "fallback_success" else "failed"
+    return (
+        result.brief_status == expected_status
+        and result.evidence_searchable
+    )
+
+
+def _edge_fixture_ok(result: EdgeFixtureResult) -> bool:
+    if result.name in {"utf8", "utf8bom", "utf16le", "utf16be", "gbk", "text_plain"}:
+        return result.accepted and not result.rejected
+    if result.name == "empty":
+        return result.rejected and result.error_code == "unsupported_type"
+    if result.name == "oversized":
+        return result.rejected and result.error_code == "source_too_large"
+    if result.name == "markdown_structure":
+        return result.accepted and result.evidence_kind_count >= 4
+    return False
+
+
+def _bundle_fixture_ok(result: BundleFixtureResult) -> bool:
+    if result.name == "valid":
+        return result.accepted and not result.rejected
+    return result.rejected and result.error_code == "bundle_invalid"
+
+
 def _collect_failures(
     metrics: dict[str, float],
     gates: AcceptanceGateConfig,
     query_results: list[QueryResult],
     source_results: list[SourceResult],
     fixture_errors: list[str],
+    brief_failure_results: Optional[list[BriefFailureResult]] = None,
+    edge_fixture_results: Optional[list[EdgeFixtureResult]] = None,
+    bundle_fixture_results: Optional[list[BundleFixtureResult]] = None,
 ) -> list[FailureCase]:
     failures: list[FailureCase] = []
     if metrics["lexical_recall_at_5"] < gates.lexical_recall_at_5:
@@ -786,7 +914,7 @@ def _collect_failures(
                         gate="lexical_recall_at_5",
                         source_key=q.expected_source_key,
                         query=q.query,
-                        evidence_id="",
+                        evidence_id=q.matched_evidence_ids[0] if q.matched_evidence_ids else "",
                         reason="lexical 查询未进前 5",
                     )
                 )
@@ -815,7 +943,7 @@ def _collect_failures(
                         gate="lexical_mrr",
                         source_key=q.expected_source_key,
                         query=q.query,
-                        evidence_id="",
+                        evidence_id=q.matched_evidence_ids[0] if q.matched_evidence_ids else "",
                         reason=f"MRR={q.mrr_score:.2f}",
                     )
                 )
@@ -839,7 +967,7 @@ def _collect_failures(
                         gate="natural_language_recall_at_5",
                         source_key=q.expected_source_key,
                         query=q.query,
-                        evidence_id="",
+                        evidence_id=q.matched_evidence_ids[0] if q.matched_evidence_ids else "",
                         reason="自然语言查询未进前 5",
                     )
                 )
@@ -893,6 +1021,119 @@ def _collect_failures(
                     ),
                 )
             )
+    # 这些是 KI-11 硬门禁，不能只作为报告诊断字段；任何子项缺失或失败都必须
+    # 让 AcceptanceReport.passed=False。
+    source_rerun_failures = [s for s in source_results if not s.rerun_consistent]
+    for source in source_rerun_failures:
+        failures.append(
+            FailureCase(
+                gate="rerun_consistency",
+                source_key=source.source_key,
+                query="",
+                evidence_id="",
+                reason="相同 extractor 重跑的 Snapshot digest 或 Evidence 定位不一致",
+            )
+        )
+
+    scenarios = brief_failure_results or []
+    scenario_by_name = {item.scenario: item for item in scenarios}
+    missing_scenarios = sorted(_EXPECTED_BRIEF_SCENARIOS - set(scenario_by_name))
+    for name in missing_scenarios:
+        failures.append(
+            FailureCase(
+                gate="brief_failure_scenarios",
+                source_key=name,
+                query="",
+                evidence_id="",
+                reason="Brief 故障场景未执行",
+            )
+        )
+    for scenario_item in scenarios:
+        if scenario_item.scenario not in _EXPECTED_BRIEF_SCENARIOS:
+            failures.append(
+                FailureCase(
+                    gate="brief_failure_scenarios",
+                    source_key=scenario_item.scenario,
+                    query="",
+                    evidence_id="",
+                    reason="出现未定义的 Brief 故障场景",
+                )
+            )
+        elif not _brief_failure_scenario_ok(scenario_item):
+            failures.append(
+                FailureCase(
+                    gate="brief_failure_scenarios",
+                    source_key=scenario_item.scenario,
+                    query="",
+                    evidence_id="",
+                    reason=(
+                        f"故障场景结果不符合预期：status={scenario_item.brief_status}, "
+                        f"error={scenario_item.brief_error_code}, "
+                        f"searchable={scenario_item.evidence_searchable}"
+                    ),
+                )
+            )
+
+    edge_results = edge_fixture_results or []
+    for edge_item in edge_results:
+        if not _edge_fixture_ok(edge_item):
+            failures.append(
+                FailureCase(
+                    gate="edge_fixtures",
+                    source_key=edge_item.name,
+                    query="",
+                    evidence_id="",
+                    reason=(
+                        f"边界 fixture 结果不符合预期：accepted={edge_item.accepted}, "
+                        f"rejected={edge_item.rejected}, error={edge_item.error_code}"
+                    ),
+                )
+            )
+    expected_edge_names = {
+        "utf8", "utf8bom", "utf16le", "utf16be", "gbk", "empty",
+        "oversized", "markdown_structure", "text_plain",
+    }
+    for name in sorted(expected_edge_names - {item.name for item in edge_results}):
+        failures.append(
+            FailureCase(
+                gate="edge_fixtures",
+                source_key=name,
+                query="",
+                evidence_id="",
+                reason="边界 fixture 未执行",
+            )
+        )
+
+    bundle_results = bundle_fixture_results or []
+    for bundle_item in bundle_results:
+        if not _bundle_fixture_ok(bundle_item):
+            failures.append(
+                FailureCase(
+                    gate="bundle_fixtures",
+                    source_key=bundle_item.name,
+                    query="",
+                    evidence_id="",
+                    reason=(
+                        f"Bundle fixture 结果不符合预期：accepted={bundle_item.accepted}, "
+                        f"rejected={bundle_item.rejected}, "
+                        f"error={bundle_item.error_code}"
+                    ),
+                )
+            )
+    expected_bundle_names = {
+        "valid", "invalid_missing_image", "invalid_duplicate_image",
+        "invalid_unused_asset", "invalid_path_traversal", "invalid_media_disguise",
+    }
+    for name in sorted(expected_bundle_names - {item.name for item in bundle_results}):
+        failures.append(
+            FailureCase(
+                gate="bundle_fixtures",
+                source_key=name,
+                query="",
+                evidence_id="",
+                reason="Bundle fixture 未执行",
+            )
+        )
     for err in fixture_errors:
         failures.append(
             FailureCase(
@@ -938,6 +1179,14 @@ def _drain_brief_queue(runner: KnowledgeJobRunner, max_rounds: int = 20) -> None
             break
 
 
+def _drain_extraction_queue(runner: KnowledgeJobRunner, max_rounds: int = 20) -> None:
+    """验收工具显式驱动异步 Extraction，再进入 Brief 队列。"""
+    for _ in range(max_rounds):
+        results = runner.tick_extraction(lease_owner="acceptance")
+        if not results:
+            break
+
+
 def _enqueue_brief_rebuild(
     repository: KnowledgeRepository, source_id: int
 ) -> None:
@@ -958,6 +1207,7 @@ def _run_brief_failure_scenarios(
     repository: KnowledgeRepository,
     data_dir: Path,
     session_factory: Any,
+    service: KnowledgeIngestService,
     base_config: Config,
     source_id_by_key: dict[str, int],
     fixtures_dir: Path,
@@ -1023,6 +1273,15 @@ def _evaluate_edge_fixtures(
     session_factory = session_factory_for_data_dir(sandbox)
     repository = KnowledgeRepository(session_factory)
     service = KnowledgeIngestService(repository, sandbox, session_factory, config=None)
+    runner = KnowledgeJobRunner(
+        repository,
+        ExtractionWorker(
+            repository,
+            sandbox,
+            session_factory,
+            on_extraction_succeeded=service.enqueue_or_block_brief,
+        ),
+    )
     edge = fixtures_dir / "edge"
     results: list[EdgeFixtureResult] = []
 
@@ -1066,6 +1325,7 @@ def _evaluate_edge_fixtures(
     accepted, error, source_id = _try_ingest(service, edge / "markdown-structure.md")
     kind_count = 0
     if accepted and source_id:
+        _drain_extraction_queue(runner)
         source = repository.get_source(source_id)
         assert source is not None and source.active_snapshot_id is not None
         page = repository.list_evidence(source_id, limit=500)
@@ -1106,6 +1366,15 @@ def _evaluate_bundle_fixtures(
     session_factory = session_factory_for_data_dir(sandbox)
     repository = KnowledgeRepository(session_factory)
     service = KnowledgeIngestService(repository, sandbox, session_factory, config=None)
+    runner = KnowledgeJobRunner(
+        repository,
+        ExtractionWorker(
+            repository,
+            sandbox,
+            session_factory,
+            on_extraction_succeeded=service.enqueue_or_block_brief,
+        ),
+    )
     bundle_dir = fixtures_dir / "bundles"
     valid_png = (bundle_dir / "valid" / "diagram.png").read_bytes()
     fake_png = (bundle_dir / "invalid-media-disguise" / "fake.png").read_bytes()
@@ -1136,6 +1405,7 @@ def _evaluate_bundle_fixtures(
         )
         try:
             service.ingest(request)
+            _drain_extraction_queue(runner)
             accepted, error = True, ""
         except IngestError as exc:
             accepted, error = False, exc.code
@@ -1208,7 +1478,8 @@ def run_acceptance(
     specs = load_manifest(fixtures_dir)
     queries = load_queries(fixtures_dir)
 
-    fixture_errors = verify_fixture_hashes(fixtures_dir, specs)
+    fixture_errors = validate_acceptance_contract(specs, queries)
+    fixture_errors.extend(verify_fixture_hashes(fixtures_dir, specs))
     if fixture_errors:
         return AcceptanceReport(
             gate_config=gates,
@@ -1233,7 +1504,8 @@ def run_acceptance(
     for spec in specs:
         source_id_by_key[spec.source_key] = _import_fixture(service, fixtures_dir, spec)
 
-    # Brief 主验收（ingest 已 enqueue brief job，tick 即可）。
+    # Ingest 只提交 Source + Extraction Job；先显式消费 Extraction，成功后由
+    # callback 按当前 Snapshot 入队 Brief，再运行 Brief 主验收。
     if enable_brief and config is not None:
         stub = model_client or make_perfect_brief_stub(repository)
         worker = BriefWorker(
@@ -1241,9 +1513,15 @@ def run_acceptance(
         )
         runner = KnowledgeJobRunner(
             repository,
-            ExtractionWorker(repository, data_dir, session_factory),
+            ExtractionWorker(
+                repository,
+                data_dir,
+                session_factory,
+                on_extraction_succeeded=service.enqueue_or_block_brief,
+            ),
             brief_worker=worker,
         )
+        _drain_extraction_queue(runner)
         _drain_brief_queue(runner)
 
     # 构建 source_results（回读 + 幂等 + Brief 状态）。
@@ -1262,7 +1540,13 @@ def run_acceptance(
     brief_failure_results: list[BriefFailureResult] = []
     if enable_brief_failure_scenarios and config is not None:
         brief_failure_results = _run_brief_failure_scenarios(
-            repository, data_dir, session_factory, config, source_id_by_key, fixtures_dir
+            repository,
+            data_dir,
+            session_factory,
+            service,
+            config,
+            source_id_by_key,
+            fixtures_dir,
         )
 
     # 边界 fixtures（独立 sandbox，不污染主指标）。
@@ -1270,8 +1554,43 @@ def run_acceptance(
     bundle_fixture_results = _evaluate_bundle_fixtures(fixtures_dir, data_dir)
 
     metrics = _aggregate_metrics(query_results, source_results)
+    metrics.update(
+        {
+            "source_count": float(len(source_results)),
+            "expected_hit_query_count": float(
+                sum(1 for query in queries if query.expect_hit)
+            ),
+            "rerun_consistency_rate": (
+                sum(1 for source in source_results if source.rerun_consistent)
+                / len(source_results)
+                if source_results
+                else 0.0
+            ),
+            "brief_failure_scenario_rate": (
+                sum(1 for item in brief_failure_results if _brief_failure_scenario_ok(item))
+                / len(_EXPECTED_BRIEF_SCENARIOS)
+                if brief_failure_results
+                else 0.0
+            ),
+            "edge_fixture_pass_rate": (
+                sum(1 for item in edge_fixture_results if _edge_fixture_ok(item))
+                / 9.0
+            ),
+            "bundle_fixture_pass_rate": (
+                sum(1 for item in bundle_fixture_results if _bundle_fixture_ok(item))
+                / 6.0
+            ),
+        }
+    )
     failures = _collect_failures(
-        metrics, gates, query_results, source_results, fixture_errors
+        metrics,
+        gates,
+        query_results,
+        source_results,
+        fixture_errors,
+        brief_failure_results,
+        edge_fixture_results,
+        bundle_fixture_results,
     )
     provider_summary = _provider_summary(
         config, repository, source_id_by_key, real_mode

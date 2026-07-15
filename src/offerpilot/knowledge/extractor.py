@@ -24,6 +24,7 @@ from markdown_it.token import Token
 
 from offerpilot.knowledge.tokenizer import (
     TOKENIZER_VERSION,
+    TokenizerUnavailableError,
     count_tokens,
     max_token_limit,
 )
@@ -219,6 +220,25 @@ class MarkdownExtractor:
         # 这样 markdown-it 会把 HTML 标签当作纯文本保留，不解析、不执行脚本、不加载资源。
         self._parser = MarkdownIt("commonmark", {"html": False}).enable("table")
 
+    def image_references(self, raw_content: str) -> tuple[str, ...]:
+        """只读取 Markdown 图片引用，不生成 Evidence。
+
+        Bundle 的 Preflight 需要确认附件与引用完整匹配，但上传请求不能执行
+        Extraction。该方法复用固定 Markdown parser，仅返回引用逻辑名。
+        """
+        canonical, _ = _normalize_text(raw_content)
+        references: list[str] = []
+        for token in self._parser.parse(canonical):
+            if token.type != "inline" or not token.children:
+                continue
+            for child in token.children:
+                if child.type != "image":
+                    continue
+                source = str(child.attrs.get("src") or "") if child.attrs else ""
+                if source:
+                    references.append(source)
+        return tuple(references)
+
     def extract(
         self,
         raw_content: str,
@@ -247,7 +267,12 @@ class MarkdownExtractor:
             else:
                 index += advanced
 
-        token_count_value = count_tokens(canonical)
+        try:
+            token_count_value = count_tokens(canonical)
+        except TokenizerUnavailableError as exc:
+            # Service 层统一把 ExtractionError 映射为稳定 API 错误码；不能让
+            # tokenizer 缺失退化成字符估算或未分类的 500。
+            raise ExtractionError("tokenizer_unavailable", str(exc)) from exc
         if token_count_value.count > max_token_limit():
             raise ExtractionError(
                 "source_too_large",

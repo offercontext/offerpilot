@@ -372,6 +372,13 @@ def test_ki05_patch_display_title_empty_resets_to_hint(app_client):
     assert body["display_title"] == ""
     assert body["title"] == "hint 标题"
 
+    # 清空自定义标题后，FTS 的 source_title 也必须回退到 title_hint。
+    search = app_client.post(
+        "/api/knowledge/evidence/search",
+        json={"query": "hint 标题"},
+    ).json()
+    assert {hit["source_id"] for hit in search["hits"]} == {source_id}
+
 
 def test_ki05_patch_display_title_too_long_rejected(app_client):
     content = "# T\n\n正文。\n".encode("utf-8")

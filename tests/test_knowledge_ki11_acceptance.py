@@ -27,11 +27,48 @@ from offerpilot.config import AIProviderProfile, Config
 from offerpilot.knowledge.acceptance import (
     AcceptanceGateConfig,
     AcceptanceReport,
+    QuerySpec,
+    _evaluate_queries,
     run_acceptance,
+    validate_acceptance_contract,
 )
 from offerpilot.knowledge.brief import BRIEF_MIN_CONTEXT_WINDOW
 
 REPO_FIXTURES = Path(__file__).parent / "fixtures" / "knowledge"
+
+
+def test_ki11_contract_requires_five_sources_and_twenty_expected_queries() -> None:
+    errors = validate_acceptance_contract([], [])
+    assert any("正好 5 份 Source" in error for error in errors)
+    assert any("至少 20 条" in error for error in errors)
+
+
+def test_ki11_recall_requires_expected_evidence_not_only_source() -> None:
+    class _Repository:
+        def search_evidence(self, _query: str, *, limit: int) -> list[object]:
+            assert limit == 5
+            return [
+                type(
+                    "Hit",
+                    (),
+                    {
+                        "source_id": 1,
+                        "evidence_id": "ev_unrelated",
+                        "canonical_excerpt": "同一 Source 的无关章节",
+                    },
+                )()
+            ]
+
+    query = QuerySpec(
+        query="人工预期主题",
+        query_type="lexical_chinese",
+        source_key="source-a",
+        expect_hit=True,
+        content_keywords=("预期主题",),
+    )
+    result = _evaluate_queries(_Repository(), {"source-a": 1}, [query])[0]
+    assert result.recall_hit is False
+    assert result.first_rank is None
 
 
 # ---------------------------------------------------------------------------

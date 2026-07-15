@@ -747,6 +747,7 @@ class KnowledgeJob(Base):
     __tablename__ = "knowledge_jobs"
     __table_args__ = (
         Index("idx_knowledge_jobs_source", "source_id"),
+        Index("idx_knowledge_jobs_attempt", "attempt_id"),
         Index("idx_knowledge_jobs_status", "status"),
         Index("idx_knowledge_jobs_queue", "queue"),
     )
@@ -756,6 +757,11 @@ class KnowledgeJob(Base):
     queue: Mapped[str] = mapped_column(String, nullable=False)
     source_id: Mapped[int | None] = mapped_column(
         ForeignKey("knowledge_sources.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    # Brief Job 与具体 Attempt 一一关联；Extraction/Delete Job 保持 NULL。
+    attempt_id: Mapped[int | None] = mapped_column(
+        ForeignKey("knowledge_brief_attempts.id", ondelete="CASCADE"),
         nullable=True,
     )
     snapshot_id: Mapped[int | None] = mapped_column(Integer, nullable=True)

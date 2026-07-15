@@ -41,12 +41,11 @@ describe('KnowledgeSourcesView', () => {
     expect(markup).not.toContain('Mutation Review');
   });
 
-  it('exposes KI-05 dedup helper text without legacy wiki surface', () => {
+  it('keeps KI-05 dedup guidance out of the main source library surface', () => {
     const markup = renderWithProviders();
 
-    // KI-05 dedup 提示文案出现在粘贴/上传入口附近,引导用户去已有 Source。
-    expect(markup).toContain('进入已有 Source');
-    expect(markup).toContain('Origin');
+    // 去重说明移入已选 Source 的“导入记录”提示图标，不再占用资料来源首页空间。
+    expect(markup).not.toContain('相同内容自动复用已有 Source');
     expect(markup).not.toContain('自动创建 Page');
   });
 

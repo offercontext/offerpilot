@@ -49,6 +49,12 @@ from offerpilot.knowledge import (
 from offerpilot.knowledge.assets import AssetInput
 from offerpilot.knowledge.search import SearchError as _KnowledgeSearchError
 from offerpilot.knowledge.service import IngestError as _IngestHttpError
+from offerpilot.knowledge.worker import (
+    BriefWorker,
+    ExtractionWorker,
+    KnowledgeJobRunner,
+    KnowledgeWorkerRuntime,
+)
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
 from offerpilot.repositories.chat import ChatRepository
 from offerpilot.repositories.application_events import (
@@ -92,6 +98,30 @@ _CANCELLED_TOOL_RESULT = json.dumps(
     {"status": "cancelled", "message": "用户取消了该操作，未执行。"},
     ensure_ascii=False,
 )
+_KNOWLEDGE_MAIN_UPLOAD_LIMIT = 5 * 1024 * 1024
+_KNOWLEDGE_ASSET_UPLOAD_LIMIT = 10 * 1024 * 1024
+_KNOWLEDGE_BUNDLE_UPLOAD_LIMIT = 50 * 1024 * 1024
+_KNOWLEDGE_ASSET_COUNT_LIMIT = 50
+
+
+class _KnowledgeUploadLimitExceeded(ValueError):
+    """上传流超过 Knowledge 的单文件或 Bundle 限制。"""
+
+
+def _read_upload_limited(upload: UploadFile, limit: int, *, label: str) -> bytes:
+    """分块读取 multipart，避免在 Service 校验前把超大请求全部放进内存。"""
+
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = upload.file.read(min(1024 * 1024, limit - total + 1))
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            raise _KnowledgeUploadLimitExceeded(f"{label} 超出 {limit} 字节上限")
+        chunks.append(chunk)
+    return b"".join(chunks)
 _ORPHAN_TOOL_RESULT = json.dumps(
     {"status": "unknown", "message": "历史记录中缺少该工具调用的结果，本轮未重新执行。"},
     ensure_ascii=False,
@@ -307,42 +337,43 @@ def _knowledge_brief_attempt_payload(attempt: Any) -> Optional[dict[str, Any]]:
     }
 
 
-def _knowledge_ingest_payload(result: Any) -> dict[str, Any]:
+def _knowledge_ingest_payload(result: Any, job: Any) -> dict[str, Any]:
     return {
         "deduplicated": result.deduplicated,
         "source": _knowledge_source_payload(result.source),
-        "job": _knowledge_job_payload_for_id(result),
+        "job": _knowledge_job_payload(job),
         "extraction_error_code": result.extraction_error_code,
         "extraction_error_message": result.extraction_error_message,
-    }
-
-
-def _knowledge_job_payload_for_id(result: Any) -> dict[str, Any]:
-    return {
-        "id": result.job_id,
-        "kind": "extract",
-        "queue": "extraction",
-        "source_id": result.source.id,
-        "snapshot_id": None,
-        "stage": "deduplicated" if result.deduplicated else "queued",
-        "status": "succeeded" if not result.extraction_failed else "failed",
-        "progress": 100 if not result.extraction_failed and not result.deduplicated else 0,
-        "retry_count": 0,
-        "next_retry_at": None,
-        "error_code": result.extraction_error_code,
-        "error_message": result.extraction_error_message,
-        "canceled": False,
-        "lease_owner": "",
-        "lease_expires_at": None,
-        "heartbeat_at": None,
-        "created_at": _json_datetime(result.source.created_at),
-        "updated_at": _json_datetime(result.source.updated_at),
     }
 
 
 def _safe_download_filename(filename: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", filename).strip("-._")
     return cleaned or "source.md"
+
+
+def _resolve_knowledge_download_path(
+    data_dir: Path,
+    relative_path: str,
+    expected_dir: Path,
+) -> Optional[Path]:
+    """解析 Knowledge 原件路径并拒绝越出当前 Source 目录的路径。
+
+    relative_path 来自 SQLite，不能仅依赖上传入口的校验：旧库、手工修改或未来
+    迁移都可能写入恶意路径。``resolve`` 同时跟随符号链接，确保最终目标仍在
+    data_dir/knowledge/sources/<source_id>（或 assets）内。
+    """
+    try:
+        data_root = data_dir.resolve()
+        expected_root = expected_dir.resolve()
+        if Path(relative_path).is_absolute():
+            return None
+        candidate = (data_root / relative_path).resolve()
+        candidate.relative_to(data_root)
+        candidate.relative_to(expected_root)
+    except (OSError, ValueError):
+        return None
+    return candidate
 
 
 def create_app(
@@ -373,8 +404,32 @@ def create_app(
         session_factory,
         config=knowledge_config,
     )
+    extraction_worker = ExtractionWorker(
+        knowledge_repository,
+        resolved_data_dir,
+        session_factory,
+        on_extraction_succeeded=knowledge_service.enqueue_or_block_brief,
+    )
+    brief_worker = BriefWorker(knowledge_repository, knowledge_config)
+    knowledge_runner = KnowledgeJobRunner(
+        knowledge_repository,
+        extraction_worker,
+        brief_worker,
+    )
     app = FastAPI(title="OfferPilot")
+    knowledge_runtime = KnowledgeWorkerRuntime(
+        knowledge_runner,
+        knowledge_repository,
+        on_extraction_succeeded=knowledge_service.enqueue_or_block_brief,
+    )
 
+    @app.on_event("startup")
+    def _start_knowledge_worker() -> None:
+        knowledge_runtime.start()
+
+    @app.on_event("shutdown")
+    def _stop_knowledge_worker() -> None:
+        knowledge_runtime.stop(timeout=5)
     @app.middleware("http")
     async def cors_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
         if request.method == "OPTIONS":
@@ -433,9 +488,21 @@ def create_app(
     ) -> Any:
         # Spec §16.1：multipart 支持 file / bundle / pasted content。file 与 paste
         # 二选一；``files`` 携带 Bundle 附件。
+        if len(files) > _KNOWLEDGE_ASSET_COUNT_LIMIT:
+            return error_response(
+                400,
+                f"Bundle 附件数量超过上限 {_KNOWLEDGE_ASSET_COUNT_LIMIT}",
+                code="size_limit_exceeded",
+            )
         if file is not None:
             try:
-                content = file.file.read()
+                content = _read_upload_limited(
+                    file,
+                    _KNOWLEDGE_MAIN_UPLOAD_LIMIT,
+                    label="主文件",
+                )
+            except _KnowledgeUploadLimitExceeded as exc:
+                return error_response(400, str(exc), code="source_too_large")
             finally:
                 file.file.close()
             filename = file.filename or ""
@@ -453,12 +520,26 @@ def create_app(
             )
 
         asset_inputs: list[AssetInput] = []
+        asset_total = 0
         if files:
             for item in files:
                 try:
-                    asset_bytes = item.file.read()
+                    asset_bytes = _read_upload_limited(
+                        item,
+                        _KNOWLEDGE_ASSET_UPLOAD_LIMIT,
+                        label=f"附件 {item.filename or ''}".strip(),
+                    )
+                except _KnowledgeUploadLimitExceeded as exc:
+                    return error_response(400, str(exc), code="source_too_large")
                 finally:
                     item.file.close()
+                asset_total += len(asset_bytes)
+                if asset_total > _KNOWLEDGE_BUNDLE_UPLOAD_LIMIT:
+                    return error_response(
+                        400,
+                        f"Bundle 总大小超过上限 {_KNOWLEDGE_BUNDLE_UPLOAD_LIMIT} 字节",
+                        code="source_too_large",
+                    )
                 asset_logical = item.filename or ""
                 if not asset_logical:
                     return error_response(
@@ -483,10 +564,19 @@ def create_app(
             )
         except _IngestHttpError as exc:
             return error_response(exc.status_code, exc.message, code=exc.code)
+        job = knowledge_repository.get_job(result.job_id)
+        if job is None:
+            # Ingest 已经提交 Source，但持久 Job 不可读属于内部一致性破坏；
+            # 不能用“succeeded”伪造成功响应，否则客户端无法恢复队列状态。
+            return error_response(
+                500,
+                "Source 已提交但 Extraction Job 不可读",
+                code="source_integrity_mismatch",
+            )
         status_code = 200 if result.deduplicated else 202
         return JSONResponse(
             status_code=status_code,
-            content=_knowledge_ingest_payload(result),
+            content=_knowledge_ingest_payload(result, job),
         )
 
     @app.get("/api/knowledge/sources/{source_id}")
@@ -553,7 +643,10 @@ def create_app(
     def delete_knowledge_source(source_id: int) -> JSONResponse:
         # Spec §5.4 / §16.1：永久删除是异步危险操作,返回 202 与 Delete Job。
         # 前端必须二次确认;后端不复权 Source,删除后相同内容可重新作为新 Source 上传。
-        result = knowledge_service.purge_source(source_id)
+        try:
+            result = knowledge_service.purge_source(source_id)
+        except _IngestHttpError as exc:
+            return error_response(exc.status_code, exc.message, code=exc.code)
         if result is None:
             return error_response(404, "Source not found")
         snapshot = result.job_snapshot
@@ -569,7 +662,7 @@ def create_app(
                     "snapshot_id": None,
                     "stage": snapshot.stage,
                     "status": snapshot.status,
-                    "progress": 100,
+                    "progress": 0,
                     "retry_count": 0,
                     "error_code": "",
                     "error_message": "",
@@ -585,8 +678,14 @@ def create_app(
         source = knowledge_repository.get_source(source_id)
         if source is None:
             return error_response(404, "Source not found")
-        path = resolved_data_dir / source.main_relative_path
-        if not path.is_file():
+        if source.lifecycle == "deleting":
+            return error_response(410, "Source is being deleted", code="source_deleting")
+        path = _resolve_knowledge_download_path(
+            resolved_data_dir,
+            source.main_relative_path,
+            resolved_data_dir / "knowledge" / "sources" / str(source.id),
+        )
+        if path is None or not path.is_file():
             return error_response(404, "Source content missing")
         safe_name = _safe_download_filename(source.main_filename)
         return FileResponse(
@@ -600,6 +699,8 @@ def create_app(
         source = knowledge_repository.get_source(source_id)
         if source is None:
             return error_response(404, "Source not found")
+        if source.lifecycle == "deleting":
+            return error_response(410, "Source is being deleted", code="source_deleting")
         assets = knowledge_repository.list_assets(source_id)
         return JSONResponse(
             {"items": [_knowledge_asset_payload(item) for item in assets]}
@@ -610,11 +711,21 @@ def create_app(
         source = knowledge_repository.get_source(source_id)
         if source is None:
             return error_response(404, "Source not found")
+        if source.lifecycle == "deleting":
+            return error_response(410, "Source is being deleted", code="source_deleting")
         asset = knowledge_repository.get_asset(asset_id)
         if asset is None or asset.source_id != source_id:
             return error_response(404, "Asset not found")
-        path = resolved_data_dir / asset.relative_path
-        if not path.is_file():
+        path = _resolve_knowledge_download_path(
+            resolved_data_dir,
+            asset.relative_path,
+            resolved_data_dir
+            / "knowledge"
+            / "sources"
+            / str(source_id)
+            / "assets",
+        )
+        if path is None or not path.is_file():
             return error_response(404, "Asset content missing")
         # Spec §13：Asset 原始字节按原始 bytes 下载，安全文件名，正确媒体类型，
         # 不暴露本机绝对路径。Bundle 内部 ``relative_path`` 在数据库中已固定为
@@ -660,6 +771,7 @@ def create_app(
         # KI-10 / Spec §10.4：读取时检测 Brief 是否相对当前 active provider / Snapshot
         # 过期；只标记 outdated，不自动重建。无 Brief 时为 no-op。
         knowledge_service.refresh_brief_outdated(source_id)
+        source = knowledge_repository.get_source(source_id) or source
         brief = knowledge_repository.get_source_brief(source_id)
         latest_attempt = knowledge_repository.find_latest_brief_attempt(source_id)
         attempts = knowledge_repository.list_brief_attempts(source_id, limit=10)
@@ -727,7 +839,21 @@ def create_app(
         source_ids_raw = payload.get("source_ids") or []
         if not isinstance(source_ids_raw, list):
             return error_response(400, "source_ids must be a list")
-        source_ids = [int(sid) for sid in source_ids_raw if str(sid).isdigit()]
+        invalid_source_ids = [
+            sid
+            for sid in source_ids_raw
+            if not (
+                (isinstance(sid, int) and not isinstance(sid, bool) and sid > 0)
+                or (isinstance(sid, str) and sid.isdigit() and int(sid) > 0)
+            )
+        ]
+        if invalid_source_ids:
+            return error_response(
+                400,
+                "source_ids must contain only positive integer IDs",
+                code="invalid_payload",
+            )
+        source_ids = [int(sid) for sid in source_ids_raw]
         include_archived = bool(payload.get("include_archived") or False)
         # Spec §15 "FTS MATCH、bm25 或查询语法错误显式返回稳定错误"：limit 非数字也
         # 必须返回 400，而不是 ValueError → 500。
@@ -778,6 +904,14 @@ def create_app(
         job = knowledge_repository.get_job(job_id)
         if job is None:
             return error_response(404, "Job not found")
+        if job.kind == "delete" and job.status not in ("succeeded", "failed", "canceled"):
+            # Delete Job 不能取消，否则 Source 会永久停留在 deleting 状态；用户需要
+            # 看到明确错误，而不是收到看似成功但实际仍会删除的响应。
+            return error_response(
+                409,
+                "Delete Job cannot be canceled",
+                code="job_not_cancelable",
+            )
         if job.status in ("succeeded", "failed", "canceled"):
             return JSONResponse(_knowledge_job_payload(job))
         updated = knowledge_repository.mark_canceled(job_id)
@@ -2522,6 +2656,7 @@ def create_app(
         # KI-10：settings 更新后刷新 knowledge_service 内存 config，确保后续 rebuild、
         # outdated 检测与 enqueue block 判断使用最新 Provider，而非启动快照。
         knowledge_service.update_config(next_config)
+        brief_worker.update_config(next_config)
         return _settings_payload(next_config, resolved_data_dir)
 
     @app.get("/{full_path:path}", include_in_schema=False)

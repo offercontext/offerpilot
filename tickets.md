@@ -1,353 +1,266 @@
-# Tickets: Knowledge Imported Source Ingest
+# Tickets: Knowledge Evidence 元数据过滤与 Brief 修复闭环
 
-将 [Knowledge Imported Source Ingest 破坏性重写设计](docs/superpowers/specs/2026-07-12-knowledge-ingest-rewrite-design.md)
-实现为可导入、可检索、可引用、可验证的 Source/Evidence/Brief 垂直闭环。
+将 [Knowledge Evidence 元数据过滤与 Brief 修复闭环设计](docs/superpowers/specs/2026-07-15-knowledge-evidence-metadata-and-brief-repair-design.md)
+实现为确定性 Evidence 资格、真实 citation coverage、汇总式单次 repair 和完整失败诊断闭环。
 
-工作方式：只处理 **frontier**，即所有 blocker 都已完成的 Ticket。每张 Ticket 使用一个全新上下文，
-完成代码、测试、真实验收和 commit 后再勾选。不要跨 Ticket 提前实现后续能力。
+这是 KI-01～KI-12 完成后的 follow-up ticket 组。工作时只处理 **frontier**：一张 Ticket 的所有
+blocker 完成后才能开始。每张 Ticket 使用一个全新上下文，通过 `/implement` 完成代码、测试、验证和
+Code Review；不要跨 Ticket 提前实现后续能力。
 
 实施前必须阅读：
 
 - [Knowledge 系统主文档](docs/architecture/knowledge-system.md)
+- [Knowledge Evidence 元数据与 Brief 修复 Spec](docs/superpowers/specs/2026-07-15-knowledge-evidence-metadata-and-brief-repair-design.md)
 - [Knowledge Ingest 实施 Spec](docs/superpowers/specs/2026-07-12-knowledge-ingest-rewrite-design.md)
 - [ADR-0007](docs/architecture/decisions/0007-use-sqlite-as-knowledge-wiki-ssot.md)
 
 通用完成要求：
 
-- 保持每次提交可运行、可测试，不回滚工作区中不属于当前 Ticket 的改动。
-- 每个行为变化先建立失败测试，再完成最小实现。
-- 同一能力涉及数据、领域服务、API、前端和测试时，在同一 Ticket 内闭环。
-- 不恢复旧 Page、Review、Index、Wikilink、Purpose/Schema 或旧 Knowledge Document 兼容层。
-- 不引入 Note、Captured Source、Pilot Tool、练习、向量检索、OCR 或未在 Spec 中确认的能力。
-- 完成前运行与改动面匹配的测试；最终 Ticket 运行完整 gate。
-- 非平凡实现完成后进行独立子代理 Code Review，并修复发现的问题。
+- 保持 Source 不可变、Evidence 可回读和 SQLite 单一事实源，不以清洗为由改写原件。
+- 每个行为变化先建立失败测试，再完成最小实现；禁止禁用、放宽或绕过现有门禁。
+- 每张 Ticket 在数据、领域服务、API、前端和测试之间形成可独立验证的纵向闭环。
+- 不保留旧 Brief Schema、模型自报 coverage 或完整 Brief repair 的运行时兼容分支。
+- 不引入任意 metadata JSON、自动 tags、LLM 元数据分类、通用网页正文抽取或整批 Validator。
+- 普通日志不得打印 Source/Evidence/Brief 正文、完整 Prompt、API Key 或本机路径。
+- 完成前运行与改动面匹配的测试；KBR-08 运行完整 release gate 和真实浏览器验收。
+- 非平凡实现完成后启动独立子代理 Code Review，修复发现的问题或记录明确剩余风险。
 
 依赖图：
 
 ```text
-KI-01 → KI-02 ─┬→ KI-03 → KI-04 ─┬→ KI-06 → KI-07 ─┐
-               └→ KI-05 ─────────┘                  ├→ KI-09 → KI-10 ─┐
-                          KI-03 + KI-06 → KI-08 ─────┘                 ├→ KI-11 → KI-12
-                                                        KI-08 ────────┘
+KBR-01 → KBR-02 ┬→ KBR-03 ───────────┐
+                 └→ KBR-04 → KBR-05 → KBR-06 ─┤
+                                               ├→ KBR-07 → KBR-08
 ```
 
-## KI-01：切换到空的新 Knowledge Source 工作台
+## KBR-01：恢复异步 Ingest 到 Brief 的最高层测试 seam
 
-**What to build:** 将未发布的旧自动 Wiki 占位实现破坏性切换为空的新 Source Library。用户进入
-Knowledge 后只看到稳定的“资料来源”空状态；旧 Page、Review、Index、配置、导出和 AI Tool 均不再
-存在，其他业务模块继续正常工作。
+**What to build:** 建立一个稳定的集成测试入口，从用户导入 Source 原始字节开始，真实驱动
+Extraction queue 完成 Snapshot/Evidence/FTS 提交，再驱动 Brief queue。后续 Ticket 可以在同一
+seam 注入确定性模型响应并观察最终 Source、Attempt、Brief 和调用顺序，不再依赖同步 Extraction
+假设或手工插入 Evidence。
 
 **Blocked by:** None — can start immediately.
 
-**Scope boundaries:** 本 Ticket 不实现上传、Extraction、Evidence、搜索或 Brief，只建立可继续纵向
-扩展的空壳和破坏性重置边界。
+**Scope boundaries:** 这是 make-the-change-easy 的测试 prefactor。不得改变生产 Pipeline、队列顺序、
+Provider 行为或产品 Schema；不得在本 Ticket 实现元数据过滤、coverage 或 repair 新语义。
 
-- [x] 启动时识别旧 Knowledge Schema，并静默删除所有旧 Knowledge 表、FTS、运行文件和生成产物。
-- [x] 破坏性重置严格限定在 Knowledge 表族和 Knowledge 数据目录，不修改其他业务表或文件。
-- [x] 重置可重复执行；新数据库、已重置数据库和带旧占位数据的数据库都能正常启动。
-- [x] 新 Source 列表接口存在并在空库返回稳定的空集合契约。
-- [x] Knowledge 导航进入新的“资料来源”空状态，不展示不可用按钮或未来 Note 占位入口。
-- [x] 旧 Page、Review、Index、Lint、Config、Export 路由全部返回 404。
-- [x] 旧 Knowledge Document 路由、CLI 命令和 `add_to_wiki` / `search_wiki` AI Tool 不再注册。
-- [x] 前后端不再暴露 Page、slug、Wikilink、Review、Purpose/Schema 等旧产品语言。
-- [x] 删除旧实现后，所有非 Knowledge 测试和基础应用 smoke 仍通过。
-- [x] 新增迁移测试证明旧 Knowledge 被清除而 Application、Conversation、Interview、Resume、Question
-      等数据保持不变。
-- [x] 独立 Code Review 确认没有保留隐式兼容分支或误删其他模块。
+- [ ] 测试入口使用正式 Ingest/Job/Worker 边界创建并处理 Source，不直接向 Snapshot、Evidence、FTS
+      或 Brief 表插入伪造数据。
+- [ ] 测试显式运行 Extraction queue，等待 Source 达到 extracted 且 active Snapshot/Evidence 可见后，
+      才运行 Brief queue。
+- [ ] 测试入口支持注入按角色和阶段返回的确定性模型响应，并能区分 generation、Validator 和 repair。
+- [ ] 测试入口可以记录调用角色、调用顺序、模型输入摘要和调用次数，但不把完整 Source 或 Prompt 写入
+      普通测试日志。
+- [ ] 测试入口返回可断言的 Source、Job、Attempt、current Brief、Evidence 和 validation report。
+- [ ] 成功路径证明 Extraction 提交后 Brief 才开始，并最终得到 ready Brief。
+- [ ] 失败路径证明 Brief 失败不影响 Evidence 搜索，且没有半提交 current Brief。
+- [ ] 重建路径证明旧 current Brief 在候选失败时继续可见。
+- [ ] 当前因 Evidence 为空而提前失败的 Brief repair 测试改用新 seam，并真正执行到目标门禁。
+- [ ] 原有队列 lease、取消、Provider retry/fallback 和 Brief 测试继续通过。
+- [ ] 本 Ticket 不改变任何用户可见行为，diff 仅为测试 seam 和必要的无行为 prefactor。
 
-## KI-02：导入 Markdown 并生成可回读 Evidence
+## KBR-02：结构化 provenance 并从 Evidence 排除 frontmatter
 
-**What to build:** 用户上传一份合法 Markdown 后，系统保存不可变原件，创建持久 Extraction Job，
-后台生成 Snapshot、文本 Evidence 和 FTS；用户能在工作台看到分阶段状态、Evidence 和对应原文位置，
-并执行一次基础关键词搜索。
+**What to build:** 用户导入带有效 frontmatter 的 Markdown 后，系统完整保留 canonical Source，提取
+最小 provenance，并且 frontmatter 不生成 Evidence、不进入 FTS 或 Brief。用户在 Source 详情中仍
+能看到标题、来源 URL、作者和发布时间；点击正文 Evidence 时位置继续对应完整原件。
 
-**Blocked by:** KI-01：切换到空的新 Knowledge Source 工作台。
+**Blocked by:** KBR-01：恢复异步 Ingest 到 Brief 的最高层测试 seam。
 
-**Scope boundaries:** 只完成 Markdown happy path 和必要失败路径；完整编码矩阵、Text/Paste、复杂 AST、
-Bundle、归档和 Brief 分别由后续 Ticket 扩展。
+**Scope boundaries:** 本 Ticket 只处理明确边界的文档头部 frontmatter 和最小 provenance。作者卡、
+阅读数、导航、Evernote/Obsidian 样板由 KBR-03 处理；不得引入任意 metadata 字典或 tags 产品能力。
 
-- [x] 上传接口只接受当前 Ticket 支持的 Markdown，执行安全文件名、空内容和基础大小检查。
-- [x] 新 Source 原件先进入 staging，正式目录 rename 与数据库创建遵守 Spec 的提交顺序。
-- [x] 上传新 Source 返回 `202`，包含 Source 摘要和持久 Extraction Job 摘要。
-- [x] Source 使用独立 lifecycle、extraction、brief 状态，不引入模糊 `done`。
-- [x] 基础 Source hash 能阻止完全相同内容创建第二份有效 Source。
-- [x] 后台 Extraction Job 从原件生成带版本和 digest 的 Snapshot。
-- [x] Markdown 标题路径和普通段落生成稳定 Evidence；重复执行得到相同 Snapshot digest 和 Evidence ID。
-- [x] Evidence 保存结构位置、原文片段、content hash 和相邻 Evidence ID。
-- [x] Snapshot、Evidence、FTS 和 `extracted` 状态在同一个 SQLite 事务中提交。
-- [x] 事务失败时没有部分 Evidence 或 FTS 可见；首次失败 Source 不参与搜索。
-- [x] Source 列表和详情展示 Extraction 与 Brief 的独立状态和最近安全错误。
-- [x] Source 详情可查看 Evidence 列表，并从 Evidence 回到规范文本位置。
-- [x] 原始 Markdown 可以按原始字节安全下载，不暴露本机绝对路径。
-- [x] 基础 Evidence 搜索返回 Evidence、Source、位置、snippet 和 score，而不是旧 Page 结果。
-- [x] API、Repository、Worker 和前端测试覆盖成功、空文件、格式错误、事务回滚和幂等重跑。
-- [x] 独立 Code Review 重点检查文件系统与 SQLite 的半提交风险。
+- [ ] provenance 契约只包含 Source 标题、Source URL、作者、发布时间、系统捕获时间和元数据提取版本。
+- [ ] provenance 沿用 Source 与 Source Origin 的现有所有权边界，不建立无约束 metadata JSON。
+- [ ] 文档开头存在成对 frontmatter 边界时，整个 frontmatter 块不生成 Evidence。
+- [ ] title、author、source URL 和 published time 采用明确白名单解析；tags 和未知字段不进入领域模型。
+- [ ] 单个白名单字段格式非法时只忽略该字段并记录安全警告，Source Extraction 仍成功。
+- [ ] 只有起始边界而没有闭合边界时，内容按普通 Markdown 保守处理，不静默吞掉后续正文。
+- [ ] 正文中的 `key: value`、YAML 示例和代码块保持为可检索 Evidence。
+- [ ] canonical Source、原始文件和 Source hash 不因 provenance 提取而改变。
+- [ ] 保留 Evidence 的 line/char offsets 能从完整 canonical Source 精确回读。
+- [ ] frontmatter 内容不进入 Evidence FTS，普通 Evidence 搜索不能召回 tags 或作者字段。
+- [ ] Source 标题仍可通过现有资料定位能力找到，但 provenance 不参与正文事实支持。
+- [ ] Source 详情 API 和前端显示已有的非空 provenance 字段，空字段不制造占位噪声。
+- [ ] Evidence 搜索/详情响应可以附带所属 Source 的 provenance，用于出处展示而不是召回计权。
+- [ ] Snapshot 记录 metadata extraction version；相同输入和版本重跑结果稳定。
+- [ ] 单元、Repository/API、前端和最高层集成测试覆盖成功、非法字段、未闭合边界和正文反例。
 
-## KI-03：完成 Text、粘贴正文与结构感知解析
+## KBR-03：过滤已知元数据样板并记录规则统计
 
-**What to build:** 用户可以上传 Text 或粘贴 Markdown；系统严格处理编码和 64K token 上限，并按
-Markdown/Text 自然结构生成稳定 Evidence。列表、表格、引用和代码都能在 UI 中准确定位和回读。
+**What to build:** 用户导入已知平台或导出工具产生的 Markdown 时，作者卡、阅读数、推荐导航、空链接
+壳、纯装饰图片壳和资源路径残片不会进入 Evidence；无法确认的内容仍被保留。维护者能从 Snapshot
+处理信息看到每条稳定规则的命中数量，而不会保存第二份被过滤正文。
 
-**Blocked by:** KI-02：导入 Markdown 并生成可回读 Evidence。
+**Blocked by:** KBR-02：结构化 provenance 并从 Evidence 排除 frontmatter。
 
-**Scope boundaries:** 不处理图片附件或 Brief；本 Ticket 完成所有文本 Source 的正式 Extraction
-契约，并取代 KI-02 的基础段落解析。
+**Scope boundaries:** 只实现低歧义全局结构规则和当前真实样本所需的明确适配器。不得使用覆盖所有
+Source 的宽泛关键词/正则，不实现通用网页正文抽取或 LLM 分类。
 
-- [x] 支持 `.md`、`.txt` 和粘贴正文；粘贴正文作为虚拟 `main.md` 进入同一 Pipeline。
-- [x] 固定产品 tokenizer 和 64,000 token 上限，不随 Provider 切换而变化。
-- [x] 主文件 5 MiB 限制与 token 限制同时执行，错误返回实际值和允许值。
-- [x] 支持已确认的 UTF 编码和高置信 GBK/GB18030；未知或冲突编码明确拒绝。
-- [x] 任何解码路径都不使用字符忽略或替换；Snapshot 记录编码和规范化版本。
-- [x] Markdown 使用固定版本 AST 解析器，不再依赖按空行正则切段。
-- [x] heading 进入 `heading_path`，不生成孤立标题 Evidence。
-- [x] paragraph、list item、blockquote、table row 和 fenced code 按 Spec 生成 Evidence。
-- [x] 表格 Evidence 带表头，代码 Evidence 带语言和行范围，嵌套列表保留父路径。
-- [x] 超长普通文本按句子边界拆分，超长代码/表格按行拆分，Evidence 之间没有重叠。
-- [x] 每条 Evidence 保存字符与行范围，并能从 canonical text 精确回读。
-- [x] Evidence ID 由 Snapshot、结构 locator 和内容 hash 确定，不暴露段落序号。
-- [x] extractor 升级创建新 Snapshot/Evidence；相同版本重跑幂等，不覆盖旧 Snapshot。
-- [x] 原文预览安全处理内嵌 HTML，不执行脚本、不加载远程资源。
-- [x] 单元测试覆盖标题、列表、嵌套列表、引用、表格、代码、长段落、控制字符和各种编码。
-- [x] 属性或参数化测试证明 Evidence 不越界、不重叠、顺序稳定且可完整回读。
-- [x] 独立 Code Review 检查解析器是否把检索 Chunk 策略混入 Evidence 身份。
+- [ ] Evidence eligibility policy 与 Markdown block 解析职责分离；规则决定是否发射 Evidence，不修改
+      canonical text 或 AST 的原始位置。
+- [ ] 全局规则只处理低歧义结构，包括空链接壳、明确导出控件文本和纯装饰图片壳。
+- [ ] 来源/导出格式适配器按确定性信号选择，不能仅凭正文中出现某个品牌或关键词启用。
+- [ ] 首版适配器覆盖真实 `@Async` 样本中的 Obsidian/Evernote 资源残片、作者区域、阅读信息和导航噪声。
+- [ ] 每条过滤规则具有稳定 rule ID、明确输入边界、正例和至少一个容易误判的反例。
+- [ ] 不确定块默认生成 Evidence；新增过滤规则必须通过版本提升和测试进入。
+- [ ] 被过滤块不进入 Evidence、FTS、Brief Prompt 或预期 coverage 章节集合。
+- [ ] 被过滤块仍能在 Source 原文中查看，且相邻保留 Evidence 的 line/char offsets 不发生偏移。
+- [ ] Snapshot 结构摘要记录 filtered block 总数、按 rule ID 聚合的数量、命中的 provenance 字段名、
+      metadata extraction version 和 evidence policy version。
+- [ ] 结构摘要不重复保存被过滤正文、URL、作者名或本机路径。
+- [ ] Source 处理记录展示过滤数量和规则摘要；普通用户界面不展示内部正则或实现细节。
+- [ ] 相同 Source 与 policy version 重跑得到相同 Snapshot digest、Evidence ID、顺序和过滤统计。
+- [ ] policy version 变化使旧 Brief 正确进入 outdated 语义，不把新旧 Snapshot Evidence 混用。
+- [ ] 搜索回归证明被过滤噪声不可召回，正文术语、URL、数字和配置示例仍可召回。
+- [ ] 最高层测试从真实样本字节完成 Extraction，并断言 tags、作者卡和图片壳没有成为 Evidence。
 
-## KI-04：支持自包含图文 Bundle
+## KBR-04：切换 Brief Schema v2 与确定性 citation coverage
 
-**What to build:** 用户上传 Markdown 主文件和本地图片附件后，系统验证 Bundle 完整性并保存不可变
-Asset；Evidence 能定位图片引用，用户可安全查看和下载图片，但系统不会 OCR 或猜测图片内容。
+**What to build:** 模型生成 Brief 时不再自报 coverage。系统从当前 post-filter Evidence 生成预期章节，
+并根据候选 Brief 的实际 citations 计算 coverage；只有真正引用了该章节 Evidence 才算 covered。
+API/UI 继续展示稳定 coverage，但模型无法通过填写状态绕过门禁。
 
-**Blocked by:** KI-03：完成 Text、粘贴正文与结构感知解析。
+**Blocked by:** KBR-02：结构化 provenance 并从 Evidence 排除 frontmatter。
 
-**Scope boundaries:** 图片只作为 Asset Evidence；不调用多模态 Provider，不让图片内容进入 FTS 或
-Brief 事实。
+**Scope boundaries:** 本 Ticket 完成 Schema、Prompt、程序门禁和派生 coverage 的成功/失败闭环；完整
+失败汇总和 repair patch 分别由 KBR-05、KBR-06 完成。
 
-- [x] Bundle 上传接受一个 Markdown 主文件和 PNG/JPEG/WebP 附件。
-- [x] 强制执行 5 MiB 主文件、10 MiB 单图、50 MiB Bundle、50 图和 40MP 限制。
-- [x] 根据实际图片解码和媒体类型验证内容，不能只信扩展名或请求头。
-- [x] 图片引用只允许扁平相对路径；远程、绝对、父目录和跨目录路径明确拒绝。
-- [x] 缺图、重复逻辑名、未使用附件和不支持媒体类型使整个 Bundle 失败，无部分 Source。
-- [x] Source hash 包含主文件字节、附件字节和附件逻辑路径的规范 manifest。
-- [x] Asset 保存 bytes、sha256、媒体类型、尺寸和相对路径，不存 SQLite BLOB。
-- [x] 每个图片 Asset 生成稳定 Asset Evidence，并记录其全部 Markdown 引用位置。
-- [x] Markdown alt text 作为作者原文参与文本 Evidence；模型生成 caption 不存在。
-- [x] Source 详情能在 Evidence 上下文中安全预览图片，并按原始字节下载单个附件。
-- [x] 浏览器不会执行图片附近的 HTML，也不会请求 Source 中的远程资源。
-- [x] 删除或事务失败不会遗留半个 Bundle、孤儿 Asset 行或未引用文件。
-- [x] 测试覆盖正常 Bundle、媒体伪装、坏图、像素炸弹、缺图、重复图、未使用图和路径穿越。
-- [x] 独立 Code Review 检查路径白名单、图片解码资源限制和数据目录逃逸风险。
+- [ ] Brief Schema 提升到 v2，模型输入/输出契约移除 coverage，不保留 v1 模型响应兼容分支。
+- [ ] generation Prompt 要求 key point、limitation 和 section guide summary 使用单一可验证核心断言。
+- [ ] overview 可以有限综合，但 Prompt 明确禁止加入 citations 未直接支持的事实、因果和建议。
+- [ ] 预期 coverage 章节只来自当前 Snapshot 的合格正文 Evidence，不包含 provenance 或被过滤块。
+- [ ] 某章节至少有一条 Evidence 被 overview、key point、section guide 或 limitation 实际引用时才为 covered。
+- [ ] assets-only 等确定性非正文章节由程序标记 skipped，不要求模型为图片生成事实。
+- [ ] 引用其他章节 Evidence 不能让当前章节通过 coverage；只声明 section guide key 也不能通过。
+- [ ] 含合格正文 Evidence 的章节缺少实际 citation 时返回稳定 coverage failure。
+- [ ] 没有可引用文本 Evidence 的 Source 保持 extracted/Evidence 可用，Brief 使用稳定 block/failure 语义，
+      不发送无意义的 generation 请求。
+- [ ] 派生 coverage 写入候选 validation report，并在 Brief 成功提交时作为 API/UI 消费字段持久化或计算。
+- [ ] 前端继续展示 covered/skipped 结果，但不暴露“模型声明 coverage”的旧语言。
+- [ ] Provider/Prompt/Brief Schema/Snapshot 版本变化正确标记已有 Brief outdated。
+- [ ] v1 测试和 mock data 全部切换到 v2；代码库不存在运行时判断旧 coverage 响应的分支。
+- [ ] 测试覆盖全覆盖、遗漏章节、错章节 citation、纯 Asset 章节、无正文 Evidence 和伪造 coverage 字段。
+- [ ] 最高层测试证明模型即使返回额外 coverage 字段也不能改变程序派生结果或绕过门禁。
 
-## KI-05：实现内容去重、来源记录与标题整理
+## KBR-05：汇总全部质量失败并展示完整 Attempt 报告
 
-**What to build:** 重复上传或粘贴同一内容时，用户会进入已有 Source，而不是得到重复 Evidence；
-系统保留每次 file/paste/URL 来源记录，用户可以整理展示标题而不改变 Source 身份。
+**What to build:** Schema 合法的候选 Brief 不再因为第一个 citation 或 coverage 问题立即消耗 repair。
+系统完成所有仍可执行的 citation、逐条 support 和 coverage 检查，形成一份完整结构化报告；用户在
+Source 状态区看到简短摘要，在 Attempt/处理记录中看到所有失败 block 和对应 Evidence。
 
-**Blocked by:** KI-02：导入 Markdown 并生成可回读 Evidence。
+**Blocked by:** KBR-04：切换 Brief Schema v2 与确定性 citation coverage。
 
-**Scope boundaries:** 不实现 Collection、标签或多个 Knowledge Base；一个工作区内同一内容只有一个
-有效 Source。
+**Scope boundaries:** 本 Ticket 先建立完整质量报告和用户可解释失败路径；repair patch 的生成、权限
+和应用由 KBR-06 完成。不得为了收集更多问题而让非法 citation 进入 Validator。
 
-- [x] 新建 Source 在数据库层以 `source_hash` 保证唯一，并正确处理并发重复请求。
-- [x] 命中正在处理的 Source 时返回已有 Source/Job，不创建第二个 Job。
-- [x] 命中 extracted、ready 或 brief failed Source 时返回已有 Source，不自动重跑。
-- [x] 重复响应使用 `200` 和 `deduplicated=true`，新建仍使用 `202`。
-- [x] 每次导入都追加 Origin，记录 file、paste 或 bundle、原文件名和导入时间。
-- [x] 粘贴正文支持可选 HTTP/HTTPS `origin_url`，只保存 provenance，绝不访问网络。
-- [x] 同内容来自不同 URL 时复用 Source，但保留多条 Origin。
-- [x] 标题推导顺序稳定，并区分 `title_hint` 与用户可编辑 `display_title`。
-- [x] 用户修改 `display_title` 不触发 Extraction、Brief 或 Evidence ID 变化。
-- [x] 标题修改后列表、详情和搜索展示一致，相关 FTS 展示字段及时更新。
-- [x] 重复提示清楚说明“资料已导入”，并提供进入已有 Source 的操作。
-- [x] 测试覆盖相同字节不同文件名/标题、不同 URL、并发上传和标题修改。
-- [x] 独立 Code Review 确认去重不会重复计权，也不会丢失 provenance。
+- [ ] JSON/Schema 完全无法解析时保留立即 repair 的现有能力，因为后续门禁无法安全运行。
+- [ ] Schema 合法时，程序先计算全部 citation ownership/existence 问题，不按首个错误返回。
+- [ ] citation 无效的 block 不发起 support Validator 调用，其问题仍进入统一报告。
+- [ ] citation 有效的其他 block 继续逐条 support validation，以收集尽可能完整的质量反馈。
+- [ ] Validator 仍只读取单条 statement 和它声明的 Evidence，不读取 Source 其他 Evidence 兜底。
+- [ ] coverage 使用 KBR-04 的实际 citation 结果计算，并与 citation/support 问题合并。
+- [ ] 每条报告项至少包含 block path、issue type、decision、reason 和 evidence IDs。
+- [ ] issue type 能区分 Schema、citation missing/ownership、support partial/unsupported/contradicted 和
+      coverage missing，供 repair 与 UI 使用。
+- [ ] support 结果只有 supported 才通过；任何 partial、unsupported 或 contradicted 仍是硬失败。
+- [ ] validation report 保存全部失败项，不使用 error message 的字符上限作为数据存储边界。
+- [ ] Source 状态区只显示稳定 error code、失败总数和不会在半句中截断的短摘要。
+- [ ] Attempt/处理记录展示全部失败项，并能定位到候选 Brief block 和已引用 Evidence。
+- [ ] 失败详情不把完整 Evidence 正文复制进 report 或普通日志；详情按 Evidence ID 从本地数据读取。
+- [ ] 重建失败时旧 current Brief 继续可见，失败候选和完整报告归属于新 Attempt。
+- [ ] 测试构造同一候选同时含 citation、support 和 coverage 问题，证明报告完整、调用顺序正确且只统计
+      实际失败 block。
 
-## KI-06：实现 Source 归档与永久删除
+## KBR-06：使用结构化 patch 完成唯一一次 repair
 
-**What to build:** 用户可以把 Source 从日常列表和检索中归档，也可以在危险区永久清除原文及全部
-派生数据。归档可恢复，永久删除不可恢复；删除后相同内容能作为新 Source 再次导入。
+**What to build:** 用户的合法候选在质量门禁失败后，Repair Agent 一次收到全部问题，只返回针对失败
+block 的结构化 patch。程序原子应用 replace/delete/split，拒绝越权修改和跨 Source citation，随后
+重跑全部门禁；只有全部 supported 的候选才能替换 current Brief。
 
-**Blocked by:** KI-04：支持自包含图文 Bundle；KI-05：实现内容去重、来源记录与标题整理。
+**Blocked by:** KBR-05：汇总全部质量失败并展示完整 Attempt 报告。
 
-**Scope boundaries:** 本轮没有 Note，因此不实现受 Note 引用的冲突 UI；领域服务保留未来
-`SourceReferenced` 检查边界，不创建空 Note 表。
+**Scope boundaries:** 只允许一次受约束内容 repair。Provider transient retry/fallback 继续沿用现有
+基础设施语义；不得通过增加 repair 次数或放宽 partial 门禁解决失败。
 
-- [x] 归档和取消归档只修改 lifecycle，不删除文件、Evidence、Brief 或 Job 历史。
-- [x] 默认 Source 列表和普通搜索排除 archived；显式筛选可以查看归档资料。
-- [x] 归档 Source 仍可查看详情、Evidence、原文和附件。
-- [x] 归档不会自动过期或后台清理。
-- [x] 永久删除前端入口位于危险操作区，并要求明确的不可恢复确认。
-- [x] 删除请求返回 Delete Job，Source 立即进入 `deleting` 并拒绝新 Job。
-- [x] 删除会取消未完成任务，迟到结果无法重新写回 Source。
-- [x] Source 目录先移动到 quarantine，再在事务中清理全部数据库关系和 FTS。
-- [x] 正常删除完成后，Source、Origin、Asset、Snapshot、Evidence、FTS、Brief/Attempt、Job 和文件均无残留。
-- [x] 删除日志只保留 Source ID、时间和结果，不保留标题、正文、URL 或路径。
-- [x] 删除不保留 source hash 墓碑；重新上传相同内容创建新 ID 和新 Job。
-- [x] 未来 Note 引用保护使用限制删除语义；当前代码不得预设 CASCADE 或 SET NULL。
-- [x] 测试覆盖归档过滤、取消归档、处理中删除、Bundle 删除、重复删除和删除后重导入。
-- [x] 独立 Code Review 检查隐私清除语义和文件/数据库协调顺序。
+- [ ] 定义固定版本 repair patch Schema，操作只包含失败 block 的 replace、delete 或 split。
+- [ ] replace 返回一个原子事实项；split 只适用于列表型事实 block，并返回满足数量约束的原子项列表。
+- [ ] section guide 只允许 replace 或 delete，不允许制造同 section 多条 guide。
+- [ ] Repair 输入包含原候选、完整结构化失败报告、失败 block 集合、数量约束和当前 Source/Snapshot
+      的完整 Evidence 列表。
+- [ ] Repair 可以为失败 block 增加、替换或删除当前 Source/Snapshot citations，即使新 Evidence ID
+      不在原候选中。
+- [ ] Repair 不得修改已通过 block、引用其他 Source/Snapshot、增加新主题或输出完整 Brief。
+- [ ] 程序拒绝未知 block、重复操作、对已通过 block 的操作、跨 Source Evidence 和非法 action。
+- [ ] 所有操作以原候选 block path 为基准一次性解析并原子应用，多个 delete/split 不会因索引变化
+      修改错误条目。
+- [ ] Patch 应用后重新执行 Schema/数量、citation ownership、实际 coverage 和全部逐条 support 门禁。
+- [ ] repair 后任何 partial、unsupported、contradicted、coverage missing 或 citation failure 都使 Attempt
+      最终失败，候选不能成为 current Brief。
+- [ ] repair 成功时 winning Attempt 与 current Brief 在一个事务中提交，并保存 repair_count=1。
+- [ ] Schema 不可解析路径和合法候选质量路径共享“最多一次 repair”预算，不出现隐藏第二次内容 repair。
+- [ ] Repair 输出非法 JSON/Schema、越权 patch 或模型调用失败时使用稳定错误码并保留完整安全报告。
+- [ ] Prompt injection 测试证明 Source、Evidence 和 previous candidate 中的指令不能扩大 patch 权限。
+- [ ] 测试覆盖 replace、delete、split、多操作原子性、数量下限、跨 Source、已通过 block 漂移、repair
+      后仍失败、repair 成功和旧 Brief 保留。
 
-## KI-07：加固持久队列、取消与崩溃恢复
+## KBR-07：执行 Knowledge-only 破坏性切换
 
-**What to build:** 连续上传、删除、应用重启和用户取消都不会制造重复 Job、半提交 Evidence 或孤儿
-文件。Extraction 与 Brief 使用独立单并发通道，Source 能尽快达到可搜索状态。
+**What to build:** 测试期安装切换到新的 provenance、Evidence policy 和 Brief v2 契约时，系统使用
+受控边界清空全部旧 Knowledge 数据和文件，然后能从零重新导入 Source；AI 配置和其他业务模块数据
+保持原样。此 Ticket 执行用户已确认的破坏性 reset，不迁移旧 Evidence 或 Brief。
 
-**Blocked by:** KI-06：实现 Source 归档与永久删除。
+**Blocked by:** KBR-03：过滤已知元数据样板并记录规则统计；KBR-04：切换 Brief Schema v2 与确定性
+citation coverage；KBR-06：使用结构化 patch 完成唯一一次 repair。
 
-**Scope boundaries:** Brief 业务逻辑仍由后续 Ticket 实现；本 Ticket 提供 Brief queue 的稳定执行
-契约和可测试调度能力。
+**Scope boundaries:** 只清空 Knowledge 数据域。不得删除整个应用数据库、整个应用数据目录、AI 配置
+或任何非 Knowledge 业务数据；不得建立旧 Schema/Evidence ID/Brief 的兼容迁移。
 
-- [x] Extraction queue 和 Brief queue 各自并发固定为 1，两条队列可以并行。
-- [x] Extraction queue 同时承载 Source 永久删除等本地维护 Job，不增加第三个可配置队列。
-- [x] 队列按创建时间和 ID FIFO；手动重试进入队尾。
-- [x] Job 持久化 kind、queue、stage、status、retry、next retry、cancel 和错误字段。
-- [x] Job claim 使用 lease owner、expiry 和 heartbeat，防止两个 worker 同时提交。
-- [x] 应用重启后，过期 running Job 能恢复；已提交阶段不会重复执行。
-- [x] 迟到的旧 lease 结果因 owner/Attempt 不匹配而拒绝提交。
-- [x] pending Job 可立即取消；running 本地任务在安全点停止。
-- [x] 已发出的模型调用即使无法中止，其返回也不能在取消后提交。
-- [x] Job detail 和 cancel API 返回稳定、用户安全的状态和错误。
-- [x] 前端处理记录展示队列、阶段、进度、重试、取消和最近错误。
-- [x] 启动恢复清理无数据库记录的 staging/final orphan，并完成或恢复 quarantine 删除。
-- [x] Worker 每次读取正式 Source 时核验 manifest/hash，不一致时以稳定错误失败。
-- [x] 自动重试计数和 `next_retry_at` 在重启后保持，不从零开始。
-- [x] 并发与故障注入测试覆盖重复 claim、进程中断、事务前后崩溃、取消和迟到结果。
-- [x] 独立 Code Review 检查幂等性、lease 竞争和无法真正原子化的文件系统边界。
+- [ ] reset 范围覆盖 Source、Origin、Asset、Extraction Snapshot、Evidence、FTS、Brief、Attempt、
+      Knowledge Job、Knowledge 处理日志和 Knowledge 文件目录。
+- [ ] reset 保留数据库 Schema、迁移记录、AI Provider/应用配置和所有非 Knowledge 表/文件。
+- [ ] reset 使用正式 Knowledge 专用边界和依赖顺序，不依赖手工逐表/逐文件临时命令。
+- [ ] reset 在新空库、已有新 Schema 空库和包含旧测试数据的库上均可重复执行。
+- [ ] 中途失败不会留下指向已删除文件的 Source，或文件已存在但数据库无记录的半重置状态。
+- [ ] reset 后 Knowledge 列表、Evidence 搜索、FTS 和 pending/running Knowledge Job 均为空。
+- [ ] reset 后相同 Source 内容可以创建新的 Source/Snapshot/Evidence ID 并完成 Brief v2。
+- [ ] 删除前后记录非 Knowledge 代表数据和 AI 配置摘要，测试证明值和数量保持不变。
+- [ ] 文件清理拒绝绝对路径、目录穿越和 Knowledge 根目录之外的目标。
+- [ ] 旧 Brief Schema、模型 coverage、旧 Evidence policy version 和完整 Brief repair 数据不被迁移。
+- [ ] 前端在 reset 后稳定展示 Knowledge 空状态，不出现指向已删除 Source 的缓存详情。
+- [ ] Repository、启动修复、API/前端空状态和文件系统故障测试覆盖 reset 完整语义。
+- [ ] 最终交付明确报告本 Ticket 已执行破坏性 Knowledge 数据清空，不使用“兼容升级”措辞。
 
-## KI-08：交付可评估的 Evidence FTS 检索
+## KBR-08：固化 `@Async` 真实回放并完成发布验收
 
-**What to build:** 用户用中文术语、英文技术词、代码标识符或自然问句搜索时，系统返回可直接回读
-的 Evidence，而不是 Page 摘要；搜索失败有明确错误，并产生本地可评估 Trace。
+**What to build:** 将本次真实 `@Async` Brief 失败固化为最高层回归案例：元数据不生成 Evidence，
+Generator 不能自报 coverage，所有 citation/support/coverage 问题一次汇总，结构化 patch 只修失败项，
+repair 后只有全部 supported 才发布。完成代码、真实数据、浏览器和完整工程 gate 的 Go/No-Go 验收。
 
-**Blocked by:** KI-03：完成 Text、粘贴正文与结构感知解析；KI-06：实现 Source 归档与永久删除。
+**Blocked by:** KBR-07：执行 Knowledge-only 破坏性切换。
 
-**Scope boundaries:** 只实现 SQLite FTS5；不添加 embedding、rerank、图扩展或 LLM 查询改写。
+**Scope boundaries:** 本 Ticket 只做跨 Ticket 整合修复、真实回放、浏览器验收和 release gate；不得借
+验收新增 Validator 并发、缓存、向量检索、通用网页抽取或复杂诊断 UI。
 
-- [x] 启动时验证 SQLite FTS5 和 trigram tokenizer；缺失时 Knowledge 明确失败。
-- [x] FTS 只索引 active Snapshot 的文本 Evidence，不索引旧 Snapshot 或图片二进制。
-- [x] source title、heading path 和 content 使用分列权重，结果仍以 Evidence 为单位。
-- [x] Query parser 正确处理中文长问句、ASCII identifier、英文词组和混合输入。
-- [x] 不再把无空格中文整句作为一个强制精确短语。
-- [x] 少于 3 字符查询使用有上限的精确/子串回退，避免全库无界扫描。
-- [x] 默认只搜索 active Source；`include_archived` 和 source filter 行为可测试。
-- [x] 结果返回 Evidence 原文、Source、Snapshot、heading、line/char 位置、snippet、score 和相邻 ID。
-- [x] 点击搜索结果进入 Source 详情并定位、高亮 Evidence 和原文位置。
-- [x] FTS MATCH、bm25 或查询语法错误显式返回稳定错误，不静默变成空结果。
-- [x] 每次搜索本地记录 query、filters、命中 ID/score、耗时和可选评估标签。
-- [x] Retrieval Trace 不参与 Knowledge 召回，也不写普通应用日志或外部 Trace。
-- [x] 测试覆盖中文、英文、代码、短词、无结果、归档、Source filter 和 FTS 故障。
-- [x] 建立一组小型确定性查询样本，为 KI-11 的正式指标工具提供接口契约。
-- [x] 独立 Code Review 检查查询注入、无界 LIKE 和异常吞噬。
-
-## KI-09：生成并验证首个 Source Brief
-
-**What to build:** 对已提取 Source，配置合格 Provider 后，系统读取完整文本 Evidence，生成中文结构化
-导读；程序和独立支持性校验共同阻止伪造 citation、遗漏章节或不受支持内容发布。
-
-**Blocked by:** KI-04：支持自包含图文 Bundle；KI-07：加固持久队列、取消与崩溃恢复。
-
-**Scope boundaries:** 只实现配置正常时的完整成功/质量失败闭环；fallback、网络重试、重建和 Provider
-切换由 KI-10 完成。
-
-- [x] Brief Provider 必须显式声明至少 96K context；未知或不足窗口不会发出请求。
-- [x] Brief Job 在 Evidence 提交后进入独立 Brief queue，不阻塞 Source `extracted`。
-- [x] generation 单次读取完整 Source 文本 Evidence，不分批、不截断、不 map/reduce。
-- [x] 图片只以 assets-only coverage 信息出现，不发送二进制、不生成图片事实。
-- [x] Prompt 把 Source 视为不可信引用数据，不执行其中指令或访问外部上下文。
-- [x] 模型输出固定 JSON Schema，不接受自由 Markdown。
-- [x] Brief 默认中文，技术术语和标识符保留原文；Evidence excerpt 不翻译。
-- [x] overview、key points、section guides、limitations 和 coverage 满足数量与 300 字上限。
-- [x] 程序校验 Schema、枚举、长度、citation 存在/归属和章节 coverage。
-- [x] 每个事实 statement/summary 至少引用当前 Source/Snapshot 的 Evidence。
-- [x] 独立 Validator 逐条返回 supported/partial/unsupported/contradicted。
-- [x] 只有全部 supported 才发布；partial 不能降级为警告。
-- [x] 首次失败允许一次受约束修复，修复后完整重跑全部门禁。
-- [x] 第二次仍失败时 Brief 为 failed，Evidence 继续可搜索，候选不成为当前 Brief。
-- [x] 成功 Brief 与 winning Attempt 在一个事务中提交为当前 Brief。
-- [x] Source 详情默认展示有效 Brief；无 Brief 时自动落到 Evidence。
-- [x] UI 逐条展示 citation，并能跳转到 Evidence 和原文位置。
-- [x] 测试覆盖合法输出、非法 JSON、伪造/跨 Source citation、遗漏章节、四种支持性结果和修复。
-- [x] 独立 Code Review 检查 prompt injection、模型自评冒充校验和未引用事实漏网。
-
-## KI-10：完善 Brief 重建与 Provider 故障语义
-
-**What to build:** 没有 AI 或 Provider 故障时，Source/Evidence 仍正常工作；用户可以安全重建 Brief，
-新候选验证失败不会覆盖旧 Brief，重试与 fallback 行为透明且有界。
-
-**Blocked by:** KI-09：生成并验证首个 Source Brief。
-
-**Scope boundaries:** 不引入第二个强制 Validator Provider，不自动批量重建所有 Source。
-
-- [x] 没有满足条件的 Provider 时 Source 保持 extracted，Brief pending 并显示 provider block reason。
-- [x] 配置 Provider 后不自动批量生成；用户显式操作才创建新 Attempt。
-- [x] Attempt 固定 Provider/Model/参数、context、Prompt/Schema/Snapshot 和 fallback 候选。
-- [x] Attempt 不保存 API Key、完整 Prompt、chain-of-thought 或不可解析原始响应。
-- [x] 网络、超时、限流和 5xx 每个 Provider 最多调用 3 次，并遵守 Retry-After 或 2/10 秒退避。
-- [x] 鉴权、模型不存在、上下文超限、非法 JSON和 validation 失败不走网络重试。
-- [x] 只有基础设施失败切换已配置 fallback；内容质量失败不换 Provider。
-- [x] fallback 必须满足上下文要求，并记录实际成功 Provider。
-- [x] 重建期间旧 Brief 继续可见，并标记“正在重建”。
-- [x] 新候选全部通过后原子替换；失败或取消保留旧 Brief 和最近错误。
-- [x] Provider、Prompt、Schema 或 Snapshot 变化标记 Brief outdated，不自动调用模型。
-- [x] 用户使用当前配置重建会创建新 Attempt 和独立重试预算。
-- [x] 应用重启保留 Attempt 的重试次数、next retry 和候选状态。
-- [x] 处理记录展示实际 Provider、模型、token、耗时、重试和结构化 validation 结果。
-- [x] 日志只记录 ID、版本、时延和错误类别，不打印 Source、Evidence、Brief 或查询正文。
-- [x] 测试覆盖无 AI、小窗口、429/5xx、鉴权失败、fallback、重建失败、取消和旧 Brief 保留。
-- [x] 独立 Code Review 检查数据是否被未经授权发送给 fallback，以及重试是否可能无限循环。
-
-## KI-11：建立真实 Source 与检索质量门禁
-
-**What to build:** 维护者可以用 5 份真实 Source 和至少 20 条人工确认查询，一次性得到 Extraction、
-Evidence、Brief 和检索指标报告；任何硬门禁失败都会让验收失败，而不是只打印警告。
-
-**Blocked by:** KI-08：交付可评估的 Evidence FTS 检索；KI-10：完善 Brief 重建与 Provider 故障语义。
-
-**Scope boundaries:** 私有或受版权保护的真实原文不提交仓库；仓库只保存安全 fixtures、fixture hash、
-查询和预期 Evidence 标识规则。
-
-- [x] 建立可从外部 fixture 目录读取真实 Source 的验收入口。
-- [x] 5 份真实 Source 通过内容 hash 标识，缺失或被修改时明确失败。
-- [x] 每份 Source 至少 4 条人工确认查询，总数至少 20 条。
-- [x] 查询集覆盖中文术语、英文技术词、代码标识符和自然语言问题。
-- [x] 另提供可提交仓库的编码、空文件、超限、Markdown 结构和 Bundle 边界 fixtures。
-- [x] 故障 fixtures 覆盖非法 JSON、伪造 citation、引用不支持、章节遗漏、超时、限流和 fallback。
-- [x] 验收报告列出每份 Source 的 Snapshot digest、Evidence 数量、回读结果和 Brief 状态。
-- [x] 相同 extractor 重跑的 Snapshot digest、Evidence ID、位置和内容完全一致。
-- [x] Evidence 回读成功率必须为 100%。
-- [x] Brief Schema、citation、support 和 coverage 通过率必须为 100%。
-- [x] Lexical 查询 `Recall@5 = 100%`、`MRR >= 0.9`。
-- [x] 自然语言查询 `Recall@5 >= 80%`。
-- [x] Provider/Brief 失败场景明确证明 Evidence 仍可搜索。
-- [x] 指标低于门禁时进程非零退出，并输出可定位 bad case 的 Evidence ID。
-- [x] 验收工具不得把真实 Source 正文、API Key、完整 Prompt 或 Provider 原始响应写入报告。
-- [x] 指标未达标时不得在本 Ticket 偷加向量、rerank 或 LLM query rewrite。
-- [x] 使用至少一个真实 Provider 完成 Brief 验收，并记录模型、版本、耗时和费用摘要。
-- [x] 独立 Code Review 检查指标实现、数据泄漏和“通过率被空样本抬高”等评估漏洞。
-
-## KI-12：完成全量回归与旧架构清场
-
-**What to build:** 新 Knowledge Ingest 作为唯一实现通过完整工程与真实浏览器验收；旧自动 Wiki 不再以
-代码、Schema、API、UI、测试或文案形式影响运行时，并形成严格的 Go/No-Go 结论。
-
-**Blocked by:** KI-11：建立真实 Source 与检索质量门禁。
-
-**Scope boundaries:** 本 Ticket 只做整合修复、清场和验收，不新增未在 Spec 或前序 Ticket 中定义的
-产品能力。
-
-- [x] 全仓搜索确认旧 Page、Review、Index、Wikilink、Purpose/Schema、Lint 和 Wiki Export 运行代码已删除。
-- [x] 所有旧 Knowledge 路由、AI Tool、CLI、前端入口和测试 fixture 已删除或改为新领域语言。
-- [x] 数据库初始化只创建新 Knowledge 表族和 Evidence FTS，不创建旧表或兼容视图。
-- [x] 旧占位 Knowledge 数据静默重置，新数据目录从零初始化，两种路径均通过 smoke。
-- [x] 完整后端测试通过。
-- [x] Python lint 和类型检查通过。
-- [x] 完整前端测试和生产构建通过。
-- [x] 静态目录 smoke 通过；Docker 可用时运行 Docker smoke，不可用时明确记录未执行。
-- [x] 5 份真实 Source、20 条查询和所有硬指标通过。
-- [x] 使用真实 Provider 完成 Brief generation、validation、repair/failure isolation 验收。
-- [x] 浏览器走查上传、搜索、Brief、Evidence、原文、归档、删除、错误恢复和重启恢复。
-- [x] 桌面与窄屏页面不存在状态、正文、按钮或下载控件重叠。
-- [x] 下载和 Markdown 预览验证无远程资源加载、脚本执行或路径泄漏。
-- [x] 应用日志、Attempt、Trace 和验收报告抽查确认不泄露 secret 或不允许保存的内容。
-- [x] 独立子代理对最终 diff 做 Standards 和 Spec 双轴 Review。
-- [x] Review 发现的问题已修复，或以明确理由记录为剩余风险。
-- [x] 最终报告包含改了什么、破坏性变化、剩余风险、所有验证结果和严格 Go/No-Go。
-- [x] 所有 Ticket 验收完成后，不保留临时实施计划或未决占位文档。
+- [ ] 安全 fixture 保留本次案例的关键结构：frontmatter/tags、来源作者与图片壳、技术正文、多个章节、
+      citation 选错和复合 partial statement；不提交私有 secret 或无授权完整原文。
+- [ ] 回放从 Source 原始字节经过正式 Ingest、Extraction queue、Snapshot/Evidence/FTS、Brief queue、
+      generation、逐条 validation、repair patch 和最终持久化，不绕过任何层。
+- [ ] 断言 tags、作者卡、阅读信息、导航和图片壳不生成 Evidence，正文 Evidence 位置可完整回读。
+- [ ] 断言 provenance 可在 Source 详情查看，但不进入 Evidence FTS 或正文 support。
+- [ ] 断言模型响应不包含有效 coverage 权限，程序只依据实际 citations 派生 coverage。
+- [ ] 首轮合法候选的 citation、support 和 coverage 问题全部进入同一 validation report。
+- [ ] 整个内容质量流程最多发起一次 repair；不存在 coverage 先抢占 repair 的旧调用顺序。
+- [ ] Repair patch 只修改失败 block，并能为 `@EnableAsync` 等陈述选择当前 Source 中更直接的 Evidence。
+- [ ] 复合 statement 被收缩或 split 为原子陈述；所有 repair 后 block 均重新逐条验证。
+- [ ] 最终 Brief 只有在所有事实 block 为 supported 且 coverage 完整时进入 ready/current。
+- [ ] 构造 repair 后仍 partial 的反例，证明 Attempt failed、完整详情可见且 Evidence 继续可搜索。
+- [ ] 使用真实 Provider 重跑该 Source，记录 Provider/Model、调用角色数量、耗时、token 和最终门禁结果，
+      不保存完整 Prompt、reasoning 或原始响应。
+- [ ] 内置浏览器走查 Source provenance、Evidence、原文定位、Brief citations、coverage 和完整失败详情。
+- [ ] 桌面和窄屏下状态、失败列表、Evidence 链接和操作按钮不存在重叠或截断关键信息。
+- [ ] 运行完整后端测试、Python lint、类型检查、前端测试、生产构建和静态 smoke。
+- [ ] Docker 可用时运行 Docker smoke；不可用时明确记录未执行原因和剩余风险。
+- [ ] 独立子代理按 Standards 与 Spec 双轴 Review 最终 diff，发现的问题已修复或记录接受理由。
+- [ ] 最终报告包含改了什么、破坏性变化、剩余风险、全部验证结果和严格 Go/No-Go。

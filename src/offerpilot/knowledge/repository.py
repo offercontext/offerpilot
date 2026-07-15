@@ -20,8 +20,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Optional, Sequence
 
-from sqlalchemy import select, text
-from sqlalchemy.exc import OperationalError, SQLAlchemyError
+from sqlalchemy import and_, delete, or_, select, text
+from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from offerpilot.knowledge.search import ParsedQuery, SearchError, parse_query
@@ -40,6 +40,10 @@ from offerpilot.models import (
 
 
 _LOGGER = logging.getLogger(__name__)
+
+# lease expired 的 running brief Job 最多自动重新入队次数；超过即转终态 failed，
+# 避免慢/卡 provider 下无限 requeue 死循环。worker 的 Provider 重试属另一维度不计入。
+BRIEF_LEASE_REQUEUE_MAX = 3
 
 
 class KnowledgeBriefAttemptError(Exception):
@@ -163,6 +167,8 @@ class JobRecord:
     attempt_token: str
     created_at: datetime
     updated_at: datetime
+    # 仅 Brief Job 使用；Extraction/Delete Job 为 None。
+    attempt_id: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -410,6 +416,7 @@ class JobCreateInput:
     kind: str
     queue: str
     source_id: Optional[int] = None
+    attempt_id: Optional[int] = None
     snapshot_id: Optional[int] = None
     stage: str = ""
 
@@ -541,6 +548,7 @@ def _to_job_record(row: KnowledgeJob) -> JobRecord:
         attempt_token=row.attempt_token,
         created_at=row.created_at,
         updated_at=row.updated_at,
+        attempt_id=row.attempt_id,
     )
 
 
@@ -554,6 +562,16 @@ def _new_attempt_token() -> str:
     return _secrets.token_hex(16)
 
 
+def _as_utc_datetime(value: Optional[datetime]) -> Optional[datetime]:
+    """将 SQLite 返回的 naive 时间按 UTC 解释，统一 lease 比较。"""
+
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 @dataclass(frozen=True)
 class EvidencePage:
     items: list[EvidenceRecord] = field(default_factory=list)
@@ -565,6 +583,37 @@ class KnowledgeRepository:
 
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         self._session_factory = session_factory
+
+    @staticmethod
+    def _lock_active_job_for_write(
+        session: Session,
+        *,
+        job_id: int,
+        attempt_token: str,
+        moment: datetime,
+    ) -> bool:
+        """原子获取一个仍在 lease 内且未取消的 running Job 写入资格。
+
+        先读 Job 再更新会留下取消/过期竞态；这里用带完整门禁的 UPDATE 抢占
+        SQLite 写锁，后续 Attempt、Brief、Job 更新都在同一事务中完成。
+        """
+
+        result = session.execute(
+            text(
+                """
+                UPDATE knowledge_jobs
+                SET updated_at = :moment
+                WHERE id = :jid
+                  AND status = 'running'
+                  AND canceled = 0
+                  AND attempt_token = :token
+                  AND lease_expires_at IS NOT NULL
+                  AND lease_expires_at > :moment
+                """
+            ),
+            {"jid": job_id, "token": attempt_token, "moment": moment},
+        )
+        return int(getattr(result, "rowcount", 0) or 0) == 1
 
     # Source
 
@@ -598,7 +647,22 @@ class KnowledgeRepository:
     def get_source(self, source_id: int) -> Optional[SourceRecord]:
         with self._session_factory() as session:
             row = session.get(KnowledgeSource, source_id)
-            if row is None or row.deleted_at is not None:
+            # deleting 是永久删除的过渡态；在物理目录进入 quarantine 前后都不应
+            # 再从详情、原文或附件下载路径暴露 Source。
+            if (
+                row is None
+                or row.deleted_at is not None
+                or row.lifecycle == "deleting"
+            ):
+                return None
+            return _to_source_record(row)
+
+    def get_deleting_source(self, source_id: int) -> Optional[SourceRecord]:
+        """供删除 Worker 读取 ``deleting`` 过渡态，不对普通 API 暴露。"""
+
+        with self._session_factory() as session:
+            row = session.get(KnowledgeSource, source_id)
+            if row is None or row.deleted_at is not None or row.lifecycle != "deleting":
                 return None
             return _to_source_record(row)
 
@@ -613,6 +677,18 @@ class KnowledgeRepository:
                 KnowledgeSource.source_hash == source_hash,
                 KnowledgeSource.deleted_at.is_(None),
                 KnowledgeSource.lifecycle != "deleting",
+            )
+            row = session.scalars(stmt).first()
+            return _to_source_record(row) if row is not None else None
+
+    def get_deleting_source_by_hash(self, source_hash: str) -> Optional[SourceRecord]:
+        """返回同 hash 的删除中过渡 Source，供上传冲突返回稳定错误。"""
+
+        with self._session_factory() as session:
+            stmt = select(KnowledgeSource).where(
+                KnowledgeSource.source_hash == source_hash,
+                KnowledgeSource.deleted_at.is_(None),
+                KnowledgeSource.lifecycle == "deleting",
             )
             row = session.scalars(stmt).first()
             return _to_source_record(row) if row is not None else None
@@ -634,6 +710,41 @@ class KnowledgeRepository:
                 KnowledgeSource.created_at.desc(), KnowledgeSource.id.desc()
             )
             return [_to_source_record(row) for row in session.scalars(stmt)]
+
+    def list_brief_enqueue_candidates(self, *, limit: int = 100) -> list[int]:
+        """返回 Extraction 已完成但当前 Snapshot 尚无 Brief Job 的 Source。
+
+        ``brief_status=pending`` 是 Extraction 提交事务留下的可恢复标记；只扫描
+        该状态，避免把设置变更产生的 ``outdated`` 误当成自动批量重建。
+        """
+        clamped = max(1, min(500, limit))
+        with self._session_factory() as session:
+            active_job = (
+                select(KnowledgeJob.id)
+                .where(
+                    KnowledgeJob.source_id == KnowledgeSource.id,
+                    KnowledgeJob.kind == "brief",
+                    KnowledgeJob.snapshot_id == KnowledgeSource.active_snapshot_id,
+                    KnowledgeJob.status.in_(("pending", "running")),
+                    KnowledgeJob.canceled.is_(False),
+                )
+                .correlate(KnowledgeSource)
+            )
+            stmt = (
+                select(KnowledgeSource.id)
+                .where(
+                    KnowledgeSource.lifecycle == "active",
+                    KnowledgeSource.deleted_at.is_(None),
+                    KnowledgeSource.extraction_status == "extracted",
+                    KnowledgeSource.brief_status == "pending",
+                    KnowledgeSource.brief_block_reason == "",
+                    KnowledgeSource.active_snapshot_id.is_not(None),
+                    ~active_job.exists(),
+                )
+                .order_by(KnowledgeSource.updated_at.asc(), KnowledgeSource.id.asc())
+                .limit(clamped)
+            )
+            return [int(source_id) for source_id in session.scalars(stmt)]
 
     def update_source_state(
         self,
@@ -685,12 +796,13 @@ class KnowledgeRepository:
             if row is None or row.deleted_at is not None or row.lifecycle == "deleting":
                 return None
             row.display_title = cleaned
+            search_title = cleaned or row.title_hint or row.main_filename
             session.execute(
                 text(
                     "UPDATE knowledge_evidence_fts "
                     "SET source_title = :title WHERE source_id = :sid"
                 ),
-                {"title": cleaned, "sid": source_id},
+                {"title": search_title, "sid": source_id},
             )
             session.commit()
             session.refresh(row)
@@ -740,7 +852,8 @@ class KnowledgeRepository:
         本方法在单个事务中:
         1. 将 Source lifecycle 改为 ``deleting``;
         2. 取消该 Source 所有 pending / running extract / brief Job;
-        3. 创建一个 ``kind=delete, queue=extraction, status=running`` Delete Job。
+        3. 创建一个 ``kind=delete, queue=extraction, status=pending`` Delete Job；
+           lease 由 Extraction Worker claim 时生成。
 
         返回 ``Source`` 当前快照与新建 Delete Job 的 ID。
         """
@@ -769,15 +882,10 @@ class KnowledgeRepository:
                 kind="delete",
                 queue="extraction",
                 source_id=source_id,
-                stage="deleting",
-                status="running",
+                stage="delete_pending",
+                status="pending",
                 progress=0,
             )
-            # KI-07：delete Job 同样填全 lease 字段，避免被启动恢复误判为过期。
-            delete_job.lease_owner = "purge-sync"
-            delete_job.lease_expires_at = now
-            delete_job.heartbeat_at = now
-            delete_job.attempt_token = _new_attempt_token()
             session.add(delete_job)
             session.flush()
             delete_job_id = delete_job.id
@@ -797,8 +905,12 @@ class KnowledgeRepository:
         """
         with self._session_factory() as session:
             row = session.get(KnowledgeSource, source_id)
-            if row is None:
+            if row is None or row.lifecycle != "deleting":
                 return False
+            # active_* 是当前 Source 的非 FK 引用。先清空再删目标行，既保持
+            # 引用不悬空，也允许后续在 SQLite 中启用删除保护触发器。
+            row.active_snapshot_id = None
+            row.active_brief_id = None
             session.execute(
                 text(
                     "DELETE FROM knowledge_evidence_fts WHERE source_id = :sid"
@@ -833,6 +945,7 @@ class KnowledgeRepository:
                 text("DELETE FROM knowledge_brief_attempts WHERE source_id = :sid"),
                 {"sid": source_id},
             )
+            _delete_retrieval_traces_for_source(session, source_id)
             session.execute(
                 text(
                     "DELETE FROM knowledge_jobs WHERE source_id = :sid"
@@ -959,10 +1072,40 @@ class KnowledgeRepository:
 
     def create_job(self, data: JobCreateInput) -> JobRecord:
         with self._session_factory() as session:
+            existing = None
+            if data.source_id is not None:
+                active_job_conditions = [
+                    KnowledgeJob.source_id == data.source_id,
+                    KnowledgeJob.kind == data.kind,
+                    KnowledgeJob.status.in_(("pending", "running")),
+                    KnowledgeJob.canceled.is_(False),
+                ]
+                # Brief Job 必须绑定当前 Snapshot。否则旧 Snapshot 的 pending
+                # Job 会被错误复用，新 Snapshot 永远没有自己的 Brief 候选。
+                if data.kind == "brief":
+                    if data.snapshot_id is None:
+                        active_job_conditions.append(KnowledgeJob.snapshot_id.is_(None))
+                    else:
+                        active_job_conditions.append(
+                            KnowledgeJob.snapshot_id == data.snapshot_id
+                        )
+                if data.attempt_id is not None:
+                    active_job_conditions.append(
+                        KnowledgeJob.attempt_id == data.attempt_id
+                    )
+                existing = session.execute(
+                    select(KnowledgeJob)
+                    .where(*active_job_conditions)
+                    .order_by(KnowledgeJob.created_at.desc(), KnowledgeJob.id.desc())
+                    .limit(1)
+                ).scalars().first()
+            if existing is not None:
+                return _to_job_record(existing)
             model = KnowledgeJob(
                 kind=data.kind,
                 queue=data.queue,
                 source_id=data.source_id,
+                attempt_id=data.attempt_id,
                 snapshot_id=data.snapshot_id,
                 stage=data.stage,
                 status="pending",
@@ -1096,6 +1239,11 @@ class KnowledgeRepository:
             row.updated_at = moment
             session.commit()
             session.refresh(row)
+            # 与 heartbeat_job 保持 UTC aware 返回快照；SQLite 重新读取时可能丢失
+            # tzinfo，但调用方常直接比较同一 Job 的前后 lease 时间。
+            row.lease_expires_at = expires_at
+            row.heartbeat_at = moment
+            row.updated_at = moment
             return _to_job_record(row)
 
     def heartbeat_job(
@@ -1114,18 +1262,42 @@ class KnowledgeRepository:
         moment = now or datetime.now(timezone.utc)
         expires_at = moment + timedelta(seconds=max(1, lease_duration_seconds))
         with self._session_factory() as session:
+            # 取消和续租必须在同一 UPDATE 门禁中判断。先读再写会允许
+            # mark_canceled() 在两次操作之间提交，随后 heartbeat 又把已取消 Job
+            # 重新续租，导致恢复/迟到结果语义失真。
+            result = session.execute(
+                text(
+                    """
+                    UPDATE knowledge_jobs
+                    SET heartbeat_at = :moment,
+                        lease_expires_at = :expires,
+                        updated_at = :moment
+                    WHERE id = :jid
+                      AND status = 'running'
+                      AND canceled = 0
+                      AND attempt_token = :token
+                      AND lease_expires_at IS NOT NULL
+                      AND lease_expires_at > :moment
+                    """
+                ),
+                {
+                    "jid": job_id,
+                    "token": attempt_token,
+                    "moment": moment,
+                    "expires": expires_at,
+                },
+            )
+            if int(getattr(result, "rowcount", 0) or 0) != 1:
+                return None
+            session.commit()
             row = session.get(KnowledgeJob, job_id)
             if row is None:
                 return None
-            if row.attempt_token != attempt_token:
-                return None
-            if row.status != "running":
-                return None
+            # SQLite 的 DateTime 返回值通常是 naive；沿用本方法输入的 UTC aware
+            # 值构造返回快照，避免调用方比较 lease 时触发 aware/naive TypeError。
             row.heartbeat_at = moment
             row.lease_expires_at = expires_at
             row.updated_at = moment
-            session.commit()
-            session.refresh(row)
             return _to_job_record(row)
 
     def complete_job(
@@ -1157,23 +1329,66 @@ class KnowledgeRepository:
                 return False, None
             if row.attempt_token != attempt_token:
                 return False, None
+            # 一个已经终结为同一状态的 Job 允许幂等回读。BriefWorker 的
+            # commit/fail 已经在同一事务终结内部 Job，外层调用方可能再次提交；
+            # 这不应被误报为 lease 拒绝。
+            if row.status in ("succeeded", "failed", "canceled") and row.status == status:
+                if row.canceled and status != "canceled":
+                    return False, None
+                return True, _to_job_record(row)
             if row.status != "running":
                 # Spec §12 "已发出的模型调用即使无法中止，其返回也不能在取消后提交"。
                 # 只允许 running→终态；pending Job 必须先 claim 才能提交。
                 return False, None
-            row.status = status
-            if stage is not None:
-                row.stage = stage
-            if progress is not None:
-                row.progress = progress
-            row.error_code = error_code
-            row.error_message = error_message
-            if next_retry_at is not None:
-                row.next_retry_at = next_retry_at
-            if increment_retry:
-                row.retry_count = (row.retry_count or 0) + 1
-            row.lease_expires_at = None
-            row.updated_at = moment
+            if row.canceled:
+                # running Job 被取消后只允许安全点写入 canceled；迟到的
+                # succeeded/failed 结果一律拒绝。
+                if status != "canceled":
+                    return False, None
+                eligible_where = (
+                    "status = 'running' AND canceled = 1"
+                )
+            else:
+                # lease 到期后即使旧 token 仍相同也不能提交，避免恢复线程尚未
+                # 重置 Job 时迟到结果写入正式状态。
+                eligible_where = (
+                    "status = 'running' AND canceled = 0 "
+                    "AND lease_expires_at IS NOT NULL "
+                    "AND lease_expires_at > :moment"
+                )
+            retry_expression = "retry_count + 1" if increment_retry else "retry_count"
+            result = session.execute(
+                text(
+                    f"""
+                    UPDATE knowledge_jobs
+                    SET status = :status,
+                        stage = COALESCE(:stage, stage),
+                        progress = COALESCE(:progress, progress),
+                        error_code = :error_code,
+                        error_message = :error_message,
+                        next_retry_at = COALESCE(:next_retry_at, next_retry_at),
+                        retry_count = {retry_expression},
+                        lease_expires_at = NULL,
+                        updated_at = :moment
+                    WHERE id = :jid
+                      AND attempt_token = :token
+                      AND {eligible_where}
+                    """
+                ),
+                {
+                    "jid": job_id,
+                    "token": attempt_token,
+                    "status": status,
+                    "stage": stage,
+                    "progress": progress,
+                    "error_code": error_code,
+                    "error_message": error_message,
+                    "next_retry_at": next_retry_at,
+                    "moment": moment,
+                },
+            )
+            if int(getattr(result, "rowcount", 0) or 0) != 1:
+                return False, None
             session.commit()
             session.refresh(row)
             return True, _to_job_record(row)
@@ -1194,11 +1409,26 @@ class KnowledgeRepository:
                 return None
             if row.status in ("succeeded", "failed", "canceled"):
                 return _to_job_record(row)
+            if row.kind == "delete":
+                # 删除 Job 不可取消：取消会让 Source 永久停留在 deleting，既不能
+                # 恢复为可用 Source，也不能保证原件和 FTS 被清理。
+                return _to_job_record(row)
             row.canceled = True
             if row.status == "pending":
                 row.status = "canceled"
                 row.stage = "canceled"
                 row.lease_expires_at = None
+                # pending brief Job 直接终结，没有 worker 会处理它，必须在此同步
+                # 恢复 Source brief_status，否则 Source 永久卡在 pending/processing，
+                # 前端 rebuild 按钮禁用、_repair_missing_brief_jobs 也不会重新入队。
+                if row.kind == "brief" and row.source_id is not None:
+                    pending_source = session.get(KnowledgeSource, row.source_id)
+                    if (
+                        pending_source is not None
+                        and pending_source.brief_status in ("pending", "processing")
+                    ):
+                        pending_source.brief_status = "not_started"
+                        pending_source.updated_at = datetime.now(timezone.utc)
             else:
                 # running：worker 在安全点检查 canceled 标记并完成清理。Spec §12
                 # "running 本地任务在安全点停止；已发出的模型调用即使无法中止，
@@ -1233,38 +1463,145 @@ class KnowledgeRepository:
             )
             return [_to_job_record(row) for row in session.scalars(stmt)]
 
-    def recover_stale_running_jobs(self, now: Optional[datetime] = None) -> list[int]:
-        """KI-07 启动恢复：把过期 running Job 标记为 failed。
+    def recover_stale_running_jobs(
+        self,
+        now: Optional[datetime] = None,
+        *,
+        requeue: bool = False,
+    ) -> list[int]:
+        """KI-07 启动恢复过期 lease。
 
-        Spec §12 "应用重启后，过期 running Job 能恢复；已提交阶段不会重复执行"。
-        选择 failed 而非 re-queue 是因为：同步 Extraction 路径下 Job 一次性事务提交为
-        succeeded，过期 running 必然意味着故障注入或 Brief 中途崩溃；由 retry_extract
-        显式重建 Job 比隐式重跑更安全。
+        默认保留旧的诊断行为（标记 failed），供历史诊断调用方使用；应用运行时传入
+        ``requeue=True``，将未提交的 Extraction/Brief Job 原子放回 pending，并终结
+        遗留 processing Attempt，保证重启后可以继续消费而不是永久卡住。
 
         返回被恢复的 job_id 列表，便于日志与测试。
         """
         moment = now or datetime.now(timezone.utc)
         recovered: list[int] = []
         with self._session_factory() as session:
+            stale_conditions = [KnowledgeJob.status == "running"]
+            if not requeue:
+                # 旧的诊断调用仍不主动恢复删除 Job；应用运行时的 requeue 路径会
+                # 将过期删除任务重新交给 Extraction Worker。
+                stale_conditions.append(KnowledgeJob.kind != "delete")
+            if requeue:
+                # cancel running Job 会清空 lease，进程若此时崩溃不能再依赖
+                # lease 过期发现；运行时恢复应把它安全终结为 canceled。
+                stale_conditions.append(
+                    or_(
+                        and_(
+                            KnowledgeJob.lease_expires_at.is_not(None),
+                            KnowledgeJob.lease_expires_at < moment,
+                        ),
+                        KnowledgeJob.canceled.is_(True),
+                    )
+                )
+            else:
+                stale_conditions.extend(
+                    (
+                        KnowledgeJob.lease_expires_at.is_not(None),
+                        KnowledgeJob.lease_expires_at < moment,
+                    )
+                )
             stale = (
                 select(KnowledgeJob)
-                .where(
-                    KnowledgeJob.status == "running",
-                    KnowledgeJob.kind != "delete",
-                    KnowledgeJob.lease_expires_at.is_not(None),
-                    KnowledgeJob.lease_expires_at < moment,
-                )
+                .where(*stale_conditions)
                 .order_by(KnowledgeJob.id.asc())
             )
+
+            def _finish_brief_attempt(
+                job_row: KnowledgeJob, *, error_code: str, error_message: str
+            ) -> None:
+                """只收口该 Job 绑定的 Attempt，禁止按 Source 误伤新候选。"""
+                if job_row.kind != "brief":
+                    return
+                attempt: Optional[KnowledgeBriefAttempt] = None
+                if job_row.attempt_id is not None:
+                    attempt = session.get(KnowledgeBriefAttempt, job_row.attempt_id)
+                elif job_row.source_id is not None and job_row.snapshot_id is not None:
+                    attempt = session.execute(
+                        select(KnowledgeBriefAttempt)
+                        .where(
+                            KnowledgeBriefAttempt.source_id == job_row.source_id,
+                            KnowledgeBriefAttempt.snapshot_id == job_row.snapshot_id,
+                            KnowledgeBriefAttempt.status == "processing",
+                        )
+                        .order_by(
+                            KnowledgeBriefAttempt.created_at.desc(),
+                            KnowledgeBriefAttempt.id.desc(),
+                        )
+                        .limit(1)
+                    ).scalars().first()
+                if attempt is not None and attempt.status == "processing":
+                    attempt.status = "failed"
+                    attempt.error_code = error_code
+                    attempt.error_message = error_message
+                    attempt.updated_at = moment
+                # 终态（canceled 或 lease requeue 超限 failed）时同步恢复 Source
+                # brief_status：worker 若阻塞在 LLM 调用里到不了安全点，或 Job 反复
+                # lease 过期超过重试上限，Source 会永久卡在 processing，前端 rebuild
+                # 按钮永久禁用。未超限的 lease expired requeue 保留 processing——Job 回
+                # pending 会被 tick_brief 重新消费。
+                if (
+                    error_code in ("job_canceled", "job_lease_requeue_exhausted")
+                    and job_row.source_id is not None
+                ):
+                    terminal_source = session.get(
+                        KnowledgeSource, job_row.source_id
+                    )
+                    if (
+                        terminal_source is not None
+                        and terminal_source.brief_status == "processing"
+                    ):
+                        terminal_source.brief_status = "not_started"
+                        terminal_source.updated_at = moment
+
             for row in session.scalars(stale):
-                row.status = "failed"
-                # 明确覆盖 stage，避免遗留 "extracting" 等描述性阶段与 failed 状态混淆。
-                row.stage = "expired_lease"
-                row.error_code = "job_lease_expired"
-                row.error_message = (
-                    "lease expired before completion; runtime marked job failed"
-                )
+                if requeue and row.canceled:
+                    row.status = "canceled"
+                    row.stage = "canceled"
+                    row.error_code = "job_canceled"
+                    row.error_message = "用户取消后进程退出，恢复为 canceled"
+                    _finish_brief_attempt(
+                        row,
+                        error_code="job_canceled",
+                        error_message="Brief Job 在取消后进程退出",
+                    )
+                elif requeue:
+                    row.retry_count = (row.retry_count or 0) + 1
+                    if row.retry_count > BRIEF_LEASE_REQUEUE_MAX:
+                        row.status = "failed"
+                        row.stage = "lease_requeue_exhausted"
+                        row.error_code = "job_lease_requeue_exhausted"
+                        row.error_message = (
+                            f"lease 过期已自动重新入队 {row.retry_count} 次仍未完成"
+                        )
+                        _finish_brief_attempt(
+                            row,
+                            error_code="job_lease_requeue_exhausted",
+                            error_message=row.error_message,
+                        )
+                    else:
+                        row.status = "pending"
+                        row.stage = "recovered_pending"
+                        row.error_code = ""
+                        row.error_message = ""
+                        _finish_brief_attempt(
+                            row,
+                            error_code="job_lease_expired",
+                            error_message="Brief Job lease expired during restart recovery",
+                        )
+                else:
+                    row.status = "failed"
+                    row.stage = "expired_lease"
+                    row.error_code = "job_lease_expired"
+                    row.error_message = (
+                        "lease expired before completion; runtime marked job failed"
+                    )
                 row.lease_expires_at = None
+                row.lease_owner = ""
+                row.heartbeat_at = None
                 row.updated_at = moment
                 recovered.append(row.id)
             if recovered:
@@ -1289,7 +1626,8 @@ class KnowledgeRepository:
                     return EvidencePage()
                 effective_snapshot = source.active_snapshot_id
             stmt = select(KnowledgeEvidence).where(
-                KnowledgeEvidence.snapshot_id == effective_snapshot
+                KnowledgeEvidence.source_id == source_id,
+                KnowledgeEvidence.snapshot_id == effective_snapshot,
             )
             if after_ordinal is not None:
                 stmt = stmt.where(KnowledgeEvidence.ordinal > after_ordinal)
@@ -1307,7 +1645,16 @@ class KnowledgeRepository:
     def get_evidence(self, evidence_id: str) -> Optional[EvidenceRecord]:
         with self._session_factory() as session:
             row = session.get(KnowledgeEvidence, evidence_id)
-            return _to_evidence_record(row) if row is not None else None
+            if row is None:
+                return None
+            source = session.get(KnowledgeSource, row.source_id)
+            if (
+                source is None
+                or source.deleted_at is not None
+                or source.lifecycle == "deleting"
+            ):
+                return None
+            return _to_evidence_record(row)
 
     def search_evidence(
         self,
@@ -1324,8 +1671,8 @@ class KnowledgeRepository:
         - 启动时校验 FTS5 + trigram（``db._ensure_knowledge_fts``）。
         - ``parse_query`` 区分 ``fts`` / ``substring`` / ``empty`` 三种模式，避免整句
           作为强制精确短语。
-        - FTS 模式使用 ``bm25(table, 0, 0, 8.0, 4.0, 1.0)`` 为 source_title 给最高
-          权重，heading_path 中等，content 基础。
+        - FTS 模式使用分列权重；正文是 Evidence 的主要相关性信号，标题和章节
+          只作为辅助，避免同一 Source 的标题命中挤掉真正的正文 Evidence。
         - 短查询 (< 3 字符) 走 LIKE + LIMIT 有界回退。
         - 错误显式抛 ``SearchError``，禁止静默吞掉变成空结果。
         - 每次搜索写一条 Retrieval Trace（含失败路径）。
@@ -1440,7 +1787,7 @@ class KnowledgeRepository:
         params: dict[str, Any] = {"query": match_expr, "limit": limit}
         sql = (
             "SELECT fts.evidence_id AS evidence_id, "
-            "bm25(knowledge_evidence_fts, 0.0, 0.0, 8.0, 4.0, 1.0) AS score "
+            "bm25(knowledge_evidence_fts, 0.0, 0.0, 1.0, 2.0, 8.0) AS score "
             "FROM knowledge_evidence_fts fts "
             "JOIN knowledge_sources ks ON ks.id = fts.source_id "
             "WHERE knowledge_evidence_fts MATCH :query "
@@ -1450,8 +1797,11 @@ class KnowledgeRepository:
             sql += f"AND fts.source_id IN ({placeholders}) "
             for i, sid in enumerate(source_ids):
                 params[f"sid_{i}"] = sid
+        # ``include_archived`` 只放开 archived，不得重新暴露永久删除的 deleting
+        # 过渡态；该状态的原件可能已经移入 quarantine，Evidence 也正在清理。
+        sql += "AND ks.lifecycle != 'deleting' AND ks.deleted_at IS NULL "
         if not include_archived:
-            sql += "AND ks.lifecycle = 'active' AND ks.deleted_at IS NULL "
+            sql += "AND ks.lifecycle = 'active' "
         # bm25 返回负数（越小越相关），ASC 即最相关在前
         sql += "ORDER BY score ASC LIMIT :limit"
         try:
@@ -1508,8 +1858,9 @@ class KnowledgeRepository:
             sql += f"AND fts.source_id IN ({placeholders}) "
             for i, sid in enumerate(source_ids):
                 params[f"sid_{i}"] = sid
+        sql += "AND ks.lifecycle != 'deleting' AND ks.deleted_at IS NULL "
         if not include_archived:
-            sql += "AND ks.lifecycle = 'active' AND ks.deleted_at IS NULL "
+            sql += "AND ks.lifecycle = 'active' "
         sql += "ORDER BY fts.rowid ASC LIMIT :limit"
         try:
             return list(session.execute(text(sql), params).fetchall())
@@ -1610,6 +1961,17 @@ class KnowledgeRepository:
                         "source_integrity_mismatch",
                         "Source 处于 deleting 状态",
                     )
+                if source_row.active_snapshot_id != data.snapshot_id:
+                    raise KnowledgeBriefAttemptError(
+                        "brief_snapshot_stale",
+                        "Brief Attempt 必须绑定 Source 当前 active Snapshot",
+                    )
+                _fail_stale_brief_jobs_for_snapshot(
+                    session,
+                    source_id=data.source_id,
+                    snapshot_id=data.snapshot_id,
+                    moment=moment,
+                )
                 existing_active = session.execute(
                     select(KnowledgeBriefAttempt).where(
                         KnowledgeBriefAttempt.source_id == data.source_id,
@@ -1621,6 +1983,35 @@ class KnowledgeRepository:
                         "brief_attempt_conflict",
                         "Source 已有进行中 Brief Attempt",
                     )
+                # 首次 ingest / rebuild 会先排入一个 pending Brief Job，Worker claim
+                # 后再创建 Attempt。复用该 Job，避免同一 Source 出现两个活动 Job；
+                # 直接调用 Repository 时也兼容已有 pending Job。
+                existing_job = session.execute(
+                    select(KnowledgeJob)
+                    .where(
+                        KnowledgeJob.source_id == data.source_id,
+                        KnowledgeJob.kind == "brief",
+                        KnowledgeJob.queue == "brief",
+                        KnowledgeJob.status.in_(("pending", "running")),
+                        KnowledgeJob.canceled.is_(False),
+                        or_(
+                            KnowledgeJob.snapshot_id == data.snapshot_id,
+                            KnowledgeJob.snapshot_id.is_(None),
+                        ),
+                    )
+                    .order_by(KnowledgeJob.created_at.desc(), KnowledgeJob.id.desc())
+                    .limit(1)
+                ).scalars().first()
+                if (
+                    existing_job is not None
+                    and existing_job.snapshot_id is not None
+                    and existing_job.snapshot_id != data.snapshot_id
+                ):
+                    raise KnowledgeBriefAttemptError(
+                        "source_integrity_mismatch",
+                        "Brief Job 与当前 Snapshot 不一致",
+                    )
+
                 attempt_row = KnowledgeBriefAttempt(
                     source_id=data.source_id,
                     snapshot_id=data.snapshot_id,
@@ -1641,33 +2032,68 @@ class KnowledgeRepository:
                     fallback_provider_model=data.fallback_provider_model,
                 )
                 session.add(attempt_row)
-                session.flush()
-                job_row = KnowledgeJob(
-                    kind="brief",
-                    queue="brief",
-                    source_id=data.source_id,
-                    snapshot_id=data.snapshot_id,
-                    stage="brief_processing",
-                    status="running",
-                )
-                job_row.lease_owner = "brief-attempt"
-                job_row.lease_expires_at = moment + timedelta(seconds=600)
-                job_row.heartbeat_at = moment
-                job_row.attempt_token = attempt_token
-                session.add(job_row)
-                session.flush()
+                try:
+                    session.flush()
+                except IntegrityError as exc:
+                    if "uq_knowledge_active_attempt_source" in str(exc):
+                        raise KnowledgeBriefAttemptError(
+                            "brief_attempt_conflict",
+                            "Source 已有进行中 Brief Attempt",
+                        ) from exc
+                    raise
+                if existing_job is None:
+                    job_row = KnowledgeJob(
+                        kind="brief",
+                        queue="brief",
+                        source_id=data.source_id,
+                        attempt_id=attempt_row.id,
+                        snapshot_id=data.snapshot_id,
+                        stage="brief_processing",
+                        status="running",
+                    )
+                    job_row.lease_owner = "brief-attempt"
+                    job_row.lease_expires_at = moment + timedelta(seconds=600)
+                    job_row.heartbeat_at = moment
+                    job_row.attempt_token = attempt_token
+                    session.add(job_row)
+                else:
+                    job_row = existing_job
+                    if job_row.snapshot_id is None:
+                        job_row.snapshot_id = data.snapshot_id
+                    if job_row.status == "pending":
+                        job_row.status = "running"
+                        job_row.stage = "brief_processing"
+                        job_row.lease_owner = "brief-attempt"
+                        job_row.lease_expires_at = moment + timedelta(seconds=600)
+                        job_row.heartbeat_at = moment
+                        job_row.attempt_token = attempt_token
+                    elif not job_row.attempt_token:
+                        # 兼容旧库中已经 running 但没有 attempt_token 的 Job。
+                        job_row.attempt_token = attempt_token
+                    # Attempt 创建后才写入关联，确保不会再按 Source 猜测 Job。
+                    job_row.attempt_id = attempt_row.id
+                try:
+                    session.flush()
+                except IntegrityError as exc:
+                    if "uq_knowledge_active_job_source_kind" in str(exc):
+                        raise KnowledgeBriefAttemptError(
+                            "brief_attempt_conflict",
+                            "Source 已有进行中 Brief Job",
+                        ) from exc
+                    raise
                 source_row.brief_status = "processing"
                 source_row.brief_block_reason = ""
                 source_row.brief_error_code = ""
                 source_row.brief_error_message = ""
                 attempt_id_value = attempt_row.id
                 job_id_value = job_row.id
+                job_attempt_token = job_row.attempt_token
             refreshed = session.get(KnowledgeBriefAttempt, attempt_id_value)
             assert refreshed is not None
             return (
                 _to_brief_attempt_record(refreshed),
                 job_id_value,
-                attempt_token,
+                job_attempt_token,
             )
 
     def get_brief_attempt(self, attempt_id: int) -> Optional[BriefAttemptRecord]:
@@ -1724,18 +2150,16 @@ class KnowledgeRepository:
     ) -> Optional[JobRecord]:
         """Spec §12：Brief Attempt 与 brief Job 关联查询。
 
-        KI-09 创建 Attempt 时同时创建 Job；通过 source_id + 状态 running 锁定。
+        KI-09 创建 Attempt 时同时创建 Job；必须按持久化的 ``attempt_id`` 精确查询，
+        不能按 Source + ``running`` 猜测（同一 Source 的旧 Attempt 可能与新 Job
+        并存）。终态 Job 也保留关联，供失败/恢复诊断回读。
         """
         with self._session_factory() as session:
-            attempt = session.get(KnowledgeBriefAttempt, attempt_id)
-            if attempt is None:
-                return None
             stmt = (
                 select(KnowledgeJob)
                 .where(
-                    KnowledgeJob.source_id == attempt.source_id,
+                    KnowledgeJob.attempt_id == attempt_id,
                     KnowledgeJob.kind == "brief",
-                    KnowledgeJob.status.in_(("running",)),
                 )
                 .order_by(KnowledgeJob.created_at.desc(), KnowledgeJob.id.desc())
                 .limit(1)
@@ -1802,9 +2226,8 @@ class KnowledgeRepository:
         """Spec §10.3 / §10.4：Brief Attempt 失败，Source brief_status=failed。
 
         事务内：
-        1. Brief Attempt 标记 failed + 错误码 + validation 报告。
-        2. Brief Job ``complete_job`` 状态 succeeded（Job 自身完成；result 是失败）。
-           ``complete_job`` 必须验证 attempt_token，迟到 lease 拒绝提交。
+        1. 原子验证 Brief Job lease 未过期且未取消；迟到结果直接拒绝。
+        2. Brief Attempt 标记 failed + 错误码 + validation 报告，Job 也终结为 failed。
         3. Source 已有有效当前 Brief 时保持 ``ready``（旧 Brief 继续可见），仅记录
            最近 Attempt 错误；首次失败（无旧 Brief）才 ``failed``。
         4. KI-10：actual_provider_* / provider_retry_count 持久化；next_retry_at 保留
@@ -1814,16 +2237,27 @@ class KnowledgeRepository:
         moment = datetime.now(timezone.utc)
         with self._session_factory() as session:
             with session.begin():
+                if not self._lock_active_job_for_write(
+                    session,
+                    job_id=job_id,
+                    attempt_token=attempt_token,
+                    moment=moment,
+                ):
+                    return False, None, None
                 attempt_row = session.get(KnowledgeBriefAttempt, attempt_id)
                 if attempt_row is None:
                     return False, None, None
                 job_row = session.get(KnowledgeJob, job_id)
                 if job_row is None:
                     return False, None, None
-                if job_row.attempt_token != attempt_token:
+                if job_row.attempt_id not in (None, attempt_id):
+                    # 一个 Job 只能提交其创建时绑定的 Attempt；拒绝迟到或串线结果。
                     return False, None, None
-                if job_row.status != "running":
-                    return False, None, None
+                if job_row.attempt_id is None:
+                    # 旧库迁移期间允许首次安全提交补齐关联；新建 Job 始终在
+                    # create_brief_attempt 事务中写入该字段。
+                    job_row.attempt_id = attempt_id
+                source_row = session.get(KnowledgeSource, attempt_row.source_id)
                 attempt_row.status = "failed"
                 attempt_row.error_code = error_code
                 attempt_row.error_message = error_message[:500]
@@ -1843,15 +2277,19 @@ class KnowledgeRepository:
                 if provider_retry_count is not None:
                     attempt_row.provider_retry_count = provider_retry_count
                 attempt_row.updated_at = moment
-                job_row.status = "succeeded"
+                job_row.status = "failed"
                 job_row.stage = "brief_attempt_failed"
                 job_row.progress = 100
-                job_row.error_code = ""
-                job_row.error_message = ""
+                job_row.error_code = error_code
+                job_row.error_message = error_message[:500]
                 job_row.lease_expires_at = None
                 job_row.updated_at = moment
-                source_row = session.get(KnowledgeSource, attempt_row.source_id)
-                if source_row is not None and source_row.lifecycle != "deleting":
+                source_matches_snapshot = (
+                    source_row is not None
+                    and source_row.lifecycle != "deleting"
+                    and source_row.active_snapshot_id == attempt_row.snapshot_id
+                )
+                if source_matches_snapshot and source_row is not None:
                     # Spec §10.4：新候选失败时保留旧 Brief。如果 Source 已有有效当前
                     # Brief，保持 ``ready`` 让旧 Brief 继续可见，仅记录最近 Attempt
                     # 错误；首次失败（无旧 Brief）才进入 ``failed``。
@@ -1897,7 +2335,7 @@ class KnowledgeRepository:
         """Spec §10.3 / §10.4：成功 Brief 与 winning Attempt 在同一事务中提交。
 
         事务步骤：
-        1. 验证 brief Job attempt_token 匹配；迟到 lease 拒绝。
+        1. 原子验证 brief Job lease 未过期且未取消；迟到 lease 拒绝。
         2. upsert ``knowledge_source_briefs`` 单行（Source UNIQUE）：
            - 替换 payload / winning_attempt_id / schema_version / language / snapshot_id。
         3. Brief Attempt 标记 succeeded + validation 报告。
@@ -1907,13 +2345,43 @@ class KnowledgeRepository:
         moment = datetime.now(timezone.utc)
         with self._session_factory() as session:
             with session.begin():
+                if not self._lock_active_job_for_write(
+                    session,
+                    job_id=job_id,
+                    attempt_token=attempt_token,
+                    moment=moment,
+                ):
+                    return False, None, None
                 attempt_row = session.get(KnowledgeBriefAttempt, attempt_id)
                 if attempt_row is None:
                     return False, None, None
                 job_row = session.get(KnowledgeJob, job_id)
                 if job_row is None:
                     return False, None, None
-                if job_row.attempt_token != attempt_token or job_row.status != "running":
+                if job_row.attempt_id not in (None, attempt_id):
+                    # 防止使用同一 Source 的另一个 Brief Job 覆盖当前候选。
+                    return False, None, None
+                if job_row.attempt_id is None:
+                    job_row.attempt_id = attempt_id
+                source_row = session.get(KnowledgeSource, attempt_row.source_id)
+                if (
+                    source_row is None
+                    or source_row.lifecycle == "deleting"
+                    or source_row.active_snapshot_id != attempt_row.snapshot_id
+                ):
+                    # 旧 Snapshot 的迟到模型结果不得成为当前 Brief；同时终结
+                    # Attempt/Job，避免 processing Attempt 永久阻塞后续重建。
+                    attempt_row.status = "failed"
+                    attempt_row.error_code = "brief_snapshot_stale"
+                    attempt_row.error_message = "Source active Snapshot 已更新"
+                    attempt_row.updated_at = moment
+                    job_row.status = "failed"
+                    job_row.stage = "brief_snapshot_stale"
+                    job_row.progress = 100
+                    job_row.error_code = "brief_snapshot_stale"
+                    job_row.error_message = "Source active Snapshot 已更新"
+                    job_row.lease_expires_at = None
+                    job_row.updated_at = moment
                     return False, None, None
                 source_id_value = attempt_row.source_id
                 snapshot_id_value = attempt_row.snapshot_id
@@ -1961,7 +2429,6 @@ class KnowledgeRepository:
                 job_row.progress = 100
                 job_row.lease_expires_at = None
                 job_row.updated_at = moment
-                source_row = session.get(KnowledgeSource, source_id_value)
                 if source_row is not None and source_row.lifecycle != "deleting":
                     source_row.brief_status = "ready"
                     source_row.brief_error_code = ""
@@ -2080,9 +2547,19 @@ class KnowledgeRepository:
                 or brief_row.snapshot_id != snapshot_id
             )
             previous = bool(brief_row.outdated)
-            if stale != previous:
+            source_row = session.get(KnowledgeSource, source_id)
+            target_status = "outdated" if stale else "ready"
+            source_needs_update = (
+                source_row is not None
+                and source_row.lifecycle != "deleting"
+                and source_row.brief_status != target_status
+            )
+            if stale != previous or source_needs_update:
                 brief_row.outdated = stale
                 brief_row.updated_at = moment
+                if source_needs_update and source_row is not None:
+                    source_row.brief_status = target_status
+                    source_row.updated_at = moment
                 session.commit()
                 session.refresh(brief_row)
             return _to_source_brief_record(brief_row)
@@ -2136,6 +2613,52 @@ def _build_snippet_from_terms(
     return snippet
 
 
+def _delete_retrieval_traces_for_source(session: Session, source_id: int) -> None:
+    """删除引用指定 Source 的 Retrieval Trace。
+
+    Trace 表刻意不建立 Source 外键，只保存评估所需的稳定命中 ID。永久删除
+    Source 时按受控 JSON 结构清理相关 Trace，避免用 ``LIKE`` 匹配正文，
+    也避免误删其他 Source 的评估记录。
+    """
+    rows = session.execute(
+        select(
+            KnowledgeRetrievalTrace.id,
+            KnowledgeRetrievalTrace.filters_json,
+            KnowledgeRetrievalTrace.hits_json,
+        )
+    ).all()
+    trace_ids: list[int] = []
+    for trace_id, filters_json, hits_json in rows:
+        try:
+            filters = json.loads(filters_json or "{}")
+        except (TypeError, json.JSONDecodeError):
+            filters = {}
+        try:
+            hits = json.loads(hits_json or "[]")
+        except (TypeError, json.JSONDecodeError):
+            hits = []
+
+        source_ids = filters.get("source_ids") if isinstance(filters, dict) else None
+        if isinstance(source_ids, list) and any(
+            str(value) == str(source_id) for value in source_ids
+        ):
+            trace_ids.append(int(trace_id))
+            continue
+        if isinstance(hits, list) and any(
+            isinstance(hit, dict)
+            and str(hit.get("source_id")) == str(source_id)
+            for hit in hits
+        ):
+            trace_ids.append(int(trace_id))
+
+    if trace_ids:
+        session.execute(
+            delete(KnowledgeRetrievalTrace).where(
+                KnowledgeRetrievalTrace.id.in_(trace_ids)
+            )
+        )
+
+
 def _to_retrieval_trace_record(row: KnowledgeRetrievalTrace) -> RetrievalTraceRecord:
     try:
         filters = json.loads(row.filters_json or "{}")
@@ -2167,6 +2690,120 @@ def make_evidence_id(
     payload = f"{snapshot_digest}|{extractor_version}|{locator}|{content_hash}"
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
     return f"ev_{digest}"
+
+
+def _fail_stale_brief_jobs_for_snapshot(
+    session: Session,
+    *,
+    source_id: int,
+    snapshot_id: int,
+    moment: datetime,
+) -> None:
+    """终结不再属于当前 Snapshot 的 Brief Job/Attempt。
+
+    Extraction 切换 active Snapshot 时，旧 Job 可能仍在 pending 或已经被 worker
+    claim。它们不能继续读取新 Snapshot，也不能让旧模型结果覆盖当前 Brief；统一以
+    ``brief_snapshot_stale`` 失败终态收口，迟到提交自然会被 Job 状态门禁拒绝。
+    """
+    stale_jobs = session.execute(
+        select(KnowledgeJob).where(
+            KnowledgeJob.source_id == source_id,
+            KnowledgeJob.kind == "brief",
+            KnowledgeJob.status.in_(("pending", "running")),
+            or_(
+                KnowledgeJob.snapshot_id.is_(None),
+                KnowledgeJob.snapshot_id != snapshot_id,
+            ),
+        )
+    ).scalars().all()
+    for job_row in stale_jobs:
+        if job_row.attempt_id is not None:
+            attempt_row = session.get(KnowledgeBriefAttempt, job_row.attempt_id)
+            if (
+                attempt_row is not None
+                and attempt_row.source_id == source_id
+                and attempt_row.snapshot_id != snapshot_id
+                and attempt_row.status in ("pending", "processing")
+            ):
+                attempt_row.status = "failed"
+                attempt_row.error_code = "brief_snapshot_stale"
+                attempt_row.error_message = "Source active Snapshot 已更新"
+                attempt_row.updated_at = moment
+        job_row.status = "failed"
+        job_row.stage = "brief_snapshot_stale"
+        job_row.progress = 100
+        job_row.error_code = "brief_snapshot_stale"
+        job_row.error_message = "Source active Snapshot 已更新"
+        job_row.lease_expires_at = None
+        job_row.heartbeat_at = None
+        job_row.updated_at = moment
+
+
+def _mark_brief_outdated_for_snapshot(
+    session: Session,
+    source_row: Optional[KnowledgeSource],
+    snapshot_id: int,
+) -> None:
+    """Snapshot 代际切换时保留旧 Brief，并在同一事务内标记过期。"""
+    if source_row is None:
+        return
+    _fail_stale_brief_jobs_for_snapshot(
+        session,
+        source_id=source_row.id,
+        snapshot_id=snapshot_id,
+        moment=datetime.now(timezone.utc),
+    )
+    brief_row = session.execute(
+        select(KnowledgeSourceBrief).where(
+            KnowledgeSourceBrief.source_id == source_row.id
+        )
+    ).scalars().first()
+    if brief_row is None or brief_row.snapshot_id == snapshot_id:
+        return
+    brief_row.outdated = True
+    brief_row.updated_at = datetime.now(timezone.utc)
+    source_row.brief_status = "outdated"
+
+
+def _mark_brief_enqueue_pending_for_snapshot(
+    session: Session,
+    source_row: KnowledgeSource,
+    snapshot_id: int,
+) -> None:
+    """为 Extraction 提交与 Brief 入队之间的崩溃窗口留下可恢复标记。"""
+    brief_row = session.execute(
+        select(KnowledgeSourceBrief).where(
+            KnowledgeSourceBrief.source_id == source_row.id
+        )
+    ).scalars().first()
+    if brief_row is not None and brief_row.snapshot_id == snapshot_id:
+        return
+    active_job = session.execute(
+        select(KnowledgeJob.id)
+        .where(
+            KnowledgeJob.source_id == source_row.id,
+            KnowledgeJob.kind == "brief",
+            KnowledgeJob.snapshot_id == snapshot_id,
+            KnowledgeJob.status.in_(("pending", "running")),
+            KnowledgeJob.canceled.is_(False),
+        )
+        .limit(1)
+    ).first()
+    active_attempt = session.execute(
+        select(KnowledgeBriefAttempt.id)
+        .where(
+            KnowledgeBriefAttempt.source_id == source_row.id,
+            KnowledgeBriefAttempt.snapshot_id == snapshot_id,
+            KnowledgeBriefAttempt.status.in_(("pending", "processing")),
+        )
+        .limit(1)
+    ).first()
+    if active_job is not None or active_attempt is not None:
+        return
+    source_row.brief_status = "pending"
+    source_row.brief_block_reason = ""
+    source_row.brief_error_code = ""
+    source_row.brief_error_message = ""
 
 
 def commit_extraction(
@@ -2215,6 +2852,12 @@ def commit_extraction(
                 source_row.extraction_status = "extracted"
                 source_row.extraction_error_code = ""
                 source_row.extraction_error_message = ""
+                _mark_brief_outdated_for_snapshot(
+                    session, source_row, existing_snapshot.id
+                )
+                _mark_brief_enqueue_pending_for_snapshot(
+                    session, source_row, existing_snapshot.id
+                )
             return existing_snapshot, list(existing_evidence)
         # extractor 版本相同但 digest 不同：内部不一致，应当创建新版本而非覆盖。
         raise RuntimeError(
@@ -2310,6 +2953,13 @@ def commit_extraction(
     # Spec §4.4：图片字节不进 FTS。asset Evidence 的 search_text 仅含 alt text，
     # 用 alt text 进入 FTS 以支持 "alt 命中" 查询；canonical_excerpt 是 image literal，
     # 不写 FTS 以避免 ![](url) 噪音。
+    # FTS 不保存 snapshot_id，切换 active Snapshot 前必须移除旧 Snapshot
+    # 的行，避免同一 Source 的历史 Evidence 继续参与检索。
+    session.execute(
+        text("DELETE FROM knowledge_evidence_fts WHERE source_id = :sid"),
+        {"sid": source_id},
+    )
+
     for evidence_row in created:
         if evidence_row.kind == "asset":
             fts_content = evidence_row.search_text
@@ -2340,5 +2990,9 @@ def commit_extraction(
         source_row.extraction_status = "extracted"
         source_row.extraction_error_code = ""
         source_row.extraction_error_message = ""
+        _mark_brief_outdated_for_snapshot(session, source_row, snapshot_row.id)
+        _mark_brief_enqueue_pending_for_snapshot(
+            session, source_row, snapshot_row.id
+        )
 
     return snapshot_row, created
