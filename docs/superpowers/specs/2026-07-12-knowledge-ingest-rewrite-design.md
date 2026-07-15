@@ -411,11 +411,11 @@ provider_unavailable
 provider_context_too_small
 provider_transient_error
 brief_schema_invalid
-brief_citation_invalid
-brief_coverage_invalid
-brief_support_invalid
+brief_quality_failed
 job_canceled
 ```
+
+KBR-05 起，citation/coverage/support 三类质量失败合并为单一 `brief_quality_failed`（schema 不可解析仍用 `brief_schema_invalid`）；细分类型见各 Attempt 的 `validation_report.issue_type`。
 
 ## 14. SQLite 数据模型
 

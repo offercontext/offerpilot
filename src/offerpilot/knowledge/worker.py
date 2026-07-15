@@ -1769,6 +1769,10 @@ class BriefWorker:
                         error_code=exc.code,
                         error_message=exc.message,
                         candidate_payload_json="",
+                        # schema_invalid 独立构造 report（不复用 _build_structured_report）：
+                        # error_code 必须是 brief_schema_invalid（与 Attempt error_code 一致），
+                        # 而 _build_structured_report 硬编码 brief_quality_failed；且此时 brief
+                        # 尚未解析、无 coverage/support 数据。详见该函数 docstring。
                         validation_report_json=json.dumps(
                             {
                                 "stage": "schema_invalid",
@@ -2100,6 +2104,10 @@ class BriefWorker:
         Source 状态区只显示稳定 error_code + 失败总数 + 短摘要；Attempt/处理记录展示
         全部失败项（block_path + issue_type + decision + reason + evidence_ids），可定位
         到候选 Brief block 与已引用 Evidence。不复制 Evidence 正文（按 evidence_ids 读）。
+
+        仅用于 Schema 合法后的质量失败（error_code 固定 brief_quality_failed）。Schema
+        不可解析路径（brief_schema_invalid）因 error_code 语义不同且此时无 coverage/support
+        数据，在调用处内联构造 report，不复用本函数。
         """
         has_failures = bool(quality.issues)
         issues_payload = [

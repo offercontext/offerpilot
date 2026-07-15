@@ -615,7 +615,7 @@ def test_fail_brief_attempt_marks_source_failed(tmp_path: Path) -> None:
         attempt.id,
         job_id=job_id,
         attempt_token=token,
-        error_code="brief_support_invalid",
+        error_code="brief_quality_failed",
         error_message="unsupported x1",
         validation_report_json='{"stage":"support"}',
     )
@@ -625,7 +625,7 @@ def test_fail_brief_attempt_marks_source_failed(tmp_path: Path) -> None:
     source = repository.get_source(source_id)
     assert source is not None
     assert source.brief_status == "failed"
-    assert source.brief_error_code == "brief_support_invalid"
+    assert source.brief_error_code == "brief_quality_failed"
 
 
 # ---------------------------------------------------------------------------

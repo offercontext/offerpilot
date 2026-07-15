@@ -29,6 +29,7 @@ from offerpilot.knowledge.brief import (
     ISSUE_CITATION_OWNERSHIP,
     ISSUE_COVERAGE_MISSING,
     ISSUE_SCHEMA_INVALID,
+    ISSUE_SUPPORT_CONTRADICTED,
     ISSUE_SUPPORT_PARTIAL,
     ISSUE_SUPPORT_UNSUPPORTED,
     BRIEF_LANGUAGE,
@@ -327,8 +328,10 @@ def test_mixed_failures_aggregated_into_single_repair(tmp_path: Path) -> None:
     assert ISSUE_CITATION_MISSING in issue_types
     assert ISSUE_SUPPORT_PARTIAL in issue_types
     assert ISSUE_COVERAGE_MISSING in issue_types
-    assert report.get("failure_count") == len(issues)
-    assert report.get("failure_count") >= 3
+    failure_count = report.get("failure_count")
+    assert failure_count is not None
+    assert failure_count == len(issues)
+    assert failure_count >= 3
 
 
 def test_citation_invalid_block_skips_validator_valid_blocks_continue(
@@ -372,13 +375,13 @@ def test_citation_invalid_block_skips_validator_valid_blocks_continue(
 
 def test_schema_unparseable_still_immediate_repair(tmp_path: Path) -> None:
     """JSON/Schema 完全无法解析时保留立即 repair（后续门禁无法安全运行）。"""
-    repository, session_factory, source_id, _ = ingest_and_extract(
+    repository, session_factory, source_id, snapshot_id = ingest_and_extract(
         tmp_path, MIXED_FAILURE_CONTENT.encode("utf-8"), config=_qualified_config()
     )
     invalid_json = "this is not json"
     good_evidence = repository.list_evidence(
         source_id,
-        snapshot_id=repository.get_source(source_id).active_snapshot_id,
+        snapshot_id=snapshot_id,
         limit=50,
     ).items
     from _knowledge_seam import build_supported_brief_json
@@ -439,6 +442,50 @@ def test_support_partial_is_hard_failure(tmp_path: Path) -> None:
     report = outcome.validation_report
     issue_types = {item.get("issue_type") for item in report.get("issues", [])}
     assert ISSUE_SUPPORT_PARTIAL in issue_types
+
+
+def test_support_contradicted_is_hard_failure(tmp_path: Path) -> None:
+    """support 返回 contradicted 是硬失败：所引 Evidence 直接否定 statement 核心。
+
+    与 partial 对称（Spec §10.3 仅 supported 可发布）；issue_type 区分为
+    support_contradicted，decision='contradicted'，且候选 Brief 不发布。
+    """
+    repository, session_factory, source_id, snapshot_id = ingest_and_extract(
+        tmp_path, MIXED_FAILURE_CONTENT.encode("utf-8"), config=_qualified_config()
+    )
+    evidence = repository.list_evidence(
+        source_id, snapshot_id=snapshot_id, limit=50
+    ).items
+    from _knowledge_seam import build_supported_brief_json
+
+    brief_json = build_supported_brief_json(evidence)
+    val_count = _count_statement_blocks(brief_json)
+    contradicted = json.dumps(
+        {"decision": "contradicted", "reason": "所引 Evidence 直接否定该 statement"}
+    )
+    client = RoleAwareModelClient(
+        generation=[brief_json],
+        repair=[brief_json],
+        validation=[contradicted] * (val_count * 2),
+    )
+    outcome = drive_brief_queue(
+        repository,
+        session_factory,
+        tmp_path,
+        config=_qualified_config(),
+        model_client=client,
+        source_id=source_id,
+    )
+    assert outcome.source is not None
+    assert outcome.source.brief_status == "failed"
+    assert outcome.brief is None  # 不能发布
+    report = outcome.validation_report
+    issues = report.get("issues", [])
+    contradicted_issues = [
+        item for item in issues if item.get("issue_type") == ISSUE_SUPPORT_CONTRADICTED
+    ]
+    assert contradicted_issues, "contradicted 必须产生 support_contradicted issue"
+    assert all(item.get("decision") == "contradicted" for item in contradicted_issues)
 
 
 def test_source_status_summary_stable_code_count_short_text(tmp_path: Path) -> None:

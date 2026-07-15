@@ -628,9 +628,18 @@ def test_content_quality_failure_does_not_switch_provider(tmp_path: Path) -> Non
         tmp_path, config=config
     )
     # 第 1 次 generation 返回非法 JSON（schema_invalid → repair）；
-    # 第 2 次 generation（repair）返回合法 payload 但引用不存在的 evidence。
-    bad_citation_payload = _valid_payload_dict()
-    bad_citation_payload["overview"][0]["evidence_ids"] = ["ev_NONEXISTENT"]
+    # 第 2 次 generation（repair）返回 schema 合法但 citation 全部无效的 payload，
+    # 走 citation 校验失败 → brief_quality_failed（不切 provider）。
+    # KBR-05：用真实 Evidence 构造 schema 合法 payload，再把所有 evidence_ids 替换为
+    # 不存在的 id——schema 解析通过（evidence_ids 非空），但每条 citation 都 invalid，
+    # 故无有效 block、不发起 Validator，确定命中 brief_quality_failed 路径（而非靠 schema
+    # 失败侥幸通过）。
+    evidence_page = repository.list_evidence(source_id, snapshot_id=snapshot_id, limit=50)
+    bad_citation_payload = _build_payload_for_evidence(evidence_page.items)
+    nonexistent_eid = "ev_NONEXISTENT"
+    for block_name in ("overview", "key_points", "section_guides", "limitations"):
+        for item in bad_citation_payload[block_name]:
+            item["evidence_ids"] = [nonexistent_eid]
     behaviors = [
         "not a json object {{{",
         json.dumps(bad_citation_payload, ensure_ascii=False),
@@ -641,7 +650,7 @@ def test_content_quality_failure_does_not_switch_provider(tmp_path: Path) -> Non
     assert results[0].status == "failed"
     assert results[0].error_code in (
         "brief_schema_invalid",
-        "brief_citation_invalid",
+        "brief_quality_failed",
     )
     generation_calls = [c for c in call_log if not c["is_validation"]]
     # 全部调用都是 primary，没有 fallback。
