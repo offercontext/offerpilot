@@ -43,7 +43,6 @@ from offerpilot.knowledge.extractor import (
     METADATA_EXTRACTION_VERSION,
     MarkdownExtraction,
     MarkdownExtractor,
-    ProvenanceDraft,
     compute_bundle_source_hash,
     compute_source_hash,
 )
@@ -103,7 +102,6 @@ __all__ = [
     "MarkdownExtraction",
     "MarkdownExtractor",
     "METADATA_EXTRACTION_VERSION",
-    "ProvenanceDraft",
     "SupportDecision",
     "SourceAssetRecord",
     "SourceBriefRecord",

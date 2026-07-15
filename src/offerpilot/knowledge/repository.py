@@ -509,6 +509,23 @@ def _to_snapshot_record(row: KnowledgeExtractionSnapshot) -> SourceSnapshotRecor
     )
 
 
+def _get_first_origin(
+    session: Session, source_id: int
+) -> Optional[KnowledgeSourceOrigin]:
+    """按 id 升序取首条 Origin（provenance URL 与 frontmatter url 补全共用）。"""
+
+    return (
+        session.execute(
+            select(KnowledgeSourceOrigin)
+            .where(KnowledgeSourceOrigin.source_id == source_id)
+            .order_by(KnowledgeSourceOrigin.id.asc())
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
+
+
 def _build_source_provenance(session: Session, source_id: int) -> dict[str, Any]:
     """从 Source / 首条 Origin / active Snapshot 组装非空 provenance 字段。
 
@@ -524,16 +541,7 @@ def _build_source_provenance(session: Session, source_id: int) -> dict[str, Any]
         provenance["title"] = source.display_title
     if source.author:
         provenance["author"] = source.author
-    origin_row = (
-        session.execute(
-            select(KnowledgeSourceOrigin)
-            .where(KnowledgeSourceOrigin.source_id == source_id)
-            .order_by(KnowledgeSourceOrigin.id.asc())
-            .limit(1)
-        )
-        .scalars()
-        .first()
-    )
+    origin_row = _get_first_origin(session, source_id)
     if origin_row is not None and origin_row.origin_url:
         provenance["url"] = origin_row.origin_url
     if source.published_at is not None:
@@ -3095,6 +3103,15 @@ def commit_extraction(
         # 用户已 PATCH 的标题）；author/published_at 是确定性提取的派生 provenance。
         if not source_row.display_title and snapshot_input.provenance_title:
             source_row.display_title = snapshot_input.provenance_title
+            # INSERT 阶段 FTS source_title 用的是调用方传入的 title_hint，frontmatter
+            # title 填充 display_title 后需回写 source_title，使标题可定位 Source Evidence。
+            session.execute(
+                text(
+                    "UPDATE knowledge_evidence_fts "
+                    "SET source_title = :title WHERE source_id = :sid"
+                ),
+                {"title": snapshot_input.provenance_title, "sid": source_id},
+            )
         if snapshot_input.provenance_author:
             source_row.author = snapshot_input.provenance_author
         if snapshot_input.provenance_published_at is not None:
@@ -3102,16 +3119,7 @@ def commit_extraction(
         # frontmatter url 沿 Origin 所有权补全：首条 Origin 若无 origin_url 则填入，
         # 不覆盖 paste 场景已提供的 url。
         if snapshot_input.provenance_url:
-            origin_row = (
-                session.execute(
-                    select(KnowledgeSourceOrigin)
-                    .where(KnowledgeSourceOrigin.source_id == source_id)
-                    .order_by(KnowledgeSourceOrigin.id.asc())
-                    .limit(1)
-                )
-                .scalars()
-                .first()
-            )
+            origin_row = _get_first_origin(session, source_id)
             if origin_row is not None and not origin_row.origin_url:
                 origin_row.origin_url = snapshot_input.provenance_url
         _mark_brief_outdated_for_snapshot(session, source_row, snapshot_row.id)

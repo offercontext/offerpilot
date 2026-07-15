@@ -312,6 +312,26 @@ def test_frontmatter_excluded_from_evidence_fts(tmp_path: Path) -> None:
     assert not repository.search_evidence("example.com/arch", limit=5)
 
 
+def test_frontmatter_title_locates_source_via_display_title(tmp_path: Path) -> None:
+    """frontmatter 派生标题经 display_title -> FTS source_title 仍可定位 Source Evidence。
+
+    与 ``test_frontmatter_excluded_from_evidence_fts`` 的负向断言配对：frontmatter
+    内容不进 Evidence content，但其白名单 title 填充 display_title 并经由
+    ``knowledge_evidence_fts.source_title`` 让该 Source 的 Evidence 可被标题召回。
+    """
+    repository, _, source_id, _ = ingest_and_extract(
+        tmp_path, _frontmatter_source_bytes()
+    )
+    source = repository.get_source(source_id)
+    assert source is not None
+    # frontmatter title 进入 display_title（可定位）。
+    assert source.display_title == "架构笔记"
+    # 经由 source_title 召回该 Source 的 Evidence（标题可定位资料）。
+    hits = repository.search_evidence("架构笔记", limit=5)
+    assert hits, "frontmatter 派生标题应经由 source_title 召回 Evidence"
+    assert all(hit.source_id == source_id for hit in hits)
+
+
 def test_source_provenance_persisted(tmp_path: Path) -> None:
     """Source/Snapshot 持久化 provenance：作者、发布时间、URL、元数据版本。"""
     repository, _, source_id, snapshot_id = ingest_and_extract(

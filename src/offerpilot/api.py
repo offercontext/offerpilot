@@ -371,10 +371,12 @@ def _knowledge_brief_attempt_payload(attempt: Any) -> Optional[dict[str, Any]]:
     }
 
 
-def _knowledge_ingest_payload(result: Any, job: Any) -> dict[str, Any]:
+def _knowledge_ingest_payload(
+    result: Any, job: Any, provenance: Optional[dict[str, Any]] = None
+) -> dict[str, Any]:
     return {
         "deduplicated": result.deduplicated,
-        "source": _knowledge_source_payload(result.source),
+        "source": _knowledge_source_payload(result.source, provenance),
         "job": _knowledge_job_payload(job),
         "extraction_error_code": result.extraction_error_code,
         "extraction_error_message": result.extraction_error_message,
@@ -616,7 +618,11 @@ def create_app(
         status_code = 200 if result.deduplicated else 202
         return JSONResponse(
             status_code=status_code,
-            content=_knowledge_ingest_payload(result, job),
+            content=_knowledge_ingest_payload(
+                result,
+                job,
+                provenance=knowledge_repository.get_source_provenance(result.source.id),
+            ),
         )
 
     @app.get("/api/knowledge/sources/{source_id}")
