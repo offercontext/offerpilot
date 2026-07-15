@@ -62,3 +62,14 @@ describe('knowledge service KI-06 contract', () => {
     expect(source).toContain('include_archived');
   });
 });
+
+describe('knowledge service KBR-07 reset contract', () => {
+  it('exposes destructive reset endpoint requiring explicit confirm payload', () => {
+    expect(source).toContain('resetKnowledgeDomain');
+    expect(source).toContain('/knowledge/reset');
+    expect(source).toContain('KnowledgeResetSummary');
+    // 必须显式传 confirm，且为破坏性 POST。
+    expect(source).toContain('confirm: boolean');
+    expect(source).toMatch(/\.post<.*>.*\/knowledge\/reset/s);
+  });
+});

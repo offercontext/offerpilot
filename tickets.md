@@ -217,20 +217,20 @@ citation coverage；KBR-06：使用结构化 patch 完成唯一一次 repair。
 **Scope boundaries:** 只清空 Knowledge 数据域。不得删除整个应用数据库、整个应用数据目录、AI 配置
 或任何非 Knowledge 业务数据；不得建立旧 Schema/Evidence ID/Brief 的兼容迁移。
 
-- [ ] reset 范围覆盖 Source、Origin、Asset、Extraction Snapshot、Evidence、FTS、Brief、Attempt、
+- [x] reset 范围覆盖 Source、Origin、Asset、Extraction Snapshot、Evidence、FTS、Brief、Attempt、
       Knowledge Job、Knowledge 处理日志和 Knowledge 文件目录。
-- [ ] reset 保留数据库 Schema、迁移记录、AI Provider/应用配置和所有非 Knowledge 表/文件。
-- [ ] reset 使用正式 Knowledge 专用边界和依赖顺序，不依赖手工逐表/逐文件临时命令。
-- [ ] reset 在新空库、已有新 Schema 空库和包含旧测试数据的库上均可重复执行。
-- [ ] 中途失败不会留下指向已删除文件的 Source，或文件已存在但数据库无记录的半重置状态。
-- [ ] reset 后 Knowledge 列表、Evidence 搜索、FTS 和 pending/running Knowledge Job 均为空。
-- [ ] reset 后相同 Source 内容可以创建新的 Source/Snapshot/Evidence ID 并完成 Brief v2。
-- [ ] 删除前后记录非 Knowledge 代表数据和 AI 配置摘要，测试证明值和数量保持不变。
-- [ ] 文件清理拒绝绝对路径、目录穿越和 Knowledge 根目录之外的目标。
-- [ ] 旧 Brief Schema、模型 coverage、旧 Evidence policy version 和完整 Brief repair 数据不被迁移。
-- [ ] 前端在 reset 后稳定展示 Knowledge 空状态，不出现指向已删除 Source 的缓存详情。
-- [ ] Repository、启动修复、API/前端空状态和文件系统故障测试覆盖 reset 完整语义。
-- [ ] 最终交付明确报告本 Ticket 已执行破坏性 Knowledge 数据清空，不使用“兼容升级”措辞。
+- [x] reset 保留数据库 Schema、迁移记录、AI Provider/应用配置和所有非 Knowledge 表/文件。
+- [x] reset 使用正式 Knowledge 专用边界和依赖顺序，不依赖手工逐表/逐文件临时命令。
+- [x] reset 在新空库、已有新 Schema 空库和包含旧测试数据的库上均可重复执行。
+- [x] 中途失败不会留下指向已删除文件的 Source，或文件已存在但数据库无记录的半重置状态。
+- [x] reset 后 Knowledge 列表、Evidence 搜索、FTS 和 pending/running Knowledge Job 均为空。
+- [x] reset 后相同 Source 内容可以创建新的 Source/Snapshot/Evidence ID 并完成 Brief v2。
+- [x] 删除前后记录非 Knowledge 代表数据和 AI 配置摘要，测试证明值和数量保持不变。
+- [x] 文件清理拒绝绝对路径、目录穿越和 Knowledge 根目录之外的目标。
+- [x] 旧 Brief Schema、模型 coverage、旧 Evidence policy version 和完整 Brief repair 数据不被迁移。
+- [x] 前端在 reset 后稳定展示 Knowledge 空状态，不出现指向已删除 Source 的缓存详情。
+- [x] Repository、启动修复、API/前端空状态和文件系统故障测试覆盖 reset 完整语义。
+- [x] 最终交付明确报告本 Ticket 已执行破坏性 Knowledge 数据清空，不使用“兼容升级”措辞。
 
 ## KBR-08：固化 `@Async` 真实回放并完成发布验收
 

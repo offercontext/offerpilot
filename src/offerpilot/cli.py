@@ -40,6 +40,7 @@ offer_app = typer.Typer(help="Manage offers")
 question_app = typer.Typer(help="Manage interview questions")
 skill_app = typer.Typer(help="Manage trusted skill packages")
 wakeup_app = typer.Typer(help="Manage scheduled wakeups")
+knowledge_app = typer.Typer(help="Manage Knowledge data domain")
 
 app.add_typer(resume_app, name="resume")
 app.add_typer(note_app, name="note")
@@ -47,6 +48,7 @@ app.add_typer(offer_app, name="offer")
 app.add_typer(question_app, name="question")
 app.add_typer(skill_app, name="skill")
 app.add_typer(wakeup_app, name="wakeup")
+app.add_typer(knowledge_app, name="knowledge")
 
 
 @app.command()
@@ -228,6 +230,43 @@ def verify(
     for step in report.steps:
         typer.echo(f"ok {step.name}: {step.detail}")
     typer.echo(f"Verify {profile} passed")
+
+
+@knowledge_app.command("reset")
+def knowledge_reset(
+    confirm: bool = typer.Option(
+        False,
+        "--confirm",
+        help="必须显式传入以执行破坏性 Knowledge 数据域清空",
+    ),
+) -> None:
+    """KBR-07：清空 Knowledge 数据域（Source/Origin/Asset/Snapshot/Evidence/FTS/Brief/
+    Attempt/Job/日志/文件目录），保留 Schema、迁移记录、AI 配置与所有非 Knowledge 业务数据。
+
+    破坏性操作：仅在本地 runtime 允许；执行前请确认数据可丢弃。相同 Source 内容可在 reset
+    后重新导入并完成 Brief v2。
+    """
+    from offerpilot.knowledge.reset import KnowledgeResetError, reset_knowledge_domain
+
+    data_dir = resolve_data_dir()
+    cfg = load_config(data_dir)
+    try:
+        summary = reset_knowledge_domain(
+            session_factory_for_data_dir(data_dir),
+            data_dir,
+            runtime_mode=cfg.runtime_mode,
+            confirm=confirm,
+        )
+    except KnowledgeResetError as exc:
+        typer.echo(f"[{exc.code}] {exc.message}")
+        raise typer.Exit(code=1)
+    typer.echo(
+        "Knowledge 数据域已清空（破坏性操作）："
+        f"删除 Source {summary.deleted_source_rows} 条，"
+        f"清表 {len(summary.cleared_tables)} 张，"
+        f"清理目录 {','.join(summary.cleared_dir_entries) or '(空)'}；"
+        "已保留 Schema、迁移记录、AI 配置与非 Knowledge 业务数据。"
+    )
 
 
 @app.command("knowledge-acceptance")

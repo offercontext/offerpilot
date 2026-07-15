@@ -69,4 +69,13 @@ describe('KnowledgeSourcesView', () => {
     // 验证组件文件可被 import 且不抛错，保证 KI-09 前端入口未回滚。
     expect(typeof KnowledgeSourcesView).toBe('function');
   });
+
+  it('exposes KBR-07 destructive Knowledge reset entry in the toolbar', () => {
+    const markup = renderWithProviders();
+
+    // 工具栏注册破坏性 reset 入口；点击后进入二次确认 Modal（需输入确认文本）。
+    // reset 成功后的缓存清空由 resetMutation.removeQueries 保证，避免指向已删除
+    // Source 的缓存详情；服务契约见 services/knowledge.test.ts。
+    expect(markup).toContain('清空 Knowledge 数据');
+  });
 });
