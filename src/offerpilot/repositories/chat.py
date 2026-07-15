@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from sqlalchemy import delete, select, update
@@ -132,11 +132,12 @@ class ChatRepository:
             provider_blocks=provider_blocks,
         )
         with self._session_factory() as session:
+            now = _next_conversation_timestamp(session, conversation_id)
             session.add(message)
             session.execute(
                 update(Conversation)
                 .where(Conversation.id == conversation_id)
-                .values(updated_at=datetime.now(timezone.utc))
+                .values(updated_at=now)
             )
             session.commit()
             session.refresh(message)
@@ -252,7 +253,6 @@ class ChatRepository:
         terminal_assistant_content: str = "",
     ) -> datetime | None:
         """Persist a result with tri-state undo: None preserves, empty clears, non-empty replaces."""
-        now = datetime.now(timezone.utc)
         values: dict[str, Any] = {
             "pending_tool_call_id": "",
             "pending_tool_name": "",
@@ -263,11 +263,12 @@ class ChatRepository:
             "clarification_args": "",
             "clarification_human": "",
             "clarification_question": "",
-            "updated_at": now,
         }
         if undo is not None:
             values["last_write_undo_json"] = json.dumps(undo, ensure_ascii=False) if undo else ""
         with self._session_factory() as session:
+            now = _next_conversation_timestamp(session, conversation_id)
+            values["updated_at"] = now
             result = session.execute(
                 update(Conversation)
                 .where(Conversation.id == conversation_id)
@@ -309,8 +310,7 @@ class ChatRepository:
     ) -> datetime | None:
         if expected_generation is None:
             return None
-        now = datetime.now(timezone.utc)
-        values: dict[str, Any] = {"updated_at": now}
+        values: dict[str, Any] = {}
         if pending is not None:
             values.update(
                 {
@@ -341,6 +341,8 @@ class ChatRepository:
                 }
             )
         with self._session_factory() as session:
+            now = _next_conversation_timestamp(session, conversation_id, expected_generation)
+            values["updated_at"] = now
             statement = (
                 update(Conversation)
                 .where(Conversation.id == conversation_id)
@@ -476,3 +478,25 @@ class ChatRepository:
             if conversation is not None:
                 session.delete(conversation)
             session.commit()
+
+
+def _next_conversation_timestamp(
+    session: Session,
+    conversation_id: int,
+    floor: datetime | None = None,
+) -> datetime:
+    current = session.scalar(
+        select(Conversation.updated_at).where(Conversation.id == conversation_id)
+    )
+    bounds = [value for value in (current, floor) if value is not None]
+    normalized_bounds = [
+        value.replace(tzinfo=timezone.utc)
+        if value.tzinfo is None or value.utcoffset() is None
+        else value.astimezone(timezone.utc)
+        for value in bounds
+    ]
+    now = datetime.now(timezone.utc)
+    if not normalized_bounds:
+        return now
+    lower_bound = max(normalized_bounds)
+    return max(now, lower_bound + timedelta(microseconds=1))

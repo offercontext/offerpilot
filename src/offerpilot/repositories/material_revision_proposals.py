@@ -60,6 +60,10 @@ class MaterialRevisionProposalsRepository:
         validated = generate_material_proposal(model, snapshot, instructions)
         proposal_json = canonical_json(validated.proposal)
         with self._session_factory() as session:
+            # Serialize the visibility check and draft insert against concurrent
+            # SQLite soft deletes. A competing writer waits until this transaction
+            # commits, so it cannot make a just-created draft immediately invisible.
+            session.execute(text("BEGIN IMMEDIATE"))
             if _visible_application(session, application_id) is None:
                 raise MaterialProposalNotFound()
             proposal = MaterialRevisionProposal(

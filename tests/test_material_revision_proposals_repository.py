@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import json
+import threading
+from datetime import datetime, timezone
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session, sessionmaker
 
 from offerpilot.ai.types import Assistant
 from offerpilot.db import init_database
-from offerpilot.models import ApplicationEvent, ApplicationMaterialKit, MaterialRevisionProposal, Resume
+from offerpilot.models import Application, ApplicationEvent, ApplicationMaterialKit, MaterialRevisionProposal, Resume
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
 from offerpilot.repositories.material_kits import MaterialKitCreate, MaterialKitsRepository
+from offerpilot.repositories import material_revision_proposals as material_revision_proposals_module
 from offerpilot.repositories.material_revision_proposals import (
     MaterialProposalConflictError,
     MaterialProposalNotFound,
@@ -184,6 +188,80 @@ def test_repository_does_not_create_draft_when_application_is_deleted_during_gen
 
     with session_factory() as session:
         assert list(session.scalars(select(MaterialRevisionProposal))) == []
+
+
+def test_repository_serializes_soft_delete_after_visibility_check(tmp_path, monkeypatch) -> None:
+    base_factory, app, _resume, _kit = _ready(tmp_path)
+    delete_engine = create_engine(
+        f"sqlite:///{tmp_path / 'data.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    delete_factory = sessionmaker(bind=delete_engine, expire_on_commit=False)
+    delete_ready = threading.Event()
+    allow_delete_commit = threading.Event()
+    delete_finished = threading.Event()
+    order: list[str] = []
+
+    def record(value: str) -> None:
+        order.append(value)
+
+    def delete_application() -> None:
+        with delete_factory() as session:
+            application = session.get(Application, app.id)
+            assert application is not None
+            application.deleted_at = datetime.now(timezone.utc)
+            delete_ready.set()
+            assert allow_delete_commit.wait(5)
+            session.commit()
+            record("delete_commit")
+            delete_finished.set()
+
+    class CoordinatedSession(Session):
+        def commit(self) -> None:  # type: ignore[override]
+            if self.info.get("material_proposal_write"):
+                allow_delete_commit.set()
+                delete_finished.wait(1)
+                record("proposal_commit")
+            super().commit()
+
+    coordinated_factory = sessionmaker(
+        bind=base_factory.kw["bind"],
+        class_=CoordinatedSession,
+        expire_on_commit=False,
+    )
+    repository = MaterialRevisionProposalsRepository(coordinated_factory)
+    original_visible = material_revision_proposals_module._visible_application
+    visible_calls = 0
+    delete_thread: threading.Thread | None = None
+
+    def visible_application(session: Session, application_id: int):
+        nonlocal delete_thread, visible_calls
+        result = original_visible(session, application_id)
+        visible_calls += 1
+        if visible_calls == 2:
+            session.info["material_proposal_write"] = True
+            delete_thread = threading.Thread(target=delete_application)
+            delete_thread.start()
+            assert delete_ready.wait(5)
+        return result
+
+    monkeypatch.setattr(
+        material_revision_proposals_module,
+        "_visible_application",
+        visible_application,
+    )
+
+    proposal = repository.create_generated(
+        app.id,
+        "",
+        ["I led the migration."],
+        ProposalModel(),
+    )
+    assert delete_thread is not None
+    delete_thread.join(timeout=5)
+    assert not delete_thread.is_alive()
+    assert order == ["proposal_commit", "delete_commit"]
+    assert proposal.status == "draft"
 
 
 def test_repository_accepts_empty_selection_only_as_validation_error_and_replays_accept(tmp_path) -> None:
