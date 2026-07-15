@@ -24,9 +24,9 @@ from offerpilot.knowledge.extractor import (
 
 
 def test_extractor_version_distinct_from_ki02():
-    # Spec §7.2：extractor 升级创建新 Snapshot。KI-04 升级到 md-ki04-* 以区分新增
-    # image Asset Evidence。
-    assert EXTRACTOR_VERSION in {"md-ki03-1", "md-ki04-1"}
+    # Spec §7.2：extractor 升级创建新 Snapshot。KBR-02 升级到 md-kbr02-* 以区分
+    # frontmatter Evidence 排除与最小 provenance 提取带来的规则变化。
+    assert EXTRACTOR_VERSION in {"md-ki03-1", "md-ki04-1", "md-kbr02-1"}
 
 
 # ---------------------------------------------------------------------------

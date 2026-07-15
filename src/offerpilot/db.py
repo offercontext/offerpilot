@@ -134,6 +134,24 @@ def init_database(db_path: Path) -> SessionFactory:
             "0007_knowledge_brief_attempt_ki10",
             "Add fallback/actual provider and retry fields for KI-10",
         )
+    # KBR-02：frontmatter 白名单 provenance 沿 Source 所有权（author/published_at），
+    # metadata extraction version 沿 Snapshot 所有权。加列兼容旧库。
+    knowledge_provenance_migrations = [
+        _ensure_column(engine, "knowledge_sources", "author", "TEXT DEFAULT ''"),
+        _ensure_column(engine, "knowledge_sources", "published_at", "DATETIME"),
+        _ensure_column(
+            engine,
+            "knowledge_extraction_snapshots",
+            "metadata_extraction_version",
+            "TEXT DEFAULT ''",
+        ),
+    ]
+    if any(knowledge_provenance_migrations):
+        _record_migration(
+            engine,
+            "0009_knowledge_provenance_kbr02",
+            "Add Source author/published_at and Snapshot metadata_extraction_version for KBR-02",
+        )
     _recover_knowledge_runtime(engine, db_path.parent)
     _record_migration(engine, "0001_base_schema", "Create current application tables")
 

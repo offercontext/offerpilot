@@ -40,8 +40,10 @@ from offerpilot.knowledge.encoding import (
 )
 from offerpilot.knowledge.extractor import (
     EXTRACTOR_VERSION,
+    METADATA_EXTRACTION_VERSION,
     MarkdownExtraction,
     MarkdownExtractor,
+    ProvenanceDraft,
     compute_bundle_source_hash,
     compute_source_hash,
 )
@@ -100,6 +102,8 @@ __all__ = [
     "KnowledgeRepository",
     "MarkdownExtraction",
     "MarkdownExtractor",
+    "METADATA_EXTRACTION_VERSION",
+    "ProvenanceDraft",
     "SupportDecision",
     "SourceAssetRecord",
     "SourceBriefRecord",

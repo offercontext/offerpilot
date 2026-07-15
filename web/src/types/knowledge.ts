@@ -16,6 +16,7 @@ export interface KnowledgeEvidence {
   asset_id: number | null;
   previous_evidence_id: string | null;
   next_evidence_id: string | null;
+  source_provenance?: KnowledgeSourceProvenance;
 }
 
 export interface KnowledgeEvidencePage {
@@ -40,12 +41,23 @@ export interface KnowledgeSourceAssetsResponse {
   items: KnowledgeSourceAsset[];
 }
 
+export interface KnowledgeSourceProvenance {
+  title?: string;
+  author?: string;
+  url?: string;
+  published_at?: string;
+  captured_at: string;
+  metadata_extraction_version: string;
+}
+
 export interface KnowledgeSource {
   id: number;
   source_kind: string;
   title: string;
   display_title: string;
   title_hint: string;
+  author: string;
+  published_at: string | null;
   main_filename: string;
   main_media_type: string;
   total_bytes: number;
@@ -62,6 +74,7 @@ export interface KnowledgeSource {
   archived_at: string | null;
   created_at: string;
   updated_at: string;
+  provenance: KnowledgeSourceProvenance;
 }
 
 export interface KnowledgeJob {
@@ -117,6 +130,7 @@ export interface KnowledgeEvidenceSearchHit {
   score: number;
   previous_evidence_id: string | null;
   next_evidence_id: string | null;
+  source_provenance?: KnowledgeSourceProvenance;
 }
 
 export interface KnowledgeEvidenceSearchResponse {

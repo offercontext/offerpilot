@@ -145,14 +145,19 @@ def _json_datetime(value: Any) -> str | None:
     return str(iso)
 
 
-def _knowledge_source_payload(source: Any) -> dict[str, Any]:
+def _knowledge_source_payload(
+    source: Any,
+    provenance: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     title = source.display_title or source.title_hint or source.main_filename
-    return {
+    payload: dict[str, Any] = {
         "id": source.id,
         "source_kind": source.source_kind,
         "title": title,
         "display_title": source.display_title,
         "title_hint": source.title_hint,
+        "author": source.author,
+        "published_at": _json_datetime(source.published_at),
         "main_filename": source.main_filename,
         "main_media_type": source.main_media_type,
         "total_bytes": source.total_bytes,
@@ -170,10 +175,30 @@ def _knowledge_source_payload(source: Any) -> dict[str, Any]:
         "created_at": _json_datetime(source.created_at),
         "updated_at": _json_datetime(source.updated_at),
     }
+    # Spec KBR-02：provenance 只含非空字段，用于出处展示而非召回计权。空 dict
+    # （理论上不应发生，captured_at 总存在）时不制造占位。
+    if provenance is not None:
+        payload["provenance"] = _provenance_to_json(provenance)
+    return payload
 
 
-def _knowledge_evidence_payload(evidence: Any) -> dict[str, Any]:
-    return {
+def _provenance_to_json(provenance: dict[str, Any]) -> dict[str, Any]:
+    """序列化 provenance：datetime -> ISO 字符串，其他原样。"""
+
+    serialized: dict[str, Any] = {}
+    for key, value in provenance.items():
+        if isinstance(value, datetime):
+            serialized[key] = _json_datetime(value)
+        else:
+            serialized[key] = value
+    return serialized
+
+
+def _knowledge_evidence_payload(
+    evidence: Any,
+    source_provenance: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "id": evidence.id,
         "source_id": evidence.source_id,
         "snapshot_id": evidence.snapshot_id,
@@ -192,6 +217,9 @@ def _knowledge_evidence_payload(evidence: Any) -> dict[str, Any]:
         "previous_evidence_id": evidence.previous_evidence_id,
         "next_evidence_id": evidence.next_evidence_id,
     }
+    if source_provenance is not None:
+        payload["source_provenance"] = _provenance_to_json(source_provenance)
+    return payload
 
 
 def _knowledge_asset_payload(asset: Any) -> dict[str, Any]:
@@ -209,8 +237,11 @@ def _knowledge_asset_payload(asset: Any) -> dict[str, Any]:
     }
 
 
-def _knowledge_search_hit_payload(hit: Any) -> dict[str, Any]:
-    return {
+def _knowledge_search_hit_payload(
+    hit: Any,
+    source_provenance: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "evidence_id": hit.evidence_id,
         "source_id": hit.source_id,
         "snapshot_id": hit.snapshot_id,
@@ -226,6 +257,9 @@ def _knowledge_search_hit_payload(hit: Any) -> dict[str, Any]:
         "previous_evidence_id": hit.previous_evidence_id,
         "next_evidence_id": hit.next_evidence_id,
     }
+    if source_provenance is not None:
+        payload["source_provenance"] = _provenance_to_json(source_provenance)
+    return payload
 
 
 def _knowledge_job_payload(job: Any) -> dict[str, Any]:
@@ -472,7 +506,13 @@ def create_app(
         # 同时返回 archived 资料。``deleting`` lifecycle 始终排除——这是过渡态,正常
         # 用户路径不应看到。
         sources = knowledge_repository.list_sources(include_archived=include_archived)
-        return [_knowledge_source_payload(item) for item in sources]
+        provenance_map = knowledge_repository.get_source_provenance_map(
+            [item.id for item in sources]
+        )
+        return [
+            _knowledge_source_payload(item, provenance_map.get(item.id, {}))
+            for item in sources
+        ]
 
     @app.post(
         "/api/knowledge/sources",
@@ -584,7 +624,8 @@ def create_app(
         source = knowledge_repository.get_source(source_id)
         if source is None:
             return error_response(404, "Source not found")
-        return JSONResponse(_knowledge_source_payload(source))
+        provenance = knowledge_repository.get_source_provenance(source_id)
+        return JSONResponse(_knowledge_source_payload(source, provenance))
 
     @app.patch("/api/knowledge/sources/{source_id}")
     def patch_knowledge_source(
@@ -619,7 +660,8 @@ def create_app(
         updated = knowledge_repository.update_display_title(source_id, cleaned_title)
         if updated is None:
             return error_response(404, "Source not found")
-        return JSONResponse(_knowledge_source_payload(updated))
+        provenance = knowledge_repository.get_source_provenance(source_id)
+        return JSONResponse(_knowledge_source_payload(updated, provenance))
 
     @app.post("/api/knowledge/sources/{source_id}/archive")
     def archive_knowledge_source(source_id: int) -> JSONResponse:
@@ -628,7 +670,8 @@ def create_app(
         archived = knowledge_service.archive_source(source_id)
         if archived is None:
             return error_response(404, "Source not found")
-        return JSONResponse(_knowledge_source_payload(archived))
+        provenance = knowledge_repository.get_source_provenance(source_id)
+        return JSONResponse(_knowledge_source_payload(archived, provenance))
 
     @app.post("/api/knowledge/sources/{source_id}/unarchive")
     def unarchive_knowledge_source(source_id: int) -> JSONResponse:
@@ -637,7 +680,8 @@ def create_app(
         restored = knowledge_service.unarchive_source(source_id)
         if restored is None:
             return error_response(404, "Source not found")
-        return JSONResponse(_knowledge_source_payload(restored))
+        provenance = knowledge_repository.get_source_provenance(source_id)
+        return JSONResponse(_knowledge_source_payload(restored, provenance))
 
     @app.delete("/api/knowledge/sources/{source_id}")
     def delete_knowledge_source(source_id: int) -> JSONResponse:
@@ -754,9 +798,13 @@ def create_app(
             after_ordinal=after_ordinal or None,
             limit=clamped_limit,
         )
+        provenance = knowledge_repository.get_source_provenance(source_id)
         return JSONResponse(
             {
-                "items": [_knowledge_evidence_payload(item) for item in page.items],
+                "items": [
+                    _knowledge_evidence_payload(item, provenance)
+                    for item in page.items
+                ],
                 "next_cursor": page.next_cursor,
             }
         )
@@ -829,7 +877,8 @@ def create_app(
         evidence = knowledge_repository.get_evidence(evidence_id)
         if evidence is None:
             return error_response(404, "Evidence not found")
-        return JSONResponse(_knowledge_evidence_payload(evidence))
+        provenance = knowledge_repository.get_source_provenance(evidence.source_id)
+        return JSONResponse(_knowledge_evidence_payload(evidence, provenance))
 
     @app.post("/api/knowledge/evidence/search")
     def search_knowledge_evidence(payload: dict[str, Any] = Body(...)) -> JSONResponse:
@@ -878,10 +927,18 @@ def create_app(
         except _KnowledgeSearchError as exc:
             # Spec §15 "FTS MATCH、bm25 或查询语法错误显式返回稳定错误，不静默变成空结果"。
             return error_response(400, exc.message, code=exc.code)
+        provenance_map = knowledge_repository.get_source_provenance_map(
+            [hit.source_id for hit in hits]
+        )
         return JSONResponse(
             {
                 "query": query,
-                "hits": [_knowledge_search_hit_payload(hit) for hit in hits],
+                "hits": [
+                    _knowledge_search_hit_payload(
+                        hit, provenance_map.get(hit.source_id, {})
+                    )
+                    for hit in hits
+                ],
             }
         )
 

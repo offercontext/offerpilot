@@ -674,6 +674,13 @@ function SourceDetailContent({
         <SourceMetadataItem label="大小" value={formatBytes(source.total_bytes)} />
         <SourceMetadataItem label="展示标题" value={source.display_title || '使用推导标题'} />
         <SourceMetadataItem label="推导标题" value={source.title_hint || '无'} />
+        {source.author ? <SourceMetadataItem label="作者" value={source.author} /> : null}
+        {source.published_at ? (
+          <SourceMetadataItem label="发布时间" value={formatDateTime(source.published_at)} />
+        ) : null}
+        {source.provenance?.url ? (
+          <SourceMetadataItem label="来源 URL" value={source.provenance.url} />
+        ) : null}
         <SourceMetadataItem label="导入时间" value={formatDateTime(source.created_at)} />
         <SourceMetadataItem
           label="Evidence"

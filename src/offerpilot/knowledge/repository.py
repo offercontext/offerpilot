@@ -46,6 +46,20 @@ _LOGGER = logging.getLogger(__name__)
 BRIEF_LEASE_REQUEUE_MAX = 3
 
 
+def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
+    """SQLite DateTime 不保留 tz；provenance 时间字段统一视为 UTC 读出。
+
+    写入时是 tz-aware UTC，读回 naive 时补回 ``timezone.utc``，避免 Source 详情
+    与 extractor 返回的 provenance 在 tz 语义上漂移。
+    """
+
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
 class KnowledgeBriefAttemptError(Exception):
     """Spec §10.3 Brief Attempt 创建/提交时拒绝的稳定错误。"""
 
@@ -62,6 +76,8 @@ class SourceRecord:
     source_kind: str
     display_title: str
     title_hint: str
+    author: str
+    published_at: Optional[datetime]
     main_filename: str
     main_media_type: str
     main_relative_path: str
@@ -106,6 +122,7 @@ class SourceSnapshotRecord:
     digest: str
     canonical_text: str
     structure_manifest: str
+    metadata_extraction_version: str
     token_count: int
     char_count: int
     created_at: datetime
@@ -381,6 +398,15 @@ class SnapshotCreateInput:
     digest: str
     token_count: int
     char_count: int
+    # KBR-02：Snapshot 沿自身所有权记录元数据提取版本。
+    metadata_extraction_version: str = ""
+    # KBR-02：frontmatter 白名单 provenance 沿 Source 所有权写入；Worker 从
+    # Extraction 透传，commit 时更新 Source 行。display_title 为空时用 frontmatter
+    # title 填充（使其进入 FTS source_title 可定位），origin_url 为空时用 frontmatter url。
+    provenance_title: str = ""
+    provenance_author: str = ""
+    provenance_url: str = ""
+    provenance_published_at: Optional[datetime] = None
 
 
 @dataclass
@@ -428,6 +454,8 @@ def _to_source_record(row: KnowledgeSource) -> SourceRecord:
         source_kind=row.source_kind,
         display_title=row.display_title,
         title_hint=row.title_hint,
+        author=row.author,
+        published_at=_as_utc(row.published_at),
         main_filename=row.main_filename,
         main_media_type=row.main_media_type,
         main_relative_path=row.main_relative_path,
@@ -474,10 +502,50 @@ def _to_snapshot_record(row: KnowledgeExtractionSnapshot) -> SourceSnapshotRecor
         digest=row.digest,
         canonical_text=row.canonical_text,
         structure_manifest=row.structure_manifest,
+        metadata_extraction_version=row.metadata_extraction_version,
         token_count=row.token_count,
         char_count=row.char_count,
         created_at=row.created_at,
     )
+
+
+def _build_source_provenance(session: Session, source_id: int) -> dict[str, Any]:
+    """从 Source / 首条 Origin / active Snapshot 组装非空 provenance 字段。
+
+    空字段不进入字典（Spec：空字段不制造占位噪声）。``captured_at`` 与
+    ``metadata_extraction_version`` 对正常 extracted Source 总存在。
+    """
+
+    source = session.get(KnowledgeSource, source_id)
+    if source is None:
+        return {}
+    provenance: dict[str, Any] = {}
+    if source.display_title:
+        provenance["title"] = source.display_title
+    if source.author:
+        provenance["author"] = source.author
+    origin_row = (
+        session.execute(
+            select(KnowledgeSourceOrigin)
+            .where(KnowledgeSourceOrigin.source_id == source_id)
+            .order_by(KnowledgeSourceOrigin.id.asc())
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
+    if origin_row is not None and origin_row.origin_url:
+        provenance["url"] = origin_row.origin_url
+    if source.published_at is not None:
+        provenance["published_at"] = _as_utc(source.published_at)
+    provenance["captured_at"] = _as_utc(source.created_at)
+    if source.active_snapshot_id:
+        snapshot = session.get(KnowledgeExtractionSnapshot, source.active_snapshot_id)
+        if snapshot is not None and snapshot.metadata_extraction_version:
+            provenance["metadata_extraction_version"] = (
+                snapshot.metadata_extraction_version
+            )
+    return provenance
 
 
 def _to_asset_record(row: KnowledgeSourceAsset) -> SourceAssetRecord:
@@ -1033,6 +1101,33 @@ class KnowledgeRepository:
                 .order_by(KnowledgeSourceOrigin.imported_at.desc(), KnowledgeSourceOrigin.id.desc())
             )
             return [_to_origin_record(row) for row in session.scalars(stmt)]
+
+    def get_source_provenance(self, source_id: int) -> dict[str, Any]:
+        """Spec KBR-02：组装 Source 的最小 provenance（只含非空字段）。
+
+        沿 Source / Source Origin / Snapshot 现有所有权边界：标题用 display_title
+        （frontmatter title 填充或用户 PATCH），URL 用首条 Origin.origin_url，作者/
+        发布时间用 Source 列，系统捕获时间用 Source.created_at，元数据提取版本用
+        active Snapshot。空字段不进入字典，避免占位噪声。provenance 不参与 Evidence
+        FTS 召回计权，仅用于出处展示。
+        """
+
+        with self._session_factory() as session:
+            return _build_source_provenance(session, source_id)
+
+    def get_source_provenance_map(
+        self, source_ids: Sequence[int]
+    ) -> dict[int, dict[str, Any]]:
+        """批量组装多个 Source 的 provenance，供 Evidence 搜索结果出处展示。"""
+
+        unique_ids = [sid for sid in dict.fromkeys(source_ids) if sid]
+        if not unique_ids:
+            return {}
+        result: dict[int, dict[str, Any]] = {}
+        with self._session_factory() as session:
+            for sid in unique_ids:
+                result[sid] = _build_source_provenance(session, sid)
+        return result
 
     # Asset
 
@@ -2878,6 +2973,7 @@ def commit_extraction(
         detection_method=snapshot_input.detection_method,
         canonical_text=snapshot_input.canonical_text,
         structure_manifest=snapshot_input.structure_manifest,
+        metadata_extraction_version=snapshot_input.metadata_extraction_version,
         digest=snapshot_input.digest,
         token_count=snapshot_input.token_count,
         char_count=snapshot_input.char_count,
@@ -2994,6 +3090,30 @@ def commit_extraction(
         source_row.extraction_status = "extracted"
         source_row.extraction_error_code = ""
         source_row.extraction_error_message = ""
+        # KBR-02：frontmatter 白名单 provenance 沿 Source 所有权写入。display_title
+        # 为空时用 frontmatter title 填充（使其进入 FTS source_title 可定位，且不覆盖
+        # 用户已 PATCH 的标题）；author/published_at 是确定性提取的派生 provenance。
+        if not source_row.display_title and snapshot_input.provenance_title:
+            source_row.display_title = snapshot_input.provenance_title
+        if snapshot_input.provenance_author:
+            source_row.author = snapshot_input.provenance_author
+        if snapshot_input.provenance_published_at is not None:
+            source_row.published_at = snapshot_input.provenance_published_at
+        # frontmatter url 沿 Origin 所有权补全：首条 Origin 若无 origin_url 则填入，
+        # 不覆盖 paste 场景已提供的 url。
+        if snapshot_input.provenance_url:
+            origin_row = (
+                session.execute(
+                    select(KnowledgeSourceOrigin)
+                    .where(KnowledgeSourceOrigin.source_id == source_id)
+                    .order_by(KnowledgeSourceOrigin.id.asc())
+                    .limit(1)
+                )
+                .scalars()
+                .first()
+            )
+            if origin_row is not None and not origin_row.origin_url:
+                origin_row.origin_url = snapshot_input.provenance_url
         _mark_brief_outdated_for_snapshot(session, source_row, snapshot_row.id)
         _mark_brief_enqueue_pending_for_snapshot(
             session, source_row, snapshot_row.id

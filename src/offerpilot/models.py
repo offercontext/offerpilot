@@ -514,6 +514,13 @@ class KnowledgeSource(Base):
     )
     display_title: Mapped[str] = mapped_column(String, default="", server_default="")
     title_hint: Mapped[str] = mapped_column(String, default="", server_default="")
+    # KBR-02：frontmatter 白名单 provenance 沿 Source 所有权持久化的文档来源字段。
+    # display_title 承载 frontmatter title（可被用户 PATCH 覆盖）；author/published_at
+    # 是从原文确定性提取的派生 provenance，非任意 metadata。
+    author: Mapped[str] = mapped_column(String, default="", server_default="")
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     main_filename: Mapped[str] = mapped_column(String, nullable=False)
     main_media_type: Mapped[str] = mapped_column(
         String,
@@ -638,6 +645,11 @@ class KnowledgeExtractionSnapshot(Base):
     canonical_text: Mapped[str] = mapped_column(Text, nullable=False)
     structure_manifest: Mapped[str] = mapped_column(
         Text, default="{}", server_default="{}"
+    )
+    # KBR-02：Snapshot 记录元数据提取版本，确定性重建可复现。空串表示旧 Snapshot
+    # （由 _ensure_column 加列回填）。
+    metadata_extraction_version: Mapped[str] = mapped_column(
+        String, default="", server_default=""
     )
     digest: Mapped[str] = mapped_column(String, nullable=False)
     token_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")

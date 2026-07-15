@@ -17,7 +17,9 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Iterable, Optional
+from urllib.parse import urlsplit
 
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
@@ -30,12 +32,15 @@ from offerpilot.knowledge.tokenizer import (
 )
 
 
-# Spec §7.2：(source_id, extractor_version) 唯一。KI-04 升级 extractor 版本以区分
-# KI-03 的纯文本输出。新增 image Asset Evidence 后，相同 Source 会得到与 KI-03 不同的
-# Snapshot digest 和 Evidence ID。
-EXTRACTOR_VERSION = "md-ki04-1"
+# Spec §7.2：(source_id, extractor_version) 唯一。KBR-02 升级 extractor 版本：frontmatter
+# 不再生成 Evidence、新增最小 provenance 提取，Evidence 规则变化视为 Extraction 版本变化。
+# 旧 Snapshot（md-ki04-1）与新版本不混用；测试期切换由 KBR-07 破坏性 reset 收尾。
+EXTRACTOR_VERSION = "md-kbr02-1"
 PARSER_VERSION = "markdown-it-py-3"
 NORMALIZATION_VERSION = "nl-1"
+# Spec Implementation Decisions：最小 provenance 含“元数据提取版本”，确定性规则带版本号，
+# 同一规则可以确定性重建 Snapshot。
+METADATA_EXTRACTION_VERSION = "provenance-1"
 
 # Spec §4.2 主 Markdown/Text 5 MiB；普通文本 Evidence ≤ 2000 Unicode chars，
 # 超长时按句子边界拆分；fenced code / table cell 允许到 8000 chars，超过按行边界拆分。
@@ -119,6 +124,24 @@ class EvidenceDraft:
 
 
 @dataclass(frozen=True)
+class ProvenanceDraft:
+    """从文档头部 frontmatter 白名单提取的最小 provenance（Spec Implementation Decisions）。
+
+    只含 6 项 provenance 中的 4 个文档来源字段；系统捕获时间和元数据提取版本由
+    Worker/Repository 沿 Source/Snapshot 所有权写入。空字符串/None 表示未命中或被
+    安全忽略。``fields_hit`` 记录成功命中的白名单字段名，供 Snapshot 摘要记录。
+    ``warnings`` 记录被忽略字段的稳定安全警告，不包含字段原值。
+    """
+
+    title: str = ""
+    author: str = ""
+    url: str = ""
+    published_at: Optional[datetime] = None
+    fields_hit: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class MarkdownExtraction:
     """Extractor 输出：canonical_text + digest + Evidence 草稿列表 + 元数据。"""
 
@@ -132,6 +155,7 @@ class MarkdownExtraction:
     control_char_count: int
     tokenizer_version: str
     structure_manifest: str
+    provenance: ProvenanceDraft = field(default_factory=ProvenanceDraft)
 
 
 class ExtractionError(Exception):
@@ -157,6 +181,180 @@ def _normalize_text(raw: str) -> tuple[str, int]:
     normalized = _MULTI_NEWLINE_RE.sub("\n\n", normalized)
     control_count = len(_CONTROL_CHAR_RE.findall(normalized))
     return normalized, control_count
+
+
+# Spec Implementation Decisions：frontmatter 边界只认文档开头成对的 ``---``。
+# 单个白名单字段格式非法只忽略该字段并记录安全警告（不含原值）；未闭合边界按普通
+# Markdown 保守处理，不静默吞后续正文。
+_FRONTMATTER_DELIMITER = "---"
+
+# provenance 白名单字段别名。tags 与未知字段不进入领域模型。
+_PROVENANCE_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("title", ("title",)),
+    ("author", ("author", "authors")),
+    ("url", ("url", "source_url", "source", "link")),
+    (
+        "published_time",
+        ("date", "published", "published_at", "published_time", "publish_date"),
+    ),
+)
+
+
+@dataclass(frozen=True)
+class _FrontmatterBoundary:
+    """frontmatter 边界识别结果。
+
+    ``body_text`` 含两个边界行原文（供白名单解析，不进 Evidence）；``end_line_exclusive``
+    是闭合边界下一行号，token.map[0] 小于该值表示落在 frontmatter 内，应跳过 Evidence 发射。
+    """
+
+    body_text: str
+    end_line_exclusive: int
+
+
+def _detect_frontmatter(
+    canonical: str, offsets: list[int]
+) -> Optional[_FrontmatterBoundary]:
+    """Spec：文档开头存在成对 ``---`` 边界时识别为 frontmatter。
+
+    第一行 ``rstrip`` 后必须严格等于 ``---``（容忍尾部空白，不允许前导空白，符合
+    YAML 约定）；从第二行起第一个整行 ``---`` 作为闭合边界。无闭合返回 None。
+    """
+
+    lines = canonical.split("\n")
+    if not lines or lines[0].rstrip() != _FRONTMATTER_DELIMITER:
+        return None
+    close_line = -1
+    for index in range(1, len(lines)):
+        if lines[index].rstrip() == _FRONTMATTER_DELIMITER:
+            close_line = index
+            break
+    if close_line == -1:
+        return None
+    end_line_exclusive = close_line + 1
+    body_end_char = (
+        offsets[end_line_exclusive]
+        if end_line_exclusive < len(offsets)
+        else len(canonical)
+    )
+    return _FrontmatterBoundary(
+        body_text=canonical[:body_end_char],
+        end_line_exclusive=end_line_exclusive,
+    )
+
+
+def _strip_yaml_value(value: str) -> str:
+    text = value.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in ("'", '"'):
+        text = text[1:-1].strip()
+    return text
+
+
+def _clean_scalar(value: str, *, limit: int) -> str:
+    text = _strip_yaml_value(value)
+    if not text:
+        return ""
+    return text[:limit]
+
+
+def _clean_author(value: str) -> str:
+    """author 字段：YAML list 形式 ``[a, b]`` 取首个元素，否则按标量清理。"""
+
+    text = _strip_yaml_value(value)
+    if not text:
+        return ""
+    if text.startswith("[") and text.endswith("]"):
+        inner = text[1:-1]
+        parts = [part.strip().strip("'\"") for part in inner.split(",")]
+        text = parts[0] if parts and parts[0] else ""
+    if not text:
+        return ""
+    return text[:200]
+
+
+def _clean_url(value: str) -> tuple[str, str]:
+    """url 字段：必须 http/https + 非空 host。非法返回 ("", 安全警告)。"""
+
+    text = _strip_yaml_value(value)
+    if not text:
+        return "", ""
+    try:
+        parts = urlsplit(text)
+    except ValueError:
+        return "", "published url 格式非法，已忽略该字段"
+    if parts.scheme not in {"http", "https"} or not parts.hostname:
+        return "", "published url 非 http/https 或缺少域名，已忽略该字段"
+    return text, ""
+
+
+def _parse_published_time(value: str) -> tuple[Optional[datetime], str]:
+    """published_time 字段：ISO 8601 / YYYY-MM-DD。非法返回 (None, 安全警告)。"""
+
+    text = _strip_yaml_value(value)
+    if not text:
+        return None, ""
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None, "published_time 格式非法，已忽略该字段"
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed, ""
+
+
+def _parse_provenance(body_text: str) -> ProvenanceDraft:
+    """从 frontmatter body 解析白名单 provenance 字段。
+
+    逐行 ``key: value``（partition 第一冒号）；tags 等未知字段忽略。单字段非法只
+    忽略该字段并记录安全警告，不影响其他字段与 Extraction 成功。
+    """
+
+    raw_values: dict[str, str] = {}
+    for line in body_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped == _FRONTMATTER_DELIMITER:
+            continue
+        if stripped.startswith("#") or ":" not in stripped:
+            continue
+        key, _, value = stripped.partition(":")
+        key = key.strip().lower()
+        if not key:
+            continue
+        for field_name, aliases in _PROVENANCE_ALIASES:
+            if key in aliases and field_name not in raw_values:
+                raw_values[field_name] = value
+                break
+
+    title = _clean_scalar(raw_values.get("title", ""), limit=200)
+    author = _clean_author(raw_values.get("author", ""))
+    url_value, url_warning = _clean_url(raw_values.get("url", ""))
+    published_at, published_warning = _parse_published_time(
+        raw_values.get("published_time", "")
+    )
+
+    fields_hit: list[str] = []
+    warnings: list[str] = []
+    if title:
+        fields_hit.append("title")
+    if author:
+        fields_hit.append("author")
+    if url_value:
+        fields_hit.append("url")
+    elif "url" in raw_values and url_warning:
+        warnings.append(url_warning)
+    if published_at is not None:
+        fields_hit.append("published_time")
+    elif "published_time" in raw_values and published_warning:
+        warnings.append(published_warning)
+
+    return ProvenanceDraft(
+        title=title,
+        author=author,
+        url=url_value,
+        published_at=published_at,
+        fields_hit=tuple(fields_hit),
+        warnings=tuple(warnings),
+    )
 
 
 def _heading_depth(token: Token) -> int:
@@ -252,8 +450,29 @@ class MarkdownExtractor:
         offsets = _line_offset_table(canonical)
         navigator = _StructureNavigator()
         drafts: list[EvidenceDraft] = []
+        # Spec KBR-02：确定性识别文档头部 frontmatter 边界。canonical text 不改写，
+        # frontmatter 原文保留用于回读；只跳过落在 frontmatter 行范围内的 token 的
+        # Evidence 发射，避免 frontmatter 键值污染 heading_path / search_text / FTS。
+        frontmatter = _detect_frontmatter(canonical, offsets)
+        fm_end_line_exclusive = (
+            frontmatter.end_line_exclusive if frontmatter is not None else 0
+        )
+        provenance = (
+            _parse_provenance(frontmatter.body_text)
+            if frontmatter is not None
+            else ProvenanceDraft()
+        )
         index = 0
         while index < len(tokens):
+            token = tokens[index]
+            if (
+                fm_end_line_exclusive > 0
+                and token.map is not None
+                and token.map[0] < fm_end_line_exclusive
+            ):
+                # frontmatter 块内 token 不发射 Evidence、不更新 navigator。
+                index += 1
+                continue
             advanced = self._emit_block(
                 tokens=tokens,
                 index=index,
@@ -288,6 +507,9 @@ class MarkdownExtractor:
                 "block_kinds": _count_block_kinds(drafts),
                 "control_char_count": control_char_count,
                 "headings": navigator.top_headings(),
+                "metadata_extraction_version": METADATA_EXTRACTION_VERSION,
+                "provenance_fields": list(provenance.fields_hit),
+                "frontmatter_detected": frontmatter is not None,
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -304,6 +526,7 @@ class MarkdownExtractor:
             control_char_count=control_char_count,
             tokenizer_version=token_count_value.tokenizer_version,
             structure_manifest=structure_summary,
+            provenance=provenance,
         )
 
     def _emit_block(

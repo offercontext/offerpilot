@@ -71,21 +71,21 @@ Provider 行为或产品 Schema；不得在本 Ticket 实现元数据过滤、co
 **Scope boundaries:** 本 Ticket 只处理明确边界的文档头部 frontmatter 和最小 provenance。作者卡、
 阅读数、导航、Evernote/Obsidian 样板由 KBR-03 处理；不得引入任意 metadata 字典或 tags 产品能力。
 
-- [ ] provenance 契约只包含 Source 标题、Source URL、作者、发布时间、系统捕获时间和元数据提取版本。
-- [ ] provenance 沿用 Source 与 Source Origin 的现有所有权边界，不建立无约束 metadata JSON。
-- [ ] 文档开头存在成对 frontmatter 边界时，整个 frontmatter 块不生成 Evidence。
-- [ ] title、author、source URL 和 published time 采用明确白名单解析；tags 和未知字段不进入领域模型。
-- [ ] 单个白名单字段格式非法时只忽略该字段并记录安全警告，Source Extraction 仍成功。
-- [ ] 只有起始边界而没有闭合边界时，内容按普通 Markdown 保守处理，不静默吞掉后续正文。
-- [ ] 正文中的 `key: value`、YAML 示例和代码块保持为可检索 Evidence。
-- [ ] canonical Source、原始文件和 Source hash 不因 provenance 提取而改变。
-- [ ] 保留 Evidence 的 line/char offsets 能从完整 canonical Source 精确回读。
-- [ ] frontmatter 内容不进入 Evidence FTS，普通 Evidence 搜索不能召回 tags 或作者字段。
-- [ ] Source 标题仍可通过现有资料定位能力找到，但 provenance 不参与正文事实支持。
-- [ ] Source 详情 API 和前端显示已有的非空 provenance 字段，空字段不制造占位噪声。
-- [ ] Evidence 搜索/详情响应可以附带所属 Source 的 provenance，用于出处展示而不是召回计权。
-- [ ] Snapshot 记录 metadata extraction version；相同输入和版本重跑结果稳定。
-- [ ] 单元、Repository/API、前端和最高层集成测试覆盖成功、非法字段、未闭合边界和正文反例。
+- [x] provenance 契约只包含 Source 标题、Source URL、作者、发布时间、系统捕获时间和元数据提取版本。
+- [x] provenance 沿用 Source 与 Source Origin 的现有所有权边界，不建立无约束 metadata JSON。
+- [x] 文档开头存在成对 frontmatter 边界时，整个 frontmatter 块不生成 Evidence。
+- [x] title、author、source URL 和 published time 采用明确白名单解析；tags 和未知字段不进入领域模型。
+- [x] 单个白名单字段格式非法时只忽略该字段并记录安全警告，Source Extraction 仍成功。
+- [x] 只有起始边界而没有闭合边界时，内容按普通 Markdown 保守处理，不静默吞掉后续正文。
+- [x] 正文中的 `key: value`、YAML 示例和代码块保持为可检索 Evidence。
+- [x] canonical Source、原始文件和 Source hash 不因 provenance 提取而改变。
+- [x] 保留 Evidence 的 line/char offsets 能从完整 canonical Source 精确回读。
+- [x] frontmatter 内容不进入 Evidence FTS，普通 Evidence 搜索不能召回 tags 或作者字段。
+- [x] Source 标题仍可通过现有资料定位能力找到，但 provenance 不参与正文事实支持。
+- [x] Source 详情 API 和前端显示已有的非空 provenance 字段，空字段不制造占位噪声。
+- [x] Evidence 搜索/详情响应可以附带所属 Source 的 provenance，用于出处展示而不是召回计权。
+- [x] Snapshot 记录 metadata extraction version；相同输入和版本重跑结果稳定。
+- [x] 单元、Repository/API、前端和最高层集成测试覆盖成功、非法字段、未闭合边界和正文反例。
 
 ## KBR-03：过滤已知元数据样板并记录规则统计
 

@@ -65,6 +65,7 @@ from offerpilot.knowledge.brief import (
 from offerpilot.knowledge.encoding import DecodedContent, decode_source_bytes
 from offerpilot.knowledge.extractor import (
     EXTRACTOR_VERSION,
+    METADATA_EXTRACTION_VERSION,
     NORMALIZATION_VERSION,
     PARSER_VERSION,
     MarkdownExtractor,
@@ -773,7 +774,20 @@ class ExtractionWorker:
             digest=extraction.digest,
             token_count=token_count_value,
             char_count=extraction.char_count,
+            metadata_extraction_version=METADATA_EXTRACTION_VERSION,
+            provenance_title=extraction.provenance.title,
+            provenance_author=extraction.provenance.author,
+            provenance_url=extraction.provenance.url,
+            provenance_published_at=extraction.provenance.published_at,
         )
+        # Spec KBR-02：单字段非法只忽略+安全警告。warnings 只含字段名与原因，不含
+        # Source 正文，符合隐私边界（普通日志不打印 Source/Evidence 正文）。
+        if extraction.provenance.warnings:
+            _LOGGER.warning(
+                "knowledge source %s provenance fields ignored: %s",
+                source.id,
+                "; ".join(extraction.provenance.warnings),
+            )
         title_for_search = source.display_title or source.title_hint or source.main_filename
         try:
             asset_inputs = self._asset_inputs_for_source(source)
