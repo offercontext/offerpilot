@@ -7,11 +7,12 @@ from sqlalchemy import select
 
 from offerpilot.ai.types import Assistant
 from offerpilot.db import init_database
-from offerpilot.models import ApplicationEvent, ApplicationMaterialKit, Resume
+from offerpilot.models import ApplicationEvent, ApplicationMaterialKit, MaterialRevisionProposal, Resume
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
 from offerpilot.repositories.material_kits import MaterialKitCreate, MaterialKitsRepository
 from offerpilot.repositories.material_revision_proposals import (
     MaterialProposalConflictError,
+    MaterialProposalNotFound,
     MaterialProposalValidationError,
     MaterialRevisionProposalsRepository,
 )
@@ -167,6 +168,22 @@ def test_repository_closes_snapshot_session_before_model_generation(tmp_path) ->
 
     assert proposal.status == "draft"
     assert tracked_factory.open_sessions == 0
+
+
+def test_repository_does_not_create_draft_when_application_is_deleted_during_generation(tmp_path) -> None:
+    session_factory, app, _resume, _kit = _ready(tmp_path)
+    repository = MaterialRevisionProposalsRepository(session_factory)
+
+    class DeletesApplicationModel(ProposalModel):
+        def complete(self, messages, tools):  # type: ignore[no-untyped-def]
+            ApplicationsRepository(session_factory).delete(app.id)
+            return super().complete(messages, tools)
+
+    with pytest.raises(MaterialProposalNotFound):
+        repository.create_generated(app.id, "", ["I led the migration."], DeletesApplicationModel())
+
+    with session_factory() as session:
+        assert list(session.scalars(select(MaterialRevisionProposal))) == []
 
 
 def test_repository_accepts_empty_selection_only_as_validation_error_and_replays_accept(tmp_path) -> None:

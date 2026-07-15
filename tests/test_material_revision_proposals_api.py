@@ -3,9 +3,13 @@ from __future__ import annotations
 import json
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from offerpilot.ai.types import Assistant
 from offerpilot.api import create_app
+from offerpilot.db import session_factory_for_data_dir
+from offerpilot.models import MaterialRevisionProposal
+from offerpilot.repositories.applications import ApplicationsRepository
 
 
 class ProposalModel:
@@ -131,3 +135,75 @@ def test_api_validates_assertions_and_empty_accept_selection(tmp_path) -> None:
         },
     )
     assert empty.status_code == 422
+
+
+def test_api_rejects_non_finite_strict_model_output_without_creating_draft(tmp_path) -> None:
+    class NonFiniteModel(ProposalModel):
+        def __init__(self) -> None:
+            self.non_finite = False
+
+        def complete(self, messages, tools):  # type: ignore[no-untyped-def]
+            if self.non_finite:
+                return Assistant(content='{"summary":"x","changes":[],"ignored":NaN}')
+            return super().complete(messages, tools)
+
+    model = NonFiniteModel()
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    app = client.post(
+        "/api/applications", json={"company_name": "Acme", "position_name": "Backend"}
+    ).json()
+    resume = client.post(
+        "/api/resumes",
+        json={"title": "Backend", "text": "Built APIs", "content_json": {"raw_text": "Built APIs"}},
+    ).json()
+    kit = client.post(
+        f"/api/applications/{app['id']}/material-kit/generate",
+        json={"resume_id": resume["id"], "jd_text": "FastAPI backend"},
+    )
+    assert kit.status_code == 201
+    model.non_finite = True
+
+    response = client.post(
+        f"/api/applications/{app['id']}/material-revision-proposals",
+        json={"instructions": "", "user_assertions": []},
+    )
+
+    assert response.status_code == 502
+    with session_factory_for_data_dir(tmp_path)() as session:
+        assert list(session.scalars(select(MaterialRevisionProposal))) == []
+
+
+def test_api_returns_404_when_application_is_deleted_during_generation(tmp_path) -> None:
+    class DeletesApplicationModel(ProposalModel):
+        def __init__(self) -> None:
+            self.application_id: int | None = None
+
+        def complete(self, messages, tools):  # type: ignore[no-untyped-def]
+            assert self.application_id is not None
+            ApplicationsRepository(session_factory_for_data_dir(tmp_path)).delete(self.application_id)
+            return super().complete(messages, tools)
+
+    model = DeletesApplicationModel()
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    app = client.post(
+        "/api/applications", json={"company_name": "Acme", "position_name": "Backend"}
+    ).json()
+    model.application_id = int(app["id"])
+    resume = client.post(
+        "/api/resumes",
+        json={"title": "Backend", "text": "Built APIs", "content_json": {"raw_text": "Built APIs"}},
+    ).json()
+    kit = client.post(
+        f"/api/applications/{app['id']}/material-kit/generate",
+        json={"resume_id": resume["id"], "jd_text": "FastAPI backend"},
+    )
+    assert kit.status_code == 201
+
+    response = client.post(
+        f"/api/applications/{app['id']}/material-revision-proposals",
+        json={"instructions": "", "user_assertions": []},
+    )
+
+    assert response.status_code == 404
+    with session_factory_for_data_dir(tmp_path)() as session:
+        assert list(session.scalars(select(MaterialRevisionProposal))) == []

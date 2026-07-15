@@ -60,6 +60,8 @@ class MaterialRevisionProposalsRepository:
         validated = generate_material_proposal(model, snapshot, instructions)
         proposal_json = canonical_json(validated.proposal)
         with self._session_factory() as session:
+            if _visible_application(session, application_id) is None:
+                raise MaterialProposalNotFound()
             proposal = MaterialRevisionProposal(
                 application_id=application_id,
                 material_kit_id=int(snapshot["material_kit"]["id"]),
