@@ -289,44 +289,63 @@ def _collect_outcome(
 # ---------------------------------------------------------------------------
 
 
-def build_supported_brief_json(evidence_items: list[EvidenceRecord]) -> str:
-    """根据真实 Evidence 列表构造合法 Brief Schema v1 JSON（全 covered + 合法 citation）。
+def _section_key_of(heading_path: list[str]) -> str:
+    path = tuple(heading_path or ())
+    if not path:
+        return "__document__"
+    return " / ".join(path)
 
-    供成功路径测试快速获得一个 generation 响应；validation 默认 supported。
+
+def build_supported_brief_json(evidence_items: list[EvidenceRecord]) -> str:
+    """根据真实 Evidence 列表构造合法 Brief Schema v2 JSON。
+
+    KBR-04：不再输出 coverage 字段；程序依据实际 citations 派生。为保证 coverage
+    门禁通过，每个文本章节至少有一条自身 Evidence 被 key_points 实际引用。
+    validation 默认 supported。
     """
     evidence_ids = [item.id for item in evidence_items]
     assert len(evidence_ids) >= 2, "至少需要 2 条 Evidence 构造合法 Brief"
     plan = build_section_coverage_plan(evidence_items)
-    first_key = next(iter(plan.sections.keys()))
-    first_section = plan.sections[first_key]
+    section_eids: dict[str, list[str]] = {}
+    for item in evidence_items:
+        section_eids.setdefault(_section_key_of(item.heading_path), []).append(item.id)
+    text_sections = [entry for entry in plan.sections.values() if not entry.must_skip]
+    # 每个文本章节选一条代表 Evidence，确保该章节被实际引用而 covered。
+    reps = [
+        section_eids[entry.section_key][0]
+        for entry in text_sections
+        if section_eids.get(entry.section_key)
+    ]
+    first = text_sections[0] if text_sections else plan.sections["__document__"]
+    first_eid = section_eids.get(first.section_key, [evidence_ids[0]])[0]
+    ov1 = reps[0] if reps else evidence_ids[0]
+    ov2 = (
+        reps[1]
+        if len(reps) > 1
+        else (evidence_ids[1] if len(evidence_ids) > 1 else ov1)
+    )
+    key_points = (
+        [{"statement": "该章节提供可引用 Evidence。", "evidence_ids": [rep]} for rep in reps]
+        or [{"statement": "要点引用 Evidence。", "evidence_ids": [evidence_ids[0]]}]
+    )
     payload: dict[str, Any] = {
         "schema_version": BRIEF_SCHEMA_VERSION,
         "language": BRIEF_LANGUAGE,
         "overview": [
-            {"statement": "Source 描述 OfferPilot 架构。", "evidence_ids": [evidence_ids[0]]},
-            {"statement": "Source 给出 SQLite SSOT 决策。", "evidence_ids": [evidence_ids[1]]},
+            {"statement": "Source 涉及 OfferPilot 架构。", "evidence_ids": [ov1]},
+            {"statement": "Source 给出引用依据。", "evidence_ids": [ov2]},
         ],
-        "key_points": [
-            {"statement": "Evidence 是引用单位。", "evidence_ids": [evidence_ids[0], evidence_ids[1]]},
-        ],
+        "key_points": key_points,
         "section_guides": [
             {
-                "section_key": first_section.section_key,
-                "heading_path": list(first_section.heading_path),
+                "section_key": first.section_key,
+                "heading_path": list(first.heading_path),
                 "summary": "该章节介绍 OfferPilot 整体方向。",
-                "evidence_ids": [evidence_ids[0]],
+                "evidence_ids": [first_eid],
             }
         ],
         "limitations": [
-            {"statement": "未涉及 Pilot 对话细节。", "evidence_ids": [evidence_ids[1]]},
-        ],
-        "coverage": [
-            {
-                "section_key": entry.section_key,
-                "status": "covered" if not entry.must_skip else "skipped",
-                "skipped_reason": entry.skipped_reason,
-            }
-            for entry in plan.sections.values()
+            {"statement": "未涉及 Pilot 对话细节。", "evidence_ids": [ov2]},
         ],
     }
     return json.dumps(payload, ensure_ascii=False)

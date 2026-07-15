@@ -1071,26 +1071,28 @@ function BriefPayloadView({
         items={payload.limitations}
         onCitationJump={onCitationJump}
       />
-      <div className="knowledge-brief-section">
-        <Title level={5} className="knowledge-brief-section-label">
-          章节覆盖
-        </Title>
-        <div className="knowledge-coverage-row">
-          {payload.coverage.map((item) => (
-            <span
-              key={item.section_key}
-              className={`knowledge-chip-coverage${
-                item.status === 'covered' ? ' is-covered' : ' is-skipped'
-              }`}
-            >
-              {item.section_key}
-              {item.status === 'skipped'
-                ? `（已跳过：${item.skipped_reason || '—'}）`
-                : ''}
-            </span>
-          ))}
+      {payload.coverage && payload.coverage.length > 0 ? (
+        <div className="knowledge-brief-section">
+          <Title level={5} className="knowledge-brief-section-label">
+            章节覆盖
+          </Title>
+          <div className="knowledge-coverage-row">
+            {payload.coverage.map((item) => (
+              <span
+                key={item.section_key}
+                className={`knowledge-chip-coverage${
+                  item.status === 'covered' ? ' is-covered' : ' is-skipped'
+                }`}
+              >
+                {item.section_key}
+                {item.status === 'skipped'
+                  ? `（已跳过：${item.skipped_reason || '—'}）`
+                  : ''}
+              </span>
+            ))}
+          </div>
         </div>
-      </div>
+      ) : null}
     </div>
   );
 }

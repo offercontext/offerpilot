@@ -1,14 +1,14 @@
 {
-  "comment": "章节遗漏故障样本。evidence_ids 使用 ev_:real:N 占位（验收工具替换为第 N 条真实 Evidence），section_key / heading_path 用 __SECTION_KEY_N__ / __HEADING_PATH_N__ 占位（验收工具替换为实际章节）。coverage 数组故意只声明第一个章节，其余实质章节缺失，使 Brief 被 brief_coverage_invalid 拒绝。",
+  "comment": "章节遗漏故障样本（KBR-04 v2）。evidence_ids 只引用第一条文本 Evidence（ev_:real:0），其他文本章节的 Evidence 未被任何 statement 实际引用；程序按实际 citation 派生 coverage 时这些章节判 missing，Brief 被 brief_coverage_invalid 拒绝。section_key / heading_path 用 __SECTION_KEY_0__ / __HEADING_PATH_0__ 占位（验收工具替换为实际章节）。",
   "payload": {
-    "schema_version": 1,
+    "schema_version": 2,
     "language": "zh-CN",
     "overview": [
       {"statement": "概述引用第一条 Evidence。", "evidence_ids": ["ev_:real:0"]},
-      {"statement": "第二条概述。", "evidence_ids": ["ev_:real:1"]}
+      {"statement": "第二条概述也只引用第一条。", "evidence_ids": ["ev_:real:0"]}
     ],
     "key_points": [
-      {"statement": "要点引用真实 Evidence。", "evidence_ids": ["ev_:real:0"]}
+      {"statement": "要点引用第一条 Evidence。", "evidence_ids": ["ev_:real:0"]}
     ],
     "section_guides": [
       {
@@ -19,10 +19,7 @@
       }
     ],
     "limitations": [
-      {"statement": "限制条目。", "evidence_ids": ["ev_:real:1"]}
-    ],
-    "coverage": [
-      {"section_key": "__SECTION_KEY_0__", "status": "covered", "skipped_reason": ""}
+      {"statement": "限制条目同样只引用第一条。", "evidence_ids": ["ev_:real:0"]}
     ]
   }
 }

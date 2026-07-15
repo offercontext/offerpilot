@@ -207,7 +207,9 @@ export interface BriefPayload {
   key_points: BriefStatement[];
   section_guides: BriefSectionGuide[];
   limitations: BriefStatement[];
-  coverage: BriefCoverage[];
+  // KBR-04：coverage 由程序从实际 citations 派生并由 API 注入到 current Brief；
+  // 候选 Brief（candidate_payload）未通过门禁，不带 coverage。
+  coverage?: BriefCoverage[];
 }
 
 export interface KnowledgeSourceBrief {

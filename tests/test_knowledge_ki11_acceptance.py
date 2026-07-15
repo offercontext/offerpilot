@@ -445,8 +445,12 @@ def test_ki11_failure_fixtures_static_samples_are_valid() -> None:
 
     coverage = json.loads((failure_dir / "coverage-missing.json").read_text("utf-8"))
     assert "ev_:real:" in json.dumps(coverage["payload"], ensure_ascii=False)
-    # coverage 故意只声明一个章节
-    assert len(coverage["payload"]["coverage"]) == 1
+    # KBR-04：fixture 只引用第一条 Evidence，其余文本章节未被实际引用 → 派生 coverage missing
+    all_evidence_ids: list[str] = []
+    for block_name in ("overview", "key_points", "section_guides", "limitations"):
+        for item in coverage["payload"][block_name]:
+            all_evidence_ids.extend(item["evidence_ids"])
+    assert set(all_evidence_ids) == {"ev_:real:0"}
 
     unsupported = json.loads(
         (failure_dir / "unsupported-validation.json").read_text("utf-8")

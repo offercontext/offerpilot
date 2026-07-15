@@ -48,6 +48,11 @@ from offerpilot.knowledge import (
     KnowledgeIngestService,
     KnowledgeRepository,
 )
+from offerpilot.knowledge.brief import (
+    BriefSchemaError,
+    derive_coverage_payload,
+    parse_brief_payload,
+)
 from offerpilot.knowledge.assets import AssetInput
 from offerpilot.knowledge.search import SearchError as _KnowledgeSearchError
 from offerpilot.knowledge.service import IngestError as _IngestHttpError
@@ -332,15 +337,46 @@ def _knowledge_origin_payload(origin: Any) -> dict[str, Any]:
     }
 
 
-def _knowledge_brief_payload(brief: Any) -> Optional[dict[str, Any]]:
-    # KI-09 / Spec §10.1：当前 Brief payload 直接转发 JSON 字符串；前端解析。
-    # ``payload`` 不包含 Source 原文或 Prompt，仅 Schema v1 结构化导读。
+def _derive_brief_coverage(
+    repository: KnowledgeRepository, source_id: int, brief: Any
+) -> list[dict[str, Any]]:
+    # KBR-04：coverage 由程序从持久化 Brief 的实际 citations + 当前 Snapshot
+    # post-filter Evidence 派生。模型不再输出 coverage；API/UI 只展示稳定
+    # covered/skipped 状态。payload 损坏或无 Snapshot 时返回空列表。
+    if brief is None or not brief.snapshot_id:
+        return []
+    try:
+        brief_payload = parse_brief_payload(brief.payload_json or "{}")
+    except BriefSchemaError:
+        return []
+    evidence_items: list[Any] = []
+    cursor: Optional[int] = None
+    while True:
+        page = repository.list_evidence(
+            source_id, snapshot_id=brief.snapshot_id, after_ordinal=cursor, limit=200
+        )
+        evidence_items.extend(page.items)
+        if page.next_cursor is None:
+            break
+        cursor = page.next_cursor
+    coverage = derive_coverage_payload(brief_payload, evidence_items)
+    return [item.model_dump() for item in coverage]
+
+
+def _knowledge_brief_payload(
+    brief: Any, derived_coverage: Optional[list[dict[str, Any]]] = None
+) -> Optional[dict[str, Any]]:
+    # KI-09 / Spec §10.1 / KBR-04：当前 Brief payload 直接转发 JSON 字符串；前端解析。
+    # ``payload`` 不包含 Source 原文或 Prompt，仅 Schema v2 结构化导读。
+    # coverage 由程序派生后注入 payload.coverage（API/UI 消费），模型不再输出该字段。
     if brief is None:
         return None
     try:
         payload = json.loads(brief.payload_json or "{}")
     except json.JSONDecodeError:
         payload = {}
+    if derived_coverage is not None:
+        payload["coverage"] = derived_coverage
     return {
         "id": brief.id,
         "source_id": brief.source_id,
@@ -874,7 +910,10 @@ def create_app(
                 "brief_block_reason": source.brief_block_reason,
                 "brief_error_code": source.brief_error_code,
                 "brief_error_message": source.brief_error_message,
-                "brief": _knowledge_brief_payload(brief),
+                "brief": _knowledge_brief_payload(
+                    brief,
+                    _derive_brief_coverage(knowledge_repository, source_id, brief),
+                ),
                 "latest_attempt": _knowledge_brief_attempt_payload(latest_attempt),
                 "attempts": [
                     _knowledge_brief_attempt_payload(item) for item in attempts

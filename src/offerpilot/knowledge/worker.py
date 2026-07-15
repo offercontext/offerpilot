@@ -1381,6 +1381,38 @@ class BriefWorker:
 
         snapshot_id = source.active_snapshot_id
         assert snapshot_id is not None
+
+        # KBR-04：没有可引用文本 Evidence 的 Source 不发 generation 请求，使用稳定
+        # block 语义。Source 保持 extracted/Evidence 可搜索；不创建无意义 Attempt。
+        evidence_rows = self._load_evidence(source_id, snapshot_id)
+        text_evidence_rows = [row for row in evidence_rows if row.kind != "asset"]
+        if not text_evidence_rows:
+            block_reason = "brief_no_text_evidence"
+            ok, _ = self._repository.complete_job(
+                job.id,
+                attempt_token=job.attempt_token,
+                status="failed",
+                stage="brief_no_text_evidence",
+                error_code=block_reason,
+                error_message="Source 缺少可引用的文本 Evidence",
+            )
+            self._repository.update_source_state(
+                source_id,
+                brief_status="pending",
+                brief_block_reason=block_reason,
+                brief_error_code=block_reason,
+                brief_error_message=(
+                    "Source 缺少可引用的文本 Evidence，请补充正文后重新导入"
+                ),
+            )
+            return JobExecutionResult(
+                job_id=job.id,
+                accepted=ok,
+                status="failed",
+                error_code=block_reason,
+                error_message="Source 缺少可引用的文本 Evidence",
+            )
+
         try:
             attempt_record, brief_job_id, attempt_token = (
                 self._repository.create_brief_attempt(
@@ -1449,23 +1481,6 @@ class BriefWorker:
                 status="canceled",
                 error_code="job_canceled",
                 error_message="用户取消",
-            )
-
-        evidence_rows = self._load_evidence(source_id, snapshot_id)
-        if not evidence_rows:
-            failed, _, _ = self._repository.fail_brief_attempt(
-                attempt_id,
-                job_id=brief_job_id,
-                attempt_token=attempt_token,
-                error_code="brief_support_invalid",
-                error_message="Source 缺少可引用的文本 Evidence",
-            )
-            return JobExecutionResult(
-                job_id=job.id,
-                accepted=failed,
-                status="failed",
-                error_code="brief_support_invalid",
-                error_message="Source 缺少可引用的文本 Evidence",
             )
 
         coverage_plan = build_section_coverage_plan(evidence_rows)
@@ -1691,7 +1706,6 @@ class BriefWorker:
         - 成功：``(BriefGenerationResult, None)``。
         - 失败：``(None, (error_code, error_message))``，已调用 ``fail_brief_attempt``。
         """
-        evidence_ids = {row.id for row in evidence_rows}
         repair_count = 0
         candidate_payload_dict: Optional[dict[str, Any]] = None
         last_issues: list[str] = []
@@ -1785,7 +1799,7 @@ class BriefWorker:
                 continue
 
             report = validate_brief_against_evidence(
-                brief, evidence_ids=evidence_ids, expected_sections=coverage_plan
+                brief, evidence_rows=evidence_rows, expected_sections=coverage_plan
             )
             if not (report.citation_ok and report.coverage_ok):
                 error_code = (

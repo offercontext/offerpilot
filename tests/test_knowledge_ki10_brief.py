@@ -53,8 +53,8 @@ _CONTENT = (
 )
 
 
-def test_text_section_cannot_be_marked_skipped_with_arbitrary_reason() -> None:
-    """带文本 Evidence 的章节必须 covered，不能靠 skipped_reason 绕过 coverage。"""
+def test_text_section_covered_only_when_actually_cited() -> None:
+    """KBR-04：含文本 Evidence 的章节只有被实际引用才 covered；模型无法用状态绕过。"""
     evidence = [
         SimpleNamespace(
             id="ev_text",
@@ -66,7 +66,7 @@ def test_text_section_cannot_be_marked_skipped_with_arbitrary_reason() -> None:
     ]
     plan = build_section_coverage_plan(evidence)
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "language": "zh-CN",
         "overview": [
             {"statement": "概述一", "evidence_ids": ["ev_text"]},
@@ -82,20 +82,24 @@ def test_text_section_cannot_be_marked_skipped_with_arbitrary_reason() -> None:
             }
         ],
         "limitations": [],
-        "coverage": [
-            {
-                "section_key": "正文",
-                "status": "skipped",
-                "skipped_reason": "模型认为不重要",
-            }
-        ],
     }
     brief = parse_brief_payload(json.dumps(payload, ensure_ascii=False))
     report = validate_brief_against_evidence(
-        brief, evidence_ids={"ev_text"}, expected_sections=plan
+        brief, evidence_rows=evidence, expected_sections=plan
     )
-    assert report.coverage_ok is False
-    assert any("必须标记 covered" in issue for issue in report.issues)
+    assert report.coverage_ok
+    # 模型若额外返回 coverage 字段声明 skipped，程序派生仍 covered（不受模型声明影响）。
+    payload_with_coverage = dict(payload)
+    payload_with_coverage["coverage"] = [
+        {"section_key": "正文", "status": "skipped", "skipped_reason": "模型认为不重要"}
+    ]
+    brief_with_coverage = parse_brief_payload(
+        json.dumps(payload_with_coverage, ensure_ascii=False)
+    )
+    report_with_coverage = validate_brief_against_evidence(
+        brief_with_coverage, evidence_rows=evidence, expected_sections=plan
+    )
+    assert report_with_coverage.coverage_ok
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +109,7 @@ def test_text_section_cannot_be_marked_skipped_with_arbitrary_reason() -> None:
 
 def _valid_payload_dict() -> dict[str, Any]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "language": "zh-CN",
         "overview": [
             {"statement": "Source 描述 OfferPilot 架构。", "evidence_ids": []},
@@ -125,9 +129,6 @@ def _valid_payload_dict() -> dict[str, Any]:
         "limitations": [
             {"statement": "未涉及 Pilot 对话细节。", "evidence_ids": []},
         ],
-        "coverage": [
-            {"section_key": "概述", "status": "covered", "skipped_reason": ""},
-        ],
     }
 
 
@@ -136,28 +137,41 @@ def _supported_json() -> str:
 
 
 def _build_payload_for_evidence(items: list[EvidenceRecord]) -> dict[str, Any]:
-    """根据真实 Evidence 列表构造合法 Brief payload（全部 supported）。"""
+    """根据真实 Evidence 列表构造合法 v2 Brief payload（每个文本章节被实际引用）。"""
     evidence_ids = [item.id for item in items]
     assert len(evidence_ids) >= 2
     plan = build_section_coverage_plan(items)
-    payload = _valid_payload_dict()
-    payload["overview"][0]["evidence_ids"] = [evidence_ids[0]]
-    payload["overview"][1]["evidence_ids"] = [evidence_ids[1]]
-    payload["key_points"][0]["evidence_ids"] = [evidence_ids[0], evidence_ids[1]]
-    payload["section_guides"][0]["evidence_ids"] = [evidence_ids[0]]
-    first_key = next(iter(plan.sections.keys()))
-    first_section = plan.sections[first_key]
-    payload["section_guides"][0]["section_key"] = first_section.section_key
-    payload["section_guides"][0]["heading_path"] = list(first_section.heading_path)
-    payload["limitations"][0]["evidence_ids"] = [evidence_ids[1]]
-    payload["coverage"] = [
-        {
-            "section_key": entry.section_key,
-            "status": "covered" if not entry.must_skip else "skipped",
-            "skipped_reason": entry.skipped_reason,
-        }
-        for entry in plan.sections.values()
+    section_eids: dict[str, list[str]] = {}
+    for item in items:
+        path = tuple(item.heading_path or ())
+        key = "__document__" if not path else " / ".join(path)
+        section_eids.setdefault(key, []).append(item.id)
+    text_sections = [entry for entry in plan.sections.values() if not entry.must_skip]
+    reps = [
+        section_eids[entry.section_key][0]
+        for entry in text_sections
+        if section_eids.get(entry.section_key)
     ]
+    first = text_sections[0] if text_sections else plan.sections["__document__"]
+    first_eid = section_eids.get(first.section_key, [evidence_ids[0]])[0]
+    ov1 = reps[0] if reps else evidence_ids[0]
+    ov2 = (
+        reps[1]
+        if len(reps) > 1
+        else (evidence_ids[1] if len(evidence_ids) > 1 else ov1)
+    )
+    payload = _valid_payload_dict()
+    payload["overview"][0]["evidence_ids"] = [ov1]
+    payload["overview"][1]["evidence_ids"] = [ov2]
+    payload["key_points"][0]["evidence_ids"] = [ov1, ov2]
+    payload["section_guides"][0]["evidence_ids"] = [first_eid]
+    payload["section_guides"][0]["section_key"] = first.section_key
+    payload["section_guides"][0]["heading_path"] = list(first.heading_path)
+    payload["limitations"][0]["evidence_ids"] = [ov2]
+    cited = {ov1, ov2, first_eid}
+    extra = [rep for rep in reps if rep not in cited]
+    if extra:
+        payload["key_points"][0]["evidence_ids"].extend(extra)
     return payload
 
 

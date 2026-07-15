@@ -1,7 +1,7 @@
 {
-  "comment": "伪造 citation 故障样本。evidence_ids 使用 ev_:forged:N 占位（验收工具直接使用本静态 payload，不替换为真实 Evidence）。Spec §10.3 门禁顺序为 Schema → citation 存在性 → coverage，因此 ev_:forged:N 先被 citation 存在性门禁以 brief_citation_invalid 拒绝，coverage 中 __SECTION_KEY_0__ 占位不影响结果。",
+  "comment": "伪造 citation 故障样本（KBR-04 v2）。evidence_ids 使用 ev_:forged:N 占位（验收工具直接使用本静态 payload，不替换为真实 Evidence）。Spec §10.3 门禁顺序为 Schema → citation 存在性 → coverage，因此 ev_:forged:N 先被 citation 存在性门禁以 brief_citation_invalid 拒绝。",
   "payload": {
-    "schema_version": 1,
+    "schema_version": 2,
     "language": "zh-CN",
     "overview": [
       {"statement": "故意引用不存在的 Evidence。", "evidence_ids": ["ev_:forged:1"]},
@@ -20,9 +20,6 @@
     ],
     "limitations": [
       {"statement": "限制条目同样伪造引用。", "evidence_ids": ["ev_:forged:2"]}
-    ],
-    "coverage": [
-      {"section_key": "__SECTION_KEY_0__", "status": "covered", "skipped_reason": ""}
     ]
   }
 }

@@ -40,31 +40,50 @@ def _upload(client, filename: str, content: bytes) -> Any:
         wait_for_extraction(client, response.json()["source"]["id"])
     return response
 
-def _valid_payload(evidence_ids: list[str], section_keys: list[str]) -> dict[str, Any]:
+def _valid_payload(evidence_items: list, plan: Any) -> dict[str, Any]:
+    """KBR-04 v2 合法 payload：每个文本章节至少一条自身 Evidence 被 key_points 引用。"""
+    evidence_ids = [item.id for item in evidence_items]
+    assert len(evidence_ids) >= 2
+    section_eids: dict[str, list[str]] = {}
+    for item in evidence_items:
+        path = tuple(item.heading_path or ())
+        key = "__document__" if not path else " / ".join(path)
+        section_eids.setdefault(key, []).append(item.id)
+    text_sections = [entry for entry in plan.sections.values() if not entry.must_skip]
+    reps = [
+        section_eids[entry.section_key][0]
+        for entry in text_sections
+        if section_eids.get(entry.section_key)
+    ]
+    first = text_sections[0] if text_sections else plan.sections["__document__"]
+    first_eid = section_eids.get(first.section_key, [evidence_ids[0]])[0]
+    ov1 = reps[0] if reps else evidence_ids[0]
+    ov2 = (
+        reps[1]
+        if len(reps) > 1
+        else (evidence_ids[1] if len(evidence_ids) > 1 else ov1)
+    )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "language": "zh-CN",
         "overview": [
-            {"statement": "Source 描述 OfferPilot。", "evidence_ids": [evidence_ids[0]]},
-            {"statement": "Source 涉及 SQLite。", "evidence_ids": [evidence_ids[1]]},
+            {"statement": "Source 描述 OfferPilot。", "evidence_ids": [ov1]},
+            {"statement": "Source 涉及 SQLite。", "evidence_ids": [ov2]},
         ],
-        "key_points": [
-            {"statement": "Evidence 是引用单位。", "evidence_ids": evidence_ids[:2]},
-        ],
+        "key_points": (
+            [{"statement": "Evidence 是引用单位。", "evidence_ids": [rep]} for rep in reps]
+            or [{"statement": "Evidence 是引用单位。", "evidence_ids": [ov1]}]
+        ),
         "section_guides": [
             {
-                "section_key": section_keys[0],
-                "heading_path": [section_keys[0]],
+                "section_key": first.section_key,
+                "heading_path": list(first.heading_path),
                 "summary": "介绍 OfferPilot。",
-                "evidence_ids": [evidence_ids[0]],
+                "evidence_ids": [first_eid],
             }
         ],
         "limitations": [
-            {"statement": "未涉及细节。", "evidence_ids": [evidence_ids[1]]},
-        ],
-        "coverage": [
-            {"section_key": key, "status": "covered", "skipped_reason": ""}
-            for key in section_keys
+            {"statement": "未涉及细节。", "evidence_ids": [ov2]},
         ],
     }
 
@@ -125,10 +144,10 @@ def test_ki09_brief_endpoint_exposes_committed_brief_payload(
     assert len(evidence_ids) >= 2
 
     # 使用 endpoint client 的同一个进程内 repository 提交一次成功 Brief
-    section_keys = ["概述"]
-    if len({tuple(ev.heading_path) for ev in evidence_page.items}) > 1:
-        section_keys.append("概述 / 第二段")
-    payload_dict = _valid_payload(evidence_ids, section_keys)
+    from offerpilot.knowledge.brief import build_section_coverage_plan
+
+    plan = build_section_coverage_plan(evidence_page.items)
+    payload_dict = _valid_payload(evidence_page.items, plan)
     attempt, job_id, token = repository.create_brief_attempt(
         BriefAttemptCreateInput(
             source_id=source_id,
@@ -159,7 +178,7 @@ def test_ki09_brief_endpoint_exposes_committed_brief_payload(
     assert response.status_code == 200
     body = response.json()
     assert body["brief"] is not None
-    assert body["brief"]["payload"]["schema_version"] == 1
+    assert body["brief"]["payload"]["schema_version"] == 2
     assert body["brief"]["payload"]["language"] == "zh-CN"
     assert len(body["brief"]["payload"]["overview"]) == 2
 
@@ -238,10 +257,7 @@ def test_ki09_brief_worker_processes_real_queue_with_stub_provider(
     from offerpilot.knowledge.brief import build_section_coverage_plan
 
     plan = build_section_coverage_plan(evidence_page.items)
-    section_keys = list(plan.sections.keys())
-    valid_payload = _valid_payload(
-        [ev.id for ev in evidence_page.items], section_keys
-    )
+    valid_payload = _valid_payload(evidence_page.items, plan)
 
     def _stub_client(**payload: Any) -> dict[str, Any]:
         system_text = ""

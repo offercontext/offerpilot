@@ -463,7 +463,11 @@ def _heading_path_for_guide(entry: Any) -> list[str]:
 def _build_valid_payload(
     evidences: list[EvidenceRecord], plan: Any
 ) -> dict[str, Any]:
-    """从真实 Evidence 与 coverage plan 构造合法 Brief payload。"""
+    """从真实 Evidence 与 coverage plan 构造合法 v2 Brief payload。
+
+    KBR-04：不再输出 coverage；key_points 引用每个文本章节的代表 Evidence，
+    保证程序派生 coverage 全 covered（"完美模型" stub 能通过门禁）。
+    """
 
     text_evidences = [e for e in evidences if e.kind != "asset"]
     pool = text_evidences if len(text_evidences) >= 2 else evidences
@@ -475,43 +479,40 @@ def _build_valid_payload(
         first = pool[0].id
         second = pool[1].id
 
-    section_guides: list[dict[str, Any]] = []
-    coverage: list[dict[str, Any]] = []
-    for entry in plan.sections.values():
-        if getattr(entry, "must_skip", False):
-            coverage.append(
-                {
-                    "section_key": entry.section_key,
-                    "status": "skipped",
-                    "skipped_reason": getattr(entry, "skipped_reason", "") or "assets_only",
-                }
-            )
-        else:
-            coverage.append(
-                {"section_key": entry.section_key, "status": "covered", "skipped_reason": ""}
-            )
-    # 为第一个非 skip section 生成 guide（满足 Schema 至少有 section_guides 条目）
+    section_eids: dict[str, list[str]] = {}
+    for ev in evidences:
+        path = tuple(getattr(ev, "heading_path", ()) or ())
+        key = "__document__" if not path else " / ".join(path)
+        section_eids.setdefault(key, []).append(ev.id)
     non_skip = [e for e in plan.sections.values() if not getattr(e, "must_skip", False)]
+    reps = [
+        section_eids[entry.section_key][0]
+        for entry in non_skip
+        if section_eids.get(entry.section_key)
+    ]
     guide_target = non_skip[0] if non_skip else next(iter(plan.sections.values()))
-    section_guides.append(
+    section_guides: list[dict[str, Any]] = [
         {
             "section_key": guide_target.section_key,
             "heading_path": _heading_path_for_guide(guide_target),
             "summary": f"{guide_target.section_key} 章节导读。",
             "evidence_ids": [first],
         }
+    ]
+    key_points = (
+        [{"statement": "要点引用 Evidence。", "evidence_ids": [rep]} for rep in reps]
+        or [{"statement": "要点引用 Evidence。", "evidence_ids": [first]}]
     )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "language": "zh-CN",
         "overview": [
             {"statement": "概述基于 Evidence。", "evidence_ids": [first]},
             {"statement": "第二条概述引用。", "evidence_ids": [second]},
         ],
-        "key_points": [{"statement": "要点引用 Evidence。", "evidence_ids": [first]}],
+        "key_points": key_points,
         "section_guides": section_guides,
         "limitations": [{"statement": "限制条目。", "evidence_ids": [second]}],
-        "coverage": coverage,
     }
 
 

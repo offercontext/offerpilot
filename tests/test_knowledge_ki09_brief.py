@@ -48,7 +48,7 @@ from offerpilot.knowledge.worker import (
 
 def _valid_payload_dict() -> dict[str, Any]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "language": "zh-CN",
         "overview": [
             {"statement": "Source 描述了 OfferPilot 架构。", "evidence_ids": ["ev_1"]},
@@ -68,16 +68,13 @@ def _valid_payload_dict() -> dict[str, Any]:
         "limitations": [
             {"statement": "未涉及 Pilot 对话细节。", "evidence_ids": ["ev_2"]},
         ],
-        "coverage": [
-            {"section_key": "概述", "status": "covered", "skipped_reason": ""},
-        ],
     }
 
 
 def test_parse_brief_payload_accepts_strict_json() -> None:
     raw = json.dumps(_valid_payload_dict(), ensure_ascii=False)
     brief = parse_brief_payload(raw)
-    assert brief.schema_version == 1
+    assert brief.schema_version == 2
     assert brief.language == BRIEF_LANGUAGE
     assert len(brief.overview) == 2
 
@@ -90,7 +87,7 @@ def test_parse_brief_payload_accepts_extra_text_around_json() -> None:
         + "\n```"
     )
     brief = parse_brief_payload(raw)
-    assert brief.schema_version == 1
+    assert brief.schema_version == 2
 
 
 def test_parse_brief_payload_picks_final_over_reasoning_draft() -> None:
@@ -124,11 +121,6 @@ def test_parse_brief_payload_allows_document_toplevel_empty_heading_path() -> No
         "heading_path": [],
         "summary": "文档顶层摘要。",
         "evidence_ids": ["ev_1"],
-    }
-    payload["coverage"][0] = {
-        "section_key": "__document__",
-        "status": "covered",
-        "skipped_reason": "",
     }
     brief = parse_brief_payload(json.dumps(payload, ensure_ascii=False))
     assert brief.section_guides[0].heading_path == []
@@ -228,15 +220,13 @@ def test_validate_brief_catches_fabricated_citation() -> None:
     """Spec §10.3 citation 必须属于当前 Source/Snapshot。"""
     raw = json.dumps(_valid_payload_dict(), ensure_ascii=False)
     brief = parse_brief_payload(raw)
-    evidence_ids = {"ev_1", "ev_2"}
-    coverage_plan = build_section_coverage_plan(
-        [
-            _evidence_record(evidence_id="ev_1", heading_path=("概述",)),
-            _evidence_record(evidence_id="ev_2", heading_path=("概述",)),
-        ]
-    )
+    evidence_rows = [
+        _evidence_record(evidence_id="ev_1", heading_path=("概述",)),
+        _evidence_record(evidence_id="ev_2", heading_path=("概述",)),
+    ]
+    coverage_plan = build_section_coverage_plan(evidence_rows)
     report = validate_brief_against_evidence(
-        brief, evidence_ids=evidence_ids, expected_sections=coverage_plan
+        brief, evidence_rows=evidence_rows, expected_sections=coverage_plan
     )
     assert report.citation_ok
     assert report.coverage_ok
@@ -244,56 +234,49 @@ def test_validate_brief_catches_fabricated_citation() -> None:
     # 注入伪造 citation
     brief.overview[0].evidence_ids.append("ev_FAKE")
     report = validate_brief_against_evidence(
-        brief, evidence_ids=evidence_ids, expected_sections=coverage_plan
+        brief, evidence_rows=evidence_rows, expected_sections=coverage_plan
     )
     assert not report.citation_ok
     assert any("ev_FAKE" in issue for issue in report.issues)
 
 
 def test_validate_brief_catches_missing_section_coverage() -> None:
-    raw = json.dumps(_valid_payload_dict(), ensure_ascii=False)
-    brief = parse_brief_payload(raw)
-    coverage_plan = build_section_coverage_plan(
-        [
-            _evidence_record(evidence_id="ev_1", heading_path=("概述",)),
-            _evidence_record(evidence_id="ev_2", heading_path=("另一章",)),
-        ]
-    )
+    """KBR-04：含文本 Evidence 的章节未被实际引用 → coverage 失败。"""
+    evidence_rows = [
+        _evidence_record(evidence_id="ev_1", heading_path=("概述",)),
+        _evidence_record(evidence_id="ev_2", heading_path=("另一章",)),
+    ]
+    coverage_plan = build_section_coverage_plan(evidence_rows)
+    payload = _valid_payload_dict()
+    for block_name in ("overview", "key_points", "section_guides", "limitations"):
+        for item in payload[block_name]:
+            item["evidence_ids"] = ["ev_1"]
+    brief = parse_brief_payload(json.dumps(payload, ensure_ascii=False))
     report = validate_brief_against_evidence(
         brief,
-        evidence_ids={"ev_1", "ev_2"},
+        evidence_rows=evidence_rows,
         expected_sections=coverage_plan,
     )
     assert not report.coverage_ok
     assert any("另一章" in issue for issue in report.issues)
 
 
-def test_validate_brief_requires_assets_only_section_skip() -> None:
-    coverage_plan = build_section_coverage_plan(
-        [
-            _evidence_record(
-                evidence_id="ev_img",
-                heading_path=("附图",),
-                kind="asset",
-            ),
-            _evidence_record(evidence_id="ev_1", heading_path=("概述",)),
-            _evidence_record(evidence_id="ev_2", heading_path=("概述",)),
-        ]
-    )
-    # coverage 标记 assets_only 章节为 covered 应失败
-    payload = _valid_payload_dict()
-    payload["coverage"] = [
-        {"section_key": "概述", "status": "covered", "skipped_reason": ""},
-        {"section_key": "附图", "status": "covered", "skipped_reason": ""},
+def test_validate_brief_accepts_assets_only_section_skipped_by_program() -> None:
+    """KBR-04：assets-only 章节由程序标 skipped，不要求模型引用，coverage 仍通过。"""
+    evidence_rows = [
+        _evidence_record(evidence_id="ev_img", heading_path=("附图",), kind="asset"),
+        _evidence_record(evidence_id="ev_1", heading_path=("概述",)),
+        _evidence_record(evidence_id="ev_2", heading_path=("概述",)),
     ]
+    coverage_plan = build_section_coverage_plan(evidence_rows)
+    payload = _valid_payload_dict()
     brief = parse_brief_payload(json.dumps(payload, ensure_ascii=False))
     report = validate_brief_against_evidence(
         brief,
-        evidence_ids={"ev_1", "ev_2", "ev_img"},
+        evidence_rows=evidence_rows,
         expected_sections=coverage_plan,
     )
-    assert not report.coverage_ok
-    assert any("附图" in issue for issue in report.issues)
+    assert report.coverage_ok
 
 
 # ---------------------------------------------------------------------------
@@ -356,7 +339,7 @@ def test_generation_prompt_injects_evidence_and_coverage() -> None:
     assert "ev_1" in user_text
     assert "ev_2" in user_text
     assert "概述" in user_text
-    assert "Schema v1" in messages[0]["content"]
+    assert "Schema v2" in messages[0]["content"]
 
 
 def test_generation_prompt_marks_assets_only_sections() -> None:
@@ -704,30 +687,48 @@ def _provider_config(context_window: int = BRIEF_MIN_CONTEXT_WINDOW) -> Config:
 
 
 def _build_valid_payload_from_evidence(evidence_page_items: list[EvidenceRecord]) -> dict[str, Any]:
-    """根据真实 Evidence 列表构造合法 Brief payload。"""
+    """根据真实 Evidence 列表构造合法 v2 Brief payload。
+
+    KBR-04：不再输出 coverage；每个文本章节至少有一条自身 Evidence 被 statement
+    实际引用，以保证程序派生 coverage 通过。
+    """
     evidence_ids = [item.id for item in evidence_page_items]
     assert len(evidence_ids) >= 2
     from offerpilot.knowledge.brief import build_section_coverage_plan
 
     plan = build_section_coverage_plan(evidence_page_items)
-    valid_payload = _valid_payload_dict()
-    valid_payload["overview"][0]["evidence_ids"] = [evidence_ids[0]]
-    valid_payload["overview"][1]["evidence_ids"] = [evidence_ids[1]]
-    valid_payload["key_points"][0]["evidence_ids"] = [evidence_ids[0], evidence_ids[1]]
-    valid_payload["section_guides"][0]["evidence_ids"] = [evidence_ids[0]]
-    first_section_key = next(iter(plan.sections.keys()))
-    first_section = plan.sections[first_section_key]
-    valid_payload["section_guides"][0]["section_key"] = first_section.section_key
-    valid_payload["section_guides"][0]["heading_path"] = list(first_section.heading_path)
-    valid_payload["limitations"][0]["evidence_ids"] = [evidence_ids[1]]
-    valid_payload["coverage"] = [
-        {
-            "section_key": entry.section_key,
-            "status": "covered" if not entry.must_skip else "skipped",
-            "skipped_reason": entry.skipped_reason,
-        }
-        for entry in plan.sections.values()
+    section_eids: dict[str, list[str]] = {}
+    for item in evidence_page_items:
+        path = tuple(item.heading_path or ())
+        key = "__document__" if not path else " / ".join(path)
+        section_eids.setdefault(key, []).append(item.id)
+    text_sections = [entry for entry in plan.sections.values() if not entry.must_skip]
+    reps = [
+        section_eids[entry.section_key][0]
+        for entry in text_sections
+        if section_eids.get(entry.section_key)
     ]
+    first = text_sections[0] if text_sections else plan.sections["__document__"]
+    first_eid = section_eids.get(first.section_key, [evidence_ids[0]])[0]
+    ov1 = reps[0] if reps else evidence_ids[0]
+    ov2 = (
+        reps[1]
+        if len(reps) > 1
+        else (evidence_ids[1] if len(evidence_ids) > 1 else ov1)
+    )
+    valid_payload = _valid_payload_dict()
+    valid_payload["overview"][0]["evidence_ids"] = [ov1]
+    valid_payload["overview"][1]["evidence_ids"] = [ov2]
+    valid_payload["key_points"][0]["evidence_ids"] = [ov1, ov2]
+    valid_payload["section_guides"][0]["evidence_ids"] = [first_eid]
+    valid_payload["section_guides"][0]["section_key"] = first.section_key
+    valid_payload["section_guides"][0]["heading_path"] = list(first.heading_path)
+    valid_payload["limitations"][0]["evidence_ids"] = [ov2]
+    # 追加未引用文本章节的代表 Evidence，保证 coverage 全 covered。
+    cited = {ov1, ov2, first_eid}
+    extra = [rep for rep in reps if rep not in cited]
+    if extra:
+        valid_payload["key_points"][0]["evidence_ids"].extend(extra)
     return valid_payload
 
 
