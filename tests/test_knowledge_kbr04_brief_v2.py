@@ -510,6 +510,52 @@ def test_schema_version_v2_marks_v1_brief_outdated(tmp_path: Path) -> None:
     assert brief.outdated is True
 
 
+def test_prompt_version_change_alone_marks_brief_outdated(tmp_path: Path) -> None:
+    """KBR-04 nit #2：仅 prompt_version 变化（schema_version 保持当前）也标记 outdated。
+
+    隔离单维度：``test_schema_version_v2_marks_v1_brief_outdated`` 同时改了 prompt_version
+    与 schema_version，本用例固定 schema_version 为当前值，只把 prompt_version 设成旧值，
+    证明 outdated 判定不依赖 schema_version 同时变化。
+    """
+    content = "# 概述\n\nSource 描述 OfferPilot。\n\n## 第二段\n\n另一段 Evidence。\n".encode(
+        "utf-8"
+    )
+    repository, session_factory, source_id, snapshot_id = ingest_and_extract(
+        tmp_path, content, config=_qualified_config()
+    )
+    evidence = repository.list_evidence(source_id, snapshot_id=snapshot_id, limit=50).items
+    attempt, job_id, token = repository.create_brief_attempt(
+        BriefAttemptCreateInput(
+            source_id=source_id,
+            snapshot_id=snapshot_id,
+            provider_id="default",
+            provider_model="m",
+            provider_base_url="",
+            context_window=BRIEF_MIN_CONTEXT_WINDOW,
+            max_output_tokens=4096,
+            prompt_version="brief-prompt-v1",  # 旧 prompt；schema_version 保持当前
+            schema_version=BRIEF_SCHEMA_VERSION,
+            language=BRIEF_LANGUAGE,
+        )
+    )
+    repository.commit_brief_attempt_success(
+        attempt.id,
+        job_id=job_id,
+        attempt_token=token,
+        payload_json=build_supported_brief_json(evidence),
+        validation_report_json="{}",
+    )
+    service = KnowledgeIngestService(
+        repository, tmp_path, session_factory, config=_qualified_config()
+    )
+    source_after = service.refresh_brief_outdated(source_id)
+    assert source_after is not None
+    assert source_after.brief_status == "outdated"
+    brief = repository.get_source_brief(source_id)
+    assert brief is not None
+    assert brief.outdated is True
+
+
 def test_seam_model_coverage_field_cannot_bypass_coverage_gate(tmp_path: Path) -> None:
     """KBR-04：模型返回 coverage 字段谎称 covered，但缺实际 citation 仍被门禁拒。"""
     content = (

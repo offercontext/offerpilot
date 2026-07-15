@@ -212,6 +212,39 @@ export interface BriefPayload {
   coverage?: BriefCoverage[];
 }
 
+// KBR-05：结构化 validation report。失败详情按 issue_type 区分 citation/support/coverage，
+// 每项可定位到候选 Brief block_path 与已引用 evidence_ids；不复制 Evidence 正文。
+export interface BriefValidationIssue {
+  block_path: string;
+  issue_type: string;
+  decision: string;
+  reason: string;
+  evidence_ids: string[];
+}
+
+export interface BriefValidationCoverageStatus {
+  section_key: string;
+  status: string;
+  skipped_reason: string;
+}
+
+export interface BriefValidationReport {
+  stage?: string;
+  error_code?: string;
+  failure_count?: number;
+  summary?: string;
+  issues?: BriefValidationIssue[];
+  coverage_statuses?: BriefValidationCoverageStatus[];
+  support_results?: {
+    block: string;
+    decision: string;
+    reason: string;
+    evidence_ids: string[];
+  }[];
+  programmatic_issues?: string[];
+  repair_count?: number;
+}
+
 export interface KnowledgeSourceBrief {
   id: number;
   source_id: number;
@@ -238,7 +271,7 @@ export interface KnowledgeBriefAttempt {
   schema_version: number;
   language: string;
   candidate_payload: BriefPayload | null;
-  validation_report: Record<string, unknown>;
+  validation_report: BriefValidationReport;
   error_code: string;
   error_message: string;
   repair_count: number;

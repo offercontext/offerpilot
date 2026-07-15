@@ -53,6 +53,7 @@ import {
 } from '@/services/knowledge';
 import type {
   BriefStatement,
+  BriefValidationReport,
   KnowledgeBriefAttempt,
   KnowledgeEvidence,
   KnowledgeJob,
@@ -1013,6 +1014,13 @@ function BriefBlock({
           style={{ marginTop: 8 }}
         />
       ) : null}
+      {latestAttempt?.status === 'failed' &&
+      (latestAttempt.validation_report.issues?.length ?? 0) > 0 ? (
+        <BriefValidationIssues
+          report={latestAttempt.validation_report}
+          onCitationJump={onCitationJump}
+        />
+      ) : null}
       {showEmpty && !blockReason ? (
         <Empty description="尚未生成 Brief，可在上方点击「生成 Brief」" />
       ) : null}
@@ -1021,6 +1029,77 @@ function BriefBlock({
       ) : null}
       <div className="knowledge-brief-footer">Source ID：{sourceId}</div>
     </div>
+  );
+}
+
+// KBR-05：issue_type → 中文 label。Source 状态区只显示稳定 error code + 失败总数 +
+// 短摘要；Attempt 详情按 issue_type 区分 citation/support/coverage 失败。
+const ISSUE_TYPE_LABEL: Record<string, string> = {
+  schema_invalid: 'Schema 非法',
+  citation_missing: '引用缺失',
+  citation_ownership: '引用越界',
+  support_partial: '部分支持',
+  support_unsupported: '未支持',
+  support_contradicted: '相矛盾',
+  coverage_missing: '章节未覆盖',
+};
+
+function BriefValidationIssues({
+  report,
+  onCitationJump,
+}: {
+  report: BriefValidationReport;
+  onCitationJump: (evidenceId: string) => void;
+}) {
+  // Attempt/处理记录展示全部失败项，每项可定位到候选 Brief block 与已引用 Evidence。
+  // 详情不复制 Evidence 正文，按 evidence_id 跳转到本地 Evidence。
+  const issues = report.issues ?? [];
+  if (issues.length === 0) {
+    return null;
+  }
+  return (
+    <Alert
+      type="error"
+      showIcon
+      style={{ marginTop: 8 }}
+      message={`Brief 质量校验失败：共 ${report.failure_count ?? issues.length} 条`}
+      description={
+        <Space direction="vertical" size={6} style={{ width: '100%' }}>
+          {issues.map((issue, index) => (
+            <div
+              key={`${issue.block_path}-${index}`}
+              className="knowledge-brief-issue"
+            >
+              <Space size={6} wrap>
+                <Pill variant="rose">
+                  {ISSUE_TYPE_LABEL[issue.issue_type] ?? issue.issue_type}
+                </Pill>
+                <Text strong>{issue.block_path || '（全局）'}</Text>
+              </Space>
+              <div>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  {issue.reason}
+                </Text>
+              </div>
+              {issue.evidence_ids.length > 0 ? (
+                <Space size={4} wrap>
+                  {issue.evidence_ids.map((eid) => (
+                    <Button
+                      key={eid}
+                      size="small"
+                      type="link"
+                      onClick={() => onCitationJump(eid)}
+                    >
+                      {eid}
+                    </Button>
+                  ))}
+                </Space>
+              ) : null}
+            </div>
+          ))}
+        </Space>
+      }
+    />
   );
 }
 

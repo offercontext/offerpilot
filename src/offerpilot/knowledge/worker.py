@@ -51,7 +51,12 @@ from offerpilot.knowledge.brief import (
     BRIEF_SCHEMA_VERSION,
     BriefPayload,
     BriefSchemaError,
+    ISSUE_CITATION_MISSING,
+    ISSUE_CITATION_OWNERSHIP,
+    ISSUE_COVERAGE_MISSING,
     SectionCoveragePlan,
+    SUPPORT_DECISION_ISSUE_TYPE,
+    ValidationIssue,
     build_generation_prompt,
     build_repair_prompt,
     build_section_coverage_plan,
@@ -996,6 +1001,20 @@ class BriefGenerationResult:
     repair_count: int = 0
 
 
+@dataclass(frozen=True)
+class BriefQualityOutcome:
+    """KBR-05 汇总质量校验结果。
+
+    Schema 合法的候选先完成全部 citation（per-block）、support（citation 有效 block 逐条）
+    与 coverage 检查，再合并成统一 ``issues``；repair 输入与 Attempt 详情共用该结构。
+    """
+
+    issues: list[ValidationIssue]
+    support_results: list[dict[str, Any]]
+    coverage_statuses: list[Any]
+    programmatic_issues: list[str]
+
+
 @dataclass
 class _RetryState:
     """Spec §11.4 Provider 层重试进度的可变累积器。
@@ -1535,35 +1554,9 @@ class BriefWorker:
                 error_message=error_message,
             )
 
-        support_results = generation_result.support_results
-        non_supported = [
-            item for item in support_results if item["decision"] != "supported"
-        ]
-        if non_supported:
-            failed, _, _ = self._repository.fail_brief_attempt(
-                attempt_id,
-                job_id=brief_job_id,
-                attempt_token=attempt_token,
-                error_code="brief_support_invalid",
-                error_message=self._format_support_failure(non_supported),
-                validation_report_json=generation_result.validation_report_json,
-                candidate_payload_json=generation_result.payload.model_dump_json(),
-                token_input_count=generation_result.token_input_count,
-                token_output_count=generation_result.token_output_count,
-                latency_ms=generation_result.latency_ms,
-                repair_count=generation_result.repair_count,
-                actual_provider_id=generation_result.actual_provider_id,
-                actual_provider_model=generation_result.actual_provider_model,
-                provider_retry_count=generation_result.provider_retry_count,
-            )
-            return JobExecutionResult(
-                job_id=job.id,
-                accepted=failed,
-                status="failed",
-                error_code="brief_support_invalid",
-                error_message=self._format_support_failure(non_supported),
-            )
-
+        # KBR-05：``_run_generation_with_repair`` 已在内部对 quality/support/citation/coverage
+        # 失败统一 ``fail_brief_attempt`` 并返回 ``(None, failure)``；走到这里说明候选已通过
+        # 全部门禁（``generation_result`` 非 None），``support_results`` 必为全 supported。
         outer_active = self._refresh_outer_lease(job)
         if not outer_active or self._repository.is_job_canceled(job.id):
             canceled = self._repository.is_job_canceled(job.id)
@@ -1779,7 +1772,18 @@ class BriefWorker:
                         validation_report_json=json.dumps(
                             {
                                 "stage": "schema_invalid",
-                                "issues": [exc.message],
+                                "error_code": exc.code,
+                                "failure_count": 1,
+                                "summary": f"Brief Schema 无法解析：{exc.message[:80]}",
+                                "issues": [
+                                    {
+                                        "block_path": "",
+                                        "issue_type": "schema_invalid",
+                                        "decision": "",
+                                        "reason": exc.message,
+                                        "evidence_ids": [],
+                                    }
+                                ],
                                 "repair_count": repair_count,
                             },
                             ensure_ascii=False,
@@ -1798,53 +1802,15 @@ class BriefWorker:
                 candidate_payload_dict = {"_invalid_raw": raw_text[:400]}
                 continue
 
-            report = validate_brief_against_evidence(
-                brief, evidence_rows=evidence_rows, expected_sections=coverage_plan
-            )
-            if not (report.citation_ok and report.coverage_ok):
-                error_code = (
-                    "brief_citation_invalid"
-                    if not report.citation_ok
-                    else "brief_coverage_invalid"
-                )
-                if repair_count >= 1:
-                    self._repository.fail_brief_attempt(
-                        attempt_id,
-                        job_id=brief_job_id,
-                        attempt_token=attempt_token,
-                        error_code=error_code,
-                        error_message="; ".join(report.issues)[:500],
-                        candidate_payload_json=brief.model_dump_json(),
-                        validation_report_json=json.dumps(
-                            {
-                                "stage": "programmatic_invalid",
-                                "issues": report.issues,
-                                "repair_count": repair_count,
-                            },
-                            ensure_ascii=False,
-                        ),
-                        repair_count=repair_count,
-                        token_input_count=token_in,
-                        token_output_count=token_out,
-                        latency_ms=latency_ms,
-                        actual_provider_id=actual_provider.id,
-                        actual_provider_model=actual_provider.model,
-                        provider_retry_count=retry_state.total_retries,
-                    )
-                    return None, (error_code, "; ".join(report.issues)[:500])
-                repair_count += 1
-                candidate_payload_dict = brief.model_dump(mode="json")
-                last_issues = list(report.issues)
-                continue
-
-            # Spec §10.3：schema/citation/coverage 全通过后做 support validation。
-            # support 失败同样属于"首次校验失败允许一次受约束修复"——repair prompt 的
-            # "删除/收缩/重新引用"约束正适合 partial/unsupported statement。
-            support_results = self._run_support_validation(
+            # KBR-05：Schema 合法后汇总全部质量检查（citation per-block → citation 有效
+            # block 逐条 support → coverage），形成完整结构化报告。不按首个失败抢占
+            # repair；citation 无效的 block 不发起 Validator，其问题进入统一 report。
+            quality = self._evaluate_brief_quality(
                 brief=brief,
-                evidence_index={row.id: row for row in evidence_rows},
-                provider=actual_provider,
-                fallback=(
+                evidence_rows=evidence_rows,
+                coverage_plan=coverage_plan,
+                primary_provider=actual_provider,
+                fallback_provider=(
                     fallback_provider
                     if fallback_provider is not None
                     and fallback_provider.id != actual_provider.id
@@ -1862,27 +1828,48 @@ class BriefWorker:
                     "job_canceled"
                     if self._repository.is_job_canceled(outer_job_id)
                     else "job_lease_mismatch",
-                    "Brief support 校验后 queue lease 已失效或已取消",
+                    "Brief 质量校验后 queue lease 已失效或已取消",
                 )
-            validation_report_payload = {
-                "stage": "support_validation",
-                "support_results": support_results,
-                "repair_count": repair_count,
-                "programmatic_issues": last_issues,
-            }
-            validation_report_json = json.dumps(
-                validation_report_payload, ensure_ascii=False
+            validation_report_json = self._build_structured_report(
+                quality=quality, repair_count=repair_count
             )
-            non_supported = [
-                item for item in support_results if item["decision"] != "supported"
-            ]
-            # 第二次 support 失败与全门禁通过共用同一 generation_result；区别只在
-            # non_supported 非空且已用完 repair 时，由外层记录 brief_support_invalid
-            # 并保留 Evidence 可搜索（Spec §8）。
+            if quality.issues:
+                if repair_count >= 1:
+                    # 第二轮仍存在质量问题 → Attempt failed；旧 current Brief 由
+                    # ``fail_brief_attempt`` 保证继续可见（Spec §10.4）。完整结构化
+                    # report 归属本 Attempt，Source 状态区只显示稳定摘要。
+                    summary = self._format_quality_summary(quality.issues)
+                    self._repository.fail_brief_attempt(
+                        attempt_id,
+                        job_id=brief_job_id,
+                        attempt_token=attempt_token,
+                        error_code="brief_quality_failed",
+                        error_message=summary,
+                        candidate_payload_json=brief.model_dump_json(),
+                        validation_report_json=validation_report_json,
+                        repair_count=repair_count,
+                        token_input_count=token_in,
+                        token_output_count=token_out,
+                        latency_ms=latency_ms,
+                        actual_provider_id=actual_provider.id,
+                        actual_provider_model=actual_provider.model,
+                        provider_retry_count=retry_state.total_retries,
+                    )
+                    return None, ("brief_quality_failed", summary)
+                # 首次质量失败：汇总后单次 repair，repair 输入含全部已发现问题
+                # （citation + support + coverage）。
+                repair_count += 1
+                candidate_payload_dict = brief.model_dump(mode="json")
+                last_issues = [
+                    self._render_issue_for_repair(issue) for issue in quality.issues
+                ]
+                continue
+
+            # 全部门禁通过（citation/support/coverage 全 supported）。
             result = BriefGenerationResult(
                 payload=brief,
                 validation_report_json=validation_report_json,
-                support_results=support_results,
+                support_results=quality.support_results,
                 token_input_count=token_in,
                 token_output_count=token_out,
                 latency_ms=latency_ms,
@@ -1891,18 +1878,6 @@ class BriefWorker:
                 provider_retry_count=retry_state.total_retries,
                 repair_count=repair_count,
             )
-            if non_supported:
-                if repair_count >= 1:
-                    return result, None
-                # 首次 support 失败：受约束 repair。
-                repair_count += 1
-                candidate_payload_dict = brief.model_dump(mode="json")
-                last_issues = [
-                    self._format_one_support_issue(item) for item in non_supported
-                ]
-                continue
-
-            # 全部门禁通过。
             return result, None
 
     def _run_support_validation(
@@ -1915,6 +1890,7 @@ class BriefWorker:
         retry_state: "_RetryState",
         outer_job_id: Optional[int] = None,
         outer_attempt_token: str = "",
+        skip_block_paths: Optional[set[str]] = None,
     ) -> list[dict[str, Any]]:
         """Spec §10.3 独立 Validator：逐条 statement 判定 supported/partial/...
 
@@ -1922,13 +1898,22 @@ class BriefWorker:
         /5xx 等基础设施失败可切换固定 fallback；Validator 的非法 JSON、unsupported
         等内容判定属于质量结论，不切换 Provider。Validator 调用共享同一
         ``retry_state``，保证诊断完整。
+
+        KBR-05：``skip_block_paths`` 中的 block（citation 无效）不发起 Validator 调用，
+        其 citation 问题已进入统一 repair report；其余 citation 有效 block 继续逐条
+        support validation，以收集尽可能完整的质量反馈。Validator 仍只读取单条
+        statement 及其声明的 Evidence。
         """
+        skip_set = skip_block_paths or set()
         results: list[dict[str, Any]] = []
         current_provider = provider
         current_fallback = fallback
         for block_name, statement, evidence_ids in collect_brief_statement_blocks(
             brief
         ):
+            if block_name in skip_set:
+                # citation 无效的 block 不调 Validator（Spec Implementation Decisions）。
+                continue
             if (
                 outer_job_id is not None
                 and not self._renew_outer_lease(outer_job_id, outer_attempt_token)
@@ -1941,15 +1926,6 @@ class BriefWorker:
                 for eid in evidence_ids
                 if eid in evidence_index
             ]
-            if not cited:
-                results.append(
-                    {
-                        "block": block_name,
-                        "decision": "unsupported",
-                        "reason": "citation 不属于当前 Source/Snapshot",
-                    }
-                )
-                continue
             try:
                 (
                     raw_text,
@@ -1978,6 +1954,7 @@ class BriefWorker:
                         "block": block_name,
                         "decision": "unsupported",
                         "reason": f"Validator 输出无法解析：{exc.message}",
+                        "evidence_ids": list(evidence_ids),
                     }
                 )
                 continue
@@ -1987,6 +1964,7 @@ class BriefWorker:
                         "block": block_name,
                         "decision": "unsupported",
                         "reason": f"Validator 调用失败：{exc.code}",
+                        "evidence_ids": list(evidence_ids),
                     }
                 )
                 continue
@@ -1995,6 +1973,7 @@ class BriefWorker:
                     "block": block_name,
                     "decision": decision.decision,
                     "reason": decision.reason,
+                    "evidence_ids": list(evidence_ids),
                 }
             )
         return results
@@ -2011,15 +1990,172 @@ class BriefWorker:
             "alt_text": evidence.search_text if evidence.kind == "asset" else "",
         }
 
-    def _format_one_support_issue(self, item: dict[str, Any]) -> str:
-        """Spec §10.3 单条 support 失败项，repair validation_issues 与聚合 failure 共用。"""
-        return f"{item.get('block')}: {item.get('decision')} ({item.get('reason')})"
+    def _evaluate_brief_quality(
+        self,
+        *,
+        brief: BriefPayload,
+        evidence_rows: list[EvidenceRecord],
+        coverage_plan: SectionCoveragePlan,
+        primary_provider: AIProviderProfile,
+        fallback_provider: Optional[AIProviderProfile],
+        retry_state: "_RetryState",
+        outer_job_id: Optional[int] = None,
+        outer_attempt_token: str = "",
+    ) -> BriefQualityOutcome:
+        """KBR-05 汇总质量校验：citation（per-block）→ support（有效 block 逐条）→ coverage。
 
-    def _format_support_failure(self, items: list[dict[str, Any]]) -> str:
-        summary = "; ".join(
-            self._format_one_support_issue(item) for item in items[:5]
+        三类问题合并成统一 ``issues``，不按首个失败返回。citation 无效的 block 不发起
+        Validator，其问题按 missing/ownership 分类进入 report；citation 有效 block 继续
+        逐条 support validation，以收集尽可能完整的反馈。coverage 用 KBR-04 实际 citation
+        结果派生，与 citation/support 问题合并。
+        """
+        report = validate_brief_against_evidence(
+            brief, evidence_rows=evidence_rows, expected_sections=coverage_plan
         )
-        return f"Brief 存在 {len(items)} 条 statement 未通过 support 校验：{summary}"
+        evidence_index = {row.id: row for row in evidence_rows}
+
+        issues: list[ValidationIssue] = []
+        invalid_block_paths: set[str] = set()
+        for block in report.citation_blocks:
+            if not block.invalid_evidence_ids:
+                continue
+            invalid_block_paths.add(block.block_path)
+            for evidence_id in block.invalid_evidence_ids:
+                # 区分 citation_missing（编造）与 citation_ownership（跨 Source/Snapshot）。
+                owner = self._repository.get_evidence(evidence_id)
+                if owner is None:
+                    issues.append(
+                        ValidationIssue(
+                            block_path=block.block_path,
+                            issue_type=ISSUE_CITATION_MISSING,
+                            decision="",
+                            reason=f"引用了未知 Evidence {evidence_id}",
+                            evidence_ids=[evidence_id],
+                        )
+                    )
+                else:
+                    issues.append(
+                        ValidationIssue(
+                            block_path=block.block_path,
+                            issue_type=ISSUE_CITATION_OWNERSHIP,
+                            decision="",
+                            reason=(
+                                f"Evidence {evidence_id} 不属于当前 Source/Snapshot"
+                            ),
+                            evidence_ids=[evidence_id],
+                        )
+                    )
+
+        support_results = self._run_support_validation(
+            brief=brief,
+            evidence_index=evidence_index,
+            provider=primary_provider,
+            fallback=fallback_provider,
+            retry_state=retry_state,
+            outer_job_id=outer_job_id,
+            outer_attempt_token=outer_attempt_token,
+            skip_block_paths=invalid_block_paths,
+        )
+        for result in support_results:
+            decision = result["decision"]
+            if decision == "supported":
+                continue
+            # decision 来自 parse_support_decision（保证在允许集合）或 except 分支的
+            # "unsupported"；supported 已跳过，剩余均能在 SUPPORT_DECISION_ISSUE_TYPE 命中。
+            issue_type = SUPPORT_DECISION_ISSUE_TYPE[decision]
+            issues.append(
+                ValidationIssue(
+                    block_path=str(result.get("block", "")),
+                    issue_type=issue_type,
+                    decision=decision,
+                    reason=str(result.get("reason", "")),
+                    evidence_ids=list(result.get("evidence_ids", [])),
+                )
+            )
+
+        for status in report.coverage_statuses:
+            if status.status == "missing":
+                issues.append(
+                    ValidationIssue(
+                        block_path=f"coverage[{status.section_key}]",
+                        issue_type=ISSUE_COVERAGE_MISSING,
+                        decision="",
+                        reason="含文本 Evidence 但未被任何 statement 实际引用",
+                        evidence_ids=[],
+                    )
+                )
+
+        return BriefQualityOutcome(
+            issues=issues,
+            support_results=support_results,
+            coverage_statuses=list(report.coverage_statuses),
+            programmatic_issues=list(report.issues),
+        )
+
+    def _build_structured_report(
+        self, *, quality: BriefQualityOutcome, repair_count: int
+    ) -> str:
+        """KBR-05 结构化 validation report：全部失败项 + coverage 状态 + support 结果。
+
+        Source 状态区只显示稳定 error_code + 失败总数 + 短摘要；Attempt/处理记录展示
+        全部失败项（block_path + issue_type + decision + reason + evidence_ids），可定位
+        到候选 Brief block 与已引用 Evidence。不复制 Evidence 正文（按 evidence_ids 读）。
+        """
+        has_failures = bool(quality.issues)
+        issues_payload = [
+            {
+                "block_path": issue.block_path,
+                "issue_type": issue.issue_type,
+                "decision": issue.decision,
+                "reason": issue.reason,
+                "evidence_ids": list(issue.evidence_ids),
+            }
+            for issue in quality.issues
+        ]
+        return json.dumps(
+            {
+                "stage": "quality_failed" if has_failures else "quality_passed",
+                "error_code": "brief_quality_failed" if has_failures else "",
+                "failure_count": len(quality.issues),
+                "summary": (
+                    self._format_quality_summary(quality.issues) if has_failures else ""
+                ),
+                "issues": issues_payload,
+                "coverage_statuses": [
+                    {
+                        "section_key": status.section_key,
+                        "status": status.status,
+                        "skipped_reason": status.skipped_reason,
+                    }
+                    for status in quality.coverage_statuses
+                ],
+                "support_results": quality.support_results,
+                "programmatic_issues": quality.programmatic_issues,
+                "repair_count": repair_count,
+            },
+            ensure_ascii=False,
+        )
+
+    def _format_quality_summary(self, issues: list[ValidationIssue]) -> str:
+        """稳定短摘要：失败总数 + 按分类（citation/support/coverage）计数。
+
+        不半句截断；不复制 Evidence 正文或具体 issue reason。
+        """
+        counts: dict[str, int] = {}
+        for issue in issues:
+            category = issue.issue_type.split("_", 1)[0]
+            counts[category] = counts.get(category, 0) + 1
+        parts = [f"{label} ×{count}" for label, count in counts.items()]
+        detail = "，".join(parts) if parts else "未分类"
+        return f"Brief 质量校验失败：共 {len(issues)} 条（{detail}），详见处理记录"
+
+    def _render_issue_for_repair(self, issue: ValidationIssue) -> str:
+        """单条结构化 issue → repair prompt 的 validation_issues 字符串行。
+
+        格式 ``{block_path}: {issue_type} — {reason}``，供 repair Agent 按行修复。
+        KBR-05 只改 repair 时机与 report 结构；结构化 patch 由 KBR-06 升级。
+        """
+        return f"{issue.block_path}: {issue.issue_type} — {issue.reason}"
 
     def _call_model_once(
         self, provider: AIProviderProfile, messages: list[dict[str, str]]

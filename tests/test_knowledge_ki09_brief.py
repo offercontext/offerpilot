@@ -804,7 +804,8 @@ def test_brief_worker_fails_when_support_unsupported(tmp_path: Path) -> None:
     results = runner.tick_brief(lease_owner="test")
     assert results
     assert results[0].status == "failed"
-    assert results[0].error_code == "brief_support_invalid"
+    # KBR-05：质量失败统一 error_code；support unsupported 进入结构化 report。
+    assert results[0].error_code == "brief_quality_failed"
     source = repository.get_source(source_id)
     assert source is not None
     assert source.brief_status == "failed"
@@ -1034,7 +1035,19 @@ def test_brief_worker_fails_for_non_supported_decisions(
     results = runner.tick_brief(lease_owner="test")
     assert results
     assert results[0].status == "failed"
-    assert results[0].error_code == "brief_support_invalid"
+    # KBR-05：partial/unsupported/contradicted 均为硬失败，统一 error_code；
+    # 具体支持性判定在结构化 report 的 issue_type 中区分。
+    assert results[0].error_code == "brief_quality_failed"
+    attempt = repository.find_latest_brief_attempt(source_id)
+    assert attempt is not None
+    report = json.loads(attempt.validation_report_json or "{}")
+    issue_types = {item.get("issue_type") for item in report.get("issues", [])}
+    expected_issue_type = {
+        "partial": "support_partial",
+        "unsupported": "support_unsupported",
+        "contradicted": "support_contradicted",
+    }[decision]
+    assert expected_issue_type in issue_types
     source = repository.get_source(source_id)
     assert source is not None
     assert source.brief_status == "failed"

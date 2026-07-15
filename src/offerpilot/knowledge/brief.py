@@ -43,6 +43,25 @@ BRIEF_MIN_CONTEXT_WINDOW = 96_000
 VALID_COVERAGE_STATUSES = ("covered", "skipped")
 VALID_SUPPORT_DECISIONS = ("supported", "partial", "unsupported", "contradicted")
 
+# KBR-05：结构化 validation report 的 issue_type 枚举（Spec Implementation Decisions）。
+# Source 状态区只显示稳定 error code + 总数；每类失败在 Attempt 详情中按 issue_type 区分，
+# 供 repair 输入（KBR-06 patch）与 UI 定位使用。详情按 evidence_ids 从本地数据读取，
+# 不复制 Evidence 正文。
+ISSUE_SCHEMA_INVALID = "schema_invalid"
+ISSUE_CITATION_MISSING = "citation_missing"
+ISSUE_CITATION_OWNERSHIP = "citation_ownership"
+ISSUE_SUPPORT_PARTIAL = "support_partial"
+ISSUE_SUPPORT_UNSUPPORTED = "support_unsupported"
+ISSUE_SUPPORT_CONTRADICTED = "support_contradicted"
+ISSUE_COVERAGE_MISSING = "coverage_missing"
+
+# support decision → issue_type 映射（supported 不进 report）。
+SUPPORT_DECISION_ISSUE_TYPE: dict[str, str] = {
+    "partial": ISSUE_SUPPORT_PARTIAL,
+    "unsupported": ISSUE_SUPPORT_UNSUPPORTED,
+    "contradicted": ISSUE_SUPPORT_CONTRADICTED,
+}
+
 
 class BriefSchemaError(Exception):
     """程序校验失败，携带稳定 error_code。"""
@@ -386,8 +405,45 @@ def parse_brief_payload(raw_text: str) -> BriefPayload:
 
 
 @dataclass(frozen=True)
+class ValidationIssue:
+    """KBR-05 结构化校验失败项。
+
+    每项至少含 block path、issue type、decision、reason 和 evidence IDs。decision 仅对
+    support 类 issue 非空（supported 不进 report）；其余类型 decision=""。详情不复制
+    Evidence 正文，前端/repair 按 ``evidence_ids`` 从本地数据读取。
+    """
+
+    block_path: str
+    issue_type: str
+    decision: str
+    reason: str
+    evidence_ids: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class CitationBlockStatus:
+    """单 block 的 citation 检查结果：有效 / 无效 evidence_ids 分组。
+
+    无效 evidence_ids 非空的 block 不发起 support Validator（Spec Implementation
+    Decisions），其 citation 问题进入统一 repair report。worker 负责进一步区分
+    citation_missing / citation_ownership。
+    """
+
+    block_path: str
+    valid_evidence_ids: list[str] = field(default_factory=list)
+    invalid_evidence_ids: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class BriefValidationReport:
-    """Spec §10.3 程序校验报告。"""
+    """Spec §10.3 程序校验报告（KBR-05 结构化扩展）。
+
+    KBR-04 nit #1：``coverage_statuses`` 结构化保存 per-section coverage status
+    （covered/skipped/missing），不再只存 issues 字符串。
+    KBR-05：``citation_blocks`` 提供 per-block citation 有效/无效 evidence_ids，
+    供 worker 汇总统一 repair 输入。``issues`` / ``repair_hints`` 字符串列表保留
+    向后兼容（人可读摘要），不再是数据存储边界。
+    """
 
     schema_ok: bool
     citation_ok: bool
@@ -396,6 +452,8 @@ class BriefValidationReport:
     issues: list[str] = field(default_factory=list)
     support_results: list[dict[str, str]] = field(default_factory=list)
     repair_hints: list[str] = field(default_factory=list)
+    citation_blocks: list[CitationBlockStatus] = field(default_factory=list)
+    coverage_statuses: list["DerivedSectionStatus"] = field(default_factory=list)
 
 
 def validate_brief_against_evidence(
@@ -404,21 +462,27 @@ def validate_brief_against_evidence(
     evidence_rows: Iterable[Any],
     expected_sections: "SectionCoveragePlan",
 ) -> BriefValidationReport:
-    """Spec §10.3 / KBR-04 程序校验：Schema、citation、coverage（派生）。
+    """Spec §10.3 / KBR-04 / KBR-05 程序校验：Schema、citation（per-block）、coverage（派生）。
 
     Schema 已由 ``parse_brief_payload`` 完成；本方法检查：
-    - 每个 statement/summary 的 ``evidence_ids`` 全部属于当前 Source/Snapshot。
+    - 每个 statement/summary 的 ``evidence_ids`` 是否属于当前 Source/Snapshot，并按 block
+      结构化记录有效/无效集合（``citation_blocks``）。无效 citation 的 block 不发起
+      support Validator（由 worker 汇总时跳过），其问题进入统一 repair report。
     - coverage 由候选 Brief 的实际 citations 派生（``derive_section_coverage``）：
       含文本 Evidence 的章节必须至少有一条 Evidence 被实际引用，否则 coverage 失败。
-      模型不再输出 coverage 字段，故无法通过声明状态绕过门禁。
+      程序派生结果结构化保存到 ``coverage_statuses``（KBR-04 nit #1）。
 
-    support 校验需要调用 Provider，由 ``_run_support_validation`` 单独完成。
+    本方法不按首个失败返回；citation 与 coverage 问题全部进入 ``issues`` /
+    ``citation_blocks`` / ``coverage_statuses``，供 worker 与 citation/support/coverage
+    合并。support 校验需要调用 Provider，由 ``_run_support_validation`` 单独完成。
     """
     evidence_ids = {str(getattr(row, "id", "")) for row in evidence_rows}
     issues: list[str] = []
+    citation_blocks: list[CitationBlockStatus] = []
 
-    citation_ok = _check_citations(brief, evidence_ids, issues)
-    coverage_ok = _check_coverage(brief, evidence_rows, expected_sections, issues)
+    citation_ok = _check_citations(brief, evidence_ids, issues, citation_blocks)
+    coverage_statuses = derive_section_coverage(brief, evidence_rows, expected_sections)
+    coverage_ok = _check_coverage(coverage_statuses, issues)
 
     return BriefValidationReport(
         schema_ok=True,
@@ -428,13 +492,18 @@ def validate_brief_against_evidence(
         issues=issues,
         support_results=[],
         repair_hints=list(issues),
+        citation_blocks=citation_blocks,
+        coverage_statuses=coverage_statuses,
     )
 
 
 def _check_citations(
-    brief: BriefPayload, evidence_ids: set[str], issues: list[str]
+    brief: BriefPayload,
+    evidence_ids: set[str],
+    issues: list[str],
+    citation_blocks: list[CitationBlockStatus],
 ) -> bool:
-    """Spec §10.3 citation 存在性、Source/Snapshot 归属关系校验。"""
+    """Spec §10.3 / KBR-05 citation 存在性校验，按 block 结构化记录有效/无效 evidence。"""
     ok = True
 
     def _check_block(
@@ -443,12 +512,24 @@ def _check_citations(
     ) -> None:
         nonlocal ok
         for index, item in enumerate(items):
+            valid: list[str] = []
+            invalid: list[str] = []
             for evidence_id in item.evidence_ids:
-                if evidence_id not in evidence_ids:
+                if evidence_id in evidence_ids:
+                    valid.append(evidence_id)
+                else:
+                    invalid.append(evidence_id)
                     ok = False
                     issues.append(
                         f"{block_name}[{index}] 引用了未知 Evidence {evidence_id}"
                     )
+            citation_blocks.append(
+                CitationBlockStatus(
+                    block_path=f"{block_name}[{index}]",
+                    valid_evidence_ids=valid,
+                    invalid_evidence_ids=invalid,
+                )
+            )
 
     _check_block("overview", brief.overview)
     _check_block("key_points", brief.key_points)
@@ -458,9 +539,7 @@ def _check_citations(
 
 
 def _check_coverage(
-    brief: BriefPayload,
-    evidence_rows: Iterable[Any],
-    expected_sections: "SectionCoveragePlan",
+    coverage_statuses: "list[DerivedSectionStatus]",
     issues: list[str],
 ) -> bool:
     """Spec §10.3 / KBR-04 章节 coverage 完整性校验（基于实际 citation 派生）。
@@ -468,9 +547,8 @@ def _check_coverage(
     某章节含合格正文 Evidence 但未被候选 Brief 的任何 statement/guide 实际引用，
     则该章节 missing，coverage 失败。assets-only 章节由程序标 skipped，不要求引用。
     """
-    statuses = derive_section_coverage(brief, evidence_rows, expected_sections)
     ok = True
-    for status in statuses:
+    for status in coverage_statuses:
         if status.status == "missing":
             ok = False
             issues.append(
