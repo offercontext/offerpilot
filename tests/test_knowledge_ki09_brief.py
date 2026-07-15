@@ -362,18 +362,32 @@ def test_generation_prompt_marks_assets_only_sections() -> None:
 
 
 def test_repair_prompt_restricts_to_fixes() -> None:
-    """Spec §10.3 repair 只能删除/收缩/重新引用。"""
+    """Spec §10.3 / KBR-06 repair 只能对失败 block 返回 replace/delete/split patch。"""
+    from offerpilot.knowledge.brief import ISSUE_CITATION_MISSING, ValidationIssue
+
+    evidence_row = _evidence_record(evidence_id="ev_1")
     messages = build_repair_prompt(
         source_title="T",
-        evidence_rows=[_evidence_record(evidence_id="ev_1")],
-        coverage_plan=build_section_coverage_plan(
-            [_evidence_record(evidence_id="ev_1")]
-        ),
-        candidate_payload=_valid_payload_dict(),
-        validation_issues=["overview[0] 引用 ev_FAKE 不存在"],
+        evidence_rows=[evidence_row],
+        coverage_plan=build_section_coverage_plan([evidence_row]),
+        candidate=parse_brief_payload(json.dumps(_valid_payload_dict(), ensure_ascii=False)),
+        failed_issues=[
+            ValidationIssue(
+                block_path="overview[0]",
+                issue_type=ISSUE_CITATION_MISSING,
+                decision="",
+                reason="引用 ev_FAKE 不存在",
+                evidence_ids=["ev_FAKE"],
+            )
+        ],
+        failed_block_paths=["overview[0]"],
     )
-    assert "只能删除" in messages[0]["content"]
-    assert "overview[0] 引用 ev_FAKE 不存在" in messages[1]["content"]
+    # patch prompt 只允许 replace/delete/split，禁止改已通过 block / 跨 Source / 新增主题。
+    assert "replace" in messages[0]["content"]
+    assert "delete" in messages[0]["content"]
+    assert "split" in messages[0]["content"]
+    assert "overview[0]" in messages[1]["content"]
+    assert "引用 ev_FAKE 不存在" in messages[1]["content"]
 
 
 def test_validation_prompt_isolates_statement_and_evidence() -> None:
@@ -657,6 +671,9 @@ def _stub_model_client_factory(
             text = validation_outputs.pop(0) if validation_outputs else (
                 json.dumps({"decision": "supported", "reason": "stub supported"})
             )
+        elif "Repair Agent" in system_text:
+            # KBR-06：repair 必须返回结构化 patch；空 patch 应用后候选不变，复验仍失败。
+            text = json.dumps({"version": 1, "operations": []}, ensure_ascii=False)
         else:
             text = generation_output
         return {
@@ -821,7 +838,7 @@ def test_brief_worker_repairs_once_then_succeeds(tmp_path: Path) -> None:
     evidence_page = repository.list_evidence(source_id, snapshot_id=snapshot_id, limit=50)
     valid_payload = _build_valid_payload_from_evidence(evidence_page.items)
 
-    invalid_payload = _valid_payload_dict()
+    invalid_payload = json.loads(json.dumps(valid_payload))
     invalid_payload["overview"][0]["evidence_ids"] = ["ev_FAKE"]
 
     call_index = {"generation": 0}
@@ -845,24 +862,31 @@ def test_brief_worker_repairs_once_then_succeeds(tmp_path: Path) -> None:
                 ],
                 "usage": {"prompt_tokens": 10, "completion_tokens": 20},
             }
-
-        call_index["generation"] += 1
-        if call_index["generation"] == 1:
+        if "Repair Agent" in system_text:
+            # KBR-06：repair 返回结构化 patch，replace overview[0] 为合法 citation。
+            patch = {
+                "version": 1,
+                "operations": [
+                    {
+                        "block_path": "overview[0]",
+                        "action": "replace",
+                        "payload": valid_payload["overview"][0],
+                    }
+                ],
+            }
             return {
                 "choices": [
-                    {
-                        "message": {
-                            "content": json.dumps(invalid_payload, ensure_ascii=False)
-                        }
-                    }
+                    {"message": {"content": json.dumps(patch, ensure_ascii=False)}}
                 ],
                 "usage": {"prompt_tokens": 10, "completion_tokens": 20},
             }
+
+        call_index["generation"] += 1
         return {
             "choices": [
                 {
                     "message": {
-                        "content": json.dumps(valid_payload, ensure_ascii=False)
+                        "content": json.dumps(invalid_payload, ensure_ascii=False)
                     }
                 }
             ],
@@ -1006,6 +1030,20 @@ def test_brief_worker_fails_for_non_supported_decisions(
                 ],
                 "usage": {"prompt_tokens": 10, "completion_tokens": 20},
             }
+        if "Repair Agent" in system_text:
+            # KBR-06：repair 返回空 patch，复验仍产生同样非 supported decision → 失败。
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {"version": 1, "operations": []}, ensure_ascii=False
+                            )
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+            }
         return {
             "choices": [
                 {
@@ -1055,13 +1093,10 @@ def test_brief_worker_fails_for_non_supported_decisions(
 
 
 def test_brief_worker_repairs_support_failure_then_succeeds(tmp_path: Path) -> None:
-    """Spec §10.3 support validation 首次失败也允许一次受约束 repair。
+    """Spec §10.3 / KBR-06 support validation 首次失败允许一次结构化 patch repair。
 
-    Spec §10.3 门禁顺序第 5 步 support validation 属于"首次校验失败允许一次受约束
-    修复"覆盖范围；repair prompt 已约束"删除/收缩/重新引用"，正适合 partial
-    statement。KI-12 真实 Provider 验收暴露：原实现只在 schema/citation/coverage 失败
-    时 repair，support validation 在循环外直接 fail，真实模型生成的 Brief 因少量
-    partial statement 被直接拒绝，没有获得 repair 机会。
+    首轮 overview[0] partial → repair replace overview[0] 为原子陈述 → 复验全 supported
+    → ready。KBR-06 把 repair 从「重写完整 Brief」改为「只对失败 block 返回 patch」。
     """
     repository, session_factory, source_id, snapshot_id = _setup_repository(tmp_path)
     config = _provider_config()
@@ -1069,7 +1104,7 @@ def test_brief_worker_repairs_support_failure_then_succeeds(tmp_path: Path) -> N
     evidence_page = repository.list_evidence(source_id, snapshot_id=snapshot_id, limit=50)
     valid_payload = _build_valid_payload_from_evidence(evidence_page.items)
 
-    call_state = {"generation_count": 0, "validation_phase": 0}
+    call_state = {"generation_count": 0, "validation_calls": 0}
 
     def _client(**payload: Any) -> dict[str, Any]:
         system_text = ""
@@ -1077,21 +1112,43 @@ def test_brief_worker_repairs_support_failure_then_succeeds(tmp_path: Path) -> N
             if message.get("role") == "system":
                 system_text = message.get("content") or ""
         if "Validator" in system_text:
-            decision = "partial" if call_state["validation_phase"] == 0 else "supported"
+            # 第 1 次 validation（overview[0]）partial，其余 supported。
+            call_state["validation_calls"] += 1
+            decision = (
+                "partial" if call_state["validation_calls"] == 1 else "supported"
+            )
             return {
                 "choices": [
                     {
                         "message": {
                             "content": json.dumps(
-                                {"decision": decision, "reason": "stub support phase"}
+                                {"decision": decision, "reason": "stub support"}
                             )
                         }
                     }
                 ],
                 "usage": {"prompt_tokens": 10, "completion_tokens": 20},
             }
+        if "Repair Agent" in system_text:
+            # KBR-06：repair replace overview[0]（失败 block）为原子陈述。
+            call_state["generation_count"] += 1
+            patch = {
+                "version": 1,
+                "operations": [
+                    {
+                        "block_path": "overview[0]",
+                        "action": "replace",
+                        "payload": valid_payload["overview"][0],
+                    }
+                ],
+            }
+            return {
+                "choices": [
+                    {"message": {"content": json.dumps(patch, ensure_ascii=False)}}
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+            }
         call_state["generation_count"] += 1
-        call_state["validation_phase"] = call_state["generation_count"] - 1
         return {
             "choices": [
                 {

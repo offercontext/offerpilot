@@ -2477,6 +2477,7 @@ class KnowledgeRepository:
         actual_provider_id: str = "",
         actual_provider_model: str = "",
         provider_retry_count: int = 0,
+        repair_count: Optional[int] = None,
     ) -> tuple[bool, Optional[SourceBriefRecord], Optional[JobRecord]]:
         """Spec §10.3 / §10.4：成功 Brief 与 winning Attempt 在同一事务中提交。
 
@@ -2568,6 +2569,9 @@ class KnowledgeRepository:
                 attempt_row.actual_provider_id = actual_provider_id
                 attempt_row.actual_provider_model = actual_provider_model
                 attempt_row.provider_retry_count = provider_retry_count
+                # KBR-06：repair 成功时持久化 repair_count（与 winning Attempt 同事务）。
+                if repair_count is not None:
+                    attempt_row.repair_count = repair_count
                 attempt_row.next_retry_at = None
                 attempt_row.updated_at = moment
                 job_row.status = "succeeded"

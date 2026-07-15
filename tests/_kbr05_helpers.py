@@ -116,27 +116,41 @@ def mixed_failure_valid_block_count(evidence_items: list[Any]) -> int:
 
 
 def extract_repair_issues(user_text: str) -> list[str]:
-    """从 repair prompt user_text 提取「校验失败原因」段的 issue 行。
+    """从 repair prompt user_text 提取「结构化失败报告」段的 issue_type 列表。
 
-    ``build_repair_prompt`` 渲染为：
+    KBR-06 ``build_repair_prompt`` 把失败 issues 渲染为 JSON 数组：
     ```
-    校验失败原因（每行一条，按顺序修复）：
-    - overview[1]: support_partial — 部分推断
-    - key_points[0]: citation_missing — ...
+    结构化失败报告（每项含 block_path/issue_type/...）：
+    [
+      {"block_path": "overview[1]", "issue_type": "support_partial", ...},
+      ...
+    ]
     ```
-    返回去掉 ``- `` 前缀的 issue 文本列表（不含 Evidence 正文）。
+    返回 issue_type 字符串列表（不含 Evidence 正文）。
     """
-    marker = "校验失败原因"
+    marker = "结构化失败报告"
     if marker not in user_text:
         return []
     tail = user_text.split(marker, 1)[1]
-    issues: list[str] = []
-    for raw_line in tail.splitlines():
-        stripped = raw_line.strip()
-        if stripped.startswith("- "):
-            issues.append(stripped[2:].strip())
-            continue
-        # 已开始收集后遇到非 bullet 行即结束（后续是「请输出...」指令）。
-        if issues and stripped:
-            break
-    return issues
+    start = tail.find("[")
+    if start == -1:
+        return []
+    # brace/bracket 计数提取首个完整 JSON 数组。
+    depth = 0
+    end = -1
+    for index in range(start, len(tail)):
+        ch = tail[index]
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                end = index
+                break
+    if end == -1:
+        return []
+    try:
+        items = json.loads(tail[start : end + 1])
+    except json.JSONDecodeError:
+        return []
+    return [str(item.get("issue_type", "")) for item in items if isinstance(item, dict)]

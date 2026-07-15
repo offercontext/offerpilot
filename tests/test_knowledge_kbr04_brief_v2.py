@@ -23,6 +23,8 @@ from offerpilot.knowledge.brief import (
     BRIEF_SCHEMA_VERSION,
     BriefPayload,
     BriefSchemaError,
+    ISSUE_CITATION_MISSING,
+    ValidationIssue,
     build_generation_prompt,
     build_repair_prompt,
     build_section_coverage_plan,
@@ -360,18 +362,35 @@ def test_generation_prompt_overview_forbids_unsupported_facts() -> None:
     assert "禁止" in system or "不得" in system
 
 
-def test_repair_prompt_drops_coverage_output() -> None:
+def test_repair_prompt_requests_structured_patch_without_coverage() -> None:
+    """KBR-06：repair prompt 要求结构化 patch（replace/delete/split），不输出 coverage。"""
     evidence = [_ev("ev_1", ("概述",))]
     plan = build_section_coverage_plan(evidence)
+    candidate = parse_brief_payload(json.dumps(_v2_payload(), ensure_ascii=False))
+    issue = ValidationIssue(
+        block_path="overview[0]",
+        issue_type=ISSUE_CITATION_MISSING,
+        decision="",
+        reason="引用 ev_FAKE 不存在",
+        evidence_ids=["ev_FAKE"],
+    )
     messages = build_repair_prompt(
         source_title="T",
         evidence_rows=evidence,
         coverage_plan=plan,
-        candidate_payload=_v2_payload(),
-        validation_issues=["overview[0] 引用 ev_FAKE 不存在"],
+        candidate=candidate,
+        failed_issues=[issue],
+        failed_block_paths=["overview[0]"],
     )
-    assert '"coverage"' not in messages[0]["content"]
-    assert "overview[0] 引用 ev_FAKE 不存在" in messages[1]["content"]
+    system = messages[0]["content"]
+    user = messages[1]["content"]
+    # patch prompt 要求结构化 patch，不输出 coverage 字段。
+    assert '"coverage"' not in system
+    assert "patch" in system
+    assert "replace" in system and "split" in system and "delete" in system
+    # 失败 block 与原因进入结构化失败报告。
+    assert "overview[0]" in user
+    assert "引用 ev_FAKE 不存在" in user
 
 
 # ---------------------------------------------------------------------------

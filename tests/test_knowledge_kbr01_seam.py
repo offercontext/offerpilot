@@ -22,6 +22,7 @@ from offerpilot.knowledge.service import KnowledgeIngestService
 
 from _knowledge_seam import (
     BriefRunOutcome,
+    EMPTY_REPAIR_PATCH,
     RoleAwareModelClient,
     build_supported_brief_json,
     drive_brief_queue,
@@ -89,7 +90,7 @@ def test_role_aware_client_classifies_generation_repair_validation(tmp_path: Pat
     val_count = expected_validation_count(brief_json)
     client = RoleAwareModelClient(
         generation=[brief_json],
-        repair=[brief_json],
+        repair=[EMPTY_REPAIR_PATCH],
         validation=[unsupported] * (val_count * 2),
     )
     drive_brief_queue(
@@ -188,7 +189,7 @@ def test_seam_failure_path_keeps_evidence_searchable_and_no_half_committed_brief
     val_count = expected_validation_count(brief_json)
     client = RoleAwareModelClient(
         generation=[brief_json],
-        repair=[brief_json],
+        repair=[EMPTY_REPAIR_PATCH],
         validation=[unsupported] * (val_count * 2),
     )
     outcome = drive_brief_queue(
@@ -245,7 +246,7 @@ def test_seam_rebuild_failure_preserves_existing_brief(tmp_path: Path) -> None:
     val_count = expected_validation_count(brief_json)
     rebuild_client = RoleAwareModelClient(
         generation=[brief_json],
-        repair=[brief_json],
+        repair=[EMPTY_REPAIR_PATCH],
         validation=[unsupported] * (val_count * 2),
     )
     rebuild = drive_brief_queue(

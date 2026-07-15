@@ -42,6 +42,7 @@ from offerpilot.knowledge.brief import (
 
 from _knowledge_seam import (
     BriefRunOutcome,
+    EMPTY_REPAIR_PATCH,
     RoleAwareModelClient,
     drive_brief_queue,
     ingest_and_extract,
@@ -53,9 +54,6 @@ from _kbr05_helpers import (
     extract_repair_issues,
     mixed_failure_valid_block_count,
 )
-
-
-_QUALIFIED_CONFIG_MARKER = "BRIEF_MIN_CONTEXT_WINDOW"
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +280,7 @@ def test_mixed_failures_aggregated_into_single_repair(tmp_path: Path) -> None:
     # 两轮（repair 前后）共用同样序列。
     client = _RepairCapturingClient(
         generation=[mixed_brief_json],
-        repair=[mixed_brief_json],  # repair 仍返回有问题的 brief → 第二轮失败
+        repair=[EMPTY_REPAIR_PATCH],  # KBR-06：空 patch 应用后候选不变，第二轮仍失败
         validation=validation_batch * 2,
     )
     outcome: BriefRunOutcome = drive_brief_queue(
@@ -306,10 +304,10 @@ def test_mixed_failures_aggregated_into_single_repair(tmp_path: Path) -> None:
     assert roles[:repair_index] == ["generation"] + ["validation"] * valid_block_count
     assert roles[repair_index + 1 :] == ["validation"] * valid_block_count
 
-    # repair 输入含全部三类问题。
+    # repair 输入含全部三类问题（KBR-06 patch prompt 以 JSON 结构化失败报告呈现）。
     assert len(client.repair_issue_batches) == 1
     repair_issues = client.repair_issue_batches[0]
-    issue_type_set = {extract_issue_type(line) for line in repair_issues}
+    issue_type_set = set(repair_issues)
     assert ISSUE_CITATION_MISSING in issue_type_set
     assert ISSUE_SUPPORT_PARTIAL in issue_type_set
     assert ISSUE_COVERAGE_MISSING in issue_type_set
@@ -350,7 +348,7 @@ def test_citation_invalid_block_skips_validator_valid_blocks_continue(
     supported = json.dumps({"decision": "supported", "reason": "ok"})
     client = _RepairCapturingClient(
         generation=[mixed_brief_json],
-        repair=[mixed_brief_json],
+        repair=[EMPTY_REPAIR_PATCH],
         validation=[supported] * (valid_block_count * 2),
     )
     outcome = drive_brief_queue(
@@ -425,7 +423,7 @@ def test_support_partial_is_hard_failure(tmp_path: Path) -> None:
     partial = json.dumps({"decision": "partial", "reason": "部分推断"})
     client = RoleAwareModelClient(
         generation=[brief_json],
-        repair=[brief_json],
+        repair=[EMPTY_REPAIR_PATCH],
         validation=[partial] * (val_count * 2),
     )
     outcome = drive_brief_queue(
@@ -465,7 +463,7 @@ def test_support_contradicted_is_hard_failure(tmp_path: Path) -> None:
     )
     client = RoleAwareModelClient(
         generation=[brief_json],
-        repair=[brief_json],
+        repair=[EMPTY_REPAIR_PATCH],
         validation=[contradicted] * (val_count * 2),
     )
     outcome = drive_brief_queue(
@@ -501,7 +499,7 @@ def test_source_status_summary_stable_code_count_short_text(tmp_path: Path) -> N
     supported = json.dumps({"decision": "supported", "reason": "ok"})
     client = _RepairCapturingClient(
         generation=[mixed_brief_json],
-        repair=[mixed_brief_json],
+        repair=[EMPTY_REPAIR_PATCH],
         validation=[supported] * (valid_block_count * 2),
     )
     outcome = drive_brief_queue(
@@ -537,7 +535,7 @@ def test_attempt_report_locates_block_and_evidence(tmp_path: Path) -> None:
     supported = json.dumps({"decision": "supported", "reason": "ok"})
     client = _RepairCapturingClient(
         generation=[mixed_brief_json],
-        repair=[mixed_brief_json],
+        repair=[EMPTY_REPAIR_PATCH],
         validation=[supported] * (valid_block_count * 2),
     )
     outcome = drive_brief_queue(
@@ -576,7 +574,7 @@ def test_report_excludes_evidence_body(tmp_path: Path) -> None:
     supported = json.dumps({"decision": "supported", "reason": "ok"})
     client = _RepairCapturingClient(
         generation=[mixed_brief_json],
-        repair=[mixed_brief_json],
+        repair=[EMPTY_REPAIR_PATCH],
         validation=[supported] * (valid_block_count * 2),
     )
     outcome = drive_brief_queue(
@@ -645,7 +643,7 @@ def test_rebuild_failure_preserves_old_brief_and_attaches_report_to_new_attempt(
         config=_qualified_config(),
         model_client=_RepairCapturingClient(
             generation=[mixed_brief_json],
-            repair=[mixed_brief_json],
+            repair=[EMPTY_REPAIR_PATCH],
             validation=[supported] * (valid_block_count * 2),
         ),
         source_id=source_id,
@@ -726,7 +724,7 @@ def test_cross_source_citation_classified_as_ownership(tmp_path: Path) -> None:
     # 但 get_evidence 能查到 → ownership）。validation 队列给足够 supported。
     client = _RepairCapturingClient(
         generation=[brief_json],
-        repair=[brief_json],
+        repair=[EMPTY_REPAIR_PATCH],
         validation=[supported] * 20,
     )
     outcome = drive_brief_queue(
@@ -783,16 +781,3 @@ def _find_other_source_evidence_id(
         if not rows:
             return ""
         return str(rows[0].id)
-
-
-def extract_issue_type(issue_line: str) -> str:
-    """从 repair prompt 的单行 issue 文本提取 issue_type。
-
-    worker 渲染格式：``{block_path}: {issue_type} — {reason}``。
-    """
-    if ":" not in issue_line:
-        return ""
-    tail = issue_line.split(":", 1)[1].strip()
-    # 取首个 token（issue_type），以空格/破折号分隔。
-    match = re.match(r"([a-z_]+)", tail)
-    return match.group(1) if match else ""

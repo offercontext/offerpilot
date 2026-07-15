@@ -1033,7 +1033,7 @@ function BriefBlock({
 }
 
 // KBR-05：issue_type → 中文 label。Source 状态区只显示稳定 error code + 失败总数 +
-// 短摘要；Attempt 详情按 issue_type 区分 citation/support/coverage 失败。
+// 短摘要；Attempt 详情按 issue_type 区分 citation/support/coverage/repair 失败。
 const ISSUE_TYPE_LABEL: Record<string, string> = {
   schema_invalid: 'Schema 非法',
   citation_missing: '引用缺失',
@@ -1042,6 +1042,9 @@ const ISSUE_TYPE_LABEL: Record<string, string> = {
   support_unsupported: '未支持',
   support_contradicted: '相矛盾',
   coverage_missing: '章节未覆盖',
+  // KBR-06：repair patch 非法/越权。
+  repair_invalid: '修复补丁非法',
+  repair_unauthorized: '修复补丁越权',
 };
 
 function BriefValidationIssues({
@@ -1062,7 +1065,10 @@ function BriefValidationIssues({
       type="error"
       showIcon
       style={{ marginTop: 8 }}
-      message={`Brief 质量校验失败：共 ${report.failure_count ?? issues.length} 条`}
+      message={
+        report.summary ??
+        `Brief 质量校验失败：共 ${report.failure_count ?? issues.length} 条`
+      }
       description={
         <Space direction="vertical" size={6} style={{ width: '100%' }}>
           {issues.map((issue, index) => (

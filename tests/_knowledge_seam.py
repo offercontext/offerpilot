@@ -25,6 +25,7 @@ from offerpilot.config import Config
 from offerpilot.db import init_database, session_factory_for_data_dir
 from offerpilot.knowledge.brief import (
     BRIEF_LANGUAGE,
+    BRIEF_REPAIR_PATCH_VERSION,
     BRIEF_SCHEMA_VERSION,
     build_section_coverage_plan,
 )
@@ -39,6 +40,13 @@ from offerpilot.knowledge.worker import (
 
 if TYPE_CHECKING:
     from offerpilot.knowledge.repository import BriefAttemptRecord, SourceBriefRecord, SourceRecord
+
+
+# KBR-06：空 repair patch。应用后候选不变，复验产生同样问题 → brief_quality_failed，
+# 用于驱动「repair 后仍失败」路径而不需要构造具体 fix。repair 成功路径需构造真实 fix patch。
+EMPTY_REPAIR_PATCH = json.dumps(
+    {"version": BRIEF_REPAIR_PATCH_VERSION, "operations": []}, ensure_ascii=False
+)
 
 
 # ---------------------------------------------------------------------------

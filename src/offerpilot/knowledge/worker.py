@@ -48,6 +48,7 @@ from offerpilot.knowledge.brief import (
     BRIEF_LANGUAGE,
     BRIEF_MIN_CONTEXT_WINDOW,
     BRIEF_PROMPT_VERSION,
+    BRIEF_REPAIR_UNAUTHORIZED,
     BRIEF_SCHEMA_VERSION,
     BriefPayload,
     BriefSchemaError,
@@ -57,12 +58,15 @@ from offerpilot.knowledge.brief import (
     SectionCoveragePlan,
     SUPPORT_DECISION_ISSUE_TYPE,
     ValidationIssue,
+    apply_repair_patch,
     build_generation_prompt,
     build_repair_prompt,
+    build_schema_repair_prompt,
     build_section_coverage_plan,
     build_validation_prompt,
     collect_brief_statement_blocks,
     parse_brief_payload,
+    parse_repair_patch,
     parse_support_decision,
     validate_brief_against_evidence,
     _extract_all_json_objects,
@@ -1618,6 +1622,7 @@ class BriefWorker:
             actual_provider_id=generation_result.actual_provider_id,
             actual_provider_model=generation_result.actual_provider_model,
             provider_retry_count=generation_result.provider_retry_count,
+            repair_count=generation_result.repair_count,
         )
         if not ok:
             # lease 失效或 attempt_token 不匹配（迟到结果）；保留 Attempt 状态不变。
@@ -1688,22 +1693,34 @@ class BriefWorker:
         outer_job_id: Optional[int] = None,
         outer_attempt_token: str = "",
     ) -> tuple[Optional[BriefGenerationResult], Optional[tuple[str, str]]]:
-        """Spec §10.3 / §11.3 / §11.4：generation + 程序校验；失败允许一次 repair。
+        """Spec §10.3 / §11.3 / §11.4 + KBR-06：generation + 程序校验；一次 repair。
 
-        KI-10：generation 与 repair 均通过 ``_call_model_with_failover`` 调用，
-        primary transient 失败可切 fallback；内容质量失败（schema/citation/coverage）
-        不切换 Provider。实际成功 Provider 写入 ``actual_provider_*`` 供 validation 与
-        Attempt 持久化。
+        两条 repair 路径共享「最多一次 repair」预算（``repair_count`` 最多到 1）：
+        - Schema 不可解析（``schema`` 模式）：没有可 patch 的候选，请求模型重新输出完整
+          Brief JSON。repair 后仍非法或仍存在质量问题 → Attempt failed。
+        - 合法候选质量失败（``quality`` 模式）：请求模型只对失败 block 返回结构化 patch
+          （replace/delete/split）。程序解析、权限校验、原子应用 patch 后重新执行完整
+          Schema/数量/citation ownership/coverage/support 门禁；任一非 supported/missing/
+          citation 失败 → Attempt failed。
 
-        返回 ``(generation_result, failure)``：
-        - 成功：``(BriefGenerationResult, None)``。
-        - 失败：``(None, (error_code, error_message))``，已调用 ``fail_brief_attempt``。
+        patch 权限由程序按失败 block 集合硬约束（``apply_repair_patch``），不采信模型自述，
+        因此 Source/Evidence/previous candidate 中的注入指令不能扩大 patch 权限。
+
+        KI-10：generation/repair/validator 均走 ``_call_model_with_failover``；内容质量
+        失败不切 Provider，actual_provider 持久化到 Attempt。
+
+        返回 ``(generation_result, failure)``：成功 ``(BriefGenerationResult, None)``；
+        失败 ``(None, (error_code, error_message))``（已 ``fail_brief_attempt``）。
         """
         repair_count = 0
-        candidate_payload_dict: Optional[dict[str, Any]] = None
-        last_issues: list[str] = []
         retry_state = _RetryState(attempt_id=attempt_id)
         actual_provider = primary_provider
+        schema_error_message = ""
+        # quality repair 上下文：(候选, 失败 issues, 允许修改的失败 block 集合)。
+        quality_repair_context: Optional[
+            tuple[BriefPayload, list[ValidationIssue], set[str]]
+        ] = None
+        source_evidence_ids = {str(row.id) for row in evidence_rows}
 
         while True:
             if (
@@ -1716,19 +1733,30 @@ class BriefWorker:
                     else "job_lease_mismatch",
                     "Brief generation 前 queue lease 已失效或已取消",
                 )
-            if candidate_payload_dict is None:
-                messages = build_generation_prompt(
-                    source_title=source_title,
-                    evidence_rows=evidence_rows,
-                    coverage_plan=coverage_plan,
-                )
-            else:
+
+            if quality_repair_context is not None:
+                candidate_brief, failed_issues, failed_block_set = quality_repair_context
                 messages = build_repair_prompt(
                     source_title=source_title,
                     evidence_rows=evidence_rows,
                     coverage_plan=coverage_plan,
-                    candidate_payload=candidate_payload_dict,
-                    validation_issues=last_issues,
+                    candidate=candidate_brief,
+                    failed_issues=failed_issues,
+                    failed_block_paths=sorted(failed_block_set),
+                )
+            elif repair_count >= 1:
+                # schema repair：无候选可 patch，请求完整 Brief。
+                messages = build_schema_repair_prompt(
+                    source_title=source_title,
+                    evidence_rows=evidence_rows,
+                    coverage_plan=coverage_plan,
+                    schema_error_message=schema_error_message,
+                )
+            else:
+                messages = build_generation_prompt(
+                    source_title=source_title,
+                    evidence_rows=evidence_rows,
+                    coverage_plan=coverage_plan,
                 )
 
             try:
@@ -1758,40 +1786,31 @@ class BriefWorker:
                 )
                 return None, (exc.code, exc.message)
 
-            try:
-                brief = parse_brief_payload(raw_text)
-            except BriefSchemaError as exc:
-                if repair_count >= 1:
+            # KBR-06：quality repair 路径把响应解析为 patch 并原子应用。
+            if quality_repair_context is not None:
+                try:
+                    patch = parse_repair_patch(raw_text)
+                    brief = apply_repair_patch(
+                        candidate_brief,
+                        patch,
+                        failed_block_paths=failed_block_set,
+                        source_evidence_ids=source_evidence_ids,
+                    )
+                except BriefSchemaError as exc:
+                    # patch 非法/越权 → 稳定错误码 + 安全 report，repair 预算已消耗。
+                    report_json = self._build_repair_failure_report(
+                        error_code=exc.code,
+                        reason=exc.message,
+                        repair_count=repair_count,
+                    )
                     self._repository.fail_brief_attempt(
                         attempt_id,
                         job_id=brief_job_id,
                         attempt_token=attempt_token,
                         error_code=exc.code,
-                        error_message=exc.message,
-                        candidate_payload_json="",
-                        # schema_invalid 独立构造 report（不复用 _build_structured_report）：
-                        # error_code 必须是 brief_schema_invalid（与 Attempt error_code 一致），
-                        # 而 _build_structured_report 硬编码 brief_quality_failed；且此时 brief
-                        # 尚未解析、无 coverage/support 数据。详见该函数 docstring。
-                        validation_report_json=json.dumps(
-                            {
-                                "stage": "schema_invalid",
-                                "error_code": exc.code,
-                                "failure_count": 1,
-                                "summary": f"Brief Schema 无法解析：{exc.message[:80]}",
-                                "issues": [
-                                    {
-                                        "block_path": "",
-                                        "issue_type": "schema_invalid",
-                                        "decision": "",
-                                        "reason": exc.message,
-                                        "evidence_ids": [],
-                                    }
-                                ],
-                                "repair_count": repair_count,
-                            },
-                            ensure_ascii=False,
-                        ),
+                        error_message=exc.message[:500],
+                        candidate_payload_json=candidate_brief.model_dump_json(),
+                        validation_report_json=report_json,
                         repair_count=repair_count,
                         token_input_count=token_in,
                         token_output_count=token_out,
@@ -1801,14 +1820,62 @@ class BriefWorker:
                         provider_retry_count=retry_state.total_retries,
                     )
                     return None, (exc.code, exc.message)
-                repair_count += 1
-                last_issues = [exc.message]
-                candidate_payload_dict = {"_invalid_raw": raw_text[:400]}
-                continue
+                # patch 应用成功：清空 quality repair 上下文，进入完整复验。
+                quality_repair_context = None
+            else:
+                try:
+                    brief = parse_brief_payload(raw_text)
+                except BriefSchemaError as exc:
+                    if repair_count >= 1:
+                        # schema repair 后仍非法 → Attempt failed（独立 schema_invalid report）。
+                        self._repository.fail_brief_attempt(
+                            attempt_id,
+                            job_id=brief_job_id,
+                            attempt_token=attempt_token,
+                            error_code=exc.code,
+                            error_message=exc.message,
+                            candidate_payload_json="",
+                            # schema_invalid 独立构造 report（不复用 _build_structured_report）：
+                            # error_code 必须是 brief_schema_invalid（与 Attempt error_code 一致），
+                            # 而 _build_structured_report 硬编码 brief_quality_failed；且此时 brief
+                            # 尚未解析、无 coverage/support 数据。详见该函数 docstring。
+                            validation_report_json=json.dumps(
+                                {
+                                    "stage": "schema_invalid",
+                                    "error_code": exc.code,
+                                    "failure_count": 1,
+                                    "summary": f"Brief Schema 无法解析：{exc.message[:80]}",
+                                    "issues": [
+                                        {
+                                            "block_path": "",
+                                            "issue_type": "schema_invalid",
+                                            "decision": "",
+                                            "reason": exc.message,
+                                            "evidence_ids": [],
+                                        }
+                                    ],
+                                    "repair_count": repair_count,
+                                },
+                                ensure_ascii=False,
+                            ),
+                            repair_count=repair_count,
+                            token_input_count=token_in,
+                            token_output_count=token_out,
+                            latency_ms=latency_ms,
+                            actual_provider_id=actual_provider.id,
+                            actual_provider_model=actual_provider.model,
+                            provider_retry_count=retry_state.total_retries,
+                        )
+                        return None, (exc.code, exc.message)
+                    # 首次 Schema 不可解析 → schema repair（消耗唯一 repair 预算）。
+                    repair_count += 1
+                    schema_error_message = exc.message
+                    quality_repair_context = None
+                    continue
 
-            # KBR-05：Schema 合法后汇总全部质量检查（citation per-block → citation 有效
-            # block 逐条 support → coverage），形成完整结构化报告。不按首个失败抢占
-            # repair；citation 无效的 block 不发起 Validator，其问题进入统一 report。
+            # KBR-05：Schema 合法（或 patch 已应用）后汇总全部质量检查（citation per-block →
+            # citation 有效 block 逐条 support → coverage），形成完整结构化报告。不按首个失败
+            # 抢占 repair；citation 无效的 block 不发起 Validator，其问题进入统一 report。
             quality = self._evaluate_brief_quality(
                 brief=brief,
                 evidence_rows=evidence_rows,
@@ -1839,7 +1906,7 @@ class BriefWorker:
             )
             if quality.issues:
                 if repair_count >= 1:
-                    # 第二轮仍存在质量问题 → Attempt failed；旧 current Brief 由
+                    # repair 后仍存在质量问题 → Attempt failed；旧 current Brief 由
                     # ``fail_brief_attempt`` 保证继续可见（Spec §10.4）。完整结构化
                     # report 归属本 Attempt，Source 状态区只显示稳定摘要。
                     summary = self._format_quality_summary(quality.issues)
@@ -1860,13 +1927,12 @@ class BriefWorker:
                         provider_retry_count=retry_state.total_retries,
                     )
                     return None, ("brief_quality_failed", summary)
-                # 首次质量失败：汇总后单次 repair，repair 输入含全部已发现问题
-                # （citation + support + coverage）。
+                # 首次质量失败：汇总后单次 quality repair（patch），repair 输入含全部已发现
+                # 问题（citation + support + coverage）。失败 block 集合即 patch 允许修改范围。
                 repair_count += 1
-                candidate_payload_dict = brief.model_dump(mode="json")
-                last_issues = [
-                    self._render_issue_for_repair(issue) for issue in quality.issues
-                ]
+                failed_block_set = {issue.block_path for issue in quality.issues}
+                quality_repair_context = (brief, list(quality.issues), failed_block_set)
+                schema_error_message = ""
                 continue
 
             # 全部门禁通过（citation/support/coverage 全 supported）。
@@ -1883,6 +1949,45 @@ class BriefWorker:
                 repair_count=repair_count,
             )
             return result, None
+
+    def _build_repair_failure_report(
+        self, *, error_code: str, reason: str, repair_count: int
+    ) -> str:
+        """KBR-06：repair patch 非法/越权失败的安全 report。
+
+        记录稳定错误码与被拒原因类别（不含 Evidence 正文、不复制完整 patch）。issue_type
+        映射自 error_code：``brief_repair_invalid``→``repair_invalid``、
+        ``brief_repair_unauthorized``→``repair_unauthorized``，供 UI 区分 repair 类失败。
+        """
+        issue_type = (
+            "repair_unauthorized"
+            if error_code == BRIEF_REPAIR_UNAUTHORIZED
+            else "repair_invalid"
+        )
+        summary = (
+            "Brief repair patch 被拒绝"
+            f"（{ '越权' if error_code == BRIEF_REPAIR_UNAUTHORIZED else '非法'}）"
+            "，详见处理记录"
+        )
+        return json.dumps(
+            {
+                "stage": "repair_failed",
+                "error_code": error_code,
+                "failure_count": 1,
+                "summary": summary,
+                "issues": [
+                    {
+                        "block_path": "",
+                        "issue_type": issue_type,
+                        "decision": "",
+                        "reason": reason,
+                        "evidence_ids": [],
+                    }
+                ],
+                "repair_count": repair_count,
+            },
+            ensure_ascii=False,
+        )
 
     def _run_support_validation(
         self,
@@ -2156,14 +2261,6 @@ class BriefWorker:
         parts = [f"{label} ×{count}" for label, count in counts.items()]
         detail = "，".join(parts) if parts else "未分类"
         return f"Brief 质量校验失败：共 {len(issues)} 条（{detail}），详见处理记录"
-
-    def _render_issue_for_repair(self, issue: ValidationIssue) -> str:
-        """单条结构化 issue → repair prompt 的 validation_issues 字符串行。
-
-        格式 ``{block_path}: {issue_type} — {reason}``，供 repair Agent 按行修复。
-        KBR-05 只改 repair 时机与 report 结构；结构化 patch 由 KBR-06 升级。
-        """
-        return f"{issue.block_path}: {issue.issue_type} — {issue.reason}"
 
     def _call_model_once(
         self, provider: AIProviderProfile, messages: list[dict[str, str]]
