@@ -5,10 +5,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import pytest
 from fastapi.testclient import TestClient
+from conftest import wait_for_extraction
 
-from offerpilot.api import create_app
 from offerpilot.config import AIProviderProfile, Config
 from offerpilot.db import init_database, session_factory_for_data_dir
 from offerpilot.knowledge.brief import (
@@ -22,23 +21,24 @@ from offerpilot.knowledge.repository import (
     JobCreateInput,
     KnowledgeRepository,
 )
+from offerpilot.api import create_app
 from offerpilot.knowledge.worker import BriefWorker, KnowledgeJobRunner, ExtractionWorker
 
-
-@pytest.fixture
-def app_client(tmp_path):
-    return TestClient(create_app(data_dir=tmp_path))
 
 
 def _upload(client: TestClient, filename: str, content: bytes) -> Any:
     files = {"file": (filename, content, "text/markdown")}
-    return client.post("/api/knowledge/sources", files=files)
-
+    response = client.post("/api/knowledge/sources", files=files)
+    if response.status_code in (200, 202):
+        wait_for_extraction(client, response.json()["source"]["id"])
+    return response
 
 def _upload(client, filename: str, content: bytes) -> Any:
     files = {"file": (filename, content, "text/markdown")}
-    return client.post("/api/knowledge/sources", files=files)
-
+    response = client.post("/api/knowledge/sources", files=files)
+    if response.status_code in (200, 202):
+        wait_for_extraction(client, response.json()["source"]["id"])
+    return response
 
 def _valid_payload(evidence_ids: list[str], section_keys: list[str]) -> dict[str, Any]:
     return {
@@ -201,15 +201,17 @@ def test_ki09_brief_endpoint_lists_attempts_with_redacted_secrets(
 
 
 def test_ki09_brief_worker_processes_real_queue_with_stub_provider(
-    app_client, tmp_path
+    tmp_path
 ) -> None:
     """Spec §10.4：tick_brief 触发完整 generation/validation/commit 流程。"""
-    upload = _upload(
-        app_client,
-        "doc.md",
-        "# 概述\n\n正文一段。\n\n## 第二段\n\n正文二段。\n".encode("utf-8"),
-    )
-    source_id = upload.json()["source"]["id"]
+    # 独立 app 上传完成 extraction；with 退出后后台 worker 停，避免与 stub tick_brief 竞争。
+    with TestClient(create_app(data_dir=tmp_path)) as client:
+        upload = _upload(
+            client,
+            "doc.md",
+            "# 概述\n\n正文一段。\n\n## 第二段\n\n正文二段。\n".encode("utf-8"),
+        )
+        source_id = upload.json()["source"]["id"]
 
     init_database(tmp_path / "data.db")
     session_factory = session_factory_for_data_dir(tmp_path)
@@ -285,8 +287,9 @@ def test_ki09_brief_worker_processes_real_queue_with_stub_provider(
     assert results
     assert results[0].status == "succeeded", results[0].error_message
 
-    # API 应该能读取到已提交 Brief
-    response = app_client.get(f"/api/knowledge/sources/{source_id}/brief")
-    body = response.json()
-    assert body["brief_status"] == "ready"
-    assert body["brief"] is not None
+    # Brief 已提交；repository 可读 ready Brief（避开后台 worker 干扰）。
+    brief = repository.get_source_brief(source_id)
+    assert brief is not None
+    source = repository.get_source(source_id)
+    assert source is not None
+    assert source.brief_status == "ready"

@@ -43,6 +43,7 @@ from offerpilot.knowledge.worker import (
     ExtractionWorker,
     KnowledgeJobRunner,
 )
+from offerpilot.models import KnowledgeExtractionSnapshot
 
 _CONTENT = (
     "# 概述\n\n"
@@ -221,9 +222,11 @@ def _primary_fallback_config() -> Config:
 def _setup(
     tmp_path: Path, *, config: Config | None = None
 ) -> tuple[KnowledgeRepository, sessionmaker[Session], int, int]:
-    """走完一次完整 ingest，得到一个 extracted Source。
+    """走完一次完整 ingest + Extraction queue，得到一个 extracted Source。
 
-    ``config`` 决定 ingest 时 enqueue_or_block_brief 的行为：
+    KBR-01：ingest 只入队 extract job；必须显式驱动 Extraction queue 才能让
+    Source 达到 extracted、active Snapshot/Evidence 可见。``config`` 决定
+    extraction 成功后 brief 是否入队：
     - 有合格 Provider → brief job 已入队。
     - 无合格 Provider → brief_status=pending + block_reason，无 job。
     """
@@ -238,11 +241,22 @@ def _setup(
             title_hint="测试",
         )
     )
+    source_id = result.source.id
+    # 显式驱动 Extraction queue：extraction 成功后由 callback 触发 brief 入队。
+    extraction_worker = ExtractionWorker(
+        repository,
+        tmp_path,
+        session_factory,
+        on_extraction_succeeded=service.enqueue_or_block_brief,
+    )
+    KnowledgeJobRunner(repository, extraction_worker).tick_extraction(lease_owner="test")
+    source = repository.get_source(source_id)
+    assert source is not None
     return (
         repository,
         session_factory,
-        result.source.id,
-        result.source.active_snapshot_id or 0,
+        source_id,
+        source.active_snapshot_id or 0,
     )
 
 
@@ -661,6 +675,38 @@ def _seed_ready_brief(
     return payload
 
 
+def _create_alt_snapshot(
+    session_factory: sessionmaker[Session], source_id: int, base_snapshot_id: int
+) -> int:
+    """创建第二个真实 Snapshot 行模拟 extractor 升级（不同 version/digest）。
+
+    KBR-01：db trigger 强制 active_snapshot_id 指向真实存在的 Snapshot，
+    不能再用 ``snapshot_id + 9999`` 模拟升级。
+    """
+    with session_factory() as session:
+        base = session.get(KnowledgeExtractionSnapshot, base_snapshot_id)
+        assert base is not None
+        alt = KnowledgeExtractionSnapshot(
+            source_id=source_id,
+            extractor_version=base.extractor_version + "-alt",
+            parser_version=base.parser_version,
+            normalization_version=base.normalization_version,
+            tokenizer_version=base.tokenizer_version,
+            encoding=base.encoding,
+            detection_method=base.detection_method,
+            canonical_text=base.canonical_text,
+            structure_manifest=base.structure_manifest,
+            digest=base.digest + "-alt",
+            token_count=base.token_count,
+            char_count=base.char_count,
+        )
+        session.add(alt)
+        session.flush()
+        alt_id = alt.id
+        session.commit()
+    return alt_id
+
+
 def test_rebuild_failure_preserves_existing_brief(tmp_path: Path) -> None:
     """Spec §10.4：有旧 ready Brief 时，重建失败保持 ready + 最近 Attempt 错误。"""
     config = _primary_config()
@@ -775,8 +821,9 @@ def test_brief_marked_outdated_on_snapshot_change(tmp_path: Path) -> None:
     _seed_ready_brief(
         repository, config, tmp_path, session_factory, source_id, snapshot_id
     )
-    # 模拟 extractor 升级切换 active_snapshot_id。
-    repository.update_source_state(source_id, active_snapshot_id=snapshot_id + 9999)
+    # 模拟 extractor 升级：创建第二个真实 Snapshot 并切换 active_snapshot_id。
+    alt_snapshot_id = _create_alt_snapshot(session_factory, source_id, snapshot_id)
+    repository.update_source_state(source_id, active_snapshot_id=alt_snapshot_id)
     service = KnowledgeIngestService(
         repository, tmp_path, session_factory, config=config
     )

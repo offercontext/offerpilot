@@ -2800,6 +2800,10 @@ def _mark_brief_enqueue_pending_for_snapshot(
     ).first()
     if active_job is not None or active_attempt is not None:
         return
+    # 旧 Brief 已被 ``_mark_brief_outdated_for_snapshot`` 标记过期时保留 outdated
+    # 状态（Spec §10.4 新 Snapshot 保留旧 Brief + 标记过期），不覆盖为 pending。
+    if brief_row is not None and brief_row.outdated:
+        return
     source_row.brief_status = "pending"
     source_row.brief_block_reason = ""
     source_row.brief_error_code = ""

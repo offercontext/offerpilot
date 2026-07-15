@@ -6,6 +6,7 @@ import sqlite3
 
 from fastapi.testclient import TestClient
 
+from conftest import wait_for_extraction, wait_for_source_deleted
 from offerpilot.api import create_app
 from offerpilot.db import init_database, session_factory_for_data_dir
 from offerpilot.knowledge.repository import KnowledgeRepository
@@ -18,7 +19,9 @@ def _upload(client: TestClient, name: str, content: bytes) -> int:
         files={"file": (name, content, "text/markdown")},
     )
     assert response.status_code == 202
-    return int(response.json()["source"]["id"])
+    source_id = int(response.json()["source"]["id"])
+    wait_for_extraction(client, source_id)
+    return source_id
 
 
 def test_purge_does_not_delete_db_when_quarantine_move_fails(tmp_path, monkeypatch):
@@ -31,11 +34,19 @@ def test_purge_does_not_delete_db_when_quarantine_move_fails(tmp_path, monkeypat
     source_id = result.source.id
     source_dir = tmp_path / "knowledge" / "sources" / str(source_id)
 
-    def fail_move(*_args, **_kwargs):
+    def fail_replace(self, target, *_args, **_kwargs):
         raise OSError("simulated rename failure")
 
-    monkeypatch.setattr("offerpilot.knowledge.service.shutil.move", fail_move)
-    assert service.purge_source(source_id) is None
+    # worker 用 Path.replace 原子移动 source → quarantine；注入失败模拟文件系统错误。
+    from pathlib import Path
+    monkeypatch.setattr(Path, "replace", fail_replace)
+    # 异步：purge_source 入队 delete job（返回 PurgeResult，非 None）；移动在 worker。
+    assert service.purge_source(source_id) is not None
+    # 驱动 worker tick：replace 失败 → delete 未完成（quarantine_retry），source 保留 deleting。
+    from offerpilot.knowledge.worker import ExtractionWorker, KnowledgeJobRunner
+    KnowledgeJobRunner(
+        repository, ExtractionWorker(repository, tmp_path, session_factory)
+    ).tick_extraction(lease_owner="test")
 
     with sqlite3.connect(tmp_path / "data.db") as conn:
         row = conn.execute(
@@ -67,22 +78,23 @@ def test_startup_recovery_handles_deleting_source_without_quarantine_root(tmp_pa
 
 
 def test_purge_removes_only_traces_referencing_deleted_source(tmp_path):
-    client = TestClient(create_app(data_dir=tmp_path))
-    deleted_id = _upload(client, "deleted.md", b"# deleted\n\nneedle-a\n")
-    kept_id = _upload(client, "kept.md", b"# kept\n\nneedle-b\n")
+    with TestClient(create_app(data_dir=tmp_path)) as client:
+        deleted_id = _upload(client, "deleted.md", b"# deleted\n\nneedle-a\n")
+        kept_id = _upload(client, "kept.md", b"# kept\n\nneedle-b\n")
 
-    deleted_search = client.post(
-        "/api/knowledge/evidence/search", json={"query": "needle-a"}
-    )
-    kept_search = client.post(
-        "/api/knowledge/evidence/search", json={"query": "needle-b"}
-    )
-    assert deleted_search.status_code == 200
-    assert kept_search.status_code == 200
-    assert deleted_search.json()["hits"]
-    assert kept_search.json()["hits"]
+        deleted_search = client.post(
+            "/api/knowledge/evidence/search", json={"query": "needle-a"}
+        )
+        kept_search = client.post(
+            "/api/knowledge/evidence/search", json={"query": "needle-b"}
+        )
+        assert deleted_search.status_code == 200
+        assert kept_search.status_code == 200
+        assert deleted_search.json()["hits"]
+        assert kept_search.json()["hits"]
 
-    assert client.delete(f"/api/knowledge/sources/{deleted_id}").status_code == 202
+        assert client.delete(f"/api/knowledge/sources/{deleted_id}").status_code == 202
+        assert wait_for_source_deleted(client, deleted_id, db_path=tmp_path / "data.db")
 
     with sqlite3.connect(tmp_path / "data.db") as conn:
         traces = conn.execute(

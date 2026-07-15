@@ -15,15 +15,11 @@ from __future__ import annotations
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 
-import pytest
 from fastapi.testclient import TestClient
+from conftest import wait_for_extraction
 
 from offerpilot.api import create_app
 
-
-@pytest.fixture
-def app_client(tmp_path):
-    return TestClient(create_app(data_dir=tmp_path))
 
 
 def _upload_file(
@@ -37,8 +33,10 @@ def _upload_file(
     data: dict[str, str] = {}
     if title_hint:
         data["title_hint"] = title_hint
-    return client.post("/api/knowledge/sources", files=files, data=data)
-
+    response = client.post("/api/knowledge/sources", files=files, data=data)
+    if response.status_code in (200, 202):
+        wait_for_extraction(client, response.json()["source"]["id"])
+    return response
 
 def _upload_paste(
     client: TestClient,
@@ -52,8 +50,10 @@ def _upload_paste(
         data["title_hint"] = title_hint
     if origin_url:
         data["origin_url"] = origin_url
-    return client.post("/api/knowledge/sources", data=data)
-
+    response = client.post("/api/knowledge/sources", data=data)
+    if response.status_code in (200, 202):
+        wait_for_extraction(client, response.json()["source"]["id"])
+    return response
 
 # ---------------------------------------------------------------------------
 # Spec §5.1：相同字节不同文件名 / 标题 / URL 都复用 Source

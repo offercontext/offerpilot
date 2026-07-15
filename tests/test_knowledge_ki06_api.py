@@ -18,16 +18,12 @@ from __future__ import annotations
 import io
 import sqlite3
 
-import pytest
 from fastapi.testclient import TestClient
+from conftest import wait_for_extraction, wait_for_source_deleted
 from PIL import Image
 
 from offerpilot.api import create_app
 
-
-@pytest.fixture
-def app_client(tmp_path):
-    return TestClient(create_app(data_dir=tmp_path))
 
 
 def _upload_file(
@@ -41,8 +37,10 @@ def _upload_file(
     data: dict[str, str] = {}
     if title_hint:
         data["title_hint"] = title_hint
-    return client.post("/api/knowledge/sources", files=files, data=data)
-
+    response = client.post("/api/knowledge/sources", files=files, data=data)
+    if response.status_code in (200, 202):
+        wait_for_extraction(client, response.json()["source"]["id"])
+    return response
 
 def _png_bytes(width: int, height: int) -> bytes:
     buf = io.BytesIO()
@@ -59,15 +57,17 @@ def _upload_bundle(
     files: list[tuple[str, tuple[str, bytes]]] = [("file", main)]
     for name, content in assets:
         files.append(("files", (name, content)))
-    return client.post("/api/knowledge/sources", files=files)  # type: ignore[arg-type]
-
+    response = client.post("/api/knowledge/sources", files=files)  # type: ignore[arg-type]
+    if response.status_code in (200, 202):
+        wait_for_extraction(client, response.json()["source"]["id"])
+    return response
 
 # ---------------------------------------------------------------------------
 # Spec §5.3：归档与取消归档
 # ---------------------------------------------------------------------------
 
 
-def test_ki06_archive_changes_lifecycle_only(app_client):
+def test_ki06_archive_changes_lifecycle_only(app_client, tmp_path):
     content = "# Title\n\n段落内容。\n".encode("utf-8")
     upload = _upload_file(app_client, "doc.md", content)
     source_id = upload.json()["source"]["id"]
@@ -121,7 +121,7 @@ def test_ki06_archive_does_not_delete_files_or_evidence(app_client, tmp_path):
     assert source_dir.is_dir()
 
 
-def test_ki06_unarchive_restores_active_lifecycle(app_client):
+def test_ki06_unarchive_restores_active_lifecycle(app_client, tmp_path):
     content = "# Title\n\n段落。\n".encode("utf-8")
     upload = _upload_file(app_client, "doc.md", content)
     source_id = upload.json()["source"]["id"]
@@ -134,7 +134,7 @@ def test_ki06_unarchive_restores_active_lifecycle(app_client):
     assert body["archived_at"] is None
 
 
-def test_ki06_default_list_excludes_archived(app_client):
+def test_ki06_default_list_excludes_archived(app_client, tmp_path):
     a = _upload_file(app_client, "a.md", "# A\n\n正文 A。\n".encode("utf-8"))
     b = _upload_file(app_client, "b.md", "# B\n\n正文 B。\n".encode("utf-8"))
     archived_id = a.json()["source"]["id"]
@@ -154,7 +154,7 @@ def test_ki06_default_list_excludes_archived(app_client):
     assert active_id in archived_ids
 
 
-def test_ki06_default_search_excludes_archived(app_client):
+def test_ki06_default_search_excludes_archived(app_client, tmp_path):
     content = "# Kafka ISR\n\nISR 是 in-sync replica 缩写。\n".encode("utf-8")
     upload = _upload_file(app_client, "kafka.md", content)
     source_id = upload.json()["source"]["id"]
@@ -177,7 +177,7 @@ def test_ki06_default_search_excludes_archived(app_client):
     assert after_include["hits"]
 
 
-def test_ki06_archived_source_detail_still_accessible(app_client):
+def test_ki06_archived_source_detail_still_accessible(app_client, tmp_path):
     content = "# Title\n\n段落。\n".encode("utf-8")
     upload = _upload_file(app_client, "doc.md", content)
     source_id = upload.json()["source"]["id"]
@@ -188,17 +188,17 @@ def test_ki06_archived_source_detail_still_accessible(app_client):
     assert detail.json()["lifecycle"] == "archived"
 
 
-def test_ki06_archive_unknown_source_returns_404(app_client):
+def test_ki06_archive_unknown_source_returns_404(app_client, tmp_path):
     response = app_client.post("/api/knowledge/sources/99999/archive")
     assert response.status_code == 404
 
 
-def test_ki06_unarchive_unknown_source_returns_404(app_client):
+def test_ki06_unarchive_unknown_source_returns_404(app_client, tmp_path):
     response = app_client.post("/api/knowledge/sources/99999/unarchive")
     assert response.status_code == 404
 
 
-def test_ki06_archive_is_idempotent(app_client):
+def test_ki06_archive_is_idempotent(app_client, tmp_path):
     content = "# Title\n\n正文。\n".encode("utf-8")
     upload = _upload_file(app_client, "doc.md", content)
     source_id = upload.json()["source"]["id"]
@@ -215,18 +215,19 @@ def test_ki06_archive_is_idempotent(app_client):
 # ---------------------------------------------------------------------------
 
 
-def test_ki06_delete_returns_202_with_delete_job(app_client):
+def test_ki06_delete_returns_202_with_delete_job(app_client, tmp_path):
     content = "# Title\n\n正文。\n".encode("utf-8")
     upload = _upload_file(app_client, "doc.md", content)
     source_id = upload.json()["source"]["id"]
 
     response = app_client.delete(f"/api/knowledge/sources/{source_id}")
     assert response.status_code == 202
+    assert wait_for_source_deleted(app_client, source_id, db_path=tmp_path / "data.db")
     body = response.json()
     assert body["source_id"] == source_id
     assert body["job"]["kind"] == "delete"
     assert body["job"]["queue"] == "extraction"
-    assert body["job"]["status"] == "succeeded"
+    assert body["job"]["status"] == "pending"
 
 
 def test_ki06_delete_removes_all_database_rows(app_client, tmp_path):
@@ -236,6 +237,7 @@ def test_ki06_delete_removes_all_database_rows(app_client, tmp_path):
 
     response = app_client.delete(f"/api/knowledge/sources/{source_id}")
     assert response.status_code == 202
+    assert wait_for_source_deleted(app_client, source_id, db_path=tmp_path / "data.db")
 
     with sqlite3.connect(tmp_path / "data.db") as conn:
         source = conn.execute(
@@ -277,6 +279,7 @@ def test_ki06_delete_removes_files_and_quarantine(app_client, tmp_path):
 
     response = app_client.delete(f"/api/knowledge/sources/{source_id}")
     assert response.status_code == 202
+    assert wait_for_source_deleted(app_client, source_id, db_path=tmp_path / "data.db")
 
     # 正式目录已不存在
     assert not source_dir.exists()
@@ -292,6 +295,7 @@ def test_ki06_delete_logs_only_id_time_result(app_client, tmp_path):
 
     response = app_client.delete(f"/api/knowledge/sources/{source_id}")
     assert response.status_code == 202
+    assert wait_for_source_deleted(app_client, source_id, db_path=tmp_path / "data.db")
 
     with sqlite3.connect(tmp_path / "data.db") as conn:
         log_rows = conn.execute(
@@ -316,7 +320,7 @@ def test_ki06_delete_logs_only_id_time_result(app_client, tmp_path):
         )
 
 
-def test_ki06_delete_does_not_keep_source_hash_tombstone(app_client):
+def test_ki06_delete_does_not_keep_source_hash_tombstone(app_client, tmp_path):
     content = "# Title\n\n正文。\n".encode("utf-8")
     upload = _upload_file(app_client, "doc.md", content)
     source_id_before = upload.json()["source"]["id"]
@@ -324,6 +328,7 @@ def test_ki06_delete_does_not_keep_source_hash_tombstone(app_client):
     # 删除
     delete_resp = app_client.delete(f"/api/knowledge/sources/{source_id_before}")
     assert delete_resp.status_code == 202
+    assert wait_for_source_deleted(app_client, source_id_before, db_path=tmp_path / "data.db")
 
     # 再次上传相同内容 → 应得到新 source_id 与新 Extract Job
     reupload = _upload_file(app_client, "doc-again.md", content)
@@ -331,15 +336,15 @@ def test_ki06_delete_does_not_keep_source_hash_tombstone(app_client):
     body = reupload.json()
     assert body["deduplicated"] is False
     assert body["source"]["id"] != source_id_before
-    assert body["job"]["status"] == "succeeded"
+    assert body["job"]["status"] == "pending"
 
 
-def test_ki06_delete_unknown_source_returns_404(app_client):
+def test_ki06_delete_unknown_source_returns_404(app_client, tmp_path):
     response = app_client.delete("/api/knowledge/sources/99999")
     assert response.status_code == 404
 
 
-def test_ki06_delete_already_archived_source_succeeds(app_client):
+def test_ki06_delete_already_archived_source_succeeds(app_client, tmp_path):
     content = "# Title\n\n正文。\n".encode("utf-8")
     upload = _upload_file(app_client, "doc.md", content)
     source_id = upload.json()["source"]["id"]
@@ -347,6 +352,7 @@ def test_ki06_delete_already_archived_source_succeeds(app_client):
 
     delete = app_client.delete(f"/api/knowledge/sources/{source_id}")
     assert delete.status_code == 202
+    assert wait_for_source_deleted(app_client, source_id, db_path=tmp_path / "data.db")
 
     detail = app_client.get(f"/api/knowledge/sources/{source_id}")
     assert detail.status_code == 404
@@ -366,6 +372,7 @@ def test_ki06_delete_bundle_removes_assets_and_evidence(app_client, tmp_path):
 
     response = app_client.delete(f"/api/knowledge/sources/{source_id}")
     assert response.status_code == 202
+    assert wait_for_source_deleted(app_client, source_id, db_path=tmp_path / "data.db")
 
     with sqlite3.connect(tmp_path / "data.db") as conn:
         assets = conn.execute(
@@ -386,13 +393,14 @@ def test_ki06_delete_bundle_removes_assets_and_evidence(app_client, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_ki06_delete_idempotent_returns_prior_job_or_404(app_client):
+def test_ki06_delete_idempotent_returns_prior_job_or_404(app_client, tmp_path):
     content = "# Title\n\n正文。\n".encode("utf-8")
     upload = _upload_file(app_client, "doc.md", content)
     source_id = upload.json()["source"]["id"]
 
     first = app_client.delete(f"/api/knowledge/sources/{source_id}")
     assert first.status_code == 202
+    assert wait_for_source_deleted(app_client, source_id, db_path=tmp_path / "data.db")
     # 已删除 → 再次 delete 应 404,不返回原 Job
     second = app_client.delete(f"/api/knowledge/sources/{source_id}")
     assert second.status_code == 404
@@ -405,6 +413,7 @@ def test_ki06_ingest_after_delete_creates_new_source_and_job(app_client, tmp_pat
 
     delete = app_client.delete(f"/api/knowledge/sources/{source_id}")
     assert delete.status_code == 202
+    assert wait_for_source_deleted(app_client, source_id, db_path=tmp_path / "data.db")
 
     second = _upload_file(app_client, "doc-again.md", content)
     assert second.status_code == 202
@@ -501,6 +510,7 @@ def test_ki06_sources_root_dir_preserved_after_delete(app_client, tmp_path):
     b_id = b.json()["source"]["id"]
 
     app_client.delete(f"/api/knowledge/sources/{a_id}")
+    assert wait_for_source_deleted(app_client, a_id, db_path=tmp_path / "data.db")
 
     sources_root = tmp_path / "knowledge" / "sources"
     assert sources_root.is_dir()
@@ -520,10 +530,10 @@ def test_ki06_startup_recovery_completes_deleting_source(tmp_path):
     """
     from offerpilot.db import init_database
 
-    client = TestClient(create_app(data_dir=tmp_path))
     content = "# Recovery\n\n正文。\n".encode("utf-8")
-    upload = _upload_file(client, "doc.md", content)
-    source_id = upload.json()["source"]["id"]
+    with TestClient(create_app(data_dir=tmp_path)) as client:
+        upload = _upload_file(client, "doc.md", content)
+        source_id = upload.json()["source"]["id"]
 
     # 直接走 begin_delete,但不调用 complete_purge,模拟崩溃
     with sqlite3.connect(tmp_path / "data.db") as conn:
@@ -574,7 +584,7 @@ def test_ki06_startup_recovery_clears_orphan_quarantine(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_ki06_deleting_source_not_visible_in_default_list(app_client):
+def test_ki06_deleting_source_not_visible_in_default_list(app_client, tmp_path):
     content = "# Title\n\n正文。\n".encode("utf-8")
     upload = _upload_file(app_client, "doc.md", content)
     source_id = upload.json()["source"]["id"]
@@ -582,13 +592,14 @@ def test_ki06_deleting_source_not_visible_in_default_list(app_client):
     # 走 API delete
     delete = app_client.delete(f"/api/knowledge/sources/{source_id}")
     assert delete.status_code == 202
+    assert wait_for_source_deleted(app_client, source_id, db_path=tmp_path / "data.db")
 
     # 列表默认排除已删除(且 lifecycle=deleting 在事务完成后行已不存在)
     listing = app_client.get("/api/knowledge/sources").json()
     assert all(item["id"] != source_id for item in listing)
 
 
-def test_ki06_search_does_not_match_deleting_source(app_client):
+def test_ki06_search_does_not_match_deleting_source(app_client, tmp_path):
     """Spec §5.4：deleting Source 不应出现在搜索结果(正常路径中 lifecycle=deleting
     时间窗口很短,但 search_evidence 仍需排除)。"""
     content = "# Searchable\n\n可索引内容。\n".encode("utf-8")
@@ -621,9 +632,9 @@ def test_ki06_begin_delete_cancels_active_extract_jobs(tmp_path):
     from offerpilot.knowledge.repository import KnowledgeRepository
     from offerpilot.models import KnowledgeJob, KnowledgeSource
 
-    client = TestClient(_create_app(data_dir=tmp_path))
-    upload = _upload_file(client, "doc.md", "# Title\n\n正文。\n".encode("utf-8"))
-    source_id = upload.json()["source"]["id"]
+    with TestClient(_create_app(data_dir=tmp_path)) as client:
+        upload = _upload_file(client, "doc.md", "# Title\n\n正文。\n".encode("utf-8"))
+        source_id = upload.json()["source"]["id"]
 
     # 直接构造一个"假装"还在 running 的 Extract Job 来模拟 KI-07 异步 worker 仍未提交。
     session_factory = session_factory_for_data_dir(tmp_path)
@@ -659,7 +670,7 @@ def test_ki06_begin_delete_cancels_active_extract_jobs(tmp_path):
         assert delete_job is not None
         assert delete_job.kind == "delete"
         assert delete_job.queue == "extraction"
-        assert delete_job.status == "running"
+        assert delete_job.status == "pending"
         assert delete_job.source_id == source_id
 
 
@@ -669,9 +680,9 @@ def test_ki06_begin_delete_rejects_already_deleting_source(tmp_path):
     from offerpilot.db import session_factory_for_data_dir
     from offerpilot.knowledge.repository import KnowledgeRepository
 
-    client = TestClient(_create_app(data_dir=tmp_path))
-    upload = _upload_file(client, "doc.md", "# Title\n\n正文。\n".encode("utf-8"))
-    source_id = upload.json()["source"]["id"]
+    with TestClient(_create_app(data_dir=tmp_path)) as client:
+        upload = _upload_file(client, "doc.md", "# Title\n\n正文。\n".encode("utf-8"))
+        source_id = upload.json()["source"]["id"]
 
     session_factory = session_factory_for_data_dir(tmp_path)
     repository = KnowledgeRepository(session_factory)

@@ -16,8 +16,8 @@ import sqlite3
 
 import pytest
 from fastapi.testclient import TestClient
+from conftest import wait_for_extraction
 
-from offerpilot.api import create_app
 from offerpilot.knowledge.search import parse_query  # noqa: F401  # 保留给后续测试扩展
 
 
@@ -118,16 +118,14 @@ def test_parse_query_pure_punctuation_returns_substring() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def app_client(tmp_path):
-    return TestClient(create_app(data_dir=tmp_path))
-
 
 def _upload(client: TestClient, filename: str, content: bytes, title_hint: str = ""):
     files = {"file": (filename, content, "text/markdown")}
     data = {"title_hint": title_hint} if title_hint else None
-    return client.post("/api/knowledge/sources", files=files, data=data)
-
+    response = client.post("/api/knowledge/sources", files=files, data=data)
+    if response.status_code in (200, 202):
+        wait_for_extraction(client, response.json()["source"]["id"])
+    return response
 
 def test_ki08_search_chinese_long_sentence_returns_evidence(app_client) -> None:
     content = (

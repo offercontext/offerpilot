@@ -416,7 +416,8 @@ def _setup_repository(tmp_path: Path) -> tuple[KnowledgeRepository, sessionmaker
     session_factory = session_factory_for_data_dir(tmp_path)
     repository = KnowledgeRepository(session_factory)
 
-    # 通过 service 走完一次完整 ingest，得到一个 extracted Source。
+    # 通过 service 走完一次完整 ingest，再显式驱动 Extraction queue，
+    # 得到一个 extracted Source（ingest 只入队 extract job）。
     from offerpilot.knowledge.service import KnowledgeIngestService
 
     service = KnowledgeIngestService(repository, tmp_path, session_factory)
@@ -427,7 +428,19 @@ def _setup_repository(tmp_path: Path) -> tuple[KnowledgeRepository, sessionmaker
             title_hint="测试",
         )
     )
-    return repository, session_factory, result.source.id, result.source.active_snapshot_id or 0
+    source_id = result.source.id
+    KnowledgeJobRunner(
+        repository,
+        ExtractionWorker(
+            repository,
+            tmp_path,
+            session_factory,
+            on_extraction_succeeded=service.enqueue_or_block_brief,
+        ),
+    ).tick_extraction(lease_owner="test")
+    source = repository.get_source(source_id)
+    assert source is not None
+    return repository, session_factory, source_id, source.active_snapshot_id or 0
 
 
 def test_create_brief_attempt_locks_source_processing(tmp_path: Path) -> None:

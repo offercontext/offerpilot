@@ -4,6 +4,7 @@ import sqlite3
 
 import pytest
 from fastapi.testclient import TestClient
+from conftest import wait_for_extraction
 
 from offerpilot.ai.tools import offerpilot_tool_registry
 from offerpilot.api import create_app
@@ -291,16 +292,14 @@ def _legacy_knowledge_tables() -> tuple[str, ...]:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def app_client(tmp_path):
-    return TestClient(create_app(data_dir=tmp_path))
-
 
 def _upload(client: TestClient, filename: str, content: bytes, title_hint: str = ""):
     files = {"file": (filename, content, "text/markdown")}
     data = {"title_hint": title_hint} if title_hint else None
-    return client.post("/api/knowledge/sources", files=files, data=data)
-
+    response = client.post("/api/knowledge/sources", files=files, data=data)
+    if response.status_code in (200, 202):
+        wait_for_extraction(client, response.json()["source"]["id"])
+    return response
 
 def test_ki02_upload_returns_202_with_source_and_extraction_job(app_client):
     content = "# Redis Notes\n\nRedis 是一个内存数据库。\n".encode("utf-8")
@@ -310,15 +309,17 @@ def test_ki02_upload_returns_202_with_source_and_extraction_job(app_client):
     assert payload["deduplicated"] is False
     source = payload["source"]
     assert source["source_kind"] == "markdown"
-    assert source["extraction_status"] == "extracted"
+    # 上传响应是 pending（异步 extraction）；_upload 已 wait，重新 GET 确认 extracted。
+    refreshed = wait_for_extraction(app_client, source["id"])
+    assert refreshed["extraction_status"] == "extracted"
     # KI-09：Extraction 提交后立即评估 Brief Provider；测试环境无 96K Provider，
     # 因此 brief_status=pending + brief_block_reason=provider_unavailable。
-    assert source["brief_status"] in ("not_started", "pending")
-    assert source["lifecycle"] == "active"
-    job = payload["job"]
-    assert job["kind"] == "extract"
-    assert job["queue"] == "extraction"
-    assert job["status"] == "succeeded"
+    assert refreshed["brief_status"] in ("not_started", "pending")
+    assert refreshed["lifecycle"] == "active"
+    jobs = app_client.get(f"/api/knowledge/sources/{source['id']}/jobs").json()
+    extract_job = next(j for j in jobs["jobs"] if j["kind"] == "extract")
+    assert extract_job["queue"] == "extraction"
+    assert extract_job["status"] == "succeeded"
     assert payload["extraction_error_code"] == ""
 
 

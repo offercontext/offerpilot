@@ -15,7 +15,7 @@ import sqlite3
 import pytest
 from fastapi.testclient import TestClient
 
-from offerpilot.api import create_app
+from conftest import wait_for_extraction
 from offerpilot.knowledge.encoding import (
     EncodingError,
     decode_source_bytes,
@@ -25,15 +25,14 @@ from offerpilot.knowledge.extractor import (
 )
 
 
-@pytest.fixture
-def app_client(tmp_path):
-    return TestClient(create_app(data_dir=tmp_path))
-
 
 def _upload_file(client: TestClient, filename: str, content: bytes, title_hint: str = ""):
     files = {"file": (filename, content, "application/octet-stream")}
     data = {"title_hint": title_hint} if title_hint else None
-    return client.post("/api/knowledge/sources", files=files, data=data)
+    response = client.post("/api/knowledge/sources", files=files, data=data)
+    if response.status_code in (200, 202):
+        wait_for_extraction(client, response.json()["source"]["id"])
+    return response
 
 
 def _upload_paste(
@@ -48,7 +47,10 @@ def _upload_paste(
         data["title_hint"] = title_hint
     if origin_url:
         data["origin_url"] = origin_url
-    return client.post("/api/knowledge/sources", data=data)
+    response = client.post("/api/knowledge/sources", data=data)
+    if response.status_code in (200, 202):
+        wait_for_extraction(client, response.json()["source"]["id"])
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +64,9 @@ def test_ki03_accepts_text_file(app_client):
     body = response.json()
     assert body["source"]["source_kind"] == "text"
     assert body["source"]["main_media_type"] == "text/plain"
-    assert body["source"]["extraction_status"] == "extracted"
+    # 上传响应是 pending（异步 extraction）；helper 已 wait，重新 GET 确认 extracted。
+    source = wait_for_extraction(app_client, body["source"]["id"])
+    assert source["extraction_status"] == "extracted"
 
 
 def test_ki03_paste_treats_as_virtual_main_md(app_client):

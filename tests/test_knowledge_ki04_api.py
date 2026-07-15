@@ -9,16 +9,11 @@ from __future__ import annotations
 import io
 import sqlite3
 
-import pytest
 from fastapi.testclient import TestClient
+from conftest import wait_for_extraction
 from PIL import Image
 
-from offerpilot.api import create_app
 
-
-@pytest.fixture
-def app_client(tmp_path):
-    return TestClient(create_app(data_dir=tmp_path))
 
 
 def _png_bytes(width: int, height: int, color: tuple[int, int, int] = (255, 0, 0)) -> bytes:
@@ -52,8 +47,10 @@ def _upload_bundle(
     data: dict[str, str] = {}
     if title_hint:
         data["title_hint"] = title_hint
-    return client.post("/api/knowledge/sources", files=files, data=data)
-
+    response = client.post("/api/knowledge/sources", files=files, data=data)
+    if response.status_code in (200, 202):
+        wait_for_extraction(client, response.json()["source"]["id"])
+    return response
 
 # ---------------------------------------------------------------------------
 # Spec §4.4 正常 Bundle：上传 / Asset / Evidence
