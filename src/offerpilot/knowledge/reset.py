@@ -171,11 +171,14 @@ def _verify_preservation(
                 preserved[table] = _count_rows(conn, table)
         if "schema_migrations" in existing:
             migrations = _count_rows(conn, "schema_migrations")
-    # 严格断言：reset 前存在的代表表，reset 后行数必须不变。
+    # 严格守卫：reset 前存在的代表表，reset 后行数必须不变。破坏性操作不用 assert
+    # （``python -O`` 会剥离致守卫静默失效），任一不一致即显式抛错，稳定映射到错误码。
     for table, before_count in pre.non_knowledge.items():
-        assert preserved.get(table) == before_count, (
-            f"非 Knowledge 表 {table} 行数变化：{before_count} -> {preserved.get(table)}"
-        )
+        if preserved.get(table) != before_count:
+            raise KnowledgeResetError(
+                "non_knowledge_violation",
+                f"非 Knowledge 表 {table} 行数变化：{before_count} -> {preserved.get(table)}",
+            )
     ai_config_now = _capture_ai_config(data_dir)
     ai_config_unchanged = (
         pre.ai_config_exists == (ai_config_now != "")
@@ -191,8 +194,10 @@ def _clear_knowledge_file_directory(data_dir: Path) -> list[str]:
     - 解析 knowledge 根目录，拒绝其本身越出 data_dir（例如被替换为符号链接）。
     - 逐个检查子项；符号链接的目标必须解析后仍在 knowledge 根内，否则 ``reset_path_escape``。
       链接本身被 unlink（不跟随），普通目录 rmtree，普通文件 unlink。
-    - 不处理绝对路径或 ``..``：``iterdir`` 只返回 knowledge 根下真实条目，恶意穿越只能经由
-      符号链接，已由上面的 resolve + relative_to 拦截。
+    - 绝对路径与目录穿越（``..``）因本接口不接收外部路径参数（仅对 knowledge 根
+      ``iterdir()`` 遍历真实子项）而不可达；唯一可达越界向量是符号链接，已由上面的
+      ``resolve`` + ``relative_to`` 拦截并测试（覆盖 knowledge 根级与 ``sources/<id>/``
+      嵌套子目录两层逃逸）。
     """
     knowledge_dir = data_dir / "knowledge"
     if not knowledge_dir.exists():

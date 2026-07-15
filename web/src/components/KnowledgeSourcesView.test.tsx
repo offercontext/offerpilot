@@ -3,6 +3,7 @@ import { App as AntApp } from 'antd';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, expect, it } from 'vitest';
 import KnowledgeSourcesView from './KnowledgeSourcesView';
+import viewSource from './KnowledgeSourcesView.tsx?raw';
 
 function renderWithProviders() {
   const queryClient = new QueryClient({
@@ -77,5 +78,19 @@ describe('KnowledgeSourcesView', () => {
     // reset 成功后的缓存清空由 resetMutation.removeQueries 保证，避免指向已删除
     // Source 的缓存详情；服务契约见 services/knowledge.test.ts。
     expect(markup).toContain('清空 Knowledge 数据');
+  });
+
+  it('KBR-07 resetMutation.onSuccess clears knowledge cache and selection state', () => {
+    // 防止误删 onSuccess 的三个副作用：removeQueries 清缓存 + 选中态/高亮清空，否则
+    // reset 后会残留指向已删 Source 的缓存详情。完整 DOM 行为测试需 jsdom + RTL
+    // （本项目未引入），退而用聚焦源码契约锁定 resetMutation 体内三个关键调用路径，
+    // 误删任一即测试失败。详情面板空状态由 SourceDetailPanel(sourceId == null) 渲染，
+    // 其文案 "选择左侧的 Source 查看详情" 已由首个 SSR 测试覆盖。
+    expect(viewSource).toMatch(/const\s+resetMutation\s*=\s*useMutation\(/);
+    expect(viewSource).toContain(
+      "queryClient.removeQueries({ queryKey: ['knowledge'] })",
+    );
+    expect(viewSource).toContain('setSelectedSourceId(null)');
+    expect(viewSource).toContain('setHighlightEvidenceId(null)');
   });
 });

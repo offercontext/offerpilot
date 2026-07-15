@@ -457,6 +457,35 @@ def test_reset_rejects_symlink_escape_in_knowledge_dir(tmp_path: Path) -> None:
     assert outside_file.read_text(encoding="utf-8") == "must-not-delete"
 
 
+def test_reset_does_not_follow_nested_escape_symlink(tmp_path: Path) -> None:
+    """rmtree 不跟随嵌套在真实子目录内的逃逸 symlink（CPython 实现细节→显式契约）。
+
+    根级逃逸 symlink 由 resolve + relative_to 拦截（见上一测试）；真实子目录（如
+    ``sources/<id>/``）内的嵌套 symlink 走 ``shutil.rmtree`` 路径。rmtree 删除目录树时
+    对符号链接条目仅 unlink 链接本身、不跟随，因此不会删掉外部目标。本测试把该实现
+    细节固化为契约：嵌套逃逸 symlink 的外部目标文件必须完好，reset 必须成功完成。
+    """
+    _repository, source_id, _snapshot_id = _seed_knowledge(tmp_path)
+    nested_dir = tmp_path / "knowledge" / "sources" / str(source_id)
+    assert nested_dir.is_dir(), "Source 目录应已存在，作为嵌套 symlink 的宿主"
+    # 外部目标文件位于 data_dir 之外（rmtree 作用域之外），含可识别内容。
+    outside_file = tmp_path.parent / "kbr07-nested-outside-target.txt"
+    outside_file.write_text("nested-must-not-delete", encoding="utf-8")
+    # 嵌套逃逸 symlink：sources/<id>/escape-link -> 外部文件。
+    (nested_dir / "escape-link").symlink_to(outside_file)
+
+    # reset 成功完成：根级 sources 是真实目录，rmtree 整树，不因嵌套 symlink 而 raise。
+    reset_knowledge_domain(
+        session_factory_for_data_dir(tmp_path),
+        tmp_path,
+        runtime_mode="local",
+        confirm=True,
+    )
+    # 外部目标完好 = rmtree 未跟随嵌套逃逸 symlink。
+    assert outside_file.exists(), "嵌套逃逸 symlink 的外部目标不应被删除"
+    assert outside_file.read_text(encoding="utf-8") == "nested-must-not-delete"
+
+
 # ---------------------------------------------------------------------------
 # 11. 原子性：DB 事务失败时全部回滚，不留半重置
 # ---------------------------------------------------------------------------
