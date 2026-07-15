@@ -303,6 +303,7 @@ def test_extractor_image_locator_fallback_when_alt_has_escape() -> None:
     assert draft.extra["logical_name"] == "pic.png"
 
 
-def test_extractor_version_is_kbr02() -> None:
-    # KBR-02：frontmatter Evidence 排除 + 最小 provenance 提取规则变化，升级版本。
-    assert EXTRACTOR_VERSION == "md-kbr02-1"
+def test_extractor_version_is_kbr03() -> None:
+    # KBR-03：evidence eligibility policy（过滤元数据样板）规则变化，升级版本。
+    # KBR-02 的 frontmatter/provenance 规则变化已包含在本版本上游。
+    assert EXTRACTOR_VERSION == "md-kbr03-1"

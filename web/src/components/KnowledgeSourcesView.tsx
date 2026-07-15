@@ -14,6 +14,7 @@ import {
   Spin,
   Switch,
   Tabs,
+  Tag,
   Tooltip,
   Typography,
   Upload,
@@ -838,6 +839,8 @@ function StatusBlock({
     source.extraction_status === 'failed' && source.extraction_error_message
       ? source.extraction_error_message
       : '';
+  const filterSummary = source.evidence_policy_summary;
+  const filteredTotal = filterSummary?.filtered_block_total ?? 0;
   return (
     <div className="knowledge-status-record">
       <StatusLine label="生命周期" value={STATUS_LABEL[source.lifecycle] ?? source.lifecycle} />
@@ -849,6 +852,31 @@ function StatusBlock({
       <StatusLine label="Brief 暂缓原因" value={source.brief_block_reason || '无'} />
       {extractionError ? (
         <Alert type="error" showIcon message="Extraction 失败" description={extractionError} />
+      ) : null}
+      {filterSummary && filteredTotal > 0 ? (
+        <div className="knowledge-status-filter-summary">
+          <Space size={4} align="center">
+            <Title level={5}>Evidence 过滤统计</Title>
+            <Tooltip title="系统在生成 Evidence 时按确定性规则过滤作者卡、阅读数、导航、图片壳、Obsidian/Evernote 残片等元数据样板；原文仍可完整查看，被过滤块不参与检索与 Brief。">
+              <Button
+                type="text"
+                size="small"
+                icon={<QuestionCircleOutlined />}
+                aria-label="查看 Evidence 过滤说明"
+              />
+            </Tooltip>
+          </Space>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            已过滤 {filteredTotal} 个元数据样板块（不影响原文查看）。
+          </Text>
+          <Space size={4} wrap>
+            {filterSummary.rules.map((rule) => (
+              <Tag key={rule.rule_id}>
+                {rule.label} ×{rule.count}
+              </Tag>
+            ))}
+          </Space>
+        </div>
       ) : null}
       <div className="knowledge-jobs-origins">
         <Space size={4} align="center" className="knowledge-jobs-origins-title">

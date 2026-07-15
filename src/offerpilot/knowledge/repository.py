@@ -1171,6 +1171,49 @@ class KnowledgeRepository:
             row = session.get(KnowledgeExtractionSnapshot, snapshot_id)
             return _to_snapshot_record(row) if row is not None else None
 
+    def get_source_filter_summary(self, source_id: int) -> dict[str, Any]:
+        """Spec KBR-03：从 active Snapshot 的 structure_manifest 读出 evidence policy 摘要。
+
+        返回 ``filtered_block_total``、``filtered_by_rule``（rule_id→count）与
+        ``evidence_policy_version``。摘要只含计数与稳定 rule_id，不重复保存被过滤正文、
+        URL、作者名或本机路径。无 active Snapshot 或旧 Snapshot 缺字段时返回零值摘要。
+        """
+
+        empty = {
+            "filtered_block_total": 0,
+            "filtered_by_rule": {},
+            "evidence_policy_version": "",
+        }
+        with self._session_factory() as session:
+            source = session.get(KnowledgeSource, source_id)
+            if source is None or source.active_snapshot_id is None:
+                return empty
+            snapshot = session.get(
+                KnowledgeExtractionSnapshot, source.active_snapshot_id
+            )
+            if snapshot is None or not snapshot.structure_manifest:
+                return empty
+            try:
+                manifest = json.loads(snapshot.structure_manifest)
+            except json.JSONDecodeError:
+                return empty
+            if not isinstance(manifest, dict):
+                return empty
+            filtered_by_rule = manifest.get("filtered_by_rule", {})
+            if not isinstance(filtered_by_rule, dict):
+                filtered_by_rule = {}
+            return {
+                "filtered_block_total": int(manifest.get("filtered_block_total", 0) or 0),
+                "filtered_by_rule": {
+                    str(rule_id): int(count)
+                    for rule_id, count in filtered_by_rule.items()
+                    if isinstance(count, (int, float))
+                },
+                "evidence_policy_version": str(
+                    manifest.get("evidence_policy_version", "") or ""
+                ),
+            }
+
     # Job
 
     def create_job(self, data: JobCreateInput) -> JobRecord:

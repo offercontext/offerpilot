@@ -50,6 +50,18 @@ export interface KnowledgeSourceProvenance {
   metadata_extraction_version: string;
 }
 
+export interface KnowledgeEvidencePolicyRule {
+  rule_id: string;
+  label: string;
+  count: number;
+}
+
+export interface KnowledgeEvidencePolicySummary {
+  filtered_block_total: number;
+  evidence_policy_version: string;
+  rules: KnowledgeEvidencePolicyRule[];
+}
+
 export interface KnowledgeSource {
   id: number;
   source_kind: string;
@@ -75,6 +87,7 @@ export interface KnowledgeSource {
   created_at: string;
   updated_at: string;
   provenance: KnowledgeSourceProvenance;
+  evidence_policy_summary?: KnowledgeEvidencePolicySummary;
 }
 
 export interface KnowledgeJob {

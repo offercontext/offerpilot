@@ -42,6 +42,8 @@ from offerpilot.config import (
 from offerpilot.db import session_factory_for_data_dir
 from offerpilot.diagnostics import append_log_entry, read_recent_log_entries
 from offerpilot.knowledge import (
+    EVIDENCE_POLICY_VERSION,
+    RULE_LABELS,
     IngestRequest,
     KnowledgeIngestService,
     KnowledgeRepository,
@@ -148,6 +150,7 @@ def _json_datetime(value: Any) -> str | None:
 def _knowledge_source_payload(
     source: Any,
     provenance: Optional[dict[str, Any]] = None,
+    evidence_policy_summary: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     title = source.display_title or source.title_hint or source.main_filename
     payload: dict[str, Any] = {
@@ -179,7 +182,37 @@ def _knowledge_source_payload(
     # （理论上不应发生，captured_at 总存在）时不制造占位。
     if provenance is not None:
         payload["provenance"] = _provenance_to_json(provenance)
+    # Spec KBR-03：Source 处理记录展示过滤数量与规则摘要（面向用户的稳定 label，不暴露
+    # 正则/实现细节）。仅单 Source 详情接口注入；列表/ingest 响应不携带。
+    if evidence_policy_summary is not None:
+        payload["evidence_policy_summary"] = _evidence_policy_summary_to_json(
+            evidence_policy_summary
+        )
     return payload
+
+
+def _evidence_policy_summary_to_json(summary: dict[str, Any]) -> dict[str, Any]:
+    """序列化 evidence policy 摘要：filtered_block_total、evidence_policy_version、
+    按稳定 rule_id 聚合的命中数与面向用户的 label。"""
+
+    filtered_by_rule = summary.get("filtered_by_rule", {})
+    if not isinstance(filtered_by_rule, dict):
+        filtered_by_rule = {}
+    rules = [
+        {
+            "rule_id": str(rule_id),
+            "label": RULE_LABELS.get(str(rule_id), str(rule_id)),
+            "count": int(count),
+        }
+        for rule_id, count in sorted(filtered_by_rule.items())
+        if isinstance(count, (int, float)) and int(count) > 0
+    ]
+    return {
+        "filtered_block_total": int(summary.get("filtered_block_total", 0) or 0),
+        "evidence_policy_version": summary.get("evidence_policy_version", "")
+        or EVIDENCE_POLICY_VERSION,
+        "rules": rules,
+    }
 
 
 def _provenance_to_json(provenance: dict[str, Any]) -> dict[str, Any]:
@@ -631,7 +664,12 @@ def create_app(
         if source is None:
             return error_response(404, "Source not found")
         provenance = knowledge_repository.get_source_provenance(source_id)
-        return JSONResponse(_knowledge_source_payload(source, provenance))
+        filter_summary = knowledge_repository.get_source_filter_summary(source_id)
+        return JSONResponse(
+            _knowledge_source_payload(
+                source, provenance, evidence_policy_summary=filter_summary
+            )
+        )
 
     @app.patch("/api/knowledge/sources/{source_id}")
     def patch_knowledge_source(

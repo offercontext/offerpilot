@@ -98,23 +98,23 @@ Provider 行为或产品 Schema；不得在本 Ticket 实现元数据过滤、co
 **Scope boundaries:** 只实现低歧义全局结构规则和当前真实样本所需的明确适配器。不得使用覆盖所有
 Source 的宽泛关键词/正则，不实现通用网页正文抽取或 LLM 分类。
 
-- [ ] Evidence eligibility policy 与 Markdown block 解析职责分离；规则决定是否发射 Evidence，不修改
+- [x] Evidence eligibility policy 与 Markdown block 解析职责分离；规则决定是否发射 Evidence，不修改
       canonical text 或 AST 的原始位置。
-- [ ] 全局规则只处理低歧义结构，包括空链接壳、明确导出控件文本和纯装饰图片壳。
-- [ ] 来源/导出格式适配器按确定性信号选择，不能仅凭正文中出现某个品牌或关键词启用。
-- [ ] 首版适配器覆盖真实 `@Async` 样本中的 Obsidian/Evernote 资源残片、作者区域、阅读信息和导航噪声。
-- [ ] 每条过滤规则具有稳定 rule ID、明确输入边界、正例和至少一个容易误判的反例。
-- [ ] 不确定块默认生成 Evidence；新增过滤规则必须通过版本提升和测试进入。
-- [ ] 被过滤块不进入 Evidence、FTS、Brief Prompt 或预期 coverage 章节集合。
-- [ ] 被过滤块仍能在 Source 原文中查看，且相邻保留 Evidence 的 line/char offsets 不发生偏移。
-- [ ] Snapshot 结构摘要记录 filtered block 总数、按 rule ID 聚合的数量、命中的 provenance 字段名、
+- [x] 全局规则只处理低歧义结构，包括空链接壳、明确导出控件文本和纯装饰图片壳。
+- [x] 来源/导出格式适配器按确定性信号选择，不能仅凭正文中出现某个品牌或关键词启用。
+- [x] 首版适配器覆盖真实 `@Async` 样本中的 Obsidian/Evernote 资源残片、作者区域、阅读信息和导航噪声。
+- [x] 每条过滤规则具有稳定 rule ID、明确输入边界、正例和至少一个容易误判的反例。
+- [x] 不确定块默认生成 Evidence；新增过滤规则必须通过版本提升和测试进入。
+- [x] 被过滤块不进入 Evidence、FTS、Brief Prompt 或预期 coverage 章节集合。
+- [x] 被过滤块仍能在 Source 原文中查看，且相邻保留 Evidence 的 line/char offsets 不发生偏移。
+- [x] Snapshot 结构摘要记录 filtered block 总数、按 rule ID 聚合的数量、命中的 provenance 字段名、
       metadata extraction version 和 evidence policy version。
-- [ ] 结构摘要不重复保存被过滤正文、URL、作者名或本机路径。
-- [ ] Source 处理记录展示过滤数量和规则摘要；普通用户界面不展示内部正则或实现细节。
-- [ ] 相同 Source 与 policy version 重跑得到相同 Snapshot digest、Evidence ID、顺序和过滤统计。
-- [ ] policy version 变化使旧 Brief 正确进入 outdated 语义，不把新旧 Snapshot Evidence 混用。
-- [ ] 搜索回归证明被过滤噪声不可召回，正文术语、URL、数字和配置示例仍可召回。
-- [ ] 最高层测试从真实样本字节完成 Extraction，并断言 tags、作者卡和图片壳没有成为 Evidence。
+- [x] 结构摘要不重复保存被过滤正文、URL、作者名或本机路径。
+- [x] Source 处理记录展示过滤数量和规则摘要；普通用户界面不展示内部正则或实现细节。
+- [x] 相同 Source 与 policy version 重跑得到相同 Snapshot digest、Evidence ID、顺序和过滤统计。
+- [x] policy version 变化使旧 Brief 正确进入 outdated 语义，不把新旧 Snapshot Evidence 混用。
+- [x] 搜索回归证明被过滤噪声不可召回，正文术语、URL、数字和配置示例仍可召回。
+- [x] 最高层测试从真实样本字节完成 Extraction，并断言 tags、作者卡和图片壳没有成为 Evidence。
 
 ## KBR-04：切换 Brief Schema v2 与确定性 citation coverage
 

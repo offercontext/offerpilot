@@ -38,6 +38,10 @@ from offerpilot.knowledge.encoding import (
     EncodingError,
     decode_source_bytes,
 )
+from offerpilot.knowledge.evidence_policy import (
+    EVIDENCE_POLICY_VERSION,
+    RULE_LABELS,
+)
 from offerpilot.knowledge.extractor import (
     EXTRACTOR_VERSION,
     METADATA_EXTRACTION_VERSION,
@@ -88,6 +92,7 @@ __all__ = [
     "DecodedContent",
     "EXTRACTOR_VERSION",
     "EncodingError",
+    "EVIDENCE_POLICY_VERSION",
     "EvidenceRecord",
     "EvidenceSearchHit",
     "ExtractionWorker",
@@ -121,5 +126,6 @@ __all__ = [
     "decode_source_bytes",
     "parse_brief_payload",
     "parse_support_decision",
+    "RULE_LABELS",
     "validate_brief_against_evidence",
 ]
