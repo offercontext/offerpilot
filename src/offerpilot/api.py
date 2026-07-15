@@ -183,6 +183,7 @@ def create_app(
     mock_sessions = MockSessionsRepository(session_factory)
     wakeups = WakeupsRepository(session_factory)
     app = FastAPI(title="OfferPilot")
+    app.state.db_engine = session_factory.kw.get("bind")
 
     @app.middleware("http")
     async def cors_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
