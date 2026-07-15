@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -17,6 +15,12 @@ from offerpilot.models import (
     ApplicationEvent,
     ApplicationMaterialKit,
     Resume,
+)
+from offerpilot.repositories.json_contract import (
+    JsonContractError,
+    canonical_json as _canonical_json,
+    parse_json_object as _parse_json_object,
+    sha256_text,
 )
 
 
@@ -37,31 +41,16 @@ class EvidenceBundleConflictError(ValueError):
 
 def canonical_json(value: Any) -> str:
     try:
-        return json.dumps(
-            value,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-            allow_nan=False,
-        )
-    except (TypeError, ValueError) as exc:
-        raise EvidenceBundleValidationError("value must be valid JSON") from exc
-
-
-def sha256_text(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+        return _canonical_json(value)
+    except JsonContractError as exc:
+        raise EvidenceBundleValidationError(str(exc)) from exc
 
 
 def parse_json_object(name: str, value: str) -> dict[str, Any]:
     try:
-        parsed = json.loads(value, parse_constant=_reject_non_finite_json_constant)
-    except (TypeError, ValueError) as exc:
-        raise EvidenceBundleValidationError(
-            f"{name} content_json must be a JSON object"
-        ) from exc
-    if not isinstance(parsed, dict):
-        raise EvidenceBundleValidationError(f"{name} content_json must be a JSON object")
-    return parsed
+        return _parse_json_object(name, value)
+    except JsonContractError as exc:
+        raise EvidenceBundleValidationError(str(exc)) from exc
 
 
 @dataclass(frozen=True)
@@ -218,10 +207,6 @@ class EvidenceBundlesRepository:
         with self._session_factory() as session:
             bundle = session.scalar(statement)
             return _normalize_bundle_timestamps(bundle) if bundle is not None else None
-
-
-def _reject_non_finite_json_constant(value: str) -> None:
-    raise ValueError(f"non-finite JSON constant: {value}")
 
 
 def _normalize_submitted_at(value: datetime) -> datetime:

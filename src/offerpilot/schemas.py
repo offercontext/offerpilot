@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -239,6 +239,26 @@ class ApplicationEvidenceBundleSummaryOut(BaseModel):
 
 class ApplicationEvidenceBundleOut(ApplicationEvidenceBundleSummaryOut):
     snapshot: dict[str, Any]
+
+
+class MaterialRevisionProposalSummaryOut(BaseModel):
+    id: int
+    application_id: int
+    material_kit_id: int
+    source_resume_id: int | None
+    status: Literal["draft", "accepted", "rejected"]
+    summary: str
+    proposal_sha256: str
+    result_resume_id: int | None
+    created_at: datetime
+
+
+class MaterialRevisionProposalOut(MaterialRevisionProposalSummaryOut):
+    changes: list[dict[str, Any]]
+    source: dict[str, Any]
+    accepted_change_ids: list[str]
+    accepted_at: datetime | None
+    rejected_at: datetime | None
 
 
 class EvidenceBundlePreviewOut(BaseModel):

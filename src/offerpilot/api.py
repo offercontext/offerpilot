@@ -32,6 +32,7 @@ from offerpilot.ai.agent import (
     resume_after_confirm,
     run_turn,
 )
+from offerpilot.ai.material_proposals import MaterialProposalModelError
 from offerpilot.ai.client import ConfiguredAIClient
 from offerpilot.ai.tools import editable_fields_for_tool, offerpilot_tool_registry
 from offerpilot.ai.types import Message, ToolCall
@@ -65,6 +66,12 @@ from offerpilot.repositories.knowledge import (
     KnowledgeRepository,
 )
 from offerpilot.repositories.material_kits import MaterialKitCreate, MaterialKitsRepository
+from offerpilot.repositories.material_revision_proposals import (
+    MaterialProposalConflictError,
+    MaterialProposalNotFound,
+    MaterialProposalValidationError,
+    MaterialRevisionProposalsRepository,
+)
 from offerpilot.repositories.mock import MockSessionCreate, MockSessionsRepository
 from offerpilot.repositories.notes import NoteCreate, NotesRepository
 from offerpilot.repositories.offers import OfferCreate, OffersRepository
@@ -84,6 +91,8 @@ from offerpilot.schemas import (
     JDAnalysisOut,
     KnowledgeDocumentOut,
     MaterialKitOut,
+    MaterialRevisionProposalOut,
+    MaterialRevisionProposalSummaryOut,
     MockSessionOut,
     OfferOut,
     QuestionOut,
@@ -170,6 +179,7 @@ def create_app(
     questions = QuestionsRepository(session_factory)
     material_kits = MaterialKitsRepository(session_factory)
     evidence_bundles = EvidenceBundlesRepository(session_factory)
+    material_revision_proposals = MaterialRevisionProposalsRepository(session_factory)
     mock_sessions = MockSessionsRepository(session_factory)
     wakeups = WakeupsRepository(session_factory)
     app = FastAPI(title="OfferPilot")
@@ -463,6 +473,92 @@ def create_app(
         if bundle is None:
             return error_response(404, "Evidence bundle not found")
         return JSONResponse(_evidence_bundle_detail_json(bundle))
+
+    @app.post("/api/applications/{app_id}/material-revision-proposals", status_code=201)
+    def create_material_revision_proposal(
+        app_id: int, payload: dict[str, Any] = Body(...)
+    ) -> JSONResponse:
+        instructions = payload.get("instructions", "")
+        user_assertions = payload.get("user_assertions", [])
+        if not isinstance(instructions, str):
+            return error_response(422, "instructions must be a string")
+        if not isinstance(user_assertions, list):
+            return error_response(422, "user_assertions must be an array")
+        if applications.get(app_id) is None:
+            return error_response(404, "Application not found")
+        model = _chat_model(chat_model, resolved_data_dir)
+        if isinstance(model, JSONResponse):
+            return error_response(502, "Material proposal model is unavailable, please configure an AI provider")
+        try:
+            proposal = material_revision_proposals.create_generated(
+                app_id,
+                instructions,
+                user_assertions,
+                model,
+            )
+        except MaterialProposalNotFound:
+            return error_response(404, "Application not found")
+        except MaterialProposalValidationError as exc:
+            return error_response(422, str(exc))
+        except MaterialProposalModelError:
+            return error_response(502, "Model returned an unverifiable material proposal, please retry")
+        return JSONResponse(_material_revision_proposal_detail_json(proposal), status_code=201)
+
+    @app.get("/api/applications/{app_id}/material-revision-proposals")
+    def list_material_revision_proposals(app_id: int) -> JSONResponse:
+        if applications.get(app_id) is None:
+            return error_response(404, "Application not found")
+        return JSONResponse(
+            [_material_revision_proposal_summary_json(item) for item in material_revision_proposals.list(app_id)]
+        )
+
+    @app.get("/api/applications/{app_id}/material-revision-proposals/{proposal_id}")
+    def get_material_revision_proposal(app_id: int, proposal_id: int) -> JSONResponse:
+        proposal = material_revision_proposals.get(app_id, proposal_id)
+        if proposal is None:
+            return error_response(404, "Material revision proposal not found")
+        return JSONResponse(_material_revision_proposal_detail_json(proposal))
+
+    @app.post("/api/applications/{app_id}/material-revision-proposals/{proposal_id}/accept")
+    def accept_material_revision_proposal(
+        app_id: int, proposal_id: int, payload: dict[str, Any] = Body(...)
+    ) -> JSONResponse:
+        expected_hash = payload.get("expected_proposal_sha256")
+        selected_ids = payload.get("selected_change_ids")
+        if not isinstance(expected_hash, str) or not expected_hash.strip():
+            return error_response(422, "expected_proposal_sha256 is required")
+        if not isinstance(selected_ids, list):
+            return error_response(422, "selected_change_ids must be an array")
+        try:
+            proposal, resume, created = material_revision_proposals.accept(
+                app_id,
+                proposal_id,
+                expected_hash.strip(),
+                selected_ids,
+            )
+        except MaterialProposalNotFound:
+            return error_response(404, "Material revision proposal not found")
+        except MaterialProposalValidationError as exc:
+            return error_response(422, str(exc))
+        except MaterialProposalConflictError as exc:
+            return error_response(409, str(exc))
+        return JSONResponse(
+            {
+                "proposal": _material_revision_proposal_detail_json(proposal),
+                "result_resume": _resume_json(resume),
+            },
+            status_code=201 if created else 200,
+        )
+
+    @app.post("/api/applications/{app_id}/material-revision-proposals/{proposal_id}/reject")
+    def reject_material_revision_proposal(app_id: int, proposal_id: int) -> JSONResponse:
+        try:
+            proposal = material_revision_proposals.reject(app_id, proposal_id)
+        except MaterialProposalNotFound:
+            return error_response(404, "Material revision proposal not found")
+        except MaterialProposalConflictError as exc:
+            return error_response(409, str(exc))
+        return JSONResponse(_material_revision_proposal_detail_json(proposal))
 
     @app.get("/api/application-events")
     def list_application_events(
@@ -4757,6 +4853,58 @@ def _evidence_bundle_preview_json(preview: Any) -> dict[str, Any]:
             },
         },
     ).model_dump(mode="json", exclude_none=True)
+
+
+def _material_revision_proposal_summary_json(proposal: Any) -> dict[str, Any]:
+    proposal_data = json.loads(proposal.proposal_json)
+    return MaterialRevisionProposalSummaryOut(
+        id=proposal.id,
+        application_id=proposal.application_id,
+        material_kit_id=proposal.material_kit_id,
+        source_resume_id=proposal.source_resume_id,
+        status=proposal.status,
+        summary=str(proposal_data.get("summary") or ""),
+        proposal_sha256=proposal.proposal_sha256,
+        result_resume_id=proposal.result_resume_id,
+        created_at=proposal.created_at,
+    ).model_dump(mode="json")
+
+
+def _material_revision_proposal_detail_json(proposal: Any) -> dict[str, Any]:
+    summary = _material_revision_proposal_summary_json(proposal)
+    proposal_data = json.loads(proposal.proposal_json)
+    snapshot = json.loads(proposal.source_snapshot_json)
+    assertions = snapshot.get("user_assertions")
+    if not isinstance(assertions, list):
+        assertions = []
+    evidence = snapshot.get("latest_evidence_bundle")
+    public_evidence = None
+    if isinstance(evidence, dict):
+        public_evidence = {
+            "id": evidence.get("id"),
+            "bundle_sha256": evidence.get("bundle_sha256"),
+        }
+    source = {
+        "application": snapshot.get("application", {}),
+        "material_kit": {
+            "id": snapshot.get("material_kit", {}).get("id"),
+            "jd_excerpt": str(snapshot.get("material_kit", {}).get("jd_snapshot") or "")[:500],
+        },
+        "resume": {
+            "id": snapshot.get("resume", {}).get("id"),
+            "title": snapshot.get("resume", {}).get("title", ""),
+        },
+        "latest_evidence_bundle": public_evidence,
+        "user_assertions": assertions,
+    }
+    return MaterialRevisionProposalOut(
+        **summary,
+        changes=proposal_data.get("changes", []),
+        source=source,
+        accepted_change_ids=json.loads(proposal.accepted_change_ids_json or "[]"),
+        accepted_at=proposal.accepted_at,
+        rejected_at=proposal.rejected_at,
+    ).model_dump(mode="json")
 
 
 def _required_text(payload: dict[str, Any], name: str) -> str:

@@ -287,6 +287,39 @@ class ApplicationEvidenceBundle(Base):
     )
 
 
+class MaterialRevisionProposal(Base):
+    __tablename__ = "material_revision_proposals"
+    __table_args__ = (
+        Index("idx_material_revision_proposals_application_created", "application_id", "created_at"),
+        UniqueConstraint("result_resume_id", name="uq_material_revision_proposals_result_resume"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    application_id: Mapped[int] = mapped_column(
+        ForeignKey("applications.id", ondelete="CASCADE"), nullable=False
+    )
+    material_kit_id: Mapped[int] = mapped_column(
+        ForeignKey("application_material_kits.id", ondelete="CASCADE"), nullable=False
+    )
+    source_resume_id: Mapped[int | None] = mapped_column(
+        ForeignKey("resumes.id", ondelete="SET NULL"), nullable=True
+    )
+    source_fingerprint_sha256: Mapped[str] = mapped_column(String, nullable=False)
+    source_snapshot_json: Mapped[str] = mapped_column(String, nullable=False)
+    proposal_json: Mapped[str] = mapped_column(String, nullable=False)
+    proposal_sha256: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="draft", server_default="draft")
+    accepted_change_ids_json: Mapped[str] = mapped_column(String, nullable=False, default="[]", server_default="[]")
+    result_resume_id: Mapped[int | None] = mapped_column(
+        ForeignKey("resumes.id", ondelete="SET NULL"), nullable=True
+    )
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
+
+
 class KnowledgeDocument(Base):
     __tablename__ = "knowledge_documents"
     __table_args__ = (
@@ -476,6 +509,7 @@ APPLICATION_FOREIGN_KEY_MODELS = (
     JDAnalysis,
     ApplicationMaterialKit,
     ApplicationEvidenceBundle,
+    MaterialRevisionProposal,
     Question,
     MockSession,
 )

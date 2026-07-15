@@ -28,6 +28,7 @@ import type {
   MaterialKitViewModel,
 } from '@/types/materialKit';
 import type { Resume } from '@/types/resume';
+import type { MaterialRevisionProposal } from '@/types/materialRevisionProposal';
 import type {
   ConfirmEvidenceBundleInput,
   EvidenceBundleDetail,
@@ -46,6 +47,8 @@ import {
   updateMaterialKit,
 } from '@/services/materialKits';
 import { listResumes } from '@/services/resumes';
+import { createMaterialRevisionProposal } from '@/services/materialRevisionProposals';
+import MaterialProposalReviewModal from './MaterialProposalReviewModal';
 import styles from './MaterialKitDrawer.module.css';
 import { getMaterialKitStatusForSave } from './materialKitStatus';
 
@@ -75,6 +78,12 @@ interface ConfirmVariables {
   applicationID: number;
   sessionID: string;
   input: ConfirmEvidenceBundleInput;
+}
+
+interface ProposalVariables {
+  applicationID: number;
+  instructions: string;
+  userAssertions: string[];
 }
 
 const STATUS_LABELS: Record<MaterialKitStatus, string> = {
@@ -186,6 +195,8 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
   const [evidenceDetail, setEvidenceDetail] = useState<EvidenceBundleDetail | null>(null);
   const [evidenceDetailError, setEvidenceDetailError] = useState<string | null>(null);
   const [evidenceDetailLoading, setEvidenceDetailLoading] = useState(false);
+  const [proposalReviewOpen, setProposalReviewOpen] = useState(false);
+  const [proposal, setProposal] = useState<MaterialRevisionProposal | null>(null);
 
   const isCurrentConfirmationSession = (requestedApplicationID: number, sessionID: string) =>
     activeApplicationIDRef.current === requestedApplicationID && confirmationSessionRef.current === sessionID;
@@ -207,6 +218,8 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
     setEvidenceDetail(null);
     setEvidenceDetailError(null);
     setEvidenceDetailLoading(false);
+    setProposalReviewOpen(false);
+    setProposal(null);
     confirmationSessionRef.current = null;
     blockedPreviewUpdatedAtRef.current = null;
   };
@@ -359,6 +372,22 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
     },
   });
 
+  const proposalMutation = useMutation({
+    mutationFn: ({ applicationID: requestedApplicationID, instructions, userAssertions }: ProposalVariables) =>
+      createMaterialRevisionProposal(requestedApplicationID, {
+        instructions,
+        user_assertions: userAssertions,
+      }),
+    onSuccess: (nextProposal: MaterialRevisionProposal, variables: ProposalVariables) => {
+      if (variables.applicationID !== applicationID) return;
+      setProposal(nextProposal);
+      setProposalReviewOpen(true);
+    },
+    onError: (error: unknown, variables: ProposalVariables) => {
+      if (variables.applicationID === applicationID) setActionError(getErrorMessage(error));
+    },
+  });
+
   const refreshEvidencePreview = async (requestedApplicationID: number, sessionID: string) => {
     if (!isCurrentConfirmationSession(requestedApplicationID, sessionID)) return;
 
@@ -434,7 +463,8 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
   const canConfirm = Boolean(canSave);
   const displayedStatus: MaterialKitStatus = legacySubmitted ? 'submitted' : status;
   const generateDisabled = !applicationID || !resumeID || !jdSnapshot.trim();
-  const busy = kitQuery.isFetching || generateMutation.isPending || saveMutation.isPending || confirmMutation.isPending || confirmationRefreshing;
+  const proposalDisabled = !applicationID || !existingKit || existingKit.application_id !== applicationID || !resumeID || !jdSnapshot.trim();
+  const busy = kitQuery.isFetching || generateMutation.isPending || saveMutation.isPending || proposalMutation.isPending || confirmMutation.isPending || confirmationRefreshing;
 
   const handleGenerate = () => {
     if (!applicationID || !resumeID || !jdSnapshot.trim()) return;
@@ -458,6 +488,26 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
       status: getMaterialKitStatusForSave(existingKit.status, status),
       content: cloneContent(content),
     });
+  };
+
+  const handleGenerateProposal = () => {
+    if (proposalDisabled || !applicationID) return;
+    proposalMutation.mutate({ applicationID, instructions: '', userAssertions: [] });
+  };
+
+  const handleProposalAccepted = () => {
+    if (!applicationID) return;
+    queryClient.invalidateQueries({ queryKey: ['resumes'] });
+    queryClient.invalidateQueries({ queryKey: ['application-material-kit', applicationID] });
+    queryClient.invalidateQueries({ queryKey: ['application-evidence-bundle-preview', applicationID] });
+    queryClient.invalidateQueries({ queryKey: ['application-evidence-bundles', applicationID] });
+    queryClient.invalidateQueries({ queryKey: ['application-events', applicationID] });
+    queryClient.invalidateQueries({ queryKey: ['events'] });
+    queryClient.invalidateQueries({ queryKey: ['events', applicationID] });
+    queryClient.invalidateQueries({ queryKey: ['application-material-revision-proposals', applicationID] });
+    setProposalReviewOpen(false);
+    setProposal(null);
+    message.success('Derived resume created after human confirmation');
   };
 
   const openConfirmation = () => {
@@ -686,6 +736,13 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
               >
                 保存
               </Button>
+              <Button
+                onClick={handleGenerateProposal}
+                loading={proposalMutation.isPending}
+                disabled={proposalDisabled || busy}
+              >
+                Generate evidence-gated resume proposal
+              </Button>
               {canConfirm ? (
                 <Button type="primary" onClick={openConfirmation} disabled={busy}>
                   确认已投递
@@ -867,6 +924,13 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
           </main>
         </div>
       </Spin>
+      <MaterialProposalReviewModal
+        applicationID={applicationID || 0}
+        proposal={proposal}
+        open={proposalReviewOpen}
+        onClose={() => setProposalReviewOpen(false)}
+        onAccepted={handleProposalAccepted}
+      />
       <Modal
         open={confirmationOpen}
         title="确认投递证据"

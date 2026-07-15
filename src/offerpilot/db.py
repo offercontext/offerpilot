@@ -93,6 +93,11 @@ def init_database(db_path: Path) -> SessionFactory:
         "0006_application_evidence_bundles",
         "Add immutable application evidence bundles",
     )
+    _record_migration(
+        engine,
+        "0007_material_revision_proposals",
+        "Add evidence-gated material revision proposals",
+    )
     _ensure_knowledge_fts(engine)
     return sessionmaker(bind=engine, expire_on_commit=False)
 

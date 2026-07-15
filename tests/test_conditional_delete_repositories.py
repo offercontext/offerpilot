@@ -8,6 +8,7 @@ from offerpilot.models import (
     ApplicationEvent,
     ApplicationEvidenceBundle,
     ApplicationMaterialKit,
+    MaterialRevisionProposal,
     Base,
     Conversation,
     InterviewNote,
@@ -47,6 +48,15 @@ def _application_dependency(model, application_id):
             idempotency_key="8f4a6b48-b554-49a0-bccf-b1bf211ef824",
             snapshot_json="{}",
             bundle_sha256="0" * 64,
+        )
+    if model is MaterialRevisionProposal:
+        return model(
+            application_id=application_id,
+            material_kit_id=1,
+            source_fingerprint_sha256="0" * 64,
+            source_snapshot_json="{}",
+            proposal_json="{}",
+            proposal_sha256="1" * 64,
         )
     if model is Question:
         return model(application_id=application_id, question="Why?")
@@ -104,6 +114,12 @@ def test_application_delete_if_matches_rejects_every_fk_dependency(tmp_path, dep
                 title="Mock",
                 role="Engineer",
             )
+        elif dependency_model is MaterialRevisionProposal:
+            kit = ApplicationMaterialKit(application_id=app.id)
+            session.add(kit)
+            session.flush()
+            dependency = _application_dependency(dependency_model, app.id)
+            dependency.material_kit_id = kit.id
         else:
             dependency = _application_dependency(dependency_model, app.id)
         session.add(dependency)
