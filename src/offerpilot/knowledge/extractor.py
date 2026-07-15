@@ -26,7 +26,6 @@ from markdown_it.token import Token
 
 from offerpilot.knowledge.evidence_policy import (
     EVIDENCE_POLICY_VERSION,
-    BlockCandidate,
     evaluate_block,
 )
 from offerpilot.knowledge.tokenizer import (
@@ -614,8 +613,10 @@ class MarkdownExtractor:
         # Spec KBR-03：正文块 Evidence eligibility policy。规则只决定是否发射，不改 canonical
         # text 与 char range；被过滤块不产生 paragraph / image Evidence，相邻保留 Evidence 的
         # line/char offsets 不受影响。
-        decision = evaluate_block(BlockCandidate(block_kind="paragraph", text=text))
+        decision = evaluate_block(text)
         if not decision.emit:
+            # evaluate_block 契约保证 emit=False 时 rule_id 非 None；``or "unknown"``
+            # 是 Optional 类型的防御性兜底，运行时不会触发（list_item/blockquote 同）。
             rule_id = decision.rule_id or "unknown"
             filter_counts[rule_id] = filter_counts.get(rule_id, 0) + 1
             return 3
@@ -762,9 +763,7 @@ class MarkdownExtractor:
             # Spec KBR-03：list item 也走 evidence policy（如 ``- 作者：张三`` byline）。
             # canonical slice 含 ``- `` list marker，因此用 marker-stripped 的 inline_text
             # 作为 policy 输入；被过滤项 push 空占位保持 push/pop 平衡，不污染嵌套子项。
-            decision = evaluate_block(
-                BlockCandidate(block_kind="list_item", text=inline_text)
-            )
+            decision = evaluate_block(inline_text)
             if decision.emit:
                 navigator.push_list_item(open_token.level, inline_text.strip())
                 line_start, line_end = _line_range_from_char(offsets, char_start, char_end)
@@ -857,9 +856,7 @@ class MarkdownExtractor:
             merged_end = parts[-1][1]
             text = canonical[merged_start:merged_end]
             # Spec KBR-03：blockquote 块也走 evidence policy；被过滤则整块不发射 Evidence。
-            decision = evaluate_block(
-                BlockCandidate(block_kind="blockquote", text="\n".join(clean_parts))
-            )
+            decision = evaluate_block("\n".join(clean_parts))
             if not decision.emit:
                 rule_id = decision.rule_id or "unknown"
                 filter_counts[rule_id] = filter_counts.get(rule_id, 0) + 1

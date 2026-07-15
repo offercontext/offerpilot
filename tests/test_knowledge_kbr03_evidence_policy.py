@@ -27,8 +27,8 @@ from offerpilot.config import AIProviderProfile, Config
 from offerpilot.knowledge.brief import BRIEF_MIN_CONTEXT_WINDOW
 from offerpilot.knowledge.evidence_policy import (
     EVIDENCE_POLICY_VERSION,
-    BlockCandidate,
     RULE_LABELS,
+    _RULES,
     evaluate_block,
 )
 from offerpilot.knowledge.extractor import (
@@ -69,10 +69,6 @@ def _api_client(tmp_path: Path):  # type: ignore[no-untyped-def]
     return TestClient(create_app(data_dir=tmp_path))
 
 
-def _candidate(text: str, *, block_kind: str = "paragraph") -> BlockCandidate:
-    return BlockCandidate(block_kind=block_kind, text=text)
-
-
 # ---------------------------------------------------------------------------
 # Spec 验收：policy 与解析职责分离 + 版本号
 # ---------------------------------------------------------------------------
@@ -103,6 +99,12 @@ def test_rule_registry_has_stable_ids_and_labels() -> None:
         "navigation",
     }
     assert expected <= set(RULE_LABELS.keys())
+    # 反向闭包：_RULES 中每个 rule_id 都必须登记 label，否则 api 层
+    # ``RULE_LABELS.get(rule_id, rule_id)`` 会 fallback 把内部 rule_id 当 label 展示。
+    rule_ids_in_rules = {rule_id for rule_id, _ in _RULES}
+    assert rule_ids_in_rules <= set(RULE_LABELS.keys()), (
+        f"rule_id 缺 label 登记：{rule_ids_in_rules - set(RULE_LABELS.keys())}"
+    )
     # label 非空、不含正则语法，供普通用户界面展示。
     for rule_id, label in RULE_LABELS.items():
         assert isinstance(label, str) and label
@@ -141,7 +143,7 @@ def test_rule_registry_has_stable_ids_and_labels() -> None:
 )
 def test_rule_positive_skips_with_stable_id(text: str, rule_id: str) -> None:
     """正例：规则命中 -> skip 并返回稳定 rule_id。"""
-    decision = evaluate_block(_candidate(text))
+    decision = evaluate_block(text)
     assert not decision.emit
     assert decision.rule_id == rule_id
 
@@ -173,19 +175,42 @@ def test_rule_positive_skips_with_stable_id(text: str, rule_id: str) -> None:
 )
 def test_rule_negative_keeps_as_evidence(text: str) -> None:
     """反例：不确定或合法正文 -> 默认生成 Evidence（emit, rule_id=None）。"""
-    decision = evaluate_block(_candidate(text))
+    decision = evaluate_block(text)
     assert decision.emit
     assert decision.rule_id is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "作者：SQLite 是最佳选择",
+        "作者：张三 是专家",
+        "by: Python 3",
+    ],
+)
+def test_author_byline_filters_colon_plus_two_token_short_body(text: str) -> None:
+    """已知 trade-off（Spec 接受）：冒号 + 恰好 2 token 的短正文被 author_byline 过滤。
+
+    ``_BYLINE_RE`` 允许冒号后 1-2 个 name token（``\\w`` 在 Unicode 模式下匹配 CJK），
+    因此 ``作者：SQLite 是最佳选择`` 这类"冒号 + 2 token"短句也被当作结构化署名 skip。
+    3+ token 的正文句子才受保护；确定性优先于覆盖面（见 _BYLINE_RE docstring）。
+    """
+    decision = evaluate_block(text)
+    assert not decision.emit
+    assert decision.rule_id == "author_byline"
+
+
+def test_author_byline_protects_three_token_body() -> None:
+    """对照：冒号 + 3 token 及以上正文句子受保护，保留为 Evidence。"""
+    assert evaluate_block("作者：张三 认为 Python 是最佳选择").emit
 
 
 def test_non_paragraph_block_kinds_evaluated() -> None:
     """policy 适用于 paragraph / list_item / blockquote；fence/table 不在此层。"""
     # list_item 形式的作者署名也被过滤。
-    assert not evaluate_block(_candidate("作者：张三", block_kind="list_item")).emit
+    assert not evaluate_block("作者：张三").emit
     # blockquote 形式的阅读数也被过滤。
-    assert not evaluate_block(
-        _candidate("阅读：1234", block_kind="blockquote")
-    ).emit
+    assert not evaluate_block("阅读：1234").emit
 
 
 def test_blockquote_and_list_item_noise_filtered_through_extractor() -> None:

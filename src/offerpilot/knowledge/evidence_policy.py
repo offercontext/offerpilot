@@ -24,20 +24,13 @@ from typing import Callable, Optional
 # Spec Implementation Decisions：Evidence 规则带稳定版本号；规则变化 = Extraction
 # 版本变化（由 extractor 升 EXTRACTOR_VERSION 体现）。本版本号写入 Snapshot 摘要，
 # 使维护者可确定性重建 Snapshot 并区分 policy 代际。
+#
+# ⚠ 升级护栏：修改 EVIDENCE_POLICY_VERSION 必须同时升级 extractor.EXTRACTOR_VERSION。
+# Spec 要求 Evidence 规则变化视为 Extraction 版本变化——policy 变化会改变
+# structure_manifest（filtered_by_rule / evidence_policy_version）从而改变 digest；
+# 若只升 policy 不升 extractor，同一 (source_id, extractor_version) 重提取会触发
+# source_integrity_mismatch（digest drift）。这是正确的护栏，但耦合隐式，故在此显式声明。
 EVIDENCE_POLICY_VERSION = "evidence-policy-1"
-
-
-@dataclass(frozen=True)
-class BlockCandidate:
-    """待判定的正文块。
-
-    ``text`` 是该块在 canonical Source 中的原文（调用方负责取片，policy 内部 strip）。
-    ``block_kind`` 为 ``paragraph`` / ``list_item`` / ``blockquote``；fence 与 table
-    不经过 policy（代码与结构化数据始终是 Evidence）。
-    """
-
-    block_kind: str
-    text: str
 
 
 @dataclass(frozen=True)
@@ -110,8 +103,11 @@ def _is_obsidian_comment(text: str) -> bool:
 # ---------------------------------------------------------------------------
 
 # 作者署名：``作者：<name>`` / ``Author: <name>`` / ``by: <name>``。
-# 匹配 1-2 个 name token（CJK、字母、数字、@ . _ - ·），避免把 ``作者：X 认为 Y 是 Z``
-# 这类 3 token 及以上的正文句子误判；单 token CJK byline 是真实 @Async 样本的主形态。
+# 匹配 1-2 个 name token（CJK、字母、数字、@ . _ - ·，按空格切分计 token）；3 个及
+# 以上 token 的正文句子（如 ``作者：X 认为 Y 是 Z``）受保护。已知 trade-off（Spec
+# 接受）：冒号 + 恰好 2 token 的短句（如 ``作者：SQLite 是最佳选择``、``by: Python 3``）
+# 也会被当作署名过滤--冒号 + 短名视为结构化署名，确定性优先于覆盖面。单 token CJK
+# byline 是真实 @Async 样本的主形态。
 _BYLINE_RE = re.compile(
     r"^(?:作者|文章作者|本文作者|author|by)[：:]\s*[@\w·._\-]+(?:\s+[@\w·._\-]+)?\s*$",
     re.IGNORECASE,
@@ -158,6 +154,8 @@ def _is_navigation(text: str) -> bool:
         outside_chunks.append(text[pos:])
         return _NAV_PUNCT_ONLY_RE.match("".join(outside_chunks)) is not None
     # 纯文本导航：必须有至少一个导航词汇 token，且所有 token 都是导航词汇。
+    # 已知 trade-off：单个导航词（如 ``目录``）独立成段也被视为导航样板过滤——纯文本
+    # 分支要求整段全部由闭集导航词构成，这种"整段一词"形态即导航样板，低风险接受。
     tokens = [token for token in _NAV_PUNCT_SPLIT_RE.split(text.strip()) if token]
     if not tokens:
         return False
@@ -180,18 +178,27 @@ _RULES: tuple[tuple[str, Callable[[str], bool]], ...] = (
     ),
 )
 
+# 模块加载时交叉校验：_RULES 中每个 rule_id 都必须在 RULE_LABELS 登记。否则 api 层
+# ``RULE_LABELS.get(rule_id, rule_id)`` 会 fallback 把内部 rule_id 当 label 展示给
+# 用户，违背 Spec「普通 UI 不展示内部正则/实现细节」。
+assert all(rule_id in RULE_LABELS for rule_id, _ in _RULES), (
+    "每个 _RULES 中的 rule_id 必须在 RULE_LABELS 登记"
+)
 
-def evaluate_block(candidate: BlockCandidate) -> EligibilityDecision:
-    """Spec：评估单个正文块的 Evidence 资格。
 
-    返回 ``EligibilityDecision(emit=True)`` 表示保留；``emit=False`` 携带稳定
-    ``rule_id`` 表示过滤。无法确认的块默认保留（不命中任何规则）。
+def evaluate_block(text: str) -> EligibilityDecision:
+    """Spec：评估单个正文块（纯文本）的 Evidence 资格。
+
+    ``text`` 是该块在 canonical Source 中的原文（调用方负责取片，内部 strip）。policy
+    只对 paragraph / list_item / blockquote 三类块的纯文本判定；fence 与 table 不经过
+    policy（代码与结构化数据始终是 Evidence）。``EligibilityDecision(emit=True)`` 表示
+    保留；``emit=False`` 携带稳定 ``rule_id`` 表示过滤。无法确认的块默认保留。
     """
 
-    text = candidate.text.strip()
-    if not text:
+    stripped = text.strip()
+    if not stripped:
         return EligibilityDecision(emit=True)
     for rule_id, matcher in _RULES:
-        if matcher(text):
+        if matcher(stripped):
             return EligibilityDecision(emit=False, rule_id=rule_id)
     return EligibilityDecision(emit=True)
