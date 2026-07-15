@@ -168,10 +168,11 @@ def test_general_json_parser_preserves_legacy_fenced_json_support() -> None:
     assert parse_json_reply("```json\n{}\n```") == {}
 
 
-def test_strict_json_parser_rejects_non_finite_constants() -> None:
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_strict_json_parser_rejects_non_finite_constants(constant: str) -> None:
     with pytest.raises(ValueError):
         parse_json_reply(
-            '{"summary":"x","changes":[],"ignored":NaN}',
+            f'{{"summary":"x","changes":[],"ignored":{constant}}}',
             allow_fenced=False,
             reject_non_finite=True,
         )
