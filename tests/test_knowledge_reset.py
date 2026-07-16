@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from pathlib import Path
@@ -25,8 +26,12 @@ from offerpilot.db import init_database, session_factory_for_data_dir
 from offerpilot.knowledge.brief import BRIEF_MIN_CONTEXT_WINDOW, BRIEF_SCHEMA_VERSION
 from offerpilot.knowledge.repository import KnowledgeRepository
 from offerpilot.knowledge.reset import (
+    KNOWLEDGE_RESET_QUARANTINE_CHILD_PREFIX,
+    KNOWLEDGE_RESET_QUARANTINE_DIR,
+    KNOWLEDGE_RESET_MANIFEST_STAGE,
     KNOWLEDGE_RESET_TABLES,
     KnowledgeResetError,
+    _quarantine_manifest_path,
     reset_knowledge_domain,
 )
 from offerpilot.models import Application, Conversation
@@ -528,6 +533,26 @@ def test_reset_db_transaction_is_atomic(tmp_path: Path, monkeypatch: pytest.Monk
     )
 
 
+def _simulate_quarantine(tmp_path: Path, knowledge_dir: Path, gen: str) -> Path:
+    """手工把 knowledge/ 移到受控父目录下 quarantine child + manifest（模拟 reset 移出后崩溃）。"""
+    qr = tmp_path / KNOWLEDGE_RESET_QUARANTINE_DIR
+    qr.mkdir(parents=True, exist_ok=True)
+    child = qr / f"{KNOWLEDGE_RESET_QUARANTINE_CHILD_PREFIX}{gen}"
+    os.replace(knowledge_dir, child)
+    _quarantine_manifest_path(child).write_text(
+        json.dumps(
+            {
+                "generation": gen,
+                "pid": 999,
+                "created_at": 999,
+                "stage": KNOWLEDGE_RESET_MANIFEST_STAGE,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return child
+
+
 def test_reset_quarantine_cleanup_failure_does_not_create_half_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -560,9 +585,13 @@ def test_reset_quarantine_cleanup_failure_does_not_create_half_state(
     knowledge_dir = tmp_path / "knowledge"
     assert knowledge_dir.is_dir()
     assert not any(knowledge_dir.iterdir())
-    # quarantine 残留（清理失败）以 .knowledge-reset- 前缀存在，待启动恢复清理。
+    # quarantine 残留（清理失败）在受控父目录下，待启动恢复清理。
+    qr = tmp_path / KNOWLEDGE_RESET_QUARANTINE_DIR
+    assert qr.is_dir()
     assert [
-        p for p in tmp_path.iterdir() if p.name.startswith(".knowledge-reset-")
+        p
+        for p in qr.iterdir()
+        if p.name.startswith(KNOWLEDGE_RESET_QUARANTINE_CHILD_PREFIX)
     ]
 
 
@@ -603,9 +632,12 @@ def test_finding3_db_failure_restores_knowledge_dir(
     assert _knowledge_counts(tmp_path) == before_counts
     # 关键：原件被移回，source 文件仍存在（无「DB 有记录 + 文件缺失」半状态）。
     assert source_file.exists()
-    # 无 quarantine 残留（已移回）。
-    assert not [
-        p for p in tmp_path.iterdir() if p.name.startswith(".knowledge-reset-")
+    # 无 quarantine 子目录残留（已移回）；受控父目录若存在则为空。
+    qr = tmp_path / KNOWLEDGE_RESET_QUARANTINE_DIR
+    assert not qr.exists() or not [
+        p
+        for p in qr.iterdir()
+        if p.name.startswith(KNOWLEDGE_RESET_QUARANTINE_CHILD_PREFIX)
     ]
 
 
@@ -617,17 +649,16 @@ def test_finding3_startup_recovery_restores_quarantine_when_db_has_rows(
     _repository, source_id, _snapshot_id = _seed_knowledge(tmp_path)
     source = _repository.get_source(source_id)
     knowledge_dir = tmp_path / "knowledge"
-    # 模拟 reset「移出后崩溃」：手工把 knowledge/ 移到 quarantine，DB 仍有行。
-    quarantine = tmp_path / ".knowledge-reset-999999-999"
-    os.replace(knowledge_dir, quarantine)
+    # 模拟 reset「移出后崩溃」：knowledge/ → 受控父目录下 quarantine child + manifest，DB 仍有行。
+    child = _simulate_quarantine(tmp_path, knowledge_dir, "999999-999")
     assert not knowledge_dir.exists()
 
     init_database(tmp_path / "data.db")  # 触发启动恢复
 
-    # knowledge/ 被移回恢复，原件可回读。
+    # knowledge/ 被移回恢复，原件可回读；quarantine child 已移走。
     assert knowledge_dir.is_dir()
     assert (knowledge_dir / "sources" / str(source_id) / source.main_filename).exists()
-    assert not quarantine.exists()
+    assert not child.exists()
 
 
 def test_finding3_startup_recovery_cleans_quarantine_when_db_empty(
@@ -645,15 +676,78 @@ def test_finding3_startup_recovery_cleans_quarantine_when_db_empty(
     knowledge_dir = tmp_path / "knowledge"
     assert knowledge_dir.is_dir()
     assert _knowledge_counts(tmp_path)["knowledge_sources"] == 0
-    # 模拟「DB 已空但 quarantine 清理未完成」的崩溃残留：把空 knowledge/ 移到 quarantine。
-    quarantine = tmp_path / ".knowledge-reset-999998-998"
-    os.replace(knowledge_dir, quarantine)
+    # 模拟「DB 已空但 quarantine 清理未完成」：空 knowledge/ → quarantine child + manifest。
+    child = _simulate_quarantine(tmp_path, knowledge_dir, "999998-998")
     assert not knowledge_dir.exists()
 
     init_database(tmp_path / "data.db")
 
     # DB 空 + knowledge/ 不存在 → quarantine 被清理。
-    assert not quarantine.exists()
+    assert not child.exists()
+
+
+def test_finding3_multiple_quarantines_conservative_refusal(tmp_path: Path) -> None:
+    """二轮 Review P1-B：多个 quarantine 残留无法判定代际 → init 保守拒绝，不自动恢复/删除。"""
+    _repository, _source_id, _snapshot_id = _seed_knowledge(tmp_path)
+    knowledge_dir = tmp_path / "knowledge"
+    # knowledge/ 移到第一个 quarantine（模拟崩溃）；再伪造第二个 quarantine 残留。
+    child1 = _simulate_quarantine(tmp_path, knowledge_dir, "999999-100")
+    qr = tmp_path / KNOWLEDGE_RESET_QUARANTINE_DIR
+    child2 = qr / f"{KNOWLEDGE_RESET_QUARANTINE_CHILD_PREFIX}999998-099"
+    child2.mkdir(parents=True, exist_ok=True)
+    (child2 / "leftover.md").write_text("stale", encoding="utf-8")
+    _quarantine_manifest_path(child2).write_text(
+        json.dumps(
+            {
+                "generation": "999998-099",
+                "pid": 99,
+                "created_at": 99,
+                "stage": KNOWLEDGE_RESET_MANIFEST_STAGE,
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert not knowledge_dir.exists()
+
+    init_database(tmp_path / "data.db")
+
+    # 两个 quarantine 都保留（保守拒绝）；knowledge/ 未自动恢复，留用户介入。
+    assert child1.exists()
+    assert child2.exists()
+    assert not knowledge_dir.exists()
+
+
+def test_finding3_quarantine_without_manifest_not_touched(tmp_path: Path) -> None:
+    """二轮 Review P1-C：无 manifest 的 quarantine 子目录不被视为 reset 产物，init 不触碰。"""
+    _repository, _source_id, _snapshot_id = _seed_knowledge(tmp_path)
+    knowledge_dir = tmp_path / "knowledge"
+    # knowledge/ 移到无 manifest 的子目录（伪造，非 reset 创建）。
+    qr = tmp_path / KNOWLEDGE_RESET_QUARANTINE_DIR
+    qr.mkdir(parents=True, exist_ok=True)
+    rogue = qr / f"{KNOWLEDGE_RESET_QUARANTINE_CHILD_PREFIX}rogue"
+    os.replace(knowledge_dir, rogue)
+    assert not knowledge_dir.exists()
+
+    init_database(tmp_path / "data.db")
+
+    # 无 manifest → 不触碰（rogue 保留，knowledge/ 未恢复）。
+    assert rogue.exists()
+    assert not knowledge_dir.exists()
+
+
+def test_finding3_user_flat_reset_prefix_dir_not_touched(tmp_path: Path) -> None:
+    """二轮 Review P1-C：data_dir 下平铺的 .knowledge-reset-* 用户目录不被 init 误删。"""
+    _seed_knowledge(tmp_path)
+    # 用户/他模块在 data_dir 平铺创建旧前缀目录（reset 不再使用平铺前缀）。
+    user_dir = tmp_path / ".knowledge-reset-userdata"
+    user_dir.mkdir(parents=True, exist_ok=True)
+    (user_dir / "keep.txt").write_text("用户数据", encoding="utf-8")
+
+    init_database(tmp_path / "data.db")
+
+    # 平铺目录不受 reset 启动恢复影响（恢复只扫受控父目录 .knowledge-reset/）。
+    assert user_dir.exists()
+    assert (user_dir / "keep.txt").read_text(encoding="utf-8") == "用户数据"
 
 
 def test_reset_startup_recovery_cleans_orphan_files_after_partial_reset(

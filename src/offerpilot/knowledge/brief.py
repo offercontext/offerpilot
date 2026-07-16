@@ -525,19 +525,23 @@ _COVERAGE_BLOCK_PATH_PATTERN = re.compile(r"^coverage\[(.+)\]$")
 def _enforce_statement_section_scope(
     original_item: Any,
     new_evidence_ids: list[str],
-    evidence_section_index: dict[str, str],
+    evidence_section_index: dict[str, tuple[str, str]],
     block_path: str,
 ) -> None:
     """Finding 5：非 guide block 的 replace/split 不得越出原块「有效 citation 所属章节」。
 
-    - 原块无任何「在 evidence_section_index 内」的有效 citation → 无法程序验证主题边界，
-      只允许 delete；replace/split 在此一律 unauthorized。
+    ``evidence_section_index`` 映射 ``eid -> (section_key, kind)``，含当前 Snapshot 全部 Evidence
+    （含 Asset，二轮 Review P1-A）：Asset citation 也受章节边界约束，不得越出原块有效 citation
+    所属章节集合。
+
+    - 原块无任何「在 evidence_section_index 内」的有效 citation（含文本与 Asset）→ 无法程序
+      验证主题边界，只允许 delete；replace/split 在此一律 unauthorized。
     - 原块有有效 citation → 新 citations 中凡进入 evidence_section_index 的，其 section 必须
       落在原块章节集合内；否则 unauthorized（新增主题 / 跨 section）。
     """
 
     original_sections = {
-        evidence_section_index[eid]
+        evidence_section_index[eid][0]
         for eid in getattr(original_item, "evidence_ids", ())
         if eid in evidence_section_index
     }
@@ -547,8 +551,8 @@ def _enforce_statement_section_scope(
             f"{block_path} 原块无有效 citation 可定章节，只允许 delete（不得 replace/split 到其他主题）",
         )
     for eid in new_evidence_ids:
-        section = evidence_section_index.get(eid)
-        if section is not None and section not in original_sections:
+        entry = evidence_section_index.get(eid)
+        if entry is not None and entry[0] not in original_sections:
             raise BriefSchemaError(
                 BRIEF_REPAIR_UNAUTHORIZED,
                 f"{block_path} 新 citation 越出原块章节范围（新增主题）：{eid}",
@@ -620,7 +624,7 @@ def apply_repair_patch(
     failed_block_paths: set[str],
     source_evidence_ids: set[str],
     coverage_plan: "SectionCoveragePlan",
-    evidence_section_index: dict[str, str],
+    evidence_section_index: dict[str, tuple[str, str]],
 ) -> BriefPayload:
     """Spec Implementation Decisions：原子应用 repair patch，返回 patched BriefPayload。
 
@@ -694,7 +698,9 @@ def apply_repair_patch(
                     "upsert guide 的 section_key/heading_path 必须与 coverage plan 一致",
                 )
             eligible = {
-                eid for eid, sk in evidence_section_index.items() if sk == section_key
+                eid
+                for eid, (sk, kind) in evidence_section_index.items()
+                if sk == section_key and kind != "asset"
             }
             guide_eids = set(getattr(guide, "evidence_ids", ()))
             if not guide_eids or not guide_eids.issubset(eligible):

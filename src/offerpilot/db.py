@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import shutil
 from datetime import datetime, timezone
@@ -11,6 +12,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from offerpilot.models import Base
 
 SessionFactory = sessionmaker[Session]
+
+_LOGGER = logging.getLogger(__name__)
 
 
 # KI-02 起新表 knowledge_sources/origins/snapshots/evidence/evidence_fts/jobs 由本模块创建并维护，
@@ -681,19 +684,37 @@ def session_factory_for_data_dir(data_dir: Path) -> SessionFactory:
 
 
 def _recover_knowledge_reset_quarantine(engine, data_dir: Path) -> None:  # type: ignore[no-untyped-def]
-    """Finding 3：清理 Knowledge reset 的 quarantine 残留（崩溃恢复）。
+    """Finding 3 + 二轮 Review P1-B/C：Knowledge reset quarantine 崩溃恢复。
 
-    扫描 ``data_dir`` 下 ``.knowledge-reset-*`` 目录（与 ``knowledge/`` 同文件系统）：
-    - ``knowledge/`` 不存在 + DB 仍有 ``knowledge_sources`` 行 → reset 未完成（移出后崩溃），
-      原子移回 ``knowledge/`` 恢复（不留「DB 有记录 + 文件缺失」半状态）。
-    - ``knowledge/`` 不存在 + DB 空 → reset 已完成、清理未完成 → rmtree quarantine。
-    - ``knowledge/`` 已存在 → quarantine 是过期残留 → rmtree。
+    扫受控父目录 ``data_dir/.knowledge-reset/`` 下的 ``quarantine-*`` 子目录，每个必须有
+    同级有效 manifest 证明由 reset 创建。无 manifest 的子目录一律不触碰（避免误删用户/他
+    模块放入受控父目录的同名目录）。多 quarantine 同时存在时保守拒绝自动恢复/删除（无法
+    判定代际，记 warning 留用户介入），杜绝错代回退或文件丢失。
     """
-    # reset.KNOWLEDGE_RESET_QUARANTINE_PREFIX 是该前缀的 SSOT；函数内 import 避免
-    # db ↔ knowledge 包加载阶段的循环（reset 不 import db，运行时已全部加载，安全）。
-    from offerpilot.knowledge.reset import KNOWLEDGE_RESET_QUARANTINE_PREFIX
+    # 函数内 import 避免 db ↔ knowledge 包加载阶段的循环（运行时已全部加载，安全）。
+    from offerpilot.knowledge.reset import (
+        KNOWLEDGE_RESET_QUARANTINE_CHILD_PREFIX,
+        KNOWLEDGE_RESET_QUARANTINE_DIR,
+        _best_effort_cleanup_quarantine,
+        _quarantine_manifest_path,
+        _read_quarantine_manifest,
+    )
 
-    if not data_dir.exists():
+    quarantine_root = data_dir / KNOWLEDGE_RESET_QUARANTINE_DIR
+    if not quarantine_root.is_dir():
+        return
+    # 仅收集有有效 manifest 证明的 quarantine 子目录；无 manifest 一律不触碰。
+    verified: list[Path] = []
+    for child in quarantine_root.iterdir():
+        if not child.is_dir() or not child.name.startswith(
+            KNOWLEDGE_RESET_QUARANTINE_CHILD_PREFIX
+        ):
+            continue
+        manifest = _quarantine_manifest_path(child)
+        if not manifest.is_file() or _read_quarantine_manifest(manifest) is None:
+            continue
+        verified.append(child)
+    if not verified:
         return
     knowledge_dir = data_dir / "knowledge"
     with engine.begin() as conn:
@@ -706,16 +727,21 @@ def _recover_knowledge_reset_quarantine(engine, data_dir: Path) -> None:  # type
         db_has_sources = "knowledge_sources" in tables and (
             conn.execute(text("SELECT COUNT(*) FROM knowledge_sources")).scalar() or 0
         ) > 0
-    for child in data_dir.iterdir():
-        if not child.is_dir() or not child.name.startswith(KNOWLEDGE_RESET_QUARANTINE_PREFIX):
-            continue
-        if not knowledge_dir.exists():
-            if db_has_sources:
-                os.replace(child, knowledge_dir)
-            else:
-                _remove_recovery_path(child)
-        else:
-            _remove_recovery_path(child)
+    if len(verified) > 1:
+        # 多 quarantine：无法确定代际，保守拒绝自动恢复/删除，记 warning 留用户介入。
+        _LOGGER.warning(
+            "检测到多个 Knowledge reset quarantine 残留，无法自动判定代际，"
+            "已跳过自动恢复与清理，请人工核查后重置"
+        )
+        return
+    child = verified[0]
+    if not knowledge_dir.exists() and db_has_sources:
+        # reset 未完成（移出后崩溃）→ 原子移回恢复。
+        os.replace(child, knowledge_dir)
+    # 统一复用 reset 的 best-effort 清理（rmtree child + 删 manifest + 删空父目录；rmtree
+    # 失败记 warning）：消除与 reset 的重复并统一错误策略。其余情况（knowledge/ 已存在的
+    # 过期残留、DB 空的未完成清理）落到此处直接清理。
+    _best_effort_cleanup_quarantine(child)
 
 
 def _recover_knowledge_runtime(engine, data_dir: Path) -> None:  # type: ignore[no-untyped-def]

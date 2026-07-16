@@ -40,6 +40,7 @@ from offerpilot.knowledge.extractor import (
     EXTRACTOR_VERSION,
     METADATA_EXTRACTION_VERSION,
     MarkdownExtractor,
+    _collect_adapter_signal_corpus,
 )
 
 from _knowledge_seam import (
@@ -666,3 +667,76 @@ def test_seam_async_sample_filters_metadata_and_builds_brief(
     assert outcome.source is not None
     assert outcome.source.brief_status == "ready", outcome.source.brief_error_message
     assert outcome.brief is not None
+
+
+# ===========================================================================
+# 二轮 Review P1-D：教程语法（fence/table/inline code）不得激活平台 adapter
+# ===========================================================================
+
+
+def test_finding_d_signal_corpus_excludes_fence_table_code_inline() -> None:
+    """信号语料显式排除 fenced code、table、行内 code——教程示例语法不进语料。"""
+    doc = (
+        "# 教程\n\n"
+        "正文 `![[inline]]` 含行内 code。\n\n"
+        "```markdown\n"
+        "![[fenced]]\n"
+        "%%comment%%\n"
+        "```\n\n"
+        "| 列 |\n"
+        "|----|\n"
+        "| <en-media> |\n"
+    )
+    tokens = MarkdownExtractor()._parser.parse(doc)
+    corpus = _collect_adapter_signal_corpus(tokens)
+    assert "![[fenced]]" not in corpus
+    assert "%%comment%%" not in corpus
+    assert "![[inline]]" not in corpus  # 行内 code 内容排除
+    assert "<en-media>" not in corpus  # table 单元格排除
+    assert "正文" in corpus  # 正文 text 保留
+
+
+def test_finding_d_fence_syntax_does_not_activate_obsidian() -> None:
+    """fenced code 里的 Obsidian 语法不激活 obsidian adapter。"""
+    doc = (
+        "# 教程\n\n"
+        "Obsidian 嵌入示例：\n\n"
+        "```markdown\n"
+        "![[example.png]]\n"
+        "%%这是注释%%\n"
+        "```\n\n"
+        "正文段落保持中性。\n"
+    )
+    tokens = MarkdownExtractor()._parser.parse(doc)
+    adapters = select_adapters(_collect_adapter_signal_corpus(tokens))
+    assert ADAPTER_OBSIDIAN not in adapters
+
+
+def test_finding_d_table_syntax_does_not_activate_evernote() -> None:
+    """table 单元格里的 Evernote 标签不激活 evernote adapter。"""
+    doc = (
+        "# 表格教程\n\n"
+        "| 示例 |\n"
+        "|------|\n"
+        "| <en-media> |\n\n"
+        "正文不含 Evernote 语法。\n"
+    )
+    tokens = MarkdownExtractor()._parser.parse(doc)
+    adapters = select_adapters(_collect_adapter_signal_corpus(tokens))
+    assert ADAPTER_EVERNOTE not in adapters
+
+
+def test_finding_d_inline_code_syntax_does_not_activate_obsidian() -> None:
+    """行内 code 里的 Obsidian 语法不激活 adapter。"""
+    doc = "# 文档\n\n使用 `![[embed]]` 语法嵌入资源。\n"
+    tokens = MarkdownExtractor()._parser.parse(doc)
+    adapters = select_adapters(_collect_adapter_signal_corpus(tokens))
+    assert ADAPTER_OBSIDIAN not in adapters
+
+
+def test_finding_d_paragraph_syntax_still_activates_obsidian() -> None:
+    """正文 paragraph 的真实 Obsidian 语法仍激活 adapter（反例：非教程语法不误杀）。"""
+    doc = "# 笔记\n\n真实嵌入 ![[real.png]] 出现在正文。\n"
+    tokens = MarkdownExtractor()._parser.parse(doc)
+    adapters = select_adapters(_collect_adapter_signal_corpus(tokens))
+    assert ADAPTER_OBSIDIAN in adapters

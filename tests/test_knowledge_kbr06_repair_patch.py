@@ -125,9 +125,9 @@ def _default_coverage_plan() -> SectionCoveragePlan:
     return build_section_coverage_plan(_default_evidence_rows())
 
 
-def _default_evidence_index() -> dict[str, str]:
+def _default_evidence_index() -> dict[str, tuple[str, str]]:
     return {
-        str(e.id): _section_key_for_heading(list(e.heading_path))
+        str(e.id): (_section_key_for_heading(list(e.heading_path)), e.kind)
         for e in _default_evidence_rows()
     }
 
@@ -145,11 +145,36 @@ def _sectioned_coverage_plan() -> SectionCoveragePlan:
     return build_section_coverage_plan(_sectioned_evidence_rows())
 
 
-def _sectioned_evidence_index() -> dict[str, str]:
+def _sectioned_evidence_index() -> dict[str, tuple[str, str]]:
     return {
-        str(e.id): _section_key_for_heading(list(e.heading_path))
+        str(e.id): (_section_key_for_heading(list(e.heading_path)), e.kind)
         for e in _sectioned_evidence_rows()
     }
+
+
+def _sectioned_rows_with_asset() -> list[Any]:
+    """ev_1/ev_2 在 A、ev_3 在 B（文本）；ev_img_a 在 A、ev_img_b 在 B（Asset）。
+
+    二轮 Review P1-A：用于验证 Asset citation 也受非 guide block 章节边界约束。
+    """
+    return [
+        _ev("ev_1", heading_path=("A",)),
+        _ev("ev_2", heading_path=("A",)),
+        _ev("ev_3", heading_path=("B",)),
+        _ev("ev_img_a", heading_path=("A",), kind="asset"),
+        _ev("ev_img_b", heading_path=("B",), kind="asset"),
+    ]
+
+
+def _sectioned_index_with_asset() -> dict[str, tuple[str, str]]:
+    return {
+        str(e.id): (_section_key_for_heading(list(e.heading_path)), e.kind)
+        for e in _sectioned_rows_with_asset()
+    }
+
+
+def _source_evidence_ids_with_asset() -> set[str]:
+    return {"ev_1", "ev_2", "ev_3", "ev_img_a", "ev_img_b"}
 
 
 def _upsert_guide_op(
@@ -1443,3 +1468,98 @@ def test_finding4_validator_raw_reason_not_persisted_in_report(tmp_path: Path) -
     assert partial_issues
     assert partial_issues[0]["reason_code"] == "validator_partial"
     assert echo_text not in partial_issues[0]["reason"]
+
+
+# ===========================================================================
+# 二轮 Review P1-A：Asset citation 不得绕过非 guide block 章节边界
+# ===========================================================================
+
+
+def test_finding_a_asset_citation_rejected_across_sections_replace() -> None:
+    """replace 注入跨章节 Asset citation → unauthorized（Asset 也受章节边界约束）。"""
+    # overview[0] 原引 ev_1（A）；replace 为 ev_1 + ev_img_b（B 的 Asset）→ 越出 A 章节。
+    brief = _brief(overview_ids=["ev_1"])
+    with pytest.raises(BriefSchemaError) as exc_info:
+        apply_repair_patch(
+            brief,
+            parse_repair_patch(
+                _patch(
+                    [
+                        _replace_stmt(
+                            "overview[0]", "注入跨章节 Asset。", ["ev_1", "ev_img_b"]
+                        )
+                    ]
+                )
+            ),
+            failed_block_paths={"overview[0]"},
+            source_evidence_ids=_source_evidence_ids_with_asset(),
+            coverage_plan=build_section_coverage_plan(_sectioned_rows_with_asset()),
+            evidence_section_index=_sectioned_index_with_asset(),
+        )
+    assert exc_info.value.code == BRIEF_REPAIR_UNAUTHORIZED
+
+
+def test_finding_a_asset_citation_rejected_across_sections_split() -> None:
+    """split 产物含跨章节 Asset citation → unauthorized。"""
+    brief = _brief(overview_ids=["ev_1"])
+    with pytest.raises(BriefSchemaError) as exc_info:
+        apply_repair_patch(
+            brief,
+            parse_repair_patch(
+                _patch(
+                    [
+                        _split_stmt(
+                            "overview[0]",
+                            [
+                                {"statement": "原子一。", "evidence_ids": ["ev_1"]},
+                                {
+                                    "statement": "原子二引跨章节 Asset。",
+                                    "evidence_ids": ["ev_img_b"],
+                                },
+                            ],
+                        )
+                    ]
+                )
+            ),
+            failed_block_paths={"overview[0]"},
+            source_evidence_ids=_source_evidence_ids_with_asset(),
+            coverage_plan=build_section_coverage_plan(_sectioned_rows_with_asset()),
+            evidence_section_index=_sectioned_index_with_asset(),
+        )
+    assert exc_info.value.code == BRIEF_REPAIR_UNAUTHORIZED
+
+
+def test_finding_a_asset_citation_allowed_within_original_section() -> None:
+    """原块有效 citation 所属章节内的 Asset citation 允许（同章节 Asset 不算越界）。"""
+    # overview[0] 原引 ev_1（A）；replace 为 ev_img_a（A 的 Asset）→ 同章节，通过。
+    brief = _brief(overview_ids=["ev_1"])
+    patched = apply_repair_patch(
+        brief,
+        parse_repair_patch(
+            _patch([_replace_stmt("overview[0]", "同章节 Asset。", ["ev_img_a"])])
+        ),
+        failed_block_paths={"overview[0]"},
+        source_evidence_ids=_source_evidence_ids_with_asset(),
+        coverage_plan=build_section_coverage_plan(_sectioned_rows_with_asset()),
+        evidence_section_index=_sectioned_index_with_asset(),
+    )
+    assert patched.overview[0].evidence_ids == ["ev_img_a"]
+
+
+def test_finding_a_upsert_guide_rejects_asset_citation() -> None:
+    """upsert_section_guide 的 citations 必须取自 section 文本 Evidence（Asset 不在 eligible）。"""
+    plan = build_section_coverage_plan(_sectioned_rows_with_asset())
+    section_key_a = _section_key_for_heading(["A"])
+    brief = _brief()
+    with pytest.raises(BriefSchemaError) as exc_info:
+        apply_repair_patch(
+            brief,
+            parse_repair_patch(
+                _patch([_upsert_guide_op(section_key_a, ("A",), ["ev_img_a"])])
+            ),
+            failed_block_paths={f"coverage[{section_key_a}]"},
+            source_evidence_ids=_source_evidence_ids_with_asset(),
+            coverage_plan=plan,
+            evidence_section_index=_sectioned_index_with_asset(),
+        )
+    assert exc_info.value.code == BRIEF_REPAIR_UNAUTHORIZED

@@ -421,6 +421,33 @@ def _inline_text(token: Optional[Token]) -> str:
     return token.content.strip()
 
 
+def _collect_adapter_signal_corpus(tokens: list[Token]) -> str:
+    """二轮 Review P1-D：收集允许的独立结构块行内文本作为 adapter 信号语料。
+
+    仅取 heading/paragraph/list/list_item/blockquote 内的行内 ``text``；显式排除 fenced code
+    （``fence``）、缩进 code block（``code_block``）、整段 table、行内 code（``code_inline``）——
+    教程示例中的 ``![[...]]`` / ``%%...%%`` / ``<en-*>`` 不得激活平台 adapter。
+    """
+    parts: list[str] = []
+    in_table = 0
+    for token in tokens:
+        if token.type == "table_open":
+            in_table += 1
+            continue
+        if token.type == "table_close":
+            in_table = max(0, in_table - 1)
+            continue
+        if in_table > 0:
+            continue
+        if token.type in ("fence", "code_block"):
+            continue
+        if token.type == "inline" and token.children:
+            for child in token.children:
+                if child.type == "text":
+                    parts.append(child.content)
+    return "\n".join(parts)
+
+
 class MarkdownExtractor:
     """Spec §7.1/§8.1：固定版本 Markdown AST 解析 + 结构感知 Evidence 生成。"""
 
@@ -458,16 +485,18 @@ class MarkdownExtractor:
         filename: str = "",
     ) -> MarkdownExtraction:
         canonical, control_char_count = _normalize_text(raw_content)
-        # Spec KBR-03：按确定性来源信号选择平台适配器（结构语法 / 扩展名 / origin_url）。
-        # 适配器激活集合贯穿 _emit_block → _consume_* → evaluate_block，平台规则只在对应
-        # adapter 激活时执行；无信号时仅全局低歧义规则，不确定块默认保留为 Evidence。
+        tokens = self._parser.parse(canonical)
+        # Spec KBR-03 + 二轮 Review P1-D：adapter 信号只从允许的独立结构块提取（排除
+        # fence/table/code_block/行内 code），教程示例语法不得激活平台 adapter。适配器激活
+        # 集合贯穿 _emit_block → _consume_* → evaluate_block；无信号时仅全局低歧义规则。
         ctx = ExtractionContext(
             active_adapters=select_adapters(
-                canonical, origin_url=origin_url, filename=filename
+                _collect_adapter_signal_corpus(tokens),
+                origin_url=origin_url,
+                filename=filename,
             )
         )
 
-        tokens = self._parser.parse(canonical)
         offsets = _line_offset_table(canonical)
         navigator = _StructureNavigator()
         drafts: list[EvidenceDraft] = []

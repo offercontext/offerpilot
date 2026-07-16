@@ -26,6 +26,7 @@ Spec Implementation Decisions：
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -81,15 +82,103 @@ NON_KNOWLEDGE_GUARD_TABLES: tuple[str, ...] = (
 
 AI_CONFIG_FILENAME = "config.json"
 
-# Finding 3：reset 的原子 quarantine 目录前缀（``data_dir/.knowledge-reset-<ts>-<pid>``）。
-# 与 ``knowledge/`` 同在 data_dir 下 → 同文件系统 → ``os.replace`` 原子 rename 成立。
-# 启动恢复按此前缀扫描残留（DB 有行则移回恢复，DB 空则清理）。
-KNOWLEDGE_RESET_QUARANTINE_PREFIX = ".knowledge-reset-"
+# Finding 3 + 二轮 Review P1-B/C：quarantine 放在受控父目录 ``data_dir/.knowledge-reset/`` 下，
+# 避免平铺前缀 ``.knowledge-reset-*`` 与用户/他模块同名目录碰撞被启动恢复误删。每个
+# quarantine 子目录配一份 manifest 证明归属与代际；无 manifest 的目录一律不触碰。
+KNOWLEDGE_RESET_QUARANTINE_DIR = ".knowledge-reset"
+KNOWLEDGE_RESET_QUARANTINE_CHILD_PREFIX = "quarantine-"
+KNOWLEDGE_RESET_MANIFEST_SUFFIX = ".manifest"
+# manifest 的 stage 标识，校验 manifest 确由 Knowledge reset 写入（非任意同名文件）。
+KNOWLEDGE_RESET_MANIFEST_STAGE = "knowledge_reset"
 
 
-def _quarantine_dir(data_dir: Path) -> Path:
-    """生成唯一的同文件系统 quarantine 路径（时间戳 + pid 防并发/重复 reset 碰撞）。"""
-    return data_dir / f"{KNOWLEDGE_RESET_QUARANTINE_PREFIX}{int(time.time())}-{os.getpid()}"
+def _quarantine_root(data_dir: Path) -> Path:
+    """受控 quarantine 父目录（``data_dir/.knowledge-reset/``）。"""
+    return data_dir / KNOWLEDGE_RESET_QUARANTINE_DIR
+
+
+def _quarantine_manifest_path(child: Path) -> Path:
+    """quarantine 子目录的同级 manifest 路径（``<child>.manifest``）。"""
+    return child.parent / f"{child.name}{KNOWLEDGE_RESET_MANIFEST_SUFFIX}"
+
+
+def _new_quarantine_child(data_dir: Path) -> tuple[Path, str]:
+    """生成唯一的 quarantine 子目录路径 + generation（时间戳 + pid 防并发碰撞）。
+
+    子目录 ``data_dir/.knowledge-reset/quarantine-<ts>-<pid>/`` 与 ``knowledge/`` 同在
+    data_dir 下 → 同文件系统 → ``os.replace`` 原子 rename 成立。
+    """
+    generation = f"{int(time.time())}-{os.getpid()}"
+    child = (
+        _quarantine_root(data_dir)
+        / f"{KNOWLEDGE_RESET_QUARANTINE_CHILD_PREFIX}{generation}"
+    )
+    return child, generation
+
+
+def _write_quarantine_manifest(child: Path, generation: str) -> None:
+    """写 quarantine manifest（JSON）：generation / pid / 创建时间 / stage。"""
+    _quarantine_manifest_path(child).write_text(
+        json.dumps(
+            {
+                "generation": generation,
+                "pid": os.getpid(),
+                "created_at": int(time.time()),
+                "stage": KNOWLEDGE_RESET_MANIFEST_STAGE,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _read_quarantine_manifest(manifest: Path) -> Optional[dict[str, Any]]:
+    """读并校验 quarantine manifest。结构非法 / stage 不符 → None（视作非 reset 创建）。"""
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    generation = data.get("generation")
+    stage = data.get("stage")
+    if not isinstance(generation, str) or not generation:
+        return None
+    if stage != KNOWLEDGE_RESET_MANIFEST_STAGE:
+        return None
+    return data
+
+
+def _remove_quarantine_manifest(child: Path) -> None:
+    """删除 quarantine manifest（best-effort，不存在/失败静默）。"""
+    try:
+        _quarantine_manifest_path(child).unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
+def _best_effort_cleanup_quarantine(child: Path) -> None:
+    """quarantine 子目录 + manifest + 空父目录的 best-effort 清理。
+
+    清理失败只留待启动恢复扫除（记 warning），不让运行时进入失败半状态；不打印本机路径。
+    """
+    try:
+        if child.exists():
+            shutil.rmtree(child)
+    except OSError:
+        _LOGGER.warning(
+            "Knowledge reset quarantine 物理清理失败，留待启动恢复扫除"
+        )
+        return
+    _remove_quarantine_manifest(child)
+    parent = child.parent
+    try:
+        if parent.is_dir() and not any(parent.iterdir()):
+            parent.rmdir()
+    except OSError:
+        pass
 
 
 def _assert_safe_knowledge_dir(data_dir: Path, knowledge_dir: Path) -> None:
@@ -278,14 +367,18 @@ def reset_knowledge_domain(
         load_config(data_dir)
 
     knowledge_dir = data_dir / "knowledge"
-    # Finding 3：先把 knowledge/ 原子移出到同文件系统 quarantine（此时 DB 未动，完全可回滚）。
+    # Finding 3 + 二轮 Review P1-B/C：先把 knowledge/ 原子移出到受控父目录下的 quarantine
+    # 子目录并写 manifest（此时 DB 未动，完全可回滚）。
     cleared_dir_entries: list[str] = []
-    quarantine: Optional[Path] = None
+    quarantine_child: Optional[Path] = None
     if knowledge_dir.exists():
         _assert_safe_knowledge_dir(data_dir, knowledge_dir)
         cleared_dir_entries = sorted(child.name for child in knowledge_dir.iterdir())
-        quarantine = _quarantine_dir(data_dir)
-        os.replace(knowledge_dir, quarantine)
+        quarantine_root = _quarantine_root(data_dir)
+        quarantine_root.mkdir(parents=True, exist_ok=True)
+        quarantine_child, generation = _new_quarantine_child(data_dir)
+        os.replace(knowledge_dir, quarantine_child)
+        _write_quarantine_manifest(quarantine_child, generation)
 
     deleted_source_rows = 0
     cleared_tables: list[str] = []
@@ -302,24 +395,18 @@ def reset_knowledge_domain(
                     cleared_tables.append(table_name)
             session.commit()
     except Exception:
-        # DB 提交失败：把 quarantine 原子移回 knowledge/，消除「DB 有记录 + 文件缺失」半状态。
-        if quarantine is not None and not knowledge_dir.exists():
-            os.replace(quarantine, knowledge_dir)
+        # DB 提交失败：把 quarantine 原子移回 knowledge/，并清 manifest，消除半状态。
+        if quarantine_child is not None and not knowledge_dir.exists():
+            os.replace(quarantine_child, knowledge_dir)
+            _remove_quarantine_manifest(quarantine_child)
         raise
 
     # 逻辑完成：DB 已提交。重建空 knowledge/（子目录由 service 按需创建）。
     knowledge_dir.mkdir(parents=True, exist_ok=True)
 
-    # quarantine best-effort 清理；失败只留目录（启动恢复按前缀扫除），不让运行时进入失败半状态。
-    if quarantine is not None and quarantine.exists():
-        try:
-            shutil.rmtree(quarantine)
-        except OSError:
-            # best-effort：清理失败只留目录（pending），由启动恢复按前缀扫除；
-            # 不打印本机路径（守 Spec 隐私边界），不让运行时进入失败半状态。
-            _LOGGER.warning(
-                "Knowledge reset quarantine 物理清理失败，留待启动恢复扫除"
-            )
+    # quarantine best-effort 清理（子目录 + manifest + 空父目录）；失败留待启动恢复扫除。
+    if quarantine_child is not None:
+        _best_effort_cleanup_quarantine(quarantine_child)
 
     preserved, ai_config_unchanged, migrations = _verify_preservation(
         session_factory, data_dir, pre

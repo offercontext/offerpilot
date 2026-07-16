@@ -1,10 +1,10 @@
 <!-- 本文冻结 Evidence 元数据边界、Brief coverage 与 repair 的跨 Extraction、持久化、AI 校验和 UI 契约。 -->
 # Knowledge Evidence 元数据过滤与 Brief 修复闭环设计
 
-**Date**: 2026-07-15  
-**Status**: Approved  
-**Decider**: 用户  
-**Architecture SSOT**: OfferPilot Knowledge 系统：核心方向与架构设计  
+**Date**: 2026-07-15
+**Status**: Approved
+**Decider**: 用户
+**Architecture SSOT**: OfferPilot Knowledge 系统：核心方向与架构设计
 **Supersedes**: Knowledge Imported Source Ingest 破坏性重写设计中由模型输出 coverage、按首个失败立即 repair、repair 重写完整 Brief 的相关契约
 
 ## Problem Statement
@@ -69,12 +69,12 @@ Schema 合法的候选先完成所有可执行的 citation、support 和 coverag
 - 不自动导入 Source tags，不保存任意 metadata JSON。未进入结构化字段的信息仍可从不可变 Source 原文回读。
 - provenance 不进入 Evidence FTS，不参与普通知识召回排序，不支撑正文事实。Source 标题可以作为独立的资料定位字段；Evidence 被召回时附带 provenance 用于出处展示。
 - 全局过滤规则只覆盖低歧义结构，包括有效的文档头部 frontmatter、纯装饰图片壳、空链接壳和明确的导出控件文本。
-- 平台或导出格式特有噪声由明确适配器处理，包括作者卡、阅读数、推荐导航、Evernote/Obsidian 资源残片等。禁止使用面向所有 Source 的宽泛关键词或文本正则清洗。适配器按确定性结构信号选择：Obsidian 由文档级 `![[...]]` 嵌入或 `%%...%%` 注释触发、Evernote 由 `<en-*>` 标签或 `.enex` 触发、web 文章由 ingest `origin_url` 触发；每个适配器只启用自身规则，一个信号不得顺带启用别的适配器，品牌名称、正文关键词与文件标题不得作为信号。无任何适配器信号时平台规则不执行，正文 `作者：...`、`by: ...`、独立"目录"等一律保留为 Evidence。
+- 平台或导出格式特有噪声由明确适配器处理，包括作者卡、阅读数、推荐导航、Evernote/Obsidian 资源残片等。禁止使用面向所有 Source 的宽泛关键词或文本正则清洗。适配器按确定性结构信号选择：Obsidian 由文档级 `![[...]]` 嵌入或 `%%...%%` 注释触发、Evernote 由 `<en-*>` 标签或 `.enex` 触发、web 文章由 ingest `origin_url` 触发；每个适配器只启用自身规则，一个信号不得顺带启用别的适配器，品牌名称、正文关键词与文件标题不得作为信号。适配器信号只从允许的独立结构块（heading/paragraph/list/blockquote）的行内文本提取，显式排除 fenced code、缩进 code block、table 单元格与行内 code——教程示例中的语法不得激活 adapter。无任何适配器信号时平台规则不执行，正文 `作者：...`、`by: ...`、独立"目录"等一律保留为 Evidence。
 - 文档开头存在成对 frontmatter 边界时，整块不生成 Evidence。单个字段解析失败只丢弃该字段并记录警告，不阻断 Extraction；边界不完整时按普通 Markdown 保守处理。
 - Snapshot 结构摘要记录过滤块总数、按稳定 rule ID 聚合的数量、成功提取的 provenance 字段名、metadata extraction version 和 evidence policy version。不得重复持久化被过滤块正文。
 - Evidence 规则变化视为 Extraction 版本变化。正式产品语义应创建新 Snapshot；本次因尚未上线，采用限定在 Knowledge 数据域内的破坏性清空，不实现旧 Snapshot 迁移。
 - Knowledge 重置覆盖 Source、Origin、Asset、Snapshot、Evidence、FTS、Brief、Attempt、Knowledge Job、处理日志及 Knowledge 文件目录。保留 Schema、迁移记录、AI Provider/应用配置和所有非 Knowledge 业务数据。
-- Knowledge reset 采用原子 quarantine：先把 `$OFFERPILOT_DATA/knowledge/` 原子移出到同文件系统的 quarantine 目录，再在单事务内 DELETE 全部 Knowledge 表并提交。DB 提交即逻辑完成点：提交失败则把 quarantine 原子移回 `knowledge/`（不留"DB 有记录 + 文件缺失"）；提交成功后 best-effort 清理 quarantine，清理失败只记 pending 待启动恢复扫除而不回退（不留"DB 空 + knowledge/ 残留"）。两个并列禁止的半重置状态都不出现。
+- Knowledge reset 采用原子 quarantine：先把 `$OFFERPILOT_DATA/knowledge/` 原子移出到同文件系统的 quarantine 目录，再在单事务内 DELETE 全部 Knowledge 表并提交。DB 提交即逻辑完成点：提交失败则把 quarantine 原子移回 `knowledge/`（不留"DB 有记录 + 文件缺失"）；提交成功后 best-effort 清理 quarantine，清理失败只记 pending 待启动恢复扫除而不回退（不留"DB 空 + knowledge/ 残留"）。两个并列禁止的半重置状态都不出现。quarantine 放在受控父目录 `$OFFERPILOT_DATA/.knowledge-reset/` 下并配 generation manifest 证明归属；启动恢复只扫该父目录、验证 manifest，无 manifest 的目录一律不触碰（不误删用户/他模块同名目录），多个 quarantine 无法判定代际时保守拒绝自动恢复/删除（记日志留用户介入）。
 - Brief Schema 提升版本并移除模型输出的 coverage。API 若继续返回 coverage，则该字段由程序在校验后派生，不接受模型声明。
 - 预期 coverage 章节只来自 post-filter 的当前 Snapshot Evidence。某章节至少有一条 Evidence 被 overview、key point、section guide 或 limitation 实际引用，才算 covered；assets-only 等确定性非正文状态由程序标记 skipped。
 - coverage 必须检查真实引用关系，而不是只检查 section key 是否出现。模型不能以“不重要”为由跳过含合格正文 Evidence 的章节。
@@ -84,7 +84,7 @@ Schema 合法的候选先完成所有可执行的 citation、support 和 coverag
 - Schema 无法解析时可以立即消耗唯一 repair，因为后续门禁无法运行。Schema 合法时不得按首个失败抢占 repair；系统先运行所有可执行的 citation、support 和 coverage 检查，再统一生成 repair 输入。
 - citation 无效的 block 不调用 support Validator，但其 citation 问题进入统一 repair report；其他引用有效的 block 继续完成 support validation，以尽可能收集完整反馈。
 - Repair Agent 接收原候选、失败 block 集合、结构化失败原因、当前 Source/Snapshot 的完整 Evidence 列表和数量约束，只返回结构化 patch，不返回完整 Brief。
-- Repair patch 仅允许针对失败 block 执行 replace、delete、split，以及 coverage_missing 专用的 upsert_section_guide。replace 和 split 可以从当前 Source/Snapshot 的任意 Evidence 中增加、替换或删除 citations；不得引用其他 Source、修改已通过 block 或新增主题。upsert_section_guide 只针对 coverage_missing 派生的 repair target（`coverage[section_key]`），其 section_key 与 heading_path 必须与 coverage plan 一致，citations 只能来自该 section 当前的合格 Evidence；该 section 已有 guide 则原位替换，否则追加，一个 patch 内同一 section_key 不得重复 upsert。非 guide 块（overview/key_points/limitations）的 replace 与 split 受章节边界约束：程序按原块有效 citation 所属章节集合校验新引用，越出该集合即拒绝；原块无任何有效 citation 可定章节时只允许 delete。
+- Repair patch 仅允许针对失败 block 执行 replace、delete、split，以及 coverage_missing 专用的 upsert_section_guide。replace 和 split 可以从当前 Source/Snapshot 的任意 Evidence 中增加、替换或删除 citations；不得引用其他 Source、修改已通过 block 或新增主题。upsert_section_guide 只针对 coverage_missing 派生的 repair target（`coverage[section_key]`），其 section_key 与 heading_path 必须与 coverage plan 一致，citations 只能来自该 section 当前的合格 Evidence；该 section 已有 guide 则原位替换，否则追加，一个 patch 内同一 section_key 不得重复 upsert。非 guide 块（overview/key_points/limitations）的 replace 与 split 受章节边界约束：程序按原块有效 citation 所属章节集合校验新引用，越出该集合即拒绝；原块无任何有效 citation 可定章节时只允许 delete。该章节集合覆盖 Asset citation——Asset 也按其 heading_path 定章节并受同样约束，repair 不得用跨章节 Asset citation 绕过边界；upsert_section_guide 的 citations 只取该 section 的文本 Evidence（Asset 不在 eligible）。
 - Patch 应用由程序完成。所有操作基于原候选 block path 一次性解析，避免 delete 导致后续索引漂移；split 只允许用于列表型事实 block，section guide 只能替换或删除。
 - Patch 应用后必须重新执行完整 Schema、数量、citation ownership、coverage 和逐条 support 门禁。第二次仍存在非 supported 结果时 Attempt 失败。
 - current Brief 的事务替换语义保持不变：新候选全部通过后才替换；重建失败时保留旧 current Brief。

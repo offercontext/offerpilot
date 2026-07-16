@@ -1729,15 +1729,16 @@ class BriefWorker:
             tuple[BriefPayload, list[ValidationIssue], set[str]]
         ] = None
         source_evidence_ids = {str(row.id) for row in evidence_rows}
-        # Finding 1/5：文本 Evidence 的 id -> section_key 映射，供 apply_repair_patch 做
-        # coverage_missing upsert 授权（citations ⊆ section 文本 Evidence）与非 guide block
-        # replace/split 的章节边界校验（不得新增主题）。
+        # Finding 1/5 + 二轮 Review P1-A：Evidence 的 id -> (section_key, kind) 映射，含当前
+        # Snapshot 全部 Evidence（含 Asset）。apply_repair_patch 用它做 coverage_missing upsert
+        # 授权（eligible 过滤 Asset，citations ⊆ section 文本 Evidence）与非 guide block
+        # replace/split 的章节边界校验（Asset citation 也受约束，不得新增主题）。
         evidence_section_index = {
-            str(row.id): _section_key_for_heading(
-                list(getattr(row, "heading_path", ()) or ())
+            str(row.id): (
+                _section_key_for_heading(list(getattr(row, "heading_path", ()) or ())),
+                str(getattr(row, "kind", "text")),
             )
             for row in evidence_rows
-            if str(getattr(row, "kind", "text")) != "asset"
         }
 
         while True:
