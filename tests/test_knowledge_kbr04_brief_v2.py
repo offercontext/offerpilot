@@ -97,9 +97,10 @@ def _v2_payload(
 # ---------------------------------------------------------------------------
 
 
-def test_brief_schema_and_prompt_versions_are_v2() -> None:
+def test_brief_schema_v2_and_prompt_v3() -> None:
+    """Schema 仍为 v2；prompt 已随 repair patch v3 升到 brief-prompt-v3。"""
     assert BRIEF_SCHEMA_VERSION == 2
-    assert BRIEF_PROMPT_VERSION == "brief-prompt-v2"
+    assert BRIEF_PROMPT_VERSION == "brief-prompt-v3"
 
 
 def test_v2_payload_has_no_coverage_model_field() -> None:
