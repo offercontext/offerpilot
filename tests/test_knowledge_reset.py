@@ -534,11 +534,14 @@ def test_reset_db_transaction_is_atomic(tmp_path: Path, monkeypatch: pytest.Monk
 
 
 def _simulate_quarantine(tmp_path: Path, knowledge_dir: Path, gen: str) -> Path:
-    """手工把 knowledge/ 移到受控父目录下 quarantine child + manifest（模拟 reset 移出后崩溃）。"""
+    """模拟 intent-first 协议：先写 intent manifest，再把 knowledge/ 原子移到 quarantine child。
+
+    对应「rename 成功后、DB 提交前崩溃」的可恢复半状态。
+    """
     qr = tmp_path / KNOWLEDGE_RESET_QUARANTINE_DIR
     qr.mkdir(parents=True, exist_ok=True)
     child = qr / f"{KNOWLEDGE_RESET_QUARANTINE_CHILD_PREFIX}{gen}"
-    os.replace(knowledge_dir, child)
+    # intent 必须先于 rename 落盘，启动恢复才能在崩溃后识别该代际。
     _quarantine_manifest_path(child).write_text(
         json.dumps(
             {
@@ -550,6 +553,7 @@ def _simulate_quarantine(tmp_path: Path, knowledge_dir: Path, gen: str) -> Path:
         ),
         encoding="utf-8",
     )
+    os.replace(knowledge_dir, child)
     return child
 
 
@@ -748,6 +752,452 @@ def test_finding3_user_flat_reset_prefix_dir_not_touched(tmp_path: Path) -> None
     # 平铺目录不受 reset 启动恢复影响（恢复只扫受控父目录 .knowledge-reset/）。
     assert user_dir.exists()
     assert (user_dir / "keep.txt").read_text(encoding="utf-8") == "用户数据"
+
+
+# ---------------------------------------------------------------------------
+# 11b. 三轮 Review P1-1：intent-first manifest 原子协议
+# ---------------------------------------------------------------------------
+
+
+def test_p1_manifest_write_failure_leaves_knowledge_and_db_intact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P1-1：intent manifest 写入失败时 knowledge/ 未移动、DB 未变化。"""
+    repository, source_id, _snapshot_id = _seed_knowledge(tmp_path)
+    source = repository.get_source(source_id)
+    before_counts = _knowledge_counts(tmp_path)
+    knowledge_dir = tmp_path / "knowledge"
+    source_file = knowledge_dir / "sources" / str(source_id) / source.main_filename
+    assert source_file.exists()
+
+    from offerpilot.knowledge import reset as reset_module
+
+    def failing_write(_child: Path, _generation: str) -> None:
+        raise OSError("simulated manifest write failure")
+
+    monkeypatch.setattr(reset_module, "_write_quarantine_manifest", failing_write)
+
+    with pytest.raises(OSError, match="simulated manifest write failure"):
+        reset_knowledge_domain(
+            session_factory_for_data_dir(tmp_path),
+            tmp_path,
+            runtime_mode="local",
+            confirm=True,
+        )
+
+    # knowledge/ 仍在原位，原件可回读；DB 完全未动。
+    assert knowledge_dir.is_dir()
+    assert source_file.exists()
+    assert _knowledge_counts(tmp_path) == before_counts
+    # 不得留下会误导恢复的半写/有效 intent manifest。
+    qr = tmp_path / KNOWLEDGE_RESET_QUARANTINE_DIR
+    if qr.exists():
+        manifests = list(qr.glob(f"{KNOWLEDGE_RESET_QUARANTINE_CHILD_PREFIX}*.manifest"))
+        assert manifests == []
+
+
+def test_p1_manifest_temp_write_failure_leaves_no_valid_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P1-1：manifest 临时文件写入失败时不留下有效/半写 manifest。"""
+    _seed_knowledge(tmp_path)
+    before_counts = _knowledge_counts(tmp_path)
+    knowledge_dir = tmp_path / "knowledge"
+
+    from offerpilot.knowledge import reset as reset_module
+
+    real_open = open
+    call_state = {"fail_next_tmp": False}
+
+    def open_interceptor(file, mode="r", *args, **kwargs):  # type: ignore[no-untyped-def]
+        path = Path(file)
+        # 仅拦截 intent 临时文件的写路径，触发半写失败。
+        if (
+            call_state["fail_next_tmp"]
+            and "w" in mode
+            and path.name.endswith(".tmp")
+            and KNOWLEDGE_RESET_QUARANTINE_DIR in path.parts
+        ):
+            raise OSError("simulated temp manifest write failure")
+        return real_open(file, mode, *args, **kwargs)
+
+    # 确保后续 reset 使用我们的 open 拦截器：通过替换 builtins.open 影响 Path.write。
+    import builtins
+
+    real_write = reset_module._write_quarantine_manifest
+
+    def write_with_failing_temp(child: Path, generation: str) -> None:
+        call_state["fail_next_tmp"] = True
+        monkeypatch.setattr(builtins, "open", open_interceptor)
+        try:
+            real_write(child, generation)
+        finally:
+            call_state["fail_next_tmp"] = False
+            monkeypatch.setattr(builtins, "open", real_open)
+
+    monkeypatch.setattr(reset_module, "_write_quarantine_manifest", write_with_failing_temp)
+
+    with pytest.raises(OSError, match="simulated temp manifest write failure"):
+        reset_knowledge_domain(
+            session_factory_for_data_dir(tmp_path),
+            tmp_path,
+            runtime_mode="local",
+            confirm=True,
+        )
+
+    assert knowledge_dir.is_dir()
+    assert _knowledge_counts(tmp_path) == before_counts
+    qr = tmp_path / KNOWLEDGE_RESET_QUARANTINE_DIR
+    if qr.exists():
+        # 既不能有有效 .manifest，也不能留下半写临时文件。
+        leftovers = [
+            p
+            for p in qr.iterdir()
+            if p.name.endswith(".manifest")
+            or p.name.endswith(".tmp")
+            or p.name.startswith(KNOWLEDGE_RESET_QUARANTINE_CHILD_PREFIX)
+        ]
+        assert leftovers == [], f"不应留下半写 intent 残留：{leftovers}"
+
+
+def test_p1_manifest_ready_but_rename_failure_cleans_intent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P1-1：manifest 已落盘、knowledge/ rename 失败时清理 intent，保持原位。"""
+    repository, source_id, _snapshot_id = _seed_knowledge(tmp_path)
+    source = repository.get_source(source_id)
+    before_counts = _knowledge_counts(tmp_path)
+    knowledge_dir = tmp_path / "knowledge"
+    source_file = knowledge_dir / "sources" / str(source_id) / source.main_filename
+
+    from offerpilot.knowledge import reset as reset_module
+
+    real_replace = os.replace
+    written_manifests: list[Path] = []
+    real_write = reset_module._write_quarantine_manifest
+
+    def tracking_write(child: Path, generation: str) -> None:
+        real_write(child, generation)
+        written_manifests.append(_quarantine_manifest_path(child))
+
+    def failing_replace(src: str | os.PathLike[str], dst: str | os.PathLike[str]) -> None:
+        src_path = Path(src)
+        # 只拦截 knowledge/ → quarantine child 的 rename，不拦截其它 replace。
+        if src_path.name == "knowledge" and KNOWLEDGE_RESET_QUARANTINE_DIR in Path(dst).parts:
+            raise OSError("simulated knowledge rename failure")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(reset_module, "_write_quarantine_manifest", tracking_write)
+    monkeypatch.setattr(reset_module.os, "replace", failing_replace)
+    monkeypatch.setattr(os, "replace", failing_replace)
+
+    with pytest.raises(OSError, match="simulated knowledge rename failure"):
+        reset_knowledge_domain(
+            session_factory_for_data_dir(tmp_path),
+            tmp_path,
+            runtime_mode="local",
+            confirm=True,
+        )
+
+    assert knowledge_dir.is_dir()
+    assert source_file.exists()
+    assert _knowledge_counts(tmp_path) == before_counts
+    assert written_manifests, "intent manifest 应已尝试落盘"
+    for manifest in written_manifests:
+        assert not manifest.exists(), "rename 失败后必须清理 intent manifest"
+
+
+def test_p1_manifest_before_rename_crash_recovers_on_init(tmp_path: Path) -> None:
+    """P1-1：intent 已落盘、rename 成功后立即崩溃 → 下次 init 按 generation 恢复。"""
+    repository, source_id, _snapshot_id = _seed_knowledge(tmp_path)
+    source = repository.get_source(source_id)
+    knowledge_dir = tmp_path / "knowledge"
+    # 模拟 intent-first + rename 成功后崩溃（DB 仍有 Source）。
+    child = _simulate_quarantine(tmp_path, knowledge_dir, "777777-777")
+    assert not knowledge_dir.exists()
+    assert child.is_dir()
+    assert _quarantine_manifest_path(child).is_file()
+
+    init_database(tmp_path / "data.db")
+
+    assert knowledge_dir.is_dir()
+    assert (knowledge_dir / "sources" / str(source_id) / source.main_filename).exists()
+    assert not child.exists()
+    assert not _quarantine_manifest_path(child).exists()
+
+
+def test_p1_manifest_generation_mismatch_rejects_recovery(tmp_path: Path) -> None:
+    """P1-1：manifest generation 与 child 名不匹配时拒绝处理，不 move/rmtree。"""
+    repository, source_id, _snapshot_id = _seed_knowledge(tmp_path)
+    source = repository.get_source(source_id)
+    knowledge_dir = tmp_path / "knowledge"
+    qr = tmp_path / KNOWLEDGE_RESET_QUARANTINE_DIR
+    qr.mkdir(parents=True, exist_ok=True)
+    child = qr / f"{KNOWLEDGE_RESET_QUARANTINE_CHILD_PREFIX}111111-111"
+    os.replace(knowledge_dir, child)
+    # stage 合法，但 generation 故意与 child 名不一致。
+    _quarantine_manifest_path(child).write_text(
+        json.dumps(
+            {
+                "generation": "222222-222",
+                "pid": 1,
+                "created_at": 1,
+                "stage": KNOWLEDGE_RESET_MANIFEST_STAGE,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    init_database(tmp_path / "data.db")
+
+    # 代际不匹配 → 不恢复、不清理；DB Source 仍在，但 knowledge/ 未自动恢复。
+    assert child.exists()
+    assert (child / "sources" / str(source_id) / source.main_filename).exists()
+    assert not knowledge_dir.exists()
+    assert _knowledge_counts(tmp_path)["knowledge_sources"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# 11c. 三轮 Review P1-2：quarantine root/child symlink 与路径逃逸
+# ---------------------------------------------------------------------------
+
+
+def test_p1_quarantine_root_symlink_escape_not_followed(tmp_path: Path) -> None:
+    """P1-2：quarantine root 是指向外部目录的 symlink 时不跟随、不 rmtree 外部。"""
+    repository, source_id, _snapshot_id = _seed_knowledge(tmp_path)
+    knowledge_dir = tmp_path / "knowledge"
+    outside = tmp_path.parent / "kbr-p1-root-outside"
+    outside.mkdir(parents=True, exist_ok=True)
+    sentinel = outside / "sentinel-root.txt"
+    sentinel.write_text("root-must-survive", encoding="utf-8")
+    # 外部真实 quarantine 结构，供 symlink root 指向。
+    outside_child = outside / f"{KNOWLEDGE_RESET_QUARANTINE_CHILD_PREFIX}888888-888"
+    outside_child.mkdir(parents=True, exist_ok=True)
+    (outside_child / "payload.md").write_text("payload", encoding="utf-8")
+    (outside / f"{outside_child.name}.manifest").write_text(
+        json.dumps(
+            {
+                "generation": "888888-888",
+                "pid": 1,
+                "created_at": 1,
+                "stage": KNOWLEDGE_RESET_MANIFEST_STAGE,
+            }
+        ),
+        encoding="utf-8",
+    )
+    # data_dir 内的 .knowledge-reset 是指向外部的 symlink。
+    qr_link = tmp_path / KNOWLEDGE_RESET_QUARANTINE_DIR
+    qr_link.symlink_to(outside)
+    # knowledge/ 仍在，DB 有 Source。
+    assert knowledge_dir.is_dir()
+    assert _knowledge_counts(tmp_path)["knowledge_sources"] >= 1
+
+    init_database(tmp_path / "data.db")
+
+    assert sentinel.exists()
+    assert sentinel.read_text(encoding="utf-8") == "root-must-survive"
+    assert outside_child.exists()
+    assert (outside_child / "payload.md").exists()
+    # 不得把外部 child 移成 knowledge/，也不得删除外部。
+    assert knowledge_dir.is_dir()
+    assert not (knowledge_dir / "payload.md").exists()
+
+
+def test_p1_quarantine_child_symlink_escape_not_followed(tmp_path: Path) -> None:
+    """P1-2：quarantine child 是指向外部目录的 symlink 时不 move/rmtree 外部。"""
+    repository, source_id, _snapshot_id = _seed_knowledge(tmp_path)
+    knowledge_dir = tmp_path / "knowledge"
+    outside = tmp_path.parent / "kbr-p1-child-outside"
+    outside.mkdir(parents=True, exist_ok=True)
+    sentinel = outside / "sentinel-child.txt"
+    sentinel.write_text("child-must-survive", encoding="utf-8")
+    (outside / "payload.md").write_text("external-payload", encoding="utf-8")
+
+    qr = tmp_path / KNOWLEDGE_RESET_QUARANTINE_DIR
+    qr.mkdir(parents=True, exist_ok=True)
+    child_link = qr / f"{KNOWLEDGE_RESET_QUARANTINE_CHILD_PREFIX}777001-001"
+    child_link.symlink_to(outside)
+    _quarantine_manifest_path(child_link).write_text(
+        json.dumps(
+            {
+                "generation": "777001-001",
+                "pid": 1,
+                "created_at": 1,
+                "stage": KNOWLEDGE_RESET_MANIFEST_STAGE,
+            }
+        ),
+        encoding="utf-8",
+    )
+    # 模拟 knowledge/ 已不在（reset 中途），DB 仍有 Source。
+    os.replace(knowledge_dir, tmp_path / "knowledge-backup-keep")
+    assert not knowledge_dir.exists()
+    assert _knowledge_counts(tmp_path)["knowledge_sources"] >= 1
+
+    init_database(tmp_path / "data.db")
+
+    assert sentinel.exists()
+    assert sentinel.read_text(encoding="utf-8") == "child-must-survive"
+    assert (outside / "payload.md").read_text(encoding="utf-8") == "external-payload"
+    # 不得把外部 symlink 目标移成 knowledge/。
+    assert not knowledge_dir.exists() or not (knowledge_dir / "payload.md").exists()
+    assert child_link.is_symlink()
+
+
+def test_p1_manifest_symlink_escape_not_followed(tmp_path: Path) -> None:
+    """P1-2：manifest 是 symlink 时拒绝处理，不跟随、不 unlink 外部目标。"""
+    repository, source_id, _snapshot_id = _seed_knowledge(tmp_path)
+    knowledge_dir = tmp_path / "knowledge"
+    outside = tmp_path.parent / "kbr-p1-manifest-outside"
+    outside.mkdir(parents=True, exist_ok=True)
+    sentinel = outside / "sentinel-manifest.txt"
+    sentinel.write_text("manifest-must-survive", encoding="utf-8")
+    external_manifest = outside / "external.manifest"
+    external_manifest.write_text(
+        json.dumps(
+            {
+                "generation": "666001-001",
+                "pid": 1,
+                "created_at": 1,
+                "stage": KNOWLEDGE_RESET_MANIFEST_STAGE,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    qr = tmp_path / KNOWLEDGE_RESET_QUARANTINE_DIR
+    qr.mkdir(parents=True, exist_ok=True)
+    child = qr / f"{KNOWLEDGE_RESET_QUARANTINE_CHILD_PREFIX}666001-001"
+    os.replace(knowledge_dir, child)
+    manifest_link = _quarantine_manifest_path(child)
+    manifest_link.symlink_to(external_manifest)
+    assert not knowledge_dir.exists()
+
+    init_database(tmp_path / "data.db")
+
+    assert sentinel.exists()
+    assert sentinel.read_text(encoding="utf-8") == "manifest-must-survive"
+    assert external_manifest.exists()
+    # symlink manifest 无效 → child 不触碰。
+    assert child.exists()
+    assert not knowledge_dir.exists()
+
+
+def test_p1_child_resolve_escape_not_followed(tmp_path: Path) -> None:
+    """P1-2：child 越出权威 data_dir 受控 root 时 cleanup 不 rmtree。"""
+    repository, source_id, _snapshot_id = _seed_knowledge(tmp_path)
+    knowledge_dir = tmp_path / "knowledge"
+    outside = tmp_path.parent / "kbr-p1-resolve-outside"
+    outside.mkdir(parents=True, exist_ok=True)
+    sentinel = outside / "sentinel-resolve.txt"
+    sentinel.write_text("resolve-must-survive", encoding="utf-8")
+
+    # 外部伪造完整 `.knowledge-reset/quarantine-*` 布局：若 cleanup 仅按目录名推断
+    # data_dir，会误删外部；必须绑定权威 data_dir 拒绝。
+    from offerpilot.knowledge.reset import _best_effort_cleanup_quarantine
+
+    external_root = outside / KNOWLEDGE_RESET_QUARANTINE_DIR
+    external_root.mkdir(parents=True, exist_ok=True)
+    external_child = external_root / f"{KNOWLEDGE_RESET_QUARANTINE_CHILD_PREFIX}555001-001"
+    external_child.mkdir(parents=True, exist_ok=True)
+    (external_child / "payload.md").write_text("external", encoding="utf-8")
+    _best_effort_cleanup_quarantine(external_child, tmp_path)
+
+    assert sentinel.exists()
+    assert sentinel.read_text(encoding="utf-8") == "resolve-must-survive"
+    assert external_child.exists()
+    assert (external_child / "payload.md").exists()
+    # 正常 knowledge/ 不受影响。
+    assert knowledge_dir.is_dir()
+    assert _knowledge_counts(tmp_path)["knowledge_sources"] >= 1
+
+
+def test_p1_orphan_intent_manifest_cleaned_on_init(tmp_path: Path) -> None:
+    """P1-1：intent 已写、rename 前崩溃留下的孤儿 manifest 在 init 时被清理。"""
+    _seed_knowledge(tmp_path)
+    knowledge_dir = tmp_path / "knowledge"
+    qr = tmp_path / KNOWLEDGE_RESET_QUARANTINE_DIR
+    qr.mkdir(parents=True, exist_ok=True)
+    orphan_child_name = f"{KNOWLEDGE_RESET_QUARANTINE_CHILD_PREFIX}121212-121"
+    orphan_manifest = qr / f"{orphan_child_name}.manifest"
+    orphan_manifest.write_text(
+        json.dumps(
+            {
+                "generation": "121212-121",
+                "pid": 1,
+                "created_at": 1,
+                "stage": KNOWLEDGE_RESET_MANIFEST_STAGE,
+            }
+        ),
+        encoding="utf-8",
+    )
+    # 无对应 child 目录，knowledge/ 仍在。
+    assert knowledge_dir.is_dir()
+    assert not (qr / orphan_child_name).exists()
+
+    init_database(tmp_path / "data.db")
+
+    assert knowledge_dir.is_dir()
+    assert not orphan_manifest.exists()
+    assert _knowledge_counts(tmp_path)["knowledge_sources"] >= 1
+
+
+def test_p1_symlink_escape_db_empty_also_safe(tmp_path: Path) -> None:
+    """P1-2：DB 空路径下 symlink quarantine 也不得越界删除。"""
+    _seed_knowledge(tmp_path)
+    reset_knowledge_domain(
+        session_factory_for_data_dir(tmp_path),
+        tmp_path,
+        runtime_mode="local",
+        confirm=True,
+    )
+    assert _knowledge_counts(tmp_path)["knowledge_sources"] == 0
+
+    outside = tmp_path.parent / "kbr-p1-empty-db-outside"
+    outside.mkdir(parents=True, exist_ok=True)
+    sentinel = outside / "sentinel-empty-db.txt"
+    sentinel.write_text("empty-db-must-survive", encoding="utf-8")
+    (outside / "payload.md").write_text("payload", encoding="utf-8")
+
+    qr = tmp_path / KNOWLEDGE_RESET_QUARANTINE_DIR
+    qr.mkdir(parents=True, exist_ok=True)
+    child_link = qr / f"{KNOWLEDGE_RESET_QUARANTINE_CHILD_PREFIX}444001-001"
+    child_link.symlink_to(outside)
+    _quarantine_manifest_path(child_link).write_text(
+        json.dumps(
+            {
+                "generation": "444001-001",
+                "pid": 1,
+                "created_at": 1,
+                "stage": KNOWLEDGE_RESET_MANIFEST_STAGE,
+            }
+        ),
+        encoding="utf-8",
+    )
+    # knowledge/ 存在但为空（reset 后），DB 空 → 本应 cleanup，但 symlink 必须拒绝。
+    knowledge_dir = tmp_path / "knowledge"
+    assert knowledge_dir.is_dir()
+
+    init_database(tmp_path / "data.db")
+
+    assert sentinel.exists()
+    assert sentinel.read_text(encoding="utf-8") == "empty-db-must-survive"
+    assert (outside / "payload.md").exists()
+    assert child_link.is_symlink()
+
+
+def test_p1_legitimate_quarantine_still_recovers(tmp_path: Path) -> None:
+    """P1-2：合法真实 quarantine 在路径守卫下仍能正常恢复。"""
+    repository, source_id, _snapshot_id = _seed_knowledge(tmp_path)
+    source = repository.get_source(source_id)
+    knowledge_dir = tmp_path / "knowledge"
+    child = _simulate_quarantine(tmp_path, knowledge_dir, "333001-001")
+    assert not knowledge_dir.exists()
+
+    init_database(tmp_path / "data.db")
+
+    assert knowledge_dir.is_dir()
+    assert (knowledge_dir / "sources" / str(source_id) / source.main_filename).exists()
+    assert not child.exists()
 
 
 def test_reset_startup_recovery_cleans_orphan_files_after_partial_reset(
