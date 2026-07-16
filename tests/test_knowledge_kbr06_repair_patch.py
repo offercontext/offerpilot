@@ -1856,7 +1856,9 @@ def test_build_repair_prompt_section_guide_replace_example_two_fields_only() -> 
 
 
 def test_build_repair_prompt_upsert_example_still_has_identity_fields() -> None:
-    """Prompt 的 upsert_section_guide 示例仍包含完整 section_key/heading_path。"""
+    """Prompt 的 upsert_section_guide 示例 payload 必须是完整四字段（不能只靠全文关键词）。"""
+    import re
+
     evidence_row = _ev("ev_1")
     messages = build_repair_prompt(
         source_title="T",
@@ -1867,11 +1869,21 @@ def test_build_repair_prompt_upsert_example_still_has_identity_fields() -> None:
         failed_block_paths=["coverage[启用异步]"],
     )
     system = messages[0]["content"]
-    assert "upsert_section_guide" in system
-    assert '"section_key"' in system
-    assert '"heading_path"' in system
-    # upsert 示例仍是完整四字段。
-    assert "coverage[" in system
+    # 提取 upsert_section_guide 示例块的 payload 正文，再断言四字段均在该 payload 内。
+    # 避免约束说明里残留 section_key/heading_path 词条时假绿。
+    upsert_payloads = re.findall(
+        r'\{"block_path":\s*"coverage\[[^"]+\]"[^}]*'
+        r'"action":\s*"upsert_section_guide"[^}]*'
+        r'"payload":\s*\{([^}]*(?:\{[^}]*\}[^}]*)*)\}',
+        system,
+        flags=re.DOTALL,
+    )
+    assert upsert_payloads, "Prompt 必须包含 coverage[...] upsert_section_guide JSON 示例"
+    for payload_body in upsert_payloads:
+        assert "section_key" in payload_body
+        assert "heading_path" in payload_body
+        assert "summary" in payload_body
+        assert "evidence_ids" in payload_body
 
 
 def test_repair_section_guide_support_partial_two_field_replace_succeeds(
