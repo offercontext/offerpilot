@@ -306,4 +306,4 @@ def test_extractor_image_locator_fallback_when_alt_has_escape() -> None:
 def test_extractor_version_is_kbr03() -> None:
     # KBR-03：evidence eligibility policy（过滤元数据样板）规则变化，升级版本。
     # KBR-02 的 frontmatter/provenance 规则变化已包含在本版本上游。
-    assert EXTRACTOR_VERSION == "md-kbr03-1"
+    assert EXTRACTOR_VERSION == "md-kbr03-2"

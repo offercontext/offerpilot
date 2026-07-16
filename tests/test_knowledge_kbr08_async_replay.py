@@ -157,7 +157,9 @@ def test_async_fixture_filters_metadata_preserves_body_and_provenance() -> None:
     """脱敏 fixture：噪声块不进 evidence_drafts；正文 offset 可从完整 canonical 回读；
     canonical 保留噪声原文；provenance 白名单字段提取，tags 不进领域模型。"""
     extractor = MarkdownExtractor()
-    result = extractor.extract(_async_source_bytes().decode("utf-8"))
+    result = extractor.extract(
+        _async_source_bytes().decode("utf-8"), origin_url=_PROVENANCE_URL
+    )
     searches = [d.search_text for d in result.evidence_drafts]
     excerpts = [d.canonical_excerpt for d in result.evidence_drafts]
 
@@ -210,7 +212,9 @@ def test_async_fixture_filters_metadata_preserves_body_and_provenance() -> None:
 def test_async_fixture_structure_manifest_records_filter_stats() -> None:
     """结构摘要记录 6 类噪声规则命中 + provenance 字段 + 元数据/policy 版本；不复制被过滤正文。"""
     extractor = MarkdownExtractor()
-    result = extractor.extract(_async_source_bytes().decode("utf-8"))
+    result = extractor.extract(
+        _async_source_bytes().decode("utf-8"), origin_url=_PROVENANCE_URL
+    )
     manifest = json.loads(result.structure_manifest)
     assert manifest["evidence_policy_version"] == EVIDENCE_POLICY_VERSION
     assert manifest["metadata_extraction_version"] == METADATA_EXTRACTION_VERSION
@@ -242,7 +246,11 @@ def test_async_seam_metadata_excluded_provenance_visible_body_searchable(
     """正式 Ingest → Extraction queue：tags/作者卡/阅读/导航/图片壳/embed/Evernote 不进 Evidence FTS；
     provenance 在 Source 详情可见但不参与普通召回；正文 Evidence 可召回。"""
     repository, _, source_id, snapshot_id = ingest_and_extract(
-        tmp_path, _async_source_bytes(), config=_qualified_config()
+        tmp_path,
+        _async_source_bytes(),
+        config=_qualified_config(),
+        origin_url=_PROVENANCE_URL,
+        import_method="paste",
     )
 
     # 噪声独有 token 零召回（不进 Evidence FTS）。
@@ -298,7 +306,11 @@ def test_async_replay_aggregated_one_repair_picks_direct_evidence_then_ready(
     - repair 后逐条复验全 supported + coverage 完整 → ready，repair_count=1。
     """
     repository, session_factory, source_id, snapshot_id = ingest_and_extract(
-        tmp_path, _async_source_bytes(), config=_qualified_config()
+        tmp_path,
+        _async_source_bytes(),
+        config=_qualified_config(),
+        origin_url=_PROVENANCE_URL,
+        import_method="paste",
     )
     evidence = repository.list_evidence(
         source_id, snapshot_id=snapshot_id, limit=50
@@ -326,12 +338,14 @@ def test_async_replay_aggregated_one_repair_picks_direct_evidence_then_ready(
         "language": BRIEF_LANGUAGE,
         "overview": [
             {"statement": "Source 涉及 OfferPilot 架构。", "evidence_ids": [ev_overview]},
-            # overview[1] 陈述关于 @EnableAsync，但 citation 误引其他 Source（ownership）。
-            {"statement": "@EnableAsync 开启异步但 citation 选错。", "evidence_ids": [other_ev]},
+            # overview[1] 陈述关于 @EnableAsync；citation 误引其他 Source（ownership），同时
+            # 带本 Source 的 ev_enable_async（有效 citation，使原块可定章节「启用异步」）。
+            # Finding 5：replace 须落回原块有效 citation 章节范围。
+            {"statement": "@EnableAsync 开启异步但 citation 选错。", "evidence_ids": [other_ev, ev_enable_async]},
         ],
         "key_points": [
             # 复合陈述（含多事实），引用标注方法章节 Evidence → Validator 判 partial。
-            {"statement": "复合陈述含多事实与推论。", "evidence_ids": [ev_async_method]},
+            {"statement": "复合陈述含多事实与推论。", "evidence_ids": [ev_async_method, ev_threadpool]},
         ],
         "section_guides": [
             {
@@ -342,12 +356,14 @@ def test_async_replay_aggregated_one_repair_picks_direct_evidence_then_ready(
             }
         ],
         "limitations": [
-            {"statement": "异常处理相关限制。", "evidence_ids": [ev_exception]}
+            # limitations 引用概述 Evidence，使「异常处理」章节首轮无人引用 -> coverage_missing。
+            {"statement": "与概述相关的限制。", "evidence_ids": [ev_overview]}
         ],
     }
-    # 模型伪造 coverage 字段：谎称「启用异步」已 covered。程序必须忽略，按实际 citation 派生。
+    # 模型伪造 coverage 字段：谎称「异常处理」已 covered。程序必须忽略，按实际 citation 派生
+    # （异常处理首轮 missing）。
     first_payload["coverage"] = [
-        {"section_key": "概述 / 启用异步", "status": "covered", "skipped_reason": "模型谎称"}
+        {"section_key": "概述 / 异常处理", "status": "covered", "skipped_reason": "模型谎称"}
     ]
     brief_json = json.dumps(first_payload, ensure_ascii=False)
 
@@ -374,6 +390,18 @@ def test_async_replay_aggregated_one_repair_picks_direct_evidence_then_ready(
                         {"statement": "@Async 方法异步执行。", "evidence_ids": [ev_async_method]},
                         {"statement": "线程池配置核心线程数。", "evidence_ids": [ev_threadpool]},
                     ],
+                },
+                # coverage_missing（异常处理）：upsert_section_guide 为该 section 追加 guide
+                # 引用 ev_exception（Finding 1）。section 已在 plan，非新增主题。
+                {
+                    "block_path": "coverage[概述 / 异常处理]",
+                    "action": "upsert_section_guide",
+                    "payload": {
+                        "section_key": "概述 / 异常处理",
+                        "heading_path": ["概述", "异常处理"],
+                        "summary": "异常处理章节导读。",
+                        "evidence_ids": [ev_exception],
+                    },
                 },
             ],
         },
@@ -460,7 +488,11 @@ def test_async_replay_first_round_report_contains_all_failure_types(
     避免首轮 report 被 winning report 覆盖后无法断言。
     """
     repository, session_factory, source_id, snapshot_id = ingest_and_extract(
-        tmp_path, _async_source_bytes(), config=_qualified_config()
+        tmp_path,
+        _async_source_bytes(),
+        config=_qualified_config(),
+        origin_url=_PROVENANCE_URL,
+        import_method="paste",
     )
     evidence = repository.list_evidence(
         source_id, snapshot_id=snapshot_id, limit=50
@@ -559,7 +591,11 @@ def test_async_replay_repair_still_partial_attempt_failed_evidence_searchable(
     """repair 应用成功但复验仍 partial → Attempt failed；完整结构化详情可见；
     Evidence 继续可搜索（Brief 失败不破坏 Source 可检索性）。"""
     repository, session_factory, source_id, snapshot_id = ingest_and_extract(
-        tmp_path, _async_source_bytes(), config=_qualified_config()
+        tmp_path,
+        _async_source_bytes(),
+        config=_qualified_config(),
+        origin_url=_PROVENANCE_URL,
+        import_method="paste",
     )
     evidence = repository.list_evidence(
         source_id, snapshot_id=snapshot_id, limit=50

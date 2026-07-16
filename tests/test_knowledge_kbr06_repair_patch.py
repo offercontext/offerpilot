@@ -35,9 +35,16 @@ from offerpilot.knowledge.brief import (
     BRIEF_REPAIR_PATCH_VERSION,
     BRIEF_SCHEMA_VERSION,
     BriefSchemaError,
+    MAX_VALIDATOR_REASON_CHARS,
+    REPAIR_ACTION_UPSERT_GUIDE,
+    SectionCoveragePlan,
+    _section_key_for_heading,
     apply_repair_patch,
+    build_section_coverage_plan,
     parse_brief_payload,
     parse_repair_patch,
+    parse_support_decision,
+    redact_reason_echo,
 )
 
 from _knowledge_seam import (
@@ -107,6 +114,60 @@ def _brief(**kwargs: Any) -> Any:
 def _source_evidence_ids() -> set[str]:
     """当前 Source/Snapshot 的完整 Evidence id 集合。"""
     return {"ev_1", "ev_2", "ev_3"}
+
+
+def _default_evidence_rows() -> list[Any]:
+    """默认 Evidence：ev_1/ev_2/ev_3 全在 __document__ section（同 section，多数 replace 测试可过）。"""
+    return [_ev("ev_1"), _ev("ev_2"), _ev("ev_3")]
+
+
+def _default_coverage_plan() -> SectionCoveragePlan:
+    return build_section_coverage_plan(_default_evidence_rows())
+
+
+def _default_evidence_index() -> dict[str, str]:
+    return {
+        str(e.id): _section_key_for_heading(list(e.heading_path))
+        for e in _default_evidence_rows()
+    }
+
+
+def _sectioned_evidence_rows() -> list[Any]:
+    """ev_1/ev_2 在 section A；ev_3 在 section B（用于 Finding 1/5 跨 section 测试）。"""
+    return [
+        _ev("ev_1", heading_path=("A",)),
+        _ev("ev_2", heading_path=("A",)),
+        _ev("ev_3", heading_path=("B",)),
+    ]
+
+
+def _sectioned_coverage_plan() -> SectionCoveragePlan:
+    return build_section_coverage_plan(_sectioned_evidence_rows())
+
+
+def _sectioned_evidence_index() -> dict[str, str]:
+    return {
+        str(e.id): _section_key_for_heading(list(e.heading_path))
+        for e in _sectioned_evidence_rows()
+    }
+
+
+def _upsert_guide_op(
+    section_key: str,
+    heading_path: tuple[str, ...],
+    evidence_ids: list[str],
+    summary: str = "章节导读。",
+) -> dict[str, Any]:
+    return {
+        "block_path": f"coverage[{section_key}]",
+        "action": REPAIR_ACTION_UPSERT_GUIDE,
+        "payload": {
+            "section_key": section_key,
+            "heading_path": list(heading_path),
+            "summary": summary,
+            "evidence_ids": evidence_ids,
+        },
+    }
 
 
 def _patch(operations: list[dict[str, Any]]) -> str:
@@ -214,7 +275,7 @@ def test_apply_replace_statement() -> None:
         brief,
         parse_repair_patch(_patch([_replace_stmt("key_points[0]", "新原子陈述。", ["ev_3"])])),
         failed_block_paths={"key_points[0]"},
-        source_evidence_ids=_source_evidence_ids(),
+        source_evidence_ids=_source_evidence_ids(), coverage_plan=_default_coverage_plan(), evidence_section_index=_default_evidence_index(),
     )
     assert patched.key_points[0].statement == "新原子陈述。"
     assert patched.key_points[0].evidence_ids == ["ev_3"]
@@ -230,7 +291,7 @@ def test_apply_replace_can_cite_new_source_evidence_not_in_candidate() -> None:
         brief,
         parse_repair_patch(_patch([_replace_stmt("overview[0]", "换证。", ["ev_3"])])),
         failed_block_paths={"overview[0]"},
-        source_evidence_ids=_source_evidence_ids(),
+        source_evidence_ids=_source_evidence_ids(), coverage_plan=_default_coverage_plan(), evidence_section_index=_default_evidence_index(),
     )
     assert patched.overview[0].evidence_ids == ["ev_3"]
 
@@ -242,7 +303,7 @@ def test_apply_delete_statement() -> None:
         brief,
         parse_repair_patch(_patch([_delete("limitations[0]")])),
         failed_block_paths={"limitations[0]"},
-        source_evidence_ids=_source_evidence_ids(),
+        source_evidence_ids=_source_evidence_ids(), coverage_plan=_default_coverage_plan(), evidence_section_index=_default_evidence_index(),
     )
     assert patched.limitations == []
     assert len(patched.overview) == 2
@@ -267,7 +328,7 @@ def test_apply_split_statement_list() -> None:
             )
         ),
         failed_block_paths={"key_points[0]"},
-        source_evidence_ids=_source_evidence_ids(),
+        source_evidence_ids=_source_evidence_ids(), coverage_plan=_default_coverage_plan(), evidence_section_index=_default_evidence_index(),
     )
     assert len(patched.key_points) == 2
     assert patched.key_points[0].statement == "原子一。"
@@ -314,7 +375,7 @@ def test_apply_multiple_ops_atomic_no_index_drift() -> None:
             )
         ),
         failed_block_paths={"key_points[0]", "key_points[2]"},
-        source_evidence_ids=_source_evidence_ids(),
+        source_evidence_ids=_source_evidence_ids(), coverage_plan=_default_coverage_plan(), evidence_section_index=_default_evidence_index(),
     )
     # 原子结果：[拆分一, 拆分二, 要点二]；要点三(key_points[2])被删除，要点一被拆分。
     assert [kp.statement for kp in patched.key_points] == ["拆分一。", "拆分二。", "要点二。"]
@@ -337,7 +398,7 @@ def test_apply_split_below_min_rejected() -> None:
                 )
             ),
             failed_block_paths={"key_points[0]"},
-            source_evidence_ids=_source_evidence_ids(),
+            source_evidence_ids=_source_evidence_ids(), coverage_plan=_default_coverage_plan(), evidence_section_index=_default_evidence_index(),
         )
     assert exc_info.value.code == BRIEF_REPAIR_INVALID
 
@@ -350,7 +411,7 @@ def test_apply_cross_source_evidence_rejected() -> None:
             brief,
             parse_repair_patch(_patch([_replace_stmt("key_points[0]", "越界。", ["ev_FOREIGN"])])),
             failed_block_paths={"key_points[0]"},
-            source_evidence_ids=_source_evidence_ids(),
+            source_evidence_ids=_source_evidence_ids(), coverage_plan=_default_coverage_plan(), evidence_section_index=_default_evidence_index(),
         )
     assert exc_info.value.code == BRIEF_REPAIR_UNAUTHORIZED
 
@@ -363,7 +424,7 @@ def test_apply_passed_block_rejected() -> None:
             brief,
             parse_repair_patch(_patch([_replace_stmt("limitations[0]", "越权。", ["ev_1"])])),
             failed_block_paths={"key_points[0]"},  # limitations[0] 未在失败集合
-            source_evidence_ids=_source_evidence_ids(),
+            source_evidence_ids=_source_evidence_ids(), coverage_plan=_default_coverage_plan(), evidence_section_index=_default_evidence_index(),
         )
     assert exc_info.value.code == BRIEF_REPAIR_UNAUTHORIZED
 
@@ -376,7 +437,7 @@ def test_apply_unknown_block_rejected() -> None:
             brief,
             parse_repair_patch(_patch([_delete("key_points[9]")])),
             failed_block_paths={"key_points[9]"},
-            source_evidence_ids=_source_evidence_ids(),
+            source_evidence_ids=_source_evidence_ids(), coverage_plan=_default_coverage_plan(), evidence_section_index=_default_evidence_index(),
         )
     assert exc_info.value.code == BRIEF_REPAIR_UNAUTHORIZED
 
@@ -404,7 +465,7 @@ def test_apply_invalid_action_rejected() -> None:
                 )
             ),
             failed_block_paths={"key_points[0]"},
-            source_evidence_ids=_source_evidence_ids(),
+            source_evidence_ids=_source_evidence_ids(), coverage_plan=_default_coverage_plan(), evidence_section_index=_default_evidence_index(),
         )
     assert exc_info.value.code == BRIEF_REPAIR_INVALID
 
@@ -417,7 +478,7 @@ def test_apply_malformed_block_path_rejected() -> None:
             brief,
             parse_repair_patch(_patch([_delete("coverage[概述]")])),
             failed_block_paths={"coverage[概述]"},
-            source_evidence_ids=_source_evidence_ids(),
+            source_evidence_ids=_source_evidence_ids(), coverage_plan=_default_coverage_plan(), evidence_section_index=_default_evidence_index(),
         )
     assert exc_info.value.code == BRIEF_REPAIR_UNAUTHORIZED
 
@@ -432,7 +493,7 @@ def test_apply_duplicate_operation_rejected() -> None:
                 _patch([_delete("key_points[0]"), _replace_stmt("key_points[0]", "重复。", ["ev_1"])])
             ),
             failed_block_paths={"key_points[0]"},
-            source_evidence_ids=_source_evidence_ids(),
+            source_evidence_ids=_source_evidence_ids(), coverage_plan=_default_coverage_plan(), evidence_section_index=_default_evidence_index(),
         )
     assert exc_info.value.code == BRIEF_REPAIR_UNAUTHORIZED
 
@@ -445,7 +506,7 @@ def test_apply_section_guide_split_rejected() -> None:
             brief,
             parse_repair_patch(_patch([_split_stmt("section_guides[0]")])),
             failed_block_paths={"section_guides[0]"},
-            source_evidence_ids=_source_evidence_ids(),
+            source_evidence_ids=_source_evidence_ids(), coverage_plan=_default_coverage_plan(), evidence_section_index=_default_evidence_index(),
         )
     assert exc_info.value.code == BRIEF_REPAIR_INVALID
 
@@ -460,7 +521,7 @@ def test_apply_section_guide_replace_new_topic_rejected() -> None:
                 _patch([_replace_guide("section_guides[0]", "新主题", ["ev_1"])])
             ),
             failed_block_paths={"section_guides[0]"},
-            source_evidence_ids=_source_evidence_ids(),
+            source_evidence_ids=_source_evidence_ids(), coverage_plan=_default_coverage_plan(), evidence_section_index=_default_evidence_index(),
         )
     assert exc_info.value.code == BRIEF_REPAIR_UNAUTHORIZED
 
@@ -472,7 +533,7 @@ def test_apply_section_guide_replace_same_section_allowed() -> None:
         brief,
         parse_repair_patch(_patch([_replace_guide("section_guides[0]", "概述", ["ev_2"])])),
         failed_block_paths={"section_guides[0]"},
-        source_evidence_ids=_source_evidence_ids(),
+        source_evidence_ids=_source_evidence_ids(), coverage_plan=_default_coverage_plan(), evidence_section_index=_default_evidence_index(),
     )
     assert len(patched.section_guides) == 1
     assert patched.section_guides[0].section_key == "概述"
@@ -490,7 +551,7 @@ def test_apply_count_violation_rejected() -> None:
             brief,
             parse_repair_patch(_patch([_delete("overview[0]"), _delete("overview[1]")])),
             failed_block_paths={"overview[0]", "overview[1]"},
-            source_evidence_ids=_source_evidence_ids(),
+            source_evidence_ids=_source_evidence_ids(), coverage_plan=_default_coverage_plan(), evidence_section_index=_default_evidence_index(),
         )
     assert exc_info.value.code == BRIEF_REPAIR_INVALID
 
@@ -515,7 +576,7 @@ def test_apply_revalidates_split_statement_atomicity() -> None:
                 )
             ),
             failed_block_paths={"key_points[0]"},
-            source_evidence_ids=_source_evidence_ids(),
+            source_evidence_ids=_source_evidence_ids(), coverage_plan=_default_coverage_plan(), evidence_section_index=_default_evidence_index(),
         )
     assert exc_info.value.code == BRIEF_REPAIR_INVALID
 
@@ -671,6 +732,10 @@ def test_repair_split_fixes_compound_partial_then_succeeds(tmp_path: Path) -> No
     text_evs = [e.id for e in evidence if e.kind != "asset"]
     atom_a = text_evs[0]
     atom_b = text_evs[1] if len(text_evs) > 1 else text_evs[0]
+    # key_points[0] 设为复合陈述：同时引用 A/B 两节 Evidence -> partial；split 拆回各自章节
+    # 原子项（Finding 5：split 产物须落在原块有效 citation 章节集合 {A,B} 内）。
+    payload["key_points"][0]["evidence_ids"] = [atom_a, atom_b]
+    brief_json = json.dumps(payload, ensure_ascii=False)
     patch_json = _patch(
         [
             _split_stmt(
@@ -977,9 +1042,10 @@ def test_seam_async_citation_wrong_repair_picks_better_evidence(tmp_path: Path) 
     other_evidence_id = _find_other_source_evidence_id(repository, source_id)
     assert other_evidence_id, "夹具需要至少一条属于其他 Source 的 Evidence"
 
-    # 候选：overview[0] 越界引用 other_evidence_id（ownership）；其余 block 引用主 Source。
+    # 候选：overview[0] 越界引用 other_evidence_id（ownership），同时带一条有效 section A
+    # citation 使原块可定章节；repair replace 落回 section A（Finding 5）。
     payload = json.loads(build_supported_brief_json(primary_evidence))
-    payload["overview"][0]["evidence_ids"] = [other_evidence_id]
+    payload["overview"][0]["evidence_ids"] = [other_evidence_id, primary_section_a_ev]
     brief_json = json.dumps(payload, ensure_ascii=False)
 
     block_count = expected_validation_count(brief_json)
@@ -1031,3 +1097,349 @@ def _find_other_source_evidence_id(repository: Any, exclude_source_id: int) -> s
         if not rows:
             return ""
         return str(rows[0].id)
+
+
+# ===========================================================================
+# Finding 1：coverage_missing 专用 upsert_section_guide
+# ===========================================================================
+
+
+def test_finding1_upsert_appends_guide_for_uncovered_section() -> None:
+    """coverage_only（无该 section guide）-> upsert 追加一条 guide；section 已在 plan 非新增主题。"""
+    brief = _brief()  # section_guides 仅含 "概述" guide，无 B
+    patched = apply_repair_patch(
+        brief,
+        parse_repair_patch(_patch([_upsert_guide_op("B", ("B",), ["ev_3"])])),
+        failed_block_paths={"coverage[B]"},
+        source_evidence_ids=_source_evidence_ids(),
+        coverage_plan=_sectioned_coverage_plan(),
+        evidence_section_index=_sectioned_evidence_index(),
+    )
+    b_guides = [g for g in patched.section_guides if g.section_key == "B"]
+    assert len(b_guides) == 1
+    assert b_guides[0].evidence_ids == ["ev_3"]
+
+
+def test_finding1_upsert_replaces_existing_guide_in_place() -> None:
+    """coverage_missing 且该 section 已有 guide -> 原位 replace，不新增第二条。"""
+    payload = _payload_dict()
+    payload["section_guides"] = [
+        {
+            "section_key": "B",
+            "heading_path": ["B"],
+            "summary": "旧摘要。",
+            "evidence_ids": ["ev_3"],
+        }
+    ]
+    brief = parse_brief_payload(json.dumps(payload, ensure_ascii=False))
+    patched = apply_repair_patch(
+        brief,
+        parse_repair_patch(_patch([_upsert_guide_op("B", ("B",), ["ev_3"], summary="新摘要。")])),
+        failed_block_paths={"coverage[B]"},
+        source_evidence_ids=_source_evidence_ids(),
+        coverage_plan=_sectioned_coverage_plan(),
+        evidence_section_index=_sectioned_evidence_index(),
+    )
+    b_guides = [g for g in patched.section_guides if g.section_key == "B"]
+    assert len(b_guides) == 1
+    assert b_guides[0].summary == "新摘要。"
+
+
+def test_finding1_upsert_cross_section_citation_rejected() -> None:
+    """upsert guide 的 citations 必须取自该 section；引用他 section Evidence -> unauthorized。"""
+    brief = _brief()
+    with pytest.raises(BriefSchemaError) as exc_info:
+        apply_repair_patch(
+            brief,
+            parse_repair_patch(_patch([_upsert_guide_op("B", ("B",), ["ev_1"])])),  # ev_1 在 A
+            failed_block_paths={"coverage[B]"},
+            source_evidence_ids=_source_evidence_ids(),
+            coverage_plan=_sectioned_coverage_plan(),
+            evidence_section_index=_sectioned_evidence_index(),
+        )
+    assert exc_info.value.code == BRIEF_REPAIR_UNAUTHORIZED
+
+
+def test_finding1_upsert_duplicate_section_rejected() -> None:
+    """同一 patch 内重复 upsert 同一 section -> unauthorized。"""
+    brief = _brief()
+    with pytest.raises(BriefSchemaError) as exc_info:
+        apply_repair_patch(
+            brief,
+            parse_repair_patch(
+                _patch(
+                    [
+                        _upsert_guide_op("B", ("B",), ["ev_3"]),
+                        _upsert_guide_op("B", ("B",), ["ev_3"]),
+                    ]
+                )
+            ),
+            failed_block_paths={"coverage[B]"},
+            source_evidence_ids=_source_evidence_ids(),
+            coverage_plan=_sectioned_coverage_plan(),
+            evidence_section_index=_sectioned_evidence_index(),
+        )
+    assert exc_info.value.code == BRIEF_REPAIR_UNAUTHORIZED
+
+
+def test_finding1_upsert_heading_path_mismatch_rejected() -> None:
+    """upsert guide 的 heading_path 必须与 coverage plan 一致；不符 -> unauthorized。"""
+    brief = _brief()
+    with pytest.raises(BriefSchemaError) as exc_info:
+        apply_repair_patch(
+            brief,
+            parse_repair_patch(_patch([_upsert_guide_op("B", ("B", "子"), ["ev_3"])])),
+            failed_block_paths={"coverage[B]"},
+            source_evidence_ids=_source_evidence_ids(),
+            coverage_plan=_sectioned_coverage_plan(),
+            evidence_section_index=_sectioned_evidence_index(),
+        )
+    assert exc_info.value.code == BRIEF_REPAIR_UNAUTHORIZED
+
+
+def test_finding1_upsert_section_not_in_plan_rejected() -> None:
+    """upsert 的 section 不在 coverage plan -> unauthorized（防借 upsert 引入 plan 外主题）。"""
+    brief = _brief()
+    with pytest.raises(BriefSchemaError) as exc_info:
+        apply_repair_patch(
+            brief,
+            parse_repair_patch(_patch([_upsert_guide_op("不存在", ("不存在",), ["ev_3"])])),
+            failed_block_paths={"coverage[不存在]"},
+            source_evidence_ids=_source_evidence_ids(),
+            coverage_plan=_sectioned_coverage_plan(),
+            evidence_section_index=_sectioned_evidence_index(),
+        )
+    assert exc_info.value.code == BRIEF_REPAIR_UNAUTHORIZED
+
+
+# ===========================================================================
+# Finding 5：非 guide block replace/split 的 section 边界
+# ===========================================================================
+
+
+def test_finding5_replace_same_section_allowed() -> None:
+    """非 guide block replace 引用原块同 section Evidence 允许。"""
+    brief = _brief(key_ids=["ev_1"])  # key_points[0] 引 ev_1（section A）
+    patched = apply_repair_patch(
+        brief,
+        parse_repair_patch(_patch([_replace_stmt("key_points[0]", "新陈述。", ["ev_2"])])),  # ev_2 同在 A
+        failed_block_paths={"key_points[0]"},
+        source_evidence_ids=_source_evidence_ids(),
+        coverage_plan=_sectioned_coverage_plan(),
+        evidence_section_index=_sectioned_evidence_index(),
+    )
+    assert patched.key_points[0].evidence_ids == ["ev_2"]
+
+
+def test_finding5_replace_cross_section_rejected() -> None:
+    """非 guide block replace 引用他 section Evidence -> unauthorized（新增主题）。"""
+    brief = _brief(key_ids=["ev_1"])  # section A
+    with pytest.raises(BriefSchemaError) as exc_info:
+        apply_repair_patch(
+            brief,
+            parse_repair_patch(_patch([_replace_stmt("key_points[0]", "越界。", ["ev_3"])])),  # ev_3 在 B
+            failed_block_paths={"key_points[0]"},
+            source_evidence_ids=_source_evidence_ids(),
+            coverage_plan=_sectioned_coverage_plan(),
+            evidence_section_index=_sectioned_evidence_index(),
+        )
+    assert exc_info.value.code == BRIEF_REPAIR_UNAUTHORIZED
+
+
+def test_finding5_no_valid_citation_block_only_delete_allowed() -> None:
+    """原块无有效 citation 可定章节（citation_missing）-> replace 拒绝，delete 允许。"""
+    # key_points[0] 引不存在的 id（无有效 citation）；key_points[1] 保留以维持数量下限。
+    brief = _brief(
+        key_ids=["ev_bogus"],
+        extra_key_point={"statement": "保留要点。", "evidence_ids": ["ev_2"]},
+    )
+    plan = _sectioned_coverage_plan()
+    idx = _sectioned_evidence_index()
+    # replace 拒绝。
+    with pytest.raises(BriefSchemaError) as exc_info:
+        apply_repair_patch(
+            brief,
+            parse_repair_patch(_patch([_replace_stmt("key_points[0]", "新。", ["ev_1"])])),
+            failed_block_paths={"key_points[0]"},
+            source_evidence_ids=_source_evidence_ids(),
+            coverage_plan=plan,
+            evidence_section_index=idx,
+        )
+    assert exc_info.value.code == BRIEF_REPAIR_UNAUTHORIZED
+    # delete 允许（保留 key_points[1]，维持数量下限）。
+    patched = apply_repair_patch(
+        brief,
+        parse_repair_patch(_patch([_delete("key_points[0]")])),
+        failed_block_paths={"key_points[0]"},
+        source_evidence_ids=_source_evidence_ids(),
+        coverage_plan=plan,
+        evidence_section_index=idx,
+    )
+    assert len(patched.key_points) == 1
+
+
+# ===========================================================================
+# Finding 1 端到端：coverage_only 经 upsert_section_guide 修复成功
+# ===========================================================================
+
+
+def test_finding1_coverage_only_upsert_succeeds(tmp_path: Path) -> None:
+    """coverage_only（全 supported，仅 section B Evidence 未被引用）-> upsert_section_guide
+    为 B 追加 guide -> 复验全 supported + coverage 完整 -> ready，repair_count=1。
+
+    这是 Finding 1 的核心回归：此前 coverage_only 在 replace/delete/split 操作集下必然死局。
+    """
+    repository, session_factory, source_id, snapshot_id = ingest_and_extract(
+        tmp_path, _CONTENT.encode("utf-8"), config=_qualified_config()
+    )
+    evidence = repository.list_evidence(
+        source_id, snapshot_id=snapshot_id, limit=50
+    ).items
+    # 按章节定位 Evidence id（_CONTENT 有「章节 A」「章节 B」各一条文本 Evidence）。
+    ev_a = next(e.id for e in evidence if e.heading_path == ["章节 A"])
+    ev_b = next(e.id for e in evidence if e.heading_path == ["章节 B"])
+
+    # 首轮候选：全部 block 仅引用 section A Evidence（全 supported），section B 未被引用
+    # -> 唯一失败为 coverage[章节 B] missing。
+    payload = {
+        "schema_version": BRIEF_SCHEMA_VERSION,
+        "language": BRIEF_LANGUAGE,
+        "overview": [
+            {"statement": "概述一。", "evidence_ids": [ev_a]},
+            {"statement": "概述二。", "evidence_ids": [ev_a]},
+        ],
+        "key_points": [{"statement": "要点。", "evidence_ids": [ev_a]}],
+        "section_guides": [
+            {
+                "section_key": "章节 A",
+                "heading_path": ["章节 A"],
+                "summary": "A 导读。",
+                "evidence_ids": [ev_a],
+            }
+        ],
+        "limitations": [{"statement": "限制。", "evidence_ids": [ev_a]}],
+    }
+    brief_json = json.dumps(payload, ensure_ascii=False)
+    patch_json = _patch(
+        [
+            {
+                "block_path": "coverage[章节 B]",
+                "action": REPAIR_ACTION_UPSERT_GUIDE,
+                "payload": {
+                    "section_key": "章节 B",
+                    "heading_path": ["章节 B"],
+                    "summary": "B 章节导读。",
+                    "evidence_ids": [ev_b],
+                },
+            }
+        ]
+    )
+    # validation 默认 supported：首轮全 supported（唯一失败是 coverage missing），repair 后
+    # 新 guide 也 supported。
+    client = RoleAwareModelClient(generation=[brief_json], repair=[patch_json])
+    outcome = drive_brief_queue(
+        repository,
+        session_factory,
+        tmp_path,
+        config=_qualified_config(),
+        model_client=client,
+        source_id=source_id,
+    )
+    assert outcome.source is not None
+    assert outcome.source.brief_status == "ready", outcome.source.brief_error_message
+    assert outcome.attempt is not None
+    assert outcome.attempt.repair_count == 1
+    assert outcome.brief is not None
+    patched = json.loads(outcome.brief.payload_json)
+    assert any(g["section_key"] == "章节 B" for g in patched["section_guides"])
+
+
+# ===========================================================================
+# Finding 4：Validator 原始 reason 不持久化 + 程序原因码/安全摘要
+# ===========================================================================
+
+
+def test_finding4_parse_support_decision_caps_reason_length() -> None:
+    """Validator 原始 reason 超过上限被截断（防倾倒 Evidence 正文）。"""
+    long_reason = "x" * (MAX_VALIDATOR_REASON_CHARS + 300)
+    raw = json.dumps({"decision": "partial", "reason": long_reason}, ensure_ascii=False)
+    decision = parse_support_decision(raw)
+    assert len(decision.reason) == MAX_VALIDATOR_REASON_CHARS
+
+
+def test_finding4_redact_reason_echo_replaces_evidence_echo() -> None:
+    """redact_reason_echo 检测到 Evidence/statement 逐字回显时替换为占位符；无回显时保留。"""
+    excerpt = "这是一段足够长的 Evidence 原文用于回显检测。"
+    assert (
+        redact_reason_echo(f"解释：{excerpt} 尾部", "statement", [excerpt])
+        == "[已过滤回显]"
+    )
+    assert (
+        redact_reason_echo("正常解释，无逐字回显。", "statement", [excerpt])
+        == "正常解释，无逐字回显。"
+    )
+    # 短片段不触发（避免误伤常见短语）。
+    assert redact_reason_echo("短", "s", ["短"]) == "短"
+
+
+def test_finding4_validator_raw_reason_not_persisted_in_report(tmp_path: Path) -> None:
+    """Finding 4：Validator 原始 reason（含 Evidence 回显）不进 Attempt report；
+    report 仅含程序原因码 + 安全摘要，Evidence 原文不在 report 中。"""
+    repository, session_factory, source_id, snapshot_id = ingest_and_extract(
+        tmp_path, _CONTENT.encode("utf-8"), config=_qualified_config()
+    )
+    evidence = repository.list_evidence(
+        source_id, snapshot_id=snapshot_id, limit=50
+    ).items
+    ev_a = next(e.id for e in evidence if e.heading_path == ["章节 A"])
+    echo_text = next(e.canonical_excerpt for e in evidence if e.id == ev_a)
+    assert len(echo_text) >= 16
+    payload = {
+        "schema_version": BRIEF_SCHEMA_VERSION,
+        "language": BRIEF_LANGUAGE,
+        "overview": [
+            {"statement": "概述一。", "evidence_ids": [ev_a]},
+            {"statement": "概述二。", "evidence_ids": [ev_a]},
+        ],
+        "key_points": [{"statement": "要点。", "evidence_ids": [ev_a]}],
+        "section_guides": [
+            {
+                "section_key": "章节 A",
+                "heading_path": ["章节 A"],
+                "summary": "导读。",
+                "evidence_ids": [ev_a],
+            }
+        ],
+        "limitations": [{"statement": "限制。", "evidence_ids": [ev_a]}],
+    }
+    brief_json = json.dumps(payload, ensure_ascii=False)
+    # key_points[0]（validation 顺序第 3 位）判 partial，reason 逐字回显 Evidence 原文。
+    partial_echo = json.dumps(
+        {"decision": "partial", "reason": f"Validator 复述：{echo_text}"}
+    )
+    supported = json.dumps({"decision": "supported", "reason": "ok"})
+    # 两轮 validation（空 patch 后复验）都让 key_points[0] partial。
+    client = RoleAwareModelClient(
+        generation=[brief_json],
+        repair=[_patch([])],  # 空 patch -> 复验仍失败，保留完整 report
+        validation=[supported, supported, partial_echo, supported, supported] * 2,
+    )
+    outcome = drive_brief_queue(
+        repository,
+        session_factory,
+        tmp_path,
+        config=_qualified_config(),
+        model_client=client,
+        source_id=source_id,
+    )
+    report = outcome.validation_report
+    report_text = json.dumps(report, ensure_ascii=False)
+    # Evidence 原文回显不进 report。
+    assert echo_text not in report_text
+    # support_partial issue 用程序原因码 + 安全摘要（非模型原文）。
+    partial_issues = [
+        i for i in report.get("issues", []) if i.get("issue_type") == "support_partial"
+    ]
+    assert partial_issues
+    assert partial_issues[0]["reason_code"] == "validator_partial"
+    assert echo_text not in partial_issues[0]["reason"]

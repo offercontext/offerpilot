@@ -15,6 +15,7 @@ from offerpilot.knowledge.brief import (
     BRIEF_LANGUAGE,
     BRIEF_MIN_CONTEXT_WINDOW,
     BRIEF_PROMPT_VERSION,
+    BRIEF_REPAIR_PATCH_VERSION,
     BRIEF_SCHEMA_VERSION,
     BriefSchemaError,
     build_generation_prompt,
@@ -673,7 +674,7 @@ def _stub_model_client_factory(
             )
         elif "Repair Agent" in system_text:
             # KBR-06：repair 必须返回结构化 patch；空 patch 应用后候选不变，复验仍失败。
-            text = json.dumps({"version": 1, "operations": []}, ensure_ascii=False)
+            text = json.dumps({"version": BRIEF_REPAIR_PATCH_VERSION, "operations": []}, ensure_ascii=False)
         else:
             text = generation_output
         return {
@@ -838,8 +839,10 @@ def test_brief_worker_repairs_once_then_succeeds(tmp_path: Path) -> None:
     evidence_page = repository.list_evidence(source_id, snapshot_id=snapshot_id, limit=50)
     valid_payload = _build_valid_payload_from_evidence(evidence_page.items)
 
+    # 「invalid」由 validation stub 模拟（overview[0] 首轮 unsupported）；citation 保持有效，
+    # 故 Finding 5 下 repair replace 落在原块有效 citation 所属章节集合内。完全无效 citation
+    # 的块只允许 delete，不在本 replace 修复用例覆盖。
     invalid_payload = json.loads(json.dumps(valid_payload))
-    invalid_payload["overview"][0]["evidence_ids"] = ["ev_FAKE"]
 
     call_index = {"generation": 0}
 
@@ -850,12 +853,17 @@ def test_brief_worker_repairs_once_then_succeeds(tmp_path: Path) -> None:
                 system_text = message.get("content") or ""
 
         if "Validator" in system_text:
+            # 首次 validation（overview[0]）unsupported，repair 后复验全 supported。
+            call_index["validation"] = call_index.get("validation", 0) + 1
+            decision = (
+                "unsupported" if call_index["validation"] == 1 else "supported"
+            )
             return {
                 "choices": [
                     {
                         "message": {
                             "content": json.dumps(
-                                {"decision": "supported", "reason": "ok"}
+                                {"decision": decision, "reason": "stub support"}
                             )
                         }
                     }
@@ -865,7 +873,7 @@ def test_brief_worker_repairs_once_then_succeeds(tmp_path: Path) -> None:
         if "Repair Agent" in system_text:
             # KBR-06：repair 返回结构化 patch，replace overview[0] 为合法 citation。
             patch = {
-                "version": 1,
+                "version": BRIEF_REPAIR_PATCH_VERSION,
                 "operations": [
                     {
                         "block_path": "overview[0]",
@@ -1037,7 +1045,7 @@ def test_brief_worker_fails_for_non_supported_decisions(
                     {
                         "message": {
                             "content": json.dumps(
-                                {"version": 1, "operations": []}, ensure_ascii=False
+                                {"version": BRIEF_REPAIR_PATCH_VERSION, "operations": []}, ensure_ascii=False
                             )
                         }
                     }
@@ -1133,7 +1141,7 @@ def test_brief_worker_repairs_support_failure_then_succeeds(tmp_path: Path) -> N
             # KBR-06：repair replace overview[0]（失败 block）为原子陈述。
             call_state["generation_count"] += 1
             patch = {
-                "version": 1,
+                "version": BRIEF_REPAIR_PATCH_VERSION,
                 "operations": [
                     {
                         "block_path": "overview[0]",

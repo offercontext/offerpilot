@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 
@@ -527,14 +528,15 @@ def test_reset_db_transaction_is_atomic(tmp_path: Path, monkeypatch: pytest.Monk
     )
 
 
-def test_reset_leaves_db_clean_when_file_cleanup_fails(
+def test_reset_quarantine_cleanup_failure_does_not_create_half_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """文件清理在 DB 提交后失败时，DB Knowledge 表必须已清空——不存在指向已删文件的 Source。"""
+    """Finding 3：quarantine 物理清理失败时 reset 仍逻辑成功——DB 已清空、knowledge/ 重建为空、
+    不产生任何半重置状态；quarantine 残留由启动恢复扫除。"""
     _seed_knowledge(tmp_path)
     non_knowledge_before = _seed_non_knowledge(tmp_path)
 
-    # DB 先提交，再清文件；注入文件删除失败模拟文件系统故障。
+    # quarantine 物理清理（shutil.rmtree）失败，模拟文件系统故障。
     import shutil as _shutil
 
     def failing_rmtree(target, *args, **kwargs):  # type: ignore[no-untyped-def]
@@ -542,7 +544,54 @@ def test_reset_leaves_db_clean_when_file_cleanup_fails(
 
     monkeypatch.setattr(_shutil, "rmtree", failing_rmtree)
 
-    with pytest.raises(OSError):
+    # reset 不再因 quarantine 清理失败而抛错（best-effort，记 pending）。
+    reset_knowledge_domain(
+        session_factory_for_data_dir(tmp_path),
+        tmp_path,
+        runtime_mode="local",
+        confirm=True,
+    )
+
+    # 关键安全属性：DB Knowledge 表已全空，无半重置。
+    assert set(_knowledge_counts(tmp_path).values()) == {0}
+    # 非 Knowledge 数据不受影响。
+    assert _non_knowledge_counts(tmp_path) == non_knowledge_before
+    # knowledge/ 重建为空目录。
+    knowledge_dir = tmp_path / "knowledge"
+    assert knowledge_dir.is_dir()
+    assert not any(knowledge_dir.iterdir())
+    # quarantine 残留（清理失败）以 .knowledge-reset- 前缀存在，待启动恢复清理。
+    assert [
+        p for p in tmp_path.iterdir() if p.name.startswith(".knowledge-reset-")
+    ]
+
+
+def test_finding3_db_failure_restores_knowledge_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Finding 3：DB 事务失败时 quarantine 原子移回 knowledge/——不留「DB 有记录 + 文件缺失」
+    半状态，原件完整可回读。"""
+    _repository, source_id, _snapshot_id = _seed_knowledge(tmp_path)
+    source = _repository.get_source(source_id)
+    before_counts = _knowledge_counts(tmp_path)
+    source_file = tmp_path / "knowledge" / "sources" / str(source_id) / source.main_filename
+    assert source_file.exists()
+
+    # 注入：DB 删除第 3 张表时失败 → 触发 except 把 quarantine 移回 knowledge/。
+    from offerpilot.knowledge import reset as reset_module
+
+    real_delete = reset_module._delete_from_table
+    call_count = {"n": 0}
+
+    def failing_delete(conn, table_name: str) -> None:  # type: ignore[no-untyped-def]
+        call_count["n"] += 1
+        if call_count["n"] == 3:
+            raise RuntimeError("simulated mid-reset db failure")
+        real_delete(conn, table_name)
+
+    monkeypatch.setattr(reset_module, "_delete_from_table", failing_delete)
+
+    with pytest.raises(Exception):
         reset_knowledge_domain(
             session_factory_for_data_dir(tmp_path),
             tmp_path,
@@ -550,10 +599,61 @@ def test_reset_leaves_db_clean_when_file_cleanup_fails(
             confirm=True,
         )
 
-    # 关键安全属性：DB Knowledge 表已全空（没有 Source 记录指向被删/残留文件）。
-    assert set(_knowledge_counts(tmp_path).values()) == {0}
-    # 非 Knowledge 数据不受文件清理失败影响。
-    assert _non_knowledge_counts(tmp_path) == non_knowledge_before
+    # DB 整体回滚：行数与 reset 前一致。
+    assert _knowledge_counts(tmp_path) == before_counts
+    # 关键：原件被移回，source 文件仍存在（无「DB 有记录 + 文件缺失」半状态）。
+    assert source_file.exists()
+    # 无 quarantine 残留（已移回）。
+    assert not [
+        p for p in tmp_path.iterdir() if p.name.startswith(".knowledge-reset-")
+    ]
+
+
+def test_finding3_startup_recovery_restores_quarantine_when_db_has_rows(
+    tmp_path: Path,
+) -> None:
+    """Finding 3 崩溃恢复：reset 移出后未提交（DB 仍有 Knowledge 行）→ init 把 quarantine
+    移回 knowledge/ 恢复，原件可回读。"""
+    _repository, source_id, _snapshot_id = _seed_knowledge(tmp_path)
+    source = _repository.get_source(source_id)
+    knowledge_dir = tmp_path / "knowledge"
+    # 模拟 reset「移出后崩溃」：手工把 knowledge/ 移到 quarantine，DB 仍有行。
+    quarantine = tmp_path / ".knowledge-reset-999999-999"
+    os.replace(knowledge_dir, quarantine)
+    assert not knowledge_dir.exists()
+
+    init_database(tmp_path / "data.db")  # 触发启动恢复
+
+    # knowledge/ 被移回恢复，原件可回读。
+    assert knowledge_dir.is_dir()
+    assert (knowledge_dir / "sources" / str(source_id) / source.main_filename).exists()
+    assert not quarantine.exists()
+
+
+def test_finding3_startup_recovery_cleans_quarantine_when_db_empty(
+    tmp_path: Path,
+) -> None:
+    """Finding 3 崩溃恢复：reset 已提交（DB 空）但 quarantine 清理未完成 → init 清理 quarantine。"""
+    _seed_knowledge(tmp_path)
+    # 先正常 reset（DB 空，knowledge/ 重建为空）。
+    reset_knowledge_domain(
+        session_factory_for_data_dir(tmp_path),
+        tmp_path,
+        runtime_mode="local",
+        confirm=True,
+    )
+    knowledge_dir = tmp_path / "knowledge"
+    assert knowledge_dir.is_dir()
+    assert _knowledge_counts(tmp_path)["knowledge_sources"] == 0
+    # 模拟「DB 已空但 quarantine 清理未完成」的崩溃残留：把空 knowledge/ 移到 quarantine。
+    quarantine = tmp_path / ".knowledge-reset-999998-998"
+    os.replace(knowledge_dir, quarantine)
+    assert not knowledge_dir.exists()
+
+    init_database(tmp_path / "data.db")
+
+    # DB 空 + knowledge/ 不存在 → quarantine 被清理。
+    assert not quarantine.exists()
 
 
 def test_reset_startup_recovery_cleans_orphan_files_after_partial_reset(

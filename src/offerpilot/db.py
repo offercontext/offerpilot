@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -679,6 +680,44 @@ def session_factory_for_data_dir(data_dir: Path) -> SessionFactory:
     return init_database(data_dir / "data.db")
 
 
+def _recover_knowledge_reset_quarantine(engine, data_dir: Path) -> None:  # type: ignore[no-untyped-def]
+    """Finding 3：清理 Knowledge reset 的 quarantine 残留（崩溃恢复）。
+
+    扫描 ``data_dir`` 下 ``.knowledge-reset-*`` 目录（与 ``knowledge/`` 同文件系统）：
+    - ``knowledge/`` 不存在 + DB 仍有 ``knowledge_sources`` 行 → reset 未完成（移出后崩溃），
+      原子移回 ``knowledge/`` 恢复（不留「DB 有记录 + 文件缺失」半状态）。
+    - ``knowledge/`` 不存在 + DB 空 → reset 已完成、清理未完成 → rmtree quarantine。
+    - ``knowledge/`` 已存在 → quarantine 是过期残留 → rmtree。
+    """
+    # reset.KNOWLEDGE_RESET_QUARANTINE_PREFIX 是该前缀的 SSOT；函数内 import 避免
+    # db ↔ knowledge 包加载阶段的循环（reset 不 import db，运行时已全部加载，安全）。
+    from offerpilot.knowledge.reset import KNOWLEDGE_RESET_QUARANTINE_PREFIX
+
+    if not data_dir.exists():
+        return
+    knowledge_dir = data_dir / "knowledge"
+    with engine.begin() as conn:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            ).fetchall()
+        }
+        db_has_sources = "knowledge_sources" in tables and (
+            conn.execute(text("SELECT COUNT(*) FROM knowledge_sources")).scalar() or 0
+        ) > 0
+    for child in data_dir.iterdir():
+        if not child.is_dir() or not child.name.startswith(KNOWLEDGE_RESET_QUARANTINE_PREFIX):
+            continue
+        if not knowledge_dir.exists():
+            if db_has_sources:
+                os.replace(child, knowledge_dir)
+            else:
+                _remove_recovery_path(child)
+        else:
+            _remove_recovery_path(child)
+
+
 def _recover_knowledge_runtime(engine, data_dir: Path) -> None:  # type: ignore[no-untyped-def]
     """KI-07：Spec §6 / §12 启动恢复。
 
@@ -693,6 +732,9 @@ def _recover_knowledge_runtime(engine, data_dir: Path) -> None:  # type: ignore[
     必须在 ``_recover_knowledge_deletions`` 之后执行——delete Job 的恢复由后者负责
     （连 Source 行 + 所有 Job 一并清理）。本函数只处理 extract/brief Job。
     """
+
+    # Finding 3：先恢复/清理 reset quarantine 残留，确保 knowledge/ 就绪再做 staging/sources 清理。
+    _recover_knowledge_reset_quarantine(engine, data_dir)
 
     knowledge_dir = data_dir / "knowledge"
     staging_root = knowledge_dir / "staging"

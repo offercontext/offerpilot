@@ -39,18 +39,26 @@ MAX_STATEMENT_CHARS = 300
 MAX_SKIPPED_REASON_CHARS = 200
 
 # KBR-06：结构化 repair patch 固定版本。Schema 不可解析路径与合法候选质量路径共享
-# 「最多一次 repair」预算；repair 只返回 patch（replace/delete/split），不返回完整 Brief。
-BRIEF_REPAIR_PATCH_VERSION = 1
+# 「最多一次 repair」预算；repair 只返回 patch（replace/delete/split + coverage_missing 专用
+# upsert_section_guide），不返回完整 Brief。
+#
+# patch v2（Finding 1）：新增 ``upsert_section_guide``——为已在 coverage plan 中的 section
+# 原位 replace 或追加一条 section guide，使 coverage_only 失败可修。Finding 5：非 guide block
+# 的 replace/split 按「原块有效 citation 所属章节」收窄，无有效 citation 的块只允许 delete。
+BRIEF_REPAIR_PATCH_VERSION = 2
 REPAIR_ACTION_REPLACE = "replace"
 REPAIR_ACTION_DELETE = "delete"
 REPAIR_ACTION_SPLIT = "split"
+# coverage_missing 专用：target 形如 ``coverage[section_key]``，只 upsert section guide，
+# 不触碰 overview/key_points/limitations；section 已在 plan，不属「新增主题」。
+REPAIR_ACTION_UPSERT_GUIDE = "upsert_section_guide"
 VALID_REPAIR_ACTIONS = (REPAIR_ACTION_REPLACE, REPAIR_ACTION_DELETE, REPAIR_ACTION_SPLIT)
 
 # KBR-06 repair patch 稳定错误码：
 # - ``brief_repair_invalid``：patch JSON/Schema 不可解析、operation 结构非法、split 不足、
 #   section guide split 或 patch 产物违反 Schema/数量门禁。
 # - ``brief_repair_unauthorized``：patch 试图修改未知/已通过 block、跨 Source/Snapshot
-#   Evidence、新增主题或重复操作同一 block。
+#   Evidence、新增主题、重复操作、upsert 与 coverage plan 不一致或非 guide 块越出原章节范围。
 BRIEF_REPAIR_INVALID = "brief_repair_invalid"
 BRIEF_REPAIR_UNAUTHORIZED = "brief_repair_unauthorized"
 
@@ -83,6 +91,54 @@ SUPPORT_DECISION_ISSUE_TYPE: dict[str, str] = {
     "unsupported": ISSUE_SUPPORT_UNSUPPORTED,
     "contradicted": ISSUE_SUPPORT_CONTRADICTED,
 }
+
+# Finding 4：程序生成的原因码 + 限长安全摘要（不依赖模型原文）。Attempt report 持久化这两者；
+# 模型原始 reason 仅在 repair 阶段受限临时使用（见 ValidationIssue.repair_hint），不落库、不展示。
+ISSUE_REASON_CODE: dict[str, str] = {
+    ISSUE_SCHEMA_INVALID: "schema_invalid",
+    ISSUE_CITATION_MISSING: "citation_unknown",
+    ISSUE_CITATION_OWNERSHIP: "citation_ownership",
+    ISSUE_SUPPORT_PARTIAL: "validator_partial",
+    ISSUE_SUPPORT_UNSUPPORTED: "validator_unsupported",
+    ISSUE_SUPPORT_CONTRADICTED: "validator_contradicted",
+    ISSUE_COVERAGE_MISSING: "coverage_section_uncited",
+}
+ISSUE_REASON_SUMMARY: dict[str, str] = {
+    ISSUE_SCHEMA_INVALID: "Brief Schema 不可解析，后续门禁未运行。",
+    ISSUE_CITATION_MISSING: "引用了不存在的 Evidence。",
+    ISSUE_CITATION_OWNERSHIP: "引用了其他 Source/Snapshot 的 Evidence。",
+    ISSUE_SUPPORT_PARTIAL: "statement 仅部分被所引 Evidence 支撑，含推断或外延。",
+    ISSUE_SUPPORT_UNSUPPORTED: "所引 Evidence 不足以支撑 statement。",
+    ISSUE_SUPPORT_CONTRADICTED: "所引 Evidence 直接否定 statement 核心断言。",
+    ISSUE_COVERAGE_MISSING: "含文本 Evidence 但未被任何 statement 实际引用。",
+}
+
+
+def program_reason_for(issue_type: str) -> tuple[str, str]:
+    """返回 ``(reason_code, safe_summary)``；未知 issue_type 回退到通用占位。"""
+    code = ISSUE_REASON_CODE.get(issue_type, issue_type)
+    summary = ISSUE_REASON_SUMMARY.get(issue_type, "质量门禁未通过。")
+    return code, summary
+
+
+# Finding 4：模型原始 reason 的临时使用上限（防回显/倾倒 Evidence 正文）。
+MAX_VALIDATOR_REASON_CHARS = 200
+
+
+def redact_reason_echo(
+    reason: str, statement: str, cited_excerpts: list[str]
+) -> str:
+    """检测受限 reason 是否回显 statement 或所引 Evidence 正文；命中则替换为占位符。
+
+    仅用于 repair 阶段的临时 reason（不持久化）。命中条件：reason 含 ≥16 字符的 statement
+    片段或某条 cited excerpt 的逐字子串。
+    """
+    fragments = [statement] + list(cited_excerpts)
+    for frag in fragments:
+        stripped = (frag or "").strip()
+        if len(stripped) >= 16 and stripped in reason:
+            return "[已过滤回显]"
+    return reason
 
 
 class BriefSchemaError(Exception):
@@ -461,6 +517,43 @@ _BLOCK_PATH_PATTERN = re.compile(
     r"^(" + "|".join(_PATCHABLE_BLOCK_NAMES) + r")\[(\d+)\]$"
 )
 
+# upsert_section_guide 的 coverage repair target：``coverage[<section_key>]``。
+# section_key 可含 ``" / "`` 与 CJK，故用非空贪心捕获整段 key。
+_COVERAGE_BLOCK_PATH_PATTERN = re.compile(r"^coverage\[(.+)\]$")
+
+
+def _enforce_statement_section_scope(
+    original_item: Any,
+    new_evidence_ids: list[str],
+    evidence_section_index: dict[str, str],
+    block_path: str,
+) -> None:
+    """Finding 5：非 guide block 的 replace/split 不得越出原块「有效 citation 所属章节」。
+
+    - 原块无任何「在 evidence_section_index 内」的有效 citation → 无法程序验证主题边界，
+      只允许 delete；replace/split 在此一律 unauthorized。
+    - 原块有有效 citation → 新 citations 中凡进入 evidence_section_index 的，其 section 必须
+      落在原块章节集合内；否则 unauthorized（新增主题 / 跨 section）。
+    """
+
+    original_sections = {
+        evidence_section_index[eid]
+        for eid in getattr(original_item, "evidence_ids", ())
+        if eid in evidence_section_index
+    }
+    if not original_sections:
+        raise BriefSchemaError(
+            BRIEF_REPAIR_UNAUTHORIZED,
+            f"{block_path} 原块无有效 citation 可定章节，只允许 delete（不得 replace/split 到其他主题）",
+        )
+    for eid in new_evidence_ids:
+        section = evidence_section_index.get(eid)
+        if section is not None and section not in original_sections:
+            raise BriefSchemaError(
+                BRIEF_REPAIR_UNAUTHORIZED,
+                f"{block_path} 新 citation 越出原块章节范围（新增主题）：{eid}",
+            )
+
 
 def parse_repair_patch(raw_text: str) -> RepairPatch:
     """Spec Implementation Decisions：解析 repair 输出为 ``RepairPatch``。
@@ -526,32 +619,93 @@ def apply_repair_patch(
     *,
     failed_block_paths: set[str],
     source_evidence_ids: set[str],
+    coverage_plan: "SectionCoveragePlan",
+    evidence_section_index: dict[str, str],
 ) -> BriefPayload:
     """Spec Implementation Decisions：原子应用 repair patch，返回 patched BriefPayload。
 
     权限与结构校验（任一违反即拒绝整个 patch，不让部分应用）：
-    - ``block_path`` 必须匹配 ``name[idx]`` 且 ``idx`` 在原候选范围内（否则 unauthorized）。
+    - replace/delete/split 的 ``block_path`` 必须匹配 ``name[idx]`` 且 ``idx`` 在原候选范围内。
     - 操作目标必须在 ``failed_block_paths`` 内（不得改已通过 block，否则 unauthorized）。
-    - 同一 ``block_path`` 不得重复操作（unauthorized）。
+    - 同一 ``block_path`` 不得重复操作；同一 section 的 upsert 不得重复。
     - ``action`` 必须合法（invalid）；section guide 不允许 split（invalid）。
     - replace/split 产物经 BriefStatement/BriefSectionGuide Schema 校验（invalid）。
     - replace/split 引用的 Evidence 必须属于当前 Source/Snapshot（``source_evidence_ids``），
       否则 unauthorized（跨 Source/Snapshot）。
+    - 非 guide block 的 replace/split：新 citations 只能落在原块「有效 citations 所属章节」
+      集合内（Finding 5，不得新增主题）；原块无有效 citation 可定章节时只允许 delete。
     - section guide replace 不得改变 section_key（新增主题 → unauthorized）。
+    - coverage_missing 专用 ``upsert_section_guide``：target ``coverage[section_key]``，payload
+      必须是与 coverage plan 严格一致的 section_key/heading_path 的 BriefSectionGuide，citations
+      非空且 ⊆ 该 section 当前 Snapshot 文本 Evidence；原位 replace 同 section guide，否则 append。
+      section 已在 plan，不属新增主题。
     - split 必须返回 ≥2 条原子项（invalid）。
 
-    应用：以原候选 block path 为基准一次性解析，先按 block_name→原 index 建操作表，
-    再统一重建各 block 列表，避免 delete/split 导致后续索引漂移。重建后的 payload 经
+    应用：以原候选 block path 为基准一次性解析，先按 block_name→原 index 建操作表 + guide
+    upsert 表，再统一重建各 block 列表，避免 delete/split 导致后续索引漂移。重建后的 payload 经
     ``BriefPayload`` 结构（含数量）复验；失败 → invalid。citation ownership / coverage /
     support 的完整门禁由 worker 在 patch 应用后重新执行。
     """
     ops_by_block: dict[str, dict[int, tuple[str, list[Any]]]] = {
         name: {} for name in _PATCHABLE_BLOCK_NAMES
     }
+    # coverage_missing upsert：section_key → 新 guide。原位 replace 同 section_key 的 guide，
+    # 否则 append；一个 patch 内同一 section_key 只能 upsert 一次。
+    guide_upserts: dict[str, BriefSectionGuide] = {}
     seen_paths: set[str] = set()
 
     for operation in patch.operations:
+        action = operation.action.strip()
         block_path = operation.block_path.strip()
+
+        if action == REPAIR_ACTION_UPSERT_GUIDE:
+            match = _COVERAGE_BLOCK_PATH_PATTERN.match(block_path)
+            if match is None:
+                raise BriefSchemaError(
+                    BRIEF_REPAIR_UNAUTHORIZED,
+                    f"upsert_section_guide 的 block_path 必须形如 coverage[section_key]：{block_path}",
+                )
+            section_key = match.group(1).strip()
+            if not section_key:
+                raise BriefSchemaError(
+                    BRIEF_REPAIR_UNAUTHORIZED, "upsert_section_guide 缺少 section_key"
+                )
+            if block_path not in failed_block_paths:
+                raise BriefSchemaError(
+                    BRIEF_REPAIR_UNAUTHORIZED,
+                    f"upsert 目标未在失败集合内（仅 coverage_missing 可 upsert）：{block_path}",
+                )
+            if block_path in seen_paths:
+                raise BriefSchemaError(
+                    BRIEF_REPAIR_UNAUTHORIZED, f"重复 upsert 同一 section：{block_path}"
+                )
+            entry = coverage_plan.sections.get(section_key)
+            if entry is None:
+                raise BriefSchemaError(
+                    BRIEF_REPAIR_UNAUTHORIZED,
+                    f"upsert 的 section 不在 coverage plan：{section_key}",
+                )
+            guide = _validate_payload_item(
+                operation.payload, is_guide=True, block_path=block_path
+            )
+            if guide.section_key != section_key or tuple(guide.heading_path) != entry.heading_path:  # type: ignore[union-attr]
+                raise BriefSchemaError(
+                    BRIEF_REPAIR_UNAUTHORIZED,
+                    "upsert guide 的 section_key/heading_path 必须与 coverage plan 一致",
+                )
+            eligible = {
+                eid for eid, sk in evidence_section_index.items() if sk == section_key
+            }
+            guide_eids = set(getattr(guide, "evidence_ids", ()))
+            if not guide_eids or not guide_eids.issubset(eligible):
+                raise BriefSchemaError(
+                    BRIEF_REPAIR_UNAUTHORIZED,
+                    f"upsert guide 的 citations 必须非空且取自 section {section_key} 的 Evidence",
+                )
+            seen_paths.add(block_path)
+            guide_upserts[section_key] = guide  # type: ignore[assignment]
+            continue
+
         match = _BLOCK_PATH_PATTERN.match(block_path)
         if match is None:
             raise BriefSchemaError(
@@ -575,7 +729,6 @@ def apply_repair_patch(
             )
         seen_paths.add(block_path)
 
-        action = operation.action.strip()
         if action not in VALID_REPAIR_ACTIONS:
             raise BriefSchemaError(
                 BRIEF_REPAIR_INVALID, f"非法 action：{action}"
@@ -601,6 +754,14 @@ def apply_repair_patch(
                         BRIEF_REPAIR_UNAUTHORIZED,
                         "section guide replace 不得改变 section_key（新增主题）",
                     )
+            else:
+                # Finding 5：非 guide block 的 replace 不得越出原块有效 citation 章节范围。
+                _enforce_statement_section_scope(
+                    original_list[original_index],
+                    list(item.evidence_ids),
+                    evidence_section_index,
+                    block_path,
+                )
             resolved_items = [item]
             cited_evidence_ids = list(item.evidence_ids)
         else:  # REPAIR_ACTION_SPLIT
@@ -613,9 +774,15 @@ def apply_repair_patch(
                 _validate_payload_item(p, is_guide=is_guide, block_path=block_path)
                 for p in payload_list
             ]
-            cited_evidence_ids = [
-                eid for item in resolved_items for eid in item.evidence_ids
-            ]
+            split_eids = [eid for item in resolved_items for eid in item.evidence_ids]
+            # Finding 5：split 产物的 citations 同样不得越出原块章节范围。
+            _enforce_statement_section_scope(
+                original_list[original_index],
+                split_eids,
+                evidence_section_index,
+                block_path,
+            )
+            cited_evidence_ids = split_eids
 
         for evidence_id in cited_evidence_ids:
             if evidence_id not in source_evidence_ids:
@@ -630,7 +797,6 @@ def apply_repair_patch(
     for block_name in _PATCHABLE_BLOCK_NAMES:
         original_list = getattr(brief, block_name)
         op_map = ops_by_block[block_name]
-        is_guide = block_name == _SECTION_GUIDE_BLOCK_NAME
         new_items: list[dict[str, Any]] = []
         for index, original_item in enumerate(original_list):
             if index in op_map:
@@ -641,6 +807,21 @@ def apply_repair_patch(
                     new_items.append(resolved.model_dump(mode="json"))
             else:
                 new_items.append(original_item.model_dump(mode="json"))
+        # section_guides 的 coverage_missing upsert：原位 replace 同 section_key guide，否则 append。
+        if block_name == _SECTION_GUIDE_BLOCK_NAME and guide_upserts:
+            consumed: set[str] = set()
+            merged: list[dict[str, Any]] = []
+            for item_dict in new_items:
+                sk = item_dict.get("section_key")
+                if sk in guide_upserts:
+                    merged.append(guide_upserts[sk].model_dump(mode="json"))
+                    consumed.add(sk)
+                else:
+                    merged.append(item_dict)
+            for sk, guide in guide_upserts.items():
+                if sk not in consumed:
+                    merged.append(guide.model_dump(mode="json"))
+            new_items = merged
         rebuilt[block_name] = new_items
 
     patched_dict: dict[str, Any] = {
@@ -666,6 +847,10 @@ class ValidationIssue:
     每项至少含 block path、issue type、decision、reason 和 evidence IDs。decision 仅对
     support 类 issue 非空（supported 不进 report）；其余类型 decision=""。详情不复制
     Evidence 正文，前端/repair 按 ``evidence_ids`` 从本地数据读取。
+
+    Finding 4：``reason`` 为程序生成的限长安全摘要，``reason_code`` 为稳定原因码--两者持久化
+    到 Attempt report。模型原始 reason 仅放入 ``repair_hint``，repair 阶段临时使用，不落库、
+    不进前端。
     """
 
     block_path: str
@@ -673,6 +858,8 @@ class ValidationIssue:
     decision: str
     reason: str
     evidence_ids: list[str] = field(default_factory=list)
+    reason_code: str = ""
+    repair_hint: str = ""
 
 
 @dataclass(frozen=True)
@@ -1140,7 +1327,8 @@ def build_repair_prompt(
             "block_path": issue.block_path,
             "issue_type": issue.issue_type,
             "decision": issue.decision,
-            "reason": issue.reason,
+            # Finding 4：repair 临时使用受限 reason（repair_hint，已限长 + 回显检测）；无则用程序摘要。
+            "reason": issue.repair_hint or issue.reason,
             "evidence_ids": list(issue.evidence_ids),
         }
         for issue in failed_issues
@@ -1151,8 +1339,9 @@ def build_repair_prompt(
         "返回结构化 patch，不要输出完整 Brief。\n"
         "\n"
         "硬性约束：\n"
-        "1. patch 只能针对「允许修改的失败 block」执行 replace、delete 或 split；不得修改已通过\n"
-        "   block、不得操作未列出的 block、不得对同一 block 重复操作。\n"
+        "1. patch 只能针对「允许修改的失败 block」执行 replace、delete 或 split；coverage_missing\n"
+        "   失败（block_path 形如 coverage[section_key]）用专用 action upsert_section_guide 修复。\n"
+        "   不得修改已通过 block、不得操作未列出的 block、不得对同一 block/section 重复操作。\n"
         "2. replace 返回单个原子事实项；split 只用于列表型事实 block（overview/key_points/\n"
         "   limitations），返回 ≥2 条原子项；section_guides 只允许 replace 或 delete（不得 split，\n"
         "   replace 时保持原 section_key）。\n"
@@ -1160,7 +1349,10 @@ def build_repair_prompt(
         "   原候选中）；严禁引用其他 Source/Snapshot 的 Evidence。\n"
         "4. 每条原子 statement/summary 只表达一个可独立验证的核心断言。\n"
         "5. 不得新增主题、不得输出完整 Brief、不得输出 coverage 字段；coverage 由程序按实际\n"
-        "   citation 派生。\n"
+        "   citation 派生。coverage_missing 用 upsert_section_guide：为该 section（已在章节信息中，\n"
+        "   非新增主题）提供一条 section guide，section_key/heading_path 必须与章节信息一致，\n"
+        "   evidence_ids 取自该 section 的 Evidence（见失败报告对应 issue 的 evidence_ids）；\n"
+        "   已有同 section guide 则原位替换，否则追加。\n"
         "6. patch 应用后程序会重新执行 Schema、数量、citation ownership、coverage 和逐条 support\n"
         "   门禁；任何 partial、unsupported、contradicted、coverage missing 或 citation 失败都会\n"
         "   使本次 repair 失败。\n"
@@ -1177,7 +1369,10 @@ def build_repair_prompt(
         '    {"block_path": "limitations[0]", "action": "delete"},\n'
         '    {"block_path": "key_points[1]", "action": "split",\n'
         '     "payload": [{"statement": "...", "evidence_ids": ["ev_..."]},\n'
-        '                  {"statement": "...", "evidence_ids": ["ev_..."]}]}\n'
+        '                  {"statement": "...", "evidence_ids": ["ev_..."]}]},\n'
+        '    {"block_path": "coverage[启用异步]", "action": "upsert_section_guide",\n'
+        '     "payload": {"section_key": "启用异步", "heading_path": ["启用异步"],\n'
+        '                 "summary": "...", "evidence_ids": ["ev_..."]}}\n'
         "  ]\n"
         "}\n"
     )
@@ -1340,6 +1535,10 @@ def parse_support_decision(raw_text: str) -> SupportDecision:
         )
     if not reason:
         raise BriefSchemaError("brief_schema_invalid", "Validator reason 不能为空")
+    # Finding 4：模型原始 reason 仅 repair 阶段临时使用，限长防止回显/倾倒 Evidence 正文。
+    # 持久化到 report 的是程序生成的原因码 + 安全摘要（见 worker _evaluate_brief_quality）。
+    if len(reason) > MAX_VALIDATOR_REASON_CHARS:
+        reason = reason[:MAX_VALIDATOR_REASON_CHARS]
     return SupportDecision(decision=decision, reason=reason)
 
 

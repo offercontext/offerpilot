@@ -26,10 +26,15 @@ import pytest
 from offerpilot.config import AIProviderProfile, Config
 from offerpilot.knowledge.brief import BRIEF_MIN_CONTEXT_WINDOW
 from offerpilot.knowledge.evidence_policy import (
+    ADAPTER_EVERNOTE,
+    ADAPTER_OBSIDIAN,
+    ADAPTER_WEB_ARTICLE,
     EVIDENCE_POLICY_VERSION,
+    ExtractionContext,
     RULE_LABELS,
     _RULES,
     evaluate_block,
+    select_adapters,
 )
 from offerpilot.knowledge.extractor import (
     EXTRACTOR_VERSION,
@@ -76,12 +81,12 @@ def _api_client(tmp_path: Path):  # type: ignore[no-untyped-def]
 
 def test_evidence_policy_version_stable() -> None:
     """Evidence policy 有稳定版本号；规则变化视为 Extraction 版本变化。"""
-    assert EVIDENCE_POLICY_VERSION == "evidence-policy-1"
+    assert EVIDENCE_POLICY_VERSION == "evidence-policy-2"
 
 
 def test_extractor_version_bumped_for_evidence_policy() -> None:
     """KBR-03 Evidence 规则变化 -> 升级 EXTRACTOR_VERSION，新 Snapshot 身份。"""
-    assert EXTRACTOR_VERSION == "md-kbr03-1"
+    assert EXTRACTOR_VERSION == "md-kbr03-2"
     assert EXTRACTOR_VERSION != "md-kbr02-1"
     assert METADATA_EXTRACTION_VERSION == "provenance-1"
 
@@ -124,28 +129,84 @@ def test_rule_registry_has_stable_ids_and_labels() -> None:
         ("[link]( )", "empty_link_shell"),
         ("![](tracking-pixel.png)", "decorative_image_shell"),
         ("![]()", "decorative_image_shell"),
-        ("![[Pasted image 1.png]]", "obsidian_wiki_embed"),
-        ("![[note.md]]", "obsidian_wiki_embed"),
-        ("%% TODO: rewrite later %%", "obsidian_comment"),
-        ("%%任意注释内容%%", "obsidian_comment"),
-        ("<en-media type=\"image/png\" hash=\"abc\"/>", "evernote_resource_fragment"),
-        ("<en-note>", "evernote_resource_fragment"),
-        ("</en-note>", "evernote_resource_fragment"),
-        ("作者：诸葛孔明丰", "author_byline"),
-        ("Author: Jane Doe", "author_byline"),
-        ("阅读：8888", "reading_count"),
-        ("阅读数：1.2万", "reading_count"),
-        ("8888 次阅读", "reading_count"),
-        ("views: 500", "reading_count"),
-        ("[上一篇](/prev) [下一篇](/next)", "navigation"),
-        ("← 上一页 | 下一页 →", "navigation"),
     ],
 )
-def test_rule_positive_skips_with_stable_id(text: str, rule_id: str) -> None:
-    """正例：规则命中 -> skip 并返回稳定 rule_id。"""
+def test_global_rule_skips_with_empty_context(text: str, rule_id: str) -> None:
+    """全局低歧义规则（空链接壳 / 纯装饰图片壳）在无 adapter 上下文下也过滤（Spec 第 71 行）。"""
     decision = evaluate_block(text)
     assert not decision.emit
     assert decision.rule_id == rule_id
+
+
+@pytest.mark.parametrize(
+    "text,rule_id,adapter",
+    [
+        ("![[Pasted image 1.png]]", "obsidian_wiki_embed", ADAPTER_OBSIDIAN),
+        ("![[note.md]]", "obsidian_wiki_embed", ADAPTER_OBSIDIAN),
+        ("%% TODO: rewrite later %%", "obsidian_comment", ADAPTER_OBSIDIAN),
+        ("%%任意注释内容%%", "obsidian_comment", ADAPTER_OBSIDIAN),
+        ("<en-media type=\"image/png\" hash=\"abc\"/>", "evernote_resource_fragment", ADAPTER_EVERNOTE),
+        ("<en-note>", "evernote_resource_fragment", ADAPTER_EVERNOTE),
+        ("</en-note>", "evernote_resource_fragment", ADAPTER_EVERNOTE),
+        ("作者：诸葛孔明丰", "author_byline", ADAPTER_WEB_ARTICLE),
+        ("Author: Jane Doe", "author_byline", ADAPTER_WEB_ARTICLE),
+        ("阅读：8888", "reading_count", ADAPTER_WEB_ARTICLE),
+        ("阅读数：1.2万", "reading_count", ADAPTER_WEB_ARTICLE),
+        ("8888 次阅读", "reading_count", ADAPTER_WEB_ARTICLE),
+        ("views: 500", "reading_count", ADAPTER_WEB_ARTICLE),
+        ("[上一篇](/prev) [下一篇](/next)", "navigation", ADAPTER_WEB_ARTICLE),
+        ("← 上一页 | 下一页 →", "navigation", ADAPTER_WEB_ARTICLE),
+    ],
+)
+def test_adapter_rule_skips_only_when_adapter_active(
+    text: str, rule_id: str, adapter: str
+) -> None:
+    """平台规则只在对应 adapter 激活时过滤；空上下文下保留（Spec 第 67/72 行：不确定默认保留）。
+
+    信号隔离：其他 adapter 激活时不得过滤本规则（一个信号不顺带启用别的 adapter）。
+    """
+    # 空 ctx：不确定块默认保留。
+    assert evaluate_block(text).emit
+    # 对应 adapter 激活：过滤并返回稳定 rule_id。
+    decision = evaluate_block(
+        text, ExtractionContext(active_adapters=frozenset({adapter}))
+    )
+    assert not decision.emit
+    assert decision.rule_id == rule_id
+    # 其他 adapter 激活时不过滤该规则（信号隔离）。
+    others = {ADAPTER_OBSIDIAN, ADAPTER_EVERNOTE, ADAPTER_WEB_ARTICLE} - {adapter}
+    for other in others:
+        assert evaluate_block(
+            text, ExtractionContext(active_adapters=frozenset({other}))
+        ).emit, f"adapter {other} 不应顺带过滤 {rule_id}"
+
+
+def test_select_adapters_uses_deterministic_signals() -> None:
+    """select_adapters 按确定性信号选择：结构语法 / 扩展名 / origin_url，互不串扰。"""
+    # 无信号 → 空。
+    assert select_adapters("普通 Markdown 正文 作者：SQLite 是最佳选择") == frozenset()
+    # Obsidian 结构语法 → 仅 obsidian。
+    assert select_adapters("参见 ![[note]] 与 %%注释%%") == frozenset({ADAPTER_OBSIDIAN})
+    # Evernote 标签 → 仅 evernote。
+    assert select_adapters("<en-media hash=\"a\"/>") == frozenset({ADAPTER_EVERNOTE})
+    # .enex 扩展名 → 仅 evernote（内容无关）。
+    assert select_adapters("plain", filename="note.enex") == frozenset({ADAPTER_EVERNOTE})
+    # origin_url → 仅 web_article。
+    assert select_adapters("plain", origin_url="https://example.com/a") == frozenset(
+        {ADAPTER_WEB_ARTICLE}
+    )
+    # 三信号同时存在 → 三 adapter 叠加，互不串扰。
+    assert select_adapters(
+        "![[x]] <en-note/>", origin_url="https://example.com/a"
+    ) == frozenset({ADAPTER_OBSIDIAN, ADAPTER_EVERNOTE, ADAPTER_WEB_ARTICLE})
+
+
+def test_brand_name_and_keyword_are_not_signals() -> None:
+    """品牌名 / 正文关键词 / 文件标题不得作为 adapter 信号（Spec KBR-03 第 104 行）。"""
+    # 含「Obsidian」「Evernote」字样但无结构语法 / provenance URL → 无 adapter。
+    assert select_adapters("本文讨论 Obsidian 与 Evernote 的导出格式") == frozenset()
+    assert select_adapters("作者：张三", filename="Obsidian笔记.md") == frozenset()
+
 
 
 @pytest.mark.parametrize(
@@ -186,42 +247,53 @@ def test_rule_negative_keeps_as_evidence(text: str) -> None:
         "作者：SQLite 是最佳选择",
         "作者：张三 是专家",
         "by: Python 3",
+        "目录",
     ],
 )
-def test_author_byline_filters_colon_plus_two_token_short_body(text: str) -> None:
-    """已知 trade-off（Spec 接受）：冒号 + 恰好 2 token 的短正文被 author_byline 过滤。
-
-    ``_BYLINE_RE`` 允许冒号后 1-2 个 name token（``\\w`` 在 Unicode 模式下匹配 CJK），
-    因此 ``作者：SQLite 是最佳选择`` 这类"冒号 + 2 token"短句也被当作结构化署名 skip。
-    3+ token 的正文句子才受保护；确定性优先于覆盖面（见 _BYLINE_RE docstring）。
-    """
-    decision = evaluate_block(text)
+def test_byline_and_nav_body_kept_in_plain_markdown(text: str) -> None:
+    """Spec 第 35/67 行：普通 Markdown（无 web_article adapter）下，冒号 + 2 token 短句、
+    ``by: Python 3`` 配置示例、单独「目录」一律保留为 Evidence——不确定默认保留，正文
+    key:value 必须可检索。这些只在 web-article adapter（ingest origin_url）下过滤。"""
+    # 无 adapter：保留（修正此前全局误删）。
+    assert evaluate_block(text).emit
+    # web_article adapter：作为结构化署名 / 阅读数 / 导航样板过滤。
+    decision = evaluate_block(
+        text, ExtractionContext(active_adapters=frozenset({ADAPTER_WEB_ARTICLE}))
+    )
     assert not decision.emit
-    assert decision.rule_id == "author_byline"
+    assert decision.rule_id in {"author_byline", "reading_count", "navigation"}
 
 
 def test_author_byline_protects_three_token_body() -> None:
-    """对照：冒号 + 3 token 及以上正文句子受保护，保留为 Evidence。"""
+    """对照：冒号 + 3 token 及以上正文句子即使 web_article adapter 激活也保留。"""
     assert evaluate_block("作者：张三 认为 Python 是最佳选择").emit
+    assert evaluate_block(
+        "作者：张三 认为 Python 是最佳选择",
+        ExtractionContext(active_adapters=frozenset({ADAPTER_WEB_ARTICLE})),
+    ).emit
 
 
 def test_non_paragraph_block_kinds_evaluated() -> None:
-    """policy 适用于 paragraph / list_item / blockquote；fence/table 不在此层。"""
-    # list_item 形式的作者署名也被过滤。
-    assert not evaluate_block("作者：张三").emit
-    # blockquote 形式的阅读数也被过滤。
-    assert not evaluate_block("阅读：1234").emit
+    """policy 适用于 paragraph / list_item / blockquote；fence/table 不在此层。
+
+    作者署名 / 阅读数在 web_article adapter 下过滤；空上下文下保留。
+    """
+    web = ExtractionContext(active_adapters=frozenset({ADAPTER_WEB_ARTICLE}))
+    assert not evaluate_block("作者：张三", web).emit
+    assert not evaluate_block("阅读：1234", web).emit
+    assert evaluate_block("作者：张三").emit
+    assert evaluate_block("阅读：1234").emit
 
 
 def test_blockquote_and_list_item_noise_filtered_through_extractor() -> None:
-    """extractor 对 blockquote/list_item 的 marker-stripped 文本应用 policy。"""
+    """extractor 对 blockquote/list_item 的 marker-stripped 文本应用 policy（web-article 来源）。"""
     extractor = MarkdownExtractor()
     content = (
         f"> 阅读：{_READING_NUMBER} 次\n\n"
         f"- 作者：{_BYLINE_TOKEN}\n"
         "- 真实要点保留 SQLite\n"
     )
-    result = extractor.extract(content)
+    result = extractor.extract(content, origin_url="https://example.com/web-article")
     for draft in result.evidence_drafts:
         assert _READING_NUMBER not in draft.search_text
         assert _BYLINE_TOKEN not in draft.search_text
@@ -283,7 +355,7 @@ def _async_representative_source() -> str:
 def test_filtered_blocks_excluded_from_evidence_drafts() -> None:
     """代表性样本：噪声块不进 evidence_drafts，正文块保留。"""
     extractor = MarkdownExtractor()
-    result = extractor.extract(_async_representative_source())
+    result = extractor.extract(_async_representative_source(), origin_url="https://example.com/async")
     searches = [d.search_text for d in result.evidence_drafts]
     excerpts = [d.canonical_excerpt for d in result.evidence_drafts]
     # 噪声独有 token 不进任何 Evidence 的 search_text / excerpt。
@@ -322,7 +394,7 @@ def test_canonical_text_preserves_noise_verbatim() -> None:
 def test_retained_evidence_offsets_read_back_from_full_canonical() -> None:
     """相邻保留 Evidence 的 line/char offsets 不因过滤偏移，可从完整 canonical 回读。"""
     extractor = MarkdownExtractor()
-    result = extractor.extract(_async_representative_source())
+    result = extractor.extract(_async_representative_source(), origin_url="https://example.com/async")
     lines = result.canonical_text.split("\n")
     assert result.evidence_drafts
     for draft in result.evidence_drafts:
@@ -335,7 +407,7 @@ def test_structure_manifest_records_filter_stats() -> None:
     """Snapshot 结构摘要记录 filtered_block_total、按 rule_id 聚合数量、
     provenance 字段名、metadata extraction version、evidence policy version。"""
     extractor = MarkdownExtractor()
-    result = extractor.extract(_async_representative_source())
+    result = extractor.extract(_async_representative_source(), origin_url="https://example.com/async")
     manifest = json.loads(result.structure_manifest)
     assert manifest["evidence_policy_version"] == EVIDENCE_POLICY_VERSION
     assert manifest["metadata_extraction_version"] == METADATA_EXTRACTION_VERSION
@@ -361,8 +433,8 @@ def test_structure_manifest_records_filter_stats() -> None:
 def test_repeated_extraction_is_stable() -> None:
     """相同 Source 与 policy version 重跑：digest、Evidence ID、顺序、过滤统计稳定。"""
     extractor = MarkdownExtractor()
-    first = extractor.extract(_async_representative_source())
-    second = extractor.extract(_async_representative_source())
+    first = extractor.extract(_async_representative_source(), origin_url="https://example.com/async")
+    second = extractor.extract(_async_representative_source(), origin_url="https://example.com/async")
     assert first.digest == second.digest
     assert [d.locator for d in first.evidence_drafts] == [
         d.locator for d in second.evidence_drafts
@@ -376,7 +448,7 @@ def test_repeated_extraction_is_stable() -> None:
 def test_policy_version_in_digest_identity() -> None:
     """evidence_policy_version 进入 structure_manifest/digest 身份；policy 变化 -> digest 变化。"""
     extractor = MarkdownExtractor()
-    result = extractor.extract(_async_representative_source())
+    result = extractor.extract(_async_representative_source(), origin_url="https://example.com/async")
     manifest = json.loads(result.structure_manifest)
     # policy version 在摘要中；摘要参与 digest 计算（见 _snapshot_digest）。
     assert manifest["evidence_policy_version"] == EVIDENCE_POLICY_VERSION
@@ -393,7 +465,7 @@ def test_filtered_list_item_does_not_leak_into_nested_child_search_text() -> Non
         f"- 阅读：{_READING_NUMBER} 次\n"
         "  - 第二个真实子要点\n"
     )
-    result = extractor.extract(content)
+    result = extractor.extract(content, origin_url="https://example.com/web-article")
     # 父级噪声 token 不进任何（子项）Evidence 的 search_text。
     for draft in result.evidence_drafts:
         assert _BYLINE_TOKEN not in draft.search_text
@@ -415,7 +487,9 @@ def test_filtered_list_item_does_not_leak_into_nested_child_search_text() -> Non
 def test_filtered_noise_not_recalled_but_body_searchable(tmp_path: Path) -> None:
     """搜索回归：被过滤噪声不可召回；正文术语/URL/数字/配置示例仍可召回。"""
     repository, _, source_id, _ = ingest_and_extract(
-        tmp_path, _async_representative_source().encode("utf-8")
+        tmp_path, _async_representative_source().encode("utf-8"),
+        origin_url="https://example.com/async",
+        import_method="paste",
     )
     # 噪声独有 token 零召回。
     for noise in (
@@ -439,7 +513,9 @@ def test_filtered_noise_not_recalled_but_body_searchable(tmp_path: Path) -> None
 def test_repository_filter_summary_from_snapshot(tmp_path: Path) -> None:
     """repository 从 active Snapshot 结构摘要读出过滤统计。"""
     repository, _, source_id, _ = ingest_and_extract(
-        tmp_path, _async_representative_source().encode("utf-8")
+        tmp_path, _async_representative_source().encode("utf-8"),
+        origin_url="https://example.com/async",
+        import_method="paste",
     )
     summary = repository.get_source_filter_summary(source_id)
     assert summary["filtered_block_total"] == 6
@@ -454,6 +530,8 @@ def test_source_detail_api_exposes_filter_summary(
     """Source 详情 API 展示过滤数量与规则摘要（不暴露正则）。"""
     _, _, source_id, _ = ingest_and_extract(
         tmp_path, _async_representative_source().encode("utf-8"),
+        origin_url="https://example.com/async",
+        import_method="paste",
         config=qualified_config,
     )
     client = _api_client(tmp_path)
@@ -501,6 +579,8 @@ def test_policy_change_via_version_bump_invalidates_old_brief(
 
     repository, session_factory, source_id, snapshot_id = ingest_and_extract(
         tmp_path, _async_representative_source().encode("utf-8"),
+        origin_url="https://example.com/async",
+        import_method="paste",
         config=qualified_config,
     )
     # 构造一个 ready Brief（绑定当前 Snapshot）。
@@ -557,6 +637,8 @@ def test_seam_async_sample_filters_metadata_and_builds_brief(
     Evidence，正文 Evidence 可回读，Brief 成功且只引用正文 Evidence。"""
     repository, session_factory, source_id, snapshot_id = ingest_and_extract(
         tmp_path, _async_representative_source().encode("utf-8"),
+        origin_url="https://example.com/async",
+        import_method="paste",
         config=qualified_config,
     )
     evidence = repository.list_evidence(source_id, snapshot_id=snapshot_id, limit=50).items

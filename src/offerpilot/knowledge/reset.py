@@ -18,22 +18,29 @@ Spec Implementation Decisions：
   穿越一律拒绝（``reset_path_escape``）。
 - 删除顺序遵循 FK 依赖（子表先于父表），不依赖临时禁用外键（SQLite 在事务内无法切换
   ``PRAGMA foreign_keys``）。
-- DB 事务原子提交后才清文件，保证不会出现"数据库仍有 Source 记录但原件已被删除"的危险半状态；
-  文件清理失败留下的孤儿目录由启动恢复（``_recover_knowledge_runtime``）自愈。
+- Finding 3 原子性：先把 ``knowledge/`` 原子移出到同文件系统 quarantine，再提交 DB 事务。
+  DB 提交即「逻辑完成」；提交失败则把 quarantine 移回 ``knowledge/``（不留「DB 有记录 +
+  文件缺失」）。提交成功后 best-effort 清理 quarantine，清理失败只记 pending（不留「DB 空 +
+  knowledge/ 内残留」）。两个并列禁止的半重置状态都不出现；quarantine 残留由启动恢复扫除。
 """
 
 from __future__ import annotations
 
+import logging
+import os
 import shutil
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session, sessionmaker
 
 from offerpilot.config import RuntimeMode, load_config
+
+_LOGGER = logging.getLogger(__name__)
 
 # Knowledge 表族闭集（reset 范围）。删除顺序：先子表（被引用者）后父表。
 # 该清单是 reset 边界的唯一事实源；绝不包含非 Knowledge 表。FK 均为 ondelete=CASCADE，
@@ -73,6 +80,48 @@ NON_KNOWLEDGE_GUARD_TABLES: tuple[str, ...] = (
 )
 
 AI_CONFIG_FILENAME = "config.json"
+
+# Finding 3：reset 的原子 quarantine 目录前缀（``data_dir/.knowledge-reset-<ts>-<pid>``）。
+# 与 ``knowledge/`` 同在 data_dir 下 → 同文件系统 → ``os.replace`` 原子 rename 成立。
+# 启动恢复按此前缀扫描残留（DB 有行则移回恢复，DB 空则清理）。
+KNOWLEDGE_RESET_QUARANTINE_PREFIX = ".knowledge-reset-"
+
+
+def _quarantine_dir(data_dir: Path) -> Path:
+    """生成唯一的同文件系统 quarantine 路径（时间戳 + pid 防并发/重复 reset 碰撞）。"""
+    return data_dir / f"{KNOWLEDGE_RESET_QUARANTINE_PREFIX}{int(time.time())}-{os.getpid()}"
+
+
+def _assert_safe_knowledge_dir(data_dir: Path, knowledge_dir: Path) -> None:
+    """移动前校验 ``knowledge/`` 是受信任的真实目录、未越出 data_dir，且根级子项无越界符号链接。
+
+    根级越界符号链接（target 越出 knowledge 根）按 Spec KBR-07 拒绝（``reset_path_escape``）。
+    嵌套在真实子目录内的符号链接不由本检查处理：atomic move 后 ``shutil.rmtree(quarantine)``
+    对符号链接条目仅 unlink 链接本身、不跟随，外部目标不会被删除（实现细节 → 契约，见测试）。
+    """
+    if knowledge_dir.is_symlink() or not knowledge_dir.is_dir():
+        raise KnowledgeResetError(
+            "reset_path_escape",
+            "knowledge 根目录不是受信任的真实目录，拒绝清理",
+        )
+    data_root = data_dir.resolve()
+    knowledge_root = knowledge_dir.resolve()
+    try:
+        knowledge_root.relative_to(data_root)
+    except ValueError as exc:
+        raise KnowledgeResetError(
+            "reset_path_escape",
+            "knowledge 根目录越出 data_dir，拒绝清理",
+        ) from exc
+    for child in knowledge_dir.iterdir():
+        if child.is_symlink():
+            try:
+                child.resolve().relative_to(knowledge_root)
+            except (OSError, ValueError) as exc:
+                raise KnowledgeResetError(
+                    "reset_path_escape",
+                    f"knowledge 子项 {child.name} 是越界符号链接，拒绝清理",
+                ) from exc
 
 
 class KnowledgeResetError(Exception):
@@ -187,60 +236,6 @@ def _verify_preservation(
     return preserved, ai_config_unchanged, migrations
 
 
-def _clear_knowledge_file_directory(data_dir: Path) -> list[str]:
-    """清空 ``$OFFERPILOT_DATA/knowledge/`` 的全部内容（保留 knowledge 根目录本身）。
-
-    路径安全红线：
-    - 解析 knowledge 根目录，拒绝其本身越出 data_dir（例如被替换为符号链接）。
-    - 逐个检查子项；符号链接的目标必须解析后仍在 knowledge 根内，否则 ``reset_path_escape``。
-      链接本身被 unlink（不跟随），普通目录 rmtree，普通文件 unlink。
-    - 绝对路径与目录穿越（``..``）因本接口不接收外部路径参数（仅对 knowledge 根
-      ``iterdir()`` 遍历真实子项）而不可达；唯一可达越界向量是符号链接，已由上面的
-      ``resolve`` + ``relative_to`` 拦截并测试（覆盖 knowledge 根级与 ``sources/<id>/``
-      嵌套子目录两层逃逸）。
-    """
-    knowledge_dir = data_dir / "knowledge"
-    if not knowledge_dir.exists():
-        return []
-    data_root = data_dir.resolve()
-    # knowledge 根本身必须是受信任的真实目录；若被替换为符号链接指向外部，拒绝清理。
-    if knowledge_dir.is_symlink() or not knowledge_dir.is_dir():
-        raise KnowledgeResetError(
-            "reset_path_escape",
-            "knowledge 根目录不是受信任的真实目录，拒绝清理",
-        )
-    knowledge_root = knowledge_dir.resolve()
-    try:
-        knowledge_root.relative_to(data_root)
-    except ValueError as exc:
-        raise KnowledgeResetError(
-            "reset_path_escape",
-            "knowledge 根目录越出 data_dir，拒绝清理",
-        ) from exc
-
-    cleared: list[str] = []
-    for child in knowledge_dir.iterdir():
-        name = child.name
-        # 符号链接：删链接本身，但目标必须落在 knowledge 根内，否则拒绝（防越界删除）。
-        if child.is_symlink():
-            try:
-                target = child.resolve()
-                target.relative_to(knowledge_root)
-            except (OSError, ValueError) as exc:
-                raise KnowledgeResetError(
-                    "reset_path_escape",
-                    f"knowledge 子项 {name} 是越界符号链接，拒绝清理",
-                ) from exc
-            child.unlink()
-        elif child.is_dir():
-            # 不跟随目录内潜在的符号链接——rmtree 对真实子目录是安全的；目录自身的归属已校验。
-            shutil.rmtree(child)
-        else:
-            child.unlink()
-        cleared.append(name)
-    return cleared
-
-
 def reset_knowledge_domain(
     session_factory: sessionmaker[Session],
     data_dir: Path,
@@ -282,23 +277,49 @@ def reset_knowledge_domain(
     if pre.ai_config_exists:
         load_config(data_dir)
 
-    existing_tables: set[str] = set()
+    knowledge_dir = data_dir / "knowledge"
+    # Finding 3：先把 knowledge/ 原子移出到同文件系统 quarantine（此时 DB 未动，完全可回滚）。
+    cleared_dir_entries: list[str] = []
+    quarantine: Optional[Path] = None
+    if knowledge_dir.exists():
+        _assert_safe_knowledge_dir(data_dir, knowledge_dir)
+        cleared_dir_entries = sorted(child.name for child in knowledge_dir.iterdir())
+        quarantine = _quarantine_dir(data_dir)
+        os.replace(knowledge_dir, quarantine)
+
     deleted_source_rows = 0
     cleared_tables: list[str] = []
-    with session_factory() as session:
-        conn = session.connection()
-        existing_tables = _existing_tables(conn)
-        if "knowledge_sources" in existing_tables:
-            deleted_source_rows = _count_rows(conn, "knowledge_sources")
-        # 单事务、按 FK 依赖顺序删除全部 Knowledge 表。事务失败整体回滚，无半重置。
-        for table_name in KNOWLEDGE_RESET_TABLES:
-            if table_name in existing_tables:
-                _delete_from_table(conn, table_name)
-                cleared_tables.append(table_name)
-        session.commit()
+    try:
+        with session_factory() as session:
+            conn = session.connection()
+            existing_tables = _existing_tables(conn)
+            if "knowledge_sources" in existing_tables:
+                deleted_source_rows = _count_rows(conn, "knowledge_sources")
+            # 单事务、按 FK 依赖顺序删除全部 Knowledge 表。
+            for table_name in KNOWLEDGE_RESET_TABLES:
+                if table_name in existing_tables:
+                    _delete_from_table(conn, table_name)
+                    cleared_tables.append(table_name)
+            session.commit()
+    except Exception:
+        # DB 提交失败：把 quarantine 原子移回 knowledge/，消除「DB 有记录 + 文件缺失」半状态。
+        if quarantine is not None and not knowledge_dir.exists():
+            os.replace(quarantine, knowledge_dir)
+        raise
 
-    # DB 提交成功后才清文件；此处的失败只会留下孤儿文件，由启动恢复自愈。
-    cleared_dir_entries = _clear_knowledge_file_directory(data_dir)
+    # 逻辑完成：DB 已提交。重建空 knowledge/（子目录由 service 按需创建）。
+    knowledge_dir.mkdir(parents=True, exist_ok=True)
+
+    # quarantine best-effort 清理；失败只留目录（启动恢复按前缀扫除），不让运行时进入失败半状态。
+    if quarantine is not None and quarantine.exists():
+        try:
+            shutil.rmtree(quarantine)
+        except OSError:
+            # best-effort：清理失败只留目录（pending），由启动恢复按前缀扫除；
+            # 不打印本机路径（守 Spec 隐私边界），不让运行时进入失败半状态。
+            _LOGGER.warning(
+                "Knowledge reset quarantine 物理清理失败，留待启动恢复扫除"
+            )
 
     preserved, ai_config_unchanged, migrations = _verify_preservation(
         session_factory, data_dir, pre

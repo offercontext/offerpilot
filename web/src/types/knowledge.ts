@@ -214,10 +214,12 @@ export interface BriefPayload {
 
 // KBR-05：结构化 validation report。失败详情按 issue_type 区分 citation/support/coverage，
 // 每项可定位到候选 Brief block_path 与已引用 evidence_ids；不复制 Evidence 正文。
+// Finding 4：reason 为程序生成的限长安全摘要，reason_code 为稳定原因码；模型原始 reason 不落库。
 export interface BriefValidationIssue {
   block_path: string;
   issue_type: string;
   decision: string;
+  reason_code?: string;
   reason: string;
   evidence_ids: string[];
 }
@@ -235,10 +237,10 @@ export interface BriefValidationReport {
   summary?: string;
   issues?: BriefValidationIssue[];
   coverage_statuses?: BriefValidationCoverageStatus[];
+  // Finding 4：support_results 不含模型原始 reason，仅保留定位信息。
   support_results?: {
     block: string;
     decision: string;
-    reason: string;
     evidence_ids: string[];
   }[];
   programmatic_issues?: string[];

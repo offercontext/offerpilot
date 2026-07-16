@@ -82,4 +82,3 @@ def wait_for_source_deleted(
             return True
         time.sleep(interval)
     return False
-

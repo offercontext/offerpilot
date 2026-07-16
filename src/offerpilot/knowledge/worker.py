@@ -57,7 +57,10 @@ from offerpilot.knowledge.brief import (
     SectionCoveragePlan,
     SUPPORT_DECISION_ISSUE_TYPE,
     ValidationIssue,
+    _section_key_for_heading,
     apply_repair_patch,
+    program_reason_for,
+    redact_reason_echo,
     build_generation_prompt,
     build_repair_prompt,
     build_schema_repair_prompt,
@@ -678,10 +681,17 @@ class ExtractionWorker:
                 raise ValueError("main file path is outside data directory")
             raw_bytes = main_path.read_bytes()
             decoded = decode_source_bytes(raw_bytes)
+            # Spec KBR-03：把确定性来源信号（首条 Origin 的 origin_url、主文件名扩展名）
+            # 传入 extractor，供 select_adapters 选择平台适配器。web-article adapter 仅在
+            # ingest origin_url 非空时激活；Obsidian/Evernote 由 extractor 扫描结构语法判定。
+            origins = self._repository.list_origins(source.id)
+            origin_url = origins[0].origin_url if origins else ""
             extraction = self._extractor.extract(
                 decoded.text,
                 encoding=decoded.encoding,
                 detection_method=decoded.detection_method,
+                origin_url=origin_url,
+                filename=source.main_filename,
             )
         except Exception as exc:
             self._mark_extraction_failed(
@@ -1719,6 +1729,16 @@ class BriefWorker:
             tuple[BriefPayload, list[ValidationIssue], set[str]]
         ] = None
         source_evidence_ids = {str(row.id) for row in evidence_rows}
+        # Finding 1/5：文本 Evidence 的 id -> section_key 映射，供 apply_repair_patch 做
+        # coverage_missing upsert 授权（citations ⊆ section 文本 Evidence）与非 guide block
+        # replace/split 的章节边界校验（不得新增主题）。
+        evidence_section_index = {
+            str(row.id): _section_key_for_heading(
+                list(getattr(row, "heading_path", ()) or ())
+            )
+            for row in evidence_rows
+            if str(getattr(row, "kind", "text")) != "asset"
+        }
 
         while True:
             if (
@@ -1796,6 +1816,8 @@ class BriefWorker:
                         patch,
                         failed_block_paths=failed_block_set,
                         source_evidence_ids=source_evidence_ids,
+                        coverage_plan=coverage_plan,
+                        evidence_section_index=evidence_section_index,
                     )
                 except BriefSchemaError as exc:
                     # patch 非法/越权 → 稳定错误码 + 安全 report，repair 预算已消耗。
@@ -2082,7 +2104,12 @@ class BriefWorker:
                 {
                     "block": block_name,
                     "decision": decision.decision,
-                    "reason": decision.reason,
+                    # Finding 4：受限 reason（已限长）再做回显检测，仅供 repair 临时使用，不持久化。
+                    "reason": redact_reason_echo(
+                        decision.reason,
+                        statement,
+                        [e.get("excerpt", "") for e in cited if e.get("excerpt")],
+                    ),
                     "evidence_ids": list(evidence_ids),
                 }
             )
@@ -2123,6 +2150,14 @@ class BriefWorker:
             brief, evidence_rows=evidence_rows, expected_sections=coverage_plan
         )
         evidence_index = {row.id: row for row in evidence_rows}
+        # coverage_missing issue 富化：每个 section 的文本 Evidence id 列表，供 repair prompt
+        # 告知模型该 section 可引用哪些 Evidence（Finding 1 upsert_section_guide 的输入）。
+        section_text_evidence: dict[str, list[str]] = {}
+        for row in evidence_rows:
+            if str(getattr(row, "kind", "text")) == "asset":
+                continue
+            sk = _section_key_for_heading(list(getattr(row, "heading_path", ()) or ()))
+            section_text_evidence.setdefault(sk, []).append(str(row.id))
 
         issues: list[ValidationIssue] = []
         invalid_block_paths: set[str] = set()
@@ -2134,25 +2169,27 @@ class BriefWorker:
                 # 区分 citation_missing（编造）与 citation_ownership（跨 Source/Snapshot）。
                 owner = self._repository.get_evidence(evidence_id)
                 if owner is None:
+                    code, summary = program_reason_for(ISSUE_CITATION_MISSING)
                     issues.append(
                         ValidationIssue(
                             block_path=block.block_path,
                             issue_type=ISSUE_CITATION_MISSING,
                             decision="",
-                            reason=f"引用了未知 Evidence {evidence_id}",
+                            reason=summary,
                             evidence_ids=[evidence_id],
+                            reason_code=code,
                         )
                     )
                 else:
+                    code, summary = program_reason_for(ISSUE_CITATION_OWNERSHIP)
                     issues.append(
                         ValidationIssue(
                             block_path=block.block_path,
                             issue_type=ISSUE_CITATION_OWNERSHIP,
                             decision="",
-                            reason=(
-                                f"Evidence {evidence_id} 不属于当前 Source/Snapshot"
-                            ),
+                            reason=summary,
                             evidence_ids=[evidence_id],
+                            reason_code=code,
                         )
                     )
 
@@ -2173,25 +2210,31 @@ class BriefWorker:
             # decision 来自 parse_support_decision（保证在允许集合）或 except 分支的
             # "unsupported"；supported 已跳过，剩余均能在 SUPPORT_DECISION_ISSUE_TYPE 命中。
             issue_type = SUPPORT_DECISION_ISSUE_TYPE[decision]
+            code, summary = program_reason_for(issue_type)
             issues.append(
                 ValidationIssue(
                     block_path=str(result.get("block", "")),
                     issue_type=issue_type,
                     decision=decision,
-                    reason=str(result.get("reason", "")),
+                    reason=summary,
                     evidence_ids=list(result.get("evidence_ids", [])),
+                    reason_code=code,
+                    # repair_hint：受限 + 回显检测后的模型原始 reason，仅 repair 临时使用，不落库。
+                    repair_hint=str(result.get("reason", "")),
                 )
             )
 
         for status in report.coverage_statuses:
             if status.status == "missing":
+                code, summary = program_reason_for(ISSUE_COVERAGE_MISSING)
                 issues.append(
                     ValidationIssue(
                         block_path=f"coverage[{status.section_key}]",
                         issue_type=ISSUE_COVERAGE_MISSING,
                         decision="",
-                        reason="含文本 Evidence 但未被任何 statement 实际引用",
-                        evidence_ids=[],
+                        reason=summary,
+                        evidence_ids=list(section_text_evidence.get(status.section_key, [])),
+                        reason_code=code,
                     )
                 )
 
@@ -2221,10 +2264,21 @@ class BriefWorker:
                 "block_path": issue.block_path,
                 "issue_type": issue.issue_type,
                 "decision": issue.decision,
+                "reason_code": issue.reason_code,
                 "reason": issue.reason,
                 "evidence_ids": list(issue.evidence_ids),
             }
             for issue in quality.issues
+        ]
+        # Finding 4：support_results 不持久化模型原始 reason（已 redact 的也不落库），
+        # 仅保留 block/decision/evidence_ids 供诊断定位。
+        support_results_payload = [
+            {
+                "block": r.get("block", ""),
+                "decision": r.get("decision", ""),
+                "evidence_ids": list(r.get("evidence_ids", [])),
+            }
+            for r in quality.support_results
         ]
         return json.dumps(
             {
@@ -2243,7 +2297,7 @@ class BriefWorker:
                     }
                     for status in quality.coverage_statuses
                 ],
-                "support_results": quality.support_results,
+                "support_results": support_results_payload,
                 "programmatic_issues": quality.programmatic_issues,
                 "repair_count": repair_count,
             },

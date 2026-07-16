@@ -31,6 +31,7 @@ def test_extractor_version_distinct_from_ki02():
         "md-ki04-1",
         "md-kbr02-1",
         "md-kbr03-1",
+        "md-kbr03-2",
     }
 
 

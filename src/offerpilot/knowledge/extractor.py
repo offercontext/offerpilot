@@ -26,7 +26,9 @@ from markdown_it.token import Token
 
 from offerpilot.knowledge.evidence_policy import (
     EVIDENCE_POLICY_VERSION,
+    ExtractionContext,
     evaluate_block,
+    select_adapters,
 )
 from offerpilot.knowledge.tokenizer import (
     TOKENIZER_VERSION,
@@ -40,7 +42,11 @@ from offerpilot.knowledge.tokenizer import (
 # Evidence eligibility policy（过滤作者卡/阅读数/导航/图片壳/Obsidian/Evernote 残片等元数据
 # 样板），Evidence 规则变化视为 Extraction 版本变化。旧 Snapshot（md-kbr02-1）与新版本不
 # 混用；测试期切换由 KBR-07 破坏性 reset 收尾。
-EXTRACTOR_VERSION = "md-kbr03-1"
+#
+# md-kbr03-2：平台/导出噪声规则收敛进按确定性来源信号选择的适配器（Obsidian / Evernote /
+# web-article），不再全局应用；普通 Markdown 中作者署名 / 阅读数 / 翻页导航不再误删
+# （Spec 第 35/58/71/72 行）。policy 规则变化同步体现为 evidence_policy_version=evidence-policy-2。
+EXTRACTOR_VERSION = "md-kbr03-2"
 PARSER_VERSION = "markdown-it-py-3"
 NORMALIZATION_VERSION = "nl-1"
 # Spec Implementation Decisions：最小 provenance 含“元数据提取版本”，确定性规则带版本号，
@@ -448,8 +454,18 @@ class MarkdownExtractor:
         *,
         encoding: str = "utf-8",
         detection_method: str = "strict-utf8",
+        origin_url: str = "",
+        filename: str = "",
     ) -> MarkdownExtraction:
         canonical, control_char_count = _normalize_text(raw_content)
+        # Spec KBR-03：按确定性来源信号选择平台适配器（结构语法 / 扩展名 / origin_url）。
+        # 适配器激活集合贯穿 _emit_block → _consume_* → evaluate_block，平台规则只在对应
+        # adapter 激活时执行；无信号时仅全局低歧义规则，不确定块默认保留为 Evidence。
+        ctx = ExtractionContext(
+            active_adapters=select_adapters(
+                canonical, origin_url=origin_url, filename=filename
+            )
+        )
 
         tokens = self._parser.parse(canonical)
         offsets = _line_offset_table(canonical)
@@ -489,6 +505,7 @@ class MarkdownExtractor:
                 navigator=navigator,
                 drafts=drafts,
                 filter_counts=filter_counts,
+                ctx=ctx,
             )
             if advanced <= 0:
                 index += 1
@@ -553,21 +570,22 @@ class MarkdownExtractor:
         navigator: "_StructureNavigator",
         drafts: list[EvidenceDraft],
         filter_counts: dict[str, int],
+        ctx: ExtractionContext,
     ) -> int:
         token = tokens[index]
         if token.type == "heading_open":
             return self._consume_heading(tokens, index, navigator)
         if token.type == "paragraph_open":
             return self._consume_paragraph(
-                tokens, index, canonical, offsets, navigator, drafts, filter_counts
+                tokens, index, canonical, offsets, navigator, drafts, filter_counts, ctx
             )
         if token.type == "bullet_list_open" or token.type == "ordered_list_open":
             return self._consume_list(
-                tokens, index, canonical, offsets, navigator, drafts, filter_counts
+                tokens, index, canonical, offsets, navigator, drafts, filter_counts, ctx
             )
         if token.type == "blockquote_open":
             return self._consume_blockquote(
-                tokens, index, canonical, offsets, navigator, drafts, filter_counts
+                tokens, index, canonical, offsets, navigator, drafts, filter_counts, ctx
             )
         if token.type == "table_open":
             return self._consume_table(tokens, index, canonical, offsets, navigator, drafts)
@@ -602,6 +620,7 @@ class MarkdownExtractor:
         navigator: "_StructureNavigator",
         drafts: list[EvidenceDraft],
         filter_counts: dict[str, int],
+        ctx: ExtractionContext,
     ) -> int:
         inline = tokens[index + 1] if index + 1 < len(tokens) else None
         if inline is None or not inline.content.strip():
@@ -612,8 +631,8 @@ class MarkdownExtractor:
         text = canonical[char_start:char_end]
         # Spec KBR-03：正文块 Evidence eligibility policy。规则只决定是否发射，不改 canonical
         # text 与 char range；被过滤块不产生 paragraph / image Evidence，相邻保留 Evidence 的
-        # line/char offsets 不受影响。
-        decision = evaluate_block(text)
+        # line/char offsets 不受影响。平台规则只在 ctx 激活的 adapter 内执行。
+        decision = evaluate_block(text, ctx)
         if not decision.emit:
             # evaluate_block 契约保证 emit=False 时 rule_id 非 None；``or "unknown"``
             # 是 Optional 类型的防御性兜底，运行时不会触发（list_item/blockquote 同）。
@@ -714,6 +733,7 @@ class MarkdownExtractor:
         navigator: "_StructureNavigator",
         drafts: list[EvidenceDraft],
         filter_counts: dict[str, int],
+        ctx: ExtractionContext,
     ) -> int:
         open_token = tokens[index]
         is_ordered = open_token.type == "ordered_list_open"
@@ -732,7 +752,7 @@ class MarkdownExtractor:
                 return consumed
             if current.type == "list_item_open":
                 item_consumed = self._consume_list_item(
-                    tokens, cursor, canonical, offsets, navigator, drafts, filter_counts
+                    tokens, cursor, canonical, offsets, navigator, drafts, filter_counts, ctx
                 )
                 cursor += item_consumed
                 consumed += item_consumed
@@ -752,6 +772,7 @@ class MarkdownExtractor:
         navigator: "_StructureNavigator",
         drafts: list[EvidenceDraft],
         filter_counts: dict[str, int],
+        ctx: ExtractionContext,
     ) -> int:
         open_token = tokens[index]
         inline_text, inline_token, consumed = _collect_list_item_inline(
@@ -763,7 +784,7 @@ class MarkdownExtractor:
             # Spec KBR-03：list item 也走 evidence policy（如 ``- 作者：张三`` byline）。
             # canonical slice 含 ``- `` list marker，因此用 marker-stripped 的 inline_text
             # 作为 policy 输入；被过滤项 push 空占位保持 push/pop 平衡，不污染嵌套子项。
-            decision = evaluate_block(inline_text)
+            decision = evaluate_block(inline_text, ctx)
             if decision.emit:
                 navigator.push_list_item(open_token.level, inline_text.strip())
                 line_start, line_end = _line_range_from_char(offsets, char_start, char_end)
@@ -805,7 +826,7 @@ class MarkdownExtractor:
                 return consumed + 1
             if current.type in {"bullet_list_open", "ordered_list_open"}:
                 nested = self._consume_list(
-                    tokens, cursor, canonical, offsets, navigator, drafts, filter_counts
+                    tokens, cursor, canonical, offsets, navigator, drafts, filter_counts, ctx
                 )
                 cursor += nested
                 consumed += nested
@@ -824,6 +845,7 @@ class MarkdownExtractor:
         navigator: "_StructureNavigator",
         drafts: list[EvidenceDraft],
         filter_counts: dict[str, int],
+        ctx: ExtractionContext,
     ) -> int:
         open_token = tokens[index]
         navigator.enter_blockquote()
@@ -856,7 +878,7 @@ class MarkdownExtractor:
             merged_end = parts[-1][1]
             text = canonical[merged_start:merged_end]
             # Spec KBR-03：blockquote 块也走 evidence policy；被过滤则整块不发射 Evidence。
-            decision = evaluate_block("\n".join(clean_parts))
+            decision = evaluate_block("\n".join(clean_parts), ctx)
             if not decision.emit:
                 rule_id = decision.rule_id or "unknown"
                 filter_counts[rule_id] = filter_counts.get(rule_id, 0) + 1
