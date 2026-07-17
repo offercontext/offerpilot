@@ -275,7 +275,7 @@ def knowledge_reset(
         f"删除 Source {summary.deleted_source_rows} 条，"
         f"清表 {len(summary.cleared_tables)} 张，"
         f"清理 knowledge 条目 {','.join(summary.cleared_dir_entries) or '(空)'}；"
-        f"非 Knowledge 保留验证通过，AI 配置未变，完成标记={summary.completion_marked}。"
+        f"完成标记={summary.completion_marked}。"
     )
 
 
