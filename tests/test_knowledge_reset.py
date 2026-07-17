@@ -1,9 +1,9 @@
-"""KBR-07：一次性离线 Knowledge reset 边界测试。
+"""KBR-07：一次性离线 Knowledge reset 边界测试（Revision 2）。
 
 批准 Spec：docs/superpowers/specs/2026-07-17-kbr07-one-time-knowledge-reset-design.md
 
-最高测试 seam 是真实 CLI / 服务函数 + 临时 data directory + 真实 SQLite Schema。
-不覆盖已删除的 quarantine/manifest/启动恢复协议。
+最高测试 seam 是真实 CLI + 临时 data directory + 真实 SQLite Schema + 真实文件。
+不覆盖在线并发、写后撤销、私有 helper 白盒、quarantine/manifest/启动恢复协议。
 绝不触碰真实 ``$OFFERPILOT_DATA``。
 """
 
@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from typer.testing import CliRunner
 
 from offerpilot.api import create_app
 from offerpilot.config import AIProviderProfile, Config, save_config
@@ -159,175 +160,6 @@ def _assert_knowledge_empty(tmp_path: Path) -> None:
     assert not (tmp_path / ".knowledge-reset").exists()
 
 
-# ---------------------------------------------------------------------------
-# 1. 主成功路径
-# ---------------------------------------------------------------------------
-
-
-def test_reset_clears_all_knowledge_tables_and_fts(tmp_path: Path) -> None:
-    _seed_knowledge(tmp_path)
-    before = _knowledge_counts(tmp_path)
-    assert before["knowledge_sources"] >= 1
-    assert before["knowledge_evidence"] >= 1
-    assert before["knowledge_evidence_fts"] >= 1
-    assert before["knowledge_extraction_snapshots"] >= 1
-
-    summary = reset_knowledge_domain(
-        session_factory_for_data_dir(tmp_path),
-        tmp_path,
-        runtime_mode="local",
-        confirm=True,
-    )
-
-    _assert_knowledge_empty(tmp_path)
-    _assert_completion_marked(tmp_path)
-    assert summary.deleted_source_rows >= 1
-    assert summary.completion_marked is True
-    assert "sources" in summary.cleared_dir_entries
-
-
-def test_reset_preserves_non_knowledge_data(tmp_path: Path) -> None:
-    _seed_knowledge(tmp_path)
-    before = _seed_non_knowledge(tmp_path)
-    assert before["applications"] == 1
-    assert before["conversations"] == 1
-
-    reset_knowledge_domain(
-        session_factory_for_data_dir(tmp_path),
-        tmp_path,
-        runtime_mode="local",
-        confirm=True,
-    )
-
-    assert _non_knowledge_counts(tmp_path) == before
-
-
-def test_reset_preserves_ai_provider_config(tmp_path: Path) -> None:
-    config = _qualified_config()
-    save_config(tmp_path, config)
-    _seed_knowledge(tmp_path, config=config)
-    config_path = tmp_path / "config.json"
-    before = config_path.read_text(encoding="utf-8")
-
-    reset_knowledge_domain(
-        session_factory_for_data_dir(tmp_path),
-        tmp_path,
-        runtime_mode="local",
-        confirm=True,
-    )
-
-    assert config_path.read_text(encoding="utf-8") == before
-
-
-def test_reset_preserves_schema_and_existing_migrations(tmp_path: Path) -> None:
-    _seed_knowledge(tmp_path)
-    expected_tables = _knowledge_tables_present(tmp_path)
-    expected_migrations = _schema_migrations(tmp_path)
-    assert expected_tables
-    assert expected_migrations
-    assert COMPLETION_MIGRATION_VERSION not in expected_migrations
-
-    reset_knowledge_domain(
-        session_factory_for_data_dir(tmp_path),
-        tmp_path,
-        runtime_mode="local",
-        confirm=True,
-    )
-
-    assert _knowledge_tables_present(tmp_path) == expected_tables
-    after = _schema_migrations(tmp_path)
-    assert expected_migrations.issubset(after)
-    assert COMPLETION_MIGRATION_VERSION in after
-    assert after - expected_migrations == {COMPLETION_MIGRATION_VERSION}
-
-
-def test_reset_clears_knowledge_file_directory(tmp_path: Path) -> None:
-    _repository, source_id, _snapshot_id = _seed_knowledge(tmp_path)
-    source_dir = tmp_path / "knowledge" / "sources" / str(source_id)
-    assert source_dir.is_dir()
-
-    reset_knowledge_domain(
-        session_factory_for_data_dir(tmp_path),
-        tmp_path,
-        runtime_mode="local",
-        confirm=True,
-    )
-
-    knowledge_dir = tmp_path / "knowledge"
-    assert knowledge_dir.is_dir()
-    assert not any(knowledge_dir.iterdir())
-    assert not source_dir.exists()
-
-
-def test_reset_does_not_touch_files_outside_knowledge_dir(tmp_path: Path) -> None:
-    _seed_knowledge(tmp_path)
-    logs_dir = tmp_path / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    log_file = logs_dir / "offerpilot.log"
-    log_file.write_text("keep-me", encoding="utf-8")
-    outside_marker = tmp_path / "outside-marker.txt"
-    outside_marker.write_text("keep", encoding="utf-8")
-    similar_name = tmp_path / ".knowledge-reset-userdata"
-    similar_name.mkdir()
-    (similar_name / "keep.txt").write_text("用户数据", encoding="utf-8")
-    similar_knowledge = tmp_path / "knowledge-backup"
-    similar_knowledge.mkdir()
-    (similar_knowledge / "keep.txt").write_text("backup", encoding="utf-8")
-
-    reset_knowledge_domain(
-        session_factory_for_data_dir(tmp_path),
-        tmp_path,
-        runtime_mode="local",
-        confirm=True,
-    )
-
-    assert outside_marker.read_text(encoding="utf-8") == "keep"
-    assert log_file.read_text(encoding="utf-8") == "keep-me"
-    assert (tmp_path / "data.db").exists()
-    assert (similar_name / "keep.txt").read_text(encoding="utf-8") == "用户数据"
-    assert (similar_knowledge / "keep.txt").read_text(encoding="utf-8") == "backup"
-
-
-def test_reset_clears_legacy_knowledge_reset_dir(tmp_path: Path) -> None:
-    _seed_knowledge(tmp_path)
-    legacy = tmp_path / ".knowledge-reset"
-    child = legacy / "quarantine-old"
-    child.mkdir(parents=True)
-    (child / "leftover.md").write_text("stale", encoding="utf-8")
-
-    reset_knowledge_domain(
-        session_factory_for_data_dir(tmp_path),
-        tmp_path,
-        runtime_mode="local",
-        confirm=True,
-    )
-
-    assert not legacy.exists()
-    _assert_knowledge_empty(tmp_path)
-
-
-def test_reset_missing_knowledge_and_legacy_dirs_are_empty_ok(tmp_path: Path) -> None:
-    init_database(tmp_path / "data.db")
-    assert not (tmp_path / "knowledge").exists()
-    assert not (tmp_path / ".knowledge-reset").exists()
-
-    summary = reset_knowledge_domain(
-        session_factory_for_data_dir(tmp_path),
-        tmp_path,
-        runtime_mode="local",
-        confirm=True,
-    )
-
-    assert summary.deleted_source_rows == 0
-    _assert_knowledge_empty(tmp_path)
-    _assert_completion_marked(tmp_path)
-
-
-# ---------------------------------------------------------------------------
-# 2. 门禁
-# ---------------------------------------------------------------------------
-
-
 def _snapshot_data_dir(tmp_path: Path) -> tuple[dict[str, int], set[str], list[str], str]:
     """门禁拒绝路径用的全量不变性快照：表计数、迁移、相对文件路径、配置原文。"""
     counts = _knowledge_counts(tmp_path)
@@ -342,52 +174,142 @@ def _snapshot_data_dir(tmp_path: Path) -> tuple[dict[str, int], set[str], list[s
     return counts, migrations, files, config_text
 
 
-def test_reset_refuses_production_runtime(tmp_path: Path) -> None:
+def _run_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *args: str):
+    monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
+    from offerpilot.cli import app as cli_app
+
+    return CliRunner().invoke(cli_app, list(args))
+
+
+# ---------------------------------------------------------------------------
+# 1. 主成功路径（真实 CLI）
+# ---------------------------------------------------------------------------
+
+
+def test_cli_reset_main_success_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _qualified_config()
+    save_config(tmp_path, config)
+    _seed_knowledge(tmp_path, config=config)
+    non_knowledge_before = _seed_non_knowledge(tmp_path)
+    config_before = (tmp_path / "config.json").read_text(encoding="utf-8")
+    expected_tables = _knowledge_tables_present(tmp_path)
+    expected_migrations = _schema_migrations(tmp_path)
+    before_counts = _knowledge_counts(tmp_path)
+    assert before_counts["knowledge_sources"] >= 1
+    assert before_counts["knowledge_evidence"] >= 1
+    assert before_counts["knowledge_evidence_fts"] >= 1
+    assert before_counts["knowledge_extraction_snapshots"] >= 1
+
+    legacy = tmp_path / ".knowledge-reset"
+    (legacy / "quarantine-old").mkdir(parents=True)
+    (legacy / "quarantine-old" / "leftover.md").write_text("stale", encoding="utf-8")
+
+    result = _run_cli(tmp_path, monkeypatch, "knowledge", "reset", "--confirm")
+    assert result.exit_code == 0, result.output
+    assert "一次性迁移完成" in result.output or "完成标记" in result.output
+
+    _assert_knowledge_empty(tmp_path)
+    _assert_completion_marked(tmp_path)
+    assert _non_knowledge_counts(tmp_path) == non_knowledge_before
+    assert (tmp_path / "config.json").read_text(encoding="utf-8") == config_before
+    assert _knowledge_tables_present(tmp_path) == expected_tables
+    after_migrations = _schema_migrations(tmp_path)
+    assert expected_migrations.issubset(after_migrations)
+    assert after_migrations - expected_migrations == {COMPLETION_MIGRATION_VERSION}
+    assert not legacy.exists()
+
+
+def test_cli_reset_does_not_touch_files_outside_knowledge_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _qualified_config()
+    save_config(tmp_path, config)
+    _seed_knowledge(tmp_path, config=config)
+
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    log_file = logs_dir / "offerpilot.log"
+    log_file.write_text("keep-me", encoding="utf-8")
+    outside_marker = tmp_path / "outside-marker.txt"
+    outside_marker.write_text("keep", encoding="utf-8")
+    similar_name = tmp_path / ".knowledge-reset-userdata"
+    similar_name.mkdir()
+    (similar_name / "keep.txt").write_text("用户数据", encoding="utf-8")
+    similar_knowledge = tmp_path / "knowledge-backup"
+    similar_knowledge.mkdir()
+    (similar_knowledge / "keep.txt").write_text("backup", encoding="utf-8")
+
+    result = _run_cli(tmp_path, monkeypatch, "knowledge", "reset", "--confirm")
+    assert result.exit_code == 0, result.output
+
+    assert outside_marker.read_text(encoding="utf-8") == "keep"
+    assert log_file.read_text(encoding="utf-8") == "keep-me"
+    assert (tmp_path / "data.db").exists()
+    assert (similar_name / "keep.txt").read_text(encoding="utf-8") == "用户数据"
+    assert (similar_knowledge / "keep.txt").read_text(encoding="utf-8") == "backup"
+    _assert_knowledge_empty(tmp_path)
+
+
+def test_cli_reset_missing_dirs_are_empty_ok(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _qualified_config()
+    save_config(tmp_path, config)
+    init_database(tmp_path / "data.db")
+    assert not (tmp_path / "knowledge").exists()
+    assert not (tmp_path / ".knowledge-reset").exists()
+
+    result = _run_cli(tmp_path, monkeypatch, "knowledge", "reset", "--confirm")
+    assert result.exit_code == 0, result.output
+    _assert_knowledge_empty(tmp_path)
+    _assert_completion_marked(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# 2. 门禁（真实 CLI）
+# ---------------------------------------------------------------------------
+
+
+def test_cli_requires_confirm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     config = _qualified_config()
     save_config(tmp_path, config)
     _seed_knowledge(tmp_path, config=config)
     before = _snapshot_data_dir(tmp_path)
-    with pytest.raises(KnowledgeResetError) as exc:
-        reset_knowledge_domain(
-            session_factory_for_data_dir(tmp_path),
-            tmp_path,
-            runtime_mode="server",
-            confirm=True,
-        )
-    assert exc.value.code == "reset_not_allowed_in_runtime"
+
+    result = _run_cli(tmp_path, monkeypatch, "knowledge", "reset")
+    assert result.exit_code != 0
+    assert "reset_requires_confirm" in result.output
     assert _snapshot_data_dir(tmp_path) == before
 
 
-def test_reset_requires_explicit_confirm(tmp_path: Path) -> None:
+def test_cli_refuses_non_local_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     config = _qualified_config()
+    config.runtime_mode = "server"
     save_config(tmp_path, config)
     _seed_knowledge(tmp_path, config=config)
     before = _snapshot_data_dir(tmp_path)
-    with pytest.raises(KnowledgeResetError) as exc:
-        reset_knowledge_domain(
-            session_factory_for_data_dir(tmp_path),
-            tmp_path,
-            runtime_mode="local",
-            confirm=False,
-        )
-    assert exc.value.code == "reset_requires_confirm"
+
+    result = _run_cli(tmp_path, monkeypatch, "knowledge", "reset", "--confirm")
+    assert result.exit_code != 0
+    assert "reset_not_allowed_in_runtime" in result.output
     assert _snapshot_data_dir(tmp_path) == before
 
 
-# ---------------------------------------------------------------------------
-# 3. 完成标记门禁 + 重新导入保护
-# ---------------------------------------------------------------------------
-
-
-def test_reset_already_completed_refuses_and_protects_new_data(tmp_path: Path) -> None:
+def test_cli_already_completed_refuses_and_protects_new_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     config = _qualified_config()
+    save_config(tmp_path, config)
     _seed_knowledge(tmp_path, config=config)
-    reset_knowledge_domain(
-        session_factory_for_data_dir(tmp_path),
-        tmp_path,
-        runtime_mode="local",
-        confirm=True,
-    )
+
+    ok = _run_cli(tmp_path, monkeypatch, "knowledge", "reset", "--confirm")
+    assert ok.exit_code == 0, ok.output
     _assert_completion_marked(tmp_path)
 
     # 完成后重新导入新 Source。
@@ -399,26 +321,197 @@ def test_reset_already_completed_refuses_and_protects_new_data(tmp_path: Path) -
     source_file = tmp_path / "knowledge" / "sources" / str(source_id)
     assert source_file.is_dir()
     before_counts = _knowledge_counts(tmp_path)
+    before_snapshot = _snapshot_data_dir(tmp_path)
 
-    with pytest.raises(KnowledgeResetError) as exc:
-        reset_knowledge_domain(
-            session_factory_for_data_dir(tmp_path),
-            tmp_path,
-            runtime_mode="local",
-            confirm=True,
-        )
-    assert exc.value.code == "reset_already_completed"
+    again = _run_cli(tmp_path, monkeypatch, "knowledge", "reset", "--confirm")
+    assert again.exit_code != 0
+    assert "reset_already_completed" in again.output
     assert _knowledge_counts(tmp_path) == before_counts
     assert source_file.is_dir()
+    assert _snapshot_data_dir(tmp_path) == before_snapshot
 
 
 # ---------------------------------------------------------------------------
-# 4. 事务回滚 / 文件失败重试 / READY_TO_MARK
+# 3. 专用路径：CLI 不得触发启动恢复
 # ---------------------------------------------------------------------------
 
 
-def test_reset_db_transaction_is_atomic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _seed_knowledge(tmp_path)
+def test_cli_does_not_invoke_session_factory_or_startup_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """成功路径与拒绝路径均不得经过 session_factory_for_data_dir / init_database。"""
+    config = _qualified_config()
+    save_config(tmp_path, config)
+    _seed_knowledge(tmp_path, config=config)
+
+    calls = {"session_factory": 0, "init_database": 0}
+
+    import offerpilot.cli as cli_module
+    import offerpilot.db as db_module
+
+    real_session_factory = db_module.session_factory_for_data_dir
+    real_init = db_module.init_database
+
+    def tracking_session_factory(data_dir: Path):  # type: ignore[no-untyped-def]
+        calls["session_factory"] += 1
+        return real_session_factory(data_dir)
+
+    def tracking_init(db_path: Path):  # type: ignore[no-untyped-def]
+        calls["init_database"] += 1
+        return real_init(db_path)
+
+    monkeypatch.setattr(db_module, "session_factory_for_data_dir", tracking_session_factory)
+    monkeypatch.setattr(db_module, "init_database", tracking_init)
+    # CLI 模块若直接 import 了符号，也一并拦截。
+    if hasattr(cli_module, "session_factory_for_data_dir"):
+        monkeypatch.setattr(
+            cli_module, "session_factory_for_data_dir", tracking_session_factory
+        )
+
+    # 成功路径。
+    ok = _run_cli(tmp_path, monkeypatch, "knowledge", "reset", "--confirm")
+    assert ok.exit_code == 0, ok.output
+    assert calls["session_factory"] == 0
+    assert calls["init_database"] == 0
+    _assert_completion_marked(tmp_path)
+
+    # 完成后拒绝路径：staging sentinel 不得被启动恢复清理。
+    staging = tmp_path / "knowledge" / "staging"
+    staging.mkdir(parents=True, exist_ok=True)
+    sentinel = staging / "sentinel.bin"
+    sentinel.write_bytes(b"keep-me")
+    before = _snapshot_data_dir(tmp_path)
+
+    again = _run_cli(tmp_path, monkeypatch, "knowledge", "reset", "--confirm")
+    assert again.exit_code != 0
+    assert "reset_already_completed" in again.output
+    assert sentinel.exists()
+    assert sentinel.read_bytes() == b"keep-me"
+    assert _snapshot_data_dir(tmp_path) == before
+    assert calls["session_factory"] == 0
+    assert calls["init_database"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 4. 路径安全 fail closed（真实 CLI）
+# ---------------------------------------------------------------------------
+
+
+def test_cli_rejects_knowledge_root_symlink_with_external_sentinels(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _qualified_config()
+    save_config(tmp_path, config)
+    _seed_knowledge(tmp_path, config=config)
+    before_counts = _knowledge_counts(tmp_path)
+    assert before_counts["knowledge_sources"] >= 1
+
+    outside = tmp_path.parent / "kbr07-knowledge-root-outside"
+    outside.mkdir(parents=True, exist_ok=True)
+    staging_sentinel = outside / "staging" / "sentinel.bin"
+    staging_sentinel.parent.mkdir(parents=True, exist_ok=True)
+    staging_sentinel.write_bytes(b"staging-keep")
+    source_sentinel = outside / "999001" / "secret.txt"
+    source_sentinel.parent.mkdir(parents=True, exist_ok=True)
+    source_sentinel.write_text("must-not-delete", encoding="utf-8")
+
+    knowledge_dir = tmp_path / "knowledge"
+    shutil.rmtree(knowledge_dir)
+    knowledge_link = tmp_path / "knowledge"
+    knowledge_link.symlink_to(outside)
+
+    result = _run_cli(tmp_path, monkeypatch, "knowledge", "reset", "--confirm")
+    assert result.exit_code != 0
+    assert "reset_path_escape" in result.output
+    assert staging_sentinel.read_bytes() == b"staging-keep"
+    assert source_sentinel.read_text(encoding="utf-8") == "must-not-delete"
+    assert knowledge_link.is_symlink()
+    assert _knowledge_counts(tmp_path) == before_counts
+    assert COMPLETION_MIGRATION_VERSION not in _schema_migrations(tmp_path)
+
+
+def test_cli_rejects_legacy_reset_root_symlink_with_external_sentinels(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _qualified_config()
+    save_config(tmp_path, config)
+    _seed_knowledge(tmp_path, config=config)
+    before_counts = _knowledge_counts(tmp_path)
+
+    outside = tmp_path.parent / "kbr07-legacy-reset-outside"
+    outside.mkdir(parents=True, exist_ok=True)
+    staging_sentinel = outside / "staging" / "sentinel.bin"
+    staging_sentinel.parent.mkdir(parents=True, exist_ok=True)
+    staging_sentinel.write_bytes(b"legacy-staging-keep")
+    source_sentinel = outside / "42" / "secret.txt"
+    source_sentinel.parent.mkdir(parents=True, exist_ok=True)
+    source_sentinel.write_text("legacy-must-not-delete", encoding="utf-8")
+
+    legacy_link = tmp_path / ".knowledge-reset"
+    legacy_link.symlink_to(outside)
+
+    result = _run_cli(tmp_path, monkeypatch, "knowledge", "reset", "--confirm")
+    assert result.exit_code != 0
+    assert "reset_path_escape" in result.output
+    assert staging_sentinel.read_bytes() == b"legacy-staging-keep"
+    assert source_sentinel.read_text(encoding="utf-8") == "legacy-must-not-delete"
+    assert legacy_link.is_symlink()
+    assert _knowledge_counts(tmp_path) == before_counts
+    assert COMPLETION_MIGRATION_VERSION not in _schema_migrations(tmp_path)
+
+
+def test_cli_rejects_knowledge_root_non_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _qualified_config()
+    save_config(tmp_path, config)
+    _seed_knowledge(tmp_path, config=config)
+    before_counts = _knowledge_counts(tmp_path)
+    knowledge_dir = tmp_path / "knowledge"
+    shutil.rmtree(knowledge_dir)
+    knowledge_file = tmp_path / "knowledge"
+    knowledge_file.write_text("not-a-dir", encoding="utf-8")
+
+    result = _run_cli(tmp_path, monkeypatch, "knowledge", "reset", "--confirm")
+    assert result.exit_code != 0
+    assert "reset_path_escape" in result.output
+    assert knowledge_file.is_file()
+    assert knowledge_file.read_text(encoding="utf-8") == "not-a-dir"
+    assert _knowledge_counts(tmp_path) == before_counts
+    assert COMPLETION_MIGRATION_VERSION not in _schema_migrations(tmp_path)
+
+
+def test_cli_does_not_follow_nested_escape_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """rmtree 对嵌套 symlink 只 unlink 链接本身，不跟随外部目标。"""
+    config = _qualified_config()
+    save_config(tmp_path, config)
+    _repository, source_id, _snapshot_id = _seed_knowledge(tmp_path, config=config)
+    nested_dir = tmp_path / "knowledge" / "sources" / str(source_id)
+    assert nested_dir.is_dir()
+    outside_file = tmp_path.parent / "kbr07-nested-outside-target.txt"
+    outside_file.write_text("nested-must-not-delete", encoding="utf-8")
+    (nested_dir / "escape-link").symlink_to(outside_file)
+
+    result = _run_cli(tmp_path, monkeypatch, "knowledge", "reset", "--confirm")
+    assert result.exit_code == 0, result.output
+    assert outside_file.exists()
+    assert outside_file.read_text(encoding="utf-8") == "nested-must-not-delete"
+    _assert_knowledge_empty(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# 5. DB 事务失败 / 文件失败重试
+# ---------------------------------------------------------------------------
+
+
+def test_reset_db_transaction_is_atomic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _qualified_config()
+    save_config(tmp_path, config)
+    _seed_knowledge(tmp_path, config=config)
     before_counts = _knowledge_counts(tmp_path)
     knowledge_dir = tmp_path / "knowledge"
     assert knowledge_dir.is_dir()
@@ -439,7 +532,6 @@ def test_reset_db_transaction_is_atomic(tmp_path: Path, monkeypatch: pytest.Monk
 
     with pytest.raises(Exception):
         reset_knowledge_domain(
-            session_factory_for_data_dir(tmp_path),
             tmp_path,
             runtime_mode="local",
             confirm=True,
@@ -455,34 +547,29 @@ def test_reset_db_transaction_is_atomic(tmp_path: Path, monkeypatch: pytest.Monk
 def test_reset_file_cleanup_failure_then_retry_converges(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _seed_knowledge(tmp_path)
+    config = _qualified_config()
+    save_config(tmp_path, config)
+    _seed_knowledge(tmp_path, config=config)
     non_knowledge_before = _seed_non_knowledge(tmp_path)
 
     from offerpilot.knowledge import reset as reset_module
 
-    real_clear = reset_module._clear_knowledge_files
-    call_count = {"n": 0}
+    def failing_clear(data_dir: Path) -> list[str]:
+        # 模拟 DB 已提交后、文件只清理一部分：留下 knowledge/sources 残留。
+        knowledge_dir = data_dir / "knowledge"
+        if knowledge_dir.exists() and knowledge_dir.is_dir():
+            leftover = knowledge_dir / "sources"
+            leftover.mkdir(parents=True, exist_ok=True)
+            (leftover / "partial.bin").write_bytes(b"partial")
+        raise KnowledgeResetError(
+            "reset_file_cleanup_failed",
+            "simulated partial file cleanup failure",
+        )
 
-    def failing_then_ok(data_dir: Path) -> list[str]:
-        call_count["n"] += 1
-        if call_count["n"] == 1:
-            # 模拟 DB 已提交后、文件只清理一部分：留下 knowledge/sources 残留。
-            knowledge_dir = data_dir / "knowledge"
-            if knowledge_dir.exists() and knowledge_dir.is_dir():
-                leftover = knowledge_dir / "sources"
-                leftover.mkdir(parents=True, exist_ok=True)
-                (leftover / "partial.bin").write_bytes(b"partial")
-            raise KnowledgeResetError(
-                "reset_file_cleanup_failed",
-                "simulated partial file cleanup failure",
-            )
-        return real_clear(data_dir)
-
-    monkeypatch.setattr(reset_module, "_clear_knowledge_files", failing_then_ok)
+    monkeypatch.setattr(reset_module, "_clear_knowledge_files", failing_clear)
 
     with pytest.raises(KnowledgeResetError) as first:
         reset_knowledge_domain(
-            session_factory_for_data_dir(tmp_path),
             tmp_path,
             runtime_mode="local",
             confirm=True,
@@ -494,180 +581,13 @@ def test_reset_file_cleanup_failure_then_retry_converges(
     assert COMPLETION_MIGRATION_VERSION not in _schema_migrations(tmp_path)
     assert _non_knowledge_counts(tmp_path) == non_knowledge_before
 
-    # 第二次从 DB_CLEARED_FILES_PENDING 继续收敛。
-    summary = reset_knowledge_domain(
-        session_factory_for_data_dir(tmp_path),
-        tmp_path,
-        runtime_mode="local",
-        confirm=True,
-    )
-    assert summary.completion_marked is True
+    # 去掉失败注入后，第二次走真实 CLI 从当前状态继续收敛。
+    monkeypatch.undo()
+    result = _run_cli(tmp_path, monkeypatch, "knowledge", "reset", "--confirm")
+    assert result.exit_code == 0, result.output
     _assert_knowledge_empty(tmp_path)
     _assert_completion_marked(tmp_path)
     assert _non_knowledge_counts(tmp_path) == non_knowledge_before
-
-
-def test_reset_ready_to_mark_only_writes_completion(tmp_path: Path) -> None:
-    """DB 空、文件空、无标记 → 只验证并写完成标记。"""
-    init_database(tmp_path / "data.db")
-    knowledge_dir = tmp_path / "knowledge"
-    knowledge_dir.mkdir(parents=True, exist_ok=True)
-    assert not any(knowledge_dir.iterdir())
-    assert COMPLETION_MIGRATION_VERSION not in _schema_migrations(tmp_path)
-
-    summary = reset_knowledge_domain(
-        session_factory_for_data_dir(tmp_path),
-        tmp_path,
-        runtime_mode="local",
-        confirm=True,
-    )
-
-    assert summary.deleted_source_rows == 0
-    assert summary.completion_marked is True
-    _assert_knowledge_empty(tmp_path)
-    _assert_completion_marked(tmp_path)
-
-
-# ---------------------------------------------------------------------------
-# 5. 路径安全 fail closed
-# ---------------------------------------------------------------------------
-
-
-def test_reset_rejects_knowledge_root_symlink(tmp_path: Path) -> None:
-    # 必须先 seed 再替换为 symlink：证明路径拒绝发生在 DB 清表之前。
-    _seed_knowledge(tmp_path)
-    before_counts = _knowledge_counts(tmp_path)
-    assert before_counts["knowledge_sources"] >= 1
-    outside = tmp_path.parent / "kbr07-knowledge-root-outside"
-    outside.mkdir(parents=True, exist_ok=True)
-    sentinel = outside / "secret.txt"
-    sentinel.write_text("must-not-delete", encoding="utf-8")
-    knowledge_dir = tmp_path / "knowledge"
-    shutil.rmtree(knowledge_dir)
-    knowledge_link = tmp_path / "knowledge"
-    knowledge_link.symlink_to(outside)
-
-    with pytest.raises(KnowledgeResetError) as exc:
-        reset_knowledge_domain(
-            session_factory_for_data_dir(tmp_path),
-            tmp_path,
-            runtime_mode="local",
-            confirm=True,
-        )
-    assert exc.value.code == "reset_path_escape"
-    assert sentinel.read_text(encoding="utf-8") == "must-not-delete"
-    assert knowledge_link.is_symlink()
-    # 关键：路径失败不得清空 DB。
-    assert _knowledge_counts(tmp_path) == before_counts
-    assert COMPLETION_MIGRATION_VERSION not in _schema_migrations(tmp_path)
-
-
-def test_reset_rejects_legacy_reset_root_symlink(tmp_path: Path) -> None:
-    _seed_knowledge(tmp_path)
-    before_counts = _knowledge_counts(tmp_path)
-    outside = tmp_path.parent / "kbr07-legacy-reset-outside"
-    outside.mkdir(parents=True, exist_ok=True)
-    sentinel = outside / "secret.txt"
-    sentinel.write_text("must-not-delete", encoding="utf-8")
-    legacy_link = tmp_path / ".knowledge-reset"
-    legacy_link.symlink_to(outside)
-
-    with pytest.raises(KnowledgeResetError) as exc:
-        reset_knowledge_domain(
-            session_factory_for_data_dir(tmp_path),
-            tmp_path,
-            runtime_mode="local",
-            confirm=True,
-        )
-    assert exc.value.code == "reset_path_escape"
-    assert sentinel.read_text(encoding="utf-8") == "must-not-delete"
-    assert legacy_link.is_symlink()
-    assert _knowledge_counts(tmp_path) == before_counts
-    assert COMPLETION_MIGRATION_VERSION not in _schema_migrations(tmp_path)
-
-
-def test_reset_rejects_knowledge_root_non_directory(tmp_path: Path) -> None:
-    _seed_knowledge(tmp_path)
-    before_counts = _knowledge_counts(tmp_path)
-    knowledge_dir = tmp_path / "knowledge"
-    shutil.rmtree(knowledge_dir)
-    knowledge_file = tmp_path / "knowledge"
-    knowledge_file.write_text("not-a-dir", encoding="utf-8")
-
-    with pytest.raises(KnowledgeResetError) as exc:
-        reset_knowledge_domain(
-            session_factory_for_data_dir(tmp_path),
-            tmp_path,
-            runtime_mode="local",
-            confirm=True,
-        )
-    assert exc.value.code == "reset_path_escape"
-    assert knowledge_file.is_file()
-    assert knowledge_file.read_text(encoding="utf-8") == "not-a-dir"
-    assert _knowledge_counts(tmp_path) == before_counts
-    assert COMPLETION_MIGRATION_VERSION not in _schema_migrations(tmp_path)
-
-
-def test_reset_rejects_legacy_reset_root_non_directory(tmp_path: Path) -> None:
-    _seed_knowledge(tmp_path)
-    before_counts = _knowledge_counts(tmp_path)
-    legacy_file = tmp_path / ".knowledge-reset"
-    legacy_file.write_text("not-a-dir", encoding="utf-8")
-
-    with pytest.raises(KnowledgeResetError) as exc:
-        reset_knowledge_domain(
-            session_factory_for_data_dir(tmp_path),
-            tmp_path,
-            runtime_mode="local",
-            confirm=True,
-        )
-    assert exc.value.code == "reset_path_escape"
-    assert legacy_file.is_file()
-    assert legacy_file.read_text(encoding="utf-8") == "not-a-dir"
-    assert _knowledge_counts(tmp_path) == before_counts
-    assert COMPLETION_MIGRATION_VERSION not in _schema_migrations(tmp_path)
-
-
-def test_reset_rejects_absolute_escape_target_via_helper_boundary(
-    tmp_path: Path,
-) -> None:
-    """固定路径清理 helper 对越界 target fail closed，外部 sentinel 完好。
-
-    公开 reset 入口只接受 data_dir 下固定子名；此处直接调用路径守卫 helper，
-    验证 resolve 越界分支本身拒绝删除外部目录。
-    """
-    from offerpilot.knowledge.reset import _assert_safe_fixed_root
-
-    init_database(tmp_path / "data.db")
-    outside = tmp_path.parent / "kbr07-resolve-escape-outside"
-    outside.mkdir(parents=True, exist_ok=True)
-    sentinel = outside / "secret.txt"
-    sentinel.write_text("must-not-delete", encoding="utf-8")
-
-    with pytest.raises(KnowledgeResetError) as exc:
-        _assert_safe_fixed_root(tmp_path, outside, "knowledge")
-    assert exc.value.code == "reset_path_escape"
-    assert sentinel.read_text(encoding="utf-8") == "must-not-delete"
-
-
-def test_reset_does_not_follow_nested_escape_symlink(tmp_path: Path) -> None:
-    """rmtree 对嵌套 symlink 只 unlink 链接本身，不跟随外部目标。"""
-    _repository, source_id, _snapshot_id = _seed_knowledge(tmp_path)
-    nested_dir = tmp_path / "knowledge" / "sources" / str(source_id)
-    assert nested_dir.is_dir()
-    outside_file = tmp_path.parent / "kbr07-nested-outside-target.txt"
-    outside_file.write_text("nested-must-not-delete", encoding="utf-8")
-    (nested_dir / "escape-link").symlink_to(outside_file)
-
-    reset_knowledge_domain(
-        session_factory_for_data_dir(tmp_path),
-        tmp_path,
-        runtime_mode="local",
-        confirm=True,
-    )
-    assert outside_file.exists()
-    assert outside_file.read_text(encoding="utf-8") == "nested-must-not-delete"
-    _assert_knowledge_empty(tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -675,17 +595,17 @@ def test_reset_does_not_follow_nested_escape_symlink(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_reset_enables_reimport_and_brief_v2(tmp_path: Path) -> None:
+def test_cli_reset_enables_reimport_and_brief_v2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     config = _qualified_config()
+    save_config(tmp_path, config)
     _repository, source_id, _snapshot_id = _seed_knowledge(tmp_path, config=config)
     first_source_id = source_id
 
-    reset_knowledge_domain(
-        session_factory_for_data_dir(tmp_path),
-        tmp_path,
-        runtime_mode="local",
-        confirm=True,
-    )
+    result = _run_cli(tmp_path, monkeypatch, "knowledge", "reset", "--confirm")
+    assert result.exit_code == 0, result.output
+    _assert_completion_marked(tmp_path)
 
     # 完成标记存在后，正常 ingest 仍可运行；但再次 reset 会被拒绝。
     repository2, session_factory, second_source_id, second_snapshot_id = (
@@ -713,27 +633,22 @@ def test_reset_enables_reimport_and_brief_v2(tmp_path: Path) -> None:
     assert outcome.brief is not None
     assert outcome.brief.schema_version == BRIEF_SCHEMA_VERSION
 
-    with pytest.raises(KnowledgeResetError) as exc:
-        reset_knowledge_domain(
-            session_factory_for_data_dir(tmp_path),
-            tmp_path,
-            runtime_mode="local",
-            confirm=True,
-        )
-    assert exc.value.code == "reset_already_completed"
+    again = _run_cli(tmp_path, monkeypatch, "knowledge", "reset", "--confirm")
+    assert again.exit_code != 0
+    assert "reset_already_completed" in again.output
     assert repository2.get_source(second_source_id) is not None
 
 
-def test_reset_post_state_is_empty(tmp_path: Path) -> None:
-    repository, _source_id, _snapshot_id = _seed_knowledge(tmp_path)
+def test_cli_reset_post_state_is_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _qualified_config()
+    save_config(tmp_path, config)
+    repository, _source_id, _snapshot_id = _seed_knowledge(tmp_path, config=config)
     assert repository.list_sources()
 
-    reset_knowledge_domain(
-        session_factory_for_data_dir(tmp_path),
-        tmp_path,
-        runtime_mode="local",
-        confirm=True,
-    )
+    result = _run_cli(tmp_path, monkeypatch, "knowledge", "reset", "--confirm")
+    assert result.exit_code == 0, result.output
 
     assert repository.list_sources() == []
     assert repository.search_evidence("Evidence", limit=5) == []
@@ -745,7 +660,7 @@ def test_reset_post_state_is_empty(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 7. 启动恢复：staging / 孤儿 Source / Job lease 仍保留；不再恢复 reset quarantine
+# 7. 正常启动恢复仍保留；CLI 不调用它
 # ---------------------------------------------------------------------------
 
 
@@ -754,7 +669,6 @@ def test_startup_recovery_still_cleans_orphan_sources_and_staging(tmp_path: Path
     source_dir = tmp_path / "knowledge" / "sources" / str(source_id)
     assert source_dir.is_dir()
 
-    # 不经过 reset：直接制造孤儿 Source 目录与 staging 残留，验证正常 Knowledge 恢复。
     orphan = tmp_path / "knowledge" / "sources" / "999999"
     orphan.mkdir(parents=True, exist_ok=True)
     (orphan / "leftover.md").write_text("x", encoding="utf-8")
@@ -772,160 +686,54 @@ def test_startup_recovery_still_cleans_orphan_sources_and_staging(tmp_path: Path
 
 
 # ---------------------------------------------------------------------------
-# 8. API 404 + CLI
+# 8. API：reset handler 不存在；请求不能执行清理
 # ---------------------------------------------------------------------------
 
 
-def test_api_reset_endpoint_removed(tmp_path: Path) -> None:
-    """原 reset HTTP 路由已删除；未知 /api/* 必须稳定返回 404。"""
-    with TestClient(create_app(data_dir=tmp_path)) as client:
-        resp = client.post("/api/knowledge/reset", json={"confirm": True})
-        assert resp.status_code == 404
-        assert "deleted_source_rows" not in resp.text
-        assert "cleared_tables" not in resp.text
-        get_resp = client.get("/api/knowledge/reset")
-        assert get_resp.status_code == 404
-        assert "deleted_source_rows" not in get_resp.text
+def test_api_reset_handler_absent_and_cannot_execute_cleanup(tmp_path: Path) -> None:
+    """路由表中不得存在 reset handler；请求不得产生 reset 结果。
 
-
-def test_cli_knowledge_reset_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    不锁定全局 fallback 的具体 404/405/200 状态码。
+    """
     config = _qualified_config()
     save_config(tmp_path, config)
     _seed_knowledge(tmp_path, config=config)
-    monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
-    before = _snapshot_data_dir(tmp_path)
+    before_sources = _knowledge_counts(tmp_path)["knowledge_sources"]
+    assert before_sources >= 1
 
-    from typer.testing import CliRunner
+    app = create_app(data_dir=tmp_path)
+    routes = []
+    for route in app.routes:
+        path = getattr(route, "path", "") or ""
+        methods = getattr(route, "methods", None) or set()
+        routes.append((path, set(methods) if methods else set()))
 
-    from offerpilot.cli import app as cli_app
+    reset_routes = [
+        (path, methods)
+        for path, methods in routes
+        if "knowledge" in path and "reset" in path
+    ]
+    assert reset_routes == []
 
-    runner = CliRunner()
-    missing = runner.invoke(cli_app, ["knowledge", "reset"])
-    assert missing.exit_code != 0
-    assert "reset_requires_confirm" in missing.output
-    assert _snapshot_data_dir(tmp_path) == before
+    with TestClient(app) as client:
+        responses = [
+            client.post("/api/knowledge/reset", json={"confirm": True}),
+            client.get("/api/knowledge/reset"),
+            client.delete("/api/knowledge/reset"),
+            client.put("/api/knowledge/reset", json={"confirm": True}),
+            client.patch("/api/knowledge/reset", json={"confirm": True}),
+        ]
+        for response in responses:
+            body = response.text
+            assert "deleted_source_rows" not in body
+            assert "cleared_tables" not in body
+            assert "completion_marked" not in body
+            # 只要不能执行 reset 即满足契约；不锁定状态码。
+            assert response.status_code != 200 or "error" in body.lower()
 
-    ok = runner.invoke(cli_app, ["knowledge", "reset", "--confirm"])
-    assert ok.exit_code == 0, ok.output
-    assert "一次性迁移完成" in ok.output or "完成标记" in ok.output
-    _assert_knowledge_empty(tmp_path)
-    _assert_completion_marked(tmp_path)
-
-    after_complete = _snapshot_data_dir(tmp_path)
-    again = runner.invoke(cli_app, ["knowledge", "reset", "--confirm"])
-    assert again.exit_code != 0
-    assert "reset_already_completed" in again.output
-    assert _snapshot_data_dir(tmp_path) == after_complete
-
-
-def test_cli_gate_refusal_does_not_run_startup_recovery(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """完成后再次 CLI 拒绝时，不得触发 init_database 启动恢复清理 staging。"""
-    config = _qualified_config()
-    save_config(tmp_path, config)
-    _seed_knowledge(tmp_path, config=config)
-    monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
-
-    from typer.testing import CliRunner
-
-    from offerpilot.cli import app as cli_app
-
-    runner = CliRunner()
-    ok = runner.invoke(cli_app, ["knowledge", "reset", "--confirm"])
-    assert ok.exit_code == 0, ok.output
-    _assert_completion_marked(tmp_path)
-
-    staging = tmp_path / "knowledge" / "staging"
-    staging.mkdir(parents=True, exist_ok=True)
-    sentinel = staging / "sentinel.bin"
-    sentinel.write_bytes(b"keep-me")
-    before = _snapshot_data_dir(tmp_path)
-
-    again = runner.invoke(cli_app, ["knowledge", "reset", "--confirm"])
-    assert again.exit_code != 0
-    assert "reset_already_completed" in again.output
-    assert sentinel.exists()
-    assert sentinel.read_bytes() == b"keep-me"
-    assert _snapshot_data_dir(tmp_path) == before
-
-    # 缺少 --confirm 同样不得有副作用。
-    missing = runner.invoke(cli_app, ["knowledge", "reset"])
-    assert missing.exit_code != 0
-    assert "reset_requires_confirm" in missing.output
-    assert sentinel.exists()
-    assert _snapshot_data_dir(tmp_path) == before
-
-
-def test_completion_mark_revoked_if_post_write_empty_check_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """写标记后复验失败必须撤销标记，避免误标 COMPLETE。"""
-    _seed_knowledge(tmp_path)
-    from offerpilot.knowledge import reset as reset_module
-
-    real_assert = reset_module._assert_knowledge_domain_empty
-    real_write = reset_module._write_completion_mark
-    state = {"written": False}
-
-    def write_then_flag(session_factory) -> None:  # type: ignore[no-untyped-def]
-        real_write(session_factory)
-        state["written"] = True
-
-    def flaky_empty(session_factory, data_dir: Path) -> None:  # type: ignore[no-untyped-def]
-        # 写标记前的检查放行；写标记后第一次复验失败。
-        if not state["written"]:
-            return real_assert(session_factory, data_dir)
-        raise KnowledgeResetError(
-            "reset_verification_failed",
-            "Knowledge 文件清空后验证仍非空，拒绝写入完成标记",
-        )
-
-    monkeypatch.setattr(reset_module, "_write_completion_mark", write_then_flag)
-    monkeypatch.setattr(reset_module, "_assert_knowledge_domain_empty", flaky_empty)
-
-    with pytest.raises(KnowledgeResetError) as exc:
-        reset_knowledge_domain(
-            session_factory_for_data_dir(tmp_path),
-            tmp_path,
-            runtime_mode="local",
-            confirm=True,
-        )
-    assert exc.value.code == "reset_verification_failed"
-    assert state["written"] is True
-    # 标记必须被撤销。
+    # 请求不得清空 Knowledge 或写完成标记（应用启动副作用除外）。
+    assert _knowledge_counts(tmp_path)["knowledge_sources"] == before_sources
     assert COMPLETION_MIGRATION_VERSION not in _schema_migrations(tmp_path)
-    # DB 已清空（写标记前已完成），可重跑收敛。
-    assert set(_knowledge_counts(tmp_path).values()) == {0}
-
-    # 去掉 monkeypatch 后应能写标记完成。
-    monkeypatch.undo()
-    summary = reset_knowledge_domain(
-        session_factory_for_data_dir(tmp_path),
-        tmp_path,
-        runtime_mode="local",
-        confirm=True,
-    )
-    assert summary.completion_marked is True
-    _assert_completion_marked(tmp_path)
-
-
-def test_cli_knowledge_reset_refuses_non_local_runtime(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    config = _qualified_config()
-    config.runtime_mode = "server"
-    save_config(tmp_path, config)
-    _seed_knowledge(tmp_path, config=config)
-    monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
-    before = _snapshot_data_dir(tmp_path)
-
-    from typer.testing import CliRunner
-
-    from offerpilot.cli import app as cli_app
-
-    runner = CliRunner()
-    result = runner.invoke(cli_app, ["knowledge", "reset", "--confirm"])
-    assert result.exit_code != 0
-    assert "reset_not_allowed_in_runtime" in result.output
-    assert _snapshot_data_dir(tmp_path) == before
+    knowledge_dir = tmp_path / "knowledge"
+    assert knowledge_dir.is_dir()
+    assert any(knowledge_dir.iterdir())

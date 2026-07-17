@@ -243,13 +243,13 @@ def knowledge_reset(
     """KBR-07：一次性离线清空 Knowledge 数据域。
 
     仅本地 runtime 允许。执行前必须停止应用与 Knowledge Worker，并显式传入 ``--confirm``。
-    命令先在单个 SQLite 事务中清空 Knowledge 表，再清理 ``knowledge/`` 与旧
-    ``.knowledge-reset/``；全部验证通过后写入一次性完成标记。完成后永久拒绝再次清空。
+    命令使用专用 SQLite 连接，不调用正常应用初始化 / 启动恢复。
+    先在单个 SQLite 事务中清空 Knowledge 表，再清理 ``knowledge/`` 与旧
+    ``.knowledge-reset/``；验证通过后写入一次性完成标记。完成后永久拒绝再次清空。
     不恢复旧 Knowledge；中断后重新运行同一命令继续向空状态收敛。
     """
     from offerpilot.knowledge.reset import (
         KnowledgeResetError,
-        assert_reset_preconditions,
         reset_knowledge_domain,
     )
 
@@ -260,15 +260,9 @@ def knowledge_reset(
         "本命令是离线一次性迁移，不提供跨进程锁或在线恢复。"
     )
     try:
-        # 门禁必须在 session_factory_for_data_dir 之前：后者会触发 staging/孤儿 Source/
-        # Job lease 启动恢复，拒绝路径不得有任何副作用。
-        assert_reset_preconditions(
-            data_dir,
-            runtime_mode=cfg.runtime_mode,
-            confirm=confirm,
-        )
+        # 专用离线路径：不调用 session_factory_for_data_dir / init_database，
+        # 因此不会触发 Schema repair、staging、Source 删除或 Job lease 恢复。
         summary = reset_knowledge_domain(
-            session_factory_for_data_dir(data_dir),
             data_dir,
             runtime_mode=cfg.runtime_mode,
             confirm=confirm,

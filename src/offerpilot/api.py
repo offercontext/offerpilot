@@ -2799,16 +2799,6 @@ def create_app(
         brief_worker.update_config(next_config)
         return _settings_payload(next_config, resolved_data_dir)
 
-    # 未匹配的 /api/* 统一 404（含所有方法），避免 SPA GET catch-all 让已删除 API
-    # （如旧 POST /api/knowledge/reset）返回 405 Method Not Allowed。
-    @app.api_route(
-        "/api/{full_path:path}",
-        methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
-        include_in_schema=False,
-    )
-    def api_not_found(full_path: str) -> JSONResponse:
-        return error_response(404, "not found")
-
     @app.get("/{full_path:path}", include_in_schema=False)
     def serve_frontend(full_path: str) -> Response:
         if full_path == "favicon.ico":

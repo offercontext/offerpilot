@@ -7,21 +7,23 @@
 
 - 唯一操作界面是本地 CLI ``oc knowledge reset --confirm``。
 - 不暴露 HTTP API、前端入口、Agent tool 或启动恢复协议。
-- 不使用 quarantine / generation / manifest / intent / cleanup pending。
+- 不调用 ``session_factory_for_data_dir`` / ``init_database`` 等正常应用初始化入口。
+- 使用专用最小 SQLite 连接打开已存在的 ``data.db``：不创建库、不迁移、不修复 Schema、不恢复。
 - 失败后不恢复旧 Knowledge，只允许重新运行命令继续向空状态收敛。
-- 数据库与文件均验证为空且保护项通过后，才写入一次性完成标记
-  ``kbr07_one_time_knowledge_reset_complete``；标记存在时永久拒绝再次清空。
+- 成功后写入一次性完成标记 ``kbr07_one_time_knowledge_reset_complete``；标记存在时永久拒绝再次清空。
 
 执行顺序
 ~~~~~~~~
 
-1. 门禁：``runtime_mode=local`` 且 ``confirm=True``（零副作用，不打开会触发恢复的 DB）。
-2. 若完成标记已存在 → ``reset_already_completed``，不触碰任何数据。
-3. 预检固定清理根路径；非法则 fail closed，不开始 DB 清理。
-4. 单 SQLite 事务 DELETE Knowledge 表闭集；失败整体回滚且不开始文件清理。
-5. 提交后安全清理固定路径 ``knowledge/`` 与 ``.knowledge-reset/``。
-6. 验证 Knowledge 表与文件均为空、非 Knowledge 与 AI 配置不变。
-7. 独立事务写入完成标记；写后立即复验空状态，失败则撤销标记。
+1. 解析 data directory 与配置。
+2. 检查 ``runtime_mode=local`` 与 ``--confirm``。
+3. 检查 ``knowledge/`` 与 ``.knowledge-reset/`` 固定根路径。
+4. 通过专用连接检查完成标记；已存在则 ``reset_already_completed``。
+5. 记录非 Knowledge 代表数据、migration versions 与 AI 配置。
+6. 单事务 DELETE Knowledge 表闭集并提交。
+7. 清理 ``knowledge/`` 与 ``.knowledge-reset/``，重建空 ``knowledge/``。
+8. 验证 Knowledge 为空且保护项不变。
+9. 独立短事务写完成标记并返回成功。
 """
 
 from __future__ import annotations
@@ -31,10 +33,6 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-
-from sqlalchemy import text
-from sqlalchemy.engine import Connection
-from sqlalchemy.orm import Session, sessionmaker
 
 from offerpilot.config import RuntimeMode, load_config
 
@@ -120,22 +118,22 @@ class _PreSnapshot:
     migration_versions: set[str] = field(default_factory=set)
 
 
-def _existing_tables(conn: Connection) -> set[str]:
+def _existing_tables(conn: sqlite3.Connection) -> set[str]:
     return {
-        row[0]
+        str(row[0])
         for row in conn.execute(
-            text("SELECT name FROM sqlite_master WHERE type IN ('table')")
+            "SELECT name FROM sqlite_master WHERE type IN ('table')"
         ).fetchall()
     }
 
 
-def _delete_from_table(conn: Connection, table_name: str) -> None:
-    """删除单张 Knowledge 表的全部行。表不存在时视为已清空（可重复执行）。"""
-    conn.execute(text(f"DELETE FROM {table_name}"))
+def _delete_from_table(conn: sqlite3.Connection, table_name: str) -> None:
+    """删除单张 Knowledge 表的全部行。表不存在时由调用方跳过。"""
+    conn.execute(f"DELETE FROM {table_name}")
 
 
-def _count_rows(conn: Connection, table_name: str) -> int:
-    row = conn.execute(text(f"SELECT COUNT(*) FROM {table_name}")).fetchone()
+def _count_rows(conn: sqlite3.Connection, table_name: str) -> int:
+    row = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
     return int(row[0]) if row is not None else 0
 
 
@@ -180,7 +178,7 @@ def _assert_safe_fixed_root(data_dir: Path, target: Path, label: str) -> None:
 def _precheck_cleanup_roots(data_dir: Path) -> None:
     """在任何破坏性 DB 操作前预检固定清理根。
 
-    不存在视为空；symlink / 非目录 / 越界 → ``reset_path_escape``，且不得开始清表。
+    不存在视为空；symlink / 非目录 / 越界 → ``reset_path_escape``。
     """
     _assert_safe_fixed_root(data_dir, data_dir / KNOWLEDGE_DIR_NAME, KNOWLEDGE_DIR_NAME)
     _assert_safe_fixed_root(
@@ -188,21 +186,63 @@ def _precheck_cleanup_roots(data_dir: Path) -> None:
     )
 
 
-def _capture_pre_snapshot(session_factory: sessionmaker[Session]) -> _PreSnapshot:
+def _open_existing_db(data_dir: Path) -> sqlite3.Connection:
+    """打开已存在的 data.db：普通文件路径，不创建、不迁移、不修复、不恢复。
+
+    fail closed：
+    - 文件不存在 / 不可读
+    - 不是有效 SQLite
+    - 缺少 schema_migrations
+    """
+    db_path = data_dir / "data.db"
+    if not db_path.exists() or not db_path.is_file():
+        raise KnowledgeResetError(
+            "reset_database_unavailable",
+            f"data.db 不存在或不是普通文件：{db_path}",
+        )
+    try:
+        # 使用普通文件路径，不拼接 file: URI。
+        conn = sqlite3.connect(str(db_path))
+    except sqlite3.Error as exc:
+        raise KnowledgeResetError(
+            "reset_database_unavailable",
+            f"无法打开 data.db：{exc.__class__.__name__}",
+        ) from exc
+
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type='table' AND name='schema_migrations' LIMIT 1"
+        ).fetchone()
+        if row is None:
+            conn.close()
+            raise KnowledgeResetError(
+                "reset_database_unavailable",
+                "data.db 缺少 schema_migrations，拒绝作为未初始化库执行 reset",
+            )
+    except KnowledgeResetError:
+        raise
+    except sqlite3.Error as exc:
+        conn.close()
+        raise KnowledgeResetError(
+            "reset_database_unavailable",
+            f"data.db 不是可用 SQLite 或读取失败：{exc.__class__.__name__}",
+        ) from exc
+    return conn
+
+
+def _capture_pre_snapshot(conn: sqlite3.Connection) -> _PreSnapshot:
     snapshot = _PreSnapshot()
-    with session_factory() as session:
-        conn = session.connection()
-        existing = _existing_tables(conn)
-        for table in NON_KNOWLEDGE_GUARD_TABLES:
-            if table in existing:
-                snapshot.non_knowledge[table] = _count_rows(conn, table)
-        if "schema_migrations" in existing:
-            snapshot.migration_versions = {
-                str(row[0])
-                for row in conn.execute(
-                    text("SELECT version FROM schema_migrations")
-                ).fetchall()
-            }
+    existing = _existing_tables(conn)
+    for table in NON_KNOWLEDGE_GUARD_TABLES:
+        if table in existing:
+            snapshot.non_knowledge[table] = _count_rows(conn, table)
+    if "schema_migrations" in existing:
+        snapshot.migration_versions = {
+            str(row[0])
+            for row in conn.execute("SELECT version FROM schema_migrations").fetchall()
+        }
     return snapshot
 
 
@@ -213,130 +253,48 @@ def _capture_ai_config(data_dir: Path) -> str:
     return config_path.read_text(encoding="utf-8")
 
 
-def completion_mark_exists_at(data_dir: Path) -> bool:
-    """只读查询完成标记，不触发 init_database / 启动恢复。
+def _completion_mark_exists(conn: sqlite3.Connection) -> bool:
+    """读取完成标记。调用方已保证 schema_migrations 存在；SQLite 错误向上传播。"""
+    found = conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE version = ? LIMIT 1",
+        (COMPLETION_MIGRATION_VERSION,),
+    ).fetchone()
+    return found is not None
 
-    供 CLI 在打开会执行恢复副作用的 session factory 之前做门禁。
-    """
-    db_path = data_dir / "data.db"
-    if not db_path.exists():
-        return False
+
+def _write_completion_mark(conn: sqlite3.Connection) -> None:
+    """在调用方提供的连接上写入一次性完成标记（独立短事务）。"""
     try:
-        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
-            row = conn.execute(
-                "SELECT 1 FROM sqlite_master "
-                "WHERE type='table' AND name='schema_migrations' LIMIT 1"
-            ).fetchone()
-            if row is None:
-                return False
-            found = conn.execute(
-                "SELECT 1 FROM schema_migrations WHERE version = ? LIMIT 1",
-                (COMPLETION_MIGRATION_VERSION,),
-            ).fetchone()
-            return found is not None
-    except sqlite3.Error:
-        # 数据库不可读时不视为已完成，交给后续正式路径处理。
-        return False
-
-
-def assert_reset_preconditions(
-    data_dir: Path,
-    *,
-    runtime_mode: RuntimeMode,
-    confirm: bool,
-) -> None:
-    """零副作用门禁：不打开会触发恢复的 DB 连接，不触碰文件。
-
-    CLI 必须在 ``session_factory_for_data_dir`` 之前调用本函数。
-    """
-    if runtime_mode != "local":
-        raise KnowledgeResetError(
-            "reset_not_allowed_in_runtime",
-            f"runtime_mode={runtime_mode!r} 非本地模式，拒绝执行破坏性 Knowledge reset",
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO schema_migrations (version, description)
+            VALUES (?, ?)
+            """,
+            (COMPLETION_MIGRATION_VERSION, COMPLETION_MIGRATION_DESCRIPTION),
         )
-    if not confirm:
+        conn.commit()
+    except sqlite3.Error as exc:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
         raise KnowledgeResetError(
-            "reset_requires_confirm",
-            "破坏性 reset 需要显式确认（confirm=True）",
-        )
-    if completion_mark_exists_at(data_dir):
-        raise KnowledgeResetError(
-            "reset_already_completed",
-            "KBR-07 一次性 Knowledge reset 已完成，拒绝再次清空",
-        )
+            "reset_database_unavailable",
+            f"写入完成标记失败：{exc.__class__.__name__}",
+        ) from exc
 
 
-def _completion_mark_exists(session_factory: sessionmaker[Session]) -> bool:
-    with session_factory() as session:
-        conn = session.connection()
-        existing = _existing_tables(conn)
-        if "schema_migrations" not in existing:
+def _knowledge_tables_empty(conn: sqlite3.Connection) -> bool:
+    existing = _existing_tables(conn)
+    for table_name in KNOWLEDGE_RESET_TABLES:
+        if table_name in existing and _count_rows(conn, table_name) > 0:
             return False
-        row = conn.execute(
-            text(
-                "SELECT 1 FROM schema_migrations WHERE version = :version LIMIT 1"
-            ),
-            {"version": COMPLETION_MIGRATION_VERSION},
-        ).fetchone()
-        return row is not None
-
-
-def _write_completion_mark(session_factory: sessionmaker[Session]) -> None:
-    """独立事务写入一次性完成标记。"""
-    with session_factory() as session:
-        conn = session.connection()
-        existing = _existing_tables(conn)
-        if "schema_migrations" not in existing:
-            raise KnowledgeResetError(
-                "reset_migration_missing",
-                "schema_migrations 不存在，无法写入一次性完成标记",
-            )
-        conn.execute(
-            text(
-                """
-                INSERT OR IGNORE INTO schema_migrations (version, description)
-                VALUES (:version, :description)
-                """
-            ),
-            {
-                "version": COMPLETION_MIGRATION_VERSION,
-                "description": COMPLETION_MIGRATION_DESCRIPTION,
-            },
-        )
-        session.commit()
-
-
-def _remove_completion_mark(session_factory: sessionmaker[Session]) -> None:
-    """撤销误写的完成标记（写标记后复验失败时使用）。"""
-    with session_factory() as session:
-        conn = session.connection()
-        existing = _existing_tables(conn)
-        if "schema_migrations" not in existing:
-            return
-        conn.execute(
-            text("DELETE FROM schema_migrations WHERE version = :version"),
-            {"version": COMPLETION_MIGRATION_VERSION},
-        )
-        session.commit()
-
-
-def _knowledge_tables_empty(session_factory: sessionmaker[Session]) -> bool:
-    with session_factory() as session:
-        conn = session.connection()
-        existing = _existing_tables(conn)
-        for table_name in KNOWLEDGE_RESET_TABLES:
-            if table_name in existing and _count_rows(conn, table_name) > 0:
-                return False
     return True
 
 
 def _knowledge_files_empty(data_dir: Path) -> bool:
-    """Knowledge 文件是否已收敛到空安全状态。
-
-    - ``knowledge/`` 不存在或为空真实目录 → 空。
-    - ``.knowledge-reset/`` 不存在 → 空；若存在则非空（需清理）。
-    - 根路径是 symlink / 非目录 → 视为未空，由清理路径 fail closed。
-    """
+    """Knowledge 文件是否已收敛到空安全状态。"""
     knowledge_dir = data_dir / KNOWLEDGE_DIR_NAME
     legacy_reset_dir = data_dir / LEGACY_RESET_DIR_NAME
 
@@ -348,7 +306,6 @@ def _knowledge_files_empty(data_dir: Path) -> bool:
                 return False
 
         if legacy_reset_dir.exists():
-            # 残留本身就需要清理；symlink/非目录也视为未空，交清理路径 fail closed。
             return False
     except OSError:
         return False
@@ -374,7 +331,6 @@ def _clear_fixed_directory(data_dir: Path, name: str, *, recreate_empty: bool) -
     - 不存在：视为空，不构成错误。
     - symlink / 非目录 / 越界：``reset_path_escape``。
     - 删除时 helper 自行校验边界；``rmtree`` 对嵌套 symlink 只 unlink 链接本身。
-    - 所有文件 I/O 异常映射为稳定 ``reset_file_cleanup_failed`` / ``reset_path_escape``。
     """
     target = data_dir / name
     _assert_safe_fixed_root(data_dir, target, name)
@@ -402,7 +358,7 @@ def _clear_fixed_directory(data_dir: Path, name: str, *, recreate_empty: bool) -
             f"列举 {name}/ 失败：{exc.__class__.__name__}",
         ) from exc
 
-    # 再次校验后再删除（helper 自带边界检查，不依赖调用方预检）。
+    # 再次校验后再删除。
     _assert_safe_fixed_root(data_dir, target, name)
     try:
         shutil.rmtree(target)
@@ -442,7 +398,7 @@ def _clear_knowledge_files(data_dir: Path) -> list[str]:
 
 
 def _verify_preservation(
-    session_factory: sessionmaker[Session],
+    conn: sqlite3.Connection,
     data_dir: Path,
     pre: _PreSnapshot,
     *,
@@ -450,22 +406,16 @@ def _verify_preservation(
 ) -> tuple[dict[str, int], bool, int]:
     """重取非 Knowledge 计数与 AI 配置，断言与 reset 前一致。"""
     preserved: dict[str, int] = {}
-    migrations = 0
     migration_versions: set[str] = set()
-    with session_factory() as session:
-        conn = session.connection()
-        existing = _existing_tables(conn)
-        for table in NON_KNOWLEDGE_GUARD_TABLES:
-            if table in existing:
-                preserved[table] = _count_rows(conn, table)
-        if "schema_migrations" in existing:
-            migration_versions = {
-                str(row[0])
-                for row in conn.execute(
-                    text("SELECT version FROM schema_migrations")
-                ).fetchall()
-            }
-            migrations = len(migration_versions)
+    existing = _existing_tables(conn)
+    for table in NON_KNOWLEDGE_GUARD_TABLES:
+        if table in existing:
+            preserved[table] = _count_rows(conn, table)
+    if "schema_migrations" in existing:
+        migration_versions = {
+            str(row[0])
+            for row in conn.execute("SELECT version FROM schema_migrations").fetchall()
+        }
 
     for table, before_count in pre.non_knowledge.items():
         if preserved.get(table) != before_count:
@@ -493,20 +443,18 @@ def _verify_preservation(
             "ai_config_violation",
             "AI 配置在 reset 过程中发生变化",
         )
-    return preserved, ai_config_unchanged, migrations
+    return preserved, ai_config_unchanged, len(migration_versions)
 
 
-def _clear_knowledge_tables(
-    session_factory: sessionmaker[Session],
-) -> tuple[int, list[str]]:
+def _clear_knowledge_tables(conn: sqlite3.Connection) -> tuple[int, list[str]]:
     """在单个 SQLite 事务中清空 Knowledge 表闭集。
 
     任何删除或 commit 失败都整体回滚；表不存在视为已空。
     """
     deleted_source_rows = 0
     cleared_tables: list[str] = []
-    with session_factory() as session:
-        conn = session.connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
         existing_tables = _existing_tables(conn)
         if "knowledge_sources" in existing_tables:
             deleted_source_rows = _count_rows(conn, "knowledge_sources")
@@ -514,15 +462,18 @@ def _clear_knowledge_tables(
             if table_name in existing_tables:
                 _delete_from_table(conn, table_name)
                 cleared_tables.append(table_name)
-        session.commit()
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        raise
     return deleted_source_rows, cleared_tables
 
 
-def _assert_knowledge_domain_empty(
-    session_factory: sessionmaker[Session],
-    data_dir: Path,
-) -> None:
-    if not _knowledge_tables_empty(session_factory):
+def _assert_knowledge_domain_empty(conn: sqlite3.Connection, data_dir: Path) -> None:
+    if not _knowledge_tables_empty(conn):
         raise KnowledgeResetError(
             "reset_verification_failed",
             "Knowledge 表清空后验证仍非空，拒绝写入完成标记",
@@ -535,7 +486,6 @@ def _assert_knowledge_domain_empty(
 
 
 def reset_knowledge_domain(
-    session_factory: sessionmaker[Session],
     data_dir: Path,
     *,
     runtime_mode: RuntimeMode,
@@ -546,17 +496,10 @@ def reset_knowledge_domain(
     覆盖范围：``KNOWLEDGE_RESET_TABLES`` + 固定路径 ``knowledge/`` 与 ``.knowledge-reset/``。
     保留：数据库 Schema、既有 ``schema_migrations``、AI 配置与全部非 Knowledge 表。
 
-    安全门禁：
-
-    - ``runtime_mode != "local"`` → ``reset_not_allowed_in_runtime``
-    - ``confirm`` 非真 → ``reset_requires_confirm``
-    - 完成标记已存在 → ``reset_already_completed``（禁止 DELETE / 文件操作 / force）
-    - 固定路径为 symlink / 非目录 / 越界 → ``reset_path_escape``
-
-    调用方（CLI）应先调用 ``assert_reset_preconditions``，避免在门禁失败路径触发
-    ``session_factory_for_data_dir`` 的启动恢复副作用。本函数仍做防御性二次检查。
+    本函数使用专用 SQLite 连接，绝不调用 ``session_factory_for_data_dir`` /
+    ``init_database``，因此不会触发 Schema repair、staging 恢复、Source 删除恢复或
+    Job lease 恢复。
     """
-    # 防御性门禁（CLI 已在打开 session factory 前检查；测试可直接调用本函数）。
     if runtime_mode != "local":
         raise KnowledgeResetError(
             "reset_not_allowed_in_runtime",
@@ -568,66 +511,68 @@ def reset_knowledge_domain(
             "破坏性 reset 需要显式确认（confirm=True）",
         )
 
-    if _completion_mark_exists(session_factory):
-        raise KnowledgeResetError(
-            "reset_already_completed",
-            "KBR-07 一次性 Knowledge reset 已完成，拒绝再次清空",
-        )
-
-    pre = _capture_pre_snapshot(session_factory)
-    pre.ai_config_exists = (data_dir / AI_CONFIG_FILENAME).exists()
-    pre.ai_config_payload = _capture_ai_config(data_dir)
-    if pre.ai_config_exists:
-        # 仅校验可解析，不改写配置文件。
-        load_config(data_dir)
-
-    # 路径预检必须在 DB 清表之前：非法根路径 fail closed，且不得留下 DB 已空的半状态。
+    # 固定根路径预检必须在打开任何会触发应用恢复的入口之前；本路径本身也不走恢复。
     _precheck_cleanup_roots(data_dir)
 
-    # DB 先于文件。事务失败整体回滚且不开始文件清理。
-    deleted_source_rows, cleared_tables = _clear_knowledge_tables(session_factory)
-
-    # 文件清理失败：不恢复旧 Knowledge、不写完成标记；重新执行继续收敛。
-    cleared_dir_entries = _clear_knowledge_files(data_dir)
-
-    _assert_knowledge_domain_empty(session_factory, data_dir)
-
-    # 完成标记写入前先验证保护项（此时尚无完成标记）。
-    preserved, ai_config_unchanged, migrations = _verify_preservation(
-        session_factory,
-        data_dir,
-        pre,
-        expect_completion_mark=False,
-    )
-
-    # 写标记前最后一次空状态检查，压缩验证→标记窗口。
-    _assert_knowledge_domain_empty(session_factory, data_dir)
-    _write_completion_mark(session_factory)
-
-    # 写标记后立即复验：若并发写入导致非空，撤销标记并失败。
+    conn = _open_existing_db(data_dir)
     try:
-        _assert_knowledge_domain_empty(session_factory, data_dir)
+        try:
+            if _completion_mark_exists(conn):
+                raise KnowledgeResetError(
+                    "reset_already_completed",
+                    "KBR-07 一次性 Knowledge reset 已完成，拒绝再次清空",
+                )
+        except KnowledgeResetError:
+            raise
+        except sqlite3.Error as exc:
+            raise KnowledgeResetError(
+                "reset_database_unavailable",
+                f"读取完成标记失败：{exc.__class__.__name__}",
+            ) from exc
+
+        pre = _capture_pre_snapshot(conn)
+        pre.ai_config_exists = (data_dir / AI_CONFIG_FILENAME).exists()
+        pre.ai_config_payload = _capture_ai_config(data_dir)
+        if pre.ai_config_exists:
+            # 仅校验可解析，不改写配置文件。
+            load_config(data_dir)
+
+        # DB 先于文件。事务失败整体回滚且不开始文件清理。
+        deleted_source_rows, cleared_tables = _clear_knowledge_tables(conn)
+
+        # 文件清理失败：不恢复旧 Knowledge、不写完成标记；重新执行继续收敛。
+        cleared_dir_entries = _clear_knowledge_files(data_dir)
+
+        _assert_knowledge_domain_empty(conn, data_dir)
         preserved, ai_config_unchanged, migrations = _verify_preservation(
-            session_factory,
+            conn,
+            data_dir,
+            pre,
+            expect_completion_mark=False,
+        )
+
+        # 独立短事务写完成标记；不写后撤销，不在线并发复验。
+        _write_completion_mark(conn)
+        preserved, ai_config_unchanged, migrations = _verify_preservation(
+            conn,
             data_dir,
             pre,
             expect_completion_mark=True,
         )
-        if not _completion_mark_exists(session_factory):
+        if not _completion_mark_exists(conn):
             raise KnowledgeResetError(
                 "reset_verification_failed",
                 "完成标记写入后验证失败",
             )
-    except KnowledgeResetError:
-        _remove_completion_mark(session_factory)
-        raise
 
-    return KnowledgeResetSummary(
-        deleted_source_rows=deleted_source_rows,
-        cleared_tables=cleared_tables,
-        cleared_dir_entries=cleared_dir_entries,
-        preserved_non_knowledge=preserved,
-        preserved_ai_config=ai_config_unchanged,
-        preserved_migrations=migrations,
-        completion_marked=True,
-    )
+        return KnowledgeResetSummary(
+            deleted_source_rows=deleted_source_rows,
+            cleared_tables=cleared_tables,
+            cleared_dir_entries=cleared_dir_entries,
+            preserved_non_knowledge=preserved,
+            preserved_ai_config=ai_config_unchanged,
+            preserved_migrations=migrations,
+            completion_marked=True,
+        )
+    finally:
+        conn.close()
