@@ -6,7 +6,6 @@ import type {
   KnowledgeEvidenceSearchResponse,
   KnowledgeIngestResponse,
   KnowledgeJob,
-  KnowledgeResetSummary,
   KnowledgeSource,
   KnowledgeSourceAssetsResponse,
   KnowledgeSourceBriefResponse,
@@ -234,15 +233,5 @@ export async function rebuildKnowledgeSourceBrief(
   const { data } = await http.post<KnowledgeBriefRebuildResponse>(
     `/knowledge/sources/${sourceId}/brief/rebuild`,
   );
-  return data;
-}
-
-// KBR-07：Knowledge 数据域破坏性 reset。必须显式 confirm；后端仅在本地 runtime 允许。
-export async function resetKnowledgeDomain(
-  confirm: boolean,
-): Promise<KnowledgeResetSummary> {
-  const { data } = await http.post<KnowledgeResetSummary>('/knowledge/reset', {
-    confirm,
-  });
   return data;
 }

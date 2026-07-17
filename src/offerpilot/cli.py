@@ -237,19 +237,24 @@ def knowledge_reset(
     confirm: bool = typer.Option(
         False,
         "--confirm",
-        help="必须显式传入以执行破坏性 Knowledge 数据域清空",
+        help="必须显式传入以执行一次性离线 Knowledge 数据域清空",
     ),
 ) -> None:
-    """KBR-07：清空 Knowledge 数据域（Source/Origin/Asset/Snapshot/Evidence/FTS/Brief/
-    Attempt/Job/日志/文件目录），保留 Schema、迁移记录、AI 配置与所有非 Knowledge 业务数据。
+    """KBR-07：一次性离线清空 Knowledge 数据域。
 
-    破坏性操作：仅在本地 runtime 允许；执行前请确认数据可丢弃。相同 Source 内容可在 reset
-    后重新导入并完成 Brief v2。
+    仅本地 runtime 允许。执行前必须停止应用与 Knowledge Worker，并显式传入 ``--confirm``。
+    命令先在单个 SQLite 事务中清空 Knowledge 表，再清理 ``knowledge/`` 与旧
+    ``.knowledge-reset/``；全部验证通过后写入一次性完成标记。完成后永久拒绝再次清空。
+    不恢复旧 Knowledge；中断后重新运行同一命令继续向空状态收敛。
     """
     from offerpilot.knowledge.reset import KnowledgeResetError, reset_knowledge_domain
 
     data_dir = resolve_data_dir()
     cfg = load_config(data_dir)
+    typer.echo(
+        "前提：请确认应用与 Knowledge Worker 已停止。"
+        "本命令是离线一次性迁移，不提供跨进程锁或在线恢复。"
+    )
     try:
         summary = reset_knowledge_domain(
             session_factory_for_data_dir(data_dir),
@@ -261,11 +266,11 @@ def knowledge_reset(
         typer.echo(f"[{exc.code}] {exc.message}")
         raise typer.Exit(code=1)
     typer.echo(
-        "Knowledge 数据域已清空（破坏性操作）："
+        "Knowledge 一次性迁移完成："
         f"删除 Source {summary.deleted_source_rows} 条，"
         f"清表 {len(summary.cleared_tables)} 张，"
-        f"清理目录 {','.join(summary.cleared_dir_entries) or '(空)'}；"
-        "已保留 Schema、迁移记录、AI 配置与非 Knowledge 业务数据。"
+        f"清理 knowledge 条目 {','.join(summary.cleared_dir_entries) or '(空)'}；"
+        f"非 Knowledge 保留验证通过，AI 配置未变，完成标记={summary.completion_marked}。"
     )
 
 

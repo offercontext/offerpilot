@@ -71,26 +71,15 @@ describe('KnowledgeSourcesView', () => {
     expect(typeof KnowledgeSourcesView).toBe('function');
   });
 
-  it('exposes KBR-07 destructive Knowledge reset entry in the toolbar', () => {
+  it('does not expose one-time Knowledge reset product entry', () => {
+    // KBR-07 收缩为本地 CLI 后，前端不得再出现清空入口、确认对话框或 reset mutation。
     const markup = renderWithProviders();
 
-    // 工具栏注册破坏性 reset 入口；点击后进入二次确认 Modal（需输入确认文本）。
-    // reset 成功后的缓存清空由 resetMutation.removeQueries 保证，避免指向已删除
-    // Source 的缓存详情；服务契约见 services/knowledge.test.ts。
-    expect(markup).toContain('清空 Knowledge 数据');
-  });
-
-  it('KBR-07 resetMutation.onSuccess clears knowledge cache and selection state', () => {
-    // 防止误删 onSuccess 的三个副作用：removeQueries 清缓存 + 选中态/高亮清空，否则
-    // reset 后会残留指向已删 Source 的缓存详情。完整 DOM 行为测试需 jsdom + RTL
-    // （本项目未引入），退而用聚焦源码契约锁定 resetMutation 体内三个关键调用路径，
-    // 误删任一即测试失败。详情面板空状态由 SourceDetailPanel(sourceId == null) 渲染，
-    // 其文案 "选择左侧的 Source 查看详情" 已由首个 SSR 测试覆盖。
-    expect(viewSource).toMatch(/const\s+resetMutation\s*=\s*useMutation\(/);
-    expect(viewSource).toContain(
-      "queryClient.removeQueries({ queryKey: ['knowledge'] })",
-    );
-    expect(viewSource).toContain('setSelectedSourceId(null)');
-    expect(viewSource).toContain('setHighlightEvidenceId(null)');
+    expect(markup).not.toContain('清空 Knowledge 数据');
+    expect(markup).not.toContain('清空 Knowledge 数据域');
+    expect(markup).not.toContain('确认清空');
+    expect(viewSource).not.toContain('resetKnowledgeDomain');
+    expect(viewSource).not.toContain('resetMutation');
+    expect(viewSource).not.toContain('/knowledge/reset');
   });
 });

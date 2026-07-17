@@ -45,7 +45,6 @@ import {
   fetchKnowledgeSources,
   pasteKnowledgeSource,
   rebuildKnowledgeSourceBrief,
-  resetKnowledgeDomain,
   searchKnowledgeEvidence,
   unarchiveKnowledgeSource,
   updateKnowledgeSourceTitle,
@@ -172,9 +171,6 @@ export default function KnowledgeSourcesView() {
   const [pasteOpen, setPasteOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeSearch, setActiveSearch] = useState('');
-  // KBR-07：Knowledge 数据域破坏性 reset 的二次确认。
-  const [resetOpen, setResetOpen] = useState(false);
-  const [resetConfirmationText, setResetConfirmationText] = useState('');
 
   const uploadMutation = useMutation({
     mutationFn: ({ file, titleHint }: { file: File; titleHint: string }) =>
@@ -262,28 +258,6 @@ export default function KnowledgeSourcesView() {
     searchMutation.mutate(searchQuery);
   };
 
-  // KBR-07：成功后必须清除全部 Knowledge 查询缓存（含 Source 详情），否则会展示
-  // 指向已删除 Source 的缓存详情。removeQueries 比 invalidateQueries 更彻底，因为
-  // 详情查询即使失效，在新 list 为空时也不会自动重新拉取已不存在的 Source。
-  const resetMutation = useMutation({
-    mutationFn: () => resetKnowledgeDomain(true),
-    onSuccess: (summary) => {
-      queryClient.removeQueries({ queryKey: ['knowledge'] });
-      queryClient.invalidateQueries({ queryKey: KNOWLEDGE_QUERY_KEY });
-      setSelectedSourceId(null);
-      setHighlightEvidenceId(null);
-      setResetOpen(false);
-      setResetConfirmationText('');
-      message.success(
-        `Knowledge 数据域已清空：删除 Source ${summary.deleted_source_rows} 条；AI 配置与非 Knowledge 业务数据保持不变`,
-      );
-    },
-    onError: (error: unknown) => {
-      const detail = extractErrorMessage(error);
-      message.error(`清空 Knowledge 失败：${detail}`);
-    },
-  });
-
   return (
     <div style={{ padding: 24 }}>
       <div className="knowledge-page-header">
@@ -338,12 +312,6 @@ export default function KnowledgeSourcesView() {
             />
             <Text type="secondary">显示归档资料</Text>
           </Space>
-          <span className="knowledge-toolbar-spacer" />
-          <Tooltip title="清空全部 Knowledge 资料与文件（保留 AI 配置与其他业务数据）">
-            <Button danger ghost onClick={() => setResetOpen(true)}>
-              清空 Knowledge 数据
-            </Button>
-          </Tooltip>
         </div>
 
         {searchMutation.data ? (
@@ -401,38 +369,6 @@ export default function KnowledgeSourcesView() {
           pasteMutation.mutate({ paste, titleHint, originUrl })
         }
       />
-      <Modal
-        open={resetOpen}
-        title="清空 Knowledge 数据域"
-        okText="确认清空"
-        cancelText="取消"
-        okType="danger"
-        okButtonProps={{
-          loading: resetMutation.isPending,
-          disabled: resetConfirmationText.trim() !== '清空 Knowledge',
-        }}
-        onOk={() => resetMutation.mutate()}
-        onCancel={() => {
-          setResetOpen(false);
-          setResetConfirmationText('');
-        }}
-      >
-        <Alert
-          type="error"
-          showIcon
-          message="这是破坏性操作"
-          description="将永久删除全部 Knowledge Source、Evidence、Brief 与文件，且不迁移旧数据。AI 配置、投递、对话等非 Knowledge 数据保持不变。"
-          style={{ marginBottom: 12 }}
-        />
-        <Paragraph type="secondary">
-          输入 <Text code>清空 Knowledge</Text> 以确认：
-        </Paragraph>
-        <Input
-          value={resetConfirmationText}
-          onChange={(event) => setResetConfirmationText(event.target.value)}
-          placeholder="清空 Knowledge"
-        />
-      </Modal>
     </div>
   );
 }

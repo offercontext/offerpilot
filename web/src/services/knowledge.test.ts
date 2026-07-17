@@ -64,12 +64,10 @@ describe('knowledge service KI-06 contract', () => {
 });
 
 describe('knowledge service KBR-07 reset contract', () => {
-  it('exposes destructive reset endpoint requiring explicit confirm payload', () => {
-    expect(source).toContain('resetKnowledgeDomain');
-    expect(source).toContain('/knowledge/reset');
-    expect(source).toContain('KnowledgeResetSummary');
-    // 必须显式传 confirm，且为破坏性 POST。
-    expect(source).toContain('confirm: boolean');
-    expect(source).toMatch(/\.post<.*>.*\/knowledge\/reset/s);
+  it('does not expose long-lived Knowledge reset HTTP client', () => {
+    // 一次性迁移只保留本地 CLI；前端 service 不得再暴露 reset 入口。
+    expect(source).not.toContain('resetKnowledgeDomain');
+    expect(source).not.toContain('/knowledge/reset');
+    expect(source).not.toContain('KnowledgeResetSummary');
   });
 });

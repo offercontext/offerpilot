@@ -54,10 +54,6 @@ from offerpilot.knowledge.brief import (
     parse_brief_payload,
 )
 from offerpilot.knowledge.assets import AssetInput
-from offerpilot.knowledge.reset import (
-    KnowledgeResetError as _KnowledgeResetError,
-    reset_knowledge_domain,
-)
 from offerpilot.knowledge.search import SearchError as _KnowledgeSearchError
 from offerpilot.knowledge.service import IngestError as _IngestHttpError
 from offerpilot.knowledge.worker import (
@@ -1062,31 +1058,6 @@ def create_app(
         if updated is None:
             return error_response(404, "Job not found")
         return JSONResponse(_knowledge_job_payload(updated))
-
-    @app.post("/api/knowledge/reset")
-    def reset_knowledge(payload: dict[str, Any] = Body(default_factory=dict)) -> JSONResponse:
-        """KBR-07：Knowledge 数据域破坏性 reset。
-
-        Spec：限定在 Knowledge 边界内的破坏性清空，保留 Schema / 迁移记录 / AI 配置 /
-        非 Knowledge 业务数据。需要显式 ``confirm=true``，且仅在本地 runtime 允许。
-        """
-        confirm = bool(payload.get("confirm", False))
-        cfg = load_config(resolved_data_dir)
-        try:
-            summary = reset_knowledge_domain(
-                session_factory,
-                resolved_data_dir,
-                runtime_mode=cfg.runtime_mode,
-                confirm=confirm,
-            )
-        except _KnowledgeResetError as exc:
-            status_code = (
-                403
-                if exc.code == "reset_not_allowed_in_runtime"
-                else 400
-            )
-            return error_response(status_code, exc.message, code=exc.code)
-        return JSONResponse(summary.as_dict())
 
     @app.get("/api/auth/status")
     def auth_status(request: Request) -> dict[str, bool]:

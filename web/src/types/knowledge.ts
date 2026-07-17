@@ -311,13 +311,3 @@ export interface KnowledgeBriefRebuildResponse {
   status: string;
 }
 
-// KBR-07：Knowledge 数据域破坏性 reset 摘要。前端用于在成功后清除全部 Knowledge 缓存，
-// 避免展示指向已删除 Source 的详情。
-export interface KnowledgeResetSummary {
-  deleted_source_rows: number;
-  cleared_tables: string[];
-  cleared_dir_entries: string[];
-  preserved_non_knowledge: Record<string, number>;
-  preserved_ai_config: boolean;
-  preserved_migrations: number;
-}

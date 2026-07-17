@@ -1,6 +1,4 @@
 import json
-import logging
-import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,8 +10,6 @@ from sqlalchemy.orm import Session, sessionmaker
 from offerpilot.models import Base
 
 SessionFactory = sessionmaker[Session]
-
-_LOGGER = logging.getLogger(__name__)
 
 
 # KI-02 起新表 knowledge_sources/origins/snapshots/evidence/evidence_fts/jobs 由本模块创建并维护，
@@ -683,125 +679,6 @@ def session_factory_for_data_dir(data_dir: Path) -> SessionFactory:
     return init_database(data_dir / "data.db")
 
 
-def _recover_knowledge_reset_quarantine(engine, data_dir: Path) -> None:  # type: ignore[no-untyped-def]
-    """Finding 3 + 三轮 Review：Knowledge reset quarantine 崩溃恢复。
-
-    扫受控父目录 ``data_dir/.knowledge-reset/`` 下的 ``quarantine-*`` 子目录，每个必须：
-
-    - root / child 是真实目录（非 symlink），resolve 后严格 contained；
-    - 同级 manifest 是普通文件（非 symlink）；
-    - manifest.stage 正确，且 generation 与 child 名严格匹配。
-
-    无有效 manifest 的子目录一律不触碰。多 quarantine 同时存在时保守拒绝自动恢复/删除。
-    任一路径校验失败：不 move、不 rmtree、不 unlink 外部目标，只记稳定 warning（不含本机路径）。
-    """
-    # 函数内 import 避免 db ↔ knowledge 包加载阶段的循环（运行时已全部加载，安全）。
-    from offerpilot.knowledge.reset import (
-        KnowledgeResetError,
-        KNOWLEDGE_RESET_MANIFEST_SUFFIX,
-        KNOWLEDGE_RESET_QUARANTINE_CHILD_PREFIX,
-        KNOWLEDGE_RESET_QUARANTINE_DIR,
-        _assert_safe_quarantine_child,
-        _assert_safe_quarantine_root,
-        _best_effort_cleanup_orphan_intent,
-        _best_effort_cleanup_quarantine,
-        _expected_generation_from_child,
-        _is_real_dir,
-        _quarantine_manifest_path,
-        _read_quarantine_manifest,
-    )
-
-    quarantine_root = data_dir / KNOWLEDGE_RESET_QUARANTINE_DIR
-    # root 不存在：无事可做。root 是 symlink / 非目录 / 越界：拒绝跟随，记 warning。
-    if not quarantine_root.exists():
-        return
-    try:
-        _assert_safe_quarantine_root(data_dir, quarantine_root)
-    except KnowledgeResetError:
-        _LOGGER.warning(
-            "Knowledge reset quarantine 根路径校验失败，已跳过自动恢复与清理"
-        )
-        return
-
-    # 仅收集有有效 generation-matched manifest 且路径安全的 quarantine 子目录。
-    # 注意：同级 ``quarantine-*.manifest`` 也以 child 前缀开头，必须先排除非目录项，
-    # 避免把 manifest 误当 child 触发路径校验 warning。
-    verified: list[Path] = []
-    for child in quarantine_root.iterdir():
-        if not child.name.startswith(KNOWLEDGE_RESET_QUARANTINE_CHILD_PREFIX):
-            continue
-        if child.name.endswith(KNOWLEDGE_RESET_MANIFEST_SUFFIX):
-            continue
-        # 非目录跳过；symlink 记 warning 后跳过（不跟随）。
-        if child.is_symlink() or not child.is_dir():
-            if child.is_symlink():
-                _LOGGER.warning(
-                    "Knowledge reset quarantine 子路径校验失败，已跳过该条目"
-                )
-            continue
-        try:
-            _assert_safe_quarantine_child(data_dir, child)
-        except KnowledgeResetError:
-            _LOGGER.warning(
-                "Knowledge reset quarantine 子路径校验失败，已跳过该条目"
-            )
-            continue
-        expected = _expected_generation_from_child(child)
-        if expected is None:
-            continue
-        manifest = _quarantine_manifest_path(child)
-        # manifest 必须是普通文件；generation 必须与 child 名匹配。
-        if _read_quarantine_manifest(manifest, expected_generation=expected) is None:
-            continue
-        verified.append(child)
-    if not verified:
-        # 可能只剩「intent 写后、rename 前崩溃」的孤儿 manifest。
-        _best_effort_cleanup_orphan_intent(data_dir)
-        return
-    knowledge_dir = data_dir / "knowledge"
-    with engine.begin() as conn:
-        tables = {
-            row[0]
-            for row in conn.execute(
-                text("SELECT name FROM sqlite_master WHERE type='table'")
-            ).fetchall()
-        }
-        db_has_sources = "knowledge_sources" in tables and (
-            conn.execute(text("SELECT COUNT(*) FROM knowledge_sources")).scalar() or 0
-        ) > 0
-    if len(verified) > 1:
-        # 多 quarantine：无法确定代际，保守拒绝自动恢复/删除，记 warning 留用户介入。
-        _LOGGER.warning(
-            "检测到多个 Knowledge reset quarantine 残留，无法自动判定代际，"
-            "已跳过自动恢复与清理，请人工核查后重置"
-        )
-        return
-    child = verified[0]
-    # knowledge/ 若是 symlink 等非受信路径：跳过恢复，但仍尝试 cleanup 已验证 child。
-    knowledge_missing = not knowledge_dir.exists()
-    if not knowledge_missing and not _is_real_dir(knowledge_dir):
-        _LOGGER.warning(
-            "Knowledge 根路径不是受信任的真实目录，已跳过 quarantine 自动恢复"
-        )
-        _best_effort_cleanup_quarantine(child, data_dir)
-        _best_effort_cleanup_orphan_intent(data_dir)
-        return
-    if knowledge_missing and db_has_sources:
-        # reset 未完成（intent 已写 + rename 后崩溃）→ 原子移回恢复。
-        # 再次校验 child 安全后才 replace。
-        try:
-            _assert_safe_quarantine_child(data_dir, child)
-        except KnowledgeResetError:
-            _LOGGER.warning(
-                "Knowledge reset quarantine 恢复前路径校验失败，已跳过自动恢复"
-            )
-            return
-        os.replace(child, knowledge_dir)
-    # 统一复用 reset 的 best-effort 清理（内部自带边界校验）。
-    _best_effort_cleanup_quarantine(child, data_dir)
-    _best_effort_cleanup_orphan_intent(data_dir)
-
-
 def _recover_knowledge_runtime(engine, data_dir: Path) -> None:  # type: ignore[no-untyped-def]
     """KI-07：Spec §6 / §12 启动恢复。
 
@@ -815,10 +692,8 @@ def _recover_knowledge_runtime(engine, data_dir: Path) -> None:  # type: ignore[
 
     必须在 ``_recover_knowledge_deletions`` 之后执行——delete Job 的恢复由后者负责
     （连 Source 行 + 所有 Job 一并清理）。本函数只处理 extract/brief Job。
+    KBR-07 一次性 reset 不再参与启动恢复；旧 quarantine/manifest 协议已删除。
     """
-
-    # Finding 3：先恢复/清理 reset quarantine 残留，确保 knowledge/ 就绪再做 staging/sources 清理。
-    _recover_knowledge_reset_quarantine(engine, data_dir)
 
     knowledge_dir = data_dir / "knowledge"
     staging_root = knowledge_dir / "staging"
