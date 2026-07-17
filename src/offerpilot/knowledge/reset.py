@@ -15,16 +15,18 @@
 执行顺序
 ~~~~~~~~
 
-1. 门禁：``runtime_mode=local`` 且 ``confirm=True``。
+1. 门禁：``runtime_mode=local`` 且 ``confirm=True``（零副作用，不打开会触发恢复的 DB）。
 2. 若完成标记已存在 → ``reset_already_completed``，不触碰任何数据。
-3. 单 SQLite 事务 DELETE Knowledge 表闭集；失败整体回滚且不开始文件清理。
-4. 提交后安全清理固定路径 ``knowledge/`` 与 ``.knowledge-reset/``。
-5. 验证 Knowledge 表与文件均为空、非 Knowledge 与 AI 配置不变。
-6. 独立事务写入完成标记。
+3. 预检固定清理根路径；非法则 fail closed，不开始 DB 清理。
+4. 单 SQLite 事务 DELETE Knowledge 表闭集；失败整体回滚且不开始文件清理。
+5. 提交后安全清理固定路径 ``knowledge/`` 与 ``.knowledge-reset/``。
+6. 验证 Knowledge 表与文件均为空、非 Knowledge 与 AI 配置不变。
+7. 独立事务写入完成标记；写后立即复验空状态，失败则撤销标记。
 """
 
 from __future__ import annotations
 
+import sqlite3
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -175,6 +177,17 @@ def _assert_safe_fixed_root(data_dir: Path, target: Path, label: str) -> None:
         )
 
 
+def _precheck_cleanup_roots(data_dir: Path) -> None:
+    """在任何破坏性 DB 操作前预检固定清理根。
+
+    不存在视为空；symlink / 非目录 / 越界 → ``reset_path_escape``，且不得开始清表。
+    """
+    _assert_safe_fixed_root(data_dir, data_dir / KNOWLEDGE_DIR_NAME, KNOWLEDGE_DIR_NAME)
+    _assert_safe_fixed_root(
+        data_dir, data_dir / LEGACY_RESET_DIR_NAME, LEGACY_RESET_DIR_NAME
+    )
+
+
 def _capture_pre_snapshot(session_factory: sessionmaker[Session]) -> _PreSnapshot:
     snapshot = _PreSnapshot()
     with session_factory() as session:
@@ -198,6 +211,59 @@ def _capture_ai_config(data_dir: Path) -> str:
     if not config_path.exists():
         return ""
     return config_path.read_text(encoding="utf-8")
+
+
+def completion_mark_exists_at(data_dir: Path) -> bool:
+    """只读查询完成标记，不触发 init_database / 启动恢复。
+
+    供 CLI 在打开会执行恢复副作用的 session factory 之前做门禁。
+    """
+    db_path = data_dir / "data.db"
+    if not db_path.exists():
+        return False
+    try:
+        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type='table' AND name='schema_migrations' LIMIT 1"
+            ).fetchone()
+            if row is None:
+                return False
+            found = conn.execute(
+                "SELECT 1 FROM schema_migrations WHERE version = ? LIMIT 1",
+                (COMPLETION_MIGRATION_VERSION,),
+            ).fetchone()
+            return found is not None
+    except sqlite3.Error:
+        # 数据库不可读时不视为已完成，交给后续正式路径处理。
+        return False
+
+
+def assert_reset_preconditions(
+    data_dir: Path,
+    *,
+    runtime_mode: RuntimeMode,
+    confirm: bool,
+) -> None:
+    """零副作用门禁：不打开会触发恢复的 DB 连接，不触碰文件。
+
+    CLI 必须在 ``session_factory_for_data_dir`` 之前调用本函数。
+    """
+    if runtime_mode != "local":
+        raise KnowledgeResetError(
+            "reset_not_allowed_in_runtime",
+            f"runtime_mode={runtime_mode!r} 非本地模式，拒绝执行破坏性 Knowledge reset",
+        )
+    if not confirm:
+        raise KnowledgeResetError(
+            "reset_requires_confirm",
+            "破坏性 reset 需要显式确认（confirm=True）",
+        )
+    if completion_mark_exists_at(data_dir):
+        raise KnowledgeResetError(
+            "reset_already_completed",
+            "KBR-07 一次性 Knowledge reset 已完成，拒绝再次清空",
+        )
 
 
 def _completion_mark_exists(session_factory: sessionmaker[Session]) -> bool:
@@ -240,6 +306,20 @@ def _write_completion_mark(session_factory: sessionmaker[Session]) -> None:
         session.commit()
 
 
+def _remove_completion_mark(session_factory: sessionmaker[Session]) -> None:
+    """撤销误写的完成标记（写标记后复验失败时使用）。"""
+    with session_factory() as session:
+        conn = session.connection()
+        existing = _existing_tables(conn)
+        if "schema_migrations" not in existing:
+            return
+        conn.execute(
+            text("DELETE FROM schema_migrations WHERE version = :version"),
+            {"version": COMPLETION_MIGRATION_VERSION},
+        )
+        session.commit()
+
+
 def _knowledge_tables_empty(session_factory: sessionmaker[Session]) -> bool:
     with session_factory() as session:
         conn = session.connection()
@@ -260,14 +340,17 @@ def _knowledge_files_empty(data_dir: Path) -> bool:
     knowledge_dir = data_dir / KNOWLEDGE_DIR_NAME
     legacy_reset_dir = data_dir / LEGACY_RESET_DIR_NAME
 
-    if knowledge_dir.exists():
-        if knowledge_dir.is_symlink() or not knowledge_dir.is_dir():
-            return False
-        if any(knowledge_dir.iterdir()):
-            return False
+    try:
+        if knowledge_dir.exists():
+            if knowledge_dir.is_symlink() or not knowledge_dir.is_dir():
+                return False
+            if any(knowledge_dir.iterdir()):
+                return False
 
-    if legacy_reset_dir.exists():
-        # 残留本身就需要清理；symlink/非目录也视为未空，交清理路径 fail closed。
+        if legacy_reset_dir.exists():
+            # 残留本身就需要清理；symlink/非目录也视为未空，交清理路径 fail closed。
+            return False
+    except OSError:
         return False
 
     return True
@@ -276,7 +359,13 @@ def _knowledge_files_empty(data_dir: Path) -> bool:
 def _list_knowledge_dir_entries(knowledge_dir: Path) -> list[str]:
     if not knowledge_dir.exists() or knowledge_dir.is_symlink() or not knowledge_dir.is_dir():
         return []
-    return sorted(child.name for child in knowledge_dir.iterdir())
+    try:
+        return sorted(child.name for child in knowledge_dir.iterdir())
+    except OSError as exc:
+        raise KnowledgeResetError(
+            "reset_file_cleanup_failed",
+            f"列举 knowledge/ 失败：{exc.__class__.__name__}",
+        ) from exc
 
 
 def _clear_fixed_directory(data_dir: Path, name: str, *, recreate_empty: bool) -> list[str]:
@@ -285,18 +374,33 @@ def _clear_fixed_directory(data_dir: Path, name: str, *, recreate_empty: bool) -
     - 不存在：视为空，不构成错误。
     - symlink / 非目录 / 越界：``reset_path_escape``。
     - 删除时 helper 自行校验边界；``rmtree`` 对嵌套 symlink 只 unlink 链接本身。
+    - 所有文件 I/O 异常映射为稳定 ``reset_file_cleanup_failed`` / ``reset_path_escape``。
     """
     target = data_dir / name
     _assert_safe_fixed_root(data_dir, target, name)
     if not target.exists():
         if recreate_empty:
-            target.mkdir(parents=True, exist_ok=True)
+            try:
+                target.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                raise KnowledgeResetError(
+                    "reset_file_cleanup_failed",
+                    f"创建 {name}/ 失败：{exc.__class__.__name__}",
+                ) from exc
             _assert_safe_fixed_root(data_dir, target, name)
         return []
 
-    cleared = _list_knowledge_dir_entries(target) if name == KNOWLEDGE_DIR_NAME else sorted(
-        child.name for child in target.iterdir()
-    )
+    try:
+        cleared = (
+            _list_knowledge_dir_entries(target)
+            if name == KNOWLEDGE_DIR_NAME
+            else sorted(child.name for child in target.iterdir())
+        )
+    except OSError as exc:
+        raise KnowledgeResetError(
+            "reset_file_cleanup_failed",
+            f"列举 {name}/ 失败：{exc.__class__.__name__}",
+        ) from exc
 
     # 再次校验后再删除（helper 自带边界检查，不依赖调用方预检）。
     _assert_safe_fixed_root(data_dir, target, name)
@@ -309,13 +413,21 @@ def _clear_fixed_directory(data_dir: Path, name: str, *, recreate_empty: bool) -
         ) from exc
 
     if recreate_empty:
-        target.mkdir(parents=True, exist_ok=True)
-        _assert_safe_fixed_root(data_dir, target, name)
-        if any(target.iterdir()):
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            _assert_safe_fixed_root(data_dir, target, name)
+            if any(target.iterdir()):
+                raise KnowledgeResetError(
+                    "reset_file_cleanup_failed",
+                    f"{name}/ 重建后仍非空",
+                )
+        except KnowledgeResetError:
+            raise
+        except OSError as exc:
             raise KnowledgeResetError(
                 "reset_file_cleanup_failed",
-                f"{name}/ 重建后仍非空",
-            )
+                f"重建 {name}/ 失败：{exc.__class__.__name__}",
+            ) from exc
     return cleared
 
 
@@ -406,6 +518,22 @@ def _clear_knowledge_tables(
     return deleted_source_rows, cleared_tables
 
 
+def _assert_knowledge_domain_empty(
+    session_factory: sessionmaker[Session],
+    data_dir: Path,
+) -> None:
+    if not _knowledge_tables_empty(session_factory):
+        raise KnowledgeResetError(
+            "reset_verification_failed",
+            "Knowledge 表清空后验证仍非空，拒绝写入完成标记",
+        )
+    if not _knowledge_files_empty(data_dir):
+        raise KnowledgeResetError(
+            "reset_verification_failed",
+            "Knowledge 文件清空后验证仍非空，拒绝写入完成标记",
+        )
+
+
 def reset_knowledge_domain(
     session_factory: sessionmaker[Session],
     data_dir: Path,
@@ -424,7 +552,11 @@ def reset_knowledge_domain(
     - ``confirm`` 非真 → ``reset_requires_confirm``
     - 完成标记已存在 → ``reset_already_completed``（禁止 DELETE / 文件操作 / force）
     - 固定路径为 symlink / 非目录 / 越界 → ``reset_path_escape``
+
+    调用方（CLI）应先调用 ``assert_reset_preconditions``，避免在门禁失败路径触发
+    ``session_factory_for_data_dir`` 的启动恢复副作用。本函数仍做防御性二次检查。
     """
+    # 防御性门禁（CLI 已在打开 session factory 前检查；测试可直接调用本函数）。
     if runtime_mode != "local":
         raise KnowledgeResetError(
             "reset_not_allowed_in_runtime",
@@ -449,23 +581,16 @@ def reset_knowledge_domain(
         # 仅校验可解析，不改写配置文件。
         load_config(data_dir)
 
+    # 路径预检必须在 DB 清表之前：非法根路径 fail closed，且不得留下 DB 已空的半状态。
+    _precheck_cleanup_roots(data_dir)
+
     # DB 先于文件。事务失败整体回滚且不开始文件清理。
     deleted_source_rows, cleared_tables = _clear_knowledge_tables(session_factory)
 
     # 文件清理失败：不恢复旧 Knowledge、不写完成标记；重新执行继续收敛。
     cleared_dir_entries = _clear_knowledge_files(data_dir)
 
-    if not _knowledge_tables_empty(session_factory):
-        raise KnowledgeResetError(
-            "reset_verification_failed",
-            "Knowledge 表清空后验证仍非空，拒绝写入完成标记",
-        )
-    if not _knowledge_files_empty(data_dir):
-        # 理论上 _clear_knowledge_files 成功后应为空；若 TOCTOU 或并发写入导致非空，拒绝标记。
-        raise KnowledgeResetError(
-            "reset_verification_failed",
-            "Knowledge 文件清空后验证仍非空，拒绝写入完成标记",
-        )
+    _assert_knowledge_domain_empty(session_factory, data_dir)
 
     # 完成标记写入前先验证保护项（此时尚无完成标记）。
     preserved, ai_config_unchanged, migrations = _verify_preservation(
@@ -475,20 +600,27 @@ def reset_knowledge_domain(
         expect_completion_mark=False,
     )
 
+    # 写标记前最后一次空状态检查，压缩验证→标记窗口。
+    _assert_knowledge_domain_empty(session_factory, data_dir)
     _write_completion_mark(session_factory)
 
-    # 写入后再次确认标记与保护项。
-    preserved, ai_config_unchanged, migrations = _verify_preservation(
-        session_factory,
-        data_dir,
-        pre,
-        expect_completion_mark=True,
-    )
-    if not _completion_mark_exists(session_factory):
-        raise KnowledgeResetError(
-            "reset_verification_failed",
-            "完成标记写入后验证失败",
+    # 写标记后立即复验：若并发写入导致非空，撤销标记并失败。
+    try:
+        _assert_knowledge_domain_empty(session_factory, data_dir)
+        preserved, ai_config_unchanged, migrations = _verify_preservation(
+            session_factory,
+            data_dir,
+            pre,
+            expect_completion_mark=True,
         )
+        if not _completion_mark_exists(session_factory):
+            raise KnowledgeResetError(
+                "reset_verification_failed",
+                "完成标记写入后验证失败",
+            )
+    except KnowledgeResetError:
+        _remove_completion_mark(session_factory)
+        raise
 
     return KnowledgeResetSummary(
         deleted_source_rows=deleted_source_rows,

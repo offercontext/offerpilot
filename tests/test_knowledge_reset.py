@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -533,11 +534,16 @@ def test_reset_ready_to_mark_only_writes_completion(tmp_path: Path) -> None:
 
 
 def test_reset_rejects_knowledge_root_symlink(tmp_path: Path) -> None:
-    init_database(tmp_path / "data.db")
+    # 必须先 seed 再替换为 symlink：证明路径拒绝发生在 DB 清表之前。
+    _seed_knowledge(tmp_path)
+    before_counts = _knowledge_counts(tmp_path)
+    assert before_counts["knowledge_sources"] >= 1
     outside = tmp_path.parent / "kbr07-knowledge-root-outside"
     outside.mkdir(parents=True, exist_ok=True)
     sentinel = outside / "secret.txt"
     sentinel.write_text("must-not-delete", encoding="utf-8")
+    knowledge_dir = tmp_path / "knowledge"
+    shutil.rmtree(knowledge_dir)
     knowledge_link = tmp_path / "knowledge"
     knowledge_link.symlink_to(outside)
 
@@ -551,12 +557,14 @@ def test_reset_rejects_knowledge_root_symlink(tmp_path: Path) -> None:
     assert exc.value.code == "reset_path_escape"
     assert sentinel.read_text(encoding="utf-8") == "must-not-delete"
     assert knowledge_link.is_symlink()
+    # 关键：路径失败不得清空 DB。
+    assert _knowledge_counts(tmp_path) == before_counts
     assert COMPLETION_MIGRATION_VERSION not in _schema_migrations(tmp_path)
 
 
 def test_reset_rejects_legacy_reset_root_symlink(tmp_path: Path) -> None:
-    init_database(tmp_path / "data.db")
-    (tmp_path / "knowledge").mkdir()
+    _seed_knowledge(tmp_path)
+    before_counts = _knowledge_counts(tmp_path)
     outside = tmp_path.parent / "kbr07-legacy-reset-outside"
     outside.mkdir(parents=True, exist_ok=True)
     sentinel = outside / "secret.txt"
@@ -574,11 +582,15 @@ def test_reset_rejects_legacy_reset_root_symlink(tmp_path: Path) -> None:
     assert exc.value.code == "reset_path_escape"
     assert sentinel.read_text(encoding="utf-8") == "must-not-delete"
     assert legacy_link.is_symlink()
+    assert _knowledge_counts(tmp_path) == before_counts
     assert COMPLETION_MIGRATION_VERSION not in _schema_migrations(tmp_path)
 
 
 def test_reset_rejects_knowledge_root_non_directory(tmp_path: Path) -> None:
-    init_database(tmp_path / "data.db")
+    _seed_knowledge(tmp_path)
+    before_counts = _knowledge_counts(tmp_path)
+    knowledge_dir = tmp_path / "knowledge"
+    shutil.rmtree(knowledge_dir)
     knowledge_file = tmp_path / "knowledge"
     knowledge_file.write_text("not-a-dir", encoding="utf-8")
 
@@ -592,12 +604,13 @@ def test_reset_rejects_knowledge_root_non_directory(tmp_path: Path) -> None:
     assert exc.value.code == "reset_path_escape"
     assert knowledge_file.is_file()
     assert knowledge_file.read_text(encoding="utf-8") == "not-a-dir"
+    assert _knowledge_counts(tmp_path) == before_counts
     assert COMPLETION_MIGRATION_VERSION not in _schema_migrations(tmp_path)
 
 
 def test_reset_rejects_legacy_reset_root_non_directory(tmp_path: Path) -> None:
-    init_database(tmp_path / "data.db")
-    (tmp_path / "knowledge").mkdir()
+    _seed_knowledge(tmp_path)
+    before_counts = _knowledge_counts(tmp_path)
     legacy_file = tmp_path / ".knowledge-reset"
     legacy_file.write_text("not-a-dir", encoding="utf-8")
 
@@ -611,6 +624,7 @@ def test_reset_rejects_legacy_reset_root_non_directory(tmp_path: Path) -> None:
     assert exc.value.code == "reset_path_escape"
     assert legacy_file.is_file()
     assert legacy_file.read_text(encoding="utf-8") == "not-a-dir"
+    assert _knowledge_counts(tmp_path) == before_counts
     assert COMPLETION_MIGRATION_VERSION not in _schema_migrations(tmp_path)
 
 
@@ -763,19 +777,14 @@ def test_startup_recovery_still_cleans_orphan_sources_and_staging(tmp_path: Path
 
 
 def test_api_reset_endpoint_removed(tmp_path: Path) -> None:
-    """原 reset HTTP 路由已删除，不得再作为成功 API 工作。
-
-    FastAPI 存在 ``GET /{full_path:path}`` SPA catch-all 时，对同 path 的 POST 会返回
-    405 Method Not Allowed（路径被 GET 占用）而非裸 404；两者都证明 reset 业务路由不存在。
-    """
+    """原 reset HTTP 路由已删除；未知 /api/* 必须稳定返回 404。"""
     with TestClient(create_app(data_dir=tmp_path)) as client:
         resp = client.post("/api/knowledge/reset", json={"confirm": True})
-        assert resp.status_code in (404, 405)
+        assert resp.status_code == 404
         assert "deleted_source_rows" not in resp.text
         assert "cleared_tables" not in resp.text
-        # 再确认 GET 也不是业务 reset 契约。
         get_resp = client.get("/api/knowledge/reset")
-        assert get_resp.status_code in (404, 200)  # 200 仅为 SPA fallback HTML
+        assert get_resp.status_code == 404
         assert "deleted_source_rows" not in get_resp.text
 
 
@@ -807,6 +816,98 @@ def test_cli_knowledge_reset_command(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert again.exit_code != 0
     assert "reset_already_completed" in again.output
     assert _snapshot_data_dir(tmp_path) == after_complete
+
+
+def test_cli_gate_refusal_does_not_run_startup_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """完成后再次 CLI 拒绝时，不得触发 init_database 启动恢复清理 staging。"""
+    config = _qualified_config()
+    save_config(tmp_path, config)
+    _seed_knowledge(tmp_path, config=config)
+    monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
+
+    from typer.testing import CliRunner
+
+    from offerpilot.cli import app as cli_app
+
+    runner = CliRunner()
+    ok = runner.invoke(cli_app, ["knowledge", "reset", "--confirm"])
+    assert ok.exit_code == 0, ok.output
+    _assert_completion_marked(tmp_path)
+
+    staging = tmp_path / "knowledge" / "staging"
+    staging.mkdir(parents=True, exist_ok=True)
+    sentinel = staging / "sentinel.bin"
+    sentinel.write_bytes(b"keep-me")
+    before = _snapshot_data_dir(tmp_path)
+
+    again = runner.invoke(cli_app, ["knowledge", "reset", "--confirm"])
+    assert again.exit_code != 0
+    assert "reset_already_completed" in again.output
+    assert sentinel.exists()
+    assert sentinel.read_bytes() == b"keep-me"
+    assert _snapshot_data_dir(tmp_path) == before
+
+    # 缺少 --confirm 同样不得有副作用。
+    missing = runner.invoke(cli_app, ["knowledge", "reset"])
+    assert missing.exit_code != 0
+    assert "reset_requires_confirm" in missing.output
+    assert sentinel.exists()
+    assert _snapshot_data_dir(tmp_path) == before
+
+
+def test_completion_mark_revoked_if_post_write_empty_check_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """写标记后复验失败必须撤销标记，避免误标 COMPLETE。"""
+    _seed_knowledge(tmp_path)
+    from offerpilot.knowledge import reset as reset_module
+
+    real_assert = reset_module._assert_knowledge_domain_empty
+    real_write = reset_module._write_completion_mark
+    state = {"written": False}
+
+    def write_then_flag(session_factory) -> None:  # type: ignore[no-untyped-def]
+        real_write(session_factory)
+        state["written"] = True
+
+    def flaky_empty(session_factory, data_dir: Path) -> None:  # type: ignore[no-untyped-def]
+        # 写标记前的检查放行；写标记后第一次复验失败。
+        if not state["written"]:
+            return real_assert(session_factory, data_dir)
+        raise KnowledgeResetError(
+            "reset_verification_failed",
+            "Knowledge 文件清空后验证仍非空，拒绝写入完成标记",
+        )
+
+    monkeypatch.setattr(reset_module, "_write_completion_mark", write_then_flag)
+    monkeypatch.setattr(reset_module, "_assert_knowledge_domain_empty", flaky_empty)
+
+    with pytest.raises(KnowledgeResetError) as exc:
+        reset_knowledge_domain(
+            session_factory_for_data_dir(tmp_path),
+            tmp_path,
+            runtime_mode="local",
+            confirm=True,
+        )
+    assert exc.value.code == "reset_verification_failed"
+    assert state["written"] is True
+    # 标记必须被撤销。
+    assert COMPLETION_MIGRATION_VERSION not in _schema_migrations(tmp_path)
+    # DB 已清空（写标记前已完成），可重跑收敛。
+    assert set(_knowledge_counts(tmp_path).values()) == {0}
+
+    # 去掉 monkeypatch 后应能写标记完成。
+    monkeypatch.undo()
+    summary = reset_knowledge_domain(
+        session_factory_for_data_dir(tmp_path),
+        tmp_path,
+        runtime_mode="local",
+        confirm=True,
+    )
+    assert summary.completion_marked is True
+    _assert_completion_marked(tmp_path)
 
 
 def test_cli_knowledge_reset_refuses_non_local_runtime(

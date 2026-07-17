@@ -310,4 +310,3 @@ export interface KnowledgeBriefRebuildResponse {
   brief_error_message: string;
   status: string;
 }
-

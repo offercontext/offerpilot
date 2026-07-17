@@ -247,7 +247,11 @@ def knowledge_reset(
     ``.knowledge-reset/``；全部验证通过后写入一次性完成标记。完成后永久拒绝再次清空。
     不恢复旧 Knowledge；中断后重新运行同一命令继续向空状态收敛。
     """
-    from offerpilot.knowledge.reset import KnowledgeResetError, reset_knowledge_domain
+    from offerpilot.knowledge.reset import (
+        KnowledgeResetError,
+        assert_reset_preconditions,
+        reset_knowledge_domain,
+    )
 
     data_dir = resolve_data_dir()
     cfg = load_config(data_dir)
@@ -256,6 +260,13 @@ def knowledge_reset(
         "本命令是离线一次性迁移，不提供跨进程锁或在线恢复。"
     )
     try:
+        # 门禁必须在 session_factory_for_data_dir 之前：后者会触发 staging/孤儿 Source/
+        # Job lease 启动恢复，拒绝路径不得有任何副作用。
+        assert_reset_preconditions(
+            data_dir,
+            runtime_mode=cfg.runtime_mode,
+            confirm=confirm,
+        )
         summary = reset_knowledge_domain(
             session_factory_for_data_dir(data_dir),
             data_dir,
