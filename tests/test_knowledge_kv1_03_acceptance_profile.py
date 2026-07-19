@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from sqlalchemy import create_engine, text
 from typer.testing import CliRunner
 
 from offerpilot.config import Config
@@ -58,6 +59,13 @@ def test_kv1_03_v1_profile_passes_without_provider_or_brief(tmp_path: Path) -> N
     # V1 导入不自动触发 Brief：所有 Source 保持 not_started。
     for source in report.source_results:
         assert source.brief_status == "not_started"
+    for sandbox in (tmp_path, tmp_path / "edge-sandbox", tmp_path / "bundle-sandbox"):
+        engine = create_engine(f"sqlite:///{sandbox / 'data.db'}")
+        with engine.connect() as connection:
+            brief_jobs = connection.execute(
+                text("SELECT COUNT(*) FROM knowledge_jobs WHERE kind = 'brief'")
+            ).scalar_one()
+        assert brief_jobs == 0
 
 
 def test_kv1_03_v1_readback_failure_fails_gate_without_brief(tmp_path: Path) -> None:

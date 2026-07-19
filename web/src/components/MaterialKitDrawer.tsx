@@ -167,9 +167,9 @@ function formatConfirmationKind(value: string): string {
 
 function getErrorMessage(error: unknown): string {
   const responseData = (
-    error as { response?: { data?: { code?: unknown; error?: unknown } } }
+    error as { response?: { data?: { error_code?: unknown; error?: unknown } } }
   )?.response?.data;
-  if (responseData?.code === 'material_proposal_unverifiable') {
+  if (responseData?.error_code === 'material_proposal_unverifiable') {
     return 'AI output did not pass evidence verification. Please retry; your original resume is protected and no draft was created.';
   }
   if (typeof responseData?.error === 'string' && responseData.error) {

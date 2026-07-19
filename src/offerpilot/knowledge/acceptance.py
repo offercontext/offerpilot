@@ -18,7 +18,10 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Optional, cast
+
+from fastapi.testclient import TestClient
 
 from offerpilot.config import AIProviderProfile, Config
 from offerpilot.db import init_database, session_factory_for_data_dir
@@ -692,6 +695,7 @@ def _evaluate_source(
     spec: SourceFixtureSpec,
     source_id: int,
     inject_readback_failure: bool,
+    http_client: TestClient,
 ) -> SourceResult:
     source = repository.get_source(source_id)
     assert source is not None
@@ -709,7 +713,11 @@ def _evaluate_source(
         excerpt = canonical[ev.char_start : ev.char_end]
         if inject_readback_failure and index == 0:
             excerpt = excerpt + "__tampered__"
-        if excerpt == ev.canonical_excerpt:
+        detail = http_client.get(f"/api/knowledge/evidence/{ev.id}")
+        detail_excerpt = (
+            detail.json().get("canonical_excerpt") if detail.status_code == 200 else None
+        )
+        if excerpt == ev.canonical_excerpt == detail_excerpt:
             readback_pass += 1
         else:
             readback_fail += 1
@@ -748,14 +756,26 @@ def _evaluate_source(
 
 
 def _evaluate_queries(
-    repository: KnowledgeRepository,
     source_id_by_key: dict[str, int],
     queries: list[QuerySpec],
+    http_client: TestClient,
 ) -> list[QueryResult]:
     id_to_key = {sid: key for key, sid in source_id_by_key.items()}
     results: list[QueryResult] = []
     for q in queries:
-        hits = repository.search_evidence(q.query, limit=5)
+        response = http_client.post(
+            "/api/knowledge/evidence/search", json={"query": q.query, "limit": 5}
+        )
+        raw_hits = response.json().get("hits", []) if response.status_code == 200 else []
+        hits = [
+            SimpleNamespace(
+                evidence_id=item.get("evidence_id", ""),
+                source_id=item.get("source_id"),
+                canonical_excerpt=item.get("canonical_excerpt", ""),
+                search_text=item.get("canonical_excerpt", ""),
+            )
+            for item in raw_hits
+        ]
         hit_source_keys = tuple(id_to_key.get(h.source_id, "") for h in hits)
         if q.expect_hit:
             expected_id = source_id_by_key.get(q.source_key)
@@ -1174,7 +1194,7 @@ def _config_with_fallback(base: Config) -> Config:
         api_key=base.api_key,
         providers=providers,
         active_provider_id=primary_id,
-        fallback_provider_id="fallback",
+        fallback_provider_ids=["fallback"],
     )
 
 
@@ -1285,7 +1305,7 @@ def _evaluate_edge_fixtures(
             repository,
             sandbox,
             session_factory,
-            on_extraction_succeeded=service.enqueue_or_block_brief,
+            on_extraction_succeeded=None,
         ),
     )
     edge = fixtures_dir / "edge"
@@ -1378,7 +1398,7 @@ def _evaluate_bundle_fixtures(
             repository,
             sandbox,
             session_factory,
-            on_extraction_succeeded=service.enqueue_or_block_brief,
+            on_extraction_succeeded=None,
         ),
     )
     bundle_dir = fixtures_dir / "bundles"
@@ -1576,16 +1596,26 @@ def run_acceptance(
             )
 
     # 构建 source_results（回读 + 幂等 + Brief 状态）。
-    source_results = [
-        _evaluate_source(
-            repository, fixtures_dir, spec, source_id_by_key[spec.source_key],
-            inject_readback_failure,
-        )
-        for spec in specs
-    ]
+    from offerpilot.api import create_app
 
-    # 检索指标。
-    query_results = _evaluate_queries(repository, source_id_by_key, queries)
+    http_client = TestClient(create_app(data_dir=data_dir))
+    try:
+        source_results = [
+            _evaluate_source(
+                repository,
+                fixtures_dir,
+                spec,
+                source_id_by_key[spec.source_key],
+                inject_readback_failure,
+                http_client,
+            )
+            for spec in specs
+        ]
+
+        # 检索指标。
+        query_results = _evaluate_queries(source_id_by_key, queries, http_client)
+    finally:
+        http_client.close()
 
     # Brief 故障场景。
     brief_failure_results: list[BriefFailureResult] = []

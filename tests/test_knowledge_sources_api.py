@@ -613,4 +613,3 @@ def test_ki02_staging_directory_cleared_after_successful_upload(app_client, tmp_
 def test_ki02_unknown_evidence_id_returns_404(app_client):
     response = app_client.get("/api/knowledge/evidence/ev_unknown")
     assert response.status_code == 404
-

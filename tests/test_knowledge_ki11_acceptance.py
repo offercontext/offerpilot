@@ -44,20 +44,25 @@ def test_ki11_contract_requires_five_sources_and_twenty_expected_queries() -> No
 
 
 def test_ki11_recall_requires_expected_evidence_not_only_source() -> None:
-    class _Repository:
-        def search_evidence(self, _query: str, *, limit: int) -> list[object]:
-            assert limit == 5
-            return [
-                type(
-                    "Hit",
-                    (),
+    class _Response:
+        status_code = 200
+
+        def json(self) -> dict[str, object]:
+            return {
+                "hits": [
                     {
                         "source_id": 1,
                         "evidence_id": "ev_unrelated",
                         "canonical_excerpt": "同一 Source 的无关章节",
-                    },
-                )()
-            ]
+                    }
+                ]
+            }
+
+    class _HttpClient:
+        def post(self, path: str, *, json: dict[str, object]) -> _Response:
+            assert path == "/api/knowledge/evidence/search"
+            assert json == {"query": "人工预期主题", "limit": 5}
+            return _Response()
 
     query = QuerySpec(
         query="人工预期主题",
@@ -66,7 +71,7 @@ def test_ki11_recall_requires_expected_evidence_not_only_source() -> None:
         expect_hit=True,
         content_keywords=("预期主题",),
     )
-    result = _evaluate_queries(_Repository(), {"source-a": 1}, [query])[0]
+    result = _evaluate_queries({"source-a": 1}, [query], _HttpClient())[0]  # type: ignore[arg-type]
     assert result.recall_hit is False
     assert result.first_rank is None
 

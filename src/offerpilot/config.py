@@ -86,9 +86,12 @@ class Config(BaseModel):
         return None
 
     def fallback_provider(self) -> AIProviderProfile | None:
-        if not self.fallback_provider_id:
+        provider_id = self.fallback_provider_id or (
+            self.fallback_provider_ids[0] if self.fallback_provider_ids else ""
+        )
+        if not provider_id:
             return None
-        fallback = self.provider_by_id(self.fallback_provider_id)
+        fallback = self.provider_by_id(provider_id)
         if fallback is None or fallback.id == self.active_provider().id:
             return None
         return fallback

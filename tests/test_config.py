@@ -1,6 +1,12 @@
 from pathlib import Path
 
-from offerpilot.config import Config, load_config, resolve_data_dir, save_config
+from offerpilot.config import (
+    AIProviderProfile,
+    Config,
+    load_config,
+    resolve_data_dir,
+    save_config,
+)
 
 
 def test_resolve_data_dir_prefers_env(monkeypatch, tmp_path):
@@ -46,3 +52,21 @@ def test_save_and_load_config_round_trip(tmp_path):
     assert loaded == cfg
     assert (tmp_path / "config.json").exists()
 
+
+def test_loaded_ordered_fallback_is_available_to_knowledge_brief(tmp_path):
+    providers = [
+        AIProviderProfile(id="primary", label="Primary", api_key="sk-primary"),
+        AIProviderProfile(id="backup", label="Backup", api_key="sk-backup"),
+    ]
+    save_config(
+        tmp_path,
+        Config(
+            active_provider_id="primary",
+            fallback_provider_ids=["backup"],
+            providers=providers,
+        ),
+    )
+
+    loaded = load_config(tmp_path)
+
+    assert loaded.fallback_provider() == providers[1]

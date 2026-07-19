@@ -323,7 +323,7 @@ describe('MaterialKitDrawer evidence confirmation', () => {
     proposalService.createMaterialRevisionProposal.mockRejectedValue({
       response: {
         data: {
-          code: 'material_proposal_unverifiable',
+          error_code: 'material_proposal_unverifiable',
           error: 'AI returned a proposal that could not be verified. Please retry.',
         },
       },
