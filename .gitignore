@@ -45,6 +45,11 @@ build/
 # Local git worktrees
 .worktrees/
 
+# Root-level workflow artifacts (planning/tickets/verification screenshots)
+/IMPLEMENTATION_PLAN.md
+/tickets*.md
+/*.png
+
 # Design/planning docs default to local workflow artifacts; approved SSOT files are allowlisted below
 docs/*
 !docs/
