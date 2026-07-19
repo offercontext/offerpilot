@@ -391,7 +391,68 @@ def _knowledge_brief_payload(
     }
 
 
-def _knowledge_brief_attempt_payload(attempt: Any) -> Optional[dict[str, Any]]:
+def _knowledge_brief_attempt_step_payload(step: Any) -> dict[str, Any]:
+    """Attempt 步骤的安全 API 形态；绝不返回模型原始响应或 preview。"""
+    try:
+        output = json.loads(step.output_json or "{}")
+    except (TypeError, json.JSONDecodeError):
+        output = {}
+    if not isinstance(output, dict):
+        output = {"value": output}
+    # 兼容已经写入旧库的步骤：常规 API 永久移除可能泄露 Evidence/Prompt 的
+    # 原始文本字段；新步骤本身不再写入这些字段。
+    unsafe_output_keys = {
+        "response_preview",
+        "preview",
+        "raw_response",
+        "prompt",
+        "messages",
+        "request",
+        "input_text",
+    }
+
+    def _strip_unsafe(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: _strip_unsafe(item)
+                for key, item in value.items()
+                if key not in unsafe_output_keys
+            }
+        if isinstance(value, list):
+            return [_strip_unsafe(item) for item in value]
+        return value
+
+    output = _strip_unsafe(output)
+    return {
+        "id": step.id,
+        "attempt_id": step.attempt_id,
+        "sequence": step.sequence,
+        "iteration": step.iteration,
+        "phase": step.phase,
+        "status": step.status,
+        "block_path": step.block_path,
+        "provider_id": step.provider_id,
+        "provider_model": step.provider_model,
+        "prompt_version": step.prompt_version,
+        "schema_version": step.schema_version,
+        "evidence_ids": list(step.evidence_ids),
+        "output": output,
+        "token_input_count": step.token_input_count,
+        "token_output_count": step.token_output_count,
+        "latency_ms": step.latency_ms,
+        "retry_count": step.retry_count,
+        "error_code": step.error_code,
+        "error_message": step.error_message,
+        "created_at": _json_datetime(step.created_at),
+    }
+
+
+def _knowledge_brief_attempt_payload(
+    attempt: Any,
+    steps: Optional[list[Any]] = None,
+    *,
+    total_steps: Optional[int] = None,
+) -> Optional[dict[str, Any]]:
     # KI-09 / Spec §10.4 / §18：Attempt 不暴露 API Key、完整 Prompt 或不可解析原始响应。
     # candidate_payload 仅在非 succeeded 时返回，便于 UI 展示校验失败候选。
     if attempt is None:
@@ -407,6 +468,8 @@ def _knowledge_brief_attempt_payload(attempt: Any) -> Optional[dict[str, Any]]:
             candidate_payload = json.loads(attempt.candidate_payload_json)
         except json.JSONDecodeError:
             candidate_payload = None
+    visible_steps = list(steps or [])
+    step_total = max(len(visible_steps), int(total_steps or 0))
     return {
         "id": attempt.id,
         "source_id": attempt.source_id,
@@ -437,6 +500,10 @@ def _knowledge_brief_attempt_payload(attempt: Any) -> Optional[dict[str, Any]]:
         "latency_ms": attempt.latency_ms,
         "created_at": _json_datetime(attempt.created_at),
         "updated_at": _json_datetime(attempt.updated_at),
+        # 过程记录是可选字段；旧数据库/旧 Attempt 没有步骤时仍返回空数组。
+        "steps": [_knowledge_brief_attempt_step_payload(step) for step in visible_steps],
+        "total_steps": step_total,
+        "has_more": step_total > len(visible_steps),
     }
 
 
@@ -509,11 +576,13 @@ def create_app(
         session_factory,
         config=knowledge_config,
     )
+    # KV1-01 / ADR-0009：V1 导入不自动触发 Brief。ExtractionWorker 与
+    # KnowledgeWorkerRuntime 均不注册 on_extraction_succeeded callback，Extraction
+    # 提交后 Source 保持 brief_status=not_started。显式 rebuild_brief 独立入队。
     extraction_worker = ExtractionWorker(
         knowledge_repository,
         resolved_data_dir,
         session_factory,
-        on_extraction_succeeded=knowledge_service.enqueue_or_block_brief,
     )
     brief_worker = BriefWorker(knowledge_repository, knowledge_config)
     knowledge_runner = KnowledgeJobRunner(
@@ -525,7 +594,6 @@ def create_app(
     knowledge_runtime = KnowledgeWorkerRuntime(
         knowledge_runner,
         knowledge_repository,
-        on_extraction_succeeded=knowledge_service.enqueue_or_block_brief,
     )
 
     @app.on_event("startup")
@@ -903,6 +971,14 @@ def create_app(
         brief = knowledge_repository.get_source_brief(source_id)
         latest_attempt = knowledge_repository.find_latest_brief_attempt(source_id)
         attempts = knowledge_repository.list_brief_attempts(source_id, limit=10)
+        attempt_steps = {
+            item.id: knowledge_repository.list_brief_attempt_steps(item.id, limit=200)
+            for item in attempts
+        }
+        attempt_step_totals = {
+            item.id: knowledge_repository.count_brief_attempt_steps(item.id)
+            for item in attempts
+        }
         return JSONResponse(
             {
                 "source_id": source_id,
@@ -914,9 +990,22 @@ def create_app(
                     brief,
                     _derive_brief_coverage(knowledge_repository, source_id, brief),
                 ),
-                "latest_attempt": _knowledge_brief_attempt_payload(latest_attempt),
+                "latest_attempt": _knowledge_brief_attempt_payload(
+                    latest_attempt,
+                    attempt_steps.get(latest_attempt.id, []) if latest_attempt else [],
+                    total_steps=(
+                        attempt_step_totals.get(latest_attempt.id, 0)
+                        if latest_attempt
+                        else 0
+                    ),
+                ),
                 "attempts": [
-                    _knowledge_brief_attempt_payload(item) for item in attempts
+                    _knowledge_brief_attempt_payload(
+                        item,
+                        attempt_steps.get(item.id, []),
+                        total_steps=attempt_step_totals.get(item.id, 0),
+                    )
+                    for item in attempts
                 ],
             }
         )

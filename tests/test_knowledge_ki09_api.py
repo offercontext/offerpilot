@@ -95,8 +95,9 @@ def test_ki09_brief_endpoint_returns_empty_without_brief(app_client) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["source_id"] == source_id
-    # 测试环境无 96K Provider，brief_block_reason 必须显式说明
-    assert body["brief_status"] in ("pending", "processing", "failed")
+    # KV1-01：V1 导入不自动触发 Brief；未显式 rebuild 时 Brief 保持 not_started，
+    # endpoint 返回空 Brief 且不携带 block reason。
+    assert body["brief_status"] == "not_started"
     assert body["brief"] is None
 
 
@@ -208,11 +209,20 @@ def test_ki09_brief_endpoint_lists_attempts_with_redacted_secrets(
         )
     )
     assert attempt.id > 0
+    for index in range(201):
+        repository.append_brief_attempt_step(
+            attempt.id,
+            phase="test",
+            output={"index": index},
+        )
 
     response = app_client.get(f"/api/knowledge/sources/{source_id}/brief")
     assert response.status_code == 200
     body = response.json()
     assert body["latest_attempt"] is not None
+    assert len(body["latest_attempt"]["steps"]) == 200
+    assert body["latest_attempt"]["total_steps"] == 201
+    assert body["latest_attempt"]["has_more"] is True
     serialized = json.dumps(body)
     # Spec §18 安全检查：API Key 与 base URL 都不得出现在响应中
     assert "sk-" not in serialized

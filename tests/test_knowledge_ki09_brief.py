@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -306,6 +307,57 @@ def test_parse_support_decision_rejects_empty_reason() -> None:
     with pytest.raises(BriefSchemaError):
         parse_support_decision(
             json.dumps({"decision": "supported", "reason": ""})
+        )
+
+
+def test_parse_support_decision_preserves_structured_diagnostics() -> None:
+    decision = parse_support_decision(
+        json.dumps(
+            {
+                "decision": "partial",
+                "reason": "Evidence 未说明默认行为",
+                "reason_code": "unsupported_qualifier",
+                "unsupported_fragments": ["默认"],
+                "explanation": "Evidence 只描述 PROXY 模式，没有说明默认模式。",
+                "suggested_rewrite": "该选择器在 PROXY 模式下引入配置类。",
+            },
+            ensure_ascii=False,
+        ),
+        statement="该选择器默认在 PROXY 模式下引入配置类。",
+    )
+    assert decision.reason_code == "unsupported_qualifier"
+    assert decision.unsupported_fragments == ["默认"]
+    assert decision.suggested_rewrite.startswith("该选择器")
+
+
+def test_parse_support_decision_unknown_reason_code_is_safe() -> None:
+    """未知 reason_code 不得注入报告，但不改变 Validator decision。"""
+    decision = parse_support_decision(
+        json.dumps(
+            {
+                "decision": "partial",
+                "reason": "Evidence 只部分支持",
+                "reason_code": "model_invented_code",
+            },
+            ensure_ascii=False,
+        )
+    )
+    assert decision.decision == "partial"
+    assert decision.reason_code == "validator_unknown_reason"
+
+
+def test_parse_support_decision_rejects_fragment_not_in_statement() -> None:
+    with pytest.raises(BriefSchemaError):
+        parse_support_decision(
+            json.dumps(
+                {
+                    "decision": "partial",
+                    "reason": "外延",
+                    "unsupported_fragments": ["读者评论"],
+                },
+                ensure_ascii=False,
+            ),
+            statement="文章使用了反向代理一词。",
         )
 
 
@@ -829,6 +881,88 @@ def test_brief_worker_fails_when_support_unsupported(tmp_path: Path) -> None:
     assert source.brief_status == "failed"
     # 未提交 Brief
     assert repository.get_source_brief(source_id) is None
+    steps = repository.list_brief_attempt_steps(
+        repository.find_latest_brief_attempt(source_id).id  # type: ignore[union-attr]
+    )
+    assert any(step.phase == "final" and step.status == "failed" for step in steps)
+    assert all("response_preview" not in step.output_json for step in steps)
+
+
+def test_validator_parse_failure_is_replayed_as_structured_step(tmp_path: Path) -> None:
+    """Validator JSON 解析失败要保留 block_path 和结构化失败步骤。"""
+    repository, session_factory, source_id, snapshot_id = _setup_repository(tmp_path)
+    evidence_page = repository.list_evidence(source_id, snapshot_id=snapshot_id, limit=50)
+    generation_output = json.dumps(
+        _build_valid_payload_from_evidence(evidence_page.items), ensure_ascii=False
+    )
+    model_client, _ = _stub_model_client_factory(
+        generation_output=generation_output,
+        validation_outputs=["not-json"] + [
+            json.dumps({"decision": "supported", "reason": "ok"})
+            for _ in range(20)
+        ],
+    )
+    worker = BriefWorker(repository, _provider_config(), model_client=model_client)
+    repository.create_job(
+        JobCreateInput(
+            kind="brief",
+            queue="brief",
+            source_id=source_id,
+            snapshot_id=snapshot_id,
+            stage="brief_pending",
+        )
+    )
+    results = KnowledgeJobRunner(
+        repository,
+        ExtractionWorker(repository, tmp_path, session_factory),
+        brief_worker=worker,
+    ).tick_brief(lease_owner="test")
+    assert results[0].status == "succeeded", results[0].error_message
+    attempt = repository.find_latest_brief_attempt(source_id)
+    assert attempt is not None
+    steps = repository.list_brief_attempt_steps(attempt.id)
+    parse_steps = [
+        step
+        for step in steps
+        if step.phase == "validation_result"
+        and step.error_code == "validator_parse_failed"
+    ]
+    assert parse_steps
+    assert parse_steps[0].block_path
+    assert json.loads(parse_steps[0].output_json)["issue_type"] == "validator_parse_failed"
+
+
+def test_attempt_step_api_drops_legacy_preview() -> None:
+    """旧库中截断 preview 也不得通过 API 暴露。"""
+    from offerpilot.api import _knowledge_brief_attempt_step_payload
+
+    payload = _knowledge_brief_attempt_step_payload(
+        SimpleNamespace(
+            id=1,
+            attempt_id=2,
+            sequence=1,
+            iteration=0,
+            phase="model_call",
+            status="completed",
+            block_path="",
+            provider_id="p",
+            provider_model="m",
+            prompt_version="v",
+            schema_version=2,
+            evidence_ids=[],
+            output_json=json.dumps(
+                {"truncated": True, "preview": "secret", "response_preview": "secret"}
+            ),
+            token_input_count=0,
+            token_output_count=0,
+            latency_ms=0,
+            retry_count=0,
+            error_code="",
+            error_message="",
+            created_at=None,
+        )
+    )
+    assert payload["output"] == {"truncated": True}
 
 
 def test_brief_worker_repairs_once_then_succeeds(tmp_path: Path) -> None:

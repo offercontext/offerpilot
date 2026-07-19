@@ -54,6 +54,7 @@ from offerpilot.knowledge.brief import (
     ISSUE_CITATION_MISSING,
     ISSUE_CITATION_OWNERSHIP,
     ISSUE_COVERAGE_MISSING,
+    ISSUE_VALIDATOR_PARSE_FAILED,
     SectionCoveragePlan,
     SUPPORT_DECISION_ISSUE_TYPE,
     ValidationIssue,
@@ -1098,6 +1099,64 @@ class BriefWorker:
         self._sleep = sleeper or time.sleep
         # heartbeat 间隔，测试注入小值避免真实 30s 等待。
         self._heartbeat_interval_seconds = heartbeat_interval_seconds
+        # 当前 Attempt 的观测上下文；未处于 Brief 执行时保持 None，不影响旧调用方。
+        self._trace_attempt_id: Optional[int] = None
+        self._trace_iteration = 0
+        self._trace_phase = ""
+        self._trace_block_path = ""
+        self._trace_evidence_ids: list[str] = []
+
+    def _set_trace_context(
+        self,
+        *,
+        phase: str,
+        iteration: int = 0,
+        block_path: str = "",
+        evidence_ids: Optional[list[str]] = None,
+    ) -> None:
+        self._trace_phase = phase
+        self._trace_iteration = iteration
+        self._trace_block_path = block_path
+        self._trace_evidence_ids = list(evidence_ids or [])
+
+    def _append_attempt_step(self, **kwargs: Any) -> None:
+        """写入过程记录；旧 Repository 替身或日志故障不阻断 Brief 主流程。"""
+        attempt_id = self._trace_attempt_id
+        append = getattr(self._repository, "append_brief_attempt_step", None)
+        if attempt_id is None or not callable(append):
+            return
+        try:
+            append(attempt_id, **kwargs)
+        except Exception:  # noqa: BLE001 - 可观测性失败不能改变业务结果
+            _LOGGER.warning("Brief Attempt step append failed", exc_info=True)
+
+    def _append_attempt_terminal_failure(
+        self,
+        *,
+        error_code: str,
+        error_message: str,
+        iteration: int = 0,
+        retry_count: int = 0,
+    ) -> None:
+        """为取消/lease 等 worker 外层失败补齐可回放终态。"""
+        self._append_attempt_step(
+            phase="attempt_failed",
+            iteration=iteration,
+            status="failed",
+            output={"status": "failed", "error_code": error_code},
+            retry_count=retry_count,
+            error_code=error_code,
+            error_message=error_message[:500],
+        )
+        self._append_attempt_step(
+            phase="final",
+            iteration=iteration,
+            status="failed",
+            output={"status": "failed", "error_code": error_code},
+            retry_count=retry_count,
+            error_code=error_code,
+            error_message=error_message[:500],
+        )
 
     def update_config(self, config: Config) -> None:
         """同步设置更新后的 Provider 配置，不重建运行时线程。"""
@@ -1489,6 +1548,13 @@ class BriefWorker:
         # Attempt 与 Brief/Job 终态由 Repository 在同一事务提交，避免先发布 Attempt
         # 失败再用第二个 complete_job 覆盖状态。
         attempt_id = attempt_record.id
+        self._trace_attempt_id = attempt_id
+        self._set_trace_context(phase="attempt_started", evidence_ids=[])
+        self._append_attempt_step(
+            phase="attempt_started",
+            status="completed",
+            output={"status": "processing"},
+        )
 
         if self._repository.is_job_canceled(job.id):
             self._repository.fail_brief_attempt(
@@ -1497,6 +1563,9 @@ class BriefWorker:
                 attempt_token=attempt_token,
                 error_code="job_canceled",
                 error_message="用户在 Brief generation 之前取消",
+            )
+            self._append_attempt_terminal_failure(
+                error_code="job_canceled", error_message="用户在 Brief generation 之前取消"
             )
             ok, _ = self._repository.complete_job(
                 job.id,
@@ -1546,6 +1615,9 @@ class BriefWorker:
                     error_code=error_code,
                     error_message=error_message,
                 )
+                self._append_attempt_terminal_failure(
+                    error_code=error_code, error_message=error_message
+                )
             if error_code == "job_canceled":
                 status = "canceled"
             else:
@@ -1584,6 +1656,16 @@ class BriefWorker:
                     else "Brief 校验通过后外层 queue lease 已失效"
                 ),
             )
+            self._append_attempt_terminal_failure(
+                error_code=cancel_code,
+                error_message=(
+                    "用户在 Brief 校验通过后、提交前取消"
+                    if canceled
+                    else "Brief 校验通过后外层 queue lease 已失效"
+                ),
+                iteration=generation_result.repair_count,
+                retry_count=generation_result.provider_retry_count,
+            )
             ok, _ = self._repository.complete_job(
                 job.id,
                 attempt_token=job.attempt_token,
@@ -1607,6 +1689,12 @@ class BriefWorker:
                 attempt_token=attempt_token,
                 error_code="job_lease_mismatch",
                 error_message="Brief 提交前外层 queue lease 已失效",
+            )
+            self._append_attempt_terminal_failure(
+                error_code="job_lease_mismatch",
+                error_message="Brief 提交前外层 queue lease 已失效",
+                iteration=generation_result.repair_count,
+                retry_count=generation_result.provider_retry_count,
             )
             return JobExecutionResult(
                 job_id=job.id,
@@ -1634,6 +1722,12 @@ class BriefWorker:
         )
         if not ok:
             # lease 失效或 attempt_token 不匹配（迟到结果）；保留 Attempt 状态不变。
+            self._append_attempt_terminal_failure(
+                iteration=generation_result.repair_count,
+                retry_count=generation_result.provider_retry_count,
+                error_code="job_lease_mismatch",
+                error_message="Brief 提交时 lease 已失效",
+            )
             self._repository.complete_job(
                 job.id,
                 attempt_token=job.attempt_token,
@@ -1649,6 +1743,13 @@ class BriefWorker:
                 error_code="job_lease_mismatch",
                 error_message="Brief 提交时 lease 已失效",
             )
+        self._append_attempt_step(
+            phase="final",
+            iteration=generation_result.repair_count,
+            status="succeeded",
+            output={"status": "succeeded"},
+            retry_count=generation_result.provider_retry_count,
+        )
         ok, _ = self._repository.complete_job(
             job.id,
             attempt_token=job.attempt_token,
@@ -1778,6 +1879,27 @@ class BriefWorker:
                     coverage_plan=coverage_plan,
                 )
 
+            self._set_trace_context(
+                phase=("repair" if quality_repair_context is not None or repair_count >= 1 else "generation"),
+                iteration=repair_count,
+                evidence_ids=sorted(source_evidence_ids),
+            )
+            if repair_count >= 1:
+                self._append_attempt_step(
+                    phase="repair_requested",
+                    iteration=repair_count,
+                    evidence_ids=source_evidence_ids,
+                    output={
+                        "mode": "quality_patch" if quality_repair_context is not None else "schema_rebuild",
+                        "failed_block_paths": sorted(
+                            quality_repair_context[2]
+                            if quality_repair_context is not None
+                            else set()
+                        ),
+                    },
+                    retry_count=retry_state.total_retries,
+                )
+
             try:
                 (
                     raw_text,
@@ -1791,6 +1913,18 @@ class BriefWorker:
                     messages,
                     state=retry_state,
                 )
+                self._append_attempt_step(
+                    phase="model_response_parsed",
+                    iteration=repair_count,
+                    provider_id=actual_provider.id,
+                    provider_model=actual_provider.model,
+                    evidence_ids=self._trace_evidence_ids,
+                    output={"response_received": True},
+                    token_input_count=token_in,
+                    token_output_count=token_out,
+                    latency_ms=latency_ms,
+                    retry_count=retry_state.total_retries,
+                )
             except BriefModelCallError as exc:
                 self._repository.fail_brief_attempt(
                     attempt_id,
@@ -1803,6 +1937,26 @@ class BriefWorker:
                     actual_provider_model=actual_provider.model,
                     provider_retry_count=retry_state.total_retries,
                 )
+                self._append_attempt_step(
+                    phase="attempt_failed",
+                    iteration=repair_count,
+                    status="failed",
+                    evidence_ids=source_evidence_ids,
+                    output={"error_code": exc.code, "stage": "model_call"},
+                    retry_count=retry_state.total_retries,
+                    error_code=exc.code,
+                    error_message=exc.message[:500],
+                )
+                self._append_attempt_step(
+                    phase="final",
+                    iteration=repair_count,
+                    status="failed",
+                    evidence_ids=source_evidence_ids,
+                    output={"status": "failed", "error_code": exc.code},
+                    retry_count=retry_state.total_retries,
+                    error_code=exc.code,
+                    error_message=exc.message[:500],
+                )
                 return None, (exc.code, exc.message)
 
             # KBR-06：quality repair 路径把响应解析为 patch 并原子应用。
@@ -1812,6 +1966,13 @@ class BriefWorker:
                 candidate_brief, _failed_issues, failed_block_set = quality_repair_context
                 try:
                     patch = parse_repair_patch(raw_text)
+                    self._append_attempt_step(
+                        phase="repair_patch_parsed",
+                        iteration=repair_count,
+                        evidence_ids=source_evidence_ids,
+                        output={"untrusted": True, **patch.model_dump(mode="json")},
+                        retry_count=retry_state.total_retries,
+                    )
                     brief = apply_repair_patch(
                         candidate_brief,
                         patch,
@@ -1826,6 +1987,16 @@ class BriefWorker:
                         error_code=exc.code,
                         reason=exc.message,
                         repair_count=repair_count,
+                    )
+                    self._append_attempt_step(
+                        phase="repair_failed",
+                        iteration=repair_count,
+                        status="failed",
+                        evidence_ids=source_evidence_ids,
+                        output={"error_code": exc.code, "stage": "patch_parse_or_apply"},
+                        retry_count=retry_state.total_retries,
+                        error_code=exc.code,
+                        error_message=exc.message[:500],
                     )
                     self._repository.fail_brief_attempt(
                         attempt_id,
@@ -1843,6 +2014,26 @@ class BriefWorker:
                         actual_provider_model=actual_provider.model,
                         provider_retry_count=retry_state.total_retries,
                     )
+                    self._append_attempt_step(
+                        phase="attempt_failed",
+                        iteration=repair_count,
+                        status="failed",
+                        evidence_ids=source_evidence_ids,
+                        output={"error_code": exc.code, "stage": "repair"},
+                        retry_count=retry_state.total_retries,
+                        error_code=exc.code,
+                        error_message=exc.message[:500],
+                    )
+                    self._append_attempt_step(
+                        phase="final",
+                        iteration=repair_count,
+                        status="failed",
+                        evidence_ids=source_evidence_ids,
+                        output={"status": "failed", "error_code": exc.code},
+                        retry_count=retry_state.total_retries,
+                        error_code=exc.code,
+                        error_message=exc.message[:500],
+                    )
                     return None, (exc.code, exc.message)
                 # patch 应用成功：清空 quality repair 上下文，进入完整复验。
                 quality_repair_context = None
@@ -1852,6 +2043,35 @@ class BriefWorker:
                 except BriefSchemaError as exc:
                     if repair_count >= 1:
                         # schema repair 后仍非法 → Attempt failed（独立 schema_invalid report）。
+                        schema_report = json.dumps(
+                            {
+                                "stage": "schema_invalid",
+                                "error_code": exc.code,
+                                "failure_count": 1,
+                                "summary": f"Brief Schema 无法解析：{exc.message[:80]}",
+                                "issues": [
+                                    {
+                                        "block_path": "",
+                                        "issue_type": "schema_invalid",
+                                        "decision": "",
+                                        "reason": exc.message,
+                                        "evidence_ids": [],
+                                    }
+                                ],
+                                "repair_count": repair_count,
+                            },
+                            ensure_ascii=False,
+                        )
+                        self._append_attempt_step(
+                            phase="schema_parse_failed",
+                            iteration=repair_count,
+                            status="failed",
+                            evidence_ids=source_evidence_ids,
+                            output={"error_code": exc.code, "stage": "repair"},
+                            retry_count=retry_state.total_retries,
+                            error_code=exc.code,
+                            error_message=exc.message[:500],
+                        )
                         self._repository.fail_brief_attempt(
                             attempt_id,
                             job_id=brief_job_id,
@@ -1863,25 +2083,7 @@ class BriefWorker:
                             # error_code 必须是 brief_schema_invalid（与 Attempt error_code 一致），
                             # 而 _build_structured_report 硬编码 brief_quality_failed；且此时 brief
                             # 尚未解析、无 coverage/support 数据。详见该函数 docstring。
-                            validation_report_json=json.dumps(
-                                {
-                                    "stage": "schema_invalid",
-                                    "error_code": exc.code,
-                                    "failure_count": 1,
-                                    "summary": f"Brief Schema 无法解析：{exc.message[:80]}",
-                                    "issues": [
-                                        {
-                                            "block_path": "",
-                                            "issue_type": "schema_invalid",
-                                            "decision": "",
-                                            "reason": exc.message,
-                                            "evidence_ids": [],
-                                        }
-                                    ],
-                                    "repair_count": repair_count,
-                                },
-                                ensure_ascii=False,
-                            ),
+                            validation_report_json=schema_report,
                             repair_count=repair_count,
                             token_input_count=token_in,
                             token_output_count=token_out,
@@ -1890,8 +2092,38 @@ class BriefWorker:
                             actual_provider_model=actual_provider.model,
                             provider_retry_count=retry_state.total_retries,
                         )
+                        self._append_attempt_step(
+                            phase="attempt_failed",
+                            iteration=repair_count,
+                            status="failed",
+                            evidence_ids=source_evidence_ids,
+                            output={"error_code": exc.code, "stage": "schema"},
+                            retry_count=retry_state.total_retries,
+                            error_code=exc.code,
+                            error_message=exc.message[:500],
+                        )
+                        self._append_attempt_step(
+                            phase="final",
+                            iteration=repair_count,
+                            status="failed",
+                            evidence_ids=source_evidence_ids,
+                            output={"status": "failed", "error_code": exc.code},
+                            retry_count=retry_state.total_retries,
+                            error_code=exc.code,
+                            error_message=exc.message[:500],
+                        )
                         return None, (exc.code, exc.message)
                     # 首次 Schema 不可解析 → schema repair（消耗唯一 repair 预算）。
+                    self._append_attempt_step(
+                        phase="schema_parse_failed",
+                        iteration=repair_count,
+                        status="failed",
+                        evidence_ids=source_evidence_ids,
+                        output={"error_code": exc.code, "stage": "initial"},
+                        retry_count=retry_state.total_retries,
+                        error_code=exc.code,
+                        error_message=exc.message[:500],
+                    )
                     repair_count += 1
                     schema_error_message = exc.message
                     quality_repair_context = None
@@ -1928,6 +2160,17 @@ class BriefWorker:
             validation_report_json = self._build_structured_report(
                 quality=quality, repair_count=repair_count
             )
+            try:
+                validation_report_payload = json.loads(validation_report_json)
+            except (TypeError, json.JSONDecodeError):
+                validation_report_payload = {"untrusted": True}
+            self._append_attempt_step(
+                phase="validation_report",
+                iteration=repair_count,
+                evidence_ids=source_evidence_ids,
+                output=validation_report_payload,
+                retry_count=retry_state.total_retries,
+            )
             if quality.issues:
                 if repair_count >= 1:
                     # repair 后仍存在质量问题 → Attempt failed；旧 current Brief 由
@@ -1950,6 +2193,26 @@ class BriefWorker:
                         actual_provider_model=actual_provider.model,
                         provider_retry_count=retry_state.total_retries,
                     )
+                    self._append_attempt_step(
+                        phase="attempt_failed",
+                        iteration=repair_count,
+                        status="failed",
+                        evidence_ids=source_evidence_ids,
+                        output={"error_code": "brief_quality_failed", "report": validation_report_payload},
+                        retry_count=retry_state.total_retries,
+                        error_code="brief_quality_failed",
+                        error_message=summary[:500],
+                    )
+                    self._append_attempt_step(
+                        phase="final",
+                        iteration=repair_count,
+                        status="failed",
+                        evidence_ids=source_evidence_ids,
+                        output={"status": "failed", "error_code": "brief_quality_failed"},
+                        retry_count=retry_state.total_retries,
+                        error_code="brief_quality_failed",
+                        error_message=summary[:500],
+                    )
                     return None, ("brief_quality_failed", summary)
                 # 首次质量失败：汇总后单次 quality repair（patch），repair 输入含全部已发现
                 # 问题（citation + support + coverage）。失败 block 集合即 patch 允许修改范围。
@@ -1960,6 +2223,21 @@ class BriefWorker:
                 continue
 
             # 全部门禁通过（citation/support/coverage 全 supported）。
+            self._append_attempt_step(
+                phase="attempt_ready",
+                iteration=repair_count,
+                evidence_ids=source_evidence_ids,
+                output={"status": "ready", "report": validation_report_payload},
+                retry_count=retry_state.total_retries,
+            )
+            self._append_attempt_step(
+                phase="final",
+                iteration=repair_count,
+                status="ready",
+                evidence_ids=source_evidence_ids,
+                output={"status": "ready"},
+                retry_count=retry_state.total_retries,
+            )
             result = BriefGenerationResult(
                 payload=brief,
                 validation_report_json=validation_report_json,
@@ -2059,6 +2337,12 @@ class BriefWorker:
                 for eid in evidence_ids
                 if eid in evidence_index
             ]
+            self._set_trace_context(
+                phase="validation",
+                iteration=retry_state.total_retries,
+                block_path=block_name,
+                evidence_ids=list(evidence_ids),
+            )
             try:
                 (
                     raw_text,
@@ -2080,13 +2364,55 @@ class BriefWorker:
                     # fallback 已成为当前 Validator Provider，后续 statement
                     # 不再把同一 profile 当作自己的 failover 候选。
                     current_fallback = None
-                decision = parse_support_decision(raw_text)
+                decision = parse_support_decision(raw_text, statement=statement)
+                self._append_attempt_step(
+                    phase="validation_result",
+                    iteration=retry_state.total_retries,
+                    block_path=block_name,
+                    provider_id=validator_provider.id,
+                    provider_model=validator_provider.model,
+                    evidence_ids=list(evidence_ids),
+                    output={
+                        "untrusted": True,
+                        "decision": decision.decision,
+                        "reason_code": decision.reason_code,
+                        "unsupported_fragments": list(decision.unsupported_fragments),
+                        "explanation": decision.explanation[:300],
+                        "suggested_rewrite": decision.suggested_rewrite[:300],
+                    },
+                    retry_count=retry_state.total_retries,
+                )
             except BriefSchemaError as exc:
+                self._append_attempt_step(
+                    phase="validation_result",
+                    iteration=retry_state.total_retries,
+                    block_path=block_name,
+                    status="failed",
+                    evidence_ids=list(evidence_ids),
+                    output={
+                        "untrusted": True,
+                        "decision": "",
+                        "issue_type": ISSUE_VALIDATOR_PARSE_FAILED,
+                        "reason_code": ISSUE_VALIDATOR_PARSE_FAILED,
+                        "explanation": exc.message[:300],
+                    },
+                    retry_count=retry_state.total_retries,
+                    error_code=ISSUE_VALIDATOR_PARSE_FAILED,
+                    error_message=exc.message[:500],
+                )
                 results.append(
                     {
                         "block": block_name,
-                        "decision": "unsupported",
+                        # 解析失败不是 Evidence 不支持；保留空 decision，交由质量
+                        # 汇总写入 validator_parse_failed，避免把模型协议错误伪装成
+                        # 内容判定。
+                        "decision": "",
+                        "issue_type": ISSUE_VALIDATOR_PARSE_FAILED,
                         "reason": f"Validator 输出无法解析：{exc.message}",
+                        "reason_code": ISSUE_VALIDATOR_PARSE_FAILED,
+                        "unsupported_fragments": [],
+                        "explanation": exc.message[:300],
+                        "suggested_rewrite": "",
                         "evidence_ids": list(evidence_ids),
                     }
                 )
@@ -2095,8 +2421,13 @@ class BriefWorker:
                 results.append(
                     {
                         "block": block_name,
-                        "decision": "unsupported",
+                        "decision": "",
+                        "issue_type": "validator_call_failed",
                         "reason": f"Validator 调用失败：{exc.code}",
+                        "reason_code": "validator_call_failed",
+                        "unsupported_fragments": [],
+                        "explanation": exc.message[:300],
+                        "suggested_rewrite": "",
                         "evidence_ids": list(evidence_ids),
                     }
                 )
@@ -2108,6 +2439,18 @@ class BriefWorker:
                     # Finding 4：受限 reason（已限长）再做回显检测，仅供 repair 临时使用，不持久化。
                     "reason": redact_reason_echo(
                         decision.reason,
+                        statement,
+                        [e.get("excerpt", "") for e in cited if e.get("excerpt")],
+                    ),
+                    "reason_code": decision.reason_code,
+                    "unsupported_fragments": list(decision.unsupported_fragments),
+                    "explanation": redact_reason_echo(
+                        decision.explanation,
+                        statement,
+                        [e.get("excerpt", "") for e in cited if e.get("excerpt")],
+                    ),
+                    "suggested_rewrite": redact_reason_echo(
+                        decision.suggested_rewrite,
                         statement,
                         [e.get("excerpt", "") for e in cited if e.get("excerpt")],
                     ),
@@ -2205,23 +2548,32 @@ class BriefWorker:
             skip_block_paths=invalid_block_paths,
         )
         for result in support_results:
-            decision = result["decision"]
+            decision = str(result.get("decision") or "")
             if decision == "supported":
                 continue
-            # decision 来自 parse_support_decision（保证在允许集合）或 except 分支的
-            # "unsupported"；supported 已跳过，剩余均能在 SUPPORT_DECISION_ISSUE_TYPE 命中。
-            issue_type = SUPPORT_DECISION_ISSUE_TYPE[decision]
+            # Validator 协议/调用失败使用显式 issue_type；不能通过缺省 decision
+            # 伪装成 support_unsupported。旧报告没有 issue_type 时仍按 decision 兼容。
+            issue_type = str(result.get("issue_type") or "")
+            if not issue_type:
+                issue_type = SUPPORT_DECISION_ISSUE_TYPE.get(
+                    decision, ISSUE_VALIDATOR_PARSE_FAILED
+                )
             code, summary = program_reason_for(issue_type)
             issues.append(
                 ValidationIssue(
                     block_path=str(result.get("block", "")),
                     issue_type=issue_type,
                     decision=decision,
-                    reason=summary,
+                    reason=(summary if issue_type != ISSUE_VALIDATOR_PARSE_FAILED else str(result.get("explanation") or summary)[:300]),
                     evidence_ids=list(result.get("evidence_ids", [])),
-                    reason_code=code,
+                    reason_code=str(result.get("reason_code") or code),
                     # repair_hint：受限 + 回显检测后的模型原始 reason，仅 repair 临时使用，不落库。
                     repair_hint=str(result.get("reason", "")),
+                    unsupported_fragments=[
+                        str(value) for value in result.get("unsupported_fragments", [])
+                    ],
+                    explanation=str(result.get("explanation", ""))[:300],
+                    suggested_rewrite=str(result.get("suggested_rewrite", ""))[:300],
                 )
             )
 
@@ -2268,6 +2620,9 @@ class BriefWorker:
                 "reason_code": issue.reason_code,
                 "reason": issue.reason,
                 "evidence_ids": list(issue.evidence_ids),
+                "unsupported_fragments": list(issue.unsupported_fragments),
+                "explanation": issue.explanation[:300],
+                "suggested_rewrite": issue.suggested_rewrite[:300],
             }
             for issue in quality.issues
         ]
@@ -2278,6 +2633,10 @@ class BriefWorker:
                 "block": r.get("block", ""),
                 "decision": r.get("decision", ""),
                 "evidence_ids": list(r.get("evidence_ids", [])),
+                "reason_code": r.get("reason_code", ""),
+                "unsupported_fragments": list(r.get("unsupported_fragments", [])),
+                "explanation": str(r.get("explanation", ""))[:300],
+                "suggested_rewrite": str(r.get("suggested_rewrite", ""))[:300],
             }
             for r in quality.support_results
         ]
@@ -2319,7 +2678,11 @@ class BriefWorker:
         return f"Brief 质量校验失败：共 {len(issues)} 条（{detail}），详见处理记录"
 
     def _call_model_once(
-        self, provider: AIProviderProfile, messages: list[dict[str, str]]
+        self,
+        provider: AIProviderProfile,
+        messages: list[dict[str, str]],
+        *,
+        retry_count: int = 0,
     ) -> tuple[str, int, int, int]:
         """Spec §11 / §18：单次调用 litellm.completion，返回 (text, in, out, ms)。
 
@@ -2345,6 +2708,22 @@ class BriefWorker:
             response = self._model_client(**payload)
         except Exception as exc:  # noqa: BLE001 - litellm 错误族未导出统一基类
             code = _classify_model_error(exc)
+            self._append_attempt_step(
+                phase=self._trace_phase or "model_call",
+                iteration=self._trace_iteration,
+                block_path=self._trace_block_path,
+                provider_id=provider.id,
+                provider_model=provider.model,
+                prompt_version=BRIEF_PROMPT_VERSION,
+                schema_version=BRIEF_SCHEMA_VERSION,
+                evidence_ids=self._trace_evidence_ids,
+                status="failed",
+                latency_ms=int((time.monotonic() - started) * 1000),
+                retry_count=retry_count,
+                error_code=code,
+                error_message=f"Provider 调用失败：{type(exc).__name__}",
+                output={"untrusted": True, "response_received": False},
+            )
             raise BriefModelCallError(
                 code,
                 f"Provider 调用失败：{type(exc).__name__}",
@@ -2355,6 +2734,26 @@ class BriefWorker:
         content = str(_get(message, "content") or "")
         token_in = int(_get(response, "usage.prompt_tokens") or 0)
         token_out = int(_get(response, "usage.completion_tokens") or 0)
+        self._append_attempt_step(
+            phase=self._trace_phase or "model_call",
+            iteration=self._trace_iteration,
+            block_path=self._trace_block_path,
+            provider_id=provider.id,
+            provider_model=provider.model,
+            prompt_version=BRIEF_PROMPT_VERSION,
+            schema_version=BRIEF_SCHEMA_VERSION,
+            evidence_ids=self._trace_evidence_ids,
+            status="completed",
+            token_input_count=token_in,
+            token_output_count=token_out,
+            latency_ms=latency_ms,
+            output={
+                "untrusted": True,
+                "response_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                "response_chars": len(content),
+            },
+            retry_count=retry_count,
+        )
         return content, token_in, token_out, latency_ms
 
     def _call_model_with_retry(
@@ -2373,7 +2772,9 @@ class BriefWorker:
         last_error: Optional[BriefModelCallError] = None
         for attempt_index in range(1, BRIEF_PROVIDER_MAX_ATTEMPTS + 1):
             try:
-                return self._call_model_once(provider, messages)
+                return self._call_model_once(
+                    provider, messages, retry_count=state.total_retries
+                )
             except BriefModelCallError as exc:
                 last_error = exc
                 if not _is_transient(exc.code):
@@ -2390,6 +2791,24 @@ class BriefWorker:
                     ),
                     delay_seconds=delay,
                     sleeper=self._sleep,
+                )
+                self._append_attempt_step(
+                    phase="retry",
+                    iteration=self._trace_iteration,
+                    status="scheduled",
+                    block_path=self._trace_block_path,
+                    provider_id=provider.id,
+                    provider_model=provider.model,
+                    evidence_ids=self._trace_evidence_ids,
+                    output={
+                        "provider": provider.id,
+                        "attempt": attempt_index,
+                        "next_attempt": attempt_index + 1,
+                        "error_code": exc.code,
+                    },
+                    retry_count=state.total_retries,
+                    error_code=exc.code,
+                    error_message=f"Provider 重试序号 {state.total_retries}",
                 )
         # 不可达：循环要么 return，要么 raise。
         assert last_error is not None
@@ -2417,6 +2836,23 @@ class BriefWorker:
         except BriefModelCallError as exc:
             if not _is_transient(exc.code) or fallback is None:
                 raise
+            self._append_attempt_step(
+                phase="provider_switch",
+                iteration=self._trace_iteration,
+                status="scheduled",
+                block_path=self._trace_block_path,
+                provider_id=fallback.id,
+                provider_model=fallback.model,
+                evidence_ids=self._trace_evidence_ids,
+                output={
+                    "from_provider": primary.id,
+                    "to_provider": fallback.id,
+                    "reason": exc.code,
+                },
+                retry_count=state.total_retries,
+                error_code="provider_switch",
+                error_message=f"Provider {primary.id} 重试耗尽后切换 {fallback.id}",
+            )
             text, tin, tout, ms = self._call_model_with_retry(
                 fallback, messages, state=state
             )

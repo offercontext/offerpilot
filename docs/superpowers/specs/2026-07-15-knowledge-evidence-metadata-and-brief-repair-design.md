@@ -2,10 +2,14 @@
 # Knowledge Evidence 元数据过滤与 Brief 修复闭环设计
 
 **Date**: 2026-07-15
-**Status**: Approved
+**Status**: Partially Implemented；Brief repair 部分 Deferred (2026-07-18)
 **Decider**: 用户
 **Architecture SSOT**: OfferPilot Knowledge 系统：核心方向与架构设计
 **Supersedes**: Knowledge Imported Source Ingest 破坏性重写设计中由模型输出 coverage、按首个失败立即 repair、repair 重写完整 Brief 的相关契约
+
+> 路线更新：本文关于 canonical Source、provenance、Evidence eligibility、FTS 和一次性 Knowledge
+> reset 的契约继续有效；自动 Brief generation、validation、repair、prune 和相关发布门禁退出
+> Knowledge V1。下文保留 Brief 设计作为历史记录，不构成当前实施要求。
 
 ## Problem Statement
 
@@ -21,7 +25,7 @@
 
 Brief 不再由模型声明 coverage。程序根据 post-filter Evidence 的章节集合和候选 Brief 的实际 citations 确定 coverage：只有某章节的 Evidence 被事实 block 实际引用，该章节才是 covered。模型生成原子、可独立验证的 statement；Validator 继续只读取单条 statement 及其声明的 Evidence。
 
-Schema 合法的候选先完成所有可执行的 citation、support 和 coverage 检查，再汇总问题发起唯一一次 repair。Repair Agent 只返回针对失败 block 的结构化 patch，可以从当前 Source/Snapshot 的完整 Evidence 集合中重新选择 citation，但不能修改已通过 block、引用其他 Source 或增加新主题。程序应用 patch 后重跑全部门禁；任何 partial、unsupported 或 contradicted 都使候选无法发布。
+Schema 合法的候选先完成所有可执行的 citation、support 和 coverage 检查，再汇总问题发起唯一一次 repair。Repair Agent 只返回针对失败 block 的结构化 patch，可以从当前 Source/Snapshot 的完整 Evidence 集合中重新选择 citation，但不能修改已通过 block、引用其他 Source 或增加新主题。程序应用 patch 后重跑确定性门禁，但支持性只复验新增或修改的 block，未修改 block 复用首次 verdict。复验仍不受支持的可选 block 可以被程序删除；删除后不满足 Schema 最低数量或实质章节 coverage 时，候选失败。最终发布的每个事实 block 仍必须有 supported verdict。
 
 项目仍处于测试阶段，本次切换直接清空 Knowledge 数据域并重新导入测试 Source，不迁移旧 Evidence、Brief 或 Job，也不触碰其他业务模块和 AI 配置。
 
@@ -80,24 +84,37 @@ Schema 合法的候选先完成所有可执行的 citation、support 和 coverag
 - coverage 必须检查真实引用关系，而不是只检查 section key 是否出现。模型不能以“不重要”为由跳过含合格正文 Evidence 的章节。
 - key point、limitation 和 section guide summary 每条只表达一个可独立验证的核心断言。overview 允许有限综合，但每个事实和因果关系都必须被 citations 直接支持。
 - Validator 继续逐条独立调用，只读取单条 statement 及其声明的当前 Source/Snapshot Evidence。它不得查看 Source 其他 Evidence 为错误 citation 兜底。
-- 支持性判定集合保持 supported、partial、unsupported、contradicted。只有所有事实 block 均为 supported 才能发布；不设置 partial 容忍比例。
+- 支持性判定集合保持 supported、partial、unsupported、contradicted。最终发布的所有事实 block 均须有 supported verdict；不设置 partial 容忍比例，也不引入 `ready_with_warnings`。
 - Schema 无法解析时可以立即消耗唯一 repair，因为后续门禁无法运行。Schema 合法时不得按首个失败抢占 repair；系统先运行所有可执行的 citation、support 和 coverage 检查，再统一生成 repair 输入。
 - citation 无效的 block 不调用 support Validator，但其 citation 问题进入统一 repair report；其他引用有效的 block 继续完成 support validation，以尽可能收集完整反馈。
 - Repair Agent 接收原候选、失败 block 集合、结构化失败原因、当前 Source/Snapshot 的完整 Evidence 列表和数量约束，只返回结构化 patch，不返回完整 Brief。
 - Repair patch 仅允许针对失败 block 执行 replace、delete、split，以及 coverage_missing 专用的 upsert_section_guide。replace 和 split 可以从当前 Source/Snapshot 的任意 Evidence 中增加、替换或删除 citations；不得引用其他 Source、修改已通过 block 或新增主题。
 - 普通已有 section guide 的 replace（`section_guides[index]` + `replace`）payload 必须且只能包含 `summary` 与 `evidence_ids`；`section_key` 与 `heading_path` 是已有 guide 的不可变身份与定位，由程序从原 guide 继承，模型不得提交。payload 携带身份字段或任意额外字段、或缺少 `summary`/`evidence_ids`，一律 `BRIEF_REPAIR_INVALID`。不实现通用 dict merge，也不保留旧四字段 replace payload 兼容。
-- upsert_section_guide 只针对 coverage_missing 派生的 repair target（`coverage[section_key]`），没有可继承的原 guide，因此 payload 仍必须是完整 `section_key`/`heading_path`/`summary`/`evidence_ids`；其 section_key 与 heading_path 必须与 coverage plan 一致，citations 只能来自该 section 当前的合格文本 Evidence；该 section 已有 guide 则原位替换，否则追加，一个 patch 内同一 section_key 不得重复 upsert。
+- upsert_section_guide 只针对 coverage_missing 派生的 repair target（`coverage[section_key]`）。patch v4 中模型 payload 必须且只能包含 `summary`；程序从 block path 与 coverage plan 派生 `section_key`/`heading_path`，并填入该 section 当前全部合格文本 Evidence IDs。模型提交身份字段、`evidence_ids` 或任意额外字段一律 `BRIEF_REPAIR_INVALID`；该 section 已有 guide 则原位替换，否则追加，一个 patch 内同一 section_key 不得重复 upsert。
 - 非 guide 块（overview/key_points/limitations）的 replace 与 split 受章节边界约束：程序按原块有效 citation 所属章节集合校验新引用，越出该集合即拒绝；原块无任何有效 citation 可定章节时只允许 delete。该章节集合覆盖 Asset citation——Asset 也按其 heading_path 定章节并受同样约束，repair 不得用跨章节 Asset citation 绕过边界；upsert_section_guide 的 citations 只取该 section 的文本 Evidence（Asset 不在 eligible）。
 - Patch 应用由程序完成。所有操作基于原候选 block path 一次性解析，避免 delete 导致后续索引漂移；split 只允许用于列表型事实 block，section guide 只能替换或删除。
-- Patch 应用后必须重新执行完整 Schema、数量、citation ownership、coverage 和逐条 support 门禁。第二次仍存在非 supported 结果时 Attempt 失败。
+- Patch 应用后重新执行完整 Schema、数量、citation ownership 和 coverage 门禁。支持性只复验新增或修改的 block；未修改 block 复用首次 supported verdict，不允许概率性复验推翻已经冻结的结果。
+- MVP 的 verdict 仅在同一次 Attempt 内复用，不做跨 Attempt 持久缓存。block 是否修改由 Validator 实际输入指纹判断：规范化后的 statement、保持顺序的 evidence_ids 与当前 snapshot_id 完全相同即为未修改；block_path 只用于展示和 patch 定位，列表删除导致的路径重排不使 verdict 失效。statement 任一字符变化、Evidence 增删或顺序变化、Snapshot 变化都必须复验；同一次 Attempt 内的 Provider failover 不使首次 verdict 失效。
+- repair 后新增或修改的可选 block 若仍为 partial、unsupported 或 contradicted，程序可以删除该 block；删除后再次运行 Schema、数量、citation ownership 和 coverage 门禁。若最低数量或任一实质章节 coverage 不再满足，Attempt 失败。
+- 自动裁剪只适用于 Validator 成功返回的 partial、unsupported 或 contradicted 内容 verdict。`validator_parse_failed`、`validator_call_failed` 及其他没有形成有效内容 verdict 的结果不得触发删除；现有重试与 Provider failover 耗尽后 Attempt 失败。Schema、citation ownership 与 coverage 等程序门禁失败同样不得通过裁剪绕过。MVP 不新增 Validator 格式修复重试。
+- “可选 block”不按字段名静态划分，而按删除结果确定：删除后 Brief Schema v2 仍合法，且所有实质章节仍由至少一个保留 block 的有效 citation 覆盖，该 block 才可删除。MVP 保持 `overview` 至少 2 条、`key_points` 至少 1 条、`limitations` 可为空的现有约束，不引入 Brief Schema v3。
+- 裁剪后任一实质章节失去 coverage 时 Attempt 失败；MVP 不用确定性摘录或模型生成的 extractive fallback 补齐章节，也不把章节标成 warning 后发布。
+- MVP 继续以现有 Brief UI block 为支持性校验单位：overview、key point、section guide summary 与 limitation。原子性由生成和 repair 契约约束；列表型 block 可 split，section guide 可 replace 或 delete。本轮不引入内嵌或持久化 `BriefClaim`，也不把 claim 作为新的 Knowledge、检索或 API 对象。只有 5-10 个真实 Source 的回归数据证明主要失败来自复合 block 时，才另行设计 claim 粒度。
+- 一次 Attempt 最多包含一次 generation 和一次 repair；repair 后只允许确定性裁剪与门禁，不再调用第二次 repair，状态机必须终止。
+- MVP 发布路径不在 changed-only 复验后运行第二次全局模型审计，无论阻塞或非阻塞。最终发布前完整重跑 Schema、数量、citation ownership 和 coverage 等确定性门禁，并确认每个保留 block 都能复用本 Attempt 的 supported verdict。重复全量 Validator 只允许作为离线评估，不写入线上 Attempt 成功语义。
+- 本轮性能硬门禁是正常无重试的 Attempt 18 回放只产生 `1 generation + 26 首轮 validations + 1 repair + 9 changed validations = 37` 次模型调用，不再调用 17 个未修改 block。Provider 墙钟时间只记录不阻塞本轮完成；MVP 不实现并发 Validator、批量 Validator 或新 Provider。真实 Source 仍超过 10 分钟时，另立性能改动评估有界并发。
+- MVP 沿用 Provider 默认采样参数，不强制设置 temperature 或 top_p，也不引入不同模型、NLI evaluator 或 Provider 能力矩阵。完成后用 5-10 个真实 Source 的重复重建测量首轮 verdict 稳定性；只有数据证明仍不稳定时，才设计按阶段和 Provider 能力校验的采样参数。
 - current Brief 的事务替换语义保持不变：新候选全部通过后才替换；重建失败时保留旧 current Brief。
 - validation report 结构化保存全部 block、decision、reason 和 evidence IDs。reason 由程序按 issue_type/decision 派生为稳定原因码加限长安全摘要（不来自模型文本），不得回显 statement 或所引 Evidence 正文。Source 状态只显示错误码、总数和简短摘要；现有 Attempt/处理记录界面展示完整详情并提供到候选 block 与 Evidence 的定位。
+- 裁剪后成功仍使用普通 `ready`，不引入 warning 状态，也不在 current Brief 中保留删除占位符。每个自动删除项必须向 append-only Attempt ledger 追加 `prune` 步骤，只记录 block_path、evidence_ids、原 verdict、稳定 reason_code 与 Validator 输入指纹，不保存 statement 或 Evidence 正文。裁剪数量作为后续真实 Source 稳定性实验的质量指标，不进入 Source 列表告警。
 - 普通日志不得打印 Evidence 正文、完整 Prompt 或 Source 本机路径。过滤统计和 validation report 遵守现有本地 SQLite 与隐私边界。逐条 Validator 返回的原始 reason 仅在本次校验/repair 内存内受限使用（限长并做回显检测），不落库、不进前端；持久化与展示只用程序生成的原因码和安全摘要。
 - 逐条 Validator 的性能优化不改变语义。本 Spec 不引入整批校验；未来缓存键可由 statement、Evidence content hashes 和 validator version 构成。
 - 本次改动是破坏性产品契约切换，不保留旧 Brief Schema、旧模型 coverage 或完整 Brief repair 响应的运行时兼容分支。
 
 ## Testing Decisions
 
+- Brief MVP 的完成定义固定为：Attempt 18 最小翻转回放通过；完整 scripted Attempt 18 在正常无重试路径产生 37 次模型调用并发布 `ready`；裁剪成功、裁剪破坏骨架、Validator 故障、路径重排与输入变化等关键分支均有回归测试；完整本地 gate 通过；真实 Source 1 重建一次并确认最终内容、调用形状和 Attempt ledger 正确。真实运行耗时只记录，不阻塞本轮完成。
+- 5-10 个真实 Source 的重复重建与首轮 verdict 稳定性实验属于 MVP 后评估，不阻塞本轮完成；其结果用于决定 BriefClaim、采样参数、跨 Attempt 缓存和有界并发是否进入后续设计。
 - 最高测试 seam 是从 Imported Source 原始字节开始，经过 Extraction、Evidence/FTS 提交、Brief generation、逐条 validation、单次 repair patch 到最终 Brief/Attempt 持久化状态的 Worker/Repository 集成路径。真实 `@Async` 失败案例必须在这个 seam 回放，而不是只测试 prompt helper。
 - `@Async` 回归样本必须包含文档顶层 tags、来源作者/图片区域、正文技术章节、初始候选的 coverage 噪声以及 citation/support partial。测试应证明元数据不生成 Evidence、coverage 不消耗 repair、repair 收到完整问题、最终结果只在全部 supported 后发布。
 - 元数据解析使用窄单元 seam 覆盖确定性边界：有效 frontmatter、非法单字段、未闭合边界、正文 `key: value`、空链接壳、纯图片壳和已知适配器规则。
@@ -111,7 +128,14 @@ Schema 合法的候选先完成所有可执行的 citation、support 和 coverag
 - 测试 Schema 完全不可解析时可以立即 repair；repair 后仍非法则失败，且不执行无意义的 support 调用。
 - 测试 patch 权限：修改已通过 block、未知 block、跨 Source Evidence、新增主题、重复操作或违反数量上限都必须被程序拒绝。
 - 测试多个 delete/split 操作相对原候选原子应用，不因索引变化修改错误 block。
-- 测试 repair 后完整复验，任何 partial、unsupported、contradicted、citation ownership 或 coverage 失败都不能写入 current Brief。
+- 测试 repair 后只复验新增或修改的 block，未修改 block 即使 scripted Validator 会翻转也不得再次调用；任何最终保留的 partial、unsupported、contradicted，以及 citation ownership 或 coverage 失败都不能写入 current Brief。
+- 测试 block_path 因列表删除发生重排但 Validator 输入指纹不变时复用首次 verdict；路径不变但 statement、evidence_ids 顺序或 snapshot_id 任一变化时必须复验。
+- 测试 repair 后仍不受支持的可选 block 被确定性删除；若删除导致 Schema 最低数量或实质章节 coverage 不满足，则 Attempt 失败。
+- 测试 validator_parse_failed、validator_call_failed 和程序门禁失败不会触发自动删除，并保持各自真实错误语义。
+- 测试裁剪成功的 Source/Brief 状态为 `ready`，current Brief 不含删除占位符，Attempt ledger 对每个删除项恰有一条不含 statement/Evidence 正文的 `prune` 步骤。
+- 测试可删除性由删除后的 Schema v2 与 coverage 结果决定，而不是由 overview、key_points、section_guides 或 limitations 字段名决定。
+- 测试最终发布不触发第二次全量 Validator；终检仍覆盖完整 Schema、数量、citation ownership、coverage 和保留 block 的 supported verdict 完备性。
+- 测试 Attempt 18 正常无重试回放的模型调用形状固定为 1 generation、26 次首轮 validation、1 repair 和 9 次 changed-only validation，总数 37。
 - 测试失败 Attempt 的摘要包含正确总数，结构化报告保留全部失败项，不再只依赖前五条拼接文本。
 - 测试 Knowledge 破坏性 reset 清除 Knowledge 表族、FTS 和文件目录，同时证明 AI 配置及非 Knowledge 业务数据保持不变。
 - 沿用现有 Brief Worker、Knowledge repository、Extraction、API 和前端 Source 详情测试作为 prior art；修复现有异步 Extraction 测试夹具，使其先完成 Evidence 提交再进入 Brief seam，禁止用空 Evidence 绕过目标行为。
@@ -125,6 +149,8 @@ Schema 合法的候选先完成所有可执行的 citation、support 和 coverag
 - provenance 参与普通知识召回、正文事实支持或向量排序。
 - Validator 整批判断、并发调度、support 缓存和性能专项优化。
 - 新建独立诊断工作台或复杂 provenance 搜索界面。
+- Brief Claim 模型、表、Schema、API、前端展示或检索对象。
+- extractive coverage fallback、phase-specific 采样配置、NLI evaluator 或新 Validator Provider。
 - 为旧 Knowledge Evidence ID、旧 Brief Schema、旧模型 coverage 或旧 repair 响应保留兼容层。
 - 迁移或保留当前测试期 Knowledge 数据。
 - 修改 Knowledge Note、Memory、Application、Conversation、Interview、Resume、Exercise 或 Pilot 的领域契约。

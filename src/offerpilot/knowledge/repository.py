@@ -20,13 +20,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Optional, Sequence
 
-from sqlalchemy import and_, delete, or_, select, text
+from sqlalchemy import and_, delete, func, or_, select, text
 from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from offerpilot.knowledge.search import ParsedQuery, SearchError, parse_query
 from offerpilot.models import (
     KnowledgeBriefAttempt,
+    KnowledgeBriefAttemptStep,
     KnowledgeEvidence,
     KnowledgeExtractionSnapshot,
     KnowledgeJob,
@@ -293,6 +294,32 @@ class BriefAttemptRecord:
     updated_at: datetime
 
 
+@dataclass(frozen=True)
+class BriefAttemptStepRecord:
+    """Brief Attempt 单步过程记录。``output_json`` 仅含限长不可信摘要。"""
+
+    id: int
+    attempt_id: int
+    sequence: int
+    iteration: int
+    phase: str
+    status: str
+    block_path: str
+    provider_id: str
+    provider_model: str
+    prompt_version: str
+    schema_version: int
+    evidence_ids: list[str]
+    output_json: str
+    token_input_count: int
+    token_output_count: int
+    latency_ms: int
+    retry_count: int
+    error_code: str
+    error_message: str
+    created_at: datetime
+
+
 @dataclass
 class BriefAttemptCreateInput:
     """Spec §11.1 Attempt 创建时固定的 Provider/Prompt/Schema 快照。
@@ -360,6 +387,37 @@ def _to_brief_attempt_record(row: KnowledgeBriefAttempt) -> BriefAttemptRecord:
         latency_ms=row.latency_ms,
         created_at=row.created_at,
         updated_at=row.updated_at,
+    )
+
+
+def _to_brief_attempt_step_record(row: KnowledgeBriefAttemptStep) -> BriefAttemptStepRecord:
+    try:
+        evidence_ids = json.loads(row.evidence_ids_json or "[]")
+    except (TypeError, json.JSONDecodeError):
+        evidence_ids = []
+    if not isinstance(evidence_ids, list):
+        evidence_ids = []
+    return BriefAttemptStepRecord(
+        id=row.id,
+        attempt_id=row.attempt_id,
+        sequence=row.sequence,
+        iteration=row.iteration,
+        phase=row.phase,
+        status=row.status,
+        block_path=row.block_path or "",
+        provider_id=row.provider_id or "",
+        provider_model=row.provider_model or "",
+        prompt_version=row.prompt_version or "",
+        schema_version=row.schema_version or 0,
+        evidence_ids=[str(item) for item in evidence_ids[:200]],
+        output_json=row.output_json or "{}",
+        token_input_count=row.token_input_count or 0,
+        token_output_count=row.token_output_count or 0,
+        latency_ms=row.latency_ms or 0,
+        retry_count=row.retry_count or 0,
+        error_code=row.error_code or "",
+        error_message=(row.error_message or "")[:500],
+        created_at=row.created_at,
     )
 
 
@@ -1015,6 +1073,13 @@ class KnowledgeRepository:
             # 但显式 DELETE 保证表结构未启用外键时仍清理（SQLite 默认不开 PRAGMA）。
             session.execute(
                 text("DELETE FROM knowledge_source_briefs WHERE source_id = :sid"),
+                {"sid": source_id},
+            )
+            session.execute(
+                text(
+                    "DELETE FROM knowledge_brief_attempt_steps "
+                    "WHERE attempt_id IN (SELECT id FROM knowledge_brief_attempts WHERE source_id = :sid)"
+                ),
                 {"sid": source_id},
             )
             session.execute(
@@ -2627,6 +2692,107 @@ class KnowledgeRepository:
             )
             return [_to_brief_attempt_record(row) for row in session.scalars(stmt)]
 
+    def append_brief_attempt_step(
+        self,
+        attempt_id: int,
+        *,
+        phase: str,
+        status: str = "completed",
+        iteration: int = 0,
+        block_path: str = "",
+        provider_id: str = "",
+        provider_model: str = "",
+        prompt_version: str = "",
+        schema_version: int = 0,
+        evidence_ids: Optional[Sequence[str]] = None,
+        output: Any = None,
+        token_input_count: int = 0,
+        token_output_count: int = 0,
+        latency_ms: int = 0,
+        retry_count: int = 0,
+        error_code: str = "",
+        error_message: str = "",
+    ) -> Optional[BriefAttemptStepRecord]:
+        """追加一条 Attempt 步骤；不更新或覆盖已有步骤。
+
+        ``output`` 仅接受 JSON 可序列化对象，序列化后截断到 12KB；调用方应把原始
+        模型响应标为不可信摘要，不应传入 Evidence 正文或 Prompt。
+        """
+        safe_phase = str(phase or "unknown")[:64]
+        safe_status = str(status or "completed")[:32]
+        safe_output: Any = output if output is not None else {}
+        try:
+            output_json = json.dumps(safe_output, ensure_ascii=False, separators=(",", ":"))
+        except (TypeError, ValueError):
+            output_json = json.dumps({"unserializable": True}, ensure_ascii=False)
+        if len(output_json) > 12_000:
+            output_json = json.dumps(
+                {"truncated": True, "preview": output_json[:11_500]},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        ids = [str(value)[:128] for value in list(evidence_ids or ())[:200]]
+        moment = datetime.now(timezone.utc)
+        with self._session_factory() as session:
+            with session.begin():
+                if session.get(KnowledgeBriefAttempt, attempt_id) is None:
+                    return None
+                max_sequence = session.scalar(
+                    select(func.max(KnowledgeBriefAttemptStep.sequence)).where(
+                        KnowledgeBriefAttemptStep.attempt_id == attempt_id
+                    )
+                )
+                row = KnowledgeBriefAttemptStep(
+                    attempt_id=attempt_id,
+                    sequence=int(max_sequence or 0) + 1,
+                    iteration=max(0, int(iteration)),
+                    phase=safe_phase,
+                    status=safe_status,
+                    block_path=str(block_path or "")[:160],
+                    provider_id=str(provider_id or "")[:128],
+                    provider_model=str(provider_model or "")[:256],
+                    prompt_version=str(prompt_version or "")[:128],
+                    schema_version=max(0, int(schema_version)),
+                    evidence_ids_json=json.dumps(ids, ensure_ascii=False),
+                    output_json=output_json,
+                    token_input_count=max(0, int(token_input_count)),
+                    token_output_count=max(0, int(token_output_count)),
+                    latency_ms=max(0, int(latency_ms)),
+                    retry_count=max(0, int(retry_count)),
+                    error_code=str(error_code or "")[:128],
+                    error_message=str(error_message or "")[:500],
+                    created_at=moment,
+                )
+                session.add(row)
+                session.flush()
+                row_id = row.id
+            refreshed = session.get(KnowledgeBriefAttemptStep, row_id)
+            return _to_brief_attempt_step_record(refreshed) if refreshed is not None else None
+
+    def list_brief_attempt_steps(
+        self, attempt_id: int, *, limit: int = 200
+    ) -> list[BriefAttemptStepRecord]:
+        """按追加顺序读取 Attempt 过程记录。"""
+        clamped = max(1, min(500, int(limit)))
+        with self._session_factory() as session:
+            stmt = (
+                select(KnowledgeBriefAttemptStep)
+                .where(KnowledgeBriefAttemptStep.attempt_id == attempt_id)
+                .order_by(KnowledgeBriefAttemptStep.sequence.asc(), KnowledgeBriefAttemptStep.id.asc())
+                .limit(clamped)
+            )
+            return [_to_brief_attempt_step_record(row) for row in session.scalars(stmt)]
+
+    def count_brief_attempt_steps(self, attempt_id: int) -> int:
+        """返回 Attempt 的步骤总数，供 API 标注分页截断状态。"""
+        with self._session_factory() as session:
+            count = session.scalar(
+                select(func.count(KnowledgeBriefAttemptStep.id)).where(
+                    KnowledgeBriefAttemptStep.attempt_id == attempt_id
+                )
+            )
+            return int(count or 0)
+
     def bump_brief_attempt_retry(
         self,
         attempt_id: int,
@@ -2699,9 +2865,12 @@ class KnowledgeRepository:
             previous = bool(brief_row.outdated)
             source_row = session.get(KnowledgeSource, source_id)
             target_status = "outdated" if stale else "ready"
+            # pending/processing 表示 Brief Job 已在途；读取路径的 outdated 检测
+            # 不得覆盖，否则 rebuild 入队后的「排队中/生成中」会被轮询 GET 打回 ready。
             source_needs_update = (
                 source_row is not None
                 and source_row.lifecycle != "deleting"
+                and source_row.brief_status in ("ready", "outdated")
                 and source_row.brief_status != target_status
             )
             if stale != previous or source_needs_update:
@@ -2920,7 +3089,12 @@ def _mark_brief_enqueue_pending_for_snapshot(
     source_row: KnowledgeSource,
     snapshot_id: int,
 ) -> None:
-    """为 Extraction 提交与 Brief 入队之间的崩溃窗口留下可恢复标记。"""
+    """为 Extraction 提交与 Brief 入队之间的崩溃窗口留下可恢复标记。
+
+    KV1-01 / ADR-0009：V1 导入不自动触发 Brief，``commit_extraction`` 不再调用本方法，
+    Source 在 Extraction 提交后保持 ``brief_status=not_started``。方法保留以备 V1.1
+    恢复自动 Brief 入队时重新启用崩溃恢复标记；此处不删除 Brief 基础设施代码。
+    """
     brief_row = session.execute(
         select(KnowledgeSourceBrief).where(
             KnowledgeSourceBrief.source_id == source_row.id
@@ -3007,9 +3181,6 @@ def commit_extraction(
                 source_row.extraction_error_code = ""
                 source_row.extraction_error_message = ""
                 _mark_brief_outdated_for_snapshot(
-                    session, source_row, existing_snapshot.id
-                )
-                _mark_brief_enqueue_pending_for_snapshot(
                     session, source_row, existing_snapshot.id
                 )
             return existing_snapshot, list(existing_evidence)
@@ -3170,8 +3341,5 @@ def commit_extraction(
             if origin_row is not None and not origin_row.origin_url:
                 origin_row.origin_url = snapshot_input.provenance_url
         _mark_brief_outdated_for_snapshot(session, source_row, snapshot_row.id)
-        _mark_brief_enqueue_pending_for_snapshot(
-            session, source_row, snapshot_row.id
-        )
 
     return snapshot_row, created

@@ -312,9 +312,13 @@ def test_lease_expired_requeue_exhausted_marks_failed_and_restores_source(
     assert source.brief_status == "not_started"
 
 
-def test_call_model_once_passes_timeout() -> None:
+def test_call_model_once_passes_timeout(tmp_path: Path) -> None:
     """_call_model_once 必须把 BRIEF_MODEL_TIMEOUT_SECONDS 传给 litellm，防止卡死
     调用无限阻塞到 lease 过期。"""
+
+    init_database(tmp_path / "data.db")
+    session_factory = session_factory_for_data_dir(tmp_path)
+    repository = KnowledgeRepository(session_factory)
 
     captured: dict[str, object] = {}
 
@@ -325,9 +329,11 @@ def test_call_model_once_passes_timeout() -> None:
             "usage": {"prompt_tokens": 1, "completion_tokens": 1},
         }
 
-    worker = BriefWorker.__new__(BriefWorker)
-    worker._model_client = _capture  # type: ignore[attr-defined]
+    # 走正式 __init__ 构造 BriefWorker，使其拥有完整 trace 初始状态
+    # （_trace_phase / _trace_iteration / _trace_block_path），与生产调用路径一致。
+    worker = BriefWorker(repository, Config(), model_client=_capture)
     profile = SimpleNamespace(
+        id="test-provider",
         provider="openai_compatible",
         model="m",
         api_key="k",

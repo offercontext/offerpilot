@@ -391,17 +391,12 @@ def test_async_replay_aggregated_one_repair_picks_direct_evidence_then_ready(
                         {"statement": "线程池配置核心线程数。", "evidence_ids": [ev_threadpool]},
                     ],
                 },
-                # coverage_missing（异常处理）：upsert_section_guide 为该 section 追加 guide
+                # coverage_missing（异常处理）：模型只提交摘要，程序派生 section 身份并
                 # 引用 ev_exception（Finding 1）。section 已在 plan，非新增主题。
                 {
                     "block_path": "coverage[概述 / 异常处理]",
                     "action": "upsert_section_guide",
-                    "payload": {
-                        "section_key": "概述 / 异常处理",
-                        "heading_path": ["概述", "异常处理"],
-                        "summary": "异常处理章节导读。",
-                        "evidence_ids": [ev_exception],
-                    },
+                    "payload": {"summary": "异常处理章节导读。"},
                 },
             ],
         },
@@ -457,6 +452,12 @@ def test_async_replay_aggregated_one_repair_picks_direct_evidence_then_ready(
     # --- 红线：repair patch 只修失败 block；为 @EnableAsync 选当前 Source 更直接 Evidence ---
     patched = json.loads(outcome.brief.payload_json)
     assert patched["overview"][1]["evidence_ids"] == [ev_enable_async]
+    exception_guide = next(
+        guide
+        for guide in patched["section_guides"]
+        if guide["section_key"] == "概述 / 异常处理"
+    )
+    assert exception_guide["evidence_ids"] == [ev_exception]
     # --- 红线：复合 statement 被 split 为原子项（key_points ≥ 2） ---
     assert len(patched["key_points"]) >= 2
 

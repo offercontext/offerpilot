@@ -893,6 +893,9 @@ def _collect_failures(
     brief_failure_results: Optional[list[BriefFailureResult]] = None,
     edge_fixture_results: Optional[list[EdgeFixtureResult]] = None,
     bundle_fixture_results: Optional[list[BundleFixtureResult]] = None,
+    *,
+    enable_brief: bool = True,
+    enable_brief_failure_scenarios: bool = True,
 ) -> list[FailureCase]:
     failures: list[FailureCase] = []
     if metrics["lexical_recall_at_5"] < gates.lexical_recall_at_5:
@@ -997,7 +1000,7 @@ def _collect_failures(
                     ),
                 )
             )
-    if metrics["brief_pass_rate"] < gates.brief_pass_rate:
+    if enable_brief and metrics.get("brief_pass_rate", gates.brief_pass_rate) < gates.brief_pass_rate:
         for s in source_results:
             if s.brief_status != "ready":
                 failures.append(
@@ -1036,44 +1039,46 @@ def _collect_failures(
             )
         )
 
-    scenarios = brief_failure_results or []
-    scenario_by_name = {item.scenario: item for item in scenarios}
-    missing_scenarios = sorted(_EXPECTED_BRIEF_SCENARIOS - set(scenario_by_name))
-    for name in missing_scenarios:
-        failures.append(
-            FailureCase(
-                gate="brief_failure_scenarios",
-                source_key=name,
-                query="",
-                evidence_id="",
-                reason="Brief 故障场景未执行",
-            )
-        )
-    for scenario_item in scenarios:
-        if scenario_item.scenario not in _EXPECTED_BRIEF_SCENARIOS:
+    # KV1-03：V1 profile 不跑 Brief 故障场景；仅 brief profile（V1.1 候选）评估。
+    if enable_brief_failure_scenarios:
+        scenarios = brief_failure_results or []
+        scenario_by_name = {item.scenario: item for item in scenarios}
+        missing_scenarios = sorted(_EXPECTED_BRIEF_SCENARIOS - set(scenario_by_name))
+        for name in missing_scenarios:
             failures.append(
                 FailureCase(
                     gate="brief_failure_scenarios",
-                    source_key=scenario_item.scenario,
+                    source_key=name,
                     query="",
                     evidence_id="",
-                    reason="出现未定义的 Brief 故障场景",
+                    reason="Brief 故障场景未执行",
                 )
             )
-        elif not _brief_failure_scenario_ok(scenario_item):
-            failures.append(
-                FailureCase(
-                    gate="brief_failure_scenarios",
-                    source_key=scenario_item.scenario,
-                    query="",
-                    evidence_id="",
-                    reason=(
-                        f"故障场景结果不符合预期：status={scenario_item.brief_status}, "
-                        f"error={scenario_item.brief_error_code}, "
-                        f"searchable={scenario_item.evidence_searchable}"
-                    ),
+        for scenario_item in scenarios:
+            if scenario_item.scenario not in _EXPECTED_BRIEF_SCENARIOS:
+                failures.append(
+                    FailureCase(
+                        gate="brief_failure_scenarios",
+                        source_key=scenario_item.scenario,
+                        query="",
+                        evidence_id="",
+                        reason="出现未定义的 Brief 故障场景",
+                    )
                 )
-            )
+            elif not _brief_failure_scenario_ok(scenario_item):
+                failures.append(
+                    FailureCase(
+                        gate="brief_failure_scenarios",
+                        source_key=scenario_item.scenario,
+                        query="",
+                        evidence_id="",
+                        reason=(
+                            f"故障场景结果不符合预期：status={scenario_item.brief_status}, "
+                            f"error={scenario_item.brief_error_code}, "
+                            f"searchable={scenario_item.evidence_searchable}"
+                        ),
+                    )
+                )
 
     edge_results = edge_fixture_results or []
     for edge_item in edge_results:
@@ -1423,6 +1428,8 @@ def _provider_summary(
     repository: KnowledgeRepository,
     source_id_by_key: dict[str, int],
     real_mode: bool,
+    *,
+    enable_brief: bool = True,
 ) -> dict[str, Any]:
     provider = config.active_provider() if config else None
     total_latency = 0
@@ -1438,21 +1445,35 @@ def _provider_summary(
         total_out += attempt.token_output_count
         if attempt.actual_provider_id:
             provider_ids.add(attempt.actual_provider_id)
+    if not enable_brief:
+        mode = "v1-no-provider"
+        note = "V1 profile：无 AI Provider，纯 Source/Evidence/检索验收（不创建 Brief Job、不调用模型）"
+        active_provider_id = ""
+        active_provider_model = ""
+        context_window_value = 0
+    elif real_mode:
+        mode = "real"
+        note = "使用真实 litellm Provider"
+        active_provider_id = provider.id if provider else ""
+        active_provider_model = provider.model if provider else ""
+        context_window_value = provider.context_window if provider else 0
+    else:
+        mode = "stub"
+        note = "使用 stub model_client；真实 Provider 验收请经 CLI --real-ai 运行"
+        active_provider_id = provider.id if provider else ""
+        active_provider_model = provider.model if provider else ""
+        context_window_value = provider.context_window if provider else 0
     return {
-        "mode": "real" if real_mode else "stub",
-        "active_provider_id": provider.id if provider else "",
-        "active_provider_model": provider.model if provider else "",
-        "context_window": provider.context_window if provider else 0,
+        "mode": mode,
+        "active_provider_id": active_provider_id,
+        "active_provider_model": active_provider_model,
+        "context_window": context_window_value,
         "extractor_version": EXTRACTOR_VERSION,
         "actual_providers": sorted(provider_ids),
         "total_latency_ms": total_latency,
         "total_input_tokens": total_in,
         "total_output_tokens": total_out,
-        "note": (
-            "使用 stub model_client；真实 Provider 验收请经 CLI --real-ai 运行"
-            if not real_mode
-            else "使用真实 litellm Provider"
-        ),
+        "note": note,
     }
 
 
@@ -1475,6 +1496,9 @@ def run_acceptance(
     - ``config`` / ``model_client``：Brief Provider 配置与模型注入；缺省用 stub。
     - ``real_mode``：True 表示 ``model_client`` 为真实 litellm，影响 provider_summary。
     """
+
+    if enable_brief_failure_scenarios and not enable_brief:
+        raise ValueError("enable_brief_failure_scenarios 需要 enable_brief=True")
 
     specs = load_manifest(fixtures_dir)
     queries = load_queries(fixtures_dir)
@@ -1505,8 +1529,9 @@ def run_acceptance(
     for spec in specs:
         source_id_by_key[spec.source_key] = _import_fixture(service, fixtures_dir, spec)
 
-    # Ingest 只提交 Source + Extraction Job；先显式消费 Extraction，成功后由
-    # callback 按当前 Snapshot 入队 Brief，再运行 Brief 主验收。
+    # KV1-03：V1（enable_brief=False）只消费 Extraction queue，不 callback Brief、不创建
+    # Brief Job、不调用模型；enable_brief=True 时（brief profile / V1.1 候选）额外 callback
+    # 入队 Brief 并消费 Brief queue。
     if enable_brief and config is not None:
         stub = model_client or make_perfect_brief_stub(repository)
         worker = BriefWorker(
@@ -1524,6 +1549,31 @@ def run_acceptance(
         )
         _drain_extraction_queue(runner)
         _drain_brief_queue(runner)
+    else:
+        # V1：无 Provider，只消费 Extraction；运行前后都断言不产生 Brief Job 或模型调用。
+        for source_id in source_id_by_key.values():
+            pre_brief_jobs = [
+                job
+                for job in repository.list_jobs_for_source(source_id)
+                if job.kind == "brief"
+            ]
+            assert not pre_brief_jobs, (
+                f"V1 sync ingest 不应在 drain 前创建 Brief Job（source_id={source_id}）"
+            )
+        v1_runner = KnowledgeJobRunner(
+            repository,
+            ExtractionWorker(repository, data_dir, session_factory),
+        )
+        _drain_extraction_queue(v1_runner)
+        for source_id in source_id_by_key.values():
+            post_brief_jobs = [
+                job
+                for job in repository.list_jobs_for_source(source_id)
+                if job.kind == "brief"
+            ]
+            assert not post_brief_jobs, (
+                f"V1 profile 不应在 Extraction 后创建 Brief Job（source_id={source_id}）"
+            )
 
     # 构建 source_results（回读 + 幂等 + Brief 状态）。
     source_results = [
@@ -1583,6 +1633,10 @@ def run_acceptance(
             ),
         }
     )
+    if not enable_brief:
+        # KV1-03：V1 报告不含 Brief pass rate / 故障场景指标（V1 不跑 Brief）。
+        metrics.pop("brief_pass_rate", None)
+        metrics.pop("brief_failure_scenario_rate", None)
     failures = _collect_failures(
         metrics,
         gates,
@@ -1592,9 +1646,11 @@ def run_acceptance(
         brief_failure_results,
         edge_fixture_results,
         bundle_fixture_results,
+        enable_brief=enable_brief,
+        enable_brief_failure_scenarios=enable_brief_failure_scenarios,
     )
     provider_summary = _provider_summary(
-        config, repository, source_id_by_key, real_mode
+        config, repository, source_id_by_key, real_mode, enable_brief=enable_brief
     )
 
     return AcceptanceReport(

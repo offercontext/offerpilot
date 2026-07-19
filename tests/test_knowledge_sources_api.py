@@ -312,9 +312,10 @@ def test_ki02_upload_returns_202_with_source_and_extraction_job(app_client):
     # 上传响应是 pending（异步 extraction）；_upload 已 wait，重新 GET 确认 extracted。
     refreshed = wait_for_extraction(app_client, source["id"])
     assert refreshed["extraction_status"] == "extracted"
-    # KI-09：Extraction 提交后立即评估 Brief Provider；测试环境无 96K Provider，
-    # 因此 brief_status=pending + brief_block_reason=provider_unavailable。
-    assert refreshed["brief_status"] in ("not_started", "pending")
+    # KV1-01：Extraction 提交后不再自动评估 Brief；Source 保持 brief_status=not_started，
+    # 无 block reason（显式 rebuild 才触发 Brief Provider 评估）。
+    assert refreshed["brief_status"] == "not_started"
+    assert refreshed["brief_block_reason"] == ""
     assert refreshed["lifecycle"] == "active"
     jobs = app_client.get(f"/api/knowledge/sources/{source['id']}/jobs").json()
     extract_job = next(j for j in jobs["jobs"] if j["kind"] == "extract")
@@ -364,11 +365,10 @@ def test_ki02_source_state_fields_independent(app_client):
     assert detail.status_code == 200
     body = detail.json()
     # lifecycle / extraction / brief 必须独立暴露，不能合并为 done。
-    # KI-09：Extraction 完成后 brief_status 自动评估为 pending（无合格 Provider）或
-    # processing（有合格 Provider 入队）；不再期望 not_started。
+    # KV1-01：Extraction 完成后 Brief 不自动评估；brief_status 保持 not_started。
     assert body["lifecycle"] == "active"
     assert body["extraction_status"] == "extracted"
-    assert body["brief_status"] in ("not_started", "pending", "processing")
+    assert body["brief_status"] == "not_started"
     assert "extraction_error_code" in body
     assert "extraction_error_message" in body
     assert "brief_block_reason" in body

@@ -286,20 +286,29 @@ def knowledge_acceptance(
         "--fixtures-dir",
         help="真实 Source fixtures 目录（含 manifest.json 与 queries.json）",
     ),
+    profile: str = typer.Option(
+        "v1",
+        "--profile",
+        help=(
+            "验收 profile：v1（默认，无 AI Provider，纯 Source/Evidence/检索/回读/edge/bundle）"
+            "或 brief（V1.1 候选，额外运行 Brief pass rate 与故障场景）"
+        ),
+    ),
     real_ai: bool = typer.Option(
         False,
         "--real-ai",
-        help="使用真实 litellm Provider 完成 Brief 验收并记录模型/耗时/费用",
+        help="brief profile 下使用真实 litellm Provider 完成 Brief 验收并记录模型/耗时/费用",
     ),
     report_path: Optional[Path] = typer.Option(
         None, "--report", help="将安全验收报告写到 JSON 文件"
     ),
 ) -> None:
-    """KI-11：对真实 Source 与检索质量做一次性硬门禁验收。
+    """KV1-03 / KI-11：对真实 Source 与检索质量做一次性硬门禁验收。
 
-    默认使用仓库内 tests/fixtures/knowledge 的公开安全 fixtures 与 stub Brief Provider；
-    私有真实 Source 请经 --fixtures-dir 指向外部目录，并用 --real-ai 接入真实 Provider。
-    任一硬门禁失败时进程非零退出，并输出可定位 bad case 的 Evidence ID。
+    默认 ``v1`` profile（ADR-0010）：无 AI Provider，只验证 Imported Source / Extraction /
+    Evidence / FTS / 搜索 / 回读 / 状态 / edge / bundle，不创建 Brief Job、不调用模型。
+    ``brief`` profile（V1.1 候选）额外运行 Brief pass rate 与故障场景，默认用 stub Provider，
+    ``--real-ai`` 接真实 Provider。任一硬门禁失败时进程非零退出，并输出可定位 bad case 的 Evidence ID。
     """
     from offerpilot.knowledge.acceptance import run_acceptance
 
@@ -313,42 +322,62 @@ def knowledge_acceptance(
         )
     run_data_dir = data_dir / "acceptance-run"
     run_data_dir.mkdir(parents=True, exist_ok=True)
-    model_client = None
-    real_mode = False
-    if real_ai:
-        from litellm import completion as litellm_completion
 
-        cfg = load_config(data_dir)
-        model_client = litellm_completion
-        real_mode = True
+    if profile == "v1":
+        # KV1-03：V1 无 Provider，纯 Source/Evidence；不创建 Brief Job、不调用模型。
+        if real_ai:
+            raise typer.BadParameter("--real-ai 仅适用于 --profile brief")
+        cfg = Config()
+        acceptance_report = run_acceptance(
+            fixtures_dir=fixtures_dir,
+            data_dir=run_data_dir,
+            config=cfg,
+            enable_brief=False,
+            enable_brief_failure_scenarios=False,
+        )
+    elif profile == "brief":
+        # brief profile（V1.1 候选）：Brief pass rate + 故障场景。默认 stub，--real-ai 真实。
+        model_client = None
+        real_mode = False
+        if real_ai:
+            from litellm import completion as litellm_completion
+
+            cfg = load_config(data_dir)
+            model_client = litellm_completion
+            real_mode = True
+        else:
+            # stub 模式：注入合格 stub Provider，Brief 用 perfect stub model_client
+            # 覆盖全部门禁逻辑，不访问网络、不产生真实费用。
+            from offerpilot.knowledge.brief import BRIEF_MIN_CONTEXT_WINDOW
+
+            stub_provider = AIProviderProfile(
+                id="acceptance-stub",
+                label="Acceptance Stub",
+                provider="openai",
+                api_key="sk-acceptance-stub",
+                base_url="https://example.com",
+                model="gpt-acceptance-stub",
+                enabled=True,
+                context_window=BRIEF_MIN_CONTEXT_WINDOW,
+                max_output_tokens=4096,
+            )
+            cfg = Config(
+                api_key="sk-acceptance-stub",
+                providers=[stub_provider],
+                active_provider_id="acceptance-stub",
+            )
+        acceptance_report = run_acceptance(
+            fixtures_dir=fixtures_dir,
+            data_dir=run_data_dir,
+            config=cfg,
+            model_client=model_client,
+            real_mode=real_mode,
+        )
     else:
-        # 默认 stub 模式：注入合格 stub Provider，Brief 用 perfect stub model_client
-        # 覆盖全部门禁逻辑，不访问网络、不产生真实费用。
-        from offerpilot.knowledge.brief import BRIEF_MIN_CONTEXT_WINDOW
+        raise typer.BadParameter(
+            f"未知 profile：{profile}；支持 v1（默认）或 brief"
+        )
 
-        stub_provider = AIProviderProfile(
-            id="acceptance-stub",
-            label="Acceptance Stub",
-            provider="openai",
-            api_key="sk-acceptance-stub",
-            base_url="https://example.com",
-            model="gpt-acceptance-stub",
-            enabled=True,
-            context_window=BRIEF_MIN_CONTEXT_WINDOW,
-            max_output_tokens=4096,
-        )
-        cfg = Config(
-            api_key="sk-acceptance-stub",
-            providers=[stub_provider],
-            active_provider_id="acceptance-stub",
-        )
-    acceptance_report = run_acceptance(
-        fixtures_dir=fixtures_dir,
-        data_dir=run_data_dir,
-        config=cfg,
-        model_client=model_client,
-        real_mode=real_mode,
-    )
     payload = json.dumps(acceptance_report.to_safe_json(), ensure_ascii=False, indent=2)
     if report_path is not None:
         report_path.write_text(payload, encoding="utf-8")

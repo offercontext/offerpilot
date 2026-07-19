@@ -1,4 +1,139 @@
-# Tickets: Knowledge Evidence 元数据过滤与 Brief 修复闭环
+# Tickets: Knowledge V1 Source / Evidence 发布
+
+将 [Knowledge V1 Source / Evidence 发布验证](docs/superpowers/specs/2026-07-18-knowledge-v1-source-evidence-release.md)
+落地为不依赖 AI Provider 的资料工作台。V1 只包含 Imported Source、确定性 Extraction、Evidence/FTS、
+搜索、回读、状态与运维可靠性；Brief 留到 V1.1 决策，内部消费链路留到 V2。
+
+工作时只处理 **frontier**：一张 Ticket 的所有 blocker 完成后才能开始。每张 Ticket 使用一个全新上下文，
+通过 `/implement` 完成测试、最小实现、验证和独立 Code Review；不得跨 Ticket 提前实现 V1.1 或 V2。
+
+实施前必须阅读：
+
+- [Knowledge 系统主文档](docs/architecture/knowledge-system.md)
+- [Knowledge V1 Source / Evidence 发布 Spec](docs/superpowers/specs/2026-07-18-knowledge-v1-source-evidence-release.md)
+- [ADR-0010](docs/architecture/decisions/0010-stage-knowledge-v1-v11-v2.md)
+- [Knowledge Ingest 实施 Spec](docs/superpowers/specs/2026-07-12-knowledge-ingest-rewrite-design.md)，仅沿用 Source/Evidence 契约
+
+通用完成要求：
+
+- Source 原件不可变，Evidence 必须稳定定位和原样回读，SQLite 继续作为运行时唯一事实源。
+- 行为变化先写失败测试，再做最小实现；不得禁用、排除或放宽现有测试、ruff、mypy 和 release gate。
+- 不删除 Brief 代码或数据结构，但 V1 不自动执行、不展示为主状态、不把它作为验收门禁。
+- 不新增 Knowledge Context、Pilot/练习消费、Captured Source、Knowledge Note、embedding 或 rerank。
+- 普通日志不得打印 Source/Evidence 正文、查询全文、本机路径、Prompt、Provider secret 或模型响应。
+- 非平凡实现完成后启动独立子代理 Code Review，修复发现的问题或明确记录剩余风险。
+
+依赖图：
+
+```text
+KV1-01 ─┬→ KV1-02 ─┐
+         └→ KV1-03 ─┼→ KV1-05
+KV1-04 ─────────────┘
+```
+
+## KV1-01：导入完成后不再自动触发 Brief
+
+**What to build:** 用户导入 Source 后，系统只执行 Preflight、Extraction、Snapshot、Evidence 和 FTS
+提交。同步导入和异步 Worker 都在 Evidence 可搜索后结束，不创建 Brief Job、不检查 Provider，也不把
+Brief pending/blocked/failed 写成 Source 的未完成状态。显式 Brief 重建代码可以留存，但不由 V1 导入触发。
+
+**Blocked by:** None — can start immediately.
+
+- [x] 先建立同步 Ingest 回归测试：Evidence 提交后 Source 为 `extracted`、Brief 保持未请求状态，且不存在 Brief Job。
+- [x] 建立异步 Worker 回归测试：Extraction success callback 不创建 Brief Job，也不调用 Provider 选择逻辑。
+- [x] 应用启动、Worker runtime 和重启恢复路径均不注册自动 Brief callback；不能只修改一个构造入口。
+- [x] 同步 Ingest 在 Extraction 成功后不再直接调用 Brief 入队或写入 Brief enqueue failure。
+- [x] 无 Provider、Provider 配置错误和 Provider context 不足均不影响 Source 达到 V1 可用状态。
+- [x] 重复导入、Worker 重放和恢复 pending Extraction 不产生重复或迟到 Brief Job。
+- [x] Source 列表、详情和上传响应中的 extraction 状态与 active Snapshot/Evidence 一致。
+- [x] Evidence 搜索和 detail 回读证明 Source 在没有 Brief 的情况下完整可用。
+- [x] 显式 Brief rebuild 代码不被破坏性删除；其行为不纳入本 Ticket 的 V1 成功定义。
+- [x] 更新受影响的既有测试，使其显式触发 Brief 场景，不再依赖导入自动入队的旧前提。
+- [x] 定向后端测试、ruff 和 mypy 通过，且没有新增日志敏感信息。
+
+## KV1-02：将 Source 工作台收缩为 V1 Evidence 体验
+
+**What to build:** 用户在 Knowledge 工作台只看到 Source 生命周期、Extraction、Evidence、原文和处理
+状态。列表与详情不再用 Brief Pill、Brief tab、Attempt、暂缓原因或自动轮询暗示导入未完成；搜索命中
+仍能进入 Source、定位 Evidence 并回读原文。
+
+**Blocked by:** KV1-01：导入完成后不再自动触发 Brief。
+
+- [x] Source 列表只展示生命周期和 Extraction 状态，不展示 Brief 状态 Pill。
+- [x] Source 详情头不展示 Brief 状态，也不把 `not_started` 表现为警告、失败或待完成。
+- [x] V1 主界面移除或隐藏 Brief 浏览、重建入口、Brief Attempt timeline 和 Brief block/error 文案。
+- [x] 后台轮询只由 Extraction、删除或其他 V1 任务的在途状态触发，不因 Brief 状态持续刷新。
+- [x] 无 Brief 的 extracted Source 默认进入 Evidence 或原文视图，而不是空 Brief 状态。
+- [x] Evidence 搜索结果点击后仍能选择正确 Source、滚动并高亮对应 Evidence。
+- [x] Evidence citation 仍能跳转到原文位置，Source provenance 和过滤摘要保持可见。
+- [x] 归档、取消归档、删除、标题编辑、原件下载和资产查看行为不回归。
+- [x] 前端 types/services 可以保留 Brief 字段以兼容后端，但 V1 组件不得依赖它决定完成度。
+- [x] 前端测试覆盖无 Brief Source、Extraction pending/failed/extracted、搜索定位和处理记录。
+- [x] production build 通过；桌面和窄屏下状态、按钮、标签和长文本不重叠。
+
+## KV1-03：提供无 Provider 的 Source / Evidence V1 验收 Profile
+
+**What to build:** 维护者可以运行一个明确的 V1 acceptance profile，在独立数据目录导入 5 份 Source，
+执行至少 20 条查询，并验证 Evidence 回读、检索指标、幂等和边界 fixtures。该 profile 不需要 Provider，
+不创建 Brief Job，也不计算 Brief 成功率或运行 Brief 故障场景。
+
+**Blocked by:** KV1-01：导入完成后不再自动触发 Brief。
+
+- [x] V1 profile 是维护者 CLI 和领域验收入口的明确选项，并成为 Knowledge V1 推荐默认路径。
+- [x] V1 profile 不要求 AI 配置、model client、API Key 或真实 Provider。
+- [x] 验收导入只消费 Extraction queue；运行前后都断言没有 Brief Job 和模型调用。
+- [x] 报告保留 Source 数量、Evidence 数量、回读率、重跑一致性、lexical Recall@5、MRR 和自然语言 Recall@5。
+- [x] V1 报告与 failure collection 不包含 Brief pass rate、Brief 状态或 Brief failure scenario 门禁。
+- [x] 5 份 Source、每份至少 4 条查询、总计至少 20 条的 manifest/query 契约继续强制校验。
+- [x] Evidence 回读成功率必须为 100%，lexical Recall@5 必须为 100%，MRR 不低于 0.9。
+- [x] 自然语言 Recall@5 低于 80% 时报告 bad cases，不自动引入 embedding、rerank 或 query model。
+- [x] 编码、空内容、超限、Markdown 结构、Bundle 路径/资产等 edge fixtures 继续作为硬门禁。
+- [x] fixture 缺失、hash 漂移、FTS 错误和回读不一致均返回非零结果与安全、可定位的报告。
+- [x] 现有 Brief 验收能力如需保留，必须成为独立的 V1.1 候选 profile，不能污染 V1 默认语义。
+- [x] 验收工具和 CLI 测试覆盖成功、指标失败、fixture 失败及无 Provider 场景。
+
+## KV1-04：恢复遗留 Brief 代码的仓库健康门禁
+
+**What to build:** 在不继续开发 Brief 产品能力的前提下，最小修复当前遗留 Brief Worker 的单测和类型
+错误，使完整 Knowledge 测试和 mypy 恢复全绿。修复只恢复仓库健康，不实现 supported-only、prune、
+changed-only validation 或其他 V1.1 设计。
+
+**Blocked by:** None — can start immediately.
+
+- [x] 修复直接构造 Brief Worker 的 timeout 测试，使测试对象拥有生产调用所需的完整 trace 初始状态。
+- [x] 修复 trace 接口的 `set[str]` / `list[str]` 类型不一致，保持 Evidence ID 顺序和既有运行语义明确。
+- [x] 不通过 `getattr` 静默兜底、类型忽略、禁用测试或缩小 mypy 检查范围掩盖初始化契约问题。
+- [x] 不实现 ADR-0008 的 changed-only validation、自动 prune、prune ledger 或 37 次调用门禁。
+- [x] 不改变 Source/Evidence、Provider retry/failover 或 current Brief 事务替换语义。
+- [x] 当前失败的 Brief timeout 测试通过，且相关 Worker/lease/trace 回归测试通过。
+- [x] 全部 `test_knowledge*.py` 通过，`uv run mypy src` 和 ruff 通过。
+- [x] 变更保持最小，独立 Code Review 确认没有把 V1.1 范围重新带回 V1。
+
+## KV1-05：完成 Knowledge V1 发布验收
+
+**What to build:** 在前四张 Ticket 完成后，以全新本地数据目录执行 Source/Evidence V1 acceptance、完整
+工程 gate 和真实工作台浏览器走查，形成可复核的 Go/No-Go 结论。只允许修复验收暴露的 V1 缺陷，
+不得借发布验收加入 Brief、内部消费或新检索方案。
+
+**Blocked by:** KV1-01：导入完成后不再自动触发 Brief；KV1-02：将 Source 工作台收缩为 V1 Evidence
+体验；KV1-03：提供无 Provider 的 Source / Evidence V1 验收 Profile；KV1-04：恢复遗留 Brief 代码的
+仓库健康门禁。
+
+- [ ] 使用全新数据目录运行 V1 profile，确认 5 份 Source、至少 20 条查询和全部 edge/bundle 门禁通过。
+- [ ] 报告证明 Evidence 回读成功率 100%、lexical Recall@5 100%、MRR 不低于 0.9，并列出自然语言指标。
+- [ ] 验收全程不配置 Provider、不创建 Brief Job、不产生模型调用。
+- [ ] 完整后端 pytest、ruff、mypy、前端测试和 production build 通过。
+- [ ] 本地应用 smoke 验证上传、异步 Extraction、列表/详情、Evidence search/detail、原文和 SPA fallback。
+- [ ] 浏览器走查 file、bundle、paste、重复导入、搜索定位、原文回读、归档、取消归档和永久删除。
+- [ ] 浏览器验证 Extraction pending/failed/extracted 状态清晰，界面不出现 Brief 待完成或错误暗示。
+- [ ] 桌面与窄屏视口无重叠、截断、不可达操作或动态内容导致的布局跳动。
+- [ ] 删除后文件、Evidence、FTS、Job 和 UI 缓存均无残留；重启后不会恢复已删除 Source。
+- [ ] 最终报告明确列出执行命令、指标、浏览器结果、未执行项和剩余风险。
+- [ ] 任一硬门禁未通过时结论必须为 No-Go；不得用跳过测试、启用 Brief 或加入向量检索绕过。
+
+---
+
+# Historical Tickets: Knowledge Evidence 元数据过滤与 Brief 修复闭环
 
 将 [Knowledge Evidence 元数据过滤与 Brief 修复闭环设计](docs/superpowers/specs/2026-07-15-knowledge-evidence-metadata-and-brief-repair-design.md)
 实现为确定性 Evidence 资格、真实 citation coverage、汇总式单次 repair 和完整失败诊断闭环。

@@ -1000,6 +1000,48 @@ class KnowledgeBriefAttempt(Base):
     )
 
 
+class KnowledgeBriefAttemptStep(Base):
+    """Brief Attempt 的追加式过程记录。
+
+    只保存结构化元数据、Evidence ID 和限长的模型响应摘要；原始响应按不可信内容
+    隔离，禁止把 Evidence 正文或 Prompt 全量复制进常规日志。
+    """
+
+    __tablename__ = "knowledge_brief_attempt_steps"
+    __table_args__ = (
+        Index("idx_knowledge_brief_attempt_steps_attempt", "attempt_id", "sequence"),
+        Index("idx_knowledge_brief_attempt_steps_phase", "phase"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    attempt_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_brief_attempts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    iteration: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    phase: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="completed", server_default="completed")
+    block_path: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    provider_id: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    provider_model: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    prompt_version: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    evidence_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]", server_default="[]")
+    output_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}", server_default="{}")
+    token_input_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    token_output_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    latency_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    error_code: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    error_message: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+
+
 class KnowledgeRetrievalTrace(Base):
     """Spec §14.10 Retrieval Trace：本地评估数据，不参与召回。
 

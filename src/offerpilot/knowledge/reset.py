@@ -46,6 +46,7 @@ KNOWLEDGE_RESET_TABLES: tuple[str, ...] = (
     "knowledge_logs",
     "knowledge_jobs",
     "knowledge_source_briefs",
+    "knowledge_brief_attempt_steps",
     "knowledge_brief_attempts",
     "knowledge_evidence",
     "knowledge_source_assets",

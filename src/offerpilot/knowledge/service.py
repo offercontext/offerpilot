@@ -427,29 +427,9 @@ class KnowledgeIngestService:
                 "事务提交后无法读取 Source / Job",
             )
 
-        # KI-09：Spec §10.2 Source 完成 Evidence 提交后立即可搜索，不等待 Brief；
-        # enqueue Brief Job 或设置 block reason 是非阻塞操作，失败不回滚 Extraction。
-        try:
-            self.enqueue_or_block_brief(refreshed_source.id)
-        except Exception as exc:
-            # Brief 入队不是 Extraction 的提交条件，但不能吞掉异常；持久化稳定
-            # 错误让 UI 和后续手动 rebuild 看见补偿状态，同时保持 Evidence 可检索。
-            persisted = self._repository.update_source_state(
-                source_id,
-                brief_status="failed",
-                brief_block_reason="",
-                brief_error_code="brief_enqueue_failed",
-                brief_error_message=str(exc)[:500] or "Brief Job 入队失败",
-            )
-            if persisted is None:
-                raise IngestError(
-                    "source_integrity_mismatch",
-                    "Extraction 已提交，但 Brief 状态无法持久化",
-                ) from exc
-            refreshed_source = persisted
-        else:
-            refreshed_source = self._repository.get_source(source_id) or refreshed_source
-
+        # KV1-01 / ADR-0009：V1 导入在 Evidence 提交后结束，不自动入队 Brief、不检查
+        # Provider、不写 brief_enqueue_failed；Source 保持 brief_status=not_started。
+        # 显式 rebuild_brief 走独立 create_job 路径，不受此处影响。
         return IngestResult(
             source=refreshed_source,
             job_id=refreshed_job.id,
@@ -476,8 +456,9 @@ class KnowledgeIngestService:
         - 无合格 Provider → ``brief_status=pending`` + ``brief_block_reason=provider_unavailable``
           或 ``provider_context_too_small``。
 
-        Spec §11.2 "配置变化不自动批量生成"：用户显式重建由 ``rebuild_brief`` 触发，
-        本方法只用于首次 ingest 时自动入队。
+        Spec §11.2 "配置变化不自动批量生成"：用户显式重建由 ``rebuild_brief`` 触发。
+        KV1-01 / ADR-0009：V1 导入不再自动调用本方法；当前仅供 acceptance profile
+        与 Brief 测试作为 callback 注册入口，V1.1 恢复自动 Brief 时重新启用。
         """
         source = self._repository.get_source(source_id)
         if source is None or source.lifecycle == "deleting":
@@ -549,7 +530,18 @@ class KnowledgeIngestService:
                 stage="brief_rebuild_pending",
             )
         )
-        updated = self._repository.get_source(source_id)
+        # 入队后立即把 Source 标为 pending，让列表/详情无需等 worker 创建
+        # Attempt 就能显示「排队中」。已是 processing 时不降级。
+        if source.brief_status == "processing":
+            updated = self._repository.get_source(source_id)
+        else:
+            updated = self._repository.update_source_state(
+                source_id,
+                brief_status="pending",
+                brief_block_reason="",
+                brief_error_code="",
+                brief_error_message="",
+            )
         return updated, "brief_rebuild_queued"
 
     def _brief_provider_block_reason(self) -> str:

@@ -859,6 +859,41 @@ def test_brief_marked_outdated_on_snapshot_change(tmp_path: Path) -> None:
     assert source.brief_status == "outdated"
 
 
+def test_rebuild_brief_marks_source_pending(tmp_path: Path) -> None:
+    """用户显式 rebuild 入队后 Source 立即变为 pending，供前端展示排队状态。"""
+    config = _primary_config()
+    repository, session_factory, source_id, snapshot_id = _setup(
+        tmp_path, config=config
+    )
+    _seed_ready_brief(
+        repository, config, tmp_path, session_factory, source_id, snapshot_id
+    )
+    source = repository.get_source(source_id)
+    assert source is not None
+    assert source.brief_status == "ready"
+
+    service = KnowledgeIngestService(
+        repository, tmp_path, session_factory, config=config
+    )
+    updated, message = service.rebuild_brief(source_id)
+    assert message == "brief_rebuild_queued"
+    assert updated is not None
+    assert updated.brief_status == "pending"
+    assert updated.brief_block_reason == ""
+    assert updated.brief_error_code == ""
+    # Job 已入队。
+    pending_jobs = repository.list_pending_jobs("brief")
+    assert any(job.source_id == source_id for job in pending_jobs)
+    # 旧 Brief 仍可读。
+    assert repository.get_source_brief(source_id) is not None
+    # GET 路径的 outdated 检测不得覆盖 pending。
+    service.refresh_brief_outdated(source_id)
+    still = repository.get_source(source_id)
+    assert still is not None
+    assert still.brief_status == "pending"
+    assert snapshot_id > 0
+
+
 def test_outdated_cleared_after_successful_rebuild(tmp_path: Path) -> None:
     """Spec §10.4：rebuild 成功后新 Brief 匹配当前配置，outdated 清除。"""
     config = _primary_config()
