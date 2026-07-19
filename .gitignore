@@ -50,25 +50,14 @@ build/
 /tickets*.md
 /*.png
 
-# Design/planning docs default to local workflow artifacts; approved SSOT files are allowlisted below
+# Docs 默认按本地工件忽略,仅跟踪 SSOT。
+# SSOT 边界以 docs/architecture/documentation-rules.md 为准。
 docs/*
-!docs/
-!docs/python-rewrite-contract.md
-!docs/p0-release-checklist.md
-!docs/archive/
-!docs/archive/*.md
-!docs/BUGS.md
 !docs/architecture/
-docs/architecture/*
-!docs/architecture/decisions/
-!docs/architecture/decisions/*.md
-!docs/architecture/*.md
-!docs/superpowers/
-docs/superpowers/*
-!docs/superpowers/specs/
-docs/superpowers/specs/*
-!docs/superpowers/plans/
-docs/superpowers/plans/*
+!docs/archive/
+!docs/BUGS.md
+!docs/p0-release-checklist.md
+!docs/python-rewrite-contract.md
 
 # Local brainstorming companion artifacts
 .superpowers/
