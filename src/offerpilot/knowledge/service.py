@@ -427,7 +427,7 @@ class KnowledgeIngestService:
                 "事务提交后无法读取 Source / Job",
             )
 
-        # KV1-01 / ADR-0009：V1 导入在 Evidence 提交后结束，不自动入队 Brief、不检查
+        # KV1-01 / ADR-0003：V1 导入在 Evidence 提交后结束，不自动入队 Brief、不检查
         # Provider、不写 brief_enqueue_failed；Source 保持 brief_status=not_started。
         # 显式 rebuild_brief 走独立 create_job 路径，不受此处影响。
         return IngestResult(
@@ -457,7 +457,7 @@ class KnowledgeIngestService:
           或 ``provider_context_too_small``。
 
         Spec §11.2 "配置变化不自动批量生成"：用户显式重建由 ``rebuild_brief`` 触发。
-        KV1-01 / ADR-0009：V1 导入不再自动调用本方法；当前仅供 acceptance profile
+        KV1-01 / ADR-0003：V1 导入不再自动调用本方法；当前仅供 acceptance profile
         与 Brief 测试作为 callback 注册入口，V1.1 恢复自动 Brief 时重新启用。
         """
         source = self._repository.get_source(source_id)

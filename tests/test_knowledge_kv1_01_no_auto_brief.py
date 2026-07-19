@@ -1,6 +1,6 @@
 """KV1-01：导入完成后不再自动触发 Brief 的回归测试。
 
-V1 范围（ADR-0010 / Spec 2026-07-18）：Imported Source 完成 Preflight / Extraction /
+V1 范围（ADR-0002 / Spec 2026-07-18）：Imported Source 完成 Preflight / Extraction /
 Snapshot / Evidence / FTS 提交后即为可用，不自动创建 Brief Job、不检查 Provider，
 也不把 Brief pending / blocked / failed 写成 Source 的未完成状态。显式 Brief rebuild
 代码保留，但不由 V1 导入触发。

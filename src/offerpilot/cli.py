@@ -305,7 +305,7 @@ def knowledge_acceptance(
 ) -> None:
     """KV1-03 / KI-11：对真实 Source 与检索质量做一次性硬门禁验收。
 
-    默认 ``v1`` profile（ADR-0010）：无 AI Provider，只验证 Imported Source / Extraction /
+    默认 ``v1`` profile（ADR-0002）：无 AI Provider，只验证 Imported Source / Extraction /
     Evidence / FTS / 搜索 / 回读 / 状态 / edge / bundle，不创建 Brief Job、不调用模型。
     ``brief`` profile（V1.1 候选）额外运行 Brief pass rate 与故障场景，默认用 stub Provider，
     ``--real-ai`` 接真实 Provider。任一硬门禁失败时进程非零退出，并输出可定位 bad case 的 Evidence ID。

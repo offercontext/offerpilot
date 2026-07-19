@@ -65,7 +65,7 @@ describe('KnowledgeSourcesView', () => {
     expect(markup).toContain('中文/英文关键词');
   });
 
-  it('keeps KI-09 Brief Attempt timeline code retained for V1.1 (KV1-02 / ADR-0010)', () => {
+  it('keeps KI-09 Brief Attempt timeline code retained for V1.1 (KV1-02 / ADR-0002)', () => {
     // KV1-02：V1 不渲染 Brief UI，但 BriefAttemptTimeline 组件代码保留以备 V1.1。
     // 验证组件源码仍在（attempt.has_more / 尚未加载完整时间线），V1.1 恢复时可用。
     expect(typeof KnowledgeSourcesView).toBe('function');
@@ -74,7 +74,7 @@ describe('KnowledgeSourcesView', () => {
   });
 
   it('polls list/detail by Extraction in-flight state only (KV1-02: not Brief)', () => {
-    // KV1-02 / ADR-0010：V1 轮询只由 Extraction pending/processing 触发，不因 Brief
+    // KV1-02 / ADR-0002：V1 轮询只由 Extraction pending/processing 触发，不因 Brief
     // 状态刷新；Brief Pill 已隐藏，brief_status 不再驱动列表/详情轮询。
     expect(viewSource).toContain("item.extraction_status === 'pending'");
     expect(viewSource).toContain("source.extraction_status === 'pending'");
@@ -84,7 +84,7 @@ describe('KnowledgeSourcesView', () => {
     expect(viewSource).toContain('setQueryData');
   });
 
-  it('hides Brief UI surface in V1 (KV1-02 / ADR-0010)', () => {
+  it('hides Brief UI surface in V1 (KV1-02 / ADR-0002)', () => {
     // V1 工作台不展示 Brief Pill / Brief 块 / 重建入口 / Attempt timeline；Brief 组件
     // 代码保留以备 V1.1，由 SHOW_BRIEF_UI 开关统一隐藏。
     expect(viewSource).toContain('const SHOW_BRIEF_UI = false');

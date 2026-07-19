@@ -67,9 +67,6 @@ docs/architecture/*
 docs/superpowers/*
 !docs/superpowers/specs/
 docs/superpowers/specs/*
-!docs/superpowers/specs/2026-07-12-knowledge-ingest-rewrite-design.md
-!docs/superpowers/specs/2026-07-15-knowledge-evidence-metadata-and-brief-repair-design.md
-!docs/superpowers/specs/2026-07-17-kbr07-one-time-knowledge-reset-design.md
 !docs/superpowers/plans/
 docs/superpowers/plans/*
 

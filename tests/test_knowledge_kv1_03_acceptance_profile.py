@@ -1,6 +1,6 @@
 """KV1-03：无 Provider 的 Source / Evidence V1 验收 Profile。
 
-ADR-0010：V1 profile 不依赖 AI Provider，只验证 Imported Source / Extraction / Evidence /
+ADR-0002：V1 profile 不依赖 AI Provider，只验证 Imported Source / Extraction / Evidence /
 FTS / 搜索 / 回读 / 状态 / edge / bundle，不创建 Brief Job、不调用模型、不计算 Brief pass rate。
 Brief 验收成为 ``brief`` profile（V1.1 候选），不污染 V1 默认语义。
 

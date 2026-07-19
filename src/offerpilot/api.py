@@ -576,7 +576,7 @@ def create_app(
         session_factory,
         config=knowledge_config,
     )
-    # KV1-01 / ADR-0009：V1 导入不自动触发 Brief。ExtractionWorker 与
+    # KV1-01 / ADR-0003：V1 导入不自动触发 Brief。ExtractionWorker 与
     # KnowledgeWorkerRuntime 均不注册 on_extraction_succeeded callback，Extraction
     # 提交后 Source 保持 brief_status=not_started。显式 rebuild_brief 独立入队。
     extraction_worker = ExtractionWorker(

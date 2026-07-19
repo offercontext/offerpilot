@@ -13,7 +13,7 @@
 核心数据流、质量不变量和演进约束。后续实施 Spec 必须引用本文，不得通过局部实现改变本文边界。
 
 前一轮以自动 Wiki 为中心的 Spec、Plan 和 ADR 已删除，必要的调研结论、否决理由与决策过程
-已归档在本文。ADR-0007 的 SQLite 单一事实源原则继续有效。具体 API、字段、迁移、任务和
+已归档在本文。ADR-0001 的 SQLite 单一事实源原则继续有效。具体 API、字段、迁移、任务和
 发布日期由后续实施 Spec 定义。
 
 ## 2. 核心结论
@@ -450,7 +450,7 @@ V1 不包含 Brief、Captured Source、Knowledge Note、Knowledge Context、Pilo
 ### 16.2 Knowledge V1.1 候选：Source Brief
 
 V1 发布并获得人工使用反馈后，再决定是否提供 Brief。优先验证“用户是否真的需要单 Source 导读”，
-再决定手动生成、质量门禁和状态机范围；不预先承诺自动 Brief 或 ADR-0008 的复杂设计。
+再决定手动生成、质量门禁和状态机范围；不预先承诺自动 Brief 或 ADR-0003 的复杂设计。
 
 ### 16.3 Knowledge V2：内部消费链路
 

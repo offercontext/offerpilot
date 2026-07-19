@@ -69,7 +69,7 @@ const { Paragraph, Text, Title } = Typography;
 
 const KNOWLEDGE_QUERY_KEY = ['knowledge', 'sources'] as const;
 
-// KV1-02 / ADR-0010：V1 工作台不展示 Brief UI（列表 / 详情头 Brief Pill、Brief 块、
+// KV1-02 / ADR-0002：V1 工作台不展示 Brief UI（列表 / 详情头 Brief Pill、Brief 块、
 // 重建入口、Attempt timeline、Brief 暂缓原因与错误文案）。Brief 组件、query、mutation
 // 与 handler 全部保留，V1.1 恢复 Brief 展示时把开关改回 true 即可，不重新引入自动 Brief。
 const SHOW_BRIEF_UI = false;

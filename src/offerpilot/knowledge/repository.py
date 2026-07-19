@@ -3091,7 +3091,7 @@ def _mark_brief_enqueue_pending_for_snapshot(
 ) -> None:
     """为 Extraction 提交与 Brief 入队之间的崩溃窗口留下可恢复标记。
 
-    KV1-01 / ADR-0009：V1 导入不自动触发 Brief，``commit_extraction`` 不再调用本方法，
+    KV1-01 / ADR-0003：V1 导入不自动触发 Brief，``commit_extraction`` 不再调用本方法，
     Source 在 Extraction 提交后保持 ``brief_status=not_started``。方法保留以备 V1.1
     恢复自动 Brief 入队时重新启用崩溃恢复标记；此处不删除 Brief 基础设施代码。
     """
