@@ -284,6 +284,9 @@ body {
   border-radius: 14px;
   padding: 10px;
   box-shadow: var(--op-shadow-sm);
+  /* 列表自身限高内部滚动，不随右侧详情高度变化 */
+  max-height: calc(100vh - 300px);
+  overflow-y: auto;
 }
 .knowledge-source-list-head {
   display: flex;
@@ -367,6 +370,13 @@ body {
   padding: 24px 26px;
   background: var(--op-surface);
   box-shadow: var(--op-shadow-sm);
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 300px);
+}
+.knowledge-source-detail-header,
+.knowledge-source-metadata {
+  flex-shrink: 0;
 }
 
 .knowledge-source-detail-header {
@@ -433,10 +443,27 @@ body {
 
 .knowledge-source-tabs {
   margin-top: 22px;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .knowledge-source-tabs .ant-tabs-nav {
   margin-bottom: 16px;
+  flex-shrink: 0;
+}
+
+/* 让 4 个子页面（处理记录 / Evidence / 原始 Markdown / 后台任务）在视口内滚动，
+   避免内容撑长整个详情面板与外层页面。flex:1 让内容区填满 detail 剩余高度。 */
+.knowledge-source-tabs .ant-tabs-content-holder {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.knowledge-source-tabs .ant-tabs-tabpane {
+  overflow-wrap: anywhere;
 }
 
 /* ---- 处理记录 StatusLine ---- */
@@ -461,6 +488,76 @@ body {
   flex-shrink: 0;
   color: var(--op-muted);
   font-size: 12px;
+}
+
+.knowledge-brief-attempts {
+  margin: 14px 0 10px;
+  padding: 12px 0 2px;
+  border-top: 1px dashed var(--op-border);
+}
+.knowledge-brief-attempts-title.ant-typography {
+  margin: 0 0 7px;
+  font-size: 12px;
+  color: var(--op-muted-strong);
+}
+.knowledge-brief-attempt-list .ant-list-item {
+  padding: 9px 0;
+  border-block-end: 1px dashed var(--op-border);
+}
+.knowledge-brief-attempt-list .ant-list-item:last-child {
+  border-block-end: none;
+}
+.knowledge-brief-attempt {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 100%;
+  min-width: 0;
+}
+.knowledge-brief-step-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 4px 0 0 9px;
+  padding-left: 11px;
+  border-left: 2px solid var(--op-border);
+}
+.knowledge-brief-step {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 7px 9px;
+  border: 1px solid var(--op-border);
+  border-radius: 7px;
+  background: var(--surface-sunken);
+}
+.knowledge-brief-diagnostic-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  font-size: 12px;
+}
+.knowledge-brief-diagnostic-text {
+  display: block;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.knowledge-brief-step-evidence .ant-btn {
+  height: auto;
+  padding: 0 2px;
+  font-family: var(--op-font-mono);
+  font-size: 11px;
+}
+.knowledge-brief-issue {
+  width: 100%;
+  padding: 7px 0;
+  border-bottom: 1px dashed var(--op-border);
+}
+.knowledge-brief-issue:last-child {
+  border-bottom: none;
 }
 
 /* ---- Brief 导读模块 ---- */
@@ -688,6 +785,9 @@ body {
   background: linear-gradient(180deg, rgba(245, 158, 11, 0.1), transparent);
   box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.16);
 }
+.knowledge-evidence-hit-badge {
+  margin-left: auto;
+}
 .knowledge-evidence-meta {
   display: flex;
   flex-wrap: wrap;
@@ -798,16 +898,86 @@ body {
 }
 .knowledge-markdown pre {
   margin: 12px 0;
-  padding: 12px;
+  padding: 13px 15px;
   overflow-x: auto;
-  border: 1px solid var(--op-border);
-  border-radius: 6px;
-  background: var(--op-layout-bg);
+  border: 1px solid #313244;
+  border-radius: 8px;
+  background: #1e1e2e;
+  color: #e0def4;
 }
 .knowledge-markdown pre code {
   padding: 0;
   border: 0;
   background: transparent;
+  color: inherit;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.knowledge-markdown pre code.hljs {
+  padding: 0;
+  background: transparent;
+}
+/* detect 模式下避免行内 `code` 被 hljs 误染色，保持行内 code 单一颜色 */
+.knowledge-markdown :not(pre) > code span {
+  color: inherit;
+}
+
+/* highlight.js token 配色（Catppuccin Mocha，与 #1e1e2e 背景匹配） */
+.knowledge-markdown .hljs-comment,
+.knowledge-markdown .hljs-quote {
+  color: #6c7086;
+  font-style: italic;
+}
+.knowledge-markdown .hljs-keyword,
+.knowledge-markdown .hljs-selector-tag,
+.knowledge-markdown .hljs-literal,
+.knowledge-markdown .hljs-type,
+.knowledge-markdown .hljs-built_in,
+.knowledge-markdown .hljs-builtin-name,
+.knowledge-markdown .hljs-name {
+  color: #cba6f7;
+}
+.knowledge-markdown .hljs-string,
+.knowledge-markdown .hljs-regexp,
+.knowledge-markdown .hljs-addition,
+.knowledge-markdown .hljs-meta-string {
+  color: #a6e3a1;
+}
+.knowledge-markdown .hljs-number,
+.knowledge-markdown .hljs-symbol,
+.knowledge-markdown .hljs-bullet,
+.knowledge-markdown .hljs-template-variable,
+.knowledge-markdown .hljs-link {
+  color: #fab387;
+}
+.knowledge-markdown .hljs-title,
+.knowledge-markdown .hljs-class .hljs-title,
+.knowledge-markdown .hljs-title.class_,
+.knowledge-markdown .hljs-title.function_,
+.knowledge-markdown .hljs-section,
+.knowledge-markdown .hljs-selector-id,
+.knowledge-markdown .hljs-selector-class {
+  color: #89b4fa;
+}
+.knowledge-markdown .hljs-attr,
+.knowledge-markdown .hljs-attribute,
+.knowledge-markdown .hljs-variable,
+.knowledge-markdown .hljs-property,
+.knowledge-markdown .hljs-params {
+  color: #f9e2af;
+}
+.knowledge-markdown .hljs-meta,
+.knowledge-markdown .hljs-tag {
+  color: #7f7f9f;
+}
+.knowledge-markdown .hljs-deletion {
+  color: #f38ba8;
+}
+.knowledge-markdown .hljs-emphasis {
+  font-style: italic;
+}
+.knowledge-markdown .hljs-strong {
+  font-weight: 700;
 }
 .knowledge-markdown table {
   display: block;

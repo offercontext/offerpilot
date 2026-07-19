@@ -220,7 +220,12 @@ export interface BriefValidationIssue {
   issue_type: string;
   decision: string;
   reason_code?: string;
-  reason: string;
+  // 旧版 API 的通用摘要；结构化诊断存在时优先展示 explanation。
+  reason?: string;
+  // KBR-08：结构化支持校验诊断，均为可选以兼容历史 Attempt。
+  unsupported_fragments?: string[];
+  explanation?: string;
+  suggested_rewrite?: string;
   evidence_ids: string[];
 }
 
@@ -245,6 +250,44 @@ export interface BriefValidationReport {
   }[];
   programmatic_issues?: string[];
   repair_count?: number;
+}
+
+export interface KnowledgeBriefAttemptStepOutput {
+  decision?: string;
+  reason_code?: string;
+  unsupported_fragments?: string[];
+  explanation?: string;
+  suggested_rewrite?: string;
+  [key: string]: unknown;
+}
+
+// KBR-08：Brief Attempt 的可选过程步骤。后端尚未返回时，前端只展示已有 Attempt 摘要和空状态。
+export interface KnowledgeBriefAttemptStep {
+  id?: number;
+  attempt_id?: number;
+  sequence: number;
+  iteration?: number;
+  phase: string;
+  status: string;
+  block_path?: string | null;
+  provider_id?: string | null;
+  provider_model?: string | null;
+  prompt_version?: string | null;
+  schema_version?: number | null;
+  decision?: string | null;
+  reason_code?: string | null;
+  evidence_ids?: string[];
+  output?: KnowledgeBriefAttemptStepOutput | null;
+  created_at?: string | null;
+  latency_ms?: number | null;
+  token_input_count?: number | null;
+  token_output_count?: number | null;
+  retry_count?: number | null;
+  error_code?: string | null;
+  error_message?: string | null;
+  unsupported_fragments?: string[];
+  explanation?: string | null;
+  suggested_rewrite?: string | null;
 }
 
 export interface KnowledgeSourceBrief {
@@ -287,6 +330,10 @@ export interface KnowledgeBriefAttempt {
   token_input_count: number;
   token_output_count: number;
   latency_ms: number;
+  // 后端逐步提供过程记录；旧 Attempt 不含该字段。
+  steps?: KnowledgeBriefAttemptStep[];
+  total_steps?: number;
+  has_more?: boolean;
   created_at: string;
   updated_at: string;
 }

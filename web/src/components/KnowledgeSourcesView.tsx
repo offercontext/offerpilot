@@ -2,6 +2,7 @@ import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import rehypeHighlight from 'rehype-highlight';
 import {
   Alert,
   Button,
@@ -55,6 +56,7 @@ import type {
   BriefStatement,
   BriefValidationReport,
   KnowledgeBriefAttempt,
+  KnowledgeBriefAttemptStep,
   KnowledgeEvidence,
   KnowledgeJob,
   KnowledgeSource,
@@ -66,6 +68,11 @@ import type {
 const { Paragraph, Text, Title } = Typography;
 
 const KNOWLEDGE_QUERY_KEY = ['knowledge', 'sources'] as const;
+
+// KV1-02 / ADR-0010：V1 工作台不展示 Brief UI（列表 / 详情头 Brief Pill、Brief 块、
+// 重建入口、Attempt timeline、Brief 暂缓原因与错误文案）。Brief 组件、query、mutation
+// 与 handler 全部保留，V1.1 恢复 Brief 展示时把开关改回 true 即可，不重新引入自动 Brief。
+const SHOW_BRIEF_UI = false;
 
 const STATUS_LABEL: Record<string, string> = {
   active: '活跃',
@@ -90,9 +97,17 @@ const BRIEF_LABEL: Record<string, string> = {
 // Status Pill 变体：替换 antd 彩色圆点 Badge，统一精致化状态标识
 type PillVariant = 'indigo' | 'green' | 'amber' | 'rose' | 'gray' | 'violet' | 'cyan';
 
-function Pill({ variant, children }: { variant: PillVariant; children: ReactNode }) {
+function Pill({
+  variant,
+  children,
+  className,
+}: {
+  variant: PillVariant;
+  children: ReactNode;
+  className?: string;
+}) {
   return (
-    <span className={`op-pill op-pill--${variant}`}>
+    <span className={`op-pill op-pill--${variant}${className ? ` ${className}` : ''}`}>
       <span className="op-pill-dot" />
       {children}
     </span>
@@ -159,8 +174,20 @@ export default function KnowledgeSourcesView() {
   const queryClient = useQueryClient();
   const [includeArchived, setIncludeArchived] = useState(false);
   const sourcesQuery = useQuery({
-    queryKey: KNOWLEDGE_QUERY_KEY,
+    queryKey: [...KNOWLEDGE_QUERY_KEY, { includeArchived }],
     queryFn: () => fetchKnowledgeSources({ includeArchived }),
+    // KV1-02：列表轮询只由 Extraction 在途状态触发；V1 不因 Brief 状态刷新
+    // （Brief Pill 已隐藏，brief_status 变化不再影响列表展示）。
+    refetchInterval: (query) => {
+      const items = query.state.data ?? [];
+      return items.some(
+        (item) =>
+          item.extraction_status === 'pending' ||
+          item.extraction_status === 'processing',
+      )
+        ? 2000
+        : false;
+    },
   });
   const [selectedSourceId, setSelectedSourceId] = useState<number | null>(null);
   // KI-08：搜索结果点击后，进入 Source 详情时定位/高亮对应 Evidence。
@@ -327,7 +354,12 @@ export default function KnowledgeSourcesView() {
 
         <div
           className="knowledge-sources-layout"
-          style={{ display: 'grid', gridTemplateColumns: 'minmax(240px, 320px) minmax(0, 1fr)', gap: 16 }}
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'minmax(240px, 320px) minmax(0, 1fr)',
+            gap: 16,
+            alignItems: 'start',
+          }}
         >
           <SourceListPanel
             sources={sourcesQuery.data ?? []}
@@ -423,9 +455,11 @@ function SourceListPanel({
                   <Pill variant={extractionVariant(item.extraction_status)}>
                     {EXTRACTION_LABEL[item.extraction_status] ?? item.extraction_status}
                   </Pill>
-                  <Pill variant={briefVariant(item.brief_status)}>
-                    {BRIEF_LABEL[item.brief_status] ?? item.brief_status}
-                  </Pill>
+                  {SHOW_BRIEF_UI ? (
+                    <Pill variant={briefVariant(item.brief_status)}>
+                      {BRIEF_LABEL[item.brief_status] ?? item.brief_status}
+                    </Pill>
+                  ) : null}
                 </div>
                 <Text className="knowledge-source-item-meta">
                   {item.main_filename} · {formatBytes(item.total_bytes)}
@@ -482,6 +516,15 @@ function SourceDetailContent({
   const sourceQuery = useQuery({
     queryKey: ['knowledge', 'source', sourceId],
     queryFn: () => fetchKnowledgeSource(sourceId),
+    // KV1-02：轮询只由 Extraction 在途状态触发；V1 不因 Brief 状态持续刷新。
+    refetchInterval: (query) => {
+      const source = query.state.data;
+      if (!source) return false;
+      return source.extraction_status === 'pending' ||
+        source.extraction_status === 'processing'
+        ? 2000
+        : false;
+    },
   });
   const evidenceQuery = useQuery({
     queryKey: ['knowledge', 'source', sourceId, 'evidence'],
@@ -491,9 +534,12 @@ function SourceDetailContent({
     queryKey: ['knowledge', 'source', sourceId, 'content'],
     queryFn: () => fetchKnowledgeSourceContent(sourceId),
   });
+  // KV1-02：V1 不展示 Brief UI，briefQuery 在 V1 不启用（不发请求、不轮询）；
+  // SHOW_BRIEF_UI 恢复 true 时自动启用 fetch 与 brief_status 轮询。
   const briefQuery = useQuery({
     queryKey: ['knowledge', 'source', sourceId, 'brief'],
     queryFn: () => fetchKnowledgeSourceBrief(sourceId),
+    enabled: SHOW_BRIEF_UI,
     refetchInterval: (query) => {
       const status = query.state.data?.brief_status;
       return status === 'pending' || status === 'processing' ? 2000 : false;
@@ -511,11 +557,55 @@ function SourceDetailContent({
   });
   const briefRebuildMutation = useMutation({
     mutationFn: (id: number) => rebuildKnowledgeSourceBrief(id),
-    onSuccess: () => {
+    onSuccess: (data) => {
       message.success('已请求重新生成 Brief');
+      // 立即用 202 响应刷新 source / brief 缓存，避免等下一轮 refetch 才看到「排队中」。
+      queryClient.setQueryData<KnowledgeSource>(
+        ['knowledge', 'source', sourceId],
+        (prev) =>
+          prev
+            ? {
+                ...prev,
+                brief_status: data.brief_status,
+                brief_block_reason: data.brief_block_reason,
+                brief_error_code: data.brief_error_code,
+                brief_error_message: data.brief_error_message,
+              }
+            : prev,
+      );
+      queryClient.setQueryData(
+        ['knowledge', 'source', sourceId, 'brief'],
+        (prev: KnowledgeSourceBriefResponse | undefined) =>
+          prev
+            ? {
+                ...prev,
+                brief_status: data.brief_status,
+                brief_block_reason: data.brief_block_reason,
+                brief_error_code: data.brief_error_code,
+                brief_error_message: data.brief_error_message,
+              }
+            : prev,
+      );
+      queryClient.setQueryData<KnowledgeSource[]>(KNOWLEDGE_QUERY_KEY, (prev) =>
+        prev?.map((item) =>
+          item.id === sourceId
+            ? {
+                ...item,
+                brief_status: data.brief_status,
+                brief_block_reason: data.brief_block_reason,
+                brief_error_code: data.brief_error_code,
+                brief_error_message: data.brief_error_message,
+              }
+            : item,
+        ),
+      );
+      queryClient.invalidateQueries({ queryKey: KNOWLEDGE_QUERY_KEY });
       queryClient.invalidateQueries({ queryKey: ['knowledge', 'source', sourceId] });
       queryClient.invalidateQueries({
         queryKey: ['knowledge', 'source', sourceId, 'brief'],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ['knowledge', 'source', sourceId, 'jobs'],
       });
     },
     onError: (error: unknown) => {
@@ -526,7 +616,8 @@ function SourceDetailContent({
   const [briefCitationTarget, setBriefCitationTarget] = useState<string | null>(
     null,
   );
-  const [activeDetailTab, setActiveDetailTab] = useState('status');
+  // KV1-02：V1 默认进入 Evidence 视图，而非暴露 Brief 缺失的状态总览。
+  const [activeDetailTab, setActiveDetailTab] = useState('evidence');
   const handleCitationJump = (evidenceId: string) => {
     setBriefCitationTarget(evidenceId);
     setActiveDetailTab('evidence');
@@ -631,9 +722,11 @@ function SourceDetailContent({
             <Pill variant={extractionVariant(source.extraction_status)}>
               {EXTRACTION_LABEL[source.extraction_status] ?? source.extraction_status}
             </Pill>
-            <Pill variant={briefVariant(source.brief_status)}>
-              {BRIEF_LABEL[source.brief_status] ?? source.brief_status}
-            </Pill>
+            {SHOW_BRIEF_UI ? (
+              <Pill variant={briefVariant(source.brief_status)}>
+                {BRIEF_LABEL[source.brief_status] ?? source.brief_status}
+              </Pill>
+            ) : null}
           </div>
         </div>
         <Space size={6} wrap className="knowledge-source-actions">
@@ -690,15 +783,17 @@ function SourceDetailContent({
         />
       </div>
 
-      <BriefBlock
-        sourceId={sourceId}
-        briefStatus={source.brief_status}
-        data={briefQuery.data}
-        loading={briefQuery.isLoading}
-        onRebuild={() => briefRebuildMutation.mutate(sourceId)}
-        rebuilding={briefRebuildMutation.isPending}
-        onCitationJump={handleCitationJump}
-      />
+      {SHOW_BRIEF_UI ? (
+        <BriefBlock
+          sourceId={sourceId}
+          briefStatus={source.brief_status}
+          data={briefQuery.data}
+          loading={briefQuery.isLoading}
+          onRebuild={() => briefRebuildMutation.mutate(sourceId)}
+          rebuilding={briefRebuildMutation.isPending}
+          onCitationJump={handleCitationJump}
+        />
+      ) : null}
 
       <Tabs
         className="knowledge-source-tabs"
@@ -708,7 +803,14 @@ function SourceDetailContent({
           {
             key: 'status',
             label: '处理记录',
-            children: <StatusBlock source={source} origins={jobsQuery.data?.origins ?? []} />,
+            children: (
+              <StatusBlock
+                source={source}
+                origins={jobsQuery.data?.origins ?? []}
+                briefAttempts={briefQuery.data?.attempts ?? []}
+                onCitationJump={handleCitationJump}
+              />
+            ),
           },
           {
             key: 'evidence',
@@ -771,7 +873,7 @@ function SourceDetailContent({
             showCount
           />
           <Text type="secondary" style={{ fontSize: 12 }}>
-            修改展示标题不会触发重新解析或重新生成 Brief,Evidence ID 保持不变。
+            修改展示标题不会触发重新解析，Evidence ID 保持不变。
           </Text>
         </Space>
       </Modal>
@@ -796,7 +898,7 @@ function SourceDetailContent({
           <div className="knowledge-delete-warning">
             <Title level={5}>危险操作</Title>
             <Paragraph type="secondary">
-              永久删除会清除原件、附件、Evidence、Snapshot、Brief 与 Job 历史,不可恢复。
+              永久删除会清除原件、附件、Evidence、Snapshot 与 Job 历史,不可恢复。
               删除后相同内容可作为新 Source 重新导入。
             </Paragraph>
           </div>
@@ -832,9 +934,13 @@ function SourceMetadataItem({ label, value }: { label: string; value: string }) 
 function StatusBlock({
   source,
   origins,
+  briefAttempts,
+  onCitationJump,
 }: {
   source: KnowledgeSource;
   origins: KnowledgeSourceJobsResponse['origins'];
+  briefAttempts: KnowledgeBriefAttempt[];
+  onCitationJump: (evidenceId: string) => void;
 }) {
   const extractionError =
     source.extraction_status === 'failed' && source.extraction_error_message
@@ -849,8 +955,13 @@ function StatusBlock({
         label="Extraction"
         value={EXTRACTION_LABEL[source.extraction_status] ?? source.extraction_status}
       />
-      <StatusLine label="Brief" value={BRIEF_LABEL[source.brief_status] ?? source.brief_status} />
-      <StatusLine label="Brief 暂缓原因" value={source.brief_block_reason || '无'} />
+      {SHOW_BRIEF_UI ? (
+        <>
+          <StatusLine label="Brief" value={BRIEF_LABEL[source.brief_status] ?? source.brief_status} />
+          <StatusLine label="Brief 暂缓原因" value={source.brief_block_reason || '无'} />
+          <BriefAttemptTimeline attempts={briefAttempts} onCitationJump={onCitationJump} />
+        </>
+      ) : null}
       {extractionError ? (
         <Alert type="error" showIcon message="Extraction 失败" description={extractionError} />
       ) : null}
@@ -858,7 +969,7 @@ function StatusBlock({
         <div className="knowledge-status-filter-summary">
           <Space size={4} align="center">
             <Title level={5}>Evidence 过滤统计</Title>
-            <Tooltip title="系统在生成 Evidence 时按确定性规则过滤作者卡、阅读数、导航、图片壳、Obsidian/Evernote 残片等元数据样板；原文仍可完整查看，被过滤块不参与检索与 Brief。">
+            <Tooltip title="系统在生成 Evidence 时按确定性规则过滤作者卡、阅读数、导航、图片壳、Obsidian/Evernote 残片等元数据样板；原文仍可完整查看，被过滤块不参与检索。">
               <Button
                 type="text"
                 size="small"
@@ -921,6 +1032,253 @@ function StatusLine({ label, value }: { label: string; value: string }) {
       <span className="knowledge-status-line-label">{label}</span>
       <span>{value}</span>
     </div>
+  );
+}
+
+const BRIEF_ATTEMPT_PHASE_LABEL: Record<string, string> = {
+  generation: '生成候选',
+  attempt_started: 'Attempt 开始',
+  model_call: '模型调用',
+  retry: 'Provider 重试',
+  provider_switch: 'Provider 切换',
+  model_response_parsed: '模型响应解析',
+  program_check: '程序检查',
+  validation_report: '校验报告',
+  validation_result: '单条支持校验',
+  validation: 'Evidence 支持校验',
+  repair: '修复',
+  repair_requested: '修复请求',
+  repair_patch_parsed: '修复补丁解析',
+  revalidation: '修复后复验',
+  final: '最终结果',
+};
+
+const BRIEF_ATTEMPT_STATUS_LABEL: Record<string, string> = {
+  pending: '排队中',
+  running: '进行中',
+  processing: '进行中',
+  succeeded: '已完成',
+  ready: '已完成',
+  failed: '已失败',
+  skipped: '已跳过',
+};
+
+const BRIEF_REASON_CODE_LABEL: Record<string, string> = {
+  unsupported_qualifier: '限定词无直接证据',
+  unsupported_inference: '推断超出证据',
+  unsupported_claim: '陈述未被证据支持',
+  contradicted_by_evidence: '与证据相矛盾',
+  evidence_missing: '缺少引用证据',
+  validator_parse_failed: 'Validator 输出无法解析',
+  validator_unknown_reason: 'Validator 未知原因',
+};
+
+function briefAttemptStatusVariant(status: string): PillVariant {
+  switch (status) {
+    case 'succeeded':
+    case 'ready':
+      return 'green';
+    case 'failed':
+      return 'rose';
+    case 'running':
+    case 'processing':
+      return 'indigo';
+    case 'pending':
+      return 'amber';
+    default:
+      return 'gray';
+  }
+}
+
+function briefStepStatusVariant(status: string): PillVariant {
+  switch (status) {
+    case 'completed':
+    case 'succeeded':
+    case 'ready':
+      return 'green';
+    case 'failed':
+      return 'rose';
+    case 'running':
+    case 'processing':
+      return 'indigo';
+    default:
+      return 'gray';
+  }
+}
+
+function BriefAttemptTimeline({
+  attempts,
+  onCitationJump,
+}: {
+  attempts: KnowledgeBriefAttempt[];
+  onCitationJump: (evidenceId: string) => void;
+}) {
+  const orderedAttempts = [...attempts].sort((left, right) => {
+    const leftTime = Date.parse(left.created_at);
+    const rightTime = Date.parse(right.created_at);
+    if (Number.isNaN(leftTime) || Number.isNaN(rightTime)) {
+      return left.id - right.id;
+    }
+    return leftTime - rightTime;
+  });
+
+  return (
+    <div className="knowledge-brief-attempts">
+      <Title level={5} className="knowledge-brief-attempts-title">
+        Brief 处理记录
+      </Title>
+      {orderedAttempts.length === 0 ? (
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          暂无 Brief Attempt 记录
+        </Text>
+      ) : (
+        <List
+          className="knowledge-brief-attempt-list"
+          dataSource={orderedAttempts}
+          rowKey={(attempt) => attempt.id}
+          renderItem={(attempt) => {
+            const steps = [...(attempt.steps ?? [])].sort(
+              (left, right) => left.sequence - right.sequence,
+            );
+            return (
+              <List.Item>
+                <div className="knowledge-brief-attempt">
+                  <Space size={7} wrap>
+                    <Text strong>Attempt #{attempt.id}</Text>
+                    <Pill variant={briefAttemptStatusVariant(attempt.status)}>
+                      {BRIEF_ATTEMPT_STATUS_LABEL[attempt.status] ?? attempt.status}
+                    </Pill>
+                    {attempt.created_at ? (
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        {formatDateTime(attempt.created_at)}
+                      </Text>
+                    ) : null}
+                  </Space>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    Provider：{attempt.actual_provider_id || attempt.provider_id || '—'}
+                    {attempt.actual_provider_model || attempt.provider_model
+                      ? ` · 模型：${attempt.actual_provider_model || attempt.provider_model}`
+                      : ''}
+                    {attempt.latency_ms > 0 ? ` · ${attempt.latency_ms} ms` : ''}
+                  </Text>
+                  {steps.length > 0 ? (
+                    <div className="knowledge-brief-step-list">
+                      {steps.map((step) => (
+                        <BriefAttemptStepView
+                          key={`${attempt.id}-${step.sequence}`}
+                          step={step}
+                          onCitationJump={onCitationJump}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      暂无细分步骤（当前 API 尚未返回 steps）
+                    </Text>
+                  )}
+                  {attempt.has_more ? (
+                    <Text type="warning" style={{ fontSize: 12 }}>
+                      处理记录仅显示前 {steps.length} / {attempt.total_steps ?? '多'} 条，尚未加载完整时间线。
+                    </Text>
+                  ) : null}
+                </div>
+              </List.Item>
+            );
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function BriefAttemptStepView({
+  step,
+  onCitationJump,
+}: {
+  step: KnowledgeBriefAttemptStep;
+  onCitationJump: (evidenceId: string) => void;
+}) {
+  const output = step.output ?? {};
+  const decision = step.decision ?? output.decision;
+  const reasonCode = step.reason_code ?? output.reason_code;
+  const evidenceIds = step.evidence_ids ?? [];
+  const fragments = step.unsupported_fragments ?? output.unsupported_fragments ?? [];
+  const explanation = step.explanation ?? output.explanation;
+  const suggestedRewrite = step.suggested_rewrite ?? output.suggested_rewrite;
+  return (
+    <div className="knowledge-brief-step">
+      <Space size={6} wrap>
+        <Text strong>
+          {BRIEF_ATTEMPT_PHASE_LABEL[step.phase] ?? (step.phase || '未知阶段')}
+        </Text>
+        <Pill variant={briefStepStatusVariant(step.status)}>
+          {BRIEF_ATTEMPT_STATUS_LABEL[step.status] ?? step.status}
+        </Pill>
+        {step.block_path ? <Text code>{step.block_path}</Text> : null}
+        {decision ? <Text type="secondary">判定：{decision}</Text> : null}
+        {reasonCode ? (
+          <Tag color="orange">
+            原因：{BRIEF_REASON_CODE_LABEL[reasonCode] ?? reasonCode}
+          </Tag>
+        ) : null}
+      </Space>
+      {fragments.length > 0 ? (
+        <div className="knowledge-brief-diagnostic-line">
+          <Text type="secondary">未直接支持：</Text>
+          <Space size={4} wrap>
+            {fragments.map((fragment, index) => (
+              <Tag key={`${fragment}-${index}`}>{fragment}</Tag>
+            ))}
+          </Space>
+        </div>
+      ) : null}
+      {explanation ? (
+        <Text type="secondary" className="knowledge-brief-diagnostic-text">
+          {explanation}
+        </Text>
+      ) : null}
+      {suggestedRewrite ? (
+        <Text type="secondary" className="knowledge-brief-diagnostic-text">
+          建议改写：{suggestedRewrite}
+        </Text>
+      ) : null}
+      {evidenceIds.length > 0 ? (
+        <BriefEvidenceLinks evidenceIds={evidenceIds} onCitationJump={onCitationJump} />
+      ) : null}
+      {step.latency_ms != null || step.token_input_count != null || step.token_output_count != null ? (
+        <Text type="secondary" style={{ fontSize: 11 }}>
+          {step.latency_ms != null ? `耗时 ${step.latency_ms} ms` : ''}
+          {step.token_input_count != null ? ` · 输入 ${step.token_input_count} tokens` : ''}
+          {step.token_output_count != null ? ` · 输出 ${step.token_output_count} tokens` : ''}
+        </Text>
+      ) : null}
+    </div>
+  );
+}
+
+function BriefEvidenceLinks({
+  evidenceIds,
+  onCitationJump,
+}: {
+  evidenceIds: string[];
+  onCitationJump: (evidenceId: string) => void;
+}) {
+  return (
+    <Space size={4} wrap className="knowledge-brief-step-evidence">
+      <Text type="secondary" style={{ fontSize: 11 }}>
+        Evidence：
+      </Text>
+      {evidenceIds.map((evidenceId) => (
+        <Button
+          key={evidenceId}
+          size="small"
+          type="link"
+          onClick={() => onCitationJump(evidenceId)}
+        >
+          {evidenceId}
+        </Button>
+      ))}
+    </Space>
   );
 }
 
@@ -1041,13 +1399,15 @@ const ISSUE_TYPE_LABEL: Record<string, string> = {
   support_partial: '部分支持',
   support_unsupported: '未支持',
   support_contradicted: '相矛盾',
+  validator_parse_failed: 'Validator 输出无法解析',
+  validator_call_failed: 'Validator 调用失败',
   coverage_missing: '章节未覆盖',
   // KBR-06：repair patch 非法/越权。
   repair_invalid: '修复补丁非法',
   repair_unauthorized: '修复补丁越权',
 };
 
-function BriefValidationIssues({
+export function BriefValidationIssues({
   report,
   onCitationJump,
 }: {
@@ -1083,23 +1443,39 @@ function BriefValidationIssues({
                 <Text strong>{issue.block_path || '（全局）'}</Text>
               </Space>
               <div>
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  {issue.reason}
-                </Text>
+                {issue.reason_code ? (
+                  <Tag color="orange">
+                    原因：{BRIEF_REASON_CODE_LABEL[issue.reason_code] ?? issue.reason_code}
+                  </Tag>
+                ) : null}
+                {issue.unsupported_fragments?.length ? (
+                  <div className="knowledge-brief-diagnostic-line">
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      未直接支持：
+                    </Text>
+                    <Space size={4} wrap>
+                      {issue.unsupported_fragments.map((fragment, fragmentIndex) => (
+                        <Tag key={`${fragment}-${fragmentIndex}`}>{fragment}</Tag>
+                      ))}
+                    </Space>
+                  </div>
+                ) : null}
+                {issue.explanation || issue.reason ? (
+                  <Text type="secondary" className="knowledge-brief-diagnostic-text">
+                    {issue.explanation || issue.reason}
+                  </Text>
+                ) : null}
+                {issue.suggested_rewrite ? (
+                  <Text type="secondary" className="knowledge-brief-diagnostic-text">
+                    建议改写：{issue.suggested_rewrite}
+                  </Text>
+                ) : null}
               </div>
-              {issue.evidence_ids.length > 0 ? (
-                <Space size={4} wrap>
-                  {issue.evidence_ids.map((eid) => (
-                    <Button
-                      key={eid}
-                      size="small"
-                      type="link"
-                      onClick={() => onCitationJump(eid)}
-                    >
-                      {eid}
-                    </Button>
-                  ))}
-                </Space>
+              {issue.evidence_ids?.length > 0 ? (
+                <BriefEvidenceLinks
+                  evidenceIds={issue.evidence_ids}
+                  onCitationJump={onCitationJump}
+                />
               ) : null}
             </div>
           ))}
@@ -1283,7 +1659,11 @@ function EvidenceBlock({
                   <span className="knowledge-evidence-loc">
                     行 {item.line_start}-{item.line_end} · 字符 {item.char_start}-{item.char_end}
                   </span>
-                  {isHighlighted ? <Pill variant="amber">搜索命中</Pill> : null}
+                  {isHighlighted ? (
+                    <Pill variant="amber" className="knowledge-evidence-hit-badge">
+                      搜索命中
+                    </Pill>
+                  ) : null}
                 </div>
                 {item.heading_path.length ? (
                   <div className="knowledge-evidence-path">
@@ -1355,7 +1735,12 @@ function OriginalMarkdownBlock({
 function MarkdownContent({ content }: { content: string }) {
   return (
     <div className="knowledge-markdown">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
+      >
+        {content}
+      </ReactMarkdown>
     </div>
   );
 }
