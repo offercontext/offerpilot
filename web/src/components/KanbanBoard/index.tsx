@@ -1,12 +1,9 @@
 import { useMemo, useState } from 'react';
 import {
-  DndContext,
   DragOverlay,
-  PointerSensor,
   type DragEndEvent,
   type DragStartEvent,
-  useSensor,
-  useSensors,
+  useDndMonitor,
 } from '@dnd-kit/core';
 import { useQueryClient } from '@tanstack/react-query';
 import { Input, Modal, Typography, message } from 'antd';
@@ -22,6 +19,7 @@ import KanbanCard from './KanbanCard';
 import {
   buildApplicationStatusPayload,
   requiresClosedReason,
+  resolveKanbanDropDestination,
   willRecordFirstStatusTimestamp,
 } from './applicationLifecycle';
 import styles from './KanbanBoard.module.css';
@@ -29,10 +27,10 @@ import styles from './KanbanBoard.module.css';
 interface KanbanBoardProps {
   applications: Application[];
   onOpenDetail?: (app: Application) => void;
-  onAskPilot?: (app: Application) => void;
+  onAttachToPilot?: (attachment: import('@/types/chat').PilotContextAttachment) => void;
 }
 
-export default function KanbanBoard({ applications, onOpenDetail, onAskPilot }: KanbanBoardProps) {
+export default function KanbanBoard({ applications, onOpenDetail, onAttachToPilot }: KanbanBoardProps) {
   const queryClient = useQueryClient();
   const [activeId, setActiveId] = useState<number | null>(null);
   const [pendingMove, setPendingMove] = useState<{ app: Application; status: ApplicationStatus } | null>(null);
@@ -55,10 +53,6 @@ export default function KanbanBoard({ applications, onOpenDetail, onAskPilot }: 
 
   const activeRecord = applications.find((a) => a.id === activeId) ?? null;
 
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
-  );
-
   const handleDragStart = (event: DragStartEvent) => {
     setActiveId(event.active.id as number);
   };
@@ -74,13 +68,21 @@ export default function KanbanBoard({ applications, onOpenDetail, onAskPilot }: 
     setActiveId(null);
     if (!over) return;
 
-    const currentStatus = active.data.current?.status as ApplicationStatus;
-    const newStatus = over.id as ApplicationStatus;
-    if (currentStatus === newStatus) return;
-
     const appId = active.id as number;
     const app = applications.find((item) => item.id === appId);
-    if (app) requestStatusChange(app, newStatus);
+    if (!app) return;
+
+    const destination = resolveKanbanDropDestination(String(over.id));
+    if (!destination) return;
+    if (destination.kind === 'pilot') {
+      onAttachToPilot?.({
+        kind: 'application',
+        id: String(app.id),
+        label: `${app.company_name} · ${app.position_name}`,
+      });
+      return;
+    }
+    if (app.status !== destination.status) requestStatusChange(app, destination.status);
   };
 
   const confirmStatusChange = async () => {
@@ -111,13 +113,14 @@ export default function KanbanBoard({ applications, onOpenDetail, onAskPilot }: 
     setActiveId(null);
   };
 
+  useDndMonitor({
+    onDragStart: handleDragStart,
+    onDragEnd: handleDragEnd,
+    onDragCancel: handleDragCancel,
+  });
+
   return (
-    <DndContext
-      sensors={sensors}
-      onDragStart={handleDragStart}
-      onDragEnd={handleDragEnd}
-      onDragCancel={handleDragCancel}
-    >
+    <>
       <div className={styles.board}>
         {KANBAN_COLUMNS.map((status) => (
           <KanbanColumn
@@ -128,7 +131,6 @@ export default function KanbanBoard({ applications, onOpenDetail, onAskPilot }: 
             cards={columns[status]}
             activeId={activeId}
             onOpenDetail={onOpenDetail}
-            onAskPilot={onAskPilot}
             onRequestStatusChange={requestStatusChange}
           />
         ))}
@@ -170,6 +172,6 @@ export default function KanbanBoard({ applications, onOpenDetail, onAskPilot }: 
           </div>
         )}
       </Modal>
-    </DndContext>
+    </>
   );
 }

@@ -3,6 +3,7 @@ import { CopyOutlined, DeleteOutlined, EditOutlined, StarOutlined } from '@ant-d
 import dayjs from 'dayjs';
 import type { ReactNode } from 'react';
 import type { Resume } from '@/types/resume';
+import { createPilotAttachmentDragBinding } from './PilotAttachmentHandle';
 
 interface Props {
   resume: Resume;
@@ -10,6 +11,7 @@ interface Props {
   onSetMaster: (id: number) => void;
   onCopy: (id: number) => void;
   onDelete: (id: number) => void;
+  onAttachToPilot?: (attachment: import('@/types/chat').PilotContextAttachment) => void;
 }
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -29,15 +31,18 @@ const SECTION_LABELS: Record<string, string> = {
   skills: '技能清单',
 };
 
-export default function ResumeCard({ resume, onEdit, onSetMaster, onCopy, onDelete }: Props) {
+export default function ResumeCard({ resume, onEdit, onSetMaster, onCopy, onDelete, onAttachToPilot }: Props) {
   const title = resume.title || resume.name || `简历 #${resume.id}`;
   const sourceLabel = SOURCE_LABELS[resume.source] ?? resume.source;
   const completion = Math.max(0, Math.min(100, resume.completion_percent ?? 0));
   const missing = (resume.missing_sections ?? []).map((item) => SECTION_LABELS[item] ?? item);
   const preview = sectionPreview(resume);
+  const resumeDragBinding = onAttachToPilot
+    ? createPilotAttachmentDragBinding({ kind: 'resume', id: String(resume.id), label: title })
+    : undefined;
 
   return (
-    <Card hoverable styles={{ body: { padding: 14 } }}>
+    <Card hoverable styles={{ body: { padding: 14 } }} {...resumeDragBinding}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           {resume.is_master && <Tag color="blue" style={{ borderRadius: 8 }}>主简历</Tag>}

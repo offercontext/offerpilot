@@ -22,6 +22,7 @@ import ResumeCard from './ResumeCard';
 import ResumeUploadModal from './ResumeUploadModal';
 import ResumeEditorDrawer from './ResumeEditorDrawer';
 import type { Resume, ResumeContent } from '@/types/resume';
+import { findEvidenceFocusRecord } from '@/lib/pilotEvidenceFocus';
 import styles from './ResumeLibraryView.module.css';
 
 const BLANK_RESUME_CONTENT: ResumeContent = {
@@ -34,13 +35,27 @@ const BLANK_RESUME_CONTENT: ResumeContent = {
   raw_text: '',
 };
 
-export default function ResumeLibraryView() {
+interface ResumeLibraryViewProps {
+  onAttachToPilot?: (attachment: import('@/types/chat').PilotContextAttachment) => void;
+  focusResumeId?: number;
+  onEvidenceFocusConsumed?: () => void;
+  onboardingFocusToken?: number;
+}
+
+export default function ResumeLibraryView({
+  onAttachToPilot,
+  focusResumeId,
+  onEvidenceFocusConsumed,
+  onboardingFocusToken,
+}: ResumeLibraryViewProps) {
   const qc = useQueryClient();
   const [uploadOpen, setUploadOpen] = useState(false);
   const [editing, setEditing] = useState<Resume | null>(null);
   const [keyword, setKeyword] = useState('');
   const [dragActive, setDragActive] = useState(false);
   const dragCounter = useRef(0);
+  const onboardingEntryRef = useRef<HTMLDivElement>(null);
+  const [onboardingFocusActive, setOnboardingFocusActive] = useState(false);
 
   const resumesQuery = useQuery({ queryKey: ['resumes'], queryFn: listResumes });
 
@@ -135,6 +150,69 @@ export default function ResumeLibraryView() {
   };
 
   const resumes = resumesQuery.data ?? [];
+
+  useEffect(() => {
+    if (
+      focusResumeId === undefined ||
+      resumesQuery.isLoading ||
+      resumesQuery.isError ||
+      resumesQuery.isFetching
+    ) return;
+    const resume = findEvidenceFocusRecord(resumes, focusResumeId);
+    if (resume) {
+      setEditing(resume);
+    } else {
+      message.warning('引用的记录已不存在');
+    }
+    onEvidenceFocusConsumed?.();
+  }, [
+    focusResumeId,
+    resumes,
+    resumesQuery.isLoading,
+    resumesQuery.isError,
+    resumesQuery.isFetching,
+    onEvidenceFocusConsumed,
+  ]);
+
+  useEffect(() => {
+    if (editing) {
+      window.scrollTo({ top: 0, left: 0 });
+    }
+  }, [editing]);
+
+  useEffect(() => {
+    if (!onboardingFocusToken || resumesQuery.isLoading) return;
+
+    setOnboardingFocusActive(true);
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    onboardingEntryRef.current?.scrollIntoView({
+      behavior: reducedMotion ? 'auto' : 'smooth',
+      block: 'center',
+      inline: 'nearest',
+    });
+    onboardingEntryRef.current?.focus({ preventScroll: true });
+    const timeout = window.setTimeout(() => setOnboardingFocusActive(false), 2400);
+    return () => window.clearTimeout(timeout);
+  }, [onboardingFocusToken, resumesQuery.isLoading]);
+
+  if (resumesQuery.isLoading) {
+    return (
+      <div role="status" style={{ textAlign: 'center', padding: 48 }}>
+        <Spin />
+        <div>正在加载简历</div>
+      </div>
+    );
+  }
+
+  if (resumesQuery.isError) {
+    return (
+      <div role="alert" style={{ textAlign: 'center', padding: 48 }}>
+        <div style={{ marginBottom: 12 }}>加载简历失败</div>
+        <Button onClick={() => void resumesQuery.refetch()}>重试</Button>
+      </div>
+    );
+  }
+
   const kw = keyword.trim().toLowerCase();
   const filtered = resumes.filter((r) => {
     if (!kw) return true;
@@ -145,12 +223,6 @@ export default function ResumeLibraryView() {
       ...(r.missing_sections ?? []),
     ].join(' ').toLowerCase().includes(kw);
   });
-
-  useEffect(() => {
-    if (editing) {
-      window.scrollTo({ top: 0, left: 0 });
-    }
-  }, [editing]);
 
   if (editing) {
     return (
@@ -175,7 +247,13 @@ export default function ResumeLibraryView() {
           <div className={styles.title}>简历库</div>
           <div className={styles.subtitle}>共 {filtered.length} 份 · 拖入 PDF 至任意位置可上传</div>
         </div>
-        <div className={styles.headerActions}>
+        <div
+          ref={onboardingEntryRef}
+          className={`${styles.headerActions} ${onboardingFocusActive ? styles.onboardingFocus : ''}`}
+          tabIndex={-1}
+          data-onboarding-target="resume-create"
+          aria-label="创建主简历入口"
+        >
           <Input.Search
             placeholder="搜索简历"
             value={keyword}
@@ -202,9 +280,7 @@ export default function ResumeLibraryView() {
         </div>
       </div>
 
-      {resumesQuery.isLoading ? (
-        <div style={{ textAlign: 'center', padding: 48 }}><Spin /></div>
-      ) : resumes.length === 0 ? (
+      {resumes.length === 0 ? (
         <div className={styles.emptyState}>
           <div className={styles.emptyIcon}><FileTextOutlined /></div>
           <div className={styles.emptyTitle}>还没有简历</div>
@@ -239,6 +315,7 @@ export default function ResumeLibraryView() {
                 onSetMaster={() => setMasterMut.mutate(r.id)}
                 onCopy={() => copyMut.mutate(r.id)}
                 onDelete={() => deleteMut.mutate(r.id)}
+                onAttachToPilot={onAttachToPilot}
               />
             </div>
           ))}

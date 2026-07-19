@@ -1,14 +1,22 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
-from typing import Any
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any, Literal
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from offerpilot.ai.agent import PendingAction
+from offerpilot.ai.types import Message
 from offerpilot.models import ChatMessage, Conversation
+
+
+@dataclass(frozen=True)
+class ConversationArchiveUpdate:
+    status: Literal["updated", "not_found", "pending"]
+    conversation: Conversation | None = None
 
 
 class ChatRepository:
@@ -53,7 +61,9 @@ class ChatRepository:
         with self._session_factory() as session:
             return list(session.scalars(statement))
 
-    def update_conversation(self, conversation_id: int, values: dict[str, Any]) -> Conversation | None:
+    def update_conversation(
+        self, conversation_id: int, values: dict[str, Any]
+    ) -> Conversation | None:
         if not values:
             return self.get_conversation(conversation_id)
         with self._session_factory() as session:
@@ -78,11 +88,31 @@ class ChatRepository:
                 .values(
                     title=title,
                     title_source="generated",
-                    updated_at=datetime.now(timezone.utc),
+                    updated_at=Conversation.updated_at,
                 )
             )
             session.commit()
             return bool(getattr(result, "rowcount", 0))
+
+    def update_conversation_for_archive(
+        self, conversation_id: int, values: dict[str, Any]
+    ) -> ConversationArchiveUpdate:
+        now = datetime.now(timezone.utc)
+        with self._session_factory() as session:
+            result = session.execute(
+                update(Conversation)
+                .where(Conversation.id == conversation_id)
+                .where(Conversation.pending_tool_name == "")
+                .values(**values, updated_at=now)
+            )
+            if getattr(result, "rowcount", 0) == 1:
+                session.commit()
+                conversation = session.get(Conversation, conversation_id)
+                return ConversationArchiveUpdate("updated", conversation)
+            conversation = session.get(Conversation, conversation_id)
+            if conversation is None:
+                return ConversationArchiveUpdate("not_found")
+            return ConversationArchiveUpdate("pending")
 
     def append_message(
         self,
@@ -102,11 +132,12 @@ class ChatRepository:
             provider_blocks=provider_blocks,
         )
         with self._session_factory() as session:
+            now = _next_conversation_timestamp(session, conversation_id)
             session.add(message)
             session.execute(
                 update(Conversation)
                 .where(Conversation.id == conversation_id)
-                .values(updated_at=datetime.now(timezone.utc))
+                .values(updated_at=now)
             )
             session.commit()
             session.refresh(message)
@@ -138,11 +169,12 @@ class ChatRepository:
                 human=conversation.pending_human or conversation.pending_tool_name,
             )
 
-    def set_pending_action(self, conversation_id: int, pending: PendingAction) -> None:
+    def set_pending_action(self, conversation_id: int, pending: PendingAction) -> bool:
         with self._session_factory() as session:
-            session.execute(
+            result = session.execute(
                 update(Conversation)
                 .where(Conversation.id == conversation_id)
+                .where(Conversation.archived_at.is_(None))
                 .values(
                     pending_tool_call_id=pending.tool_call_id,
                     pending_tool_name=pending.tool_name,
@@ -152,6 +184,49 @@ class ChatRepository:
                 )
             )
             session.commit()
+            return getattr(result, "rowcount", 0) == 1
+
+    def persist_pending_action(
+        self,
+        conversation_id: int,
+        pending: PendingAction,
+        messages: list[dict[str, str]],
+    ) -> bool:
+        """Atomically persist a write proposal and make it the pending action."""
+        with self._session_factory() as session:
+            result = session.execute(
+                update(Conversation)
+                .where(Conversation.id == conversation_id)
+                .where(Conversation.archived_at.is_(None))
+                .values(
+                    pending_tool_call_id=pending.tool_call_id,
+                    pending_tool_name=pending.tool_name,
+                    pending_args=pending.args,
+                    pending_human=pending.human,
+                    clarification_tool_call_id="",
+                    clarification_tool_name="",
+                    clarification_args="",
+                    clarification_human="",
+                    clarification_question="",
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            if getattr(result, "rowcount", 0) != 1:
+                session.rollback()
+                return False
+            for message in messages:
+                session.add(
+                    ChatMessage(
+                        conversation_id=conversation_id,
+                        role=message.get("role", ""),
+                        content=message.get("content", ""),
+                        tool_calls=message.get("tool_calls", ""),
+                        tool_call_id=message.get("tool_call_id", ""),
+                        provider_blocks=message.get("provider_blocks", ""),
+                    )
+                )
+            session.commit()
+            return True
 
     def clear_pending_action(self, conversation_id: int) -> None:
         with self._session_factory() as session:
@@ -167,6 +242,131 @@ class ChatRepository:
                 )
             )
             session.commit()
+
+    def resolve_pending_confirmation(
+        self,
+        conversation_id: int,
+        expected: PendingAction,
+        tool_message: Message,
+        undo: dict[str, Any] | None,
+        *,
+        terminal_assistant_content: str = "",
+    ) -> datetime | None:
+        """Persist a result with tri-state undo: None preserves, empty clears, non-empty replaces."""
+        values: dict[str, Any] = {
+            "pending_tool_call_id": "",
+            "pending_tool_name": "",
+            "pending_args": "",
+            "pending_human": "",
+            "clarification_tool_call_id": "",
+            "clarification_tool_name": "",
+            "clarification_args": "",
+            "clarification_human": "",
+            "clarification_question": "",
+        }
+        if undo is not None:
+            values["last_write_undo_json"] = json.dumps(undo, ensure_ascii=False) if undo else ""
+        with self._session_factory() as session:
+            now = _next_conversation_timestamp(session, conversation_id)
+            values["updated_at"] = now
+            result = session.execute(
+                update(Conversation)
+                .where(Conversation.id == conversation_id)
+                .where(Conversation.pending_tool_call_id == expected.tool_call_id)
+                .where(Conversation.pending_tool_name == expected.tool_name)
+                .where(Conversation.pending_args == expected.args)
+                .values(**values)
+            )
+            if getattr(result, "rowcount", 0) != 1:
+                session.rollback()
+                return None
+            session.add(
+                ChatMessage(
+                    conversation_id=conversation_id,
+                    role=tool_message.role,
+                    content=tool_message.content,
+                    tool_call_id=tool_message.tool_call_id,
+                )
+            )
+            if terminal_assistant_content:
+                session.add(
+                    ChatMessage(
+                        conversation_id=conversation_id,
+                        role="assistant",
+                        content=terminal_assistant_content,
+                    )
+                )
+            session.commit()
+            return now
+
+    def persist_confirmation_continuation(
+        self,
+        conversation_id: int,
+        expected_generation: datetime | None,
+        messages: list[dict[str, str]],
+        *,
+        pending: PendingAction | None = None,
+        clarification: tuple[PendingAction, str] | None = None,
+    ) -> datetime | None:
+        if expected_generation is None:
+            return None
+        values: dict[str, Any] = {}
+        if pending is not None:
+            values.update(
+                {
+                    "pending_tool_call_id": pending.tool_call_id,
+                    "pending_tool_name": pending.tool_name,
+                    "pending_args": pending.args,
+                    "pending_human": pending.human,
+                    "clarification_tool_call_id": "",
+                    "clarification_tool_name": "",
+                    "clarification_args": "",
+                    "clarification_human": "",
+                    "clarification_question": "",
+                }
+            )
+        elif clarification is not None:
+            action, question = clarification
+            values.update(
+                {
+                    "pending_tool_call_id": "",
+                    "pending_tool_name": "",
+                    "pending_args": "",
+                    "pending_human": "",
+                    "clarification_tool_call_id": action.tool_call_id,
+                    "clarification_tool_name": action.tool_name,
+                    "clarification_args": action.args,
+                    "clarification_human": action.human,
+                    "clarification_question": question,
+                }
+            )
+        with self._session_factory() as session:
+            now = _next_conversation_timestamp(session, conversation_id, expected_generation)
+            values["updated_at"] = now
+            statement = (
+                update(Conversation)
+                .where(Conversation.id == conversation_id)
+                .where(Conversation.updated_at == expected_generation)
+            )
+            if pending is not None:
+                statement = statement.where(Conversation.archived_at.is_(None))
+            result = session.execute(statement.values(**values))
+            if getattr(result, "rowcount", 0) != 1:
+                session.rollback()
+                return None
+            for message in messages:
+                session.add(
+                    ChatMessage(
+                        conversation_id=conversation_id,
+                        role=message.get("role", ""),
+                        content=message.get("content", ""),
+                        tool_calls=message.get("tool_calls", ""),
+                        tool_call_id=message.get("tool_call_id", ""),
+                        provider_blocks=message.get("provider_blocks", ""),
+                    )
+                )
+            session.commit()
+            return now
 
     def get_pending_clarification(self, conversation_id: int) -> tuple[PendingAction, str] | None:
         with self._session_factory() as session:
@@ -252,10 +452,51 @@ class ChatRepository:
             )
             session.commit()
 
+    def clear_last_write_undo_if_matches(
+        self,
+        conversation_id: int,
+        expected: dict[str, Any],
+    ) -> bool:
+        with self._session_factory() as session:
+            result = session.execute(
+                update(Conversation)
+                .where(Conversation.id == conversation_id)
+                .where(
+                    Conversation.last_write_undo_json == json.dumps(expected, ensure_ascii=False)
+                )
+                .values(last_write_undo_json="", updated_at=datetime.now(timezone.utc))
+            )
+            session.commit()
+            return getattr(result, "rowcount", 0) == 1
+
     def delete_conversation(self, conversation_id: int) -> None:
         with self._session_factory() as session:
-            session.execute(delete(ChatMessage).where(ChatMessage.conversation_id == conversation_id))
+            session.execute(
+                delete(ChatMessage).where(ChatMessage.conversation_id == conversation_id)
+            )
             conversation = session.get(Conversation, conversation_id)
             if conversation is not None:
                 session.delete(conversation)
             session.commit()
+
+
+def _next_conversation_timestamp(
+    session: Session,
+    conversation_id: int,
+    floor: datetime | None = None,
+) -> datetime:
+    current = session.scalar(
+        select(Conversation.updated_at).where(Conversation.id == conversation_id)
+    )
+    bounds = [value for value in (current, floor) if value is not None]
+    normalized_bounds = [
+        value.replace(tzinfo=timezone.utc)
+        if value.tzinfo is None or value.utcoffset() is None
+        else value.astimezone(timezone.utc)
+        for value in bounds
+    ]
+    now = datetime.now(timezone.utc)
+    if not normalized_bounds:
+        return now
+    lower_bound = max(normalized_bounds)
+    return max(now, lower_bound + timedelta(microseconds=1))

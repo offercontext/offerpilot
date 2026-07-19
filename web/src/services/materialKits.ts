@@ -66,9 +66,10 @@ export async function updateMaterialKit(
   kitID: number,
   input: UpdateMaterialKitInput,
 ): Promise<MaterialKitViewModel> {
+  const { status, ...payload } = input;
   const { data } = await http.put<ApplicationMaterialKit>(`/material-kits/${kitID}`, {
-    ...input,
-    content_json: input.content_json,
+    ...payload,
+    ...(status === undefined ? {} : { status }),
   });
   return parseMaterialKit(data);
 }

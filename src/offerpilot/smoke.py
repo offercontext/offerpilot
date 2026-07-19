@@ -5,6 +5,7 @@ import gc
 import json
 from dataclasses import dataclass
 from pathlib import Path
+import shutil
 import socket
 import tempfile
 import threading
@@ -13,10 +14,13 @@ from typing import Any
 
 import httpx
 import uvicorn
+from sqlalchemy import func, select
 
 from offerpilot.ai.agent import ChatModel
 from offerpilot.ai.types import Assistant, Message, ToolCall
 from offerpilot.api import create_app
+from offerpilot.db import session_factory_for_data_dir
+from offerpilot.models import ApplicationMaterialKit, MaterialRevisionProposal, Resume
 
 
 @dataclass(frozen=True)
@@ -200,7 +204,11 @@ def _assert_create_event_card(pending_body: dict[str, Any], application_id: int)
 def _reject_pending_chat_action(client: Any, pending_body: dict[str, Any], step: str) -> None:
     rejected = client.post(
         "/api/chat/confirm",
-        json={"conversation_id": pending_body["conversation_id"], "approved": False},
+        json={
+            "conversation_id": pending_body["conversation_id"],
+            "approved": False,
+            "confirmation_token": pending_body["pending_action"]["confirmation_token"],
+        },
     )
     _assert_status(rejected.status_code, 200, step)
 
@@ -251,7 +259,11 @@ def run_core_smoke(data_dir: Path, static_dir: Path | None = None) -> SmokeRepor
 
     confirmed = chat_client.post(
         "/api/chat/confirm",
-        json={"conversation_id": pending_body["conversation_id"], "approved": True},
+        json={
+            "conversation_id": pending_body["conversation_id"],
+            "approved": True,
+            "confirmation_token": pending_body["pending_action"]["confirmation_token"],
+        },
     )
     _assert_status(confirmed.status_code, 200, "confirm_action")
     after_confirm = client.get(f"/api/applications/{application_id}").json()
@@ -270,6 +282,24 @@ def run_core_smoke(data_dir: Path, static_dir: Path | None = None) -> SmokeRepor
 
 
 def run_http_smoke(
+    data_dir: Path,
+    static_dir: Path | None = None,
+    *,
+    real_ai: bool = False,
+) -> SmokeReport:
+    if not real_ai:
+        return _run_http_smoke(data_dir, static_dir=static_dir, real_ai=False)
+
+    with tempfile.TemporaryDirectory(prefix="offerpilot-real-ai-verify-") as temp_dir:
+        isolated_data_dir = Path(temp_dir)
+        _copy_real_ai_config(data_dir, isolated_data_dir)
+        report = _run_http_smoke(isolated_data_dir, static_dir=static_dir, real_ai=True)
+        _cleanup_real_ai_smoke_records(isolated_data_dir)
+        _assert_real_ai_smoke_data_clean(isolated_data_dir)
+        return report
+
+
+def _run_http_smoke(
     data_dir: Path,
     static_dir: Path | None = None,
     *,
@@ -330,6 +360,7 @@ def run_http_smoke(
                 _run_application_event_http_smoke(client, steps, application_id)
 
                 if real_ai:
+                    _run_real_ai_material_proposal_smoke(client, steps, application_id)
                     _run_real_ai_write_smoke(client, steps, company, application_id)
                 else:
                     _run_deterministic_chat_smoke(client, steps, application_id)
@@ -340,6 +371,196 @@ def run_http_smoke(
                 steps.append(SmokeStep("http_cleanup", f"deleted smoke application #{application_id}"))
 
     return SmokeReport(ok=True, steps=steps)
+
+
+def _run_real_ai_material_proposal_smoke(
+    client: httpx.Client,
+    steps: list[SmokeStep],
+    application_id: int,
+) -> None:
+    anchor_resume_id: int | None = None
+    resume_id: int | None = None
+    try:
+        anchor = client.post(
+            "/api/resumes",
+            json={
+                "title": "AI Material Proposal Smoke Anchor",
+                "text": "",
+                "content_json": {},
+            },
+        )
+        _assert_status(anchor.status_code, 201, "http_material_proposal_resume_anchor")
+        anchor_resume_id = int(anchor.json()["id"])
+
+        created_resume = client.post(
+            "/api/resumes",
+            json={
+                "title": "AI Material Proposal Smoke Resume",
+                "text": "Built API services. Led migration.",
+                "content_json": {
+                    "experience": [{"highlights": ["Built API services", "Led migration"]}],
+                    "skills": ["Python"],
+                    "raw_text": "Built API services. Led migration.",
+                },
+            },
+        )
+        _assert_status(created_resume.status_code, 201, "http_material_proposal_resume")
+        resume_id = int(created_resume.json()["id"])
+
+        kit = client.post(
+            f"/api/applications/{application_id}/material-kit/generate",
+            json={
+                "resume_id": resume_id,
+                "jd_text": "Evidence QA Engineer: build reliable API quality workflows.",
+            },
+        )
+        _assert_status(kit.status_code, 201, "http_material_proposal_kit")
+
+        proposal = client.post(
+            f"/api/applications/{application_id}/material-revision-proposals",
+            json={
+                "instructions": "Prefer only safe evidence-backed changes.",
+                "user_assertions": ["I led the migration."],
+            },
+        )
+        _assert_status(proposal.status_code, 201, "http_material_proposal")
+        body = proposal.json()
+        _validate_material_proposal_smoke_response(body)
+        steps.append(
+            SmokeStep(
+                "http_material_proposal",
+                "real AI returned a verified material proposal",
+            )
+        )
+    finally:
+        if resume_id is not None:
+            cleanup = client.delete(f"/api/resumes/{resume_id}")
+            _assert_status(cleanup.status_code, 200, "http_material_proposal_resume_cleanup")
+        if anchor_resume_id is not None:
+            cleanup = client.delete(f"/api/resumes/{anchor_resume_id}")
+            _assert_status(cleanup.status_code, 200, "http_material_proposal_resume_anchor_cleanup")
+
+
+def _copy_real_ai_config(source_data_dir: Path, isolated_data_dir: Path) -> None:
+    source_config = source_data_dir / "config.json"
+    if source_config.is_file():
+        shutil.copyfile(source_config, isolated_data_dir / "config.json")
+
+
+def _cleanup_real_ai_smoke_records(data_dir: Path) -> None:
+    session_factory = session_factory_for_data_dir(data_dir)
+    try:
+        with session_factory() as session:
+            session.query(MaterialRevisionProposal).delete(synchronize_session=False)
+            session.query(ApplicationMaterialKit).delete(synchronize_session=False)
+            session.commit()
+    finally:
+        bind = session_factory.kw.get("bind")
+        if bind is not None:
+            bind.dispose()
+
+
+def _assert_real_ai_smoke_data_clean(data_dir: Path) -> None:
+    session_factory = session_factory_for_data_dir(data_dir)
+    try:
+        with session_factory() as session:
+            active_resume_count = session.scalar(
+                select(func.count()).select_from(Resume).where(Resume.deleted_at.is_(None))
+            )
+            active_master_count = session.scalar(
+                select(func.count())
+                .select_from(Resume)
+                .where(Resume.deleted_at.is_(None))
+                .where(Resume.is_master.is_(True))
+            )
+            material_kit_count = session.scalar(select(func.count()).select_from(ApplicationMaterialKit))
+            proposal_count = session.scalar(select(func.count()).select_from(MaterialRevisionProposal))
+    finally:
+        bind = session_factory.kw.get("bind")
+        if bind is not None:
+            bind.dispose()
+
+    if active_resume_count != 0:
+        raise RuntimeError("real-ai smoke left active resumes")
+    if active_master_count != 0:
+        raise RuntimeError("real-ai smoke left active master resumes")
+    if material_kit_count != 0:
+        raise RuntimeError("real-ai smoke left material kits")
+    if proposal_count != 0:
+        raise RuntimeError("real-ai smoke left material proposals")
+
+
+def _validate_material_proposal_smoke_response(body: object) -> None:
+    if not isinstance(body, dict):
+        raise RuntimeError("material proposal response was not an object")
+    expected_root = {
+        "id",
+        "application_id",
+        "material_kit_id",
+        "source_resume_id",
+        "status",
+        "summary",
+        "proposal_sha256",
+        "result_resume_id",
+        "created_at",
+        "changes",
+        "source",
+        "accepted_change_ids",
+        "accepted_at",
+        "rejected_at",
+    }
+    if set(body) != expected_root:
+        raise RuntimeError("material proposal response leaked frozen source data")
+    changes = body.get("changes")
+    if not isinstance(changes, list):
+        raise RuntimeError("material proposal response did not contain changes")
+    for change in changes:
+        if not isinstance(change, dict) or set(change) != {
+            "id",
+            "path",
+            "before",
+            "after",
+            "rationale",
+            "evidence_refs",
+        }:
+            raise RuntimeError("material proposal response leaked frozen source data")
+        refs = change.get("evidence_refs")
+        if not isinstance(refs, list):
+            raise RuntimeError("material proposal response leaked frozen source data")
+        for ref in refs:
+            if not isinstance(ref, dict) or set(ref) != {"source", "path", "excerpt"}:
+                raise RuntimeError("material proposal response leaked frozen source data")
+
+    source = body.get("source")
+    if not isinstance(source, dict) or set(source) != {
+        "application",
+        "material_kit",
+        "resume",
+        "latest_evidence_bundle",
+        "user_assertions",
+    }:
+        raise RuntimeError("material proposal response leaked frozen source data")
+    if not isinstance(source.get("application"), dict) or set(source["application"]) != {
+        "id",
+        "company_name",
+        "position_name",
+    }:
+        raise RuntimeError("material proposal response leaked frozen source data")
+    if not isinstance(source.get("material_kit"), dict) or set(source["material_kit"]) != {
+        "id",
+        "jd_excerpt",
+    }:
+        raise RuntimeError("material proposal response leaked frozen source data")
+    if not isinstance(source.get("resume"), dict) or set(source["resume"]) != {"id", "title"}:
+        raise RuntimeError("material proposal response leaked frozen source data")
+    bundle = source.get("latest_evidence_bundle")
+    if bundle is not None and (not isinstance(bundle, dict) or set(bundle) != {"id", "bundle_sha256"}):
+        raise RuntimeError("material proposal response leaked frozen source data")
+    assertions = source.get("user_assertions")
+    if not isinstance(assertions, list) or any(
+        not isinstance(item, dict) or set(item) != {"id", "text"} for item in assertions
+    ):
+        raise RuntimeError("material proposal response leaked frozen source data")
 
 
 def _run_unconfigured_chat_smoke(static_dir: Path | None, steps: list[SmokeStep]) -> None:
@@ -482,7 +703,11 @@ def _run_deterministic_chat_smoke(
 
     confirmed = client.post(
         "/api/chat/confirm",
-        json={"conversation_id": pending_body["conversation_id"], "approved": True},
+        json={
+            "conversation_id": pending_body["conversation_id"],
+            "approved": True,
+            "confirmation_token": pending_body["pending_action"]["confirmation_token"],
+        },
     )
     _assert_status(confirmed.status_code, 200, "http_confirm_action")
     after_confirm = client.get(f"/api/applications/{application_id}").json()
@@ -518,7 +743,11 @@ def _run_real_ai_write_smoke(
         steps.append(SmokeStep("http_chat_pending", "real AI requested write confirmation"))
         confirmed = client.post(
             "/api/chat/confirm",
-            json={"conversation_id": conversation_id, "approved": True},
+            json={
+                "conversation_id": conversation_id,
+                "approved": True,
+                "confirmation_token": pending_body["pending_action"]["confirmation_token"],
+            },
         )
         _assert_status(confirmed.status_code, 200, "http_confirm_action")
     else:
@@ -559,12 +788,20 @@ def _running_server(app: Any) -> Any:
     else:
         server.should_exit = True
         thread.join(timeout=5)
+        _dispose_smoke_app_database(app)
         raise RuntimeError("http smoke server did not become ready")
     try:
         yield base_url
     finally:
         server.should_exit = True
         thread.join(timeout=5)
+        _dispose_smoke_app_database(app)
+
+
+def _dispose_smoke_app_database(app: Any) -> None:
+    engine = getattr(app.state, "db_engine", None)
+    if engine is not None:
+        engine.dispose()
 
 
 def _free_port() -> int:

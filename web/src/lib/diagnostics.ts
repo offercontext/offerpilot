@@ -4,7 +4,7 @@ export function buildDiagnosticsText(settings: Settings, logs: LogEntry[]): stri
   const providers = settings.providers.map((provider) => {
     const roles = [
       provider.id === settings.active_provider_id ? 'active' : '',
-      provider.id === settings.fallback_provider_id ? 'fallback' : '',
+      settings.fallback_provider_ids.includes(provider.id) ? 'fallback' : '',
     ].filter(Boolean).join(',');
     return `- ${provider.label} | ${provider.provider} | ${provider.model} | ${provider.enabled ? 'enabled' : 'disabled'}${roles ? ` | ${roles}` : ''}`;
   });

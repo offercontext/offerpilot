@@ -36,6 +36,7 @@ import ScheduleEventForm from '@/components/ScheduleEventForm';
 import JDAnalyzeModal from './JDAnalyzeModal';
 import ReviewFormDrawer from './ReviewFormDrawer';
 import MaterialKitDrawer from './MaterialKitDrawer';
+import { createPilotAttachmentDragBinding } from './PilotAttachmentHandle';
 import styles from './ApplicationDetail.module.css';
 
 const { Title, Paragraph, Text } = Typography;
@@ -52,9 +53,10 @@ interface ApplicationDetailProps {
   onClose: () => void;
   onMockInterview?: (app: Application) => void;
   onAskPilot?: (app: Application) => void;
+  onAttachToPilot?: (attachment: import('@/types/chat').PilotContextAttachment) => void;
 }
 
-export default function ApplicationDetail({ application, open, onClose, onMockInterview, onAskPilot }: ApplicationDetailProps) {
+export default function ApplicationDetail({ application, open, onClose, onMockInterview, onAskPilot, onAttachToPilot }: ApplicationDetailProps) {
   const queryClient = useQueryClient();
   const [form] = Form.useForm();
   const [analyzing, setAnalyzing] = useState(false);
@@ -175,9 +177,17 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
     );
   }
 
+  const applicationDragBinding = onAttachToPilot
+    ? createPilotAttachmentDragBinding({
+        kind: 'application',
+        id: String(application.id),
+        label: `${application.company_name} · ${application.position_name}`,
+      })
+    : undefined;
+
   return (
     <>
-      <section className={styles.detailWorkspace} aria-label="投递详情">
+      <section className={styles.detailWorkspace} {...applicationDragBinding}>
         <div className={styles.header}>
           <Button type="link" className={styles.backButton} icon={<ArrowLeftOutlined />} onClick={closeDetail}>
             返回上一层

@@ -193,7 +193,7 @@ def test_client_does_not_fallback_after_streaming_visible_delta(monkeypatch):
     client = ConfiguredAIClient(
         Config(
             active_provider_id="primary",
-            fallback_provider_id="backup",
+            fallback_provider_ids=["backup"],
             providers=[
                 AIProviderProfile(id="primary", api_key="sk-primary", model="gpt-4o"),
                 AIProviderProfile(id="backup", api_key="sk-backup", model="gpt-4o-mini"),
@@ -222,7 +222,7 @@ def test_client_falls_back_to_configured_provider_after_primary_failure(monkeypa
     client = ConfiguredAIClient(
         Config(
             active_provider_id="primary",
-            fallback_provider_id="backup",
+            fallback_provider_ids=["backup"],
             providers=[
                 AIProviderProfile(
                     id="primary",

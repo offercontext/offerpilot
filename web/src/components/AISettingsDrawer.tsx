@@ -82,7 +82,7 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
   const qc = useQueryClient();
   const [providers, setProviders] = useState<EditableProvider[]>([]);
   const [activeProviderId, setActiveProviderId] = useState('default');
-  const [fallbackProviderId, setFallbackProviderId] = useState('');
+  const [fallbackProviderIds, setFallbackProviderIds] = useState<string[]>([]);
   const [editingId, setEditingId] = useState('default');
   const [connectionResult, setConnectionResult] = useState<ProviderConnectionTestResult | null>(null);
 
@@ -103,7 +103,7 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
     const nextActiveId = settingsQuery.data.active_provider_id || nextProviders[0]?.id || 'default';
     setProviders(nextProviders);
     setActiveProviderId(nextActiveId);
-    setFallbackProviderId(settingsQuery.data.fallback_provider_id || '');
+    setFallbackProviderIds(settingsQuery.data.fallback_provider_ids ?? []);
     setEditingId(nextActiveId);
     setConnectionResult(null);
     form.setFieldsValue(providerToForm(nextProviders.find((item) => item.id === nextActiveId), settingsQuery.data));
@@ -116,18 +116,21 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
       const nextActiveId = nextProviders.some((item) => item.id === activeProviderId)
         ? activeProviderId
         : nextProviders[0]?.id || 'default';
-      const nextFallbackId =
-        fallbackProviderId && fallbackProviderId !== nextActiveId && nextProviders.some((item) => item.id === fallbackProviderId)
-          ? fallbackProviderId
-          : '';
+      const nextFallbackIds = Array.from(
+        new Set(
+          fallbackProviderIds.filter(
+            (providerId) => providerId !== nextActiveId && nextProviders.some((item) => item.id === providerId),
+          ),
+        ),
+      );
       const nextActive = nextProviders.find((item) => item.id === nextActiveId) ?? nextProviders[0];
       setProviders(nextProviders);
       setActiveProviderId(nextActiveId);
-      setFallbackProviderId(nextFallbackId);
+      setFallbackProviderIds(nextFallbackIds);
       const payload: UpdateSettingsPayload = {
         chat_auto_approve_writes: values.chat_auto_approve_writes,
         active_provider_id: nextActiveId,
-        fallback_provider_id: nextFallbackId,
+        fallback_provider_ids: nextFallbackIds,
         base_url: nextActive?.base_url || DEFAULT_BASE_URL,
         model: nextActive?.model || DEFAULT_MODEL,
         providers: nextProviders.map(providerPayload),
@@ -141,7 +144,7 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
       message.success('AI 设置已保存');
       setProviders(toEditableProviders(settings));
       setActiveProviderId(settings.active_provider_id);
-      setFallbackProviderId(settings.fallback_provider_id || '');
+      setFallbackProviderIds(settings.fallback_provider_ids ?? []);
       form.setFieldValue('api_key', '');
       onClose();
     },
@@ -212,9 +215,7 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
     if (providerId === activeProviderId) return;
     const nextProviders = providers.filter((item) => item.id !== providerId);
     setProviders(nextProviders);
-    if (fallbackProviderId === providerId) {
-      setFallbackProviderId('');
-    }
+    setFallbackProviderIds((current) => current.filter((item) => item !== providerId));
     if (editingId === providerId) {
       const nextProvider = nextProviders.find((item) => item.id === activeProviderId) ?? nextProviders[0];
       if (nextProvider) {
@@ -225,9 +226,7 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
 
   function markDefault(providerId: string) {
     setActiveProviderId(providerId);
-    if (fallbackProviderId === providerId) {
-      setFallbackProviderId('');
-    }
+    setFallbackProviderIds((current) => current.filter((item) => item !== providerId));
   }
 
   if (!open) return null;
@@ -308,7 +307,7 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
                     <Space wrap>
                       <Typography.Text strong>{provider.label || provider.id}</Typography.Text>
                       {provider.id === activeProviderId ? <Tag color="blue">默认</Tag> : null}
-                      {provider.id === fallbackProviderId ? <Tag color="gold">Fallback</Tag> : null}
+                      {fallbackProviderIds.includes(provider.id) ? <Tag color="gold">Fallback</Tag> : null}
                       {provider.has_api_key ? <Tag color="green">密钥已配置</Tag> : <Tag>未配置密钥</Tag>}
                     </Space>
                   }
@@ -364,10 +363,10 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
 
           <Form.Item label="Fallback 供应商">
             <Select
-              allowClear
-              placeholder="不启用"
-              value={fallbackProviderId || undefined}
-              onChange={(value) => setFallbackProviderId(value || '')}
+              mode="multiple"
+              placeholder="默认供应商失败时依次尝试"
+              value={fallbackProviderIds}
+              onChange={(value: string[]) => setFallbackProviderIds(value)}
               options={providers
                 .filter((provider) => provider.id !== activeProviderId)
                 .map((provider) => ({ value: provider.id, label: provider.label || provider.id }))}

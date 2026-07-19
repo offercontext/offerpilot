@@ -75,6 +75,20 @@ def test_mock_session_requires_role(tmp_path):
     assert response.json() == {"error": "role is required"}
 
 
+def test_mock_session_create_returns_conversation_context_label(tmp_path):
+    client = TestClient(create_app(data_dir=tmp_path))
+
+    response = client.post("/api/mock/sessions", json={"role": "后端开发"})
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["conversation_id"] == payload["conversation"]["id"]
+    assert payload["conversation"]["mode"] == "mock_interview"
+    assert payload["conversation"]["context_type"] == "workspace"
+    assert payload["conversation"]["context_ref"] == ""
+    assert payload["conversation"]["context_label"] == "工作区"
+
+
 def test_mock_session_end_scores_and_auto_saves_note(tmp_path):
     model = ScoringModel()
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model))

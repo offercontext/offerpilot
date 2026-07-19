@@ -4,11 +4,15 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from sqlalchemy import select
+from sqlalchemy import exists, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
-from offerpilot.application_status import normalize_application_status
-from offerpilot.models import Application
+from offerpilot.application_status import (
+    FIRST_STATUS_TIMESTAMP_ATTR,
+    mark_first_status_timestamp,
+    normalize_application_status,
+)
+from offerpilot.models import APPLICATION_FOREIGN_KEY_MODELS, Application
 
 
 @dataclass
@@ -43,8 +47,9 @@ class ApplicationsRepository:
             notes=data.notes,
             applied_at=applied_at,
             closed_reason=closed_reason,
+            updated_at=now,
         )
-        _mark_first_status_timestamp(app, status, now)
+        mark_first_status_timestamp(app, status, now)
         with self._session_factory() as session:
             session.add(app)
             session.commit()
@@ -90,7 +95,9 @@ class ApplicationsRepository:
                 app.closed_reason = closed_reason
             else:
                 app.closed_reason = ""
-            _mark_first_status_timestamp(app, status, datetime.now(timezone.utc))
+            now = datetime.now(timezone.utc)
+            mark_first_status_timestamp(app, status, now)
+            app.updated_at = now
             session.commit()
             session.refresh(app)
             return app
@@ -102,6 +109,60 @@ class ApplicationsRepository:
                 app.deleted_at = datetime.now(timezone.utc)
                 session.commit()
 
+    def delete_if_matches(self, app_id: int, expected: dict[str, Any]) -> bool:
+        applied_at = expected.get("applied_at")
+        if isinstance(applied_at, str):
+            applied_at = datetime.fromisoformat(applied_at.replace("Z", "+00:00"))
+        updated_at = expected.get("updated_at")
+        if isinstance(updated_at, str):
+            updated_at = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+        with self._session_factory() as session:
+            statement = (
+                update(Application)
+                .where(Application.id == app_id)
+                .where(Application.deleted_at.is_(None))
+                .where(Application.company_name == expected.get("company_name"))
+                .where(Application.position_name == expected.get("position_name"))
+                .where(Application.job_url == expected.get("job_url"))
+                .where(Application.status == expected.get("status"))
+                .where(Application.source == expected.get("source"))
+                .where(Application.notes == expected.get("notes"))
+                .where(Application.applied_at == applied_at)
+                .where(Application.closed_reason == expected.get("closed_reason"))
+                .where(Application.updated_at == updated_at)
+            )
+            for dependency_model in APPLICATION_FOREIGN_KEY_MODELS:
+                statement = statement.where(
+                    ~exists().where(dependency_model.application_id == app_id)
+                )
+            result = session.execute(statement.values(deleted_at=datetime.now(timezone.utc)))
+            session.commit()
+            return getattr(result, "rowcount", 0) == 1
+
+    def restore_status_if_matches(
+        self,
+        app_id: int,
+        *,
+        expected_status: str,
+        expected_closed_reason: str,
+        status: str,
+        closed_reason: str,
+    ) -> bool:
+        with self._session_factory() as session:
+            result = session.execute(
+                update(Application)
+                .where(Application.id == app_id)
+                .where(Application.deleted_at.is_(None))
+                .where(Application.status == normalize_application_status(expected_status))
+                .where(Application.closed_reason == expected_closed_reason)
+                .values(
+                    status=normalize_application_status(status),
+                    closed_reason=closed_reason,
+                )
+            )
+            session.commit()
+            return getattr(result, "rowcount", 0) == 1
+
     def dashboard(self) -> dict[str, Any]:
         apps = self.list()
         board: dict[str, list[Application]] = {}
@@ -112,18 +173,8 @@ class ApplicationsRepository:
 
 def _normalize_model_status(app: Application) -> Application:
     app.status = normalize_application_status(app.status)
+    for attr in FIRST_STATUS_TIMESTAMP_ATTR.values():
+        value = getattr(app, attr)
+        if value is not None and value.tzinfo is None:
+            setattr(app, attr, value.replace(tzinfo=timezone.utc))
     return app
-
-
-def _mark_first_status_timestamp(app: Application, status: str, now: datetime) -> None:
-    attr_by_status = {
-        "pending": "first_pending_at",
-        "applied": "first_applied_at",
-        "written_test": "first_written_test_at",
-        "interview": "first_interview_at",
-        "offer": "first_offer_at",
-        "closed": "closed_at",
-    }
-    attr = attr_by_status[status]
-    if getattr(app, attr) is None:
-        setattr(app, attr, now)

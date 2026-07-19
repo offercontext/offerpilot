@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,14 @@ APPLICATION_STATUSES: tuple[ApplicationStatus, ...] = (
     ApplicationStatus("closed", "结束", "#475569"),
 )
 APPLICATION_STATUS_IDS = tuple(status.value for status in APPLICATION_STATUSES)
+FIRST_STATUS_TIMESTAMP_ATTR = {
+    "pending": "first_pending_at",
+    "applied": "first_applied_at",
+    "written_test": "first_written_test_at",
+    "interview": "first_interview_at",
+    "offer": "first_offer_at",
+    "closed": "closed_at",
+}
 
 _LEGACY_STATUS_ALIASES = {
     "assessment": "written_test",
@@ -40,3 +49,9 @@ def application_status_options() -> list[dict[str, str]]:
         {"value": status.value, "label": status.label, "color": status.color}
         for status in APPLICATION_STATUSES
     ]
+
+
+def mark_first_status_timestamp(application: object, status: str, occurred_at: datetime) -> None:
+    attr = FIRST_STATUS_TIMESTAMP_ATTR[status]
+    if getattr(application, attr) is None:
+        setattr(application, attr, occurred_at)

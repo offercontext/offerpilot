@@ -1,15 +1,22 @@
 from __future__ import annotations
 
 import json
-from contextlib import AbstractContextManager, nullcontext
+import math
+import os
+from collections import OrderedDict
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Literal, Protocol, TypedDict, cast
+from threading import Lock
+from typing import Any, Callable, Iterator, Literal, Protocol, TypedDict, cast
+from uuid import uuid4
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.config import get_config
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import Command, interrupt
+from langgraph.types import Command, Interrupt, interrupt
 
 from offerpilot.ai.types import Assistant, Message
 
@@ -18,15 +25,37 @@ _DEFAULT_THREAD_ID = "conversation:ephemeral"
 AgentEventSink = Callable[[dict[str, Any]], None]
 AssistantDeltaSink = Callable[[str], None]
 CancelCheck = Callable[[], bool]
+_IN_MEMORY_CONFIRMATION_NAMESPACE = "offerpilot.ai.agent.in-memory"
+_MAX_FALLBACK_CONFIRMATION_CLAIMS = 4096
+ConfirmationLockKey = tuple[str, str]
+FallbackConfirmationClaim = tuple[ConfirmationLockKey, str, str, str]
+
+
+@dataclass
+class _ConfirmationLockEntry:
+    lock: Any
+    users: int = 0
+
+
+_CONFIRMATION_STATE_GUARD = Lock()
+_CONFIRMATION_LOCKS: dict[ConfirmationLockKey, _ConfirmationLockEntry] = {}
+_FALLBACK_CONFIRMATION_CLAIMS: OrderedDict[FallbackConfirmationClaim, None] = OrderedDict()
 
 
 class ChatRunCancelled(RuntimeError):
     """Raised when a chat run is cancelled before another model/tool step."""
 
 
+class StalePendingActionError(ValueError):
+    """Raised when a confirmation does not match the checkpoint interrupt."""
+
+
+class PendingActionValidationError(ValueError):
+    """Raised when confirmation arguments fail before a write handler is attempted."""
+
+
 class ChatModel(Protocol):
-    def complete(self, messages: list[Message], tools: list[dict[str, Any]]) -> Assistant:
-        ...
+    def complete(self, messages: list[Message], tools: list[dict[str, Any]]) -> Assistant: ...
 
 
 class StreamingChatModel(Protocol):
@@ -35,8 +64,7 @@ class StreamingChatModel(Protocol):
         messages: list[Message],
         tools: list[dict[str, Any]],
         on_delta: AssistantDeltaSink,
-    ) -> Assistant:
-        ...
+    ) -> Assistant: ...
 
 
 @dataclass
@@ -45,6 +73,44 @@ class PendingAction:
     tool_name: str
     args: str
     human: str
+
+
+ConfirmationResultSink = Callable[[PendingAction, bool, Message], None]
+ConfirmationAttemptSink = Callable[[PendingAction], None]
+
+
+@contextmanager
+def _confirmation_lock(lock_key: ConfirmationLockKey) -> Iterator[None]:
+    with _CONFIRMATION_STATE_GUARD:
+        entry = _CONFIRMATION_LOCKS.get(lock_key)
+        if entry is None:
+            entry = _ConfirmationLockEntry(lock=Lock())
+            _CONFIRMATION_LOCKS[lock_key] = entry
+        entry.users += 1
+    entry.lock.acquire()
+    try:
+        yield
+    finally:
+        entry.lock.release()
+        with _CONFIRMATION_STATE_GUARD:
+            entry.users -= 1
+            if entry.users == 0 and _CONFIRMATION_LOCKS.get(lock_key) is entry:
+                del _CONFIRMATION_LOCKS[lock_key]
+
+
+def _claim_fallback_confirmation(
+    lock_key: ConfirmationLockKey,
+    pending: PendingAction,
+) -> bool:
+    claim_key = (lock_key, pending.tool_call_id, pending.tool_name, pending.args)
+    with _CONFIRMATION_STATE_GUARD:
+        if claim_key in _FALLBACK_CONFIRMATION_CLAIMS:
+            _FALLBACK_CONFIRMATION_CLAIMS.move_to_end(claim_key)
+            return False
+        _FALLBACK_CONFIRMATION_CLAIMS[claim_key] = None
+        while len(_FALLBACK_CONFIRMATION_CLAIMS) > _MAX_FALLBACK_CONFIRMATION_CLAIMS:
+            _FALLBACK_CONFIRMATION_CLAIMS.popitem(last=False)
+    return True
 
 
 class _GraphState(TypedDict, total=False):
@@ -57,6 +123,8 @@ class _GraphState(TypedDict, total=False):
     reply: str
     current_tool_call: dict[str, Any]
     current_tool_calls: list[dict[str, Any]]
+    consumed_resume_id: str
+    consumed_resume_attempt_id: str
 
 
 class LangGraphAgentRunner:
@@ -69,6 +137,8 @@ class LangGraphAgentRunner:
         thread_id: str = _DEFAULT_THREAD_ID,
         event_sink: AgentEventSink | None = None,
         cancel_check: CancelCheck | None = None,
+        confirmation_result_sink: ConfirmationResultSink | None = None,
+        confirmation_attempt_sink: ConfirmationAttemptSink | None = None,
     ):
         self._model = model
         self._registry = registry
@@ -76,6 +146,8 @@ class LangGraphAgentRunner:
         self._thread_id = thread_id
         self._event_sink = event_sink
         self._cancel_check = cancel_check
+        self._confirmation_result_sink = confirmation_result_sink
+        self._confirmation_attempt_sink = confirmation_attempt_sink
         self._memory_saver = InMemorySaver()
         self._has_pending_checkpoint = False
 
@@ -107,22 +179,83 @@ class LangGraphAgentRunner:
         approved: bool,
         auto_approve: bool,
         max_iter: int = DEFAULT_MAX_ITERATIONS,
+        rejection_feedback: str = "",
     ) -> tuple[list[Message], str, PendingAction | None]:
-        self._emit_pending_tool_call(pending, "approved" if approved else "rejected")
+        approved = approved is True
+        confirmation_lock_key = self._confirmation_lock_key()
+        with _confirmation_lock(confirmation_lock_key):
+            return self._resume_after_confirm_locked(
+                messages,
+                pending,
+                approved,
+                auto_approve,
+                max_iter,
+                rejection_feedback,
+                confirmation_lock_key,
+            )
+
+    def _resume_after_confirm_locked(
+        self,
+        messages: list[Message],
+        pending: PendingAction,
+        approved: bool,
+        auto_approve: bool,
+        max_iter: int,
+        rejection_feedback: str,
+        confirmation_lock_key: ConfirmationLockKey,
+    ) -> tuple[list[Message], str, PendingAction | None]:
         checkpoint_missing = self._checkpoint_path is None or not self._checkpoint_path.exists()
         if checkpoint_missing and not self._has_pending_checkpoint:
-            return self._resume_without_checkpoint(messages, pending, approved, auto_approve, max_iter)
+            return self._resume_without_checkpoint(
+                messages,
+                pending,
+                approved,
+                auto_approve,
+                max_iter,
+                rejection_feedback,
+                confirmation_lock_key,
+            )
 
         with self._checkpointer() as checkpointer:
             graph = self._compile_graph(checkpointer)
+            config = self._config(max_iter)
+            interrupt_id = _assert_pending_checkpoint_identity(graph, config, pending)
+            resume_attempt_id = uuid4().hex
+            resume_payload = {
+                "approved": approved,
+                "tool_call_id": pending.tool_call_id,
+                "tool_name": pending.tool_name,
+                "effective_args": pending.args,
+                "rejection_feedback": rejection_feedback,
+                "resume_attempt_id": resume_attempt_id,
+            }
             result = graph.invoke(
-                Command(update={"added": []}, resume={"approved": approved}),
-                self._config(max_iter),
+                Command(
+                    resume={interrupt_id: resume_payload},
+                ),
+                config,
             )
-        added, reply, new_pending = self._result_from_state(cast(dict[str, Any], result))
+        result_state = cast(dict[str, Any], result)
+        if (
+            result_state.get("consumed_resume_id") != interrupt_id
+            or result_state.get("consumed_resume_attempt_id") != resume_attempt_id
+        ):
+            raise StalePendingActionError(
+                "stale pending action: confirmation resume was not consumed"
+            )
+        added, reply, new_pending = self._result_from_state(result_state)
         if new_pending is not None:
             self._has_pending_checkpoint = True
         return added, reply, new_pending
+
+    def _confirmation_lock_key(self) -> ConfirmationLockKey:
+        if self._checkpoint_path is None:
+            checkpoint_identity = _IN_MEMORY_CONFIRMATION_NAMESPACE
+        else:
+            checkpoint_identity = os.path.normcase(
+                str(self._checkpoint_path.expanduser().resolve())
+            )
+        return checkpoint_identity, self._thread_id
 
     def _compile_graph(self, checkpointer: Any) -> Any:
         graph = StateGraph(_GraphState)
@@ -173,7 +306,9 @@ class LangGraphAgentRunner:
         return {
             "messages": messages,
             "added": added,
-            "current_tool_calls": [_tool_call_to_dict(tool_call) for tool_call in selected_tool_calls],
+            "current_tool_calls": [
+                _tool_call_to_dict(tool_call) for tool_call in selected_tool_calls
+            ],
             "status": "tool",
             "iterations": iterations + 1,
         }
@@ -182,12 +317,32 @@ class LangGraphAgentRunner:
         current_tool_calls = state.get("current_tool_calls") or [state["current_tool_call"]]
         messages = list(state.get("messages", []))
         added = list(state.get("added", []))
+        consumed_resume_id = str(state.get("consumed_resume_id") or "")
+        consumed_resume_attempt_id = str(state.get("consumed_resume_attempt_id") or "")
         for tool_call in current_tool_calls:
+            confirmed_outcome: tuple[PendingAction, bool] | None = None
             self._raise_if_cancelled()
             tool_name = str(tool_call["name"])
             tool_args = str(tool_call.get("args") or "")
             tool_call_id = str(tool_call["id"])
             tool = self._registry.get(tool_name)
+            has_mapped_resume, mapped_resume, mapped_interrupt_id = _mapped_resume_payload()
+            if has_mapped_resume:
+                mapped_identity_error = _resume_identity_error(
+                    mapped_resume,
+                    tool_call_id,
+                    tool_name,
+                )
+                if mapped_identity_error:
+                    raise StalePendingActionError("stale pending action: " + mapped_identity_error)
+                mapped_attempt_id = mapped_resume.get("resume_attempt_id")
+                if not isinstance(mapped_attempt_id, str) or not mapped_attempt_id:
+                    raise StalePendingActionError(
+                        "stale pending action: confirmation resume identity is missing"
+                    )
+                consumed_resume_id = mapped_interrupt_id
+                consumed_resume_attempt_id = mapped_attempt_id
+                added = []
 
             if tool is None:
                 result = f'错误：未知工具 "{tool_name}"'
@@ -203,12 +358,67 @@ class LangGraphAgentRunner:
                         "args": tool_args,
                         "human": _describe_pending_action(describe, tool_args, tool_name),
                     }
-                    resume_value = cast(dict[str, Any], interrupt(pending))
+                    raw_resume_value = interrupt(pending)
+                    resume_value = raw_resume_value if isinstance(raw_resume_value, dict) else {}
                     self._raise_if_cancelled()
-                    if bool(resume_value.get("approved")):
-                        result = _execute_tool(tool, tool_args)
+                    identity_error = _resume_identity_error(
+                        resume_value,
+                        tool_call_id,
+                        tool_name,
+                    )
+                    if identity_error:
+                        raise StalePendingActionError("stale pending action: " + identity_error)
+                    if resume_value.get("approved") is True:
+                        try:
+                            effective_args = _validated_resumed_args(
+                                tool_call_id,
+                                tool_name,
+                                tool_args,
+                                resume_value.get("effective_args"),
+                                self._registry,
+                            )
+                        except ValueError as exc:
+                            raise PendingActionValidationError(str(exc)) from exc
+                        effective_pending = PendingAction(
+                            tool_call_id=tool_call_id,
+                            tool_name=tool_name,
+                            args=effective_args,
+                            human=_describe_pending_action(
+                                describe, effective_args, str(pending["human"])
+                            ),
+                        )
+                        self._emit_pending_tool_call(
+                            effective_pending,
+                            "approved",
+                        )
+                        confirmed_outcome = (
+                            effective_pending,
+                            True,
+                        )
+                        self._raise_if_cancelled()
+                        if self._confirmation_attempt_sink is not None:
+                            self._confirmation_attempt_sink(effective_pending)
+                        result = _execute_tool(tool, effective_args)
                     else:
-                        result = "用户拒绝了该操作，请勿执行，并询问用户下一步希望怎么做。"
+                        self._emit_pending_tool_call(
+                            PendingAction(
+                                tool_call_id=tool_call_id,
+                                tool_name=tool_name,
+                                args=tool_args,
+                                human=str(pending["human"]),
+                            ),
+                            "rejected",
+                        )
+                        result = _rejection_result(resume_value.get("rejection_feedback"))
+                        confirmed_outcome = (
+                            PendingAction(
+                                tool_call_id=tool_call_id,
+                                tool_name=tool_name,
+                                args=tool_args,
+                                human=str(pending["human"]),
+                            ),
+                            False,
+                        )
                 else:
                     self._raise_if_cancelled()
                     result = _execute_tool(tool, tool_args)
@@ -220,10 +430,19 @@ class LangGraphAgentRunner:
             tool_message = Message(role="tool", content=result, tool_call_id=tool_call_id)
             messages.append(_message_to_dict(tool_message))
             added.append(_message_to_dict(tool_message))
+            if confirmed_outcome is not None and self._confirmation_result_sink is not None:
+                effective_pending, confirmed_approved = confirmed_outcome
+                self._confirmation_result_sink(
+                    effective_pending,
+                    confirmed_approved,
+                    tool_message,
+                )
         return {
             "messages": messages,
             "added": added,
             "status": "continue",
+            "consumed_resume_id": consumed_resume_id,
+            "consumed_resume_attempt_id": consumed_resume_attempt_id,
         }
 
     def _checkpointer(self) -> AbstractContextManager[Any]:
@@ -247,11 +466,15 @@ class LangGraphAgentRunner:
         interrupts = state.get("__interrupt__") or []
         if interrupts:
             pending_payload = getattr(interrupts[0], "value")
-            return added, "", PendingAction(
-                tool_call_id=str(pending_payload["tool_call_id"]),
-                tool_name=str(pending_payload["tool_name"]),
-                args=str(pending_payload["args"]),
-                human=str(pending_payload["human"]),
+            return (
+                added,
+                "",
+                PendingAction(
+                    tool_call_id=str(pending_payload["tool_call_id"]),
+                    tool_name=str(pending_payload["tool_name"]),
+                    args=str(pending_payload["args"]),
+                    human=str(pending_payload["human"]),
+                ),
             )
         return added, str(state.get("reply") or ""), None
 
@@ -262,15 +485,50 @@ class LangGraphAgentRunner:
         approved: bool,
         auto_approve: bool,
         max_iter: int,
+        rejection_feedback: str,
+        confirmation_lock_key: ConfirmationLockKey,
     ) -> tuple[list[Message], str, PendingAction | None]:
-        if approved:
-            result = _execute_tool(self._registry[pending.tool_name], pending.args)
+        sink_pending = pending
+        if approved is True:
+            tool = self._registry[pending.tool_name]
+            try:
+                parsed_args = _parse_json_object(
+                    pending.args,
+                    "pending arguments must be a valid JSON object",
+                )
+            except ValueError as exc:
+                raise PendingActionValidationError(str(exc)) from exc
+            effective_args = _encode_json_object(parsed_args)
+            validation_error = _validate_pending_action(tool.get("validate"), effective_args)
+            if validation_error:
+                raise PendingActionValidationError(validation_error)
+            sink_pending = PendingAction(
+                tool_call_id=pending.tool_call_id,
+                tool_name=pending.tool_name,
+                args=effective_args,
+                human=pending.human,
+            )
+            self._emit_pending_tool_call(sink_pending, "approved")
+            self._raise_if_cancelled()
+            if self._confirmation_attempt_sink is not None:
+                self._confirmation_attempt_sink(sink_pending)
+            if not _claim_fallback_confirmation(
+                confirmation_lock_key,
+                pending,
+            ):
+                raise StalePendingActionError(
+                    "stale pending action: fallback confirmation was already consumed"
+                )
+            result = _execute_tool(tool, effective_args)
         else:
-            result = "用户拒绝了该操作，请勿执行，并询问用户下一步希望怎么做。"
+            self._emit_pending_tool_call(pending, "rejected")
+            result = _rejection_result(rejection_feedback)
         self._emit_tool_result(pending.tool_call_id, pending.tool_name, result)
 
         tool_message = Message(role="tool", content=result, tool_call_id=pending.tool_call_id)
         added = [tool_message]
+        if self._confirmation_result_sink is not None:
+            self._confirmation_result_sink(sink_pending, approved, tool_message)
         more, reply, new_pending = self.run_turn(
             [*messages, tool_message],
             auto_approve=auto_approve,
@@ -283,7 +541,9 @@ class LangGraphAgentRunner:
         tool_name = str(tool_call.name)
         tool = self._registry.get(tool_name) or {}
         is_write = bool(tool.get("write"))
-        confirm_mode = "hitl" if _requires_confirmation(tool, auto_approve) else "auto" if is_write else "none"
+        confirm_mode = (
+            "hitl" if _requires_confirmation(tool, auto_approve) else "auto" if is_write else "none"
+        )
         summary = _tool_call_summary(tool, str(tool_call.args or ""), tool_name)
         self._emit_event(
             "tool_call",
@@ -308,7 +568,9 @@ class LangGraphAgentRunner:
                 "public_label": _tool_public_label(tool, pending.tool_name),
                 "kind": "write" if bool(tool.get("write")) else "read",
                 "confirm_mode": confirm_mode,
-                "summary": pending.human,
+                "summary": _describe_pending_action(
+                    tool.get("describe"), pending.args, pending.human
+                ),
                 "args_summary": _args_summary(pending.args),
             },
         )
@@ -374,11 +636,14 @@ def resume_after_confirm(
     approved: bool,
     auto_approve: bool,
     max_iter: int = DEFAULT_MAX_ITERATIONS,
+    rejection_feedback: str = "",
     *,
     checkpoint_path: Path | None = None,
     thread_id: str = _DEFAULT_THREAD_ID,
     event_sink: AgentEventSink | None = None,
     cancel_check: CancelCheck | None = None,
+    confirmation_result_sink: ConfirmationResultSink | None = None,
+    confirmation_attempt_sink: ConfirmationAttemptSink | None = None,
 ) -> tuple[list[Message], str, PendingAction | None]:
     return LangGraphAgentRunner(
         model,
@@ -387,7 +652,274 @@ def resume_after_confirm(
         thread_id=thread_id,
         event_sink=event_sink,
         cancel_check=cancel_check,
-    ).resume_after_confirm(messages, pending, approved, auto_approve, max_iter)
+        confirmation_result_sink=confirmation_result_sink,
+        confirmation_attempt_sink=confirmation_attempt_sink,
+    ).resume_after_confirm(
+        messages,
+        pending,
+        approved,
+        auto_approve,
+        max_iter,
+        rejection_feedback,
+    )
+
+
+def prepare_pending_action(
+    pending: PendingAction,
+    registry: dict[str, dict[str, Any]],
+    edited_args: dict[str, Any] | None,
+) -> PendingAction:
+    if edited_args is None:
+        return pending
+    if not isinstance(edited_args, dict):
+        raise ValueError("edited arguments must be a JSON object")
+
+    tool = registry.get(pending.tool_name)
+    if tool is None:
+        raise ValueError(f'unknown pending tool "{pending.tool_name}"')
+
+    original_args = _parse_json_object(
+        pending.args,
+        "pending arguments must be a valid JSON object",
+    )
+
+    descriptors = tool.get("editable_fields")
+    editable_fields = (
+        {
+            descriptor.get("field"): descriptor
+            for descriptor in descriptors
+            if isinstance(descriptor, dict) and isinstance(descriptor.get("field"), str)
+        }
+        if isinstance(descriptors, list)
+        else {}
+    )
+    non_editable = [str(field) for field in edited_args if field not in editable_fields]
+    if non_editable:
+        raise ValueError("non-editable fields: " + ", ".join(sorted(non_editable)))
+
+    for field, value in edited_args.items():
+        _validate_edited_value(str(field), value, editable_fields[field])
+
+    effective_args = {**original_args, **edited_args}
+    encoded_args = _encode_json_object(effective_args)
+    validation_error = _validate_pending_action(tool.get("validate"), encoded_args)
+    if validation_error:
+        raise ValueError(validation_error)
+    return PendingAction(
+        tool_call_id=pending.tool_call_id,
+        tool_name=pending.tool_name,
+        args=encoded_args,
+        human=_describe_pending_action(tool.get("describe"), encoded_args, pending.human),
+    )
+
+
+def _validated_resumed_args(
+    tool_call_id: str,
+    tool_name: str,
+    original_encoded_args: str,
+    effective_encoded_args: Any,
+    registry: dict[str, dict[str, Any]],
+) -> str:
+    if not isinstance(effective_encoded_args, str):
+        raise ValueError("approved resume requires validated effective arguments")
+    try:
+        original_args = _parse_json_object(
+            original_encoded_args,
+            "effective arguments must be a valid JSON object",
+        )
+        effective_args = _parse_json_object(
+            effective_encoded_args,
+            "effective arguments must be a valid JSON object",
+        )
+    except ValueError as exc:
+        raise ValueError("effective arguments must be a valid JSON object") from exc
+
+    missing_fields = [str(field) for field in original_args if field not in effective_args]
+    if missing_fields:
+        raise ValueError(
+            "effective arguments removed original fields: " + ", ".join(missing_fields)
+        )
+    edited_args = {
+        field: value
+        for field, value in effective_args.items()
+        if field not in original_args or not _same_json_value(original_args[field], value)
+    }
+    prepared = prepare_pending_action(
+        PendingAction(
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            args=original_encoded_args,
+            human=tool_name,
+        ),
+        registry,
+        edited_args,
+    )
+    return prepared.args
+
+
+def _resume_identity_error(
+    resume_value: dict[str, Any],
+    tool_call_id: str,
+    tool_name: str,
+) -> str:
+    if resume_value.get("tool_call_id") != tool_call_id:
+        return "confirmation does not match the pending tool call"
+    if resume_value.get("tool_name") != tool_name:
+        return "confirmation does not match the pending tool"
+    return ""
+
+
+def _assert_pending_checkpoint_identity(
+    graph: Any,
+    config: dict[str, Any],
+    pending: PendingAction,
+) -> str:
+    try:
+        snapshot = graph.get_state(config)
+    except Exception as exc:
+        raise StalePendingActionError(
+            "stale pending action: unable to read the current checkpoint"
+        ) from exc
+    interrupts = getattr(snapshot, "interrupts", ())
+    if not isinstance(interrupts, tuple) or len(interrupts) != 1:
+        raise StalePendingActionError("stale pending action: no current checkpoint interrupt")
+    current_interrupt = interrupts[0]
+    current = getattr(current_interrupt, "value", None)
+    if not isinstance(current, dict):
+        raise StalePendingActionError("stale pending action: invalid checkpoint interrupt")
+    if (
+        current.get("tool_call_id") != pending.tool_call_id
+        or current.get("tool_name") != pending.tool_name
+    ):
+        raise StalePendingActionError(
+            "stale pending action: confirmation does not match the current checkpoint"
+        )
+    interrupt_id = getattr(current_interrupt, "id", None)
+    if not isinstance(interrupt_id, str) or not interrupt_id:
+        raise StalePendingActionError("stale pending action: invalid checkpoint interrupt identity")
+    return interrupt_id
+
+
+def _mapped_resume_payload() -> tuple[bool, dict[str, Any], str]:
+    try:
+        configurable = get_config().get("configurable", {})
+    except RuntimeError:
+        return False, {}, ""
+    if "__pregel_resume_map" not in configurable:
+        return False, {}, ""
+    resume_map = configurable.get("__pregel_resume_map")
+    checkpoint_ns = configurable.get("checkpoint_ns")
+    if not isinstance(resume_map, dict) or not isinstance(checkpoint_ns, str):
+        return True, {}, ""
+    current_interrupt_id = Interrupt.from_ns(value=None, ns=checkpoint_ns).id
+    if current_interrupt_id not in resume_map:
+        return False, {}, ""
+    payload = resume_map[current_interrupt_id]
+    return True, payload if isinstance(payload, dict) else {}, current_interrupt_id
+
+
+def _parse_json_object(raw: str, error_message: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(raw, parse_constant=_reject_non_json_constant)
+        _validate_finite_json_numbers(parsed)
+    except (ValueError, TypeError) as exc:
+        raise ValueError(error_message) from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(error_message)
+    return parsed
+
+
+def _encode_json_object(value: dict[str, Any]) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
+def _validate_finite_json_numbers(value: Any) -> None:
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("JSON numbers must be finite")
+    if isinstance(value, dict):
+        for item in value.values():
+            _validate_finite_json_numbers(item)
+    elif isinstance(value, list):
+        for item in value:
+            _validate_finite_json_numbers(item)
+
+
+def _same_json_value(left: Any, right: Any) -> bool:
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(
+            _same_json_value(value, right[key]) for key, value in left.items()
+        )
+    if isinstance(left, list):
+        return len(left) == len(right) and all(
+            _same_json_value(left_value, right_value)
+            for left_value, right_value in zip(left, right, strict=True)
+        )
+    return bool(left == right)
+
+
+def _reject_non_json_constant(value: str) -> None:
+    raise ValueError(f'non-JSON numeric constant "{value}"')
+
+
+def _is_json_scalar(value: Any) -> bool:
+    if value is None or isinstance(value, (str, bool, int)):
+        return True
+    return isinstance(value, float) and math.isfinite(value)
+
+
+def _validate_edited_value(field: str, value: Any, descriptor: dict[str, Any]) -> None:
+    if (
+        descriptor.get("clearable") is True
+        and "clear_value" in descriptor
+        and _is_json_scalar(descriptor["clear_value"])
+        and _same_json_value(value, descriptor["clear_value"])
+    ):
+        return
+    field_type = descriptor.get("type")
+    if field_type in {"string", "long_text"}:
+        if not isinstance(value, str):
+            raise ValueError(f'edited field "{field}" must be a string')
+        return
+    if field_type == "number":
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f'edited field "{field}" must be a finite number')
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError(f'edited field "{field}" must be a finite number')
+        return
+    if field_type == "boolean":
+        if not isinstance(value, bool):
+            raise ValueError(f'edited field "{field}" must be a boolean')
+        return
+    if field_type == "enum":
+        options = descriptor.get("options")
+        if not isinstance(value, str) or not isinstance(options, list) or value not in options:
+            raise ValueError(f'edited field "{field}" must be one of the configured options')
+        return
+    if field_type == "datetime":
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f'edited field "{field}" must be an ISO/RFC3339 datetime string')
+        try:
+            datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(
+                f'edited field "{field}" must be an ISO/RFC3339 datetime string'
+            ) from exc
+        return
+    raise ValueError(f'edited field "{field}" has unknown descriptor type "{field_type}"')
+
+
+def _rejection_result(rejection_feedback: Any) -> str:
+    feedback = rejection_feedback.strip() if isinstance(rejection_feedback, str) else ""
+    if not feedback:
+        return "用户拒绝了该操作，请勿执行，并询问用户下一步希望怎么做。"
+    return f"用户拒绝了该操作，请勿执行。用户反馈：{feedback}请将这条反馈作为用户指导继续正常回应。"
 
 
 def _describe_pending_action(describe: Any, args: str, fallback: str) -> str:
@@ -405,9 +937,9 @@ def _validate_pending_action(validate: Any, args: str) -> str:
         return ""
     try:
         error = validate(args)
-    except Exception as exc:
-        return str(exc)
-    return str(error or "")
+        return str(error or "")
+    except Exception:
+        return "工具参数验证失败，请检查后重试。"
 
 
 def _execute_tool(tool: dict[str, Any], args: str) -> str:

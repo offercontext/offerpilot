@@ -1,5 +1,7 @@
 export type MaterialKitStatus = 'draft' | 'ready' | 'submitted';
 
+export type EditableMaterialKitStatus = 'draft' | 'ready';
+
 export interface MaterialKitResumeAdvice {
   summary: string;
   highlights: string[];
@@ -54,6 +56,6 @@ export interface UpdateMaterialKitInput {
   resume_id?: number;
   jd_analysis_id?: number;
   jd_snapshot: string;
-  status: MaterialKitStatus;
+  status?: EditableMaterialKitStatus;
   content_json: MaterialKitContent;
 }

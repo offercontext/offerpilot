@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from offerpilot.models import InterviewNote
@@ -80,3 +80,26 @@ class NotesRepository:
                 session.delete(note)
                 session.commit()
 
+    def delete_if_matches(self, note_id: int, expected: dict[str, object]) -> bool:
+        statement = (
+            delete(InterviewNote)
+            .where(InterviewNote.id == note_id)
+            .where(InterviewNote.company == expected.get("company"))
+            .where(InterviewNote.position == expected.get("position"))
+            .where(InterviewNote.round == expected.get("round"))
+            .where(InterviewNote.date == expected.get("date"))
+            .where(InterviewNote.questions == expected.get("questions"))
+            .where(InterviewNote.self_reflection == expected.get("self_reflection"))
+            .where(InterviewNote.difficulty_points == expected.get("difficulty_points"))
+            .where(InterviewNote.mood == expected.get("mood"))
+        )
+        application_id = expected.get("application_id")
+        statement = (
+            statement.where(InterviewNote.application_id.is_(None))
+            if application_id is None
+            else statement.where(InterviewNote.application_id == application_id)
+        )
+        with self._session_factory() as session:
+            result = session.execute(statement)
+            session.commit()
+            return getattr(result, "rowcount", 0) == 1

@@ -29,6 +29,7 @@ import ApplicationReadinessStrip from './widgets/ApplicationReadinessStrip';
 import FocusWorkspace from './widgets/FocusWorkspace';
 import styles from './dashboard.module.css';
 import OnboardingChecklist from '@/features/onboarding/OnboardingChecklist';
+import type { OnboardingAction } from '@/features/onboarding/actionRouting';
 import {
   getOnboarding,
   ONBOARDING_QUERY_KEY,
@@ -58,9 +59,10 @@ interface Props {
   onNavigate: (v: ViewMode) => void;
   onOpenDetailById: (id: number) => void;
   onAddApplication: () => void;
+  onOnboardingAction: (action: OnboardingAction) => void;
 }
 
-export default function DashboardView({ onNavigate, onOpenDetailById, onAddApplication }: Props) {
+export default function DashboardView({ onNavigate, onOpenDetailById, onAddApplication, onOnboardingAction }: Props) {
   const queryClient = useQueryClient();
   const [now, setNow] = useState(() => dayjs());
   const [selectedInsightId, setSelectedInsightId] = useState<string | null>(null);
@@ -189,6 +191,7 @@ export default function DashboardView({ onNavigate, onOpenDetailById, onAddAppli
       <OnboardingChecklist
         status={onboardingQ.data}
         onCollapse={() => collapseOnboarding.mutate()}
+        onAction={onOnboardingAction}
       />
     </div>
   ) : onboardingQ.data ? (

@@ -1,4 +1,5 @@
 import { Component, lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { DndContext, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button, Layout, Spin, Tabs, message } from 'antd';
 import { listApplications } from '@/services/applications';
@@ -7,13 +8,14 @@ import { listOffers } from '@/services/offers';
 import { ONBOARDING_QUERY_KEY } from '@/services/onboarding';
 import { uploadResume } from '@/services/resumes';
 import type { Application } from '@/types/application';
-import type { ChatStartRequest } from '@/types/chat';
+import type { ChatStartRequest, PilotContextAttachment } from '@/types/chat';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
 import AddApplicationForm from '@/components/AddApplicationForm';
 import ApplicationDetail from '@/components/ApplicationDetail';
 import ResumeUploadModal from '@/components/ResumeUploadModal';
 import ChatPanel from '@/components/ChatPanel';
+import type { EvidenceTarget } from '@/components/ChatPanel/model';
 import AISettingsDrawer from '@/components/AISettingsDrawer';
 import CommandPalette from './CommandPalette';
 import { moduleTabsForView, type ViewMode } from './navigation';
@@ -23,6 +25,17 @@ import {
   type PipelineInsight,
 } from '@/lib/pipelineInsights';
 import { getPracticeStats } from '@/services/questions';
+import { buildPilotPageContext } from '@/lib/pilotPageContext';
+import { PilotAttachmentProvider } from '@/features/pilot/PilotAttachmentContext';
+import {
+  usePilotAttachmentStore,
+  type PilotAttachmentConversationKey,
+} from '@/features/pilot/PilotAttachmentContext';
+import { retainPilotAttachmentKey } from '@/features/pilot/attachmentHandoff';
+import {
+  type OnboardingAction,
+  onboardingActionIntent,
+} from '@/features/onboarding/actionRouting';
 import dayjs from 'dayjs';
 
 const { Content } = Layout;
@@ -74,21 +87,41 @@ function computeStreak(apps: Application[], now = dayjs()): number {
 }
 
 export default function AppShell() {
+  return (
+    <PilotAttachmentProvider>
+      <AppShellContent />
+    </PilotAttachmentProvider>
+  );
+}
+
+function AppShellContent() {
   const [view, setView] = useState<ViewMode>('dashboard');
   const [addOpen, setAddOpen] = useState(false);
   const [resumeUploadOpen, setResumeUploadOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [pilotDrawerOpen, setPilotDrawerOpen] = useState(false);
   const [aiSettingsOpen, setAISettingsOpen] = useState(false);
+  const [resumeOnboardingFocusToken, setResumeOnboardingFocusToken] = useState(0);
+  const [pilotOnboardingFocusToken, setPilotOnboardingFocusToken] = useState(0);
+  const nextPilotOnboardingFocusToken = useRef(0);
   const [selected, setSelected] = useState<Application | null>(null);
+  const [evidenceFocus, setEvidenceFocus] = useState<Exclude<EvidenceTarget, { kind: 'application' }> | null>(null);
   const [coachOfferId, setCoachOfferId] = useState<number | undefined>(undefined);
   const [chatStartRequest, setChatStartRequest] = useState<ChatStartRequest>();
+  const [activePilotAttachmentKey, setActivePilotAttachmentKey] = useState<PilotAttachmentConversationKey>();
+  const [pendingAttachmentDraftKey, setPendingAttachmentDraftKey] = useState<PilotAttachmentConversationKey>();
+  const pilotAttachmentDraftKey = pendingAttachmentDraftKey;
+  const pendingAttachmentDraftKeyRef = useRef<PilotAttachmentConversationKey>();
   const nextChatStartRequestKey = useRef(0);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [now, setNow] = useState(() => dayjs());
   const [pilotRailAvailable, setPilotRailAvailable] = useState(() =>
     typeof window === 'undefined' ? false : window.matchMedia('(min-width: 1180px)').matches
   );
+  const kanbanSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+  );
+  const { addAttachment: addAttachmentToKey, createNewDraftWithAttachment } = usePilotAttachmentStore();
 
   const { data: applications = [], isLoading, isError: appsError } = useQuery({
     queryKey: ['applications'],
@@ -119,6 +152,7 @@ export default function AppShell() {
   const refreshWorkspaceData = () => {
     void qc.invalidateQueries({ queryKey: ['applications'] });
     void qc.invalidateQueries({ queryKey: ['events'] });
+    void qc.invalidateQueries({ queryKey: ['calendar'] });
     void qc.invalidateQueries({ queryKey: ['offers'] });
     void qc.invalidateQueries({ queryKey: ['questions', 'stats'] });
     void qc.invalidateQueries({ queryKey: ['chat', 'conversations'] });
@@ -170,6 +204,16 @@ export default function AppShell() {
   const selectedApp = selected
     ? apps.find((a) => a.id === selected.id) ?? null
     : null;
+  const coachedOffer = ofrs.find((offer) => offer.id === coachOfferId);
+  const pageContext = useMemo(
+    () =>
+      buildPilotPageContext({
+        view,
+        selectedApplication: selectedApp ?? undefined,
+        coachedOffer,
+      }),
+    [view, selectedApp, coachedOffer]
+  );
   const moduleTabs = moduleTabsForView(view);
 
   useEffect(() => {
@@ -183,6 +227,7 @@ export default function AppShell() {
   }, [apps, selected]);
 
   const shouldShowContextualPilot = view !== 'pilot';
+  const contextualPilotPanelOpen = pilotRailAvailable ? pilotDrawerOpen : chatOpen;
 
   const openChat = (offerId?: number) => {
     setCoachOfferId(offerId);
@@ -194,6 +239,36 @@ export default function AppShell() {
       return;
     }
     setChatOpen(true);
+  };
+
+  const attachToPilot = (attachment: PilotContextAttachment) => {
+    const attachmentKey =
+      activePilotAttachmentKey ?? pendingAttachmentDraftKeyRef.current ?? pendingAttachmentDraftKey;
+    if (attachmentKey) {
+      pendingAttachmentDraftKeyRef.current = attachmentKey;
+      setPendingAttachmentDraftKey(attachmentKey);
+      addAttachmentToKey(attachmentKey, attachment);
+      return;
+    }
+    const key = createNewDraftWithAttachment(attachment);
+    pendingAttachmentDraftKeyRef.current = key;
+    setPendingAttachmentDraftKey(key);
+  };
+
+  const syncPilotAttachmentKey = (key?: PilotAttachmentConversationKey) => {
+    setActivePilotAttachmentKey((currentKey) => retainPilotAttachmentKey(currentKey, key));
+    if (key) {
+      pendingAttachmentDraftKeyRef.current = undefined;
+      setPendingAttachmentDraftKey(undefined);
+    }
+  };
+
+  const handoffPilotAttachmentDraft = () => {
+    const attachmentKey =
+      activePilotAttachmentKey ?? pendingAttachmentDraftKeyRef.current ?? pendingAttachmentDraftKey;
+    if (!attachmentKey) return;
+    pendingAttachmentDraftKeyRef.current = attachmentKey;
+    setPendingAttachmentDraftKey(attachmentKey);
   };
 
   const startApplicationChat = (application: Application) => {
@@ -211,9 +286,10 @@ export default function AppShell() {
     }
   };
 
-  const navigateToView = (nextView: ViewMode) => {
+  const navigateToView = (nextView: ViewMode, { preserveEvidenceFocus = false }: { preserveEvidenceFocus?: boolean } = {}) => {
     setAISettingsOpen(false);
     setSelected(null);
+    if (!preserveEvidenceFocus) setEvidenceFocus(null);
     if (nextView === 'pilot') {
       setChatOpen(false);
       setPilotDrawerOpen(false);
@@ -222,9 +298,60 @@ export default function AppShell() {
     setView(nextView);
   };
 
+  const consumePilotOnboardingFocus = (token: number) => {
+    setPilotOnboardingFocusToken((current) => (current === token ? 0 : current));
+  };
+
+  const handleOnboardingAction = (action: OnboardingAction) => {
+    const intent = onboardingActionIntent(action, pilotRailAvailable);
+    if (intent.view) navigateToView(intent.view);
+    if (intent.openAISettings) setAISettingsOpen(true);
+    if (intent.openApplicationForm) setAddOpen(true);
+    if (intent.focusResumeEntry) setResumeOnboardingFocusToken((token) => token + 1);
+    if (intent.openPilotDrawer) setChatOpen(true);
+    if (intent.focusPilot) {
+      nextPilotOnboardingFocusToken.current += 1;
+      setPilotOnboardingFocusToken(nextPilotOnboardingFocusToken.current);
+    }
+  };
+
   const openApplicationDetail = (app: Application) => {
     setAISettingsOpen(false);
     setSelected(app);
+  };
+
+  const clearEvidenceFocus = (target: EvidenceTarget) => {
+    setEvidenceFocus((current) => (current === target ? null : current));
+  };
+
+  const openEvidence = (target: EvidenceTarget) => {
+    setAISettingsOpen(false);
+    if (view === 'pilot' && !pilotRailAvailable) {
+      setChatOpen(true);
+    }
+    if (target.kind === 'application') {
+      setEvidenceFocus(null);
+      const app = apps.find((item) => item.id === target.id);
+      if (app) {
+        if (view === 'pilot') setView('board');
+        openApplicationDetail(app);
+      } else {
+        message.warning('引用的记录已不存在');
+      }
+      return;
+    }
+
+    setSelected(null);
+    setEvidenceFocus(target);
+    if (target.kind === 'offer') {
+      navigateToView('offers', { preserveEvidenceFocus: true });
+      return;
+    }
+    if (target.kind === 'resume') {
+      navigateToView('resumes', { preserveEvidenceFocus: true });
+      return;
+    }
+    navigateToView('calendar', { preserveEvidenceFocus: true });
   };
 
   const goDetailById = (appId: number) => {
@@ -241,6 +368,10 @@ export default function AppShell() {
     navigateToView(item.primaryAction.target);
   };
 
+  const calendarEvidenceFocus = evidenceFocus?.kind === 'event' ? evidenceFocus : undefined;
+  const offerEvidenceFocus = evidenceFocus?.kind === 'offer' ? evidenceFocus : undefined;
+  const resumeEvidenceFocus = evidenceFocus?.kind === 'resume' ? evidenceFocus : undefined;
+
   const workspaceContent = aiSettingsOpen ? (
     <AISettingsDrawer open onClose={() => setAISettingsOpen(false)} />
   ) : selectedApp ? (
@@ -249,6 +380,7 @@ export default function AppShell() {
       open
       onClose={() => setSelected(null)}
       onAskPilot={startApplicationChat}
+      onAttachToPilot={attachToPilot}
     />
   ) : (
     <>
@@ -273,10 +405,11 @@ export default function AppShell() {
               onNavigate={navigateToView}
               onOpenDetailById={goDetailById}
               onAddApplication={() => setAddOpen(true)}
+              onOnboardingAction={handleOnboardingAction}
             />
           )}
           {view === 'board' && (
-            <KanbanBoard applications={apps} onOpenDetail={openApplicationDetail} onAskPilot={startApplicationChat} />
+            <KanbanBoard applications={apps} onOpenDetail={openApplicationDetail} onAttachToPilot={attachToPilot} />
           )}
           {view === 'applications-list' && (
             <ApplicationListView
@@ -284,30 +417,54 @@ export default function AppShell() {
                events={evs}
                onOpenDetail={openApplicationDetail}
                onAskPilot={startApplicationChat}
+               onAttachToPilot={attachToPilot}
             />
           )}
           {view === 'calendar' && (
-            <CalendarView applications={apps} onOpenDetail={openApplicationDetail} />
+            <CalendarView
+              applications={apps}
+              onOpenDetail={openApplicationDetail}
+              focusEvent={calendarEvidenceFocus}
+              onEvidenceFocusConsumed={calendarEvidenceFocus ? () => clearEvidenceFocus(calendarEvidenceFocus) : undefined}
+            />
           )}
           {view === 'reminders' && (
             <RemindersView onNavigate={navigateToView} onOpenDetailById={goDetailById} />
           )}
           {view === 'offers' && (
-            <OfferCenterView applications={apps} onCoach={(offer) => openChat(offer.id)} />
+            <OfferCenterView
+              applications={apps}
+              onCoach={(offer) => openChat(offer.id)}
+              onAttachToPilot={attachToPilot}
+              focusOfferId={offerEvidenceFocus?.id}
+              onEvidenceFocusConsumed={offerEvidenceFocus ? () => clearEvidenceFocus(offerEvidenceFocus) : undefined}
+            />
           )}
           {view === 'knowledge' && <KnowledgeSourcesView />}
           {view === 'questions' && <QuestionBankView />}
           {view === 'interview' && <InterviewV01View />}
-          {view === 'resumes' && <ResumeLibraryView />}
+          {view === 'resumes' && (
+            <ResumeLibraryView
+              onAttachToPilot={attachToPilot}
+              focusResumeId={resumeEvidenceFocus?.id}
+              onEvidenceFocusConsumed={resumeEvidenceFocus ? () => clearEvidenceFocus(resumeEvidenceFocus) : undefined}
+              onboardingFocusToken={resumeOnboardingFocusToken}
+            />
+          )}
           {view === 'pilot' && (
             <div style={{ height: 'calc(100vh - 128px)', minHeight: 640 }}>
               <ChatPanel
                 variant="page"
                 open
+                onboardingFocusToken={pilotOnboardingFocusToken}
+                onOnboardingFocusConsumed={consumePilotOnboardingFocus}
                 onClose={() => undefined}
                 onOpenSettings={() => setAISettingsOpen(true)}
                 startRequest={chatStartRequest}
                 onDataChanged={refreshWorkspaceData}
+                attachmentDraftKey={pilotAttachmentDraftKey}
+                onAttachmentKeyChange={syncPilotAttachmentKey}
+                onOpenEvidence={openEvidence}
               />
             </div>
           )}
@@ -318,7 +475,8 @@ export default function AppShell() {
   );
 
   return (
-    <Layout
+    <DndContext sensors={kanbanSensors}>
+      <Layout
       className="op-app-shell"
       style={{ minHeight: '100vh', background: 'var(--op-layout-bg)' }}
       hasSider
@@ -356,12 +514,22 @@ export default function AppShell() {
           <ChatPanel
             variant="rail"
             open
+            onboardingFocusToken={pilotOnboardingFocusToken}
+            onOnboardingFocusConsumed={consumePilotOnboardingFocus}
+            pilotDropTarget
             onClose={() => setCoachOfferId(undefined)}
             offerId={coachOfferId}
             onOpenSettings={() => setAISettingsOpen(true)}
-            onExpand={() => navigateToView('pilot')}
+            onExpand={() => {
+              handoffPilotAttachmentDraft();
+              navigateToView('pilot');
+            }}
             startRequest={chatStartRequest}
             onDataChanged={refreshWorkspaceData}
+            pageContext={pageContext}
+            attachmentDraftKey={pilotAttachmentDraftKey}
+            onAttachmentKeyChange={syncPilotAttachmentKey}
+            onOpenEvidence={openEvidence}
           />
         </aside>
       )}
@@ -387,9 +555,12 @@ export default function AppShell() {
         pipelineActions={pipelineActions}
         onRunPipelineAction={runPipelineAction}
       />
-      {shouldShowContextualPilot && (!pilotRailAvailable || pilotDrawerOpen) && (
+      {shouldShowContextualPilot && contextualPilotPanelOpen && (
         <ChatPanel
-          open={pilotRailAvailable ? pilotDrawerOpen : chatOpen}
+          open={contextualPilotPanelOpen}
+          onboardingFocusToken={pilotOnboardingFocusToken}
+          onOnboardingFocusConsumed={consumePilotOnboardingFocus}
+          pilotDropTarget
           onClose={() => {
             setChatOpen(false);
             setPilotDrawerOpen(false);
@@ -399,8 +570,13 @@ export default function AppShell() {
           onOpenSettings={() => setAISettingsOpen(true)}
           startRequest={chatStartRequest}
           onDataChanged={refreshWorkspaceData}
+          pageContext={pageContext}
+          attachmentDraftKey={pilotAttachmentDraftKey}
+          onAttachmentKeyChange={syncPilotAttachmentKey}
+          onOpenEvidence={openEvidence}
         />
       )}
-    </Layout>
+      </Layout>
+    </DndContext>
   );
 }

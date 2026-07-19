@@ -49,6 +49,7 @@ class Config(BaseModel):
     fallback_provider_id: str = ""
     multimodal_provider_id: str = ""
     providers: list[AIProviderProfile] = Field(default_factory=list)
+    fallback_provider_ids: list[str] = Field(default_factory=list)
     runtime_mode: RuntimeMode = "local"
     auth_enabled: bool = False
     auth_token: str = ""
@@ -92,6 +93,18 @@ class Config(BaseModel):
             return None
         return fallback
 
+    def ordered_provider_profiles(self) -> list[AIProviderProfile]:
+        active = self.active_provider()
+        profiles = [active]
+        seen = {active.id}
+        for provider_id in self.fallback_provider_ids:
+            fallback = self.provider_by_id(provider_id)
+            if fallback is None or fallback.id in seen:
+                continue
+            profiles.append(fallback)
+            seen.add(fallback.id)
+        return profiles
+
     def multimodal_provider(self) -> AIProviderProfile | None:
         if not self.multimodal_provider_id:
             return None
@@ -111,6 +124,9 @@ def load_config(data_dir: Path) -> Config:
         return Config()
 
     raw: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    legacy_fallback = str(raw.pop("fallback_provider_id", "") or "")
+    if not isinstance(raw.get("fallback_provider_ids"), list):
+        raw["fallback_provider_ids"] = [legacy_fallback] if legacy_fallback else []
     cfg = Config.model_validate(raw)
     if not cfg.base_url:
         cfg.base_url = DEFAULT_BASE_URL

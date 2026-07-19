@@ -1,21 +1,23 @@
 import { CheckCircleOutlined, ClockCircleOutlined } from '@ant-design/icons';
 import { Button } from 'antd';
 import type { OnboardingStatus } from '@/services/onboarding';
+import type { OnboardingAction } from './actionRouting';
 import styles from './OnboardingChecklist.module.css';
 
 interface Props {
   status: OnboardingStatus;
   onCollapse: () => void;
+  onAction: (action: OnboardingAction) => void;
 }
 
-const STEPS: Array<{ key: keyof OnboardingStatus['steps']; label: string }> = [
+const STEPS: Array<{ key: OnboardingAction; label: string }> = [
   { key: 'configure_ai', label: '配置 AI' },
   { key: 'create_primary_resume', label: '创建主简历' },
   { key: 'create_first_application', label: '添加第一条投递' },
   { key: 'send_first_pilot_message', label: '向 Pilot 发出第一条消息' },
 ];
 
-export default function OnboardingChecklist({ status, onCollapse }: Props) {
+export default function OnboardingChecklist({ status, onCollapse, onAction }: Props) {
   return (
     <section className={styles.card} aria-label="新手引导">
       <div className={styles.header}>
@@ -36,12 +38,18 @@ export default function OnboardingChecklist({ status, onCollapse }: Props) {
         {STEPS.map((step) => {
           const completed = status.steps[step.key];
           return (
-            <div key={step.key} className={`${styles.step} ${completed ? styles.completed : ''}`}>
-              <div className={styles.stepIcon} aria-hidden="true">
+            <button
+              key={step.key}
+              type="button"
+              data-onboarding-action={step.key}
+              className={`${styles.step} ${completed ? styles.completed : ''}`}
+              onClick={() => onAction(step.key)}
+            >
+              <span className={styles.stepIcon} aria-hidden="true">
                 {completed ? <CheckCircleOutlined /> : <ClockCircleOutlined />}
-              </div>
-              <div className={styles.stepLabel}>{step.label}</div>
-            </div>
+              </span>
+              <span className={styles.stepLabel}>{step.label}</span>
+            </button>
           );
         })}
       </div>

@@ -1,15 +1,485 @@
 import { describe, expect, it } from 'vitest';
-import type { ChatMessage } from '@/types/chat';
+import type { ChatMessage, PilotPageContext } from '@/types/chat';
 import {
+  createPilotPageContextRemovalState,
+  deriveActivePageContext,
+  pageContextKey,
+  pilotPageContextRemovalReducer,
+} from '@/lib/pilotPageContext';
+import {
+  buildChatRequestContext,
   buildTurns,
   collectEvidence,
+  evidenceSetIdentity,
+  formatEvidenceMeta,
+  parseTurnPresentation,
   hydrateMissingPendingAction,
-  firstPendingConversationId,
   pendingActionForConversation,
   pendingComposerDisabledReason,
+  pendingAutoSelectReducer,
+  remainingEvidence,
+  shouldApplyConversationRequest,
+  isCurrentVisibleConversationRequest,
   reloadConversationTurns,
   toolMeta,
+  confirmationInputForRetry,
+  confirmationErrorAllowsImmediateRetry,
+  confirmationErrorRequiresSync,
+  hasConfirmationSettled,
+  shouldAbortActiveRequestOnClose,
+  clearOwnedConfirmationLock,
+  shouldConsumeConfirmationSettlement,
+  shouldRestoreConfirmationRetryFocus,
+  selectEvidence,
+  toolStepSetIdentity,
 } from './model';
+
+describe('evidence selection', () => {
+  const item = (id: string, title: string, source = 'tool', kind: 'application' = 'application') => ({
+    id,
+    title,
+    source,
+    kind: kind as 'application',
+  });
+
+  it('dedupes only matching source, id, and display metadata while preserving conflicts and occurrences', () => {
+    const evidence = collectEvidence([
+      {
+        role: 'assistant',
+        content: '',
+        steps: [
+          {
+            name: 'list_applications',
+            evidence: [
+              item('42', 'Same company', 'latest'),
+              item('42', 'Same company', 'other-source'),
+              item('43', 'Same company', 'latest'),
+              item('42', 'Same company', 'latest'),
+              item('42', 'Conflicting company', 'latest'),
+            ],
+          },
+        ],
+      },
+    ]);
+
+    expect(evidence).toHaveLength(4);
+    expect(evidence).toContainEqual(
+      expect.objectContaining({ source: 'latest', id: '42', title: 'Same company', occurrences: 2 }),
+    );
+    expect(evidence).toContainEqual(
+      expect.objectContaining({ source: 'latest', id: '42', title: 'Conflicting company', occurrences: 1 }),
+    );
+  });
+
+  it('selects one representative per normalized cluster before filling remaining capacity', () => {
+    const selection = selectEvidence(
+      [
+        item('1', 'Acme #1'),
+        item('2', 'Acme #2'),
+        item('3', 'Beta'),
+        item('4', 'Acme #3'),
+        item('5', 'Gamma'),
+      ],
+      4,
+    );
+
+    expect(selection.visible.map((entry) => entry.id)).toEqual(['1', '3', '5', '2']);
+    expect(selection.similar.map((entry) => entry.id)).toEqual(['4']);
+    expect(selection.remainingCount).toBe(1);
+  });
+
+  it('keeps exact records with matching titles distinct and reports all omitted records', () => {
+    const selection = selectEvidence(
+      [item('1', 'Same title'), item('2', 'Same title'), item('3', 'Another title')],
+      1,
+    );
+
+    expect(selection.visible.map((entry) => entry.id)).toEqual(['1']);
+    expect(selection.similar.map((entry) => entry.id)).toEqual(['2']);
+    expect(selection.remainingCount).toBe(2);
+  });
+
+  it('formats embedded valid timestamps without changing invalid metadata', () => {
+    expect(formatEvidenceMeta('scheduled 2026-07-10T09:05:59+08:00')).toBe('scheduled 2026-07-10 09:05');
+    expect(formatEvidenceMeta('scheduled 2026-02-30T09:05:00Z')).toBe('scheduled 2026-02-30T09:05:00Z');
+    expect(formatEvidenceMeta('scheduled 2026-07-10T09:05:00Z+08:00')).toBe(
+      'scheduled 2026-07-10T09:05:00Z+08:00',
+    );
+    expect(formatEvidenceMeta('scheduled 2026-07-10T09:05:00Z.')).toBe('scheduled 2026-07-10 17:05.');
+    expect(formatEvidenceMeta('scheduled 2026-07-10T09:05.123')).toBe('scheduled 2026-07-10T09:05.123');
+    expect(formatEvidenceMeta('scheduled 2026-07-10T09:05:00.abc')).toBe(
+      'scheduled 2026-07-10T09:05:00.abc',
+    );
+    expect(formatEvidenceMeta('scheduled someday')).toBe('scheduled someday');
+    expect(formatEvidenceMeta()).toBeUndefined();
+  });
+
+  it('changes the evidence-set identity when a conversation supplies different visible or similar records', () => {
+    const visible = [item('1', 'Acme', 'applications')];
+    const similar = [item('2', 'Acme', 'applications')];
+
+    expect(evidenceSetIdentity(visible, similar)).not.toBe(evidenceSetIdentity(visible, []));
+    expect(evidenceSetIdentity(visible, similar)).not.toBe(
+      evidenceSetIdentity([item('3', 'Acme', 'applications')], similar),
+    );
+    expect(evidenceSetIdentity(visible, similar, [item('3', 'Beta', 'applications')])).not.toBe(
+      evidenceSetIdentity(visible, similar, [item('4', 'Gamma', 'applications')]),
+    );
+  });
+
+  it('collects newest evidence first and applies the diversified cap after exact dedupe', () => {
+    const evidence = collectEvidence(
+      [
+        {
+          role: 'assistant',
+          content: '',
+          steps: [{ name: 'list_applications', evidence: [item('old', 'Older', 'applications')] }],
+        },
+        {
+          role: 'assistant',
+          content: '',
+          steps: [
+            {
+              name: 'list_applications',
+              evidence: [
+                item('new-1', 'Acme #1', 'applications'),
+                item('new-2', 'Acme #2', 'applications'),
+                item('new-3', 'Beta', 'applications'),
+              ],
+            },
+          ],
+        },
+      ],
+      2,
+    );
+
+    expect(evidence.map((entry) => entry.id)).toEqual(['new-1', 'new-3']);
+  });
+
+  it('retains omitted distinct records for expansion even when they are not similar', () => {
+    const items = Array.from({ length: 9 }, (_value, index) => item(String(index + 1), `Record ${index + 1}`));
+    const selection = selectEvidence(items, 8);
+
+    expect(selection.similar).toEqual([]);
+    expect(selection.remainingCount).toBe(1);
+    expect(remainingEvidence(items, selection.visible).map((entry) => entry.id)).toEqual(['9']);
+  });
+
+  it('changes the timeline step-set identity for a new tool call or evidence record', () => {
+    const current = [{ name: 'get_application', toolCallId: 'call-1', evidence: [item('1', 'Acme', 'applications')] }];
+
+    expect(toolStepSetIdentity(current)).toBe(toolStepSetIdentity([...current]));
+    expect(toolStepSetIdentity(current)).not.toBe(
+      toolStepSetIdentity([{ ...current[0], toolCallId: 'call-2' }]),
+    );
+    expect(toolStepSetIdentity(current)).not.toBe(
+      toolStepSetIdentity([{ ...current[0], evidence: [item('2', 'Acme', 'applications')] }]),
+    );
+  });
+
+  it('changes the timeline step-set identity for ID-less rendered tool changes', () => {
+    const base = {
+      name: 'search_knowledge',
+      detail: 'first query',
+      resultText: 'first result',
+      evidenceUnavailable: true,
+      evidence: [
+        {
+          id: '1',
+          source: 'knowledge',
+          kind: 'note' as const,
+          title: 'first title',
+          meta: 'first meta',
+          snippet: 'first snippet',
+        },
+      ],
+    };
+    const identity = toolStepSetIdentity([base]);
+
+    expect(identity).not.toBe(toolStepSetIdentity([{ ...base, name: 'list_applications' }]));
+    expect(identity).not.toBe(toolStepSetIdentity([{ ...base, detail: 'second query' }]));
+    expect(identity).not.toBe(toolStepSetIdentity([{ ...base, resultText: 'second result' }]));
+    expect(identity).not.toBe(toolStepSetIdentity([{ ...base, evidenceUnavailable: false }]));
+    expect(identity).not.toBe(
+      toolStepSetIdentity([{ ...base, evidence: [{ ...base.evidence[0], title: 'second title' }] }]),
+    );
+    expect(identity).not.toBe(
+      toolStepSetIdentity([{ ...base, evidence: [{ ...base.evidence[0], meta: 'second meta' }] }]),
+    );
+    expect(identity).not.toBe(
+      toolStepSetIdentity([{ ...base, evidence: [{ ...base.evidence[0], snippet: 'second snippet' }] }]),
+    );
+    expect(identity).not.toBe(
+      toolStepSetIdentity([{ ...base, evidence: [{ ...base.evidence[0], kind: 'knowledge' as const }] }]),
+    );
+  });
+});
+
+describe('confirmation retry focus lifecycle', () => {
+  it('restores focus only after a requested retry finishes with an error', () => {
+    expect(shouldRestoreConfirmationRetryFocus(true, '网络失败', false)).toBe(true);
+    expect(shouldRestoreConfirmationRetryFocus(true, '网络失败', true)).toBe(false);
+    expect(shouldRestoreConfirmationRetryFocus(true, null, false)).toBe(false);
+    expect(shouldRestoreConfirmationRetryFocus(false, '网络失败', false)).toBe(false);
+  });
+});
+
+describe('pending auto-selection suppression', () => {
+  it('suppresses explicit new chats and restores eligibility after selecting a conversation', () => {
+    expect(pendingAutoSelectReducer(false, 'suppress')).toBe(true);
+    expect(pendingAutoSelectReducer(true, 'allow')).toBe(false);
+  });
+
+  it('rejects a late selection response after an explicit new chat invalidates its generation', () => {
+    expect(shouldApplyConversationRequest(3, 3, false)).toBe(true);
+    expect(shouldApplyConversationRequest(2, 3, false)).toBe(false);
+    expect(shouldApplyConversationRequest(3, 3, true)).toBe(false);
+  });
+});
+
+describe('visible conversation request isolation', () => {
+  it('ignores deferred chat deltas, pending state, and completion after switching from A to B', () => {
+    let generation = 0;
+    let visible = { conversationId: 1, turns: ['A'], pending: 'A pending' as string | null };
+    const requestA = ++generation;
+    const apply = (requestGeneration: number, mutation: () => void) => {
+      if (isCurrentVisibleConversationRequest(requestGeneration, generation)) mutation();
+    };
+
+    generation += 1;
+    visible = { conversationId: 2, turns: ['B'], pending: null };
+    apply(requestA, () => visible.turns.push('late A delta'));
+    apply(requestA, () => { visible.pending = 'late A pending'; });
+    apply(requestA, () => { visible = { conversationId: 1, turns: ['A complete'], pending: null }; });
+
+    expect(visible).toEqual({ conversationId: 2, turns: ['B'], pending: null });
+  });
+
+  it('ignores deferred confirmation mutations after switching conversations', () => {
+    let generation = 4;
+    let visible = { conversationId: 2, turns: ['B'], pending: null as string | null, undo: null as string | null };
+    const confirmationA = generation;
+
+    generation += 1;
+    if (isCurrentVisibleConversationRequest(confirmationA, generation)) {
+      visible = { conversationId: 1, turns: ['confirmed A'], pending: 'next A', undo: 'undo A' };
+    }
+
+    expect(visible).toEqual({ conversationId: 2, turns: ['B'], pending: null, undo: null });
+  });
+});
+
+describe('background confirmation settlement', () => {
+  const original = {
+    tool_name: 'create_application',
+    human: 'create',
+    confirmation_token: 'original-token',
+  };
+
+  it('keeps polling while the original pending action is still durable', () => {
+    for (let poll = 0; poll < 240; poll += 1) {
+      expect(hasConfirmationSettled(original, 'original-token')).toBe(false);
+    }
+    expect(hasConfirmationSettled(undefined, 'original-token')).toBe(false);
+  });
+
+  it('settles when the pending action clears or is replaced', () => {
+    expect(hasConfirmationSettled(null, 'original-token')).toBe(true);
+    expect(
+      hasConfirmationSettled(
+        { ...original, confirmation_token: 'replacement-token' },
+        'original-token',
+      ),
+    ).toBe(true);
+  });
+
+});
+
+describe('active request ownership', () => {
+  it('preserves confirmation A across new-chat, B selection, and panel close', () => {
+    const confirmationA = {
+      kind: 'confirmation' as const,
+      conversationId: 1,
+      confirmationToken: 'token-a',
+    };
+    let visibleConversationId: number | undefined = 1;
+
+    visibleConversationId = undefined;
+    expect(visibleConversationId).toBeUndefined();
+    expect(shouldAbortActiveRequestOnClose(confirmationA)).toBe(false);
+
+    visibleConversationId = 2;
+    expect(visibleConversationId).toBe(2);
+    expect(shouldAbortActiveRequestOnClose(confirmationA)).toBe(false);
+  });
+
+  it('aborts an ordinary active chat when the panel closes', () => {
+    expect(
+      shouldAbortActiveRequestOnClose({ kind: 'chat', conversationId: 2 }),
+    ).toBe(true);
+    expect(shouldAbortActiveRequestOnClose(null)).toBe(false);
+  });
+
+  it('does not let stale A completion clear a newer lock for A', () => {
+    const stale = { confirmationToken: 'old-token' };
+    const replacement = { confirmationToken: 'replacement-token' };
+    const locks = new Map([[1, stale]]);
+    locks.set(1, replacement);
+
+    expect(clearOwnedConfirmationLock(locks, 1, stale)).toBe(false);
+    expect(locks.get(1)).toBe(replacement);
+    expect(clearOwnedConfirmationLock(locks, 1, replacement)).toBe(true);
+    expect(locks.has(1)).toBe(false);
+  });
+
+  it('consumes hidden completion only when reopen reconciliation hydrates it', () => {
+    const owner = { confirmationToken: 'token-a' };
+    const locks = new Map([[1, owner]]);
+    let state = {
+      phase: 'saving',
+      turns: ['partial'],
+      pending: 'token-a' as string | null,
+      undo: null as string | null,
+    };
+    let dataChangedCalls = 0;
+
+    if (shouldConsumeConfirmationSettlement(null, 'token-a', false)) {
+      clearOwnedConfirmationLock(locks, 1, owner);
+    }
+    expect(locks.get(1)).toBe(owner);
+
+    if (shouldConsumeConfirmationSettlement(null, 'token-a', true)) {
+      const consumed = clearOwnedConfirmationLock(locks, 1, owner);
+      if (consumed) {
+        state = { phase: 'idle', turns: ['persisted result'], pending: null, undo: 'undo-a' };
+        dataChangedCalls += 1;
+      }
+    }
+
+    expect(state).toEqual({
+      phase: 'idle',
+      turns: ['persisted result'],
+      pending: null,
+      undo: 'undo-a',
+    });
+    expect(dataChangedCalls).toBe(1);
+    expect(locks.has(1)).toBe(false);
+  });
+});
+
+describe('buildChatRequestContext', () => {
+  const pageContext: PilotPageContext = {
+    view: 'applications-list',
+    label: '投递列表',
+    entity: { kind: 'application', id: '42', label: '星海科技 · 前端工程师' },
+  };
+
+  it('sends only request page context for an existing conversation', () => {
+    expect(
+      buildChatRequestContext({
+        conversationId: 7,
+        offerApplicationId: 99,
+        offerId: 8,
+        pageContext,
+      }),
+    ).toEqual({ page_context: pageContext });
+  });
+
+  it('sends the latest derived context while retaining same-page removals', () => {
+    const identity = pageContextKey(pageContext);
+    const removalState = pilotPageContextRemovalReducer(
+      createPilotPageContextRemovalState(identity),
+      { type: 'remove', contextKey: identity, chipKey: 'entity' },
+    );
+    const refreshedContext = {
+      ...pageContext,
+      label: '最新投递列表',
+      entity: {
+        ...pageContext.entity!,
+        label: '星海智能 · 高级前端工程师',
+        description: '当前状态：已录用',
+      },
+    };
+    const activePageContext = deriveActivePageContext(refreshedContext, removalState);
+
+    expect(buildChatRequestContext({ conversationId: 7, pageContext: activePageContext })).toEqual({
+      page_context: { view: 'applications-list', label: '最新投递列表' },
+    });
+  });
+
+  it('prefers a loaded offer application for a new conversation', () => {
+    expect(
+      buildChatRequestContext({
+        offerApplicationId: 99,
+        offerId: 8,
+        pageContext,
+      }),
+    ).toEqual({
+      context_type: 'application',
+      context_ref: 99,
+      mode: 'nego_coach',
+      page_context: pageContext,
+    });
+  });
+
+  it('binds a new general conversation to the page application entity', () => {
+    expect(buildChatRequestContext({ pageContext })).toEqual({
+      context_type: 'application',
+      context_ref: '42',
+      mode: 'general',
+      page_context: pageContext,
+    });
+  });
+
+  it('falls back to negotiation workspace context when only an offer id is available', () => {
+    expect(buildChatRequestContext({ offerId: 8 })).toEqual({
+      context_type: 'workspace',
+      context_ref: '',
+      mode: 'nego_coach',
+    });
+  });
+
+  it('uses general workspace context for other new conversations', () => {
+    expect(buildChatRequestContext({})).toEqual({
+      context_type: 'workspace',
+      context_ref: '',
+      mode: 'general',
+    });
+  });
+});
+
+describe('confirmation retry intent', () => {
+  it('preserves approval edits exactly', () => {
+    const input = {
+      approved: true as const,
+      confirmation_token: 'a'.repeat(64),
+      edited_args: { status: 'closed', closed_reason: 'Paused' },
+    };
+
+    expect(confirmationInputForRetry(input)).toEqual(input);
+  });
+
+  it('preserves rejection feedback exactly', () => {
+    const input = {
+      approved: false as const,
+      confirmation_token: 'b'.repeat(64),
+      rejection_feedback: 'Keep the current status.',
+    };
+
+    expect(confirmationInputForRetry(input)).toEqual(input);
+  });
+
+  it('forces state refresh for stale and in-progress confirmation errors', () => {
+    expect(confirmationErrorRequiresSync('stale_pending_action')).toBe(true);
+    expect(confirmationErrorRequiresSync('confirmation_in_progress')).toBe(true);
+    expect(confirmationErrorRequiresSync('ai_provider_error')).toBe(false);
+  });
+
+  it('allows rejected confirmation edits to restore the review card immediately', () => {
+    expect(confirmationErrorAllowsImmediateRetry('http_422')).toBe(true);
+    expect(confirmationErrorAllowsImmediateRetry('confirmation_in_progress')).toBe(false);
+  });
+});
 
 function msg(patch: Partial<ChatMessage> & Pick<ChatMessage, 'role'>): ChatMessage {
   return {
@@ -166,6 +636,23 @@ describe('buildTurns evidence normalization', () => {
     });
   });
 
+  it('targets application evidence from a real numeric application id', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([{ id: 'call-app', name: 'list_applications', args: {} }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-app',
+        content: JSON.stringify([{ id: 7, company_name: 'Acme', position_name: 'Engineer' }]),
+      }),
+      msg({ role: 'assistant', content: 'I found an application.' }),
+    ]);
+
+    expect(turns[0].steps?.[0].evidence?.[0]?.target).toEqual({ kind: 'application', id: 7 });
+  });
+
   it('classifies event tool results as event evidence even when company is present', () => {
     const turns = buildTurns([
       msg({
@@ -208,6 +695,116 @@ describe('buildTurns evidence normalization', () => {
         },
       ],
     });
+  });
+
+  it('targets event evidence with its structured id and scheduled time', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([{ id: 'call-event', name: 'list_application_events', args: {} }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-event',
+        content: JSON.stringify([
+          {
+            record_type: 'application_event',
+            application_event_id: 1,
+            id: 9,
+            company_name: 'Acme',
+            scheduled_at: '2026-07-01T07:00:00Z',
+          },
+        ]),
+      }),
+      msg({ role: 'assistant', content: 'I found an event.' }),
+    ]);
+
+    expect(turns[0].steps?.[0].evidence?.[0]?.target).toEqual({
+      kind: 'event',
+      id: 1,
+      scheduledAt: '2026-07-01T07:00:00Z',
+    });
+  });
+
+  it('falls back to an event row id when application_event_id is absent', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([{ id: 'call-event', name: 'list_application_events', args: {} }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-event',
+        content: JSON.stringify([
+          {
+            record_type: 'application_event',
+            id: 9,
+            company_name: 'Acme',
+            scheduled_at: '2026-07-01T07:00:00Z',
+          },
+        ]),
+      }),
+      msg({ role: 'assistant', content: 'I found an event.' }),
+    ]);
+
+    expect(turns[0].steps?.[0].evidence?.[0]?.target).toEqual({
+      kind: 'event',
+      id: 9,
+      scheduledAt: '2026-07-01T07:00:00Z',
+    });
+  });
+
+  it('leaves events with negative, fractional, unsafe, or non-finite ids targetless', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([
+          { id: 'call-negative', name: 'list_application_events', args: {} },
+          { id: 'call-fractional', name: 'list_application_events', args: {} },
+          { id: 'call-unsafe', name: 'list_application_events', args: {} },
+          { id: 'call-nonfinite', name: 'list_application_events', args: {} },
+        ]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-negative',
+        content: JSON.stringify([
+          { record_type: 'application_event', id: -1, company_name: 'Acme', scheduled_at: '2026-07-01T07:00:00Z' },
+        ]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-fractional',
+        content: JSON.stringify([
+          { record_type: 'application_event', id: 1.5, company_name: 'Acme', scheduled_at: '2026-07-01T07:00:00Z' },
+        ]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-unsafe',
+        content: JSON.stringify([
+          {
+            record_type: 'application_event',
+            id: Number.MAX_SAFE_INTEGER + 1,
+            company_name: 'Acme',
+            scheduled_at: '2026-07-01T07:00:00Z',
+          },
+        ]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-nonfinite',
+        content: '[{"record_type":"application_event","id":1e309,"company_name":"Acme","scheduled_at":"2026-07-01T07:00:00Z"}]',
+      }),
+      msg({ role: 'assistant', content: 'These events are not safely targetable.' }),
+    ]);
+
+    expect(turns[0].steps?.map((step) => step.evidence?.[0]?.target)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]);
   });
 
   it('attaches evidence to the final answer when a tool-calling assistant includes preamble content', () => {
@@ -390,6 +987,23 @@ describe('buildTurns evidence normalization', () => {
     });
   });
 
+  it('targets direct resume evidence from its real numeric id', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([{ id: 'call-resume', name: 'list_resumes', args: {} }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-resume',
+        content: JSON.stringify([{ record_type: 'resume', id: 6, name: 'Backend resume' }]),
+      }),
+      msg({ role: 'assistant', content: 'I found a resume.' }),
+    ]);
+
+    expect(turns[0].steps?.[0].evidence?.[0]?.target).toEqual({ kind: 'resume', id: 6 });
+  });
+
   it('classifies resume match results as match evidence instead of generic resume evidence', () => {
     const turns = buildTurns([
       msg({
@@ -428,6 +1042,243 @@ describe('buildTurns evidence normalization', () => {
         },
       ],
     });
+  });
+
+  it('targets resume match evidence using resume_id instead of the match row id', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([{ id: 'call-match', name: 'list_resume_matches', args: {} }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-match',
+        content: JSON.stringify([
+          { record_type: 'resume_match', id: 9, resume_match_id: 9, resume_id: 6 },
+        ]),
+      }),
+      msg({ role: 'assistant', content: 'I found a resume match.' }),
+    ]);
+
+    expect(turns[0].steps?.[0].evidence?.[0]?.target).toEqual({ kind: 'resume', id: 6 });
+  });
+
+  it('targets offer evidence from its real numeric id', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([{ id: 'call-offer', name: 'list_offers', args: {} }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-offer',
+        content: JSON.stringify([{ id: 3, company_name: 'Acme', total_cash: 600000 }]),
+      }),
+      msg({ role: 'assistant', content: 'I found an offer.' }),
+    ]);
+
+    expect(turns[0].steps?.[0].evidence?.[0]?.target).toEqual({ kind: 'offer', id: 3 });
+  });
+
+  it('leaves malformed, string, or non-positive record ids targetless', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([
+          { id: 'call-app', name: 'list_applications', args: {} },
+          { id: 'call-offer', name: 'list_offers', args: {} },
+          { id: 'call-resume', name: 'list_resumes', args: {} },
+          { id: 'call-event', name: 'list_application_events', args: {} },
+        ]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-app',
+        content: JSON.stringify([{ id: '7', company_name: 'Acme' }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-offer',
+        content: JSON.stringify([{ id: 0, company_name: 'Acme', total_cash: 600000 }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-resume',
+        content: JSON.stringify([{ record_type: 'resume', id: '6', name: 'Backend resume' }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-event',
+        content: JSON.stringify([
+          {
+            record_type: 'application_event',
+            application_event_id: '1',
+            id: '9',
+            company_name: 'Acme',
+            scheduled_at: '2026-07-01T07:00:00Z',
+          },
+        ]),
+      }),
+      msg({ role: 'assistant', content: 'These records are not safely targetable.' }),
+    ]);
+
+    for (const step of turns[0].steps ?? []) {
+      expect(step.evidence?.[0]?.target).toBeUndefined();
+    }
+  });
+
+  it('leaves event evidence without a valid scheduled time targetless', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([
+          { id: 'call-missing-time', name: 'list_application_events', args: {} },
+          { id: 'call-invalid-time', name: 'list_application_events', args: {} },
+        ]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-missing-time',
+        content: JSON.stringify([
+          { record_type: 'application_event', application_event_id: 1, company_name: 'Acme' },
+        ]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-invalid-time',
+        content: JSON.stringify([
+          {
+            record_type: 'application_event',
+            application_event_id: 2,
+            company_name: 'Acme',
+            scheduled_at: 'not-a-date',
+          },
+        ]),
+      }),
+      msg({ role: 'assistant', content: 'These events are not safely targetable.' }),
+    ]);
+
+    for (const step of turns[0].steps ?? []) {
+      expect(step.evidence?.[0]?.target).toBeUndefined();
+    }
+  });
+
+  it('leaves event evidence with an empty scheduled time targetless', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([{ id: 'call-empty-time', name: 'list_application_events', args: {} }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-empty-time',
+        content: JSON.stringify([
+          {
+            record_type: 'application_event',
+            id: 1,
+            company_name: 'Acme',
+            scheduled_at: '   ',
+          },
+        ]),
+      }),
+      msg({ role: 'assistant', content: 'This event is not safely targetable.' }),
+    ]);
+
+    expect(turns[0].steps?.[0].evidence?.[0]?.target).toBeUndefined();
+  });
+
+  it('leaves events with rollover calendar or time values targetless', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([
+          { id: 'call-rollover-date', name: 'list_application_events', args: {} },
+          { id: 'call-rollover-hour', name: 'list_application_events', args: {} },
+        ]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-rollover-date',
+        content: JSON.stringify([
+          {
+            record_type: 'application_event',
+            id: 1,
+            company_name: 'Acme',
+            scheduled_at: '2026-02-30T09:05:00Z',
+          },
+        ]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-rollover-hour',
+        content: JSON.stringify([
+          {
+            record_type: 'application_event',
+            id: 2,
+            company_name: 'Acme',
+            scheduled_at: '2026-01-01T24:00:00Z',
+          },
+        ]),
+      }),
+      msg({ role: 'assistant', content: 'These events are not safely targetable.' }),
+    ]);
+
+    expect(turns[0].steps?.map((step) => step.evidence?.[0]?.target)).toEqual([undefined, undefined]);
+  });
+
+  it('keeps unsupported, plain-text, and malformed results targetless', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([
+          { id: 'call-knowledge', name: 'search_knowledge', args: {} },
+          { id: 'call-jd', name: 'list_jd_analyses', args: {} },
+          { id: 'call-note', name: 'list_notes', args: {} },
+          { id: 'call-unknown', name: 'unknown_tool', args: {} },
+          { id: 'call-unknown-application', name: 'unknown_application_reader', args: {} },
+          { id: 'call-text', name: 'tool_text', args: {} },
+          { id: 'call-json', name: 'tool_json', args: {} },
+        ]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-knowledge',
+        content: JSON.stringify([{ record_type: 'knowledge_document', id: 4, title: 'Knowledge' }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-jd',
+        content: JSON.stringify([{ record_type: 'jd_analysis', id: 5, jd_text: 'Role details' }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-note',
+        content: JSON.stringify([{ id: 6, title: 'A note', company_name: 'Not an application' }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-unknown',
+        content: JSON.stringify([{ record_type: 'unknown', id: 7, company_name: 'Not an application' }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-unknown-application',
+        content: JSON.stringify([{ id: 7, company_name: 'Not an application' }]),
+      }),
+      msg({ role: 'tool', tool_call_id: 'call-text', content: 'A plain text result.' }),
+      msg({ role: 'tool', tool_call_id: 'call-json', content: '{bad json' }),
+      msg({ role: 'assistant', content: 'Only structured local records can be targets.' }),
+    ]);
+
+    expect(turns[0].steps?.map((step) => step.evidence?.[0]?.target)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]);
   });
 
   it('attaches evidence from JD analysis payloads', () => {
@@ -676,6 +1527,7 @@ describe('buildTurns evidence normalization', () => {
           pending_action: {
             tool_name: 'update_application_status',
             human: '更新状态',
+            confirmation_token: 'a'.repeat(64),
             args: { id: 1, status: 'offer' },
           },
         },
@@ -686,6 +1538,7 @@ describe('buildTurns evidence normalization', () => {
     expect(pending).toEqual({
       tool_name: 'update_application_status',
       human: '更新状态',
+      confirmation_token: 'a'.repeat(64),
       args: { id: 1, status: 'offer' },
     });
   });
@@ -695,6 +1548,7 @@ describe('buildTurns evidence normalization', () => {
       pendingComposerDisabledReason({
         tool_name: 'create_application',
         human: '新建投递：牛客网 - 软件测试工程师',
+        confirmation_token: 'a'.repeat(64),
         workflow: {
           current_step: 1,
           total_steps: 2,
@@ -709,6 +1563,7 @@ describe('buildTurns evidence normalization', () => {
     const persisted = {
       tool_name: 'create_application',
       human: '新建投递：牛客网 - 软件测试工程师',
+      confirmation_token: 'a'.repeat(64),
       args: { company_name: '牛客网', position_name: '软件测试工程师', status: 'interview' },
     };
 
@@ -735,6 +1590,7 @@ describe('buildTurns evidence normalization', () => {
     const current = {
       tool_name: 'create_application_event',
       human: '新建投递事件',
+      confirmation_token: 'b'.repeat(64),
       args: { application_id: 40, event_type: 'written_test' },
     };
 
@@ -751,6 +1607,7 @@ describe('buildTurns evidence normalization', () => {
           pending_action: {
             tool_name: 'create_application',
             human: '新建投递：牛客网 - 软件测试工程师',
+            confirmation_token: 'a'.repeat(64),
             args: { company_name: '牛客网', position_name: '软件测试工程师' },
           },
         },
@@ -761,32 +1618,360 @@ describe('buildTurns evidence normalization', () => {
     expect(pending).toEqual(current);
   });
 
-  it('finds the newest conversation with a pending action', () => {
-    const id = firstPendingConversationId([
-      {
-        id: 72,
-        title: '牛客网面试复盘',
-        context_type: 'workspace',
-        context_ref: '',
-        created_at: '2026-07-09T00:00:00Z',
-        updated_at: '2026-07-09T00:00:02Z',
-        pending_action: {
-          tool_name: 'create_application',
-          human: '新建投递：牛客网 - 软件测试工程师',
-          args: { company_name: '牛客网', position_name: '软件测试工程师' },
-        },
-      },
-      {
-        id: 71,
-        title: '普通对话',
-        context_type: 'workspace',
-        context_ref: '',
-        created_at: '2026-07-09T00:00:00Z',
-        updated_at: '2026-07-09T00:00:01Z',
-        pending_action: null,
-      },
+});
+
+describe('Pilot turn presentation reconstruction', () => {
+  it('parses persisted markdown headings and preserves leading detail markdown', () => {
+    const presentation = parseTurnPresentation([
+      '# 投递进展',
+      '',
+      '已核对 **两个**岗位的状态。',
+      '',
+      '   ## 结论',
+      '',
+      '优先准备下一轮技术面。',
+      '',
+      '### 下一步',
+      '',
+      '-  整理项目亮点  ',
+      '- 联系招聘方确认时间',
+    ].join('\n'));
+
+    expect(presentation).toEqual({
+      conclusion: '优先准备下一轮技术面。',
+      actions: ['整理项目亮点', '联系招聘方确认时间'],
+      detailMarkdown: '# 投递进展\n\n已核对 **两个**岗位的状态。',
+    });
+  });
+
+  it('falls back for incomplete or reversed presentation headings', () => {
+    const onlyConclusion = '## 结论\n\n继续跟进。';
+    const noAction = '## 结论\n\n继续跟进。\n\n## 下一步\n\n稍后处理。';
+    const reversed = '## 下一步\n\n- 跟进\n\n## 结论\n\n继续跟进。';
+
+    expect(parseTurnPresentation(onlyConclusion)).toBeUndefined();
+    expect(parseTurnPresentation(noAction)).toBeUndefined();
+    expect(parseTurnPresentation(reversed)).toBeUndefined();
+
+    const turns = buildTurns([msg({ role: 'assistant', content: noAction })]);
+    expect(turns[0]).toMatchObject({
+      content: noAction,
+      taskTitle: '本轮任务',
+      presentation: undefined,
+    });
+  });
+
+  it('keeps at most the first three actionable bullets', () => {
+    const presentation = parseTurnPresentation([
+      '## 结论',
+      '',
+      '可以推进。',
+      '',
+      '## 下一步',
+      '',
+      '* 第一项',
+      '+ 第二项',
+      '- 第三项',
+      '- 第四项',
+    ].join('\n'));
+
+    expect(presentation?.actions).toEqual(['第一项', '第二项', '第三项']);
+  });
+
+  it('attaches real tool steps and structured presentation to the final assistant turn', () => {
+    const turns = buildTurns([
+      msg({
+        role: 'user',
+        content: '   Review    application  pipeline and prepare an exceptionally detailed final summary today  ',
+      }),
+      msg({
+        role: 'assistant',
+        tool_calls: JSON.stringify([{ id: 'call-apps', name: 'list_applications', args: {} }]),
+      }),
+      msg({
+        role: 'tool',
+        tool_call_id: 'call-apps',
+        content: JSON.stringify([{ id: 7, company_name: 'OpenAI', position_name: 'Engineer' }]),
+      }),
+      msg({
+        role: 'assistant',
+        content: [
+          '已查到投递记录。',
+          '',
+          '## 结论',
+          '',
+          '应优先准备 OpenAI 面试。',
+          '',
+          '## 下一步',
+          '',
+          '- 更新项目案例',
+          '- 安排模拟面试',
+        ].join('\n'),
+      }),
     ]);
 
-    expect(id).toBe(72);
+    expect(turns).toHaveLength(2);
+    expect(turns[1]).toMatchObject({
+      role: 'assistant',
+      content: '已查到投递记录。',
+      taskTitle: 'Review application pipeline and pre…',
+      presentation: {
+        conclusion: '应优先准备 OpenAI 面试。',
+        actions: ['更新项目案例', '安排模拟面试'],
+        detailMarkdown: '已查到投递记录。',
+      },
+      steps: [
+        {
+          name: 'list_applications',
+          toolCallId: 'call-apps',
+        },
+      ],
+    });
+    expect(turns[1].steps).toHaveLength(1);
+    expect(turns[1].taskTitle).toHaveLength(36);
+  });
+
+  it('stops actions at a following peer heading and retains nested list content with the trailing markdown', () => {
+    const presentation = parseTurnPresentation([
+      '前置说明。',
+      '',
+      '## 结论',
+      '',
+      '先完成面试准备。',
+      '',
+      '## 下一步',
+      '',
+      '- 完成项目案例',
+      '  - 用量化指标补充成果',
+      '- 约一次模拟面试',
+      '',
+      '## 备注',
+      '',
+      '提交后跟进反馈。',
+      '- 这不是下一步行动',
+    ].join('\n'));
+
+    expect(presentation).toEqual({
+      conclusion: '先完成面试准备。',
+      actions: ['完成项目案例\n  - 用量化指标补充成果', '约一次模拟面试'],
+      detailMarkdown: '前置说明。\n\n## 备注\n\n提交后跟进反馈。\n- 这不是下一步行动',
+    });
+  });
+
+  it('preserves root prose and fenced markdown while retaining nested action continuations', () => {
+    const presentation = parseTurnPresentation([
+      '## 结论',
+      '',
+      '先完成准备。',
+      '',
+      '## 下一步',
+      '',
+      '- 执行 A',
+      '  - 保留的嵌套延续',
+      '补充说明',
+      '```markdown',
+      '- 这是围栏示例，不是行动',
+      '```',
+    ].join('\n'));
+
+    expect(presentation?.actions).toEqual(['执行 A\n  - 保留的嵌套延续']);
+    expect(presentation?.detailMarkdown).toContain('补充说明');
+    expect(presentation?.detailMarkdown).toContain('```markdown\n- 这是围栏示例，不是行动\n```');
+  });
+
+  it('does not parse fenced historical markdown examples as a Pilot presentation', () => {
+    const historicalExample = [
+      '旧回复模板：',
+      '',
+      '```markdown',
+      '## 结论',
+      '',
+      '这只是示例结论。',
+      '',
+      '## 下一步',
+      '',
+      '- 这只是示例行动',
+      '```',
+    ].join('\n');
+
+    expect(parseTurnPresentation(historicalExample)).toBeUndefined();
+    expect(buildTurns([msg({ role: 'assistant', content: historicalExample })])[0]).toMatchObject({
+      content: historicalExample,
+      presentation: undefined,
+    });
+  });
+
+  it('does not treat fenced list examples as additional actions', () => {
+    const presentation = parseTurnPresentation([
+      '## 结论',
+      '',
+      '按计划推进。',
+      '',
+      '## 下一步',
+      '',
+      '- 准备项目案例',
+      '```markdown',
+      '- 示例列表项',
+      '* 另一条示例',
+      '```',
+      '- 安排模拟面试',
+    ].join('\n'));
+
+    expect(presentation?.actions).toEqual(['准备项目案例', '安排模拟面试']);
+  });
+
+  it('does not append nested fenced list examples to the current action', () => {
+    const presentation = parseTurnPresentation([
+      '## 结论',
+      '',
+      '按计划推进。',
+      '',
+      '## 下一步',
+      '',
+      '- 准备项目案例',
+      '    ```markdown',
+      '    ## 示例结论',
+      '    - 示例列表项',
+      '    ```',
+      '- 安排模拟面试',
+    ].join('\n'));
+
+    expect(presentation?.actions).toEqual(['准备项目案例', '安排模拟面试']);
+  });
+
+  it('does not mistake root indented code for a fence that masks a later presentation', () => {
+    const presentation = parseTurnPresentation([
+      '    ```not-a-fence-at-root',
+      '## 结论',
+      '',
+      '可以推进。',
+      '',
+      '## 下一步',
+      '',
+      '- 准备项目案例',
+    ].join('\n'));
+
+    expect(presentation).toEqual({
+      conclusion: '可以推进。',
+      actions: ['准备项目案例'],
+      detailMarkdown: '```not-a-fence-at-root',
+    });
+  });
+
+  it('does not initialize actions from space- or tab-indented code bullets', () => {
+    const presentation = parseTurnPresentation([
+      '## 结论',
+      '',
+      '需要先区分示例代码。',
+      '',
+      '## 下一步',
+      '',
+      '    - 四空格的示例代码',
+      '\t- 制表符的示例代码',
+      '- 真正的下一步',
+    ].join('\n'));
+
+    expect(presentation).toEqual({
+      conclusion: '需要先区分示例代码。',
+      actions: ['真正的下一步'],
+      detailMarkdown: '    - 四空格的示例代码\n\t- 制表符的示例代码',
+    });
+    expect(parseTurnPresentation('## 结论\n\n只含代码。\n\n## 下一步\n\n\t- 制表示例')).toBeUndefined();
+  });
+
+  it('keeps a root fence open when a four-space marker appears inside it', () => {
+    const fencedExample = [
+      '```markdown',
+      '    ```',
+      '## 结论',
+      '',
+      '这仍在围栏内。',
+      '',
+      '## 下一步',
+      '',
+      '- 这不是实际行动',
+    ].join('\n');
+
+    expect(parseTurnPresentation(fencedExample)).toBeUndefined();
+    expect(buildTurns([msg({ role: 'assistant', content: fencedExample })])[0]).toMatchObject({
+      content: fencedExample,
+      presentation: undefined,
+    });
+  });
+
+  it('closes a list-contained fence at the shallower content-start column', () => {
+    const presentation = parseTurnPresentation([
+      '- 代码示例容器',
+      '    ```markdown',
+      '    - 围栏内示例',
+      '  ```',
+      '## 结论',
+      '',
+      '围栏已结束。',
+      '',
+      '## 下一步',
+      '',
+      '- 执行真实行动',
+    ].join('\n'));
+
+    expect(presentation).toMatchObject({
+      conclusion: '围栏已结束。',
+      actions: ['执行真实行动'],
+    });
+  });
+
+  it('closes a list-contained fence within three columns past its content start', () => {
+    const presentation = parseTurnPresentation([
+      '- 代码示例容器',
+      '    ```markdown',
+      '    - 围栏内示例',
+      '     ```',
+      '## 结论',
+      '',
+      '围栏已结束。',
+      '',
+      '## 下一步',
+      '',
+      '- 执行真实行动',
+    ].join('\n'));
+
+    expect(presentation).toMatchObject({
+      conclusion: '围栏已结束。',
+      actions: ['执行真实行动'],
+    });
+  });
+
+  it('uses a list container even when its opening fence starts within three root columns', () => {
+    const relativeClose = [
+      '- 代码示例容器',
+      '  ```markdown',
+      '  - 围栏内示例',
+      '     ```',
+      '## 结论',
+      '',
+      '围栏已结束。',
+      '',
+      '## 下一步',
+      '',
+      '- 执行真实行动',
+    ].join('\n');
+    const tooDeepToClose = relativeClose.replace('     ```', '      ```');
+
+    expect(parseTurnPresentation(relativeClose)).toMatchObject({
+      conclusion: '围栏已结束。',
+      actions: ['执行真实行动'],
+    });
+    expect(parseTurnPresentation(tooDeepToClose)).toBeUndefined();
+  });
+
+  it('truncates task titles at a code-point boundary within the 36-character display limit', () => {
+    const turns = buildTurns([
+      msg({ role: 'user', content: '😀'.repeat(37) }),
+      msg({ role: 'assistant', content: '已处理。' }),
+    ]);
+    const taskTitle = turns[1].taskTitle;
+
+    expect(taskTitle).toBe(`${'😀'.repeat(35)}…`);
+    expect(Array.from(taskTitle ?? '')).toHaveLength(36);
   });
 });

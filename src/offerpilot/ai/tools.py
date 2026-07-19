@@ -31,6 +31,117 @@ from offerpilot.schemas import (
 EVENT_TYPES = ("written_test", "interview", "offer_step", "deadline", "custom")
 OFFER_STATUSES = ("pending", "negotiating", "accepted", "declined", "expired")
 
+_EDITABLE_FIELDS_BY_TOOL: dict[str, list[dict[str, Any]]] = {
+    "create_application": [
+        {"field": "company_name", "type": "string"},
+        {"field": "position_name", "type": "string"},
+        {"field": "job_url", "type": "string"},
+        {"field": "status", "type": "enum", "options": list(APPLICATION_STATUS_IDS)},
+        {"field": "closed_reason", "type": "long_text"},
+    ],
+    "update_application_status": [
+        {"field": "status", "type": "enum", "options": list(APPLICATION_STATUS_IDS)},
+        {"field": "closed_reason", "type": "long_text"},
+    ],
+    "create_application_event": [
+        {"field": "event_type", "type": "enum", "options": list(EVENT_TYPES)},
+        {"field": "subtype", "type": "string"},
+        {"field": "scheduled_at", "type": "datetime"},
+        {
+            "field": "remind_at",
+            "type": "datetime",
+            "clearable": True,
+            "clear_value": "",
+        },
+        {"field": "duration_minutes", "type": "number"},
+        {"field": "round", "type": "number", "clearable": True, "clear_value": 0},
+        {"field": "location", "type": "string"},
+        {"field": "notes", "type": "long_text"},
+        {"field": "status", "type": "string"},
+    ],
+    "update_application_event": [
+        {"field": "event_type", "type": "enum", "options": list(EVENT_TYPES)},
+        {"field": "subtype", "type": "string"},
+        {"field": "scheduled_at", "type": "datetime"},
+        {
+            "field": "remind_at",
+            "type": "datetime",
+            "clearable": True,
+            "clear_value": "",
+        },
+        {"field": "duration_minutes", "type": "number"},
+        {"field": "round", "type": "number", "clearable": True, "clear_value": 0},
+        {"field": "location", "type": "string"},
+        {"field": "notes", "type": "long_text"},
+        {"field": "status", "type": "string"},
+    ],
+    "delete_application_event": [],
+    "add_note": [
+        {"field": "company", "type": "string"},
+        {"field": "position", "type": "string"},
+        {"field": "round", "type": "string"},
+        {"field": "date", "type": "datetime"},
+        {"field": "allow_placeholder_date", "type": "boolean"},
+        {"field": "questions", "type": "long_text"},
+        {"field": "self_reflection", "type": "long_text"},
+        {"field": "difficulty_points", "type": "long_text"},
+        {"field": "mood", "type": "long_text"},
+    ],
+    "update_note": [
+        {"field": "company", "type": "string"},
+        {"field": "position", "type": "string"},
+        {"field": "round", "type": "string"},
+        {"field": "date", "type": "datetime"},
+        {"field": "allow_placeholder_date", "type": "boolean"},
+        {"field": "questions", "type": "long_text"},
+        {"field": "self_reflection", "type": "long_text"},
+        {"field": "difficulty_points", "type": "long_text"},
+        {"field": "mood", "type": "long_text"},
+    ],
+    "delete_note": [],
+    "update_offer": [
+        {"field": "company_name", "type": "string"},
+        {"field": "position_name", "type": "string"},
+        {"field": "status", "type": "enum", "options": list(OFFER_STATUSES)},
+        {
+            "field": "base_monthly",
+            "type": "number",
+            "clearable": True,
+            "clear_value": 0,
+        },
+        {"field": "months_per_year", "type": "number"},
+        {
+            "field": "signing_bonus",
+            "type": "number",
+            "clearable": True,
+            "clear_value": 0,
+        },
+        {"field": "equity", "type": "string"},
+        {"field": "perks", "type": "long_text"},
+        {
+            "field": "deadline",
+            "type": "datetime",
+            "clearable": True,
+            "clear_value": "",
+        },
+        {"field": "notes", "type": "long_text"},
+        {"field": "assessment", "type": "long_text"},
+    ],
+    "save_offer_assessment": [{"field": "assessment", "type": "long_text"}],
+    "resume_update_career_intent": [],
+    "resume_rewrite_highlight": [{"field": "text", "type": "long_text"}],
+}
+
+
+def editable_fields_for_tool(tool_name: str) -> list[dict[str, Any]]:
+    fields: list[dict[str, Any]] = []
+    for descriptor in _EDITABLE_FIELDS_BY_TOOL.get(tool_name, []):
+        copied = dict(descriptor)
+        if "options" in copied:
+            copied["options"] = list(copied["options"])
+        fields.append(copied)
+    return fields
+
 
 def offerpilot_tool_registry(
     applications: ApplicationsRepository,
@@ -87,6 +198,7 @@ def application_tool_registry(repo: ApplicationsRepository) -> dict[str, dict[st
         },
         "create_application": {
             "write": True,
+            "editable_fields": editable_fields_for_tool("create_application"),
             "description": (
                 "Create a job application record. If the same company already has records but this is a new "
                 "position, ask the user before creating it; set confirmed_new_position=true only after the user "
@@ -119,6 +231,7 @@ def application_tool_registry(repo: ApplicationsRepository) -> dict[str, dict[st
         },
         "update_application_status": {
             "write": True,
+            "editable_fields": editable_fields_for_tool("update_application_status"),
             "description": "Update one job application's status. Use an id returned by list_applications.",
             "schema": {
                 "type": "object",
@@ -167,6 +280,7 @@ def event_tool_registry(
         },
         "create_application_event": {
             "write": True,
+            "editable_fields": editable_fields_for_tool("create_application_event"),
             "description": "Create an application event. Use written_test.subtype=assessment for assessments.",
             "schema": _event_schema(["application_id", "event_type", "scheduled_at", "duration_minutes"]),
             "describe": _describe_create_application_event,
@@ -174,6 +288,7 @@ def event_tool_registry(
         },
         "update_application_event": {
             "write": True,
+            "editable_fields": editable_fields_for_tool("update_application_event"),
             "description": "Update an existing application event.",
             "schema": _event_schema(["id", "application_id", "event_type", "scheduled_at", "duration_minutes"]),
             "describe": lambda args: _describe_id_action(args, "更新日程"),
@@ -181,6 +296,7 @@ def event_tool_registry(
         },
         "delete_application_event": {
             "write": True,
+            "editable_fields": editable_fields_for_tool("delete_application_event"),
             "always_confirm": True,
             "description": "Delete an application event by id.",
             "schema": _id_schema("Application event id."),
@@ -206,6 +322,7 @@ def note_tool_registry(
         },
         "add_note": {
             "write": True,
+            "editable_fields": editable_fields_for_tool("add_note"),
             "always_confirm": True,
             "description": "Add an interview review note. If application_id is present, company and position can be omitted.",
             "schema": _note_schema([]),
@@ -215,6 +332,7 @@ def note_tool_registry(
         },
         "update_note": {
             "write": True,
+            "editable_fields": editable_fields_for_tool("update_note"),
             "always_confirm": True,
             "description": "Update an existing interview review note. Missing fields keep existing values.",
             "schema": _note_schema(["id"]),
@@ -223,6 +341,7 @@ def note_tool_registry(
         },
         "delete_note": {
             "write": True,
+            "editable_fields": editable_fields_for_tool("delete_note"),
             "always_confirm": True,
             "description": "Delete an interview review note by id.",
             "schema": _id_schema("Note id."),
@@ -264,6 +383,7 @@ def offer_tool_registry(repo: OffersRepository) -> dict[str, dict[str, Any]]:
         },
         "update_offer": {
             "write": True,
+            "editable_fields": editable_fields_for_tool("update_offer"),
             "always_confirm": True,
             "description": "Update an offer. Missing fields keep existing values.",
             "schema": _offer_schema(["id"]),
@@ -272,6 +392,7 @@ def offer_tool_registry(repo: OffersRepository) -> dict[str, dict[str, Any]]:
         },
         "save_offer_assessment": {
             "write": True,
+            "editable_fields": editable_fields_for_tool("save_offer_assessment"),
             "always_confirm": True,
             "description": "Save or replace the assessment text for an offer.",
             "schema": {
@@ -304,6 +425,7 @@ def resume_tool_registry(repo: ResumesRepository) -> dict[str, dict[str, Any]]:
         },
         "resume_update_career_intent": {
             "write": True,
+            "editable_fields": editable_fields_for_tool("resume_update_career_intent"),
             "always_confirm": True,
             "description": "Update a resume's career_intent block. Requires user confirmation.",
             "schema": {
@@ -319,6 +441,7 @@ def resume_tool_registry(repo: ResumesRepository) -> dict[str, dict[str, Any]]:
         },
         "resume_rewrite_highlight": {
             "write": True,
+            "editable_fields": editable_fields_for_tool("resume_rewrite_highlight"),
             "always_confirm": True,
             "description": "Rewrite one highlight in a structured resume section. Requires user confirmation.",
             "schema": {

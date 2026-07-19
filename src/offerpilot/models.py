@@ -265,6 +265,71 @@ class ApplicationMaterialKit(Base):
     )
 
 
+class ApplicationEvidenceBundle(Base):
+    __tablename__ = "application_evidence_bundles"
+    __table_args__ = (
+        UniqueConstraint("application_id", "sequence", name="uq_evidence_bundle_sequence"),
+        UniqueConstraint("application_id", "idempotency_key", name="uq_evidence_bundle_idempotency"),
+        Index("idx_evidence_bundles_application", "application_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    application_id: Mapped[int] = mapped_column(
+        ForeignKey("applications.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    confirmation_kind: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        default="user_asserted",
+        server_default="user_asserted",
+    )
+    idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
+    snapshot_json: Mapped[str] = mapped_column(String, nullable=False)
+    bundle_sha256: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+
+
+class MaterialRevisionProposal(Base):
+    __tablename__ = "material_revision_proposals"
+    __table_args__ = (
+        Index("idx_material_revision_proposals_application_created", "application_id", "created_at"),
+        UniqueConstraint("result_resume_id", name="uq_material_revision_proposals_result_resume"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    application_id: Mapped[int] = mapped_column(
+        ForeignKey("applications.id", ondelete="CASCADE"), nullable=False
+    )
+    material_kit_id: Mapped[int] = mapped_column(
+        ForeignKey("application_material_kits.id", ondelete="CASCADE"), nullable=False
+    )
+    source_resume_id: Mapped[int | None] = mapped_column(
+        ForeignKey("resumes.id", ondelete="SET NULL"), nullable=True
+    )
+    source_fingerprint_sha256: Mapped[str] = mapped_column(String, nullable=False)
+    source_snapshot_json: Mapped[str] = mapped_column(String, nullable=False)
+    proposal_json: Mapped[str] = mapped_column(String, nullable=False)
+    proposal_sha256: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="draft", server_default="draft")
+    accepted_change_ids_json: Mapped[str] = mapped_column(String, nullable=False, default="[]", server_default="[]")
+    result_resume_id: Mapped[int | None] = mapped_column(
+        ForeignKey("resumes.id", ondelete="SET NULL"), nullable=True
+    )
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
+
+
 class Question(Base):
     __tablename__ = "questions"
     __table_args__ = (
@@ -376,6 +441,22 @@ class MockSession(Base):
         nullable=False,
         server_default=func.current_timestamp(),
     )
+
+
+# Every model with a direct foreign key to applications.id. Conditional application
+# deletion iterates this explicit inventory; a metadata-backed test keeps it exhaustive.
+APPLICATION_FOREIGN_KEY_MODELS = (
+    ApplicationEvent,
+    InterviewNote,
+    Offer,
+    ResumeMatch,
+    JDAnalysis,
+    ApplicationMaterialKit,
+    ApplicationEvidenceBundle,
+    MaterialRevisionProposal,
+    Question,
+    MockSession,
+)
 
 
 class Wakeup(Base):

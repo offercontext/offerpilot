@@ -7,7 +7,7 @@ const settings: Settings = {
   data_dir: '/tmp/offerpilot',
   chat_auto_approve_writes: false,
   active_provider_id: 'local',
-  fallback_provider_id: '',
+  fallback_provider_ids: [],
   providers: [
     {
       id: 'local',

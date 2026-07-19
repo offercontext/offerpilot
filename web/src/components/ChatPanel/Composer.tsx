@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Input, Button } from 'antd';
 import { SendOutlined } from '@ant-design/icons';
 import type { Capability } from './capabilities';
@@ -11,20 +11,53 @@ interface Props {
   disabledReason?: string;
   placeholder?: string;
   resetKey?: number;
+  suggestions?: string[];
+  onSuggestionSelect?: (question: string) => void;
+  onboardingFocusToken?: number;
   onSend: (text: string) => void | boolean | Promise<void | boolean>;
 }
 
-export default function Composer({ capabilities, disabled, disabledReason, placeholder, resetKey, onSend }: Props) {
+export default function Composer({
+  capabilities,
+  disabled,
+  disabledReason,
+  placeholder,
+  resetKey,
+  suggestions,
+  onSuggestionSelect,
+  onboardingFocusToken,
+  onSend,
+}: Props) {
   const [value, setValue] = useState('');
   const [sel, setSel] = useState(0);
+  const [onboardingFocusActive, setOnboardingFocusActive] = useState(false);
+  const composerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setValue('');
     setSel(0);
   }, [resetKey]);
 
+  useEffect(() => {
+    if (!onboardingFocusToken) {
+      setOnboardingFocusActive(false);
+      return;
+    }
+
+    setOnboardingFocusActive(true);
+    const focusTimer = window.setTimeout(() => {
+      composerRef.current?.querySelector('textarea')?.focus();
+    }, 0);
+    const resetTimer = window.setTimeout(() => setOnboardingFocusActive(false), 2400);
+    return () => {
+      window.clearTimeout(focusTimer);
+      window.clearTimeout(resetTimer);
+    };
+  }, [onboardingFocusToken]);
+
   const slashQuery = value.startsWith('/') ? value.slice(1).trim().toLowerCase() : null;
   const menuOpen = slashQuery !== null && !disabled;
+  const quickQuestions = !disabled && !value ? (suggestions ?? []).slice(0, 3) : [];
 
   const items = useMemo(() => {
     if (slashQuery === null) return [];
@@ -60,7 +93,29 @@ export default function Composer({ capabilities, disabled, disabledReason, place
   }
 
   return (
-    <div className={styles.composer}>
+    <div
+      ref={composerRef}
+      className={`${styles.composer} ${onboardingFocusActive ? styles.composerOnboardingFocus : ''}`}
+    >
+      {quickQuestions.length > 0 ? (
+        <div className={styles.quickQuestions} aria-label="快捷提问">
+          {quickQuestions.map((question, index) => (
+            <button
+              key={question}
+              type="button"
+              className={styles.quickQuestion}
+              data-testid={`quick-question-${index}`}
+              onClick={() => {
+                setValue(question);
+                setSel(0);
+                onSuggestionSelect?.(question);
+              }}
+            >
+              {question}
+            </button>
+          ))}
+        </div>
+      ) : null}
       {menuOpen && items.length > 0 && (
         <SlashMenu items={items} selected={sel} onSelect={pickCapability} onHover={setSel} />
       )}

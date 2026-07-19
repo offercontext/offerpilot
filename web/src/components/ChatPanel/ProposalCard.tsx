@@ -1,20 +1,29 @@
-import { createElement } from 'react';
-import { Alert, Button } from 'antd';
+import { createElement, useEffect, useId, useRef, useState } from 'react';
+import { Alert, Button, DatePicker, Input, InputNumber, Select, Switch } from 'antd';
 import dayjs from 'dayjs';
-import type { PendingAction } from '@/types/chat';
+import type { PendingAction, PendingActionEditableField } from '@/types/chat';
 import { STATUS_LABELS, type ApplicationStatus } from '@/types/application';
 import { EVENT_TYPE_LABELS, type ScheduleEventType } from '@/types/event';
-import type { EvidenceItem } from './model';
+import { selectEvidence, type EvidenceItem, type EvidenceTarget } from './model';
 import { toolMeta } from './capabilities';
 import EvidenceList from './EvidenceList';
+import {
+  actionIdentity,
+  changedEditableArgs,
+  createProposalReviewState,
+  editableFieldsForAction,
+  syncProposalReviewState,
+  type ProposalReviewState,
+} from './proposalDraft';
 import styles from './ChatPanel.module.css';
 
 interface Props {
   action: PendingAction;
   loading: boolean;
   evidence: EvidenceItem[];
-  onConfirm: () => void;
-  onCancel: () => void;
+  onConfirm: (editedArgs?: Record<string, unknown>) => void;
+  onCancel: (rejectionFeedback?: string) => void;
+  onOpenEvidence?: (target: EvidenceTarget) => void;
 }
 
 const FIELD_LABELS: Record<string, string> = {
@@ -119,7 +128,28 @@ function summarizeLongValue(value: unknown, field?: string): string | null {
   return `新增 ${paragraphCount} 段内容 · ${normalized.length} 字`;
 }
 
-export default function ProposalCard({ action, loading, evidence, onConfirm, onCancel }: Props) {
+export default function ProposalCard({ action, loading, evidence, onConfirm, onCancel, onOpenEvidence }: Props) {
+  const identity = actionIdentity(action);
+  const editorId = `proposal-editor-${useId().replace(/:/g, '')}`;
+  const [review, setReview] = useState<ProposalReviewState>(() => createProposalReviewState(action));
+  const pendingFocusTargetRef = useRef<'feedback' | 'trigger' | null>(null);
+
+  useEffect(() => {
+    setReview((current) => syncProposalReviewState(current, action));
+  }, [action, identity]);
+
+  const currentReview = syncProposalReviewState(review, action);
+  const editableFields = editableFieldsForAction(action);
+
+  useEffect(() => {
+    if (review.identity !== identity || !pendingFocusTargetRef.current) return;
+    const targetId =
+      pendingFocusTargetRef.current === 'feedback'
+        ? `${editorId}-feedback`
+        : `${editorId}-reject-trigger`;
+    document.getElementById(targetId)?.focus();
+    pendingFocusTargetRef.current = null;
+  }, [editorId, identity, review.identity, review.rejectOpen]);
   const meta = toolMeta(action.tool_name);
   const diff = parseDiff(action.human);
   const target = action.target?.title ?? actionTarget(action);
@@ -133,7 +163,7 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
     snippet: item.snippet,
     source: item.source,
   })) ?? [];
-  const visibleEvidence = evidence.length ? evidence : actionEvidence;
+  const visibleEvidence = selectEvidence(evidence.length ? evidence : actionEvidence, 3).visible;
   const changes = action.proposed_changes ?? [];
   const thinEvidence = visibleEvidence.length === 0;
   const longDraftFields = changes.filter((change) => summarizeLongValue(change.after, change.field));
@@ -142,6 +172,118 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
     : action.tool_name.includes('create') || action.tool_name === 'add_note'
       ? '确认新建'
       : '确认更新';
+  const isDelete = action.tool_name.includes('delete');
+
+  function updateReview(update: (current: ProposalReviewState) => ProposalReviewState) {
+    setReview((current) => update(syncProposalReviewState(current, action)));
+  }
+
+  function updateDraft(field: string, value: unknown) {
+    updateReview((current) => ({
+      ...current,
+      draft: { ...current.draft, [field]: value },
+    }));
+  }
+
+  function setRejectOpen(open: boolean) {
+    pendingFocusTargetRef.current = open ? 'feedback' : 'trigger';
+    updateReview((current) => ({ ...current, rejectOpen: open }));
+  }
+
+  function renderEditorControl(descriptor: PendingActionEditableField) {
+    const value = currentReview.draft[descriptor.field];
+    const controlId = `${editorId}-${descriptor.field}`;
+    const common = { id: controlId, disabled: loading, className: styles.editorControl };
+
+    switch (descriptor.type) {
+      case 'enum':
+        return (
+          <Select
+            {...common}
+            size="large"
+            value={typeof value === 'string' ? value : undefined}
+            options={(descriptor.options ?? []).map((option) => ({
+              value: option,
+              label: valueLabel(option, descriptor.field),
+            }))}
+            onChange={(next) => updateDraft(descriptor.field, next)}
+          />
+        );
+      case 'boolean':
+        return (
+          <label className={styles.switchHitArea} htmlFor={controlId}>
+            <Switch
+              {...common}
+              checked={value === true}
+              checkedChildren="是"
+              unCheckedChildren="否"
+              onChange={(next) => updateDraft(descriptor.field, next)}
+            />
+          </label>
+        );
+      case 'number':
+        return (
+          <InputNumber
+            {...common}
+            size="large"
+            precision={0}
+            step={1}
+            value={typeof value === 'number' && Number.isFinite(value) ? value : undefined}
+            onChange={(next) =>
+              typeof next === 'number' && Number.isFinite(next)
+                ? updateDraft(descriptor.field, next)
+                : updateDraft(
+                    descriptor.field,
+                    descriptor.clearable === true
+                      ? descriptor.clear_value
+                      : action.args?.[descriptor.field],
+                  )
+            }
+          />
+        );
+      case 'datetime': {
+        const parsed = typeof value === 'string' && value.trim() ? dayjs(value) : null;
+        const dateValue = parsed?.isValid() ? parsed : null;
+        return (
+          <DatePicker
+            {...common}
+            size="large"
+            showTime
+            allowClear={descriptor.clearable === true}
+            value={dateValue}
+            format="YYYY-MM-DD HH:mm"
+            onChange={(next) => {
+              const nextValue = next?.isValid()
+                ? next.toISOString()
+                : descriptor.clearable === true
+                  ? descriptor.clear_value
+                  : action.args?.[descriptor.field];
+              updateDraft(descriptor.field, nextValue);
+            }}
+          />
+        );
+      }
+      case 'long_text':
+        return (
+          <Input.TextArea
+            {...common}
+            size="large"
+            value={typeof value === 'string' ? value : ''}
+            autoSize={{ minRows: 4, maxRows: 9 }}
+            onChange={(event) => updateDraft(descriptor.field, event.target.value)}
+          />
+        );
+      case 'string':
+        return (
+          <Input
+            {...common}
+            size="large"
+            value={typeof value === 'string' ? value : ''}
+            onChange={(event) => updateDraft(descriptor.field, event.target.value)}
+          />
+        );
+    }
+  }
 
   return (
     <div className={styles.proposal} role="group" aria-label="AI 修改提议">
@@ -226,6 +368,37 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
             ))}
           </div>
         ) : null}
+        {editableFields.length ? (
+          <div className={styles.proposalEditor}>
+            <button
+              type="button"
+              className={styles.editorDisclosure}
+              aria-expanded={currentReview.editorOpen}
+              aria-controls={editorId}
+              disabled={loading}
+              onClick={() =>
+                updateReview((current) => ({ ...current, editorOpen: !current.editorOpen }))
+              }
+            >
+              <span>编辑建议</span>
+              <i aria-hidden="true">{currentReview.editorOpen ? '收起' : '展开'}</i>
+            </button>
+            {currentReview.editorOpen ? (
+              <div id={editorId} className={styles.editorGrid}>
+                <p>只会提交这里实际修改过的字段，其余建议保持不变。</p>
+                {editableFields.map((descriptor) => {
+                  const controlId = `${editorId}-${descriptor.field}`;
+                  return (
+                    <div key={descriptor.field} className={styles.editorField}>
+                      <label htmlFor={controlId}>{fieldLabel(descriptor.field)}</label>
+                      {renderEditorControl(descriptor)}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         {action.risk_hint || thinEvidence ? (
           <Alert
             className={styles.prAlert}
@@ -237,18 +410,77 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
         {!thinEvidence ? (
           <div className={styles.prEvidence}>
             <div className={styles.panelLabel}>参考依据</div>
-            <EvidenceList items={visibleEvidence.slice(0, 3)} compact />
+            <EvidenceList items={visibleEvidence.slice(0, 3)} compact onOpenEvidence={onOpenEvidence} />
           </div>
         ) : null}
       </div>
-      <div className={styles.prActions}>
-        <Button type="primary" className="op-ai-btn" loading={loading} onClick={onConfirm}>
-          {confirmLabel}
-        </Button>
-        <Button disabled={loading} onClick={onCancel}>
-          取消
-        </Button>
-      </div>
+      {currentReview.rejectOpen ? (
+        <div
+          className={styles.rejectPanel}
+          role="region"
+          aria-live="polite"
+          aria-label={isDelete ? '保留记录确认' : '拒绝建议确认'}
+        >
+          <div>
+            <b>{isDelete ? '确认保留这条记录？' : '最终拒绝这项建议？'}</b>
+            <p>
+              {isDelete
+                ? '删除不会执行。你可以补充原因，帮助 Pilot 调整后续建议。'
+                : '当前建议不会执行。反馈可选，并会用于后续对话。'}
+            </p>
+          </div>
+          <label htmlFor={`${editorId}-feedback`}>拒绝原因（可选）</label>
+          <Input.TextArea
+            id={`${editorId}-feedback`}
+            size="large"
+            value={currentReview.feedback}
+            maxLength={500}
+            showCount
+            autoSize={{ minRows: 3, maxRows: 6 }}
+            disabled={loading}
+            placeholder="例如：时间不对，先不要更新"
+            onChange={(event) =>
+              updateReview((current) => ({ ...current, feedback: event.target.value }))
+            }
+          />
+          <div className={styles.rejectActions}>
+            <button
+              type="button"
+              className={styles.reviewBack}
+              disabled={loading}
+              onClick={() => setRejectOpen(false)}
+            >
+              返回审核
+            </button>
+            <Button
+              danger
+              type="primary"
+              loading={loading}
+              onClick={() => onCancel(currentReview.feedback.trim() || undefined)}
+            >
+              {isDelete ? '确认不删除' : '最终拒绝'}
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className={styles.prActions}>
+          <Button
+            type="primary"
+            className="op-ai-btn"
+            loading={loading}
+            onClick={() => onConfirm(changedEditableArgs(action, currentReview.draft))}
+          >
+            {confirmLabel}
+          </Button>
+          <Button
+            id={`${editorId}-reject-trigger`}
+            disabled={loading}
+            onClick={() => setRejectOpen(true)}
+          >
+            {isDelete ? '不删除' : '拒绝建议'}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

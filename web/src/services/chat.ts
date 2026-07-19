@@ -1,4 +1,11 @@
-import type { ChatMessage, ChatResponse, ChatStreamEvent, Conversation } from '@/types/chat';
+import type {
+  ChatMessage,
+  ChatResponse,
+  ChatStreamEvent,
+  Conversation,
+  PilotContextAttachment,
+  PilotPageContext,
+} from '@/types/chat';
 import { authHeaders } from './authToken';
 import { createApiClient } from './http';
 
@@ -9,6 +16,8 @@ export interface ChatContextInput {
   context_type?: 'workspace' | 'application' | 'global' | string;
   context_ref?: string | number;
   mode?: string;
+  page_context?: PilotPageContext;
+  attachments?: PilotContextAttachment[];
 }
 
 export interface ChatRequestOptions {
@@ -17,6 +26,38 @@ export interface ChatRequestOptions {
 
 export interface ChatStreamRequestOptions extends ChatRequestOptions {
   onEvent?: (event: ChatStreamEvent) => void;
+}
+
+export class ChatStreamError extends Error {
+  code?: string;
+  retryable?: boolean;
+
+  constructor(message: string, code?: string, retryable?: boolean) {
+    super(message);
+    this.name = 'ChatStreamError';
+    this.code = code;
+    this.retryable = retryable;
+  }
+}
+
+export type ConfirmationInput =
+  | {
+      approved: true;
+      confirmation_token: string;
+      edited_args?: Record<string, unknown>;
+      rejection_feedback?: never;
+    }
+  | {
+      approved: false;
+      confirmation_token: string;
+      rejection_feedback?: string;
+      edited_args?: never;
+    };
+
+export type ConfirmationRequest = ConfirmationInput | boolean;
+
+function confirmationPayload(input: ConfirmationRequest): ConfirmationInput | { approved: boolean } {
+  return typeof input === 'boolean' ? { approved: input } : input;
 }
 
 export async function sendChat(
@@ -33,6 +74,8 @@ export async function sendChat(
       ...(context?.context_type ? { context_type: context.context_type } : {}),
       ...(context?.context_ref !== undefined ? { context_ref: String(context.context_ref) } : {}),
       ...(context?.mode ? { mode: context.mode } : {}),
+      ...(context?.page_context !== undefined ? { page_context: context.page_context } : {}),
+      ...(context?.attachments !== undefined ? { attachments: context.attachments } : {}),
     },
     { signal: options?.signal },
   );
@@ -41,14 +84,14 @@ export async function sendChat(
 
 export async function confirmAction(
   conversationId: number,
-  approved: boolean,
+  input: ConfirmationRequest,
   options?: ChatRequestOptions,
 ): Promise<ChatResponse> {
   const { data } = await http.post<ChatResponse>(
     '/chat/confirm',
     {
       conversation_id: conversationId,
-      approved,
+      ...confirmationPayload(input),
     },
     { signal: options?.signal },
   );
@@ -120,6 +163,8 @@ export async function streamChat(
       ...(context?.context_type ? { context_type: context.context_type } : {}),
       ...(context?.context_ref !== undefined ? { context_ref: String(context.context_ref) } : {}),
       ...(context?.mode ? { mode: context.mode } : {}),
+      ...(context?.page_context !== undefined ? { page_context: context.page_context } : {}),
+      ...(context?.attachments !== undefined ? { attachments: context.attachments } : {}),
     },
     options,
   );
@@ -127,14 +172,14 @@ export async function streamChat(
 
 export async function streamConfirmAction(
   conversationId: number,
-  approved: boolean,
+  input: ConfirmationRequest,
   options?: ChatStreamRequestOptions,
 ): Promise<ChatResponse> {
   return postChatStream(
     '/api/chat/confirm/stream',
     {
       conversation_id: conversationId,
-      approved,
+      ...confirmationPayload(input),
     },
     options,
   );
@@ -170,8 +215,12 @@ async function postChatStream(
       completed = data.response;
     }
     if (event.event === 'error') {
-      const data = event.data as { message?: string };
-      throw new Error(data.message || '对话失败，请稍后重试');
+      const data = event.data as { code?: string; message?: string; retryable?: boolean };
+      throw new ChatStreamError(
+        data.message || '对话失败，请稍后重试',
+        data.code,
+        data.retryable,
+      );
     }
   });
   const reader = response.body.getReader();
@@ -191,9 +240,9 @@ async function postChatStream(
 async function streamHttpError(response: Response) {
   try {
     const payload = (await response.json()) as { error?: string };
-    return new Error(payload.error || `HTTP ${response.status}`);
+    return new ChatStreamError(payload.error || `HTTP ${response.status}`, `http_${response.status}`);
   } catch {
-    return new Error(`HTTP ${response.status}`);
+    return new ChatStreamError(`HTTP ${response.status}`, `http_${response.status}`);
   }
 }
 
@@ -234,7 +283,7 @@ export interface Settings {
   data_dir: string;
   chat_auto_approve_writes: boolean;
   active_provider_id: string;
-  fallback_provider_id: string;
+  fallback_provider_ids: string[];
   providers: AIProviderProfile[];
   base_url: string;
   model: string;
@@ -250,8 +299,12 @@ export interface LogEntry {
   message: string;
 }
 
-export interface LogsResponse {
+export interface LogsPage {
   entries: LogEntry[];
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
 }
 
 export interface AIProviderProfile {
@@ -267,7 +320,7 @@ export interface AIProviderProfile {
 export interface UpdateSettingsPayload {
   chat_auto_approve_writes: boolean;
   active_provider_id?: string;
-  fallback_provider_id?: string;
+  fallback_provider_ids?: string[];
   providers?: Array<Omit<AIProviderProfile, 'has_api_key'> & { api_key?: string }>;
   base_url?: string;
   model?: string;
@@ -297,7 +350,7 @@ export interface SettingsBackup {
   log_level: Settings['log_level'];
   chat_auto_approve_writes: boolean;
   active_provider_id: string;
-  fallback_provider_id: string;
+  fallback_provider_ids: string[];
   providers: AIProviderProfile[];
 }
 
@@ -323,9 +376,28 @@ export async function getSettingsBackup(): Promise<SettingsBackup> {
   return data;
 }
 
-export async function getLogs(limit = 20, level = ''): Promise<LogEntry[]> {
-  const { data } = await http.get<LogsResponse>('/logs', { params: { limit, ...(level ? { level } : {}) } });
-  return data.entries ?? [];
+export async function exportBackup(path = '/backups/export'): Promise<void> {
+  const { data } = await http.get<Blob>(path, { responseType: 'blob' });
+  const archive = data instanceof Blob ? data : new Blob([data], { type: 'application/zip' });
+  const url = URL.createObjectURL(archive);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = 'offerpilot-backup.zip';
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+export async function getLogs(limit = 20, offset = 0, level = ''): Promise<LogsPage> {
+  const { data } = await http.get<LogsPage>('/logs', {
+    params: { limit, offset, ...(level ? { level } : {}) },
+  });
+  return {
+    entries: data.entries ?? [],
+    total: data.total ?? 0,
+    limit: data.limit ?? limit,
+    offset: data.offset ?? offset,
+    has_more: data.has_more ?? false,
+  };
 }
 
 export async function updateAutoApprove(value: boolean): Promise<Settings> {
