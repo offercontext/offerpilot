@@ -56,6 +56,8 @@ interface Props {
   application: Application | null;
   open: boolean;
   onClose: () => void;
+  initialResumeID?: number;
+  initialJdSnapshot?: string;
 }
 
 interface GenerateVariables {
@@ -198,7 +200,7 @@ function validateProposalAssertions(raw: string): ProposalAssertionsValidation {
   return { values, error: null };
 }
 
-export default function MaterialKitDrawer({ application, open, onClose }: Props) {
+export default function MaterialKitDrawer({ application, open, onClose, initialResumeID, initialJdSnapshot }: Props) {
   const { message } = AntApp.useApp();
   const queryClient = useQueryClient();
   const applicationID = application?.id;
@@ -236,8 +238,8 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
 
   const resetEditor = (nextApplication: Application | null) => {
     setExistingKit(null);
-    setResumeID(undefined);
-    setJdSnapshot(nextApplication?.notes || '');
+    setResumeID(initialResumeID);
+    setJdSnapshot((initialJdSnapshot ?? nextApplication?.notes) || '');
     setStatus('draft');
     setContent(createDefaultContent());
     setActionError(null);
@@ -293,7 +295,7 @@ export default function MaterialKitDrawer({ application, open, onClose }: Props)
 
   useEffect(() => {
     resetEditor(open ? application : null);
-  }, [applicationID, application?.notes, open]);
+  }, [applicationID, application?.notes, initialJdSnapshot, initialResumeID, open]);
 
   useEffect(() => {
     if (evidencePreviewQuery.isError) {

@@ -6,13 +6,20 @@ from typer.testing import CliRunner
 
 from offerpilot.cli import app
 from offerpilot.db import session_factory_for_data_dir
-from offerpilot.models import Application, ApplicationMaterialKit, MaterialRevisionProposal, Resume
+from offerpilot.models import (
+    Application,
+    ApplicationMaterialKit,
+    MaterialRevisionProposal,
+    OpportunityFitReview,
+    Resume,
+)
 from offerpilot.smoke import (
     SmokeStep,
     SmokeReport,
     _assert_real_ai_smoke_data_clean,
     _cleanup_real_ai_smoke_records,
     _run_real_ai_material_proposal_smoke,
+    _run_real_ai_opportunity_fit_smoke,
     run_core_smoke,
     run_http_smoke,
 )
@@ -194,6 +201,17 @@ def test_real_ai_smoke_cleanup_removes_material_records_and_active_resume(tmp_pa
                 proposal_sha256="proposal",
             )
         )
+        session.add(
+            OpportunityFitReview(
+                application_id=application.id,
+                resume_id=resume.id,
+                idempotency_key="f36f6d0b-1d1e-4e9a-aec1-9fef6b2f3b90",
+                source_fingerprint_sha256="source",
+                source_snapshot_json="{}",
+                triage_json="{}",
+                triage_sha256="triage",
+            )
+        )
         session.commit()
     bind = session_factory.kw.get("bind")
     if bind is not None:
@@ -232,6 +250,39 @@ def test_real_ai_material_proposal_smoke_rejects_renamed_snapshot_leak():
 
     with pytest.raises(RuntimeError, match="leaked frozen source data"):
         _run_real_ai_material_proposal_smoke(Client(), [], 7)
+
+
+def test_real_ai_opportunity_fit_smoke_requires_verified_triage_without_snapshot_leak():
+    class Response:
+        status_code = 201
+
+        def __init__(self, payload: dict[str, object] | None = None) -> None:
+            self._payload = payload or {}
+
+        def json(self) -> dict[str, object]:
+            return self._payload
+
+    class Client:
+        def post(self, path: str, json: dict[str, object] | None = None) -> Response:
+            if path == "/api/resumes":
+                return Response({"id": 41})
+            if path.endswith("opportunity-fit-reviews"):
+                return Response({"id": 8, "triage": {"summary": "safe"}})
+            if path.endswith("deep-review"):
+                return Response({"deep_review": {"recommended_path": "clarify_first"}})
+            raise AssertionError(path)
+
+        def delete(self, path: str) -> Response:
+            response = Response()
+            response.status_code = 200
+            return response
+
+    steps: list[SmokeStep] = []
+    _run_real_ai_opportunity_fit_smoke(Client(), steps, 7)
+    assert [step.name for step in steps] == [
+        "http_opportunity_fit_review",
+        "http_opportunity_fit_deep_review",
+    ]
 
 
 def test_cli_verify_local_runs_http_smoke(monkeypatch, tmp_path):

@@ -330,6 +330,37 @@ class MaterialRevisionProposal(Base):
     )
 
 
+class OpportunityFitReview(Base):
+    __tablename__ = "opportunity_fit_reviews"
+    __table_args__ = (
+        UniqueConstraint(
+            "application_id",
+            "idempotency_key",
+            name="uq_opportunity_fit_reviews_application_idempotency",
+        ),
+        Index("idx_opportunity_fit_reviews_application_created", "application_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    application_id: Mapped[int] = mapped_column(
+        ForeignKey("applications.id", ondelete="CASCADE"), nullable=False
+    )
+    resume_id: Mapped[int | None] = mapped_column(
+        ForeignKey("resumes.id", ondelete="SET NULL"), nullable=True
+    )
+    idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
+    source_fingerprint_sha256: Mapped[str] = mapped_column(String, nullable=False)
+    source_snapshot_json: Mapped[str] = mapped_column(String, nullable=False)
+    triage_json: Mapped[str] = mapped_column(String, nullable=False)
+    triage_sha256: Mapped[str] = mapped_column(String, nullable=False)
+    deep_review_json: Mapped[str | None] = mapped_column(String, nullable=True)
+    deep_review_sha256: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
+    deep_reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class Question(Base):
     __tablename__ = "questions"
     __table_args__ = (
@@ -454,6 +485,7 @@ APPLICATION_FOREIGN_KEY_MODELS = (
     ApplicationMaterialKit,
     ApplicationEvidenceBundle,
     MaterialRevisionProposal,
+    OpportunityFitReview,
     Question,
     MockSession,
 )

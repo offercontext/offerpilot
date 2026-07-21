@@ -12,7 +12,7 @@ from queue import Empty, Queue
 from secrets import compare_digest
 from threading import Event, Lock
 from time import perf_counter
-from typing import Any, Callable, Generator, Optional, cast
+from typing import Any, Callable, Generator, Literal, Optional, cast
 from uuid import UUID, uuid4
 
 import httpx
@@ -33,6 +33,7 @@ from offerpilot.ai.agent import (
     run_turn,
 )
 from offerpilot.ai.material_proposals import MaterialProposalModelError
+from offerpilot.ai.opportunity_fit_reviews import OpportunityFitModelError
 from offerpilot.ai.client import ConfiguredAIClient
 from offerpilot.ai.tools import editable_fields_for_tool, offerpilot_tool_registry
 from offerpilot.ai.types import Message, ToolCall
@@ -89,6 +90,12 @@ from offerpilot.repositories.material_revision_proposals import (
     MaterialProposalValidationError,
     MaterialRevisionProposalsRepository,
 )
+from offerpilot.repositories.opportunity_fit_reviews import (
+    HUMAN_APPLICATION_SOURCES,
+    OpportunityFitReviewNotFound,
+    OpportunityFitReviewValidationError,
+    OpportunityFitReviewsRepository,
+)
 from offerpilot.repositories.mock import MockSessionCreate, MockSessionsRepository
 from offerpilot.repositories.notes import NoteCreate, NotesRepository
 from offerpilot.repositories.offers import OfferCreate, OffersRepository
@@ -110,6 +117,8 @@ from offerpilot.schemas import (
     MaterialKitOut,
     MaterialRevisionProposalOut,
     MaterialRevisionProposalSummaryOut,
+    OpportunityFitReviewOut,
+    OpportunityFitReviewSummaryOut,
     MockSessionOut,
     OfferOut,
     QuestionOut,
@@ -625,6 +634,7 @@ def create_app(
     material_kits = MaterialKitsRepository(session_factory)
     evidence_bundles = EvidenceBundlesRepository(session_factory)
     material_revision_proposals = MaterialRevisionProposalsRepository(session_factory)
+    opportunity_fit_reviews = OpportunityFitReviewsRepository(session_factory)
     mock_sessions = MockSessionsRepository(session_factory)
     wakeups = WakeupsRepository(session_factory)
     knowledge_repository = KnowledgeRepository(session_factory)
@@ -1569,6 +1579,105 @@ def create_app(
         except MaterialProposalConflictError as exc:
             return error_response(409, str(exc))
         return JSONResponse(_material_revision_proposal_detail_json(proposal))
+
+    @app.post("/api/applications/{app_id}/opportunity-fit-reviews", status_code=201)
+    def create_opportunity_fit_review(
+        app_id: int, payload: dict[str, Any] = Body(...)
+    ) -> JSONResponse:
+        parsed = _opportunity_fit_create_payload(payload)
+        if isinstance(parsed, JSONResponse):
+            return parsed
+        app_model = applications.get(app_id)
+        if app_model is None or app_model.source not in HUMAN_APPLICATION_SOURCES:
+            return error_response(404, "Application not found")
+        model = _chat_model(chat_model, resolved_data_dir)
+        if isinstance(model, JSONResponse):
+            return error_response(
+                502,
+                "AI provider request failed. Please retry.",
+                code="opportunity_fit_provider_error",
+            )
+        try:
+            review, created = opportunity_fit_reviews.create_triage(
+                app_id,
+                parsed["resume_id"],
+                parsed["jd_text"],
+                parsed["jd_source_label"],
+                parsed["candidate_assertions"],
+                parsed["idempotency_key"],
+                model,
+            )
+        except OpportunityFitReviewNotFound:
+            return error_response(404, "Application or resume not found")
+        except OpportunityFitReviewValidationError as exc:
+            return error_response(422, str(exc))
+        except OpportunityFitModelError as exc:
+            append_log_entry(resolved_data_dir, "WARNING", f"opportunity_fit_{exc.failure_category}")
+            if exc.failure_category == "provider_error":
+                return error_response(
+                    502,
+                    "AI provider request failed. Please retry.",
+                    code="opportunity_fit_provider_error",
+                )
+            return error_response(
+                502,
+                "AI output could not be verified. Please retry.",
+                code="opportunity_fit_unverifiable",
+            )
+        return JSONResponse(
+            _opportunity_fit_review_detail_json(review),
+            status_code=201 if created else 200,
+        )
+
+    @app.get("/api/applications/{app_id}/opportunity-fit-reviews")
+    def list_opportunity_fit_reviews(app_id: int) -> JSONResponse:
+        app_model = applications.get(app_id)
+        if app_model is None or app_model.source not in HUMAN_APPLICATION_SOURCES:
+            return error_response(404, "Application not found")
+        return JSONResponse(
+            [_opportunity_fit_review_summary_json(item) for item in opportunity_fit_reviews.list(app_id)]
+        )
+
+    @app.get("/api/applications/{app_id}/opportunity-fit-reviews/{review_id}")
+    def get_opportunity_fit_review(app_id: int, review_id: int) -> JSONResponse:
+        review = opportunity_fit_reviews.get(app_id, review_id)
+        if review is None:
+            return error_response(404, "Opportunity fit review not found")
+        return JSONResponse(_opportunity_fit_review_detail_json(review))
+
+    @app.post("/api/applications/{app_id}/opportunity-fit-reviews/{review_id}/deep-review", status_code=201)
+    def create_opportunity_fit_deep_review(app_id: int, review_id: int) -> JSONResponse:
+        app_model = applications.get(app_id)
+        if app_model is None or app_model.source not in HUMAN_APPLICATION_SOURCES:
+            return error_response(404, "Application not found")
+        model = _chat_model(chat_model, resolved_data_dir)
+        if isinstance(model, JSONResponse):
+            return error_response(
+                502,
+                "AI provider request failed. Please retry.",
+                code="opportunity_fit_provider_error",
+            )
+        try:
+            review, created = opportunity_fit_reviews.create_deep_review(app_id, review_id, model)
+        except OpportunityFitReviewNotFound:
+            return error_response(404, "Opportunity fit review not found")
+        except OpportunityFitModelError as exc:
+            append_log_entry(resolved_data_dir, "WARNING", f"opportunity_fit_{exc.failure_category}")
+            if exc.failure_category == "provider_error":
+                return error_response(
+                    502,
+                    "AI provider request failed. Please retry.",
+                    code="opportunity_fit_provider_error",
+                )
+            return error_response(
+                502,
+                "AI output could not be verified. Please retry.",
+                code="opportunity_fit_unverifiable",
+            )
+        return JSONResponse(
+            _opportunity_fit_review_detail_json(review),
+            status_code=201 if created else 200,
+        )
 
     @app.get("/api/application-events")
     def list_application_events(
@@ -5814,6 +5923,115 @@ def _material_revision_proposal_detail_json(proposal: Any) -> dict[str, Any]:
         accepted_at=proposal.accepted_at,
         rejected_at=proposal.rejected_at,
     ).model_dump(mode="json")
+
+
+def _opportunity_fit_create_payload(
+    payload: dict[str, Any],
+) -> dict[str, Any] | JSONResponse:
+    raw_resume_id = payload.get("resume_id")
+    if isinstance(raw_resume_id, bool):
+        return error_response(422, "resume_id must be a positive integer")
+    try:
+        resume_id = int(raw_resume_id or 0)
+    except (TypeError, ValueError):
+        return error_response(422, "resume_id must be a positive integer")
+    if resume_id <= 0:
+        return error_response(422, "resume_id must be a positive integer")
+
+    jd_text = payload.get("jd_text")
+    if not isinstance(jd_text, str) or not jd_text.strip():
+        return error_response(422, "jd_text is required")
+    raw_label = payload.get("jd_source_label", "Pasted JD")
+    if not isinstance(raw_label, str) or not raw_label.strip():
+        return error_response(422, "jd_source_label is required")
+
+    raw_assertions = payload.get("candidate_assertions", [])
+    if not isinstance(raw_assertions, list):
+        return error_response(422, "candidate_assertions must be an array")
+    assertions: list[str] = []
+    for value in raw_assertions:
+        if not isinstance(value, str):
+            return error_response(422, "candidate_assertions must contain strings")
+        normalized = value.strip()
+        if not normalized:
+            continue
+        if len(normalized) > 500:
+            return error_response(422, "each candidate assertion must be at most 500 characters")
+        assertions.append(normalized)
+    if len(assertions) > 10:
+        return error_response(422, "candidate_assertions must contain at most 10 non-empty items")
+
+    raw_idempotency_key = payload.get("idempotency_key")
+    if not isinstance(raw_idempotency_key, str) or not raw_idempotency_key.strip():
+        return error_response(422, "idempotency_key is required")
+    try:
+        idempotency_key = str(UUID(raw_idempotency_key.strip()))
+    except ValueError:
+        return error_response(422, "idempotency_key must be a UUID")
+    return {
+        "resume_id": resume_id,
+        "jd_text": jd_text.strip(),
+        "jd_source_label": raw_label.strip(),
+        "candidate_assertions": assertions,
+        "idempotency_key": idempotency_key,
+    }
+
+
+def _opportunity_fit_review_summary_json(review: Any) -> dict[str, Any]:
+    triage = json.loads(review.triage_json)
+    return OpportunityFitReviewSummaryOut(
+        id=review.id,
+        application_id=review.application_id,
+        resume_id=review.resume_id,
+        status="deep_reviewed" if review.deep_review_json else "triage_complete",
+        summary=str(triage.get("summary") or ""),
+        recommendation=cast(
+            Literal["advance", "hold", "decline"],
+            str(triage.get("recommendation") or ""),
+        ),
+        source_fingerprint_sha256=review.source_fingerprint_sha256,
+        triage_sha256=review.triage_sha256,
+        deep_review_sha256=review.deep_review_sha256,
+        created_at=review.created_at,
+        deep_reviewed_at=review.deep_reviewed_at,
+    ).model_dump(mode="json", exclude_none=False)
+
+
+def _opportunity_fit_review_detail_json(review: Any) -> dict[str, Any]:
+    summary = _opportunity_fit_review_summary_json(review)
+    snapshot = json.loads(review.source_snapshot_json)
+    triage = json.loads(review.triage_json)
+    deep_review = json.loads(review.deep_review_json) if review.deep_review_json else None
+    application = snapshot.get("application")
+    resume = snapshot.get("resume")
+    jd = snapshot.get("jd")
+    assertions = snapshot.get("candidate_assertions")
+    return OpportunityFitReviewOut(
+        **summary,
+        source={
+            "application": {
+                "id": application.get("id") if isinstance(application, dict) else None,
+                "company_name": application.get("company_name", "")
+                if isinstance(application, dict)
+                else "",
+                "position_name": application.get("position_name", "")
+                if isinstance(application, dict)
+                else "",
+            },
+            "resume": {
+                "id": resume.get("id") if isinstance(resume, dict) else None,
+                "title": resume.get("title", "") if isinstance(resume, dict) else "",
+                "sha256": resume.get("sha256") if isinstance(resume, dict) else None,
+            },
+            "jd": {
+                "source_label": jd.get("source_label", "") if isinstance(jd, dict) else "",
+                "sha256": jd.get("sha256") if isinstance(jd, dict) else None,
+            },
+            "candidate_assertions": assertions if isinstance(assertions, list) else [],
+        },
+        triage=triage,
+        deep_review=deep_review,
+    ).model_dump(mode="json", exclude_none=False)
 
 
 def _required_text(payload: dict[str, Any], name: str) -> str:

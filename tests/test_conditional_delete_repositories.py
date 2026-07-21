@@ -9,6 +9,7 @@ from offerpilot.models import (
     ApplicationEvidenceBundle,
     ApplicationMaterialKit,
     MaterialRevisionProposal,
+    OpportunityFitReview,
     Base,
     Conversation,
     InterviewNote,
@@ -57,6 +58,15 @@ def _application_dependency(model, application_id):
             source_snapshot_json="{}",
             proposal_json="{}",
             proposal_sha256="1" * 64,
+        )
+    if model is OpportunityFitReview:
+        return model(
+            application_id=application_id,
+            idempotency_key="8f4a6b48-b554-49a0-bccf-b1bf211ef824",
+            source_fingerprint_sha256="0" * 64,
+            source_snapshot_json="{}",
+            triage_json="{}",
+            triage_sha256="1" * 64,
         )
     if model is Question:
         return model(application_id=application_id, question="Why?")

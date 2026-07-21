@@ -36,6 +36,8 @@ import ScheduleEventForm from '@/components/ScheduleEventForm';
 import JDAnalyzeModal from './JDAnalyzeModal';
 import ReviewFormDrawer from './ReviewFormDrawer';
 import MaterialKitDrawer from './MaterialKitDrawer';
+import OpportunityFitReviewDrawer from './OpportunityFitReviewDrawer';
+import type { OpportunityFitReview } from '@/types/opportunityFitReview';
 import { createPilotAttachmentDragBinding } from './PilotAttachmentHandle';
 import styles from './ApplicationDetail.module.css';
 
@@ -63,6 +65,11 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
   const [jdModalOpen, setJdModalOpen] = useState(false);
   const [eventFormOpen, setEventFormOpen] = useState(false);
   const [materialKitOpen, setMaterialKitOpen] = useState(false);
+  const [opportunityFitOpen, setOpportunityFitOpen] = useState(false);
+  const [materialKitPrefill, setMaterialKitPrefill] = useState<{
+    resumeID?: number;
+    jdSnapshot?: string;
+  }>({});
   const [editingNote, setEditingNote] = useState<InterviewNote | null>(null);
 
   const notesQuery = useQuery({
@@ -134,6 +141,8 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
   const closeDetail = () => {
     setEventFormOpen(false);
     setMaterialKitOpen(false);
+    setOpportunityFitOpen(false);
+    setMaterialKitPrefill({});
     setEditingNote(null);
     onClose();
   };
@@ -173,6 +182,23 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
         application={application}
         open={materialKitOpen}
         onClose={() => setMaterialKitOpen(false)}
+        initialResumeID={materialKitPrefill.resumeID}
+        initialJdSnapshot={materialKitPrefill.jdSnapshot}
+      />
+    );
+  }
+
+  if (opportunityFitOpen) {
+    return (
+      <OpportunityFitReviewDrawer
+        application={application}
+        open={opportunityFitOpen}
+        onClose={() => setOpportunityFitOpen(false)}
+        onPrepareMaterials={(review: OpportunityFitReview, jdText: string) => {
+          setMaterialKitPrefill({ resumeID: review.source.resume.id, jdSnapshot: jdText });
+          setOpportunityFitOpen(false);
+          setMaterialKitOpen(true);
+        }}
       />
     );
   }
@@ -226,6 +252,9 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
             style={{ marginLeft: 8 }}
           >
             材料包
+          </Button>
+          <Button onClick={() => setOpportunityFitOpen(true)} style={{ marginLeft: 8 }}>
+            岗位决策漏斗
           </Button>
           {onMockInterview && (
             <Button

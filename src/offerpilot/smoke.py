@@ -20,7 +20,7 @@ from offerpilot.ai.agent import ChatModel
 from offerpilot.ai.types import Assistant, Message, ToolCall
 from offerpilot.api import create_app
 from offerpilot.db import session_factory_for_data_dir
-from offerpilot.models import ApplicationMaterialKit, MaterialRevisionProposal, Resume
+from offerpilot.models import ApplicationMaterialKit, MaterialRevisionProposal, OpportunityFitReview, Resume
 
 
 @dataclass(frozen=True)
@@ -361,6 +361,7 @@ def _run_http_smoke(
 
                 if real_ai:
                     _run_real_ai_material_proposal_smoke(client, steps, application_id)
+                    _run_real_ai_opportunity_fit_smoke(client, steps, application_id)
                     _run_real_ai_write_smoke(client, steps, company, application_id)
                 else:
                     _run_deterministic_chat_smoke(client, steps, application_id)
@@ -441,6 +442,83 @@ def _run_real_ai_material_proposal_smoke(
             _assert_status(cleanup.status_code, 200, "http_material_proposal_resume_anchor_cleanup")
 
 
+def _run_real_ai_opportunity_fit_smoke(
+    client: httpx.Client,
+    steps: list[SmokeStep],
+    application_id: int,
+) -> None:
+    anchor_resume_id: int | None = None
+    resume_id: int | None = None
+    try:
+        anchor = client.post(
+            "/api/resumes",
+            json={"title": "AI Opportunity Fit Smoke Anchor", "text": "", "content_json": {}},
+        )
+        _assert_status(anchor.status_code, 201, "http_opportunity_fit_resume_anchor")
+        anchor_resume_id = int(anchor.json()["id"])
+
+        created_resume = client.post(
+            "/api/resumes",
+            json={
+                "title": "AI Opportunity Fit Smoke Resume",
+                "text": "Built API services and led migration.",
+                "content_json": {
+                    "raw_text": "Built API services and led migration.",
+                    "skills": ["Python"],
+                },
+            },
+        )
+        _assert_status(created_resume.status_code, 201, "http_opportunity_fit_resume")
+        resume_id = int(created_resume.json()["id"])
+
+        review = client.post(
+            f"/api/applications/{application_id}/opportunity-fit-reviews",
+            json={
+                "resume_id": resume_id,
+                "jd_text": "Build reliable API quality workflows.",
+                "jd_source_label": "Smoke pasted JD",
+                "candidate_assertions": ["I led the migration."],
+                "idempotency_key": "f36f6d0b-1d1e-4e9a-aec1-9fef6b2f3b90",
+            },
+        )
+        _assert_status(review.status_code, 201, "http_opportunity_fit_review")
+        body = review.json()
+        if not isinstance(body, dict) or "triage" not in body or "source_snapshot_json" in body:
+            raise RuntimeError("opportunity fit smoke response leaked frozen source data")
+        triage = body.get("triage")
+        if not isinstance(triage, dict):
+            raise RuntimeError("opportunity fit smoke response did not contain triage")
+        review_id = body.get("id")
+        if not isinstance(review_id, int):
+            raise RuntimeError("opportunity fit smoke response did not contain a review id")
+        deep_review = client.post(
+            f"/api/applications/{application_id}/opportunity-fit-reviews/{review_id}/deep-review"
+        )
+        _assert_status(deep_review.status_code, 201, "http_opportunity_fit_deep_review")
+        deep_body = deep_review.json()
+        if not isinstance(deep_body, dict) or not isinstance(deep_body.get("deep_review"), dict):
+            raise RuntimeError("opportunity fit smoke response did not contain deep review")
+        steps.append(
+            SmokeStep(
+                "http_opportunity_fit_review",
+                "real AI returned a verified opportunity fit triage",
+            )
+        )
+        steps.append(
+            SmokeStep(
+                "http_opportunity_fit_deep_review",
+                "real AI returned a verified opportunity fit deep review",
+            )
+        )
+    finally:
+        if resume_id is not None:
+            cleanup = client.delete(f"/api/resumes/{resume_id}")
+            _assert_status(cleanup.status_code, 200, "http_opportunity_fit_resume_cleanup")
+        if anchor_resume_id is not None:
+            cleanup = client.delete(f"/api/resumes/{anchor_resume_id}")
+            _assert_status(cleanup.status_code, 200, "http_opportunity_fit_resume_anchor_cleanup")
+
+
 def _copy_real_ai_config(source_data_dir: Path, isolated_data_dir: Path) -> None:
     source_config = source_data_dir / "config.json"
     if source_config.is_file():
@@ -453,6 +531,7 @@ def _cleanup_real_ai_smoke_records(data_dir: Path) -> None:
         with session_factory() as session:
             session.query(MaterialRevisionProposal).delete(synchronize_session=False)
             session.query(ApplicationMaterialKit).delete(synchronize_session=False)
+            session.query(OpportunityFitReview).delete(synchronize_session=False)
             session.commit()
     finally:
         bind = session_factory.kw.get("bind")
@@ -475,6 +554,9 @@ def _assert_real_ai_smoke_data_clean(data_dir: Path) -> None:
             )
             material_kit_count = session.scalar(select(func.count()).select_from(ApplicationMaterialKit))
             proposal_count = session.scalar(select(func.count()).select_from(MaterialRevisionProposal))
+            opportunity_fit_review_count = session.scalar(
+                select(func.count()).select_from(OpportunityFitReview)
+            )
     finally:
         bind = session_factory.kw.get("bind")
         if bind is not None:
@@ -488,6 +570,8 @@ def _assert_real_ai_smoke_data_clean(data_dir: Path) -> None:
         raise RuntimeError("real-ai smoke left material kits")
     if proposal_count != 0:
         raise RuntimeError("real-ai smoke left material proposals")
+    if opportunity_fit_review_count != 0:
+        raise RuntimeError("real-ai smoke left opportunity fit reviews")
 
 
 def _validate_material_proposal_smoke_response(body: object) -> None:

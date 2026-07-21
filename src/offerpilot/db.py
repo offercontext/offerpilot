@@ -224,6 +224,11 @@ def init_database(db_path: Path) -> SessionFactory:
         "0007_material_revision_proposals",
         "Add evidence-gated material revision proposals",
     )
+    _record_migration(
+        engine,
+        "0008_opportunity_fit_reviews",
+        "Add immutable opportunity fit reviews",
+    )
     return sessionmaker(bind=engine, expire_on_commit=False)
 
 

@@ -241,6 +241,26 @@ class MaterialRevisionProposalOut(MaterialRevisionProposalSummaryOut):
     rejected_at: datetime | None
 
 
+class OpportunityFitReviewSummaryOut(BaseModel):
+    id: int
+    application_id: int
+    resume_id: int | None
+    status: Literal["triage_complete", "deep_reviewed"]
+    summary: str
+    recommendation: Literal["advance", "hold", "decline"]
+    source_fingerprint_sha256: str
+    triage_sha256: str
+    deep_review_sha256: str | None
+    created_at: datetime
+    deep_reviewed_at: datetime | None
+
+
+class OpportunityFitReviewOut(OpportunityFitReviewSummaryOut):
+    source: dict[str, Any]
+    triage: dict[str, Any]
+    deep_review: dict[str, Any] | None
+
+
 class EvidenceBundlePreviewOut(BaseModel):
     application_id: int
     ready: bool
