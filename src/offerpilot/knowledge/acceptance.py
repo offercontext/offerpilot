@@ -198,6 +198,7 @@ class AcceptanceReport:
         failures: list[FailureCase],
         fixture_errors: list[str],
         provider_summary: dict[str, Any],
+        brief_enabled: bool = True,
     ) -> None:
         self.gate_config = gate_config
         self.metrics = metrics
@@ -209,18 +210,21 @@ class AcceptanceReport:
         self.failures = failures
         self.fixture_errors = fixture_errors
         self.provider_summary = provider_summary
+        self.brief_enabled = brief_enabled
         self.passed = not failures and not fixture_errors
 
     def to_safe_json(self) -> dict[str, Any]:
+        gates = {
+            "lexical_recall_at_5": self.gate_config.lexical_recall_at_5,
+            "lexical_mrr_min": self.gate_config.lexical_mrr_min,
+            "natural_language_recall_at_5": self.gate_config.natural_language_recall_at_5,
+            "evidence_readback_rate": self.gate_config.evidence_readback_rate,
+        }
+        if self.brief_enabled:
+            gates["brief_pass_rate"] = self.gate_config.brief_pass_rate
         return {
             "passed": self.passed,
-            "gates": {
-                "lexical_recall_at_5": self.gate_config.lexical_recall_at_5,
-                "lexical_mrr_min": self.gate_config.lexical_mrr_min,
-                "natural_language_recall_at_5": self.gate_config.natural_language_recall_at_5,
-                "evidence_readback_rate": self.gate_config.evidence_readback_rate,
-                "brief_pass_rate": self.gate_config.brief_pass_rate,
-            },
+            "gates": gates,
             "metrics": dict(self.metrics),
             "sources": [
                 {
@@ -849,7 +853,10 @@ def _check_content_keywords(
 
 
 def _aggregate_metrics(
-    query_results: list[QueryResult], source_results: list[SourceResult]
+    query_results: list[QueryResult],
+    source_results: list[SourceResult],
+    *,
+    include_brief: bool = True,
 ) -> dict[str, float]:
     lexical = [
         q for q in query_results if q.query_type.startswith("lexical_") and q.expect_hit
@@ -867,15 +874,18 @@ def _aggregate_metrics(
     total_ev = sum(s.evidence_count for s in source_results)
     total_pass = sum(s.readback_pass for s in source_results)
     readback_rate = total_pass / total_ev if total_ev else 0.0
-    ready = sum(1 for s in source_results if s.brief_status == "ready")
-    brief_rate = ready / len(source_results) if source_results else 0.0
-    return {
+    metrics = {
         "lexical_recall_at_5": lex_recall,
         "lexical_mrr": lex_mrr,
         "natural_language_recall_at_5": nl_recall,
         "evidence_readback_rate": readback_rate,
-        "brief_pass_rate": brief_rate,
     }
+    if include_brief:
+        ready = sum(1 for s in source_results if s.brief_status == "ready")
+        metrics["brief_pass_rate"] = (
+            ready / len(source_results) if source_results else 0.0
+        )
+    return metrics
 
 
 def _brief_failure_scenario_ok(result: BriefFailureResult) -> bool:
@@ -1537,6 +1547,7 @@ def run_acceptance(
             failures=[],
             fixture_errors=fixture_errors,
             provider_summary={"mode": "stub", "note": "fixture 校验失败，未运行验收"},
+            brief_enabled=enable_brief,
         )
 
     init_database(data_dir / "data.db")
@@ -1634,7 +1645,9 @@ def run_acceptance(
     edge_fixture_results = _evaluate_edge_fixtures(fixtures_dir, data_dir)
     bundle_fixture_results = _evaluate_bundle_fixtures(fixtures_dir, data_dir)
 
-    metrics = _aggregate_metrics(query_results, source_results)
+    metrics = _aggregate_metrics(
+        query_results, source_results, include_brief=enable_brief
+    )
     metrics.update(
         {
             "source_count": float(len(source_results)),
@@ -1647,12 +1660,6 @@ def run_acceptance(
                 if source_results
                 else 0.0
             ),
-            "brief_failure_scenario_rate": (
-                sum(1 for item in brief_failure_results if _brief_failure_scenario_ok(item))
-                / len(_EXPECTED_BRIEF_SCENARIOS)
-                if brief_failure_results
-                else 0.0
-            ),
             "edge_fixture_pass_rate": (
                 sum(1 for item in edge_fixture_results if _edge_fixture_ok(item))
                 / 9.0
@@ -1663,10 +1670,13 @@ def run_acceptance(
             ),
         }
     )
-    if not enable_brief:
-        # KV1-03：V1 报告不含 Brief pass rate / 故障场景指标（V1 不跑 Brief）。
-        metrics.pop("brief_pass_rate", None)
-        metrics.pop("brief_failure_scenario_rate", None)
+    if enable_brief_failure_scenarios:
+        metrics["brief_failure_scenario_rate"] = (
+            sum(1 for item in brief_failure_results if _brief_failure_scenario_ok(item))
+            / len(_EXPECTED_BRIEF_SCENARIOS)
+            if brief_failure_results
+            else 0.0
+        )
     failures = _collect_failures(
         metrics,
         gates,
@@ -1694,4 +1704,5 @@ def run_acceptance(
         failures=failures,
         fixture_errors=fixture_errors,
         provider_summary=provider_summary,
+        brief_enabled=enable_brief,
     )

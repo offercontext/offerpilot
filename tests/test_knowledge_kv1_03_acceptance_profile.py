@@ -54,6 +54,7 @@ def test_kv1_03_v1_profile_passes_without_provider_or_brief(tmp_path: Path) -> N
     # V1 报告不含 Brief 指标 / 门禁。
     assert "brief_pass_rate" not in report.metrics
     assert "brief_failure_scenario_rate" not in report.metrics
+    assert "brief_pass_rate" not in report.to_safe_json()["gates"]
     assert not any("brief" in failure.gate for failure in report.failures)
     assert report.provider_summary["mode"] == "v1-no-provider"
     # V1 导入不自动触发 Brief：所有 Source 保持 not_started。
@@ -88,6 +89,7 @@ def test_kv1_03_cli_v1_profile_exits_zero_on_success(
     assert payload["passed"] is True
     assert payload["provider_summary"]["mode"] == "v1-no-provider"
     assert "brief_pass_rate" not in payload["metrics"]
+    assert "brief_pass_rate" not in payload["gates"]
 
 
 def test_kv1_03_cli_unknown_profile_exits_nonzero(
