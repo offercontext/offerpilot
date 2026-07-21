@@ -187,8 +187,8 @@ Deep Review 按钮只有在当前 Triage 成功存在时启用。
 
 1. Pilot 只在 Application 上下文中显示岗位评估入口。
 2. 用户确认发送前不调用 Triage/Deep Review API。
-3. 服务端明确返回校验失败、Provider 失败、不可验证、404 或其他错误时，客户端不把该次请求当作成功，也不伪造新的评估结果；Deep Review 失败不覆盖已有结果。
-4. Triage 请求发生超时、断网、响应丢失等客户端传输失败时，结果属于“未知”，客户端不得声称服务端未写入评估；必须保留原 `triageAttemptKey`，使用同一 key 重试，或从历史列表/详情恢复服务端可能已提交的结果。只有收到服务端明确失败响应后，才按失败语义处理。
+3. 只有 API 契约明确保证“不写入”的响应才允许清除当前 `triageAttemptKey`：输入校验 `422`、调用前置条件明确失败的 `404`，以及带稳定错误码 `opportunity_fit_provider_error` 或 `opportunity_fit_unverifiable` 的 `502`。这些响应不产生新的评估结果；Deep Review 失败不覆盖已有结果。
+4. 普通 `500`、网关错误、没有稳定安全错误码的 `5xx`、响应体无效/无法序列化，以及超时、断网、响应丢失，统一属于“结果未知”。客户端不得声称服务端未写入评估，不得清除或更换原 `triageAttemptKey`，必须优先使用同一 key 重试以取得后端幂等返回。历史列表或详情只能作为只读查看入口，不能按时间、摘要或其他猜测匹配记录，也不能据此清除当前尝试 key。
 5. 相同幂等键沿用后端幂等返回，不重复创建评估。
 6. 评估过程中 Application 软删除时，后端既有 404 语义生效；前端清理卡片，不创建材料交接。
 7. 材料交接是导航/预填动作，不是写入动作；不会创建 Material Kit、修改投递状态或接受简历 Proposal。
@@ -203,7 +203,7 @@ Deep Review 按钮只有在当前 Triage 成功存在时启用。
 - 确认弹窗取消不发请求，加载期间按钮禁用；
 - Resume/JD/断言输入限制和 trim 后请求体；
 - Triage/Deep Review 的加载、成功、幂等结果和历史恢复；
-- Triage 传输失败显示“结果未知”、保留同一 `triageAttemptKey`，重试不生成新 key；明确错误响应才清除 key 并按失败处理；
+- Triage 的超时、断网、响应丢失、普通 500/网关 5xx 和无效响应体均显示“结果未知”、保留同一 `triageAttemptKey`，重试不生成新 key；仅 422、调用前置条件 404，以及带 `opportunity_fit_provider_error`/`opportunity_fit_unverifiable` 的 502 清除 key 并按明确失败处理；
 - 软删除/404、422、Provider 502、不可验证 502 和未知错误均只显示安全中文；
 - 证据标签、引用路径/摘录原文保留；
 - “准备材料”写入 handoff 并打开现有抽屉，未调用生成 Material Kit 或接受 Proposal；由 AppShell 原子校验 `applicationId` 并消费，ApplicationDetail 不自行校验 token；
