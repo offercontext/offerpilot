@@ -14,7 +14,6 @@ from offerpilot.repositories.applications import ApplicationCreate, Applications
 
 def _triage() -> dict[str, object]:
     return {
-        "summary": "API experience is relevant; confirm location.",
         "recommendation": "hold",
         "hard_constraints": [
             {
@@ -126,6 +125,8 @@ def test_api_creates_lists_and_deep_reviews_without_snapshot_leak(tmp_path) -> N
     assert created.status_code == 201
     body = created.json()
     assert body["triage"]["recommendation"] == "hold"
+    assert body["summary"]["text"].startswith("Evidence-backed review recommendation:")
+    assert body["summary"]["evidence_refs"]
     assert "source_snapshot_json" not in body
     assert body["source"]["candidate_assertions"][0]["text"] == "I can work in Shanghai."
 
@@ -136,6 +137,7 @@ def test_api_creates_lists_and_deep_reviews_without_snapshot_leak(tmp_path) -> N
     listed = client.get(path)
     assert listed.status_code == 200
     assert listed.json()[0]["id"] == body["id"]
+    assert listed.json()[0]["summary"]["evidence_refs"]
 
     detail = client.get(f"{path}/{body['id']}")
     assert detail.status_code == 200
@@ -190,6 +192,40 @@ def test_api_returns_stable_502_without_record_for_unverifiable_model(tmp_path) 
     }
     with session_factory_for_data_dir(tmp_path)() as session:
         assert list(session.scalars(select(OpportunityFitReview))) == []
+
+
+def test_api_rederives_legacy_summary_without_frontend_crash(tmp_path) -> None:
+    client, application, resume = _ready(tmp_path)
+    path = f"/api/applications/{application['id']}/opportunity-fit-reviews"
+    created = client.post(
+        path,
+        json={
+            "resume_id": resume["id"],
+            "jd_text": "Kubernetes preferred",
+            "jd_source_label": "copy",
+            "candidate_assertions": [],
+            "idempotency_key": "26b4dd35-75e6-4d3f-8806-3cb7bc9f3e2e",
+        },
+    )
+    assert created.status_code == 201
+    review_id = created.json()["id"]
+    with session_factory_for_data_dir(tmp_path)() as session:
+        review = session.get(OpportunityFitReview, review_id)
+        assert review is not None
+        triage = json.loads(review.triage_json)
+        triage["summary"] = {
+            "text": "Unsupported candidate guarantee",
+            "evidence_refs": [
+                {"source": "resume", "path": "/invented", "excerpt": "forged"}
+            ],
+        }
+        review.triage_json = json.dumps(triage)
+        session.commit()
+
+    detail = client.get(f"{path}/{review_id}")
+    assert detail.status_code == 200
+    assert detail.json()["summary"]["text"] != "Unsupported candidate guarantee"
+    assert detail.json()["triage"]["summary"]["evidence_refs"]
 
 
 def test_api_does_not_retry_provider_failure(tmp_path) -> None:

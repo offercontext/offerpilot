@@ -267,7 +267,7 @@ def test_real_ai_opportunity_fit_smoke_requires_verified_triage_without_snapshot
             if path == "/api/resumes":
                 return Response({"id": 41})
             if path.endswith("opportunity-fit-reviews"):
-                return Response({"id": 8, "triage": {"summary": "safe"}})
+                return Response({"id": 8, "triage": {"summary": {"text": "safe", "evidence_refs": []}}})
             if path.endswith("deep-review"):
                 return Response({"deep_review": {"recommended_path": "clarify_first"}})
             raise AssertionError(path)

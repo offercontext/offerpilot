@@ -7,7 +7,7 @@ export interface OpportunityFitEvidenceRef {
 }
 
 export interface OpportunityFitTriage {
-  summary: string;
+  summary: { text: string; evidence_refs: OpportunityFitEvidenceRef[] };
   recommendation: OpportunityFitRecommendation;
   hard_constraints: Array<{
     id: string;
@@ -56,7 +56,7 @@ export interface OpportunityFitReviewSummary {
   application_id: number;
   resume_id: number | null;
   status: 'triage_complete' | 'deep_reviewed';
-  summary: string;
+  summary: OpportunityFitTriage['summary'];
   recommendation: OpportunityFitRecommendation;
   source_fingerprint_sha256: string;
   triage_sha256: string;

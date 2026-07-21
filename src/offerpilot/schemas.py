@@ -241,12 +241,23 @@ class MaterialRevisionProposalOut(MaterialRevisionProposalSummaryOut):
     rejected_at: datetime | None
 
 
+class OpportunityFitEvidenceRefOut(BaseModel):
+    source: Literal["jd", "resume", "user_assertion"]
+    path: str
+    excerpt: str
+
+
+class OpportunityFitSummaryOut(BaseModel):
+    text: str
+    evidence_refs: list[OpportunityFitEvidenceRefOut]
+
+
 class OpportunityFitReviewSummaryOut(BaseModel):
     id: int
     application_id: int
     resume_id: int | None
     status: Literal["triage_complete", "deep_reviewed"]
-    summary: str
+    summary: OpportunityFitSummaryOut
     recommendation: Literal["advance", "hold", "decline"]
     source_fingerprint_sha256: str
     triage_sha256: str

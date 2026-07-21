@@ -97,7 +97,7 @@ beforeEach(() => {
       candidate_assertions: [],
     },
     triage: {
-      summary: 'safe',
+      summary: { text: 'safe', evidence_refs: [] },
       recommendation: 'hold',
       hard_constraints: [],
       fit_signals: [],
@@ -116,7 +116,7 @@ beforeEach(() => {
       candidate_assertions: [],
     },
     triage: {
-      summary: 'safe',
+      summary: { text: 'safe', evidence_refs: [] },
       recommendation: 'advance',
       hard_constraints: [],
       fit_signals: [],

@@ -33,7 +33,7 @@ from offerpilot.ai.agent import (
     run_turn,
 )
 from offerpilot.ai.material_proposals import MaterialProposalModelError
-from offerpilot.ai.opportunity_fit_reviews import OpportunityFitModelError
+from offerpilot.ai.opportunity_fit_reviews import OpportunityFitModelError, validate_triage
 from offerpilot.ai.client import ConfiguredAIClient
 from offerpilot.ai.tools import editable_fields_for_tool, offerpilot_tool_registry
 from offerpilot.ai.types import Message, ToolCall
@@ -119,6 +119,7 @@ from offerpilot.schemas import (
     MaterialRevisionProposalSummaryOut,
     OpportunityFitReviewOut,
     OpportunityFitReviewSummaryOut,
+    OpportunityFitSummaryOut,
     MockSessionOut,
     OfferOut,
     QuestionOut,
@@ -5979,12 +5980,21 @@ def _opportunity_fit_create_payload(
 
 def _opportunity_fit_review_summary_json(review: Any) -> dict[str, Any]:
     triage = json.loads(review.triage_json)
+    snapshot = json.loads(review.source_snapshot_json)
+    summary = _opportunity_fit_summary_json(triage, snapshot)
+    try:
+        summary_model = OpportunityFitSummaryOut.model_validate(summary)
+    except ValueError:
+        summary_model = OpportunityFitSummaryOut(
+            text="Historical review summary unavailable; rerun to generate an evidence-backed summary.",
+            evidence_refs=[],
+        )
     return OpportunityFitReviewSummaryOut(
         id=review.id,
         application_id=review.application_id,
         resume_id=review.resume_id,
         status="deep_reviewed" if review.deep_review_json else "triage_complete",
-        summary=str(triage.get("summary") or ""),
+        summary=summary_model,
         recommendation=cast(
             Literal["advance", "hold", "decline"],
             str(triage.get("recommendation") or ""),
@@ -6001,6 +6011,8 @@ def _opportunity_fit_review_detail_json(review: Any) -> dict[str, Any]:
     summary = _opportunity_fit_review_summary_json(review)
     snapshot = json.loads(review.source_snapshot_json)
     triage = json.loads(review.triage_json)
+    if isinstance(triage, dict):
+        triage = {**triage, "summary": summary["summary"]}
     deep_review = json.loads(review.deep_review_json) if review.deep_review_json else None
     application = snapshot.get("application")
     resume = snapshot.get("resume")
@@ -6033,6 +6045,25 @@ def _opportunity_fit_review_detail_json(review: Any) -> dict[str, Any]:
         triage=triage,
         deep_review=deep_review,
     ).model_dump(mode="json", exclude_none=False)
+
+
+def _opportunity_fit_summary_json(
+    triage: Any,
+    snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    if isinstance(triage, dict):
+        model_payload = {key: value for key, value in triage.items() if key != "summary"}
+        try:
+            validated = validate_triage(model_payload, snapshot)
+            summary = validated.payload["summary"]
+            if isinstance(summary, dict):
+                return summary
+        except (OpportunityFitModelError, TypeError, ValueError):
+            pass
+    return {
+        "text": "Historical review summary unavailable; rerun to generate an evidence-backed summary.",
+        "evidence_refs": [],
+    }
 
 
 def _required_text(payload: dict[str, Any], name: str) -> str:

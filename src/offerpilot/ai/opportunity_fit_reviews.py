@@ -23,7 +23,6 @@ class ValidatedOpportunityOutput:
 
 
 _TRIAGE_FIELDS = {
-    "summary",
     "recommendation",
     "hard_constraints",
     "fit_signals",
@@ -95,7 +94,6 @@ def build_source_snapshot(
 
 def validate_triage(payload: dict[str, Any], snapshot: dict[str, Any]) -> ValidatedOpportunityOutput:
     _require_exact_fields(payload, _TRIAGE_FIELDS, "triage")
-    _require_non_empty_string(payload.get("summary"), "summary")
     recommendation = _require_enum(payload.get("recommendation"), _RECOMMENDATIONS, "recommendation")
 
     hard_constraints = _require_list(payload.get("hard_constraints"), "hard_constraints")
@@ -162,7 +160,32 @@ def validate_triage(payload: dict[str, Any], snapshot: dict[str, Any]) -> Valida
     ) and not any(item.get("candidate_status") == "unmet" for item in gaps):
         raise OpportunityFitModelError("decline needs a referenced blocker")
 
-    return ValidatedOpportunityOutput(payload=copy.deepcopy(payload))
+    validated = copy.deepcopy(payload)
+    validated["summary"] = _derive_triage_summary(validated)
+    return ValidatedOpportunityOutput(payload=validated)
+
+
+def _derive_triage_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    refs: list[dict[str, str]] = []
+    for section in ("hard_constraints", "fit_signals", "gaps"):
+        for item in payload[section]:
+            refs.extend(item["evidence_refs"])
+    refs.extend(payload["deadline"]["evidence_refs"])
+    unique_refs: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for ref in refs:
+        ref_key = (ref["source"], ref["path"], ref["excerpt"])
+        if ref_key not in seen:
+            seen.add(ref_key)
+            unique_refs.append(ref)
+    has_candidate_evidence = any(ref["source"] != "jd" for ref in unique_refs)
+    if has_candidate_evidence:
+        text = f"Evidence-backed review recommendation: {payload['recommendation']}."
+    elif unique_refs:
+        text = "The role requirements are referenced, but no candidate evidence is available; clarify before proceeding."
+    else:
+        text = "No source-backed candidate conclusion is available; clarify before proceeding."
+    return {"text": text, "evidence_refs": unique_refs}
 
 
 def validate_deep_review(
@@ -246,8 +269,10 @@ def _generate(
         if attempt == 1:
             user = (
                 f"{prompt}\n\n"
-                "修复类别：invalid_change_shape。只返回符合既定契约的 raw JSON，"
-                "不要返回 Markdown、解释、原始回复或新增事实。"
+                "Repair category: invalid_change_shape. Return only raw JSON matching the contract. "
+                "Do not return Markdown, explanations, the previous response, or new facts. "
+                "If evidence is insufficient, use unknown or an empty array. Never use JD evidence "
+                "as a candidate fact and never put a JD reference in fit_signals."
             )
         try:
             assistant = model.complete(
@@ -434,7 +459,7 @@ def _triage_system() -> str:
     return (
         "You are a job opportunity decision analyst. Return raw JSON only: no Markdown, "
         "explanation, scores, probabilities, URLs, or platform claims. The exact top-level "
-        "schema is {summary:string, recommendation:advance|hold|decline, "
+        "schema is {recommendation:advance|hold|decline, "
         "hard_constraints:array, fit_signals:array, gaps:array, deadline:object, "
         "next_questions:array}; do not add fields. Each hard constraint is exactly "
         "{id:string, requirement:string, status:met|unmet|unknown, explanation:string, evidence_refs:array}. "
@@ -443,6 +468,9 @@ def _triage_system() -> str:
         "candidate_status:met|unmet|unknown, evidence_refs:array}. Deadline is exactly "
         "{status:stated|not_stated, text:string, evidence_refs:array}. "
         "Each evidence ref is exactly {source:jd|resume|user_assertion, path:string, excerpt:string}. "
+        "For source jd, path must be exactly /text and excerpt must equal the entire frozen JD text; "
+        "do not use /jd/text. For source resume, "
+        "path is relative to resume content_json and must not start with /content_json. "
         "JD is only a job requirement and analysis direction; never use it as candidate fact. "
         "Candidate facts require exact resume or user_assertion refs. User assertions must be "
         "treated as user-provided and not externally verified. Excerpts must be copied exactly "
@@ -450,7 +478,9 @@ def _triage_system() -> str:
         "ref for the role requirement; when its candidate status is known, also include a "
         "resume or user_assertion ref. Use empty evidence_refs only for unresolved questions "
         "that are not stated as constraints or gaps. If there is no safe candidate evidence, "
-        "use unknown rather than inventing a candidate fact."
+        "use unknown rather than inventing a candidate fact. The server derives the visible "
+        "summary from these validated, referenced entries; do not return a summary field. "
+        "If unsure, return empty fit_signals rather than citing JD as candidate evidence."
     )
 
 
@@ -465,7 +495,7 @@ def _deep_review_system() -> str:
         "evidence_refs:array}; every action is exactly {id:string, label:string, "
         "kind:open_material_kit|add_assertion|record_deadline}. Each evidence ref is exactly "
         "{source:jd|resume|user_assertion, path:string, excerpt:string}; excerpts must match "
-        "the frozen snapshot exactly. JD is not candidate evidence; it may appear in a "
+        "the frozen snapshot exactly. JD refs must use path /text and are not candidate evidence; it may appear in a "
         "gaps_to_address must contain at least one evidence ref; a JD ref may only restate a "
         "job requirement. User assertions remain user-provided and not externally verified."
     )
@@ -475,9 +505,10 @@ def _triage_prompt(snapshot: dict[str, Any]) -> str:
     paths = _editable_snapshot_paths(snapshot)
     return (
         "Analyze this frozen source snapshot. Keep candidate facts separate from job requirements. "
-        "When no candidate evidence supports a conclusion, use unknown or an empty array. A valid "
-        "uncertain result has this shape (replace only with snapshot-backed values): "
-        '{"summary":"...","recommendation":"hold","hard_constraints":[],"fit_signals":[],"gaps":[],"deadline":{"status":"not_stated","text":"","evidence_refs":[]},"next_questions":["..."]}.\n'
+        "When no candidate evidence supports a conclusion, use unknown or an empty array. The "
+        "server derives the visible summary from validated evidence; do not return a summary field. "
+        "A valid uncertain result has this shape (replace only with snapshot-backed values): "
+        '{"recommendation":"hold","hard_constraints":[],"fit_signals":[],"gaps":[],"deadline":{"status":"not_stated","text":"","evidence_refs":[]},"next_questions":["..."]}.\n'
         f"Snapshot: {json.dumps(snapshot, ensure_ascii=False, sort_keys=True)}\n"
         f"Available evidence paths: {json.dumps(paths, ensure_ascii=False)}"
     )

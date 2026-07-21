@@ -265,7 +265,8 @@ export default function OpportunityFitReviewDrawer({
             <Tag>人工确认</Tag>
           </Space>
           <Typography.Title level={4}>Triage</Typography.Title>
-          <Typography.Paragraph>{review.triage.summary}</Typography.Paragraph>
+          <Typography.Paragraph>{review.triage.summary.text}</Typography.Paragraph>
+          <EvidenceRefs refs={review.triage.summary.evidence_refs} />
 
           <Typography.Title level={5}>岗位约束</Typography.Title>
           {review.triage.hard_constraints.map((item) => (

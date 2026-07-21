@@ -42,7 +42,6 @@ def snapshot() -> dict[str, object]:
 
 def triage_payload() -> dict[str, object]:
     return {
-        "summary": "The role aligns with existing API work, but location needs confirmation.",
         "recommendation": "hold",
         "hard_constraints": [
             {
@@ -163,6 +162,15 @@ class ScriptedModel:
 def test_valid_triage_is_strictly_validated() -> None:
     result = validate_triage(triage_payload(), snapshot())
     assert result.payload["recommendation"] == "hold"
+    assert result.payload["summary"]["evidence_refs"]
+
+
+def test_derived_summary_does_not_claim_candidate_evidence_from_jd_only() -> None:
+    payload = triage_payload()
+    payload["fit_signals"] = []
+    payload["gaps"] = []
+    result = validate_triage(payload, snapshot())
+    assert "Evidence-backed" not in result.payload["summary"]["text"]
 
 
 def test_valid_deep_review_is_strictly_validated() -> None:
@@ -180,6 +188,11 @@ def test_deep_review_rejects_uncited_gap() -> None:
 def test_triage_rejects_extra_fields_and_invalid_recommendation() -> None:
     payload = triage_payload()
     payload["extra"] = "no"
+    with pytest.raises(OpportunityFitModelError):
+        validate_triage(payload, snapshot())
+
+    payload = triage_payload()
+    payload["summary"] = "Candidate guarantees all job requirements."
     with pytest.raises(OpportunityFitModelError):
         validate_triage(payload, snapshot())
 
@@ -298,7 +311,7 @@ def test_triage_rejects_fenced_and_non_finite_json() -> None:
         def complete(self, messages, tools):  # type: ignore[no-untyped-def]
             self.calls += 1
             return Assistant(
-                content='{"summary":"x","recommendation":"hold","hard_constraints":[],"fit_signals":[],"gaps":[],"deadline":{"status":"not_stated","text":"","evidence_refs":[]},"next_questions":["x"],"value":NaN}'
+                content='{"recommendation":"hold","hard_constraints":[],"fit_signals":[],"gaps":[],"deadline":{"status":"not_stated","text":"","evidence_refs":[]},"next_questions":["x"],"value":NaN}'
             )
 
     non_finite = NonFiniteModel()

@@ -18,7 +18,6 @@ from offerpilot.repositories.resumes import ResumeCreate, ResumesRepository
 
 def _triage() -> dict[str, object]:
     return {
-        "summary": "API experience is relevant; confirm location.",
         "recommendation": "hold",
         "hard_constraints": [
             {
