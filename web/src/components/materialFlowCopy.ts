@@ -34,6 +34,8 @@ export const MATERIAL_FLOW_COPY = {
     proposalUnverifiable: 'AI 输出未通过证据校验，已保护原简历且未创建草稿，请重试',
     proposalSourceConflict: '原始来源已发生变化，请重新生成提案后再审核',
     confirmationSourceConflict: '提交材料已变化，请重新核对',
+    aiServiceUnavailable: 'AI 服务暂不可用，请稍后重试',
+    generalConflict: '操作未完成，请稍后重试',
     notFound: '请求的材料已不存在或不可用，请刷新后重试',
     invalidRequest: '输入内容无法处理，请检查后重试',
     fallback: '操作未完成，请稍后重试',
@@ -87,13 +89,16 @@ export function materialFlowErrorMessage(
   context: MaterialFlowErrorContext = 'general',
 ): string {
   const { status, code } = responseDetails(error);
-  if (code === 'material_proposal_unverifiable' || (status === 502 && context === 'proposal')) {
+  if (code === 'material_proposal_unverifiable') {
     return MATERIAL_FLOW_COPY.errors.proposalUnverifiable;
   }
+  if (status === 502 && context === 'proposal') return MATERIAL_FLOW_COPY.errors.aiServiceUnavailable;
   if (status === 409) {
     return context === 'proposal'
       ? MATERIAL_FLOW_COPY.errors.proposalSourceConflict
-      : MATERIAL_FLOW_COPY.errors.confirmationSourceConflict;
+      : context === 'confirmation'
+        ? MATERIAL_FLOW_COPY.errors.confirmationSourceConflict
+        : MATERIAL_FLOW_COPY.errors.generalConflict;
   }
   if (status === 404) return MATERIAL_FLOW_COPY.errors.notFound;
   if (status === 422) return MATERIAL_FLOW_COPY.errors.invalidRequest;

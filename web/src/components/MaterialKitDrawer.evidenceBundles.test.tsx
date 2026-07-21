@@ -35,6 +35,12 @@ const proposalService = vi.hoisted(() => ({
   createMaterialRevisionProposal: vi.fn(),
 }));
 
+const materialKitService = vi.hoisted(() => ({
+  generateApplicationMaterialKit: vi.fn(),
+  getApplicationMaterialKit: vi.fn(),
+  updateMaterialKit: vi.fn(),
+}));
+
 vi.mock('@tanstack/react-query', () => ({
   useMutation: (options: any) => ({
     isPending: false,
@@ -135,11 +141,7 @@ vi.mock('@ant-design/icons', () => ({
 
 vi.mock('@/services/evidenceBundles', () => evidenceService);
 vi.mock('@/services/materialRevisionProposals', () => proposalService);
-vi.mock('@/services/materialKits', () => ({
-  generateApplicationMaterialKit: vi.fn(),
-  getApplicationMaterialKit: vi.fn(),
-  updateMaterialKit: vi.fn(),
-}));
+vi.mock('@/services/materialKits', () => materialKitService);
 vi.mock('@/services/resumes', () => ({ listResumes: vi.fn() }));
 
 const { default: MaterialKitDrawer } = await import('./MaterialKitDrawer');
@@ -270,6 +272,9 @@ beforeEach(() => {
   evidenceService.listEvidenceBundles.mockReset();
   proposalService.createMaterialRevisionProposal.mockReset();
   proposalService.createMaterialRevisionProposal.mockResolvedValue(null);
+  materialKitService.generateApplicationMaterialKit.mockReset();
+  materialKitService.getApplicationMaterialKit.mockReset();
+  materialKitService.updateMaterialKit.mockReset();
   vi.stubGlobal('crypto', { randomUUID: vi.fn(() => 'e2ddc6c1-2a4d-4bd6-8969-7c0bc29cc771') });
 });
 
@@ -284,6 +289,18 @@ afterEach(() => {
 });
 
 describe('MaterialKitDrawer evidence confirmation', () => {
+  it('uses a neutral error when material kit generation returns a general 409', async () => {
+    materialKitService.generateApplicationMaterialKit.mockRejectedValueOnce({ response: { status: 409 } });
+    const view = render();
+    await flush();
+
+    clickByText(view, '生成材料包');
+    await flush();
+
+    expect(view.textContent).toContain('操作未完成，请稍后重试');
+    expect(view.textContent).not.toContain('提交材料已变化，请重新核对');
+  });
+
   it('sends user-supplied candidate assertions with a generated proposal', async () => {
     const view = render();
     await flush();
