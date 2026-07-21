@@ -68,14 +68,14 @@ const proposal: MaterialRevisionProposal = {
 let root: Root | undefined;
 let container: HTMLDivElement | undefined;
 
-function render() {
+function render(nextProposal: MaterialRevisionProposal = proposal) {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
   act(() => root?.render(
     <MaterialProposalReviewModal
       applicationID={7}
-      proposal={proposal}
+      proposal={nextProposal}
       open
       onClose={vi.fn()}
       onAccepted={vi.fn()}
@@ -103,26 +103,71 @@ afterEach(() => {
 });
 
 describe('MaterialProposalReviewModal', () => {
+  const knownLegacyFixedPhrases = [
+    'AI recommendation',
+    'Reject proposal',
+    'Accept selected changes',
+    'Generate evidence-gated resume proposal',
+    'User assertion supplied for this proposal',
+    'No safe evidence-backed changes are available.',
+  ];
+
   it('shows evidence, user assertion labels, and selects all changes by default', () => {
     const view = render();
 
-    expect(view.textContent).toContain('AI recommendation — human review required');
+    expect(view.textContent).toContain('AI 建议，仅供人工审核');
     expect(view.textContent).toContain('Built APIs');
-    expect(view.textContent).toContain('User assertion supplied for this proposal');
+    expect(view.textContent).toContain('用户断言：I led the migration.');
     expect(view.querySelector<HTMLInputElement>('input[type="checkbox"]')?.checked).toBe(true);
-    expect(button(view, 'Accept selected changes')?.disabled).toBe(false);
+    expect(button(view, '接受选中的修改')?.disabled).toBe(false);
+    for (const phrase of knownLegacyFixedPhrases) {
+      expect(view.textContent).not.toContain(phrase);
+    }
+  });
+
+  it('maps every material evidence source to a fixed Chinese label while preserving paths and excerpts', () => {
+    const sourceCoverageProposal: MaterialRevisionProposal = {
+      ...proposal,
+      changes: [{
+        ...proposal.changes[0],
+        evidence_refs: [
+          { source: 'resume', path: '/experience/0/highlights/0', excerpt: 'Built APIs' },
+          { source: 'evidence_bundle', path: '/resume/content_json/experience/0/highlights/0', excerpt: 'Built APIs' },
+          { source: 'user_assertion', path: '/user_assertions/0/text', excerpt: 'I led the migration.' },
+        ],
+      }],
+    };
+    const view = render(sourceCoverageProposal);
+
+    expect(view.textContent).toContain('简历');
+    expect(view.textContent).toContain('已确认的投递证据快照');
+    expect(view.textContent).toContain('用户断言');
+    expect(view.textContent).toContain('/resume/content_json/experience/0/highlights/0: Built APIs');
+    expect(view.textContent).toContain('/user_assertions/0/text: I led the migration.');
+  });
+
+  it('shows a fixed Chinese empty state without rendering the model empty summary', () => {
+    const view = render({
+      ...proposal,
+      summary: 'No safe evidence-backed changes are available.',
+      changes: [],
+    });
+
+    expect(view.textContent).toContain('当前没有可由证据安全支持的简历改写建议');
+    expect(view.textContent).not.toContain('No safe evidence-backed changes are available.');
+    expect(button(view, '接受选中的修改')?.disabled).toBe(true);
   });
 
   it('requires a second confirmation and sends selected ids and proposal hash', async () => {
     const view = render();
     const checkbox = view.querySelector<HTMLInputElement>('input[type="checkbox"]');
     act(() => checkbox?.click());
-    expect(button(view, 'Accept selected changes')?.disabled).toBe(true);
+    expect(button(view, '接受选中的修改')?.disabled).toBe(true);
 
     act(() => checkbox?.click());
-    act(() => button(view, 'Accept selected changes')?.click());
-    expect(view.textContent).toContain('This will create a new derived Resume version');
-    await act(async () => button(view, 'Create derived resume')?.click());
+    act(() => button(view, '接受选中的修改')?.click());
+    expect(view.textContent).toContain('这会创建一个新的派生简历版本');
+    await act(async () => button(view, '创建派生简历')?.click());
 
     expect(proposalService.acceptMaterialRevisionProposal).toHaveBeenCalledWith(7, 3, {
       expected_proposal_sha256: 'abc',
@@ -132,7 +177,7 @@ describe('MaterialProposalReviewModal', () => {
 
   it('rejects without calling accept', async () => {
     const view = render();
-    await act(async () => button(view, 'Reject proposal')?.click());
+    await act(async () => button(view, '拒绝提案')?.click());
 
     expect(proposalService.rejectMaterialRevisionProposal).toHaveBeenCalledWith(7, 3);
     expect(proposalService.acceptMaterialRevisionProposal).not.toHaveBeenCalled();
@@ -144,10 +189,20 @@ describe('MaterialProposalReviewModal', () => {
       response: { status: 409 },
     });
     const view = render();
-    act(() => button(view, 'Accept selected changes')?.click());
-    await act(async () => button(view, 'Create derived resume')?.click());
+    act(() => button(view, '接受选中的修改')?.click());
+    await act(async () => button(view, '创建派生简历')?.click());
 
-    expect(view.textContent).toContain('The source changed while this proposal was open');
-    expect(button(view, 'Accept selected changes')?.disabled).toBe(true);
+    expect(view.textContent).toContain('原始来源已发生变化，请重新生成提案后再审核');
+    expect(button(view, '接受选中的修改')?.disabled).toBe(true);
+  });
+
+  it('uses a fixed Chinese error for unknown failures without exposing raw error text', async () => {
+    proposalService.rejectMaterialRevisionProposal.mockRejectedValueOnce(new Error('SECRET_RAW_ERROR'));
+    const view = render();
+
+    await act(async () => button(view, '拒绝提案')?.click());
+
+    expect(view.textContent).toContain('操作未完成，请稍后重试');
+    expect(view.textContent).not.toContain('SECRET_RAW_ERROR');
   });
 });

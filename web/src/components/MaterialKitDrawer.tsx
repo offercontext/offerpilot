@@ -51,6 +51,14 @@ import { createMaterialRevisionProposal } from '@/services/materialRevisionPropo
 import MaterialProposalReviewModal from './MaterialProposalReviewModal';
 import styles from './MaterialKitDrawer.module.css';
 import { getMaterialKitStatusForSave } from './materialKitStatus';
+import {
+  isMaterialFlowSourceConflict,
+  MATERIAL_FLOW_COPY,
+  materialConfirmationKindLabel,
+  materialEvidencePreviewIssueLabels,
+  materialFlowErrorMessage,
+  type MaterialFlowErrorContext,
+} from './materialFlowCopy';
 
 interface Props {
   application: Application | null;
@@ -164,21 +172,11 @@ function formatEvidenceTimestamp(value: string): string {
 }
 
 function formatConfirmationKind(value: string): string {
-  return value === 'user_asserted' ? '用户确认' : value;
+  return materialConfirmationKindLabel(value);
 }
 
-function getErrorMessage(error: unknown): string {
-  const responseData = (
-    error as { response?: { data?: { error_code?: unknown; error?: unknown } } }
-  )?.response?.data;
-  if (responseData?.error_code === 'material_proposal_unverifiable') {
-    return 'AI output did not pass evidence verification. Please retry; your original resume is protected and no draft was created.';
-  }
-  if (typeof responseData?.error === 'string' && responseData.error) {
-    return responseData.error;
-  }
-  if (error instanceof Error && error.message) return error.message;
-  return '操作失败，请稍后重试';
+function getErrorMessage(error: unknown, context: MaterialFlowErrorContext = 'general'): string {
+  return materialFlowErrorMessage(error, context);
 }
 
 interface ProposalAssertionsValidation {
@@ -192,10 +190,10 @@ function validateProposalAssertions(raw: string): ProposalAssertionsValidation {
     .map((assertion) => assertion.trim())
     .filter(Boolean);
   if (values.length > 10) {
-    return { values, error: 'At most 10 non-empty assertions.' };
+    return { values, error: MATERIAL_FLOW_COPY.drawer.proposalValidationTooMany };
   }
   if (values.some((assertion) => assertion.length > 500)) {
-    return { values, error: 'Each assertion must be 500 characters or fewer.' };
+    return { values, error: MATERIAL_FLOW_COPY.drawer.proposalValidationTooLong };
   }
   return { values, error: null };
 }
@@ -420,7 +418,7 @@ export default function MaterialKitDrawer({ application, open, onClose, initialR
       setProposalReviewOpen(true);
     },
     onError: (error: unknown, variables: ProposalVariables) => {
-      if (variables.applicationID === applicationID) setActionError(getErrorMessage(error));
+      if (variables.applicationID === applicationID) setActionError(getErrorMessage(error, 'proposal'));
     },
   });
 
@@ -474,18 +472,15 @@ export default function MaterialKitDrawer({ application, open, onClose, initialR
     onError: (error: unknown, variables) => {
       if (!isCurrentConfirmationSession(variables.applicationID, variables.sessionID)) return;
 
-      if (typeof error === 'object' && error !== null && 'response' in error) {
-        const response = error.response as { status?: number } | undefined;
-        if (response?.status === 409) {
-          setConfirmationError('提交材料已变化，请重新核对');
-          setConfirmationPreviewValid(false);
-          blockedPreviewUpdatedAtRef.current = evidencePreviewQuery.dataUpdatedAt;
-          void refreshEvidencePreview(variables.applicationID, variables.sessionID);
-          return;
-        }
+      if (isMaterialFlowSourceConflict(error)) {
+        setConfirmationError(getErrorMessage(error, 'confirmation'));
+        setConfirmationPreviewValid(false);
+        blockedPreviewUpdatedAtRef.current = evidencePreviewQuery.dataUpdatedAt;
+        void refreshEvidencePreview(variables.applicationID, variables.sessionID);
+        return;
       }
 
-      setConfirmationError(getErrorMessage(error));
+      setConfirmationError(getErrorMessage(error, 'confirmation'));
     },
   });
 
@@ -548,7 +543,7 @@ export default function MaterialKitDrawer({ application, open, onClose, initialR
     queryClient.invalidateQueries({ queryKey: ['application-material-revision-proposals', applicationID] });
     setProposalReviewOpen(false);
     setProposal(null);
-    message.success('Derived resume created after human confirmation');
+    message.success(MATERIAL_FLOW_COPY.drawer.proposalAccepted);
   };
 
   const openConfirmation = () => {
@@ -728,11 +723,11 @@ export default function MaterialKitDrawer({ application, open, onClose, initialR
                 />
               </Form.Item>
 
-              <Form.Item label="Additional candidate facts (one per line)">
+              <Form.Item label={MATERIAL_FLOW_COPY.drawer.candidateFactsLabel}>
                 <Input.TextArea
                   value={proposalAssertions}
                   onChange={(event) => setProposalAssertions(event.target.value)}
-                  placeholder="One candidate fact per line"
+                  placeholder={MATERIAL_FLOW_COPY.drawer.candidateFactsPlaceholder}
                   rows={4}
                   disabled={!application}
                 />
@@ -795,7 +790,7 @@ export default function MaterialKitDrawer({ application, open, onClose, initialR
                 loading={proposalMutation.isPending}
                 disabled={proposalDisabled || busy || Boolean(proposalAssertionsValidation.error)}
               >
-                Generate evidence-gated resume proposal
+                {MATERIAL_FLOW_COPY.drawer.generateProposal}
               </Button>
               {canConfirm ? (
                 <Button type="primary" onClick={openConfirmation} disabled={busy}>
@@ -888,7 +883,7 @@ export default function MaterialKitDrawer({ application, open, onClose, initialR
                         placeholder="每行一条亮点"
                       />
                     </Form.Item>
-                    <Form.Item label="建议改写的 bullet">
+                    <Form.Item label="建议改写的要点">
                       <Input.TextArea
                         value={linesToText(content.resume_advice.rewrite_bullets)}
                         onChange={(event) => updateAdvice('rewrite_bullets', textToLines(event.target.value))}
@@ -1057,7 +1052,7 @@ export default function MaterialKitDrawer({ application, open, onClose, initialR
                 <Typography.Text>材料证据加载失败，请刷新后再确认</Typography.Text>
               ) : (confirmationPreview?.issues || []).length > 0 ? (
                 <ul>
-                  {(confirmationPreview?.issues || []).map((issue) => <li key={issue}>{issue}</li>)}
+                  {materialEvidencePreviewIssueLabels(confirmationPreview?.issues || []).map((issue) => <li key={issue}>{issue}</li>)}
                 </ul>
               ) : (
                 <Typography.Text>材料证据尚未准备完成</Typography.Text>

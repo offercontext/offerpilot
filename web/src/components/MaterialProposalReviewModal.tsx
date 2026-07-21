@@ -1,8 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Alert, Button, Checkbox, Modal, Space, Tag, Typography } from 'antd';
-import { isAxiosError } from 'axios';
 import type { MaterialRevisionProposal } from '@/types/materialRevisionProposal';
 import { acceptMaterialRevisionProposal, rejectMaterialRevisionProposal } from '@/services/materialRevisionProposals';
+import {
+  isMaterialFlowSourceConflict,
+  MATERIAL_FLOW_COPY,
+  materialEvidenceSourceLabel,
+  materialFlowErrorMessage,
+} from './materialFlowCopy';
 import styles from './MaterialProposalReviewModal.module.css';
 
 interface Props {
@@ -11,20 +16,6 @@ interface Props {
   open: boolean;
   onClose: () => void;
   onAccepted: () => void;
-}
-
-function evidenceLabel(source: string): string {
-  if (source === 'user_assertion') return 'User assertion supplied for this proposal';
-  if (source === 'evidence_bundle') return 'Confirmed application evidence snapshot';
-  return 'Source resume';
-}
-
-function errorMessage(error: unknown): string {
-  if (isAxiosError(error) && error.response?.status === 409) {
-    return 'The source changed while this proposal was open. Review and generate a new proposal.';
-  }
-  if (error instanceof Error && error.message) return error.message;
-  return 'The proposal could not be updated. Please retry.';
 }
 
 export default function MaterialProposalReviewModal({
@@ -68,8 +59,8 @@ export default function MaterialProposalReviewModal({
       setConfirmOpen(false);
       onAccepted();
     } catch (reason) {
-      if (isAxiosError(reason) && reason.response?.status === 409) setSourceConflict(true);
-      setError(errorMessage(reason));
+      if (isMaterialFlowSourceConflict(reason)) setSourceConflict(true);
+      setError(materialFlowErrorMessage(reason, 'proposal'));
     } finally {
       setBusy(false);
     }
@@ -82,7 +73,7 @@ export default function MaterialProposalReviewModal({
       await rejectMaterialRevisionProposal(applicationID, proposal.id);
       onClose();
     } catch (reason) {
-      setError(errorMessage(reason));
+      setError(materialFlowErrorMessage(reason, 'proposal'));
     } finally {
       setBusy(false);
     }
@@ -92,63 +83,69 @@ export default function MaterialProposalReviewModal({
     <>
       <Modal
         open={open}
-        title="AI recommendation — human review required"
+        title={MATERIAL_FLOW_COPY.proposal.title}
         onCancel={busy ? undefined : onClose}
         destroyOnClose
         footer={(
           <Space>
-            <Button onClick={handleReject} disabled={busy}>Reject proposal</Button>
+            <Button onClick={handleReject} disabled={busy}>{MATERIAL_FLOW_COPY.proposal.reject}</Button>
             <Button
               type="primary"
               onClick={() => setConfirmOpen(true)}
               disabled={busy || sourceConflict || selected.length === 0}
             >
-              Accept selected changes
+              {MATERIAL_FLOW_COPY.proposal.accept}
             </Button>
           </Space>
         )}
       >
         <div className={styles.body}>
           <Typography.Text className={styles.warning}>
-            AI recommendation — human review required. No resume is changed until you accept.
+            {MATERIAL_FLOW_COPY.proposal.warning}
           </Typography.Text>
           <div className={styles.source}>
             <Typography.Text strong>
               {proposal.source.application.company_name} · {proposal.source.application.position_name}
             </Typography.Text>
-            <Typography.Text>Source resume: {proposal.source.resume.title}</Typography.Text>
-            <Typography.Text>JD direction: {proposal.source.material_kit.jd_excerpt}</Typography.Text>
-            <Typography.Text>Proposal generated: {proposal.created_at}</Typography.Text>
+            <Typography.Text>{MATERIAL_FLOW_COPY.proposal.sourceResume}：{proposal.source.resume.title}</Typography.Text>
+            <Typography.Text>{MATERIAL_FLOW_COPY.proposal.jdDirection}：{proposal.source.material_kit.jd_excerpt}</Typography.Text>
+            <Typography.Text>{MATERIAL_FLOW_COPY.proposal.generatedAt}：{proposal.created_at}</Typography.Text>
           </div>
-          <Typography.Paragraph>{proposal.summary}</Typography.Paragraph>
-          {proposal.changes.map((change) => (
-            <div className={styles.change} key={change.id}>
-              <div className={styles.changeHeader}>
-                <Checkbox
-                  checked={selectedSet.has(change.id)}
-                  onChange={(event) => toggleChange(change.id, event.target.checked)}
-                  aria-label={`Select ${change.id}`}
-                />
-                <div className={styles.changeText}>
-                  <Typography.Text strong>{change.path}</Typography.Text>
-                  <Typography.Text className={styles.before}>Before: {change.before}</Typography.Text>
-                  <Typography.Text className={styles.after}>After: {change.after}</Typography.Text>
-                  <Typography.Text>Why: {change.rationale}</Typography.Text>
-                </div>
-              </div>
-              <div className={styles.evidenceList}>
-                {change.evidence_refs.map((ref) => (
-                  <div className={styles.evidence} key={`${change.id}-${ref.source}-${ref.path}`}>
-                    <Tag>{evidenceLabel(ref.source)}</Tag>
-                    <div>{ref.path}: {ref.excerpt}</div>
+          {proposal.changes.length === 0 ? (
+            <Alert type="info" showIcon message={MATERIAL_FLOW_COPY.proposal.empty} />
+          ) : (
+            <>
+              <Typography.Paragraph>{proposal.summary}</Typography.Paragraph>
+              {proposal.changes.map((change) => (
+                <div className={styles.change} key={change.id}>
+                  <div className={styles.changeHeader}>
+                    <Checkbox
+                      checked={selectedSet.has(change.id)}
+                      onChange={(event) => toggleChange(change.id, event.target.checked)}
+                      aria-label={MATERIAL_FLOW_COPY.proposal.selectChange(change.id)}
+                    />
+                    <div className={styles.changeText}>
+                      <Typography.Text strong>{change.path}</Typography.Text>
+                      <Typography.Text className={styles.before}>{MATERIAL_FLOW_COPY.proposal.before}：{change.before}</Typography.Text>
+                      <Typography.Text className={styles.after}>{MATERIAL_FLOW_COPY.proposal.after}：{change.after}</Typography.Text>
+                      <Typography.Text>{MATERIAL_FLOW_COPY.proposal.why}：{change.rationale}</Typography.Text>
+                    </div>
                   </div>
-                ))}
-              </div>
-            </div>
-          ))}
+                  <div className={styles.evidenceList}>
+                    {change.evidence_refs.map((ref) => (
+                      <div className={styles.evidence} key={`${change.id}-${ref.source}-${ref.path}`}>
+                        <Tag>{materialEvidenceSourceLabel(ref.source)}</Tag>
+                        <div>{ref.path}: {ref.excerpt}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
           {proposal.source.user_assertions.map((assertion) => (
             <Typography.Text key={assertion.id} type="secondary">
-              User assertion supplied for this proposal: {assertion.text}
+              {MATERIAL_FLOW_COPY.proposal.userAssertion}：{assertion.text}
             </Typography.Text>
           ))}
           {error ? <Alert className={styles.error} type="error" showIcon message={error} /> : null}
@@ -156,15 +153,15 @@ export default function MaterialProposalReviewModal({
       </Modal>
       <Modal
         open={confirmOpen}
-        title="Confirm new derived resume"
+        title={MATERIAL_FLOW_COPY.proposal.confirmTitle}
         onCancel={() => setConfirmOpen(false)}
-        okText="Create derived resume"
-        cancelText="Back to review"
+        okText={MATERIAL_FLOW_COPY.proposal.createDerivedResume}
+        cancelText={MATERIAL_FLOW_COPY.proposal.backToReview}
         onOk={() => void handleAccept()}
         confirmLoading={busy}
       >
         <Typography.Paragraph>
-          This will create a new derived Resume version and update the application Material Kit to point to it. It will not overwrite the source resume.
+          {MATERIAL_FLOW_COPY.proposal.confirmBody}
         </Typography.Paragraph>
       </Modal>
     </>

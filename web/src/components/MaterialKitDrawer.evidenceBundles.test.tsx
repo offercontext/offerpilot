@@ -235,7 +235,7 @@ function clickByText(view: HTMLDivElement, text: string) {
 
 function setProposalAssertions(view: HTMLDivElement, value: string) {
   const input = view.querySelector<HTMLTextAreaElement>(
-    'textarea[placeholder="One candidate fact per line"]',
+    'textarea[placeholder="每行填写一条候选人事实"]',
   );
   expect(input).toBeInstanceOf(HTMLTextAreaElement);
   act(() => {
@@ -290,7 +290,7 @@ describe('MaterialKitDrawer evidence confirmation', () => {
 
     setProposalAssertions(view, 'I led the migration.\nI shipped the API.');
 
-    clickByText(view, 'Generate evidence-gated resume proposal');
+    clickByText(view, '生成基于证据的简历提案');
     await flush();
 
     expect(proposalService.createMaterialRevisionProposal).toHaveBeenCalledWith(7, {
@@ -304,8 +304,8 @@ describe('MaterialKitDrawer evidence confirmation', () => {
     await flush();
     setProposalAssertions(view, Array.from({ length: 11 }, (_, index) => `Fact ${index + 1}`).join('\n'));
 
-    expect(view.textContent).toContain('At most 10 non-empty assertions.');
-    expect(buttonByText(view, 'Generate evidence-gated resume proposal')?.disabled).toBe(true);
+    expect(view.textContent).toContain('最多填写 10 条非空断言');
+    expect(buttonByText(view, '生成基于证据的简历提案')?.disabled).toBe(true);
     expect(proposalService.createMaterialRevisionProposal).not.toHaveBeenCalled();
   });
 
@@ -314,8 +314,8 @@ describe('MaterialKitDrawer evidence confirmation', () => {
     await flush();
     setProposalAssertions(view, 'x'.repeat(501));
 
-    expect(view.textContent).toContain('Each assertion must be 500 characters or fewer.');
-    expect(buttonByText(view, 'Generate evidence-gated resume proposal')?.disabled).toBe(true);
+    expect(view.textContent).toContain('每条断言不得超过 500 个字符');
+    expect(buttonByText(view, '生成基于证据的简历提案')?.disabled).toBe(true);
     expect(proposalService.createMaterialRevisionProposal).not.toHaveBeenCalled();
   });
 
@@ -332,17 +332,18 @@ describe('MaterialKitDrawer evidence confirmation', () => {
     await flush();
 
     setProposalAssertions(view, 'I led the migration.');
-    clickByText(view, 'Generate evidence-gated resume proposal');
+    clickByText(view, '生成基于证据的简历提案');
     await flush();
 
     expect(view.textContent).toContain(
-      'AI output did not pass evidence verification. Please retry; your original resume is protected and no draft was created.',
+      'AI 输出未通过证据校验，已保护原简历且未创建草稿，请重试',
     );
+    expect(view.textContent).not.toContain('AI returned a proposal that could not be verified. Please retry.');
     expect(view.textContent).not.toContain('Request failed with status code 502');
-    expect(buttonByText(view, 'Generate evidence-gated resume proposal')?.disabled).toBe(false);
+    expect(buttonByText(view, '生成基于证据的简历提案')?.disabled).toBe(false);
   });
 
-  it('shows the user-attestation statement and concrete unready preview issues before confirmation', async () => {
+  it('shows safe preview issue labels without exposing unknown server diagnostics', async () => {
     queryState.preview = {
       application_id: 7,
       ready: false,
@@ -355,8 +356,9 @@ describe('MaterialKitDrawer evidence confirmation', () => {
     clickByText(view, '确认已投递');
 
     expect(view.textContent).toContain('用户确认，非平台回执');
-    expect(view.textContent).toContain('缺少已选择的简历');
-    expect(view.textContent).toContain('服务端返回的校验问题');
+    expect(view.textContent).toContain('缺少已选择的简历，请先选择简历');
+    expect(view.textContent).toContain('材料证据尚未准备完成，请补充必要来源');
+    expect(view.textContent).not.toContain('服务端返回的校验问题');
     expect([...view.querySelectorAll('button')].find((item) => item.textContent?.includes('确认投递'))?.disabled).toBe(true);
   });
 
