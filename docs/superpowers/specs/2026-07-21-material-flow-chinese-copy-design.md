@@ -13,7 +13,7 @@
 - `web/src/components/MaterialKitDrawer.tsx`
 - `web/src/components/MaterialProposalReviewModal.tsx`
 
-固定产品文案中的 `Resume` 统一显示为“简历”；`JD` 可以保留。证据来源标签统一为“简历”“岗位描述”“用户断言”。证据路径和证据摘录不翻译。
+固定产品文案中的 `Resume` 统一显示为“简历”；`JD` 可以保留。材料提案的证据来源只有 `resume`、`evidence_bundle`、`user_assertion` 三种：分别显示为“简历”“已确认的投递证据快照”“用户断言”。材料提案证据来源不包含 JD，不能把 `evidence_bundle` 误标为岗位描述。证据路径和证据摘录不翻译。
 
 以下内容保留原文：
 
@@ -23,6 +23,8 @@
 - 模型生成的建议正文、修改前后内容和修改理由
 - 证据路径与证据摘录
 
+提案的 `summary` 属于模型生成内容，但当 `changes` 为空时不直接渲染它。此时只显示固定中文空状态“当前没有可由证据安全支持的简历改写建议”，避免把模型返回的英文空变更句子展示给用户。只有存在至少一条 change 时才展示 summary。
+
 ## 实现方案
 
 新增材料流程专用文案模块，例如 `web/src/components/materialFlowCopy.ts`，集中维护固定文案和来源标签映射。该模块不接入全局国际化系统，不改变服务层或后端契约。
@@ -31,14 +33,14 @@
 
 - 材料包工作区标题、字段标签、占位提示、状态标签、按钮、加载/空状态和证据历史文案
 - 简历优化提案弹窗标题、人工确认提示、变更字段标签、证据来源标签、接受/拒绝按钮和二次确认文案
-- 服务端错误码、Axios 错误和来源冲突的可理解中文提示
+- 服务端错误码和 HTTP 状态的可理解中文提示
 - 无障碍标签、按钮 aria-label 和加载提示
 
 动态值使用插值传入文案函数或放在中文固定标签之后，避免翻译动态数据。
 
 ## 错误与安全边界
 
-`material_proposal_unverifiable`、HTTP 409 和其他服务端错误仍按原错误码和状态处理；仅将用户可见文本映射为中文。原始 Axios 错误字符串不得直接展示给用户。
+`material_proposal_unverifiable`、HTTP 409 和其他服务端错误仍按原错误码和状态处理；仅将用户可见文本映射为中文。两个组件均禁止直接展示 `response.data.error`、Axios 的错误消息或 `Error.message`。错误处理只能根据安全错误码或 HTTP 状态选择固定中文文案；未识别的错误统一显示固定中文兜底提示。
 
 提案生成、接受、拒绝和证据确认的请求逻辑不变。中文化不得绕过禁用状态、二次确认、来源指纹冲突或证据预览门控。
 
@@ -47,9 +49,10 @@
 在现有 Vitest 测试上扩展：
 
 - 生成提案：固定按钮、输入提示、人工确认和错误提示为中文；用户断言与模型内容保留原文。
-- 无可用改写：显示中文空状态，不将空变更当作失败。
+- 无可用改写：当 `changes` 为空时显示中文空状态，不渲染 `proposal.summary`，并断言 `No safe evidence-backed changes are available.` 不在页面中出现。
 - 接受/拒绝：中文操作按钮、二次确认弹窗、成功提示和来源冲突提示。
-- 证据展示：来源固定标签为中文，路径和摘录保持原文。
+- 证据展示：`resume`、`evidence_bundle`、`user_assertion` 分别显示为“简历”“已确认的投递证据快照”“用户断言”，路径和摘录保持原文。
+- 错误提示：已知错误码/HTTP 状态显示固定中文；服务端 error、Axios message、Error.message 等原始文本均不得出现在页面中，未知错误显示统一中文兜底。
 - 无障碍：关键按钮、复选框和加载状态使用中文可访问名称或提示。
 - 遗留英文扫描：只断言已知固定英文短语不存在，例如 `Generate evidence-gated resume proposal`、`Reject proposal`、`Accept selected changes`、`AI recommendation`、`Confirm new derived resume`、`Create derived resume`、`Source resume`、`User assertion supplied for this proposal`。不扫描任意英文，以免误伤动态 JD、公司名、简历、AI 内容和证据摘录。
 
