@@ -1,7 +1,7 @@
 # Opportunity Fit Review 设计
 
-日期：2026-07-21  
-状态：已确认，进入实现  
+日期：2026-07-21
+状态：已确认，进入实现
 范围：Application 上游岗位决策漏斗；不重做 Evidence Bundle 与 Evidence-gated Material Proposal。
 
 ## 目标与边界
@@ -92,11 +92,9 @@ Deep Review 只读取已保存 Triage 的快照和结果；已有 `deep_review_j
 “去准备材料”只关闭评估抽屉并将冻结 Resume/JD 预填到现有 Material Kit UI，不直接写 Material Kit。主 UI 移除 Resume Library 中 `ResumeMatchModal` 的 0–100 分入口，但保留后端兼容 API 和回归测试。任何界面不得出现匹配分、录取概率、“建议投递”“已验证”或平台回执文案。
 
 ## 验收
-
 - 修改 Resume/JD 后，旧 Triage 与 Deep Review 内容和引用保持不变，新评估才读取新来源。
 - 非法路径、伪造事实、错误 excerpt、JD URL、额外字段、非有限值和 Provider 异常均安全失败且不写评估。
 - Triage/Deep Review 幂等、软删除并发、重复 Deep Review 均有回归测试。
 - 无 URL 或招聘平台网络请求；用户断言独立展示。
 - “去准备材料”不创建/更新 Material Kit；既有 Material Proposal、Evidence Bundle、Application 状态和事件测试保持全绿。
 - 使用临时隔离数据目录完成一次真实 Triage 和 Deep Review 验收，不输出密钥、完整简历或完整 JD。
-

@@ -20,7 +20,6 @@ import {
   CalendarOutlined,
   RobotOutlined,
   PlusOutlined,
-  LinkOutlined,
   AudioOutlined,
   FileTextOutlined,
 } from '@ant-design/icons';
@@ -29,11 +28,9 @@ import type { Application } from '@/types/application';
 import { STATUS_LABELS } from '@/types/application';
 import { listNotesByApp, createNote, deleteNote as removeNote, updateNote } from '@/services/notes';
 import { listEvents } from '@/services/events';
-import { analyzeJD } from '@/services/ai';
 import type { CreateNoteInput, InterviewNote } from '@/types/note';
 import { EVENT_TYPE_LABELS } from '@/types/event';
 import ScheduleEventForm from '@/components/ScheduleEventForm';
-import JDAnalyzeModal from './JDAnalyzeModal';
 import ReviewFormDrawer from './ReviewFormDrawer';
 import MaterialKitDrawer from './MaterialKitDrawer';
 import OpportunityFitReviewDrawer from './OpportunityFitReviewDrawer';
@@ -61,8 +58,6 @@ interface ApplicationDetailProps {
 export default function ApplicationDetail({ application, open, onClose, onMockInterview, onAskPilot, onAttachToPilot }: ApplicationDetailProps) {
   const queryClient = useQueryClient();
   const [form] = Form.useForm();
-  const [analyzing, setAnalyzing] = useState(false);
-  const [jdModalOpen, setJdModalOpen] = useState(false);
   const [eventFormOpen, setEventFormOpen] = useState(false);
   const [materialKitOpen, setMaterialKitOpen] = useState(false);
   const [opportunityFitOpen, setOpportunityFitOpen] = useState(false);
@@ -117,26 +112,6 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
     },
     onError: () => message.error('更新失败'),
   });
-
-  const handleAnalyze = async () => {
-    if (!application) return;
-    setAnalyzing(true);
-    try {
-      // Prefer the saved JD URL; if none, open the modal so the user pastes text.
-      if (application.job_url) {
-        await analyzeJD({ jd_url: application.job_url, application_id: application.id });
-        message.success('JD 分析完成，已保存');
-        queryClient.invalidateQueries({ queryKey: ['jd-analyses', application.id] });
-      } else {
-        setJdModalOpen(true);
-      }
-    } catch (e: any) {
-      const msg = e?.response?.data?.error ?? 'JD 分析失败';
-      message.error(msg);
-    } finally {
-      setAnalyzing(false);
-    }
-  };
 
   const closeDetail = () => {
     setEventFormOpen(false);
@@ -227,20 +202,6 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
         </div>
 
         <div className={styles.actionRow}>
-          {application.job_url && (
-            <a href={application.job_url} target="_blank" rel="noreferrer">
-              <LinkOutlined /> 查看 JD
-            </a>
-          )}
-          <Button
-            type="primary"
-            icon={<RobotOutlined />}
-            loading={analyzing}
-            onClick={handleAnalyze}
-            style={{ marginLeft: 12 }}
-          >
-            分析 JD
-          </Button>
           {onAskPilot && (
             <Button icon={<RobotOutlined />} onClick={() => onAskPilot(application)}>
               问 Pilot
@@ -401,11 +362,6 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
         )}
       </section>
 
-      <JDAnalyzeModal
-        open={jdModalOpen}
-        application={application}
-        onClose={() => setJdModalOpen(false)}
-      />
     </>
   );
 }

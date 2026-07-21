@@ -109,6 +109,7 @@ def validate_triage(payload: dict[str, Any], snapshot: dict[str, Any]) -> Valida
             item.get("evidence_refs"),
             snapshot,
             allow_jd=True,
+            require_jd=True,
             require_candidate=status != "unknown",
         )
         if status != "unknown" and not refs:
@@ -132,6 +133,7 @@ def validate_triage(payload: dict[str, Any], snapshot: dict[str, Any]) -> Valida
             item.get("evidence_refs"),
             snapshot,
             allow_jd=True,
+            require_jd=True,
             require=item.get("candidate_status") != "unknown",
             require_candidate=item.get("candidate_status") != "unknown",
         )
@@ -189,6 +191,7 @@ def validate_deep_review(
             item.get("evidence_refs"),
             snapshot,
             allow_jd=True,
+            require=True,
         )
 
     questions = _require_list(payload.get("questions_to_clarify"), "questions_to_clarify")
@@ -293,6 +296,7 @@ def _validate_refs(
     allow_jd: bool,
     require: bool = False,
     require_candidate: bool = False,
+    require_jd: bool = False,
 ) -> list[dict[str, str]]:
     if not isinstance(refs, list):
         raise OpportunityFitModelError("evidence_refs must be an array")
@@ -323,6 +327,8 @@ def _validate_refs(
         validated.append({"source": source, "path": path, "excerpt": excerpt})
     if require_candidate and not any(ref["source"] != "jd" for ref in validated):
         raise OpportunityFitModelError("candidate conclusion needs resume or user_assertion evidence")
+    if require_jd and not any(ref["source"] == "jd" for ref in validated):
+        raise OpportunityFitModelError("role requirement needs JD evidence")
     return validated
 
 
@@ -440,8 +446,11 @@ def _triage_system() -> str:
         "JD is only a job requirement and analysis direction; never use it as candidate fact. "
         "Candidate facts require exact resume or user_assertion refs. User assertions must be "
         "treated as user-provided and not externally verified. Excerpts must be copied exactly "
-        "from the frozen snapshot. Use empty evidence_refs only for unknown constraints or "
-        "unresolved questions. If there is no safe evidence, return an empty array."
+        "from the frozen snapshot. Every hard constraint and gap must include at least one JD "
+        "ref for the role requirement; when its candidate status is known, also include a "
+        "resume or user_assertion ref. Use empty evidence_refs only for unresolved questions "
+        "that are not stated as constraints or gaps. If there is no safe candidate evidence, "
+        "use unknown rather than inventing a candidate fact."
     )
 
 
@@ -457,8 +466,8 @@ def _deep_review_system() -> str:
         "kind:open_material_kit|add_assertion|record_deadline}. Each evidence ref is exactly "
         "{source:jd|resume|user_assertion, path:string, excerpt:string}; excerpts must match "
         "the frozen snapshot exactly. JD is not candidate evidence; it may appear in a "
-        "gaps_to_address ref only to restate a job requirement. User assertions remain "
-        "user-provided and not externally verified."
+        "gaps_to_address must contain at least one evidence ref; a JD ref may only restate a "
+        "job requirement. User assertions remain user-provided and not externally verified."
     )
 
 

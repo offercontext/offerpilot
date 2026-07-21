@@ -6025,6 +6025,7 @@ def _opportunity_fit_review_detail_json(review: Any) -> dict[str, Any]:
             },
             "jd": {
                 "source_label": jd.get("source_label", "") if isinstance(jd, dict) else "",
+                "text": jd.get("text", "") if isinstance(jd, dict) else "",
                 "sha256": jd.get("sha256") if isinstance(jd, dict) else None,
             },
             "candidate_assertions": assertions if isinstance(assertions, list) else [],

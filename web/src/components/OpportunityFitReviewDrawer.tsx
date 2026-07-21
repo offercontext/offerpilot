@@ -170,7 +170,11 @@ export default function OpportunityFitReviewDrawer({
     if (!application) return;
     try {
       setActionError(null);
-      setReview(await getOpportunityFitReview(application.id, reviewID));
+      const historicalReview = await getOpportunityFitReview(application.id, reviewID);
+      setResumeID(historicalReview.source.resume.id);
+      setJdText(historicalReview.source.jd.text);
+      setAssertionsText(historicalReview.source.candidate_assertions.map((item) => item.text).join('\n'));
+      setReview(historicalReview);
       setStage('review');
     } catch (error) {
       setActionError(getErrorMessage(error));
@@ -331,8 +335,8 @@ export default function OpportunityFitReviewDrawer({
               ))}
               <Button
                 type="primary"
-                onClick={() => onPrepareMaterials?.(review, jdText)}
-                disabled={!onPrepareMaterials}
+                onClick={() => onPrepareMaterials?.(review, review.source.jd.text)}
+                disabled={!onPrepareMaterials || !review.source.jd.text}
               >
                 去准备材料
               </Button>

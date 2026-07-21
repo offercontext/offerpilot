@@ -8,6 +8,7 @@ const state = vi.hoisted(() => ({
   deep: vi.fn(),
   get: vi.fn(),
   list: vi.fn(),
+  history: [] as Array<{ id: number; recommendation: string; created_at: string }>,
 }));
 
 vi.mock('@/services/resumes', () => ({
@@ -21,7 +22,9 @@ vi.mock('@/services/opportunityFitReviews', () => ({
 }));
 vi.mock('@tanstack/react-query', () => ({
   useQuery: (options: { queryKey?: unknown[]; queryFn: () => unknown }) => ({
-    data: options.queryKey?.[0] === 'resumes' ? [{ id: 11, name: 'Backend Resume', title: 'Backend Resume' }] : [],
+    data: options.queryKey?.[0] === 'resumes'
+      ? [{ id: 11, name: 'Backend Resume', title: 'Backend Resume' }]
+      : state.history,
     isFetching: false,
   }),
   useMutation: (options: { mutationFn: () => unknown; onSuccess?: (data: unknown) => void; onError?: (error: unknown) => void }) => ({
@@ -70,11 +73,11 @@ const application = { id: 7, company_name: 'Example Co.', position_name: 'Backen
 let root: Root | undefined;
 let container: HTMLDivElement | undefined;
 
-function render() {
+function render(onPrepareMaterials?: (review: unknown, jdText: string) => void) {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
-  act(() => root?.render(<OpportunityFitReviewDrawer application={application} open onClose={vi.fn()} />));
+  act(() => root?.render(<OpportunityFitReviewDrawer application={application} open onClose={vi.fn()} onPrepareMaterials={onPrepareMaterials} />));
   return container;
 }
 
@@ -83,13 +86,14 @@ beforeEach(() => {
   state.deep.mockReset();
   state.get.mockReset();
   state.list.mockReset();
+  state.history = [];
   state.list.mockResolvedValue([]);
   state.create.mockResolvedValue({
     id: 8,
     recommendation: 'hold',
     source: {
       resume: { id: 11, title: 'Backend Resume', sha256: 'resume' },
-      jd: { source_label: '用户粘贴 JD', sha256: 'jd' },
+      jd: { source_label: '用户粘贴 JD', sha256: 'jd', text: 'JD text' },
       candidate_assertions: [],
     },
     triage: {
@@ -102,6 +106,31 @@ beforeEach(() => {
       next_questions: ['clarify'],
     },
     deep_review: null,
+  });
+  state.get.mockResolvedValue({
+    id: 8,
+    recommendation: 'advance',
+    source: {
+      resume: { id: 11, title: 'Backend Resume', sha256: 'resume' },
+      jd: { source_label: 'Frozen JD', sha256: 'jd', text: 'Frozen JD text' },
+      candidate_assertions: [],
+    },
+    triage: {
+      summary: 'safe',
+      recommendation: 'advance',
+      hard_constraints: [],
+      fit_signals: [],
+      gaps: [],
+      deadline: { status: 'not_stated', text: '', evidence_refs: [] },
+      next_questions: [],
+    },
+    deep_review: {
+      strengths: [],
+      gaps_to_address: [],
+      questions_to_clarify: [],
+      recommended_path: 'prepare_materials',
+      next_actions: [],
+    },
   });
   vi.stubGlobal('crypto', { randomUUID: vi.fn(() => 'd4b4b5e8-0a3a-4a3e-8e4d-6bc7a04d36b0') });
 });
@@ -156,5 +185,22 @@ describe('OpportunityFitReviewDrawer', () => {
       jd_text: 'JD text',
       candidate_assertions: ['fact one', 'fact two'],
     }));
+  });
+
+  it('hands historical review frozen JD and resume to material preparation', async () => {
+    state.history = [{ id: 8, recommendation: 'advance', created_at: '2026-07-21T00:00:00Z' }];
+    const onPrepareMaterials = vi.fn();
+    const view = render(onPrepareMaterials);
+
+    await act(async () => {
+      view.querySelectorAll('button')[0]?.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    act(() => {
+      const buttons = [...view.querySelectorAll('button')];
+      buttons[buttons.length - 1]?.click();
+    });
+
+    expect(onPrepareMaterials).toHaveBeenCalledWith(expect.objectContaining({ id: 8 }), 'Frozen JD text');
   });
 });

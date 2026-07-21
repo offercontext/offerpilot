@@ -47,7 +47,7 @@ export interface OpportunityFitDeepReview {
 export interface OpportunityFitSource {
   application: { id: number; company_name: string; position_name: string };
   resume: { id: number; title: string; sha256: string };
-  jd: { source_label: string; sha256: string };
+  jd: { source_label: string; sha256: string; text: string };
   candidate_assertions: Array<{ index: number; text: string }>;
 }
 

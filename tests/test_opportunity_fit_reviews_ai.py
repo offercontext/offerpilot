@@ -50,7 +50,13 @@ def triage_payload() -> dict[str, object]:
                 "requirement": "Shanghai office",
                 "status": "unknown",
                 "explanation": "The JD mentions the location, but the materials do not establish availability.",
-                "evidence_refs": [],
+                "evidence_refs": [
+                    {
+                        "source": "jd",
+                        "path": "/text",
+                        "excerpt": "Must build reliable APIs. Kubernetes production experience preferred.",
+                    }
+                ],
             }
         ],
         "fit_signals": [
@@ -73,6 +79,11 @@ def triage_payload() -> dict[str, object]:
                 "kind": "preferred",
                 "candidate_status": "unknown",
                 "evidence_refs": [
+                    {
+                        "source": "jd",
+                        "path": "/text",
+                        "excerpt": "Must build reliable APIs. Kubernetes production experience preferred.",
+                    },
                     {
                         "source": "resume",
                         "path": "/raw_text",
@@ -159,6 +170,13 @@ def test_valid_deep_review_is_strictly_validated() -> None:
     assert result.payload["recommended_path"] == "clarify_first"
 
 
+def test_deep_review_rejects_uncited_gap() -> None:
+    payload = deep_review_payload()
+    payload["gaps_to_address"][0]["evidence_refs"] = []
+    with pytest.raises(OpportunityFitModelError):
+        validate_deep_review(payload, snapshot())
+
+
 def test_triage_rejects_extra_fields_and_invalid_recommendation() -> None:
     payload = triage_payload()
     payload["extra"] = "no"
@@ -205,6 +223,29 @@ def test_triage_rejects_jd_as_candidate_evidence() -> None:
     with pytest.raises(OpportunityFitModelError):
         validate_triage(payload, snapshot())
 
+
+def test_triage_requires_jd_evidence_for_role_requirements() -> None:
+    payload = triage_payload()
+    payload["hard_constraints"][0]["evidence_refs"] = [
+        {
+            "source": "resume",
+            "path": "/raw_text",
+            "excerpt": "Built APIs. Reviewed code.",
+        }
+    ]
+    with pytest.raises(OpportunityFitModelError):
+        validate_triage(payload, snapshot())
+
+    payload = triage_payload()
+    payload["gaps"][0]["evidence_refs"] = [
+        {
+            "source": "resume",
+            "path": "/raw_text",
+            "excerpt": "Built APIs. Reviewed code.",
+        }
+    ]
+    with pytest.raises(OpportunityFitModelError):
+        validate_triage(payload, snapshot())
 
 def test_triage_rejects_invalid_resume_path_and_excerpt() -> None:
     payload = triage_payload()

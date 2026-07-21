@@ -22,7 +22,9 @@ def _triage() -> dict[str, object]:
                 "requirement": "Shanghai office",
                 "status": "unknown",
                 "explanation": "Availability is not in the resume.",
-                "evidence_refs": [],
+                "evidence_refs": [
+                    {"source": "jd", "path": "/text", "excerpt": "Kubernetes preferred"}
+                ],
             }
         ],
         "fit_signals": [
@@ -41,6 +43,7 @@ def _triage() -> dict[str, object]:
                 "kind": "preferred",
                 "candidate_status": "unknown",
                 "evidence_refs": [
+                    {"source": "jd", "path": "/text", "excerpt": "Kubernetes preferred"},
                     {"source": "resume", "path": "/raw_text", "excerpt": "Built APIs"}
                 ],
             }
@@ -137,6 +140,7 @@ def test_api_creates_lists_and_deep_reviews_without_snapshot_leak(tmp_path) -> N
     detail = client.get(f"{path}/{body['id']}")
     assert detail.status_code == 200
     assert detail.json()["source"]["resume"]["title"] == "Backend Resume"
+    assert detail.json()["source"]["jd"]["text"] == "Kubernetes preferred"
 
     deep = client.post(f"{path}/{body['id']}/deep-review")
     assert deep.status_code == 201

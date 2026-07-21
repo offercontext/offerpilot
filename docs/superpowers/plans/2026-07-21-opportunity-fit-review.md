@@ -256,4 +256,3 @@ git commit -m "feat: AI add opportunity fit review"
 - 计划没有使用 URL 抓取、外部平台、自动投递、Pilot 写工具或匹配分。
 - `source_snapshot_json` 只在后端内部保存，API 输出不暴露完整快照。
 - Triage 与 Deep Review 的模型调用都在 session 关闭后进行，第二阶段均以 `BEGIN IMMEDIATE` 重新检查 Application。
-

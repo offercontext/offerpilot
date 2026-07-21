@@ -26,7 +26,9 @@ def _triage() -> dict[str, object]:
                 "requirement": "Shanghai office",
                 "status": "unknown",
                 "explanation": "Availability is not in the resume.",
-                "evidence_refs": [],
+                "evidence_refs": [
+                    {"source": "jd", "path": "/text", "excerpt": "Kubernetes preferred"}
+                ],
             }
         ],
         "fit_signals": [
@@ -45,6 +47,7 @@ def _triage() -> dict[str, object]:
                 "kind": "preferred",
                 "candidate_status": "unknown",
                 "evidence_refs": [
+                    {"source": "jd", "path": "/text", "excerpt": "Kubernetes preferred"},
                     {"source": "resume", "path": "/raw_text", "excerpt": "Built APIs"}
                 ],
             }
