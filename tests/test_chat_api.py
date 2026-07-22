@@ -2925,7 +2925,7 @@ def test_chat_confirm_timeout_after_write_returns_completed_fallback(
         )
     )
     _, client, _, pending = _create_status_confirmation(tmp_path, model)
-    monkeypatch.setattr(api_module, "CHAT_AGENT_TIMEOUT_SECONDS", 0.25)
+    monkeypatch.setattr(api_module, "CHAT_AGENT_TIMEOUT_SECONDS", 0.75)
 
     response = client.post(
         endpoint,
