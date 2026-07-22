@@ -209,6 +209,20 @@ describe('Pilot triage lifecycle', () => {
     });
   });
 
+  it('drops an unknown attempt key when a later history lookup proves the application missing', () => {
+    const store = createOpportunityFitDraftStore(7, 'draft-1');
+    store.dispatch({ type: 'set_attempt_key', key: 'attempt-unknown' });
+    store.dispatch({ type: 'set_error', error: 'opportunity_fit_result_unknown', disposition: 'unknown' });
+    store.dispatch({ type: 'set_phase', phase: 'confirm_triage' });
+
+    expect(cancelPilotTriage(store, { preserveAttempt: false })).toBe(true);
+    expect(store.getState()).toMatchObject({
+      phase: 'confirm_triage',
+      triageAttemptKey: null,
+      triageFailureDisposition: 'definite_no_write',
+    });
+  });
+
   it('preserves a retryable attempt when the Pilot context switches before a late response', async () => {
     const store = createOpportunityFitDraftStore(7, 'draft-1');
     store.dispatch({ type: 'set_resume', resumeID: 3 });

@@ -89,14 +89,24 @@ export function cancelPilotTriage(
   options: { preserveAttempt?: boolean } = {},
 ): boolean {
   const current = store.getState();
+  const preserveAttempt = options.preserveAttempt ?? true;
+
+  if (!preserveAttempt && current.triageAttemptKey) {
+    requestGenerations.set(store, (requestGenerations.get(store) ?? 0) + 1);
+    store.dispatch({ type: 'set_error', error: NOT_FOUND_ERROR, disposition: 'definite_no_write' });
+    if (current.phase === 'triage_loading') {
+      store.dispatch({ type: 'set_phase', phase: 'confirm_triage' });
+    }
+    return true;
+  }
+
   if (current.phase !== 'triage_loading' || !current.triageAttemptKey) return false;
 
   requestGenerations.set(store, (requestGenerations.get(store) ?? 0) + 1);
-  const preserveAttempt = options.preserveAttempt ?? true;
   store.dispatch({
     type: 'set_error',
-    error: preserveAttempt ? UNKNOWN_RESULT_ERROR : NOT_FOUND_ERROR,
-    disposition: preserveAttempt ? 'unknown' : 'definite_no_write',
+    error: UNKNOWN_RESULT_ERROR,
+    disposition: 'unknown',
   });
   store.dispatch({ type: 'set_phase', phase: 'confirm_triage' });
   return true;
