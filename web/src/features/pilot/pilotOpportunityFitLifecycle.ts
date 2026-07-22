@@ -3,8 +3,10 @@ import type { OpportunityFitReview } from '@/types/opportunityFitReview';
 import {
   classifyOpportunityFitFailure,
   normalizeOpportunityFitAssertions,
+  isValidOpportunityFitReview,
   type OpportunityFitDraftState,
   type OpportunityFitDraftStore,
+  type OpportunityFitResumeEvidenceProof,
 } from './opportunityFitDraft';
 
 export interface PilotTriagePayload {
@@ -22,6 +24,7 @@ interface PilotTriageRunOptions {
   draft: OpportunityFitDraftState;
   existingKey: string | null;
   createReview: (applicationId: number, payload: PilotTriagePayload) => Promise<OpportunityFitReview>;
+  resumeEvidenceProof?: OpportunityFitResumeEvidenceProof | null;
   isContextCurrent?: () => boolean;
 }
 
@@ -35,7 +38,22 @@ interface PilotDeepReviewRunOptions {
   draft: OpportunityFitDraftState;
   review: OpportunityFitReview;
   createReview: (applicationId: number, reviewId: number) => Promise<OpportunityFitReview>;
+  resumeEvidenceProof?: OpportunityFitResumeEvidenceProof | null;
   isContextCurrent?: () => boolean;
+}
+
+const INVALID_RESPONSE_ERROR = getOpportunityFitErrorMessage({
+  response: { status: 502, data: { error_code: 'opportunity_fit_unverifiable' } },
+});
+
+function isVerifiedReview(
+  value: unknown,
+  resumeEvidenceProof?: OpportunityFitResumeEvidenceProof | null,
+): value is OpportunityFitReview {
+  return isValidOpportunityFitReview(value, {
+    resumeEvidenceProof: resumeEvidenceProof ?? undefined,
+    requireResumeEvidenceProof: Boolean(resumeEvidenceProof),
+  });
 }
 
 function isRunCurrent(
@@ -85,6 +103,15 @@ export async function runPilotTriage(options: PilotTriageRunOptions): Promise<vo
   try {
     const result = await options.createReview(options.applicationId, payload);
     if (!isRunCurrent(options, triageAttemptKey, generation, normalizedInput)) return;
+    if (!isVerifiedReview(result, options.resumeEvidenceProof)) {
+      options.store.dispatch({
+        type: 'set_error',
+        error: INVALID_RESPONSE_ERROR,
+        disposition: 'unknown',
+      });
+      options.store.dispatch({ type: 'set_phase', phase: 'confirm_triage' });
+      return;
+    }
     options.store.dispatch({ type: 'set_review', review: result });
   } catch (error) {
     if (!isRunCurrent(options, triageAttemptKey, generation, normalizedInput)) return;
@@ -124,6 +151,15 @@ export async function runPilotDeepReview(options: PilotDeepReviewRunOptions): Pr
   try {
     const result = await options.createReview(options.applicationId, options.review.id);
     if (!isDeepReviewRunCurrent(options, generation)) return;
+    if (!isVerifiedReview(result, options.resumeEvidenceProof)) {
+      options.store.dispatch({
+        type: 'set_error',
+        error: INVALID_RESPONSE_ERROR,
+        disposition: 'unknown',
+      });
+      options.store.dispatch({ type: 'set_phase', phase: 'triage_ready' });
+      return;
+    }
     options.store.dispatch({ type: 'set_review', review: result });
   } catch (error) {
     if (!isDeepReviewRunCurrent(options, generation)) return;

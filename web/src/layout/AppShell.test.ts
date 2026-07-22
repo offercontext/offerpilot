@@ -3,6 +3,9 @@ import source from './AppShell.tsx?raw';
 import calendarView from '@/components/CalendarView.tsx?raw';
 import offerCenterView from '@/components/OfferCenterView.tsx?raw';
 import resumeLibraryView from '@/components/ResumeLibraryView.tsx?raw';
+import { createOpportunityFitDraftStore } from '@/features/pilot/opportunityFitDraft';
+import { runPilotTriage } from '@/features/pilot/pilotOpportunityFitLifecycle';
+import { consumeMaterialKitHandoff, writeMaterialKitHandoff } from '@/features/pilot/materialKitHandoff';
 
 describe('AppShell source contract', () => {
   it('closes stale application detail when a selected application disappears', () => {
@@ -19,17 +22,32 @@ describe('AppShell source contract', () => {
     expect(source).toContain('onDataChanged={refreshWorkspaceData}');
   });
 
-  it('delegates Pilot triage to a lifecycle harness that owns payload and stale-response checks', () => {
-    expect(source).toContain("import { runPilotDeepReview, runPilotTriage } from '@/features/pilot/pilotOpportunityFitLifecycle';");
-    expect(source).toContain('runPilotTriage({');
-    expect(source).toContain('onRetryTriage={startPilotTriage}');
-  });
+  it('exercises the Pilot runner with invalid provider output and frozen handoff consumption', async () => {
+    const store = createOpportunityFitDraftStore(7, 'draft-1');
+    store.dispatch({ type: 'set_resume', resumeID: 3 });
+    store.dispatch({ type: 'set_jd', jdText: 'JD' });
 
-  it('delegates Pilot deep review to the lifecycle harness with context checks', () => {
-    expect(source).toContain("import { runPilotDeepReview, runPilotTriage } from '@/features/pilot/pilotOpportunityFitLifecycle';");
-    expect(source).toContain('runPilotDeepReview({');
-    expect(source).toContain('createReview: createOpportunityFitDeepReview');
-    expect(source).toContain('isContextCurrent: () => {');
+    await runPilotTriage({
+      store,
+      applicationId: 7,
+      pilotDraftKey: 'draft-1',
+      draft: store.getState(),
+      existingKey: 'attempt-1',
+      createReview: async () => ({ invalid: true } as never),
+    });
+
+    expect(store.getState().phase).toBe('confirm_triage');
+    expect(store.getState().triageAttemptKey).toBe('attempt-1');
+    expect(store.getState().actionError).toBeTruthy();
+
+    writeMaterialKitHandoff({
+      applicationId: 7,
+      resumeId: 3,
+      jdText: 'JD',
+      resumeEvidenceProof: { resumeId: 3, sha256: 'hash', contentJson: {} },
+    });
+    expect(consumeMaterialKitHandoff(7)?.jdText).toBe('JD');
+    expect(consumeMaterialKitHandoff(7)).toBeNull();
   });
 
   it('renders Pilot as a normal tab with the expanded assistant workspace', () => {

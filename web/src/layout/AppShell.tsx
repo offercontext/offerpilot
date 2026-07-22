@@ -12,6 +12,7 @@ import { createOpportunityFitReview, createOpportunityFitDeepReview } from '@/se
 import PilotOpportunityFitCard, { type PilotOpportunityFitMaterialHandoff } from '@/features/pilot/PilotOpportunityFitCard';
 import {
   createOpportunityFitDraftStore,
+  removeOpportunityFitDraftStore,
   type OpportunityFitDraftAction,
   type OpportunityFitDraftState,
   type OpportunityFitDraftStore,
@@ -137,6 +138,35 @@ function AppShellContent() {
     typeof window === 'undefined' ? false : window.matchMedia('(min-width: 1180px)').matches
   );
   const pilotDraftStoresRef = useRef(new Map<string, OpportunityFitDraftStore>());
+  const pilotDraftInFlightRef = useRef(new Map<string, number>());
+  const pilotDraftCleanupPendingRef = useRef(new Set<string>());
+  const pilotDraftKey = (context: { applicationId: number; pilotDraftKey: string }) =>
+    `${context.applicationId}:${context.pilotDraftKey}`;
+  const schedulePilotDraftCleanup = (context: { applicationId: number; pilotDraftKey: string }) => {
+    const key = pilotDraftKey(context);
+    if ((pilotDraftInFlightRef.current.get(key) ?? 0) > 0) {
+      pilotDraftCleanupPendingRef.current.add(key);
+      return;
+    }
+    removeOpportunityFitDraftStore(pilotDraftStoresRef.current, key);
+  };
+  const beginPilotDraftRequest = (context: { applicationId: number; pilotDraftKey: string }) => {
+    const key = pilotDraftKey(context);
+    pilotDraftInFlightRef.current.set(key, (pilotDraftInFlightRef.current.get(key) ?? 0) + 1);
+    pilotDraftCleanupPendingRef.current.delete(key);
+  };
+  const finishPilotDraftRequest = (context: { applicationId: number; pilotDraftKey: string }) => {
+    const key = pilotDraftKey(context);
+    const remaining = (pilotDraftInFlightRef.current.get(key) ?? 1) - 1;
+    if (remaining > 0) {
+      pilotDraftInFlightRef.current.set(key, remaining);
+      return;
+    }
+    pilotDraftInFlightRef.current.delete(key);
+    if (pilotDraftCleanupPendingRef.current.delete(key)) {
+      removeOpportunityFitDraftStore(pilotDraftStoresRef.current, key);
+    }
+  };
   const kanbanSensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   );
@@ -390,6 +420,8 @@ function AppShellContent() {
 
   const openApplicationDetail = (app: Application) => {
     setAISettingsOpen(false);
+    const currentPilot = pilotApplicationContextRef.current;
+    if (currentPilot) schedulePilotDraftCleanup(currentPilot);
     setPilotApplicationContext(null);
     setSelected(app);
   };
@@ -397,6 +429,10 @@ function AppShellContent() {
   const startPilotOpportunityFit = (app: Application) => {
     setAISettingsOpen(false);
     setSelected(null);
+    const currentPilot = pilotApplicationContextRef.current;
+    if (currentPilot && currentPilot.applicationId !== app.id) {
+      schedulePilotDraftCleanup(currentPilot);
+    }
     setPilotApplicationContext((current) => current?.applicationId === app.id
       ? current
       : { applicationId: app.id, pilotDraftKey: crypto.randomUUID() });
@@ -411,45 +447,59 @@ function AppShellContent() {
     if (!pilotApplicationContext || draft.applicationId !== pilotApplicationContext.applicationId) return;
     const store = pilotDraftStore;
     const applicationContext = pilotApplicationContext;
-    await runPilotTriage({
-      store,
-      applicationId: draft.applicationId,
-      pilotDraftKey: applicationContext.pilotDraftKey,
-      draft,
-      existingKey,
-      createReview: createOpportunityFitReview,
-      isContextCurrent: () => {
-        const current = pilotApplicationContextRef.current;
-        return current?.applicationId === applicationContext.applicationId
-          && current.pilotDraftKey === applicationContext.pilotDraftKey
-          && pilotDraftStoresRef.current.get(`${applicationContext.applicationId}:${applicationContext.pilotDraftKey}`) === store;
-      },
-    });
+    beginPilotDraftRequest(applicationContext);
+    try {
+      await runPilotTriage({
+        store,
+        applicationId: draft.applicationId,
+        pilotDraftKey: applicationContext.pilotDraftKey,
+        draft,
+        existingKey,
+        createReview: createOpportunityFitReview,
+        resumeEvidenceProof,
+        isContextCurrent: () => {
+          const current = pilotApplicationContextRef.current;
+          return current?.applicationId === applicationContext.applicationId
+            && current.pilotDraftKey === applicationContext.pilotDraftKey
+            && pilotDraftStoresRef.current.get(pilotDraftKey(applicationContext)) === store;
+        },
+      });
+    } finally {
+      finishPilotDraftRequest(applicationContext);
+    }
   };
 
   const startPilotDeepReview = async (draft: OpportunityFitDraftState, review: OpportunityFitReview) => {
     if (!pilotApplicationContext || draft.applicationId !== pilotApplicationContext.applicationId) return;
     const store = pilotDraftStore;
     const applicationContext = pilotApplicationContext;
-    await runPilotDeepReview({
-      store,
-      applicationId: draft.applicationId,
-      pilotDraftKey: applicationContext.pilotDraftKey,
-      draft,
-      review,
-      createReview: createOpportunityFitDeepReview,
-      isContextCurrent: () => {
-        const current = pilotApplicationContextRef.current;
-        return current?.applicationId === applicationContext.applicationId
-          && current.pilotDraftKey === applicationContext.pilotDraftKey
-          && pilotDraftStoresRef.current.get(`${applicationContext.applicationId}:${applicationContext.pilotDraftKey}`) === store;
-      },
-    });
+    beginPilotDraftRequest(applicationContext);
+    try {
+      await runPilotDeepReview({
+        store,
+        applicationId: draft.applicationId,
+        pilotDraftKey: applicationContext.pilotDraftKey,
+        draft,
+        review,
+        createReview: createOpportunityFitDeepReview,
+        resumeEvidenceProof,
+        isContextCurrent: () => {
+          const current = pilotApplicationContextRef.current;
+          return current?.applicationId === applicationContext.applicationId
+            && current.pilotDraftKey === applicationContext.pilotDraftKey
+            && pilotDraftStoresRef.current.get(pilotDraftKey(applicationContext)) === store;
+        },
+      });
+    } finally {
+      finishPilotDraftRequest(applicationContext);
+    }
   };
 
   const preparePilotMaterials = (handoff: PilotOpportunityFitMaterialHandoff) => {
     writeMaterialKitHandoff(handoff);
     const app = apps.find((item) => item.id === handoff.applicationId);
+    const currentPilot = pilotApplicationContextRef.current;
+    if (currentPilot) schedulePilotDraftCleanup(currentPilot);
     setPilotApplicationContext(null);
     setView('board');
     if (app) setSelected(app);
@@ -602,6 +652,8 @@ function AppShellContent() {
                   isTriageLoading={pilotDraft.phase === 'triage_loading'}
                   isDeepReviewLoading={pilotDraft.phase === 'deep_review_loading'}
                   onCancel={() => {
+                    const currentPilot = pilotApplicationContextRef.current;
+                    if (currentPilot) schedulePilotDraftCleanup(currentPilot);
                     setPilotApplicationContext(null);
                     setView('dashboard');
                   }}

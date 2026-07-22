@@ -10,6 +10,7 @@ import {
   createOpportunityFitDraftStore,
   normalizeOpportunityFitAssertions,
   opportunityFitDraftReducer,
+  removeOpportunityFitDraftStore,
   isValidOpportunityFitReview,
   type OpportunityFitDraftStore,
 } from './opportunityFitDraft';
@@ -654,5 +655,19 @@ describe('opportunity fit draft external store', () => {
     act(() => store.dispatch({ type: 'set_phase', phase: 'triage_loading' }));
     expect(store.getState().triageAttemptKey).toBe('attempt-1');
     expect(secondMount.querySelector('[data-testid="draft-state"]')?.textContent).toBe('attempt-1');
+  });
+
+  it('removes only the expected store during explicit lifecycle cleanup', () => {
+    const stores = new Map<string, OpportunityFitDraftStore>();
+    const active = createOpportunityFitDraftStore(7, 'active');
+    const replacement = createOpportunityFitDraftStore(7, 'replacement');
+    stores.set('7:active', active);
+    stores.set('7:replacement', replacement);
+
+    expect(removeOpportunityFitDraftStore(stores, '7:active', replacement)).toBe(false);
+    expect(stores.has('7:active')).toBe(true);
+    expect(removeOpportunityFitDraftStore(stores, '7:active', active)).toBe(true);
+    expect(stores.has('7:active')).toBe(false);
+    expect(stores.has('7:replacement')).toBe(true);
   });
 });

@@ -55,6 +55,28 @@ function deferred<T>() {
 }
 
 describe('Pilot triage lifecycle', () => {
+  it('fails safely when the provider returns an invalid response body', async () => {
+    const store = createOpportunityFitDraftStore(7, 'draft-1');
+    store.dispatch({ type: 'set_resume', resumeID: 3 });
+    store.dispatch({ type: 'set_jd', jdText: 'JD' });
+
+    await runPilotTriage({
+      store,
+      applicationId: 7,
+      pilotDraftKey: 'draft-1',
+      draft: store.getState(),
+      existingKey: 'attempt-invalid',
+      createReview: async () => ({ invalid: true } as unknown as OpportunityFitReview),
+    });
+
+    expect(store.getState().review).toBeNull();
+    expect(store.getState().phase).toBe('confirm_triage');
+    expect(store.getState().actionError).toBeTruthy();
+    expect(store.getState().triageFailureDisposition).toBe('unknown');
+    expect(store.getState().triageAttemptKey).toBe('attempt-invalid');
+    expect(store.getState().actionError).not.toContain('invalid');
+  });
+
   it('discards a response after the draft input changes while the request is pending', async () => {
     const store = createOpportunityFitDraftStore(7, 'draft-1');
     store.dispatch({ type: 'set_resume', resumeID: 3 });
@@ -138,6 +160,25 @@ describe('Pilot triage lifecycle', () => {
 });
 
 describe('Pilot deep review lifecycle', () => {
+  it('fails safely when Deep Review returns an invalid response body', async () => {
+    const store = createOpportunityFitDraftStore(7, 'draft-1');
+    store.dispatch({ type: 'set_review', review });
+
+    await runPilotDeepReview({
+      store,
+      applicationId: 7,
+      pilotDraftKey: 'draft-1',
+      draft: store.getState(),
+      review,
+      createReview: async () => ({ ...deepReview, deep_review: {} } as unknown as OpportunityFitReview),
+    });
+
+    expect(store.getState().review).toBe(review);
+    expect(store.getState().phase).toBe('triage_ready');
+    expect(store.getState().actionError).toBeTruthy();
+    expect(store.getState().triageFailureDisposition).toBe('unknown');
+  });
+
   it('discards a deep-review response after the Pilot context is canceled', async () => {
     const store = createOpportunityFitDraftStore(7, 'draft-1');
     store.dispatch({ type: 'set_review', review });

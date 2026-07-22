@@ -67,6 +67,15 @@ export interface OpportunityFitDraftStore {
   subscribe: (listener: () => void) => () => void;
 }
 
+export function removeOpportunityFitDraftStore(
+  stores: Map<string, OpportunityFitDraftStore>,
+  key: string,
+  expectedStore?: OpportunityFitDraftStore,
+): boolean {
+  if (expectedStore && stores.get(key) !== expectedStore) return false;
+  return stores.delete(key);
+}
+
 const OPPORTUNITY_FIT_DRAFT_PHASES: ReadonlySet<string> = new Set([
   'collect_input',
   'confirm_triage',
