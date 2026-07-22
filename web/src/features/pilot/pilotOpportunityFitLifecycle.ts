@@ -26,6 +26,17 @@ interface PilotTriageRunOptions {
 }
 
 const requestGenerations = new WeakMap<OpportunityFitDraftStore, number>();
+const deepReviewRequestGenerations = new WeakMap<OpportunityFitDraftStore, number>();
+
+interface PilotDeepReviewRunOptions {
+  store: OpportunityFitDraftStore;
+  applicationId: number;
+  pilotDraftKey: string;
+  draft: OpportunityFitDraftState;
+  review: OpportunityFitReview;
+  createReview: (applicationId: number, reviewId: number) => Promise<OpportunityFitReview>;
+  isContextCurrent?: () => boolean;
+}
 
 function isRunCurrent(
   options: PilotTriageRunOptions,
@@ -84,5 +95,44 @@ export async function runPilotTriage(options: PilotTriageRunOptions): Promise<vo
       disposition,
     });
     options.store.dispatch({ type: 'set_phase', phase: 'confirm_triage' });
+  }
+}
+
+function isDeepReviewRunCurrent(
+  options: PilotDeepReviewRunOptions,
+  generation: number,
+): boolean {
+  const current = options.store.getState();
+  return deepReviewRequestGenerations.get(options.store) === generation
+    && options.isContextCurrent?.() !== false
+    && current.applicationId === options.applicationId
+    && current.pilotDraftKey === options.pilotDraftKey
+    && current.resumeID === options.draft.resumeID
+    && current.jdText === options.draft.jdText
+    && current.assertionsText === options.draft.assertionsText
+    && current.review?.id === options.review.id
+    && current.phase === 'deep_review_loading';
+}
+
+export async function runPilotDeepReview(options: PilotDeepReviewRunOptions): Promise<void> {
+  const generation = (deepReviewRequestGenerations.get(options.store) ?? 0) + 1;
+  deepReviewRequestGenerations.set(options.store, generation);
+
+  options.store.dispatch({ type: 'set_error', error: null, disposition: null });
+  options.store.dispatch({ type: 'set_phase', phase: 'deep_review_loading' });
+
+  try {
+    const result = await options.createReview(options.applicationId, options.review.id);
+    if (!isDeepReviewRunCurrent(options, generation)) return;
+    options.store.dispatch({ type: 'set_review', review: result });
+  } catch (error) {
+    if (!isDeepReviewRunCurrent(options, generation)) return;
+    const disposition = classifyOpportunityFitFailure(error);
+    options.store.dispatch({
+      type: 'set_error',
+      error: getOpportunityFitErrorMessage(error),
+      disposition,
+    });
+    options.store.dispatch({ type: 'set_phase', phase: 'triage_ready' });
   }
 }

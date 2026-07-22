@@ -67,15 +67,18 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
     resumeID?: number;
     jdSnapshot?: string;
   }>({});
+  const [materialKitApplicationId, setMaterialKitApplicationId] = useState<number | null>(null);
   const [editingNote, setEditingNote] = useState<InterviewNote | null>(null);
 
   useEffect(() => {
     setMaterialKitPrefill({});
     setMaterialKitOpen(false);
+    setMaterialKitApplicationId(null);
     if (!application || !open) return;
     const handoff = consumeMaterialKitHandoff(application.id);
     if (!handoff) return;
     setMaterialKitPrefill({ resumeID: handoff.resumeId, jdSnapshot: handoff.jdText });
+    setMaterialKitApplicationId(application.id);
     setMaterialKitOpen(true);
   }, [application?.id, open]);
 
@@ -128,6 +131,7 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
   const closeDetail = () => {
     setEventFormOpen(false);
     setMaterialKitOpen(false);
+    setMaterialKitApplicationId(null);
     setOpportunityFitOpen(false);
     setMaterialKitPrefill({});
     setEditingNote(null);
@@ -163,12 +167,16 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
     );
   }
 
-  if (materialKitOpen) {
+  if (materialKitOpen && materialKitApplicationId === application.id) {
     return (
       <MaterialKitDrawer
         application={application}
         open={materialKitOpen}
-        onClose={() => setMaterialKitOpen(false)}
+        onClose={() => {
+          setMaterialKitOpen(false);
+          setMaterialKitApplicationId(null);
+          setMaterialKitPrefill({});
+        }}
         initialResumeID={materialKitPrefill.resumeID}
         initialJdSnapshot={materialKitPrefill.jdSnapshot}
       />
@@ -183,6 +191,7 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
         onClose={() => setOpportunityFitOpen(false)}
         onPrepareMaterials={(review: OpportunityFitReview, jdText: string) => {
           setMaterialKitPrefill({ resumeID: review.source.resume.id, jdSnapshot: jdText });
+          setMaterialKitApplicationId(application.id);
           setOpportunityFitOpen(false);
           setMaterialKitOpen(true);
         }}
@@ -226,7 +235,10 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
           )}
           <Button
             icon={<FileTextOutlined />}
-            onClick={() => setMaterialKitOpen(true)}
+            onClick={() => {
+              setMaterialKitApplicationId(application.id);
+              setMaterialKitOpen(true);
+            }}
             style={{ marginLeft: 8 }}
           >
             材料包

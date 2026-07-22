@@ -4,6 +4,8 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { writeMaterialKitHandoff } from '@/features/pilot/materialKitHandoff';
 
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
 const state = vi.hoisted(() => ({
   materialProps: vi.fn(),
   analyzeJD: vi.fn(),
@@ -30,9 +32,13 @@ vi.mock('./PilotAttachmentHandle', () => ({ createPilotAttachmentDragBinding: ()
 vi.mock('./ScheduleEventForm', () => ({ default: () => null }));
 vi.mock('./ReviewFormDrawer', () => ({ default: () => null }));
 vi.mock('./MaterialKitDrawer', () => ({
-  default: (props: { initialResumeID?: number; initialJdSnapshot?: string }) => {
+  default: (props: { initialResumeID?: number; initialJdSnapshot?: string; onClose?: () => void }) => {
     state.materialProps(props);
-    return <div data-testid="material-kit" data-resume-id={props.initialResumeID} data-jd={props.initialJdSnapshot} />;
+    return (
+      <div data-testid="material-kit" data-resume-id={props.initialResumeID} data-jd={props.initialJdSnapshot}>
+        <button type="button" aria-label="close material kit" onClick={props.onClose}>close</button>
+      </div>
+    );
   },
 }));
 vi.mock('./OpportunityFitReviewDrawer', () => ({
@@ -68,7 +74,9 @@ vi.mock('antd', () => {
     Text: (props: { children: ReactNode }) => <span>{props.children}</span>,
   };
   return {
-    Button: (props: React.ButtonHTMLAttributes<HTMLButtonElement>) => <button {...props}>{props.children}</button>,
+    Button: ({ children, htmlType: _htmlType, loading: _loading, icon: _icon, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { htmlType?: string; loading?: boolean; icon?: ReactNode }) => (
+      <button {...props}>{children}</button>
+    ),
     Divider: () => <hr />,
     Empty: (props: { description?: ReactNode }) => <div>{props.description}</div>,
     Form,
@@ -167,6 +175,29 @@ describe('ApplicationDetail opportunity fit handoff', () => {
     act(() => root?.render(<ApplicationDetail application={otherApplication} open onClose={vi.fn()} />));
     await act(async () => { await Promise.resolve(); });
     expect(container?.querySelector('[data-testid="material-kit"]')).toBeNull();
+  });
+
+  it('clears the consumed material prefill immediately when Material Kit closes', async () => {
+    writeMaterialKitHandoff({
+      applicationId: 7,
+      resumeId: 12,
+      jdText: 'Frozen Pilot JD',
+      resumeEvidenceProof: { resumeId: 12, sha256: 'hash', contentJson: { raw_text: 'resume' } },
+    });
+
+    act(() => root?.render(<ApplicationDetail application={application} open onClose={vi.fn()} />));
+    await act(async () => { await Promise.resolve(); });
+    expect(container?.querySelector('[data-testid="material-kit"]')).not.toBeNull();
+
+    act(() => {
+      (container?.querySelector('[aria-label="close material kit"]') as HTMLButtonElement)?.click();
+    });
+
+    expect(container?.querySelector('[data-testid="material-kit"]')).toBeNull();
+    expect(state.materialProps.mock.calls[state.materialProps.mock.calls.length - 1]?.[0]).toMatchObject({
+      initialResumeID: 12,
+      initialJdSnapshot: 'Frozen Pilot JD',
+    });
   });
 
   it('exposes the Application-scoped Pilot evaluation entry without URL analysis', () => {

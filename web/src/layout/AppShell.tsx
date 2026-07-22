@@ -9,17 +9,15 @@ import { ONBOARDING_QUERY_KEY } from '@/services/onboarding';
 import { uploadResume } from '@/services/resumes';
 import { listResumes } from '@/services/resumes';
 import { createOpportunityFitReview, createOpportunityFitDeepReview } from '@/services/opportunityFitReviews';
-import { getOpportunityFitErrorMessage } from '@/components/opportunityFitCopy';
 import PilotOpportunityFitCard, { type PilotOpportunityFitMaterialHandoff } from '@/features/pilot/PilotOpportunityFitCard';
 import {
-  classifyOpportunityFitFailure,
   createOpportunityFitDraftStore,
   type OpportunityFitDraftAction,
   type OpportunityFitDraftState,
   type OpportunityFitDraftStore,
   type OpportunityFitResumeEvidenceProof,
 } from '@/features/pilot/opportunityFitDraft';
-import { runPilotTriage } from '@/features/pilot/pilotOpportunityFitLifecycle';
+import { runPilotDeepReview, runPilotTriage } from '@/features/pilot/pilotOpportunityFitLifecycle';
 import { writeMaterialKitHandoff } from '@/features/pilot/materialKitHandoff';
 import type { Application } from '@/types/application';
 import type { OpportunityFitReview } from '@/types/opportunityFitReview';
@@ -409,11 +407,6 @@ function AppShellContent() {
     if (pilotApplicationContext) pilotDraftStore.dispatch(action);
   };
 
-  const showPilotError = (error: unknown) => {
-    const disposition = classifyOpportunityFitFailure(error);
-    dispatchPilotDraft({ type: 'set_error', error: getOpportunityFitErrorMessage(error), disposition });
-  };
-
   const startPilotTriage = async (draft: OpportunityFitDraftState, existingKey: string | null) => {
     if (!pilotApplicationContext || draft.applicationId !== pilotApplicationContext.applicationId) return;
     const store = pilotDraftStore;
@@ -434,15 +427,24 @@ function AppShellContent() {
     });
   };
 
-  const startPilotDeepReview = async (_draft: OpportunityFitDraftState, review: OpportunityFitReview) => {
-    dispatchPilotDraft({ type: 'set_phase', phase: 'deep_review_loading' });
-    try {
-      const result = await createOpportunityFitDeepReview(review.application_id, review.id);
-      dispatchPilotDraft({ type: 'set_review', review: result });
-    } catch (error) {
-      showPilotError(error);
-      dispatchPilotDraft({ type: 'set_phase', phase: 'triage_ready' });
-    }
+  const startPilotDeepReview = async (draft: OpportunityFitDraftState, review: OpportunityFitReview) => {
+    if (!pilotApplicationContext || draft.applicationId !== pilotApplicationContext.applicationId) return;
+    const store = pilotDraftStore;
+    const applicationContext = pilotApplicationContext;
+    await runPilotDeepReview({
+      store,
+      applicationId: draft.applicationId,
+      pilotDraftKey: applicationContext.pilotDraftKey,
+      draft,
+      review,
+      createReview: createOpportunityFitDeepReview,
+      isContextCurrent: () => {
+        const current = pilotApplicationContextRef.current;
+        return current?.applicationId === applicationContext.applicationId
+          && current.pilotDraftKey === applicationContext.pilotDraftKey
+          && pilotDraftStoresRef.current.get(`${applicationContext.applicationId}:${applicationContext.pilotDraftKey}`) === store;
+      },
+    });
   };
 
   const preparePilotMaterials = (handoff: PilotOpportunityFitMaterialHandoff) => {

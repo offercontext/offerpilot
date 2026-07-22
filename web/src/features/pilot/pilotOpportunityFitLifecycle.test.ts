@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createOpportunityFitDraftStore } from './opportunityFitDraft';
-import { runPilotTriage } from './pilotOpportunityFitLifecycle';
+import { runPilotDeepReview, runPilotTriage } from './pilotOpportunityFitLifecycle';
 import type { OpportunityFitReview } from '@/types/opportunityFitReview';
 
 const review = {
@@ -31,6 +31,20 @@ const review = {
     next_questions: [],
   },
   deep_review: null,
+} satisfies OpportunityFitReview;
+
+const deepReview = {
+  ...review,
+  status: 'deep_reviewed',
+  deep_review_sha256: 'deep',
+  deep_reviewed_at: '2026-07-22T00:01:00Z',
+  deep_review: {
+    strengths: [],
+    gaps_to_address: [],
+    questions_to_clarify: [],
+    recommended_path: 'prepare_materials',
+    next_actions: [],
+  },
 } satisfies OpportunityFitReview;
 
 function deferred<T>() {
@@ -120,5 +134,67 @@ describe('Pilot triage lifecycle', () => {
     second.resolve(review);
     await secondRun;
     expect(store.getState().review?.id).toBe(review.id);
+  });
+});
+
+describe('Pilot deep review lifecycle', () => {
+  it('discards a deep-review response after the Pilot context is canceled', async () => {
+    const store = createOpportunityFitDraftStore(7, 'draft-1');
+    store.dispatch({ type: 'set_review', review });
+    const request = deferred<OpportunityFitReview>();
+    let contextCurrent = true;
+    const run = runPilotDeepReview({
+      store,
+      applicationId: 7,
+      pilotDraftKey: 'draft-1',
+      draft: store.getState(),
+      review,
+      createReview: () => request.promise,
+      isContextCurrent: () => contextCurrent,
+    });
+
+    contextCurrent = false;
+    request.resolve(deepReview);
+    await run;
+
+    expect(store.getState().review).toBe(review);
+    expect(store.getState().phase).toBe('deep_review_loading');
+  });
+
+  it('accepts only the newest deep-review response for the same review', async () => {
+    const store = createOpportunityFitDraftStore(7, 'draft-1');
+    store.dispatch({ type: 'set_review', review });
+    const first = deferred<OpportunityFitReview>();
+    const second = deferred<OpportunityFitReview>();
+    let calls = 0;
+    const createReview = () => {
+      calls += 1;
+      return calls === 1 ? first.promise : second.promise;
+    };
+    const firstRun = runPilotDeepReview({
+      store,
+      applicationId: 7,
+      pilotDraftKey: 'draft-1',
+      draft: store.getState(),
+      review,
+      createReview,
+    });
+    const secondRun = runPilotDeepReview({
+      store,
+      applicationId: 7,
+      pilotDraftKey: 'draft-1',
+      draft: store.getState(),
+      review,
+      createReview,
+    });
+
+    first.resolve(deepReview);
+    await firstRun;
+    expect(store.getState().phase).toBe('deep_review_loading');
+    second.resolve(deepReview);
+    await secondRun;
+    expect(calls).toBe(2);
+    expect(store.getState().review?.deep_review).toEqual(deepReview.deep_review);
+    expect(store.getState().phase).toBe('deep_review_ready');
   });
 });

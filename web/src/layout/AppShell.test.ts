@@ -20,9 +20,16 @@ describe('AppShell source contract', () => {
   });
 
   it('delegates Pilot triage to a lifecycle harness that owns payload and stale-response checks', () => {
-    expect(source).toContain("import { runPilotTriage } from '@/features/pilot/pilotOpportunityFitLifecycle';");
+    expect(source).toContain("import { runPilotDeepReview, runPilotTriage } from '@/features/pilot/pilotOpportunityFitLifecycle';");
     expect(source).toContain('runPilotTriage({');
     expect(source).toContain('onRetryTriage={startPilotTriage}');
+  });
+
+  it('delegates Pilot deep review to the lifecycle harness with context checks', () => {
+    expect(source).toContain("import { runPilotDeepReview, runPilotTriage } from '@/features/pilot/pilotOpportunityFitLifecycle';");
+    expect(source).toContain('runPilotDeepReview({');
+    expect(source).toContain('createReview: createOpportunityFitDeepReview');
+    expect(source).toContain('isContextCurrent: () => {');
   });
 
   it('renders Pilot as a normal tab with the expanded assistant workspace', () => {
