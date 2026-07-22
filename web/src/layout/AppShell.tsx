@@ -598,6 +598,8 @@ function AppShellContent() {
                   onRetryTriage={startPilotTriage}
                   onStartDeepReview={startPilotDeepReview}
                   onPrepareMaterials={preparePilotMaterials}
+                  isTriageLoading={pilotDraft.phase === 'triage_loading'}
+                  isDeepReviewLoading={pilotDraft.phase === 'deep_review_loading'}
                   onCancel={() => {
                     setPilotApplicationContext(null);
                     setView('dashboard');
