@@ -33,6 +33,7 @@ from offerpilot.ai.agent import (
     run_turn,
 )
 from offerpilot.ai.material_proposals import MaterialProposalModelError
+from offerpilot.ai.interview_review_proposals import InterviewReviewModelError
 from offerpilot.ai.opportunity_fit_reviews import OpportunityFitModelError, validate_triage
 from offerpilot.ai.client import ConfiguredAIClient
 from offerpilot.ai.tools import editable_fields_for_tool, offerpilot_tool_registry
@@ -95,6 +96,12 @@ from offerpilot.repositories.opportunity_fit_reviews import (
     OpportunityFitReviewNotFound,
     OpportunityFitReviewValidationError,
     OpportunityFitReviewsRepository,
+)
+from offerpilot.repositories.interview_review_proposals import (
+    InterviewReviewConflictError,
+    InterviewReviewEventRequired,
+    InterviewReviewNotFound,
+    InterviewReviewProposalsRepository,
 )
 from offerpilot.repositories.mock import MockSessionCreate, MockSessionsRepository
 from offerpilot.repositories.notes import (
@@ -642,6 +649,7 @@ def create_app(
     evidence_bundles = EvidenceBundlesRepository(session_factory)
     material_revision_proposals = MaterialRevisionProposalsRepository(session_factory)
     opportunity_fit_reviews = OpportunityFitReviewsRepository(session_factory)
+    interview_review_proposals = InterviewReviewProposalsRepository(session_factory)
     mock_sessions = MockSessionsRepository(session_factory)
     wakeups = WakeupsRepository(session_factory)
     knowledge_repository = KnowledgeRepository(session_factory)
@@ -1843,6 +1851,80 @@ def create_app(
             return error_response(404, "Interview note not found")
         notes.delete(note_id)
         return JSONResponse({"message": "Deleted"})
+
+    @app.get("/api/notes/{note_id}/interview-review-proposals")
+    def list_interview_review_proposals(note_id: int) -> JSONResponse:
+        try:
+            proposals = interview_review_proposals.list(note_id)
+        except InterviewReviewNotFound:
+            return _interview_review_not_found_response()
+        return JSONResponse([_interview_review_proposal_json(item) for item in proposals])
+
+    @app.get("/api/notes/{note_id}/interview-review-proposals/{proposal_id}")
+    def get_interview_review_proposal(note_id: int, proposal_id: int) -> JSONResponse:
+        try:
+            proposal = interview_review_proposals.get(note_id, proposal_id)
+        except InterviewReviewNotFound:
+            return _interview_review_not_found_response()
+        if proposal is None:
+            return _interview_review_not_found_response()
+        return JSONResponse(_interview_review_proposal_json(proposal))
+
+    @app.post("/api/notes/{note_id}/interview-review-proposals")
+    def create_interview_review_proposal(
+        note_id: int, payload: dict[str, Any] = Body(...)
+    ) -> JSONResponse:
+        if set(payload) != {"idempotency_key"}:
+            return error_response(422, "idempotency_key is required")
+        idempotency_key = payload.get("idempotency_key")
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+            return error_response(422, "idempotency_key is required")
+        model = _chat_model(chat_model, resolved_data_dir)
+        if isinstance(model, JSONResponse):
+            return error_response(
+                502,
+                "AI 服务暂不可用，请稍后重试。",
+                code="interview_review_provider_error",
+            )
+        try:
+            proposal, created = interview_review_proposals.create_generated(
+                note_id, idempotency_key.strip(), model
+            )
+        except InterviewReviewNotFound:
+            return _interview_review_not_found_response()
+        except InterviewReviewEventRequired:
+            return error_response(
+                422,
+                "请先绑定有效的面试事件。",
+                code="interview_review_event_required",
+            )
+        except InterviewReviewConflictError:
+            return error_response(
+                409,
+                "复盘来源已变化，请重新核对后再生成。",
+                code="interview_review_source_conflict",
+            )
+        except InterviewReviewModelError as exc:
+            append_log_entry(
+                resolved_data_dir,
+                "WARNING",
+                f"interview_review_{exc.failure_category}",
+            )
+            if exc.failure_category == "provider_error":
+                return error_response(
+                    502,
+                    "AI 服务暂不可用，请稍后重试。",
+                    code="interview_review_provider_error",
+                )
+            return error_response(
+                502,
+                "AI 建议未通过证据校验，原复盘未受影响，请重试。",
+                code="interview_review_unverifiable",
+            )
+        return JSONResponse(
+            _interview_review_proposal_json(proposal),
+            status_code=201 if created else 200,
+        )
 
     @app.get("/api/offers")
     def list_offers(status: str = "") -> list[dict[str, Any]]:
@@ -5811,6 +5893,33 @@ def _note_create_from_payload(
 
 def _note_json(note: Any) -> dict[str, Any]:
     return InterviewNoteOut.model_validate(note).model_dump(mode="json", exclude_none=True)
+
+
+def _interview_review_not_found_response() -> JSONResponse:
+    return error_response(
+        404,
+        "面试复盘已不可见，请重新打开投递。",
+        code="interview_review_not_found",
+    )
+
+
+def _interview_review_proposal_json(proposal: Any) -> dict[str, Any]:
+    proposal_payload = json.loads(proposal.proposal_json)
+    snapshot = json.loads(proposal.input_snapshot_json)
+    event_snapshot = snapshot.get("event") if isinstance(snapshot, dict) else None
+    event_id = proposal.application_event_id
+    if event_id is None and isinstance(event_snapshot, dict):
+        event_id = event_snapshot.get("id")
+    return {
+        "id": proposal.id,
+        "note_id": proposal.note_id,
+        "application_event_id": event_id,
+        "source_fingerprint": proposal.source_fingerprint,
+        "source_status": getattr(proposal, "source_status", "source_changed"),
+        "proposal": proposal_payload,
+        "proposal_hash": proposal.proposal_hash,
+        "created_at": _json_datetime(proposal.created_at),
+    }
 
 
 def _offer_create_from_payload(

@@ -264,6 +264,17 @@ class OpportunityFitReviewSummaryOut(BaseModel):
     triage_sha256: str
     deep_review_sha256: str | None
     created_at: datetime
+
+
+class InterviewReviewProposalOut(BaseModel):
+    id: int
+    note_id: int
+    application_event_id: int | None = None
+    source_fingerprint: str
+    source_status: Literal["current", "source_changed"]
+    proposal: dict[str, Any]
+    proposal_hash: str
+    created_at: datetime | str
     deep_reviewed_at: datetime | None
 
 
