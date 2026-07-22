@@ -284,6 +284,87 @@ describe('opportunityFitDraftReducer', () => {
     expect(next.review).not.toBeNull();
   });
 
+  it.each([
+    ['unknown hard constraint', { hard_constraints: [{
+      id: 'constraint-1',
+      requirement: 'Build things.',
+      status: 'unknown',
+      explanation: 'The candidate evidence is unresolved.',
+      evidence_refs: [],
+    }] }],
+    ['unknown gap', { gaps: [{
+      id: 'gap-1',
+      requirement: 'Build things.',
+      kind: 'required',
+      candidate_status: 'unknown',
+      evidence_refs: [],
+    }] }],
+  ] as const)('rejects an unresolved %s without JD evidence', (_label, triagePatch) => {
+    const state = createInitialOpportunityFitDraft(7, 'draft-1');
+    const next = opportunityFitDraftReducer(state, {
+      type: 'set_review',
+      review: { ...review, triage: { ...review.triage, ...triagePatch } },
+    } as never);
+
+    expect(next).toBe(state);
+  });
+
+  it('accepts an unknown hard constraint when it has JD evidence', () => {
+    const state = createInitialOpportunityFitDraft(7, 'draft-1');
+    const next = opportunityFitDraftReducer(state, {
+      type: 'set_review',
+      review: {
+        ...review,
+        triage: {
+          ...review.triage,
+          hard_constraints: [{
+            id: 'constraint-1',
+            requirement: 'Build things.',
+            status: 'unknown',
+            explanation: 'The candidate evidence is unresolved.',
+            evidence_refs: [{ source: 'jd', path: '/text', excerpt: 'Build things.' }],
+          }],
+        },
+      },
+    });
+
+    expect(next.review).not.toBeNull();
+  });
+
+  it('accepts an empty derived summary for a safe no-source result', () => {
+    const state = createInitialOpportunityFitDraft(7, 'draft-1');
+    const emptyResult = {
+      ...review,
+      summary: { text: 'No source-backed candidate conclusion is available; clarify before proceeding.', evidence_refs: [] },
+      triage: {
+        ...review.triage,
+        summary: { text: 'No source-backed candidate conclusion is available; clarify before proceeding.', evidence_refs: [] },
+        fit_signals: [],
+      },
+    };
+
+    const next = opportunityFitDraftReducer(state, { type: 'set_review', review: emptyResult });
+
+    expect(next.review).not.toBeNull();
+  });
+
+  it('rejects an uncited non-derived summary', () => {
+    const state = createInitialOpportunityFitDraft(7, 'draft-1');
+    const next = opportunityFitDraftReducer(state, {
+      type: 'set_review',
+      review: {
+        ...review,
+        summary: { text: 'Candidate guarantees every requirement.', evidence_refs: [] },
+        triage: {
+          ...review.triage,
+          summary: { text: 'Candidate guarantees every requirement.', evidence_refs: [] },
+        },
+      },
+    });
+
+    expect(next).toBe(state);
+  });
+
   it('checks resume excerpts against content_json when the frozen response includes it', () => {
     const source = {
       ...review.source,

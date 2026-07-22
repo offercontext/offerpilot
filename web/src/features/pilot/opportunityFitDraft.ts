@@ -108,6 +108,9 @@ function isOpportunityFitRecommendation(value: unknown): value is OpportunityFit
 
 type EvidenceSource = 'jd' | 'resume' | 'user_assertion';
 
+const EMPTY_OPPORTUNITY_FIT_SUMMARY =
+  'No source-backed candidate conclusion is available; clarify before proceeding.';
+
 function isCanonicalPathSegment(segment: string): boolean {
   return segment.length > 0
     && segment !== '-'
@@ -196,7 +199,9 @@ function hasEvidenceSource(value: unknown, source: EvidenceSource): boolean {
 function isOpportunityFitSummary(value: unknown, source: Record<string, unknown>): boolean {
   return isRecord(value)
     && typeof value.text === 'string'
-    && isValidOpportunityFitEvidenceRefs(value.evidence_refs, source, { allowJd: true, requireNonEmpty: true });
+    && Array.isArray(value.evidence_refs)
+    && isValidOpportunityFitEvidenceRefs(value.evidence_refs, source, { allowJd: true })
+    && (value.evidence_refs.length > 0 || value.text === EMPTY_OPPORTUNITY_FIT_SUMMARY);
 }
 
 function isOpportunityFitConstraintStatus(value: unknown): boolean {
@@ -225,18 +230,16 @@ function isValidOpportunityFitTriage(
       && typeof item.requirement === 'string'
       && isOpportunityFitConstraintStatus(item.status)
       && typeof item.explanation === 'string'
+      && isValidOpportunityFitEvidenceRefs(item.evidence_refs, source, {
+        allowJd: true,
+        requireNonEmpty: true,
+      })
+      && hasEvidenceSource(item.evidence_refs, 'jd')
       && (item.status === 'unknown'
-        ? isValidOpportunityFitEvidenceRefs(item.evidence_refs, source, { allowJd: true })
-        : isValidOpportunityFitEvidenceRefs(item.evidence_refs, source, {
-          allowJd: true,
-          requireNonEmpty: true,
-        })
-          && hasEvidenceSource(item.evidence_refs, 'jd')
-          && (hasEvidenceSource(item.evidence_refs, 'resume')
-            || hasEvidenceSource(item.evidence_refs, 'user_assertion')))
+        || (hasEvidenceSource(item.evidence_refs, 'resume')
+          || hasEvidenceSource(item.evidence_refs, 'user_assertion')))
     ))
     && Array.isArray(value.fit_signals)
-    && value.fit_signals.length > 0
     && value.fit_signals.every((item) => (
       isRecord(item)
       && typeof item.id === 'string'
@@ -250,15 +253,14 @@ function isValidOpportunityFitTriage(
       && typeof item.requirement === 'string'
       && isOpportunityFitGapKind(item.kind)
       && isOpportunityFitConstraintStatus(item.candidate_status)
+      && isValidOpportunityFitEvidenceRefs(item.evidence_refs, source, {
+        allowJd: true,
+        requireNonEmpty: true,
+      })
+      && hasEvidenceSource(item.evidence_refs, 'jd')
       && (item.candidate_status === 'unknown'
-        ? isValidOpportunityFitEvidenceRefs(item.evidence_refs, source, { allowJd: true })
-        : isValidOpportunityFitEvidenceRefs(item.evidence_refs, source, {
-          allowJd: true,
-          requireNonEmpty: true,
-        })
-          && hasEvidenceSource(item.evidence_refs, 'jd')
-          && (hasEvidenceSource(item.evidence_refs, 'resume')
-            || hasEvidenceSource(item.evidence_refs, 'user_assertion')))
+        || (hasEvidenceSource(item.evidence_refs, 'resume')
+          || hasEvidenceSource(item.evidence_refs, 'user_assertion')))
     ))
     && isRecord(value.deadline)
     && (value.deadline.status === 'stated' || value.deadline.status === 'not_stated')
