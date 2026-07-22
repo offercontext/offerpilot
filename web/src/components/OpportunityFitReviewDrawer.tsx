@@ -30,13 +30,12 @@ import type {
 import {
   getOpportunityFitErrorMessage,
   OPPORTUNITY_FIT_COPY,
-  opportunityFitCandidateStatusLabel,
-  opportunityFitConstraintStatusLabel,
   opportunityFitEvidenceLabel,
   opportunityFitGapKindLabel,
   opportunityFitRecommendationColor,
   opportunityFitRecommendationLabel,
   opportunityFitRecommendedPathLabel,
+  opportunityFitStatusLabel,
 } from './opportunityFitCopy';
 
 interface Props {
@@ -188,6 +187,13 @@ export default function OpportunityFitReviewDrawer({
         {OPPORTUNITY_FIT_COPY.drawer.description}
       </Typography.Paragraph>
       {actionError ? <Alert type="error" showIcon message={actionError} /> : null}
+      {reviewHistoryQuery.error ? (
+        <Alert
+          type="error"
+          showIcon
+          message={getOpportunityFitErrorMessage(reviewHistoryQuery.error)}
+        />
+      ) : null}
 
       {stage === 'input' && reviewHistoryQuery.data && reviewHistoryQuery.data.length > 0 ? (
         <Card size="small" title={OPPORTUNITY_FIT_COPY.drawer.history} style={{ marginBottom: 16 }}>
@@ -265,7 +271,7 @@ export default function OpportunityFitReviewDrawer({
           {review.triage.hard_constraints.map((item) => (
             <ReviewItem
               key={item.id}
-              title={`${item.requirement} · ${opportunityFitConstraintStatusLabel(item.status)}`}
+              title={`${item.requirement} · ${opportunityFitStatusLabel(item.status)}`}
               statement={item.explanation}
               refs={item.evidence_refs}
             />
@@ -278,7 +284,7 @@ export default function OpportunityFitReviewDrawer({
           {review.triage.gaps.map((item) => (
             <ReviewItem
               key={item.id}
-              title={`${opportunityFitGapKindLabel(item.kind)} · ${opportunityFitCandidateStatusLabel(item.candidate_status)}`}
+              title={`${opportunityFitGapKindLabel(item.kind)} · ${opportunityFitStatusLabel(item.candidate_status)}`}
               statement={item.requirement}
               refs={item.evidence_refs}
             />

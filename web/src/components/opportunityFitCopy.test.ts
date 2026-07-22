@@ -1,13 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   getOpportunityFitErrorMessage,
-  opportunityFitCandidateStatusLabel,
-  opportunityFitConstraintStatusLabel,
   opportunityFitEvidenceLabel,
   opportunityFitGapKindLabel,
   opportunityFitRecommendationLabel,
   opportunityFitRecommendationColor,
   opportunityFitRecommendedPathLabel,
+  opportunityFitStatusLabel,
 } from './opportunityFitCopy';
 
 describe('opportunity fit copy', () => {
@@ -66,11 +65,11 @@ describe('opportunity fit copy', () => {
   it('maps every user-visible Opportunity Fit enum to Chinese copy', () => {
     expect(['advance', 'hold', 'decline'].map(opportunityFitRecommendationLabel))
       .toEqual(['建议推进', '需要澄清', '建议放弃']);
-    expect(['met', 'unmet', 'unknown'].map(opportunityFitConstraintStatusLabel))
+    expect(['met', 'unmet', 'unknown'].map(opportunityFitStatusLabel))
       .toEqual(['已满足', '未满足', '待确认']);
     expect(['required', 'preferred'].map(opportunityFitGapKindLabel))
       .toEqual(['必要条件', '优先条件']);
-    expect(['met', 'unmet', 'unknown'].map(opportunityFitCandidateStatusLabel))
+    expect(['met', 'unmet', 'unknown'].map(opportunityFitStatusLabel))
       .toEqual(['已满足', '未满足', '待确认']);
     expect(['prepare_materials', 'clarify_first', 'do_not_pursue'].map(opportunityFitRecommendedPathLabel))
       .toEqual(['建议准备材料', '建议先澄清', '不建议继续推进']);

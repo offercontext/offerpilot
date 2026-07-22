@@ -9,6 +9,7 @@ const state = vi.hoisted(() => ({
   get: vi.fn(),
   list: vi.fn(),
   history: [] as Array<{ id: number; recommendation: string; created_at: string }>,
+  historyError: undefined as unknown,
 }));
 
 vi.mock('@/services/resumes', () => ({
@@ -25,6 +26,7 @@ vi.mock('@tanstack/react-query', () => ({
     data: options.queryKey?.[0] === 'resumes'
       ? [{ id: 11, name: 'Backend Resume', title: 'Backend Resume' }]
       : state.history,
+    error: options.queryKey?.[0] === 'resumes' ? undefined : state.historyError,
     isFetching: false,
   }),
   useMutation: (options: { mutationFn: () => unknown; onSuccess?: (data: unknown) => void; onError?: (error: unknown) => void }) => ({
@@ -87,6 +89,7 @@ beforeEach(() => {
   state.get.mockReset();
   state.list.mockReset();
   state.history = [];
+  state.historyError = undefined;
   state.list.mockResolvedValue([]);
   state.create.mockResolvedValue({
     id: 8,
@@ -154,6 +157,36 @@ function setValue(element: HTMLTextAreaElement | HTMLSelectElement, value: strin
   element.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
+async function flush() {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+async function waitFor(assertion: () => void, attempts = 5) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await flush();
+    }
+  }
+  throw lastError;
+}
+
+function getByRole(view: HTMLDivElement, role: string, name?: string): HTMLElement {
+  const selector = role === 'button' ? 'button,[role="button"]' : `[role="${role}"]`;
+  const element = [...view.querySelectorAll<HTMLElement>(selector)].find((candidate) => (
+    !name || candidate.textContent?.includes(name)
+  ));
+  if (!element) throw new Error(`Expected ${role}${name ? ` named ${name}` : ''}`);
+  return element;
+}
+
 describe('OpportunityFitReviewDrawer', () => {
   it('blocks more than ten assertions before submit', () => {
     const view = render();
@@ -192,16 +225,24 @@ describe('OpportunityFitReviewDrawer', () => {
     const onPrepareMaterials = vi.fn();
     const view = render(onPrepareMaterials);
 
-    await act(async () => {
-      view.querySelectorAll('button')[0]?.click();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-    act(() => {
-      const buttons = [...view.querySelectorAll('button')];
-      buttons[buttons.length - 1]?.click();
-    });
+    act(() => getByRole(view, 'button', '查看').click());
+    await waitFor(() => expect(state.get).toHaveBeenCalledWith(7, 8));
+    await waitFor(() => expect(getByRole(view, 'button', '去准备材料')).toBeTruthy());
+    act(() => getByRole(view, 'button', '去准备材料').click());
 
     expect(onPrepareMaterials).toHaveBeenCalledWith(expect.objectContaining({ id: 8 }), 'Frozen JD text');
+  });
+
+  it.each([
+    ['404', { response: { status: 404, data: { error: 'raw history 404' } } }, '请求的岗位评估不存在或不可用，请刷新后重试'],
+    ['502', { response: { status: 502, data: { error: 'raw history 502' } } }, 'AI 服务暂不可用，请稍后重试'],
+    ['unknown', new Error('raw history error'), '操作失败，请稍后重试'],
+  ])('shows safe copy when history list fails with %s', async (_name, error, expected) => {
+    state.historyError = error;
+    const view = render();
+
+    await waitFor(() => expect(getByRole(view, 'alert').textContent).toContain(expected));
+    expect(view.textContent).not.toContain('raw history');
   });
 
   it('shows safe mapped copy instead of raw Opportunity Fit errors', async () => {

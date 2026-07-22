@@ -1,3 +1,11 @@
+export type OpportunityFitStatus = 'met' | 'unmet' | 'unknown';
+
+const FIT_STATUS_LABELS: Record<OpportunityFitStatus, string> = {
+  met: '已满足',
+  unmet: '未满足',
+  unknown: '待确认',
+};
+
 export const OPPORTUNITY_FIT_COPY = {
   drawer: {
     title: '岗位决策漏斗',
@@ -50,19 +58,10 @@ export const OPPORTUNITY_FIT_COPY = {
       hold: '需要澄清',
       decline: '建议放弃',
     },
-    constraintStatus: {
-      met: '已满足',
-      unmet: '未满足',
-      unknown: '待确认',
-    },
+    fitStatus: FIT_STATUS_LABELS,
     gapKind: {
       required: '必要条件',
       preferred: '优先条件',
-    },
-    candidateStatus: {
-      met: '已满足',
-      unmet: '未满足',
-      unknown: '待确认',
     },
     recommendedPath: {
       prepare_materials: '建议准备材料',
@@ -116,19 +115,13 @@ export function opportunityFitRecommendationColor(value: string): 'green' | 'gol
   return 'gold';
 }
 
-export function opportunityFitConstraintStatusLabel(value: string): string {
-  return OPPORTUNITY_FIT_COPY.enums.constraintStatus[value as keyof typeof OPPORTUNITY_FIT_COPY.enums.constraintStatus]
-    || '未知状态';
+export function opportunityFitStatusLabel(value: string): string {
+  return FIT_STATUS_LABELS[value as OpportunityFitStatus] || '未知状态';
 }
 
 export function opportunityFitGapKindLabel(value: string): string {
   return OPPORTUNITY_FIT_COPY.enums.gapKind[value as keyof typeof OPPORTUNITY_FIT_COPY.enums.gapKind]
     || '未知条件';
-}
-
-export function opportunityFitCandidateStatusLabel(value: string): string {
-  return OPPORTUNITY_FIT_COPY.enums.candidateStatus[value as keyof typeof OPPORTUNITY_FIT_COPY.enums.candidateStatus]
-    || '未知状态';
 }
 
 export function opportunityFitRecommendedPathLabel(value: string): string {
