@@ -203,4 +203,31 @@ describe('OpportunityFitReviewDrawer', () => {
 
     expect(onPrepareMaterials).toHaveBeenCalledWith(expect.objectContaining({ id: 8 }), 'Frozen JD text');
   });
+
+  it('shows safe mapped copy instead of raw Opportunity Fit errors', async () => {
+    state.create.mockRejectedValue({
+      response: {
+        status: 502,
+        data: {
+          error_code: 'opportunity_fit_unverifiable',
+          error: 'raw provider text',
+        },
+      },
+    });
+    const view = render();
+    const areas = textareas(view);
+    const select = view.querySelector('select') as HTMLSelectElement;
+    act(() => {
+      setValue(select, '11');
+      setValue(areas[0], 'JD text');
+    });
+
+    await act(async () => {
+      [...view.querySelectorAll('button')].find((button) => button.textContent?.includes('开始 Triage'))?.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(view.textContent).toContain('AI 输出未通过证据校验，可重试；原简历已保护，未创建草稿。');
+    expect(view.textContent).not.toContain('raw provider text');
+  });
 });
