@@ -130,6 +130,7 @@ function AppShellContent() {
   const [pilotDrawerOpen, setPilotDrawerOpen] = useState(false);
   const [pilotApplicationContext, setPilotApplicationContext] = useState<{ applicationId: number; pilotDraftKey: string } | null>(null);
   const [pilotHistoricalReviewId, setPilotHistoricalReviewId] = useState<number | null>(null);
+  const [pilotInterviewReviewApplicationId, setPilotInterviewReviewApplicationId] = useState<number | null>(null);
   const pilotApplicationContextRef = useRef(pilotApplicationContext);
   pilotApplicationContextRef.current = pilotApplicationContext;
   const [aiSettingsOpen, setAISettingsOpen] = useState(false);
@@ -494,6 +495,15 @@ function AppShellContent() {
     setSelected(app);
   };
 
+  const openPilotInterviewReview = (applicationId: number) => {
+    const app = apps.find((item) => item.id === applicationId);
+    if (!app) return;
+    exitPilotContext();
+    setPilotInterviewReviewApplicationId(applicationId);
+    setView('board');
+    setSelected(app);
+  };
+
   const startPilotOpportunityFit = (app: Application) => {
     setAISettingsOpen(false);
     setSelected(null);
@@ -649,6 +659,8 @@ function AppShellContent() {
       onClose={() => setSelected(null)}
       onAskPilot={startApplicationChat}
       onOpenPilotOpportunityFit={startPilotOpportunityFit}
+      pilotInterviewReviewApplicationId={pilotInterviewReviewApplicationId}
+      onPilotInterviewReviewFocusConsumed={() => setPilotInterviewReviewApplicationId(null)}
       onAttachToPilot={attachToPilot}
     />
   ) : (
@@ -737,6 +749,7 @@ function AppShellContent() {
                   onRetryTriage={startPilotTriage}
                   onStartDeepReview={startPilotDeepReview}
                   onPrepareMaterials={preparePilotMaterials}
+                  onOpenInterviewReview={openPilotInterviewReview}
                   isTriageLoading={pilotDraft.phase === 'triage_loading'}
                   isDeepReviewLoading={pilotDraft.phase === 'deep_review_loading'}
                   onCancel={() => {

@@ -41,6 +41,7 @@ interface Props {
   onRetryTriage: (draft: OpportunityFitDraftState, triageAttemptKey: string | null) => void;
   onStartDeepReview: (draft: OpportunityFitDraftState, review: OpportunityFitReview) => void;
   onPrepareMaterials: (handoff: PilotOpportunityFitMaterialHandoff) => void;
+  onOpenInterviewReview?: (applicationId: number) => void;
   onCancel: () => void;
   triageFailureDisposition?: OpportunityFitDraftErrorDisposition;
   historicalReview?: boolean;
@@ -137,6 +138,7 @@ export default function PilotOpportunityFitCard({
   onRetryTriage,
   onStartDeepReview,
   onPrepareMaterials,
+  onOpenInterviewReview,
   onCancel,
   triageFailureDisposition,
   historicalReview = false,
@@ -206,6 +208,11 @@ export default function PilotOpportunityFitCard({
       <header>
         <h2 id="pilot-opportunity-fit-title">岗位评估</h2>
         <p>通过“收集→确认→审阅→交接”逐步完成当前岗位分析。</p>
+        {onOpenInterviewReview ? (
+          <button type="button" onClick={() => onOpenInterviewReview(draft.applicationId)}>
+            打开面试复盘
+          </button>
+        ) : null}
       </header>
 
       {historicalReviews.length > 0 ? (

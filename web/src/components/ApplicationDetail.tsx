@@ -55,10 +55,12 @@ interface ApplicationDetailProps {
   onMockInterview?: (app: Application) => void;
   onAskPilot?: (app: Application) => void;
   onOpenPilotOpportunityFit?: (app: Application) => void;
+  pilotInterviewReviewApplicationId?: number | null;
+  onPilotInterviewReviewFocusConsumed?: () => void;
   onAttachToPilot?: (attachment: import('@/types/chat').PilotContextAttachment) => void;
 }
 
-export default function ApplicationDetail({ application, open, onClose, onMockInterview, onAskPilot, onOpenPilotOpportunityFit, onAttachToPilot }: ApplicationDetailProps) {
+export default function ApplicationDetail({ application, open, onClose, onMockInterview, onAskPilot, onOpenPilotOpportunityFit, pilotInterviewReviewApplicationId, onPilotInterviewReviewFocusConsumed, onAttachToPilot }: ApplicationDetailProps) {
   const queryClient = useQueryClient();
   const [form] = Form.useForm();
   const [eventFormOpen, setEventFormOpen] = useState(false);
@@ -85,6 +87,14 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
     setMaterialKitApplicationId(application.id);
     setMaterialKitOpen(true);
   }, [application?.id, open]);
+
+  useEffect(() => {
+    if (!application || !open || pilotInterviewReviewApplicationId !== application.id) return;
+    setEditingNote(null);
+    setReviewEventID(null);
+    setReviewFormOpen(true);
+    onPilotInterviewReviewFocusConsumed?.();
+  }, [application, open, pilotInterviewReviewApplicationId, onPilotInterviewReviewFocusConsumed]);
 
   const notesQuery = useQuery({
     queryKey: ['notes', application?.id],
