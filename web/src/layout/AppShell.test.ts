@@ -68,6 +68,7 @@ describe('AppShell source contract', () => {
   it('clears the Pilot context when the historical list is no longer visible', () => {
     expect(source).toContain('isOpportunityFitNotFoundError(pilotHistoryQuery.error)');
     expect(source).toContain('handlePilotNotFound();');
+    expect(source).toContain('discardMaterialKitHandoff(current.applicationId);');
     expect(source).toContain('setPilotApplicationContext(null);');
   });
 

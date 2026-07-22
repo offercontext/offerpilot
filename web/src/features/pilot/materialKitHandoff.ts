@@ -26,6 +26,7 @@ function freezeHandoff(value: MaterialKitHandoff): MaterialKitHandoff {
 export interface MaterialKitHandoffStore {
   write: (handoff: MaterialKitHandoff) => void;
   consumeMaterialKitHandoff: (applicationId: number) => MaterialKitHandoff | null;
+  discardMaterialKitHandoff: (applicationId: number) => boolean;
   clear: () => void;
 }
 
@@ -41,6 +42,11 @@ export function createMaterialKitHandoffStore(): MaterialKitHandoffStore {
       pending = null;
       return value;
     },
+    discardMaterialKitHandoff: (applicationId) => {
+      if (!pending || pending.applicationId !== applicationId) return false;
+      pending = null;
+      return true;
+    },
     clear: () => {
       pending = null;
     },
@@ -51,3 +57,4 @@ export const materialKitHandoffStore = createMaterialKitHandoffStore();
 
 export const writeMaterialKitHandoff = materialKitHandoffStore.write;
 export const consumeMaterialKitHandoff = materialKitHandoffStore.consumeMaterialKitHandoff;
+export const discardMaterialKitHandoff = materialKitHandoffStore.discardMaterialKitHandoff;

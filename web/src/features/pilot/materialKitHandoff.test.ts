@@ -29,6 +29,18 @@ describe('materialKitHandoffStore', () => {
     expect(store.consumeMaterialKitHandoff(7)).toEqual(handoff);
   });
 
+  it('discards only the matching application handoff', () => {
+    const store = createMaterialKitHandoffStore();
+    store.write(handoff);
+
+    expect(store.discardMaterialKitHandoff(8)).toBe(false);
+    expect(store.consumeMaterialKitHandoff(7)).toEqual(handoff);
+
+    store.write({ ...handoff, applicationId: 8, jdText: 'Other JD' });
+    expect(store.discardMaterialKitHandoff(8)).toBe(true);
+    expect(store.consumeMaterialKitHandoff(8)).toBeNull();
+  });
+
   it('replaces pending state without exposing a mutable original', () => {
     const store = createMaterialKitHandoffStore();
     store.write(handoff);

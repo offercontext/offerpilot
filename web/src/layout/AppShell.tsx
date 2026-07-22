@@ -31,7 +31,7 @@ import {
   runPilotDeepReview,
   runPilotTriage,
 } from '@/features/pilot/pilotOpportunityFitLifecycle';
-import { writeMaterialKitHandoff } from '@/features/pilot/materialKitHandoff';
+import { discardMaterialKitHandoff, writeMaterialKitHandoff } from '@/features/pilot/materialKitHandoff';
 import type { Application } from '@/types/application';
 import type { OpportunityFitReview } from '@/types/opportunityFitReview';
 import type { ChatStartRequest, PilotContextAttachment } from '@/types/chat';
@@ -261,6 +261,8 @@ function AppShellContent() {
     retry: false,
   });
   const handlePilotNotFound = () => {
+    const current = pilotApplicationContextRef.current;
+    if (current) discardMaterialKitHandoff(current.applicationId);
     message.error('当前投递或岗位评估已不存在，请重新打开。');
     exitPilotContext({ preserveUnknownAttempt: false });
     setView('dashboard');
