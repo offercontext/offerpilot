@@ -29,7 +29,6 @@ export interface PilotOpportunityFitMaterialHandoff {
   applicationId: number;
   resumeId: number;
   jdText: string;
-  resumeEvidenceProof: OpportunityFitResumeEvidenceProof;
 }
 
 interface Props {
@@ -43,6 +42,8 @@ interface Props {
   onPrepareMaterials: (handoff: PilotOpportunityFitMaterialHandoff) => void;
   onCancel: () => void;
   triageFailureDisposition?: OpportunityFitDraftErrorDisposition;
+  historicalReview?: boolean;
+  isHistoryLoading?: boolean;
   isTriageLoading?: boolean;
   isDeepReviewLoading?: boolean;
 }
@@ -53,12 +54,13 @@ function isRenderableReview(
   value: OpportunityFitReview | null,
   applicationId: number,
   resumeEvidenceProof: OpportunityFitResumeEvidenceProof | null | undefined,
+  historicalReview: boolean,
 ): value is OpportunityFitReview {
   return value !== null
     && value.application_id === applicationId
     && isValidOpportunityFitReview(value, {
       resumeEvidenceProof: resumeEvidenceProof ?? undefined,
-      requireResumeEvidenceProof: true,
+      requireResumeEvidenceProof: !historicalReview,
     });
 }
 
@@ -133,6 +135,8 @@ export default function PilotOpportunityFitCard({
   onPrepareMaterials,
   onCancel,
   triageFailureDisposition,
+  historicalReview = false,
+  isHistoryLoading = false,
   isTriageLoading = false,
   isDeepReviewLoading = false,
 }: Props) {
@@ -154,9 +158,11 @@ export default function PilotOpportunityFitCard({
       jdText: draft.jdText.trim(),
       assertionsText: assertions.values.join('\n'),
     };
-  const review = isRenderableReview(draft.review, draft.applicationId, resumeEvidenceProof) ? draft.review : null;
+  const review = isRenderableReview(draft.review, draft.applicationId, resumeEvidenceProof, historicalReview)
+    ? draft.review
+    : null;
   const isTriagePhase = draft.phase === 'collect_input' || draft.phase === 'confirm_triage' || draft.phase === 'triage_loading';
-  const canStartTriage = Boolean(draft.resumeID && draft.jdText.trim() && !assertions.error && !isTriageLoading && draft.phase !== 'triage_loading');
+  const canStartTriage = Boolean(draft.resumeID && draft.jdText.trim() && !assertions.error && !isHistoryLoading && !isTriageLoading && draft.phase !== 'triage_loading');
   const failureDisposition = draft.triageFailureDisposition ?? triageFailureDisposition ?? null;
   const isUnknownFailure = failureDisposition === 'unknown' && Boolean(draft.actionError);
   const isDeepReady = Boolean(review?.deep_review) && draft.phase === 'deep_review_ready';
@@ -180,7 +186,6 @@ export default function PilotOpportunityFitCard({
       applicationId: draft.applicationId,
       resumeId: review.source.resume.id,
       jdText: review.source.jd.text,
-      resumeEvidenceProof: resumeEvidenceProof!,
     });
   };
 
@@ -193,6 +198,7 @@ export default function PilotOpportunityFitCard({
 
       {draft.actionError && isUnknownFailure ? <div role="alert">结果未知：请使用原尝试重试。</div> : null}
       {draft.actionError && !isUnknownFailure ? <div role="alert">{OPPORTUNITY_FIT_COPY.errors.fallback}</div> : null}
+      {isHistoryLoading ? <p role="status">正在恢复历史岗位评估…</p> : null}
 
       {isTriagePhase ? (
         <form onSubmit={(event) => { event.preventDefault(); if (canStartTriage) setConfirmation('triage'); }}>

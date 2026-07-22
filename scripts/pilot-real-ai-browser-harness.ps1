@@ -93,14 +93,19 @@ finally {
     }
   }
 
+  $cleanupFailure = $null
   if ($applicationId -and $resumeIds.Count -gt 0) {
     $env:PILOT_BROWSER_HARNESS_DATA = $tempData
     $env:PILOT_BROWSER_HARNESS_APPLICATION_ID = [string]$applicationId
     $env:PILOT_BROWSER_HARNESS_RESUME_IDS = ($resumeIds -join ',')
     Push-Location $repo
     try {
-      uv run python -c "import os; from pathlib import Path; from offerpilot.smoke import _cleanup_real_ai_browser_records; _cleanup_real_ai_browser_records(Path(os.environ['PILOT_BROWSER_HARNESS_DATA']), int(os.environ['PILOT_BROWSER_HARNESS_APPLICATION_ID']), [int(value) for value in os.environ['PILOT_BROWSER_HARNESS_RESUME_IDS'].split(',') if value])"
-      uv run python -c "import os; from pathlib import Path; from offerpilot.smoke import _assert_real_ai_smoke_data_clean; _assert_real_ai_smoke_data_clean(Path(os.environ['PILOT_BROWSER_HARNESS_DATA']))"
+      & uv run python -c "import os; from pathlib import Path; from offerpilot.smoke import _cleanup_real_ai_browser_records; _cleanup_real_ai_browser_records(Path(os.environ['PILOT_BROWSER_HARNESS_DATA']), int(os.environ['PILOT_BROWSER_HARNESS_APPLICATION_ID']), [int(value) for value in os.environ['PILOT_BROWSER_HARNESS_RESUME_IDS'].split(',') if value])"
+      if ($LASTEXITCODE -ne 0) { throw "Isolated browser harness record cleanup failed with exit code $LASTEXITCODE." }
+      & uv run python -c "import os; from pathlib import Path; from offerpilot.smoke import _assert_real_ai_smoke_data_clean; _assert_real_ai_smoke_data_clean(Path(os.environ['PILOT_BROWSER_HARNESS_DATA']))"
+      if ($LASTEXITCODE -ne 0) { throw "Isolated browser harness residual assertion failed with exit code $LASTEXITCODE." }
+    } catch {
+      $cleanupFailure = $_
     }
     finally {
       Pop-Location
@@ -115,4 +120,5 @@ finally {
   }
   if ($null -eq $previousData) { Remove-Item Env:OFFERPILOT_DATA -ErrorAction SilentlyContinue }
   else { $env:OFFERPILOT_DATA = $previousData }
+  if ($cleanupFailure) { throw $cleanupFailure }
 }

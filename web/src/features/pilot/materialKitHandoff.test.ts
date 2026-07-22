@@ -5,30 +5,19 @@ const handoff = {
   applicationId: 7,
   resumeId: 11,
   jdText: 'Frozen JD',
-  resumeEvidenceProof: {
-    resumeId: 11,
-    sha256: 'resume-hash',
-    contentJson: { skills: ['TypeScript'] },
-  },
 };
 
 describe('materialKitHandoffStore', () => {
-  it('matches the application, freezes a copy, and consumes exactly once', () => {
+  it('matches the application, freezes a minimal copy, and consumes exactly once', () => {
     const store = createMaterialKitHandoffStore();
     store.write(handoff);
 
     const first = store.consumeMaterialKitHandoff(7);
     expect(first).toEqual(handoff);
-    expect(Object.keys(first ?? {}).sort()).toEqual([
-      'applicationId',
-      'jdText',
-      'resumeEvidenceProof',
-      'resumeId',
-    ]);
+    expect(Object.keys(first ?? {}).sort()).toEqual(['applicationId', 'jdText', 'resumeId']);
     expect(first).not.toBe(handoff);
-    expect(first?.resumeEvidenceProof.contentJson).not.toBe(handoff.resumeEvidenceProof.contentJson);
     expect(Object.isFrozen(first)).toBe(true);
-    expect(Object.isFrozen(first?.resumeEvidenceProof.contentJson)).toBe(true);
+    expect(first).not.toHaveProperty('resumeEvidenceProof');
     expect(store.consumeMaterialKitHandoff(7)).toBeNull();
   });
 

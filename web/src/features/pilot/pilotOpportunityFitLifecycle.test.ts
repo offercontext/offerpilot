@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createOpportunityFitDraftStore } from './opportunityFitDraft';
-import { runPilotDeepReview, runPilotTriage } from './pilotOpportunityFitLifecycle';
+import { restorePilotHistoricalReview, runPilotDeepReview, runPilotTriage } from './pilotOpportunityFitLifecycle';
 import type { OpportunityFitReview } from '@/types/opportunityFitReview';
 
 const review = {
@@ -55,6 +55,34 @@ function deferred<T>() {
 }
 
 describe('Pilot triage lifecycle', () => {
+  it('restores frozen historical inputs and review without an attempt key', () => {
+    const store = createOpportunityFitDraftStore(7, 'draft-1');
+
+    expect(restorePilotHistoricalReview(store, review)).toBe(true);
+    expect(store.getState()).toMatchObject({
+      resumeID: 3,
+      jdText: 'JD',
+      assertionsText: '',
+      review,
+      triageAttemptKey: null,
+      phase: 'triage_ready',
+    });
+    expect(store.getState().reviewSource).toBe('historical');
+  });
+
+  it('does not overwrite an unresolved attempt while restoring history', () => {
+    const store = createOpportunityFitDraftStore(7, 'draft-1');
+    store.dispatch({ type: 'set_attempt_key', key: 'attempt-1' });
+    store.dispatch({ type: 'set_phase', phase: 'triage_loading' });
+
+    expect(restorePilotHistoricalReview(store, review)).toBe(false);
+    expect(store.getState()).toMatchObject({
+      triageAttemptKey: 'attempt-1',
+      phase: 'triage_loading',
+      review: null,
+    });
+  });
+
   it('fails safely when the provider returns an invalid response body', async () => {
     const store = createOpportunityFitDraftStore(7, 'draft-1');
     store.dispatch({ type: 'set_resume', resumeID: 3 });

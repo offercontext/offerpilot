@@ -147,7 +147,6 @@ describe('ApplicationDetail opportunity fit handoff', () => {
       applicationId: 7,
       resumeId: 12,
       jdText: 'Frozen Pilot JD',
-      resumeEvidenceProof: { resumeId: 12, sha256: 'hash', contentJson: { raw_text: 'resume' } },
     });
 
     act(() => root?.render(<ApplicationDetail application={application} open onClose={vi.fn()} />));
@@ -164,7 +163,6 @@ describe('ApplicationDetail opportunity fit handoff', () => {
       applicationId: 7,
       resumeId: 12,
       jdText: 'Frozen Pilot JD',
-      resumeEvidenceProof: { resumeId: 12, sha256: 'hash', contentJson: { raw_text: 'resume' } },
     });
     const otherApplication = Object.assign({}, application, { id: 8 }) as typeof application;
 
@@ -182,7 +180,6 @@ describe('ApplicationDetail opportunity fit handoff', () => {
       applicationId: 7,
       resumeId: 12,
       jdText: 'Frozen Pilot JD',
-      resumeEvidenceProof: { resumeId: 12, sha256: 'hash', contentJson: { raw_text: 'resume' } },
     });
 
     act(() => root?.render(<ApplicationDetail application={application} open onClose={vi.fn()} />));

@@ -261,6 +261,8 @@ def test_real_ai_browser_harness_isolated_and_uses_base_url():
     assert "http://127.0.0.1:$port" in source
     assert "/applications/" not in source
     assert "_cleanup_real_ai_browser_records" in source
+    assert "if ($LASTEXITCODE -ne 0)" in source
+    assert source.count("if ($LASTEXITCODE -ne 0)") >= 2
 
 
 def test_real_ai_material_proposal_smoke_rejects_renamed_snapshot_leak():

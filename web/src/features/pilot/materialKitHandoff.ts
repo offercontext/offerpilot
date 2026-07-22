@@ -1,10 +1,7 @@
-import type { OpportunityFitResumeEvidenceProof } from './opportunityFitDraft';
-
 export interface MaterialKitHandoff {
   readonly applicationId: number;
   readonly resumeId: number;
   readonly jdText: string;
-  readonly resumeEvidenceProof: OpportunityFitResumeEvidenceProof;
 }
 
 function cloneAndFreeze<T>(value: T): T {
@@ -22,11 +19,6 @@ function freezeHandoff(value: MaterialKitHandoff): MaterialKitHandoff {
     applicationId: value.applicationId,
     resumeId: value.resumeId,
     jdText: value.jdText,
-    resumeEvidenceProof: {
-      resumeId: value.resumeEvidenceProof.resumeId,
-      sha256: value.resumeEvidenceProof.sha256,
-      contentJson: structuredClone(value.resumeEvidenceProof.contentJson),
-    },
   };
   return cloneAndFreeze(copy);
 }

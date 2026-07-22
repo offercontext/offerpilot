@@ -11,6 +11,7 @@ import {
   normalizeOpportunityFitAssertions,
   opportunityFitDraftReducer,
   removeOpportunityFitDraftStore,
+  shouldRetainOpportunityFitDraft,
   isValidOpportunityFitReview,
   type OpportunityFitDraftStore,
 } from './opportunityFitDraft';
@@ -83,6 +84,7 @@ describe('opportunityFitDraftReducer', () => {
       actionError: null,
       triageAttemptKey: null,
       triageFailureDisposition: null,
+      reviewSource: 'live',
     });
   });
 
@@ -150,6 +152,28 @@ describe('opportunityFitDraftReducer', () => {
 
     expect(timedOut.triageAttemptKey).toBe('attempt-1');
     expect(timedOut.actionError).toBe('结果未知');
+  });
+
+  it.each([
+    ['triage loading', { phase: 'triage_loading' as const, triageFailureDisposition: null }],
+    ['unknown failure', { phase: 'confirm_triage' as const, triageFailureDisposition: 'unknown' as const }],
+  ])('retains the draft for %s while its attempt key is unresolved', (_label, patch) => {
+    const state = {
+      ...createInitialOpportunityFitDraft(7, 'draft-1'),
+      triageAttemptKey: 'attempt-1',
+      ...patch,
+    };
+    expect(shouldRetainOpportunityFitDraft(state)).toBe(true);
+  });
+
+  it('allows cleanup after success or a definite no-write failure', () => {
+    const base = createInitialOpportunityFitDraft(7, 'draft-1');
+    expect(shouldRetainOpportunityFitDraft({ ...base, triageAttemptKey: null })).toBe(false);
+    expect(shouldRetainOpportunityFitDraft({
+      ...base,
+      triageAttemptKey: 'attempt-1',
+      triageFailureDisposition: 'definite_no_write',
+    })).toBe(false);
   });
 
   it('clears the attempt key only when explicitly requested', () => {

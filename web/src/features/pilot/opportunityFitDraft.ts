@@ -21,6 +21,7 @@ export interface OpportunityFitDraftState {
   actionError: string | null;
   triageAttemptKey: string | null;
   triageFailureDisposition: OpportunityFitDraftErrorDisposition | null;
+  reviewSource: 'live' | 'historical';
 }
 
 export interface OpportunityFitResumeEvidenceProof {
@@ -58,6 +59,7 @@ export type OpportunityFitDraftAction =
   | { type: 'set_phase'; phase: OpportunityFitDraftPhase }
   | { type: 'set_attempt_key'; key: string | null }
   | { type: 'set_review'; review: OpportunityFitReview }
+  | { type: 'restore_review'; review: OpportunityFitReview }
   | { type: 'set_error'; error: string; disposition: OpportunityFitDraftErrorDisposition }
   | { type: 'set_error'; error: null; disposition: null };
 
@@ -74,6 +76,13 @@ export function removeOpportunityFitDraftStore(
 ): boolean {
   if (expectedStore && stores.get(key) !== expectedStore) return false;
   return stores.delete(key);
+}
+
+export function shouldRetainOpportunityFitDraft(state: OpportunityFitDraftState): boolean {
+  return Boolean(
+    state.triageAttemptKey
+    && (state.phase === 'triage_loading' || state.triageFailureDisposition === 'unknown'),
+  );
 }
 
 const OPPORTUNITY_FIT_DRAFT_PHASES: ReadonlySet<string> = new Set([
@@ -106,6 +115,7 @@ export function createInitialOpportunityFitDraft(
     actionError: null,
     triageAttemptKey: null,
     triageFailureDisposition: null,
+    reviewSource: 'live',
   };
 }
 
@@ -443,6 +453,7 @@ function isValidOpportunityFitDraftState(value: unknown): value is OpportunityFi
     && (value.triageFailureDisposition === null
       || value.triageFailureDisposition === 'unknown'
       || value.triageFailureDisposition === 'definite_no_write')
+    && (value.reviewSource === 'live' || value.reviewSource === 'historical')
   );
 }
 
@@ -463,6 +474,8 @@ function isValidOpportunityFitDraftAction(action: OpportunityFitDraftAction): bo
     case 'set_attempt_key':
       return action.key === null || typeof action.key === 'string';
     case 'set_review':
+      return isValidOpportunityFitReview(action.review);
+    case 'restore_review':
       return isValidOpportunityFitReview(action.review);
     case 'set_error':
       return action.error === null
@@ -533,6 +546,7 @@ function updateDraftInput(
     actionError: null,
     triageAttemptKey: null,
     triageFailureDisposition: null,
+    reviewSource: 'live',
   };
 }
 
@@ -581,6 +595,19 @@ export function opportunityFitDraftReducer(
         actionError: null,
         triageAttemptKey: null,
         triageFailureDisposition: null,
+      };
+    case 'restore_review':
+      if (action.review.application_id !== state.applicationId || state.triageAttemptKey !== null) {
+        return state;
+      }
+      return {
+        ...state,
+        phase: action.review.deep_review === null ? 'triage_ready' : 'deep_review_ready',
+        review: action.review,
+        actionError: null,
+        triageAttemptKey: null,
+        triageFailureDisposition: null,
+        reviewSource: 'historical',
       };
     case 'set_error':
       if (

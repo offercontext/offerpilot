@@ -73,6 +73,34 @@ function isRunCurrent(
     && current.triageAttemptKey === attemptKey;
 }
 
+export function restorePilotHistoricalReview(
+  store: OpportunityFitDraftStore,
+  review: OpportunityFitReview,
+): boolean {
+  const current = store.getState();
+  if (
+    current.review !== null
+    || current.triageAttemptKey !== null
+    || current.phase === 'triage_loading'
+    || current.resumeID !== undefined
+    || current.jdText.trim()
+    || current.assertionsText.trim()
+    || !isVerifiedReview(review)
+    || review.application_id !== current.applicationId
+  ) {
+    return false;
+  }
+
+  store.dispatch({ type: 'set_resume', resumeID: review.source.resume.id });
+  store.dispatch({ type: 'set_jd', jdText: review.source.jd.text });
+  store.dispatch({
+    type: 'set_assertions',
+    assertionsText: review.source.candidate_assertions.map((item) => item.text).join('\n'),
+  });
+  store.dispatch({ type: 'restore_review', review });
+  return store.getState().review === review;
+}
+
 export async function runPilotTriage(options: PilotTriageRunOptions): Promise<void> {
   const candidateAssertions = normalizeOpportunityFitAssertions(options.draft.assertionsText);
   const normalizedInput = {

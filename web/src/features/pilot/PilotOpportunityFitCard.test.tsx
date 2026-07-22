@@ -114,10 +114,12 @@ const defaultResumeEvidenceProof = {
 function Harness({
   initial = createInitialOpportunityFitDraft(7, 'pilot:7'),
   deepLoading = false,
+  historyLoading = false,
   resumeEvidenceProof: proof = defaultResumeEvidenceProof,
 }: {
   initial?: OpportunityFitDraftState;
   deepLoading?: boolean;
+  historyLoading?: boolean;
   resumeEvidenceProof?: typeof defaultResumeEvidenceProof | null;
 }) {
   const [draft, dispatch] = useState(initial);
@@ -134,6 +136,7 @@ function Harness({
       onPrepareMaterials={prepare}
       onCancel={cancel}
       triageFailureDisposition={triageDisposition}
+      isHistoryLoading={historyLoading}
       isDeepReviewLoading={deepLoading}
     />
   );
@@ -218,6 +221,13 @@ async function clickDialog(view: HTMLElement, name: string) {
 }
 
 describe('PilotOpportunityFitCard', () => {
+  it('blocks new triage while historical reviews are loading', async () => {
+    const view = await render();
+    await act(async () => root?.render(<Harness historyLoading />));
+    expect(view.querySelector('[role="status"]')?.textContent).toContain('历史岗位评估');
+    expect(button(view, '开始 Triage').disabled).toBe(true);
+  });
+
   it('normalizes assertions and disables triage for invalid input', async () => {
     const view = await render();
     await change(labeled(view, '选择简历'), '11');
@@ -324,9 +334,9 @@ describe('PilotOpportunityFitCard', () => {
       applicationId: 7,
       resumeId: 11,
       jdText: '原始 JD 文本',
-      resumeEvidenceProof: defaultResumeEvidenceProof,
     }));
     expect(prepare.mock.calls[0][0]).not.toHaveProperty('review');
+    expect(prepare.mock.calls[0][0]).not.toHaveProperty('resumeEvidenceProof');
   });
 
   it('requires explicit confirmation when deviating from the recommendation', async () => {

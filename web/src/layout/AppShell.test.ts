@@ -44,10 +44,23 @@ describe('AppShell source contract', () => {
       applicationId: 7,
       resumeId: 3,
       jdText: 'JD',
-      resumeEvidenceProof: { resumeId: 3, sha256: 'hash', contentJson: {} },
     });
     expect(consumeMaterialKitHandoff(7)?.jdText).toBe('JD');
     expect(consumeMaterialKitHandoff(7)).toBeNull();
+  });
+
+  it('restores historical Pilot reviews through the frozen review APIs', () => {
+    expect(source).toContain('listOpportunityFitReviews');
+    expect(source).toContain('getOpportunityFitReview');
+    expect(source).toContain("['opportunity-fit-reviews'");
+    expect(source).toContain('restorePilotHistoricalReview');
+    expect(source).toContain('triageAttemptKey === null');
+  });
+
+  it('retains an unknown Pilot attempt when the flow is canceled', () => {
+    expect(source).toContain('shouldRetainOpportunityFitDraft');
+    expect(source).toContain('if (shouldRetainOpportunityFitDraft(store.getState())) return;');
+    expect(source).toContain('findRetainedPilotDraftKey');
   });
 
   it('renders Pilot as a normal tab with the expanded assistant workspace', () => {
