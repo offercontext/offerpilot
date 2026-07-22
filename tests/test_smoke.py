@@ -19,6 +19,7 @@ from offerpilot.smoke import (
     _assert_real_ai_smoke_data_clean,
     _cleanup_real_ai_browser_records,
     _cleanup_real_ai_smoke_records,
+    _run_real_ai_interview_review_smoke,
     _run_real_ai_material_proposal_smoke,
     _run_real_ai_opportunity_fit_smoke,
     run_core_smoke,
@@ -259,6 +260,8 @@ def test_real_ai_browser_harness_isolated_and_uses_base_url():
     assert "Get-NetTCPConnection" in source
     assert "Get-TreeIds" in source
     assert "http://127.0.0.1:$port" in source
+    assert "/api/application-events" in source
+    assert "evidence-gated interview review proposal" in source
     assert "/applications/" not in source
     assert "_cleanup_real_ai_browser_records" in source
     assert "if ($LASTEXITCODE -ne 0)" in source
@@ -342,3 +345,52 @@ def test_cli_verify_local_runs_http_smoke(monkeypatch, tmp_path):
     assert "http_application_event_crud" in result.output
     assert "http_health" in result.output
     assert "http_confirm_action" in result.output
+
+
+def test_real_ai_interview_review_smoke_allows_empty_changes_without_snapshot_leak():
+    class Response:
+        status_code = 201
+
+        def __init__(self, payload: dict[str, object]) -> None:
+            self._payload = payload
+
+        def json(self) -> dict[str, object]:
+            return self._payload
+
+    class Client:
+        def post(self, path: str, json: dict[str, object]) -> Response:
+            if path == "/api/application-events":
+                assert json["event_type"] == "interview"
+                return Response({"id": 31, "application_id": 7, "event_type": "interview"})
+            if path == "/api/applications/7/notes":
+                assert json["application_event_id"] == 31
+                return Response({"id": 32, "application_event_id": 31})
+            if path == "/api/notes/32/interview-review-proposals":
+                assert set(json) == {"idempotency_key"}
+                return Response(
+                    {
+                        "id": 33,
+                        "note_id": 32,
+                        "application_event_id": 31,
+                        "source_status": "current",
+                        "proposal": {
+                            "summary": {
+                                "text": "本次复盘记录不足以形成有依据的表现判断，请先补充待澄清问题。",
+                                "evidence_refs": [],
+                            },
+                            "observations": [],
+                            "clarifications": [],
+                            "practice_focuses": [],
+                            "next_questions": [],
+                        },
+                        "proposal_hash": "hash",
+                        "source_fingerprint": "fingerprint",
+                        "created_at": "2026-07-22T00:00:00Z",
+                    }
+                )
+            raise AssertionError(path)
+
+    steps: list[SmokeStep] = []
+    _run_real_ai_interview_review_smoke(Client(), steps, 7)
+
+    assert [step.name for step in steps] == ["http_interview_review_proposal"]

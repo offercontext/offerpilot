@@ -78,10 +78,21 @@ try {
     source = 'smoke'
   } | ConvertTo-Json)
   $applicationId = [int]$application.id
+  $interviewEvent = Invoke-RestMethod -Method Post -Uri "$baseUrl/api/application-events" -ContentType 'application/json' -Body (@{
+    application_id = $applicationId
+    event_type = 'interview'
+    subtype = 'technical'
+    round = 1
+    scheduled_at = '2026-07-22T10:00:00+08:00'
+    duration_minutes = 45
+    location = 'Pilot browser smoke'
+  } | ConvertTo-Json)
+  $interviewEventId = [int]$interviewEvent.id
 
   Write-Host "Isolated browser harness is ready: $baseUrl"
-  Write-Host "Synthetic Application ID: $applicationId; Resume ID: $($resumeIds -join ', ')"
+  Write-Host "Synthetic Application ID: $applicationId; Resume ID: $($resumeIds -join ', '); Interview Event ID: $interviewEventId"
   Write-Host 'Open the base URL in the in-app browser. Navigate to the application list/board, open Pilot Browser Smoke · Verification Engineer, click 在 Pilot 中评估, and complete the Triage → Deep Review → 准备材料 flow.'
+  Write-Host 'Then open the interview event, save a review, generate the evidence-gated interview review proposal, and open any prefilled action without saving it.'
   Write-Host 'Verify requests stay on local /api and the configured AI provider, then return here.'
   [void](Read-Host 'Press Enter after browser acceptance')
 }

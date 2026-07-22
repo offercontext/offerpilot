@@ -23,7 +23,10 @@ from offerpilot.db import session_factory_for_data_dir
 from offerpilot.models import (
     Application,
     ApplicationEvidenceBundle,
+    ApplicationEvent,
     ApplicationMaterialKit,
+    InterviewNote,
+    InterviewReviewProposal,
     MaterialRevisionProposal,
     OpportunityFitReview,
     Resume,
@@ -369,6 +372,7 @@ def _run_http_smoke(
                 if real_ai:
                     _run_real_ai_material_proposal_smoke(client, steps, application_id, smoke_resume_ids)
                     _run_real_ai_opportunity_fit_smoke(client, steps, application_id, smoke_resume_ids)
+                    _run_real_ai_interview_review_smoke(client, steps, application_id)
                     _run_real_ai_write_smoke(client, steps, company, application_id)
                 else:
                     _run_deterministic_chat_smoke(client, steps, application_id)
@@ -528,6 +532,71 @@ def _run_real_ai_opportunity_fit_smoke(
         del anchor_resume_id, resume_id
 
 
+def _run_real_ai_interview_review_smoke(
+    client: httpx.Client,
+    steps: list[SmokeStep],
+    application_id: int,
+) -> None:
+    marker = "SMOKE_PRIVATE_INTERVIEW_FACT"
+    event = client.post(
+        "/api/application-events",
+        json={
+            "application_id": application_id,
+            "event_type": "interview",
+            "subtype": "technical",
+            "round": 1,
+            "scheduled_at": "2026-07-22T10:00:00+08:00",
+            "duration_minutes": 45,
+            "location": "SMOKE_PRIVATE_LOCATION",
+        },
+    )
+    _assert_status(event.status_code, 201, "http_interview_review_event")
+    event_body = event.json()
+    event_id = event_body.get("id") if isinstance(event_body, dict) else None
+    if not isinstance(event_id, int):
+        raise RuntimeError("interview review smoke did not return an event id")
+
+    note = client.post(
+        f"/api/applications/{application_id}/notes",
+        json={
+            "company": "AI Interview Review Smoke",
+            "position": "Verification Engineer",
+            "round": "technical",
+            "date": "2026-07-22",
+            "questions": f"{marker}: explain the migration rollback plan",
+            "self_reflection": "I gave a concise answer after clarifying the constraint.",
+            "difficulty_points": "I needed more time to structure the tradeoff.",
+            "mood": "focused",
+            "application_event_id": event_id,
+        },
+    )
+    _assert_status(note.status_code, 201, "http_interview_review_note")
+    note_body = note.json()
+    note_id = note_body.get("id") if isinstance(note_body, dict) else None
+    if not isinstance(note_id, int):
+        raise RuntimeError("interview review smoke did not return a note id")
+
+    proposal = client.post(
+        f"/api/notes/{note_id}/interview-review-proposals",
+        json={"idempotency_key": "f36f6d0b-1d1e-4e9a-aec1-9fef6b2f3b91"},
+    )
+    _assert_status(proposal.status_code, 201, "http_interview_review_proposal")
+    body = proposal.json()
+    if not isinstance(body, dict) or not isinstance(body.get("proposal"), dict):
+        raise RuntimeError("interview review smoke response did not contain a verified proposal")
+    serialized = json.dumps(body, ensure_ascii=False)
+    if marker in serialized or "SMOKE_PRIVATE_LOCATION" in serialized:
+        raise RuntimeError("interview review smoke response leaked frozen source data")
+    if "input_snapshot_json" in body or "input_snapshot" in body:
+        raise RuntimeError("interview review smoke response exposed the input snapshot")
+    steps.append(
+        SmokeStep(
+            "http_interview_review_proposal",
+            "real AI returned a verified interview review proposal",
+        )
+    )
+
+
 def _copy_real_ai_config(source_data_dir: Path, isolated_data_dir: Path) -> None:
     source_config = source_data_dir / "config.json"
     if source_config.is_file():
@@ -547,6 +616,12 @@ def _cleanup_real_ai_smoke_records(
                     MaterialRevisionProposal.application_id == application_id
                 )
             )
+            note_ids = select(InterviewNote.id).where(InterviewNote.application_id == application_id)
+            session.execute(
+                delete(InterviewReviewProposal).where(InterviewReviewProposal.note_id.in_(note_ids))
+            )
+            session.execute(delete(InterviewNote).where(InterviewNote.application_id == application_id))
+            session.execute(delete(ApplicationEvent).where(ApplicationEvent.application_id == application_id))
             session.execute(
                 delete(ApplicationMaterialKit).where(
                     ApplicationMaterialKit.application_id == application_id
@@ -596,6 +671,11 @@ def _assert_real_ai_smoke_data_clean(data_dir: Path) -> None:
             )
             material_kit_count = session.scalar(select(func.count()).select_from(ApplicationMaterialKit))
             proposal_count = session.scalar(select(func.count()).select_from(MaterialRevisionProposal))
+            interview_note_count = session.scalar(select(func.count()).select_from(InterviewNote))
+            interview_event_count = session.scalar(
+                select(func.count()).select_from(ApplicationEvent).where(ApplicationEvent.event_type == "interview")
+            )
+            interview_proposal_count = session.scalar(select(func.count()).select_from(InterviewReviewProposal))
             opportunity_fit_review_count = session.scalar(
                 select(func.count()).select_from(OpportunityFitReview)
             )
@@ -616,6 +696,12 @@ def _assert_real_ai_smoke_data_clean(data_dir: Path) -> None:
         raise RuntimeError("real-ai smoke left material kits")
     if proposal_count != 0:
         raise RuntimeError("real-ai smoke left material proposals")
+    if interview_note_count != 0:
+        raise RuntimeError("real-ai smoke left interview notes")
+    if interview_event_count != 0:
+        raise RuntimeError("real-ai smoke left interview events")
+    if interview_proposal_count != 0:
+        raise RuntimeError("real-ai smoke left interview review proposals")
     if opportunity_fit_review_count != 0:
         raise RuntimeError("real-ai smoke left opportunity fit reviews")
     if application_count != 0:
