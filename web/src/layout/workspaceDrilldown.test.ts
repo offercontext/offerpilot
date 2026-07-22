@@ -67,7 +67,7 @@ describe('workspace drill-down layout contract', () => {
   it('opens application subflows as replacement workspace layers', () => {
     expect(applicationDetail).toContain('if (eventFormOpen) {');
     expect(applicationDetail).toContain('if (editingNote) {');
-    expect(applicationDetail).toContain('if (materialKitOpen) {');
+    expect(applicationDetail).toContain('if (materialKitOpen && materialKitApplicationId === application.id) {');
     expect(materialKit).toContain('返回投递详情');
     expect(reviewForm).toContain('返回上一层');
   });
