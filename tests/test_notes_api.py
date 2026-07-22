@@ -52,3 +52,134 @@ def test_list_update_delete_notes(tmp_path):
     assert deleted.status_code == 200
     assert deleted.json() == {"message": "Deleted"}
 
+
+def _create_application_and_event(client, *, company="ByteDance", event_type="interview"):
+    application = client.post(
+        "/api/applications",
+        json={"company_name": company, "position_name": "Backend"},
+    ).json()
+    event = client.post(
+        "/api/application-events",
+        json={
+            "application_id": application["id"],
+            "event_type": event_type,
+            "scheduled_at": "2026-07-20T10:00:00Z",
+            "duration_minutes": 45,
+        },
+    )
+    assert event.status_code == 201
+    return application, event.json()
+
+
+def _create_bound_note(client, application, event):
+    response = client.post(
+        f"/api/applications/{application['id']}/notes",
+        json={"application_event_id": event["id"], "questions": "How do you test?"},
+    )
+    assert response.status_code == 201
+    return response.json()
+
+
+def test_bound_note_update_preserves_ownership_and_event(tmp_path):
+    client = TestClient(create_app(data_dir=tmp_path))
+    application, event = _create_application_and_event(client)
+    note = _create_bound_note(client, application, event)
+
+    response = client.put(
+        f"/api/notes/{note['id']}",
+        json={"questions": "How do you debug?"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["application_id"] == application["id"]
+    assert response.json()["application_event_id"] == event["id"]
+    assert response.json()["questions"] == "How do you debug?"
+
+
+def test_bound_note_can_explicitly_unbind_event_without_unbinding_application(tmp_path):
+    client = TestClient(create_app(data_dir=tmp_path))
+    application, event = _create_application_and_event(client)
+    note = _create_bound_note(client, application, event)
+
+    response = client.put(
+        f"/api/notes/{note['id']}",
+        json={"application_event_id": None, "questions": "Updated"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["application_id"] == application["id"]
+    assert "application_event_id" not in response.json()
+
+
+def test_bound_note_rejects_application_reassignment_or_unbinding(tmp_path):
+    client = TestClient(create_app(data_dir=tmp_path))
+    application, event = _create_application_and_event(client)
+    other = client.post(
+        "/api/applications",
+        json={"company_name": "Tencent", "position_name": "Frontend"},
+    ).json()
+    note = _create_bound_note(client, application, event)
+
+    null_response = client.put(
+        f"/api/notes/{note['id']}", json={"application_id": None}
+    )
+    other_response = client.put(
+        f"/api/notes/{note['id']}", json={"application_id": other["id"]}
+    )
+
+    assert null_response.status_code == 422
+    assert other_response.status_code == 422
+
+
+def test_note_binding_requires_same_application_interview_event(tmp_path):
+    client = TestClient(create_app(data_dir=tmp_path))
+    application, _ = _create_application_and_event(client)
+    other, other_event = _create_application_and_event(client, company="Tencent")
+    _, written_test = _create_application_and_event(client, event_type="written_test")
+
+    cross_app = client.post(
+        f"/api/applications/{application['id']}/notes",
+        json={"application_event_id": other_event["id"]},
+    )
+    non_interview = client.post(
+        f"/api/applications/{application['id']}/notes",
+        json={"application_event_id": written_test["id"]},
+    )
+
+    assert other["id"] != application["id"]
+    assert cross_app.status_code == 422
+    assert non_interview.status_code == 422
+
+
+def test_one_main_note_per_interview_event(tmp_path):
+    client = TestClient(create_app(data_dir=tmp_path))
+    application, event = _create_application_and_event(client)
+    first = _create_bound_note(client, application, event)
+    second = client.post(
+        f"/api/applications/{application['id']}/notes",
+        json={"application_event_id": event["id"]},
+    )
+
+    assert first["application_event_id"] == event["id"]
+    assert second.status_code == 409
+
+
+def test_deleting_event_unbinds_note_but_deleting_application_hides_bound_notes(tmp_path):
+    client = TestClient(create_app(data_dir=tmp_path))
+    application, event = _create_application_and_event(client)
+    note = _create_bound_note(client, application, event)
+
+    assert client.delete(f"/api/application-events/{event['id']}").status_code == 200
+    after_event_delete = client.get("/api/notes").json()
+    assert after_event_delete[0]["id"] == note["id"]
+    assert "application_event_id" not in after_event_delete[0]
+
+    application_two, event_two = _create_application_and_event(client, company="Tencent")
+    note_two = _create_bound_note(client, application_two, event_two)
+    assert client.delete(f"/api/applications/{application_two['id']}").status_code == 200
+
+    assert all(item["id"] != note_two["id"] for item in client.get("/api/notes").json())
+    assert client.get(f"/api/applications/{application_two['id']}/notes").status_code == 404
+    assert client.put(f"/api/notes/{note_two['id']}", json={"questions": "x"}).status_code == 404
+    assert client.delete(f"/api/notes/{note_two['id']}").status_code == 404
+

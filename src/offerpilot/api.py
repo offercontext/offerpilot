@@ -97,7 +97,13 @@ from offerpilot.repositories.opportunity_fit_reviews import (
     OpportunityFitReviewsRepository,
 )
 from offerpilot.repositories.mock import MockSessionCreate, MockSessionsRepository
-from offerpilot.repositories.notes import NoteCreate, NotesRepository
+from offerpilot.repositories.notes import (
+    UNSET,
+    NoteBindingError,
+    NoteCreate,
+    NoteUpdate,
+    NotesRepository,
+)
 from offerpilot.repositories.offers import OfferCreate, OffersRepository
 from offerpilot.repositories.questions import QuestionCreate, QuestionsRepository, question_hash
 from offerpilot.repositories.resumes import ResumeCreate, ResumeMatchCreate, ResumesRepository
@@ -1759,6 +1765,8 @@ def create_app(
 
     @app.get("/api/applications/{app_id}/notes")
     def list_notes_by_app(app_id: int) -> list[dict[str, Any]]:
+        if applications.get(app_id) is None:
+            return JSONResponse(status_code=404, content={"error": "Application not found"})
         return [_note_json(note) for note in notes.list(application_id=app_id)]
 
     @app.post("/api/applications/{app_id}/notes", status_code=201)
@@ -1768,7 +1776,10 @@ def create_app(
         )
         if isinstance(parsed, JSONResponse):
             return parsed
-        note = notes.create(parsed)
+        try:
+            note = notes.create(parsed)
+        except NoteBindingError as exc:
+            return error_response(exc.status_code, str(exc))
         return JSONResponse(_note_json(note), status_code=201)
 
     @app.get("/api/notes")
@@ -1780,34 +1791,58 @@ def create_app(
         parsed = _note_create_from_payload(payload, fallback_app_id=None, applications=applications)
         if isinstance(parsed, JSONResponse):
             return parsed
-        note = notes.create(parsed)
+        try:
+            note = notes.create(parsed)
+        except NoteBindingError as exc:
+            return error_response(exc.status_code, str(exc))
         return JSONResponse(_note_json(note), status_code=201)
 
     @app.put("/api/notes/{note_id}")
     def update_note(note_id: int, payload: dict[str, Any] = Body(...)) -> JSONResponse:
-        note = notes.update(
-            note_id,
-            NoteCreate(
-                company=str(payload.get("company") or ""),
-                position=str(payload.get("position") or ""),
-                round=str(payload.get("round") or ""),
-                date=str(payload.get("date") or ""),
-                questions=str(payload.get("questions") or ""),
-                self_reflection=str(payload.get("self_reflection") or ""),
-                difficulty_points=str(payload.get("difficulty_points") or ""),
-                mood=str(payload.get("mood") or ""),
-            ),
-        )
+        try:
+            note = notes.update(
+                note_id,
+                NoteUpdate(
+                    company=str(payload.get("company") or ""),
+                    position=str(payload.get("position") or ""),
+                    round=str(payload.get("round") or ""),
+                    date=str(payload.get("date") or ""),
+                    questions=str(payload.get("questions") or ""),
+                    self_reflection=str(payload.get("self_reflection") or ""),
+                    difficulty_points=str(payload.get("difficulty_points") or ""),
+                    mood=str(payload.get("mood") or ""),
+                    application_id=(
+                        int(payload["application_id"])
+                        if "application_id" in payload and payload["application_id"] is not None
+                        else None
+                        if "application_id" in payload
+                        else UNSET
+                    ),
+                    application_event_id=(
+                        int(payload["application_event_id"])
+                        if "application_event_id" in payload
+                        and payload["application_event_id"] is not None
+                        else None
+                        if "application_event_id" in payload
+                        else UNSET
+                    ),
+                ),
+            )
+        except (TypeError, ValueError) as exc:
+            if isinstance(exc, NoteBindingError):
+                return error_response(exc.status_code, str(exc))
+            return error_response(422, "Invalid note binding")
         if note is None:
-            return error_response(500, "Failed to update note")
+            return error_response(404, "Interview note not found")
         payload = _note_json(note)
-        payload.pop("application_id", None)
         return JSONResponse(payload)
 
     @app.delete("/api/notes/{note_id}")
-    def delete_note(note_id: int) -> dict[str, str]:
+    def delete_note(note_id: int) -> JSONResponse:
+        if notes.get(note_id) is None:
+            return error_response(404, "Interview note not found")
         notes.delete(note_id)
-        return {"message": "Deleted"}
+        return JSONResponse({"message": "Deleted"})
 
     @app.get("/api/offers")
     def list_offers(status: str = "") -> list[dict[str, Any]]:
@@ -5754,8 +5789,15 @@ def _note_create_from_payload(
             position = app.position_name
     if not company:
         return error_response(400, "company is required")
+    event_id: int | None = None
+    if "application_event_id" in payload and payload["application_event_id"] is not None:
+        try:
+            event_id = int(payload["application_event_id"])
+        except (TypeError, ValueError):
+            return error_response(422, "Invalid application_event_id")
     return NoteCreate(
         application_id=app_id,
+        application_event_id=event_id,
         company=company,
         position=position,
         round=str(payload.get("round") or ""),

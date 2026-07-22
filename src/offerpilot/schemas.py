@@ -83,6 +83,7 @@ class InterviewNoteOut(BaseModel):
 
     id: int
     application_id: int | None = None
+    application_event_id: int | None = None
     company: str
     position: str
     round: str
