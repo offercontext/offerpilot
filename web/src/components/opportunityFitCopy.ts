@@ -33,8 +33,6 @@ export const OPPORTUNITY_FIT_COPY = {
     nextQuestions: '截止日期',
     notStated: '未在输入材料中陈述',
     evidenceSources: '证据来源',
-    resumeSource: '简历',
-    jdSource: 'JD',
     jdOriginal: 'JD 原文',
     candidateAssertions: '用户断言（用户提供，未外部核验）',
     deepReview: 'Deep Fit Review',
@@ -43,6 +41,12 @@ export const OPPORTUNITY_FIT_COPY = {
     prepareMaterials: '去准备材料',
     startDeepReview: '开始 Deep Fit Review',
     noDirectEvidence: '无直接证据引用',
+  },
+  evidence: {
+    resume: '简历',
+    jd: '岗位描述（仅用于分析方向）',
+    user_assertion: '用户断言（用户提供，未外部核验）',
+    unknown: '未知证据来源',
   },
   errors: {
     unverifiable: 'AI 输出未通过证据校验，可重试；原简历已保护，未创建草稿。',
@@ -72,6 +76,14 @@ export const OPPORTUNITY_FIT_COPY = {
   },
 } as const;
 
+function fixedCopyLabel(
+  mapping: Readonly<Record<string, string>>,
+  value: string,
+  fallback: string,
+): string {
+  return Object.prototype.hasOwnProperty.call(mapping, value) ? mapping[value] : fallback;
+}
+
 function responseDetails(error: unknown): { status?: number; errorCode?: string } {
   if (typeof error !== 'object' || error === null) return {};
   const response = (error as { response?: unknown }).response;
@@ -99,15 +111,11 @@ export function getOpportunityFitErrorMessage(error: unknown): string {
 }
 
 export function opportunityFitEvidenceLabel(source: string): string {
-  if (source === 'resume') return '简历';
-  if (source === 'jd') return '岗位描述（仅用于分析方向）';
-  if (source === 'user_assertion') return '用户断言（用户提供，未外部核验）';
-  return '未知证据来源';
+  return fixedCopyLabel(OPPORTUNITY_FIT_COPY.evidence, source, OPPORTUNITY_FIT_COPY.evidence.unknown);
 }
 
 export function opportunityFitRecommendationLabel(value: string): string {
-  return OPPORTUNITY_FIT_COPY.enums.recommendation[value as keyof typeof OPPORTUNITY_FIT_COPY.enums.recommendation]
-    || '未知建议';
+  return fixedCopyLabel(OPPORTUNITY_FIT_COPY.enums.recommendation, value, '未知建议');
 }
 
 export function opportunityFitRecommendationColor(value: string): 'green' | 'gold' | 'red' {
@@ -117,15 +125,13 @@ export function opportunityFitRecommendationColor(value: string): 'green' | 'gol
 }
 
 export function opportunityFitStatusLabel(value: string): string {
-  return FIT_STATUS_LABELS[value as OpportunityFitStatus] || '未知状态';
+  return fixedCopyLabel(FIT_STATUS_LABELS, value, '未知状态');
 }
 
 export function opportunityFitGapKindLabel(value: string): string {
-  return OPPORTUNITY_FIT_COPY.enums.gapKind[value as keyof typeof OPPORTUNITY_FIT_COPY.enums.gapKind]
-    || '未知条件';
+  return fixedCopyLabel(OPPORTUNITY_FIT_COPY.enums.gapKind, value, '未知条件');
 }
 
 export function opportunityFitRecommendedPathLabel(value: string): string {
-  return OPPORTUNITY_FIT_COPY.enums.recommendedPath[value as keyof typeof OPPORTUNITY_FIT_COPY.enums.recommendedPath]
-    || '未知建议路径';
+  return fixedCopyLabel(OPPORTUNITY_FIT_COPY.enums.recommendedPath, value, '未知建议路径');
 }

@@ -3,6 +3,8 @@ import { act, useEffect, useState, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
 const state = vi.hoisted(() => ({
   create: vi.fn(),
   deep: vi.fn(),
@@ -60,7 +62,9 @@ vi.mock('antd', () => {
   };
   return {
     Alert: (props: { message: ReactNode }) => <div role="alert">{props.message}</div>,
-    Button: (props: React.ButtonHTMLAttributes<HTMLButtonElement>) => <button {...props}>{props.children}</button>,
+    Button: ({ loading: _loading, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { loading?: boolean }) => (
+      <button {...props}>{props.children}</button>
+    ),
     Card: (props: { title?: ReactNode; children: ReactNode }) => <section><h3>{props.title}</h3>{props.children}</section>,
     Divider: () => <hr />,
     Drawer: (props: { open: boolean; title: ReactNode; children: ReactNode }) => props.open ? <div role="dialog"><h1>{props.title}</h1>{props.children}</div> : null,
@@ -85,11 +89,13 @@ const application = { id: 7, company_name: 'Example Co.', position_name: 'Backen
 let root: Root | undefined;
 let container: HTMLDivElement | undefined;
 
-function render(onPrepareMaterials?: (review: unknown, jdText: string) => void) {
+async function render(onPrepareMaterials?: (review: unknown, jdText: string) => void) {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
-  act(() => root?.render(<OpportunityFitReviewDrawer application={application} open onClose={vi.fn()} onPrepareMaterials={onPrepareMaterials} />));
+  await act(async () => {
+    root?.render(<OpportunityFitReviewDrawer application={application} open onClose={vi.fn()} onPrepareMaterials={onPrepareMaterials} />);
+  });
   return container;
 }
 
@@ -147,8 +153,10 @@ beforeEach(() => {
   vi.stubGlobal('crypto', { randomUUID: vi.fn(() => 'd4b4b5e8-0a3a-4a3e-8e4d-6bc7a04d36b0') });
 });
 
-afterEach(() => {
-  act(() => root?.unmount());
+afterEach(async () => {
+  await act(async () => {
+    root?.unmount();
+  });
   container?.remove();
   vi.unstubAllGlobals();
 });
@@ -201,12 +209,18 @@ function getByLabelText(view: HTMLDivElement, label: string): HTMLTextAreaElemen
   return control;
 }
 
+async function click(element: HTMLElement) {
+  await act(async () => {
+    element.click();
+  });
+}
+
 describe('OpportunityFitReviewDrawer', () => {
   it('blocks more than ten assertions before submit', async () => {
-    const view = render();
+    const view = await render();
     await waitFor(() => expect(getByLabelText(view, '本次补充断言（每行一条）')).toBeTruthy());
     const assertions = getByLabelText(view, '本次补充断言（每行一条）') as HTMLTextAreaElement;
-    act(() => {
+    await act(async () => {
       setValue(assertions, Array.from({ length: 11 }, (_, index) => `Fact ${index}`).join('\n'));
     });
     expect(view.textContent).toContain('最多填写 10 条非空断言。');
@@ -215,19 +229,19 @@ describe('OpportunityFitReviewDrawer', () => {
   });
 
   it('submits trimmed assertions as independent input', async () => {
-    const view = render();
+    const view = await render();
     await waitFor(() => expect(getByLabelText(view, '用于审阅的简历')).toBeTruthy());
     const select = getByLabelText(view, '用于审阅的简历') as HTMLSelectElement;
     const jd = getByLabelText(view, '用户粘贴的 JD') as HTMLTextAreaElement;
     const assertions = getByLabelText(view, '本次补充断言（每行一条）') as HTMLTextAreaElement;
     await waitFor(() => expect(select.querySelector('option[value="11"]')).toBeTruthy());
-    act(() => {
+    await act(async () => {
       setValue(select, '11');
       setValue(jd, 'JD text');
       setValue(assertions, ' fact one \n\n fact two ');
     });
     await waitFor(() => expect(getByRole(view, 'button', '开始 Triage')).toHaveProperty('disabled', false));
-    act(() => getByRole(view, 'button', '开始 Triage').click());
+    await click(getByRole(view, 'button', '开始 Triage'));
     await waitFor(() => expect(state.create).toHaveBeenCalledWith(7, expect.objectContaining({
       resume_id: 11,
       jd_text: 'JD text',
@@ -239,13 +253,13 @@ describe('OpportunityFitReviewDrawer', () => {
     state.history = [{ id: 8, recommendation: 'advance', created_at: '2026-07-21T00:00:00Z' }];
     state.list.mockResolvedValue(state.history);
     const onPrepareMaterials = vi.fn();
-    const view = render(onPrepareMaterials);
+    const view = await render(onPrepareMaterials);
 
     await waitFor(() => expect(getByRole(view, 'button', '查看')).toBeTruthy());
-    act(() => getByRole(view, 'button', '查看').click());
+    await click(getByRole(view, 'button', '查看'));
     await waitFor(() => expect(state.get).toHaveBeenCalledWith(7, 8));
     await waitFor(() => expect(getByRole(view, 'button', '去准备材料')).toBeTruthy());
-    act(() => getByRole(view, 'button', '去准备材料').click());
+    await click(getByRole(view, 'button', '去准备材料'));
 
     expect(onPrepareMaterials).toHaveBeenCalledWith(expect.objectContaining({ id: 8 }), 'Frozen JD text');
   });
@@ -256,7 +270,7 @@ describe('OpportunityFitReviewDrawer', () => {
     ['unknown', new Error('raw history error'), '操作失败，请稍后重试'],
   ])('shows safe copy when history list fails with %s', async (_name, error, expected) => {
     state.list.mockRejectedValue(error);
-    const view = render();
+    const view = await render();
 
     await waitFor(() => expect(getByRole(view, 'alert').textContent).toContain(expected));
     expect(view.textContent).not.toContain('raw history');
@@ -272,18 +286,18 @@ describe('OpportunityFitReviewDrawer', () => {
         },
       },
     });
-    const view = render();
+    const view = await render();
     await waitFor(() => expect(getByLabelText(view, '用户粘贴的 JD')).toBeTruthy());
     const jd = getByLabelText(view, '用户粘贴的 JD') as HTMLTextAreaElement;
     const select = getByLabelText(view, '用于审阅的简历') as HTMLSelectElement;
     await waitFor(() => expect(select.querySelector('option[value="11"]')).toBeTruthy());
-    act(() => {
+    await act(async () => {
       setValue(select, '11');
       setValue(jd, 'JD text');
     });
 
     await waitFor(() => expect(getByRole(view, 'button', '开始 Triage')).toHaveProperty('disabled', false));
-    act(() => getByRole(view, 'button', '开始 Triage').click());
+    await click(getByRole(view, 'button', '开始 Triage'));
     await waitFor(() => expect(view.textContent).toContain('AI 输出未通过证据校验，可重试；原简历已保护，未创建草稿。'));
 
     expect(view.textContent).toContain('AI 输出未通过证据校验，可重试；原简历已保护，未创建草稿。');
@@ -328,16 +342,18 @@ describe('OpportunityFitReviewDrawer', () => {
         next_actions: [{ id: 'action-a', label: 'Dynamic next action label', kind: 'open_material_kit' }],
       },
     });
-    const view = render();
+    const view = await render();
 
     await waitFor(() => expect(getByRole(view, 'button', '查看')).toBeTruthy());
-    act(() => getByRole(view, 'button', '查看').click());
+    await click(getByRole(view, 'button', '查看'));
     await waitFor(() => expect(view.textContent).toContain('Frozen Resume'));
 
     const renderedText = view.textContent || '';
     expect(renderedText).toContain('Frozen Resume');
     expect(renderedText).toContain('Frozen JD label');
     expect(renderedText).toContain('Frozen JD original text');
+    expect(renderedText).toContain('岗位描述（仅用于分析方向）');
+    expect(renderedText).not.toContain('仅决定分析方向');
     expect(renderedText).toContain('Dynamic AI summary');
     expect(renderedText).toContain('Dynamic AI statement');
     expect(renderedText).toContain('Dynamic explanation A');
