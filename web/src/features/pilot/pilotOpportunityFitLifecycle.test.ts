@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createOpportunityFitDraftStore } from './opportunityFitDraft';
-import { restorePilotHistoricalReview, runPilotDeepReview, runPilotTriage } from './pilotOpportunityFitLifecycle';
+import { cancelPilotTriage, restorePilotHistoricalReview, runPilotDeepReview, runPilotTriage } from './pilotOpportunityFitLifecycle';
 import type { OpportunityFitReview } from '@/types/opportunityFitReview';
 
 const review = {
@@ -148,6 +148,52 @@ describe('Pilot triage lifecycle', () => {
     expect(calls).toBe(1);
     expect(store.getState().triageAttemptKey).toBe('attempt-1');
     expect(store.getState().triageFailureDisposition).toBe('unknown');
+  });
+
+  it('turns a canceled pending request into a retryable unknown result and reuses its key', async () => {
+    const store = createOpportunityFitDraftStore(7, 'draft-1');
+    store.dispatch({ type: 'set_resume', resumeID: 3 });
+    store.dispatch({ type: 'set_jd', jdText: 'JD' });
+    const lateResponse = deferred<OpportunityFitReview>();
+    const calls: string[] = [];
+    const firstRun = runPilotTriage({
+      store,
+      applicationId: 7,
+      pilotDraftKey: 'draft-1',
+      draft: store.getState(),
+      existingKey: 'attempt-canceled',
+      createReview: async (_applicationId, payload) => {
+        calls.push(payload.idempotency_key);
+        return lateResponse.promise;
+      },
+    });
+
+    cancelPilotTriage(store);
+    lateResponse.resolve(review);
+    await firstRun;
+
+    expect(store.getState()).toMatchObject({
+      phase: 'confirm_triage',
+      triageAttemptKey: 'attempt-canceled',
+      triageFailureDisposition: 'unknown',
+      review: null,
+    });
+
+    await runPilotTriage({
+      store,
+      applicationId: 7,
+      pilotDraftKey: 'draft-1',
+      draft: store.getState(),
+      existingKey: store.getState().triageAttemptKey,
+      createReview: async (_applicationId, payload) => {
+        calls.push(payload.idempotency_key);
+        return review;
+      },
+    });
+
+    expect(calls).toEqual(['attempt-canceled', 'attempt-canceled']);
+    expect(store.getState().review).toBe(review);
+    expect(store.getState().triageAttemptKey).toBeNull();
   });
 
   it('accepts only the newest request when two requests share an idempotency key', async () => {

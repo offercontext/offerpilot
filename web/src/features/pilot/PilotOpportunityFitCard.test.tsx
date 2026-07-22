@@ -9,7 +9,7 @@ import {
   type OpportunityFitDraftState,
 } from './opportunityFitDraft';
 import PilotOpportunityFitCard from './PilotOpportunityFitCard';
-import type { OpportunityFitReview } from '@/types/opportunityFitReview';
+import type { OpportunityFitReview, OpportunityFitReviewSummary } from '@/types/opportunityFitReview';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -115,11 +115,15 @@ function Harness({
   initial = createInitialOpportunityFitDraft(7, 'pilot:7'),
   deepLoading = false,
   historyLoading = false,
+  historicalReviews = [],
+  onViewHistoricalReview,
   resumeEvidenceProof: proof = defaultResumeEvidenceProof,
 }: {
   initial?: OpportunityFitDraftState;
   deepLoading?: boolean;
   historyLoading?: boolean;
+  historicalReviews?: OpportunityFitReviewSummary[];
+  onViewHistoricalReview?: (reviewId: number) => void;
   resumeEvidenceProof?: typeof defaultResumeEvidenceProof | null;
 }) {
   const [draft, dispatch] = useState(initial);
@@ -137,6 +141,9 @@ function Harness({
       onCancel={cancel}
       triageFailureDisposition={triageDisposition}
       isHistoryLoading={historyLoading}
+      historicalReviews={historicalReviews}
+      onViewHistoricalReview={onViewHistoricalReview}
+      historicalReview={initial.reviewSource === 'historical'}
       isDeepReviewLoading={deepLoading}
     />
   );
@@ -221,6 +228,51 @@ async function clickDialog(view: HTMLElement, name: string) {
 }
 
 describe('PilotOpportunityFitCard', () => {
+  it('shows read-only historical summaries and requests details only when viewed', async () => {
+    const onViewHistoricalReview = vi.fn();
+    const view = await render();
+    await act(async () => root?.render(
+      <Harness
+        historicalReviews={[{
+          id: 42,
+          application_id: 7,
+          resume_id: 11,
+          status: 'triage_complete',
+          summary: { text: '历史摘要', evidence_refs: [] },
+          recommendation: 'advance',
+          source_fingerprint_sha256: 'source',
+          triage_sha256: 'triage',
+          deep_review_sha256: null,
+          created_at: '2026-07-22T00:00:00Z',
+          deep_reviewed_at: null,
+        }]}
+        onViewHistoricalReview={onViewHistoricalReview}
+      />,
+    ));
+
+    expect(view.textContent).toContain('历史岗位评估');
+    expect(view.textContent).toContain('历史摘要');
+    await click(view, '查看历史评估');
+    expect(onViewHistoricalReview).toHaveBeenCalledWith(42);
+    expect(triage).not.toHaveBeenCalled();
+  });
+
+  it('lets the user return from a historical review to a fresh form', async () => {
+    const historical = { ...validReview, id: 42 };
+    const initial = {
+      ...createInitialOpportunityFitDraft(7, 'pilot:7'),
+      review: historical,
+      reviewSource: 'historical' as const,
+      phase: 'triage_ready' as const,
+      resumeID: 11,
+      jdText: '冻结 JD',
+    };
+    const view = await render(initial);
+    await click(view, '开始新的岗位评估');
+    expect(view.querySelector('select')?.value).toBe('');
+    expect(view.textContent).toContain('开始 Triage');
+  });
+
   it('blocks new triage while historical reviews are loading', async () => {
     const view = await render();
     await act(async () => root?.render(<Harness historyLoading />));

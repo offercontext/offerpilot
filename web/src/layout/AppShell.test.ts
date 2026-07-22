@@ -53,12 +53,18 @@ describe('AppShell source contract', () => {
     expect(source).toContain('listOpportunityFitReviews');
     expect(source).toContain('getOpportunityFitReview');
     expect(source).toContain("['opportunity-fit-reviews'");
+    expect(source).toContain('pilotHistoricalReviewId');
+    expect(source).toContain('setPilotHistoricalReviewId');
+    expect(source).toContain('viewPilotHistoricalReview');
+    expect(source).toContain("type: 'reset_for_new_review'");
+    expect(source).not.toContain('const latest = summaries[0]');
     expect(source).toContain('restorePilotHistoricalReview');
-    expect(source).toContain('triageAttemptKey === null');
+    expect(source).toContain('pilotHistoricalReviewId !== null');
   });
 
   it('retains an unknown Pilot attempt when the flow is canceled', () => {
     expect(source).toContain('shouldRetainOpportunityFitDraft');
+    expect(source).toContain('cancelPilotTriage');
     expect(source).toContain('if (shouldRetainOpportunityFitDraft(store.getState())) return;');
     expect(source).toContain('findRetainedPilotDraftKey');
   });

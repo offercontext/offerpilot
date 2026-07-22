@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import type {
   OpportunityFitEvidenceRef,
   OpportunityFitReview,
+  OpportunityFitReviewSummary,
 } from '@/types/opportunityFitReview';
 import {
   isValidOpportunityFitReview,
@@ -43,6 +44,9 @@ interface Props {
   onCancel: () => void;
   triageFailureDisposition?: OpportunityFitDraftErrorDisposition;
   historicalReview?: boolean;
+  historicalReviews?: OpportunityFitReviewSummary[];
+  onViewHistoricalReview?: (reviewId: number) => void;
+  onStartNewReview?: () => void;
   isHistoryLoading?: boolean;
   isTriageLoading?: boolean;
   isDeepReviewLoading?: boolean;
@@ -136,6 +140,9 @@ export default function PilotOpportunityFitCard({
   onCancel,
   triageFailureDisposition,
   historicalReview = false,
+  historicalReviews = [],
+  onViewHistoricalReview,
+  onStartNewReview,
   isHistoryLoading = false,
   isTriageLoading = false,
   isDeepReviewLoading = false,
@@ -167,6 +174,11 @@ export default function PilotOpportunityFitCard({
   const isUnknownFailure = failureDisposition === 'unknown' && Boolean(draft.actionError);
   const isDeepReady = Boolean(review?.deep_review) && draft.phase === 'deep_review_ready';
 
+  const resetForNewReview = () => {
+    onStartNewReview?.();
+    dispatch({ type: 'reset_for_new_review' });
+  };
+
   const submitTriage = () => {
     if (!normalizedDraft) return;
     setConfirmation(null);
@@ -195,6 +207,23 @@ export default function PilotOpportunityFitCard({
         <h2 id="pilot-opportunity-fit-title">岗位评估</h2>
         <p>通过“收集→确认→审阅→交接”逐步完成当前岗位分析。</p>
       </header>
+
+      {historicalReviews.length > 0 ? (
+        <aside aria-label="历史岗位评估">
+          <h3>历史岗位评估</h3>
+          <ul>
+            {historicalReviews.map((historical) => (
+              <li key={historical.id}>
+                <p>{historical.summary.text}</p>
+                <EvidenceRefs refs={historical.summary.evidence_refs} />
+                <button type="button" onClick={() => onViewHistoricalReview?.(historical.id)}>
+                  查看历史评估
+                </button>
+              </li>
+            ))}
+          </ul>
+        </aside>
+      ) : null}
 
       {draft.actionError && isUnknownFailure ? <div role="alert">结果未知：请使用原尝试重试。</div> : null}
       {draft.actionError && !isUnknownFailure ? <div role="alert">{OPPORTUNITY_FIT_COPY.errors.fallback}</div> : null}
@@ -237,6 +266,7 @@ export default function PilotOpportunityFitCard({
 
       {review && draft.phase !== 'collect_input' && draft.phase !== 'confirm_triage' && draft.phase !== 'triage_loading' ? (
         <div>
+          {historicalReview ? <button type="button" onClick={resetForNewReview}>开始新的岗位评估</button> : null}
           <p>来源已冻结 · 人工确认</p>
           <h3>Triage</h3>
           <ReviewItem statement={review.triage.summary.text} refs={review.triage.summary.evidence_refs} />

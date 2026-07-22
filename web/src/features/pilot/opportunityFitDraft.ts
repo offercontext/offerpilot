@@ -60,6 +60,7 @@ export type OpportunityFitDraftAction =
   | { type: 'set_attempt_key'; key: string | null }
   | { type: 'set_review'; review: OpportunityFitReview }
   | { type: 'restore_review'; review: OpportunityFitReview }
+  | { type: 'reset_for_new_review' }
   | { type: 'set_error'; error: string; disposition: OpportunityFitDraftErrorDisposition }
   | { type: 'set_error'; error: null; disposition: null };
 
@@ -477,6 +478,8 @@ function isValidOpportunityFitDraftAction(action: OpportunityFitDraftAction): bo
       return isValidOpportunityFitReview(action.review);
     case 'restore_review':
       return isValidOpportunityFitReview(action.review);
+    case 'reset_for_new_review':
+      return true;
     case 'set_error':
       return action.error === null
         ? action.disposition === null
@@ -609,6 +612,8 @@ export function opportunityFitDraftReducer(
         triageFailureDisposition: null,
         reviewSource: 'historical',
       };
+    case 'reset_for_new_review':
+      return createInitialOpportunityFitDraft(state.applicationId, state.pilotDraftKey);
     case 'set_error':
       if (
         state.actionError === action.error

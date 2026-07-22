@@ -25,6 +25,7 @@ import {
   type OpportunityFitResumeEvidenceProof,
 } from '@/features/pilot/opportunityFitDraft';
 import {
+  cancelPilotTriage,
   restorePilotHistoricalReview,
   runPilotDeepReview,
   runPilotTriage,
@@ -127,6 +128,7 @@ function AppShellContent() {
   const [chatOpen, setChatOpen] = useState(false);
   const [pilotDrawerOpen, setPilotDrawerOpen] = useState(false);
   const [pilotApplicationContext, setPilotApplicationContext] = useState<{ applicationId: number; pilotDraftKey: string } | null>(null);
+  const [pilotHistoricalReviewId, setPilotHistoricalReviewId] = useState<number | null>(null);
   const pilotApplicationContextRef = useRef(pilotApplicationContext);
   pilotApplicationContextRef.current = pilotApplicationContext;
   const [aiSettingsOpen, setAISettingsOpen] = useState(false);
@@ -236,31 +238,24 @@ function AppShellContent() {
     pilotDraftStore.getState,
     pilotDraftStore.getState,
   );
-  const shouldLoadPilotHistory = Boolean(
-    pilotApplicationContext
-    && pilotDraft.review === null
-    && pilotDraft.triageAttemptKey === null
-    && pilotDraft.resumeID === undefined
-    && pilotDraft.jdText.trim() === ''
-    && pilotDraft.assertionsText.trim() === '',
-  );
   const pilotHistoryQuery = useQuery({
     queryKey: ['opportunity-fit-reviews', pilotApplicationContext?.applicationId],
-    queryFn: async () => {
-      const applicationId = pilotApplicationContext!.applicationId;
-      const summaries = await listOpportunityFitReviews(applicationId);
-      const latest = summaries[0];
-      return latest ? getOpportunityFitReview(applicationId, latest.id) : null;
-    },
-    enabled: shouldLoadPilotHistory,
+    queryFn: () => listOpportunityFitReviews(pilotApplicationContext!.applicationId),
+    enabled: Boolean(pilotApplicationContext),
+    retry: false,
+  });
+  const pilotHistoricalReviewQuery = useQuery({
+    queryKey: ['opportunity-fit-review', pilotApplicationContext?.applicationId, pilotHistoricalReviewId],
+    queryFn: () => getOpportunityFitReview(pilotApplicationContext!.applicationId, pilotHistoricalReviewId!),
+    enabled: Boolean(pilotApplicationContext && pilotHistoricalReviewId !== null),
     retry: false,
   });
   const [resumeEvidenceProof, setResumeEvidenceProof] = useState<OpportunityFitResumeEvidenceProof | null>(null);
 
   useEffect(() => {
-    if (!pilotHistoryQuery.data || !pilotApplicationContext || !shouldLoadPilotHistory) return;
-    restorePilotHistoricalReview(pilotDraftStore, pilotHistoryQuery.data);
-  }, [pilotHistoryQuery.data, pilotApplicationContext, pilotDraftStore, shouldLoadPilotHistory]);
+    if (!pilotHistoricalReviewQuery.data || !pilotApplicationContext || pilotHistoricalReviewId === null) return;
+    restorePilotHistoricalReview(pilotDraftStore, pilotHistoricalReviewQuery.data);
+  }, [pilotHistoricalReviewQuery.data, pilotApplicationContext, pilotDraftStore, pilotHistoricalReviewId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -477,6 +472,7 @@ function AppShellContent() {
   const startPilotOpportunityFit = (app: Application) => {
     setAISettingsOpen(false);
     setSelected(null);
+    setPilotHistoricalReviewId(null);
     const currentPilot = pilotApplicationContextRef.current;
     if (currentPilot && currentPilot.applicationId !== app.id) {
       schedulePilotDraftCleanup(currentPilot);
@@ -554,6 +550,17 @@ function AppShellContent() {
     setPilotApplicationContext(null);
     setView('board');
     if (app) setSelected(app);
+  };
+
+  const startNewPilotReview = () => {
+    setPilotHistoricalReviewId(null);
+  };
+
+  const viewPilotHistoricalReview = (reviewId: number) => {
+    if (pilotDraftStore.getState().reviewSource === 'historical') {
+      pilotDraftStore.dispatch({ type: 'reset_for_new_review' });
+    }
+    setPilotHistoricalReviewId(reviewId);
   };
 
   const clearEvidenceFocus = (target: EvidenceTarget) => {
@@ -696,8 +703,11 @@ function AppShellContent() {
                   dispatch={dispatchPilotDraft}
                   resumes={resumes}
                   resumeEvidenceProof={resumeEvidenceProof}
-                  historicalReview={pilotDraft.reviewSource === 'historical'}
-                  isHistoryLoading={pilotHistoryQuery.isLoading || pilotHistoryQuery.isFetching}
+                   historicalReview={pilotDraft.reviewSource === 'historical'}
+                   historicalReviews={pilotHistoryQuery.data ?? []}
+                   onViewHistoricalReview={viewPilotHistoricalReview}
+                   onStartNewReview={startNewPilotReview}
+                   isHistoryLoading={pilotHistoryQuery.isLoading || pilotHistoricalReviewQuery.isLoading || pilotHistoricalReviewQuery.isFetching}
                   onStartTriage={startPilotTriage}
                   onRetryTriage={startPilotTriage}
                   onStartDeepReview={startPilotDeepReview}
@@ -706,7 +716,11 @@ function AppShellContent() {
                   isDeepReviewLoading={pilotDraft.phase === 'deep_review_loading'}
                   onCancel={() => {
                     const currentPilot = pilotApplicationContextRef.current;
+                    if (currentPilot && pilotDraftStore.getState().phase === 'triage_loading') {
+                      cancelPilotTriage(pilotDraftStore);
+                    }
                     if (currentPilot) schedulePilotDraftCleanup(currentPilot);
+                    setPilotHistoricalReviewId(null);
                     setPilotApplicationContext(null);
                     setView('dashboard');
                   }}

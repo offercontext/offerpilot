@@ -45,6 +45,7 @@ interface PilotDeepReviewRunOptions {
 const INVALID_RESPONSE_ERROR = getOpportunityFitErrorMessage({
   response: { status: 502, data: { error_code: 'opportunity_fit_unverifiable' } },
 });
+const UNKNOWN_RESULT_ERROR = 'opportunity_fit_result_unknown';
 
 function isVerifiedReview(
   value: unknown,
@@ -71,6 +72,16 @@ function isRunCurrent(
     && current.jdText === input.jdText
     && current.assertionsText === input.assertionsText
     && current.triageAttemptKey === attemptKey;
+}
+
+export function cancelPilotTriage(store: OpportunityFitDraftStore): boolean {
+  const current = store.getState();
+  if (current.phase !== 'triage_loading' || !current.triageAttemptKey) return false;
+
+  requestGenerations.set(store, (requestGenerations.get(store) ?? 0) + 1);
+  store.dispatch({ type: 'set_error', error: UNKNOWN_RESULT_ERROR, disposition: 'unknown' });
+  store.dispatch({ type: 'set_phase', phase: 'confirm_triage' });
+  return true;
 }
 
 export function restorePilotHistoricalReview(
