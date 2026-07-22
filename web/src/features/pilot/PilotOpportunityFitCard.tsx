@@ -222,8 +222,8 @@ export default function PilotOpportunityFitCard({
         </form>
       ) : null}
 
-      {draft.phase === 'triage_loading' ? <p role="status">正在等待 AI 返回可验证的评估结果…</p> : null}
-      {draft.actionError && draft.phase === 'triage_loading' ? (
+      {draft.phase === 'triage_loading' && !draft.actionError ? <p role="status">正在等待 AI 返回可验证的评估结果…</p> : null}
+      {draft.actionError && (draft.phase === 'triage_loading' || draft.phase === 'confirm_triage') ? (
         <button type="button" onClick={() => normalizedDraft && onRetryTriage(normalizedDraft, normalizedDraft.triageAttemptKey)}>
           {isUnknownFailure ? '使用原尝试重试' : '重新尝试'}
         </button>

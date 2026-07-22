@@ -14,12 +14,12 @@ import PilotOpportunityFitCard, { type PilotOpportunityFitMaterialHandoff } from
 import {
   classifyOpportunityFitFailure,
   createOpportunityFitDraftStore,
-  normalizeOpportunityFitAssertions,
   type OpportunityFitDraftAction,
   type OpportunityFitDraftState,
   type OpportunityFitDraftStore,
   type OpportunityFitResumeEvidenceProof,
 } from '@/features/pilot/opportunityFitDraft';
+import { runPilotTriage } from '@/features/pilot/pilotOpportunityFitLifecycle';
 import { writeMaterialKitHandoff } from '@/features/pilot/materialKitHandoff';
 import type { Application } from '@/types/application';
 import type { OpportunityFitReview } from '@/types/opportunityFitReview';
@@ -118,6 +118,8 @@ function AppShellContent() {
   const [chatOpen, setChatOpen] = useState(false);
   const [pilotDrawerOpen, setPilotDrawerOpen] = useState(false);
   const [pilotApplicationContext, setPilotApplicationContext] = useState<{ applicationId: number; pilotDraftKey: string } | null>(null);
+  const pilotApplicationContextRef = useRef(pilotApplicationContext);
+  pilotApplicationContextRef.current = pilotApplicationContext;
   const [aiSettingsOpen, setAISettingsOpen] = useState(false);
   const [resumeOnboardingFocusToken, setResumeOnboardingFocusToken] = useState(0);
   const [pilotOnboardingFocusToken, setPilotOnboardingFocusToken] = useState(0);
@@ -410,29 +412,26 @@ function AppShellContent() {
   const showPilotError = (error: unknown) => {
     const disposition = classifyOpportunityFitFailure(error);
     dispatchPilotDraft({ type: 'set_error', error: getOpportunityFitErrorMessage(error), disposition });
-    return disposition;
   };
 
   const startPilotTriage = async (draft: OpportunityFitDraftState, existingKey: string | null) => {
     if (!pilotApplicationContext || draft.applicationId !== pilotApplicationContext.applicationId) return;
-    const triageAttemptKey = existingKey ?? draft.triageAttemptKey ?? crypto.randomUUID();
-    dispatchPilotDraft({ type: 'set_attempt_key', key: triageAttemptKey });
-    dispatchPilotDraft({ type: 'set_phase', phase: 'triage_loading' });
-    try {
-      const candidateAssertions = normalizeOpportunityFitAssertions(draft.assertionsText);
-      const result = await createOpportunityFitReview(draft.applicationId, {
-        resume_id: draft.resumeID!,
-        jd_text: draft.jdText.trim(),
-        jd_source_label: '用户粘贴 JD',
-        candidate_assertions: candidateAssertions,
-        idempotency_key: triageAttemptKey,
-      });
-      dispatchPilotDraft({ type: 'set_review', review: result });
-    } catch (error) {
-      const disposition = showPilotError(error);
-      dispatchPilotDraft({ type: 'set_phase', phase: 'confirm_triage' });
-      if (disposition === 'unknown') dispatchPilotDraft({ type: 'set_attempt_key', key: triageAttemptKey });
-    }
+    const store = pilotDraftStore;
+    const applicationContext = pilotApplicationContext;
+    await runPilotTriage({
+      store,
+      applicationId: draft.applicationId,
+      pilotDraftKey: applicationContext.pilotDraftKey,
+      draft,
+      existingKey,
+      createReview: createOpportunityFitReview,
+      isContextCurrent: () => {
+        const current = pilotApplicationContextRef.current;
+        return current?.applicationId === applicationContext.applicationId
+          && current.pilotDraftKey === applicationContext.pilotDraftKey
+          && pilotDraftStoresRef.current.get(`${applicationContext.applicationId}:${applicationContext.pilotDraftKey}`) === store;
+      },
+    });
   };
 
   const startPilotDeepReview = async (_draft: OpportunityFitDraftState, review: OpportunityFitReview) => {

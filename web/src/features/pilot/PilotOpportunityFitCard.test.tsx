@@ -284,6 +284,20 @@ describe('PilotOpportunityFitCard', () => {
     const initial = { ...createInitialOpportunityFitDraft(7, 'pilot:7'), phase: 'triage_loading' as const, triageAttemptKey: 'attempt-1', actionError: '安全错误' };
     const view = await render(initial);
     expect(view.textContent).toContain('结果未知');
+    expect(view.querySelector('[role="status"]')).toBeNull();
+    await click(view, '使用原尝试重试');
+    expect(retry).toHaveBeenCalledWith(expect.objectContaining({ triageAttemptKey: 'attempt-1' }), 'attempt-1');
+  });
+
+  it('keeps the retry action reachable after an error returns to confirmation', async () => {
+    triageDisposition = 'unknown';
+    const initial = {
+      ...createInitialOpportunityFitDraft(7, 'pilot:7'),
+      phase: 'confirm_triage' as const,
+      triageAttemptKey: 'attempt-1',
+      actionError: '安全错误',
+    };
+    const view = await render(initial);
     await click(view, '使用原尝试重试');
     expect(retry).toHaveBeenCalledWith(expect.objectContaining({ triageAttemptKey: 'attempt-1' }), 'attempt-1');
   });

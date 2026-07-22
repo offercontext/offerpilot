@@ -70,12 +70,14 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
   const [editingNote, setEditingNote] = useState<InterviewNote | null>(null);
 
   useEffect(() => {
+    setMaterialKitPrefill({});
+    setMaterialKitOpen(false);
     if (!application || !open) return;
     const handoff = consumeMaterialKitHandoff(application.id);
     if (!handoff) return;
     setMaterialKitPrefill({ resumeID: handoff.resumeId, jdSnapshot: handoff.jdText });
     setMaterialKitOpen(true);
-  }, [application, open]);
+  }, [application?.id, open]);
 
   const notesQuery = useQuery({
     queryKey: ['notes', application?.id],

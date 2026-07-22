@@ -19,6 +19,12 @@ describe('AppShell source contract', () => {
     expect(source).toContain('onDataChanged={refreshWorkspaceData}');
   });
 
+  it('delegates Pilot triage to a lifecycle harness that owns payload and stale-response checks', () => {
+    expect(source).toContain("import { runPilotTriage } from '@/features/pilot/pilotOpportunityFitLifecycle';");
+    expect(source).toContain('runPilotTriage({');
+    expect(source).toContain('onRetryTriage={startPilotTriage}');
+  });
+
   it('renders Pilot as a normal tab with the expanded assistant workspace', () => {
     expect(source).toContain("view === 'pilot'");
     expect(source).toContain('variant="page"');

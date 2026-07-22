@@ -151,6 +151,24 @@ describe('ApplicationDetail opportunity fit handoff', () => {
     expect(container?.querySelector('[data-testid="material-kit"]')?.getAttribute('data-jd')).toBe('Frozen Pilot JD');
   });
 
+  it('clears consumed material prefill when switching to another Application', async () => {
+    writeMaterialKitHandoff({
+      applicationId: 7,
+      resumeId: 12,
+      jdText: 'Frozen Pilot JD',
+      resumeEvidenceProof: { resumeId: 12, sha256: 'hash', contentJson: { raw_text: 'resume' } },
+    });
+    const otherApplication = Object.assign({}, application, { id: 8 }) as typeof application;
+
+    act(() => root?.render(<ApplicationDetail application={application} open onClose={vi.fn()} />));
+    await act(async () => { await Promise.resolve(); });
+    expect(container?.querySelector('[data-testid="material-kit"]')).not.toBeNull();
+
+    act(() => root?.render(<ApplicationDetail application={otherApplication} open onClose={vi.fn()} />));
+    await act(async () => { await Promise.resolve(); });
+    expect(container?.querySelector('[data-testid="material-kit"]')).toBeNull();
+  });
+
   it('exposes the Application-scoped Pilot evaluation entry without URL analysis', () => {
     const openPilot = vi.fn();
     act(() => root?.render(<ApplicationDetail application={application} open onClose={vi.fn()} onOpenPilotOpportunityFit={openPilot} />));
