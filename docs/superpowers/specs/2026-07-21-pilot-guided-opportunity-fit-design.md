@@ -1,7 +1,7 @@
 # Pilot 引导式岗位评估设计
 
 日期：2026-07-21
-状态：待复审
+状态：已复审通过
 范围：将既有 Opportunity Fit 的 Triage、Deep Review 和材料交接接入绑定 Application 的 Pilot 会话；不改变 Opportunity Fit API、数据模型或材料包生命周期。
 
 ## 1. 目标与非目标
