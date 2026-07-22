@@ -21,6 +21,7 @@ import type { Application } from '@/types/application';
 import type { CreateNoteInput, InterviewNote } from '@/types/note';
 import { createStandaloneNote, deleteNote, listNotes, updateNote } from '@/services/notes';
 import ReviewFormDrawer from '@/components/ReviewFormDrawer';
+import InterviewReviewProposalDrawer from '@/components/InterviewReviewProposalDrawer';
 
 const { Text, Paragraph } = Typography;
 
@@ -52,6 +53,7 @@ export default function ReviewManagementView({ applications }: Props) {
   const queryClient = useQueryClient();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editing, setEditing] = useState<InterviewNote | null>(null);
+  const [proposalNote, setProposalNote] = useState<InterviewNote | null>(null);
   const [search, setSearch] = useState('');
   const [applicationID, setApplicationID] = useState<number | undefined>();
   const [mood, setMood] = useState<string | undefined>();
@@ -124,6 +126,17 @@ export default function ReviewManagementView({ applications }: Props) {
     } else {
       createMut.mutate(input);
     }
+  }
+
+  if (proposalNote) {
+    return (
+      <InterviewReviewProposalDrawer
+        open
+        note={proposalNote}
+        eventID={proposalNote.application_event_id}
+        onClose={() => setProposalNote(null)}
+      />
+    );
   }
 
   if (drawerOpen) {
@@ -211,6 +224,11 @@ export default function ReviewManagementView({ applications }: Props) {
                     />
                   </Tooltip>
                   <Tooltip title="删除">
+                    {note.application_event_id != null && (
+                      <Button type="text" onClick={() => setProposalNote(note)}>
+                        复盘建议
+                      </Button>
+                    )}
                     <Popconfirm
                       title="删除这条复盘？"
                       onConfirm={() => deleteMut.mutate(note.id)}

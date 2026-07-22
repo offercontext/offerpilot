@@ -32,6 +32,7 @@ import type { CreateNoteInput, InterviewNote } from '@/types/note';
 import { EVENT_TYPE_LABELS } from '@/types/event';
 import ScheduleEventForm from '@/components/ScheduleEventForm';
 import ReviewFormDrawer from './ReviewFormDrawer';
+import InterviewReviewProposalDrawer from './InterviewReviewProposalDrawer';
 import MaterialKitDrawer from './MaterialKitDrawer';
 import OpportunityFitReviewDrawer from './OpportunityFitReviewDrawer';
 import type { OpportunityFitReview } from '@/types/opportunityFitReview';
@@ -70,6 +71,7 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
   const [materialKitApplicationId, setMaterialKitApplicationId] = useState<number | null>(null);
   const [editingNote, setEditingNote] = useState<InterviewNote | null>(null);
   const [reviewFormOpen, setReviewFormOpen] = useState(false);
+  const [reviewProposalOpen, setReviewProposalOpen] = useState(false);
   const [reviewEventID, setReviewEventID] = useState<number | null>(null);
 
   useEffect(() => {
@@ -151,6 +153,7 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
     setMaterialKitPrefill({});
     setEditingNote(null);
     setReviewFormOpen(false);
+    setReviewProposalOpen(false);
     setReviewEventID(null);
     onClose();
   };
@@ -202,6 +205,20 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
         }}
         initialResumeID={materialKitPrefill.resumeID}
         initialJdSnapshot={materialKitPrefill.jdSnapshot}
+      />
+    );
+  }
+
+  if (reviewProposalOpen && editingNote) {
+    return (
+      <InterviewReviewProposalDrawer
+        open={reviewProposalOpen}
+        note={editingNote}
+        eventID={editingNote.application_event_id}
+        onClose={() => {
+          setReviewProposalOpen(false);
+          setEditingNote(null);
+        }}
       />
     );
   }
@@ -317,7 +334,8 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
                     onClick={() => {
                       setReviewEventID(event.id);
                       setEditingNote(linkedNote ?? null);
-                      setReviewFormOpen(true);
+                      if (linkedNote) setReviewProposalOpen(true);
+                      else setReviewFormOpen(true);
                     }}
                   >
                     {linkedNote ? '查看复盘' : '记录复盘'}
@@ -399,6 +417,18 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
                       >
                         编辑
                       </Button>
+                      {n.application_event_id != null && (
+                        <Button
+                          type="text"
+                          size="small"
+                          onClick={() => {
+                            setEditingNote(n);
+                            setReviewProposalOpen(true);
+                          }}
+                        >
+                          复盘建议
+                        </Button>
+                      )}
                       <Popconfirm
                         title="删除这条复盘？"
                         onConfirm={() => removeNoteMut.mutate(n.id)}

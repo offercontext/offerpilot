@@ -1,0 +1,31 @@
+.drawer {
+  display: grid;
+  gap: 16px;
+  padding: 8px 0 24px;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.history {
+  background: #fafafa;
+}
+
+.item {
+  padding: 8px 0;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.evidence {
+  display: grid;
+  gap: 6px;
+  padding: 8px 0;
+}
+
+.excerpt {
+  margin: 4px 0 0 8px !important;
+  color: #64748b;
+}
