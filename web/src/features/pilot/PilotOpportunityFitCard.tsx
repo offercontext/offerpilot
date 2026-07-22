@@ -27,7 +27,6 @@ export interface PilotOpportunityFitMaterialHandoff {
   applicationId: number;
   resumeId: number;
   jdText: string;
-  review: OpportunityFitReview;
 }
 
 interface Props {
@@ -59,11 +58,31 @@ function isEvidenceRefs(value: unknown): boolean {
   ));
 }
 
+function isDeepReviewGapEvidenceRefs(value: unknown): boolean {
+  return Array.isArray(value)
+    && value.length > 0
+    && value.every((item) => (
+      isRecord(item)
+      && (item.source === 'resume' || item.source === 'evidence_bundle' || item.source === 'user_assertion')
+      && typeof item.path === 'string'
+      && item.path.trim().length > 0
+      && typeof item.excerpt === 'string'
+      && item.excerpt.trim().length > 0
+    ));
+}
+
 function isReviewItem(value: unknown, statementKey: 'statement' | 'explanation' | 'requirement'): boolean {
   return isRecord(value)
     && typeof value.id === 'string'
     && typeof value[statementKey] === 'string'
     && isEvidenceRefs(value.evidence_refs);
+}
+
+function isDeepReviewGapItem(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value.id === 'string'
+    && typeof value.statement === 'string'
+    && isDeepReviewGapEvidenceRefs(value.evidence_refs);
 }
 
 function isRenderableReview(
@@ -76,7 +95,7 @@ function isRenderableReview(
   if (!isRecord(value.triage) || !isRecord(value.triage.summary) || typeof value.triage.summary.text !== 'string' || !isEvidenceRefs(value.triage.summary.evidence_refs) || !Array.isArray(value.triage.hard_constraints) || !Array.isArray(value.triage.fit_signals) || !Array.isArray(value.triage.gaps) || !Array.isArray(value.triage.next_questions)) return false;
   if (!value.triage.hard_constraints.every((item) => isReviewItem(item, 'explanation')) || !value.triage.fit_signals.every((item) => isReviewItem(item, 'statement')) || !value.triage.gaps.every((item) => isReviewItem(item, 'requirement')) || !value.triage.next_questions.every((item) => typeof item === 'string')) return false;
   if (value.deep_review !== null) {
-    if (!isRecord(value.deep_review) || !Array.isArray(value.deep_review.strengths) || !Array.isArray(value.deep_review.gaps_to_address) || !Array.isArray(value.deep_review.questions_to_clarify) || !value.deep_review.strengths.every((item) => isReviewItem(item, 'statement')) || !value.deep_review.gaps_to_address.every((item) => isReviewItem(item, 'statement')) || !value.deep_review.questions_to_clarify.every((item) => isReviewItem(item, 'statement'))) return false;
+    if (!isRecord(value.deep_review) || !Array.isArray(value.deep_review.strengths) || !Array.isArray(value.deep_review.gaps_to_address) || !Array.isArray(value.deep_review.questions_to_clarify) || !value.deep_review.strengths.every((item) => isReviewItem(item, 'statement')) || !value.deep_review.gaps_to_address.every(isDeepReviewGapItem) || !value.deep_review.questions_to_clarify.every((item) => isReviewItem(item, 'statement'))) return false;
   }
   return true;
 }
@@ -165,6 +184,13 @@ export default function PilotOpportunityFitCard({
       return { values: [], error: OPPORTUNITY_FIT_COPY.drawer.assertionsTooLong };
     }
   }, [draft.assertionsText]);
+  const normalizedDraft = assertions.error
+    ? null
+    : {
+      ...draft,
+      jdText: draft.jdText.trim(),
+      assertionsText: assertions.values.join('\n'),
+    };
   const review = isRenderableReview(draft.review, draft.applicationId) ? draft.review : null;
   const isTriagePhase = draft.phase === 'collect_input' || draft.phase === 'confirm_triage' || draft.phase === 'triage_loading';
   const canStartTriage = Boolean(draft.resumeID && draft.jdText.trim() && !assertions.error && !isTriageLoading && draft.phase !== 'triage_loading');
@@ -172,8 +198,9 @@ export default function PilotOpportunityFitCard({
   const isDeepReady = Boolean(review?.deep_review) && draft.phase === 'deep_review_ready';
 
   const submitTriage = () => {
+    if (!normalizedDraft) return;
     setConfirmation(null);
-    onStartTriage(draft, draft.triageAttemptKey);
+    onStartTriage(normalizedDraft, normalizedDraft.triageAttemptKey);
   };
 
   const submitDeepReview = () => {
@@ -189,7 +216,6 @@ export default function PilotOpportunityFitCard({
       applicationId: draft.applicationId,
       resumeId: review.source.resume.id,
       jdText: review.source.jd.text,
-      review,
     });
   };
 
@@ -233,7 +259,7 @@ export default function PilotOpportunityFitCard({
 
       {draft.phase === 'triage_loading' ? <p role="status">正在等待 AI 返回可验证的评估结果…</p> : null}
       {draft.actionError && draft.phase === 'triage_loading' ? (
-        <button type="button" onClick={() => onRetryTriage(draft, draft.triageAttemptKey)}>
+        <button type="button" onClick={() => normalizedDraft && onRetryTriage(normalizedDraft, normalizedDraft.triageAttemptKey)}>
           {isUnknownFailure ? '使用原尝试重试' : '重新尝试'}
         </button>
       ) : null}
@@ -266,6 +292,9 @@ export default function PilotOpportunityFitCard({
             </div>
           ) : null}
 
+          {!isDeepReady ? (
+            isDeepReviewLoading ? <p role="status">正在进行 Deep Review…</p> : null
+          ) : null}
           {!isDeepReady ? (
             <button type="button" disabled={isDeepReviewLoading} onClick={() => setConfirmation('deep_review')}>
               {isDeepReviewLoading ? '正在深入分析…' : OPPORTUNITY_FIT_COPY.drawer.startDeepReview}

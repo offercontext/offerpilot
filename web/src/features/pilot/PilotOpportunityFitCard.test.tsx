@@ -50,7 +50,7 @@ const deepReview = {
   deep_review_sha256: 'deep',
   deep_review: {
     strengths: [{ id: 'strength-1', statement: '优势内容', evidence_refs: [{ source: 'resume', path: '/experience/0', excerpt: '经历证据' }] }],
-    gaps_to_address: [{ id: 'gap-2', statement: '待补足内容', evidence_refs: [{ source: 'jd', path: '/text', excerpt: '岗位证据' }] }],
+    gaps_to_address: [{ id: 'gap-2', statement: '待补足内容', evidence_refs: [{ source: 'resume', path: '/experience/0', excerpt: '经历证据' }] }],
     questions_to_clarify: [{ id: 'question-1', statement: '需要澄清的问题', evidence_refs: [{ source: 'user_assertion', path: '/user_assertions/0/text', excerpt: '用户事实' }] }],
     recommended_path: 'prepare_materials',
     next_actions: [{ id: 'action-1', label: '准备材料', kind: 'open_material_kit' }],
@@ -60,7 +60,7 @@ const deepReview = {
 let root: Root | undefined;
 let container: HTMLDivElement | undefined;
 
-function Harness({ initial = createInitialOpportunityFitDraft(7, 'pilot:7') }: { initial?: OpportunityFitDraftState }) {
+function Harness({ initial = createInitialOpportunityFitDraft(7, 'pilot:7'), deepLoading = false }: { initial?: OpportunityFitDraftState; deepLoading?: boolean }) {
   const [draft, dispatch] = useState(initial);
   const reduce = (action: OpportunityFitDraftAction) => dispatch((current) => opportunityFitDraftReducer(current, action));
   return (
@@ -74,6 +74,7 @@ function Harness({ initial = createInitialOpportunityFitDraft(7, 'pilot:7') }: {
       onPrepareMaterials={prepare}
       onCancel={cancel}
       triageFailureDisposition={triageDisposition}
+      isDeepReviewLoading={deepLoading}
     />
   );
 }
@@ -161,7 +162,7 @@ describe('PilotOpportunityFitCard', () => {
     await change(labeled(view, '补充断言'), ' fact one \n\n fact two ');
     await click(view, '开始 Triage');
     await click(view, '确认发送');
-    expect(triage).toHaveBeenCalledWith(expect.objectContaining({ resumeID: 11, jdText: ' JD ', assertionsText: ' fact one \n\n fact two ' }), null);
+    expect(triage).toHaveBeenCalledWith(expect.objectContaining({ resumeID: 11, jdText: 'JD', assertionsText: 'fact one\nfact two' }), null);
   });
 
   it('renders evidence-backed triage content without translating dynamic text', async () => {
@@ -203,7 +204,8 @@ describe('PilotOpportunityFitCard', () => {
     expect(view.textContent).toContain('优势内容');
     expect(view.textContent).toContain('建议准备材料');
     await click(view, '去准备材料');
-    expect(prepare).toHaveBeenCalledWith({ applicationId: 7, resumeId: 11, jdText: '原始 JD 文本', review: deepReview });
+    expect(prepare).toHaveBeenCalledWith({ applicationId: 7, resumeId: 11, jdText: '原始 JD 文本' });
+    expect(prepare.mock.calls[0][0]).not.toHaveProperty('review');
   });
 
   it('requires explicit confirmation when deviating from the recommendation', async () => {
@@ -222,6 +224,57 @@ describe('PilotOpportunityFitCard', () => {
   it('does not render malformed or empty review payloads', async () => {
     const malformed = { ...createInitialOpportunityFitDraft(7, 'pilot:7'), review: {} as OpportunityFitReview, phase: 'triage_ready' as const };
     const view = await render(malformed);
+    expect(view.textContent).toContain('暂无可展示的评估结果');
+    expect(view.textContent).not.toContain('undefined');
+  });
+
+  it('does not render a deep review with empty or disallowed gap evidence', async () => {
+    const malformed = {
+      ...deepReview,
+      deep_review: {
+        ...deepReview.deep_review!,
+        gaps_to_address: [{ ...deepReview.deep_review!.gaps_to_address[0], evidence_refs: [] }],
+      },
+    } as OpportunityFitReview;
+    const view = await render({ ...createInitialOpportunityFitDraft(7, 'pilot:7'), review: malformed, phase: 'deep_review_ready' });
+    expect(view.textContent).toContain('暂无可展示的评估结果');
+    expect(view.textContent).not.toContain('待补足内容');
+
+    const disallowed = {
+      ...deepReview,
+      deep_review: {
+        ...deepReview.deep_review!,
+        gaps_to_address: [{ ...deepReview.deep_review!.gaps_to_address[0], evidence_refs: [{ source: 'jd', path: '/text', excerpt: '岗位证据' }] }],
+      },
+    } as unknown as OpportunityFitReview;
+    const disallowedView = await render({ ...createInitialOpportunityFitDraft(7, 'pilot:7'), review: disallowed, phase: 'deep_review_ready' });
+    expect(disallowedView.textContent).toContain('暂无可展示的评估结果');
+  });
+
+  it('rejects a 501-character assertion before triage', async () => {
+    const view = await render();
+    await change(labeled(view, '补充断言'), 'x'.repeat(501));
+    expect(view.textContent).toContain('每条断言最多 500 字');
+    expect(button(view, '开始 Triage').disabled).toBe(true);
+    expect(triage).not.toHaveBeenCalled();
+  });
+
+  it('marks deep review loading with a status role', async () => {
+    const initial = { ...createInitialOpportunityFitDraft(7, 'pilot:7'), review, phase: 'deep_review_loading' as const };
+    await act(async () => root?.render(<Harness initial={initial} deepLoading />));
+    const view = container!;
+    expect(view.querySelector('[role="status"]')?.textContent).toContain('Deep Review');
+  });
+
+  it('safely renders a malformed nested deep review as empty state', async () => {
+    const malformed = {
+      ...deepReview,
+      deep_review: {
+        ...deepReview.deep_review!,
+        gaps_to_address: [{ ...deepReview.deep_review!.gaps_to_address[0], evidence_refs: [{}] }],
+      },
+    } as unknown as OpportunityFitReview;
+    const view = await render({ ...createInitialOpportunityFitDraft(7, 'pilot:7'), review: malformed, phase: 'deep_review_ready' });
     expect(view.textContent).toContain('暂无可展示的评估结果');
     expect(view.textContent).not.toContain('undefined');
   });
