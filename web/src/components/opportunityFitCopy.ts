@@ -35,6 +35,7 @@ export const OPPORTUNITY_FIT_COPY = {
     evidenceSources: '证据来源',
     resumeSource: '简历',
     jdSource: 'JD',
+    jdOriginal: 'JD 原文',
     candidateAssertions: '用户断言（用户提供，未外部核验）',
     deepReview: 'Deep Fit Review',
     recommendedPath: '建议路径',

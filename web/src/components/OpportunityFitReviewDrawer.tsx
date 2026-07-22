@@ -304,6 +304,8 @@ export default function OpportunityFitReviewDrawer({
             <Typography.Text>{OPPORTUNITY_FIT_COPY.drawer.resumeSource}：{review.source.resume.title}</Typography.Text>
             <br />
             <Typography.Text>{OPPORTUNITY_FIT_COPY.drawer.jdSource}：{review.source.jd.source_label}（仅决定分析方向）</Typography.Text>
+            <Typography.Paragraph type="secondary">{OPPORTUNITY_FIT_COPY.drawer.jdOriginal}</Typography.Paragraph>
+            <Typography.Paragraph style={{ whiteSpace: 'pre-wrap' }}>{review.source.jd.text}</Typography.Paragraph>
             {review.source.candidate_assertions.length > 0 ? (
               <>
                 <Typography.Paragraph strong>{OPPORTUNITY_FIT_COPY.drawer.candidateAssertions}</Typography.Paragraph>

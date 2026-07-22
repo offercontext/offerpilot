@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, type ReactNode } from 'react';
+import { act, useEffect, useState, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -9,7 +9,6 @@ const state = vi.hoisted(() => ({
   get: vi.fn(),
   list: vi.fn(),
   history: [] as Array<{ id: number; recommendation: string; created_at: string }>,
-  historyError: undefined as unknown,
 }));
 
 vi.mock('@/services/resumes', () => ({
@@ -22,13 +21,24 @@ vi.mock('@/services/opportunityFitReviews', () => ({
   listOpportunityFitReviews: state.list,
 }));
 vi.mock('@tanstack/react-query', () => ({
-  useQuery: (options: { queryKey?: unknown[]; queryFn: () => unknown }) => ({
-    data: options.queryKey?.[0] === 'resumes'
-      ? [{ id: 11, name: 'Backend Resume', title: 'Backend Resume' }]
-      : state.history,
-    error: options.queryKey?.[0] === 'resumes' ? undefined : state.historyError,
-    isFetching: false,
-  }),
+  useQuery: (options: { enabled?: boolean; queryKey?: unknown[]; queryFn: () => unknown }) => {
+    const [queryState, setQueryState] = useState<{ data?: unknown; error?: unknown }>({});
+    const queryKey = JSON.stringify(options.queryKey || []);
+    useEffect(() => {
+      if (options.enabled === false) return undefined;
+      let active = true;
+      void Promise.resolve(options.queryFn()).then(
+        (data) => active && setQueryState({ data }),
+        (error) => active && setQueryState({ error }),
+      );
+      return () => { active = false; };
+    }, [options.enabled, queryKey]);
+    return {
+      data: queryState.data,
+      error: queryState.error,
+      isFetching: queryState.data === undefined && queryState.error === undefined,
+    };
+  },
   useMutation: (options: { mutationFn: () => unknown; onSuccess?: (data: unknown) => void; onError?: (error: unknown) => void }) => ({
     isPending: false,
     mutate: () => void Promise.resolve(options.mutationFn()).then(options.onSuccess).catch(options.onError),
@@ -89,7 +99,6 @@ beforeEach(() => {
   state.get.mockReset();
   state.list.mockReset();
   state.history = [];
-  state.historyError = undefined;
   state.list.mockResolvedValue([]);
   state.create.mockResolvedValue({
     id: 8,
@@ -144,10 +153,6 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function textareas(view: HTMLDivElement) {
-  return [...view.querySelectorAll('textarea')] as HTMLTextAreaElement[];
-}
-
 function setValue(element: HTMLTextAreaElement | HTMLSelectElement, value: string) {
   const prototype = element instanceof HTMLSelectElement
     ? HTMLSelectElement.prototype
@@ -187,44 +192,56 @@ function getByRole(view: HTMLDivElement, role: string, name?: string): HTMLEleme
   return element;
 }
 
+function getByLabelText(view: HTMLDivElement, label: string): HTMLTextAreaElement | HTMLSelectElement {
+  const labelElement = [...view.querySelectorAll('label')].find((candidate) => candidate.textContent?.includes(label));
+  const control = labelElement?.querySelector('textarea,select');
+  if (!(control instanceof HTMLTextAreaElement) && !(control instanceof HTMLSelectElement)) {
+    throw new Error(`Expected control labelled ${label}`);
+  }
+  return control;
+}
+
 describe('OpportunityFitReviewDrawer', () => {
-  it('blocks more than ten assertions before submit', () => {
+  it('blocks more than ten assertions before submit', async () => {
     const view = render();
-    const areas = textareas(view);
+    await waitFor(() => expect(getByLabelText(view, '本次补充断言（每行一条）')).toBeTruthy());
+    const assertions = getByLabelText(view, '本次补充断言（每行一条）') as HTMLTextAreaElement;
     act(() => {
-      setValue(areas[1], Array.from({ length: 11 }, (_, index) => `Fact ${index}`).join('\n'));
+      setValue(assertions, Array.from({ length: 11 }, (_, index) => `Fact ${index}`).join('\n'));
     });
     expect(view.textContent).toContain('最多填写 10 条非空断言。');
-    expect([...view.querySelectorAll('button')].find((button) => button.textContent?.includes('开始 Triage'))?.disabled).toBe(true);
+    expect(getByRole(view, 'button', '开始 Triage')).toHaveProperty('disabled', true);
     expect(state.create).not.toHaveBeenCalled();
   });
 
   it('submits trimmed assertions as independent input', async () => {
     const view = render();
-    const areas = textareas(view);
-    const select = view.querySelector('select') as HTMLSelectElement;
+    await waitFor(() => expect(getByLabelText(view, '用于审阅的简历')).toBeTruthy());
+    const select = getByLabelText(view, '用于审阅的简历') as HTMLSelectElement;
+    const jd = getByLabelText(view, '用户粘贴的 JD') as HTMLTextAreaElement;
+    const assertions = getByLabelText(view, '本次补充断言（每行一条）') as HTMLTextAreaElement;
+    await waitFor(() => expect(select.querySelector('option[value="11"]')).toBeTruthy());
     act(() => {
       setValue(select, '11');
-      setValue(areas[0], 'JD text');
-      setValue(areas[1], ' fact one \n\n fact two ');
+      setValue(jd, 'JD text');
+      setValue(assertions, ' fact one \n\n fact two ');
     });
-    await act(async () => { await Promise.resolve(); });
-    await act(async () => {
-      [...view.querySelectorAll('button')].find((button) => button.textContent?.includes('开始 Triage'))?.click();
-      await Promise.resolve();
-    });
-    expect(state.create).toHaveBeenCalledWith(7, expect.objectContaining({
+    await waitFor(() => expect(getByRole(view, 'button', '开始 Triage')).toHaveProperty('disabled', false));
+    act(() => getByRole(view, 'button', '开始 Triage').click());
+    await waitFor(() => expect(state.create).toHaveBeenCalledWith(7, expect.objectContaining({
       resume_id: 11,
       jd_text: 'JD text',
       candidate_assertions: ['fact one', 'fact two'],
-    }));
+    })));
   });
 
   it('hands historical review frozen JD and resume to material preparation', async () => {
     state.history = [{ id: 8, recommendation: 'advance', created_at: '2026-07-21T00:00:00Z' }];
+    state.list.mockResolvedValue(state.history);
     const onPrepareMaterials = vi.fn();
     const view = render(onPrepareMaterials);
 
+    await waitFor(() => expect(getByRole(view, 'button', '查看')).toBeTruthy());
     act(() => getByRole(view, 'button', '查看').click());
     await waitFor(() => expect(state.get).toHaveBeenCalledWith(7, 8));
     await waitFor(() => expect(getByRole(view, 'button', '去准备材料')).toBeTruthy());
@@ -238,7 +255,7 @@ describe('OpportunityFitReviewDrawer', () => {
     ['502', { response: { status: 502, data: { error: 'raw history 502' } } }, 'AI 服务暂不可用，请稍后重试'],
     ['unknown', new Error('raw history error'), '操作失败，请稍后重试'],
   ])('shows safe copy when history list fails with %s', async (_name, error, expected) => {
-    state.historyError = error;
+    state.list.mockRejectedValue(error);
     const view = render();
 
     await waitFor(() => expect(getByRole(view, 'alert').textContent).toContain(expected));
@@ -256,17 +273,18 @@ describe('OpportunityFitReviewDrawer', () => {
       },
     });
     const view = render();
-    const areas = textareas(view);
-    const select = view.querySelector('select') as HTMLSelectElement;
+    await waitFor(() => expect(getByLabelText(view, '用户粘贴的 JD')).toBeTruthy());
+    const jd = getByLabelText(view, '用户粘贴的 JD') as HTMLTextAreaElement;
+    const select = getByLabelText(view, '用于审阅的简历') as HTMLSelectElement;
+    await waitFor(() => expect(select.querySelector('option[value="11"]')).toBeTruthy());
     act(() => {
       setValue(select, '11');
-      setValue(areas[0], 'JD text');
+      setValue(jd, 'JD text');
     });
 
-    await act(async () => {
-      [...view.querySelectorAll('button')].find((button) => button.textContent?.includes('开始 Triage'))?.click();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+    await waitFor(() => expect(getByRole(view, 'button', '开始 Triage')).toHaveProperty('disabled', false));
+    act(() => getByRole(view, 'button', '开始 Triage').click());
+    await waitFor(() => expect(view.textContent).toContain('AI 输出未通过证据校验，可重试；原简历已保护，未创建草稿。'));
 
     expect(view.textContent).toContain('AI 输出未通过证据校验，可重试；原简历已保护，未创建草稿。');
     expect(view.textContent).not.toContain('raw provider text');
@@ -274,12 +292,13 @@ describe('OpportunityFitReviewDrawer', () => {
 
   it('renders Chinese labels for Opportunity Fit enum values', async () => {
     state.history = [{ id: 9, recommendation: 'advance', created_at: '2026-07-21T00:00:00Z' }];
+    state.list.mockResolvedValue(state.history);
     state.get.mockResolvedValue({
       id: 9,
       recommendation: 'advance',
       source: {
         resume: { id: 11, title: 'Frozen Resume', sha256: 'resume' },
-        jd: { source_label: 'Frozen JD text', sha256: 'jd', text: 'Frozen JD text' },
+        jd: { source_label: 'Frozen JD label', sha256: 'jd', text: 'Frozen JD original text' },
         candidate_assertions: [],
       },
       triage: {
@@ -311,14 +330,14 @@ describe('OpportunityFitReviewDrawer', () => {
     });
     const view = render();
 
-    await act(async () => {
-      view.querySelector('button')?.click();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+    await waitFor(() => expect(getByRole(view, 'button', '查看')).toBeTruthy());
+    act(() => getByRole(view, 'button', '查看').click());
+    await waitFor(() => expect(view.textContent).toContain('Frozen Resume'));
 
     const renderedText = view.textContent || '';
     expect(renderedText).toContain('Frozen Resume');
-    expect(renderedText).toContain('Frozen JD text');
+    expect(renderedText).toContain('Frozen JD label');
+    expect(renderedText).toContain('Frozen JD original text');
     expect(renderedText).toContain('Dynamic AI summary');
     expect(renderedText).toContain('Dynamic AI statement');
     expect(renderedText).toContain('Dynamic explanation A');
