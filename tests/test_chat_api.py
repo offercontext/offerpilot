@@ -2887,9 +2887,9 @@ def test_chat_confirm_result_cas_loss_stays_stale_on_followup_failure(
         if failure_kind == "provider"
         else SlowAfterPendingModel(tool_call)
     )
+    _, client, _, pending = _create_status_confirmation(tmp_path, model)
     if failure_kind == "timeout":
         monkeypatch.setattr(api_module, "CHAT_AGENT_TIMEOUT_SECONDS", 0.25)
-    _, client, _, pending = _create_status_confirmation(tmp_path, model)
 
     def lose_cas(self, conversation_id, expected, tool_message, undo):
         self.set_pending_action(conversation_id, newer)
