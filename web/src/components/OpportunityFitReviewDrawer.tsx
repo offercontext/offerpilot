@@ -30,7 +30,13 @@ import type {
 import {
   getOpportunityFitErrorMessage,
   OPPORTUNITY_FIT_COPY,
+  opportunityFitCandidateStatusLabel,
+  opportunityFitConstraintStatusLabel,
   opportunityFitEvidenceLabel,
+  opportunityFitGapKindLabel,
+  opportunityFitRecommendationColor,
+  opportunityFitRecommendationLabel,
+  opportunityFitRecommendedPathLabel,
 } from './opportunityFitCopy';
 
 interface Props {
@@ -189,7 +195,7 @@ export default function OpportunityFitReviewDrawer({
             {reviewHistoryQuery.data.map((item) => (
               <Space key={item.id} style={{ justifyContent: 'space-between', width: '100%' }}>
                 <Typography.Text>
-                  {item.recommendation} · {new Date(item.created_at).toLocaleString()}
+                  {opportunityFitRecommendationLabel(item.recommendation)} · {new Date(item.created_at).toLocaleString()}
                 </Typography.Text>
                 <Button size="small" onClick={() => void openHistoricalReview(item.id)}>
                   {OPPORTUNITY_FIT_COPY.drawer.view}
@@ -245,8 +251,8 @@ export default function OpportunityFitReviewDrawer({
       ) : review ? (
         <div>
           <Space wrap>
-            <Tag color={review.recommendation === 'advance' ? 'green' : review.recommendation === 'decline' ? 'red' : 'gold'}>
-              {review.recommendation === 'advance' ? '建议推进' : review.recommendation === 'decline' ? '建议放弃' : '需要澄清'}
+            <Tag color={opportunityFitRecommendationColor(review.recommendation)}>
+              {opportunityFitRecommendationLabel(review.recommendation)}
             </Tag>
             <Tag>{OPPORTUNITY_FIT_COPY.drawer.sourceFrozen}</Tag>
             <Tag>{OPPORTUNITY_FIT_COPY.drawer.humanConfirmation}</Tag>
@@ -259,7 +265,7 @@ export default function OpportunityFitReviewDrawer({
           {review.triage.hard_constraints.map((item) => (
             <ReviewItem
               key={item.id}
-              title={`${item.requirement} · ${item.status}`}
+              title={`${item.requirement} · ${opportunityFitConstraintStatusLabel(item.status)}`}
               statement={item.explanation}
               refs={item.evidence_refs}
             />
@@ -272,7 +278,7 @@ export default function OpportunityFitReviewDrawer({
           {review.triage.gaps.map((item) => (
             <ReviewItem
               key={item.id}
-              title={`${item.kind} · ${item.candidate_status}`}
+              title={`${opportunityFitGapKindLabel(item.kind)} · ${opportunityFitCandidateStatusLabel(item.candidate_status)}`}
               statement={item.requirement}
               refs={item.evidence_refs}
             />
@@ -305,7 +311,7 @@ export default function OpportunityFitReviewDrawer({
           {review.deep_review ? (
             <>
               <Typography.Title level={4}>{OPPORTUNITY_FIT_COPY.drawer.deepReview}</Typography.Title>
-              <Typography.Paragraph>{OPPORTUNITY_FIT_COPY.drawer.recommendedPath}：{review.deep_review.recommended_path}</Typography.Paragraph>
+              <Typography.Paragraph>{OPPORTUNITY_FIT_COPY.drawer.recommendedPath}：{opportunityFitRecommendedPathLabel(review.deep_review.recommended_path)}</Typography.Paragraph>
               {review.deep_review.strengths.map((item) => (
                 <ReviewItem key={item.id} statement={item.statement} refs={item.evidence_refs} />
               ))}

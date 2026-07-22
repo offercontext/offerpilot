@@ -230,4 +230,56 @@ describe('OpportunityFitReviewDrawer', () => {
     expect(view.textContent).toContain('AI 输出未通过证据校验，可重试；原简历已保护，未创建草稿。');
     expect(view.textContent).not.toContain('raw provider text');
   });
+
+  it('renders Chinese labels for Opportunity Fit enum values', async () => {
+    state.history = [{ id: 9, recommendation: 'advance', created_at: '2026-07-21T00:00:00Z' }];
+    state.get.mockResolvedValue({
+      id: 9,
+      recommendation: 'advance',
+      source: {
+        resume: { id: 11, title: 'Frozen Resume', sha256: 'resume' },
+        jd: { source_label: 'Frozen JD', sha256: 'jd', text: 'Frozen JD text' },
+        candidate_assertions: [],
+      },
+      triage: {
+        summary: { text: 'Dynamic AI summary', evidence_refs: [] },
+        recommendation: 'advance',
+        hard_constraints: [
+          { id: 'constraint-a', requirement: 'Dynamic requirement A', status: 'met', explanation: 'Dynamic explanation A', evidence_refs: [] },
+          { id: 'constraint-b', requirement: 'Dynamic requirement B', status: 'unmet', explanation: 'Dynamic explanation B', evidence_refs: [] },
+          { id: 'constraint-c', requirement: 'Dynamic requirement C', status: 'unknown', explanation: 'Dynamic explanation C', evidence_refs: [] },
+        ],
+        fit_signals: [],
+        gaps: [
+          { id: 'gap-a', requirement: 'Dynamic gap A', kind: 'required', candidate_status: 'unmet', evidence_refs: [] },
+          { id: 'gap-b', requirement: 'Dynamic gap B', kind: 'preferred', candidate_status: 'met', evidence_refs: [] },
+        ],
+        deadline: { status: 'not_stated', text: '', evidence_refs: [] },
+        next_questions: [],
+      },
+      deep_review: {
+        strengths: [],
+        gaps_to_address: [],
+        questions_to_clarify: [],
+        recommended_path: 'prepare_materials',
+        next_actions: [],
+      },
+    });
+    const view = render();
+
+    await act(async () => {
+      view.querySelector('button')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const renderedText = view.textContent || '';
+    expect(renderedText).toContain('建议推进');
+    expect(renderedText).toContain('已满足');
+    expect(renderedText).toContain('未满足');
+    expect(renderedText).toContain('待确认');
+    expect(renderedText).toContain('必要条件');
+    expect(renderedText).toContain('优先条件');
+    expect(renderedText).toContain('建议准备材料');
+    expect(renderedText).not.toMatch(/\b(advance|hold|decline|met|unmet|unknown|required|preferred|prepare_materials|clarify_first|do_not_pursue)\b/);
+  });
 });

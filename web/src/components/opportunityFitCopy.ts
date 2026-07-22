@@ -44,6 +44,32 @@ export const OPPORTUNITY_FIT_COPY = {
     invalidRequest: '输入内容无法处理，请检查后重试',
     fallback: '操作失败，请稍后重试',
   },
+  enums: {
+    recommendation: {
+      advance: '建议推进',
+      hold: '需要澄清',
+      decline: '建议放弃',
+    },
+    constraintStatus: {
+      met: '已满足',
+      unmet: '未满足',
+      unknown: '待确认',
+    },
+    gapKind: {
+      required: '必要条件',
+      preferred: '优先条件',
+    },
+    candidateStatus: {
+      met: '已满足',
+      unmet: '未满足',
+      unknown: '待确认',
+    },
+    recommendedPath: {
+      prepare_materials: '建议准备材料',
+      clarify_first: '建议先澄清',
+      do_not_pursue: '不建议继续推进',
+    },
+  },
 } as const;
 
 function responseDetails(error: unknown): { status?: number; errorCode?: string } {
@@ -77,4 +103,35 @@ export function opportunityFitEvidenceLabel(source: string): string {
   if (source === 'jd') return '岗位描述（仅用于分析方向）';
   if (source === 'user_assertion') return '用户断言（用户提供，未外部核验）';
   return '未知证据来源';
+}
+
+export function opportunityFitRecommendationLabel(value: string): string {
+  return OPPORTUNITY_FIT_COPY.enums.recommendation[value as keyof typeof OPPORTUNITY_FIT_COPY.enums.recommendation]
+    || '未知建议';
+}
+
+export function opportunityFitRecommendationColor(value: string): 'green' | 'gold' | 'red' {
+  if (value === 'advance') return 'green';
+  if (value === 'decline') return 'red';
+  return 'gold';
+}
+
+export function opportunityFitConstraintStatusLabel(value: string): string {
+  return OPPORTUNITY_FIT_COPY.enums.constraintStatus[value as keyof typeof OPPORTUNITY_FIT_COPY.enums.constraintStatus]
+    || '未知状态';
+}
+
+export function opportunityFitGapKindLabel(value: string): string {
+  return OPPORTUNITY_FIT_COPY.enums.gapKind[value as keyof typeof OPPORTUNITY_FIT_COPY.enums.gapKind]
+    || '未知条件';
+}
+
+export function opportunityFitCandidateStatusLabel(value: string): string {
+  return OPPORTUNITY_FIT_COPY.enums.candidateStatus[value as keyof typeof OPPORTUNITY_FIT_COPY.enums.candidateStatus]
+    || '未知状态';
+}
+
+export function opportunityFitRecommendedPathLabel(value: string): string {
+  return OPPORTUNITY_FIT_COPY.enums.recommendedPath[value as keyof typeof OPPORTUNITY_FIT_COPY.enums.recommendedPath]
+    || '未知建议路径';
 }
