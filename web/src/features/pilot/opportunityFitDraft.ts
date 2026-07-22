@@ -23,6 +23,12 @@ export interface OpportunityFitDraftState {
   triageFailureDisposition: OpportunityFitDraftErrorDisposition | null;
 }
 
+export interface OpportunityFitResumeEvidenceProof {
+  resumeId: number;
+  sha256: string;
+  contentJson: unknown;
+}
+
 export type OpportunityFitDraftErrorDisposition = 'unknown' | 'definite_no_write';
 
 export type OpportunityFitAssertionsNormalizationErrorCode =
@@ -134,6 +140,15 @@ function getResumeStringAtPath(content: unknown, path: string): string | undefin
   return typeof current === 'string' ? current : undefined;
 }
 
+function isValidResumeEvidenceProof(value: unknown): value is OpportunityFitResumeEvidenceProof {
+  return isRecord(value)
+    && typeof value.resumeId === 'number'
+    && Number.isFinite(value.resumeId)
+    && typeof value.sha256 === 'string'
+    && value.sha256.trim().length > 0
+    && Object.prototype.hasOwnProperty.call(value, 'contentJson');
+}
+
 function isValidResumeEvidence(
   ref: Record<string, unknown>,
   source: Record<string, unknown>,
@@ -146,17 +161,17 @@ function isValidResumeEvidence(
 
   const resume = source.resume;
   if (!isRecord(resume)) return false;
-  const content = options.resumeContentJson ?? resume.content_json;
-  if (content !== undefined) {
-    return getResumeStringAtPath(content, path) === ref.excerpt;
+  const proof = options.resumeEvidenceProof;
+  if (proof) {
+    if (!isValidResumeEvidenceProof(proof)) return false;
+    if (proof.resumeId !== resume.id || proof.sha256 !== resume.sha256) return false;
+    return getResumeStringAtPath(proof.contentJson, path) === ref.excerpt;
   }
-  return !options.requireResumeEvidenceProof
-    && typeof ref.excerpt === 'string'
-    && ref.excerpt.trim().length > 0;
+  return !options.requireResumeEvidenceProof;
 }
 
 export interface OpportunityFitReviewValidationOptions {
-  resumeContentJson?: unknown;
+  resumeEvidenceProof?: OpportunityFitResumeEvidenceProof;
   requireResumeEvidenceProof?: boolean;
 }
 

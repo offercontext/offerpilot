@@ -10,6 +10,7 @@ import {
   createOpportunityFitDraftStore,
   normalizeOpportunityFitAssertions,
   opportunityFitDraftReducer,
+  isValidOpportunityFitReview,
   type OpportunityFitDraftStore,
 } from './opportunityFitDraft';
 
@@ -381,36 +382,42 @@ describe('opportunityFitDraftReducer', () => {
     expect(next).toBe(state);
   });
 
-  it('checks resume excerpts against content_json when the frozen response includes it', () => {
-    const source = {
-      ...review.source,
-      resume: {
-        ...review.source.resume,
-        content_json: { experience: [{ highlights: ['Strong delivery record.'] }] },
+  it('checks resume excerpts against an identity-bound evidence proof', () => {
+    const proof = {
+      resumeId: 3,
+      sha256: 'resume-hash',
+      contentJson: { experience: [{ highlights: ['Strong delivery record.'] }] },
+    };
+    const valid = isValidOpportunityFitReview(review, {
+      resumeEvidenceProof: proof,
+      requireResumeEvidenceProof: true,
+    });
+    const invalidExcerpt = isValidOpportunityFitReview({
+      ...review,
+      triage: {
+        ...review.triage,
+        fit_signals: [{
+          ...review.triage.fit_signals[0],
+          evidence_refs: [{ source: 'resume', path: '/experience/0/highlights/0', excerpt: 'Invented' }],
+        }],
       },
-    } as OpportunityFitReview['source'] & { resume: OpportunityFitReview['source']['resume'] & { content_json: unknown } };
-    const state = createInitialOpportunityFitDraft(7, 'draft-1');
-    const valid = opportunityFitDraftReducer(state, {
-      type: 'set_review',
-      review: { ...review, source },
-    } as never);
-    const invalid = opportunityFitDraftReducer(state, {
-      type: 'set_review',
-      review: {
-        ...review,
-        source,
-        triage: {
-          ...review.triage,
-          fit_signals: [{
-            ...review.triage.fit_signals[0],
-            evidence_refs: [{ source: 'resume', path: '/experience/0/highlights/0', excerpt: 'Invented' }],
-          }],
-        },
-      },
-    } as never);
+    }, { resumeEvidenceProof: proof, requireResumeEvidenceProof: true });
 
-    expect(valid.review).not.toBeNull();
-    expect(invalid).toBe(state);
+    expect(valid).toBe(true);
+    expect(invalidExcerpt).toBe(false);
+  });
+
+  it.each([
+    ['wrong resume id', { resumeId: 4, sha256: 'resume-hash' }],
+    ['wrong resume sha', { resumeId: 3, sha256: 'other-hash' }],
+  ] as const)('rejects resume evidence with %s proof identity', (_label, identity) => {
+    expect(isValidOpportunityFitReview(review, {
+      resumeEvidenceProof: {
+        ...identity,
+        contentJson: { experience: [{ highlights: ['Strong delivery record.'] }] },
+      },
+      requireResumeEvidenceProof: true,
+    })).toBe(false);
   });
 
   it('retains the failure disposition on the draft state', () => {

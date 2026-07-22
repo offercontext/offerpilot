@@ -102,19 +102,23 @@ const validDeepReview: OpportunityFitReview = {
   deep_review: deepReview.deep_review,
 };
 
-const defaultResumeContentJson = {
+const defaultResumeEvidenceProof = {
+  resumeId: 11,
+  sha256: 'resume',
+  contentJson: {
   skills: ['TypeScript'],
   experience: ['经历证据', '相关经历'],
+  },
 };
 
 function Harness({
   initial = createInitialOpportunityFitDraft(7, 'pilot:7'),
   deepLoading = false,
-  resumeContentJson: content = defaultResumeContentJson,
+  resumeEvidenceProof: proof = defaultResumeEvidenceProof,
 }: {
   initial?: OpportunityFitDraftState;
   deepLoading?: boolean;
-  resumeContentJson?: unknown;
+  resumeEvidenceProof?: typeof defaultResumeEvidenceProof | null;
 }) {
   const [draft, dispatch] = useState(initial);
   const reduce = (action: OpportunityFitDraftAction) => dispatch((current) => opportunityFitDraftReducer(current, action));
@@ -123,7 +127,7 @@ function Harness({
       draft={draft}
       dispatch={reduce}
       resumes={[{ id: 11, title: '原始简历' }]}
-      resumeContentJson={content}
+      resumeEvidenceProof={proof}
       onStartTriage={triage}
       onRetryTriage={retry}
       onStartDeepReview={deep}
@@ -159,11 +163,11 @@ afterEach(async () => {
   container?.remove();
 });
 
-async function render(initial?: OpportunityFitDraftState, content: unknown = defaultResumeContentJson) {
+async function render(initial?: OpportunityFitDraftState, proof: typeof defaultResumeEvidenceProof | null = defaultResumeEvidenceProof) {
   await act(async () => {
     root?.unmount();
     root = createRoot(container!);
-    root.render(<Harness initial={initial} resumeContentJson={content} />);
+    root.render(<Harness initial={initial} resumeEvidenceProof={proof} />);
   });
   return container!;
 }
@@ -400,7 +404,7 @@ describe('PilotOpportunityFitCard', () => {
         }],
       },
     } as OpportunityFitReview;
-    const forged = await render({ ...createInitialOpportunityFitDraft(7, 'pilot:7'), review: forgedReview, phase: 'deep_review_ready' }, defaultResumeContentJson);
+    const forged = await render({ ...createInitialOpportunityFitDraft(7, 'pilot:7'), review: forgedReview, phase: 'deep_review_ready' }, defaultResumeEvidenceProof);
     expect(forged.textContent).toContain('暂无可展示的评估结果');
     expect(forged.textContent).not.toContain('待补足内容');
     expect(prepare).not.toHaveBeenCalled();
