@@ -69,6 +69,8 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
   }>({});
   const [materialKitApplicationId, setMaterialKitApplicationId] = useState<number | null>(null);
   const [editingNote, setEditingNote] = useState<InterviewNote | null>(null);
+  const [reviewFormOpen, setReviewFormOpen] = useState(false);
+  const [reviewEventID, setReviewEventID] = useState<number | null>(null);
 
   useEffect(() => {
     setMaterialKitPrefill({});
@@ -123,9 +125,22 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
     onSuccess: () => {
       message.success('已更新面试复盘');
       setEditingNote(null);
+      setReviewFormOpen(false);
+      setReviewEventID(null);
       invalidateNotes();
     },
     onError: () => message.error('更新失败'),
+  });
+
+  const createEventNoteMut = useMutation({
+    mutationFn: (input: CreateNoteInput) => createNote(application!.id, input),
+    onSuccess: () => {
+      message.success('已保存面试复盘');
+      setReviewFormOpen(false);
+      setReviewEventID(null);
+      invalidateNotes();
+    },
+    onError: () => message.error('保存复盘失败'),
   });
 
   const closeDetail = () => {
@@ -135,6 +150,8 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
     setOpportunityFitOpen(false);
     setMaterialKitPrefill({});
     setEditingNote(null);
+    setReviewFormOpen(false);
+    setReviewEventID(null);
     onClose();
   };
 
@@ -151,18 +168,24 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
     );
   }
 
-  if (editingNote) {
+  if (reviewFormOpen) {
     return (
       <ReviewFormDrawer
-        open={!!editingNote}
+        open={reviewFormOpen}
         applications={[application]}
         initialApplication={application}
         note={editingNote}
-        saving={updateNoteMut.isPending}
+        initialEventID={reviewEventID}
+        saving={updateNoteMut.isPending || createEventNoteMut.isPending}
         onSubmit={(input) => {
           if (editingNote) updateNoteMut.mutate({ id: editingNote.id, input });
+          else createEventNoteMut.mutate(input);
         }}
-        onClose={() => setEditingNote(null)}
+        onClose={() => {
+          setReviewFormOpen(false);
+          setEditingNote(null);
+          setReviewEventID(null);
+        }}
       />
     );
   }
@@ -276,7 +299,9 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
           </div>
         ) : eventsQuery.data && eventsQuery.data.length > 0 ? (
           <Space direction="vertical" style={{ width: '100%', marginBottom: 16 }}>
-            {eventsQuery.data.map((event) => (
+            {eventsQuery.data.map((event) => {
+              const linkedNote = notesQuery.data?.find((note) => note.application_event_id === event.id);
+              return (
               <div key={event.id} style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 12 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
                   <Text strong>{EVENT_TYPE_LABELS[event.event_type]}</Text>
@@ -285,8 +310,22 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
                 <div style={{ color: '#64748b', fontSize: 13, marginTop: 4 }}>
                   时长 {event.duration_minutes} 分钟{event.location ? ` · ${event.location}` : ''}
                 </div>
+                {event.event_type === 'interview' && (
+                  <Button
+                    size="small"
+                    type="link"
+                    onClick={() => {
+                      setReviewEventID(event.id);
+                      setEditingNote(linkedNote ?? null);
+                      setReviewFormOpen(true);
+                    }}
+                  >
+                    {linkedNote ? '查看复盘' : '记录复盘'}
+                  </Button>
+                )}
               </div>
-            ))}
+              );
+            })}
           </Space>
         ) : (
           <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无笔试、面试或测评日程" style={{ marginBottom: 16 }} />
@@ -349,7 +388,15 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
                       {n.round || '未标注轮次'} · {n.date} · 心情 {n.mood || '—'}
                     </Text>
                     <Space size={4}>
-                      <Button type="text" size="small" onClick={() => setEditingNote(n)}>
+                      <Button
+                        type="text"
+                        size="small"
+                        onClick={() => {
+                          setEditingNote(n);
+                          setReviewEventID(n.application_event_id ?? null);
+                          setReviewFormOpen(true);
+                        }}
+                      >
                         编辑
                       </Button>
                       <Popconfirm

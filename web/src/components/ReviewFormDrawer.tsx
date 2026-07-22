@@ -1,8 +1,10 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { ArrowLeftOutlined } from '@ant-design/icons';
 import { Button, Form, Input, Select, Space } from 'antd';
 import type { Application } from '@/types/application';
 import type { CreateNoteInput, InterviewNote } from '@/types/note';
+import type { ScheduleEvent } from '@/types/event';
+import { listEvents } from '@/services/events';
 
 const MOOD_OPTIONS = [
   { value: 'good', label: '好' },
@@ -15,6 +17,7 @@ interface Props {
   applications: Application[];
   initialApplication?: Application | null;
   note?: InterviewNote | null;
+  initialEventID?: number | null;
   saving?: boolean;
   onSubmit: (input: CreateNoteInput) => void;
   onClose: () => void;
@@ -25,12 +28,27 @@ export default function ReviewFormDrawer({
   applications,
   initialApplication,
   note,
+  initialEventID,
   saving = false,
   onSubmit,
   onClose,
 }: Props) {
   const [form] = Form.useForm<CreateNoteInput>();
+  const [interviewEvents, setInterviewEvents] = useState<ScheduleEvent[]>([]);
   const editing = !!note;
+
+  async function loadInterviewEvents(applicationID?: number) {
+    if (!applicationID) {
+      setInterviewEvents([]);
+      return;
+    }
+    try {
+      const events = await listEvents({ application_id: applicationID, event_type: 'interview' });
+      setInterviewEvents(events.filter((event) => event.event_type === 'interview'));
+    } catch {
+      setInterviewEvents([]);
+    }
+  }
 
   useEffect(() => {
     if (!open) return;
@@ -38,6 +56,7 @@ export default function ReviewFormDrawer({
     if (note) {
       form.setFieldsValue({
         application_id: note.application_id,
+        application_event_id: note.application_event_id ?? undefined,
         company: note.company,
         position: note.position,
         round: note.round,
@@ -47,6 +66,7 @@ export default function ReviewFormDrawer({
         difficulty_points: note.difficulty_points,
         mood: note.mood,
       });
+      void loadInterviewEvents(note.application_id);
       return;
     }
 
@@ -54,11 +74,15 @@ export default function ReviewFormDrawer({
     if (initialApplication) {
       form.setFieldsValue({
         application_id: initialApplication.id,
+        application_event_id: initialEventID ?? undefined,
         company: initialApplication.company_name,
         position: initialApplication.position_name,
       });
+      void loadInterviewEvents(initialApplication.id);
+    } else {
+      setInterviewEvents([]);
     }
-  }, [open, note, initialApplication, form]);
+  }, [open, note, initialApplication, initialEventID, form]);
 
   function handleApplicationChange(appID?: number) {
     const app = applications.find((item) => item.id === appID);
@@ -68,6 +92,32 @@ export default function ReviewFormDrawer({
       company: app.company_name,
       position: app.position_name,
     });
+    void loadInterviewEvents(app.id);
+  }
+
+  function handleSubmit(input: CreateNoteInput) {
+    if (!editing) {
+      onSubmit(input);
+      return;
+    }
+
+    const update: CreateNoteInput = {
+      ...input,
+      application_id: undefined,
+      application_event_id: undefined,
+    };
+    delete update.application_id;
+    delete update.application_event_id;
+
+    const eventChanged = input.application_event_id !== note?.application_event_id;
+    if (eventChanged && note?.application_event_id != null) {
+      const confirmed = window.confirm('解除或更换绑定的面试事件？已有 AI 建议将标记为来源已变化。');
+      if (!confirmed) return;
+      update.application_event_id = input.application_event_id ?? null;
+    } else if (eventChanged && input.application_event_id != null) {
+      update.application_event_id = input.application_event_id;
+    }
+    onSubmit(update);
   }
 
   if (!open) return null;
@@ -93,7 +143,7 @@ export default function ReviewFormDrawer({
           </Space>
         </Space>
       </div>
-      <Form form={form} layout="vertical" onFinish={onSubmit}>
+      <Form form={form} layout="vertical" onFinish={handleSubmit}>
         <Form.Item name="application_id" label="关联投递">
           <Select
             allowClear
@@ -101,9 +151,22 @@ export default function ReviewFormDrawer({
             placeholder="可选"
             optionFilterProp="label"
             onChange={handleApplicationChange}
+            disabled={editing}
             options={applications.map((app) => ({
               value: app.id,
               label: `${app.company_name} / ${app.position_name}`,
+            }))}
+          />
+        </Form.Item>
+
+        <Form.Item name="application_event_id" label="绑定面试事件">
+          <Select
+            allowClear
+            disabled={!form.getFieldValue('application_id')}
+            placeholder="可选，仅支持面试事件"
+            options={interviewEvents.map((event) => ({
+              value: event.id,
+              label: `${event.subtype || '面试'} / ${event.scheduled_at}`,
             }))}
           />
         </Form.Item>

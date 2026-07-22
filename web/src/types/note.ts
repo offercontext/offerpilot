@@ -2,6 +2,7 @@
 export interface InterviewNote {
   id: number;
   application_id?: number;
+  application_event_id?: number | null;
   company: string;
   position: string;
   round: string;
@@ -15,6 +16,7 @@ export interface InterviewNote {
 
 export interface CreateNoteInput {
   application_id?: number;
+  application_event_id?: number | null;
   company?: string;
   position?: string;
   round?: string;
