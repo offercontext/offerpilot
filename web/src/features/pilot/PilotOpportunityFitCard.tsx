@@ -34,6 +34,7 @@ interface Props {
   draft: OpportunityFitDraftState;
   dispatch: (action: OpportunityFitDraftAction) => void;
   resumes: PilotOpportunityFitResumeOption[];
+  resumeContentJson?: unknown;
   onStartTriage: (draft: OpportunityFitDraftState, triageAttemptKey: string | null) => void;
   onRetryTriage: (draft: OpportunityFitDraftState, triageAttemptKey: string | null) => void;
   onStartDeepReview: (draft: OpportunityFitDraftState, review: OpportunityFitReview) => void;
@@ -49,8 +50,14 @@ type Confirmation = 'triage' | 'deep_review' | 'prepare_materials' | null;
 function isRenderableReview(
   value: OpportunityFitReview | null,
   applicationId: number,
+  resumeContentJson: unknown,
 ): value is OpportunityFitReview {
-  return value !== null && value.application_id === applicationId && isValidOpportunityFitReview(value);
+  return value !== null
+    && value.application_id === applicationId
+    && isValidOpportunityFitReview(value, {
+      resumeContentJson,
+      requireResumeEvidenceProof: true,
+    });
 }
 
 function EvidenceRefs({ refs }: { refs: OpportunityFitEvidenceRef[] }) {
@@ -117,6 +124,7 @@ export default function PilotOpportunityFitCard({
   draft,
   dispatch,
   resumes,
+  resumeContentJson,
   onStartTriage,
   onRetryTriage,
   onStartDeepReview,
@@ -144,7 +152,7 @@ export default function PilotOpportunityFitCard({
       jdText: draft.jdText.trim(),
       assertionsText: assertions.values.join('\n'),
     };
-  const review = isRenderableReview(draft.review, draft.applicationId) ? draft.review : null;
+  const review = isRenderableReview(draft.review, draft.applicationId, resumeContentJson) ? draft.review : null;
   const isTriagePhase = draft.phase === 'collect_input' || draft.phase === 'confirm_triage' || draft.phase === 'triage_loading';
   const canStartTriage = Boolean(draft.resumeID && draft.jdText.trim() && !assertions.error && !isTriageLoading && draft.phase !== 'triage_loading');
   const failureDisposition = draft.triageFailureDisposition ?? triageFailureDisposition ?? null;

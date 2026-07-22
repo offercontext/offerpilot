@@ -81,7 +81,7 @@ const validReview: OpportunityFitReview = {
     }],
     fit_signals: [{
       ...review.triage.fit_signals[0],
-      evidence_refs: [{ source: 'resume', path: '/experience/0', excerpt: '相关经历' }],
+      evidence_refs: [{ source: 'resume', path: '/experience/1', excerpt: '相关经历' }],
     }],
     gaps: [{
       ...review.triage.gaps[0],
@@ -102,7 +102,20 @@ const validDeepReview: OpportunityFitReview = {
   deep_review: deepReview.deep_review,
 };
 
-function Harness({ initial = createInitialOpportunityFitDraft(7, 'pilot:7'), deepLoading = false }: { initial?: OpportunityFitDraftState; deepLoading?: boolean }) {
+const defaultResumeContentJson = {
+  skills: ['TypeScript'],
+  experience: ['经历证据', '相关经历'],
+};
+
+function Harness({
+  initial = createInitialOpportunityFitDraft(7, 'pilot:7'),
+  deepLoading = false,
+  resumeContentJson: content = defaultResumeContentJson,
+}: {
+  initial?: OpportunityFitDraftState;
+  deepLoading?: boolean;
+  resumeContentJson?: unknown;
+}) {
   const [draft, dispatch] = useState(initial);
   const reduce = (action: OpportunityFitDraftAction) => dispatch((current) => opportunityFitDraftReducer(current, action));
   return (
@@ -110,6 +123,7 @@ function Harness({ initial = createInitialOpportunityFitDraft(7, 'pilot:7'), dee
       draft={draft}
       dispatch={reduce}
       resumes={[{ id: 11, title: '原始简历' }]}
+      resumeContentJson={content}
       onStartTriage={triage}
       onRetryTriage={retry}
       onStartDeepReview={deep}
@@ -145,8 +159,12 @@ afterEach(async () => {
   container?.remove();
 });
 
-async function render(initial?: OpportunityFitDraftState) {
-  await act(async () => root?.render(<Harness initial={initial} />));
+async function render(initial?: OpportunityFitDraftState, content: unknown = defaultResumeContentJson) {
+  await act(async () => {
+    root?.unmount();
+    root = createRoot(container!);
+    root.render(<Harness initial={initial} resumeContentJson={content} />);
+  });
   return container!;
 }
 
@@ -365,6 +383,27 @@ describe('PilotOpportunityFitCard', () => {
     expect(view.textContent).not.toContain('secret backend detail');
     await click(view, '去准备材料');
     expect(prepare).toHaveBeenCalledWith(expect.objectContaining({ applicationId: 7, resumeId: 11, jdText: '原始 JD 文本' }));
+  });
+
+  it('fails closed when resume evidence proof is missing or forged', async () => {
+    const missingProof = await render({ ...createInitialOpportunityFitDraft(7, 'pilot:7'), review: validReview, phase: 'triage_ready' }, null);
+    expect(missingProof.textContent).toContain('暂无可展示的评估结果');
+    expect(missingProof.textContent).not.toContain('岗位摘要');
+
+    const forgedReview = {
+      ...validDeepReview,
+      deep_review: {
+        ...validDeepReview.deep_review!,
+        gaps_to_address: [{
+          ...validDeepReview.deep_review!.gaps_to_address[0],
+          evidence_refs: [{ source: 'resume', path: '/skills/0', excerpt: '伪造证据' }],
+        }],
+      },
+    } as OpportunityFitReview;
+    const forged = await render({ ...createInitialOpportunityFitDraft(7, 'pilot:7'), review: forgedReview, phase: 'deep_review_ready' }, defaultResumeContentJson);
+    expect(forged.textContent).toContain('暂无可展示的评估结果');
+    expect(forged.textContent).not.toContain('待补足内容');
+    expect(prepare).not.toHaveBeenCalled();
   });
 
   it('cancels through the controlled callback without creating material state', async () => {

@@ -262,6 +262,22 @@ describe('opportunityFitDraftReducer', () => {
     expect(next).toBe(state);
   });
 
+  it('rejects candidate assertions whose declared index differs from array position', () => {
+    const state = createInitialOpportunityFitDraft(7, 'draft-1');
+    const next = opportunityFitDraftReducer(state, {
+      type: 'set_review',
+      review: {
+        ...review,
+        source: {
+          ...review.source,
+          candidate_assertions: [{ index: 1, text: 'I shipped production systems.' }],
+        },
+      },
+    } as never);
+
+    expect(next).toBe(state);
+  });
+
   it('accepts a valid JD evidence reference in a role gap', () => {
     const state = createInitialOpportunityFitDraft(7, 'draft-1');
     const next = opportunityFitDraftReducer(state, {
