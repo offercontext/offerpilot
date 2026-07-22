@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createOpportunityFitDraftStore } from './opportunityFitDraft';
-import { cancelPilotTriage, restorePilotHistoricalReview, runPilotDeepReview, runPilotTriage } from './pilotOpportunityFitLifecycle';
+import { cancelPilotTriage, isOpportunityFitNotFoundError, restorePilotHistoricalReview, runPilotDeepReview, runPilotTriage } from './pilotOpportunityFitLifecycle';
 import type { OpportunityFitReview } from '@/types/opportunityFitReview';
 
 const review = {
@@ -196,6 +196,19 @@ describe('Pilot triage lifecycle', () => {
     expect(store.getState().triageAttemptKey).toBeNull();
   });
 
+  it('drops the attempt key when cancellation follows a definite missing-application failure', () => {
+    const store = createOpportunityFitDraftStore(7, 'draft-1');
+    store.dispatch({ type: 'set_attempt_key', key: 'attempt-not-found' });
+    store.dispatch({ type: 'set_phase', phase: 'triage_loading' });
+
+    expect(cancelPilotTriage(store, { preserveAttempt: false })).toBe(true);
+    expect(store.getState()).toMatchObject({
+      phase: 'confirm_triage',
+      triageAttemptKey: null,
+      triageFailureDisposition: 'definite_no_write',
+    });
+  });
+
   it('preserves a retryable attempt when the Pilot context switches before a late response', async () => {
     const store = createOpportunityFitDraftStore(7, 'draft-1');
     store.dispatch({ type: 'set_resume', resumeID: 3 });
@@ -219,6 +232,27 @@ describe('Pilot triage lifecycle', () => {
       triageAttemptKey: 'attempt-switch',
       triageFailureDisposition: 'unknown',
     });
+  });
+
+  it('reports a Triage 404 so the AppShell can clear the Pilot context', async () => {
+    const store = createOpportunityFitDraftStore(7, 'draft-1');
+    store.dispatch({ type: 'set_resume', resumeID: 3 });
+    store.dispatch({ type: 'set_jd', jdText: 'JD' });
+    const onNotFound = vi.fn();
+
+    await runPilotTriage({
+      store,
+      applicationId: 7,
+      pilotDraftKey: 'draft-1',
+      draft: store.getState(),
+      existingKey: 'attempt-404',
+      createReview: async () => { throw { response: { status: 404 } }; },
+      onNotFound,
+    });
+
+    expect(onNotFound).toHaveBeenCalledTimes(1);
+    expect(isOpportunityFitNotFoundError({ response: { status: 404 } })).toBe(true);
+    expect(store.getState().review).toBeNull();
   });
 
   it('accepts only the newest request when two requests share an idempotency key', async () => {
@@ -259,6 +293,25 @@ describe('Pilot triage lifecycle', () => {
 });
 
 describe('Pilot deep review lifecycle', () => {
+  it('reports a Deep Review 404 instead of leaving a handoff-capable review visible', async () => {
+    const store = createOpportunityFitDraftStore(7, 'draft-1');
+    store.dispatch({ type: 'set_review', review });
+    const onNotFound = vi.fn();
+
+    await runPilotDeepReview({
+      store,
+      applicationId: 7,
+      pilotDraftKey: 'draft-1',
+      draft: store.getState(),
+      review,
+      createReview: async () => { throw { response: { status: 404 } }; },
+      onNotFound,
+    });
+
+    expect(onNotFound).toHaveBeenCalledTimes(1);
+    expect(store.getState().review).toBe(review);
+  });
+
   it('fails safely when Deep Review returns an invalid response body', async () => {
     const store = createOpportunityFitDraftStore(7, 'draft-1');
     store.dispatch({ type: 'set_review', review });

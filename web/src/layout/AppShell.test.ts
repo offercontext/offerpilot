@@ -60,15 +60,43 @@ describe('AppShell source contract', () => {
     expect(source).not.toContain('const latest = summaries[0]');
     expect(source).toContain('restorePilotHistoricalReview');
     expect(source).toContain('pilotHistoricalReviewId !== null');
+    expect(source).toContain('pilotHistoryQuery.error');
+    expect(source).toContain('pilotHistoricalReviewQuery.error');
+    expect(source).toContain('handlePilotNotFound');
+  });
+
+  it('clears the Pilot context when the historical list is no longer visible', () => {
+    expect(source).toContain('isOpportunityFitNotFoundError(pilotHistoryQuery.error)');
+    expect(source).toContain('handlePilotNotFound();');
+    expect(source).toContain('setPilotApplicationContext(null);');
+  });
+
+  it('clears the Pilot context when a historical detail is no longer visible', () => {
+    expect(source).toContain('isOpportunityFitNotFoundError(pilotHistoricalReviewQuery.error)');
+    expect(source).toContain('setPilotHistoricalReviewId(null);');
+    expect(source).toContain('exitPilotContext({ preserveUnknownAttempt: false });');
+  });
+
+  it('routes a missing Triage application through the shared Pilot cleanup', () => {
+    const triageStart = source.indexOf('const startPilotTriage =');
+    const triageEnd = source.indexOf('const startPilotDeepReview =', triageStart);
+    expect(source.slice(triageStart, triageEnd)).toContain('onNotFound: handlePilotNotFound');
+  });
+
+  it('routes a missing Deep Review application through the shared Pilot cleanup', () => {
+    const deepReviewStart = source.indexOf('const startPilotDeepReview =');
+    const deepReviewEnd = source.indexOf('const preparePilotMaterials =', deepReviewStart);
+    expect(source.slice(deepReviewStart, deepReviewEnd)).toContain('onNotFound: handlePilotNotFound');
   });
 
   it('retains an unknown Pilot attempt when the flow is canceled', () => {
     expect(source).toContain('shouldRetainOpportunityFitDraft');
     expect(source).toContain('cancelPilotTriage');
-    expect(source).toContain('const exitPilotContext = () => {');
+    expect(source).toContain('const exitPilotContext = ({ preserveUnknownAttempt = true }');
     expect(source).toContain('exitPilotContext();');
     expect(source).toContain('if (shouldRetainOpportunityFitDraft(store.getState())) return;');
     expect(source).toContain('findRetainedPilotDraftKey');
+    expect(source).toContain('onNotFound: handlePilotNotFound');
   });
 
   it('renders Pilot as a normal tab with the expanded assistant workspace', () => {

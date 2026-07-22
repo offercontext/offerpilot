@@ -26,6 +26,7 @@ import {
 } from '@/features/pilot/opportunityFitDraft';
 import {
   cancelPilotTriage,
+  isOpportunityFitNotFoundError,
   restorePilotHistoricalReview,
   runPilotDeepReview,
   runPilotTriage,
@@ -193,11 +194,11 @@ function AppShellContent() {
       removeOpportunityFitDraftStore(pilotDraftStoresRef.current, key);
     }
   };
-  const exitPilotContext = () => {
+  const exitPilotContext = ({ preserveUnknownAttempt = true }: { preserveUnknownAttempt?: boolean } = {}) => {
     const current = pilotApplicationContextRef.current;
     if (!current) return;
     const store = pilotDraftStoresRef.current.get(pilotDraftKey(current));
-    if (store) cancelPilotTriage(store);
+    if (store) cancelPilotTriage(store, { preserveAttempt: preserveUnknownAttempt });
     schedulePilotDraftCleanup(current);
     setPilotHistoricalReviewId(null);
     setPilotApplicationContext(null);
@@ -259,6 +260,21 @@ function AppShellContent() {
     enabled: Boolean(pilotApplicationContext && pilotHistoricalReviewId !== null),
     retry: false,
   });
+  const handlePilotNotFound = () => {
+    message.error('当前投递或岗位评估已不存在，请重新打开。');
+    exitPilotContext({ preserveUnknownAttempt: false });
+    setView('dashboard');
+  };
+
+  useEffect(() => {
+    if (
+      isOpportunityFitNotFoundError(pilotHistoryQuery.error)
+      || isOpportunityFitNotFoundError(pilotHistoricalReviewQuery.error)
+    ) {
+      handlePilotNotFound();
+    }
+  }, [pilotHistoryQuery.error, pilotHistoricalReviewQuery.error]);
+
   const [resumeEvidenceProof, setResumeEvidenceProof] = useState<OpportunityFitResumeEvidenceProof | null>(null);
 
   useEffect(() => {
@@ -511,6 +527,7 @@ function AppShellContent() {
         existingKey,
         createReview: createOpportunityFitReview,
         resumeEvidenceProof,
+        onNotFound: handlePilotNotFound,
         isContextCurrent: () => {
           const current = pilotApplicationContextRef.current;
           return current?.applicationId === applicationContext.applicationId
@@ -537,6 +554,7 @@ function AppShellContent() {
         review,
         createReview: createOpportunityFitDeepReview,
         resumeEvidenceProof,
+        onNotFound: handlePilotNotFound,
         isContextCurrent: () => {
           const current = pilotApplicationContextRef.current;
           return current?.applicationId === applicationContext.applicationId

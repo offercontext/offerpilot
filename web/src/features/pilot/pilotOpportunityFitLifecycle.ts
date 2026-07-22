@@ -26,6 +26,7 @@ interface PilotTriageRunOptions {
   createReview: (applicationId: number, payload: PilotTriagePayload) => Promise<OpportunityFitReview>;
   resumeEvidenceProof?: OpportunityFitResumeEvidenceProof | null;
   isContextCurrent?: () => boolean;
+  onNotFound?: () => void;
 }
 
 const requestGenerations = new WeakMap<OpportunityFitDraftStore, number>();
@@ -40,12 +41,21 @@ interface PilotDeepReviewRunOptions {
   createReview: (applicationId: number, reviewId: number) => Promise<OpportunityFitReview>;
   resumeEvidenceProof?: OpportunityFitResumeEvidenceProof | null;
   isContextCurrent?: () => boolean;
+  onNotFound?: () => void;
 }
 
 const INVALID_RESPONSE_ERROR = getOpportunityFitErrorMessage({
   response: { status: 502, data: { error_code: 'opportunity_fit_unverifiable' } },
 });
 const UNKNOWN_RESULT_ERROR = 'opportunity_fit_result_unknown';
+const NOT_FOUND_ERROR = getOpportunityFitErrorMessage({ response: { status: 404 } });
+
+export function isOpportunityFitNotFoundError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const response = (error as { response?: unknown }).response;
+  if (typeof response !== 'object' || response === null) return false;
+  return (response as { status?: unknown }).status === 404;
+}
 
 function isVerifiedReview(
   value: unknown,
@@ -74,12 +84,20 @@ function isRunCurrent(
     && current.triageAttemptKey === attemptKey;
 }
 
-export function cancelPilotTriage(store: OpportunityFitDraftStore): boolean {
+export function cancelPilotTriage(
+  store: OpportunityFitDraftStore,
+  options: { preserveAttempt?: boolean } = {},
+): boolean {
   const current = store.getState();
   if (current.phase !== 'triage_loading' || !current.triageAttemptKey) return false;
 
   requestGenerations.set(store, (requestGenerations.get(store) ?? 0) + 1);
-  store.dispatch({ type: 'set_error', error: UNKNOWN_RESULT_ERROR, disposition: 'unknown' });
+  const preserveAttempt = options.preserveAttempt ?? true;
+  store.dispatch({
+    type: 'set_error',
+    error: preserveAttempt ? UNKNOWN_RESULT_ERROR : NOT_FOUND_ERROR,
+    disposition: preserveAttempt ? 'unknown' : 'definite_no_write',
+  });
   store.dispatch({ type: 'set_phase', phase: 'confirm_triage' });
   return true;
 }
@@ -154,6 +172,10 @@ export async function runPilotTriage(options: PilotTriageRunOptions): Promise<vo
     options.store.dispatch({ type: 'set_review', review: result });
   } catch (error) {
     if (!isRunCurrent(options, triageAttemptKey, generation, normalizedInput)) return;
+    if (isOpportunityFitNotFoundError(error)) {
+      options.onNotFound?.();
+      return;
+    }
     const disposition = classifyOpportunityFitFailure(error);
     options.store.dispatch({
       type: 'set_error',
@@ -202,6 +224,10 @@ export async function runPilotDeepReview(options: PilotDeepReviewRunOptions): Pr
     options.store.dispatch({ type: 'set_review', review: result });
   } catch (error) {
     if (!isDeepReviewRunCurrent(options, generation)) return;
+    if (isOpportunityFitNotFoundError(error)) {
+      options.onNotFound?.();
+      return;
+    }
     const disposition = classifyOpportunityFitFailure(error);
     options.store.dispatch({
       type: 'set_error',
