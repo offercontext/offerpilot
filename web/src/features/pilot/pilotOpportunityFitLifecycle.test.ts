@@ -196,6 +196,31 @@ describe('Pilot triage lifecycle', () => {
     expect(store.getState().triageAttemptKey).toBeNull();
   });
 
+  it('preserves a retryable attempt when the Pilot context switches before a late response', async () => {
+    const store = createOpportunityFitDraftStore(7, 'draft-1');
+    store.dispatch({ type: 'set_resume', resumeID: 3 });
+    store.dispatch({ type: 'set_jd', jdText: 'JD' });
+    const lateResponse = deferred<OpportunityFitReview>();
+    const run = runPilotTriage({
+      store,
+      applicationId: 7,
+      pilotDraftKey: 'draft-1',
+      draft: store.getState(),
+      existingKey: 'attempt-switch',
+      createReview: () => lateResponse.promise,
+    });
+
+    expect(cancelPilotTriage(store)).toBe(true);
+    lateResponse.resolve(review);
+    await run;
+
+    expect(store.getState()).toMatchObject({
+      phase: 'confirm_triage',
+      triageAttemptKey: 'attempt-switch',
+      triageFailureDisposition: 'unknown',
+    });
+  });
+
   it('accepts only the newest request when two requests share an idempotency key', async () => {
     const store = createOpportunityFitDraftStore(7, 'draft-1');
     store.dispatch({ type: 'set_resume', resumeID: 3 });

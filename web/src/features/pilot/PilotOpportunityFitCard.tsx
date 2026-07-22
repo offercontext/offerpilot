@@ -293,14 +293,14 @@ export default function PilotOpportunityFitCard({
             </div>
           ) : null}
 
-          {!isDeepReady ? (
+          {!historicalReview && !isDeepReady ? (
             isDeepReviewLoading ? <p role="status">正在进行 Deep Review…</p> : null
           ) : null}
-          {!isDeepReady ? (
+          {!historicalReview && !isDeepReady ? (
             <button type="button" disabled={isDeepReviewLoading} onClick={() => setConfirmation('deep_review')}>
               {isDeepReviewLoading ? '正在深入分析…' : OPPORTUNITY_FIT_COPY.drawer.startDeepReview}
             </button>
-          ) : (
+          ) : isDeepReady ? (
             <>
               <h3>Deep Fit Review</h3>
               <p>{OPPORTUNITY_FIT_COPY.drawer.recommendedPath}：{opportunityFitRecommendedPathLabel(review.deep_review!.recommended_path)}</p>
@@ -316,7 +316,7 @@ export default function PilotOpportunityFitCard({
                 <button type="button" disabled={isDeepReviewLoading} onClick={() => setConfirmation('prepare_materials')}>仍要准备材料</button>
               )}
             </>
-          )}
+          ) : null}
         </div>
       ) : null}
 

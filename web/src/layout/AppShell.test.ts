@@ -65,6 +65,8 @@ describe('AppShell source contract', () => {
   it('retains an unknown Pilot attempt when the flow is canceled', () => {
     expect(source).toContain('shouldRetainOpportunityFitDraft');
     expect(source).toContain('cancelPilotTriage');
+    expect(source).toContain('const exitPilotContext = () => {');
+    expect(source).toContain('exitPilotContext();');
     expect(source).toContain('if (shouldRetainOpportunityFitDraft(store.getState())) return;');
     expect(source).toContain('findRetainedPilotDraftKey');
   });

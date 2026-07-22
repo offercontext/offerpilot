@@ -193,6 +193,15 @@ function AppShellContent() {
       removeOpportunityFitDraftStore(pilotDraftStoresRef.current, key);
     }
   };
+  const exitPilotContext = () => {
+    const current = pilotApplicationContextRef.current;
+    if (!current) return;
+    const store = pilotDraftStoresRef.current.get(pilotDraftKey(current));
+    if (store) cancelPilotTriage(store);
+    schedulePilotDraftCleanup(current);
+    setPilotHistoricalReviewId(null);
+    setPilotApplicationContext(null);
+  };
   const kanbanSensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   );
@@ -463,20 +472,18 @@ function AppShellContent() {
 
   const openApplicationDetail = (app: Application) => {
     setAISettingsOpen(false);
-    const currentPilot = pilotApplicationContextRef.current;
-    if (currentPilot) schedulePilotDraftCleanup(currentPilot);
-    setPilotApplicationContext(null);
+    exitPilotContext();
     setSelected(app);
   };
 
   const startPilotOpportunityFit = (app: Application) => {
     setAISettingsOpen(false);
     setSelected(null);
-    setPilotHistoricalReviewId(null);
     const currentPilot = pilotApplicationContextRef.current;
     if (currentPilot && currentPilot.applicationId !== app.id) {
-      schedulePilotDraftCleanup(currentPilot);
+      exitPilotContext();
     }
+    setPilotHistoricalReviewId(null);
     setPilotApplicationContext((current) => current?.applicationId === app.id
       ? current
       : {
@@ -545,9 +552,7 @@ function AppShellContent() {
   const preparePilotMaterials = (handoff: PilotOpportunityFitMaterialHandoff) => {
     writeMaterialKitHandoff(handoff);
     const app = apps.find((item) => item.id === handoff.applicationId);
-    const currentPilot = pilotApplicationContextRef.current;
-    if (currentPilot) schedulePilotDraftCleanup(currentPilot);
-    setPilotApplicationContext(null);
+    exitPilotContext();
     setView('board');
     if (app) setSelected(app);
   };
@@ -715,13 +720,7 @@ function AppShellContent() {
                   isTriageLoading={pilotDraft.phase === 'triage_loading'}
                   isDeepReviewLoading={pilotDraft.phase === 'deep_review_loading'}
                   onCancel={() => {
-                    const currentPilot = pilotApplicationContextRef.current;
-                    if (currentPilot && pilotDraftStore.getState().phase === 'triage_loading') {
-                      cancelPilotTriage(pilotDraftStore);
-                    }
-                    if (currentPilot) schedulePilotDraftCleanup(currentPilot);
-                    setPilotHistoricalReviewId(null);
-                    setPilotApplicationContext(null);
+                    exitPilotContext();
                     setView('dashboard');
                   }}
                 />

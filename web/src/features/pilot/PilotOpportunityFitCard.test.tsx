@@ -273,6 +273,20 @@ describe('PilotOpportunityFitCard', () => {
     expect(view.textContent).toContain('开始 Triage');
   });
 
+  it('keeps historical Triage details read-only and does not offer Deep Review', async () => {
+    const initial = {
+      ...createInitialOpportunityFitDraft(7, 'pilot:7'),
+      review: validReview,
+      reviewSource: 'historical' as const,
+      phase: 'triage_ready' as const,
+    };
+    const view = await render(initial);
+    expect(view.textContent).toContain('开始新的岗位评估');
+    expect(view.textContent).not.toContain('开始 Deep Fit Review');
+    expect(view.querySelector('button')?.textContent).not.toContain('开始 Deep Fit Review');
+    expect(deep).not.toHaveBeenCalled();
+  });
+
   it('blocks new triage while historical reviews are loading', async () => {
     const view = await render();
     await act(async () => root?.render(<Harness historyLoading />));
