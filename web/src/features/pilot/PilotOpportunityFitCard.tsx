@@ -27,8 +27,10 @@ export interface PilotOpportunityFitResumeOption {
 
 export interface PilotOpportunityFitMaterialHandoff {
   applicationId: number;
+  reviewId?: number;
   resumeId: number;
   jdText: string;
+  resumeEvidenceProof: OpportunityFitResumeEvidenceProof;
 }
 
 interface Props {
@@ -177,8 +179,10 @@ export default function PilotOpportunityFitCard({
     setConfirmation(null);
     onPrepareMaterials({
       applicationId: draft.applicationId,
+      reviewId: review.id,
       resumeId: review.source.resume.id,
       jdText: review.source.jd.text,
+      resumeEvidenceProof: resumeEvidenceProof!,
     });
   };
 

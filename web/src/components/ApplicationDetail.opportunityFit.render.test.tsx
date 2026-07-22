@@ -2,6 +2,7 @@
 import { act, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { writeMaterialKitHandoff } from '@/features/pilot/materialKitHandoff';
 
 const state = vi.hoisted(() => ({
   materialProps: vi.fn(),
@@ -131,5 +132,33 @@ describe('ApplicationDetail opportunity fit handoff', () => {
     const materialKit = container?.querySelector('[data-testid="material-kit"]');
     expect(materialKit?.getAttribute('data-resume-id')).toBe('11');
     expect(materialKit?.getAttribute('data-jd')).toBe('Frozen JD text');
+  });
+
+  it('consumes a matching AppShell handoff once and uses frozen values', async () => {
+    writeMaterialKitHandoff({
+      applicationId: 7,
+      reviewId: 17,
+      resumeId: 12,
+      jdText: 'Frozen Pilot JD',
+      resumeEvidenceProof: { resumeId: 12, sha256: 'hash', contentJson: { raw_text: 'resume' } },
+    });
+
+    act(() => root?.render(<ApplicationDetail application={application} open onClose={vi.fn()} />));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(container?.querySelector('[data-testid="material-kit"]')?.getAttribute('data-resume-id')).toBe('12');
+    expect(container?.querySelector('[data-testid="material-kit"]')?.getAttribute('data-jd')).toBe('Frozen Pilot JD');
+  });
+
+  it('exposes the Application-scoped Pilot evaluation entry without URL analysis', () => {
+    const openPilot = vi.fn();
+    act(() => root?.render(<ApplicationDetail application={application} open onClose={vi.fn()} onOpenPilotOpportunityFit={openPilot} />));
+    const button = [...(container?.querySelectorAll('button') || [])]
+      .find((candidate) => candidate.textContent === '在 Pilot 中评估');
+    act(() => button?.click());
+    expect(openPilot).toHaveBeenCalledWith(application);
+    expect(state.analyzeJD).not.toHaveBeenCalled();
   });
 });

@@ -1,4 +1,4 @@
-import { Component, lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Component, lazy, Suspense, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { DndContext, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button, Layout, Spin, Tabs, message } from 'antd';
@@ -7,7 +7,22 @@ import { listEvents } from '@/services/events';
 import { listOffers } from '@/services/offers';
 import { ONBOARDING_QUERY_KEY } from '@/services/onboarding';
 import { uploadResume } from '@/services/resumes';
+import { listResumes } from '@/services/resumes';
+import { createOpportunityFitReview, createOpportunityFitDeepReview } from '@/services/opportunityFitReviews';
+import { getOpportunityFitErrorMessage } from '@/components/opportunityFitCopy';
+import PilotOpportunityFitCard, { type PilotOpportunityFitMaterialHandoff } from '@/features/pilot/PilotOpportunityFitCard';
+import {
+  classifyOpportunityFitFailure,
+  createOpportunityFitDraftStore,
+  normalizeOpportunityFitAssertions,
+  type OpportunityFitDraftAction,
+  type OpportunityFitDraftState,
+  type OpportunityFitDraftStore,
+  type OpportunityFitResumeEvidenceProof,
+} from '@/features/pilot/opportunityFitDraft';
+import { writeMaterialKitHandoff } from '@/features/pilot/materialKitHandoff';
 import type { Application } from '@/types/application';
+import type { OpportunityFitReview } from '@/types/opportunityFitReview';
 import type { ChatStartRequest, PilotContextAttachment } from '@/types/chat';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
@@ -51,6 +66,8 @@ const RemindersView = lazy(() => import('@/features/reminders/RemindersView'));
 const InterviewV01View = lazy(() => import('@/components/InterviewV01View'));
 const ResumeLibraryView = lazy(() => import('@/components/ResumeLibraryView'));
 const SettingsView = lazy(() => import('@/components/SettingsView'));
+
+const EMPTY_PILOT_DRAFT_STORE = createOpportunityFitDraftStore(0, 'empty');
 
 class ViewErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
   state = { hasError: false };
@@ -100,6 +117,7 @@ function AppShellContent() {
   const [resumeUploadOpen, setResumeUploadOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [pilotDrawerOpen, setPilotDrawerOpen] = useState(false);
+  const [pilotApplicationContext, setPilotApplicationContext] = useState<{ applicationId: number; pilotDraftKey: string } | null>(null);
   const [aiSettingsOpen, setAISettingsOpen] = useState(false);
   const [resumeOnboardingFocusToken, setResumeOnboardingFocusToken] = useState(0);
   const [pilotOnboardingFocusToken, setPilotOnboardingFocusToken] = useState(0);
@@ -118,6 +136,7 @@ function AppShellContent() {
   const [pilotRailAvailable, setPilotRailAvailable] = useState(() =>
     typeof window === 'undefined' ? false : window.matchMedia('(min-width: 1180px)').matches
   );
+  const pilotDraftStoresRef = useRef(new Map<string, OpportunityFitDraftStore>());
   const kanbanSensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   );
@@ -140,6 +159,60 @@ function AppShellContent() {
     queryFn: () => getPracticeStats(),
     retry: false,
   });
+  const { data: resumes = [] } = useQuery({
+    queryKey: ['resumes'],
+    queryFn: listResumes,
+    enabled: pilotApplicationContext !== null,
+  });
+
+  const pilotDraftStore = useMemo(() => {
+    if (!pilotApplicationContext) return EMPTY_PILOT_DRAFT_STORE;
+    const key = `${pilotApplicationContext.applicationId}:${pilotApplicationContext.pilotDraftKey}`;
+    const existing = pilotDraftStoresRef.current.get(key);
+    if (existing) return existing;
+    const created = createOpportunityFitDraftStore(
+      pilotApplicationContext.applicationId,
+      pilotApplicationContext.pilotDraftKey,
+    );
+    pilotDraftStoresRef.current.set(key, created);
+    return created;
+  }, [pilotApplicationContext]);
+  const pilotDraft = useSyncExternalStore(
+    pilotDraftStore.subscribe,
+    pilotDraftStore.getState,
+    pilotDraftStore.getState,
+  );
+  const [resumeEvidenceProof, setResumeEvidenceProof] = useState<OpportunityFitResumeEvidenceProof | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const review = pilotDraft.review;
+    const resume = review ? resumes.find((item) => item.id === review.source.resume.id) : undefined;
+    if (!review || !resume) {
+      setResumeEvidenceProof(null);
+      return () => { cancelled = true; };
+    }
+
+    const stableJson = (value: unknown): string => {
+      if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+      if (value && typeof value === 'object') {
+        return `{${Object.keys(value as Record<string, unknown>).sort().map((key) => `${JSON.stringify(key)}:${stableJson((value as Record<string, unknown>)[key])}`).join(',')}}`;
+      }
+      return JSON.stringify(value);
+    };
+
+    void crypto.subtle.digest('SHA-256', new TextEncoder().encode(stableJson(resume.content_json))).then((digest) => {
+      const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+      if (!cancelled && hash === review.source.resume.sha256) {
+        setResumeEvidenceProof({ resumeId: resume.id, sha256: hash, contentJson: resume.content_json });
+      } else if (!cancelled) {
+        setResumeEvidenceProof(null);
+      }
+    }).catch(() => {
+      if (!cancelled) setResumeEvidenceProof(null);
+    });
+    return () => { cancelled = true; };
+  }, [pilotDraft.review, resumes]);
 
   // Backend serializes an empty []T slice as JSON `null` (Go encoding/json).
   // React Query's `= []` default only applies when data is `undefined`, so an
@@ -317,7 +390,68 @@ function AppShellContent() {
 
   const openApplicationDetail = (app: Application) => {
     setAISettingsOpen(false);
+    setPilotApplicationContext(null);
     setSelected(app);
+  };
+
+  const startPilotOpportunityFit = (app: Application) => {
+    setAISettingsOpen(false);
+    setSelected(null);
+    setPilotApplicationContext((current) => current?.applicationId === app.id
+      ? current
+      : { applicationId: app.id, pilotDraftKey: crypto.randomUUID() });
+    setView('pilot');
+  };
+
+  const dispatchPilotDraft = (action: OpportunityFitDraftAction) => {
+    if (pilotApplicationContext) pilotDraftStore.dispatch(action);
+  };
+
+  const showPilotError = (error: unknown) => {
+    const disposition = classifyOpportunityFitFailure(error);
+    dispatchPilotDraft({ type: 'set_error', error: getOpportunityFitErrorMessage(error), disposition });
+    return disposition;
+  };
+
+  const startPilotTriage = async (draft: OpportunityFitDraftState, existingKey: string | null) => {
+    if (!pilotApplicationContext || draft.applicationId !== pilotApplicationContext.applicationId) return;
+    const triageAttemptKey = existingKey ?? draft.triageAttemptKey ?? crypto.randomUUID();
+    dispatchPilotDraft({ type: 'set_attempt_key', key: triageAttemptKey });
+    dispatchPilotDraft({ type: 'set_phase', phase: 'triage_loading' });
+    try {
+      const candidateAssertions = normalizeOpportunityFitAssertions(draft.assertionsText);
+      const result = await createOpportunityFitReview(draft.applicationId, {
+        resume_id: draft.resumeID!,
+        jd_text: draft.jdText.trim(),
+        jd_source_label: '用户粘贴 JD',
+        candidate_assertions: candidateAssertions,
+        idempotency_key: triageAttemptKey,
+      });
+      dispatchPilotDraft({ type: 'set_review', review: result });
+    } catch (error) {
+      const disposition = showPilotError(error);
+      dispatchPilotDraft({ type: 'set_phase', phase: 'confirm_triage' });
+      if (disposition === 'unknown') dispatchPilotDraft({ type: 'set_attempt_key', key: triageAttemptKey });
+    }
+  };
+
+  const startPilotDeepReview = async (_draft: OpportunityFitDraftState, review: OpportunityFitReview) => {
+    dispatchPilotDraft({ type: 'set_phase', phase: 'deep_review_loading' });
+    try {
+      const result = await createOpportunityFitDeepReview(review.application_id, review.id);
+      dispatchPilotDraft({ type: 'set_review', review: result });
+    } catch (error) {
+      showPilotError(error);
+      dispatchPilotDraft({ type: 'set_phase', phase: 'triage_ready' });
+    }
+  };
+
+  const preparePilotMaterials = (handoff: PilotOpportunityFitMaterialHandoff) => {
+    writeMaterialKitHandoff(handoff);
+    const app = apps.find((item) => item.id === handoff.applicationId);
+    setPilotApplicationContext(null);
+    setView('board');
+    if (app) setSelected(app);
   };
 
   const clearEvidenceFocus = (target: EvidenceTarget) => {
@@ -380,6 +514,7 @@ function AppShellContent() {
       open
       onClose={() => setSelected(null)}
       onAskPilot={startApplicationChat}
+      onOpenPilotOpportunityFit={startPilotOpportunityFit}
       onAttachToPilot={attachToPilot}
     />
   ) : (
@@ -452,7 +587,23 @@ function AppShellContent() {
             />
           )}
           {view === 'pilot' && (
-            <div style={{ height: 'calc(100vh - 128px)', minHeight: 640 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: pilotApplicationContext ? 'minmax(0, 1fr) minmax(320px, 0.7fr)' : '1fr', gap: 16, minHeight: 640 }}>
+              {pilotApplicationContext ? (
+                <PilotOpportunityFitCard
+                  draft={pilotDraft}
+                  dispatch={dispatchPilotDraft}
+                  resumes={resumes}
+                  resumeEvidenceProof={resumeEvidenceProof}
+                  onStartTriage={startPilotTriage}
+                  onRetryTriage={startPilotTriage}
+                  onStartDeepReview={startPilotDeepReview}
+                  onPrepareMaterials={preparePilotMaterials}
+                  onCancel={() => {
+                    setPilotApplicationContext(null);
+                    setView('dashboard');
+                  }}
+                />
+              ) : null}
               <ChatPanel
                 variant="page"
                 open

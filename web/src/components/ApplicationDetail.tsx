@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Typography,
@@ -36,6 +36,7 @@ import MaterialKitDrawer from './MaterialKitDrawer';
 import OpportunityFitReviewDrawer from './OpportunityFitReviewDrawer';
 import type { OpportunityFitReview } from '@/types/opportunityFitReview';
 import { createPilotAttachmentDragBinding } from './PilotAttachmentHandle';
+import { consumeMaterialKitHandoff } from '@/features/pilot/materialKitHandoff';
 import styles from './ApplicationDetail.module.css';
 
 const { Title, Paragraph, Text } = Typography;
@@ -52,10 +53,11 @@ interface ApplicationDetailProps {
   onClose: () => void;
   onMockInterview?: (app: Application) => void;
   onAskPilot?: (app: Application) => void;
+  onOpenPilotOpportunityFit?: (app: Application) => void;
   onAttachToPilot?: (attachment: import('@/types/chat').PilotContextAttachment) => void;
 }
 
-export default function ApplicationDetail({ application, open, onClose, onMockInterview, onAskPilot, onAttachToPilot }: ApplicationDetailProps) {
+export default function ApplicationDetail({ application, open, onClose, onMockInterview, onAskPilot, onOpenPilotOpportunityFit, onAttachToPilot }: ApplicationDetailProps) {
   const queryClient = useQueryClient();
   const [form] = Form.useForm();
   const [eventFormOpen, setEventFormOpen] = useState(false);
@@ -66,6 +68,14 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
     jdSnapshot?: string;
   }>({});
   const [editingNote, setEditingNote] = useState<InterviewNote | null>(null);
+
+  useEffect(() => {
+    if (!application || !open) return;
+    const handoff = consumeMaterialKitHandoff(application.id);
+    if (!handoff) return;
+    setMaterialKitPrefill({ resumeID: handoff.resumeId, jdSnapshot: handoff.jdText });
+    setMaterialKitOpen(true);
+  }, [application, open]);
 
   const notesQuery = useQuery({
     queryKey: ['notes', application?.id],
@@ -205,6 +215,11 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
           {onAskPilot && (
             <Button icon={<RobotOutlined />} onClick={() => onAskPilot(application)}>
               问 Pilot
+            </Button>
+          )}
+          {onOpenPilotOpportunityFit && (
+            <Button onClick={() => onOpenPilotOpportunityFit(application)} style={{ marginLeft: 8 }}>
+              在 Pilot 中评估
             </Button>
           )}
           <Button

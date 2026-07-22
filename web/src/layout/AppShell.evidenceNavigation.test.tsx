@@ -70,8 +70,12 @@ vi.mock('@/components/ApplicationDetail', () => ({
     <section data-testid="application-detail">
       {props.application.id}
       <button type="button" data-testid="close-application" onClick={props.onClose}>Close</button>
+      <button type="button" data-testid="open-pilot-opportunity-fit" onClick={() => props.onOpenPilotOpportunityFit?.(props.application)}>Evaluate</button>
     </section>
   ),
+}));
+vi.mock('@/features/pilot/PilotOpportunityFitCard', () => ({
+  default: (props: any) => <section data-testid="pilot-opportunity-fit-card" data-draft-key={props.draft.pilotDraftKey} data-application-id={props.draft.applicationId} />,
 }));
 vi.mock('@/components/ChatPanel', () => ({
   default: (props: any) => (
@@ -153,6 +157,28 @@ afterEach(() => {
 });
 
 describe('AppShell evidence navigation', () => {
+  it('opens one Application-scoped Pilot draft and keeps its key across view changes', async () => {
+    const view = render(<AppShell />);
+    await flush();
+
+    act(() => view.querySelector<HTMLButtonElement>('[data-testid="nav-pilot"]')?.click());
+    await flush();
+    act(() => view.querySelector<HTMLButtonElement>('[data-testid="open-application-page"]')?.click());
+    await flush();
+    act(() => view.querySelector<HTMLButtonElement>('[data-testid="open-pilot-opportunity-fit"]')?.click());
+    await flush();
+
+    const card = view.querySelector('[data-testid="pilot-opportunity-fit-card"]');
+    expect(card?.getAttribute('data-application-id')).toBe('7');
+    const draftKey = card?.getAttribute('data-draft-key');
+    expect(draftKey).toBeTruthy();
+
+    act(() => view.querySelector<HTMLButtonElement>('[data-testid="nav-board"]')?.click());
+    act(() => view.querySelector<HTMLButtonElement>('[data-testid="nav-pilot"]')?.click());
+    await flush();
+    expect(view.querySelector('[data-testid="pilot-opportunity-fit-card"]')?.getAttribute('data-draft-key')).toBe(draftKey);
+  });
+
   it('invalidates the same-month calendar query after Pilot data changes', async () => {
     const view = render(<AppShell />);
     await flush();

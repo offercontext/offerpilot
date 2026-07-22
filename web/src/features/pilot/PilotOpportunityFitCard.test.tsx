@@ -306,7 +306,13 @@ describe('PilotOpportunityFitCard', () => {
     expect(view.textContent).toContain('优势内容');
     expect(view.textContent).toContain('建议准备材料');
     await click(view, '去准备材料');
-    expect(prepare).toHaveBeenCalledWith({ applicationId: 7, resumeId: 11, jdText: '原始 JD 文本' });
+    expect(prepare).toHaveBeenCalledWith(expect.objectContaining({
+      applicationId: 7,
+      reviewId: 17,
+      resumeId: 11,
+      jdText: '原始 JD 文本',
+      resumeEvidenceProof: defaultResumeEvidenceProof,
+    }));
     expect(prepare.mock.calls[0][0]).not.toHaveProperty('review');
   });
 
