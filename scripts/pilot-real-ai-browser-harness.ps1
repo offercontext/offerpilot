@@ -33,12 +33,13 @@ function Get-TreeIds([int]$processId) {
 
 function Assert-HarnessPortOwner([int]$rootProcessId, [int]$expectedPort) {
   $listeners = @(Get-NetTCPConnection -LocalPort $expectedPort -State Listen -ErrorAction SilentlyContinue)
-  if ($listeners.Count -eq 0) { throw "No process is listening on harness port $expectedPort." }
+  if ($listeners.Count -eq 0) { return $false }
   $treeIds = @(Get-TreeIds $rootProcessId)
   $foreign = @($listeners | Where-Object { $treeIds -notcontains [int]$_.OwningProcess })
   if ($foreign.Count -gt 0) {
     throw "Harness port $expectedPort is owned by a process outside the harness tree."
   }
+  return $true
 }
 
 try {
@@ -48,7 +49,12 @@ try {
   )
   $healthy = $false
   for ($attempt = 0; $attempt -lt 60; $attempt++) {
-    Assert-HarnessPortOwner ([int]$server.Id) $port
+    $ownerVerified = Assert-HarnessPortOwner ([int]$server.Id) $port
+    if (-not $ownerVerified) {
+      if ($server.HasExited) { throw "Isolated OfferPilot exited before binding harness port $port." }
+      Start-Sleep -Milliseconds 500
+      continue
+    }
     try {
       $health = Invoke-RestMethod -Uri "$baseUrl/api/health" -TimeoutSec 2
       if ($health) { $healthy = $true; break }
