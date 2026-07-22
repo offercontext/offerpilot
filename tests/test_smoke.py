@@ -17,6 +17,7 @@ from offerpilot.smoke import (
     SmokeStep,
     SmokeReport,
     _assert_real_ai_smoke_data_clean,
+    _cleanup_real_ai_browser_records,
     _cleanup_real_ai_smoke_records,
     _run_real_ai_material_proposal_smoke,
     _run_real_ai_opportunity_fit_smoke,
@@ -136,12 +137,13 @@ def test_real_ai_material_proposal_smoke_allows_empty_changes_and_hides_snapshot
 
     client = Client()
     steps: list[SmokeStep] = []
+    resume_ids: list[int] = []
 
-    _run_real_ai_material_proposal_smoke(client, steps, 7)
+    _run_real_ai_material_proposal_smoke(client, steps, 7, resume_ids)
 
     assert [step.name for step in steps] == ["http_material_proposal"]
     assert client.created_resume_ids == [41, 42]
-    assert client.deleted_resume_ids == [42, 41]
+    assert resume_ids == [41, 42]
 
 
 def test_real_ai_http_smoke_isolates_config_and_removes_temporary_data(monkeypatch, tmp_path):
@@ -217,8 +219,48 @@ def test_real_ai_smoke_cleanup_removes_material_records_and_active_resume(tmp_pa
     if bind is not None:
         bind.dispose()
 
-    _cleanup_real_ai_smoke_records(data_dir)
+    _cleanup_real_ai_smoke_records(data_dir, application.id, [resume.id])
     _assert_real_ai_smoke_data_clean(data_dir)
+
+
+def test_real_ai_browser_cleanup_is_scoped_to_temp_data(tmp_path):
+    source_data = tmp_path / "source"
+    temp_data = tmp_path / "temp"
+    records: dict[str, tuple[int, int]] = {}
+    for name, data_dir in (("source", source_data), ("temp", temp_data)):
+        session_factory = session_factory_for_data_dir(data_dir)
+        with session_factory() as session:
+            application = Application(company_name=f"{name} company", position_name="QA")
+            resume = Resume(title=f"{name} resume", content_json="{}")
+            session.add_all([application, resume])
+            session.commit()
+            records[name] = (application.id, resume.id)
+        bind = session_factory.kw.get("bind")
+        if bind is not None:
+            bind.dispose()
+
+    _cleanup_real_ai_browser_records(temp_data, records["temp"][0], [records["temp"][1]])
+    _assert_real_ai_smoke_data_clean(temp_data)
+
+    source_factory = session_factory_for_data_dir(source_data)
+    with source_factory() as session:
+        assert session.get(Application, records["source"][0]) is not None
+        assert session.get(Resume, records["source"][1]) is not None
+    bind = source_factory.kw.get("bind")
+    if bind is not None:
+        bind.dispose()
+
+
+def test_real_ai_browser_harness_isolated_and_uses_base_url():
+    harness = Path(__file__).parents[1] / "scripts" / "pilot-real-ai-browser-harness.ps1"
+    source = harness.read_text(encoding="utf-8")
+    assert "OFFERPILOT_DATA" in source
+    assert "Copy-Item" in source
+    assert "Get-NetTCPConnection" in source
+    assert "Get-TreeIds" in source
+    assert "http://127.0.0.1:$port" in source
+    assert "/applications/" not in source
+    assert "_cleanup_real_ai_browser_records" in source
 
 
 def test_real_ai_material_proposal_smoke_rejects_renamed_snapshot_leak():

@@ -14,13 +14,20 @@ from typing import Any
 
 import httpx
 import uvicorn
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from offerpilot.ai.agent import ChatModel
 from offerpilot.ai.types import Assistant, Message, ToolCall
 from offerpilot.api import create_app
 from offerpilot.db import session_factory_for_data_dir
-from offerpilot.models import ApplicationMaterialKit, MaterialRevisionProposal, OpportunityFitReview, Resume
+from offerpilot.models import (
+    Application,
+    ApplicationEvidenceBundle,
+    ApplicationMaterialKit,
+    MaterialRevisionProposal,
+    OpportunityFitReview,
+    Resume,
+)
 
 
 @dataclass(frozen=True)
@@ -294,7 +301,6 @@ def run_http_smoke(
         isolated_data_dir = Path(temp_dir)
         _copy_real_ai_config(data_dir, isolated_data_dir)
         report = _run_http_smoke(isolated_data_dir, static_dir=static_dir, real_ai=True)
-        _cleanup_real_ai_smoke_records(isolated_data_dir)
         _assert_real_ai_smoke_data_clean(isolated_data_dir)
         return report
 
@@ -306,6 +312,7 @@ def _run_http_smoke(
     real_ai: bool = False,
 ) -> SmokeReport:
     steps: list[SmokeStep] = []
+    smoke_resume_ids: list[int] = []
     data_dir.mkdir(parents=True, exist_ok=True)
 
     _run_unconfigured_chat_smoke(static_dir, steps)
@@ -360,8 +367,8 @@ def _run_http_smoke(
                 _run_application_event_http_smoke(client, steps, application_id)
 
                 if real_ai:
-                    _run_real_ai_material_proposal_smoke(client, steps, application_id)
-                    _run_real_ai_opportunity_fit_smoke(client, steps, application_id)
+                    _run_real_ai_material_proposal_smoke(client, steps, application_id, smoke_resume_ids)
+                    _run_real_ai_opportunity_fit_smoke(client, steps, application_id, smoke_resume_ids)
                     _run_real_ai_write_smoke(client, steps, company, application_id)
                 else:
                     _run_deterministic_chat_smoke(client, steps, application_id)
@@ -369,6 +376,8 @@ def _run_http_smoke(
             finally:
                 cleanup = client.delete(f"/api/applications/{application_id}")
                 _assert_status(cleanup.status_code, 200, "http_cleanup")
+                if real_ai:
+                    _cleanup_real_ai_smoke_records(data_dir, application_id, smoke_resume_ids)
                 steps.append(SmokeStep("http_cleanup", f"deleted smoke application #{application_id}"))
 
     return SmokeReport(ok=True, steps=steps)
@@ -378,6 +387,7 @@ def _run_real_ai_material_proposal_smoke(
     client: httpx.Client,
     steps: list[SmokeStep],
     application_id: int,
+    resume_ids: list[int] | None = None,
 ) -> None:
     anchor_resume_id: int | None = None
     resume_id: int | None = None
@@ -392,6 +402,8 @@ def _run_real_ai_material_proposal_smoke(
         )
         _assert_status(anchor.status_code, 201, "http_material_proposal_resume_anchor")
         anchor_resume_id = int(anchor.json()["id"])
+        if resume_ids is not None:
+            resume_ids.append(anchor_resume_id)
 
         created_resume = client.post(
             "/api/resumes",
@@ -407,6 +419,8 @@ def _run_real_ai_material_proposal_smoke(
         )
         _assert_status(created_resume.status_code, 201, "http_material_proposal_resume")
         resume_id = int(created_resume.json()["id"])
+        if resume_ids is not None:
+            resume_ids.append(resume_id)
 
         kit = client.post(
             f"/api/applications/{application_id}/material-kit/generate",
@@ -434,18 +448,14 @@ def _run_real_ai_material_proposal_smoke(
             )
         )
     finally:
-        if resume_id is not None:
-            cleanup = client.delete(f"/api/resumes/{resume_id}")
-            _assert_status(cleanup.status_code, 200, "http_material_proposal_resume_cleanup")
-        if anchor_resume_id is not None:
-            cleanup = client.delete(f"/api/resumes/{anchor_resume_id}")
-            _assert_status(cleanup.status_code, 200, "http_material_proposal_resume_anchor_cleanup")
+        del anchor_resume_id, resume_id
 
 
 def _run_real_ai_opportunity_fit_smoke(
     client: httpx.Client,
     steps: list[SmokeStep],
     application_id: int,
+    resume_ids: list[int] | None = None,
 ) -> None:
     anchor_resume_id: int | None = None
     resume_id: int | None = None
@@ -456,6 +466,8 @@ def _run_real_ai_opportunity_fit_smoke(
         )
         _assert_status(anchor.status_code, 201, "http_opportunity_fit_resume_anchor")
         anchor_resume_id = int(anchor.json()["id"])
+        if resume_ids is not None:
+            resume_ids.append(anchor_resume_id)
 
         created_resume = client.post(
             "/api/resumes",
@@ -470,6 +482,8 @@ def _run_real_ai_opportunity_fit_smoke(
         )
         _assert_status(created_resume.status_code, 201, "http_opportunity_fit_resume")
         resume_id = int(created_resume.json()["id"])
+        if resume_ids is not None:
+            resume_ids.append(resume_id)
 
         review = client.post(
             f"/api/applications/{application_id}/opportunity-fit-reviews",
@@ -511,12 +525,7 @@ def _run_real_ai_opportunity_fit_smoke(
             )
         )
     finally:
-        if resume_id is not None:
-            cleanup = client.delete(f"/api/resumes/{resume_id}")
-            _assert_status(cleanup.status_code, 200, "http_opportunity_fit_resume_cleanup")
-        if anchor_resume_id is not None:
-            cleanup = client.delete(f"/api/resumes/{anchor_resume_id}")
-            _assert_status(cleanup.status_code, 200, "http_opportunity_fit_resume_anchor_cleanup")
+        del anchor_resume_id, resume_id
 
 
 def _copy_real_ai_config(source_data_dir: Path, isolated_data_dir: Path) -> None:
@@ -525,18 +534,51 @@ def _copy_real_ai_config(source_data_dir: Path, isolated_data_dir: Path) -> None
         shutil.copyfile(source_config, isolated_data_dir / "config.json")
 
 
-def _cleanup_real_ai_smoke_records(data_dir: Path) -> None:
+def _cleanup_real_ai_smoke_records(
+    data_dir: Path,
+    application_id: int,
+    resume_ids: list[int],
+) -> None:
     session_factory = session_factory_for_data_dir(data_dir)
     try:
         with session_factory() as session:
-            session.query(MaterialRevisionProposal).delete(synchronize_session=False)
-            session.query(ApplicationMaterialKit).delete(synchronize_session=False)
-            session.query(OpportunityFitReview).delete(synchronize_session=False)
+            session.execute(
+                delete(MaterialRevisionProposal).where(
+                    MaterialRevisionProposal.application_id == application_id
+                )
+            )
+            session.execute(
+                delete(ApplicationMaterialKit).where(
+                    ApplicationMaterialKit.application_id == application_id
+                )
+            )
+            session.execute(
+                delete(OpportunityFitReview).where(
+                    OpportunityFitReview.application_id == application_id
+                )
+            )
+            session.execute(
+                delete(ApplicationEvidenceBundle).where(
+                    ApplicationEvidenceBundle.application_id == application_id
+                )
+            )
+            session.execute(delete(Application).where(Application.id == application_id))
+            if resume_ids:
+                session.execute(delete(Resume).where(Resume.id.in_(resume_ids)))
             session.commit()
     finally:
         bind = session_factory.kw.get("bind")
         if bind is not None:
             bind.dispose()
+
+
+def _cleanup_real_ai_browser_records(
+    data_dir: Path,
+    application_id: int,
+    resume_ids: list[int],
+) -> None:
+    """Remove only the synthetic records created by the isolated browser harness."""
+    _cleanup_real_ai_smoke_records(data_dir, application_id, resume_ids)
 
 
 def _assert_real_ai_smoke_data_clean(data_dir: Path) -> None:
@@ -557,6 +599,10 @@ def _assert_real_ai_smoke_data_clean(data_dir: Path) -> None:
             opportunity_fit_review_count = session.scalar(
                 select(func.count()).select_from(OpportunityFitReview)
             )
+            application_count = session.scalar(select(func.count()).select_from(Application))
+            evidence_bundle_count = session.scalar(
+                select(func.count()).select_from(ApplicationEvidenceBundle)
+            )
     finally:
         bind = session_factory.kw.get("bind")
         if bind is not None:
@@ -572,6 +618,10 @@ def _assert_real_ai_smoke_data_clean(data_dir: Path) -> None:
         raise RuntimeError("real-ai smoke left material proposals")
     if opportunity_fit_review_count != 0:
         raise RuntimeError("real-ai smoke left opportunity fit reviews")
+    if application_count != 0:
+        raise RuntimeError("real-ai smoke left applications")
+    if evidence_bundle_count != 0:
+        raise RuntimeError("real-ai smoke left evidence bundles")
 
 
 def _validate_material_proposal_smoke_response(body: object) -> None:
