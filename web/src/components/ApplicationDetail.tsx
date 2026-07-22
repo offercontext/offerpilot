@@ -189,11 +189,14 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
         initialApplication={application}
         note={editingNote}
         initialEventID={reviewEventID}
-        saving={updateNoteMut.isPending || createEventNoteMut.isPending}
-        onSubmit={(input) => {
-          if (editingNote) updateNoteMut.mutate({ id: editingNote.id, input });
-          else createEventNoteMut.mutate(input);
-        }}
+         saving={updateNoteMut.isPending || createEventNoteMut.isPending}
+         onSubmit={(input) => {
+           if (editingNote) {
+             updateNoteMut.mutate({ id: editingNote.id, input });
+           } else {
+             createEventNoteMut.mutate(input);
+           }
+         }}
         onClose={() => {
           setReviewFormOpen(false);
           setEditingNote(null);
