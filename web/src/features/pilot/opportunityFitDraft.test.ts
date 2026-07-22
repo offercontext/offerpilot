@@ -26,7 +26,7 @@ const review: OpportunityFitReview = {
   status: 'triage_complete',
   summary: {
     text: 'Candidate has a plausible fit.',
-    evidence_refs: [],
+    evidence_refs: [{ source: 'jd', path: '/text', excerpt: 'Build things.' }],
   },
   recommendation: 'advance',
   source_fingerprint_sha256: 'source-hash',
@@ -38,13 +38,17 @@ const review: OpportunityFitReview = {
     application: { id: 7, company_name: 'Example', position_name: 'Engineer' },
     resume: { id: 3, title: 'Resume', sha256: 'resume-hash' },
     jd: { source_label: 'Pasted JD', sha256: 'jd-hash', text: 'Build things.' },
-    candidate_assertions: [],
+    candidate_assertions: [{ index: 0, text: 'I shipped production systems.' }],
   },
   triage: {
-    summary: { text: 'Candidate has a plausible fit.', evidence_refs: [] },
+    summary: { text: 'Candidate has a plausible fit.', evidence_refs: [{ source: 'jd', path: '/text', excerpt: 'Build things.' }] },
     recommendation: 'advance',
     hard_constraints: [],
-    fit_signals: [],
+    fit_signals: [{
+      id: 'fit-1',
+      statement: 'Has delivery experience.',
+      evidence_refs: [{ source: 'resume', path: '/experience/0/highlights/0', excerpt: 'Strong delivery record.' }],
+    }],
     gaps: [],
     deadline: { status: 'not_stated', text: '', evidence_refs: [] },
     next_questions: [],
@@ -53,7 +57,7 @@ const review: OpportunityFitReview = {
 };
 
 const deepReview: NonNullable<OpportunityFitReview['deep_review']> = {
-  strengths: [{ id: 'strength-1', statement: 'Strong delivery record.', evidence_refs: [] }],
+  strengths: [{ id: 'strength-1', statement: 'Strong delivery record.', evidence_refs: [{ source: 'resume', path: '/experience/0/highlights/0', excerpt: 'Strong delivery record.' }] }],
   gaps_to_address: [{
     id: 'gap-1',
     statement: 'Clarify system scale.',
@@ -76,6 +80,7 @@ describe('opportunityFitDraftReducer', () => {
       review: null,
       actionError: null,
       triageAttemptKey: null,
+      triageFailureDisposition: null,
     });
   });
 
@@ -232,6 +237,106 @@ describe('opportunityFitDraftReducer', () => {
     expect(next.review).toBeNull();
     expect(next.phase).toBe('deep_review_loading');
     expect(next.triageAttemptKey).toBe('attempt-1');
+  });
+
+  it.each([
+    ['JD path', { source: 'jd', path: '/requirements', excerpt: 'Build things.' }],
+    ['JD excerpt', { source: 'jd', path: '/text', excerpt: 'Invented JD' }],
+    ['user assertion path', { source: 'user_assertion', path: '/user_assertions/1/text', excerpt: 'I shipped production systems.' }],
+    ['user assertion excerpt', { source: 'user_assertion', path: '/user_assertions/0/text', excerpt: 'Invented fact' }],
+    ['resume path', { source: 'resume', path: '/experience/01/highlights/0', excerpt: 'Strong delivery record.' }],
+    ['resume content_json path', { source: 'resume', path: '/content_json/experience/0/highlights/0', excerpt: 'Strong delivery record.' }],
+  ] as const)('rejects a semantically invalid %s evidence reference', (_label, ref) => {
+    const state = createInitialOpportunityFitDraft(7, 'draft-1');
+    const next = opportunityFitDraftReducer(state, {
+      type: 'set_review',
+      review: {
+        ...review,
+        triage: {
+          ...review.triage,
+          fit_signals: [{ id: 'fit-1', statement: 'Good fit', evidence_refs: [ref] }],
+        },
+      },
+    } as never);
+
+    expect(next).toBe(state);
+  });
+
+  it('accepts a valid JD evidence reference in a role gap', () => {
+    const state = createInitialOpportunityFitDraft(7, 'draft-1');
+    const next = opportunityFitDraftReducer(state, {
+      type: 'set_review',
+      review: {
+        ...review,
+        triage: {
+          ...review.triage,
+          gaps: [{
+            id: 'gap-1',
+            requirement: 'Build things.',
+            kind: 'required',
+            candidate_status: 'unknown',
+            evidence_refs: [{ source: 'jd', path: '/text', excerpt: 'Build things.' }],
+          }],
+        },
+      },
+    });
+
+    expect(next.review).not.toBeNull();
+  });
+
+  it('checks resume excerpts against content_json when the frozen response includes it', () => {
+    const source = {
+      ...review.source,
+      resume: {
+        ...review.source.resume,
+        content_json: { experience: [{ highlights: ['Strong delivery record.'] }] },
+      },
+    } as OpportunityFitReview['source'] & { resume: OpportunityFitReview['source']['resume'] & { content_json: unknown } };
+    const state = createInitialOpportunityFitDraft(7, 'draft-1');
+    const valid = opportunityFitDraftReducer(state, {
+      type: 'set_review',
+      review: { ...review, source },
+    } as never);
+    const invalid = opportunityFitDraftReducer(state, {
+      type: 'set_review',
+      review: {
+        ...review,
+        source,
+        triage: {
+          ...review.triage,
+          fit_signals: [{
+            ...review.triage.fit_signals[0],
+            evidence_refs: [{ source: 'resume', path: '/experience/0/highlights/0', excerpt: 'Invented' }],
+          }],
+        },
+      },
+    } as never);
+
+    expect(valid.review).not.toBeNull();
+    expect(invalid).toBe(state);
+  });
+
+  it('retains the failure disposition on the draft state', () => {
+    const state = createInitialOpportunityFitDraft(7, 'draft-1');
+    const failed = opportunityFitDraftReducer(
+      opportunityFitDraftReducer(state, { type: 'set_attempt_key', key: 'attempt-1' }),
+      { type: 'set_error', error: 'unknown', disposition: 'unknown' },
+    );
+
+    expect(failed.triageFailureDisposition).toBe('unknown');
+    expect(failed.triageAttemptKey).toBe('attempt-1');
+  });
+
+  it('does not mutate the original draft when normalizing callback input', () => {
+    const state = createInitialOpportunityFitDraft(7, 'draft-1');
+    const normalized = {
+      ...state,
+      jdText: state.jdText.trim(),
+      assertionsText: normalizeOpportunityFitAssertions('  fact  \n').join('\n'),
+    };
+
+    expect(state.assertionsText).toBe('');
+    expect(normalized.assertionsText).toBe('fact');
   });
 
   it('accepts a complete deep review result', () => {

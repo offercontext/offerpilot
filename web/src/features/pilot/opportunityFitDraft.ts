@@ -20,6 +20,7 @@ export interface OpportunityFitDraftState {
   review: OpportunityFitReview | null;
   actionError: string | null;
   triageAttemptKey: string | null;
+  triageFailureDisposition: OpportunityFitDraftErrorDisposition | null;
 }
 
 export type OpportunityFitDraftErrorDisposition = 'unknown' | 'definite_no_write';
@@ -89,6 +90,7 @@ export function createInitialOpportunityFitDraft(
     review: null,
     actionError: null,
     triageAttemptKey: null,
+    triageFailureDisposition: null,
   };
 }
 
@@ -104,23 +106,97 @@ function isOpportunityFitRecommendation(value: unknown): value is OpportunityFit
   return value === 'advance' || value === 'hold' || value === 'decline';
 }
 
-function isOpportunityFitEvidenceRefs(value: unknown, requireNonEmpty = false): boolean {
-  return Array.isArray(value)
-    && (!requireNonEmpty || value.length > 0)
-    && value.every((item) => (
-    isRecord(item)
-    && (item.source === 'jd' || item.source === 'resume' || item.source === 'user_assertion')
-    && typeof item.path === 'string'
-    && item.path.trim().length > 0
-    && typeof item.excerpt === 'string'
-    && item.excerpt.trim().length > 0
-  ));
+type EvidenceSource = 'jd' | 'resume' | 'user_assertion';
+
+function isCanonicalPathSegment(segment: string): boolean {
+  return segment.length > 0
+    && segment !== '-'
+    && (!/^\d+$/.test(segment) || segment === '0' || !segment.startsWith('0'));
 }
 
-function isOpportunityFitSummary(value: unknown): boolean {
+function getResumeStringAtPath(content: unknown, path: string): string | undefined {
+  let current = content;
+  for (const segment of path.slice(1).split('/')) {
+    if (!isCanonicalPathSegment(segment)) return undefined;
+    if (Array.isArray(current) && /^\d+$/.test(segment)) {
+      const index = Number(segment);
+      if (index >= current.length) return undefined;
+      current = current[index];
+    } else if (isRecord(current) && Object.prototype.hasOwnProperty.call(current, segment)) {
+      current = current[segment];
+    } else {
+      return undefined;
+    }
+  }
+  return typeof current === 'string' ? current : undefined;
+}
+
+function isValidResumeEvidence(
+  ref: Record<string, unknown>,
+  source: Record<string, unknown>,
+): boolean {
+  const path = ref.path;
+  if (typeof path !== 'string' || !path.startsWith('/') || path.startsWith('/content_json')) return false;
+  const segments = path.slice(1).split('/');
+  if (segments.some((segment) => !isCanonicalPathSegment(segment))) return false;
+
+  const resume = source.resume;
+  if (!isRecord(resume)) return false;
+  const content = resume.content_json;
+  if (content !== undefined) {
+    return getResumeStringAtPath(content, path) === ref.excerpt;
+  }
+  return typeof ref.excerpt === 'string' && ref.excerpt.trim().length > 0;
+}
+
+function isValidEvidenceRef(
+  value: unknown,
+  source: Record<string, unknown>,
+  allowJd: boolean,
+): value is { source: EvidenceSource; path: string; excerpt: string } {
+  if (!isRecord(value)
+    || (value.source !== 'jd' && value.source !== 'resume' && value.source !== 'user_assertion')
+    || typeof value.path !== 'string'
+    || typeof value.excerpt !== 'string'
+    || !value.excerpt.trim()) {
+    return false;
+  }
+
+  if (value.source === 'jd') {
+    return allowJd
+      && value.path === '/text'
+      && isRecord(source.jd)
+      && value.excerpt === source.jd.text;
+  }
+  if (value.source === 'resume') return isValidResumeEvidence(value, source);
+
+  if (!/^\/user_assertions\/(0|[1-9]\d*)\/text$/.test(value.path)) return false;
+  const index = Number(value.path.split('/')[2]);
+  const assertions = source.candidate_assertions;
+  return Array.isArray(assertions)
+    && isRecord(assertions[index])
+    && value.excerpt === assertions[index].text;
+}
+
+export function isValidOpportunityFitEvidenceRefs(
+  value: unknown,
+  source: Record<string, unknown>,
+  options: { allowJd: boolean; requireNonEmpty?: boolean },
+): boolean {
+  return Array.isArray(value)
+    && (!options.requireNonEmpty || value.length > 0)
+    && value.every((item) => isValidEvidenceRef(item, source, options.allowJd));
+}
+
+function hasEvidenceSource(value: unknown, source: EvidenceSource): boolean {
+  return Array.isArray(value)
+    && value.some((item) => isRecord(item) && item.source === source);
+}
+
+function isOpportunityFitSummary(value: unknown, source: Record<string, unknown>): boolean {
   return isRecord(value)
     && typeof value.text === 'string'
-    && isOpportunityFitEvidenceRefs(value.evidence_refs);
+    && isValidOpportunityFitEvidenceRefs(value.evidence_refs, source, { allowJd: true, requireNonEmpty: true });
 }
 
 function isOpportunityFitConstraintStatus(value: unknown): boolean {
@@ -131,13 +207,16 @@ function isOpportunityFitGapKind(value: unknown): boolean {
   return value === 'required' || value === 'preferred';
 }
 
-function isValidOpportunityFitTriage(value: unknown): value is OpportunityFitReview['triage'] {
+function isValidOpportunityFitTriage(
+  value: unknown,
+  source: Record<string, unknown>,
+): value is OpportunityFitReview['triage'] {
   if (!isRecord(value)) {
     return false;
   }
 
   return (
-    isOpportunityFitSummary(value.summary)
+    isOpportunityFitSummary(value.summary, source)
     && isOpportunityFitRecommendation(value.recommendation)
     && Array.isArray(value.hard_constraints)
     && value.hard_constraints.every((item) => (
@@ -146,14 +225,23 @@ function isValidOpportunityFitTriage(value: unknown): value is OpportunityFitRev
       && typeof item.requirement === 'string'
       && isOpportunityFitConstraintStatus(item.status)
       && typeof item.explanation === 'string'
-      && isOpportunityFitEvidenceRefs(item.evidence_refs)
+      && (item.status === 'unknown'
+        ? isValidOpportunityFitEvidenceRefs(item.evidence_refs, source, { allowJd: true })
+        : isValidOpportunityFitEvidenceRefs(item.evidence_refs, source, {
+          allowJd: true,
+          requireNonEmpty: true,
+        })
+          && hasEvidenceSource(item.evidence_refs, 'jd')
+          && (hasEvidenceSource(item.evidence_refs, 'resume')
+            || hasEvidenceSource(item.evidence_refs, 'user_assertion')))
     ))
     && Array.isArray(value.fit_signals)
+    && value.fit_signals.length > 0
     && value.fit_signals.every((item) => (
       isRecord(item)
       && typeof item.id === 'string'
       && typeof item.statement === 'string'
-      && isOpportunityFitEvidenceRefs(item.evidence_refs)
+      && isValidOpportunityFitEvidenceRefs(item.evidence_refs, source, { allowJd: false, requireNonEmpty: true })
     ))
     && Array.isArray(value.gaps)
     && value.gaps.every((item) => (
@@ -162,12 +250,23 @@ function isValidOpportunityFitTriage(value: unknown): value is OpportunityFitRev
       && typeof item.requirement === 'string'
       && isOpportunityFitGapKind(item.kind)
       && isOpportunityFitConstraintStatus(item.candidate_status)
-      && isOpportunityFitEvidenceRefs(item.evidence_refs)
+      && (item.candidate_status === 'unknown'
+        ? isValidOpportunityFitEvidenceRefs(item.evidence_refs, source, { allowJd: true })
+        : isValidOpportunityFitEvidenceRefs(item.evidence_refs, source, {
+          allowJd: true,
+          requireNonEmpty: true,
+        })
+          && hasEvidenceSource(item.evidence_refs, 'jd')
+          && (hasEvidenceSource(item.evidence_refs, 'resume')
+            || hasEvidenceSource(item.evidence_refs, 'user_assertion')))
     ))
     && isRecord(value.deadline)
     && (value.deadline.status === 'stated' || value.deadline.status === 'not_stated')
     && typeof value.deadline.text === 'string'
-    && isOpportunityFitEvidenceRefs(value.deadline.evidence_refs)
+    && (value.deadline.status === 'not_stated'
+      ? value.deadline.text === '' && isValidOpportunityFitEvidenceRefs(value.deadline.evidence_refs, source, { allowJd: true })
+      : Boolean(value.deadline.text.trim())
+        && isValidOpportunityFitEvidenceRefs(value.deadline.evidence_refs, source, { allowJd: true, requireNonEmpty: true }))
     && Array.isArray(value.next_questions)
     && value.next_questions.every((item) => typeof item === 'string')
   );
@@ -175,6 +274,7 @@ function isValidOpportunityFitTriage(value: unknown): value is OpportunityFitRev
 
 function isValidOpportunityFitDeepReview(
   value: unknown,
+  source: Record<string, unknown>,
 ): value is NonNullable<OpportunityFitReview['deep_review']> {
   if (!isRecord(value)) {
     return false;
@@ -186,21 +286,21 @@ function isValidOpportunityFitDeepReview(
       isRecord(item)
       && typeof item.id === 'string'
       && typeof item.statement === 'string'
-      && isOpportunityFitEvidenceRefs(item.evidence_refs)
+      && isValidOpportunityFitEvidenceRefs(item.evidence_refs, source, { allowJd: false, requireNonEmpty: true })
     ))
     && Array.isArray(value.gaps_to_address)
     && value.gaps_to_address.every((item) => (
       isRecord(item)
       && typeof item.id === 'string'
       && typeof item.statement === 'string'
-      && isOpportunityFitEvidenceRefs(item.evidence_refs, true)
+      && isValidOpportunityFitEvidenceRefs(item.evidence_refs, source, { allowJd: true, requireNonEmpty: true })
     ))
     && Array.isArray(value.questions_to_clarify)
     && value.questions_to_clarify.every((item) => (
       isRecord(item)
       && typeof item.id === 'string'
       && typeof item.statement === 'string'
-      && isOpportunityFitEvidenceRefs(item.evidence_refs)
+      && isValidOpportunityFitEvidenceRefs(item.evidence_refs, source, { allowJd: true })
     ))
     && (value.recommended_path === 'prepare_materials'
       || value.recommended_path === 'clarify_first'
@@ -225,7 +325,7 @@ export function isValidOpportunityFitReview(value: unknown): value is Opportunit
   const source = value.source;
   const triage = value.triage;
   const hasValidDeepReview = value.deep_review === null
-    || isValidOpportunityFitDeepReview(value.deep_review);
+    || (isRecord(source) && isValidOpportunityFitDeepReview(value.deep_review, source));
   return (
     typeof value.id === 'number'
     && Number.isFinite(value.id)
@@ -234,8 +334,8 @@ export function isValidOpportunityFitReview(value: unknown): value is Opportunit
     && (value.resume_id === null || (typeof value.resume_id === 'number' && Number.isFinite(value.resume_id)))
     && (value.status === 'triage_complete' || value.status === 'deep_reviewed')
     && isOpportunityFitRecommendation(value.recommendation)
-    && isOpportunityFitSummary(value.summary)
     && isRecord(source)
+    && isOpportunityFitSummary(value.summary, source)
     && isRecord(source.application)
     && typeof source.application.id === 'number'
     && Number.isFinite(source.application.id)
@@ -269,7 +369,7 @@ export function isValidOpportunityFitReview(value: unknown): value is Opportunit
       && typeof item.text === 'string'
       && item.text.trim().length > 0
     ))
-    && isValidOpportunityFitTriage(triage)
+    && isValidOpportunityFitTriage(triage, source)
     && hasValidDeepReview
     && (value.status === 'triage_complete'
       ? value.deep_review === null
@@ -293,6 +393,9 @@ function isValidOpportunityFitDraftState(value: unknown): value is OpportunityFi
     && (value.review === null || isRecord(value.review))
     && (value.actionError === null || typeof value.actionError === 'string')
     && (value.triageAttemptKey === null || typeof value.triageAttemptKey === 'string')
+    && (value.triageFailureDisposition === null
+      || value.triageFailureDisposition === 'unknown'
+      || value.triageFailureDisposition === 'definite_no_write')
   );
 }
 
@@ -377,7 +480,13 @@ function updateDraftInput(
   field: OpportunityFitDraftInputField,
   value: OpportunityFitDraftState[OpportunityFitDraftInputField],
 ): OpportunityFitDraftState {
-  return { ...state, [field]: value, triageAttemptKey: null };
+  return {
+    ...state,
+    [field]: value,
+    actionError: null,
+    triageAttemptKey: null,
+    triageFailureDisposition: null,
+  };
 }
 
 export function opportunityFitDraftReducer(
@@ -424,6 +533,7 @@ export function opportunityFitDraftReducer(
         review: action.review,
         actionError: null,
         triageAttemptKey: null,
+        triageFailureDisposition: null,
       };
     case 'set_error':
       if (
@@ -435,6 +545,7 @@ export function opportunityFitDraftReducer(
       return {
         ...state,
         actionError: action.error,
+        triageFailureDisposition: action.disposition,
         triageAttemptKey: action.disposition === 'definite_no_write'
           ? null
           : state.triageAttemptKey,

@@ -147,7 +147,8 @@ export default function PilotOpportunityFitCard({
   const review = isRenderableReview(draft.review, draft.applicationId) ? draft.review : null;
   const isTriagePhase = draft.phase === 'collect_input' || draft.phase === 'confirm_triage' || draft.phase === 'triage_loading';
   const canStartTriage = Boolean(draft.resumeID && draft.jdText.trim() && !assertions.error && !isTriageLoading && draft.phase !== 'triage_loading');
-  const isUnknownFailure = triageFailureDisposition === 'unknown' && Boolean(draft.actionError);
+  const failureDisposition = draft.triageFailureDisposition ?? triageFailureDisposition ?? null;
+  const isUnknownFailure = failureDisposition === 'unknown' && Boolean(draft.actionError);
   const isDeepReady = Boolean(review?.deep_review) && draft.phase === 'deep_review_ready';
 
   const submitTriage = () => {

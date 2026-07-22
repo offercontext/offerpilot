@@ -60,6 +60,48 @@ const deepReview = {
 let root: Root | undefined;
 let container: HTMLDivElement | undefined;
 
+const validReview: OpportunityFitReview = {
+  ...review,
+  summary: {
+    text: review.summary.text,
+    evidence_refs: [{ source: 'jd', path: '/text', excerpt: review.source.jd.text }],
+  },
+  triage: {
+    ...review.triage,
+    summary: {
+      text: review.triage.summary.text,
+      evidence_refs: [{ source: 'jd', path: '/text', excerpt: review.source.jd.text }],
+    },
+    hard_constraints: [{
+      ...review.triage.hard_constraints[0],
+      evidence_refs: [
+        { source: 'jd', path: '/text', excerpt: review.source.jd.text },
+        { source: 'resume', path: '/skills/0', excerpt: 'TypeScript' },
+      ],
+    }],
+    fit_signals: [{
+      ...review.triage.fit_signals[0],
+      evidence_refs: [{ source: 'resume', path: '/experience/0', excerpt: '相关经历' }],
+    }],
+    gaps: [{
+      ...review.triage.gaps[0],
+      evidence_refs: [{ source: 'jd', path: '/text', excerpt: review.source.jd.text }],
+    }],
+    deadline: {
+      ...review.triage.deadline,
+      evidence_refs: [{ source: 'jd', path: '/text', excerpt: review.source.jd.text }],
+    },
+  },
+};
+
+const validDeepReview: OpportunityFitReview = {
+  ...validReview,
+  status: 'deep_reviewed',
+  deep_reviewed_at: '2026-07-22T00:01:00Z',
+  deep_review_sha256: 'deep',
+  deep_review: deepReview.deep_review,
+};
+
 function Harness({ initial = createInitialOpportunityFitDraft(7, 'pilot:7'), deepLoading = false }: { initial?: OpportunityFitDraftState; deepLoading?: boolean }) {
   const [draft, dispatch] = useState(initial);
   const reduce = (action: OpportunityFitDraftAction) => dispatch((current) => opportunityFitDraftReducer(current, action));
@@ -108,8 +150,17 @@ async function render(initial?: OpportunityFitDraftState) {
   return container!;
 }
 
+function getByRole(view: HTMLElement, role: string, name: string): HTMLElement {
+  const selector = role === 'button' ? 'button,[role="button"]' : `[role="${role}"]`;
+  const found = [...view.querySelectorAll<HTMLElement>(selector)].find((item) => (
+    (item.getAttribute('aria-label') ?? item.textContent?.trim() ?? '') === name
+  ));
+  if (!found) throw new Error(`missing ${role} ${name}`);
+  return found;
+}
+
 function button(view: HTMLElement, name: string): HTMLButtonElement {
-  const found = [...view.querySelectorAll('button')].find((item) => item.textContent?.trim() === name);
+  const found = getByRole(view, 'button', name);
   if (!(found instanceof HTMLButtonElement)) throw new Error(`missing button ${name}`);
   return found;
 }
@@ -175,15 +226,34 @@ describe('PilotOpportunityFitCard', () => {
     expect(triage).toHaveBeenCalledWith(expect.objectContaining({ resumeID: 11, jdText: 'JD', assertionsText: 'fact one\nfact two' }), null);
   });
 
+  it('submits normalized input without mutating the original draft', async () => {
+    const initial = createInitialOpportunityFitDraft(7, 'pilot:7');
+    const view = await render(initial);
+    await change(view.querySelector('select')!, '11');
+    await change(labeled(view, '粘贴 JD'), '  JD  ');
+    await change(labeled(view, '补充断言'), '  fact  \n');
+    await click(view, '开始 Triage');
+    const dialog = view.querySelector('[role="dialog"]');
+    const confirmButton = dialog?.querySelectorAll('button')[1];
+    await act(async () => (confirmButton as HTMLButtonElement).click());
+
+    expect(triage).toHaveBeenCalledWith(
+      expect.objectContaining({ jdText: 'JD', assertionsText: 'fact' }),
+      null,
+    );
+    expect(initial.jdText).toBe('');
+    expect(initial.assertionsText).toBe('');
+  });
+
   it('renders evidence-backed triage content without translating dynamic text', async () => {
-    const initial = { ...createInitialOpportunityFitDraft(7, 'pilot:7'), review, phase: 'triage_ready' as const };
+    const initial = { ...createInitialOpportunityFitDraft(7, 'pilot:7'), review: validReview, phase: 'triage_ready' as const };
     const view = await render(initial);
     expect(view.textContent).toContain('岗位摘要');
     expect(view.textContent).toContain('简历');
-    expect(view.textContent).toContain('JD 证据');
+    expect(view.textContent).toContain('用户粘贴 JD');
     expect(view.textContent).toContain('原始 JD 文本');
     expect(view.textContent).toContain('/text');
-    expect(view.textContent).toContain('JD 证据');
+    expect(view.textContent).toContain('岗位描述');
     expect(view.textContent).toContain('岗位约束');
   });
 
@@ -197,7 +267,7 @@ describe('PilotOpportunityFitCard', () => {
   });
 
   it('requires a second confirmation before deep review', async () => {
-    const initial = { ...createInitialOpportunityFitDraft(7, 'pilot:7'), review, phase: 'triage_ready' as const };
+    const initial = { ...createInitialOpportunityFitDraft(7, 'pilot:7'), review: validReview, phase: 'triage_ready' as const };
     const view = await render(initial);
     await click(view, '开始 Deep Fit Review');
     expect(view.textContent).toContain('确认开始深入分析');
@@ -209,7 +279,7 @@ describe('PilotOpportunityFitCard', () => {
   });
 
   it('renders deep review and uses the primary prepare button', async () => {
-    const initial = { ...createInitialOpportunityFitDraft(7, 'pilot:7'), review: deepReview, phase: 'deep_review_ready' as const };
+    const initial = { ...createInitialOpportunityFitDraft(7, 'pilot:7'), review: validDeepReview, phase: 'deep_review_ready' as const };
     const view = await render(initial);
     expect(view.textContent).toContain('优势内容');
     expect(view.textContent).toContain('建议准备材料');
@@ -219,7 +289,7 @@ describe('PilotOpportunityFitCard', () => {
   });
 
   it('requires explicit confirmation when deviating from the recommendation', async () => {
-    const divergent = { ...deepReview, deep_review: { ...deepReview.deep_review!, recommended_path: 'clarify_first' as const } };
+    const divergent = { ...validDeepReview, deep_review: { ...validDeepReview.deep_review!, recommended_path: 'clarify_first' as const } };
     const initial = { ...createInitialOpportunityFitDraft(7, 'pilot:7'), review: divergent, phase: 'deep_review_ready' as const };
     const view = await render(initial);
     await click(view, '仍要准备材料');
@@ -240,9 +310,9 @@ describe('PilotOpportunityFitCard', () => {
 
   it('does not render a deep review with empty or disallowed gap evidence', async () => {
     const malformed = {
-      ...deepReview,
+      ...validDeepReview,
       deep_review: {
-        ...deepReview.deep_review!,
+        ...validDeepReview.deep_review!,
         gaps_to_address: [{ ...deepReview.deep_review!.gaps_to_address[0], evidence_refs: [] }],
       },
     } as OpportunityFitReview;
@@ -251,9 +321,9 @@ describe('PilotOpportunityFitCard', () => {
     expect(view.textContent).not.toContain('待补足内容');
 
     const disallowed = {
-      ...deepReview,
+      ...validDeepReview,
       deep_review: {
-        ...deepReview.deep_review!,
+        ...validDeepReview.deep_review!,
         gaps_to_address: [{ ...deepReview.deep_review!.gaps_to_address[0], evidence_refs: [{ source: 'evidence_bundle', path: '/text', excerpt: '岗位证据' }] }],
       },
     } as unknown as OpportunityFitReview;
@@ -270,7 +340,7 @@ describe('PilotOpportunityFitCard', () => {
   });
 
   it('marks deep review loading with a status role', async () => {
-    const initial = { ...createInitialOpportunityFitDraft(7, 'pilot:7'), review, phase: 'deep_review_loading' as const };
+    const initial = { ...createInitialOpportunityFitDraft(7, 'pilot:7'), review: validReview, phase: 'deep_review_loading' as const };
     await act(async () => root?.render(<Harness initial={initial} deepLoading />));
     const view = container!;
     expect(view.querySelector('[role="status"]')?.textContent).toContain('Deep Review');
@@ -278,9 +348,9 @@ describe('PilotOpportunityFitCard', () => {
 
   it('safely renders a malformed nested deep review as empty state', async () => {
     const malformed = {
-      ...deepReview,
+      ...validDeepReview,
       deep_review: {
-        ...deepReview.deep_review!,
+        ...validDeepReview.deep_review!,
         gaps_to_address: [{ ...deepReview.deep_review!.gaps_to_address[0], evidence_refs: [{}] }],
       },
     } as unknown as OpportunityFitReview;
@@ -290,7 +360,7 @@ describe('PilotOpportunityFitCard', () => {
   });
 
   it('never displays raw service error text and hands off only frozen source data', async () => {
-    const initial = { ...createInitialOpportunityFitDraft(7, 'pilot:7'), review: deepReview, phase: 'deep_review_ready' as const, actionError: 'AxiosError: secret backend detail' };
+    const initial = { ...createInitialOpportunityFitDraft(7, 'pilot:7'), review: validDeepReview, phase: 'deep_review_ready' as const, actionError: 'AxiosError: secret backend detail' };
     const view = await render(initial);
     expect(view.textContent).not.toContain('secret backend detail');
     await click(view, '去准备材料');
