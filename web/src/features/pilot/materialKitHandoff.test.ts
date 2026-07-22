@@ -3,7 +3,6 @@ import { createMaterialKitHandoffStore } from './materialKitHandoff';
 
 const handoff = {
   applicationId: 7,
-  reviewId: 9,
   resumeId: 11,
   jdText: 'Frozen JD',
   resumeEvidenceProof: {
@@ -20,6 +19,12 @@ describe('materialKitHandoffStore', () => {
 
     const first = store.consumeMaterialKitHandoff(7);
     expect(first).toEqual(handoff);
+    expect(Object.keys(first ?? {}).sort()).toEqual([
+      'applicationId',
+      'jdText',
+      'resumeEvidenceProof',
+      'resumeId',
+    ]);
     expect(first).not.toBe(handoff);
     expect(first?.resumeEvidenceProof.contentJson).not.toBe(handoff.resumeEvidenceProof.contentJson);
     expect(Object.isFrozen(first)).toBe(true);

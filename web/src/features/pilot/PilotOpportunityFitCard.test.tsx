@@ -308,7 +308,6 @@ describe('PilotOpportunityFitCard', () => {
     await click(view, '去准备材料');
     expect(prepare).toHaveBeenCalledWith(expect.objectContaining({
       applicationId: 7,
-      reviewId: 17,
       resumeId: 11,
       jdText: '原始 JD 文本',
       resumeEvidenceProof: defaultResumeEvidenceProof,

@@ -137,7 +137,6 @@ describe('ApplicationDetail opportunity fit handoff', () => {
   it('consumes a matching AppShell handoff once and uses frozen values', async () => {
     writeMaterialKitHandoff({
       applicationId: 7,
-      reviewId: 17,
       resumeId: 12,
       jdText: 'Frozen Pilot JD',
       resumeEvidenceProof: { resumeId: 12, sha256: 'hash', contentJson: { raw_text: 'resume' } },

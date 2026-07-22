@@ -2,7 +2,6 @@ import type { OpportunityFitResumeEvidenceProof } from './opportunityFitDraft';
 
 export interface MaterialKitHandoff {
   readonly applicationId: number;
-  readonly reviewId?: number;
   readonly resumeId: number;
   readonly jdText: string;
   readonly resumeEvidenceProof: OpportunityFitResumeEvidenceProof;
@@ -21,7 +20,6 @@ function cloneAndFreeze<T>(value: T): T {
 function freezeHandoff(value: MaterialKitHandoff): MaterialKitHandoff {
   const copy: MaterialKitHandoff = {
     applicationId: value.applicationId,
-    ...(value.reviewId === undefined ? {} : { reviewId: value.reviewId }),
     resumeId: value.resumeId,
     jdText: value.jdText,
     resumeEvidenceProof: {
