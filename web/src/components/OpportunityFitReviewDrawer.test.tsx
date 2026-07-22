@@ -238,18 +238,21 @@ describe('OpportunityFitReviewDrawer', () => {
       recommendation: 'advance',
       source: {
         resume: { id: 11, title: 'Frozen Resume', sha256: 'resume' },
-        jd: { source_label: 'Frozen JD', sha256: 'jd', text: 'Frozen JD text' },
+        jd: { source_label: 'Frozen JD text', sha256: 'jd', text: 'Frozen JD text' },
         candidate_assertions: [],
       },
       triage: {
-        summary: { text: 'Dynamic AI summary', evidence_refs: [] },
+        summary: {
+          text: 'Dynamic AI summary',
+          evidence_refs: [{ source: 'jd', path: 'requirements.location', excerpt: 'Dynamic evidence excerpt' }],
+        },
         recommendation: 'advance',
         hard_constraints: [
           { id: 'constraint-a', requirement: 'Dynamic requirement A', status: 'met', explanation: 'Dynamic explanation A', evidence_refs: [] },
           { id: 'constraint-b', requirement: 'Dynamic requirement B', status: 'unmet', explanation: 'Dynamic explanation B', evidence_refs: [] },
           { id: 'constraint-c', requirement: 'Dynamic requirement C', status: 'unknown', explanation: 'Dynamic explanation C', evidence_refs: [] },
         ],
-        fit_signals: [],
+        fit_signals: [{ id: 'signal-a', statement: 'Dynamic AI statement', evidence_refs: [] }],
         gaps: [
           { id: 'gap-a', requirement: 'Dynamic gap A', kind: 'required', candidate_status: 'unmet', evidence_refs: [] },
           { id: 'gap-b', requirement: 'Dynamic gap B', kind: 'preferred', candidate_status: 'met', evidence_refs: [] },
@@ -262,7 +265,7 @@ describe('OpportunityFitReviewDrawer', () => {
         gaps_to_address: [],
         questions_to_clarify: [],
         recommended_path: 'prepare_materials',
-        next_actions: [],
+        next_actions: [{ id: 'action-a', label: 'Dynamic next action label', kind: 'open_material_kit' }],
       },
     });
     const view = render();
@@ -273,6 +276,13 @@ describe('OpportunityFitReviewDrawer', () => {
     });
 
     const renderedText = view.textContent || '';
+    expect(renderedText).toContain('Frozen Resume');
+    expect(renderedText).toContain('Frozen JD text');
+    expect(renderedText).toContain('Dynamic AI summary');
+    expect(renderedText).toContain('Dynamic AI statement');
+    expect(renderedText).toContain('Dynamic explanation A');
+    expect(renderedText).toContain('Dynamic evidence excerpt');
+    expect(renderedText).toContain('Dynamic next action label');
     expect(renderedText).toContain('建议推进');
     expect(renderedText).toContain('已满足');
     expect(renderedText).toContain('未满足');
