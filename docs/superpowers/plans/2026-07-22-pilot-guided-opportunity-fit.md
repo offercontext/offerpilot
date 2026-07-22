@@ -371,7 +371,7 @@ Set-Location ..
 
 - [ ] **Step 1: 先写 smoke 与 harness RED 回归**
 
-保留现有 run_http_smoke(real_ai=True) 的临时数据目录复制配置行为，新增断言：空数据目录运行结束后无 active Resume、无 master、无 Application Material Kit、无 Material Revision Proposal、无 Opportunity Fit Review；local profile 不使用真实 Provider。API smoke 只校验公共字段，不输出完整 Resume/JD、断言或模型原文。新增 harness 的静态回归测试必须断言它包含 OFFERPILOT_DATA 临时目录、只复制 config.json、启动后创建合成 Application/Resume、等待人工浏览器完成、停止精确服务进程、执行数据库残留断言并删除临时目录；禁止在 harness 中调用默认数据目录的 oc start。
+保留现有 run_http_smoke(real_ai=True) 的临时数据目录复制配置行为，新增断言：空数据目录运行结束后无 active Resume、无 master、无 Application Material Kit、无 Material Revision Proposal、无 Opportunity Fit Review；local profile 不使用真实 Provider。API smoke 只校验公共字段，不输出完整 Resume/JD、断言或模型原文。新增 harness 的静态回归测试必须断言它包含 OFFERPILOT_DATA 临时目录、只复制 config.json、启动后创建合成 Application/Resume、使用 TcpListener 和 Get-NetTCPConnection 校验监听 owner 属于 Get-TreeIds 进程树、等待人工浏览器完成、停止精确服务进程、执行数据库残留断言并删除临时目录；禁止在 harness 中调用默认数据目录的 oc start，也禁止拼接不存在的 /applications/{id} 前端路由。
 
 浏览器 harness 需要记录自己创建的 applicationId 和 resumeId 列表。停服后先调用新的 scoped cleanup helper 删除这些 ID 对应的 MaterialRevisionProposal、ApplicationMaterialKit、OpportunityFitReview、ApplicationEvidenceBundle、Application 和 Resume，再调用 _assert_real_ai_smoke_data_clean(tempData)。cleanup helper 必须只接收 tempData 和显式合成 ID，不能执行“删除所有用户记录”的查询。
 
@@ -409,12 +409,33 @@ $env:OFFERPILOT_DATA = $tempData
 $server = $null
 $applicationId = $null
 $resumeIds = @()
+function Get-TreeIds([int]$processId) {
+  $processId
+  Get-CimInstance Win32_Process | Where-Object ParentProcessId -eq $processId |
+    ForEach-Object { Get-TreeIds ([int]$_.ProcessId) }
+}
 try {
   $server = Start-Process powershell -WindowStyle Hidden -PassThru -ArgumentList @(
     '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command',
     "Set-Location '$repo'; `$env:OFFERPILOT_DATA = '$tempData'; uv run oc start --port $port"
   )
   $baseUrl = "http://127.0.0.1:$port"
+  $ownerVerified = $false
+  for ($attempt = 0; $attempt -lt 40; $attempt++) {
+    $treeIds = @(Get-TreeIds ([int]$server.Id))
+    $owners = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
+      Select-Object -ExpandProperty OwningProcess | ForEach-Object { [int]$_ } | Sort-Object -Unique)
+    $foreignOwners = @($owners | Where-Object { $_ -notin $treeIds })
+    $ownedListeners = @($owners | Where-Object { $_ -in $treeIds })
+    if ($foreignOwners.Count -gt 0) { throw "port $port is owned by a process outside the harness tree" }
+    if ($owners.Count -gt 0 -and $ownedListeners.Count -gt 0) {
+      $ownerVerified = $true
+      break
+    }
+    if ($server.HasExited) { throw "isolated OfferPilot exited before binding port $port" }
+    Start-Sleep -Milliseconds 500
+  }
+  if (-not $ownerVerified) { throw "harness could not verify the isolated listener owner on port $port" }
   $ready = $false
   for ($attempt = 0; $attempt -lt 40; $attempt++) {
     try {
@@ -436,8 +457,8 @@ try {
     content_json = @{ raw_text = 'Built API services and led migration.'; skills = @('Python') }
   } | ConvertTo-Json -Depth 5)
   $resumeIds += [int]$resume.id
-  # Open $baseUrl/applications/$applicationId in the in-app browser and pause while the reviewer completes the flow.
-  Write-Host "Pilot browser harness: $baseUrl/applications/$applicationId"
+  # Open the SPA root in the in-app browser; the reviewer locates the synthetic row in the managed application view.
+  Write-Host "Pilot browser harness: $baseUrl"
   Read-Host '完成 Pilot 浏览器闭环后按 Enter 继续清理'
 }
 finally {
@@ -461,7 +482,7 @@ finally {
 }
 ```
 
-脚本必须在启动前通过 TcpListener 分配确认空闲的 loopback 端口，并把同一 port 用于 oc start、健康检查、API 创建和浏览器地址；不得使用固定 18766，也不得连到启动前已存在的服务。脚本必须在浏览器暂停前完成健康检查和具体 API 创建；浏览器只访问该服务的本地地址与已配置 Provider。停服后先按显式 ID 清理，再执行残留断言；清理或断言失败也必须在 finally 中删除 tempData 并重新抛出安全失败类别，且绝不触碰 sourceData。
+脚本必须在启动前通过 TcpListener 分配确认空闲的 loopback 端口，并把同一 port 用于 oc start、健康检查、API 创建和浏览器地址；不得使用固定 18766，也不得连到启动前已存在的服务。启动后、健康检查前必须轮询该端口的监听 owner，确认所有 owner PID 都属于 server 的递归进程树；如果监听 owner 不属于该进程树，立即停止本次进程树、抛出错误并禁止打开浏览器。仅健康检查返回 ok 不足以通过验证。脚本必须在浏览器暂停前完成健康检查和具体 API 创建；浏览器只访问该服务的本地地址与已配置 Provider。停服后先按显式 ID 清理，再执行残留断言；清理或断言失败也必须在 finally 中删除 tempData 并重新抛出安全失败类别，且绝不触碰 sourceData。
 
 - [ ] **Step 5: 运行连续隔离浏览器闭环**
 
@@ -473,7 +494,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\pilot-real-ai-brow
 uv run oc verify --profile real-ai --static-dir web/dist
 ```
 
-在 harness 等待期间，内置浏览器从同一临时目录中的 ApplicationDetail 的“在 Pilot 中评估”进入；完成输入确认、Triage 确认、Deep Review 确认和材料交接。记录 Triage 重试沿用同一 key；材料包只获得冻结 Resume/JD 预填；没有自动 Material Kit/Proposal/Application 状态写入；没有招聘平台请求；真实模型返回空结果时记录为安全空结果，不强行推进。harness 返回成功后，再执行 real-ai API verify 作为独立回归，但不得用它替代这次连续浏览器闭环。
+在 harness 等待期间，内置浏览器先从 baseUrl 进入 AppShell 管理的投递视图，定位“Pilot Browser Smoke · Verification Engineer”，打开该投递详情，再点击“在 Pilot 中评估”；不得通过 URL 拼接详情路由。完成输入确认、Triage 确认、Deep Review 确认和材料交接。记录 Triage 重试沿用同一 key；材料包只获得冻结 Resume/JD 预填；没有自动 Material Kit/Proposal/Application 状态写入；没有招聘平台请求；真实模型返回空结果时记录为安全空结果，不强行推进。harness 返回成功后，再执行 real-ai API verify 作为独立回归，但不得用它替代这次连续浏览器闭环。
 
 ### Task 8: 全量验证、代码审查与交付
 
