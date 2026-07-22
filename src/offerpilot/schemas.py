@@ -264,6 +264,7 @@ class OpportunityFitReviewSummaryOut(BaseModel):
     triage_sha256: str
     deep_review_sha256: str | None
     created_at: datetime
+    deep_reviewed_at: datetime | None
 
 
 class InterviewReviewProposalOut(BaseModel):
@@ -275,7 +276,6 @@ class InterviewReviewProposalOut(BaseModel):
     proposal: dict[str, Any]
     proposal_hash: str
     created_at: datetime | str
-    deep_reviewed_at: datetime | None
 
 
 class OpportunityFitReviewOut(OpportunityFitReviewSummaryOut):

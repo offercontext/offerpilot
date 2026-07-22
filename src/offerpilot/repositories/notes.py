@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, cast
 
 from sqlalchemy import delete, exists, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.sql import Select
 
 from offerpilot.models import Application, ApplicationEvent, InterviewNote
 
@@ -34,7 +35,7 @@ class _Unset:
     pass
 
 
-UNSET = _Unset()
+UNSET: _Unset = _Unset()
 
 
 @dataclass
@@ -100,7 +101,7 @@ class NotesRepository:
 
     def get(self, note_id: int) -> Optional[InterviewNote]:
         with self._session_factory() as session:
-            return session.scalar(self._visible_note_statement(note_id))
+            return cast(Optional[InterviewNote], session.scalar(self._visible_note_statement(note_id)))
 
     def update(self, note_id: int, data: NoteUpdate) -> Optional[InterviewNote]:
         with self._session_factory() as session:
@@ -109,11 +110,11 @@ class NotesRepository:
                 return None
             if data.application_id is not UNSET and data.application_id != note.application_id:
                 raise NoteBindingError(422, "application_id cannot be changed")
-            event_id = (
-                note.application_event_id
-                if data.application_event_id is UNSET
-                else data.application_event_id
-            )
+            event_id: int | None
+            if data.application_event_id is UNSET:
+                event_id = note.application_event_id
+            else:
+                event_id = cast(int | None, data.application_event_id)
             if event_id != note.application_event_id:
                 self._validate_event_binding(session, note.application_id, event_id, note.id)
             note.company = data.company
@@ -137,7 +138,7 @@ class NotesRepository:
 
     def delete(self, note_id: int) -> None:
         with self._session_factory() as session:
-            note = session.scalar(self._visible_note_statement(note_id))
+            note = cast(Optional[InterviewNote], session.scalar(self._visible_note_statement(note_id)))
             if note is not None:
                 session.delete(note)
                 session.commit()
@@ -175,7 +176,7 @@ class NotesRepository:
             return getattr(result, "rowcount", 0) == 1
 
     @staticmethod
-    def _visible_note_statement(note_id: int):
+    def _visible_note_statement(note_id: int) -> Select[tuple[InterviewNote]]:
         return (
             select(InterviewNote)
             .outerjoin(Application, Application.id == InterviewNote.application_id)
@@ -210,10 +211,11 @@ class NotesRepository:
                 422,
                 "application_event_id must reference an interview event for the application",
             )
-        existing = session.scalar(
-            select(InterviewNote.id)
-            .where(InterviewNote.application_event_id == event_id)
-            .where(InterviewNote.id != note_id if note_id is not None else True)
+        existing_statement = select(InterviewNote.id).where(
+            InterviewNote.application_event_id == event_id
         )
+        if note_id is not None:
+            existing_statement = existing_statement.where(InterviewNote.id != note_id)
+        existing = session.scalar(existing_statement)
         if existing is not None:
             raise NoteBindingError(409, "Interview event already has a note")

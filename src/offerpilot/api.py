@@ -1771,8 +1771,8 @@ def create_app(
         dispatched = wakeups.dispatch_due(now, limit=limit)
         return JSONResponse({"dispatched": [wakeup_payload(wakeup) for wakeup in dispatched]})
 
-    @app.get("/api/applications/{app_id}/notes")
-    def list_notes_by_app(app_id: int) -> list[dict[str, Any]]:
+    @app.get("/api/applications/{app_id}/notes", response_model=None)
+    def list_notes_by_app(app_id: int) -> list[dict[str, Any]] | JSONResponse:
         if applications.get(app_id) is None:
             return JSONResponse(status_code=404, content={"error": "Application not found"})
         return [_note_json(note) for note in notes.list(application_id=app_id)]

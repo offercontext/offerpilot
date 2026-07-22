@@ -13,7 +13,7 @@ from offerpilot.repositories.application_events import (
     duration_minutes,
 )
 from offerpilot.repositories.jd import JDAnalysesRepository
-from offerpilot.repositories.notes import NoteCreate, NotesRepository
+from offerpilot.repositories.notes import NoteCreate, NoteUpdate, NotesRepository
 from offerpilot.repositories.offers import OfferCreate, OffersRepository
 from offerpilot.repositories.resumes import ResumesRepository
 from offerpilot.schemas import (
@@ -614,8 +614,9 @@ def _update_note(repo: NotesRepository, args: str) -> str:
         raise ValueError("note not found")
     updated = repo.update(
         note_id,
-        NoteCreate(
+        NoteUpdate(
             application_id=existing.application_id,
+            application_event_id=existing.application_event_id,
             company=_payload_or_existing(payload, "company", existing.company),
             position=_payload_or_existing(payload, "position", existing.position),
             round=_payload_or_existing(payload, "round", existing.round),
