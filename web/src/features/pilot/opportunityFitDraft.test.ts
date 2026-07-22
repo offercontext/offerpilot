@@ -8,6 +8,7 @@ import {
   classifyOpportunityFitFailure,
   createInitialOpportunityFitDraft,
   createOpportunityFitDraftStore,
+  normalizeOpportunityFitAssertions,
   opportunityFitDraftReducer,
   type OpportunityFitDraftStore,
 } from './opportunityFitDraft';
@@ -237,6 +238,77 @@ describe('opportunityFitDraftReducer', () => {
 
     expect(next.review?.deep_review).toBe(deepReview);
     expect(next.phase).toBe('deep_review_ready');
+  });
+
+  it('rejects a review owned by another application without changing draft state', () => {
+    const loading = opportunityFitDraftReducer(
+      opportunityFitDraftReducer(
+        createInitialOpportunityFitDraft(7, 'draft-1'),
+        { type: 'set_phase', phase: 'triage_loading' },
+      ),
+      { type: 'set_attempt_key', key: 'attempt-1' },
+    );
+
+    const next = opportunityFitDraftReducer(loading, {
+      type: 'set_review',
+      review: { ...review, application_id: 8 },
+    });
+
+    expect(next).toBe(loading);
+    expect(next.phase).toBe('triage_loading');
+    expect(next.review).toBeNull();
+    expect(next.triageAttemptKey).toBe('attempt-1');
+  });
+
+  it.each([
+    ['hard constraint', { hard_constraints: [{}] }],
+    ['fit signal', { fit_signals: [{}] }],
+    ['gap', { gaps: [{}] }],
+    ['deadline', { deadline: {} }],
+    ['question', { next_questions: [{}] }],
+    ['invalid evidence ref', { fit_signals: [{ id: 'fit-1', statement: 'Good fit', evidence_refs: [{}] }] }],
+  ] as const)('rejects a malformed triage %s payload', (_label, triagePatch) => {
+    const state = createInitialOpportunityFitDraft(7, 'draft-1');
+    const next = opportunityFitDraftReducer(state, {
+      type: 'set_review',
+      review: { ...review, triage: { ...review.triage, ...triagePatch } },
+    } as never);
+
+    expect(next).toBe(state);
+    expect(next.phase).toBe('collect_input');
+    expect(next.review).toBeNull();
+  });
+
+  it.each([
+    [{ ...review, status: 'triage_complete', deep_review: deepReview }, 'triage_complete with deep review'],
+    [{ ...review, status: 'deep_reviewed', deep_review: null }, 'deep_reviewed without deep review'],
+  ] as const)('rejects inconsistent review status and deep review: %s', (invalidReview, _label) => {
+    const state = createInitialOpportunityFitDraft(7, 'draft-1');
+    const next = opportunityFitDraftReducer(state, {
+      type: 'set_review',
+      review: invalidReview,
+    });
+
+    expect(next).toBe(state);
+    expect(next.phase).toBe('collect_input');
+    expect(next.review).toBeNull();
+  });
+});
+
+describe('normalizeOpportunityFitAssertions', () => {
+  it('trims assertions, removes empty lines, and preserves valid input', () => {
+    expect(normalizeOpportunityFitAssertions('  one  \r\n\n two ')).toEqual(['one', 'two']);
+  });
+
+  it('reports more than ten assertions instead of silently truncating', () => {
+    expect(() => normalizeOpportunityFitAssertions(
+      Array.from({ length: 11 }, (_, index) => `assertion ${index}`).join('\n'),
+    )).toThrowError(expect.objectContaining({ code: 'too_many_assertions' }));
+  });
+
+  it('reports an assertion longer than 500 characters instead of silently truncating', () => {
+    expect(() => normalizeOpportunityFitAssertions('x'.repeat(501)))
+      .toThrowError(expect.objectContaining({ code: 'assertion_too_long', index: 0 }));
   });
 });
 

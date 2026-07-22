@@ -24,6 +24,26 @@ export interface OpportunityFitDraftState {
 
 export type OpportunityFitDraftErrorDisposition = 'unknown' | 'definite_no_write';
 
+export type OpportunityFitAssertionsNormalizationErrorCode =
+  | 'too_many_assertions'
+  | 'assertion_too_long';
+
+export class OpportunityFitAssertionsNormalizationError extends Error {
+  readonly code: OpportunityFitAssertionsNormalizationErrorCode;
+  readonly index?: number;
+
+  constructor(
+    code: OpportunityFitAssertionsNormalizationErrorCode,
+    message: string,
+    index?: number,
+  ) {
+    super(message);
+    this.name = 'OpportunityFitAssertionsNormalizationError';
+    this.code = code;
+    this.index = index;
+  }
+}
+
 export type OpportunityFitDraftAction =
   | { type: 'set_resume'; resumeID?: number }
   | { type: 'set_jd'; jdText: string }
@@ -93,6 +113,62 @@ function isOpportunityFitEvidenceRefs(value: unknown): boolean {
   ));
 }
 
+function isOpportunityFitSummary(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value.text === 'string'
+    && isOpportunityFitEvidenceRefs(value.evidence_refs);
+}
+
+function isOpportunityFitConstraintStatus(value: unknown): boolean {
+  return value === 'met' || value === 'unmet' || value === 'unknown';
+}
+
+function isOpportunityFitGapKind(value: unknown): boolean {
+  return value === 'required' || value === 'preferred';
+}
+
+function isValidOpportunityFitTriage(value: unknown): value is OpportunityFitReview['triage'] {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    isOpportunityFitSummary(value.summary)
+    && isOpportunityFitRecommendation(value.recommendation)
+    && Array.isArray(value.hard_constraints)
+    && value.hard_constraints.every((item) => (
+      isRecord(item)
+      && typeof item.id === 'string'
+      && typeof item.requirement === 'string'
+      && isOpportunityFitConstraintStatus(item.status)
+      && typeof item.explanation === 'string'
+      && isOpportunityFitEvidenceRefs(item.evidence_refs)
+    ))
+    && Array.isArray(value.fit_signals)
+    && value.fit_signals.every((item) => (
+      isRecord(item)
+      && typeof item.id === 'string'
+      && typeof item.statement === 'string'
+      && isOpportunityFitEvidenceRefs(item.evidence_refs)
+    ))
+    && Array.isArray(value.gaps)
+    && value.gaps.every((item) => (
+      isRecord(item)
+      && typeof item.id === 'string'
+      && typeof item.requirement === 'string'
+      && isOpportunityFitGapKind(item.kind)
+      && isOpportunityFitConstraintStatus(item.candidate_status)
+      && isOpportunityFitEvidenceRefs(item.evidence_refs)
+    ))
+    && isRecord(value.deadline)
+    && (value.deadline.status === 'stated' || value.deadline.status === 'not_stated')
+    && typeof value.deadline.text === 'string'
+    && isOpportunityFitEvidenceRefs(value.deadline.evidence_refs)
+    && Array.isArray(value.next_questions)
+    && value.next_questions.every((item) => typeof item === 'string')
+  );
+}
+
 function isValidOpportunityFitDeepReview(
   value: unknown,
 ): value is NonNullable<OpportunityFitReview['deep_review']> {
@@ -144,6 +220,8 @@ function isValidOpportunityFitReview(value: unknown): value is OpportunityFitRev
 
   const source = value.source;
   const triage = value.triage;
+  const hasValidDeepReview = value.deep_review === null
+    || isValidOpportunityFitDeepReview(value.deep_review);
   return (
     typeof value.id === 'number'
     && Number.isFinite(value.id)
@@ -152,21 +230,17 @@ function isValidOpportunityFitReview(value: unknown): value is OpportunityFitRev
     && (value.resume_id === null || (typeof value.resume_id === 'number' && Number.isFinite(value.resume_id)))
     && (value.status === 'triage_complete' || value.status === 'deep_reviewed')
     && isOpportunityFitRecommendation(value.recommendation)
-    && isRecord(value.summary)
+    && isOpportunityFitSummary(value.summary)
     && isRecord(source)
     && isRecord(source.application)
     && isRecord(source.resume)
     && isRecord(source.jd)
     && Array.isArray(source.candidate_assertions)
-    && isRecord(triage)
-    && isRecord(triage.summary)
-    && isOpportunityFitRecommendation(triage.recommendation)
-    && Array.isArray(triage.hard_constraints)
-    && Array.isArray(triage.fit_signals)
-    && Array.isArray(triage.gaps)
-    && isRecord(triage.deadline)
-    && Array.isArray(triage.next_questions)
-    && (value.deep_review === null || isValidOpportunityFitDeepReview(value.deep_review))
+    && isValidOpportunityFitTriage(triage)
+    && hasValidDeepReview
+    && (value.status === 'triage_complete'
+      ? value.deep_review === null
+      : value.deep_review !== null && hasValidDeepReview)
   );
 }
 
@@ -238,6 +312,31 @@ export function classifyOpportunityFitFailure(
     : 'unknown';
 }
 
+export function normalizeOpportunityFitAssertions(raw: string): string[] {
+  const assertions = raw
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  if (assertions.length > 10) {
+    throw new OpportunityFitAssertionsNormalizationError(
+      'too_many_assertions',
+      'At most 10 assertions are allowed.',
+    );
+  }
+
+  const overlongIndex = assertions.findIndex((value) => value.length > 500);
+  if (overlongIndex !== -1) {
+    throw new OpportunityFitAssertionsNormalizationError(
+      'assertion_too_long',
+      'Each assertion must be at most 500 characters.',
+      overlongIndex,
+    );
+  }
+
+  return assertions;
+}
+
 type OpportunityFitDraftInputField = 'resumeID' | 'jdText' | 'assertionsText';
 
 function updateDraftInput(
@@ -283,6 +382,9 @@ export function opportunityFitDraftReducer(
       }
       return { ...state, triageAttemptKey: action.key };
     case 'set_review':
+      if (action.review.application_id !== state.applicationId) {
+        return state;
+      }
       return {
         ...state,
         phase: action.review.deep_review === null ? 'triage_ready' : 'deep_review_ready',
