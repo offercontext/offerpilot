@@ -175,6 +175,7 @@ def parse_json_reply(
     *,
     allow_fenced: bool = True,
     reject_non_finite: bool = False,
+    reject_duplicate_keys: bool = False,
 ) -> dict[str, Any]:
     text = reply.strip()
     if not allow_fenced and (text.startswith("```") or text.endswith("```")):
@@ -189,6 +190,8 @@ def parse_json_reply(
     json_options: dict[str, Any] = {}
     if reject_non_finite:
         json_options["parse_constant"] = _reject_non_finite_json_constant
+    if reject_duplicate_keys:
+        json_options["object_pairs_hook"] = _reject_duplicate_json_keys
     value = json.loads(text, **json_options)
     if not isinstance(value, dict):
         raise RuntimeError("AI response must be a JSON object")
@@ -197,6 +200,15 @@ def parse_json_reply(
 
 def _reject_non_finite_json_constant(value: str) -> None:
     raise ValueError(f"non-finite JSON constant is not allowed: {value}")
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key is not allowed: {key}")
+        result[key] = value
+    return result
 
 
 def structured_ai_system() -> str:
