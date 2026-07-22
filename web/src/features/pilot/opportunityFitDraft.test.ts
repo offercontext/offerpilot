@@ -51,6 +51,14 @@ const review: OpportunityFitReview = {
   deep_review: null,
 };
 
+const deepReview: NonNullable<OpportunityFitReview['deep_review']> = {
+  strengths: [{ id: 'strength-1', statement: 'Strong delivery record.', evidence_refs: [] }],
+  gaps_to_address: [{ id: 'gap-1', statement: 'Clarify system scale.', evidence_refs: [] }],
+  questions_to_clarify: [{ id: 'question-1', statement: 'What was the peak traffic?', evidence_refs: [] }],
+  recommended_path: 'prepare_materials',
+  next_actions: [{ id: 'action-1', label: 'Open material kit', kind: 'open_material_kit' }],
+};
+
 describe('opportunityFitDraftReducer', () => {
   it('creates a complete reusable draft state', () => {
     expect(createInitialOpportunityFitDraft(7, 'draft-1')).toEqual({
@@ -199,6 +207,36 @@ describe('opportunityFitDraftReducer', () => {
     expect(next).toBe(state);
     expect(next.review).toBeNull();
     expect(next.phase).toBe('collect_input');
+  });
+
+  it('rejects a malformed nested deep review without advancing state', () => {
+    const loading = opportunityFitDraftReducer(
+      opportunityFitDraftReducer(
+        createInitialOpportunityFitDraft(7, 'draft-1'),
+        { type: 'set_phase', phase: 'deep_review_loading' },
+      ),
+      { type: 'set_attempt_key', key: 'attempt-1' },
+    );
+
+    const next = opportunityFitDraftReducer(loading, {
+      type: 'set_review',
+      review: { ...review, deep_review: {} },
+    } as never);
+
+    expect(next).toBe(loading);
+    expect(next.review).toBeNull();
+    expect(next.phase).toBe('deep_review_loading');
+    expect(next.triageAttemptKey).toBe('attempt-1');
+  });
+
+  it('accepts a complete deep review result', () => {
+    const next = opportunityFitDraftReducer(createInitialOpportunityFitDraft(7, 'draft-1'), {
+      type: 'set_review',
+      review: { ...review, status: 'deep_reviewed', deep_review: deepReview },
+    });
+
+    expect(next.review?.deep_review).toBe(deepReview);
+    expect(next.phase).toBe('deep_review_ready');
   });
 });
 

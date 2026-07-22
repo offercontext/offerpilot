@@ -84,6 +84,59 @@ function isOpportunityFitRecommendation(value: unknown): value is OpportunityFit
   return value === 'advance' || value === 'hold' || value === 'decline';
 }
 
+function isOpportunityFitEvidenceRefs(value: unknown): boolean {
+  return Array.isArray(value) && value.every((item) => (
+    isRecord(item)
+    && (item.source === 'jd' || item.source === 'resume' || item.source === 'user_assertion')
+    && typeof item.path === 'string'
+    && typeof item.excerpt === 'string'
+  ));
+}
+
+function isValidOpportunityFitDeepReview(
+  value: unknown,
+): value is NonNullable<OpportunityFitReview['deep_review']> {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    Array.isArray(value.strengths)
+    && value.strengths.every((item) => (
+      isRecord(item)
+      && typeof item.id === 'string'
+      && typeof item.statement === 'string'
+      && isOpportunityFitEvidenceRefs(item.evidence_refs)
+    ))
+    && Array.isArray(value.gaps_to_address)
+    && value.gaps_to_address.every((item) => (
+      isRecord(item)
+      && typeof item.id === 'string'
+      && typeof item.statement === 'string'
+      && isOpportunityFitEvidenceRefs(item.evidence_refs)
+    ))
+    && Array.isArray(value.questions_to_clarify)
+    && value.questions_to_clarify.every((item) => (
+      isRecord(item)
+      && typeof item.id === 'string'
+      && typeof item.statement === 'string'
+      && isOpportunityFitEvidenceRefs(item.evidence_refs)
+    ))
+    && (value.recommended_path === 'prepare_materials'
+      || value.recommended_path === 'clarify_first'
+      || value.recommended_path === 'do_not_pursue')
+    && Array.isArray(value.next_actions)
+    && value.next_actions.every((item) => (
+      isRecord(item)
+      && typeof item.id === 'string'
+      && typeof item.label === 'string'
+      && (item.kind === 'open_material_kit'
+        || item.kind === 'add_assertion'
+        || item.kind === 'record_deadline')
+    ))
+  );
+}
+
 function isValidOpportunityFitReview(value: unknown): value is OpportunityFitReview {
   if (!isRecord(value)) {
     return false;
@@ -113,7 +166,7 @@ function isValidOpportunityFitReview(value: unknown): value is OpportunityFitRev
     && Array.isArray(triage.gaps)
     && isRecord(triage.deadline)
     && Array.isArray(triage.next_questions)
-    && (value.deep_review === null || isRecord(value.deep_review))
+    && (value.deep_review === null || isValidOpportunityFitDeepReview(value.deep_review))
   );
 }
 
