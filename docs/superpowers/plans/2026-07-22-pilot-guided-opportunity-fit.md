@@ -10,17 +10,17 @@
 
 ---
 
-### Task 1: 固化设计状态并建立实现基线
+### Task 1: 固化设计状态并建立实现基线（已完成）
 
 **Files:**
 - Modify: docs/superpowers/specs/2026-07-21-pilot-guided-opportunity-fit-design.md
 - Create: docs/superpowers/plans/2026-07-22-pilot-guided-opportunity-fit.md
 
-- [ ] **Step 1: 标记设计已通过复审**
+- [x] **Step 1: 标记设计已通过复审**
 
 将设计文档的状态改为 已复审通过，不改变已批准的接口、边界和验收条款。
 
-- [ ] **Step 2: 运行实现前基线检查**
+- [x] **Step 2: 运行实现前基线检查**
 
 ```powershell
 git status --short --branch
@@ -32,12 +32,14 @@ Set-Location ..
 
 Expected: 当前 Opportunity Fit 后端专项和既有抽屉/详情测试通过；已有失败必须记录为基线，而不能归因于 Pilot 改动。
 
-- [ ] **Step 3: 提交计划与状态变更**
+- [x] **Step 3: 提交计划与状态变更**
 
 ```powershell
 git add -f docs/superpowers/specs/2026-07-21-pilot-guided-opportunity-fit-design.md docs/superpowers/plans/2026-07-22-pilot-guided-opportunity-fit.md
 git commit -m "docs: AI plan Pilot opportunity fit implementation"
 ```
+
+本任务已在计划建立时完成；执行实现任务时跳过，不重复修改设计状态或提交文档。
 
 ### Task 2: 先写共享中文文案与安全错误映射测试
 
@@ -159,6 +161,8 @@ it('reuses triageAttemptKey after a timeout', async () => {
 });
 ```
 
+另加回归测试：首次请求超时后卸载并重新挂载同一 applicationId/pilotDraftKey 的卡片，再点击重试；第二次请求必须继续使用第一次请求的 idempotency_key，且不能调用 crypto.randomUUID() 生成新 key。
+
 - [ ] **Step 3: 运行 RED**
 
 ```powershell
@@ -171,7 +175,39 @@ Expected: FAIL，因为卡片、草稿 reducer 和错误分类尚未实现。
 
 - [ ] **Step 4: 实现最小状态机与草稿 reducer**
 
-定义 PilotOpportunityFitCardProps：application、稳定 pilotDraftKey、onPrepareMaterials、onCancel。状态只允许 collect_input、confirm_triage、triage_loading、triage_ready、confirm_deep_review、deep_review_loading、deep_review_ready、material_handoff。临时输入和当前结果只存 React 状态。首次确认生成 crypto.randomUUID() 并保存到当前草稿；未知结果重试复用；只有错误 allowlist 明确失败时清除。每次 Resume/JD/断言变更和显式取消使 key 失效。
+定义 OpportunityFitDraftState、OpportunityFitDraftAction 和按 draftKey 索引的 opportunityFitDraftsReducer。状态必须包含 applicationId、pilotDraftKey、phase、resumeID、jdText、assertionsText、review、actionError 和 triageAttemptKey；reducer 负责所有输入、结果、阶段和 key 生命周期。PilotOpportunityFitCardProps 接收受控 draft、dispatch、onStartTriage、onRetryTriage、onStartDeepReview、onPrepareMaterials 和 onCancel，不得在组件内保存这些业务状态。AppShell 是 reducer 的唯一 owner，使用 applicationId/pilotDraftKey 作为键；首次确认由 AppShell 生成 crypto.randomUUID() 写入对应 draft，未知结果重试读取原 key，只有错误 allowlist 明确失败时清除。每次 Resume/JD/断言变更和显式取消使 key 失效。
+
+AppShell 在卡片卸载或侧栏/抽屉切换时保留该 keyed reducer；因此组件重挂载只重新读取同一 draft，不会丢失未知结果、输入或 triageAttemptKey。
+
+实现接口固定为以下形状，避免卡片偷偷创建第二份业务状态：
+
+```ts
+type OpportunityFitDraftPhase =
+  | 'collect_input' | 'confirm_triage' | 'triage_loading' | 'triage_ready'
+  | 'confirm_deep_review' | 'deep_review_loading' | 'deep_review_ready'
+  | 'material_handoff';
+
+interface OpportunityFitDraftState {
+  applicationId: number;
+  pilotDraftKey: string;
+  phase: OpportunityFitDraftPhase;
+  resumeID?: number;
+  jdText: string;
+  assertionsText: string;
+  review: OpportunityFitReview | null;
+  actionError: string | null;
+  triageAttemptKey: string | null;
+}
+
+type OpportunityFitDraftAction =
+  | { type: 'set_resume'; resumeID?: number }
+  | { type: 'set_jd'; jdText: string }
+  | { type: 'set_assertions'; assertionsText: string }
+  | { type: 'set_phase'; phase: OpportunityFitDraftPhase }
+  | { type: 'set_attempt_key'; key: string | null }
+  | { type: 'set_review'; review: OpportunityFitReview }
+  | { type: 'set_error'; error: string | null };
+```
 
 - [ ] **Step 5: 实现结构化卡片界面**
 
@@ -184,6 +220,8 @@ Set-Location web
 npm.cmd test -- --run src/features/pilot/opportunityFitDraft.test.ts src/features/pilot/PilotOpportunityFitCard.test.tsx
 Set-Location ..
 ```
+
+此时测试 harness 必须通过受控 draft/dispatch 注入完整状态，不能用卡片内部 useState 掩盖 AppShell 所有权要求。
 
 ### Task 4: 实现 Deep Review 人工确认与材料交接选择
 
@@ -269,9 +307,9 @@ npm.cmd test -- --run src/features/pilot/materialKitHandoff.test.ts src/componen
 Set-Location ..
 ```
 
-- [ ] **Step 3: 实现 AppShell 原子 handoff store**
+- [ ] **Step 3: 实现 AppShell 草稿 owner 与原子 handoff store**
 
-用 useRef 保存 pending handoff，以同步 read-match-clear 保证同一事件循环只能消费一次；暴露稳定的 consumeMaterialKitHandoff(applicationId)，不把原始可写对象传给子组件。AppShell 在同一 Application 上下文只生成一次 pilotDraftKey 并只渲染一个 PilotOpportunityFitCard；切换 Application 时冻结/丢弃旧草稿引用，历史评估不共享输入和幂等 key。
+用 useReducer 保存按 applicationId/pilotDraftKey 索引的完整 OpportunityFitDraftState，AppShell 通过受控 props 将 draft 和 dispatch 传给唯一活动的 PilotOpportunityFitCard。AppShell 在同一 Application 上下文只生成一次 pilotDraftKey；切换 Application 时冻结/丢弃旧卡片引用，但保留同一草稿在当前会话内的 key、输入、结果和 triageAttemptKey，历史评估不共享临时草稿或幂等 key。另用 useRef 保存 pending handoff，以同步 read-match-clear 保证同一事件循环只能消费一次；暴露稳定的 consumeMaterialKitHandoff(applicationId)，不把原始可写对象传给子组件。
 
 - [ ] **Step 4: 接入入口与材料交接**
 
@@ -279,7 +317,7 @@ Set-Location ..
 
 - [ ] **Step 5: GREEN 与唯一归属回归**
 
-测试入口传递正确 applicationId；Pilot 侧栏/抽屉切换和组件重挂载不产生第二个 pilotDraftKey；Application 不匹配 handoff 不消费；点击 handoff 后没有 materialKits、materialRevisionProposals 或 Application status mutation。
+测试入口传递正确 applicationId；Pilot 侧栏/抽屉切换和组件重挂载不产生第二个 pilotDraftKey，且超时后的重试继续使用原 triageAttemptKey；Application 不匹配 handoff 不消费；点击 handoff 后没有 materialKits、materialRevisionProposals 或 Application status mutation。
 
 ```powershell
 Set-Location web
@@ -329,10 +367,11 @@ Set-Location ..
 **Files:**
 - Modify: src/offerpilot/smoke.py
 - Modify: tests/test_smoke.py
+- Create: scripts/pilot-real-ai-browser-harness.ps1
 
-- [ ] **Step 1: 先写 smoke RED 回归**
+- [ ] **Step 1: 先写 smoke 与 harness RED 回归**
 
-保留现有 run_http_smoke(real_ai=True) 的临时数据目录复制配置行为，新增断言：空数据目录运行结束后无 active Resume、无 master、无 Application Material Kit、无 Material Revision Proposal、无 Opportunity Fit Review；local profile 不使用真实 Provider。API smoke 只校验公共字段，不输出完整 Resume/JD、断言或模型原文。
+保留现有 run_http_smoke(real_ai=True) 的临时数据目录复制配置行为，新增断言：空数据目录运行结束后无 active Resume、无 master、无 Application Material Kit、无 Material Revision Proposal、无 Opportunity Fit Review；local profile 不使用真实 Provider。API smoke 只校验公共字段，不输出完整 Resume/JD、断言或模型原文。新增 harness 的静态回归测试必须断言它包含 OFFERPILOT_DATA 临时目录、只复制 config.json、启动后创建合成 Application/Resume、等待人工浏览器完成、停止精确服务进程、执行数据库残留断言并删除临时目录；禁止在 harness 中调用默认数据目录的 oc start。
 
 - [ ] **Step 2: 运行 RED**
 
@@ -340,22 +379,62 @@ Set-Location ..
 uv run pytest tests/test_smoke.py -q
 ```
 
-- [ ] **Step 3: 实现或确认隔离 smoke**
+- [ ] **Step 3: 实现或确认隔离 API smoke**
 
 真实 profile 将 config.json 复制到 TemporaryDirectory(prefix="offerpilot-real-ai-verify-")，只在该目录创建合成数据；finally 删除临时目录并调用现有清理/残留断言。real-AI API smoke 调用 Triage/Deep Review，允许安全空结果；local profile 保持 fake model。若当前实现已经满足这些断言，只保留回归测试而不添加重复生产逻辑。
 
-- [ ] **Step 4: 运行真实服务与内置浏览器闭环**
+- [ ] **Step 4: 实现连续隔离浏览器 harness**
+
+scripts/pilot-real-ai-browser-harness.ps1 必须把浏览器验收与服务生命周期放在同一临时目录中，核心结构如下：
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$repo = Split-Path -Parent $PSScriptRoot
+$sourceData = if ($env:OFFERPILOT_DATA) { $env:OFFERPILOT_DATA } else { Join-Path $HOME '.offerpilot' }
+$tempData = Join-Path ([IO.Path]::GetTempPath()) ('offerpilot-pilot-real-ai-' + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Force -Path $tempData | Out-Null
+if (Test-Path (Join-Path $sourceData 'config.json')) {
+  Copy-Item (Join-Path $sourceData 'config.json') (Join-Path $tempData 'config.json')
+}
+$previousData = $env:OFFERPILOT_DATA
+$env:OFFERPILOT_DATA = $tempData
+$server = $null
+try {
+  $server = Start-Process powershell -WindowStyle Hidden -PassThru -ArgumentList @(
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command',
+    "Set-Location '$repo'; `$env:OFFERPILOT_DATA = '$tempData'; uv run oc start --port 18766"
+  )
+  # Poll /api/health, then POST only the synthetic Application and Resume to 127.0.0.1.
+  # Open the built SPA in the in-app browser and pause here while the reviewer completes the flow.
+  Read-Host '完成 Pilot 浏览器闭环后按 Enter 继续清理'
+}
+finally {
+  # Recursively stop only the process tree created by this harness before touching the database.
+  function Stop-Tree([int]$processId) {
+    Get-CimInstance Win32_Process | Where-Object ParentProcessId -eq $processId |
+      ForEach-Object { Stop-Tree ([int]$_.ProcessId) }
+    Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+  }
+  if ($server) { Stop-Tree ([int]$server.Id) }
+  $env:OFFERPILOT_DATA = $previousData
+  uv run python -c "from pathlib import Path; from offerpilot.smoke import _assert_real_ai_smoke_data_clean; _assert_real_ai_smoke_data_clean(Path(r'$tempData'))"
+  Remove-Item -Recurse -Force -LiteralPath $tempData
+}
+```
+
+脚本必须在浏览器暂停前完成健康检查和合成数据创建；浏览器只访问该服务的本地地址与已配置 Provider。清理断言在服务停止后执行；断言失败也必须在 finally 中删除临时目录并重新抛出安全失败类别，且绝不触碰 sourceData。
+
+- [ ] **Step 5: 运行连续隔离浏览器闭环**
 
 ```powershell
 Set-Location web
 npm.cmd run build
 Set-Location ..
-uv run oc verify --profile local --static-dir web/dist
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\pilot-real-ai-browser-harness.ps1
 uv run oc verify --profile real-ai --static-dir web/dist
-uv run oc start --port 18766
 ```
 
-在内置浏览器从绑定 Application 的“在 Pilot 中评估”进入；完成输入确认、Triage 确认、Deep Review 确认和材料交接。记录 Triage 重试沿用同一 key；材料包只获得冻结 Resume/JD 预填；没有自动 Material Kit/Proposal/Application 状态写入；没有招聘平台请求；真实模型返回空结果时记录为安全空结果，不强行推进。
+在 harness 等待期间，内置浏览器从同一临时目录中的 ApplicationDetail 的“在 Pilot 中评估”进入；完成输入确认、Triage 确认、Deep Review 确认和材料交接。记录 Triage 重试沿用同一 key；材料包只获得冻结 Resume/JD 预填；没有自动 Material Kit/Proposal/Application 状态写入；没有招聘平台请求；真实模型返回空结果时记录为安全空结果，不强行推进。harness 返回成功后，再执行 real-ai API verify 作为独立回归，但不得用它替代这次连续浏览器闭环。
 
 ### Task 8: 全量验证、代码审查与交付
 
