@@ -107,6 +107,10 @@ class InterviewNote(Base):
         ForeignKey("applications.id", ondelete="SET NULL"),
         nullable=True,
     )
+    application_event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("application_events.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     company: Mapped[str] = mapped_column(String, nullable=False)
     position: Mapped[str] = mapped_column(String, nullable=False)
     round: Mapped[str] = mapped_column(String, default="", server_default="")
@@ -359,6 +363,38 @@ class OpportunityFitReview(Base):
         DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
     )
     deep_reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class InterviewReviewProposal(Base):
+    __tablename__ = "interview_review_proposals"
+    __table_args__ = (
+        UniqueConstraint(
+            "note_id",
+            "idempotency_key",
+            name="uq_interview_review_proposals_note_key",
+        ),
+        Index("idx_interview_review_proposals_note", "note_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    note_id: Mapped[int] = mapped_column(
+        ForeignKey("interview_notes.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    application_event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("application_events.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
+    input_snapshot_json: Mapped[str] = mapped_column(String, nullable=False)
+    source_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
+    proposal_json: Mapped[str] = mapped_column(String, nullable=False)
+    proposal_hash: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
 
 
 class Question(Base):

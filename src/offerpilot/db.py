@@ -63,6 +63,34 @@ def init_database(db_path: Path) -> SessionFactory:
     _ensure_schema_migrations(engine)
     _reset_knowledge_legacy_tables(engine, db_path.parent)
     Base.metadata.create_all(engine)
+    # InterviewNote existed before event-bound review notes.  create_all creates
+    # the column on a fresh database; existing databases need the nullable column
+    # added before the migration-only indexes are created.
+    _ensure_column(
+        engine,
+        "interview_notes",
+        "application_event_id",
+        "INTEGER REFERENCES application_events(id) ON DELETE SET NULL",
+    )
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_notes_event "
+                "ON interview_notes(application_event_id)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_interview_notes_event_main "
+                "ON interview_notes(application_event_id) "
+                "WHERE application_event_id IS NOT NULL"
+            )
+        )
+    _record_migration(
+        engine,
+        "0010_interview_review_proposals",
+        "Add event-bound interview review proposals",
+    )
     # ``attempt_id`` was added after the initial KI-10 schema.  Add it before
     # creating the integrity triggers below so existing databases can use the
     # same association checks as fresh databases.
