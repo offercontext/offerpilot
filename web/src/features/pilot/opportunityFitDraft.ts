@@ -104,8 +104,10 @@ function isOpportunityFitRecommendation(value: unknown): value is OpportunityFit
   return value === 'advance' || value === 'hold' || value === 'decline';
 }
 
-function isOpportunityFitEvidenceRefs(value: unknown): boolean {
-  return Array.isArray(value) && value.every((item) => (
+function isOpportunityFitEvidenceRefs(value: unknown, requireNonEmpty = false): boolean {
+  return Array.isArray(value)
+    && (!requireNonEmpty || value.length > 0)
+    && value.every((item) => (
     isRecord(item)
     && (item.source === 'jd' || item.source === 'resume' || item.source === 'user_assertion')
     && typeof item.path === 'string'
@@ -189,7 +191,7 @@ function isValidOpportunityFitDeepReview(
       isRecord(item)
       && typeof item.id === 'string'
       && typeof item.statement === 'string'
-      && isOpportunityFitEvidenceRefs(item.evidence_refs)
+      && isOpportunityFitEvidenceRefs(item.evidence_refs, true)
     ))
     && Array.isArray(value.questions_to_clarify)
     && value.questions_to_clarify.every((item) => (
@@ -235,6 +237,9 @@ function isValidOpportunityFitReview(value: unknown): value is OpportunityFitRev
     && isRecord(source.application)
     && isRecord(source.resume)
     && isRecord(source.jd)
+    && source.application.id === value.application_id
+    && value.resume_id !== null
+    && source.resume.id === value.resume_id
     && Array.isArray(source.candidate_assertions)
     && isValidOpportunityFitTriage(triage)
     && hasValidDeepReview

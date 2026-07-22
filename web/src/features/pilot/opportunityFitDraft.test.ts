@@ -54,7 +54,11 @@ const review: OpportunityFitReview = {
 
 const deepReview: NonNullable<OpportunityFitReview['deep_review']> = {
   strengths: [{ id: 'strength-1', statement: 'Strong delivery record.', evidence_refs: [] }],
-  gaps_to_address: [{ id: 'gap-1', statement: 'Clarify system scale.', evidence_refs: [] }],
+  gaps_to_address: [{
+    id: 'gap-1',
+    statement: 'Clarify system scale.',
+    evidence_refs: [{ source: 'resume', path: '/experience/0', excerpt: 'Strong delivery record.' }],
+  }],
   questions_to_clarify: [{ id: 'question-1', statement: 'What was the peak traffic?', evidence_refs: [] }],
   recommended_path: 'prepare_materials',
   next_actions: [{ id: 'action-1', label: 'Open material kit', kind: 'open_material_kit' }],
@@ -240,6 +244,22 @@ describe('opportunityFitDraftReducer', () => {
     expect(next.phase).toBe('deep_review_ready');
   });
 
+  it('rejects a deep review gap without evidence refs', () => {
+    const state = createInitialOpportunityFitDraft(7, 'draft-1');
+    const invalidDeepReview = {
+      ...deepReview,
+      gaps_to_address: [{ ...deepReview.gaps_to_address[0], evidence_refs: [] }],
+    };
+
+    const next = opportunityFitDraftReducer(state, {
+      type: 'set_review',
+      review: { ...review, status: 'deep_reviewed', deep_review: invalidDeepReview },
+    });
+
+    expect(next).toBe(state);
+    expect(next.review).toBeNull();
+  });
+
   it('rejects a review owned by another application without changing draft state', () => {
     const loading = opportunityFitDraftReducer(
       opportunityFitDraftReducer(
@@ -258,6 +278,43 @@ describe('opportunityFitDraftReducer', () => {
     expect(next.phase).toBe('triage_loading');
     expect(next.review).toBeNull();
     expect(next.triageAttemptKey).toBe('attempt-1');
+  });
+
+  it('rejects a review whose frozen application source belongs to another application', () => {
+    const loading = opportunityFitDraftReducer(
+      opportunityFitDraftReducer(
+        createInitialOpportunityFitDraft(7, 'draft-1'),
+        { type: 'set_phase', phase: 'triage_loading' },
+      ),
+      { type: 'set_attempt_key', key: 'attempt-1' },
+    );
+
+    const next = opportunityFitDraftReducer(loading, {
+      type: 'set_review',
+      review: {
+        ...review,
+        source: { ...review.source, application: { ...review.source.application, id: 8 } },
+      },
+    });
+
+    expect(next).toBe(loading);
+    expect(next.review).toBeNull();
+    expect(next.triageAttemptKey).toBe('attempt-1');
+  });
+
+  it('rejects a review whose frozen resume source does not match resume_id', () => {
+    const state = createInitialOpportunityFitDraft(7, 'draft-1');
+
+    const next = opportunityFitDraftReducer(state, {
+      type: 'set_review',
+      review: {
+        ...review,
+        source: { ...review.source, resume: { ...review.source.resume, id: 4 } },
+      },
+    });
+
+    expect(next).toBe(state);
+    expect(next.review).toBeNull();
   });
 
   it.each([
