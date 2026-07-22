@@ -111,7 +111,9 @@ function isOpportunityFitEvidenceRefs(value: unknown, requireNonEmpty = false): 
     isRecord(item)
     && (item.source === 'jd' || item.source === 'resume' || item.source === 'user_assertion')
     && typeof item.path === 'string'
+    && item.path.trim().length > 0
     && typeof item.excerpt === 'string'
+    && item.excerpt.trim().length > 0
   ));
 }
 
@@ -215,7 +217,7 @@ function isValidOpportunityFitDeepReview(
   );
 }
 
-function isValidOpportunityFitReview(value: unknown): value is OpportunityFitReview {
+export function isValidOpportunityFitReview(value: unknown): value is OpportunityFitReview {
   if (!isRecord(value)) {
     return false;
   }
@@ -235,12 +237,38 @@ function isValidOpportunityFitReview(value: unknown): value is OpportunityFitRev
     && isOpportunityFitSummary(value.summary)
     && isRecord(source)
     && isRecord(source.application)
+    && typeof source.application.id === 'number'
+    && Number.isFinite(source.application.id)
+    && typeof source.application.company_name === 'string'
+    && source.application.company_name.trim().length > 0
+    && typeof source.application.position_name === 'string'
+    && source.application.position_name.trim().length > 0
     && isRecord(source.resume)
+    && typeof source.resume.id === 'number'
+    && Number.isFinite(source.resume.id)
+    && typeof source.resume.title === 'string'
+    && source.resume.title.trim().length > 0
+    && typeof source.resume.sha256 === 'string'
+    && source.resume.sha256.trim().length > 0
     && isRecord(source.jd)
+    && typeof source.jd.source_label === 'string'
+    && source.jd.source_label.trim().length > 0
+    && typeof source.jd.sha256 === 'string'
+    && source.jd.sha256.trim().length > 0
+    && typeof source.jd.text === 'string'
+    && source.jd.text.trim().length > 0
     && source.application.id === value.application_id
     && value.resume_id !== null
     && source.resume.id === value.resume_id
     && Array.isArray(source.candidate_assertions)
+    && source.candidate_assertions.every((item) => (
+      isRecord(item)
+      && typeof item.index === 'number'
+      && Number.isInteger(item.index)
+      && item.index >= 0
+      && typeof item.text === 'string'
+      && item.text.trim().length > 0
+    ))
     && isValidOpportunityFitTriage(triage)
     && hasValidDeepReview
     && (value.status === 'triage_complete'

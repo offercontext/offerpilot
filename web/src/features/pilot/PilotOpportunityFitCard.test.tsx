@@ -109,9 +109,15 @@ async function render(initial?: OpportunityFitDraftState) {
 }
 
 function button(view: HTMLElement, name: string): HTMLButtonElement {
-  const found = [...view.querySelectorAll('button')].find((item) => item.textContent?.includes(name));
+  const found = [...view.querySelectorAll('button')].find((item) => item.textContent?.trim() === name);
   if (!(found instanceof HTMLButtonElement)) throw new Error(`missing button ${name}`);
   return found;
+}
+
+function dialogButton(view: HTMLElement, name: string): HTMLButtonElement {
+  const dialog = view.querySelector('[role="dialog"]');
+  if (!(dialog instanceof HTMLElement)) throw new Error('missing confirmation dialog');
+  return button(dialog, name);
 }
 
 function labeled(view: HTMLElement, text: string): HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement {
@@ -134,6 +140,10 @@ async function click(view: HTMLElement, name: string) {
   await act(async () => button(view, name).click());
 }
 
+async function clickDialog(view: HTMLElement, name: string) {
+  await act(async () => dialogButton(view, name).click());
+}
+
 describe('PilotOpportunityFitCard', () => {
   it('normalizes assertions and disables triage for invalid input', async () => {
     const view = await render();
@@ -151,7 +161,7 @@ describe('PilotOpportunityFitCard', () => {
     await change(labeled(view, '粘贴 JD'), 'JD');
     await click(view, '开始 Triage');
     expect(view.textContent).toContain('确认将这些内容发送给当前配置的 AI 服务');
-    await click(view, '取消');
+    await clickDialog(view, '取消');
     expect(triage).not.toHaveBeenCalled();
   });
 
@@ -191,7 +201,7 @@ describe('PilotOpportunityFitCard', () => {
     const view = await render(initial);
     await click(view, '开始 Deep Fit Review');
     expect(view.textContent).toContain('确认开始深入分析');
-    await click(view, '取消');
+    await clickDialog(view, '取消');
     expect(deep).not.toHaveBeenCalled();
     await click(view, '开始 Deep Fit Review');
     await click(view, '确认深入分析');
@@ -214,7 +224,7 @@ describe('PilotOpportunityFitCard', () => {
     const view = await render(initial);
     await click(view, '仍要准备材料');
     expect(view.textContent).toContain('当前建议不是准备材料');
-    await click(view, '取消');
+    await clickDialog(view, '取消');
     expect(prepare).not.toHaveBeenCalled();
     await click(view, '仍要准备材料');
     await click(view, '确认仍要准备材料');
@@ -244,7 +254,7 @@ describe('PilotOpportunityFitCard', () => {
       ...deepReview,
       deep_review: {
         ...deepReview.deep_review!,
-        gaps_to_address: [{ ...deepReview.deep_review!.gaps_to_address[0], evidence_refs: [{ source: 'jd', path: '/text', excerpt: '岗位证据' }] }],
+        gaps_to_address: [{ ...deepReview.deep_review!.gaps_to_address[0], evidence_refs: [{ source: 'evidence_bundle', path: '/text', excerpt: '岗位证据' }] }],
       },
     } as unknown as OpportunityFitReview;
     const disallowedView = await render({ ...createInitialOpportunityFitDraft(7, 'pilot:7'), review: disallowed, phase: 'deep_review_ready' });

@@ -4,6 +4,7 @@ import type {
   OpportunityFitReview,
 } from '@/types/opportunityFitReview';
 import {
+  isValidOpportunityFitReview,
   normalizeOpportunityFitAssertions,
   type OpportunityFitDraftAction,
   type OpportunityFitDraftErrorDisposition,
@@ -45,59 +46,11 @@ interface Props {
 
 type Confirmation = 'triage' | 'deep_review' | 'prepare_materials' | null;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function isEvidenceRefs(value: unknown): boolean {
-  return Array.isArray(value) && value.every((item) => (
-    isRecord(item)
-    && typeof item.source === 'string'
-    && typeof item.path === 'string'
-    && typeof item.excerpt === 'string'
-  ));
-}
-
-function isDeepReviewGapEvidenceRefs(value: unknown): boolean {
-  return Array.isArray(value)
-    && value.length > 0
-    && value.every((item) => (
-      isRecord(item)
-      && (item.source === 'resume' || item.source === 'evidence_bundle' || item.source === 'user_assertion')
-      && typeof item.path === 'string'
-      && item.path.trim().length > 0
-      && typeof item.excerpt === 'string'
-      && item.excerpt.trim().length > 0
-    ));
-}
-
-function isReviewItem(value: unknown, statementKey: 'statement' | 'explanation' | 'requirement'): boolean {
-  return isRecord(value)
-    && typeof value.id === 'string'
-    && typeof value[statementKey] === 'string'
-    && isEvidenceRefs(value.evidence_refs);
-}
-
-function isDeepReviewGapItem(value: unknown): boolean {
-  return isRecord(value)
-    && typeof value.id === 'string'
-    && typeof value.statement === 'string'
-    && isDeepReviewGapEvidenceRefs(value.evidence_refs);
-}
-
 function isRenderableReview(
   value: OpportunityFitReview | null,
   applicationId: number,
 ): value is OpportunityFitReview {
-  if (!isRecord(value) || value.application_id !== applicationId || typeof value.id !== 'number') return false;
-  if (!isRecord(value.source) || !isRecord(value.source.application) || !isRecord(value.source.resume) || !isRecord(value.source.jd)) return false;
-  if (value.source.application.id !== applicationId || typeof value.source.resume.id !== 'number' || typeof value.source.jd.text !== 'string' || typeof value.source.resume.title !== 'string') return false;
-  if (!isRecord(value.triage) || !isRecord(value.triage.summary) || typeof value.triage.summary.text !== 'string' || !isEvidenceRefs(value.triage.summary.evidence_refs) || !Array.isArray(value.triage.hard_constraints) || !Array.isArray(value.triage.fit_signals) || !Array.isArray(value.triage.gaps) || !Array.isArray(value.triage.next_questions)) return false;
-  if (!value.triage.hard_constraints.every((item) => isReviewItem(item, 'explanation')) || !value.triage.fit_signals.every((item) => isReviewItem(item, 'statement')) || !value.triage.gaps.every((item) => isReviewItem(item, 'requirement')) || !value.triage.next_questions.every((item) => typeof item === 'string')) return false;
-  if (value.deep_review !== null) {
-    if (!isRecord(value.deep_review) || !Array.isArray(value.deep_review.strengths) || !Array.isArray(value.deep_review.gaps_to_address) || !Array.isArray(value.deep_review.questions_to_clarify) || !value.deep_review.strengths.every((item) => isReviewItem(item, 'statement')) || !value.deep_review.gaps_to_address.every(isDeepReviewGapItem) || !value.deep_review.questions_to_clarify.every((item) => isReviewItem(item, 'statement'))) return false;
-  }
-  return true;
+  return value !== null && value.application_id === applicationId && isValidOpportunityFitReview(value);
 }
 
 function EvidenceRefs({ refs }: { refs: OpportunityFitEvidenceRef[] }) {

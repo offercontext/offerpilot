@@ -260,6 +260,27 @@ describe('opportunityFitDraftReducer', () => {
     expect(next.review).toBeNull();
   });
 
+  it('rejects a deep review without a recommended path or with malformed candidate assertions', () => {
+    const state = createInitialOpportunityFitDraft(7, 'draft-1');
+    const missingPath = { ...deepReview, recommended_path: undefined };
+    const malformedSource = {
+      ...review.source,
+      candidate_assertions: [{ index: '0', text: 'fact' }],
+    };
+
+    const missingPathResult = opportunityFitDraftReducer(state, {
+      type: 'set_review',
+      review: { ...review, status: 'deep_reviewed', deep_review: missingPath },
+    } as never);
+    const malformedSourceResult = opportunityFitDraftReducer(state, {
+      type: 'set_review',
+      review: { ...review, source: malformedSource },
+    } as never);
+
+    expect(missingPathResult).toBe(state);
+    expect(malformedSourceResult).toBe(state);
+  });
+
   it('rejects a review owned by another application without changing draft state', () => {
     const loading = opportunityFitDraftReducer(
       opportunityFitDraftReducer(
