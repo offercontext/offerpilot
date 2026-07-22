@@ -72,9 +72,14 @@ application_event_id: Mapped[int | None] = mapped_column(
 )
 ~~~
 
-将 idx_notes_event 放入 InterviewNote.__table_args__。新增 InterviewReviewProposal，字段严格对应设计文档：note_id、可空快照 application_event_id、idempotency_key、input_snapshot_json、source_fingerprint、proposal_json、proposal_hash、created_at；增加 idx_interview_review_proposals_note、(note_id, idempotency_key) 唯一约束和 note_id ON DELETE CASCADE。
+不要把 idx_notes_event 放入 InterviewNote.__table_args__，因为旧库的 interview_notes 可能尚无 application_event_id，Base.metadata.create_all() 会尝试先建引用缺失列的索引。新增 InterviewReviewProposal，字段严格对应设计文档：note_id、可空快照 application_event_id、idempotency_key、input_snapshot_json、source_fingerprint、proposal_json、proposal_hash、created_at；增加 idx_interview_review_proposals_note、(note_id, idempotency_key) 唯一约束和 note_id ON DELETE CASCADE。
 
-在 init_database() 中，Base.metadata.create_all() 前通过 _ensure_column(engine, "interview_notes", "application_event_id", "INTEGER REFERENCES application_events(id) ON DELETE SET NULL") 升级旧表；随后创建部分唯一索引：
+在 init_database() 中先调用 Base.metadata.create_all(engine)，让全新数据库一次创建带 application_event_id 的 interview_notes 和 proposal 表；随后对已存在且缺列的旧 interview_notes 调用 _ensure_column(engine, "interview_notes", "application_event_id", "INTEGER REFERENCES application_events(id) ON DELETE SET NULL")。最后用显式 SQL 创建 idx_notes_event 和部分唯一索引，确保两条路径都只在列存在后建索引：
+
+~~~sql
+CREATE INDEX IF NOT EXISTS idx_notes_event
+ON interview_notes(application_event_id)
+~~~
 
 ~~~sql
 CREATE UNIQUE INDEX IF NOT EXISTS uq_interview_notes_event_main
@@ -82,7 +87,7 @@ ON interview_notes(application_event_id)
 WHERE application_event_id IS NOT NULL
 ~~~
 
-记录唯一版本 0009_interview_review_proposals，重复启动不得重复报错或丢失数据。为 API 响应增加 InterviewNoteOut.application_event_id，并新增 proposal 的嵌套输出类型，拒绝额外字段。
+记录未占用的唯一版本 0010_interview_review_proposals，重复启动不得重复报错或丢失数据。迁移测试必须断言 schema_migrations 中存在 0010_interview_review_proposals。为 API 响应增加 InterviewNoteOut.application_event_id，并新增 proposal 的嵌套输出类型，拒绝额外字段。
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -413,7 +418,7 @@ git commit -m "feat: AI connect interview review proposal flow"
 
 - 首次生成先出现“本次复盘内容与面试事件信息将发送给当前配置的 AI 服务”的确认弹窗，取消不调用 service；
 - 历史列表按创建时间展示，点击某项才加载详情；
-- source_changed 只读显示“来源已变化”，隐藏生成/后续写入动作；
+- source_changed 的旧建议只读显示“来源已变化”，不提供对旧建议的接受、编辑或跨领域写入动作；当当前 note 仍绑定有效 interview event 时，显示独立的、需确认的“重新生成复盘建议”入口并创建新 idempotency key；当事件已删除/绑定为空时禁用该入口并显示“请先绑定有效的面试事件。”；
 - “用户记录”“AI 建议”“待澄清问题”“下次可追问”分区展示；
 - evidence source 固定映射为“复盘问题/自我反思/困难点/情绪记录”，path/excerpt 保留原文；
 - 生成返回 422/409/502 和未知错误时显示安全中文，不显示原始服务端文本；
@@ -428,7 +433,7 @@ Expected: FAIL because the component does not exist.
 
 - [ ] **Step 3: Implement the drawer and integrate it**
 
-组件只接收 noteId、eventId、open、onClose，通过 service 获取历史和详情；不复制 AI prompt，不渲染原始 JSON，不提供跨领域动作按钮。首次生成使用明确确认；结果未知保留同一个 idempotency key，显示“结果待确认/使用原尝试重试”，不自动重试。proposal 历史只读，source_changed 禁止生成和任何后续动作。
+组件只接收 noteId、eventId、open、onClose，通过 service 获取历史和详情；不复制 AI prompt，不渲染原始 JSON，不提供跨领域动作按钮。首次生成和 source_changed 后的重新生成都使用明确确认；重新生成必须创建新的 idempotency key，旧建议仍只读保留。结果未知保留同一个 idempotency key，显示“结果待确认/使用原尝试重试”，不自动重试。事件删除后由 API 的 422 映射为固定中文提示并禁用生成。
 
 在 ApplicationDetail 的事件/复盘时间线增加“查看复盘/生成复盘建议”入口；ReviewManagementView 对有绑定事件的复盘提供同一原生抽屉。复盘正文、事件原文、公司/岗位名保持原文；固定 UI 文案全部使用中文。
 
@@ -566,7 +571,7 @@ uv run oc verify --profile local --static-dir web/dist
 uv run oc verify --profile real-ai --static-dir web/dist
 ~~~
 
-Expected: all commands exit 0; no secrets, complete notes, event metadata or raw model replies appear in output.
+Expected: 新增及受影响的专项测试、ruff、mypy、前端测试和构建通过。全量 uv run pytest 与既有 smoke/verify 命令照常执行并逐项记录退出码；当前分支已知 Windows symlink 权限和 Knowledge fixture hash 基线失败时，不得将其误报为本任务通过，也不得为了本功能改写这些基线。只有新增或受影响测试全绿且没有新增失败，才可交付复审。任何命令输出都不得包含 secrets、完整复盘、事件元数据或模型原文。
 
 - [ ] **Step 4: Run the isolated browser acceptance**
 
