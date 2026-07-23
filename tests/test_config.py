@@ -1,4 +1,7 @@
+import json
 from pathlib import Path
+
+import pytest
 
 from offerpilot.config import (
     AIProviderProfile,
@@ -32,6 +35,33 @@ def test_load_missing_config_returns_defaults(tmp_path):
     assert cfg.runtime_mode == "local"
     assert cfg.auth_enabled is False
     assert cfg.log_level == "INFO"
+
+
+@pytest.mark.parametrize(
+    ("raw_capability", "expected"),
+    [(True, True), ("true", False), ("1", False), (1, False), (None, False)],
+)
+def test_load_config_only_accepts_json_boolean_for_schema_capability(
+    tmp_path, raw_capability, expected
+):
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "active_provider_id": "provider",
+                "providers": [
+                    {
+                        "id": "provider",
+                        "label": "Provider",
+                        "provider": "openai",
+                        "supports_json_schema": raw_capability,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert load_config(tmp_path).active_provider().supports_json_schema is expected
 
 
 def test_save_and_load_config_round_trip(tmp_path):

@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MODEL = "gpt-4o"
@@ -24,6 +24,11 @@ class AIProviderProfile(BaseModel):
     max_output_tokens: int = 0
     supports_vision: bool = False
     supports_json_schema: bool = False
+
+    @field_validator("supports_json_schema", mode="before")
+    @classmethod
+    def normalize_json_schema_capability(cls, value: Any) -> bool:
+        return value if type(value) is bool else False
 
 
 class SkillPackage(BaseModel):
