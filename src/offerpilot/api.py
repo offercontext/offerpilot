@@ -1607,6 +1607,19 @@ def create_app(
             return error_response(404, "Application not found")
         model = _chat_model(chat_model, resolved_data_dir)
         if isinstance(model, JSONResponse):
+            append_log_entry(
+                resolved_data_dir,
+                "WARNING",
+                _interview_review_diagnostic_message(
+                    {
+                        "failure_category": "provider_error",
+                        "repair_attempted": False,
+                        "retry_count": 0,
+                        "duration_ms": 0,
+                        "provider_request_id": "",
+                    }
+                ),
+            )
             return error_response(
                 502,
                 "AI provider request failed. Please retry.",
@@ -1900,7 +1913,14 @@ def create_app(
             )
         try:
             proposal, created = interview_review_proposals.create_generated(
-                note_id, normalized_key, model
+                note_id,
+                normalized_key,
+                model,
+                on_diagnostic=lambda diagnostic: append_log_entry(
+                    resolved_data_dir,
+                    "WARNING",
+                    _interview_review_diagnostic_message(diagnostic),
+                ),
             )
         except InterviewReviewNotFound:
             return _interview_review_not_found_response()
@@ -1917,11 +1937,6 @@ def create_app(
                 code="interview_review_source_conflict",
             )
         except InterviewReviewModelError as exc:
-            append_log_entry(
-                resolved_data_dir,
-                "WARNING",
-                f"interview_review_{exc.failure_category}",
-            )
             if exc.failure_category == "provider_error":
                 return error_response(
                     502,
@@ -5626,6 +5641,12 @@ def _provider_from_payload(
         base_url=str(payload.get("base_url") or (current.base_url if current is not None else "")),
         model=str(payload.get("model") or (current.model if current is not None else "")),
         enabled=bool(payload.get("enabled", current.enabled if current is not None else True)),
+        supports_json_schema=bool(
+            payload.get(
+                "supports_json_schema",
+                current.supports_json_schema if current is not None else False,
+            )
+        ),
     )
 
 
@@ -5905,6 +5926,26 @@ def _note_create_from_payload(
 
 def _note_json(note: Any) -> dict[str, Any]:
     return InterviewNoteOut.model_validate(note).model_dump(mode="json")
+
+
+def _interview_review_diagnostic_message(diagnostic: dict[str, Any]) -> str:
+    category = str(diagnostic.get("failure_category") or "unknown")
+    repair_attempted = "true" if diagnostic.get("repair_attempted") is True else "false"
+    try:
+        retry_count = max(0, min(int(diagnostic.get("retry_count") or 0), 1))
+    except (TypeError, ValueError):
+        retry_count = 0
+    try:
+        duration_ms = max(0, int(diagnostic.get("duration_ms") or 0))
+    except (TypeError, ValueError):
+        duration_ms = 0
+    request_id = str(diagnostic.get("provider_request_id") or "")[:128]
+    return (
+        "interview_review_generation "
+        f"category={category} repair_attempted={repair_attempted} "
+        f"retry_count={retry_count} duration_ms={duration_ms} "
+        f"provider_request_id={request_id}"
+    )
 
 
 def _interview_review_not_found_response() -> JSONResponse:

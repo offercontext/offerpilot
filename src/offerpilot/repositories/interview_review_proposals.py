@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from offerpilot.ai.agent import ChatModel
 from offerpilot.ai.interview_review_proposals import (
+    InterviewReviewDiagnosticSink,
     build_interview_review_snapshot,
     generate_interview_review_proposal,
 )
@@ -84,6 +85,8 @@ class InterviewReviewProposalsRepository:
         note_id: int,
         idempotency_key: str,
         model: ChatModel,
+        *,
+        on_diagnostic: InterviewReviewDiagnosticSink | None = None,
     ) -> tuple[InterviewReviewProposal, bool]:
         with self._session_factory() as session:
             note = _visible_note(session, note_id)
@@ -96,7 +99,11 @@ class InterviewReviewProposalsRepository:
             snapshot_json = canonical_json(snapshot)
             source_fingerprint = sha256_text(snapshot_json)
 
-        proposal = generate_interview_review_proposal(model, snapshot)
+        proposal = generate_interview_review_proposal(
+            model,
+            snapshot,
+            on_diagnostic=on_diagnostic,
+        )
         proposal_json = canonical_json(proposal)
         proposal_hash = sha256_text(proposal_json)
 

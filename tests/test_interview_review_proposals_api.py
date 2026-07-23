@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from offerpilot.ai.types import Assistant
 from offerpilot.api import create_app
+from offerpilot.diagnostics import read_recent_log_entries
 
 
 def _payload() -> dict[str, object]:
@@ -160,11 +161,43 @@ def test_provider_and_unverifiable_failures_are_safe_and_do_not_persist(tmp_path
         f"/api/notes/{invalid_note['id']}/interview-review-proposals",
         json={"idempotency_key": "attempt-invalid"},
     )
-    assert invalid_response.status_code == 502
-    assert invalid_response.json()["error_code"] == "interview_review_unverifiable"
-    assert invalid_client.get(
+    assert invalid_response.status_code == 201
+    assert invalid_response.json()["proposal"]["summary"]["evidence_refs"] == []
+    assert len(invalid_client.get(
         f"/api/notes/{invalid_note['id']}/interview-review-proposals"
-    ).json() == []
+    ).json()) == 1
+
+
+def test_contract_failure_persists_safe_empty_and_logs_only_safe_diagnostic(tmp_path) -> None:
+    invalid = FakeModel(
+        response={
+            "summary": {"text": "candidate secret", "evidence_refs": []},
+            "unexpected": "raw model output",
+        }
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=invalid))
+    _, _, note = _create_bound_note(client)
+
+    response = client.post(
+        f"/api/notes/{note['id']}/interview-review-proposals",
+        json={"idempotency_key": "attempt-safe-empty"},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["proposal"]["summary"]["evidence_refs"] == []
+    assert response.json()["proposal"]["observations"] == []
+    assert response.json()["source_status"] == "current"
+    assert client.post(
+        f"/api/notes/{note['id']}/interview-review-proposals",
+        json={"idempotency_key": "attempt-safe-empty"},
+    ).status_code == 200
+    logs = read_recent_log_entries(tmp_path)
+    message = logs[-1]["message"]
+    assert "category=unexpected_field" in message
+    assert "repair_attempted=true" in message
+    assert "retry_count=1" in message
+    assert "candidate secret" not in message
+    assert "raw model output" not in message
 
 
 def test_soft_deleted_note_application_returns_safe_not_found(tmp_path) -> None:

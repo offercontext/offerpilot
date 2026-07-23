@@ -23,6 +23,7 @@ class AIProviderProfile(BaseModel):
     context_window: int = 0
     max_output_tokens: int = 0
     supports_vision: bool = False
+    supports_json_schema: bool = False
 
 
 class SkillPackage(BaseModel):

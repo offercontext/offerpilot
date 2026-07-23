@@ -17,14 +17,25 @@ class ConfiguredAIClient:
         if not any(provider.enabled and provider.api_key for provider in self._providers):
             raise ValueError("AI is not configured: run `oc config` to set your API key")
 
-    def complete(self, messages: list[Message], tools: list[dict[str, Any]]) -> Assistant:
+    @property
+    def supports_json_schema(self) -> bool:
+        return any(provider.supports_json_schema for provider in self._candidate_providers())
+
+    def complete(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        response_format: dict[str, Any] | None = None,
+    ) -> Assistant:
         last_error: Exception | None = None
         providers = self._candidate_providers()
         for index, provider in enumerate(providers):
             if not provider.api_key:
                 continue
             try:
-                assistant = self._complete_with_provider(provider, messages, tools)
+                assistant = self._complete_with_provider(
+                    provider, messages, tools, response_format
+                )
                 if index > 0:
                     self._emit("INFO", f"AI fallback provider {provider.id} succeeded")
                 return assistant
@@ -87,6 +98,7 @@ class ConfiguredAIClient:
         provider: AIProviderProfile,
         messages: list[Message],
         tools: list[dict[str, Any]],
+        response_format: dict[str, Any] | None = None,
     ) -> Assistant:
         payload: dict[str, Any] = {
             "model": _litellm_model(provider),
@@ -99,6 +111,8 @@ class ConfiguredAIClient:
         if tools:
             payload["tools"] = [_openai_tool(tool) for tool in tools]
             payload["tool_choice"] = "auto"
+        if response_format is not None and provider.supports_json_schema:
+            payload["response_format"] = response_format
 
         response = completion(**payload)
         message = _first_choice_message(response)
@@ -112,10 +126,14 @@ class ConfiguredAIClient:
                     args=str(_get(function, "arguments") or "{}"),
                 )
             )
+        provider_blocks = _provider_blocks(message)
+        request_id = _get(response, "id")
+        if request_id:
+            provider_blocks["request_id"] = str(request_id)
         return Assistant(
             content=str(_get(message, "content") or ""),
             tool_calls=calls,
-            provider_blocks=_provider_blocks(message),
+            provider_blocks=provider_blocks,
         )
 
     def _stream_with_provider(

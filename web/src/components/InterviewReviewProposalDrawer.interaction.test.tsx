@@ -232,4 +232,32 @@ describe('InterviewReviewProposalDrawer attempt ownership', () => {
     expect(service.create).toHaveBeenNthCalledWith(2, 7, '00000000-0000-0000-0000-000000000001');
     act(() => { resolveFirst?.({}); });
   });
+
+  it('renders a safe empty proposal as a normal empty state', async () => {
+    service.create.mockResolvedValueOnce({
+      id: 20,
+      created_at: '2026-07-22T00:00:00Z',
+      source_status: 'current',
+      proposal: {
+        summary: { text: '暂无可验证建议', evidence_refs: [] },
+        observations: [],
+        clarifications: [],
+        practice_focuses: [],
+        next_questions: [],
+      },
+    });
+
+    act(() => root?.render(<Harness />));
+    const generate = () => {
+      const buttons = [...(container?.querySelectorAll('button') || [])];
+      return buttons[buttons.length - 1] as HTMLButtonElement;
+    };
+    await act(async () => {
+      generate().click();
+      await Promise.resolve();
+    });
+
+    expect(container?.textContent).toContain('暂无可验证建议');
+    expect(container?.querySelector('[role="alert"]')).toBeNull();
+  });
 });

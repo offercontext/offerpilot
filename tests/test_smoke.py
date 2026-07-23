@@ -358,15 +358,37 @@ def test_real_ai_interview_review_smoke_allows_verified_evidence_excerpt():
             return self._payload
 
     class Client:
+        def __init__(self) -> None:
+            self.event_calls = 0
+            self.note_calls = 0
+            self.proposal_calls = 0
+
         def post(self, path: str, json: dict[str, object]) -> Response:
             if path == "/api/application-events":
                 assert json["event_type"] == "interview"
-                return Response({"id": 31, "application_id": 7, "event_type": "interview"})
+                self.event_calls += 1
+                return Response(
+                    {
+                        "id": 30 + self.event_calls,
+                        "application_id": 7,
+                        "event_type": "interview",
+                    }
+                )
             if path == "/api/applications/7/notes":
-                assert json["application_event_id"] == 31
-                return Response({"id": 32, "application_event_id": 31})
-            if path == "/api/notes/32/interview-review-proposals":
+                self.note_calls += 1
+                assert json["application_event_id"] == 30 + self.note_calls
+                return Response(
+                    {"id": 31 + self.note_calls, "application_event_id": 30 + self.note_calls}
+                )
+            if path.startswith("/api/notes/") and path.endswith("/interview-review-proposals"):
                 assert set(json) == {"idempotency_key"}
+                self.proposal_calls += 1
+                excerpts = [
+                    "SMOKE_PRIVATE_INTERVIEW_QUESTION: explain the migration rollback plan",
+                    "SMOKE_PRIVATE_INTERVIEW_REFLECTION: I omitted the failure mode initially.",
+                    "SMOKE_PRIVATE_INTERVIEW_DIFFICULTY: prioritizing the first diagnostic step",
+                ]
+                paths = ["/questions", "/self_reflection", "/difficulty_points"]
                 return Response(
                     {
                         "id": 33,
@@ -377,11 +399,11 @@ def test_real_ai_interview_review_smoke_allows_verified_evidence_excerpt():
                             "summary": {
                                 "text": "本次复盘记录不足以形成有依据的表现判断，请先补充待澄清问题。",
                                 "evidence_refs": [
-                                    {
-                                        "source": "interview_note",
-                                        "path": "/questions",
-                                        "excerpt": "SMOKE_PRIVATE_INTERVIEW_FACT: explain the migration rollback plan",
-                                    }
+                                        {
+                                            "source": "interview_note",
+                                            "path": paths[self.proposal_calls - 1],
+                                            "excerpt": excerpts[self.proposal_calls - 1],
+                                        }
                                 ],
                             },
                             "observations": [],

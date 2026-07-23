@@ -206,8 +206,9 @@ def test_validator_rejects_event_as_evidence_and_extra_top_level_fields() -> Non
     payload["summary"]["evidence_refs"] = [  # type: ignore[index]
         {"source": "application_event", "path": "/status", "excerpt": "done"}
     ]
-    with pytest.raises(InterviewReviewModelError):
+    with pytest.raises(InterviewReviewModelError) as exc_info:
         validate_interview_review(payload, _snapshot())
+    assert exc_info.value.validation_category == "unknown_evidence_ref"
 
 
 def test_validator_allows_only_versioned_ungrounded_summary_and_questions() -> None:
@@ -274,7 +275,7 @@ def test_generate_retries_once_for_invalid_shape() -> None:
 
     assert model.calls == 2
     assert result == valid
-    assert "invalid_change_shape" in model.prompts[1]
+    assert "invalid_structure" in model.prompts[1]
     assert "not a string" not in model.prompts[1]
 
 
@@ -294,7 +295,7 @@ def test_generate_does_not_retry_provider_errors() -> None:
     assert exc_info.value.failure_category == "provider_error"
 
 
-def test_generate_fails_after_one_invalid_retry() -> None:
+def test_generate_returns_safe_empty_after_one_invalid_retry() -> None:
     class InvalidModel:
         calls = 0
 
@@ -303,8 +304,84 @@ def test_generate_fails_after_one_invalid_retry() -> None:
             return Assistant(content='{"summary": {"text": "bad", "evidence_refs": []}}')
 
     model = InvalidModel()
-    with pytest.raises(InterviewReviewModelError) as exc_info:
-        generate_interview_review_proposal(model, _snapshot())
+    result = generate_interview_review_proposal(model, _snapshot())
 
     assert model.calls == 2
-    assert exc_info.value.failure_category == "unverifiable"
+    assert result["summary"] == {
+        "text": INTERVIEW_REVIEW_UNGROUNDED_SUMMARY_V1,
+        "evidence_refs": [],
+    }
+    assert result["observations"] == []
+    assert result["practice_focuses"] == []
+    assert result["clarifications"][0]["question"] == INTERVIEW_REVIEW_UNGROUNDED_QUESTIONS_V1[0]
+    assert result["clarifications"][0]["evidence_refs"] == []
+
+
+def test_generate_emits_redacted_diagnostic_for_safe_empty_fallback() -> None:
+    diagnostics: list[dict[str, object]] = []
+
+    class InvalidModel:
+        def complete(self, messages, tools):  # type: ignore[no-untyped-def]
+            return Assistant(content='{"summary": {"text": "candidate secret", "evidence_refs": []}}')
+
+    generate_interview_review_proposal(
+        InvalidModel(),
+        _snapshot(),
+        on_diagnostic=diagnostics.append,
+    )
+
+    assert len(diagnostics) == 1
+    diagnostic = diagnostics[0]
+    assert diagnostic["failure_category"] == "unexpected_field"
+    assert diagnostic["repair_attempted"] is True
+    assert diagnostic["retry_count"] == 1
+    assert "candidate secret" not in str(diagnostic)
+    assert "cache invalidation" not in str(diagnostic)
+
+
+def test_prompt_lists_exact_evidence_candidates_and_safe_output_limits() -> None:
+    from offerpilot.ai.interview_review_proposals import _interview_review_prompt, _interview_review_system
+
+    prompt = _interview_review_prompt(_snapshot())
+    system = _interview_review_system()
+    assert "Verified evidence candidates" in prompt
+    assert "/questions" in prompt
+    assert "How would you design a cache?" in prompt
+    assert "at most 10" in system
+    assert "at most 5" in system
+    assert "exact safe JSON shape" in system
+
+
+def test_generate_uses_native_schema_when_model_explicitly_supports_it() -> None:
+    class StructuredModel:
+        supports_json_schema = True
+
+        def __init__(self) -> None:
+            self.response_formats = []
+
+        def complete(self, messages, tools, response_format=None):  # type: ignore[no-untyped-def]
+            self.response_formats.append(response_format)
+            return Assistant(content=json.dumps(_proposal()))
+
+    model = StructuredModel()
+    assert generate_interview_review_proposal(model, _snapshot()) == _proposal()
+    assert model.response_formats[0]["type"] == "json_schema"
+
+
+def test_generate_repair_prompt_classifies_unexpected_field() -> None:
+    invalid = _proposal()
+    invalid["unexpected"] = True
+
+    class RepairingModel:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.prompts: list[str] = []
+
+        def complete(self, messages, tools):  # type: ignore[no-untyped-def]
+            self.calls += 1
+            self.prompts.append(messages[-1].content)
+            return Assistant(content=json.dumps(invalid if self.calls == 1 else _proposal()))
+
+    model = RepairingModel()
+    assert generate_interview_review_proposal(model, _snapshot()) == _proposal()
+    assert "unexpected_field" in model.prompts[1]

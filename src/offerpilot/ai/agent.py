@@ -55,7 +55,12 @@ class PendingActionValidationError(ValueError):
 
 
 class ChatModel(Protocol):
-    def complete(self, messages: list[Message], tools: list[dict[str, Any]]) -> Assistant: ...
+    def complete(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        response_format: dict[str, Any] | None = None,
+    ) -> Assistant: ...
 
 
 class StreamingChatModel(Protocol):

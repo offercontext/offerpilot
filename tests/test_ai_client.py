@@ -3,7 +3,7 @@ from typing import Any
 from offerpilot.ai import client as ai_client
 from offerpilot.ai.client import ConfiguredAIClient
 from offerpilot.ai.types import Message, ToolCall
-from offerpilot.config import Config
+from offerpilot.config import AIProviderProfile, Config
 
 
 def test_legacy_anthropic_config_routes_through_litellm(monkeypatch):
@@ -91,3 +91,66 @@ def test_client_accepts_openai_wrapped_tool_schema(monkeypatch):
     client.complete([Message(role="user", content="analyse")], [tool])
 
     assert captured["tools"] == [tool]
+
+
+def test_client_passes_response_format_only_to_explicitly_capable_provider(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake_completion(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {"choices": [{"message": {"content": "{}"}}]}
+
+    monkeypatch.setattr(ai_client, "completion", fake_completion)
+    client = ConfiguredAIClient(
+        Config(
+            providers=[
+                AIProviderProfile(
+                    id="capable",
+                    api_key="sk-test",
+                    supports_json_schema=True,
+                )
+            ],
+            active_provider_id="capable",
+        )
+    )
+
+    client.complete(
+        [Message(role="user", content="return JSON")],
+        [],
+        response_format={"type": "json_schema", "json_schema": {"name": "review"}},
+    )
+
+    assert captured["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {"name": "review"},
+    }
+
+
+def test_client_omits_response_format_for_provider_without_explicit_capability(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake_completion(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {"choices": [{"message": {"content": "{}"}}]}
+
+    monkeypatch.setattr(ai_client, "completion", fake_completion)
+    client = ConfiguredAIClient(
+        Config(
+            providers=[
+                AIProviderProfile(
+                    id="unconfigured",
+                    api_key="sk-test",
+                    supports_json_schema=False,
+                )
+            ],
+            active_provider_id="unconfigured",
+        )
+    )
+
+    client.complete(
+        [Message(role="user", content="return JSON")],
+        [],
+        response_format={"type": "json_schema", "json_schema": {"name": "review"}},
+    )
+
+    assert "response_format" not in captured

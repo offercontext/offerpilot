@@ -49,7 +49,12 @@ class _SmokeChatModel(ChatModel):
     def __init__(self, application_id: int):
         self._application_id = application_id
 
-    def complete(self, messages: list[Message], tools: list[dict[str, Any]]) -> Assistant:
+    def complete(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        response_format: dict[str, Any] | None = None,
+    ) -> Assistant:
         if messages and messages[-1].role == "tool":
             return Assistant(content="smoke complete")
         user_message = _latest_user_message(messages)
@@ -100,7 +105,12 @@ class _MutableSmokeChatModel(ChatModel):
     def __init__(self) -> None:
         self.application_id: int | None = None
 
-    def complete(self, messages: list[Message], tools: list[dict[str, Any]]) -> Assistant:
+    def complete(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        response_format: dict[str, Any] | None = None,
+    ) -> Assistant:
         if self.application_id is None:
             raise RuntimeError("smoke application id was not initialized")
         if messages and messages[-1].role == "tool":
@@ -537,76 +547,100 @@ def _run_real_ai_interview_review_smoke(
     steps: list[SmokeStep],
     application_id: int,
 ) -> None:
-    marker = "SMOKE_PRIVATE_INTERVIEW_FACT"
-    event = client.post(
-        "/api/application-events",
-        json={
-            "application_id": application_id,
-            "event_type": "interview",
-            "subtype": "technical",
-            "round": 1,
-            "scheduled_at": "2026-07-22T10:00:00+08:00",
-            "duration_minutes": 45,
-            "location": "SMOKE_PRIVATE_LOCATION",
-        },
-    )
-    _assert_status(event.status_code, 201, "http_interview_review_event")
-    event_body = event.json()
-    event_id = event_body.get("id") if isinstance(event_body, dict) else None
-    if not isinstance(event_id, int):
-        raise RuntimeError("interview review smoke did not return an event id")
-
-    note = client.post(
-        f"/api/applications/{application_id}/notes",
-        json={
-            "company": "AI Interview Review Smoke",
-            "position": "Verification Engineer",
-            "round": "technical",
-            "date": "2026-07-22",
-            "questions": f"{marker}: explain the migration rollback plan",
+    cases = [
+        {
+            "marker": "SMOKE_PRIVATE_INTERVIEW_QUESTION",
+            "questions": "SMOKE_PRIVATE_INTERVIEW_QUESTION: explain the migration rollback plan",
             "self_reflection": "I gave a concise answer after clarifying the constraint.",
             "difficulty_points": "I needed more time to structure the tradeoff.",
             "mood": "focused",
-            "application_event_id": event_id,
         },
-    )
-    _assert_status(note.status_code, 201, "http_interview_review_note")
-    note_body = note.json()
-    note_id = note_body.get("id") if isinstance(note_body, dict) else None
-    if not isinstance(note_id, int):
-        raise RuntimeError("interview review smoke did not return a note id")
-
-    proposal = client.post(
-        f"/api/notes/{note_id}/interview-review-proposals",
-        json={"idempotency_key": "f36f6d0b-1d1e-4e9a-aec1-9fef6b2f3b91"},
-    )
-    if proposal.status_code != 201:
-        error_code = None
-        try:
-            error_body = proposal.json()
-            if isinstance(error_body, dict):
-                error_code = error_body.get("error_code")
-        except (TypeError, ValueError):
-            pass
-        raise RuntimeError(
-            f"http_interview_review_proposal returned status {proposal.status_code}, "
-            f"expected 201 (error_code={error_code!r})"
+        {
+            "marker": "SMOKE_PRIVATE_INTERVIEW_REFLECTION",
+            "questions": "Explain the cache invalidation strategy.",
+            "self_reflection": "SMOKE_PRIVATE_INTERVIEW_REFLECTION: I omitted the failure mode initially.",
+            "difficulty_points": "I needed more time to structure the tradeoff.",
+            "mood": "nervous",
+        },
+        {
+            "marker": "SMOKE_PRIVATE_INTERVIEW_DIFFICULTY",
+            "questions": "How would you debug a slow query?",
+            "self_reflection": "I asked for a moment to organize the answer.",
+            "difficulty_points": "SMOKE_PRIVATE_INTERVIEW_DIFFICULTY: prioritizing the first diagnostic step",
+            "mood": "focused",
+        },
+    ]
+    verified_non_empty = 0
+    for index, case in enumerate(cases, start=1):
+        event = client.post(
+            "/api/application-events",
+            json={
+                "application_id": application_id,
+                "event_type": "interview",
+                "subtype": "technical",
+                "round": index,
+                "scheduled_at": f"2026-07-22T{9 + index:02d}:00:00+08:00",
+                "duration_minutes": 45,
+                "location": "SMOKE_PRIVATE_LOCATION",
+            },
         )
-    body = proposal.json()
-    if not isinstance(body, dict) or not isinstance(body.get("proposal"), dict):
-        raise RuntimeError("interview review smoke response did not contain a verified proposal")
-    serialized = json.dumps(body, ensure_ascii=False)
-    verified_marker_excerpt = _validate_interview_review_smoke_evidence(
-        body["proposal"], marker
-    )
-    if (marker in serialized and not verified_marker_excerpt) or "SMOKE_PRIVATE_LOCATION" in serialized:
-        raise RuntimeError("interview review smoke response leaked frozen source data")
-    if "input_snapshot_json" in body or "input_snapshot" in body:
-        raise RuntimeError("interview review smoke response exposed the input snapshot")
+        _assert_status(event.status_code, 201, f"http_interview_review_event_{index}")
+        event_body = event.json()
+        event_id = event_body.get("id") if isinstance(event_body, dict) else None
+        if not isinstance(event_id, int):
+            raise RuntimeError("interview review smoke did not return an event id")
+
+        note = client.post(
+            f"/api/applications/{application_id}/notes",
+            json={
+                "company": "AI Interview Review Smoke",
+                "position": "Verification Engineer",
+                "round": "technical",
+                "date": "2026-07-22",
+                "questions": case["questions"],
+                "self_reflection": case["self_reflection"],
+                "difficulty_points": case["difficulty_points"],
+                "mood": case["mood"],
+                "application_event_id": event_id,
+            },
+        )
+        _assert_status(note.status_code, 201, f"http_interview_review_note_{index}")
+        note_body = note.json()
+        note_id = note_body.get("id") if isinstance(note_body, dict) else None
+        if not isinstance(note_id, int):
+            raise RuntimeError("interview review smoke did not return a note id")
+
+        proposal = client.post(
+            f"/api/notes/{note_id}/interview-review-proposals",
+            json={"idempotency_key": f"interview-review-smoke-{index}"},
+        )
+        _assert_status(proposal.status_code, 201, f"http_interview_review_proposal_{index}")
+        body = proposal.json()
+        if not isinstance(body, dict) or not isinstance(body.get("proposal"), dict):
+            raise RuntimeError("interview review smoke response did not contain a verified proposal")
+        serialized = json.dumps(body, ensure_ascii=False)
+        cited = _validate_interview_review_smoke_evidence(
+            body["proposal"],
+            case["marker"],
+            {
+                "/questions": case["questions"],
+                "/self_reflection": case["self_reflection"],
+                "/difficulty_points": case["difficulty_points"],
+                "/mood": case["mood"],
+            },
+        )
+        if cited:
+            verified_non_empty += 1
+        if "SMOKE_PRIVATE_LOCATION" in serialized:
+            raise RuntimeError("interview review smoke response leaked frozen source data")
+        if "input_snapshot_json" in body or "input_snapshot" in body:
+            raise RuntimeError("interview review smoke response exposed the input snapshot")
+    if verified_non_empty < 1:
+        raise RuntimeError("interview review smoke returned no evidence-backed non-empty proposal")
     steps.append(
         SmokeStep(
             "http_interview_review_proposal",
-            "real AI returned a verified interview review proposal",
+            "real AI returned three safe interview review proposals with at least one cited result",
         )
     )
 
@@ -614,10 +648,11 @@ def _run_real_ai_interview_review_smoke(
 def _validate_interview_review_smoke_evidence(
     proposal: Any,
     marker: str,
+    expected_excerpts: dict[str, str] | None = None,
 ) -> bool:
     if not isinstance(proposal, dict):
         raise RuntimeError("interview review smoke proposal was not an object")
-    marker_in_verified_excerpt = False
+    has_verified_evidence = False
     for field in ("summary", "observations", "clarifications", "practice_focuses", "next_questions"):
         values = proposal.get(field)
         items = values if isinstance(values, list) else [values]
@@ -637,9 +672,13 @@ def _validate_interview_review_smoke_evidence(
                     or not ref["excerpt"]
                 ):
                     raise RuntimeError("interview review smoke returned an invalid evidence reference")
-                if marker in ref["excerpt"]:
-                    marker_in_verified_excerpt = True
-    return marker_in_verified_excerpt
+                if expected_excerpts is not None and ref["excerpt"] not in expected_excerpts.get(
+                    str(ref["path"]), ""
+                ):
+                    raise RuntimeError("interview review smoke evidence excerpt did not match note")
+                if marker in ref["excerpt"] or expected_excerpts is not None:
+                    has_verified_evidence = True
+    return has_verified_evidence
 
 
 def _copy_real_ai_config(source_data_dir: Path, isolated_data_dir: Path) -> None:
