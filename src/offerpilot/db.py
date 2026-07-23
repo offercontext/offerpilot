@@ -91,6 +91,11 @@ def init_database(db_path: Path) -> SessionFactory:
         "0010_interview_review_proposals",
         "Add event-bound interview review proposals",
     )
+    _record_migration(
+        engine,
+        "0011_confirmed_interview_knowledge_capture",
+        "Add confirmed interview knowledge capture",
+    )
     # ``attempt_id`` was added after the initial KI-10 schema.  Add it before
     # creating the integrity triggers below so existing databases can use the
     # same association checks as fresh databases.

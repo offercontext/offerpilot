@@ -25,8 +25,16 @@ from offerpilot.models import (
     ApplicationEvidenceBundle,
     ApplicationEvent,
     ApplicationMaterialKit,
+    InterviewKnowledgeCaptureAttempt,
     InterviewNote,
     InterviewReviewProposal,
+    KnowledgeCapturedSourceMetadata,
+    KnowledgeEvidence,
+    KnowledgeExtractionSnapshot,
+    KnowledgeNote,
+    KnowledgeNoteEvidence,
+    KnowledgeNoteVersion,
+    KnowledgeSource,
     MaterialRevisionProposal,
     OpportunityFitReview,
     Resume,
@@ -383,6 +391,7 @@ def _run_http_smoke(
                     _run_real_ai_material_proposal_smoke(client, steps, application_id, smoke_resume_ids)
                     _run_real_ai_opportunity_fit_smoke(client, steps, application_id, smoke_resume_ids)
                     _run_real_ai_interview_review_smoke(client, steps, application_id)
+                    _run_real_ai_interview_knowledge_capture_smoke(client, steps, application_id)
                     _run_real_ai_write_smoke(client, steps, company, application_id)
                 else:
                     _run_deterministic_chat_smoke(client, steps, application_id)
@@ -645,6 +654,91 @@ def _run_real_ai_interview_review_smoke(
     )
 
 
+def _run_real_ai_interview_knowledge_capture_smoke(
+    client: httpx.Client,
+    steps: list[SmokeStep],
+    application_id: int,
+) -> None:
+    event = client.post(
+        "/api/application-events",
+        json={
+            "application_id": application_id,
+            "event_type": "interview",
+            "subtype": "knowledge-capture",
+            "scheduled_at": "2026-07-24T10:00:00+08:00",
+            "duration_minutes": 45,
+        },
+    )
+    _assert_status(event.status_code, 201, "http_interview_knowledge_event")
+    event_id = event.json().get("id")
+    if not isinstance(event_id, int):
+        raise RuntimeError("interview knowledge smoke did not return an event id")
+    note = client.post(
+        f"/api/applications/{application_id}/notes",
+        json={
+            "company": "AI Interview Knowledge Smoke",
+            "position": "Verification Engineer",
+            "round": "technical",
+            "date": "2026-07-24",
+            "questions": "I explained the rollback plan and the observable safety signal.",
+            "self_reflection": "I should have stated the tradeoff before the implementation detail.",
+            "difficulty_points": "I needed a moment to structure the tradeoff.",
+            "mood": "focused",
+            "application_event_id": event_id,
+        },
+    )
+    _assert_status(note.status_code, 201, "http_interview_knowledge_note")
+    note_id = note.json().get("id")
+    if not isinstance(note_id, int):
+        raise RuntimeError("interview knowledge smoke did not return a note id")
+    selected = [
+        {
+            "fragment_id": "smoke-question",
+            "path": "/questions",
+            "start": 2,
+            "end": 63,
+            "text": "explained the rollback plan and the observable safety signal.",
+        },
+        {
+            "fragment_id": "smoke-reflection",
+            "path": "/self_reflection",
+            "start": 0,
+            "end": 67,
+            "text": "I should have stated the tradeoff before the implementation detail.",
+        },
+    ]
+    preview = client.post(
+        f"/api/notes/{note_id}/knowledge-capture/preview",
+        json={"attempt_key": "real-ai-interview-knowledge", "mode": "ai", "selected_fragments": selected},
+    )
+    _assert_status(preview.status_code, 200, "http_interview_knowledge_preview")
+    preview_body = preview.json()
+    if not isinstance(preview_body, dict) or not isinstance(preview_body.get("preview"), dict):
+        raise RuntimeError("interview knowledge smoke preview was not an object")
+    if "input_snapshot" in preview_body or "source_fields" in preview_body:
+        raise RuntimeError("interview knowledge smoke exposed the input snapshot")
+    confirm = client.post(
+        f"/api/notes/{note_id}/knowledge-capture/confirm",
+        json={
+            "attempt_key": preview_body["attempt_key"],
+            "note_fingerprint": preview_body["note_fingerprint"],
+            "title": "Interview rollback reflection",
+            "blocks": preview_body["preview"].get("blocks", []),
+        },
+    )
+    _assert_status(confirm.status_code, 201, "http_interview_knowledge_confirm")
+    confirmed = client.get("/api/knowledge/notes")
+    _assert_status(confirmed.status_code, 200, "http_interview_knowledge_history")
+    if not confirmed.json().get("items"):
+        raise RuntimeError("interview knowledge smoke did not return confirmed history")
+    steps.append(
+        SmokeStep(
+            "http_interview_knowledge_capture",
+            "real AI preview was reviewed and confirmed into frozen interview knowledge",
+        )
+    )
+
+
 def _validate_interview_review_smoke_evidence(
     proposal: Any,
     marker: str,
@@ -704,6 +798,40 @@ def _cleanup_real_ai_smoke_records(
             session.execute(
                 delete(InterviewReviewProposal).where(InterviewReviewProposal.note_id.in_(note_ids))
             )
+            captured_note_ids = list(
+                session.scalars(
+                    select(InterviewNote.id).where(InterviewNote.application_id == application_id)
+                )
+            )
+            captured_source_ids = list(
+                session.scalars(
+                    select(KnowledgeCapturedSourceMetadata.source_id).where(
+                        KnowledgeCapturedSourceMetadata.origin_note_id.in_(captured_note_ids)
+                    )
+                )
+            )
+            captured_version_ids = list(
+                session.scalars(
+                    select(KnowledgeNoteVersion.id).where(
+                        KnowledgeNoteVersion.source_id.in_(captured_source_ids)
+                    )
+                )
+            )
+            captured_knowledge_note_ids = list(
+                session.scalars(
+                    select(KnowledgeNoteVersion.note_id).where(
+                        KnowledgeNoteVersion.id.in_(captured_version_ids)
+                    )
+                )
+            )
+            session.execute(delete(KnowledgeNoteEvidence).where(KnowledgeNoteEvidence.note_version_id.in_(captured_version_ids)))
+            session.execute(delete(KnowledgeNoteVersion).where(KnowledgeNoteVersion.id.in_(captured_version_ids)))
+            session.execute(delete(KnowledgeNote).where(KnowledgeNote.id.in_(captured_knowledge_note_ids)))
+            session.execute(delete(KnowledgeEvidence).where(KnowledgeEvidence.source_id.in_(captured_source_ids)))
+            session.execute(delete(KnowledgeExtractionSnapshot).where(KnowledgeExtractionSnapshot.source_id.in_(captured_source_ids)))
+            session.execute(delete(KnowledgeCapturedSourceMetadata).where(KnowledgeCapturedSourceMetadata.source_id.in_(captured_source_ids)))
+            session.execute(delete(KnowledgeSource).where(KnowledgeSource.id.in_(captured_source_ids)))
+            session.execute(delete(InterviewKnowledgeCaptureAttempt).where(InterviewKnowledgeCaptureAttempt.note_id.in_(captured_note_ids)))
             session.execute(delete(InterviewNote).where(InterviewNote.application_id == application_id))
             session.execute(delete(ApplicationEvent).where(ApplicationEvent.application_id == application_id))
             session.execute(
@@ -767,6 +895,11 @@ def _assert_real_ai_smoke_data_clean(data_dir: Path) -> None:
             evidence_bundle_count = session.scalar(
                 select(func.count()).select_from(ApplicationEvidenceBundle)
             )
+            captured_knowledge_count = session.scalar(
+                select(func.count()).select_from(KnowledgeNote).where(
+                    KnowledgeNote.origin_kind == "confirmed_interview_capture"
+                )
+            )
     finally:
         bind = session_factory.kw.get("bind")
         if bind is not None:
@@ -792,6 +925,8 @@ def _assert_real_ai_smoke_data_clean(data_dir: Path) -> None:
         raise RuntimeError("real-ai smoke left applications")
     if evidence_bundle_count != 0:
         raise RuntimeError("real-ai smoke left evidence bundles")
+    if captured_knowledge_count != 0:
+        raise RuntimeError("real-ai smoke left confirmed interview knowledge")
 
 
 def _validate_material_proposal_smoke_response(body: object) -> None:

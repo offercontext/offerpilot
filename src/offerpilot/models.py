@@ -397,6 +397,115 @@ class InterviewReviewProposal(Base):
     )
 
 
+class InterviewKnowledgeCaptureAttempt(Base):
+    __tablename__ = "interview_knowledge_capture_attempts"
+    __table_args__ = (
+        UniqueConstraint("note_id", "attempt_key", name="uq_interview_capture_note_key"),
+        Index("idx_interview_capture_attempt_note", "note_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    note_id: Mapped[int] = mapped_column(
+        ForeignKey("interview_notes.id", ondelete="CASCADE"), nullable=False
+    )
+    attempt_key: Mapped[str] = mapped_column(String, nullable=False)
+    note_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
+    selected_fragments_json: Mapped[str] = mapped_column(Text, nullable=False)
+    last_preview_mode: Mapped[str] = mapped_column(String, default="direct", server_default="direct")
+    preview_status: Mapped[str] = mapped_column(
+        String, default="not_requested", server_default="not_requested"
+    )
+    preview_revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    provider_call_token: Mapped[str] = mapped_column(String, default="", server_default="")
+    preview_json: Mapped[str] = mapped_column(Text, default="", server_default="")
+    preview_error_code: Mapped[str] = mapped_column(String, default="", server_default="")
+    confirmed_note_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("knowledge_note_versions.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
+
+
+class KnowledgeNote(Base):
+    __tablename__ = "knowledge_notes"
+    __table_args__ = (Index("idx_knowledge_notes_origin", "origin_kind"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    title: Mapped[str] = mapped_column(String, default="", server_default="")
+    current_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("knowledge_note_versions.id", ondelete="SET NULL"), nullable=True
+    )
+    origin_kind: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class KnowledgeNoteVersion(Base):
+    __tablename__ = "knowledge_note_versions"
+    __table_args__ = (
+        UniqueConstraint("note_id", "version_number", name="uq_knowledge_note_version_number"),
+        Index("idx_knowledge_note_versions_note", "note_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    note_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_notes.id", ondelete="CASCADE"), nullable=False
+    )
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_json: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String, nullable=False)
+    content_origin: Mapped[str] = mapped_column(String, nullable=False)
+    capture_attempt_key: Mapped[str] = mapped_column(String, nullable=False)
+    source_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_sources.id", ondelete="RESTRICT"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
+
+
+class KnowledgeNoteEvidence(Base):
+    __tablename__ = "knowledge_note_evidence"
+    __table_args__ = (
+        UniqueConstraint(
+            "note_version_id", "block_id", "evidence_id", name="uq_knowledge_note_block_evidence"
+        ),
+        Index("idx_knowledge_note_evidence_version", "note_version_id"),
+    )
+
+    note_version_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_note_versions.id", ondelete="RESTRICT"), primary_key=True
+    )
+    block_id: Mapped[str] = mapped_column(String, primary_key=True)
+    evidence_id: Mapped[str] = mapped_column(
+        ForeignKey("knowledge_evidence.id", ondelete="RESTRICT"), primary_key=True
+    )
+
+
+class KnowledgeCapturedSourceMetadata(Base):
+    __tablename__ = "knowledge_captured_source_metadata"
+
+    source_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_sources.id", ondelete="CASCADE"), primary_key=True
+    )
+    origin_note_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    note_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
+    selected_fragments_json: Mapped[str] = mapped_column(Text, nullable=False)
+    capture_schema_version: Mapped[str] = mapped_column(String, nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
+
+
 class Question(Base):
     __tablename__ = "questions"
     __table_args__ = (

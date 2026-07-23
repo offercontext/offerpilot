@@ -1,5 +1,6 @@
 import type {
   KnowledgeBriefRebuildResponse,
+  ConfirmedInterviewKnowledgeNote,
   KnowledgeDeleteResponse,
   KnowledgeEvidence,
   KnowledgeEvidencePage,
@@ -14,6 +15,18 @@ import type {
 import { createApiClient } from './http';
 
 const http = createApiClient({ baseURL: '/api', timeout: 30000 });
+
+export async function fetchConfirmedInterviewKnowledgeNotes(): Promise<ConfirmedInterviewKnowledgeNote[]> {
+  const { data } = await http.get<{ items: ConfirmedInterviewKnowledgeNote[] }>('/knowledge/notes');
+  return data.items;
+}
+
+export async function fetchConfirmedInterviewKnowledgeNote(
+  noteId: number,
+): Promise<ConfirmedInterviewKnowledgeNote> {
+  const { data } = await http.get<ConfirmedInterviewKnowledgeNote>(`/knowledge/notes/${noteId}`);
+  return data;
+}
 
 export async function fetchKnowledgeSources(
   options: { includeArchived?: boolean } = {},

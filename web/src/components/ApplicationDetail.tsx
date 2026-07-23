@@ -35,6 +35,10 @@ import ReviewFormDrawer from './ReviewFormDrawer';
 import InterviewReviewProposalDrawer, {
   type InterviewReviewProposalAttemptState,
 } from './InterviewReviewProposalDrawer';
+import InterviewKnowledgeCaptureDrawer, {
+  createInterviewKnowledgeCaptureDraft,
+  type InterviewKnowledgeCaptureDraft,
+} from './InterviewKnowledgeCaptureDrawer';
 import MaterialKitDrawer from './MaterialKitDrawer';
 import OpportunityFitReviewDrawer from './OpportunityFitReviewDrawer';
 import type { OpportunityFitReview } from '@/types/opportunityFitReview';
@@ -66,9 +70,12 @@ interface ApplicationDetailProps {
     state: InterviewReviewProposalAttemptState | null,
   ) => void;
   onInterviewNoteChanged?: (noteID: number) => void;
+  interviewKnowledgeCaptureDrafts?: Record<number, InterviewKnowledgeCaptureDraft>;
+  onInterviewKnowledgeCaptureDraftChange?: (noteID: number, draft: InterviewKnowledgeCaptureDraft | null) => void;
+  onInterviewKnowledgeCaptureNoteChanged?: (noteID: number) => void;
 }
 
-export default function ApplicationDetail({ application, open, onClose, onMockInterview, onAskPilot, onOpenPilotOpportunityFit, pilotInterviewReviewApplicationId, onPilotInterviewReviewFocusConsumed, onAttachToPilot, interviewReviewProposalAttempts, onInterviewReviewProposalAttemptChange, onInterviewNoteChanged }: ApplicationDetailProps) {
+export default function ApplicationDetail({ application, open, onClose, onMockInterview, onAskPilot, onOpenPilotOpportunityFit, pilotInterviewReviewApplicationId, onPilotInterviewReviewFocusConsumed, onAttachToPilot, interviewReviewProposalAttempts, onInterviewReviewProposalAttemptChange, onInterviewNoteChanged, interviewKnowledgeCaptureDrafts, onInterviewKnowledgeCaptureDraftChange, onInterviewKnowledgeCaptureNoteChanged }: ApplicationDetailProps) {
   const queryClient = useQueryClient();
   const [form] = Form.useForm();
   const [eventFormOpen, setEventFormOpen] = useState(false);
@@ -82,6 +89,7 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
   const [editingNote, setEditingNote] = useState<InterviewNote | null>(null);
   const [reviewFormOpen, setReviewFormOpen] = useState(false);
   const [reviewProposalOpen, setReviewProposalOpen] = useState(false);
+  const [knowledgeCaptureOpen, setKnowledgeCaptureOpen] = useState(false);
   const [reviewEventID, setReviewEventID] = useState<number | null>(null);
 
   useEffect(() => {
@@ -144,6 +152,7 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
     mutationFn: ({ id, input }: { id: number; input: CreateNoteInput }) => updateNote(id, input),
     onSuccess: (_data, variables) => {
       onInterviewNoteChanged?.(variables.id);
+      onInterviewKnowledgeCaptureNoteChanged?.(variables.id);
       message.success('已更新面试复盘');
       setEditingNote(null);
       setReviewFormOpen(false);
@@ -173,8 +182,16 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
     setEditingNote(null);
     setReviewFormOpen(false);
     setReviewProposalOpen(false);
+    setKnowledgeCaptureOpen(false);
     setReviewEventID(null);
     onClose();
+  };
+
+  const openKnowledgeCapture = (note: InterviewNote) => {
+    const existing = interviewKnowledgeCaptureDrafts?.[note.id] ?? createInterviewKnowledgeCaptureDraft();
+    onInterviewKnowledgeCaptureDraftChange?.(note.id, existing);
+    setEditingNote(note);
+    setKnowledgeCaptureOpen(true);
   };
 
   if (!application || !open) return null;
@@ -241,6 +258,21 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
         onAttemptStateChange={(state) => onInterviewReviewProposalAttemptChange?.(editingNote.id, state)}
         onClose={() => {
           setReviewProposalOpen(false);
+          setEditingNote(null);
+        }}
+      />
+    );
+  }
+
+  if (knowledgeCaptureOpen && editingNote) {
+    return (
+      <InterviewKnowledgeCaptureDrawer
+        open
+        note={editingNote}
+        draft={interviewKnowledgeCaptureDrafts?.[editingNote.id] ?? createInterviewKnowledgeCaptureDraft()}
+        onDraftChange={(draft) => onInterviewKnowledgeCaptureDraftChange?.(editingNote.id, draft)}
+        onClose={() => {
+          setKnowledgeCaptureOpen(false);
           setEditingNote(null);
         }}
       />
@@ -352,18 +384,25 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
                   时长 {event.duration_minutes} 分钟{event.location ? ` · ${event.location}` : ''}
                 </div>
                 {event.event_type === 'interview' && (
-                  <Button
-                    size="small"
-                    type="link"
-                    onClick={() => {
-                      setReviewEventID(event.id);
-                      setEditingNote(linkedNote ?? null);
-                      if (linkedNote) setReviewProposalOpen(true);
-                      else setReviewFormOpen(true);
-                    }}
-                  >
-                    {linkedNote ? '查看复盘' : '记录复盘'}
-                  </Button>
+                  <Space size={4}>
+                    <Button
+                      size="small"
+                      type="link"
+                      onClick={() => {
+                        setReviewEventID(event.id);
+                        setEditingNote(linkedNote ?? null);
+                        if (linkedNote) setReviewProposalOpen(true);
+                        else setReviewFormOpen(true);
+                      }}
+                    >
+                      {linkedNote ? '查看复盘' : '记录复盘'}
+                    </Button>
+                    {linkedNote && (
+                      <Button size="small" type="link" onClick={() => openKnowledgeCapture(linkedNote)}>
+                        沉淀知识
+                      </Button>
+                    )}
+                  </Space>
                 )}
               </div>
               );
@@ -450,6 +489,9 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
                         }}
                       >
                         复盘建议
+                      </Button>
+                      <Button type="text" size="small" onClick={() => openKnowledgeCapture(n)}>
+                        沉淀知识
                       </Button>
                       <Popconfirm
                         title="删除这条复盘？"

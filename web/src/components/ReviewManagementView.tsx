@@ -24,6 +24,10 @@ import ReviewFormDrawer from '@/components/ReviewFormDrawer';
 import InterviewReviewProposalDrawer, {
   type InterviewReviewProposalAttemptState,
 } from '@/components/InterviewReviewProposalDrawer';
+import InterviewKnowledgeCaptureDrawer, {
+  createInterviewKnowledgeCaptureDraft,
+  type InterviewKnowledgeCaptureDraft,
+} from '@/components/InterviewKnowledgeCaptureDrawer';
 
 const { Text, Paragraph } = Typography;
 
@@ -41,6 +45,9 @@ interface Props {
     state: InterviewReviewProposalAttemptState | null,
   ) => void;
   onInterviewNoteChanged?: (noteID: number) => void;
+  interviewKnowledgeCaptureDrafts?: Record<number, InterviewKnowledgeCaptureDraft>;
+  onInterviewKnowledgeCaptureDraftChange?: (noteID: number, draft: InterviewKnowledgeCaptureDraft | null) => void;
+  onInterviewKnowledgeCaptureNoteChanged?: (noteID: number) => void;
 }
 
 function includesText(value: string | undefined, query: string) {
@@ -57,11 +64,12 @@ function inDateRange(date: string, range: [Dayjs | null, Dayjs | null] | null) {
   return !parsed.isBefore(range[0], 'day') && !parsed.isAfter(range[1], 'day');
 }
 
-export default function ReviewManagementView({ applications, interviewReviewProposalAttempts, onInterviewReviewProposalAttemptChange, onInterviewNoteChanged }: Props) {
+export default function ReviewManagementView({ applications, interviewReviewProposalAttempts, onInterviewReviewProposalAttemptChange, onInterviewNoteChanged, interviewKnowledgeCaptureDrafts, onInterviewKnowledgeCaptureDraftChange, onInterviewKnowledgeCaptureNoteChanged }: Props) {
   const queryClient = useQueryClient();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editing, setEditing] = useState<InterviewNote | null>(null);
   const [proposalNote, setProposalNote] = useState<InterviewNote | null>(null);
+  const [knowledgeCaptureNote, setKnowledgeCaptureNote] = useState<InterviewNote | null>(null);
   const [search, setSearch] = useState('');
   const [applicationID, setApplicationID] = useState<number | undefined>();
   const [mood, setMood] = useState<string | undefined>();
@@ -88,6 +96,7 @@ export default function ReviewManagementView({ applications, interviewReviewProp
     mutationFn: ({ id, input }: { id: number; input: CreateNoteInput }) => updateNote(id, input),
     onSuccess: (_data, variables) => {
       onInterviewNoteChanged?.(variables.id);
+      onInterviewKnowledgeCaptureNoteChanged?.(variables.id);
       message.success('已更新面试复盘');
       setEditing(null);
       setDrawerOpen(false);
@@ -146,6 +155,19 @@ export default function ReviewManagementView({ applications, interviewReviewProp
         attemptState={interviewReviewProposalAttempts?.[proposalNote.id]}
         onAttemptStateChange={(state) => onInterviewReviewProposalAttemptChange?.(proposalNote.id, state)}
         onClose={() => setProposalNote(null)}
+      />
+    );
+  }
+
+  if (knowledgeCaptureNote) {
+    const note = knowledgeCaptureNote;
+    return (
+      <InterviewKnowledgeCaptureDrawer
+        open
+        note={note}
+        draft={interviewKnowledgeCaptureDrafts?.[note.id] ?? createInterviewKnowledgeCaptureDraft()}
+        onDraftChange={(draft) => onInterviewKnowledgeCaptureDraftChange?.(note.id, draft)}
+        onClose={() => setKnowledgeCaptureNote(null)}
       />
     );
   }
@@ -234,6 +256,15 @@ export default function ReviewManagementView({ applications, interviewReviewProp
                       }}
                     />
                   </Tooltip>
+                  <Button type="text" size="small" onClick={() => {
+                    onInterviewKnowledgeCaptureDraftChange?.(
+                      note.id,
+                      interviewKnowledgeCaptureDrafts?.[note.id] ?? createInterviewKnowledgeCaptureDraft(),
+                    );
+                    setKnowledgeCaptureNote(note);
+                  }}>
+                    沉淀知识
+                  </Button>
                   <Tooltip title="删除">
                     <Button type="text" onClick={() => setProposalNote(note)}>
                       复盘建议

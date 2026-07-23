@@ -34,6 +34,10 @@ from offerpilot.ai.agent import (
 )
 from offerpilot.ai.material_proposals import MaterialProposalModelError
 from offerpilot.ai.interview_review_proposals import InterviewReviewModelError
+from offerpilot.ai.interview_knowledge_capture import (
+    InterviewKnowledgeProviderError,
+    generate_interview_knowledge_preview,
+)
 from offerpilot.ai.opportunity_fit_reviews import OpportunityFitModelError, validate_triage
 from offerpilot.ai.client import ConfiguredAIClient
 from offerpilot.ai.tools import editable_fields_for_tool, offerpilot_tool_registry
@@ -62,6 +66,7 @@ from offerpilot.knowledge.brief import (
     parse_brief_payload,
 )
 from offerpilot.knowledge.assets import AssetInput
+from offerpilot.knowledge.interview_capture import FragmentValidationError
 from offerpilot.knowledge.search import SearchError as _KnowledgeSearchError
 from offerpilot.knowledge.service import IngestError as _IngestHttpError
 from offerpilot.knowledge.worker import (
@@ -102,6 +107,15 @@ from offerpilot.repositories.interview_review_proposals import (
     InterviewReviewEventRequired,
     InterviewReviewNotFound,
     InterviewReviewProposalsRepository,
+)
+from offerpilot.repositories.interview_knowledge_capture import (
+    CaptureAttemptConfirmed,
+    CaptureAttemptConflict,
+    CaptureAttemptExpired,
+    InterviewKnowledgeCaptureNotFound,
+    InterviewKnowledgeCaptureRepository,
+    InterviewKnowledgeSourceChanged,
+    InterviewKnowledgeValidationError,
 )
 from offerpilot.repositories.mock import MockSessionCreate, MockSessionsRepository
 from offerpilot.repositories.notes import (
@@ -650,6 +664,7 @@ def create_app(
     material_revision_proposals = MaterialRevisionProposalsRepository(session_factory)
     opportunity_fit_reviews = OpportunityFitReviewsRepository(session_factory)
     interview_review_proposals = InterviewReviewProposalsRepository(session_factory)
+    interview_knowledge_capture = InterviewKnowledgeCaptureRepository(session_factory)
     mock_sessions = MockSessionsRepository(session_factory)
     wakeups = WakeupsRepository(session_factory)
     knowledge_repository = KnowledgeRepository(session_factory)
@@ -726,6 +741,142 @@ def create_app(
     @app.get("/api/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/api/knowledge/notes")
+    def list_confirmed_interview_knowledge_notes() -> JSONResponse:
+        return JSONResponse({"items": interview_knowledge_capture.list_knowledge_notes()})
+
+    @app.get("/api/knowledge/notes/{knowledge_note_id}")
+    def get_confirmed_interview_knowledge_note(knowledge_note_id: int) -> JSONResponse:
+        payload = interview_knowledge_capture.get_knowledge_note(knowledge_note_id)
+        if payload is None:
+            return error_response(404, "知识笔记不可见。", code="knowledge_note_not_found")
+        return JSONResponse(payload)
+
+    @app.post("/api/notes/{note_id}/knowledge-capture/preview")
+    def create_interview_knowledge_preview(
+        note_id: int, payload: dict[str, Any] = Body(...)
+    ) -> JSONResponse:
+        if set(payload) != {"attempt_key", "mode", "selected_fragments"}:
+            return error_response(
+                422,
+                "所选片段无法验证，请重新选择。",
+                code="interview_knowledge_selection_invalid",
+            )
+        attempt_key = payload.get("attempt_key")
+        mode = payload.get("mode")
+        selected = payload.get("selected_fragments")
+        if not isinstance(attempt_key, str) or not attempt_key.strip() or not isinstance(mode, str) or not isinstance(selected, list):
+            return error_response(
+                422,
+                "所选片段无法验证，请重新选择。",
+                code="interview_knowledge_selection_invalid",
+            )
+        try:
+            attempt = interview_knowledge_capture.prepare_preview(
+                note_id, attempt_key.strip(), mode, selected
+            )
+            if mode == "ai" and attempt.preview_status not in {"ai_ready", "safe_empty", "confirmed"}:
+                claim = interview_knowledge_capture.claim_ai_preview(
+                    note_id, attempt_key.strip(), attempt.fragments
+                )
+                if claim.should_call_provider:
+                    model = _chat_model(chat_model, resolved_data_dir)
+                    if isinstance(model, JSONResponse):
+                        interview_knowledge_capture.mark_provider_unknown(
+                            note_id,
+                            attempt_key.strip(),
+                            claim.preview_revision,
+                            claim.provider_call_token,
+                        )
+                        return error_response(
+                            502,
+                            "AI 预览暂不可用，可直接保存选中原文。",
+                            code="interview_knowledge_preview_provider_error",
+                        )
+                    try:
+                        preview = generate_interview_knowledge_preview(
+                            model,
+                            claim.fragments,
+                            on_diagnostic=lambda diagnostic: append_log_entry(
+                                resolved_data_dir,
+                                "WARNING",
+                                _interview_knowledge_diagnostic_message(diagnostic),
+                            ),
+                        )
+                    except InterviewKnowledgeProviderError:
+                        interview_knowledge_capture.mark_provider_unknown(
+                            note_id,
+                            attempt_key.strip(),
+                            claim.preview_revision,
+                            claim.provider_call_token,
+                        )
+                        return error_response(
+                            502,
+                            "AI 预览暂不可用，可直接保存选中原文。",
+                            code="interview_knowledge_preview_provider_error",
+                        )
+                    interview_knowledge_capture.complete_ai_preview(
+                        note_id,
+                        attempt_key.strip(),
+                        claim.preview_revision,
+                        claim.provider_call_token,
+                        preview,
+                    )
+                refreshed_attempt = interview_knowledge_capture.get_attempt(note_id, attempt_key.strip())
+                if refreshed_attempt is None:
+                    raise InterviewKnowledgeCaptureNotFound()
+                attempt = refreshed_attempt
+        except InterviewKnowledgeCaptureNotFound:
+            return error_response(404, "该复盘已不可用。", code="interview_note_not_found")
+        except CaptureAttemptConflict:
+            return error_response(409, "当前沉淀草稿已变化，请重新开始。", code="interview_knowledge_attempt_conflict")
+        except CaptureAttemptExpired:
+            return error_response(410, "沉淀草稿已过期，请重新选择片段。", code="interview_knowledge_attempt_expired")
+        except (FragmentValidationError, TypeError, ValueError):
+            return error_response(422, "所选片段无法验证，请重新选择。", code="interview_knowledge_selection_invalid")
+        return JSONResponse(_interview_knowledge_capture_payload(attempt))
+
+    @app.post("/api/notes/{note_id}/knowledge-capture/confirm")
+    def confirm_interview_knowledge_capture(
+        note_id: int, payload: dict[str, Any] = Body(...)
+    ) -> JSONResponse:
+        if set(payload) != {"attempt_key", "note_fingerprint", "title", "blocks"}:
+            return error_response(422, "所选片段无法验证，请重新选择。", code="interview_knowledge_selection_invalid")
+        if (
+            not isinstance(payload.get("attempt_key"), str)
+            or not payload["attempt_key"].strip()
+            or not isinstance(payload.get("note_fingerprint"), str)
+            or not payload["note_fingerprint"].strip()
+            or not isinstance(payload.get("title"), str)
+            or not isinstance(payload.get("blocks"), list)
+        ):
+            return error_response(422, "所选片段无法验证，请重新选择。", code="interview_knowledge_selection_invalid")
+        try:
+            result = interview_knowledge_capture.confirm(
+                note_id,
+                payload["attempt_key"].strip(),
+                payload["note_fingerprint"].strip(),
+                payload["title"],
+                payload["blocks"],
+            )
+        except InterviewKnowledgeCaptureNotFound:
+            return error_response(404, "该复盘已不可用。", code="interview_note_not_found")
+        except InterviewKnowledgeSourceChanged:
+            return error_response(409, "复盘内容已变化，请重新选择原始片段。", code="interview_knowledge_source_changed")
+        except InterviewKnowledgeValidationError:
+            return error_response(422, "所选片段无法验证，请重新选择。", code="interview_knowledge_selection_invalid")
+        return JSONResponse(_confirmed_interview_knowledge_payload(result), status_code=201 if result.created else 200)
+
+    @app.delete("/api/notes/{note_id}/knowledge-capture/attempts/{attempt_key}", status_code=204)
+    def delete_interview_knowledge_capture_attempt(note_id: int, attempt_key: str) -> Response:
+        if notes.get(note_id) is None:
+            return error_response(404, "该复盘已不可用。", code="interview_note_not_found")
+        try:
+            interview_knowledge_capture.discard_unconfirmed_attempt(note_id, attempt_key)
+        except CaptureAttemptConfirmed:
+            return error_response(409, "该沉淀已保存，可在知识库查看。", code="capture_attempt_confirmed")
+        return Response(status_code=204)
 
     @app.get("/api/knowledge/sources")
     def list_knowledge_sources(
@@ -5928,6 +6079,45 @@ def _note_create_from_payload(
 
 def _note_json(note: Any) -> dict[str, Any]:
     return InterviewNoteOut.model_validate(note).model_dump(mode="json")
+
+
+def _interview_knowledge_diagnostic_message(diagnostic: dict[str, Any]) -> str:
+    category = str(diagnostic.get("failure_category") or "")[:64]
+    repair = "true" if diagnostic.get("repair_attempted") is True else "false"
+    try:
+        retry_count = max(0, min(int(diagnostic.get("retry_count") or 0), 1))
+    except (TypeError, ValueError):
+        retry_count = 0
+    try:
+        duration_ms = max(0, int(diagnostic.get("duration_ms") or 0))
+    except (TypeError, ValueError):
+        duration_ms = 0
+    return (
+        "interview_knowledge_preview "
+        f"category={category} repair_attempted={repair} retry_count={retry_count} "
+        f"duration_ms={duration_ms}"
+    )
+
+
+def _interview_knowledge_capture_payload(attempt: Any) -> dict[str, Any]:
+    return {
+        "attempt_key": attempt.attempt_key,
+        "note_fingerprint": attempt.note_fingerprint,
+        "selected_fragments": [fragment.as_dict() for fragment in attempt.fragments],
+        "preview_status": attempt.preview_status,
+        "preview": attempt.preview,
+        "error_code": attempt.preview_error_code or None,
+    }
+
+
+def _confirmed_interview_knowledge_payload(result: Any) -> dict[str, Any]:
+    return {
+        "version_id": result.version_id,
+        "note_id": result.note_id,
+        "source_id": result.source_id,
+        "content": result.content,
+        "evidence": result.evidence,
+    }
 
 
 def _interview_review_diagnostic_message(diagnostic: dict[str, Any]) -> str:

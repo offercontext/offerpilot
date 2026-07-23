@@ -90,6 +90,27 @@ export interface KnowledgeSource {
   evidence_policy_summary?: KnowledgeEvidencePolicySummary;
 }
 
+export interface ConfirmedInterviewKnowledgeBlock {
+  block_id: string;
+  text: string;
+  evidence_refs: Array<{ fragment_id: string; excerpt: string }>;
+}
+
+export interface ConfirmedInterviewKnowledgeNote {
+  id: number;
+  title: string;
+  origin_kind: 'confirmed_interview_capture';
+  version_id: number;
+  version_number: number;
+  content: {
+    title: string;
+    blocks: ConfirmedInterviewKnowledgeBlock[];
+  };
+  source_id: number;
+  source_status: 'frozen' | 'source_changed';
+  captured_at: string;
+}
+
 export interface KnowledgeJob {
   id: number;
   kind: string;

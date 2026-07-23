@@ -44,6 +44,7 @@ import {
   fetchKnowledgeSourceEvidence,
   fetchKnowledgeSourceJobs,
   fetchKnowledgeSources,
+  fetchConfirmedInterviewKnowledgeNotes,
   pasteKnowledgeSource,
   rebuildKnowledgeSourceBrief,
   searchKnowledgeEvidence,
@@ -63,6 +64,7 @@ import type {
   KnowledgeSourceBrief,
   KnowledgeSourceBriefResponse,
   KnowledgeSourceJobsResponse,
+  ConfirmedInterviewKnowledgeNote,
 } from '@/types/knowledge';
 
 const { Paragraph, Text, Title } = Typography;
@@ -189,6 +191,10 @@ export default function KnowledgeSourcesView() {
         : false;
     },
   });
+  const confirmedInterviewKnowledgeQuery = useQuery({
+    queryKey: ['knowledge', 'confirmed-interview-notes'],
+    queryFn: fetchConfirmedInterviewKnowledgeNotes,
+  });
   const [selectedSourceId, setSelectedSourceId] = useState<number | null>(null);
   // KI-08：搜索结果点击后，进入 Source 详情时定位/高亮对应 Evidence。
   // 保留 evidenceId + 命中片段用于详情面板滚动与高亮；定位完成后清空。
@@ -287,6 +293,29 @@ export default function KnowledgeSourcesView() {
 
   return (
     <div style={{ padding: 24 }}>
+      <div style={{ marginBottom: 24 }}>
+        <Title level={4}>已确认的面试知识</Title>
+        <Paragraph type="secondary">
+          仅展示用户确认保存的面试原始片段沉淀；来源已冻结，可继续审阅证据链。
+        </Paragraph>
+        {confirmedInterviewKnowledgeQuery.isLoading ? <Spin /> : null}
+        {!confirmedInterviewKnowledgeQuery.isLoading && !(confirmedInterviewKnowledgeQuery.data?.length ?? 0) ? (
+          <Empty description="暂无已确认的面试知识" />
+        ) : (
+          <List
+            bordered
+            dataSource={confirmedInterviewKnowledgeQuery.data ?? []}
+            renderItem={(item: ConfirmedInterviewKnowledgeNote) => (
+              <List.Item>
+                <List.Item.Meta
+                  title={item.title || '未命名面试知识'}
+                  description={`${item.source_status === 'source_changed' ? '原复盘已变化，历史来源仍冻结' : '来源已冻结'} · ${item.content.blocks.length} 个内容块 · ${item.content.blocks.reduce((count, block) => count + block.evidence_refs.length, 0)} 条证据`}
+                />
+              </List.Item>
+            )}
+          />
+        )}
+      </div>
       <div className="knowledge-page-header">
         <div className="knowledge-page-header-row">
           <span className="knowledge-page-mark" />

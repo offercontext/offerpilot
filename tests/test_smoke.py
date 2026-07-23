@@ -20,6 +20,7 @@ from offerpilot.smoke import (
     _cleanup_real_ai_browser_records,
     _cleanup_real_ai_smoke_records,
     _run_real_ai_interview_review_smoke,
+    _run_real_ai_interview_knowledge_capture_smoke,
     _run_real_ai_material_proposal_smoke,
     _run_real_ai_opportunity_fit_smoke,
     run_core_smoke,
@@ -261,8 +262,8 @@ def test_real_ai_browser_harness_isolated_and_uses_base_url():
     assert "Get-TreeIds" in source
     assert "http://127.0.0.1:$port" in source
     assert "/api/application-events" in source
-    assert "evidence-gated interview review proposal" in source
-    assert "/applications/" not in source
+    assert "optionally generate an AI note preview" in source
+    assert "$baseUrl/applications/$applicationId" not in source
     assert "_cleanup_real_ai_browser_records" in source
     assert "if ($LASTEXITCODE -ne 0)" in source
     assert source.count("if ($LASTEXITCODE -ne 0)") >= 2
@@ -351,7 +352,8 @@ def test_real_ai_interview_review_smoke_allows_verified_evidence_excerpt():
     class Response:
         status_code = 201
 
-        def __init__(self, payload: dict[str, object]) -> None:
+        def __init__(self, payload: dict[str, object], status_code: int = 201) -> None:
+            self.status_code = status_code
             self._payload = payload
 
         def json(self) -> dict[str, object]:
@@ -422,3 +424,44 @@ def test_real_ai_interview_review_smoke_allows_verified_evidence_excerpt():
     _run_real_ai_interview_review_smoke(Client(), steps, 7)
 
     assert [step.name for step in steps] == ["http_interview_review_proposal"]
+
+
+def test_real_ai_interview_knowledge_capture_smoke_requires_confirmed_history():
+    class Response:
+        status_code = 201
+
+        def __init__(self, payload: dict[str, object], status_code: int = 201) -> None:
+            self.status_code = status_code
+            self._payload = payload
+
+        def json(self) -> dict[str, object]:
+            return self._payload
+
+    class Client:
+        def post(self, path: str, json: dict[str, object]) -> Response:
+            if path == "/api/application-events":
+                return Response({"id": 31})
+            if path == "/api/applications/7/notes":
+                return Response({"id": 32})
+            if path == "/api/notes/32/knowledge-capture/preview":
+                assert json["mode"] == "ai"
+                return Response(
+                    {
+                        "attempt_key": "real-ai-interview-knowledge",
+                        "note_fingerprint": "fingerprint",
+                        "preview": {"title": "safe", "blocks": []},
+                    },
+                    status_code=200,
+                )
+            if path == "/api/notes/32/knowledge-capture/confirm":
+                return Response({"version_id": 12, "source_id": 13, "content": {}})
+            raise AssertionError(path)
+
+        def get(self, path: str) -> Response:
+            if path == "/api/knowledge/notes":
+                return Response({"items": [{"id": 12}]}, status_code=200)
+            raise AssertionError(path)
+
+    steps: list[SmokeStep] = []
+    _run_real_ai_interview_knowledge_capture_smoke(Client(), steps, 7)
+    assert [step.name for step in steps] == ["http_interview_knowledge_capture"]

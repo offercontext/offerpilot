@@ -40,6 +40,7 @@ import TopBar from './TopBar';
 import AddApplicationForm from '@/components/AddApplicationForm';
 import ApplicationDetail from '@/components/ApplicationDetail';
 import type { InterviewReviewProposalAttemptState } from '@/components/InterviewReviewProposalDrawer';
+import type { InterviewKnowledgeCaptureDraft } from '@/components/InterviewKnowledgeCaptureDrawer';
 import ResumeUploadModal from '@/components/ResumeUploadModal';
 import ChatPanel from '@/components/ChatPanel';
 import type { EvidenceTarget } from '@/components/ChatPanel/model';
@@ -140,6 +141,7 @@ function AppShellContent() {
   const nextPilotOnboardingFocusToken = useRef(0);
   const [selected, setSelected] = useState<Application | null>(null);
   const [interviewReviewProposalAttempts, setInterviewReviewProposalAttempts] = useState<Record<number, InterviewReviewProposalAttemptState>>({});
+  const [interviewKnowledgeCaptureDrafts, setInterviewKnowledgeCaptureDrafts] = useState<Record<number, InterviewKnowledgeCaptureDraft>>({});
   const [evidenceFocus, setEvidenceFocus] = useState<Exclude<EvidenceTarget, { kind: 'application' }> | null>(null);
   const [coachOfferId, setCoachOfferId] = useState<number | undefined>(undefined);
   const [chatStartRequest, setChatStartRequest] = useState<ChatStartRequest>();
@@ -498,22 +500,43 @@ function AppShellContent() {
   };
 
   const updateInterviewReviewProposalAttempt = (
-    noteID: number,
+    noteId: number,
     state: InterviewReviewProposalAttemptState | null,
   ) => {
     setInterviewReviewProposalAttempts((current) => {
       const next = { ...current };
-      if (state?.result_unknown) next[noteID] = state;
-      else delete next[noteID];
+      if (state?.result_unknown) next[noteId] = state;
+      else delete next[noteId];
       return next;
     });
   };
 
-  const clearInterviewReviewProposalAttempt = (noteID: number) => {
+  const clearInterviewReviewProposalAttempt = (noteId: number) => {
     setInterviewReviewProposalAttempts((current) => {
-      if (!(noteID in current)) return current;
+      if (!(noteId in current)) return current;
       const next = { ...current };
-      delete next[noteID];
+      delete next[noteId];
+      return next;
+    });
+  };
+
+  const updateInterviewKnowledgeCaptureDraft = (
+    noteId: number,
+    draft: InterviewKnowledgeCaptureDraft | null,
+  ) => {
+    setInterviewKnowledgeCaptureDrafts((current) => {
+      const next = { ...current };
+      if (draft) next[noteId] = draft;
+      else delete next[noteId];
+      return next;
+    });
+  };
+
+  const clearInterviewKnowledgeCaptureDraft = (noteId: number) => {
+    setInterviewKnowledgeCaptureDrafts((current) => {
+      if (!(noteId in current)) return current;
+      const next = { ...current };
+      delete next[noteId];
       return next;
     });
   };
@@ -688,6 +711,9 @@ function AppShellContent() {
       interviewReviewProposalAttempts={interviewReviewProposalAttempts}
       onInterviewReviewProposalAttemptChange={updateInterviewReviewProposalAttempt}
       onInterviewNoteChanged={clearInterviewReviewProposalAttempt}
+      interviewKnowledgeCaptureDrafts={interviewKnowledgeCaptureDrafts}
+      onInterviewKnowledgeCaptureDraftChange={updateInterviewKnowledgeCaptureDraft}
+      onInterviewKnowledgeCaptureNoteChanged={clearInterviewKnowledgeCaptureDraft}
     />
   ) : (
     <>

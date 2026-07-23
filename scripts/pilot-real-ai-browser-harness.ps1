@@ -88,11 +88,23 @@ try {
     location = 'Pilot browser smoke'
   } | ConvertTo-Json)
   $interviewEventId = [int]$interviewEvent.id
+  $interviewNote = Invoke-RestMethod -Method Post -Uri "$baseUrl/api/applications/$applicationId/notes" -ContentType 'application/json' -Body (@{
+    application_event_id = $interviewEventId
+    company = 'Pilot Browser Smoke'
+    position = 'Verification Engineer'
+    round = 'technical'
+    date = '2026-07-22'
+    questions = 'I explained the rollback plan and the observable safety signal.'
+    self_reflection = 'I should have stated the tradeoff before the implementation detail.'
+    difficulty_points = 'I needed a moment to structure the tradeoff.'
+    mood = 'focused'
+  } | ConvertTo-Json)
+  $interviewNoteId = [int]$interviewNote.id
 
   Write-Host "Isolated browser harness is ready: $baseUrl"
-  Write-Host "Synthetic Application ID: $applicationId; Resume ID: $($resumeIds -join ', '); Interview Event ID: $interviewEventId"
+  Write-Host "Synthetic Application ID: $applicationId; Resume ID: $($resumeIds -join ', '); Interview Event ID: $interviewEventId; Interview Note ID: $interviewNoteId"
   Write-Host 'Open the base URL in the in-app browser. Navigate to the application list/board, open Pilot Browser Smoke · Verification Engineer, click 在 Pilot 中评估, and complete the Triage → Deep Review → 准备材料 flow.'
-  Write-Host 'Then open the interview event, save a review, generate the evidence-gated interview review proposal, and open any prefilled action without saving it.'
+  Write-Host 'Then open the interview event, save a review, select original fragments, optionally generate an AI note preview, edit it, and confirm saving to Knowledge. Reopen Knowledge to verify the frozen evidence; do not create practice, Memory, or other follow-up assets.'
   Write-Host 'Verify requests stay on local /api and the configured AI provider, then return here.'
   [void](Read-Host 'Press Enter after browser acceptance')
 }
