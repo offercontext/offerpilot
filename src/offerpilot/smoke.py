@@ -580,7 +580,18 @@ def _run_real_ai_interview_review_smoke(
         f"/api/notes/{note_id}/interview-review-proposals",
         json={"idempotency_key": "f36f6d0b-1d1e-4e9a-aec1-9fef6b2f3b91"},
     )
-    _assert_status(proposal.status_code, 201, "http_interview_review_proposal")
+    if proposal.status_code != 201:
+        error_code = None
+        try:
+            error_body = proposal.json()
+            if isinstance(error_body, dict):
+                error_code = error_body.get("error_code")
+        except (TypeError, ValueError):
+            pass
+        raise RuntimeError(
+            f"http_interview_review_proposal returned status {proposal.status_code}, "
+            f"expected 201 (error_code={error_code!r})"
+        )
     body = proposal.json()
     if not isinstance(body, dict) or not isinstance(body.get("proposal"), dict):
         raise RuntimeError("interview review smoke response did not contain a verified proposal")
