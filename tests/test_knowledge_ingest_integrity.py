@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import io
+import errno
+import os
 import sqlite3
 
 from fastapi.testclient import TestClient
@@ -329,7 +331,15 @@ def test_failed_commit_cleanup_does_not_follow_symlink(tmp_path) -> None:
     secret.write_text("keep", encoding="utf-8")
     cleanup_root = tmp_path / "staging-upload"
     cleanup_root.mkdir()
-    (cleanup_root / "outside-link").symlink_to(outside, target_is_directory=True)
+    try:
+        (cleanup_root / "outside-link").symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        if (
+            (os.name == "nt" and getattr(exc, "winerror", None) == 1314)
+            or exc.errno in {errno.EACCES, errno.EPERM}
+        ):
+            pytest.skip("当前环境没有创建符号链接的权限")
+        raise
 
     _safe_cleanup(cleanup_root)
 
