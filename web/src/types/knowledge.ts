@@ -94,6 +94,16 @@ export interface ConfirmedInterviewKnowledgeBlock {
   block_id: string;
   text: string;
   evidence_refs: Array<{ fragment_id: string; excerpt: string }>;
+  evidence?: Array<{
+    id: string;
+    path: string;
+    excerpt: string;
+    char_start: number;
+    char_end: number;
+    line_start: number;
+    line_end: number;
+    frozen_at: string;
+  }>;
 }
 
 export interface ConfirmedInterviewKnowledgeNote {
@@ -109,6 +119,16 @@ export interface ConfirmedInterviewKnowledgeNote {
   source_id: number;
   source_status: 'frozen' | 'source_changed';
   captured_at: string;
+  evidence?: Array<{
+    id: string;
+    path: string;
+    excerpt: string;
+    char_start: number;
+    char_end: number;
+    line_start: number;
+    line_end: number;
+    frozen_at: string;
+  }>;
 }
 
 export interface KnowledgeJob {

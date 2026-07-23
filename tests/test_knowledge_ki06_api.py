@@ -460,12 +460,11 @@ def test_ki06_logs_table_does_not_persist_title_url_or_path(app_client, tmp_path
 
 
 # ---------------------------------------------------------------------------
-# Spec §5.4：Note 引用保护 — 当前 Note 表不存在
+# Spec §5.4：Interview Knowledge capture tables are part of the current schema
 # ---------------------------------------------------------------------------
 
 
-def test_ki06_no_note_table_created_in_ki06_scope(app_client, tmp_path):
-    # 当前 Note 还未引入,数据库不应存在 knowledge_notes 等表,防止预设 CASCADE。
+def test_ki06_capture_note_tables_are_created_by_knowledge_capture(app_client, tmp_path):
     init_database_call = app_client.get("/api/health")
     assert init_database_call.status_code == 200
 
@@ -476,12 +475,11 @@ def test_ki06_no_note_table_created_in_ki06_scope(app_client, tmp_path):
                 "SELECT name FROM sqlite_master WHERE type IN ('table','view')"
             ).fetchall()
         }
-    forbidden = {
+    assert {
         "knowledge_notes",
         "knowledge_note_versions",
         "knowledge_note_evidence",
-    }
-    assert not (forbidden & tables)
+    } <= tables
 
 
 # ---------------------------------------------------------------------------

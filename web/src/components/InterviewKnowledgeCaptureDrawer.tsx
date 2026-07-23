@@ -160,6 +160,11 @@ export default function InterviewKnowledgeCaptureDrawer({ open, note, draft, onD
       const safeError = error instanceof InterviewKnowledgeCaptureError
         ? error
         : new InterviewKnowledgeCaptureError('复盘知识沉淀暂时不可用，请稍后重试。');
+      if (safeError.resultUnknown) {
+        onDraftChange({ ...draft, previewStatus: 'confirm_unknown', errorCode: safeError.code ?? null });
+        message.error('保存结果未知，请重新打开复盘确认状态。');
+        return;
+      }
       message.error(safeError.message);
     } finally {
       setBusy(false);
@@ -171,7 +176,7 @@ export default function InterviewKnowledgeCaptureDrawer({ open, note, draft, onD
       onClose();
       return;
     }
-    if (draft.previewStatus === 'provider_unknown') {
+    if (draft.previewStatus === 'provider_unknown' || draft.previewStatus === 'confirm_unknown') {
       onClose();
       return;
     }
@@ -247,7 +252,21 @@ export default function InterviewKnowledgeCaptureDrawer({ open, note, draft, onD
       )}
       {draft.editedBlocks.length > 0 && (
         <>
-          <Title level={5} style={{ marginTop: 20 }}>AI 笔记预览</Title>
+          <Title level={5} style={{ marginTop: 20 }}>
+            {draft.previewStatus === 'ai_ready' || draft.previewStatus === 'safe_empty' ? 'AI 笔记预览' : '可编辑笔记预览'}
+          </Title>
+          {draft.preview && (
+            <Input
+              aria-label="知识笔记标题"
+              value={draft.preview.title}
+              placeholder="可选的知识笔记标题"
+              onChange={(event) => onDraftChange({
+                ...draft,
+                preview: { ...draft.preview!, title: event.target.value },
+              })}
+              style={{ marginBottom: 12 }}
+            />
+          )}
           {draft.editedBlocks.map((block, index) => (
             <div key={block.block_id} style={{ marginBottom: 12 }}>
               <Input.TextArea

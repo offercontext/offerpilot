@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from offerpilot.api import create_app
+from offerpilot.db import session_factory_for_data_dir
+from offerpilot.models import (
+    InterviewKnowledgeCaptureAttempt,
+    KnowledgeEvidence,
+    KnowledgeExtractionSnapshot,
+)
 
 
 def _create_note(client: TestClient) -> dict[str, object]:
@@ -93,6 +102,148 @@ def test_confirm_creates_frozen_knowledge_and_is_idempotent(tmp_path) -> None:
     listing = client.get("/api/knowledge/notes")
     assert listing.status_code == 200
     assert listing.json()["items"][0]["origin_kind"] == "confirmed_interview_capture"
+
+
+def test_confirmed_attempt_is_read_only_for_same_key_direct_preview(tmp_path) -> None:
+    client = TestClient(create_app(data_dir=tmp_path))
+    note = _create_note(client)
+    attempt = _preview(client, int(note["id"])).json()
+    payload = {
+        "attempt_key": attempt["attempt_key"],
+        "note_fingerprint": attempt["note_fingerprint"],
+        "title": "缓存面试复盘",
+        "blocks": attempt["preview"]["blocks"],
+    }
+    first = client.post(f"/api/notes/{note['id']}/knowledge-capture/confirm", json=payload)
+    assert first.status_code == 201
+
+    replay = _preview(client, int(note["id"]), attempt["attempt_key"])
+    assert replay.status_code == 200
+    assert replay.json()["preview_status"] == "confirmed"
+    assert replay.json()["preview"] == attempt["preview"]
+
+    second = client.post(f"/api/notes/{note['id']}/knowledge-capture/confirm", json=payload)
+    assert second.status_code == 200
+    assert second.json()["version_id"] == first.json()["version_id"]
+    assert len(client.get("/api/knowledge/notes").json()["items"]) == 1
+
+
+def test_expired_attempt_cannot_be_confirmed(tmp_path) -> None:
+    client = TestClient(create_app(data_dir=tmp_path))
+    note = _create_note(client)
+    attempt = _preview(client, int(note["id"])).json()
+    factory = session_factory_for_data_dir(tmp_path)
+    with factory() as session:
+        row = session.scalar(
+            select(InterviewKnowledgeCaptureAttempt).where(
+                InterviewKnowledgeCaptureAttempt.attempt_key == attempt["attempt_key"]
+            )
+        )
+        assert row is not None
+        row.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        session.commit()
+    response = client.post(
+        f"/api/notes/{note['id']}/knowledge-capture/confirm",
+        json={
+            "attempt_key": attempt["attempt_key"],
+            "note_fingerprint": attempt["note_fingerprint"],
+            "title": "过期复盘",
+            "blocks": attempt["preview"]["blocks"],
+        },
+    )
+    assert response.status_code == 410
+    assert response.json()["error_code"] == "interview_knowledge_attempt_expired"
+    assert client.get("/api/knowledge/notes").json() == {"items": []}
+
+
+def test_evidence_offsets_point_to_each_fragment_in_snapshot(tmp_path) -> None:
+    client = TestClient(create_app(data_dir=tmp_path))
+    note = _create_note(client)
+    fragments = [
+        {"fragment_id": "client-1", "path": "/questions", "start": 0, "end": 6, "text": "设计一个缓存"},
+        {"fragment_id": "client-2", "path": "/self_reflection", "start": 0, "end": 8, "text": "我解释了淘汰策略"},
+    ]
+    attempt = client.post(
+        f"/api/notes/{note['id']}/knowledge-capture/preview",
+        json={"attempt_key": "offsets", "mode": "direct", "selected_fragments": fragments},
+    ).json()
+    response = client.post(
+        f"/api/notes/{note['id']}/knowledge-capture/confirm",
+        json={
+            "attempt_key": attempt["attempt_key"],
+            "note_fingerprint": attempt["note_fingerprint"],
+            "title": "带定位复盘",
+            "blocks": attempt["preview"]["blocks"],
+        },
+    )
+    assert response.status_code == 201
+    factory = session_factory_for_data_dir(tmp_path)
+    with factory() as session:
+        snapshot = session.scalar(select(KnowledgeExtractionSnapshot))
+        evidence = list(session.scalars(select(KnowledgeEvidence).order_by(KnowledgeEvidence.ordinal)))
+        assert snapshot is not None
+        snapshot_text = snapshot.canonical_text
+        assert len(evidence) == 2
+        for row in evidence:
+            assert snapshot_text[row.char_start : row.char_end] == row.canonical_excerpt
+            assert row.char_end > row.char_start
+            assert row.line_end >= row.line_start
+
+
+def test_editing_preview_marks_content_origin_as_user_edited(tmp_path) -> None:
+    client = TestClient(create_app(data_dir=tmp_path))
+    note = _create_note(client)
+    attempt = _preview(client, int(note["id"])).json()
+    edited_blocks = [dict(block) for block in attempt["preview"]["blocks"]]
+    edited_blocks[0]["text"] = "用户补充的复盘笔记"
+    response = client.post(
+        f"/api/notes/{note['id']}/knowledge-capture/confirm",
+        json={
+            "attempt_key": attempt["attempt_key"],
+            "note_fingerprint": attempt["note_fingerprint"],
+            "title": "用户编辑后的标题",
+            "blocks": edited_blocks,
+        },
+    )
+    assert response.status_code == 201
+    factory = session_factory_for_data_dir(tmp_path)
+    from offerpilot.models import KnowledgeNoteVersion
+
+    with factory() as session:
+        version = session.scalar(select(KnowledgeNoteVersion))
+        assert version is not None
+        assert version.content_origin == "user_edited_preview"
+
+
+def test_captured_source_is_not_mutable_through_generic_source_api(tmp_path) -> None:
+    client = TestClient(create_app(data_dir=tmp_path))
+    note = _create_note(client)
+    attempt = _preview(client, int(note["id"])).json()
+    confirm = client.post(
+        f"/api/notes/{note['id']}/knowledge-capture/confirm",
+        json={
+            "attempt_key": attempt["attempt_key"],
+            "note_fingerprint": attempt["note_fingerprint"],
+            "title": "只读面试知识",
+            "blocks": attempt["preview"]["blocks"],
+        },
+    )
+    source_id = confirm.json()["source_id"]
+    protected = "captured_interview_source_read_only"
+    for response in (
+        client.patch(f"/api/knowledge/sources/{source_id}", json={"display_title": "改名"}),
+        client.post(f"/api/knowledge/sources/{source_id}/archive"),
+        client.post(f"/api/knowledge/sources/{source_id}/unarchive"),
+        client.delete(f"/api/knowledge/sources/{source_id}"),
+    ):
+        assert response.status_code == 409
+        assert response.json()["error_code"] == protected
+    assert all(item["id"] != source_id for item in client.get("/api/knowledge/sources").json())
+    details = client.get("/api/knowledge/notes").json()["items"][0]
+    assert details["evidence"]
+    assert details["evidence"][0]["excerpt"]
+    assert details["content"]["blocks"][0]["evidence"][0]["path"] == "/questions"
+    assert details["content"]["blocks"][0]["evidence"][0]["frozen_at"]
 
 
 def test_note_edit_before_confirm_returns_409_without_knowledge_asset(tmp_path) -> None:

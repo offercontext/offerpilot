@@ -837,6 +837,7 @@ class KnowledgeRepository:
             stmt = select(KnowledgeSource).where(
                 KnowledgeSource.deleted_at.is_(None),
                 KnowledgeSource.lifecycle != "deleting",
+                KnowledgeSource.source_kind != "captured_interview_note",
             )
             if not include_archived:
                 stmt = stmt.where(KnowledgeSource.lifecycle == "active")

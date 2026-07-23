@@ -17,6 +17,7 @@ from offerpilot.knowledge.interview_capture import (
     canonicalize_fragments,
     fragments_json,
     note_fingerprint,
+    serialize_capture_snapshot_with_ranges,
     source_fields_for_note,
 )
 from offerpilot.models import (
@@ -185,6 +186,8 @@ class InterviewKnowledgeCaptureRepository:
                     or attempt.selected_fragments_json != serialized_fragments
                 ):
                     raise CaptureAttemptConflict("capture attempt input changed")
+                if attempt.preview_status == "confirmed" or attempt.confirmed_note_version_id is not None:
+                    return _view(attempt)
                 if attempt.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
                     raise CaptureAttemptExpired()
             else:
@@ -341,8 +344,6 @@ class InterviewKnowledgeCaptureRepository:
             InterviewKnowledgePreviewError,
             validate_interview_knowledge_preview,
         )
-        from offerpilot.knowledge.interview_capture import serialize_capture_snapshot
-
         with self._session_factory() as session:
             session.execute(text("BEGIN IMMEDIATE"))
             attempt = session.scalar(
@@ -375,6 +376,8 @@ class InterviewKnowledgeCaptureRepository:
                     ],
                     created=False,
                 )
+            if attempt.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
+                raise CaptureAttemptExpired()
             if attempt.preview_status not in {"direct_ready", "ai_ready", "safe_empty"}:
                 raise InterviewKnowledgeValidationError("preview_required")
             current_note = _visible_note(session, note_id)
@@ -393,7 +396,7 @@ class InterviewKnowledgeCaptureRepository:
                 )
             except InterviewKnowledgePreviewError as exc:
                 raise InterviewKnowledgeValidationError(exc.category) from exc
-            snapshot_bytes = serialize_capture_snapshot(fragments)
+            snapshot_bytes, snapshot_ranges = serialize_capture_snapshot_with_ranges(fragments)
             snapshot_text = snapshot_bytes.decode("utf-8")
             snapshot_digest = hashlib.sha256(snapshot_bytes).hexdigest()
             source_hash = hashlib.sha256(
@@ -463,10 +466,10 @@ class InterviewKnowledgeCaptureRepository:
                         block_kind="captured_fragment",
                         ordinal=ordinal,
                         heading_path_json=json.dumps([fragment.path], ensure_ascii=False),
-                        char_start=0,
-                        char_end=len(fragment.text),
-                        line_start=1,
-                        line_end=1,
+                        char_start=snapshot_ranges[fragment.fragment_id].char_start,
+                        char_end=snapshot_ranges[fragment.fragment_id].char_end,
+                        line_start=snapshot_ranges[fragment.fragment_id].line_start,
+                        line_end=snapshot_ranges[fragment.fragment_id].line_end,
                         canonical_excerpt=fragment.text,
                         search_text=fragment.text,
                         content_hash=hashlib.sha256(fragment.text.encode("utf-8")).hexdigest(),
@@ -500,7 +503,11 @@ class InterviewKnowledgeCaptureRepository:
                 )
                 or 0
             ) + 1
-            origin = "direct_selected_text" if attempt.last_preview_mode == "direct" else "ai_preview"
+            submitted_preview_json = canonical_json(canonical_content)
+            if submitted_preview_json != attempt.preview_json:
+                origin = "user_edited_preview"
+            else:
+                origin = "direct_selected_text" if attempt.last_preview_mode == "direct" else "ai_preview"
             version = KnowledgeNoteVersion(
                 note_id=knowledge_note.id,
                 version_number=version_number,
@@ -583,14 +590,53 @@ class InterviewKnowledgeCaptureRepository:
             current_note = session.get(InterviewNote, metadata.origin_note_id)
             if current_note is None or note_fingerprint(current_note) != metadata.note_fingerprint:
                 source_status = "source_changed"
+        evidence_rows = list(
+            session.scalars(
+                select(KnowledgeEvidence)
+                .join(KnowledgeNoteEvidence, KnowledgeNoteEvidence.evidence_id == KnowledgeEvidence.id)
+                .where(KnowledgeNoteEvidence.note_version_id == version.id)
+                .order_by(KnowledgeEvidence.ordinal.asc())
+            )
+        )
+        frozen_at = source.created_at.isoformat() if source else ""
+        content = json.loads(version.content_json)
+        evidence_by_id = {
+            evidence.id: {
+                "id": evidence.id,
+                "path": json.loads(evidence.heading_path_json)[0]
+                if evidence.heading_path_json
+                else "",
+                "excerpt": evidence.canonical_excerpt,
+                "char_start": evidence.char_start,
+                "char_end": evidence.char_end,
+                "line_start": evidence.line_start,
+                "line_end": evidence.line_end,
+                "frozen_at": frozen_at,
+            }
+            for evidence in evidence_rows
+        }
+        links = list(
+            session.execute(
+                select(KnowledgeNoteEvidence.block_id, KnowledgeNoteEvidence.evidence_id)
+                .where(KnowledgeNoteEvidence.note_version_id == version.id)
+            )
+        )
+        evidence_by_block: dict[str, list[dict[str, Any]]] = {}
+        for block_id, evidence_id in links:
+            evidence = evidence_by_id.get(evidence_id)
+            if evidence is not None:
+                evidence_by_block.setdefault(block_id, []).append(evidence)
+        for block in content.get("blocks", []):
+            block["evidence"] = evidence_by_block.get(block.get("block_id"), [])
         return {
             "id": row.id,
             "title": row.title,
             "origin_kind": row.origin_kind,
             "version_id": version.id,
             "version_number": version.version_number,
-            "content": json.loads(version.content_json),
+            "content": content,
             "source_id": version.source_id,
             "source_status": source_status,
-            "captured_at": source.created_at.isoformat() if source else "",
+            "captured_at": frozen_at,
+            "evidence": list(evidence_by_id.values()),
         }

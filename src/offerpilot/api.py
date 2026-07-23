@@ -862,6 +862,8 @@ def create_app(
             )
         except InterviewKnowledgeCaptureNotFound:
             return error_response(404, "该复盘已不可用。", code="interview_note_not_found")
+        except CaptureAttemptExpired:
+            return error_response(410, "沉淀草稿已过期，请重新选择片段。", code="interview_knowledge_attempt_expired")
         except InterviewKnowledgeSourceChanged:
             return error_response(409, "复盘内容已变化，请重新选择原始片段。", code="interview_knowledge_source_changed")
         except InterviewKnowledgeValidationError:
@@ -1025,6 +1027,9 @@ def create_app(
         source = knowledge_repository.get_source(source_id)
         if source is None:
             return error_response(404, "Source not found")
+        protected = _captured_interview_source_error(source)
+        if protected is not None:
+            return protected
         unknown_keys = set(payload) - {"display_title"}
         if unknown_keys:
             return error_response(
@@ -1056,6 +1061,10 @@ def create_app(
     def archive_knowledge_source(source_id: int) -> JSONResponse:
         # Spec §5.3 / KI-06：归档只改 lifecycle + archived_at,不删文件 / Evidence /
         # Brief / Job 历史。Source 不存在或处于 deleting 时返回 404。
+        source = knowledge_repository.get_source(source_id)
+        protected = _captured_interview_source_error(source)
+        if protected is not None:
+            return protected
         archived = knowledge_service.archive_source(source_id)
         if archived is None:
             return error_response(404, "Source not found")
@@ -1066,6 +1075,10 @@ def create_app(
     def unarchive_knowledge_source(source_id: int) -> JSONResponse:
         # Spec §5.3 / KI-06：取消归档恢复 ``active`` lifecycle,archived_at 清空,不触发
         # Extraction / Brief / Evidence 重建。
+        source = knowledge_repository.get_source(source_id)
+        protected = _captured_interview_source_error(source)
+        if protected is not None:
+            return protected
         restored = knowledge_service.unarchive_source(source_id)
         if restored is None:
             return error_response(404, "Source not found")
@@ -1076,6 +1089,10 @@ def create_app(
     def delete_knowledge_source(source_id: int) -> JSONResponse:
         # Spec §5.4 / §16.1：永久删除是异步危险操作,返回 202 与 Delete Job。
         # 前端必须二次确认;后端不复权 Source,删除后相同内容可重新作为新 Source 上传。
+        source = knowledge_repository.get_source(source_id)
+        protected = _captured_interview_source_error(source)
+        if protected is not None:
+            return protected
         try:
             result = knowledge_service.purge_source(source_id)
         except _IngestHttpError as exc:
@@ -4000,6 +4017,16 @@ def error_response(status_code: int, message: str, code: str = "") -> JSONRespon
     if code:
         payload["error_code"] = code
     return JSONResponse(payload, status_code=status_code)
+
+
+def _captured_interview_source_error(source: Any) -> JSONResponse | None:
+    if source is not None and source.source_kind == "captured_interview_note":
+        return error_response(
+            409,
+            "已确认的面试来源不可修改。",
+            code="captured_interview_source_read_only",
+        )
+    return None
 
 
 def _confirmation_input(

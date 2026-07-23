@@ -5,6 +5,7 @@ export type CapturePreviewStatus =
   | 'ai_ready'
   | 'safe_empty'
   | 'provider_unknown'
+  | 'confirm_unknown'
   | 'confirmed';
 
 export interface SelectedFragment {
@@ -56,6 +57,16 @@ export interface InterviewKnowledgeNote {
   version_number?: number;
   content?: CapturePreview;
   source_id?: number;
-  source_status?: 'frozen';
+  source_status?: 'frozen' | 'source_changed';
   captured_at?: string;
+  evidence?: Array<{
+    id: string;
+    path: string;
+    excerpt: string;
+    char_start?: number;
+    char_end?: number;
+    line_start?: number;
+    line_end?: number;
+    frozen_at?: string;
+  }>;
 }

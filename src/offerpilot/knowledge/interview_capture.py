@@ -49,6 +49,16 @@ class CanonicalFragment:
         }
 
 
+@dataclass(frozen=True)
+class SnapshotFragmentRange:
+    fragment_id: str
+    char_start: int
+    char_end: int
+    line_start: int
+    line_end: int
+    excerpt: str
+
+
 def slice_utf16(value: str, start: int, end: int) -> str:
     if not isinstance(value, str) or not isinstance(start, int) or not isinstance(end, int):
         raise FragmentValidationError("utf16 range must use integer offsets")
@@ -140,10 +150,13 @@ def canonicalize_fragments(
     ]
 
 
-def serialize_capture_snapshot(fragments: list[CanonicalFragment]) -> bytes:
+def serialize_capture_snapshot_with_ranges(
+    fragments: list[CanonicalFragment],
+) -> tuple[bytes, dict[str, SnapshotFragmentRange]]:
     if not fragments:
         raise FragmentValidationError("snapshot requires fragments")
     payload = bytearray(f"{CAPTURE_SCHEMA_VERSION}\n".encode("ascii"))
+    ranges: dict[str, SnapshotFragmentRange] = {}
     for ordinal, fragment in enumerate(fragments, start=1):
         text_bytes = fragment.text.encode("utf-8")
         payload.extend(f"fragment={ordinal}\n".encode("ascii"))
@@ -152,9 +165,30 @@ def serialize_capture_snapshot(fragments: list[CanonicalFragment]) -> bytes:
         payload.extend(f"end={fragment.end}\n".encode("ascii"))
         payload.extend(f"bytes={len(text_bytes)}\n".encode("ascii"))
         payload.extend(b"text-bytes=")
+        prefix_text = bytes(payload).decode("utf-8")
+        char_start = len(prefix_text)
+        line_start = prefix_text.count("\n") + 1
         payload.extend(text_bytes)
+        char_end = char_start + len(fragment.text)
+        line_end = line_start + fragment.text.count("\n")
+        ranges[fragment.fragment_id] = SnapshotFragmentRange(
+            fragment_id=fragment.fragment_id,
+            char_start=char_start,
+            char_end=char_end,
+            line_start=line_start,
+            line_end=line_end,
+            excerpt=fragment.text,
+        )
         payload.extend(b"\nseparator=single LF\n")
-    return bytes(payload)
+    snapshot_text = bytes(payload).decode("utf-8")
+    for item in ranges.values():
+        if snapshot_text[item.char_start : item.char_end] != item.excerpt:
+            raise FragmentValidationError("snapshot range does not match excerpt")
+    return bytes(payload), ranges
+
+
+def serialize_capture_snapshot(fragments: list[CanonicalFragment]) -> bytes:
+    return serialize_capture_snapshot_with_ranges(fragments)[0]
 
 
 def _read_ascii_line(payload: bytes, offset: int) -> tuple[str, int]:

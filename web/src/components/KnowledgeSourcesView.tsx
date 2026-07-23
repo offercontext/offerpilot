@@ -311,6 +311,25 @@ export default function KnowledgeSourcesView() {
                   title={item.title || '未命名面试知识'}
                   description={`${item.source_status === 'source_changed' ? '原复盘已变化，历史来源仍冻结' : '来源已冻结'} · ${item.content.blocks.length} 个内容块 · ${item.content.blocks.reduce((count, block) => count + block.evidence_refs.length, 0)} 条证据`}
                 />
+                <Space direction="vertical" size={4} style={{ width: '100%', marginTop: 8 }}>
+                  {(item.evidence ?? []).map((evidence) => (
+                    <Typography.Text key={evidence.id} type="secondary">
+                      证据 {evidence.path} · 冻结于 {evidence.frozen_at} · {evidence.excerpt}
+                    </Typography.Text>
+                  ))}
+                  {item.content.blocks.map((block) => (
+                    <div key={block.block_id}>
+                      <Typography.Text>{block.text}</Typography.Text>
+                      {(block.evidence ?? []).map((evidence) => (
+                        <div key={`${block.block_id}-${evidence.id}`}>
+                          <Typography.Text type="secondary">
+                            该内容块证据：{evidence.path} · 冻结于 {evidence.frozen_at} · {evidence.excerpt}
+                          </Typography.Text>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </Space>
               </List.Item>
             )}
           />
