@@ -36,6 +36,7 @@ from _knowledge_seam import (
     drive_brief_queue,
     ingest_and_extract,
 )
+from conftest import symlink_or_skip
 
 CONTENT = (
     "# 概述\n\n"
@@ -418,7 +419,7 @@ def test_cli_rejects_knowledge_root_symlink_with_external_sentinels(
     knowledge_dir = tmp_path / "knowledge"
     shutil.rmtree(knowledge_dir)
     knowledge_link = tmp_path / "knowledge"
-    knowledge_link.symlink_to(outside)
+    symlink_or_skip(knowledge_link, outside, target_is_directory=True)
 
     result = _run_cli(tmp_path, monkeypatch, "knowledge", "reset", "--confirm")
     assert result.exit_code != 0
@@ -448,7 +449,7 @@ def test_cli_rejects_legacy_reset_root_symlink_with_external_sentinels(
     source_sentinel.write_text("legacy-must-not-delete", encoding="utf-8")
 
     legacy_link = tmp_path / ".knowledge-reset"
-    legacy_link.symlink_to(outside)
+    symlink_or_skip(legacy_link, outside, target_is_directory=True)
 
     result = _run_cli(tmp_path, monkeypatch, "knowledge", "reset", "--confirm")
     assert result.exit_code != 0
@@ -492,7 +493,7 @@ def test_cli_does_not_follow_nested_escape_symlink(
     assert nested_dir.is_dir()
     outside_file = tmp_path.parent / "kbr07-nested-outside-target.txt"
     outside_file.write_text("nested-must-not-delete", encoding="utf-8")
-    (nested_dir / "escape-link").symlink_to(outside_file)
+    symlink_or_skip(nested_dir / "escape-link", outside_file)
 
     result = _run_cli(tmp_path, monkeypatch, "knowledge", "reset", "--confirm")
     assert result.exit_code == 0, result.output

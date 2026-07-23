@@ -11,6 +11,8 @@ extracted 再验证 Evidence/搜索/结构等 extraction 产物。
 
 from __future__ import annotations
 
+import errno
+import os
 import time
 from pathlib import Path
 
@@ -18,6 +20,19 @@ import pytest
 from fastapi.testclient import TestClient
 
 from offerpilot.api import create_app
+
+
+def symlink_or_skip(link: Path, target: Path, *, target_is_directory: bool = False) -> None:
+    """Create a symlink, skipping only when the host lacks symlink capability."""
+    try:
+        link.symlink_to(target, target_is_directory=target_is_directory)
+    except OSError as exc:
+        if (
+            (os.name == "nt" and getattr(exc, "winerror", None) == 1314)
+            or exc.errno in {errno.EACCES, errno.EPERM}
+        ):
+            pytest.skip("当前环境没有创建符号链接的权限")
+        raise
 
 
 @pytest.fixture

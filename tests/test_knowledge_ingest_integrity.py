@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import io
-import errno
-import os
 import sqlite3
 
 from fastapi.testclient import TestClient
@@ -12,7 +10,7 @@ from PIL import Image
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from conftest import wait_for_extraction
+from conftest import symlink_or_skip, wait_for_extraction
 from offerpilot import api
 from offerpilot.config import Config
 from offerpilot.db import session_factory_for_data_dir
@@ -331,15 +329,7 @@ def test_failed_commit_cleanup_does_not_follow_symlink(tmp_path) -> None:
     secret.write_text("keep", encoding="utf-8")
     cleanup_root = tmp_path / "staging-upload"
     cleanup_root.mkdir()
-    try:
-        (cleanup_root / "outside-link").symlink_to(outside, target_is_directory=True)
-    except OSError as exc:
-        if (
-            (os.name == "nt" and getattr(exc, "winerror", None) == 1314)
-            or exc.errno in {errno.EACCES, errno.EPERM}
-        ):
-            pytest.skip("当前环境没有创建符号链接的权限")
-        raise
+    symlink_or_skip(cleanup_root / "outside-link", outside, target_is_directory=True)
 
     _safe_cleanup(cleanup_root)
 
