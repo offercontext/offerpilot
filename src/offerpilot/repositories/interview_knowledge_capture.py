@@ -172,13 +172,17 @@ class InterviewKnowledgeCaptureRepository:
             note = _visible_note(session, note_id)
             if note is None:
                 raise InterviewKnowledgeCaptureNotFound()
-            fragments = canonicalize_fragments(raw_fragments, source_fields_for_note(note))
-            fingerprint = note_fingerprint(note)
             attempt = session.scalar(
                 select(InterviewKnowledgeCaptureAttempt)
                 .where(InterviewKnowledgeCaptureAttempt.note_id == note_id)
                 .where(InterviewKnowledgeCaptureAttempt.attempt_key == attempt_key)
             )
+            if attempt is not None and (
+                attempt.preview_status == "confirmed" or attempt.confirmed_note_version_id is not None
+            ):
+                return _view(attempt)
+            fragments = canonicalize_fragments(raw_fragments, source_fields_for_note(note))
+            fingerprint = note_fingerprint(note)
             serialized_fragments = fragments_json(fragments)
             if attempt is not None:
                 if (
@@ -186,8 +190,6 @@ class InterviewKnowledgeCaptureRepository:
                     or attempt.selected_fragments_json != serialized_fragments
                 ):
                     raise CaptureAttemptConflict("capture attempt input changed")
-                if attempt.preview_status == "confirmed" or attempt.confirmed_note_version_id is not None:
-                    return _view(attempt)
                 if attempt.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
                     raise CaptureAttemptExpired()
             else:

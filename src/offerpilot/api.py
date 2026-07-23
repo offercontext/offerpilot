@@ -1222,6 +1222,9 @@ def create_app(
         source = knowledge_repository.get_source(source_id)
         if source is None:
             return error_response(404, "Source not found")
+        protected = _captured_interview_source_error(source)
+        if protected is not None:
+            return protected
         # KI-10 / Spec §10.4：读取时检测 Brief 是否相对当前 active provider / Snapshot
         # 过期；只标记 outdated，不自动重建。无 Brief 时为 no-op。
         knowledge_service.refresh_brief_outdated(source_id)
@@ -1273,6 +1276,12 @@ def create_app(
         # KI-09 / Spec §16.1：用户显式触发 Brief 重建；无合格 Provider 时返回 202 +
         # block reason。Spec §11.2 "配置 Provider 后不自动批量生成；用户显式操作才创建
         # 新 Attempt"。
+        source = knowledge_repository.get_source(source_id)
+        if source is None:
+            return error_response(404, "Source not found")
+        protected = _captured_interview_source_error(source)
+        if protected is not None:
+            return protected
         source, status = knowledge_service.rebuild_brief(source_id)
         if source is None:
             return error_response(404, "Source not found")

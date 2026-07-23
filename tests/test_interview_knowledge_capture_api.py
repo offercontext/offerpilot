@@ -128,6 +128,30 @@ def test_confirmed_attempt_is_read_only_for_same_key_direct_preview(tmp_path) ->
     assert len(client.get("/api/knowledge/notes").json()["items"]) == 1
 
 
+def test_confirmed_attempt_recovers_after_note_edit_with_same_key(tmp_path) -> None:
+    client = TestClient(create_app(data_dir=tmp_path))
+    note = _create_note(client)
+    attempt = _preview(client, int(note["id"])).json()
+    payload = {
+        "attempt_key": attempt["attempt_key"],
+        "note_fingerprint": attempt["note_fingerprint"],
+        "title": "冻结的面试知识",
+        "blocks": attempt["preview"]["blocks"],
+    }
+    first = client.post(f"/api/notes/{note['id']}/knowledge-capture/confirm", json=payload)
+    assert first.status_code == 201
+    edited = dict(note)
+    edited["questions"] = "后续修改的面试问题"
+    assert client.put(f"/api/notes/{note['id']}", json=edited).status_code == 200
+
+    replay = _preview(client, int(note["id"]), attempt["attempt_key"])
+    assert replay.status_code == 200
+    assert replay.json()["preview_status"] == "confirmed"
+    second = client.post(f"/api/notes/{note['id']}/knowledge-capture/confirm", json=payload)
+    assert second.status_code == 200
+    assert second.json()["version_id"] == first.json()["version_id"]
+
+
 def test_expired_attempt_cannot_be_confirmed(tmp_path) -> None:
     client = TestClient(create_app(data_dir=tmp_path))
     note = _create_note(client)
@@ -244,6 +268,40 @@ def test_captured_source_is_not_mutable_through_generic_source_api(tmp_path) -> 
     assert details["evidence"][0]["excerpt"]
     assert details["content"]["blocks"][0]["evidence"][0]["path"] == "/questions"
     assert details["content"]["blocks"][0]["evidence"][0]["frozen_at"]
+
+
+def test_captured_source_brief_routes_are_read_only_but_generic_source_is_not_blocked(tmp_path) -> None:
+    client = TestClient(create_app(data_dir=tmp_path))
+    note = _create_note(client)
+    attempt = _preview(client, int(note["id"])).json()
+    confirm = client.post(
+        f"/api/notes/{note['id']}/knowledge-capture/confirm",
+        json={
+            "attempt_key": attempt["attempt_key"],
+            "note_fingerprint": attempt["note_fingerprint"],
+            "title": "Brief 隔离测试",
+            "blocks": attempt["preview"]["blocks"],
+        },
+    )
+    source_id = confirm.json()["source_id"]
+    for response in (
+        client.get(f"/api/knowledge/sources/{source_id}/brief"),
+        client.post(f"/api/knowledge/sources/{source_id}/brief/rebuild"),
+    ):
+        assert response.status_code == 409
+        assert response.json()["error_code"] == "captured_interview_source_read_only"
+
+    ordinary = client.post(
+        "/api/knowledge/sources",
+        files={"file": ("ordinary.md", b"# Ordinary\n", "text/markdown")},
+    )
+    assert ordinary.status_code in {200, 202}
+    ordinary_id = ordinary.json()["source"]["id"]
+    for response in (
+        client.get(f"/api/knowledge/sources/{ordinary_id}/brief"),
+        client.post(f"/api/knowledge/sources/{ordinary_id}/brief/rebuild"),
+    ):
+        assert response.status_code != 409 or response.json().get("error_code") != "captured_interview_source_read_only"
 
 
 def test_note_edit_before_confirm_returns_409_without_knowledge_asset(tmp_path) -> None:
