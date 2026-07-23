@@ -14,7 +14,7 @@
 
 ## 执行约束
 
-- 开发前运行 `git status --short --branch`，保持当前分支和 worktree，不新建 worktree、不使用 subagent。
+- 开发前运行 `git status --short --branch`，保持当前分支和 worktree，不新建 worktree；实现过程全部 inline，不派 subagent 编写代码。最终交付前必须执行一次独立 CR，独立审查者可以是专门的 review subagent，但只能审查和提出问题，不能代替实现。
 - 每个任务按“先写失败测试 → 运行确认失败 → 最小实现 → 定向测试 → 小步提交”执行。
 - 所有提交使用 `type: AI subject` 格式；本计划建议提交标题已给出。
 - 不修改现有 Interview Review Proposal 的 API、数据语义或 HITL 行为；新能力只增加独立 capture API 和 Knowledge 只读展示。
@@ -43,6 +43,8 @@
 | `web/src/components/InterviewKnowledgeCaptureDrawer.tsx` | 原始片段选择、直接保存、可选 AI 预览、编辑和二次确认 |
 | `web/src/components/InterviewKnowledgeCaptureDrawer.test.tsx` | 组件静态契约与固定安全文案 |
 | `web/src/components/InterviewKnowledgeCaptureDrawer.interaction.test.tsx` | 选择、AI 确认、取消、错误、幂等恢复和提交边界 |
+| `web/src/layout/AppShell.tsx` | 按 `noteId` 持有完整 capture draft，保证抽屉卸载/重进不丢失未知结果 key |
+| `web/src/layout/AppShell.interviewKnowledgeCapture.test.tsx` | 真实卸载/重进、普通取消与结果未知的 draft 保留语义 |
 | `web/src/components/ApplicationDetail.tsx` / `ReviewManagementView.tsx` | 接入复盘知识沉淀入口与已确认 Knowledge 查看入口 |
 | `web/src/services/knowledge.ts` / `web/src/types/knowledge.ts` | 增加已确认 interview capture 的只读展示类型/读取方法 |
 | `src/offerpilot/smoke.py` / `tests/test_smoke.py` | 隔离 real-AI 合成数据、浏览器闭环和清理断言 |
@@ -179,9 +181,9 @@ git commit -m "feat: AI add interview knowledge capture schema"
 ```python
 def test_utf16_offsets_match_browser_for_cjk_emoji_and_combining_text():
     value = "问题：Kafka 🚀 e\u0301"
-    assert slice_utf16(value, 4, 9) == "Kafka"
-    assert slice_utf16(value, 10, 12) == "🚀"
-    assert slice_utf16(value, 13, 15) == "e\u0301"
+    assert slice_utf16(value, 3, 8) == "Kafka"
+    assert slice_utf16(value, 9, 11) == "🚀"
+    assert slice_utf16(value, 12, 14) == "e\u0301"
 
 
 def test_utf16_slice_rejects_surrogate_pair_boundary():
@@ -191,17 +193,20 @@ def test_utf16_slice_rejects_surrogate_pair_boundary():
 
 
 def test_selected_fragments_reject_count_and_utf8_byte_limits():
+    source_fields = {"/questions": "x" * 21}
     too_many = [fragment("/questions", i, i + 1, "x") for i in range(21)]
     with pytest.raises(FragmentValidationError, match="fragment_count"):
-        canonicalize_fragments(too_many)
-    oversized = [fragment("/questions", 0, 4096, "x" * 4097)]
+        canonicalize_fragments(too_many, source_fields)
+    oversized_source = "x" * 4097
+    oversized = [fragment("/questions", 0, 4097, oversized_source)]
     with pytest.raises(FragmentValidationError, match="utf8_bytes"):
-        canonicalize_fragments(oversized)
+        canonicalize_fragments(oversized, {"/questions": oversized_source})
 
 
 def test_snapshot_round_trip_reads_exact_text_bytes_then_one_lf():
     fragments = canonicalize_fragments(
-        [fragment("/questions", 0, 3, "问题"), fragment("/mood", 0, 2, "🚀")]
+        [fragment("/questions", 0, 2, "问题"), fragment("/mood", 0, 2, "🚀")],
+        {"/questions": "问题", "/mood": "🚀"},
     )
     encoded = serialize_capture_snapshot(fragments)
     assert parse_capture_snapshot(encoded) == fragments
@@ -225,10 +230,14 @@ uv run pytest tests/test_interview_knowledge_capture_fragments.py -q
 公开给 repository 和 AI validator 的纯函数固定为：
 
 ```python
+from collections.abc import Mapping
+
 def slice_utf16(value: str, start: int, end: int) -> str:
     pass
 
-def canonicalize_fragments(raw: list[SelectedFragment]) -> list[CanonicalFragment]:
+def canonicalize_fragments(
+    raw: list[SelectedFragment], source_fields: Mapping[str, str]
+) -> list[CanonicalFragment]:
     pass
 
 def serialize_capture_snapshot(fragments: list[CanonicalFragment]) -> bytes:
@@ -270,7 +279,7 @@ git commit -m "feat: AI add interview capture fragment protocol"
 
 - [ ] **Step 1: 写失败的 attempt/CAS 测试**
 
-覆盖以下确定行为：
+覆盖以下确定行为。测试模块先定义 `tracked_session_factory(db_path)`，每个 factory 都创建独立 SQLAlchemy engine/SQLite connection，并通过 `open_sessions` 计数；再定义带 `started`/`release` Event 的 `BlockingProvider.complete(fragments)`，Provider 每次进入递增 `calls`，并记录进入时两个 tracker 的 open session 总数。这样可以证明 claim 提交并关闭 session 后才调用 Provider，而不是只测试顺序调用：
 
 ```python
 def test_same_key_can_switch_from_direct_to_ai_without_new_key(repository):
@@ -280,12 +289,39 @@ def test_same_key_can_switch_from_direct_to_ai_without_new_key(repository):
     assert ai.preview_status == "ai_generating"
 
 
-def test_concurrent_ai_claim_allows_one_provider_token(repository):
-    first = repository.claim_ai_preview(note_id, key, fragments)
-    second = repository.claim_ai_preview(note_id, key, fragments)
-    assert first.provider_call_token
+def test_concurrent_ai_claim_allows_one_provider_call_across_two_sqlite_sessions(tmp_path):
+    db_path = tmp_path / "capture.db"
+    factory_a, tracker_a = tracked_session_factory(db_path)
+    factory_b, tracker_b = tracked_session_factory(db_path)
+    repository_a = InterviewKnowledgeCaptureRepository(factory_a)
+    repository_b = InterviewKnowledgeCaptureRepository(factory_b)
+    provider = BlockingProvider()
+
+    def invoke(repository):
+        claim = repository.claim_ai_preview(note_id, key, fragments)
+        if not claim.should_call_provider:
+            return claim
+        preview = provider.complete(fragments)
+        return repository.complete_ai_preview(
+            note_id, key, claim.preview_revision, claim.provider_call_token, preview
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first_future = pool.submit(invoke, repository_a)
+        assert provider.started.wait(timeout=5)
+        second_future = pool.submit(invoke, repository_b)
+        second = second_future.result(timeout=5)
+        provider.release.set()
+        first = first_future.result(timeout=5)
+
+    assert provider.calls == 1
+    assert provider.open_sessions_seen == [0]
     assert second.status == "ai_generating"
-    assert second.provider_call_token == first.provider_call_token
+    assert first is True
+    assert tracker_a.open_sessions == 0
+    assert tracker_b.open_sessions == 0
+    factory_a.kw["bind"].dispose()
+    factory_b.kw["bind"].dispose()
 
 
 def test_stale_provider_result_fails_revision_token_cas(repository):
@@ -539,8 +575,10 @@ git commit -m "feat: AI add confirmed interview knowledge capture API"
 - Create: `web/src/components/InterviewKnowledgeCaptureDrawer.tsx`
 - Create: `web/src/components/InterviewKnowledgeCaptureDrawer.test.tsx`
 - Create: `web/src/components/InterviewKnowledgeCaptureDrawer.interaction.test.tsx`
+- Modify: `web/src/layout/AppShell.tsx`
+- Create: `web/src/layout/AppShell.interviewKnowledgeCapture.test.tsx`
 - Modify: `web/src/components/ApplicationDetail.tsx`
-- Modify: `web/src/components/ReviewManagementView.tsx` if the same review entry is rendered there
+- Modify: `web/src/components/ReviewManagementView.tsx`
 
 - [ ] **Step 1: 写失败的 service 与组件测试**
 
@@ -592,15 +630,59 @@ it('unknown result remount reuses the same attempt key', async () => {
 
 ```powershell
 Set-Location web
-npm.cmd test -- --run src/services/interviewKnowledgeCapture.test.ts src/components/InterviewKnowledgeCaptureDrawer.interaction.test.tsx
+npm.cmd test -- --run src/services/interviewKnowledgeCapture.test.ts src/components/InterviewKnowledgeCaptureDrawer.interaction.test.tsx src/layout/AppShell.interviewKnowledgeCapture.test.tsx
 Set-Location ..
 ```
 
 预期：FAIL，因为 service、组件和入口尚不存在。
 
-- [ ] **Step 3: 实现受控前端状态**
+- [ ] **Step 3: 实现 AppShell 持久草稿 reducer 与受控 Drawer**
 
-组件状态至少包括：`selectedFragments`, `canonicalFragments`, `attemptKey`, `previewStatus`, `preview`, `editedBlocks`, `errorCode`。服务端返回 `ai_generating` 时不得发第二个 Provider 请求；关闭/取消只清理未确认前端视图，网络未知保留 attempt key 以便重进恢复。确认按钮仅在每个 block 有 canonical Evidence ref、内容未超限且用户完成二次确认后调用 confirm。
+`InterviewKnowledgeCaptureDrawer` 不得在自身 `useState` 中拥有幂等 key、canonical fragments 或结果状态。`AppShell` 使用按 `noteId` 键控的 reducer 保存完整 draft：
+
+```tsx
+type InterviewKnowledgeCaptureDraft = {
+  selectedFragments: SelectedFragment[];
+  canonicalFragments: CanonicalFragment[];
+  attemptKey: string;
+  previewStatus: 'not_requested' | 'direct_ready' | 'ai_generating' | 'ai_ready' | 'safe_empty' | 'provider_unknown';
+  preview: KnowledgePreview | null;
+  editedBlocks: PreviewBlock[];
+  errorCode: string | null;
+};
+
+type CaptureDraftAction =
+  | { type: 'upsert'; noteId: number; patch: Partial<InterviewKnowledgeCaptureDraft> }
+  | { type: 'mark_unknown'; noteId: number }
+  | { type: 'cancel'; noteId: number }
+  | { type: 'confirmed'; noteId: number }
+  | { type: 'source_changed'; noteId: number };
+```
+
+`AppShell` 只在 `cancel`、确定 404/409/422、确认成功或来源变化时删除 key；普通取消删除对应 note draft，结果未知只把状态改为 `provider_unknown` 并保留全部 draft。Drawer 通过 `draft` 和 `onDraftChange` 受控渲染，卸载不触发清理；重新挂载按同一 `noteId` 读取原 draft，并用原 `attemptKey` 恢复。
+
+服务端返回 `ai_generating` 时不得发第二个 Provider 请求；确认按钮仅在每个 block 有 canonical Evidence ref、内容未超限且用户完成二次确认后调用 confirm。
+
+在 `web/src/layout/AppShell.interviewKnowledgeCapture.test.tsx` 使用真实 `render` → `unmount` → `render` 流程断言：
+
+```tsx
+it('keeps unknown-result draft and key across drawer unmount and remount', async () => {
+  const firstKey = await openDrawerSubmitAndLoseResponse(noteId);
+  closeDrawerByUnmount();
+  await reopenDrawer(noteId);
+  expect(readAttemptKey()).toBe(firstKey);
+  await retryWithSameKey();
+  expect(mockPreview).toHaveBeenLastCalledWith(expect.objectContaining({ attempt_key: firstKey }));
+});
+
+it('clears ordinary-cancel draft but preserves unknown-result draft', async () => {
+  await openDrawerAndCancel(noteId);
+  expect(readDraft(noteId)).toBeUndefined();
+  await openDrawerSubmitAndLoseResponse(noteId);
+  await cancelAfterUnknownResult(noteId);
+  expect(readDraft(noteId)?.attemptKey).toBeDefined();
+});
+```
 
 固定 UI 行为：默认“直接保存选中原文”；AI 预览前明确说明发送给当前 Provider；安全空结果显示“暂无可验证的笔记预览”；502 显示“AI 预览暂不可用，可直接保存选中原文”；不显示原始 Axios/Provider 文本，不提供练习、Memory、能力判断或投递动作。
 
@@ -608,7 +690,7 @@ Set-Location ..
 
 ```powershell
 Set-Location web
-npm.cmd test -- --run src/services/interviewKnowledgeCapture.test.ts src/components/InterviewKnowledgeCaptureDrawer.interaction.test.tsx
+npm.cmd test -- --run src/services/interviewKnowledgeCapture.test.ts src/components/InterviewKnowledgeCaptureDrawer.interaction.test.tsx src/layout/AppShell.interviewKnowledgeCapture.test.tsx
 Set-Location ..
 ```
 
@@ -617,7 +699,7 @@ Set-Location ..
 - [ ] **Step 5: 提交前端切片**
 
 ```powershell
-git add web/src/types/interviewKnowledgeCapture.ts web/src/services/interviewKnowledgeCapture.ts web/src/services/interviewKnowledgeCapture.test.ts web/src/components/InterviewKnowledgeCaptureDrawer.tsx web/src/components/InterviewKnowledgeCaptureDrawer.test.tsx web/src/components/InterviewKnowledgeCaptureDrawer.interaction.test.tsx web/src/components/ApplicationDetail.tsx web/src/components/ReviewManagementView.tsx
+git add web/src/types/interviewKnowledgeCapture.ts web/src/services/interviewKnowledgeCapture.ts web/src/services/interviewKnowledgeCapture.test.ts web/src/components/InterviewKnowledgeCaptureDrawer.tsx web/src/components/InterviewKnowledgeCaptureDrawer.test.tsx web/src/components/InterviewKnowledgeCaptureDrawer.interaction.test.tsx web/src/layout/AppShell.tsx web/src/layout/AppShell.interviewKnowledgeCapture.test.tsx web/src/components/ApplicationDetail.tsx web/src/components/ReviewManagementView.tsx
 git commit -m "feat: AI add interview knowledge capture review flow"
 ```
 
@@ -781,6 +863,40 @@ rg -n "job_url|requests\.get|/jobs|auto.?apply|Memory|weakness|exercise" src/off
 - UTF-16、Snapshot parser、canonical ID、Attempt CAS、逐块 Evidence、来源漂移和原 note 删除审计测试名称及结果；
 - 隔离 real-AI 浏览器实际结果：有效预览/安全空预览/502 的具体安全状态，不输出模型原文或敏感数据；
 - 未运行或既有失败的门禁命令、原因和剩余风险。
+
+### Task 10: 独立最终 CR 与问题回归
+
+**Files:**
+- Review: `src/offerpilot/models.py`, `src/offerpilot/db.py`, `src/offerpilot/knowledge/interview_capture.py`, `src/offerpilot/repositories/interview_knowledge_capture.py`, `src/offerpilot/ai/interview_knowledge_capture.py`, `src/offerpilot/api.py`
+- Review: `web/src/layout/AppShell.tsx`, `web/src/components/InterviewKnowledgeCaptureDrawer.tsx`, `web/src/components/KnowledgeSourcesView.tsx`
+- Review: all new/modified tests and `scripts/interview-knowledge-real-ai-browser-harness.ps1`
+
+- [ ] **Step 1: 发起独立 CR，不让 reviewer 代写代码**
+
+在所有 inline 实现和 Task 9 门禁完成后，使用 `requesting-code-review` 或等价独立审查流程提交：批准设计文档、当前 diff、定向测试结果和安全边界检查结果。审查范围必须特别询问：UTF-16 helper 是否真的使用 source fields、双 connection + Provider barrier 是否证明 session 释放和单调用、AppShell 是否拥有完整 noteId draft、Attempt cascade 是否不影响冻结资产、canonical ID 是否贯穿 preview/confirm/Evidence。
+
+预期：reviewer 只输出问题列表和风险，不直接修改 worktree；inline 开发者负责逐项处理。
+
+- [ ] **Step 2: 为每个 CR 问题先补回归测试**
+
+每个可复现问题必须先在对应测试文件增加失败断言：Unicode/fragment 问题放入 `tests/test_interview_knowledge_capture_fragments.py`；CAS/删除/来源漂移问题放入 `tests/test_interview_knowledge_capture_repository.py` 或 `tests/test_interview_knowledge_capture_api.py`；AppShell 卸载/重进问题放入 `web/src/layout/AppShell.interviewKnowledgeCapture.test.tsx`；canonical ID 或文案问题放入对应 service/component 测试。
+
+- [ ] **Step 3: inline 修复并回归**
+
+只在当前 worktree inline 修复已确认问题，按最小范围提交；每个修复后运行对应定向测试，再重跑：
+
+```powershell
+uv run pytest tests/test_interview_knowledge_capture_migrations.py tests/test_interview_knowledge_capture_fragments.py tests/test_interview_knowledge_capture_repository.py tests/test_interview_knowledge_capture_ai.py tests/test_interview_knowledge_capture_api.py -q
+Set-Location web
+npm.cmd test -- --run src/layout/AppShell.interviewKnowledgeCapture.test.tsx src/components/InterviewKnowledgeCaptureDrawer.interaction.test.tsx src/components/KnowledgeSourcesView.interviewCapture.test.tsx
+Set-Location ..
+```
+
+预期：CR 所指出的每个问题都有对应回归测试，且新增/受影响测试全部 PASS。
+
+- [ ] **Step 4: 复核独立 CR 结论并交付**
+
+确认所有 CR 意见已修复或有明确技术理由不采纳；最终报告列出 CR 审查范围、问题、回归测试和剩余风险。不得以“测试通过”替代独立 CR。
 
 ## 完成定义
 
