@@ -65,10 +65,11 @@ let container: HTMLDivElement | undefined;
 
 function Harness() {
   const [open, setOpen] = useState(true);
-  const [attemptState, setAttemptState] = useState<{ key: string; result_unknown: boolean } | null>(null);
+  const [attemptState, setAttemptState] = useState<{ key: string; result_unknown: boolean; event_id: number | null } | null>(null);
   return (
     <>
       <button type="button" onClick={() => setOpen(true)}>重新打开</button>
+      <button type="button" onClick={() => setOpen(false)}>切换页面</button>
       {open && (
         <InterviewReviewProposalDrawer
           open
@@ -144,5 +145,91 @@ describe('InterviewReviewProposalDrawer attempt ownership', () => {
     });
 
     expect(service.create).toHaveBeenNthCalledWith(2, 7, '00000000-0000-0000-0000-000000000001');
+  });
+
+  it('creates a new key after a successful response and reopening', async () => {
+    service.create.mockResolvedValue({
+      id: 20,
+      created_at: '2026-07-22T00:00:00Z',
+      source_status: 'current',
+      proposal: {
+        summary: { text: 'safe', evidence_refs: [] },
+        observations: [],
+        clarifications: [],
+        practice_focuses: [],
+        next_questions: [],
+      },
+    });
+    vi.spyOn(globalThis.crypto, 'randomUUID')
+      .mockReturnValueOnce('00000000-0000-0000-0000-000000000001')
+      .mockReturnValueOnce('00000000-0000-0000-0000-000000000002');
+
+    act(() => root?.render(<Harness />));
+    const generate = () => [...(container?.querySelectorAll('button') || [])]
+      .find((button) => button.textContent === '生成复盘建议') as HTMLButtonElement;
+    await act(async () => {
+      generate().click();
+      await Promise.resolve();
+    });
+    act(() => {
+      [...(container?.querySelectorAll('button') || [])]
+        .find((button) => button.textContent === '关闭')
+        ?.click();
+    });
+    act(() => {
+      [...(container?.querySelectorAll('button') || [])]
+        .find((button) => button.textContent === '重新打开')
+        ?.click();
+    });
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => {
+      generate().click();
+      await Promise.resolve();
+    });
+
+    expect(service.create).toHaveBeenNthCalledWith(2, 7, '00000000-0000-0000-0000-000000000002');
+  });
+
+  it('keeps the key when the parent unmounts during a pending request', async () => {
+    let resolveFirst: ((value: unknown) => void) | undefined;
+    service.create.mockReturnValueOnce(new Promise((resolve) => { resolveFirst = resolve; }));
+    service.create.mockResolvedValueOnce({
+      id: 20,
+      created_at: '2026-07-22T00:00:00Z',
+      source_status: 'current',
+      proposal: {
+        summary: { text: 'safe', evidence_refs: [] },
+        observations: [],
+        clarifications: [],
+        practice_focuses: [],
+        next_questions: [],
+      },
+    });
+
+    act(() => root?.render(<Harness />));
+    const generate = () => [...(container?.querySelectorAll('button') || [])]
+      .find((button) => button.textContent === '生成复盘建议') as HTMLButtonElement;
+    await act(async () => {
+      generate().click();
+      await Promise.resolve();
+    });
+    act(() => {
+      [...(container?.querySelectorAll('button') || [])]
+        .find((button) => button.textContent === '切换页面')
+        ?.click();
+    });
+    act(() => {
+      [...(container?.querySelectorAll('button') || [])]
+        .find((button) => button.textContent === '重新打开')
+        ?.click();
+    });
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => {
+      generate().click();
+      await Promise.resolve();
+    });
+
+    expect(service.create).toHaveBeenNthCalledWith(2, 7, '00000000-0000-0000-0000-000000000001');
+    act(() => { resolveFirst?.({}); });
   });
 });

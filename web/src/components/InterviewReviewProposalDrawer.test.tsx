@@ -22,6 +22,11 @@ describe('InterviewReviewProposalDrawer', () => {
     expect(source).toContain('if (generating &&');
   });
 
+  it('ends the attempt after a successful response', () => {
+    expect(source).toContain('onAttemptStateChange?.(null);');
+    expect(source).toContain('event_id');
+  });
+
   it('shows evidence labels and has no cross-domain write actions', () => {
     expect(source).toContain('复盘问题');
     expect(source).toContain('自我反思');

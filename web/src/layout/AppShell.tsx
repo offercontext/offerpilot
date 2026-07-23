@@ -39,6 +39,7 @@ import Sidebar from './Sidebar';
 import TopBar from './TopBar';
 import AddApplicationForm from '@/components/AddApplicationForm';
 import ApplicationDetail from '@/components/ApplicationDetail';
+import type { InterviewReviewProposalAttemptState } from '@/components/InterviewReviewProposalDrawer';
 import ResumeUploadModal from '@/components/ResumeUploadModal';
 import ChatPanel from '@/components/ChatPanel';
 import type { EvidenceTarget } from '@/components/ChatPanel/model';
@@ -138,6 +139,7 @@ function AppShellContent() {
   const [pilotOnboardingFocusToken, setPilotOnboardingFocusToken] = useState(0);
   const nextPilotOnboardingFocusToken = useRef(0);
   const [selected, setSelected] = useState<Application | null>(null);
+  const [interviewReviewProposalAttempts, setInterviewReviewProposalAttempts] = useState<Record<number, InterviewReviewProposalAttemptState>>({});
   const [evidenceFocus, setEvidenceFocus] = useState<Exclude<EvidenceTarget, { kind: 'application' }> | null>(null);
   const [coachOfferId, setCoachOfferId] = useState<number | undefined>(undefined);
   const [chatStartRequest, setChatStartRequest] = useState<ChatStartRequest>();
@@ -495,6 +497,27 @@ function AppShellContent() {
     setSelected(app);
   };
 
+  const updateInterviewReviewProposalAttempt = (
+    noteID: number,
+    state: InterviewReviewProposalAttemptState | null,
+  ) => {
+    setInterviewReviewProposalAttempts((current) => {
+      const next = { ...current };
+      if (state?.result_unknown) next[noteID] = state;
+      else delete next[noteID];
+      return next;
+    });
+  };
+
+  const clearInterviewReviewProposalAttempt = (noteID: number) => {
+    setInterviewReviewProposalAttempts((current) => {
+      if (!(noteID in current)) return current;
+      const next = { ...current };
+      delete next[noteID];
+      return next;
+    });
+  };
+
   const openPilotInterviewReview = (applicationId: number) => {
     const app = apps.find((item) => item.id === applicationId);
     if (!app) return;
@@ -662,6 +685,9 @@ function AppShellContent() {
       pilotInterviewReviewApplicationId={pilotInterviewReviewApplicationId}
       onPilotInterviewReviewFocusConsumed={() => setPilotInterviewReviewApplicationId(null)}
       onAttachToPilot={attachToPilot}
+      interviewReviewProposalAttempts={interviewReviewProposalAttempts}
+      onInterviewReviewProposalAttemptChange={updateInterviewReviewProposalAttempt}
+      onInterviewNoteChanged={clearInterviewReviewProposalAttempt}
     />
   ) : (
     <>

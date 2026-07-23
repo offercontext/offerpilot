@@ -34,6 +34,7 @@ interface Props {
 export interface InterviewReviewProposalAttemptState {
   key: string;
   result_unknown: boolean;
+  event_id: number | null;
 }
 
 function newAttemptKey() {
@@ -69,10 +70,30 @@ export default function InterviewReviewProposalDrawer({
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState('');
   const activeAttemptKey = useRef<string | null>(null);
+  const attemptStateChangeRef = useRef(onAttemptStateChange);
+  const currentEventIDRef = useRef<number | null>(null);
   const currentEventID = eventID ?? note.application_event_id ?? null;
+  attemptStateChangeRef.current = onAttemptStateChange;
+  currentEventIDRef.current = currentEventID;
   const resultUnknown = attemptState?.result_unknown ?? false;
   const hasChangedSource = selected?.source_status === 'source_changed';
   const generationLabel = hasChangedSource ? '重新生成复盘建议' : '生成复盘建议';
+
+  useEffect(() => () => {
+    const key = activeAttemptKey.current;
+    if (key) {
+      attemptStateChangeRef.current?.({
+        key,
+        result_unknown: true,
+        event_id: currentEventIDRef.current,
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!open || !attemptState || attemptState.event_id === currentEventID) return;
+    onAttemptStateChange?.(null);
+  }, [open, currentEventID, attemptState?.event_id]);
 
   useEffect(() => {
     if (!open) return;
@@ -106,7 +127,7 @@ export default function InterviewReviewProposalDrawer({
     }
     const key = hasChangedSource ? newAttemptKey() : (attemptState?.key ?? newAttemptKey());
     if (!window.confirm('本次复盘内容与面试事件信息将发送给当前配置的 AI 服务。是否继续？')) return;
-    onAttemptStateChange?.({ key, result_unknown: false });
+    onAttemptStateChange?.({ key, result_unknown: false, event_id: currentEventID });
     activeAttemptKey.current = key;
     setGenerating(true);
     setError('');
@@ -114,13 +135,13 @@ export default function InterviewReviewProposalDrawer({
       const proposal = await createInterviewReviewProposal(note.id, key);
       setHistory((items) => [proposal, ...items.filter((item) => item.id !== proposal.id)]);
       setSelected(proposal);
-      onAttemptStateChange?.({ key, result_unknown: false });
+      onAttemptStateChange?.(null);
     } catch (cause) {
       const safe = cause instanceof InterviewReviewProposalError ? cause : null;
       setError(safe?.message ?? '复盘建议暂时不可用，请稍后重试。');
       if (safe?.code) onAttemptStateChange?.(null);
       else {
-        onAttemptStateChange?.({ key, result_unknown: true });
+        onAttemptStateChange?.({ key, result_unknown: true, event_id: currentEventID });
       }
     } finally {
       activeAttemptKey.current = null;
@@ -131,7 +152,7 @@ export default function InterviewReviewProposalDrawer({
   function handleClose() {
     const key = activeAttemptKey.current ?? attemptState?.key;
     if (generating && key) {
-      onAttemptStateChange?.({ key, result_unknown: true });
+      onAttemptStateChange?.({ key, result_unknown: true, event_id: currentEventID });
     }
     onClose();
   }

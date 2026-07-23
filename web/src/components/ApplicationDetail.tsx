@@ -60,9 +60,15 @@ interface ApplicationDetailProps {
   pilotInterviewReviewApplicationId?: number | null;
   onPilotInterviewReviewFocusConsumed?: () => void;
   onAttachToPilot?: (attachment: import('@/types/chat').PilotContextAttachment) => void;
+  interviewReviewProposalAttempts?: Record<number, InterviewReviewProposalAttemptState>;
+  onInterviewReviewProposalAttemptChange?: (
+    noteID: number,
+    state: InterviewReviewProposalAttemptState | null,
+  ) => void;
+  onInterviewNoteChanged?: (noteID: number) => void;
 }
 
-export default function ApplicationDetail({ application, open, onClose, onMockInterview, onAskPilot, onOpenPilotOpportunityFit, pilotInterviewReviewApplicationId, onPilotInterviewReviewFocusConsumed, onAttachToPilot }: ApplicationDetailProps) {
+export default function ApplicationDetail({ application, open, onClose, onMockInterview, onAskPilot, onOpenPilotOpportunityFit, pilotInterviewReviewApplicationId, onPilotInterviewReviewFocusConsumed, onAttachToPilot, interviewReviewProposalAttempts, onInterviewReviewProposalAttemptChange, onInterviewNoteChanged }: ApplicationDetailProps) {
   const queryClient = useQueryClient();
   const [form] = Form.useForm();
   const [eventFormOpen, setEventFormOpen] = useState(false);
@@ -77,7 +83,6 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
   const [reviewFormOpen, setReviewFormOpen] = useState(false);
   const [reviewProposalOpen, setReviewProposalOpen] = useState(false);
   const [reviewEventID, setReviewEventID] = useState<number | null>(null);
-  const [proposalAttempts, setProposalAttempts] = useState<Record<number, InterviewReviewProposalAttemptState>>({});
 
   useEffect(() => {
     setMaterialKitPrefill({});
@@ -137,7 +142,8 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
 
   const updateNoteMut = useMutation({
     mutationFn: ({ id, input }: { id: number; input: CreateNoteInput }) => updateNote(id, input),
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
+      onInterviewNoteChanged?.(variables.id);
       message.success('已更新面试复盘');
       setEditingNote(null);
       setReviewFormOpen(false);
@@ -231,15 +237,8 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
         open={reviewProposalOpen}
         note={editingNote}
         eventID={editingNote.application_event_id}
-        attemptState={proposalAttempts[editingNote.id]}
-        onAttemptStateChange={(state) => {
-          setProposalAttempts((current) => {
-            const next = { ...current };
-            if (state) next[editingNote.id] = state;
-            else delete next[editingNote.id];
-            return next;
-          });
-        }}
+        attemptState={interviewReviewProposalAttempts?.[editingNote.id]}
+        onAttemptStateChange={(state) => onInterviewReviewProposalAttemptChange?.(editingNote.id, state)}
         onClose={() => {
           setReviewProposalOpen(false);
           setEditingNote(null);

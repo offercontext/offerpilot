@@ -35,6 +35,12 @@ const MOOD_OPTIONS = [
 
 interface Props {
   applications: Application[];
+  interviewReviewProposalAttempts?: Record<number, InterviewReviewProposalAttemptState>;
+  onInterviewReviewProposalAttemptChange?: (
+    noteID: number,
+    state: InterviewReviewProposalAttemptState | null,
+  ) => void;
+  onInterviewNoteChanged?: (noteID: number) => void;
 }
 
 function includesText(value: string | undefined, query: string) {
@@ -51,12 +57,11 @@ function inDateRange(date: string, range: [Dayjs | null, Dayjs | null] | null) {
   return !parsed.isBefore(range[0], 'day') && !parsed.isAfter(range[1], 'day');
 }
 
-export default function ReviewManagementView({ applications }: Props) {
+export default function ReviewManagementView({ applications, interviewReviewProposalAttempts, onInterviewReviewProposalAttemptChange, onInterviewNoteChanged }: Props) {
   const queryClient = useQueryClient();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editing, setEditing] = useState<InterviewNote | null>(null);
   const [proposalNote, setProposalNote] = useState<InterviewNote | null>(null);
-  const [proposalAttempts, setProposalAttempts] = useState<Record<number, InterviewReviewProposalAttemptState>>({});
   const [search, setSearch] = useState('');
   const [applicationID, setApplicationID] = useState<number | undefined>();
   const [mood, setMood] = useState<string | undefined>();
@@ -81,7 +86,8 @@ export default function ReviewManagementView({ applications }: Props) {
 
   const updateMut = useMutation({
     mutationFn: ({ id, input }: { id: number; input: CreateNoteInput }) => updateNote(id, input),
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
+      onInterviewNoteChanged?.(variables.id);
       message.success('已更新面试复盘');
       setEditing(null);
       setDrawerOpen(false);
@@ -137,15 +143,8 @@ export default function ReviewManagementView({ applications }: Props) {
         open
         note={proposalNote}
         eventID={proposalNote.application_event_id}
-        attemptState={proposalAttempts[proposalNote.id]}
-        onAttemptStateChange={(state) => {
-          setProposalAttempts((current) => {
-            const next = { ...current };
-            if (state) next[proposalNote.id] = state;
-            else delete next[proposalNote.id];
-            return next;
-          });
-        }}
+        attemptState={interviewReviewProposalAttempts?.[proposalNote.id]}
+        onAttemptStateChange={(state) => onInterviewReviewProposalAttemptChange?.(proposalNote.id, state)}
         onClose={() => setProposalNote(null)}
       />
     );
