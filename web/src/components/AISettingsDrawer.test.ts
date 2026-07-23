@@ -30,4 +30,10 @@ describe('AISettingsDrawer localization', () => {
     expect(source).toContain('设为默认');
     expect(source).toContain('Fallback 供应商');
   });
+
+  it('exposes the explicit native JSON Schema capability in the provider form and payload', () => {
+    expect(source).toContain('supports_json_schema');
+    expect(source).toContain('原生 JSON Schema');
+    expect(source).toContain('仅在 Provider 明确支持时启用');
+  });
 });

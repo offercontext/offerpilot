@@ -98,9 +98,65 @@ def test_get_settings_exposes_provider_profiles_without_keys(tmp_path):
         "base_url": "https://api.deepseek.com/v1",
         "model": "deepseek-chat",
         "enabled": True,
+        "supports_json_schema": False,
         "has_api_key": True,
     }
     assert "api_key" not in provider
+
+
+def test_provider_json_schema_capability_round_trips_settings_and_backup(tmp_path):
+    save_config(
+        tmp_path,
+        Config(
+            active_provider_id="structured",
+            providers=[
+                AIProviderProfile(
+                    id="structured",
+                    label="Structured",
+                    provider="openai_compatible",
+                    api_key="sk-structured",
+                    base_url="https://example.test/v1",
+                    model="structured-model",
+                    supports_json_schema=True,
+                )
+            ],
+        ),
+    )
+    client = TestClient(create_app(data_dir=tmp_path))
+
+    initial = client.get("/api/settings")
+
+    assert initial.status_code == 200
+    assert initial.json()["providers"][0]["supports_json_schema"] is True
+    initial_backup = client.get("/api/settings/backup")
+    assert initial_backup.status_code == 200
+    assert initial_backup.json()["providers"][0]["supports_json_schema"] is True
+
+    updated = client.put(
+        "/api/settings",
+        json={
+            "chat_auto_approve_writes": False,
+            "active_provider_id": "structured",
+            "providers": [
+                {
+                    "id": "structured",
+                    "label": "Structured",
+                    "provider": "openai_compatible",
+                    "base_url": "https://example.test/v1",
+                    "model": "structured-model",
+                    "enabled": True,
+                    "supports_json_schema": False,
+                }
+            ],
+        },
+    )
+
+    assert updated.status_code == 200
+    assert updated.json()["providers"][0]["supports_json_schema"] is False
+    assert load_config(tmp_path).active_provider().supports_json_schema is False
+    backup = client.get("/api/settings/backup")
+    assert backup.status_code == 200
+    assert backup.json()["providers"][0]["supports_json_schema"] is False
 
 
 def test_put_settings_preserves_blank_provider_api_key(tmp_path):

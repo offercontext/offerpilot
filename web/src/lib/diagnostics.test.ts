@@ -16,6 +16,7 @@ const settings: Settings = {
       base_url: 'http://127.0.0.1:4010/v1',
       model: 'stub',
       enabled: true,
+      supports_json_schema: false,
       has_api_key: true,
     },
   ],

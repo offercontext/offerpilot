@@ -314,6 +314,7 @@ export interface AIProviderProfile {
   base_url: string;
   model: string;
   enabled: boolean;
+  supports_json_schema: boolean;
   has_api_key: boolean;
 }
 

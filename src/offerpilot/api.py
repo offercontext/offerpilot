@@ -5688,6 +5688,7 @@ def _provider_payload(profile: AIProviderProfile) -> dict[str, Any]:
         "base_url": profile.base_url,
         "model": profile.model,
         "enabled": profile.enabled,
+        "supports_json_schema": profile.supports_json_schema,
         "has_api_key": bool(profile.api_key),
     }
 

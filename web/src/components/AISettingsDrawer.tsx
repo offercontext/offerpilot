@@ -57,6 +57,7 @@ interface FormValues {
   base_url: string;
   model: string;
   enabled: boolean;
+  supports_json_schema: boolean;
   chat_auto_approve_writes: boolean;
 }
 
@@ -189,6 +190,7 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
       base_url: DEFAULT_BASE_URL,
       model: DEFAULT_MODEL,
       enabled: true,
+      supports_json_schema: false,
       api_key: '',
       has_api_key: false,
     };
@@ -361,6 +363,15 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
             <Switch />
           </Form.Item>
 
+          <Form.Item
+            label="原生 JSON Schema"
+            name="supports_json_schema"
+            valuePropName="checked"
+            tooltip="仅在 Provider 明确支持时启用"
+          >
+            <Switch />
+          </Form.Item>
+
           <Form.Item label="Fallback 供应商">
             <Select
               mode="multiple"
@@ -423,6 +434,7 @@ function toEditableProviders(settings?: Settings): EditableProvider[] {
           base_url: DEFAULT_BASE_URL,
           model: DEFAULT_MODEL,
           enabled: true,
+          supports_json_schema: false,
           has_api_key: false,
         },
       ];
@@ -438,6 +450,7 @@ function providerToForm(provider?: EditableProvider, settings?: Settings): FormV
     base_url: provider?.base_url || settings?.base_url || DEFAULT_BASE_URL,
     model: provider?.model || settings?.model || DEFAULT_MODEL,
     enabled: provider?.enabled ?? true,
+    supports_json_schema: provider?.supports_json_schema ?? false,
     chat_auto_approve_writes: settings?.chat_auto_approve_writes ?? false,
   };
 }
@@ -451,6 +464,7 @@ function formToProvider(values: FormValues, existing?: EditableProvider): Editab
     base_url: values.base_url.trim() || DEFAULT_BASE_URL,
     model: values.model.trim() || DEFAULT_MODEL,
     enabled: values.enabled,
+    supports_json_schema: values.supports_json_schema,
     has_api_key: Boolean(values.api_key?.trim() || existing?.has_api_key),
   };
 }
@@ -469,6 +483,7 @@ function providerPayload(provider: EditableProvider): Omit<AIProviderProfile, 'h
     base_url: provider.base_url,
     model: provider.model,
     enabled: provider.enabled,
+    supports_json_schema: provider.supports_json_schema,
   };
   if (provider.api_key?.trim()) {
     payload.api_key = provider.api_key.trim();
