@@ -10,6 +10,16 @@ describe('InterviewReviewProposalDrawer', () => {
     expect(source).toContain('source_changed');
     expect(source).toContain('来源已变化');
     expect(source).toContain('重新生成复盘建议');
+    expect(source).toContain('attemptState');
+    expect(source).toContain('onAttemptStateChange');
+    expect(source).toContain('handleClose');
+    expect(source).not.toContain('const [attemptKey, setAttemptKey]');
+  });
+
+  it('keeps an unknown attempt owned by the parent across drawer unmounts', () => {
+    expect(source).toContain('result_unknown: true');
+    expect(source).toContain('onAttemptStateChange?.(null)');
+    expect(source).toContain('if (generating &&');
   });
 
   it('shows evidence labels and has no cross-domain write actions', () => {

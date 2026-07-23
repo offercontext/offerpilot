@@ -55,4 +55,16 @@ describe('interview review proposal service', () => {
       message: '复盘建议暂时不可用，请稍后重试。',
     });
   });
+
+  it('keeps a bare 502 distinguishable as an unknown result', async () => {
+    apiPost.mockRejectedValue({
+      response: { status: 502, data: { error: 'provider detail' } },
+      message: 'Axios provider detail',
+    });
+
+    const error = await createInterviewReviewProposal(7, 'attempt-1').catch((cause) => cause);
+
+    expect(error).toMatchObject({ message: 'AI 服务暂不可用，请稍后重试。' });
+    expect(error).toMatchObject({ code: undefined });
+  });
 });

@@ -1879,6 +1879,18 @@ def create_app(
         idempotency_key = payload.get("idempotency_key")
         if not isinstance(idempotency_key, str) or not idempotency_key.strip():
             return error_response(422, "idempotency_key is required")
+        normalized_key = idempotency_key.strip()
+        try:
+            existing = interview_review_proposals.get_by_idempotency_key(
+                note_id, normalized_key
+            )
+        except InterviewReviewNotFound:
+            return _interview_review_not_found_response()
+        if existing is not None:
+            return JSONResponse(
+                _interview_review_proposal_json(existing),
+                status_code=200,
+            )
         model = _chat_model(chat_model, resolved_data_dir)
         if isinstance(model, JSONResponse):
             return error_response(
@@ -1888,7 +1900,7 @@ def create_app(
             )
         try:
             proposal, created = interview_review_proposals.create_generated(
-                note_id, idempotency_key.strip(), model
+                note_id, normalized_key, model
             )
         except InterviewReviewNotFound:
             return _interview_review_not_found_response()
@@ -5892,7 +5904,7 @@ def _note_create_from_payload(
 
 
 def _note_json(note: Any) -> dict[str, Any]:
-    return InterviewNoteOut.model_validate(note).model_dump(mode="json", exclude_none=True)
+    return InterviewNoteOut.model_validate(note).model_dump(mode="json")
 
 
 def _interview_review_not_found_response() -> JSONResponse:

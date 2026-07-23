@@ -67,6 +67,18 @@ class InterviewReviewProposalsRepository:
                 return None
             return _with_source_status(session, note, proposal)
 
+    def get_by_idempotency_key(
+        self, note_id: int, idempotency_key: str
+    ) -> InterviewReviewProposal | None:
+        with self._session_factory() as session:
+            note = _visible_note(session, note_id)
+            if note is None:
+                raise InterviewReviewNotFound()
+            proposal = _find_by_key(session, note_id, idempotency_key)
+            if proposal is None:
+                return None
+            return _with_source_status(session, note, proposal)
+
     def create_generated(
         self,
         note_id: int,

@@ -91,6 +91,25 @@ def test_create_is_idempotent_and_returns_source_status(tmp_path) -> None:
     assert model.calls == 1
 
 
+def test_idempotent_hit_returns_existing_proposal_before_provider_resolution(tmp_path) -> None:
+    first_client = TestClient(create_app(data_dir=tmp_path, chat_model=FakeModel()))
+    _, _, note = _create_bound_note(first_client)
+    created = first_client.post(
+        f"/api/notes/{note['id']}/interview-review-proposals",
+        json={"idempotency_key": "provider-can-disappear"},
+    )
+    assert created.status_code == 201
+
+    client_without_provider = TestClient(create_app(data_dir=tmp_path))
+    replay = client_without_provider.post(
+        f"/api/notes/{note['id']}/interview-review-proposals",
+        json={"idempotency_key": "provider-can-disappear"},
+    )
+
+    assert replay.status_code == 200
+    assert replay.json()["id"] == created.json()["id"]
+
+
 def test_history_and_detail_remain_readable_after_event_delete(tmp_path) -> None:
     client = TestClient(create_app(data_dir=tmp_path, chat_model=FakeModel()))
     _, event, note = _create_bound_note(client)

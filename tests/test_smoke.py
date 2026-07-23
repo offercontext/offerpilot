@@ -347,7 +347,7 @@ def test_cli_verify_local_runs_http_smoke(monkeypatch, tmp_path):
     assert "http_confirm_action" in result.output
 
 
-def test_real_ai_interview_review_smoke_allows_empty_changes_without_snapshot_leak():
+def test_real_ai_interview_review_smoke_allows_verified_evidence_excerpt():
     class Response:
         status_code = 201
 
@@ -376,7 +376,13 @@ def test_real_ai_interview_review_smoke_allows_empty_changes_without_snapshot_le
                         "proposal": {
                             "summary": {
                                 "text": "本次复盘记录不足以形成有依据的表现判断，请先补充待澄清问题。",
-                                "evidence_refs": [],
+                                "evidence_refs": [
+                                    {
+                                        "source": "interview_note",
+                                        "path": "/questions",
+                                        "excerpt": "SMOKE_PRIVATE_INTERVIEW_FACT: explain the migration rollback plan",
+                                    }
+                                ],
                             },
                             "observations": [],
                             "clarifications": [],

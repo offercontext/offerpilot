@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Card, Empty, List, Space, Spin, Tag, Typography } from 'antd';
 import type { InterviewNote } from '@/types/note';
 import type {
@@ -27,6 +27,13 @@ interface Props {
   note: InterviewNote;
   eventID?: number | null;
   onClose: () => void;
+  attemptState?: InterviewReviewProposalAttemptState | null;
+  onAttemptStateChange?: (state: InterviewReviewProposalAttemptState | null) => void;
+}
+
+export interface InterviewReviewProposalAttemptState {
+  key: string;
+  result_unknown: boolean;
 }
 
 function newAttemptKey() {
@@ -48,16 +55,22 @@ function EvidenceRefs({ refs }: { refs: InterviewReviewEvidenceRef[] }) {
   );
 }
 
-export default function InterviewReviewProposalDrawer({ open, note, eventID, onClose }: Props) {
+export default function InterviewReviewProposalDrawer({
+  open,
+  note,
+  eventID,
+  onClose,
+  attemptState,
+  onAttemptStateChange,
+}: Props) {
   const [history, setHistory] = useState<InterviewReviewProposal[]>([]);
   const [selected, setSelected] = useState<InterviewReviewProposal | null>(null);
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState('');
-  const [resultUnknown, setResultUnknown] = useState(false);
-  const [attemptKey, setAttemptKey] = useState<string | null>(null);
-
+  const activeAttemptKey = useRef<string | null>(null);
   const currentEventID = eventID ?? note.application_event_id ?? null;
+  const resultUnknown = attemptState?.result_unknown ?? false;
   const hasChangedSource = selected?.source_status === 'source_changed';
   const generationLabel = hasChangedSource ? '重新生成复盘建议' : '生成复盘建议';
 
@@ -65,7 +78,6 @@ export default function InterviewReviewProposalDrawer({ open, note, eventID, onC
     if (!open) return;
     setSelected(null);
     setError('');
-    setResultUnknown(false);
     setLoading(true);
     listInterviewReviewProposals(note.id)
       .then(setHistory)
@@ -92,27 +104,36 @@ export default function InterviewReviewProposalDrawer({ open, note, eventID, onC
       setError('请先绑定有效的面试事件。');
       return;
     }
-    const key = attemptKey ?? newAttemptKey();
+    const key = hasChangedSource ? newAttemptKey() : (attemptState?.key ?? newAttemptKey());
     if (!window.confirm('本次复盘内容与面试事件信息将发送给当前配置的 AI 服务。是否继续？')) return;
+    onAttemptStateChange?.({ key, result_unknown: false });
+    activeAttemptKey.current = key;
     setGenerating(true);
     setError('');
     try {
       const proposal = await createInterviewReviewProposal(note.id, key);
       setHistory((items) => [proposal, ...items.filter((item) => item.id !== proposal.id)]);
       setSelected(proposal);
-      setAttemptKey(null);
-      setResultUnknown(false);
+      onAttemptStateChange?.({ key, result_unknown: false });
     } catch (cause) {
       const safe = cause instanceof InterviewReviewProposalError ? cause : null;
       setError(safe?.message ?? '复盘建议暂时不可用，请稍后重试。');
-      if (safe?.code) setAttemptKey(null);
+      if (safe?.code) onAttemptStateChange?.(null);
       else {
-        setAttemptKey(key);
-        setResultUnknown(true);
+        onAttemptStateChange?.({ key, result_unknown: true });
       }
     } finally {
+      activeAttemptKey.current = null;
       setGenerating(false);
     }
+  }
+
+  function handleClose() {
+    const key = activeAttemptKey.current ?? attemptState?.key;
+    if (generating && key) {
+      onAttemptStateChange?.({ key, result_unknown: true });
+    }
+    onClose();
   }
 
   if (!open) return null;
@@ -121,10 +142,10 @@ export default function InterviewReviewProposalDrawer({ open, note, eventID, onC
     <section className={styles.drawer} aria-label="面试复盘建议">
       <div className={styles.header}>
         <div>
-          <Button type="link" onClick={onClose}>返回复盘</Button>
+          <Button type="link" onClick={handleClose}>返回复盘</Button>
           <Title level={3}>面试复盘建议</Title>
         </div>
-        <Button onClick={onClose}>关闭</Button>
+        <Button onClick={handleClose}>关闭</Button>
       </div>
 
       <Card title="用户记录" size="small">

@@ -48,7 +48,8 @@ def test_list_update_delete_notes(tmp_path):
     assert listed.json()[0]["company"] == "ByteDance"
     assert updated.status_code == 200
     assert updated.json()["company"] == "Tencent"
-    assert "application_id" not in updated.json()
+    assert updated.json()["application_id"] is None
+    assert updated.json()["application_event_id"] is None
     assert deleted.status_code == 200
     assert deleted.json() == {"message": "Deleted"}
 
@@ -108,7 +109,7 @@ def test_bound_note_can_explicitly_unbind_event_without_unbinding_application(tm
 
     assert response.status_code == 200
     assert response.json()["application_id"] == application["id"]
-    assert "application_event_id" not in response.json()
+    assert response.json()["application_event_id"] is None
 
 
 def test_bound_note_rejects_application_reassignment_or_unbinding(tmp_path):
@@ -172,7 +173,7 @@ def test_deleting_event_unbinds_note_but_deleting_application_hides_bound_notes(
     assert client.delete(f"/api/application-events/{event['id']}").status_code == 200
     after_event_delete = client.get("/api/notes").json()
     assert after_event_delete[0]["id"] == note["id"]
-    assert "application_event_id" not in after_event_delete[0]
+    assert after_event_delete[0]["application_event_id"] is None
 
     application_two, event_two = _create_application_and_event(client, company="Tencent")
     note_two = _create_bound_note(client, application_two, event_two)

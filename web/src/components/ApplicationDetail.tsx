@@ -32,7 +32,9 @@ import type { CreateNoteInput, InterviewNote } from '@/types/note';
 import { EVENT_TYPE_LABELS } from '@/types/event';
 import ScheduleEventForm from '@/components/ScheduleEventForm';
 import ReviewFormDrawer from './ReviewFormDrawer';
-import InterviewReviewProposalDrawer from './InterviewReviewProposalDrawer';
+import InterviewReviewProposalDrawer, {
+  type InterviewReviewProposalAttemptState,
+} from './InterviewReviewProposalDrawer';
 import MaterialKitDrawer from './MaterialKitDrawer';
 import OpportunityFitReviewDrawer from './OpportunityFitReviewDrawer';
 import type { OpportunityFitReview } from '@/types/opportunityFitReview';
@@ -75,6 +77,7 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
   const [reviewFormOpen, setReviewFormOpen] = useState(false);
   const [reviewProposalOpen, setReviewProposalOpen] = useState(false);
   const [reviewEventID, setReviewEventID] = useState<number | null>(null);
+  const [proposalAttempts, setProposalAttempts] = useState<Record<number, InterviewReviewProposalAttemptState>>({});
 
   useEffect(() => {
     setMaterialKitPrefill({});
@@ -228,6 +231,15 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
         open={reviewProposalOpen}
         note={editingNote}
         eventID={editingNote.application_event_id}
+        attemptState={proposalAttempts[editingNote.id]}
+        onAttemptStateChange={(state) => {
+          setProposalAttempts((current) => {
+            const next = { ...current };
+            if (state) next[editingNote.id] = state;
+            else delete next[editingNote.id];
+            return next;
+          });
+        }}
         onClose={() => {
           setReviewProposalOpen(false);
           setEditingNote(null);
@@ -430,18 +442,16 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
                       >
                         编辑
                       </Button>
-                      {n.application_event_id != null && (
-                        <Button
-                          type="text"
-                          size="small"
-                          onClick={() => {
-                            setEditingNote(n);
-                            setReviewProposalOpen(true);
-                          }}
-                        >
-                          复盘建议
-                        </Button>
-                      )}
+                      <Button
+                        type="text"
+                        size="small"
+                        onClick={() => {
+                          setEditingNote(n);
+                          setReviewProposalOpen(true);
+                        }}
+                      >
+                        复盘建议
+                      </Button>
                       <Popconfirm
                         title="删除这条复盘？"
                         onConfirm={() => removeNoteMut.mutate(n.id)}

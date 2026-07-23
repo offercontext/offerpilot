@@ -40,7 +40,7 @@ function safeError(error: unknown): InterviewReviewProposalError {
     return new InterviewReviewProposalError(SAFE_ERRORS.interview_review_event_required, 'interview_review_event_required');
   }
   if (response?.status === 502) {
-    return new InterviewReviewProposalError(SAFE_ERRORS.interview_review_provider_error, 'interview_review_provider_error');
+    return new InterviewReviewProposalError(SAFE_ERRORS.interview_review_provider_error);
   }
   return new InterviewReviewProposalError('复盘建议暂时不可用，请稍后重试。');
 }

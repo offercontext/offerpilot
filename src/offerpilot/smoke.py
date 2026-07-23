@@ -596,7 +596,10 @@ def _run_real_ai_interview_review_smoke(
     if not isinstance(body, dict) or not isinstance(body.get("proposal"), dict):
         raise RuntimeError("interview review smoke response did not contain a verified proposal")
     serialized = json.dumps(body, ensure_ascii=False)
-    if marker in serialized or "SMOKE_PRIVATE_LOCATION" in serialized:
+    verified_marker_excerpt = _validate_interview_review_smoke_evidence(
+        body["proposal"], marker
+    )
+    if (marker in serialized and not verified_marker_excerpt) or "SMOKE_PRIVATE_LOCATION" in serialized:
         raise RuntimeError("interview review smoke response leaked frozen source data")
     if "input_snapshot_json" in body or "input_snapshot" in body:
         raise RuntimeError("interview review smoke response exposed the input snapshot")
@@ -606,6 +609,37 @@ def _run_real_ai_interview_review_smoke(
             "real AI returned a verified interview review proposal",
         )
     )
+
+
+def _validate_interview_review_smoke_evidence(
+    proposal: Any,
+    marker: str,
+) -> bool:
+    if not isinstance(proposal, dict):
+        raise RuntimeError("interview review smoke proposal was not an object")
+    marker_in_verified_excerpt = False
+    for field in ("summary", "observations", "clarifications", "practice_focuses", "next_questions"):
+        values = proposal.get(field)
+        items = values if isinstance(values, list) else [values]
+        for item in items:
+            if not isinstance(item, dict):
+                raise RuntimeError("interview review smoke proposal item was not an object")
+            refs = item.get("evidence_refs", [])
+            if not isinstance(refs, list):
+                raise RuntimeError("interview review smoke evidence refs were not an array")
+            for ref in refs:
+                if (
+                    not isinstance(ref, dict)
+                    or set(ref) != {"source", "path", "excerpt"}
+                    or ref.get("source") != "interview_note"
+                    or ref.get("path") not in {"/questions", "/self_reflection", "/difficulty_points", "/mood"}
+                    or not isinstance(ref.get("excerpt"), str)
+                    or not ref["excerpt"]
+                ):
+                    raise RuntimeError("interview review smoke returned an invalid evidence reference")
+                if marker in ref["excerpt"]:
+                    marker_in_verified_excerpt = True
+    return marker_in_verified_excerpt
 
 
 def _copy_real_ai_config(source_data_dir: Path, isolated_data_dir: Path) -> None:

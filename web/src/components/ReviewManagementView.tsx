@@ -21,7 +21,9 @@ import type { Application } from '@/types/application';
 import type { CreateNoteInput, InterviewNote } from '@/types/note';
 import { createStandaloneNote, deleteNote, listNotes, updateNote } from '@/services/notes';
 import ReviewFormDrawer from '@/components/ReviewFormDrawer';
-import InterviewReviewProposalDrawer from '@/components/InterviewReviewProposalDrawer';
+import InterviewReviewProposalDrawer, {
+  type InterviewReviewProposalAttemptState,
+} from '@/components/InterviewReviewProposalDrawer';
 
 const { Text, Paragraph } = Typography;
 
@@ -54,6 +56,7 @@ export default function ReviewManagementView({ applications }: Props) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editing, setEditing] = useState<InterviewNote | null>(null);
   const [proposalNote, setProposalNote] = useState<InterviewNote | null>(null);
+  const [proposalAttempts, setProposalAttempts] = useState<Record<number, InterviewReviewProposalAttemptState>>({});
   const [search, setSearch] = useState('');
   const [applicationID, setApplicationID] = useState<number | undefined>();
   const [mood, setMood] = useState<string | undefined>();
@@ -134,6 +137,15 @@ export default function ReviewManagementView({ applications }: Props) {
         open
         note={proposalNote}
         eventID={proposalNote.application_event_id}
+        attemptState={proposalAttempts[proposalNote.id]}
+        onAttemptStateChange={(state) => {
+          setProposalAttempts((current) => {
+            const next = { ...current };
+            if (state) next[proposalNote.id] = state;
+            else delete next[proposalNote.id];
+            return next;
+          });
+        }}
         onClose={() => setProposalNote(null)}
       />
     );
@@ -224,11 +236,9 @@ export default function ReviewManagementView({ applications }: Props) {
                     />
                   </Tooltip>
                   <Tooltip title="删除">
-                    {note.application_event_id != null && (
-                      <Button type="text" onClick={() => setProposalNote(note)}>
-                        复盘建议
-                      </Button>
-                    )}
+                    <Button type="text" onClick={() => setProposalNote(note)}>
+                      复盘建议
+                    </Button>
                     <Popconfirm
                       title="删除这条复盘？"
                       onConfirm={() => deleteMut.mutate(note.id)}
