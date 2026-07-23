@@ -228,14 +228,38 @@ def _snapshot_value(value: Any) -> Any:
 
 
 def _interview_review_system() -> str:
+    empty_example = json.dumps(
+        {
+            "summary": {
+                "text": INTERVIEW_REVIEW_UNGROUNDED_SUMMARY_V1,
+                "evidence_refs": [],
+            },
+            "observations": [],
+            "clarifications": [
+                {
+                    "id": "clarification-1",
+                    "question": INTERVIEW_REVIEW_UNGROUNDED_QUESTIONS_V1[0],
+                    "evidence_refs": [],
+                }
+            ],
+            "practice_focuses": [],
+            "next_questions": [],
+        },
+        ensure_ascii=False,
+    )
     return """You review one user's saved interview note. Return raw JSON only, never Markdown fences.
 Use only the supplied frozen note fields as evidence. Event metadata is context only and is never evidence.
 Do not infer ability, weakness, interviewer judgment, external facts, or anything not written in the note.
 The exact top-level fields are summary, observations, clarifications, practice_focuses, next_questions.
+summary is an object with exactly text and evidence_refs; it is never a string.
+Every observation and practice_focus is an object with exactly id, text, and evidence_refs.
+Every clarification and next_question is an object with exactly id, question, and evidence_refs.
 Summary, observations, and practice_focuses require non-empty evidence_refs unless using the exact safe summary.
 Every question needs evidence_refs unless it is one exact fixed safe question supplied by the contract.
 Each evidence reference must be exactly {"source":"interview_note","path":"...","excerpt":"..."}.
-Return only the strict JSON object matching the contract and never add fields."""
+Return only the strict JSON object matching the contract and never add fields.
+If you cannot produce a cited item, return this exact safe JSON shape:
+""" + empty_example
 
 
 def _interview_review_prompt(snapshot: dict[str, Any]) -> str:
@@ -251,5 +275,6 @@ def _interview_review_repair_prompt(snapshot: dict[str, Any]) -> str:
         "The previous output failed safe validation. Failure category: invalid_change_shape. "
         "Return only raw JSON for the same frozen snapshot and contract. Do not explain, "
         "repeat the invalid output, add fields, or use new sources.\n"
+        "If no cited item can be produced, return the exact safe empty proposal from the system contract.\n"
         f"Frozen snapshot:\n{json.dumps(snapshot, ensure_ascii=False, sort_keys=True)}"
     )
