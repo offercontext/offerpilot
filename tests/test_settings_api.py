@@ -1,5 +1,6 @@
 import json
 
+import pytest
 from fastapi.testclient import TestClient
 
 from offerpilot.ai import client as ai_client
@@ -102,6 +103,36 @@ def test_get_settings_exposes_provider_profiles_without_keys(tmp_path):
         "has_api_key": True,
     }
     assert "api_key" not in provider
+
+
+@pytest.mark.parametrize("raw_capability", ["false", "0", 1, None])
+def test_put_settings_treats_non_boolean_json_schema_capability_as_disabled(
+    tmp_path, raw_capability
+):
+    client = TestClient(create_app(data_dir=tmp_path))
+
+    response = client.put(
+        "/api/settings",
+        json={
+            "chat_auto_approve_writes": False,
+            "active_provider_id": "default",
+            "providers": [
+                {
+                    "id": "default",
+                    "label": "Default",
+                    "provider": "openai",
+                    "base_url": "https://api.openai.com/v1",
+                    "model": "gpt-4o",
+                    "enabled": True,
+                    "supports_json_schema": raw_capability,
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["providers"][0]["supports_json_schema"] is False
+    assert load_config(tmp_path).active_provider().supports_json_schema is False
 
 
 def test_provider_json_schema_capability_round_trips_settings_and_backup(tmp_path):

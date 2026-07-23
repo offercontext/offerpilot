@@ -5641,11 +5641,12 @@ def _provider_from_payload(
         base_url=str(payload.get("base_url") or (current.base_url if current is not None else "")),
         model=str(payload.get("model") or (current.model if current is not None else "")),
         enabled=bool(payload.get("enabled", current.enabled if current is not None else True)),
-        supports_json_schema=bool(
+        supports_json_schema=(
             payload.get(
                 "supports_json_schema",
                 current.supports_json_schema if current is not None else False,
             )
+            is True
         ),
     )
 
