@@ -334,6 +334,8 @@ def test_stale_provider_result_fails_revision_token_cas(repository):
 
 再覆盖：同 key 不同指纹返回 attempt conflict；AI 调用前 session 已关闭的 fake model 交互；provider unknown 同 key 可重新 claim 下一 revision；确定 404/422/409 后 key 可清理；原 note 删除级联删除 attempt 但不删除 metadata/Source/Snapshot/Evidence/Version。
 
+另加 `discard_unconfirmed_attempt()` 回归：未确认 attempt 可删除，重复删除返回相同成功结果且不产生 Knowledge 资产；已确认 attempt 不可删除并返回稳定冲突，不得影响已确认资产。
+
 - [ ] **Step 2: 运行测试确认失败**
 
 ```powershell
@@ -516,6 +518,22 @@ def test_idempotent_confirm_returns_same_version(client, db):
     assert first.status_code == 201
     assert second.status_code == 200
     assert second.json()["version_id"] == first.json()["version_id"]
+
+def test_delete_unconfirmed_attempt_is_idempotent_and_creates_no_knowledge(client, db):
+    attempt = create_direct_preview(client, note_id, selected_fragments).json()
+    first = delete_capture_attempt(client, note_id, attempt["attempt_key"])
+    second = delete_capture_attempt(client, note_id, attempt["attempt_key"])
+    assert first.status_code == 204
+    assert second.status_code == 204
+    assert fetch_attempt(client, note_id, attempt["attempt_key"]).status_code == 404
+    assert knowledge_counts(db) == zero_knowledge_counts()
+
+def test_delete_confirmed_attempt_returns_conflict_and_keeps_frozen_assets(client, db):
+    attempt = create_and_confirm_capture(client, note_id)
+    response = delete_capture_attempt(client, note_id, attempt.key)
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "capture_attempt_confirmed"
+    assert fetch_confirmed_knowledge(client, attempt.version_id).status_code == 200
 ```
 
 确认前查询 `knowledge_sources`, `knowledge_evidence`, `knowledge_notes`, `knowledge_note_versions`, `knowledge_note_evidence` 均不得出现新资产。原 note 删除后用 Knowledge 只读 API 读取 `origin_note_id`、Snapshot、Evidence 和 Version；再次用原 key 查询 attempt 返回 404，不创建新版本。
@@ -545,11 +563,14 @@ API 新增：
 ```text
 POST /api/notes/{note_id}/knowledge-capture/preview
 POST /api/notes/{note_id}/knowledge-capture/confirm
+DELETE /api/notes/{note_id}/knowledge-capture/attempts/{attempt_key}
 GET  /api/knowledge/notes
 GET  /api/knowledge/notes/{knowledge_note_id}
 ```
 
-只返回稳定 `error_code`：404 note 不可见、409 source changed/attempt conflict、410 expired、422 selection invalid、502 provider unknown。前端不可见后端原始 error、Axios message 或 Provider 原文。
+DELETE 仅删除未确认 attempt：note 不可见返回 404；attempt 不存在或已删除时仍返回 204（幂等）；attempt 已确认时返回稳定 `capture_attempt_confirmed` 409，不删除任何冻结资产。普通取消/关闭必须先调用该 DELETE，收到 204 后再清除 AppShell draft；若请求结果未知，不得把它当作已删除。
+
+其他接口只返回稳定 `error_code`：404 note 不可见、409 source changed/attempt conflict、410 expired、422 selection invalid、502 provider unknown。前端不可见后端原始 error、Axios message 或 Provider 原文。
 
 - [ ] **Step 4: 运行 API 测试确认通过**
 
@@ -607,6 +628,20 @@ it('AI 502 keeps direct-save available and shows safe Chinese copy', async () =>
   expect(screen.getByRole('button', { name: '直接保存选中原文' })).toBeEnabled();
   expect(screen.getByText('AI 预览暂不可用，可直接保存选中原文')).toBeInTheDocument();
 });
+it('ordinary cancel deletes the unconfirmed server attempt before clearing the draft', async () => {
+  await renderWithDirectPreview();
+  await clickCancel();
+  expect(mockDeleteAttempt).toHaveBeenCalledWith(noteId, attemptKey);
+  expect(readDraft(noteId)).toBeUndefined();
+  expect(mockConfirm).not.toHaveBeenCalled();
+});
+it('unknown-result close keeps the server attempt and draft for same-key recovery', async () => {
+  await renderWithUnknownResultAndReadAttemptKey();
+  await clickClose();
+  expect(mockDeleteAttempt).not.toHaveBeenCalled();
+  await remountAndReadAttemptKey();
+  expect(readAttemptKey()).toBe(attemptKey);
+});
 it('safe empty preview is normal empty state, not an error', async () => {
   await renderWithSafeEmptyPreview();
   expect(screen.getByText('暂无可验证的笔记预览')).toBeInTheDocument();
@@ -655,13 +690,16 @@ type CaptureDraftAction =
   | { type: 'upsert'; noteId: number; patch: Partial<InterviewKnowledgeCaptureDraft> }
   | { type: 'mark_unknown'; noteId: number }
   | { type: 'cancel'; noteId: number }
+  | { type: 'dismiss_unknown'; noteId: number }
   | { type: 'confirmed'; noteId: number }
   | { type: 'source_changed'; noteId: number };
 ```
 
-`AppShell` 只在 `cancel`、确定 404/409/422、确认成功或来源变化时删除 key；普通取消删除对应 note draft，结果未知只把状态改为 `provider_unknown` 并保留全部 draft。Drawer 通过 `draft` 和 `onDraftChange` 受控渲染，卸载不触发清理；重新挂载按同一 `noteId` 读取原 draft，并用原 `attemptKey` 恢复。
+`AppShell` 只在 `cancel`、确定 404/409/422、确认成功或来源变化时删除 key；普通取消/关闭先调用 `DELETE /api/notes/{note_id}/knowledge-capture/attempts/{attempt_key}`，仅在收到确定 204（包括服务端已不存在）后 dispatch `cancel` 并删除对应 note draft。若请求已发出但响应超时、断网或丢失，必须转为 `provider_unknown`，关闭只 dispatch `dismiss_unknown`、不调用 DELETE，并保留完整 draft/key。结果未知只把状态标记为 `provider_unknown` 并保留全部 draft；重新挂载按同一 `noteId` 读取原 draft，并用原 `attemptKey` 恢复。Drawer 通过 `draft` 和 `onDraftChange` 受控渲染，卸载不触发清理。
 
 服务端返回 `ai_generating` 时不得发第二个 Provider 请求；确认按钮仅在每个 block 有 canonical Evidence ref、内容未超限且用户完成二次确认后调用 confirm。
+
+`web/src/services/interviewKnowledgeCapture.ts` 必须提供 `deleteUnconfirmedAttempt(noteId, attemptKey)`，只对该 note/key 调用上述 DELETE，并把 204/不存在统一视为确定删除；超时、断网、普通 5xx 或响应丢失不得转换成成功删除，调用方必须保留 `provider_unknown` 草稿。
 
 在 `web/src/layout/AppShell.interviewKnowledgeCapture.test.tsx` 使用真实 `render` → `unmount` → `render` 流程断言：
 
@@ -677,9 +715,11 @@ it('keeps unknown-result draft and key across drawer unmount and remount', async
 
 it('clears ordinary-cancel draft but preserves unknown-result draft', async () => {
   await openDrawerAndCancel(noteId);
+  expect(mockDeleteAttempt).toHaveBeenCalledTimes(1);
   expect(readDraft(noteId)).toBeUndefined();
   await openDrawerSubmitAndLoseResponse(noteId);
   await cancelAfterUnknownResult(noteId);
+  expect(mockDeleteAttempt).toHaveBeenCalledTimes(1);
   expect(readDraft(noteId)?.attemptKey).toBeDefined();
 });
 ```
