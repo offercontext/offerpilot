@@ -470,6 +470,10 @@ def _build_snapshot(
         raise InterviewPreparationValidationError(
             "JD is required", "interview_preparation_jd_required"
         )
+    if len(jd_text.encode("utf-8")) > 60_000:
+        raise InterviewPreparationValidationError(
+            "JD is too large", "interview_preparation_input_too_large"
+        )
     if not isinstance(knowledge_selections, list):
         raise InterviewPreparationValidationError(
             "Knowledge selections must be an array", "interview_preparation_invalid_request"
@@ -478,12 +482,21 @@ def _build_snapshot(
         raise InterviewPreparationValidationError(
             "user_assertions must be an array of strings", "interview_preparation_invalid_request"
         )
+    normalized_assertions = [item for item in user_assertions if item.strip()]
+    if len(normalized_assertions) > 10 or any(len(item) > 500 for item in normalized_assertions):
+        raise InterviewPreparationValidationError(
+            "user_assertions is too large", "interview_preparation_input_too_large"
+        )
     try:
         content_json = parse_json_object("resume", resume.content_json)
     except Exception as exc:
         raise InterviewPreparationValidationError(
             "Resume content is invalid", "interview_preparation_resume_not_found"
         ) from exc
+    if len(canonical_json(content_json).encode("utf-8")) > 200_000:
+        raise InterviewPreparationValidationError(
+            "Resume content is too large", "interview_preparation_input_too_large"
+        )
     canonical_knowledge = _validate_knowledge_selections(session, knowledge_selections)
     return {
         "event": {
@@ -499,7 +512,7 @@ def _build_snapshot(
         "jd": {"text": jd_text},
         "resume": {"id": resume.id, "content_json": content_json},
         "knowledge_evidence": canonical_knowledge,
-        "user_assertions": list(user_assertions),
+        "user_assertions": normalized_assertions,
     }
 
 

@@ -90,6 +90,22 @@ def test_invalid_idempotency_key_returns_422_without_provider_call(tmp_path) -> 
     assert model.calls == 0
 
 
+def test_input_limits_return_422_without_provider_call(tmp_path) -> None:
+    model = FakeModel()
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    application, resume, event = _context(client)
+    payload = _payload(resume["id"], event["id"])
+    payload["user_assertions"] = [f"assertion-{index}" for index in range(11)]
+    response = client.post(
+        f"/api/applications/{application['id']}/interview-preparation-proposals",
+        json=payload,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error_code"] == "interview_preparation_input_too_large"
+    assert model.calls == 0
+
+
 def test_unknown_request_fields_and_forged_source_fields_are_rejected(tmp_path) -> None:
     model = FakeModel()
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
