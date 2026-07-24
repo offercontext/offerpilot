@@ -4,7 +4,7 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, List
 from uuid import uuid4
 
 from sqlalchemy import select, text, update
@@ -99,7 +99,7 @@ class InterviewPreparationProposalsRepository:
             fingerprint = sha256_text(canonical_json(snapshot))
             existing = _find_by_key(session, application_id, event_id, idempotency_key)
             if existing is not None:
-                return self._handle_existing(
+                result = self._handle_existing(
                     session,
                     existing,
                     fingerprint=fingerprint,
@@ -114,6 +114,9 @@ class InterviewPreparationProposalsRepository:
                     idempotency_key=idempotency_key,
                     on_diagnostic=on_diagnostic,
                 )
+                if result is None:
+                    raise InterviewPreparationProviderError()
+                return result
 
             token = uuid4().hex
             row = InterviewPreparationProposal(
@@ -156,8 +159,8 @@ class InterviewPreparationProposalsRepository:
         event_id: int,
         resume_id: int,
         jd_text: str,
-        knowledge_selections: list[dict[str, Any]],
-        user_assertions: list[str],
+        knowledge_selections: List[dict[str, Any]],
+        user_assertions: List[str],
         idempotency_key: str,
     ) -> InterviewPreparationGenerationResult | None:
         """Return a replayable attempt without resolving the AI provider.
@@ -248,8 +251,8 @@ class InterviewPreparationProposalsRepository:
         event_id: int,
         resume_id: int,
         jd_text: str,
-        knowledge_selections: list[dict[str, Any]],
-        user_assertions: list[str],
+        knowledge_selections: List[dict[str, Any]],
+        user_assertions: List[str],
         idempotency_key: str,
         on_diagnostic: Any | None,
     ) -> InterviewPreparationGenerationResult | None:
@@ -340,8 +343,8 @@ class InterviewPreparationProposalsRepository:
         event_id: int,
         resume_id: int,
         jd_text: str,
-        knowledge_selections: list[dict[str, Any]],
-        user_assertions: list[str],
+        knowledge_selections: List[dict[str, Any]],
+        user_assertions: List[str],
         idempotency_key: str,
         source_fingerprint: str,
         snapshot: dict[str, Any],

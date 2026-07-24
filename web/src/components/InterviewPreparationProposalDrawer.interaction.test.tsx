@@ -115,7 +115,7 @@ describe('InterviewPreparationProposalDrawer interaction', () => {
     ));
     await act(async () => {
       [...(container?.querySelectorAll('button') || [])]
-        .at(0)
+        [0]
         ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       await Promise.resolve();
       await Promise.resolve();
