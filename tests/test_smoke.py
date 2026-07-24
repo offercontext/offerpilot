@@ -13,6 +13,7 @@ from offerpilot.models import (
     OpportunityFitReview,
     Resume,
 )
+from offerpilot.repositories.json_contract import canonical_json, sha256_text
 from offerpilot.smoke import (
     SmokeStep,
     SmokeReport,
@@ -104,7 +105,7 @@ def test_real_ai_interview_preparation_smoke_retries_pending_results_with_same_r
             if path == "/api/resumes":
                 return Response(201, {"id": 41})
             if path == "/api/application-events":
-                return Response(201, {"id": 51})
+                return Response(201, _smoke_event_snapshot())
             self.calls += 1
             self.proposal_requests.append(dict(json))
             if self.calls == 2:
@@ -119,40 +120,31 @@ def test_real_ai_interview_preparation_smoke_retries_pending_results_with_same_r
                         "retry_after_ms": 1,
                     },
                 )
-            return Response(
-                200 if self.calls == 3 else 201,
-                {
-                    "id": 60 + self.calls,
-                    "application_id": 7,
-                    "event_id": 51,
-                    "resume_id": 41,
-                    "attempt_status": "ready",
-                    "proposal_status": "normal",
-                    "source_fingerprint": "fingerprint",
-                    "source_status": "current",
-                    "source_states": {},
-                    "proposal": {
-                        "preparation_directions": [
+            proposal = {
+                "preparation_directions": [
+                    {
+                        "id": "direction-1",
+                        "text": "Discuss reliable services.",
+                        "evidence_refs": [
                             {
-                                "id": "direction-1",
-                                "text": "Discuss reliable services.",
-                                "evidence_refs": [
-                                    {
-                                        "source": "resume",
-                                        "path": "/raw_text",
-                                        "excerpt": "Built reliable API services; input_snapshot is a literal term here.",
-                                    }
-                                ],
+                                "source": "resume",
+                                "path": "/raw_text",
+                                "excerpt": "Built reliable API services; input_snapshot is a literal term here.",
                             }
                         ],
-                        "story_prompts": [],
-                        "review_points": [],
-                        "interviewer_questions": [],
-                        "items_to_clarify": [],
-                    },
-                    "proposal_hash": "proposal-hash",
-                    "created_at": "2026-07-24T10:00:00+00:00",
-                },
+                    }
+                ],
+                "story_prompts": [],
+                "review_points": [],
+                "interviewer_questions": [],
+                "items_to_clarify": [],
+            }
+            return Response(
+                200 if self.calls == 3 else 201,
+                _smoke_terminal_proposal_payload(
+                    proposal=proposal,
+                    source_fingerprint=_smoke_request_source_fingerprint(json),
+                ),
             )
 
     monkeypatch.setattr("offerpilot.smoke.time.sleep", lambda _: None)
@@ -171,7 +163,22 @@ def _smoke_terminal_proposal_payload(
     resume_id: int = 41,
     proposal: dict[str, object] | None = None,
     proposal_status: str = "normal",
+    source_fingerprint: str | None = None,
+    proposal_hash: str | None = None,
 ) -> dict[str, object]:
+    actual_proposal = proposal or {
+        "preparation_directions": [],
+        "story_prompts": [],
+        "review_points": [],
+        "interviewer_questions": [],
+        "items_to_clarify": [],
+    }
+    snapshot = _smoke_evidence_snapshot()
+    snapshot["event"] = _smoke_event_snapshot()
+    snapshot["resume"] = {
+        "id": resume_id,
+        "content_json": snapshot["resume"]["content_json"],  # type: ignore[index]
+    }
     return {
         "id": 61,
         "application_id": application_id,
@@ -179,28 +186,51 @@ def _smoke_terminal_proposal_payload(
         "resume_id": resume_id,
         "attempt_status": "ready",
         "proposal_status": proposal_status,
-        "source_fingerprint": "fingerprint",
-        "source_status": "current",
-        "source_states": {},
-        "proposal": proposal
-        or {
-            "preparation_directions": [],
-            "story_prompts": [],
-            "review_points": [],
-            "interviewer_questions": [],
-            "items_to_clarify": [],
-        },
-        "proposal_hash": "proposal-hash",
+        "source_fingerprint": source_fingerprint or sha256_text(canonical_json(snapshot)),
+        "source_status": "not_checked",
+        "source_states": {"event": "current", "resume": "current", "jd": "not_checked", "knowledge": "current"},
+        "proposal": actual_proposal,
+        "proposal_hash": proposal_hash or sha256_text(canonical_json(actual_proposal)),
         "created_at": "2026-07-24T10:00:00+00:00",
+    }
+
+
+def _smoke_event_snapshot() -> dict[str, object]:
+    return {
+        "id": 51,
+        "application_id": 7,
+        "event_type": "interview",
+        "subtype": "technical",
+        "round": 0,
+        "scheduled_at": "2026-07-24T10:00:00",
+        "duration_minutes": 45,
+        "status": "todo",
     }
 
 
 def _smoke_evidence_snapshot() -> dict[str, object]:
     return {
+        "event": _smoke_event_snapshot(),
         "jd": {"text": "Build reliable Python services."},
-        "resume": {"content_json": {"raw_text": "Built reliable API services."}},
+        "resume": {
+            "id": 41,
+            "content_json": {
+                "raw_text": "Built reliable API services; input_snapshot is a literal term here.",
+                "experience": [{"highlights": ["Built reliable API services", "Led a migration."]}],
+            }
+        },
         "knowledge_evidence": [],
+        "user_assertions": [],
     }
+
+
+def _smoke_request_source_fingerprint(request: dict[str, object]) -> str:
+    snapshot = _smoke_evidence_snapshot()
+    snapshot["event"] = _smoke_event_snapshot()
+    snapshot["jd"] = {"text": request["jd_text"]}
+    snapshot["user_assertions"] = request["user_assertions"]
+    snapshot["resume"] = {"id": 41, "content_json": snapshot["resume"]["content_json"]}  # type: ignore[index]
+    return sha256_text(canonical_json(snapshot))
 
 
 def _smoke_proposal_with_ref(evidence_ref: dict[str, str]) -> dict[str, object]:
@@ -243,8 +273,15 @@ def test_real_ai_interview_preparation_smoke_rejects_invalid_terminal_metadata_a
     invalid_bodies = [
         {**_smoke_terminal_proposal_payload(proposal=valid_proposal), "id": 0},
         {**_smoke_terminal_proposal_payload(proposal=valid_proposal), "source_fingerprint": 1},
+        {**_smoke_terminal_proposal_payload(proposal=valid_proposal), "source_fingerprint": "forged"},
         {**_smoke_terminal_proposal_payload(proposal=valid_proposal), "proposal_hash": ""},
+        {**_smoke_terminal_proposal_payload(proposal=valid_proposal), "proposal_hash": "forged"},
         {**_smoke_terminal_proposal_payload(proposal=valid_proposal), "source_status": {"state": "current"}},
+        {
+            **_smoke_terminal_proposal_payload(proposal=valid_proposal),
+            "source_states": {"event": "unknown", "resume": "current", "jd": "not_checked", "knowledge": "current"},
+        },
+        {**_smoke_terminal_proposal_payload(proposal=valid_proposal), "source_status": "source_changed"},
         {**_smoke_terminal_proposal_payload(proposal=valid_proposal), "created_at": "not-a-date"},
         _smoke_terminal_proposal_payload(proposal=valid_proposal, proposal_status="safe_empty"),
         _smoke_terminal_proposal_payload(proposal_status="normal"),
@@ -273,7 +310,7 @@ def test_real_ai_interview_preparation_smoke_rejects_terminal_ownership_mismatch
             if path == "/api/resumes":
                 return Response(201, {"id": 41})
             if path == "/api/application-events":
-                return Response(201, {"id": 51})
+                return Response(201, _smoke_event_snapshot())
             self.calls += 1
             if self.calls == 2:
                 return Response(
@@ -310,7 +347,7 @@ def test_real_ai_interview_preparation_smoke_rejects_nested_snapshot_fields():
             if path == "/api/resumes":
                 return Response(201, {"id": 41})
             if path == "/api/application-events":
-                return Response(201, {"id": 51})
+                return Response(201, _smoke_event_snapshot())
             proposal = {
                 "preparation_directions": [
                     {
@@ -327,7 +364,13 @@ def test_real_ai_interview_preparation_smoke_rejects_nested_snapshot_fields():
                 "interviewer_questions": [],
                 "items_to_clarify": [],
             }
-            return Response(201, _smoke_terminal_proposal_payload(proposal=proposal))
+            return Response(
+                201,
+                _smoke_terminal_proposal_payload(
+                    proposal=proposal,
+                    source_fingerprint=_smoke_request_source_fingerprint(json),
+                ),
+            )
 
     with pytest.raises(RuntimeError, match="proposal structure was invalid"):
         _run_real_ai_interview_preparation_smoke(Client(), [], 7, [])
@@ -347,7 +390,7 @@ def test_real_ai_interview_preparation_smoke_rejects_unknown_success_fields():
             if path == "/api/resumes":
                 return Response(201, {"id": 41})
             if path == "/api/application-events":
-                return Response(201, {"id": 51})
+                return Response(201, _smoke_event_snapshot())
             return Response(
                 201,
                 {
@@ -385,7 +428,7 @@ def test_real_ai_interview_preparation_smoke_rejects_pending_snapshot_leak():
             if path == "/api/resumes":
                 return Response(201, {"id": 41})
             if path == "/api/application-events":
-                return Response(201, {"id": 51})
+                return Response(201, _smoke_event_snapshot())
             return Response(
                 202,
                 {

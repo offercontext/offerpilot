@@ -45,6 +45,7 @@ from offerpilot.models import (
     OpportunityFitReview,
     Resume,
 )
+from offerpilot.repositories.json_contract import canonical_json, sha256_text
 
 
 @dataclass(frozen=True)
@@ -447,7 +448,26 @@ def _run_real_ai_interview_preparation_smoke(
         },
     )
     _assert_status(event.status_code, 201, "http_interview_preparation_event")
-    event_id = int(event.json()["id"])
+    event_body = event.json()
+    event_id = int(event_body["id"])
+    scheduled_at = event_body.get("scheduled_at")
+    if isinstance(scheduled_at, str) and scheduled_at:
+        try:
+            scheduled_at = datetime.fromisoformat(scheduled_at.replace("Z", "+00:00")).replace(
+                tzinfo=None
+            ).isoformat()
+        except ValueError:
+            pass
+    event_snapshot = {
+        "id": event_id,
+        "application_id": application_id,
+        "event_type": event_body.get("event_type", "interview"),
+        "subtype": event_body.get("subtype", "technical"),
+        "round": event_body.get("round", 0),
+        "scheduled_at": scheduled_at,
+        "duration_minutes": event_body.get("duration_minutes", 45),
+        "status": event_body.get("status", "todo"),
+    }
     cases = [
         "Build reliable Python services and explain operational tradeoffs.",
         "Design an API migration with safe rollback and observability.",
@@ -462,6 +482,13 @@ def _run_real_ai_interview_preparation_smoke(
             "knowledge_selections": [],
             "user_assertions": [f"I led preparation case {index}."],
             "idempotency_key": f"interview-preparation-smoke-{index}",
+        }
+        snapshot = {
+            "event": event_snapshot,
+            "jd": {"text": jd_text},
+            "resume": {"id": resume_id, "content_json": resume_content_json},
+            "knowledge_evidence": [],
+            "user_assertions": request_payload["user_assertions"],
         }
         pending_retries = 0
         while True:
@@ -482,11 +509,7 @@ def _run_real_ai_interview_preparation_smoke(
                     application_id=application_id,
                     event_id=event_id,
                     resume_id=resume_id,
-                    snapshot={
-                        "jd": {"text": jd_text},
-                        "resume": {"id": resume_id, "content_json": resume_content_json},
-                        "knowledge_evidence": [],
-                    },
+                    snapshot=snapshot,
                 )
                 break
             _validate_interview_preparation_pending_response(
@@ -528,7 +551,7 @@ def _validate_interview_preparation_proposal_response(
     application_id: int,
     event_id: int,
     resume_id: int,
-    snapshot: dict[str, object],
+    snapshot: dict[str, Any],
 ) -> None:
     expected_fields = {
         "id",
@@ -573,6 +596,20 @@ def _validate_interview_preparation_proposal_response(
     }:
         raise RuntimeError("interview preparation smoke terminal metadata was invalid")
     if not isinstance(body["source_states"], dict):
+        raise RuntimeError("interview preparation smoke terminal metadata was invalid")
+    expected_states = {
+        "event": "current",
+        "resume": "current",
+        "jd": "not_checked",
+        "knowledge": "current",
+    }
+    if body["source_states"] != expected_states:
+        raise RuntimeError("interview preparation smoke terminal metadata was invalid")
+    expected_source_status = "source_changed" if "source_changed" in expected_states.values() else "not_checked"
+    if body["source_status"] != expected_source_status:
+        raise RuntimeError("interview preparation smoke terminal metadata was invalid")
+    expected_source_fingerprint = sha256_text(canonical_json(snapshot))
+    if body["source_fingerprint"] != expected_source_fingerprint:
         raise RuntimeError("interview preparation smoke terminal metadata was invalid")
     created_at = body["created_at"]
     if not isinstance(created_at, str) or not created_at:
@@ -620,6 +657,8 @@ def _validate_interview_preparation_proposal_response(
         raise RuntimeError("interview preparation smoke proposal status was not empty")
     if body["proposal_status"] == "normal" and item_count == 0:
         raise RuntimeError("interview preparation smoke returned an empty proposal")
+    if body["proposal_hash"] != sha256_text(canonical_json(proposal)):
+        raise RuntimeError("interview preparation smoke terminal metadata was invalid")
 
 
 def _validate_interview_preparation_pending_response(
