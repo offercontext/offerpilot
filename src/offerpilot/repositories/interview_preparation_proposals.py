@@ -643,6 +643,9 @@ def _set_source_status(session: Session, row: InterviewPreparationProposal) -> N
             and event.event_type == event_snapshot.get("event_type")
             and event.subtype == event_snapshot.get("subtype")
             and event.round == event_snapshot.get("round")
+            and (event.scheduled_at.isoformat() if event.scheduled_at else None)
+            == event_snapshot.get("scheduled_at")
+            and event.duration_minutes == event_snapshot.get("duration_minutes")
             and event.status == event_snapshot.get("status")
         ):
             states["event"] = "current"
@@ -665,14 +668,19 @@ def _set_source_status(session: Session, row: InterviewPreparationProposal) -> N
             current = session.scalar(
                 select(KnowledgeEvidence)
                 .join(KnowledgeNoteEvidence, KnowledgeNoteEvidence.evidence_id == KnowledgeEvidence.id)
+                .join(KnowledgeNoteVersion, KnowledgeNoteVersion.id == KnowledgeNoteEvidence.note_version_id)
+                .join(KnowledgeNote, KnowledgeNote.id == KnowledgeNoteVersion.note_id)
                 .where(KnowledgeEvidence.id == evidence_id)
                 .where(KnowledgeNoteEvidence.note_version_id == version_id)
+                .where(KnowledgeNote.current_version_id == version_id)
+                .where(KnowledgeNote.archived_at.is_(None))
             )
             source = session.get(KnowledgeSource, current.source_id) if current is not None else None
             if (
                 current is None
                 or source is None
                 or source.deleted_at is not None
+                or source.lifecycle == "deleting"
                 or current.canonical_excerpt != evidence.get("excerpt")
             ):
                 knowledge_changed = True
