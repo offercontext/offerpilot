@@ -28,6 +28,7 @@ from offerpilot.models import (
     InterviewKnowledgeCaptureAttempt,
     InterviewNote,
     InterviewReviewProposal,
+    InterviewPreparationProposal,
     KnowledgeCapturedSourceMetadata,
     KnowledgeEvidence,
     KnowledgeExtractionSnapshot,
@@ -388,6 +389,7 @@ def _run_http_smoke(
                 _run_application_event_http_smoke(client, steps, application_id)
 
                 if real_ai:
+                    _run_real_ai_interview_preparation_smoke(client, steps, application_id, smoke_resume_ids)
                     _run_real_ai_material_proposal_smoke(client, steps, application_id, smoke_resume_ids)
                     _run_real_ai_opportunity_fit_smoke(client, steps, application_id, smoke_resume_ids)
                     _run_real_ai_interview_review_smoke(client, steps, application_id)
@@ -404,6 +406,82 @@ def _run_http_smoke(
                 steps.append(SmokeStep("http_cleanup", f"deleted smoke application #{application_id}"))
 
     return SmokeReport(ok=True, steps=steps)
+
+
+def _run_real_ai_interview_preparation_smoke(
+    client: httpx.Client,
+    steps: list[SmokeStep],
+    application_id: int,
+    resume_ids: list[int] | None = None,
+) -> None:
+    resume = client.post(
+        "/api/resumes",
+        json={
+            "title": "AI Interview Preparation Smoke Resume",
+            "text": "Built reliable API services and led a migration.",
+            "content_json": {
+                "raw_text": "Built reliable API services and led a migration.",
+                "experience": [{"highlights": ["Built reliable API services", "Led a migration."]}],
+            },
+        },
+    )
+    _assert_status(resume.status_code, 201, "http_interview_preparation_resume")
+    resume_id = int(resume.json()["id"])
+    if resume_ids is not None:
+        resume_ids.append(resume_id)
+    event = client.post(
+        "/api/application-events",
+        json={
+            "application_id": application_id,
+            "event_type": "interview",
+            "subtype": "technical",
+            "scheduled_at": "2026-07-24T10:00:00Z",
+            "duration_minutes": 45,
+        },
+    )
+    _assert_status(event.status_code, 201, "http_interview_preparation_event")
+    event_id = int(event.json()["id"])
+    cases = [
+        "Build reliable Python services and explain operational tradeoffs.",
+        "Design an API migration with safe rollback and observability.",
+        "Review distributed systems failure handling and testing practices.",
+    ]
+    verified_non_empty = 0
+    for index, jd_text in enumerate(cases, start=1):
+        response = client.post(
+            f"/api/applications/{application_id}/interview-preparation-proposals",
+            json={
+                "event_id": event_id,
+                "resume_id": resume_id,
+                "jd_text": jd_text,
+                "knowledge_selections": [],
+                "user_assertions": [f"I led preparation case {index}."],
+                "idempotency_key": f"interview-preparation-smoke-{index}",
+            },
+        )
+        _assert_status(response.status_code, 201, f"http_interview_preparation_proposal_{index}")
+        body = response.json()
+        if not isinstance(body, dict) or not isinstance(body.get("proposal"), dict):
+            raise RuntimeError("interview preparation smoke response did not contain a proposal")
+        if body.get("proposal_status") == "normal":
+            proposal = body["proposal"]
+            if any(
+                isinstance(items, list)
+                and any(isinstance(item, dict) and item.get("evidence_refs") for item in items)
+                for items in proposal.values()
+            ):
+                verified_non_empty += 1
+        serialized = json.dumps(body, ensure_ascii=False)
+        if "input_snapshot" in body or "Built reliable API services and led a migration." in serialized:
+            raise RuntimeError("interview preparation smoke exposed the frozen input snapshot")
+    if verified_non_empty < 1:
+        raise RuntimeError("interview preparation smoke returned no evidence-backed non-empty proposal")
+    steps.append(
+        SmokeStep(
+            "http_interview_preparation_proposal",
+            "real AI returned three safe interview preparation proposals with at least one cited result",
+        )
+    )
 
 
 def _run_real_ai_material_proposal_smoke(
@@ -798,6 +876,11 @@ def _cleanup_real_ai_smoke_records(
             session.execute(
                 delete(InterviewReviewProposal).where(InterviewReviewProposal.note_id.in_(note_ids))
             )
+            session.execute(
+                delete(InterviewPreparationProposal).where(
+                    InterviewPreparationProposal.application_id == application_id
+                )
+            )
             captured_note_ids = list(
                 session.scalars(
                     select(InterviewNote.id).where(InterviewNote.application_id == application_id)
@@ -888,6 +971,9 @@ def _assert_real_ai_smoke_data_clean(data_dir: Path) -> None:
                 select(func.count()).select_from(ApplicationEvent).where(ApplicationEvent.event_type == "interview")
             )
             interview_proposal_count = session.scalar(select(func.count()).select_from(InterviewReviewProposal))
+            interview_preparation_proposal_count = session.scalar(
+                select(func.count()).select_from(InterviewPreparationProposal)
+            )
             opportunity_fit_review_count = session.scalar(
                 select(func.count()).select_from(OpportunityFitReview)
             )
@@ -919,6 +1005,8 @@ def _assert_real_ai_smoke_data_clean(data_dir: Path) -> None:
         raise RuntimeError("real-ai smoke left interview events")
     if interview_proposal_count != 0:
         raise RuntimeError("real-ai smoke left interview review proposals")
+    if interview_preparation_proposal_count != 0:
+        raise RuntimeError("real-ai smoke left interview preparation proposals")
     if opportunity_fit_review_count != 0:
         raise RuntimeError("real-ai smoke left opportunity fit reviews")
     if application_count != 0:

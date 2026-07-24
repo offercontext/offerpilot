@@ -6385,10 +6385,8 @@ def _interview_preparation_generation_response(result: Any) -> JSONResponse:
 def _interview_preparation_proposal_json(proposal: Any) -> dict[str, Any]:
     try:
         proposal_payload = json.loads(proposal.proposal_json)
-        snapshot = json.loads(proposal.input_snapshot_json)
     except (TypeError, ValueError, json.JSONDecodeError):
         proposal_payload = {}
-        snapshot = {}
     source_states = getattr(proposal, "source_states", {})
     if not isinstance(source_states, dict):
         source_states = {}
@@ -6404,7 +6402,6 @@ def _interview_preparation_proposal_json(proposal: Any) -> dict[str, Any]:
         "source_states": source_states,
         "proposal": proposal_payload,
         "proposal_hash": proposal.proposal_hash,
-        "input_snapshot": snapshot,
         "created_at": _json_datetime(proposal.created_at),
     }
 

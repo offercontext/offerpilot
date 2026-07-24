@@ -21,6 +21,7 @@ from offerpilot.smoke import (
     _cleanup_real_ai_smoke_records,
     _run_real_ai_interview_review_smoke,
     _run_real_ai_interview_knowledge_capture_smoke,
+    _run_real_ai_interview_preparation_smoke,
     _run_real_ai_material_proposal_smoke,
     _run_real_ai_opportunity_fit_smoke,
     run_core_smoke,
@@ -82,6 +83,53 @@ def test_http_smoke_uses_real_http_and_cleans_test_application(tmp_path):
         "http_chat_create_event_card",
         "http_cleanup",
     ]
+
+
+def test_real_ai_interview_preparation_smoke_requires_three_safe_results_and_one_cited_result():
+    class Response:
+        def __init__(self, status_code: int, payload: dict[str, object]) -> None:
+            self.status_code = status_code
+            self._payload = payload
+
+        def json(self) -> dict[str, object]:
+            return self._payload
+
+    class Client:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def post(self, path: str, json: dict[str, object]) -> Response:
+            if path == "/api/resumes":
+                return Response(201, {"id": 41})
+            if path == "/api/application-events":
+                return Response(201, {"id": 51})
+            self.calls += 1
+            return Response(
+                201,
+                {
+                    "id": 60 + self.calls,
+                    "proposal_status": "normal",
+                    "proposal": {
+                        "preparation_directions": [
+                            {
+                                "id": "direction-1",
+                                "text": "Discuss reliable services.",
+                                "evidence_refs": [
+                                    {"source": "resume", "path": "/raw_text", "excerpt": "reliable services"}
+                                ],
+                            }
+                        ],
+                        "story_prompts": [],
+                        "review_points": [],
+                        "interviewer_questions": [],
+                        "items_to_clarify": [],
+                    },
+                },
+            )
+
+    steps: list[SmokeStep] = []
+    _run_real_ai_interview_preparation_smoke(Client(), steps, 7, [])
+    assert steps[-1].name == "http_interview_preparation_proposal"
 
 
 def test_real_ai_material_proposal_smoke_allows_empty_changes_and_hides_snapshot():

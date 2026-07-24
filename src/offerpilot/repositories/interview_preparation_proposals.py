@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -14,11 +15,22 @@ from offerpilot.ai.interview_preparation_proposals import (
     InterviewPreparationModelError,
     generate_interview_preparation_proposal,
 )
-from offerpilot.models import Application, ApplicationEvent, InterviewPreparationProposal, Resume
+from offerpilot.models import (
+    Application,
+    ApplicationEvent,
+    InterviewPreparationProposal,
+    KnowledgeEvidence,
+    KnowledgeNote,
+    KnowledgeNoteEvidence,
+    KnowledgeNoteVersion,
+    KnowledgeSource,
+    Resume,
+)
 from offerpilot.repositories.json_contract import canonical_json, parse_json_object, sha256_text
 
 
 LEASE_SECONDS = 30
+IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 
 
 class InterviewPreparationNotFound(Exception):
@@ -68,6 +80,11 @@ class InterviewPreparationProposalsRepository:
         model: ChatModel | None,
         on_diagnostic: Any | None = None,
     ) -> InterviewPreparationGenerationResult:
+        if not isinstance(idempotency_key, str) or not IDEMPOTENCY_KEY_RE.fullmatch(idempotency_key):
+            raise InterviewPreparationValidationError(
+                "idempotency_key must be 16-128 ASCII characters",
+                "interview_preparation_invalid_request",
+            )
         with self._session_factory() as session:
             session.execute(text("BEGIN IMMEDIATE"))
             snapshot = _build_snapshot(
@@ -150,6 +167,11 @@ class InterviewPreparationProposalsRepository:
         needs a provider call, so the caller must resolve the provider before
         invoking ``create_generated``.
         """
+        if not isinstance(idempotency_key, str) or not IDEMPOTENCY_KEY_RE.fullmatch(idempotency_key):
+            raise InterviewPreparationValidationError(
+                "idempotency_key must be 16-128 ASCII characters",
+                "interview_preparation_invalid_request",
+            )
         with self._session_factory() as session:
             session.execute(text("BEGIN IMMEDIATE"))
             snapshot = _build_snapshot(
@@ -462,6 +484,7 @@ def _build_snapshot(
         raise InterviewPreparationValidationError(
             "Resume content is invalid", "interview_preparation_resume_not_found"
         ) from exc
+    canonical_knowledge = _validate_knowledge_selections(session, knowledge_selections)
     return {
         "event": {
             "id": event.id,
@@ -475,9 +498,89 @@ def _build_snapshot(
         },
         "jd": {"text": jd_text},
         "resume": {"id": resume.id, "content_json": content_json},
-        "knowledge_evidence": list(knowledge_selections),
+        "knowledge_evidence": canonical_knowledge,
         "user_assertions": list(user_assertions),
     }
+
+
+def _validate_knowledge_selections(
+    session: Session, selections: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    if len(selections) > 5:
+        raise InterviewPreparationValidationError(
+            "Too many Knowledge Note selections", "interview_preparation_input_too_large"
+        )
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    total = 0
+    for selection in selections:
+        if set(selection) != {"note_version_id", "evidence_ids"}:
+            raise InterviewPreparationValidationError(
+                "Knowledge selection shape is invalid",
+                "interview_preparation_knowledge_selection_invalid",
+            )
+        version_id = selection.get("note_version_id")
+        evidence_ids = selection.get("evidence_ids")
+        if not isinstance(version_id, int) or isinstance(version_id, bool) or not isinstance(evidence_ids, list):
+            raise InterviewPreparationValidationError(
+                "Knowledge selection shape is invalid",
+                "interview_preparation_knowledge_selection_invalid",
+            )
+        version = session.scalar(
+            select(KnowledgeNoteVersion)
+            .join(KnowledgeNote, KnowledgeNote.id == KnowledgeNoteVersion.note_id)
+            .join(KnowledgeSource, KnowledgeSource.id == KnowledgeNoteVersion.source_id)
+            .where(KnowledgeNoteVersion.id == version_id)
+            .where(KnowledgeNote.current_version_id == version_id)
+            .where(KnowledgeNote.archived_at.is_(None))
+            .where(KnowledgeSource.deleted_at.is_(None))
+            .where(KnowledgeSource.lifecycle != "deleting")
+        )
+        if version is None:
+            raise InterviewPreparationValidationError(
+                "Knowledge Note Version is unavailable",
+                "interview_preparation_knowledge_selection_invalid",
+            )
+        if len(evidence_ids) > 20 or any(
+            not isinstance(evidence_id, str) or not evidence_id or evidence_id in seen
+            for evidence_id in evidence_ids
+        ):
+            raise InterviewPreparationValidationError(
+                "Knowledge Evidence selection is invalid",
+                "interview_preparation_knowledge_selection_invalid",
+            )
+        total += len(evidence_ids)
+        if total > 20:
+            raise InterviewPreparationValidationError(
+                "Too many Knowledge Evidence selections",
+                "interview_preparation_input_too_large",
+            )
+        evidence_rows = list(
+            session.scalars(
+                select(KnowledgeEvidence)
+                .join(KnowledgeNoteEvidence, KnowledgeNoteEvidence.evidence_id == KnowledgeEvidence.id)
+                .where(KnowledgeNoteEvidence.note_version_id == version_id)
+                .where(KnowledgeEvidence.id.in_(evidence_ids))
+            )
+        )
+        by_id = {row.id: row for row in evidence_rows}
+        if len(by_id) != len(evidence_ids):
+            raise InterviewPreparationValidationError(
+                "Knowledge Evidence is not part of the selected version",
+                "interview_preparation_knowledge_selection_invalid",
+            )
+        for evidence_id in evidence_ids:
+            seen.add(evidence_id)
+            row = by_id[evidence_id]
+            result.append(
+                {
+                    "id": row.id,
+                    "note_version_id": version_id,
+                    "path": f"/{row.id}",
+                    "excerpt": row.canonical_excerpt,
+                }
+            )
+    return result
 
 
 def _find_by_key(

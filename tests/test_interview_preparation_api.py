@@ -47,7 +47,7 @@ def _context(client: TestClient) -> tuple[dict, dict, dict]:
     return application, resume, event
 
 
-def _payload(resume_id: int, event_id: int, key: str = "attempt-1") -> dict:
+def _payload(resume_id: int, event_id: int, key: str = "attempt-00000001") -> dict:
     return {
         "event_id": event_id,
         "resume_id": resume_id,
@@ -75,6 +75,21 @@ def test_missing_required_input_returns_422_without_provider_call(tmp_path) -> N
     assert model.calls == 0
 
 
+def test_invalid_idempotency_key_returns_422_without_provider_call(tmp_path) -> None:
+    model = FakeModel()
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    application, resume, event = _context(client)
+    payload = _payload(resume["id"], event["id"], "too-short")
+    response = client.post(
+        f"/api/applications/{application['id']}/interview-preparation-proposals",
+        json=payload,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error_code"] == "interview_preparation_invalid_request"
+    assert model.calls == 0
+
+
 def test_unknown_request_fields_and_forged_source_fields_are_rejected(tmp_path) -> None:
     model = FakeModel()
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
@@ -90,6 +105,23 @@ def test_unknown_request_fields_and_forged_source_fields_are_rejected(tmp_path) 
 
     assert response.status_code == 422
     assert response.json()["error_code"] == "interview_preparation_invalid_request"
+    assert model.calls == 0
+
+
+def test_forged_knowledge_selection_is_rejected_before_provider_call(tmp_path) -> None:
+    model = FakeModel()
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    application, resume, event = _context(client)
+    payload = _payload(resume["id"], event["id"])
+    payload["knowledge_selections"] = [{"note_version_id": 999, "evidence_ids": ["ev-forged"]}]
+
+    response = client.post(
+        f"/api/applications/{application['id']}/interview-preparation-proposals",
+        json=payload,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error_code"] == "interview_preparation_knowledge_selection_invalid"
     assert model.calls == 0
 
 
@@ -116,8 +148,8 @@ def test_same_key_provider_unknown_returns_202_without_second_provider_call(tmp_
     application, resume, event = _context(client)
     url = f"/api/applications/{application['id']}/interview-preparation-proposals"
 
-    first = client.post(url, json=_payload(resume["id"], event["id"], "unknown"))
-    second = client.post(url, json=_payload(resume["id"], event["id"], "unknown"))
+    first = client.post(url, json=_payload(resume["id"], event["id"], "unknown-000000001"))
+    second = client.post(url, json=_payload(resume["id"], event["id"], "unknown-000000001"))
 
     assert first.status_code == 502
     assert first.json()["error_code"] == "interview_preparation_provider_error"
