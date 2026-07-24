@@ -148,6 +148,7 @@ Knowledge Note 新建版本不会修改旧 Evidence。旧 Proposal 的快照仍�
 | `generation_revision` | 非负整数；用于 Provider lease/CAS |
 | `provider_call_token` | 仅生成中存在的随机 token，不写日志 |
 | `provider_lease_until` | 生成 lease 的失效时间；进程崩溃后允许同 key 安全接管 |
+| `invalidation_reason` | `source_conflict` 或 `idempotency_conflict`；仅 `invalidated` 状态填写，重放时映射为统一稳定错误 |
 | `input_snapshot_json` | canonical JSON 冻结快照，包含 JD、Resume、所选 Evidence 和断言 |
 | `source_fingerprint` | 输入快照 SHA-256 |
 | `proposal_json` | 严格校验后的 Proposal 或固定安全空 Proposal；`ready` 时非空 |
@@ -157,7 +158,7 @@ Knowledge Note 新建版本不会修改旧 Evidence。旧 Proposal 的快照仍�
 
 唯一约束为 `(application_id, application_event_id, idempotency_key)`，并建立 Application、Event、Resume 和创建时间索引。事件和简历的快照身份不能用 `ON DELETE CASCADE` 抹掉；Proposal 自己保存输入快照和内部 ID。Application 物理删除是否级联清理历史由现有应用删除语义决定，Application 软删除不删除 Proposal。
 
-`generating`/`provider_unknown` 是同一行中的持久化尝试状态，不是可见 Proposal。Proposal 一旦进入 `ready`，`input_snapshot_json`、`source_fingerprint`、`proposal_json`、`proposal_hash`、`proposal_status` 和创建时间均不可更新；后续重新生成必须使用新 key 创建新行。`invalidated` 只用于尚未完成的 `generating/provider_unknown` 尝试：它禁止原 key 再次接管或写入，且不向历史接口返回。已有 `ready` 行永远保持 `ready`，即使收到同 key 的不同快照请求也不改变其状态；原始快照再次请求仍稳定返回原 `200` 结果。这样只用一张增量表也能在模型调用期间跨连接控制幂等 lease，而不会把半成品展示给用户。
+`generating`/`provider_unknown` 是同一行中的持久化尝试状态，不是可见 Proposal。Proposal 一旦进入 `ready`，`input_snapshot_json`、`source_fingerprint`、`proposal_json`、`proposal_hash`、`proposal_status` 和创建时间均不可更新；后续重新生成必须使用新 key 创建新行。`invalidated` 只用于尚未完成的 `generating/provider_unknown` 尝试：它禁止原 key 再次接管或写入，且不向历史接口返回。该状态保存内部 `invalidation_reason`，但所有重放都返回统一稳定的 `409 interview_preparation_attempt_invalidated`，不根据错误细节猜测或恢复。已有 `ready` 行永远保持 `ready`，即使收到同 key 的不同快照请求也不改变其状态；原始快照再次请求仍稳定返回原 `200` 结果。这样只用一张增量表也能在模型调用期间跨连接控制幂等 lease，而不会把半成品展示给用户。
 
 ### 5.2 迁移顺序
 
@@ -168,10 +169,12 @@ Knowledge Note 新建版本不会修改旧 Evidence。旧 Proposal 的快照仍�
 ### 6.1 新生成的两段式生命周期
 
 1. 第一个短 session 使用 `BEGIN IMMEDIATE` 检查可见 Application、选定 interview event、Resume、JD 和 Knowledge selections，构建快照并计算指纹。`idempotency_key` 必须由客户端生成，并由服务端严格校验格式和长度；服务端不替客户端生成替代 key。
-2. 先查询 `(application_id, event_id, idempotency_key)`，并在任何状态分支前比较新旧 `source_fingerprint`。指纹不一致时，若旧行是 `generating` 或 `provider_unknown`，就在同一写事务中标记为 `invalidated`，使旧 revision/token 不能再回写，然后返回 `409 interview_preparation_idempotency_conflict`；若旧行已经是 `ready`，保持其状态和结果不变，直接返回同一 `409`。指纹一致时，`ready` 直接返回相同 Proposal，不能解析 Provider 配置、不能调用模型；`generating` 或 `provider_unknown` 只要 lease 未过期都返回 `202`，绝不二次调用；只有 lease 到期后才允许 CAS 接管新的 revision/token。已经 `invalidated` 的 key 是终态，任何重放都返回同一幂等冲突，不能恢复或写入。
-3. 事务提交并关闭 session 后才调用真实 AI；模型调用期间绝不持有 SQLite 连接。
-4. Provider 返回后，以新短 session 执行 `BEGIN IMMEDIATE`，按 revision/token/status 做 CAS；lease 到期、状态已变为 `invalidated` 或 token/revision 不匹配的迟到结果必须丢弃，不写入模型原文。
-5. 回写事务重新校验 Application 可见性、事件关系、Resume 当前 hash 和已选 Knowledge Evidence hash。任何可观察来源漂移都在 CAS 成功的同一事务中将该尚未完成尝试标为 `invalidated`，返回 `409 interview_preparation_source_conflict`，不将结果写成 `ready`。JD 没有服务端当前来源；本请求中的 JD 从开始到回写都是同一冻结值，JD 的后续编辑只会形成新的本地草稿，并在重用旧 key 时触发前述幂等冲突。
+2. 在这个首次短事务内查询 `(application_id, event_id, idempotency_key)`。若不存在，原子插入一行 `attempt_status=generating`，写入完整快照、`source_fingerprint`、`generation_revision=1`、随机 `provider_call_token` 和未过期 `provider_lease_until`，提交事务后只有该行的持有者才可调用 Provider。两个并发首请求由 SQLite 写锁串行化；后到请求提交后再读到这行，只按下面状态分支处理，不能各自调用 Provider。
+3. 已有行在任何状态分支前比较新旧 `source_fingerprint`。指纹不一致时，若旧行是 `generating` 或 `provider_unknown`，就在同一写事务中标记为 `invalidated`、写入 `invalidation_reason`，使旧 revision/token 不能再回写，然后返回 `409 interview_preparation_idempotency_conflict`；若旧行已经是 `ready`，保持其状态和结果不变，直接返回同一 `409`。指纹一致时，`ready` 直接返回相同 Proposal，不能解析 Provider 配置、不能调用模型；`generating` 或 `provider_unknown` 只要 lease 未过期都返回 `202`，绝不二次调用；只有 lease 到期后才允许 CAS 接管新的 revision/token。已经 `invalidated` 的 key 是终态，任何重放都返回统一 `409 interview_preparation_attempt_invalidated`，不能恢复或写入。
+4. 首次插入或 lease 接管事务提交并关闭 session 后才调用真实 AI；模型调用期间绝不持有 SQLite 连接。
+5. Provider/网络/超时等结果未知异常返回前，以新短 session 执行 `BEGIN IMMEDIATE`，使用 `WHERE attempt_status='generating' AND generation_revision=? AND provider_call_token=?` 做 CAS，将行转为 `provider_unknown`，保留原 token 和原 lease，提交后返回 `502 interview_preparation_provider_error`。若 CAS 失败，不覆盖后来持有者的状态，客户端仍保留原 key；在原 lease 未过期时同 key 重试只能返回 `202`，不能第二次调用 Provider。
+6. Provider 返回后，以新短 session 执行 `BEGIN IMMEDIATE`，按 revision/token/status 做 CAS；lease 到期、状态已变为 `invalidated` 或 token/revision 不匹配的迟到结果必须丢弃，不写入模型原文。
+7. 回写事务重新校验 Application 可见性、事件关系、Resume 当前 hash 和已选 Knowledge Evidence hash。任何可观察来源漂移都在 CAS 成功的同一事务中将该尚未完成尝试标为 `invalidated`、写入 `source_conflict`，返回 `409 interview_preparation_source_conflict`，不将结果写成 `ready`。JD 没有服务端当前来源；本请求中的 JD 从开始到回写都是同一冻结值，JD 的后续编辑只会形成新的本地草稿，并在重用旧 key 时触发前述幂等冲突。
 6. 没有漂移时，在同一事务内将校验后的 Proposal 或安全空 Proposal 写入该 attempt 并提交。并发请求只能看到同一个 `ready` 行。
 
 ### 6.2 历史读取与实时生成分离
@@ -322,7 +325,7 @@ POST /api/applications/{application_id}/interview-preparation-proposals
 
 ```json
 {
-  "status": "generating|provider_unknown",
+  "attempt_status": "generating|provider_unknown",
   "application_id": 12,
   "event_id": 34,
   "idempotency_key": "client-generated-key",
@@ -331,7 +334,7 @@ POST /api/applications/{application_id}/interview-preparation-proposals
 }
 ```
 
-`202` 不触发第二次 Provider 调用，客户端保留 key 并按同 key 查询/重试；它不包含 `proposal`、`proposal_hash`、`proposal_status` 或任何模型输出。
+`202` 不触发第二次 Provider 调用，客户端保留 key 并按同 key 查询/重试；它不包含 `proposal`、`proposal_hash`、`proposal_status` 或任何模型输出。响应字段统一使用持久化模型的 `attempt_status` 命名。
 
 ### 8.2 历史读取
 
@@ -353,6 +356,7 @@ POST /api/applications/{application_id}/interview-preparation-proposals
 | 选定 Knowledge/Evidence 不属于当前已确认版本 | 422 | `interview_preparation_knowledge_selection_invalid` |
 | 模型调用前后来源指纹或关系变化 | 409 | `interview_preparation_source_conflict` |
 | 既有 Proposal 与同 key 的请求快照不同 | 409 | `interview_preparation_idempotency_conflict` |
+| 未完成尝试已被原子失效，旧 key 不能恢复 | 409 | `interview_preparation_attempt_invalidated` |
 | Provider/网络/超时/未知响应结果 | 502 | `interview_preparation_provider_error` |
 | 历史 Proposal 不存在或不属于该 Application | 404 | `interview_preparation_proposal_not_found` |
 
