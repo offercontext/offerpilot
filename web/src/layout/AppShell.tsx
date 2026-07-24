@@ -41,7 +41,7 @@ import AddApplicationForm from '@/components/AddApplicationForm';
 import ApplicationDetail from '@/components/ApplicationDetail';
 import type { InterviewReviewProposalAttemptState } from '@/components/InterviewReviewProposalDrawer';
 import type { InterviewKnowledgeCaptureDraft } from '@/components/InterviewKnowledgeCaptureDrawer';
-import type { InterviewPreparationAttemptState, InterviewPreparationDraft } from '@/components/InterviewPreparationProposalDrawer';
+import type { InterviewPreparationAttemptState, InterviewPreparationDraft, InterviewPreparationKnowledgeOption } from '@/components/InterviewPreparationProposalDrawer';
 import ResumeUploadModal from '@/components/ResumeUploadModal';
 import ChatPanel from '@/components/ChatPanel';
 import type { EvidenceTarget } from '@/components/ChatPanel/model';
@@ -54,6 +54,7 @@ import {
   type PipelineInsight,
 } from '@/lib/pipelineInsights';
 import { getPracticeStats } from '@/services/questions';
+import { fetchConfirmedInterviewKnowledgeNotes } from '@/services/knowledge';
 import { buildPilotPageContext } from '@/lib/pilotPageContext';
 import { PilotAttachmentProvider } from '@/features/pilot/PilotAttachmentContext';
 import {
@@ -238,6 +239,20 @@ function AppShellContent() {
     queryFn: listResumes,
     enabled: true,
   });
+  const { data: confirmedInterviewKnowledgeNotes = [] } = useQuery({
+    queryKey: ['knowledge', 'confirmed-interview-notes'],
+    queryFn: fetchConfirmedInterviewKnowledgeNotes,
+    staleTime: 30000,
+  });
+  const interviewPreparationKnowledgeOptions = useMemo<InterviewPreparationKnowledgeOption[]>(
+    () => confirmedInterviewKnowledgeNotes.flatMap((note) => (note.evidence ?? []).map((evidence) => ({
+      evidence_id: evidence.id,
+      note_version_id: note.version_id,
+      label: `${note.title} · ${evidence.path}`,
+      excerpt: evidence.excerpt,
+    }))),
+    [confirmedInterviewKnowledgeNotes],
+  );
 
   const pilotDraftStore = useMemo(() => {
     if (!pilotApplicationContext) return EMPTY_PILOT_DRAFT_STORE;
@@ -762,6 +777,7 @@ function AppShellContent() {
       onInterviewPreparationAttemptChange={updateInterviewPreparationAttempt}
       interviewPreparationDrafts={interviewPreparationDrafts}
       onInterviewPreparationDraftChange={updateInterviewPreparationDraft}
+      interviewPreparationKnowledgeOptions={interviewPreparationKnowledgeOptions}
     />
   ) : (
     <>

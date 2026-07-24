@@ -42,6 +42,7 @@ import InterviewKnowledgeCaptureDrawer, {
 import InterviewPreparationProposalDrawer, {
   type InterviewPreparationDraft,
   type InterviewPreparationAttemptState,
+  type InterviewPreparationKnowledgeOption,
 } from './InterviewPreparationProposalDrawer';
 import type { Resume } from '@/types/resume';
 import MaterialKitDrawer from './MaterialKitDrawer';
@@ -83,9 +84,10 @@ interface ApplicationDetailProps {
   onInterviewPreparationAttemptChange?: (key: string, state: InterviewPreparationAttemptState | null) => void;
   interviewPreparationDrafts?: Record<string, InterviewPreparationDraft>;
   onInterviewPreparationDraftChange?: (key: string, draft: InterviewPreparationDraft | null) => void;
+  interviewPreparationKnowledgeOptions?: InterviewPreparationKnowledgeOption[];
 }
 
-export default function ApplicationDetail({ application, open, onClose, onMockInterview, onAskPilot, onOpenPilotOpportunityFit, pilotInterviewReviewApplicationId, onPilotInterviewReviewFocusConsumed, onAttachToPilot, interviewReviewProposalAttempts, onInterviewReviewProposalAttemptChange, onInterviewNoteChanged, interviewKnowledgeCaptureDrafts, onInterviewKnowledgeCaptureDraftChange, onInterviewKnowledgeCaptureNoteChanged, resumes = [], interviewPreparationAttempts, onInterviewPreparationAttemptChange, interviewPreparationDrafts, onInterviewPreparationDraftChange }: ApplicationDetailProps) {
+export default function ApplicationDetail({ application, open, onClose, onMockInterview, onAskPilot, onOpenPilotOpportunityFit, pilotInterviewReviewApplicationId, onPilotInterviewReviewFocusConsumed, onAttachToPilot, interviewReviewProposalAttempts, onInterviewReviewProposalAttemptChange, onInterviewNoteChanged, interviewKnowledgeCaptureDrafts, onInterviewKnowledgeCaptureDraftChange, onInterviewKnowledgeCaptureNoteChanged, resumes = [], interviewPreparationAttempts, onInterviewPreparationAttemptChange, interviewPreparationDrafts, onInterviewPreparationDraftChange, interviewPreparationKnowledgeOptions = [] }: ApplicationDetailProps) {
   const queryClient = useQueryClient();
   const [form] = Form.useForm();
   const [eventFormOpen, setEventFormOpen] = useState(false);
@@ -292,6 +294,7 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
           userAssertions: [],
         }}
         resumeOptions={resumes}
+        knowledgeOptions={interviewPreparationKnowledgeOptions}
         attemptState={interviewPreparationAttempts?.[preparationKey]}
         draft={interviewPreparationDrafts?.[preparationKey]}
         onAttemptStateChange={(state) => onInterviewPreparationAttemptChange?.(preparationKey, state)}
