@@ -104,6 +104,8 @@ def test_real_ai_interview_preparation_smoke_requires_three_safe_results_and_one
             if path == "/api/application-events":
                 return Response(201, {"id": 51})
             self.calls += 1
+            if self.calls == 2:
+                return Response(202, {"attempt_status": "provider_unknown"})
             return Response(
                 201,
                 {

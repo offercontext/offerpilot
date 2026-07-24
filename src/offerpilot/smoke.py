@@ -459,6 +459,11 @@ def _run_real_ai_interview_preparation_smoke(
                 "idempotency_key": f"interview-preparation-smoke-{index}",
             },
         )
+        if response.status_code == 202:
+            body = response.json()
+            if body.get("attempt_status") not in {"generating", "provider_unknown"}:
+                raise RuntimeError("interview preparation smoke returned an invalid pending status")
+            continue
         _assert_status(response.status_code, 201, f"http_interview_preparation_proposal_{index}")
         body = response.json()
         if not isinstance(body, dict) or not isinstance(body.get("proposal"), dict):
@@ -479,7 +484,7 @@ def _run_real_ai_interview_preparation_smoke(
     steps.append(
         SmokeStep(
             "http_interview_preparation_proposal",
-            "real AI returned three safe interview preparation proposals with at least one cited result",
+            "real AI returned safe interview preparation results with at least one cited result",
         )
     )
 

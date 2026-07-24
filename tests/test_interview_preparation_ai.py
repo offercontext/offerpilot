@@ -7,11 +7,24 @@ import pytest
 
 from offerpilot.ai.interview_preparation_proposals import (
     InterviewPreparationModelError,
+    _repair_prompt,
+    _system_prompt,
     generate_interview_preparation_proposal,
     safe_empty_interview_preparation_proposal,
     validate_interview_preparation,
 )
 from offerpilot.ai.types import Assistant
+
+
+def test_provider_prompt_spells_out_evidence_reference_object_contract() -> None:
+    prompt = _system_prompt()
+    repair = _repair_prompt("invalid_item_shape")
+
+    assert 'source","path","excerpt' in prompt
+    assert "/jd/text" in prompt
+    assert "/raw_text" in prompt
+    assert "/knowledge_evidence/001" in prompt
+    assert 'source","path","excerpt' in repair
 
 
 def _snapshot() -> dict[str, object]:

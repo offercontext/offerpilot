@@ -35,6 +35,16 @@ _REPAIR_CATEGORIES = {
     "excerpt_mismatch",
 }
 
+_EVIDENCE_REFERENCE_PROMPT = (
+    "每个具体建议必须包含非空 evidence_refs；evidence_refs 是对象数组，且每个对象的键必须恰好为 "
+    '["source","path","excerpt"]。'
+    "source 只能是 jd、resume 或 knowledge_evidence。jd 的 path 只能是 /jd/text；resume 的 path "
+    "必须是冻结 content_json 的规范 JSON Pointer，并解析到字符串叶子，例如 /raw_text 或 "
+    "/experience/0/highlights/0；knowledge_evidence 的 path 必须使用输入中的 canonical "
+    "provider_path，例如 /knowledge_evidence/001。excerpt 必须是对应冻结文本中逐字连续、非空的子串，"
+    "不得拼接、改写或使用未提供的证据。每个数组最多 8 条，每条最多 1000 个字符，每条最多 5 个引用。"
+)
+
 INTERVIEW_PREPARATION_JSON_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -315,7 +325,8 @@ def _system_prompt() -> str:
         "只根据用户确认的 JD、所选 Resume 和已确认 Knowledge Evidence 生成面试准备建议。"
         "只输出原始 JSON；顶层只能有 preparation_directions、story_prompts、review_points、"
         "interviewer_questions、items_to_clarify 五个数组。每个条目只能有 id、text、evidence_refs，"
-        "每个条目必须至少引用一条证据；无法可靠建议时返回五个空数组。不要输出分数、预测、决定、"
+        + _EVIDENCE_REFERENCE_PROMPT
+        + "无法可靠建议时返回五个空数组。不要输出分数、预测、决定、"
         "能力判断、旧建议、复盘、Memory、用户断言或额外字段。"
     )
 
@@ -351,8 +362,9 @@ def _repair_prompt(category: str) -> str:
     return (
         "上一次输出未通过严格验证。失败类别为 "
         + category
-        + "。只返回符合既定契约的 raw JSON；不要解释、不要返回 Markdown、不要加入额外字段，"
-        "没有可验证建议时返回五个空数组。"
+        + "。只返回符合既定契约的 raw JSON；不要解释、不要返回 Markdown、不要加入额外字段。"
+        + _EVIDENCE_REFERENCE_PROMPT
+        + "没有可验证建议时返回五个空数组，"
     )
 
 
