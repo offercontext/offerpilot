@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor
@@ -121,9 +121,9 @@ def test_first_request_without_old_row_creates_lease_before_provider_and_calls_o
     model = BlockingSafeEmptyModel()
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        first_future = pool.submit(_generate, repository_a, ids, "first-key", model)
+        first_future = pool.submit(_generate, repository_a, ids, "first-key-00000001", model)
         assert model.entered.wait(5)
-        second_future = pool.submit(_generate, repository_b, ids, "first-key", model)
+        second_future = pool.submit(_generate, repository_b, ids, "first-key-00000001", model)
         second = second_future.result(timeout=5)
         assert second.pending is True
         assert second.attempt_status == "generating"
@@ -149,7 +149,7 @@ def test_provider_unknown_cas_preserves_token_and_unexpired_lease(tmp_path) -> N
     model = FailingModel()
 
     with pytest.raises(InterviewPreparationProviderError):
-        _generate(repository, ids, "unknown-key", model)
+        _generate(repository, ids, "unknown-key-0000001", model)
 
     with factory() as session:
         row = session.scalar(select(InterviewPreparationProposal))
@@ -160,7 +160,7 @@ def test_provider_unknown_cas_preserves_token_and_unexpired_lease(tmp_path) -> N
         assert row.provider_lease_until.replace(tzinfo=timezone.utc) > datetime.now(timezone.utc)
         original_token = row.provider_call_token
 
-    retry = _generate(repository, ids, "unknown-key", SafeEmptyModel())
+    retry = _generate(repository, ids, "unknown-key-0000001", SafeEmptyModel())
     assert retry.pending is True
     assert retry.attempt_status == "provider_unknown"
     with factory() as session:
@@ -169,14 +169,13 @@ def test_provider_unknown_cas_preserves_token_and_unexpired_lease(tmp_path) -> N
         assert row.provider_call_token == original_token
     factory.kw["bind"].dispose()
 
-
 def test_expired_lease_takeover_atomically_bumps_revision_and_only_one_wins(tmp_path) -> None:
     factory_a, ids = _setup(tmp_path)
     factory_b = init_database(tmp_path / "data.db")
     repository_a = InterviewPreparationProposalsRepository(factory_a)
     repository_b = InterviewPreparationProposalsRepository(factory_b)
     with pytest.raises(InterviewPreparationProviderError):
-        _generate(repository_a, ids, "expired-key", FailingModel())
+        _generate(repository_a, ids, "expired-key-0000001", FailingModel())
     with factory_a() as session:
         row = session.scalar(select(InterviewPreparationProposal))
         assert row is not None
@@ -186,9 +185,9 @@ def test_expired_lease_takeover_atomically_bumps_revision_and_only_one_wins(tmp_
 
     model = BlockingSafeEmptyModel()
     with ThreadPoolExecutor(max_workers=2) as pool:
-        first_future = pool.submit(_generate, repository_a, ids, "expired-key", model)
+        first_future = pool.submit(_generate, repository_a, ids, "expired-key-0000001", model)
         assert model.entered.wait(5)
-        second_future = pool.submit(_generate, repository_b, ids, "expired-key", model)
+        second_future = pool.submit(_generate, repository_b, ids, "expired-key-0000001", model)
         second = second_future.result(timeout=5)
         model.release.set()
         first = first_future.result(timeout=5)
@@ -209,13 +208,13 @@ def test_expired_lease_takeover_atomically_bumps_revision_and_only_one_wins(tmp_
 def test_ready_different_snapshot_returns_409_and_original_ready_remains_stable(tmp_path) -> None:
     factory, ids = _setup(tmp_path)
     repository = InterviewPreparationProposalsRepository(factory)
-    first = _generate(repository, ids, "stable-key", SafeEmptyModel())
+    first = _generate(repository, ids, "stable-key-0000001", SafeEmptyModel())
 
     with pytest.raises(InterviewPreparationConflictError) as exc_info:
-        _generate(repository, ids, "stable-key", SafeEmptyModel(), jd_text="Different JD")
+        _generate(repository, ids, "stable-key-0000001", SafeEmptyModel(), jd_text="Different JD")
 
     assert exc_info.value.code == "interview_preparation_idempotency_conflict"
-    replay = _generate(repository, ids, "stable-key", SafeEmptyModel())
+    replay = _generate(repository, ids, "stable-key-0000001", SafeEmptyModel())
     assert replay.pending is False
     assert replay.proposal is not None
     assert replay.proposal.id == first.proposal.id  # type: ignore[union-attr]
@@ -225,7 +224,7 @@ def test_ready_different_snapshot_returns_409_and_original_ready_remains_stable(
 def test_event_delete_keeps_history_readable_and_source_changed(tmp_path) -> None:
     factory, ids = _setup(tmp_path)
     repository = InterviewPreparationProposalsRepository(factory)
-    _generate(repository, ids, "event-history-key", SafeEmptyModel())
+    _generate(repository, ids, "event-history-key-01", SafeEmptyModel())
     with factory() as session:
         session.execute(text("DELETE FROM application_events WHERE id=:id"), {"id": ids[1]})
         session.commit()
@@ -238,7 +237,7 @@ def test_event_delete_keeps_history_readable_and_source_changed(tmp_path) -> Non
 def test_resume_delete_keeps_history_readable_and_source_changed(tmp_path) -> None:
     factory, ids = _setup(tmp_path)
     repository = InterviewPreparationProposalsRepository(factory)
-    _generate(repository, ids, "resume-history-key", SafeEmptyModel())
+    _generate(repository, ids, "resume-history-key-1", SafeEmptyModel())
     with factory() as session:
         session.execute(text("DELETE FROM resumes WHERE id=:id"), {"id": ids[2]})
         session.commit()
@@ -251,7 +250,7 @@ def test_resume_delete_keeps_history_readable_and_source_changed(tmp_path) -> No
 def test_soft_deleted_application_returns_not_found_for_history(tmp_path) -> None:
     factory, ids = _setup(tmp_path)
     repository = InterviewPreparationProposalsRepository(factory)
-    _generate(repository, ids, "application-history-key", SafeEmptyModel())
+    _generate(repository, ids, "application-history-key-1", SafeEmptyModel())
     with factory() as session:
         session.execute(
             text("UPDATE applications SET deleted_at=CURRENT_TIMESTAMP WHERE id=:id"),
@@ -262,3 +261,4 @@ def test_soft_deleted_application_returns_not_found_for_history(tmp_path) -> Non
     with pytest.raises(InterviewPreparationNotFound):
         repository.list(ids[0])
     factory.kw["bind"].dispose()
+
