@@ -448,23 +448,32 @@ def _run_real_ai_interview_preparation_smoke(
     ]
     verified_non_empty = 0
     for index, jd_text in enumerate(cases, start=1):
-        response = client.post(
-            f"/api/applications/{application_id}/interview-preparation-proposals",
-            json={
-                "event_id": event_id,
-                "resume_id": resume_id,
-                "jd_text": jd_text,
-                "knowledge_selections": [],
-                "user_assertions": [f"I led preparation case {index}."],
-                "idempotency_key": f"interview-preparation-smoke-{index}",
-            },
-        )
-        if response.status_code == 202:
+        request_payload = {
+            "event_id": event_id,
+            "resume_id": resume_id,
+            "jd_text": jd_text,
+            "knowledge_selections": [],
+            "user_assertions": [f"I led preparation case {index}."],
+            "idempotency_key": f"interview-preparation-smoke-{index}",
+        }
+        pending_retries = 0
+        while True:
+            response = client.post(
+                f"/api/applications/{application_id}/interview-preparation-proposals",
+                json=request_payload,
+            )
             body = response.json()
-            if body.get("attempt_status") not in {"generating", "provider_unknown"}:
-                raise RuntimeError("interview preparation smoke returned an invalid pending status")
-            continue
-        _assert_status(response.status_code, 201, f"http_interview_preparation_proposal_{index}")
+            _assert_interview_preparation_smoke_response_safe(body)
+            if response.status_code != 202:
+                _assert_status(response.status_code, 201, f"http_interview_preparation_proposal_{index}")
+                break
+            _validate_interview_preparation_pending_response(
+                body, request_payload, application_id=application_id, event_id=event_id
+            )
+            if pending_retries >= 3:
+                raise RuntimeError("interview preparation smoke pending result did not complete")
+            time.sleep(min(body["retry_after_ms"], 30_000) / 1000)
+            pending_retries += 1
         body = response.json()
         if not isinstance(body, dict) or not isinstance(body.get("proposal"), dict):
             raise RuntimeError("interview preparation smoke response did not contain a proposal")
@@ -476,9 +485,6 @@ def _run_real_ai_interview_preparation_smoke(
                 for items in proposal.values()
             ):
                 verified_non_empty += 1
-        serialized = json.dumps(body, ensure_ascii=False)
-        if "input_snapshot" in body or "Built reliable API services and led a migration." in serialized:
-            raise RuntimeError("interview preparation smoke exposed the frozen input snapshot")
     if verified_non_empty < 1:
         raise RuntimeError("interview preparation smoke returned no evidence-backed non-empty proposal")
     steps.append(
@@ -487,6 +493,45 @@ def _run_real_ai_interview_preparation_smoke(
             "real AI returned safe interview preparation results with at least one cited result",
         )
     )
+
+
+def _assert_interview_preparation_smoke_response_safe(body: object) -> None:
+    if not isinstance(body, dict):
+        raise RuntimeError("interview preparation smoke response was not an object")
+    serialized = json.dumps(body, ensure_ascii=False)
+    if "input_snapshot" in serialized:
+        raise RuntimeError("interview preparation smoke response leaked frozen input snapshot")
+
+
+def _validate_interview_preparation_pending_response(
+    body: dict[str, object],
+    request_payload: dict[str, object],
+    *,
+    application_id: int,
+    event_id: int,
+) -> None:
+    expected_fields = {
+        "attempt_status",
+        "application_id",
+        "event_id",
+        "idempotency_key",
+        "generation_revision",
+        "retry_after_ms",
+    }
+    if set(body) != expected_fields:
+        raise RuntimeError("interview preparation smoke pending response fields were invalid")
+    if body["attempt_status"] not in {"generating", "provider_unknown"}:
+        raise RuntimeError("interview preparation smoke returned an invalid pending status")
+    if body["application_id"] != application_id:
+        raise RuntimeError("interview preparation smoke pending application did not match")
+    if body["event_id"] != event_id:
+        raise RuntimeError("interview preparation smoke pending event did not match")
+    if body["idempotency_key"] != request_payload.get("idempotency_key"):
+        raise RuntimeError("interview preparation smoke pending key did not match")
+    for field in ("generation_revision", "retry_after_ms"):
+        value = body[field]
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise RuntimeError("interview preparation smoke pending timing fields were invalid")
 
 
 def _run_real_ai_material_proposal_smoke(

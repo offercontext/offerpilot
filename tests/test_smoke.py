@@ -85,7 +85,7 @@ def test_http_smoke_uses_real_http_and_cleans_test_application(tmp_path):
     ]
 
 
-def test_real_ai_interview_preparation_smoke_requires_three_safe_results_and_one_cited_result():
+def test_real_ai_interview_preparation_smoke_retries_pending_results_with_same_request(monkeypatch):
     class Response:
         def __init__(self, status_code: int, payload: dict[str, object]) -> None:
             self.status_code = status_code
@@ -97,6 +97,7 @@ def test_real_ai_interview_preparation_smoke_requires_three_safe_results_and_one
     class Client:
         def __init__(self) -> None:
             self.calls = 0
+            self.proposal_requests: list[dict[str, object]] = []
 
         def post(self, path: str, json: dict[str, object]) -> Response:
             if path == "/api/resumes":
@@ -104,8 +105,19 @@ def test_real_ai_interview_preparation_smoke_requires_three_safe_results_and_one
             if path == "/api/application-events":
                 return Response(201, {"id": 51})
             self.calls += 1
+            self.proposal_requests.append(dict(json))
             if self.calls == 2:
-                return Response(202, {"attempt_status": "provider_unknown"})
+                return Response(
+                    202,
+                    {
+                        "attempt_status": "provider_unknown",
+                        "application_id": 7,
+                        "event_id": 51,
+                        "idempotency_key": "interview-preparation-smoke-2",
+                        "generation_revision": 1,
+                        "retry_after_ms": 1,
+                    },
+                )
             return Response(
                 201,
                 {
@@ -129,9 +141,45 @@ def test_real_ai_interview_preparation_smoke_requires_three_safe_results_and_one
                 },
             )
 
+    monkeypatch.setattr("offerpilot.smoke.time.sleep", lambda _: None)
+    client = Client()
     steps: list[SmokeStep] = []
-    _run_real_ai_interview_preparation_smoke(Client(), steps, 7, [])
+    _run_real_ai_interview_preparation_smoke(client, steps, 7, [])
     assert steps[-1].name == "http_interview_preparation_proposal"
+    assert len(client.proposal_requests) == 4
+    assert client.proposal_requests[1] == client.proposal_requests[2]
+
+
+def test_real_ai_interview_preparation_smoke_rejects_pending_snapshot_leak():
+    class Response:
+        def __init__(self, status_code: int, payload: dict[str, object]) -> None:
+            self.status_code = status_code
+            self._payload = payload
+
+        def json(self) -> dict[str, object]:
+            return self._payload
+
+    class Client:
+        def post(self, path: str, json: dict[str, object]) -> Response:
+            if path == "/api/resumes":
+                return Response(201, {"id": 41})
+            if path == "/api/application-events":
+                return Response(201, {"id": 51})
+            return Response(
+                202,
+                {
+                    "attempt_status": "provider_unknown",
+                    "application_id": 7,
+                    "event_id": 51,
+                    "idempotency_key": str(json["idempotency_key"]),
+                    "generation_revision": 1,
+                    "retry_after_ms": 0,
+                    "input_snapshot": {"raw_text": "should never be returned"},
+                },
+            )
+
+    with pytest.raises(RuntimeError, match="response leaked frozen input snapshot"):
+        _run_real_ai_interview_preparation_smoke(Client(), [], 7, [])
 
 
 def test_real_ai_material_proposal_smoke_allows_empty_changes_and_hides_snapshot():
