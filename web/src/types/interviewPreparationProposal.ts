@@ -32,7 +32,6 @@ export interface InterviewPreparationProposal {
   source_states: Record<string, string>;
   proposal: InterviewPreparationProposalBody;
   proposal_hash: string;
-  input_snapshot: Record<string, unknown>;
   created_at: string;
 }
 
