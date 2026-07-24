@@ -25,6 +25,13 @@ export interface InterviewPreparationAttemptState {
   result_unknown: boolean;
 }
 
+export interface InterviewPreparationKnowledgeOption {
+  note_version_id: number;
+  evidence_id: string;
+  label?: string;
+  excerpt: string;
+}
+
 interface Props {
   open: boolean;
   context: InterviewPreparationDrawerContext;
@@ -33,6 +40,7 @@ interface Props {
   attemptState?: InterviewPreparationAttemptState;
   initialProposal?: InterviewPreparationProposal | null;
   resumeOptions?: Array<{ id: number; title?: string; name?: string }>;
+  knowledgeOptions?: InterviewPreparationKnowledgeOption[];
 }
 
 const SECTION_LABELS: Array<[keyof InterviewPreparationProposal['proposal'], string]> = [
@@ -92,6 +100,7 @@ export default function InterviewPreparationProposalDrawer({
   attemptState,
   initialProposal = null,
   resumeOptions = [],
+  knowledgeOptions = [],
 }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -101,6 +110,13 @@ export default function InterviewPreparationProposalDrawer({
   const [jdText, setJdText] = useState(context.jdText);
   const [assertionsText, setAssertionsText] = useState(context.userAssertions.join('\n'));
   const [history, setHistory] = useState<InterviewPreparationProposal[]>([]);
+  const [selectedEvidenceIds, setSelectedEvidenceIds] = useState<string[]>(() =>
+    context.knowledgeSelections.flatMap((selection) =>
+      Array.isArray(selection.evidence_ids)
+        ? selection.evidence_ids.filter((value): value is string => typeof value === 'string')
+        : [],
+    ),
+  );
   const hasInput = Boolean(resumeId && jdText.trim());
   const isSafeEmpty = proposal?.proposal_status === 'safe_empty';
   const input = useMemo<CreateInterviewPreparationProposalInput>(() => ({
@@ -108,10 +124,19 @@ export default function InterviewPreparationProposalDrawer({
     event_id: context.eventId,
     resume_id: resumeId,
     jd_text: jdText,
-    knowledge_selections: context.knowledgeSelections,
+    knowledge_selections: knowledgeOptions.length > 0
+      ? knowledgeOptions
+        .filter((option) => selectedEvidenceIds.includes(option.evidence_id))
+        .reduce<Array<{ note_version_id: number; evidence_ids: string[] }>>((groups, option) => {
+          const group = groups.find((item) => item.note_version_id === option.note_version_id);
+          if (group) group.evidence_ids.push(option.evidence_id);
+          else groups.push({ note_version_id: option.note_version_id, evidence_ids: [option.evidence_id] });
+          return groups;
+        }, [])
+      : context.knowledgeSelections,
     user_assertions: assertionsText.split('\n').map((value) => value.trim()).filter(Boolean),
     idempotency_key: attemptKey,
-  }), [assertionsText, attemptKey, context, jdText, resumeId]);
+  }), [assertionsText, attemptKey, context, jdText, knowledgeOptions, resumeId, selectedEvidenceIds]);
 
   useEffect(() => {
     if (!open) return;
@@ -156,6 +181,23 @@ export default function InterviewPreparationProposalDrawer({
         <dt>选定简历</dt><dd>{resumeId || '尚未选择'}</dd>
         <dt>已确认 Knowledge Evidence</dt><dd>{context.knowledgeSelections.length} 条</dd>
       </dl>
+      {knowledgeOptions.length > 0 && (
+        <fieldset>
+          <legend>选择已确认 Knowledge Evidence</legend>
+          {knowledgeOptions.map((option) => (
+            <label key={option.evidence_id}>
+              <input
+                type="checkbox"
+                checked={selectedEvidenceIds.includes(option.evidence_id)}
+                onChange={() => setSelectedEvidenceIds((current) => current.includes(option.evidence_id)
+                  ? current.filter((id) => id !== option.evidence_id)
+                  : [...current, option.evidence_id])}
+              />
+              {option.label || option.evidence_id}: {option.excerpt}
+            </label>
+          ))}
+        </fieldset>
+      )}
       <label>
         选择简历
         <select value={resumeId} onChange={(event) => setResumeId(Number(event.target.value))}>
