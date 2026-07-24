@@ -24,6 +24,7 @@ from offerpilot.smoke import (
     _run_real_ai_interview_preparation_smoke,
     _run_real_ai_material_proposal_smoke,
     _run_real_ai_opportunity_fit_smoke,
+    _validate_interview_preparation_proposal_response,
     run_core_smoke,
     run_http_smoke,
 )
@@ -164,7 +165,12 @@ def test_real_ai_interview_preparation_smoke_retries_pending_results_with_same_r
 
 
 def _smoke_terminal_proposal_payload(
-    *, application_id: int = 7, event_id: int = 51, resume_id: int = 41, proposal: dict[str, object] | None = None
+    *,
+    application_id: int = 7,
+    event_id: int = 51,
+    resume_id: int = 41,
+    proposal: dict[str, object] | None = None,
+    proposal_status: str = "normal",
 ) -> dict[str, object]:
     return {
         "id": 61,
@@ -172,7 +178,7 @@ def _smoke_terminal_proposal_payload(
         "event_id": event_id,
         "resume_id": resume_id,
         "attempt_status": "ready",
-        "proposal_status": "normal",
+        "proposal_status": proposal_status,
         "source_fingerprint": "fingerprint",
         "source_status": "current",
         "source_states": {},
@@ -187,6 +193,67 @@ def _smoke_terminal_proposal_payload(
         "proposal_hash": "proposal-hash",
         "created_at": "2026-07-24T10:00:00+00:00",
     }
+
+
+def _smoke_evidence_snapshot() -> dict[str, object]:
+    return {
+        "jd": {"text": "Build reliable Python services."},
+        "resume": {"content_json": {"raw_text": "Built reliable API services."}},
+        "knowledge_evidence": [],
+    }
+
+
+def _smoke_proposal_with_ref(evidence_ref: dict[str, str]) -> dict[str, object]:
+    return {
+        "preparation_directions": [
+            {"id": "direction-1", "text": "Discuss the cited experience.", "evidence_refs": [evidence_ref]}
+        ],
+        "story_prompts": [],
+        "review_points": [],
+        "interviewer_questions": [],
+        "items_to_clarify": [],
+    }
+
+
+@pytest.mark.parametrize(
+    ("evidence_ref", "error_match"),
+    [
+        ({"source": "attacker", "path": "/raw_text", "excerpt": "Built reliable API services"}, "evidence"),
+        ({"source": "resume", "path": "/missing", "excerpt": "Built reliable API services"}, "evidence"),
+        ({"source": "jd", "path": "/jd/text", "excerpt": "forged requirement"}, "evidence"),
+    ],
+)
+def test_real_ai_interview_preparation_smoke_rejects_untraceable_evidence(
+    evidence_ref: dict[str, str], error_match: str
+):
+    with pytest.raises(RuntimeError, match=error_match):
+        _validate_interview_preparation_proposal_response(
+            _smoke_terminal_proposal_payload(proposal=_smoke_proposal_with_ref(evidence_ref)),
+            application_id=7,
+            event_id=51,
+            resume_id=41,
+            snapshot=_smoke_evidence_snapshot(),
+        )
+
+
+def test_real_ai_interview_preparation_smoke_rejects_invalid_terminal_metadata_and_status():
+    snapshot = _smoke_evidence_snapshot()
+    valid_ref = {"source": "resume", "path": "/raw_text", "excerpt": "Built reliable API services"}
+    valid_proposal = _smoke_proposal_with_ref(valid_ref)
+    invalid_bodies = [
+        {**_smoke_terminal_proposal_payload(proposal=valid_proposal), "id": 0},
+        {**_smoke_terminal_proposal_payload(proposal=valid_proposal), "source_fingerprint": 1},
+        {**_smoke_terminal_proposal_payload(proposal=valid_proposal), "proposal_hash": ""},
+        {**_smoke_terminal_proposal_payload(proposal=valid_proposal), "source_status": {"state": "current"}},
+        {**_smoke_terminal_proposal_payload(proposal=valid_proposal), "created_at": "not-a-date"},
+        _smoke_terminal_proposal_payload(proposal=valid_proposal, proposal_status="safe_empty"),
+        _smoke_terminal_proposal_payload(proposal_status="normal"),
+    ]
+    for body in invalid_bodies:
+        with pytest.raises(RuntimeError, match="terminal metadata|proposal status|empty proposal"):
+            _validate_interview_preparation_proposal_response(
+                body, application_id=7, event_id=51, resume_id=41, snapshot=snapshot
+            )
 
 
 def test_real_ai_interview_preparation_smoke_rejects_terminal_ownership_mismatch():

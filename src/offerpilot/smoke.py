@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import datetime
 import gc
 import json
 from dataclasses import dataclass
@@ -17,6 +18,10 @@ import uvicorn
 from sqlalchemy import delete, func, select
 
 from offerpilot.ai.agent import ChatModel
+from offerpilot.ai.interview_preparation_proposals import (
+    InterviewPreparationModelError,
+    validate_interview_preparation,
+)
 from offerpilot.ai.types import Assistant, Message, ToolCall
 from offerpilot.api import create_app
 from offerpilot.db import session_factory_for_data_dir
@@ -414,15 +419,17 @@ def _run_real_ai_interview_preparation_smoke(
     application_id: int,
     resume_ids: list[int] | None = None,
 ) -> None:
+    resume_raw_text = "Built reliable API services; input_snapshot is a literal term here."
+    resume_content_json = {
+        "raw_text": resume_raw_text,
+        "experience": [{"highlights": ["Built reliable API services", "Led a migration."]}],
+    }
     resume = client.post(
         "/api/resumes",
         json={
             "title": "AI Interview Preparation Smoke Resume",
-            "text": "Built reliable API services and led a migration.",
-            "content_json": {
-                "raw_text": "Built reliable API services and led a migration.",
-                "experience": [{"highlights": ["Built reliable API services", "Led a migration."]}],
-            },
+            "text": resume_raw_text,
+            "content_json": resume_content_json,
         },
     )
     _assert_status(resume.status_code, 201, "http_interview_preparation_resume")
@@ -475,6 +482,11 @@ def _run_real_ai_interview_preparation_smoke(
                     application_id=application_id,
                     event_id=event_id,
                     resume_id=resume_id,
+                    snapshot={
+                        "jd": {"text": jd_text},
+                        "resume": {"id": resume_id, "content_json": resume_content_json},
+                        "knowledge_evidence": [],
+                    },
                 )
                 break
             _validate_interview_preparation_pending_response(
@@ -511,7 +523,12 @@ def _assert_interview_preparation_smoke_response_safe(body: object) -> None:
 
 
 def _validate_interview_preparation_proposal_response(
-    body: dict[str, object], *, application_id: int, event_id: int, resume_id: int
+    body: dict[str, object],
+    *,
+    application_id: int,
+    event_id: int,
+    resume_id: int,
+    snapshot: dict[str, object],
 ) -> None:
     expected_fields = {
         "id",
@@ -542,6 +559,28 @@ def _validate_interview_preparation_proposal_response(
         )
     ):
         raise RuntimeError("interview preparation smoke proposal response ownership was invalid")
+    if type(body["id"]) is not int or body["id"] <= 0:
+        raise RuntimeError("interview preparation smoke terminal metadata was invalid")
+    if any(
+        not isinstance(body[field], str) or not body[field]
+        for field in ("source_fingerprint", "proposal_hash")
+    ):
+        raise RuntimeError("interview preparation smoke terminal metadata was invalid")
+    if not isinstance(body["source_status"], str) or body["source_status"] not in {
+        "current",
+        "not_checked",
+        "source_changed",
+    }:
+        raise RuntimeError("interview preparation smoke terminal metadata was invalid")
+    if not isinstance(body["source_states"], dict):
+        raise RuntimeError("interview preparation smoke terminal metadata was invalid")
+    created_at = body["created_at"]
+    if not isinstance(created_at, str) or not created_at:
+        raise RuntimeError("interview preparation smoke terminal metadata was invalid")
+    try:
+        datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise RuntimeError("interview preparation smoke terminal metadata was invalid") from exc
 
     proposal = body["proposal"]
     if not isinstance(proposal, dict) or set(proposal) != {
@@ -572,6 +611,15 @@ def _validate_interview_preparation_proposal_response(
                     raise RuntimeError("interview preparation smoke proposal structure was invalid")
                 if not all(isinstance(evidence_ref[field], str) for field in ("source", "path", "excerpt")):
                     raise RuntimeError("interview preparation smoke proposal structure was invalid")
+    try:
+        validate_interview_preparation(proposal, snapshot)
+    except InterviewPreparationModelError as exc:
+        raise RuntimeError("interview preparation smoke evidence was not traceable") from exc
+    item_count = sum(len(items) for items in proposal.values())
+    if body["proposal_status"] == "safe_empty" and item_count != 0:
+        raise RuntimeError("interview preparation smoke proposal status was not empty")
+    if body["proposal_status"] == "normal" and item_count == 0:
+        raise RuntimeError("interview preparation smoke returned an empty proposal")
 
 
 def _validate_interview_preparation_pending_response(
