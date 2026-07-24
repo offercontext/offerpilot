@@ -41,7 +41,7 @@ import AddApplicationForm from '@/components/AddApplicationForm';
 import ApplicationDetail from '@/components/ApplicationDetail';
 import type { InterviewReviewProposalAttemptState } from '@/components/InterviewReviewProposalDrawer';
 import type { InterviewKnowledgeCaptureDraft } from '@/components/InterviewKnowledgeCaptureDrawer';
-import type { InterviewPreparationAttemptState } from '@/components/InterviewPreparationProposalDrawer';
+import type { InterviewPreparationAttemptState, InterviewPreparationDraft } from '@/components/InterviewPreparationProposalDrawer';
 import ResumeUploadModal from '@/components/ResumeUploadModal';
 import ChatPanel from '@/components/ChatPanel';
 import type { EvidenceTarget } from '@/components/ChatPanel/model';
@@ -144,6 +144,7 @@ function AppShellContent() {
   const [interviewReviewProposalAttempts, setInterviewReviewProposalAttempts] = useState<Record<number, InterviewReviewProposalAttemptState>>({});
   const [interviewKnowledgeCaptureDrafts, setInterviewKnowledgeCaptureDrafts] = useState<Record<number, InterviewKnowledgeCaptureDraft>>({});
   const [interviewPreparationAttempts, setInterviewPreparationAttempts] = useState<Record<string, InterviewPreparationAttemptState>>({});
+  const [interviewPreparationDrafts, setInterviewPreparationDrafts] = useState<Record<string, InterviewPreparationDraft>>({});
   const [evidenceFocus, setEvidenceFocus] = useState<Exclude<EvidenceTarget, { kind: 'application' }> | null>(null);
   const [coachOfferId, setCoachOfferId] = useState<number | undefined>(undefined);
   const [chatStartRequest, setChatStartRequest] = useState<ChatStartRequest>();
@@ -555,6 +556,26 @@ function AppShellContent() {
     });
   };
 
+  const updateInterviewPreparationDraft = (
+    key: string,
+    draft: InterviewPreparationDraft | null,
+  ) => {
+    setInterviewPreparationDrafts((current) => {
+      const next = { ...current };
+      if (draft) next[key] = draft;
+      else delete next[key];
+      return next;
+    });
+    if (!draft) {
+      setInterviewPreparationAttempts((current) => {
+        if (!(key in current)) return current;
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+    }
+  };
+
   const openPilotInterviewReview = (applicationId: number) => {
     const app = apps.find((item) => item.id === applicationId);
     if (!app) return;
@@ -739,6 +760,8 @@ function AppShellContent() {
       resumes={resumes}
       interviewPreparationAttempts={interviewPreparationAttempts}
       onInterviewPreparationAttemptChange={updateInterviewPreparationAttempt}
+      interviewPreparationDrafts={interviewPreparationDrafts}
+      onInterviewPreparationDraftChange={updateInterviewPreparationDraft}
     />
   ) : (
     <>

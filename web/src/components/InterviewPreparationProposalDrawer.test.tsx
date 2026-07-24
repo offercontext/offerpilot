@@ -21,4 +21,11 @@ describe('InterviewPreparationProposalDrawer', () => {
     expect(source).not.toContain('创建提醒');
     expect(source).not.toContain('写入 Memory');
   });
+
+  it('persists the complete draft above the drawer for remount recovery', () => {
+    expect(source).toContain('onDraftChange');
+    expect(source).toContain('draft?.attemptState.key');
+    expect(source).toContain('draft?.jdText');
+    expect(source).toContain('draft?.knowledgeSelections');
+  });
 });

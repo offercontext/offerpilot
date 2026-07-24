@@ -3,14 +3,18 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const service = vi.hoisted(() => ({ create: vi.fn(), list: vi.fn() }));
+const service = vi.hoisted(() => {
+  class InterviewPreparationProposalError extends Error {
+    constructor(public status: number, public code: string, message = '') {
+      super(message);
+    }
+  }
+  return { create: vi.fn(), list: vi.fn(), InterviewPreparationProposalError };
+});
 vi.mock('@/services/interviewPreparationProposals', () => ({
   createInterviewPreparationProposal: service.create,
   listInterviewPreparationProposals: service.list,
-  InterviewPreparationProposalError: class InterviewPreparationProposalError extends Error {
-    status = 502;
-    code = 'interview_preparation_provider_error';
-  },
+  InterviewPreparationProposalError: service.InterviewPreparationProposalError,
 }));
 
 const { default: InterviewPreparationProposalDrawer } = await import('./InterviewPreparationProposalDrawer');
@@ -84,7 +88,7 @@ describe('InterviewPreparationProposalDrawer interaction', () => {
   });
 
   it('maps a provider error without exposing the original message', async () => {
-    service.create.mockRejectedValue({ status: 502, code: 'interview_preparation_provider_error', message: 'API key secret' });
+    service.create.mockRejectedValue(new service.InterviewPreparationProposalError(502, 'interview_preparation_provider_error', 'API key secret'));
     act(() => root?.render(<InterviewPreparationProposalDrawer open context={context} onClose={() => {}} />));
     await act(async () => {
       [...(container?.querySelectorAll('button') || [])]
@@ -94,5 +98,29 @@ describe('InterviewPreparationProposalDrawer interaction', () => {
     });
     expect(container?.textContent).toContain('AI 服务暂不可用，请稍后重试');
     expect(container?.textContent).not.toContain('API key secret');
+  });
+
+  it('clears the draft and attempt key after a definite validation failure', async () => {
+    service.create.mockRejectedValue(new service.InterviewPreparationProposalError(422, 'interview_preparation_inputs_invalid'));
+    const draftChanges: unknown[] = [];
+    const attemptChanges: unknown[] = [];
+    act(() => root?.render(
+      <InterviewPreparationProposalDrawer
+        open
+        context={context}
+        onClose={() => {}}
+        onDraftChange={(draft) => draftChanges.push(draft)}
+        onAttemptStateChange={(state) => attemptChanges.push(state)}
+      />,
+    ));
+    await act(async () => {
+      [...(container?.querySelectorAll('button') || [])]
+        .at(0)
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(attemptChanges).toContain(null);
+    expect(draftChanges).toContain(null);
   });
 });

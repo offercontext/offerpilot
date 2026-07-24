@@ -40,6 +40,7 @@ import InterviewKnowledgeCaptureDrawer, {
   type InterviewKnowledgeCaptureDraft,
 } from './InterviewKnowledgeCaptureDrawer';
 import InterviewPreparationProposalDrawer, {
+  type InterviewPreparationDraft,
   type InterviewPreparationAttemptState,
 } from './InterviewPreparationProposalDrawer';
 import type { Resume } from '@/types/resume';
@@ -80,9 +81,11 @@ interface ApplicationDetailProps {
   resumes?: Resume[];
   interviewPreparationAttempts?: Record<string, InterviewPreparationAttemptState>;
   onInterviewPreparationAttemptChange?: (key: string, state: InterviewPreparationAttemptState | null) => void;
+  interviewPreparationDrafts?: Record<string, InterviewPreparationDraft>;
+  onInterviewPreparationDraftChange?: (key: string, draft: InterviewPreparationDraft | null) => void;
 }
 
-export default function ApplicationDetail({ application, open, onClose, onMockInterview, onAskPilot, onOpenPilotOpportunityFit, pilotInterviewReviewApplicationId, onPilotInterviewReviewFocusConsumed, onAttachToPilot, interviewReviewProposalAttempts, onInterviewReviewProposalAttemptChange, onInterviewNoteChanged, interviewKnowledgeCaptureDrafts, onInterviewKnowledgeCaptureDraftChange, onInterviewKnowledgeCaptureNoteChanged, resumes = [], interviewPreparationAttempts, onInterviewPreparationAttemptChange }: ApplicationDetailProps) {
+export default function ApplicationDetail({ application, open, onClose, onMockInterview, onAskPilot, onOpenPilotOpportunityFit, pilotInterviewReviewApplicationId, onPilotInterviewReviewFocusConsumed, onAttachToPilot, interviewReviewProposalAttempts, onInterviewReviewProposalAttemptChange, onInterviewNoteChanged, interviewKnowledgeCaptureDrafts, onInterviewKnowledgeCaptureDraftChange, onInterviewKnowledgeCaptureNoteChanged, resumes = [], interviewPreparationAttempts, onInterviewPreparationAttemptChange, interviewPreparationDrafts, onInterviewPreparationDraftChange }: ApplicationDetailProps) {
   const queryClient = useQueryClient();
   const [form] = Form.useForm();
   const [eventFormOpen, setEventFormOpen] = useState(false);
@@ -290,7 +293,9 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
         }}
         resumeOptions={resumes}
         attemptState={interviewPreparationAttempts?.[preparationKey]}
+        draft={interviewPreparationDrafts?.[preparationKey]}
         onAttemptStateChange={(state) => onInterviewPreparationAttemptChange?.(preparationKey, state)}
+        onDraftChange={(draft) => onInterviewPreparationDraftChange?.(preparationKey, draft)}
         onClose={() => {
           setPreparationOpen(false);
           setPreparationEventID(null);

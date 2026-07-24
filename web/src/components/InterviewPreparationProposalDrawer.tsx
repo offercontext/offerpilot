@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   createInterviewPreparationProposal,
   getInterviewPreparationProposal,
@@ -32,6 +32,14 @@ export interface InterviewPreparationKnowledgeOption {
   excerpt: string;
 }
 
+export interface InterviewPreparationDraft {
+  attemptState: InterviewPreparationAttemptState;
+  resumeId: number;
+  jdText: string;
+  assertionsText: string;
+  knowledgeSelections: Array<Record<string, unknown>>;
+}
+
 interface Props {
   open: boolean;
   context: InterviewPreparationDrawerContext;
@@ -41,6 +49,8 @@ interface Props {
   initialProposal?: InterviewPreparationProposal | null;
   resumeOptions?: Array<{ id: number; title?: string; name?: string }>;
   knowledgeOptions?: InterviewPreparationKnowledgeOption[];
+  draft?: InterviewPreparationDraft;
+  onDraftChange?: (draft: InterviewPreparationDraft | null) => void;
 }
 
 const SECTION_LABELS: Array<[keyof InterviewPreparationProposal['proposal'], string]> = [
@@ -101,22 +111,25 @@ export default function InterviewPreparationProposalDrawer({
   initialProposal = null,
   resumeOptions = [],
   knowledgeOptions = [],
+  draft,
+  onDraftChange,
 }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [proposal, setProposal] = useState<InterviewPreparationProposal | null>(initialProposal);
-  const [attemptKey, setAttemptKey] = useState(() => attemptState?.key ?? newAttemptKey());
-  const [resumeId, setResumeId] = useState(context.resumeId);
-  const [jdText, setJdText] = useState(context.jdText);
-  const [assertionsText, setAssertionsText] = useState(context.userAssertions.join('\n'));
+  const [attemptKey, setAttemptKey] = useState(() => draft?.attemptState.key ?? attemptState?.key ?? newAttemptKey());
+  const [resumeId, setResumeId] = useState(draft?.resumeId ?? context.resumeId);
+  const [jdText, setJdText] = useState(draft?.jdText ?? context.jdText);
+  const [assertionsText, setAssertionsText] = useState(draft?.assertionsText ?? context.userAssertions.join('\n'));
   const [history, setHistory] = useState<InterviewPreparationProposal[]>([]);
   const [selectedEvidenceIds, setSelectedEvidenceIds] = useState<string[]>(() =>
-    context.knowledgeSelections.flatMap((selection) =>
+    (draft?.knowledgeSelections ?? context.knowledgeSelections).flatMap((selection) =>
       Array.isArray(selection.evidence_ids)
         ? selection.evidence_ids.filter((value): value is string => typeof value === 'string')
         : [],
     ),
   );
+  const suppressDraftPersistence = useRef(false);
   const hasInput = Boolean(resumeId && jdText.trim());
   const isSafeEmpty = proposal?.proposal_status === 'safe_empty';
   const input = useMemo<CreateInterviewPreparationProposalInput>(() => ({
@@ -145,6 +158,20 @@ export default function InterviewPreparationProposalDrawer({
       .catch(() => undefined);
   }, [context.applicationId, open]);
 
+  useEffect(() => {
+    if (!open || !onDraftChange || suppressDraftPersistence.current) {
+      suppressDraftPersistence.current = false;
+      return;
+    }
+    onDraftChange({
+      attemptState: { key: attemptKey, result_unknown: attemptState?.result_unknown ?? false },
+      resumeId,
+      jdText,
+      assertionsText,
+      knowledgeSelections: input.knowledge_selections,
+    });
+  }, [assertionsText, attemptKey, attemptState?.result_unknown, input.knowledge_selections, jdText, onDraftChange, open, resumeId]);
+
   if (!open) return null;
 
   const generate = async () => {
@@ -152,11 +179,14 @@ export default function InterviewPreparationProposalDrawer({
     if (!window.confirm('仅 JD、所选简历和已确认 Knowledge Evidence 会发送给 AI；用户断言仅保存于本次快照，不会发送给 AI，也不作为建议依据。是否继续？')) return;
     setBusy(true);
     setError(null);
+    suppressDraftPersistence.current = false;
     try {
       const result = await createInterviewPreparationProposal(input);
       if ('proposal' in result) {
         setProposal(result);
         onAttemptStateChange?.(null);
+        suppressDraftPersistence.current = true;
+        onDraftChange?.(null);
         setAttemptKey(newAttemptKey());
       } else {
         onAttemptStateChange?.({ key: attemptKey, result_unknown: result.attempt_status === 'provider_unknown' });
@@ -164,7 +194,14 @@ export default function InterviewPreparationProposalDrawer({
     } catch (caught) {
       const typedError = caught instanceof InterviewPreparationProposalError ? caught : null;
       const unknown = !typedError || typedError.code === 'interview_preparation_provider_error';
-      onAttemptStateChange?.(unknown ? { key: attemptKey, result_unknown: true } : null);
+      if (unknown) {
+        onAttemptStateChange?.({ key: attemptKey, result_unknown: true });
+      } else {
+        onAttemptStateChange?.(null);
+        suppressDraftPersistence.current = true;
+        onDraftChange?.(null);
+        setAttemptKey(newAttemptKey());
+      }
       setError(safeErrorMessage(caught));
     } finally {
       setBusy(false);
