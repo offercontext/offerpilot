@@ -299,6 +299,45 @@ def test_same_knowledge_set_in_different_order_reuses_idempotent_proposal(tmp_pa
         )
     assert len(evidence_ids) == 2
 
+    with factory() as session:
+        second_note = InterviewNote(
+            application_id=ids[0],
+            application_event_id=None,
+            company="Acme",
+            position="Backend",
+            questions="Discuss observability.",
+            self_reflection="I described the signal.",
+            difficulty_points="Clarify the alert.",
+            mood="steady",
+        )
+        session.add(second_note)
+        session.commit()
+        second_note_id = second_note.id
+    second_attempt = capture.prepare_preview(
+        second_note_id,
+        "capture-order-key-2",
+        "direct",
+        [{"fragment_id": "questions", "path": "/questions", "start": 0, "end": 22, "text": "Discuss observability."}],
+    )
+    second_confirmed = capture.confirm(
+        second_note_id,
+        "capture-order-key-2",
+        second_attempt.note_fingerprint,
+        "Second interview notes",
+        second_attempt.preview["blocks"],
+    )
+    with factory() as session:
+        second_version = session.get(KnowledgeNoteVersion, second_confirmed.version_id)
+        assert second_version is not None
+        second_evidence_ids = list(
+            session.scalars(
+                select(KnowledgeEvidence.id)
+                .join(KnowledgeNoteEvidence, KnowledgeNoteEvidence.evidence_id == KnowledgeEvidence.id)
+                .where(KnowledgeNoteEvidence.note_version_id == second_version.id)
+            )
+        )
+    assert len(second_evidence_ids) == 1
+
     repository = InterviewPreparationProposalsRepository(factory)
     first = repository.create_generated(
         application_id=ids[0],
@@ -306,8 +345,9 @@ def test_same_knowledge_set_in_different_order_reuses_idempotent_proposal(tmp_pa
         resume_id=ids[2],
         jd_text=JD_TEXT,
         knowledge_selections=[
-            {"note_version_id": version.id, "evidence_ids": [evidence_ids[0]]},
+            {"note_version_id": second_version.id, "evidence_ids": second_evidence_ids},
             {"note_version_id": version.id, "evidence_ids": [evidence_ids[1]]},
+            {"note_version_id": version.id, "evidence_ids": [evidence_ids[0]]},
         ],
         user_assertions=[],
         idempotency_key="knowledge-order-key-01",
@@ -319,8 +359,9 @@ def test_same_knowledge_set_in_different_order_reuses_idempotent_proposal(tmp_pa
         resume_id=ids[2],
         jd_text=JD_TEXT,
         knowledge_selections=[
-            {"note_version_id": version.id, "evidence_ids": [evidence_ids[1]]},
             {"note_version_id": version.id, "evidence_ids": [evidence_ids[0]]},
+            {"note_version_id": version.id, "evidence_ids": [evidence_ids[1]]},
+            {"note_version_id": second_version.id, "evidence_ids": second_evidence_ids},
         ],
         user_assertions=[],
         idempotency_key="knowledge-order-key-01",
@@ -331,6 +372,17 @@ def test_same_knowledge_set_in_different_order_reuses_idempotent_proposal(tmp_pa
     assert replay.proposal is not None
     assert replay.created is False
     assert replay.proposal.id == first.proposal.id
+    with factory() as session:
+        row = session.get(InterviewPreparationProposal, first.proposal.id)
+        assert row is not None
+        snapshot = json.loads(row.input_snapshot_json)
+    ordered = snapshot["knowledge_evidence"]
+    assert [(item["note_version_id"], item["id"]) for item in ordered] == sorted(
+        (item["note_version_id"], item["id"]) for item in ordered
+    )
+    assert [item["provider_path"] for item in ordered] == [
+        f"/knowledge_evidence/{index:03d}" for index in range(1, len(ordered) + 1)
+    ]
     factory.kw["bind"].dispose()
 
 

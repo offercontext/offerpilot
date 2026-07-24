@@ -190,7 +190,7 @@ export default function InterviewPreparationProposalDrawer({
         onDraftChange?.(null);
         setAttemptKey(newAttemptKey());
       } else {
-        onAttemptStateChange?.({ key: attemptKey, result_unknown: result.attempt_status === 'provider_unknown' });
+        onAttemptStateChange?.({ key: attemptKey, result_unknown: true });
       }
     } catch (caught) {
       const typedError = caught instanceof InterviewPreparationProposalError ? caught : null;

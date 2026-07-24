@@ -161,6 +161,54 @@ describe('InterviewPreparationProposalDrawer interaction', () => {
     }));
   });
 
+  it('keeps inputs frozen when retry returns 202 generating and remounts with the same key', async () => {
+    service.create.mockResolvedValue({
+      attempt_status: 'generating',
+      application_id: 7,
+      event_id: 11,
+      idempotency_key: 'unknown-attempt-0001',
+      generation_revision: 1,
+      retry_after_ms: 1000,
+    });
+    const attemptState = { key: 'unknown-attempt-0001', result_unknown: true };
+    const attemptChanges: Array<{ key: string; result_unknown: boolean } | null> = [];
+    const props = {
+      open: true,
+      context,
+      attemptState,
+      draft: {
+        attemptState,
+        resumeId: 13,
+        jdText: context.jdText,
+        assertionsText: context.userAssertions.join('\n'),
+        knowledgeSelections: [],
+      },
+      onClose: () => {},
+      onAttemptStateChange: (state: { key: string; result_unknown: boolean } | null) => attemptChanges.push(state),
+    };
+    act(() => root?.render(<InterviewPreparationProposalDrawer {...props} />));
+    await act(async () => {
+      container?.querySelectorAll('button')[0]?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(attemptChanges[attemptChanges.length - 1]).toEqual(attemptState);
+    expect(Array.from(container?.querySelectorAll('select, textarea, input[type="checkbox"]') ?? [])
+      .every((control) => (control as HTMLInputElement).disabled)).toBe(true);
+
+    act(() => root?.unmount());
+    root = createRoot(container!);
+    act(() => root?.render(<InterviewPreparationProposalDrawer {...props} />));
+    await act(async () => {
+      container?.querySelectorAll('button')[0]?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(service.create).toHaveBeenLastCalledWith(expect.objectContaining({
+      idempotency_key: attemptState.key,
+    }));
+    expect(Array.from(container?.querySelectorAll('select, textarea, input[type="checkbox"]') ?? [])
+      .every((control) => (control as HTMLInputElement).disabled)).toBe(true);
+  });
+
   it('clears the draft and attempt key after a definite validation failure', async () => {
     service.create.mockRejectedValue(new service.InterviewPreparationProposalError(422, 'interview_preparation_inputs_invalid'));
     const draftChanges: unknown[] = [];
