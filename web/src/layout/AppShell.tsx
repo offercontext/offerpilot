@@ -41,6 +41,7 @@ import AddApplicationForm from '@/components/AddApplicationForm';
 import ApplicationDetail from '@/components/ApplicationDetail';
 import type { InterviewReviewProposalAttemptState } from '@/components/InterviewReviewProposalDrawer';
 import type { InterviewKnowledgeCaptureDraft } from '@/components/InterviewKnowledgeCaptureDrawer';
+import type { InterviewPreparationAttemptState } from '@/components/InterviewPreparationProposalDrawer';
 import ResumeUploadModal from '@/components/ResumeUploadModal';
 import ChatPanel from '@/components/ChatPanel';
 import type { EvidenceTarget } from '@/components/ChatPanel/model';
@@ -142,6 +143,7 @@ function AppShellContent() {
   const [selected, setSelected] = useState<Application | null>(null);
   const [interviewReviewProposalAttempts, setInterviewReviewProposalAttempts] = useState<Record<number, InterviewReviewProposalAttemptState>>({});
   const [interviewKnowledgeCaptureDrafts, setInterviewKnowledgeCaptureDrafts] = useState<Record<number, InterviewKnowledgeCaptureDraft>>({});
+  const [interviewPreparationAttempts, setInterviewPreparationAttempts] = useState<Record<string, InterviewPreparationAttemptState>>({});
   const [evidenceFocus, setEvidenceFocus] = useState<Exclude<EvidenceTarget, { kind: 'application' }> | null>(null);
   const [coachOfferId, setCoachOfferId] = useState<number | undefined>(undefined);
   const [chatStartRequest, setChatStartRequest] = useState<ChatStartRequest>();
@@ -233,7 +235,7 @@ function AppShellContent() {
   const { data: resumes = [] } = useQuery({
     queryKey: ['resumes'],
     queryFn: listResumes,
-    enabled: pilotApplicationContext !== null,
+    enabled: true,
   });
 
   const pilotDraftStore = useMemo(() => {
@@ -541,6 +543,18 @@ function AppShellContent() {
     });
   };
 
+  const updateInterviewPreparationAttempt = (
+    key: string,
+    state: InterviewPreparationAttemptState | null,
+  ) => {
+    setInterviewPreparationAttempts((current) => {
+      const next = { ...current };
+      if (state) next[key] = state;
+      else delete next[key];
+      return next;
+    });
+  };
+
   const openPilotInterviewReview = (applicationId: number) => {
     const app = apps.find((item) => item.id === applicationId);
     if (!app) return;
@@ -548,6 +562,14 @@ function AppShellContent() {
     setPilotInterviewReviewApplicationId(applicationId);
     setView('board');
     setSelected(app);
+  };
+
+  const openPilotInterviewPreparation = (applicationId: number) => {
+    const app = apps.find((item) => item.id === applicationId);
+    if (!app) return;
+    exitPilotContext();
+    setSelected(app);
+    setView('board');
   };
 
   const startPilotOpportunityFit = (app: Application) => {
@@ -714,6 +736,9 @@ function AppShellContent() {
       interviewKnowledgeCaptureDrafts={interviewKnowledgeCaptureDrafts}
       onInterviewKnowledgeCaptureDraftChange={updateInterviewKnowledgeCaptureDraft}
       onInterviewKnowledgeCaptureNoteChanged={clearInterviewKnowledgeCaptureDraft}
+      resumes={resumes}
+      interviewPreparationAttempts={interviewPreparationAttempts}
+      onInterviewPreparationAttemptChange={updateInterviewPreparationAttempt}
     />
   ) : (
     <>
@@ -802,6 +827,7 @@ function AppShellContent() {
                   onStartDeepReview={startPilotDeepReview}
                   onPrepareMaterials={preparePilotMaterials}
                   onOpenInterviewReview={openPilotInterviewReview}
+                  onOpenInterviewPreparation={openPilotInterviewPreparation}
                   isTriageLoading={pilotDraft.phase === 'triage_loading'}
                   isDeepReviewLoading={pilotDraft.phase === 'deep_review_loading'}
                   onCancel={() => {

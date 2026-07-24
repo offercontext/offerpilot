@@ -39,6 +39,10 @@ import InterviewKnowledgeCaptureDrawer, {
   createInterviewKnowledgeCaptureDraft,
   type InterviewKnowledgeCaptureDraft,
 } from './InterviewKnowledgeCaptureDrawer';
+import InterviewPreparationProposalDrawer, {
+  type InterviewPreparationAttemptState,
+} from './InterviewPreparationProposalDrawer';
+import type { Resume } from '@/types/resume';
 import MaterialKitDrawer from './MaterialKitDrawer';
 import OpportunityFitReviewDrawer from './OpportunityFitReviewDrawer';
 import type { OpportunityFitReview } from '@/types/opportunityFitReview';
@@ -73,9 +77,12 @@ interface ApplicationDetailProps {
   interviewKnowledgeCaptureDrafts?: Record<number, InterviewKnowledgeCaptureDraft>;
   onInterviewKnowledgeCaptureDraftChange?: (noteID: number, draft: InterviewKnowledgeCaptureDraft | null) => void;
   onInterviewKnowledgeCaptureNoteChanged?: (noteID: number) => void;
+  resumes?: Resume[];
+  interviewPreparationAttempts?: Record<string, InterviewPreparationAttemptState>;
+  onInterviewPreparationAttemptChange?: (key: string, state: InterviewPreparationAttemptState | null) => void;
 }
 
-export default function ApplicationDetail({ application, open, onClose, onMockInterview, onAskPilot, onOpenPilotOpportunityFit, pilotInterviewReviewApplicationId, onPilotInterviewReviewFocusConsumed, onAttachToPilot, interviewReviewProposalAttempts, onInterviewReviewProposalAttemptChange, onInterviewNoteChanged, interviewKnowledgeCaptureDrafts, onInterviewKnowledgeCaptureDraftChange, onInterviewKnowledgeCaptureNoteChanged }: ApplicationDetailProps) {
+export default function ApplicationDetail({ application, open, onClose, onMockInterview, onAskPilot, onOpenPilotOpportunityFit, pilotInterviewReviewApplicationId, onPilotInterviewReviewFocusConsumed, onAttachToPilot, interviewReviewProposalAttempts, onInterviewReviewProposalAttemptChange, onInterviewNoteChanged, interviewKnowledgeCaptureDrafts, onInterviewKnowledgeCaptureDraftChange, onInterviewKnowledgeCaptureNoteChanged, resumes = [], interviewPreparationAttempts, onInterviewPreparationAttemptChange }: ApplicationDetailProps) {
   const queryClient = useQueryClient();
   const [form] = Form.useForm();
   const [eventFormOpen, setEventFormOpen] = useState(false);
@@ -91,6 +98,8 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
   const [reviewProposalOpen, setReviewProposalOpen] = useState(false);
   const [knowledgeCaptureOpen, setKnowledgeCaptureOpen] = useState(false);
   const [reviewEventID, setReviewEventID] = useState<number | null>(null);
+  const [preparationOpen, setPreparationOpen] = useState(false);
+  const [preparationEventID, setPreparationEventID] = useState<number | null>(null);
 
   useEffect(() => {
     setMaterialKitPrefill({});
@@ -108,6 +117,8 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
     if (!application || !open || pilotInterviewReviewApplicationId !== application.id) return;
     setEditingNote(null);
     setReviewEventID(null);
+    setPreparationOpen(false);
+    setPreparationEventID(null);
     setReviewFormOpen(true);
     onPilotInterviewReviewFocusConsumed?.();
   }, [application, open, pilotInterviewReviewApplicationId, onPilotInterviewReviewFocusConsumed]);
@@ -264,6 +275,30 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
     );
   }
 
+  if (preparationOpen && preparationEventID !== null) {
+    const preparationKey = `${application.id}:${preparationEventID}`;
+    return (
+      <InterviewPreparationProposalDrawer
+        open
+        context={{
+          applicationId: application.id,
+          eventId: preparationEventID,
+          resumeId: 0,
+          jdText: '',
+          knowledgeSelections: [],
+          userAssertions: [],
+        }}
+        resumeOptions={resumes}
+        attemptState={interviewPreparationAttempts?.[preparationKey]}
+        onAttemptStateChange={(state) => onInterviewPreparationAttemptChange?.(preparationKey, state)}
+        onClose={() => {
+          setPreparationOpen(false);
+          setPreparationEventID(null);
+        }}
+      />
+    );
+  }
+
   if (knowledgeCaptureOpen && editingNote) {
     return (
       <InterviewKnowledgeCaptureDrawer
@@ -402,6 +437,16 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
                         沉淀知识
                       </Button>
                     )}
+                    <Button
+                      size="small"
+                      type="link"
+                      onClick={() => {
+                        setPreparationEventID(event.id);
+                        setPreparationOpen(true);
+                      }}
+                    >
+                      面试准备建议
+                    </Button>
                   </Space>
                 )}
               </div>

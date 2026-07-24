@@ -42,6 +42,7 @@ interface Props {
   onStartDeepReview: (draft: OpportunityFitDraftState, review: OpportunityFitReview) => void;
   onPrepareMaterials: (handoff: PilotOpportunityFitMaterialHandoff) => void;
   onOpenInterviewReview?: (applicationId: number) => void;
+  onOpenInterviewPreparation?: (applicationId: number) => void;
   onCancel: () => void;
   triageFailureDisposition?: OpportunityFitDraftErrorDisposition;
   historicalReview?: boolean;
@@ -139,6 +140,7 @@ export default function PilotOpportunityFitCard({
   onStartDeepReview,
   onPrepareMaterials,
   onOpenInterviewReview,
+  onOpenInterviewPreparation,
   onCancel,
   triageFailureDisposition,
   historicalReview = false,
@@ -211,6 +213,11 @@ export default function PilotOpportunityFitCard({
         {onOpenInterviewReview ? (
           <button type="button" onClick={() => onOpenInterviewReview(draft.applicationId)}>
             打开面试复盘
+          </button>
+        ) : null}
+        {onOpenInterviewPreparation ? (
+          <button type="button" onClick={() => onOpenInterviewPreparation(draft.applicationId)}>
+            打开面试准备建议
           </button>
         ) : null}
       </header>

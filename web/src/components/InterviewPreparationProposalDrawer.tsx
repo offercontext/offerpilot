@@ -1,6 +1,8 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   createInterviewPreparationProposal,
+  getInterviewPreparationProposal,
+  listInterviewPreparationProposals,
   InterviewPreparationProposalError,
 } from '@/services/interviewPreparationProposals';
 import type {
@@ -18,12 +20,19 @@ export interface InterviewPreparationDrawerContext {
   userAssertions: string[];
 }
 
+export interface InterviewPreparationAttemptState {
+  key: string;
+  result_unknown: boolean;
+}
+
 interface Props {
   open: boolean;
   context: InterviewPreparationDrawerContext;
   onClose: () => void;
   onAttemptStateChange?: (state: { key: string; result_unknown: boolean } | null) => void;
+  attemptState?: InterviewPreparationAttemptState;
   initialProposal?: InterviewPreparationProposal | null;
+  resumeOptions?: Array<{ id: number; title?: string; name?: string }>;
 }
 
 const SECTION_LABELS: Array<[keyof InterviewPreparationProposal['proposal'], string]> = [
@@ -80,23 +89,36 @@ export default function InterviewPreparationProposalDrawer({
   context,
   onClose,
   onAttemptStateChange,
+  attemptState,
   initialProposal = null,
+  resumeOptions = [],
 }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [proposal, setProposal] = useState<InterviewPreparationProposal | null>(initialProposal);
-  const [attemptKey, setAttemptKey] = useState(newAttemptKey);
-  const hasInput = Boolean(context.resumeId && context.jdText.trim());
+  const [attemptKey, setAttemptKey] = useState(() => attemptState?.key ?? newAttemptKey());
+  const [resumeId, setResumeId] = useState(context.resumeId);
+  const [jdText, setJdText] = useState(context.jdText);
+  const [assertionsText, setAssertionsText] = useState(context.userAssertions.join('\n'));
+  const [history, setHistory] = useState<InterviewPreparationProposal[]>([]);
+  const hasInput = Boolean(resumeId && jdText.trim());
   const isSafeEmpty = proposal?.proposal_status === 'safe_empty';
   const input = useMemo<CreateInterviewPreparationProposalInput>(() => ({
     application_id: context.applicationId,
     event_id: context.eventId,
-    resume_id: context.resumeId,
-    jd_text: context.jdText,
+    resume_id: resumeId,
+    jd_text: jdText,
     knowledge_selections: context.knowledgeSelections,
-    user_assertions: context.userAssertions,
+    user_assertions: assertionsText.split('\n').map((value) => value.trim()).filter(Boolean),
     idempotency_key: attemptKey,
-  }), [attemptKey, context]);
+  }), [assertionsText, attemptKey, context, jdText, resumeId]);
+
+  useEffect(() => {
+    if (!open) return;
+    void listInterviewPreparationProposals(context.applicationId)
+      .then(setHistory)
+      .catch(() => undefined);
+  }, [context.applicationId, open]);
 
   if (!open) return null;
 
@@ -130,10 +152,45 @@ export default function InterviewPreparationProposalDrawer({
       <p>围绕当前面试事件，生成可审阅、可引用的准备建议。</p>
       <p>仅 JD、所选简历和已确认 Knowledge Evidence 会发送给 AI；用户断言仅保存于本次快照，不会发送给 AI。</p>
       <dl>
-        <dt>岗位描述</dt><dd>{context.jdText}</dd>
-        <dt>选定简历</dt><dd>{context.resumeId}</dd>
+        <dt>岗位描述</dt><dd>{jdText || '尚未填写'}</dd>
+        <dt>选定简历</dt><dd>{resumeId || '尚未选择'}</dd>
         <dt>已确认 Knowledge Evidence</dt><dd>{context.knowledgeSelections.length} 条</dd>
       </dl>
+      <label>
+        选择简历
+        <select value={resumeId} onChange={(event) => setResumeId(Number(event.target.value))}>
+          <option value={0}>请选择简历</option>
+          {resumeOptions.map((resume) => (
+            <option key={resume.id} value={resume.id}>{resume.title || resume.name || `简历 ${resume.id}`}</option>
+          ))}
+        </select>
+      </label>
+      <label>
+        粘贴 JD
+        <textarea value={jdText} onChange={(event) => setJdText(event.target.value)} placeholder="仅粘贴岗位描述文本，不会抓取链接。" />
+      </label>
+      <label>
+        可选用户断言（不会发送给 AI）
+        <textarea value={assertionsText} onChange={(event) => setAssertionsText(event.target.value)} placeholder="每行一条本次准备的补充信息" />
+      </label>
+      {history.length > 0 && (
+        <aside aria-label="历史面试准备建议">
+          <h3>历史面试准备建议</h3>
+          {history.map((item) => (
+            <button
+              type="button"
+              key={item.id}
+              onClick={() => {
+                void getInterviewPreparationProposal(context.applicationId, item.id)
+                  .then(setProposal)
+                  .catch((caught) => setError(safeErrorMessage(caught)));
+              }}
+            >
+              查看 {item.created_at}
+            </button>
+          ))}
+        </aside>
+      )}
       {error && <p role="alert">{error}</p>}
       {isSafeEmpty && <p>暂无可验证的面试准备建议</p>}
       {proposal && !isSafeEmpty && SECTION_LABELS.map(([field, label]) => (
