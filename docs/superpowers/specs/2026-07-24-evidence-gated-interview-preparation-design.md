@@ -2,7 +2,7 @@
 
 - 任务：`feat: AI add evidence-gated interview preparation`
 - 日期：2026-07-24
-- 状态：待复审设计；本阶段只提交设计，不修改实现代码
+- 状态：设计复审通过；本阶段进入测试先行实施计划，不修改实现代码
 - 基线：`origin/main`（`71a9de1`）
 
 ## 1. 目标与边界
@@ -175,7 +175,7 @@ Knowledge Note 新建版本不会修改旧 Evidence。旧 Proposal 的快照仍�
 5. Provider/网络/超时等结果未知异常返回前，以新短 session 执行 `BEGIN IMMEDIATE`，使用 `WHERE attempt_status='generating' AND generation_revision=? AND provider_call_token=?` 做 CAS，将行转为 `provider_unknown`，保留原 token 和原 lease，提交后返回 `502 interview_preparation_provider_error`。若 CAS 失败，不覆盖后来持有者的状态，客户端仍保留原 key；在原 lease 未过期时同 key 重试只能返回 `202`，不能第二次调用 Provider。
 6. Provider 返回后，以新短 session 执行 `BEGIN IMMEDIATE`，按 revision/token/status 做 CAS；lease 到期、状态已变为 `invalidated` 或 token/revision 不匹配的迟到结果必须丢弃，不写入模型原文。
 7. 回写事务重新校验 Application 可见性、事件关系、Resume 当前 hash 和已选 Knowledge Evidence hash。任何可观察来源漂移都在 CAS 成功的同一事务中将该尚未完成尝试标为 `invalidated`、写入 `source_conflict`，返回 `409 interview_preparation_source_conflict`，不将结果写成 `ready`。JD 没有服务端当前来源；本请求中的 JD 从开始到回写都是同一冻结值，JD 的后续编辑只会形成新的本地草稿，并在重用旧 key 时触发前述幂等冲突。
-6. 没有漂移时，在同一事务内将校验后的 Proposal 或安全空 Proposal 写入该 attempt 并提交。并发请求只能看到同一个 `ready` 行。
+8. 没有漂移时，在同一事务内将校验后的 Proposal 或安全空 Proposal 写入该 attempt 并提交。并发请求只能看到同一个 `ready` 行。
 
 ### 6.2 历史读取与实时生成分离
 
