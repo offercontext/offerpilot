@@ -397,6 +397,64 @@ class InterviewReviewProposal(Base):
     )
 
 
+class InterviewPreparationProposal(Base):
+    __tablename__ = "interview_preparation_proposals"
+    __table_args__ = (
+        UniqueConstraint(
+            "application_id",
+            "application_event_id",
+            "idempotency_key",
+            name="uq_interview_preparation_application_event_key",
+        ),
+        Index("idx_interview_preparation_application", "application_id"),
+        Index("idx_interview_preparation_event", "application_event_id"),
+        Index("idx_interview_preparation_resume", "resume_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    # These IDs are immutable snapshot identities, not foreign keys.  Event
+    # and Resume deletion must not block deletion or cascade away the audit row.
+    application_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    application_event_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    resume_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
+    attempt_status: Mapped[str] = mapped_column(
+        String, default="generating", server_default="generating", nullable=False
+    )
+    proposal_status: Mapped[str] = mapped_column(
+        String, default="", server_default="", nullable=False
+    )
+    generation_revision: Mapped[int] = mapped_column(
+        Integer, default=1, server_default="1", nullable=False
+    )
+    provider_call_token: Mapped[str] = mapped_column(
+        String, default="", server_default="", nullable=False
+    )
+    provider_lease_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    invalidation_reason: Mapped[str] = mapped_column(
+        String, default="", server_default="", nullable=False
+    )
+    input_snapshot_json: Mapped[str] = mapped_column(
+        Text, default="", server_default="", nullable=False
+    )
+    source_fingerprint: Mapped[str] = mapped_column(
+        String, default="", server_default="", nullable=False
+    )
+    proposal_json: Mapped[str] = mapped_column(
+        Text, default="", server_default="", nullable=False
+    )
+    proposal_hash: Mapped[str] = mapped_column(
+        String, default="", server_default="", nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+    )
+
+
 class InterviewKnowledgeCaptureAttempt(Base):
     __tablename__ = "interview_knowledge_capture_attempts"
     __table_args__ = (
