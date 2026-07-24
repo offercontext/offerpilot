@@ -139,7 +139,7 @@ def test_real_ai_interview_preparation_smoke_retries_pending_results_with_same_r
                                     {
                                         "source": "resume",
                                         "path": "/raw_text",
-                                        "excerpt": "Built reliable API services and led a migration.",
+                                        "excerpt": "Built reliable API services; input_snapshot is a literal term here.",
                                     }
                                 ],
                             }
@@ -161,6 +161,109 @@ def test_real_ai_interview_preparation_smoke_retries_pending_results_with_same_r
     assert steps[-1].name == "http_interview_preparation_proposal"
     assert len(client.proposal_requests) == 4
     assert client.proposal_requests[1] == client.proposal_requests[2]
+
+
+def _smoke_terminal_proposal_payload(
+    *, application_id: int = 7, event_id: int = 51, resume_id: int = 41, proposal: dict[str, object] | None = None
+) -> dict[str, object]:
+    return {
+        "id": 61,
+        "application_id": application_id,
+        "event_id": event_id,
+        "resume_id": resume_id,
+        "attempt_status": "ready",
+        "proposal_status": "normal",
+        "source_fingerprint": "fingerprint",
+        "source_status": "current",
+        "source_states": {},
+        "proposal": proposal
+        or {
+            "preparation_directions": [],
+            "story_prompts": [],
+            "review_points": [],
+            "interviewer_questions": [],
+            "items_to_clarify": [],
+        },
+        "proposal_hash": "proposal-hash",
+        "created_at": "2026-07-24T10:00:00+00:00",
+    }
+
+
+def test_real_ai_interview_preparation_smoke_rejects_terminal_ownership_mismatch():
+    class Response:
+        def __init__(self, status_code: int, payload: dict[str, object]) -> None:
+            self.status_code = status_code
+            self._payload = payload
+
+        def json(self) -> dict[str, object]:
+            return self._payload
+
+    class Client:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def post(self, path: str, json: dict[str, object]) -> Response:
+            if path == "/api/resumes":
+                return Response(201, {"id": 41})
+            if path == "/api/application-events":
+                return Response(201, {"id": 51})
+            self.calls += 1
+            if self.calls == 2:
+                return Response(
+                    202,
+                    {
+                        "attempt_status": "provider_unknown",
+                        "application_id": 7,
+                        "event_id": 51,
+                        "idempotency_key": "interview-preparation-smoke-2",
+                        "generation_revision": 1,
+                        "retry_after_ms": 0,
+                    },
+                )
+            return Response(
+                200,
+                _smoke_terminal_proposal_payload(application_id=999),
+            )
+
+    with pytest.raises(RuntimeError, match="proposal response ownership was invalid"):
+        _run_real_ai_interview_preparation_smoke(Client(), [], 7, [])
+
+
+def test_real_ai_interview_preparation_smoke_rejects_nested_snapshot_fields():
+    class Response:
+        def __init__(self, status_code: int, payload: dict[str, object]) -> None:
+            self.status_code = status_code
+            self._payload = payload
+
+        def json(self) -> dict[str, object]:
+            return self._payload
+
+    class Client:
+        def post(self, path: str, json: dict[str, object]) -> Response:
+            if path == "/api/resumes":
+                return Response(201, {"id": 41})
+            if path == "/api/application-events":
+                return Response(201, {"id": 51})
+            proposal = {
+                "preparation_directions": [
+                    {
+                        "id": "direction-1",
+                        "text": "Discuss the cited experience.",
+                        "evidence_refs": [
+                            {"source": "resume", "path": "/raw_text", "excerpt": "input_snapshot"}
+                        ],
+                        "input_snapshot": {"raw_text": "must not be returned"},
+                    }
+                ],
+                "story_prompts": [],
+                "review_points": [],
+                "interviewer_questions": [],
+                "items_to_clarify": [],
+            }
+            return Response(201, _smoke_terminal_proposal_payload(proposal=proposal))
+
+    with pytest.raises(RuntimeError, match="proposal structure was invalid"):
+        _run_real_ai_interview_preparation_smoke(Client(), [], 7, [])
 
 
 def test_real_ai_interview_preparation_smoke_rejects_unknown_success_fields():

@@ -470,7 +470,12 @@ def _run_real_ai_interview_preparation_smoke(
                         f"http_interview_preparation_proposal_{index} returned status "
                         f"{response.status_code}, expected 200 or 201"
                     )
-                _validate_interview_preparation_proposal_response(body)
+                _validate_interview_preparation_proposal_response(
+                    body,
+                    application_id=application_id,
+                    event_id=event_id,
+                    resume_id=resume_id,
+                )
                 break
             _validate_interview_preparation_pending_response(
                 body, request_payload, application_id=application_id, event_id=event_id
@@ -505,7 +510,9 @@ def _assert_interview_preparation_smoke_response_safe(body: object) -> None:
         raise RuntimeError("interview preparation smoke response was not an object")
 
 
-def _validate_interview_preparation_proposal_response(body: dict[str, object]) -> None:
+def _validate_interview_preparation_proposal_response(
+    body: dict[str, object], *, application_id: int, event_id: int, resume_id: int
+) -> None:
     expected_fields = {
         "id",
         "application_id",
@@ -524,6 +531,47 @@ def _validate_interview_preparation_proposal_response(body: dict[str, object]) -
         raise RuntimeError("interview preparation smoke proposal response fields were invalid")
     if body["attempt_status"] != "ready":
         raise RuntimeError("interview preparation smoke returned an invalid terminal status")
+    if body["proposal_status"] not in {"normal", "safe_empty"}:
+        raise RuntimeError("interview preparation smoke returned an invalid proposal status")
+    if any(
+        type(body[field]) is not int or body[field] != expected
+        for field, expected in (
+            ("application_id", application_id),
+            ("event_id", event_id),
+            ("resume_id", resume_id),
+        )
+    ):
+        raise RuntimeError("interview preparation smoke proposal response ownership was invalid")
+
+    proposal = body["proposal"]
+    if not isinstance(proposal, dict) or set(proposal) != {
+        "preparation_directions",
+        "story_prompts",
+        "review_points",
+        "interviewer_questions",
+        "items_to_clarify",
+    }:
+        raise RuntimeError("interview preparation smoke proposal structure was invalid")
+    for items in proposal.values():
+        if not isinstance(items, list):
+            raise RuntimeError("interview preparation smoke proposal structure was invalid")
+        for item in items:
+            if not isinstance(item, dict) or set(item) != {"id", "text", "evidence_refs"}:
+                raise RuntimeError("interview preparation smoke proposal structure was invalid")
+            if not isinstance(item["id"], str) or not isinstance(item["text"], str):
+                raise RuntimeError("interview preparation smoke proposal structure was invalid")
+            evidence_refs = item["evidence_refs"]
+            if not isinstance(evidence_refs, list) or not evidence_refs:
+                raise RuntimeError("interview preparation smoke proposal structure was invalid")
+            for evidence_ref in evidence_refs:
+                if not isinstance(evidence_ref, dict) or set(evidence_ref) != {
+                    "source",
+                    "path",
+                    "excerpt",
+                }:
+                    raise RuntimeError("interview preparation smoke proposal structure was invalid")
+                if not all(isinstance(evidence_ref[field], str) for field in ("source", "path", "excerpt")):
+                    raise RuntimeError("interview preparation smoke proposal structure was invalid")
 
 
 def _validate_interview_preparation_pending_response(
