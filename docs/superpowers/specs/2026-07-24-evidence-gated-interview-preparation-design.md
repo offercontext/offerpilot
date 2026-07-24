@@ -83,7 +83,7 @@
 
 快照中的 `application_id`、事件 ID、简历 ID 和 Knowledge ID 只用于审计、指纹与漂移检查；模型请求不得发送内部数据库 ID。事件只发送必要的面试上下文：`event_type`、`subtype`、轮次、开始时间、时长和状态。不得发送 `location`、事件备注、会议链接、联系人、Application 全对象或 `job_url`。
 
-JD 使用用户确认的原文，不做 trim 以外的规范化；不读取 URL。Resume 只发送用户选定的这一份当前 `content_json`，不发送其他 Resume、文件路径或解析日志。Knowledge 只发送用户选中的 Evidence 原文与其冻结路径，不发送 Knowledge Note 的 AI/用户派生成文案、旧 Interview Review Proposal、Note 全文、Memory 或检索结果。
+JD 使用用户确认的原文；仅用 `strip()` 判空，原文不 trim、不做任何规范化；不读取 URL。Resume 只发送用户选定的这一份当前 `content_json`，不发送其他 Resume、文件路径或解析日志。Knowledge 只发送用户选中的 Evidence 原文与其冻结路径，不发送 Knowledge Note 的 AI/用户派生成文案、旧 Interview Review Proposal、Note 全文、Memory 或检索结果。
 
 用户断言在服务端快照中保持独立的 `user_assertions` 数组，但首期不进入 Provider payload。它们只能作为用户自己回看的未验证输入，不能出现在 `evidence_refs` 中，也不能被描述为“简历证明”“岗位要求”或“已确认知识”。
 
@@ -143,7 +143,7 @@ Knowledge Note 新建版本不会修改旧 Evidence。旧 Proposal 的快照仍�
 | `application_event_id` | 非空快照标识；不依赖事件删除后的实时行，保存原事件 ID 用于审计 |
 | `resume_id` | 非空快照标识；Resume 物理删除后仍从快照历史查看 |
 | `idempotency_key` | 非空；与 Application、Event 组成唯一键 |
-| `attempt_status` | `generating`、`provider_unknown`、`ready`、`invalidated`；只有包含完整结果的 `ready`/`invalidated` 行可作为历史 Proposal 查看 |
+| `attempt_status` | `generating`、`provider_unknown`、`ready`、`invalidated`；只有 `ready` 行是用户可见 Proposal，`invalidated` 永不作为 Proposal 返回 |
 | `proposal_status` | `normal` 或 `safe_empty`；仅在 attempt 首次进入 `ready` 时写入，之后不可变 |
 | `generation_revision` | 非负整数；用于 Provider lease/CAS |
 | `provider_call_token` | 仅生成中存在的随机 token，不写日志 |
@@ -157,7 +157,7 @@ Knowledge Note 新建版本不会修改旧 Evidence。旧 Proposal 的快照仍�
 
 唯一约束为 `(application_id, application_event_id, idempotency_key)`，并建立 Application、Event、Resume 和创建时间索引。事件和简历的快照身份不能用 `ON DELETE CASCADE` 抹掉；Proposal 自己保存输入快照和内部 ID。Application 物理删除是否级联清理历史由现有应用删除语义决定，Application 软删除不删除 Proposal。
 
-`generating`/`provider_unknown` 是同一行中的持久化尝试状态，不是可见 Proposal。Proposal 一旦有完整结果，`input_snapshot_json`、`source_fingerprint`、`proposal_json`、`proposal_hash`、`proposal_status` 和创建时间均不可更新；后续重新生成必须使用新 key 创建新行。`invalidated` 是终态：它禁止原 key 再次接管或写入，但保留已有完整结果供历史审计，并按来源变化展示。这样只用一张增量表也能在模型调用期间跨连接控制幂等 lease，而不会把半成品展示给用户。
+`generating`/`provider_unknown` 是同一行中的持久化尝试状态，不是可见 Proposal。Proposal 一旦进入 `ready`，`input_snapshot_json`、`source_fingerprint`、`proposal_json`、`proposal_hash`、`proposal_status` 和创建时间均不可更新；后续重新生成必须使用新 key 创建新行。`invalidated` 只用于尚未完成的 `generating/provider_unknown` 尝试：它禁止原 key 再次接管或写入，且不向历史接口返回。已有 `ready` 行永远保持 `ready`，即使收到同 key 的不同快照请求也不改变其状态；原始快照再次请求仍稳定返回原 `200` 结果。这样只用一张增量表也能在模型调用期间跨连接控制幂等 lease，而不会把半成品展示给用户。
 
 ### 5.2 迁移顺序
 
@@ -168,15 +168,15 @@ Knowledge Note 新建版本不会修改旧 Evidence。旧 Proposal 的快照仍�
 ### 6.1 新生成的两段式生命周期
 
 1. 第一个短 session 使用 `BEGIN IMMEDIATE` 检查可见 Application、选定 interview event、Resume、JD 和 Knowledge selections，构建快照并计算指纹。`idempotency_key` 必须由客户端生成，并由服务端严格校验格式和长度；服务端不替客户端生成替代 key。
-2. 先查询 `(application_id, event_id, idempotency_key)`，并在任何状态分支前比较新旧 `source_fingerprint`。指纹不一致时，无论旧行是 `ready`、`generating` 还是 `provider_unknown`，都在同一写事务中将旧尝试标记为 `invalidated`，使旧 revision/token 不能再回写，然后返回 `409 interview_preparation_idempotency_conflict`；不得接管、覆盖或返回旧结果冒充新快照。指纹一致时，`ready` 直接返回相同 Proposal，不能解析 Provider 配置、不能调用模型；`generating` 或 `provider_unknown` 只要 lease 未过期都返回 `202`，绝不二次调用；只有 lease 到期后才允许 CAS 接管新的 revision/token。
+2. 先查询 `(application_id, event_id, idempotency_key)`，并在任何状态分支前比较新旧 `source_fingerprint`。指纹不一致时，若旧行是 `generating` 或 `provider_unknown`，就在同一写事务中标记为 `invalidated`，使旧 revision/token 不能再回写，然后返回 `409 interview_preparation_idempotency_conflict`；若旧行已经是 `ready`，保持其状态和结果不变，直接返回同一 `409`。指纹一致时，`ready` 直接返回相同 Proposal，不能解析 Provider 配置、不能调用模型；`generating` 或 `provider_unknown` 只要 lease 未过期都返回 `202`，绝不二次调用；只有 lease 到期后才允许 CAS 接管新的 revision/token。已经 `invalidated` 的 key 是终态，任何重放都返回同一幂等冲突，不能恢复或写入。
 3. 事务提交并关闭 session 后才调用真实 AI；模型调用期间绝不持有 SQLite 连接。
 4. Provider 返回后，以新短 session 执行 `BEGIN IMMEDIATE`，按 revision/token/status 做 CAS；lease 到期、状态已变为 `invalidated` 或 token/revision 不匹配的迟到结果必须丢弃，不写入模型原文。
-5. 回写事务重新校验 Application 可见性、事件关系、Resume 当前 hash、JD 本次请求 hash 和已选 Knowledge Evidence hash。任何漂移都在 CAS 成功的同一事务中将该尝试标为 `invalidated`，返回 `409 interview_preparation_source_conflict`，不将结果写成 `ready`。
+5. 回写事务重新校验 Application 可见性、事件关系、Resume 当前 hash 和已选 Knowledge Evidence hash。任何可观察来源漂移都在 CAS 成功的同一事务中将该尚未完成尝试标为 `invalidated`，返回 `409 interview_preparation_source_conflict`，不将结果写成 `ready`。JD 没有服务端当前来源；本请求中的 JD 从开始到回写都是同一冻结值，JD 的后续编辑只会形成新的本地草稿，并在重用旧 key 时触发前述幂等冲突。
 6. 没有漂移时，在同一事务内将校验后的 Proposal 或安全空 Proposal 写入该 attempt 并提交。并发请求只能看到同一个 `ready` 行。
 
 ### 6.2 历史读取与实时生成分离
 
-历史列表/详情只读 `ready` Proposal，并要求 Application 当前可见。事件被删除、简历被删除或内容变化、Knowledge 来源变更时，历史 Proposal 仍从 `input_snapshot_json` 返回并标记来源变化；不会重新读取新的原文去覆盖快照。Application 软删除时历史接口返回 `404 interview_preparation_application_not_found`，前端清理当前卡片和待交接状态，不展示已隐藏投递内容。
+历史列表/详情只读 `attempt_status=ready` 的 Proposal，并要求 Application 当前可见。事件被删除、简历被删除或内容变化、Knowledge 来源变更时，历史 Proposal 仍从 `input_snapshot_json` 返回并标记来源变化；不会重新读取新的原文去覆盖快照。Application 软删除时历史接口返回 `404 interview_preparation_application_not_found`，前端清理当前卡片和待交接状态，不展示已隐藏投递内容。
 
 历史状态算法固定为：
 
@@ -297,11 +297,45 @@ POST /api/applications/{application_id}/interview-preparation-proposals
 
 请求不接受 `job_url`、`jd_url`、`source_fingerprint`、`snapshot`、`proposal` 或模型输出字段。服务端自己读取事件、Resume 和 Knowledge Evidence；任何未知请求字段均返回 `422 interview_preparation_invalid_request`，不静默忽略可能扩大上下文的字段。
 
-成功响应为：新建 `201`，同 key 的 ready 幂等命中 `200`，同 key 已有未过期 lease 的生成中状态 `202`。响应包含 `id`、`application_id`、事件/简历快照 ID、`source_fingerprint`、`source_status`、`proposal_status`、严格 `proposal`、`proposal_hash`、`created_at` 和分项来源状态。`202` 不含未完成 Proposal，不触发第二次 Provider 调用，客户端保留 key 并按同 key 查询/重试。
+成功响应严格区分为两种 schema：
+
+`201`（新建）和 `200`（同 key 命中既有 ready 结果）都返回完整 Proposal：
+
+```json
+{
+  "id": 123,
+  "application_id": 12,
+  "event_id": 34,
+  "resume_id": 56,
+  "attempt_status": "ready",
+  "source_fingerprint": "...",
+  "source_status": "current|source_changed|not_checked",
+  "proposal_status": "normal|safe_empty",
+  "proposal": {"preparation_directions": [], "story_prompts": [], "review_points": [], "interviewer_questions": [], "items_to_clarify": []},
+  "proposal_hash": "...",
+  "created_at": "2026-07-24T00:00:00Z",
+  "source_states": {"event": "current", "resume": "current", "jd": "not_checked", "knowledge": "current"}
+}
+```
+
+`202` 只表示同 key 仍有未过期 Provider lease，不包含任何未完成 Proposal 字段：
+
+```json
+{
+  "status": "generating|provider_unknown",
+  "application_id": 12,
+  "event_id": 34,
+  "idempotency_key": "client-generated-key",
+  "generation_revision": 2,
+  "retry_after_ms": 1000
+}
+```
+
+`202` 不触发第二次 Provider 调用，客户端保留 key 并按同 key 查询/重试；它不包含 `proposal`、`proposal_hash`、`proposal_status` 或任何模型输出。
 
 ### 8.2 历史读取
 
-历史接口只返回 `attempt_status IN ('ready', 'invalidated')` 且含完整结果的行，不触发 AI、不触发写入。详情不提供 `current_jd_hash` 契约；即使旧客户端附带该参数，服务端也忽略它并保持 `jd=not_checked`，不能把它作为服务端来源事实。前端只能本地比较当前输入并显示该比较性质。历史 Proposal 的 `input_snapshot_json` 只用于服务端来源检查与安全展示，Proposal 正文仍是保存时的严格结果。
+历史接口只返回 `attempt_status='ready'` 且含完整结果的行，不触发 AI、不触发写入。详情不提供 `current_jd_hash` 契约；即使旧客户端附带该参数，服务端也忽略它并保持 `jd=not_checked`，不能把它作为服务端来源事实。前端只能本地比较当前输入并显示该比较性质。历史 Proposal 的 `input_snapshot_json` 只用于服务端来源检查与安全展示，Proposal 正文仍是保存时的严格结果。
 
 历史查看可以复制 JD、简历片段、Knowledge Evidence 和建议文本，但复制不是写入。页面明确区分“冻结来源”和“当前来源已变化”，不能提供自动重新生成或接受动作之外的隐式操作。
 
@@ -367,9 +401,9 @@ POST /api/applications/{application_id}/interview-preparation-proposals
 ### 10.2 快照、漂移和幂等
 
 - 输入快照只含事件最小上下文、JD、选定 Resume、明确选定 Evidence 和独立断言；不含旧 AI Proposal、完整旧复盘、Memory、未选 Knowledge、location、job_url 或外部内容；
-- Resume 内容、事件字段、JD hash、Knowledge Evidence 原文/归属在模型调用期间变化，最终短事务返回 `409 interview_preparation_source_conflict`，不产生 ready Proposal；
+- Resume 内容、事件字段或 Knowledge Evidence 原文/归属在模型调用期间变化，最终短事务返回 `409 interview_preparation_source_conflict`，将未完成尝试标为 `invalidated`，不产生 ready Proposal；JD 没有服务端当前来源，模型调用期间不会出现“JD 变化”，同 key 改 JD 只在开始阶段返回幂等冲突；
 - 事件删除后历史 Proposal 仍可读并标记 `event=source_changed`；新生成返回 `422 interview_preparation_event_invalid`；Application 软删除后历史/生成返回安全 `404`，前端清理卡片；Resume/JD/Knowledge 变化只标记历史来源变化，不改写历史；
-- 同一 key 在 Provider 配置不可用时先返回已有 ready Proposal，不因当前 Provider 配置失败而覆盖幂等结果；对 `ready`、`generating`、`provider_unknown` 三种旧状态分别测试不同快照复用同 key，均必须先原子标记 `invalidated`、返回 `409 interview_preparation_idempotency_conflict`，且旧 token 不能迟到写回；
+- 同一 key 在 Provider 配置不可用时先返回已有 ready Proposal，不因当前 Provider 配置失败而覆盖幂等结果；`ready` 旧状态遇到不同快照只返回 `409` 且保持 ready，随后用原快照重试仍返回原 `200`；`generating/provider_unknown` 旧状态遇到不同快照才原子标记 `invalidated`，返回 `409`，且旧 token 不能迟到写回；已经 invalidated 的 key 重放仍返回同一幂等冲突；
 - 两个独立 SQLite session 并发同 key，使用可控 Provider barrier，断言最多一个有效 Provider lease、最多一条 ready Proposal、第二请求不抢占未过期 lease，陈旧 revision/token 回写失败；
 - Provider barrier 测试覆盖：第一调用进入超时/未知后，在原 lease 未到期时第二个独立 session 只能返回 `202` 且 Provider 调用次数仍为 1；lease 到期后才允许 CAS 接管，第一调用的迟到回写必须失败；
 - Provider 超时、断网、普通 5xx、响应丢失和客户端取消保留 key；重新挂载后同 key 恢复。成功/安全空结果后新生成必须使用新 key。
