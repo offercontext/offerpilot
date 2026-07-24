@@ -119,17 +119,28 @@ def test_real_ai_interview_preparation_smoke_retries_pending_results_with_same_r
                     },
                 )
             return Response(
-                201,
+                200 if self.calls == 3 else 201,
                 {
                     "id": 60 + self.calls,
+                    "application_id": 7,
+                    "event_id": 51,
+                    "resume_id": 41,
+                    "attempt_status": "ready",
                     "proposal_status": "normal",
+                    "source_fingerprint": "fingerprint",
+                    "source_status": "current",
+                    "source_states": {},
                     "proposal": {
                         "preparation_directions": [
                             {
                                 "id": "direction-1",
                                 "text": "Discuss reliable services.",
                                 "evidence_refs": [
-                                    {"source": "resume", "path": "/raw_text", "excerpt": "reliable services"}
+                                    {
+                                        "source": "resume",
+                                        "path": "/raw_text",
+                                        "excerpt": "Built reliable API services and led a migration.",
+                                    }
                                 ],
                             }
                         ],
@@ -138,6 +149,8 @@ def test_real_ai_interview_preparation_smoke_retries_pending_results_with_same_r
                         "interviewer_questions": [],
                         "items_to_clarify": [],
                     },
+                    "proposal_hash": "proposal-hash",
+                    "created_at": "2026-07-24T10:00:00+00:00",
                 },
             )
 
@@ -148,6 +161,44 @@ def test_real_ai_interview_preparation_smoke_retries_pending_results_with_same_r
     assert steps[-1].name == "http_interview_preparation_proposal"
     assert len(client.proposal_requests) == 4
     assert client.proposal_requests[1] == client.proposal_requests[2]
+
+
+def test_real_ai_interview_preparation_smoke_rejects_unknown_success_fields():
+    class Response:
+        def __init__(self, status_code: int, payload: dict[str, object]) -> None:
+            self.status_code = status_code
+            self._payload = payload
+
+        def json(self) -> dict[str, object]:
+            return self._payload
+
+    class Client:
+        def post(self, path: str, json: dict[str, object]) -> Response:
+            if path == "/api/resumes":
+                return Response(201, {"id": 41})
+            if path == "/api/application-events":
+                return Response(201, {"id": 51})
+            return Response(
+                201,
+                {
+                    "id": 61,
+                    "application_id": 7,
+                    "event_id": 51,
+                    "resume_id": 41,
+                    "attempt_status": "ready",
+                    "proposal_status": "empty",
+                    "source_fingerprint": "fingerprint",
+                    "source_status": "current",
+                    "source_states": {},
+                    "proposal": {},
+                    "proposal_hash": "proposal-hash",
+                    "created_at": "2026-07-24T10:00:00+00:00",
+                    "input_snapshot": {"raw_text": "must not be returned"},
+                },
+            )
+
+    with pytest.raises(RuntimeError, match="proposal response fields were invalid"):
+        _run_real_ai_interview_preparation_smoke(Client(), [], 7, [])
 
 
 def test_real_ai_interview_preparation_smoke_rejects_pending_snapshot_leak():
@@ -178,7 +229,7 @@ def test_real_ai_interview_preparation_smoke_rejects_pending_snapshot_leak():
                 },
             )
 
-    with pytest.raises(RuntimeError, match="response leaked frozen input snapshot"):
+    with pytest.raises(RuntimeError, match="pending response fields were invalid"):
         _run_real_ai_interview_preparation_smoke(Client(), [], 7, [])
 
 

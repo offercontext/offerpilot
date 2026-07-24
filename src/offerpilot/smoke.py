@@ -465,7 +465,12 @@ def _run_real_ai_interview_preparation_smoke(
             body = response.json()
             _assert_interview_preparation_smoke_response_safe(body)
             if response.status_code != 202:
-                _assert_status(response.status_code, 201, f"http_interview_preparation_proposal_{index}")
+                if response.status_code not in {200, 201}:
+                    raise RuntimeError(
+                        f"http_interview_preparation_proposal_{index} returned status "
+                        f"{response.status_code}, expected 200 or 201"
+                    )
+                _validate_interview_preparation_proposal_response(body)
                 break
             _validate_interview_preparation_pending_response(
                 body, request_payload, application_id=application_id, event_id=event_id
@@ -498,9 +503,27 @@ def _run_real_ai_interview_preparation_smoke(
 def _assert_interview_preparation_smoke_response_safe(body: object) -> None:
     if not isinstance(body, dict):
         raise RuntimeError("interview preparation smoke response was not an object")
-    serialized = json.dumps(body, ensure_ascii=False)
-    if "input_snapshot" in serialized:
-        raise RuntimeError("interview preparation smoke response leaked frozen input snapshot")
+
+
+def _validate_interview_preparation_proposal_response(body: dict[str, object]) -> None:
+    expected_fields = {
+        "id",
+        "application_id",
+        "event_id",
+        "resume_id",
+        "attempt_status",
+        "proposal_status",
+        "source_fingerprint",
+        "source_status",
+        "source_states",
+        "proposal",
+        "proposal_hash",
+        "created_at",
+    }
+    if set(body) != expected_fields:
+        raise RuntimeError("interview preparation smoke proposal response fields were invalid")
+    if body["attempt_status"] != "ready":
+        raise RuntimeError("interview preparation smoke returned an invalid terminal status")
 
 
 def _validate_interview_preparation_pending_response(
