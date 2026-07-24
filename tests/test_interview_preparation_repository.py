@@ -14,9 +14,14 @@ from offerpilot.db import init_database
 from offerpilot.models import (
     Application,
     ApplicationEvent,
+    InterviewNote,
     InterviewPreparationProposal,
+    KnowledgeEvidence,
+    KnowledgeNoteEvidence,
+    KnowledgeNoteVersion,
     Resume,
 )
+from offerpilot.repositories.interview_knowledge_capture import InterviewKnowledgeCaptureRepository
 from offerpilot.repositories.interview_preparation_proposals import (
     InterviewPreparationConflictError,
     InterviewPreparationNotFound,
@@ -249,6 +254,83 @@ def test_ready_different_snapshot_returns_409_and_original_ready_remains_stable(
     assert replay.pending is False
     assert replay.proposal is not None
     assert replay.proposal.id == first.proposal.id  # type: ignore[union-attr]
+    factory.kw["bind"].dispose()
+
+
+def test_same_knowledge_set_in_different_order_reuses_idempotent_proposal(tmp_path) -> None:
+    factory, ids = _setup(tmp_path)
+    with factory() as session:
+        note = InterviewNote(
+            application_id=ids[0],
+            application_event_id=ids[1],
+            company="Acme",
+            position="Backend",
+            questions="Describe the migration.",
+            self_reflection="I explained the rollback plan.",
+            difficulty_points="Clarify the signal.",
+            mood="steady",
+        )
+        session.add(note)
+        session.commit()
+        note_id = note.id
+
+    capture = InterviewKnowledgeCaptureRepository(factory)
+    selected = [
+        {"fragment_id": "questions", "path": "/questions", "start": 0, "end": 23, "text": "Describe the migration."},
+        {"fragment_id": "reflection", "path": "/self_reflection", "start": 0, "end": 30, "text": "I explained the rollback plan."},
+    ]
+    attempt = capture.prepare_preview(note_id, "capture-order-key", "direct", selected)
+    confirmed = capture.confirm(
+        note_id,
+        "capture-order-key",
+        attempt.note_fingerprint,
+        "Interview preparation notes",
+        attempt.preview["blocks"],
+    )
+    with factory() as session:
+        version = session.get(KnowledgeNoteVersion, confirmed.version_id)
+        assert version is not None
+        evidence_ids = list(
+            session.scalars(
+                select(KnowledgeEvidence.id)
+                .join(KnowledgeNoteEvidence, KnowledgeNoteEvidence.evidence_id == KnowledgeEvidence.id)
+                .where(KnowledgeNoteEvidence.note_version_id == version.id)
+            )
+        )
+    assert len(evidence_ids) == 2
+
+    repository = InterviewPreparationProposalsRepository(factory)
+    first = repository.create_generated(
+        application_id=ids[0],
+        event_id=ids[1],
+        resume_id=ids[2],
+        jd_text=JD_TEXT,
+        knowledge_selections=[
+            {"note_version_id": version.id, "evidence_ids": [evidence_ids[0]]},
+            {"note_version_id": version.id, "evidence_ids": [evidence_ids[1]]},
+        ],
+        user_assertions=[],
+        idempotency_key="knowledge-order-key-01",
+        model=SafeEmptyModel(),
+    )
+    replay = repository.create_generated(
+        application_id=ids[0],
+        event_id=ids[1],
+        resume_id=ids[2],
+        jd_text=JD_TEXT,
+        knowledge_selections=[
+            {"note_version_id": version.id, "evidence_ids": [evidence_ids[1]]},
+            {"note_version_id": version.id, "evidence_ids": [evidence_ids[0]]},
+        ],
+        user_assertions=[],
+        idempotency_key="knowledge-order-key-01",
+        model=SafeEmptyModel(),
+    )
+
+    assert first.proposal is not None
+    assert replay.proposal is not None
+    assert replay.created is False
+    assert replay.proposal.id == first.proposal.id
     factory.kw["bind"].dispose()
 
 

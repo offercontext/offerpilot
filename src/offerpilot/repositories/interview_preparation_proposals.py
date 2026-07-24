@@ -603,6 +603,7 @@ def _validate_knowledge_selections(
             "Too many Knowledge Note selections", "interview_preparation_input_too_large"
         )
     result: list[dict[str, Any]] = []
+    pending: list[tuple[int, str, KnowledgeEvidence]] = []
     seen: set[str] = set()
     total = 0
     total_bytes = 0
@@ -689,20 +690,23 @@ def _validate_knowledge_selections(
                     "Knowledge Evidence is too large",
                     "interview_preparation_input_too_large",
                 )
-            provider_path = f"/knowledge_evidence/{len(result) + 1:03d}"
-            result.append(
-                {
-                    "id": row.id,
-                    "note_version_id": version_id,
-                    "path": f"/{row.id}",
-                    "provider_path": provider_path,
-                    "excerpt": row.canonical_excerpt,
-                    "content_hash": row.content_hash,
-                    "source_hash": session.scalar(
-                        select(KnowledgeSource.source_hash).where(KnowledgeSource.id == row.source_id)
-                    ),
-                }
-            )
+            pending.append((version_id, evidence_id, row))
+
+    for version_id, evidence_id, row in sorted(pending, key=lambda item: (item[0], item[1])):
+        provider_path = f"/knowledge_evidence/{len(result) + 1:03d}"
+        result.append(
+            {
+                "id": row.id,
+                "note_version_id": version_id,
+                "path": f"/{row.id}",
+                "provider_path": provider_path,
+                "excerpt": row.canonical_excerpt,
+                "content_hash": row.content_hash,
+                "source_hash": session.scalar(
+                    select(KnowledgeSource.source_hash).where(KnowledgeSource.id == row.source_id)
+                ),
+            }
+        )
     return result
 
 

@@ -194,7 +194,11 @@ export default function InterviewPreparationProposalDrawer({
       }
     } catch (caught) {
       const typedError = caught instanceof InterviewPreparationProposalError ? caught : null;
-      const unknown = !typedError || typedError.code === null;
+      const unknown =
+        !typedError
+        || typedError.code === null
+        || typedError.code === 'interview_preparation_provider_error'
+        || typedError.status >= 500;
       if (unknown) {
         onAttemptStateChange?.({ key: attemptKey, result_unknown: true });
       } else {

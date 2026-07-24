@@ -100,8 +100,8 @@ describe('InterviewPreparationProposalDrawer interaction', () => {
     expect(container?.textContent).not.toContain('API key secret');
   });
 
-  it('keeps the same attempt after a raw server failure and remount', async () => {
-    service.create.mockRejectedValueOnce(new service.InterviewPreparationProposalError(500, null));
+  it('keeps the same attempt after a Provider 502 and remount', async () => {
+    service.create.mockRejectedValueOnce(new service.InterviewPreparationProposalError(502, 'interview_preparation_provider_error'));
     const attemptChanges: Array<{ key: string; result_unknown: boolean } | null> = [];
     const draftChanges: unknown[] = [];
     const props = {
