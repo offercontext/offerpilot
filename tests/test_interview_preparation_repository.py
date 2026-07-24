@@ -99,6 +99,21 @@ class BlockingSafeEmptyModel(SafeEmptyModel):
         )
 
 
+class EventDeletingModel(SafeEmptyModel):
+    def __init__(self, factory, event_id: int) -> None:
+        super().__init__()
+        self.factory = factory
+        self.event_id = event_id
+
+    def complete(self, messages, tools):  # type: ignore[no-untyped-def]
+        with self.factory() as session:
+            session.execute(text("DELETE FROM application_events WHERE id=:id"), {"id": self.event_id})
+            session.commit()
+        return Assistant(
+            content=json.dumps(safe_empty_interview_preparation_proposal(), ensure_ascii=False)
+        )
+
+
 def _generate(repository, ids, key, model, *, jd_text=JD_TEXT):
     application_id, event_id, resume_id = ids
     return repository.create_generated(
@@ -167,6 +182,22 @@ def test_provider_unknown_cas_preserves_token_and_unexpired_lease(tmp_path) -> N
         row = session.scalar(select(InterviewPreparationProposal))
         assert row is not None
         assert row.provider_call_token == original_token
+    factory.kw["bind"].dispose()
+
+
+def test_source_deletion_during_provider_call_invalidates_attempt_without_ready_result(tmp_path) -> None:
+    factory, ids = _setup(tmp_path)
+    repository = InterviewPreparationProposalsRepository(factory)
+
+    with pytest.raises(InterviewPreparationConflictError) as exc_info:
+        _generate(repository, ids, "event-drift-key-0001", EventDeletingModel(factory, ids[1]))
+
+    assert exc_info.value.code == "interview_preparation_source_conflict"
+    with factory() as session:
+        row = session.scalar(select(InterviewPreparationProposal))
+        assert row is not None
+        assert row.attempt_status == "invalidated"
+        assert row.proposal_json == ""
     factory.kw["bind"].dispose()
 
 def test_expired_lease_takeover_atomically_bumps_revision_and_only_one_wins(tmp_path) -> None:

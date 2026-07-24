@@ -375,15 +375,45 @@ class InterviewPreparationProposalsRepository:
                     "interview preparation attempt disappeared",
                     "interview_preparation_idempotency_conflict",
                 )
-            current_snapshot = _build_snapshot(
-                session,
-                application_id=application_id,
-                event_id=event_id,
-                resume_id=resume_id,
-                jd_text=jd_text,
-                knowledge_selections=knowledge_selections,
-                user_assertions=user_assertions,
-            )
+            try:
+                current_snapshot = _build_snapshot(
+                    session,
+                    application_id=application_id,
+                    event_id=event_id,
+                    resume_id=resume_id,
+                    jd_text=jd_text,
+                    knowledge_selections=knowledge_selections,
+                    user_assertions=user_assertions,
+                )
+            except InterviewPreparationNotFound as exc:
+                if exc.code == "interview_preparation_application_not_found":
+                    session.rollback()
+                    raise
+                current_snapshot = None
+            except InterviewPreparationValidationError as exc:
+                if exc.code != "interview_preparation_event_invalid":
+                    session.rollback()
+                    raise
+                current_snapshot = None
+            if current_snapshot is None:
+                if (
+                    row.attempt_status == "generating"
+                    and row.generation_revision == owner_revision
+                    and row.provider_call_token == owner_token
+                ):
+                    row.attempt_status = "invalidated"
+                    row.invalidation_reason = "source_conflict"
+                    row.provider_call_token = ""
+                    row.provider_lease_until = None
+                    session.commit()
+                    raise InterviewPreparationConflictError(
+                        "interview preparation source changed",
+                        "interview_preparation_source_conflict",
+                    )
+                session.commit()
+                if row.attempt_status == "ready":
+                    return InterviewPreparationGenerationResult(row, False, False, "ready")
+                return InterviewPreparationGenerationResult(row, False, True, row.attempt_status)
             current_fingerprint = sha256_text(canonical_json(current_snapshot))
             if current_fingerprint != source_fingerprint:
                 row.attempt_status = "invalidated"
