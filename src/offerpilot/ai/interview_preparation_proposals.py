@@ -307,11 +307,25 @@ def _system_prompt() -> str:
 
 
 def _initial_prompt(snapshot: dict[str, Any]) -> str:
+    event = dict(snapshot.get("event", {}))
+    event.pop("id", None)
+    event.pop("application_id", None)
+    resume = dict(snapshot.get("resume", {}))
+    resume.pop("id", None)
+    knowledge_evidence = [
+        {
+            "id": item.get("id"),
+            "path": item.get("path"),
+            "excerpt": item.get("excerpt"),
+        }
+        for item in snapshot.get("knowledge_evidence", [])
+        if isinstance(item, dict)
+    ]
     provider_input = {
-        "event": snapshot.get("event", {}),
+        "event": event,
         "jd": snapshot.get("jd", {}),
-        "resume": snapshot.get("resume", {}),
-        "knowledge_evidence": snapshot.get("knowledge_evidence", []),
+        "resume": resume,
+        "knowledge_evidence": knowledge_evidence,
     }
     return (
         "请基于以下冻结输入生成严格 JSON。所有具体文本必须逐项引用冻结输入中的 JD、Resume 或已确认 "

@@ -216,7 +216,7 @@ export default function InterviewPreparationProposalDrawer({
       <dl>
         <dt>岗位描述</dt><dd>{jdText || '尚未填写'}</dd>
         <dt>选定简历</dt><dd>{resumeId || '尚未选择'}</dd>
-        <dt>已确认 Knowledge Evidence</dt><dd>{context.knowledgeSelections.length} 条</dd>
+        <dt>已确认 Knowledge Evidence</dt><dd>{selectedEvidenceIds.length} 条</dd>
       </dl>
       {knowledgeOptions.length > 0 && (
         <fieldset>
@@ -256,17 +256,21 @@ export default function InterviewPreparationProposalDrawer({
         <aside aria-label="历史面试准备建议">
           <h3>历史面试准备建议</h3>
           {history.map((item) => (
-            <button
-              type="button"
-              key={item.id}
-              onClick={() => {
-                void getInterviewPreparationProposal(context.applicationId, item.id)
-                  .then(setProposal)
-                  .catch((caught) => setError(safeErrorMessage(caught)));
-              }}
-            >
-              查看 {item.created_at}
-            </button>
+            <div key={item.id}>
+              {item.source_status === 'source_changed' && (
+                <p role="status">历史资料来源已变化，本提案仍保持冻结，可查看但不作为当前来源。</p>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  void getInterviewPreparationProposal(context.applicationId, item.id)
+                    .then(setProposal)
+                    .catch((caught) => setError(safeErrorMessage(caught)));
+                }}
+              >
+                查看 {item.created_at}
+              </button>
+            </div>
           ))}
         </aside>
       )}

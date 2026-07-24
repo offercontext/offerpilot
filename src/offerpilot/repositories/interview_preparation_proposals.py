@@ -390,10 +390,7 @@ class InterviewPreparationProposalsRepository:
                     session.rollback()
                     raise
                 current_snapshot = None
-            except InterviewPreparationValidationError as exc:
-                if exc.code != "interview_preparation_event_invalid":
-                    session.rollback()
-                    raise
+            except InterviewPreparationValidationError:
                 current_snapshot = None
             if current_snapshot is None:
                 if (
@@ -559,6 +556,7 @@ def _validate_knowledge_selections(
     result: list[dict[str, Any]] = []
     seen: set[str] = set()
     total = 0
+    total_bytes = 0
     for selection in selections:
         if set(selection) != {"note_version_id", "evidence_ids"}:
             raise InterviewPreparationValidationError(
@@ -580,6 +578,7 @@ def _validate_knowledge_selections(
             .where(KnowledgeNote.current_version_id == version_id)
             .where(KnowledgeNote.archived_at.is_(None))
             .where(KnowledgeSource.deleted_at.is_(None))
+            .where(KnowledgeSource.archived_at.is_(None))
             .where(KnowledgeSource.lifecycle != "deleting")
         )
         if version is None:
@@ -618,12 +617,22 @@ def _validate_knowledge_selections(
         for evidence_id in evidence_ids:
             seen.add(evidence_id)
             row = by_id[evidence_id]
+            total_bytes += len(row.canonical_excerpt.encode("utf-8"))
+            if total_bytes > 64_000:
+                raise InterviewPreparationValidationError(
+                    "Knowledge Evidence is too large",
+                    "interview_preparation_input_too_large",
+                )
             result.append(
                 {
                     "id": row.id,
                     "note_version_id": version_id,
                     "path": f"/{row.id}",
                     "excerpt": row.canonical_excerpt,
+                    "content_hash": row.content_hash,
+                    "source_hash": session.scalar(
+                        select(KnowledgeSource.source_hash).where(KnowledgeSource.id == row.source_id)
+                    ),
                 }
             )
     return result
@@ -710,8 +719,11 @@ def _set_source_status(session: Session, row: InterviewPreparationProposal) -> N
                 current is None
                 or source is None
                 or source.deleted_at is not None
+                or source.archived_at is not None
                 or source.lifecycle == "deleting"
                 or current.canonical_excerpt != evidence.get("excerpt")
+                or current.content_hash != evidence.get("content_hash")
+                or source.source_hash != evidence.get("source_hash")
             ):
                 knowledge_changed = True
         if knowledge_changed:

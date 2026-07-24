@@ -135,6 +135,7 @@ function AppShellContent() {
   const [pilotApplicationContext, setPilotApplicationContext] = useState<{ applicationId: number; pilotDraftKey: string } | null>(null);
   const [pilotHistoricalReviewId, setPilotHistoricalReviewId] = useState<number | null>(null);
   const [pilotInterviewReviewApplicationId, setPilotInterviewReviewApplicationId] = useState<number | null>(null);
+  const [pilotInterviewPreparationApplicationId, setPilotInterviewPreparationApplicationId] = useState<number | null>(null);
   const pilotApplicationContextRef = useRef(pilotApplicationContext);
   pilotApplicationContextRef.current = pilotApplicationContext;
   const [aiSettingsOpen, setAISettingsOpen] = useState(false);
@@ -245,12 +246,14 @@ function AppShellContent() {
     staleTime: 30000,
   });
   const interviewPreparationKnowledgeOptions = useMemo<InterviewPreparationKnowledgeOption[]>(
-    () => confirmedInterviewKnowledgeNotes.flatMap((note) => (note.evidence ?? []).map((evidence) => ({
-      evidence_id: evidence.id,
-      note_version_id: note.version_id,
-      label: `${note.title} · ${evidence.path}`,
-      excerpt: evidence.excerpt,
-    }))),
+    () => confirmedInterviewKnowledgeNotes
+      .filter((note) => note.source_status === 'frozen')
+      .flatMap((note) => (note.evidence ?? []).map((evidence) => ({
+        evidence_id: evidence.id,
+        note_version_id: note.version_id,
+        label: `${note.title} · ${evidence.path}`,
+        excerpt: evidence.excerpt,
+      }))),
     [confirmedInterviewKnowledgeNotes],
   );
 
@@ -604,6 +607,7 @@ function AppShellContent() {
     const app = apps.find((item) => item.id === applicationId);
     if (!app) return;
     exitPilotContext();
+    setPilotInterviewPreparationApplicationId(applicationId);
     setSelected(app);
     setView('board');
   };
@@ -765,6 +769,8 @@ function AppShellContent() {
       onOpenPilotOpportunityFit={startPilotOpportunityFit}
       pilotInterviewReviewApplicationId={pilotInterviewReviewApplicationId}
       onPilotInterviewReviewFocusConsumed={() => setPilotInterviewReviewApplicationId(null)}
+      pilotInterviewPreparationApplicationId={pilotInterviewPreparationApplicationId}
+      onPilotInterviewPreparationFocusConsumed={() => setPilotInterviewPreparationApplicationId(null)}
       onAttachToPilot={attachToPilot}
       interviewReviewProposalAttempts={interviewReviewProposalAttempts}
       onInterviewReviewProposalAttemptChange={updateInterviewReviewProposalAttempt}

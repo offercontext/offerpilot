@@ -213,6 +213,18 @@ def test_user_assertions_are_saved_in_snapshot_but_absent_from_provider_payload(
     assert "A rollback is safe when the observable signal is defined first." in provider_text
 
 
+def test_provider_payload_omits_internal_application_event_resume_and_note_ids() -> None:
+    model = FakeModel([_proposal()])
+    snapshot = _snapshot()
+    generate_interview_preparation_proposal(model, snapshot)
+    provider_text = "\n".join(message.content for message in model.messages[0])
+    assert '"application_id"' not in provider_text
+    assert '"event_id"' not in provider_text
+    assert '"note_version_id"' not in provider_text
+    assert '"id":4' not in provider_text
+    assert '"id":9' not in provider_text
+
+
 def test_json_schema_is_passed_only_for_explicit_true_capability() -> None:
     model = FakeModel([_proposal()])
     model.supports_json_schema = True
