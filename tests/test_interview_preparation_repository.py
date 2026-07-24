@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor
@@ -261,4 +261,3 @@ def test_soft_deleted_application_returns_not_found_for_history(tmp_path) -> Non
     with pytest.raises(InterviewPreparationNotFound):
         repository.list(ids[0])
     factory.kw["bind"].dispose()
-
