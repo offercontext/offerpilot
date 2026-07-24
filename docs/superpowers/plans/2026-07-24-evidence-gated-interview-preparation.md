@@ -18,7 +18,7 @@ Design source: docs/superpowers/specs/2026-07-24-evidence-gated-interview-prepar
 - 每项实现严格遵循“先写失败测试 → 运行确认失败 → 最小实现 → 定向测试 → 小步提交”。提交标题使用 type: AI English subject。
 - 不修改既有 Interview Review Proposal 的 API/数据语义；新接口只增加本功能契约。
 - 不增加模型工具调用，不读取旧 AI 建议、完整旧复盘、Memory、聊天历史、外部网页或招聘平台数据。
-- 不创建或修改 Application、ApplicationEvent、Resume、Material Kit、Question、Knowledge、Memory、提醒或投递状态；Proposal 仅保存自身快照。
+- 不创建或修改 Application、ApplicationEvent、Resume、Material Kit、Question、Knowledge、Memory、提醒或投递状态；Proposal 仅保存自身快照。Proposal 的 application_id、application_event_id 和 resume_id 都是不可变的普通整数标识，不建立会阻止删除或随删除级联的外键。
 - lease 到期接管必须在同一个 BEGIN IMMEDIATE 短事务内完成：条件匹配、attempt_status=generating、generation_revision 加一、新随机 token、新 lease 一次提交；两个到期并发请求只允许一个接管，另一个返回 202。
 - 设计第 6.1 节的最终“无漂移写入 ready”步骤已顺延为第 8 步；实现和测试统一使用 attempt_status，不引入另一个 status 字段。
 - 未知结果保留客户端 key 和服务端 lease；只有稳定确定失败、来源冲突或用户明确点击“重新生成”才结束当前尝试。
@@ -59,7 +59,7 @@ Files:
 
 - [ ] Step 1: 写迁移失败测试
 
-覆盖全新数据库和旧库升级，断言存在 interview_preparation_proposals、迁移记录 0012_interview_preparation_proposals、唯一键 application_id/event_id/idempotency_key，以及 attempt_status、generation_revision、token、lease、invalidation_reason 和快照/hash 字段。
+覆盖全新数据库和旧库升级，断言存在 interview_preparation_proposals、迁移记录 0012_interview_preparation_proposals、唯一键 application_id/event_id/idempotency_key，以及 attempt_status、generation_revision、token、lease、invalidation_reason 和快照/hash 字段。用 PRAGMA foreign_key_list 断言 application_event_id、resume_id 没有外键；删除事件或 Resume 后 Proposal 行仍存在，历史读取依靠冻结快照而不是当前外键对象。
 
 测试名称：
 
@@ -77,7 +77,7 @@ Files:
 
 新增 InterviewPreparationProposal，至少包含 application_id、application_event_id、resume_id、idempotency_key、attempt_status、proposal_status、generation_revision、provider_call_token、provider_lease_until、invalidation_reason、input_snapshot_json、source_fingerprint、proposal_json、proposal_hash、created_at。
 
-使用现有 Application/Event/Resume 外键；历史快照不因来源后续变化而改写。db.py 先 Base.metadata.create_all(engine)，再兼容旧结构，最后创建本功能索引/唯一约束并记录唯一版本 0012_interview_preparation_proposals，不得复用 0010 或 0011。
+application_id、application_event_id 和 resume_id 使用不可变普通整数列，不建立 Application/Event/Resume 外键；创建与历史读取通过显式 Application 可见性查询和快照中的 ID 完成。这样物理删除事件或 Resume 不会阻止删除，也不会级联删除 Proposal；软删除 Application 仍由 API/Repository 显式返回 404。db.py 先 Base.metadata.create_all(engine)，再兼容旧结构，最后创建本功能索引/唯一约束并记录唯一版本 0012_interview_preparation_proposals，不得复用 0010 或 0011。
 
 - [ ] Step 4: 运行 GREEN 测试并提交
 
@@ -109,6 +109,7 @@ Files:
     test_provider_failure_is_called_once_and_not_repaired
     test_two_contract_failures_return_validated_safe_empty
     test_only_explicit_true_capability_receives_response_format
+    test_user_assertions_are_saved_in_snapshot_but_absent_from_provider_payload
 
 - [ ] Step 2: 运行 AI RED 测试
 
@@ -118,7 +119,7 @@ Files:
 
 - [ ] Step 3: 实现快照 validator、Schema 和一次修复
 
-实现 build_interview_preparation_snapshot、validate_interview_preparation 和 generate_interview_preparation_proposal。snapshot 只含事件最小字段、原始 JD、冻结 Resume、显式 Evidence 和断言；断言不发送给 Provider，也不能成为 Evidence ref。解析阶段拒绝 fenced JSON、NaN/Infinity、重复键和额外字段；首次契约失败只重试一次并携带 invalid_json、unexpected_field、missing_evidence_ref 等机器类别。Provider 异常不重试；两次契约失败后严格生成五个空数组的安全空 Proposal。supports_json_schema 只有真实布尔 True 才传原生 Schema。
+实现 build_interview_preparation_snapshot、validate_interview_preparation 和 generate_interview_preparation_proposal。snapshot 只含事件最小字段、原始 JD、冻结 Resume、显式 Evidence 和断言；Provider payload 只含 JD、所选 Resume 和 Knowledge Evidence，绝不含 user_assertions，断言也不能成为 Evidence ref。解析阶段拒绝 fenced JSON、NaN/Infinity、重复键和额外字段；首次契约失败只重试一次并携带 invalid_json、unexpected_field、missing_evidence_ref 等机器类别。Provider 异常不重试；两次契约失败后严格生成五个空数组的安全空 Proposal。supports_json_schema 只有真实布尔 True 才传原生 Schema。
 
 - [ ] Step 4: 运行 GREEN 测试并提交
 
@@ -149,7 +150,10 @@ Files:
     test_ready_different_snapshot_returns_409_and_original_ready_remains_stable
     test_unfinished_different_snapshot_invalidates_with_reason_and_blocks_old_token
     test_resume_event_knowledge_drift_invalidates_before_ready
-    test_history_reads_ready_snapshot_after_event_or_application_changes
+    test_event_delete_keeps_history_readable_and_source_changed
+    test_resume_delete_keeps_history_readable_and_source_changed
+    test_knowledge_change_keeps_history_readable_and_source_changed
+    test_soft_deleted_application_returns_not_found_for_history
 
 到期接管测试必须让两个独立连接同时接管已过期 lease：只有一个写入 attempt_status=generating、revision 加一、新 token、新 lease；另一个读取新 lease 返回 202，Provider 调用次数为 1，不能用单线程顺序调用替代。
 
@@ -236,7 +240,7 @@ Files:
 
 - [ ] Step 1: 写前端 RED 测试
 
-覆盖固定中文五区域、显式简历/JD/Knowledge 选择、确认弹窗、安全空状态、Evidence 展示、202/超时/网络未知重试、404/409/422/502 和未知错误映射。扫描只断言本功能已知固定英文短语不出现，不禁止英文 JD、公司名、简历、Evidence 摘录或 AI 正文。
+覆盖固定中文五区域、显式简历/JD/Knowledge 选择、确认弹窗、安全空状态、Evidence 展示、202/超时/网络未知重试、404/409/422/502 和未知错误映射。确认弹窗必须明确写“仅 JD、所选简历和已确认 Knowledge Evidence 会发送给 AI；用户断言仅保存于本次快照，不会发送给 AI，也不作为建议依据”。扫描只断言本功能已知固定英文短语不出现，不禁止英文 JD、公司名、简历、Evidence 摘录或 AI 正文。
 
 测试名称：
 
@@ -246,6 +250,7 @@ Files:
     maps_known_and_unknown_errors_to_safe_chinese_copy
     keeps_the_original_key_after_pending_or_unknown_result
     shows_every_item_evidence_path_and_excerpt
+    renders_the_assertion_privacy_boundary_and_provider_payload_excludes_assertions
 
 - [ ] Step 2: 运行前端 RED 测试
 
@@ -259,7 +264,7 @@ Files:
 
 - [ ] Step 4: 实现 Drawer
 
-Drawer 先展示事件最小上下文、简历选择、原始 JD 输入、显式 Knowledge Evidence 选择和独立用户断言；确认弹窗明确提示输入将发送给当前 AI。生成后按五个固定区域展示，紧邻显示“岗位描述/选定简历/已确认 Knowledge Evidence”标签、路径和逐字摘录；安全空 Proposal 只显示“暂无可验证的面试准备建议”。不提供接受、修改投递、创建题目、练习、提醒、Knowledge 或 Memory 的按钮。
+Drawer 先展示事件最小上下文、简历选择、原始 JD 输入、显式 Knowledge Evidence 选择和独立用户断言；确认弹窗明确说明仅 JD、所选简历和已确认 Knowledge Evidence 发送给 AI，用户断言只进入本次服务端快照，不发送给 AI，也不作为建议依据。生成后按五个固定区域展示，紧邻显示“岗位描述/选定简历/已确认 Knowledge Evidence”标签、路径和逐字摘录；安全空 Proposal 只显示“暂无可验证的面试准备建议”。不提供接受、修改投递、创建题目、练习、提醒、Knowledge 或 Memory 的按钮。
 
 - [ ] Step 5: 运行 GREEN 测试并提交
 
