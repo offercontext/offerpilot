@@ -108,6 +108,13 @@ from offerpilot.repositories.interview_review_proposals import (
     InterviewReviewNotFound,
     InterviewReviewProposalsRepository,
 )
+from offerpilot.repositories.interview_preparation_proposals import (
+    InterviewPreparationConflictError,
+    InterviewPreparationNotFound,
+    InterviewPreparationProviderError,
+    InterviewPreparationProposalsRepository,
+    InterviewPreparationValidationError,
+)
 from offerpilot.repositories.interview_knowledge_capture import (
     CaptureAttemptConfirmed,
     CaptureAttemptConflict,
@@ -664,6 +671,7 @@ def create_app(
     material_revision_proposals = MaterialRevisionProposalsRepository(session_factory)
     opportunity_fit_reviews = OpportunityFitReviewsRepository(session_factory)
     interview_review_proposals = InterviewReviewProposalsRepository(session_factory)
+    interview_preparation_proposals = InterviewPreparationProposalsRepository(session_factory)
     interview_knowledge_capture = InterviewKnowledgeCaptureRepository(session_factory)
     mock_sessions = MockSessionsRepository(session_factory)
     wakeups = WakeupsRepository(session_factory)
@@ -1883,6 +1891,107 @@ def create_app(
             _opportunity_fit_review_detail_json(review),
             status_code=201 if created else 200,
         )
+
+    @app.get("/api/applications/{app_id}/interview-preparation-proposals")
+    def list_interview_preparation_proposals(app_id: int) -> JSONResponse:
+        try:
+            proposals = interview_preparation_proposals.list(app_id)
+        except InterviewPreparationNotFound:
+            return error_response(
+                404,
+                "该投递已不可见。",
+                code="interview_preparation_application_not_found",
+            )
+        return JSONResponse([_interview_preparation_proposal_json(item) for item in proposals])
+
+    @app.get("/api/applications/{app_id}/interview-preparation-proposals/{proposal_id}")
+    def get_interview_preparation_proposal(app_id: int, proposal_id: int) -> JSONResponse:
+        try:
+            proposal = interview_preparation_proposals.get(app_id, proposal_id)
+        except InterviewPreparationNotFound:
+            return error_response(
+                404,
+                "该投递已不可见。",
+                code="interview_preparation_application_not_found",
+            )
+        if proposal is None:
+            return error_response(
+                404,
+                "面试准备建议不存在。",
+                code="interview_preparation_proposal_not_found",
+            )
+        return JSONResponse(_interview_preparation_proposal_json(proposal))
+
+    @app.post("/api/applications/{app_id}/interview-preparation-proposals")
+    def create_interview_preparation_proposal(
+        app_id: int, payload: dict[str, Any] = Body(...)
+    ) -> JSONResponse:
+        parsed = _interview_preparation_request_payload(payload)
+        if isinstance(parsed, JSONResponse):
+            return parsed
+        app_model = applications.get(app_id)
+        if app_model is None or app_model.source not in HUMAN_APPLICATION_SOURCES:
+            return error_response(
+                404,
+                "该投递已不可见。",
+                code="interview_preparation_application_not_found",
+            )
+        try:
+            replay = interview_preparation_proposals.preflight(
+                application_id=app_id,
+                **parsed,
+            )
+        except InterviewPreparationNotFound as exc:
+            status = 404
+            code = getattr(exc, "code", "interview_preparation_application_not_found")
+            message = "所选简历不可见。" if code.endswith("resume_not_found") else "该投递已不可见。"
+            return error_response(status, message, code=code)
+        except InterviewPreparationValidationError as exc:
+            return error_response(422, "面试准备输入无法验证。", code=exc.code)
+        except InterviewPreparationConflictError as exc:
+            return error_response(409, "本次面试准备尝试已冲突，请重新开始。", code=exc.code)
+        if replay is not None:
+            return _interview_preparation_generation_response(replay)
+
+        model = _chat_model(chat_model, resolved_data_dir)
+        if isinstance(model, JSONResponse):
+            append_log_entry(
+                resolved_data_dir,
+                "WARNING",
+                "interview_preparation_generation category=provider_error "
+                "repair_attempted=false retry_count=0 duration_ms=0 provider_request_id=",
+            )
+            return error_response(
+                502,
+                "AI 服务暂不可用，请稍后重试。",
+                code="interview_preparation_provider_error",
+            )
+        try:
+            result = interview_preparation_proposals.create_generated(
+                model=model,
+                on_diagnostic=lambda diagnostic: append_log_entry(
+                    resolved_data_dir,
+                    "WARNING",
+                    _interview_preparation_diagnostic_message(diagnostic),
+                ),
+                **parsed,
+                application_id=app_id,
+            )
+        except InterviewPreparationNotFound as exc:
+            code = getattr(exc, "code", "interview_preparation_application_not_found")
+            message = "所选简历不可见。" if code.endswith("resume_not_found") else "该投递已不可见。"
+            return error_response(404, message, code=code)
+        except InterviewPreparationValidationError as exc:
+            return error_response(422, "面试准备输入无法验证。", code=exc.code)
+        except InterviewPreparationConflictError as exc:
+            return error_response(409, "本次面试准备尝试已冲突，请重新开始。", code=exc.code)
+        except InterviewPreparationProviderError:
+            return error_response(
+                502,
+                "AI 服务暂不可用，请稍后重试。",
+                code="interview_preparation_provider_error",
+            )
+        return _interview_preparation_generation_response(result)
 
     @app.get("/api/application-events")
     def list_application_events(
@@ -6201,6 +6310,123 @@ def _interview_review_proposal_json(proposal: Any) -> dict[str, Any]:
         "proposal_hash": proposal.proposal_hash,
         "created_at": _json_datetime(proposal.created_at),
     }
+
+
+def _interview_preparation_request_payload(payload: Any) -> dict[str, Any] | JSONResponse:
+    allowed = {
+        "event_id",
+        "resume_id",
+        "jd_text",
+        "knowledge_selections",
+        "user_assertions",
+        "idempotency_key",
+    }
+    if not isinstance(payload, dict) or set(payload) != allowed:
+        return error_response(
+            422,
+            "面试准备请求字段无效。",
+            code="interview_preparation_invalid_request",
+        )
+    if not isinstance(payload["event_id"], int) or isinstance(payload["event_id"], bool):
+        return error_response(422, "面试事件不能为空。", code="interview_preparation_event_required")
+    if not isinstance(payload["resume_id"], int) or isinstance(payload["resume_id"], bool):
+        return error_response(422, "简历不能为空。", code="interview_preparation_resume_required")
+    if not isinstance(payload["jd_text"], str) or not payload["jd_text"].strip():
+        return error_response(422, "JD 不能为空。", code="interview_preparation_jd_required")
+    if not isinstance(payload["idempotency_key"], str) or not payload["idempotency_key"].strip():
+        return error_response(422, "请求尝试标识不能为空。", code="interview_preparation_invalid_request")
+    if not isinstance(payload["knowledge_selections"], list) or any(
+        not isinstance(item, dict) for item in payload["knowledge_selections"]
+    ):
+        return error_response(422, "Knowledge 选择无效。", code="interview_preparation_invalid_request")
+    if not isinstance(payload["user_assertions"], list) or any(
+        not isinstance(item, str) for item in payload["user_assertions"]
+    ):
+        return error_response(422, "用户断言格式无效。", code="interview_preparation_invalid_request")
+    return {
+        "event_id": payload["event_id"],
+        "resume_id": payload["resume_id"],
+        "jd_text": payload["jd_text"],
+        "knowledge_selections": payload["knowledge_selections"],
+        "user_assertions": payload["user_assertions"],
+        "idempotency_key": payload["idempotency_key"],
+    }
+
+
+def _interview_preparation_generation_response(result: Any) -> JSONResponse:
+    if result.pending:
+        row = result.proposal
+        lease_until = getattr(row, "provider_lease_until", None)
+        retry_after_ms = 0
+        if isinstance(lease_until, datetime):
+            if lease_until.tzinfo is None:
+                lease_until = lease_until.replace(tzinfo=timezone.utc)
+            retry_after_ms = max(
+                0,
+                int((lease_until - datetime.now(timezone.utc)).total_seconds() * 1000),
+            )
+        payload = {
+            "attempt_status": result.attempt_status,
+            "application_id": row.application_id if row is not None else None,
+            "event_id": row.application_event_id if row is not None else None,
+            "idempotency_key": row.idempotency_key if row is not None else "",
+            "generation_revision": row.generation_revision if row is not None else 0,
+            "retry_after_ms": retry_after_ms,
+        }
+        return JSONResponse(payload, status_code=202)
+    if result.proposal is None:
+        return error_response(502, "面试准备建议暂时不可用，请稍后重试。")
+    return JSONResponse(
+        _interview_preparation_proposal_json(result.proposal),
+        status_code=201 if result.created else 200,
+    )
+
+
+def _interview_preparation_proposal_json(proposal: Any) -> dict[str, Any]:
+    try:
+        proposal_payload = json.loads(proposal.proposal_json)
+        snapshot = json.loads(proposal.input_snapshot_json)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        proposal_payload = {}
+        snapshot = {}
+    source_states = getattr(proposal, "source_states", {})
+    if not isinstance(source_states, dict):
+        source_states = {}
+    return {
+        "id": proposal.id,
+        "application_id": proposal.application_id,
+        "event_id": proposal.application_event_id,
+        "resume_id": proposal.resume_id,
+        "attempt_status": proposal.attempt_status,
+        "proposal_status": proposal.proposal_status,
+        "source_fingerprint": proposal.source_fingerprint,
+        "source_status": getattr(proposal, "source_status", "source_changed"),
+        "source_states": source_states,
+        "proposal": proposal_payload,
+        "proposal_hash": proposal.proposal_hash,
+        "input_snapshot": snapshot,
+        "created_at": _json_datetime(proposal.created_at),
+    }
+
+
+def _interview_preparation_diagnostic_message(diagnostic: dict[str, Any]) -> str:
+    category = str(diagnostic.get("failure_category") or "unknown")
+    repair_attempted = "true" if diagnostic.get("repair_attempted") is True else "false"
+    try:
+        retry_count = max(0, min(int(diagnostic.get("retry_count") or 0), 1))
+    except (TypeError, ValueError):
+        retry_count = 0
+    try:
+        duration_ms = max(0, int(diagnostic.get("duration_ms") or 0))
+    except (TypeError, ValueError):
+        duration_ms = 0
+    request_id = str(diagnostic.get("provider_request_id") or "")[:128]
+    return (
+        "interview_preparation_generation "
+        f"category={category} repair_attempted={repair_attempted} "
+        f"retry_count={retry_count} duration_ms={duration_ms} "
+        f"provider_request_id={request_id}"
+    )
 
 
 def _offer_create_from_payload(

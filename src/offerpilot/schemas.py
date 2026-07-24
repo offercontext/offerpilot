@@ -278,6 +278,31 @@ class InterviewReviewProposalOut(BaseModel):
     created_at: datetime | str
 
 
+class InterviewPreparationProposalOut(BaseModel):
+    id: int
+    application_id: int
+    event_id: int
+    resume_id: int
+    attempt_status: Literal["ready"]
+    proposal_status: Literal["normal", "safe_empty"]
+    source_fingerprint: str
+    source_status: Literal["current", "source_changed"]
+    source_states: dict[str, str]
+    proposal: dict[str, Any]
+    proposal_hash: str
+    input_snapshot: dict[str, Any]
+    created_at: datetime | str
+
+
+class InterviewPreparationPendingOut(BaseModel):
+    attempt_status: Literal["generating", "provider_unknown"]
+    application_id: int
+    event_id: int
+    idempotency_key: str
+    generation_revision: int
+    retry_after_ms: int
+
+
 class OpportunityFitReviewOut(OpportunityFitReviewSummaryOut):
     source: dict[str, Any]
     triage: dict[str, Any]

@@ -22,7 +22,9 @@ LEASE_SECONDS = 30
 
 
 class InterviewPreparationNotFound(Exception):
-    code = "interview_preparation_application_not_found"
+    def __init__(self, code: str = "interview_preparation_application_not_found") -> None:
+        super().__init__(code)
+        self.code = code
 
 
 class InterviewPreparationValidationError(ValueError):
@@ -63,7 +65,7 @@ class InterviewPreparationProposalsRepository:
         knowledge_selections: list[dict[str, Any]],
         user_assertions: list[str],
         idempotency_key: str,
-        model: ChatModel,
+        model: ChatModel | None,
         on_diagnostic: Any | None = None,
     ) -> InterviewPreparationGenerationResult:
         with self._session_factory() as session:
@@ -130,6 +132,57 @@ class InterviewPreparationProposalsRepository:
             on_diagnostic=on_diagnostic,
         )
 
+    def preflight(
+        self,
+        *,
+        application_id: int,
+        event_id: int,
+        resume_id: int,
+        jd_text: str,
+        knowledge_selections: list[dict[str, Any]],
+        user_assertions: list[str],
+        idempotency_key: str,
+    ) -> InterviewPreparationGenerationResult | None:
+        """Return a replayable attempt without resolving the AI provider.
+
+        A ready result and an unexpired lease are safe to return before provider
+        configuration is loaded.  ``None`` means a new row or an expired lease
+        needs a provider call, so the caller must resolve the provider before
+        invoking ``create_generated``.
+        """
+        with self._session_factory() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            snapshot = _build_snapshot(
+                session,
+                application_id=application_id,
+                event_id=event_id,
+                resume_id=resume_id,
+                jd_text=jd_text,
+                knowledge_selections=knowledge_selections,
+                user_assertions=user_assertions,
+            )
+            fingerprint = sha256_text(canonical_json(snapshot))
+            existing = _find_by_key(session, application_id, event_id, idempotency_key)
+            if existing is None:
+                session.commit()
+                return None
+            result = self._handle_existing(
+                session,
+                existing,
+                fingerprint=fingerprint,
+                snapshot=snapshot,
+                model=None,
+                application_id=application_id,
+                event_id=event_id,
+                resume_id=resume_id,
+                jd_text=jd_text,
+                knowledge_selections=knowledge_selections,
+                user_assertions=user_assertions,
+                idempotency_key=idempotency_key,
+                on_diagnostic=None,
+            )
+            return result
+
     def list(self, application_id: int) -> list[InterviewPreparationProposal]:
         with self._session_factory() as session:
             _require_visible_application(session, application_id)
@@ -168,7 +221,7 @@ class InterviewPreparationProposalsRepository:
         *,
         fingerprint: str,
         snapshot: dict[str, Any],
-        model: ChatModel,
+        model: ChatModel | None,
         application_id: int,
         event_id: int,
         resume_id: int,
@@ -177,7 +230,7 @@ class InterviewPreparationProposalsRepository:
         user_assertions: list[str],
         idempotency_key: str,
         on_diagnostic: Any | None,
-    ) -> InterviewPreparationGenerationResult:
+    ) -> InterviewPreparationGenerationResult | None:
         if row.attempt_status == "invalidated":
             raise InterviewPreparationConflictError(
                 "interview preparation attempt was invalidated",
@@ -201,6 +254,10 @@ class InterviewPreparationProposalsRepository:
         lease_until = _as_aware(row.provider_lease_until)
         if lease_until is not None and lease_until > datetime.now(timezone.utc):
             return InterviewPreparationGenerationResult(row, False, True, row.attempt_status)
+
+        if model is None:
+            session.commit()
+            return None
 
         old_revision = row.generation_revision
         old_token = row.provider_call_token
@@ -254,7 +311,7 @@ class InterviewPreparationProposalsRepository:
     def _call_and_store(
         self,
         *,
-        model: ChatModel,
+        model: ChatModel | None,
         owner_revision: int,
         owner_token: str,
         application_id: int,
@@ -268,6 +325,8 @@ class InterviewPreparationProposalsRepository:
         snapshot: dict[str, Any],
         on_diagnostic: Any | None,
     ) -> InterviewPreparationGenerationResult:
+        if model is None:
+            raise InterviewPreparationProviderError()
         try:
             proposal = generate_interview_preparation_proposal(
                 model,
@@ -384,7 +443,7 @@ def _build_snapshot(
         )
     resume = session.get(Resume, resume_id)
     if resume is None or resume.deleted_at is not None:
-        raise InterviewPreparationNotFound()
+        raise InterviewPreparationNotFound("interview_preparation_resume_not_found")
     if not isinstance(jd_text, str) or not jd_text.strip():
         raise InterviewPreparationValidationError(
             "JD is required", "interview_preparation_jd_required"
