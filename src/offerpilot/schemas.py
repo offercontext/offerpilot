@@ -286,7 +286,7 @@ class InterviewPreparationProposalOut(BaseModel):
     attempt_status: Literal["ready"]
     proposal_status: Literal["normal", "safe_empty"]
     source_fingerprint: str
-    source_status: Literal["current", "source_changed"]
+    source_status: Literal["current", "source_changed", "not_checked"]
     source_states: dict[str, str]
     proposal: dict[str, Any]
     proposal_hash: str

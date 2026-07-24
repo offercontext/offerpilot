@@ -28,7 +28,7 @@ export interface InterviewPreparationProposal {
   attempt_status: 'ready';
   proposal_status: 'normal' | 'safe_empty';
   source_fingerprint: string;
-  source_status: 'current' | 'source_changed';
+  source_status: 'current' | 'source_changed' | 'not_checked';
   source_states: Record<string, string>;
   proposal: InterviewPreparationProposalBody;
   proposal_hash: string;

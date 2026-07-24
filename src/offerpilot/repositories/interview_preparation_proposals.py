@@ -606,25 +606,67 @@ def _require_visible_application(session: Session, application_id: int) -> Appli
 
 
 def _set_source_status(session: Session, row: InterviewPreparationProposal) -> None:
+    states = {
+        "event": "source_changed",
+        "resume": "source_changed",
+        "jd": "not_checked",
+        "knowledge": "current",
+    }
     try:
         snapshot = json.loads(row.input_snapshot_json)
         event_id = snapshot["event"]["id"]
         resume_id = snapshot["resume"]["id"]
-        event_exists = session.scalar(
-            select(ApplicationEvent.id)
+        event = session.scalar(
+            select(ApplicationEvent)
             .where(ApplicationEvent.id == event_id)
             .where(ApplicationEvent.application_id == row.application_id)
         )
-        resume_exists = session.scalar(
-            select(Resume.id)
+        event_snapshot = snapshot["event"]
+        if (
+            event is not None
+            and event.event_type == event_snapshot.get("event_type")
+            and event.subtype == event_snapshot.get("subtype")
+            and event.round == event_snapshot.get("round")
+            and event.status == event_snapshot.get("status")
+        ):
+            states["event"] = "current"
+        resume = session.scalar(
+            select(Resume)
             .where(Resume.id == resume_id)
             .where(Resume.deleted_at.is_(None))
         )
-        source_status = "current" if event_exists is not None and resume_exists is not None else "source_changed"
+        if resume is not None:
+            try:
+                current_content = parse_json_object("resume", resume.content_json)
+                if canonical_json(current_content) == canonical_json(snapshot["resume"]["content_json"]):
+                    states["resume"] = "current"
+            except Exception:
+                pass
+        knowledge_changed = False
+        for evidence in snapshot.get("knowledge_evidence", []):
+            evidence_id = evidence.get("id") if isinstance(evidence, dict) else None
+            version_id = evidence.get("note_version_id") if isinstance(evidence, dict) else None
+            current = session.scalar(
+                select(KnowledgeEvidence)
+                .join(KnowledgeNoteEvidence, KnowledgeNoteEvidence.evidence_id == KnowledgeEvidence.id)
+                .where(KnowledgeEvidence.id == evidence_id)
+                .where(KnowledgeNoteEvidence.note_version_id == version_id)
+            )
+            source = session.get(KnowledgeSource, current.source_id) if current is not None else None
+            if (
+                current is None
+                or source is None
+                or source.deleted_at is not None
+                or current.canonical_excerpt != evidence.get("excerpt")
+            ):
+                knowledge_changed = True
+        if knowledge_changed:
+            states["knowledge"] = "source_changed"
+        source_status = "source_changed" if "source_changed" in states.values() else "not_checked"
     except (TypeError, ValueError, KeyError):
         source_status = "source_changed"
     setattr(row, "source_status", source_status)
-    setattr(row, "source_states", {"event": source_status, "resume": source_status, "jd": "not_checked", "knowledge": source_status})
+    setattr(row, "source_states", states)
 
 
 def _lease_until() -> datetime:
