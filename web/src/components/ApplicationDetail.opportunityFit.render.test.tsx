@@ -9,6 +9,7 @@ import { writeMaterialKitHandoff } from '@/features/pilot/materialKitHandoff';
 const state = vi.hoisted(() => ({
   materialProps: vi.fn(),
   analyzeJD: vi.fn(),
+  events: [] as unknown[],
 }));
 
 vi.mock('@/services/ai', () => ({ analyzeJD: state.analyzeJD }));
@@ -22,7 +23,7 @@ vi.mock('@/services/events', () => ({ listEvents: vi.fn().mockResolvedValue([]) 
 vi.mock('@tanstack/react-query', () => ({
   useQueryClient: () => ({ invalidateQueries: vi.fn() }),
   useQuery: (options: { queryKey?: unknown[] }) => ({
-    data: options.queryKey?.[0] === 'notes' || options.queryKey?.[0] === 'events' ? [] : [],
+    data: options.queryKey?.[0] === 'events' ? state.events : [],
     isLoading: false,
   }),
   useMutation: () => ({ mutate: vi.fn(), isPending: false }),
@@ -77,6 +78,9 @@ vi.mock('antd', () => {
     Button: ({ children, htmlType: _htmlType, loading: _loading, icon: _icon, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { htmlType?: string; loading?: boolean; icon?: ReactNode }) => (
       <button {...props}>{children}</button>
     ),
+    Modal: (props: { open?: boolean; title?: ReactNode; children: ReactNode; footer?: ReactNode; onCancel?: () => void }) => (
+      props.open ? <div role="dialog"><h3>{props.title}</h3>{props.children}</div> : null
+    ),
     Divider: () => <hr />,
     Empty: (props: { description?: ReactNode }) => <div>{props.description}</div>,
     Form,
@@ -113,6 +117,7 @@ let container: HTMLDivElement | undefined;
 beforeEach(() => {
   state.materialProps.mockReset();
   state.analyzeJD.mockReset();
+  state.events = [];
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -205,5 +210,30 @@ describe('ApplicationDetail opportunity fit handoff', () => {
     act(() => button?.click());
     expect(openPilot).toHaveBeenCalledWith(application);
     expect(state.analyzeJD).not.toHaveBeenCalled();
+  });
+
+  it('requires an explicit interview choice when Pilot targets multiple interviews', async () => {
+    state.events = [
+      { id: 31, event_type: 'interview', subtype: 'technical', scheduled_at: '2026-07-24T10:00:00Z' },
+      { id: 32, event_type: 'interview', subtype: 'behavioral', scheduled_at: '2026-07-25T10:00:00Z' },
+    ];
+    act(() => root?.render(
+      <ApplicationDetail
+        application={application}
+        open
+        onClose={vi.fn()}
+        pilotInterviewPreparationApplicationId={7}
+        onPilotInterviewPreparationFocusConsumed={vi.fn()}
+      />,
+    ));
+    await act(async () => { await Promise.resolve(); });
+
+    expect(container?.textContent).toContain('选择要准备的面试');
+    expect(container?.textContent).toContain('technical');
+    expect(container?.textContent).toContain('behavioral');
+    const dialogButtons = [...(container?.querySelectorAll('[role="dialog"] button') || [])];
+    expect(dialogButtons).toHaveLength(2);
+    act(() => (dialogButtons[1] as HTMLButtonElement).click());
+    expect(container?.textContent).toContain('面试准备建议');
   });
 });

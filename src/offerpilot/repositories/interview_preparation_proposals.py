@@ -15,15 +15,18 @@ from offerpilot.ai.interview_preparation_proposals import (
     InterviewPreparationModelError,
     generate_interview_preparation_proposal,
 )
+from offerpilot.knowledge.interview_capture import note_fingerprint
 from offerpilot.models import (
     Application,
     ApplicationEvent,
     InterviewPreparationProposal,
     KnowledgeEvidence,
+    KnowledgeCapturedSourceMetadata,
     KnowledgeNote,
     KnowledgeNoteEvidence,
     KnowledgeNoteVersion,
     KnowledgeSource,
+    InterviewNote,
     Resume,
 )
 from offerpilot.repositories.json_contract import canonical_json, parse_json_object, sha256_text
@@ -61,6 +64,28 @@ class InterviewPreparationGenerationResult:
     created: bool
     pending: bool
     attempt_status: str
+
+
+def _attempt_invalidated() -> InterviewPreparationConflictError:
+    return InterviewPreparationConflictError(
+        "interview preparation attempt was invalidated",
+        "interview_preparation_attempt_invalidated",
+    )
+
+
+def _result_for_existing(
+    row: InterviewPreparationProposal,
+) -> InterviewPreparationGenerationResult:
+    if row.attempt_status == "ready":
+        return InterviewPreparationGenerationResult(row, False, False, "ready")
+    if row.attempt_status in {"generating", "provider_unknown"}:
+        return InterviewPreparationGenerationResult(row, False, True, row.attempt_status)
+    if row.attempt_status == "invalidated":
+        raise _attempt_invalidated()
+    raise InterviewPreparationConflictError(
+        "interview preparation attempt has an unsupported state",
+        "interview_preparation_idempotency_conflict",
+    )
 
 
 class InterviewPreparationProposalsRepository:
@@ -257,16 +282,32 @@ class InterviewPreparationProposalsRepository:
         on_diagnostic: Any | None,
     ) -> InterviewPreparationGenerationResult | None:
         if row.attempt_status == "invalidated":
-            raise InterviewPreparationConflictError(
-                "interview preparation attempt was invalidated",
-                "interview_preparation_attempt_invalidated",
-            )
+            raise _attempt_invalidated()
         if row.source_fingerprint != fingerprint:
             if row.attempt_status in {"generating", "provider_unknown"}:
-                row.attempt_status = "invalidated"
-                row.invalidation_reason = "idempotency_conflict"
-                row.provider_call_token = ""
-                row.provider_lease_until = None
+                session.execute(
+                    update(InterviewPreparationProposal)
+                    .where(InterviewPreparationProposal.id == row.id)
+                    .where(
+                        InterviewPreparationProposal.attempt_status.in_(
+                            ["generating", "provider_unknown"]
+                        )
+                    )
+                    .where(
+                        InterviewPreparationProposal.generation_revision
+                        == row.generation_revision
+                    )
+                    .where(
+                        InterviewPreparationProposal.provider_call_token
+                        == row.provider_call_token
+                    )
+                    .values(
+                        attempt_status="invalidated",
+                        invalidation_reason="idempotency_conflict",
+                        provider_call_token="",
+                        provider_lease_until=None,
+                    )
+                )
                 session.commit()
             raise InterviewPreparationConflictError(
                 "interview preparation idempotency key has a different snapshot",
@@ -310,12 +351,7 @@ class InterviewPreparationProposalsRepository:
                     "interview preparation attempt disappeared",
                     "interview_preparation_idempotency_conflict",
                 )
-            return InterviewPreparationGenerationResult(
-                refreshed,
-                False,
-                True,
-                refreshed.attempt_status,
-            )
+            return _result_for_existing(refreshed)
         session.commit()
         return self._call_and_store(
             model=model,
@@ -393,35 +429,50 @@ class InterviewPreparationProposalsRepository:
             except InterviewPreparationValidationError:
                 current_snapshot = None
             if current_snapshot is None:
-                if (
-                    row.attempt_status == "generating"
-                    and row.generation_revision == owner_revision
-                    and row.provider_call_token == owner_token
-                ):
-                    row.attempt_status = "invalidated"
-                    row.invalidation_reason = "source_conflict"
-                    row.provider_call_token = ""
-                    row.provider_lease_until = None
+                invalidated = session.execute(
+                    update(InterviewPreparationProposal)
+                    .where(InterviewPreparationProposal.id == row.id)
+                    .where(InterviewPreparationProposal.attempt_status == "generating")
+                    .where(InterviewPreparationProposal.generation_revision == owner_revision)
+                    .where(InterviewPreparationProposal.provider_call_token == owner_token)
+                    .values(
+                        attempt_status="invalidated",
+                        invalidation_reason="source_conflict",
+                        provider_call_token="",
+                        provider_lease_until=None,
+                    )
+                )
+                if getattr(invalidated, "rowcount", 0) == 1:
                     session.commit()
                     raise InterviewPreparationConflictError(
                         "interview preparation source changed",
                         "interview_preparation_source_conflict",
                     )
                 session.commit()
-                if row.attempt_status == "ready":
-                    return InterviewPreparationGenerationResult(row, False, False, "ready")
-                return InterviewPreparationGenerationResult(row, False, True, row.attempt_status)
+                return _result_for_existing(row)
             current_fingerprint = sha256_text(canonical_json(current_snapshot))
             if current_fingerprint != source_fingerprint:
-                row.attempt_status = "invalidated"
-                row.invalidation_reason = "source_conflict"
-                row.provider_call_token = ""
-                row.provider_lease_until = None
-                session.commit()
-                raise InterviewPreparationConflictError(
-                    "interview preparation source changed",
-                    "interview_preparation_source_conflict",
+                invalidated = session.execute(
+                    update(InterviewPreparationProposal)
+                    .where(InterviewPreparationProposal.id == row.id)
+                    .where(InterviewPreparationProposal.attempt_status == "generating")
+                    .where(InterviewPreparationProposal.generation_revision == owner_revision)
+                    .where(InterviewPreparationProposal.provider_call_token == owner_token)
+                    .values(
+                        attempt_status="invalidated",
+                        invalidation_reason="source_conflict",
+                        provider_call_token="",
+                        provider_lease_until=None,
+                    )
                 )
+                if getattr(invalidated, "rowcount", 0) == 1:
+                    session.commit()
+                    raise InterviewPreparationConflictError(
+                        "interview preparation source changed",
+                        "interview_preparation_source_conflict",
+                    )
+                session.commit()
+                return _result_for_existing(row)
             if (
                 row.attempt_status != "generating"
                 or row.generation_revision != owner_revision
@@ -430,9 +481,7 @@ class InterviewPreparationProposalsRepository:
                 <= datetime.now(timezone.utc)
             ):
                 session.commit()
-                if row.attempt_status == "ready":
-                    return InterviewPreparationGenerationResult(row, False, False, "ready")
-                return InterviewPreparationGenerationResult(row, False, True, row.attempt_status)
+                return _result_for_existing(row)
             proposal_json = canonical_json(proposal)
             row.proposal_json = proposal_json
             row.proposal_hash = sha256_text(proposal_json)
@@ -576,6 +625,7 @@ def _validate_knowledge_selections(
             .join(KnowledgeSource, KnowledgeSource.id == KnowledgeNoteVersion.source_id)
             .where(KnowledgeNoteVersion.id == version_id)
             .where(KnowledgeNote.current_version_id == version_id)
+            .where(KnowledgeNote.origin_kind == "confirmed_interview_capture")
             .where(KnowledgeNote.archived_at.is_(None))
             .where(KnowledgeSource.deleted_at.is_(None))
             .where(KnowledgeSource.archived_at.is_(None))
@@ -584,6 +634,22 @@ def _validate_knowledge_selections(
         if version is None:
             raise InterviewPreparationValidationError(
                 "Knowledge Note Version is unavailable",
+                "interview_preparation_knowledge_selection_invalid",
+            )
+        metadata = session.scalar(
+            select(KnowledgeCapturedSourceMetadata).where(
+                KnowledgeCapturedSourceMetadata.source_id == version.source_id
+            )
+        )
+        if metadata is None:
+            raise InterviewPreparationValidationError(
+                "Knowledge source is not a confirmed interview capture",
+                "interview_preparation_knowledge_selection_invalid",
+            )
+        origin_note = session.get(InterviewNote, metadata.origin_note_id)
+        if origin_note is None or note_fingerprint(origin_note) != metadata.note_fingerprint:
+            raise InterviewPreparationValidationError(
+                "Knowledge source has changed",
                 "interview_preparation_knowledge_selection_invalid",
             )
         if len(evidence_ids) > 20 or any(
@@ -623,11 +689,13 @@ def _validate_knowledge_selections(
                     "Knowledge Evidence is too large",
                     "interview_preparation_input_too_large",
                 )
+            provider_path = f"/knowledge_evidence/{len(result) + 1:03d}"
             result.append(
                 {
                     "id": row.id,
                     "note_version_id": version_id,
                     "path": f"/{row.id}",
+                    "provider_path": provider_path,
                     "excerpt": row.canonical_excerpt,
                     "content_hash": row.content_hash,
                     "source_hash": session.scalar(
@@ -712,12 +780,30 @@ def _set_source_status(session: Session, row: InterviewPreparationProposal) -> N
                 .where(KnowledgeEvidence.id == evidence_id)
                 .where(KnowledgeNoteEvidence.note_version_id == version_id)
                 .where(KnowledgeNote.current_version_id == version_id)
+                .where(KnowledgeNote.origin_kind == "confirmed_interview_capture")
                 .where(KnowledgeNote.archived_at.is_(None))
             )
             source = session.get(KnowledgeSource, current.source_id) if current is not None else None
+            metadata = (
+                session.scalar(
+                    select(KnowledgeCapturedSourceMetadata).where(
+                        KnowledgeCapturedSourceMetadata.source_id == current.source_id
+                    )
+                )
+                if current is not None
+                else None
+            )
+            origin_note = (
+                session.get(InterviewNote, metadata.origin_note_id)
+                if metadata is not None
+                else None
+            )
             if (
                 current is None
                 or source is None
+                or metadata is None
+                or origin_note is None
+                or note_fingerprint(origin_note) != metadata.note_fingerprint
                 or source.deleted_at is not None
                 or source.archived_at is not None
                 or source.lifecycle == "deleting"

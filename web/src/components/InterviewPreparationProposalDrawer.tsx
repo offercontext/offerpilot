@@ -131,6 +131,7 @@ export default function InterviewPreparationProposalDrawer({
   );
   const suppressDraftPersistence = useRef(false);
   const hasInput = Boolean(resumeId && jdText.trim());
+  const resultUnknown = attemptState?.result_unknown ?? draft?.attemptState.result_unknown ?? false;
   const isSafeEmpty = proposal?.proposal_status === 'safe_empty';
   const input = useMemo<CreateInterviewPreparationProposalInput>(() => ({
     application_id: context.applicationId,
@@ -154,7 +155,7 @@ export default function InterviewPreparationProposalDrawer({
   useEffect(() => {
     if (!open) return;
     void listInterviewPreparationProposals(context.applicationId)
-      .then(setHistory)
+      .then((items) => setHistory(items.filter((item) => item.event_id === context.eventId)))
       .catch(() => undefined);
   }, [context.applicationId, open]);
 
@@ -193,7 +194,7 @@ export default function InterviewPreparationProposalDrawer({
       }
     } catch (caught) {
       const typedError = caught instanceof InterviewPreparationProposalError ? caught : null;
-      const unknown = !typedError || typedError.code === 'interview_preparation_provider_error';
+      const unknown = !typedError || typedError.code === null;
       if (unknown) {
         onAttemptStateChange?.({ key: attemptKey, result_unknown: true });
       } else {
@@ -213,6 +214,9 @@ export default function InterviewPreparationProposalDrawer({
       <h2>面试准备建议</h2>
       <p>围绕当前面试事件，生成可审阅、可引用的准备建议。</p>
       <p>仅 JD、所选简历和已确认 Knowledge Evidence 会发送给 AI；用户断言仅保存于本次快照，不会发送给 AI。</p>
+      {resultUnknown && (
+        <p role="status">上次请求结果待确认，请使用原尝试重试；请不要修改输入。</p>
+      )}
       <dl>
         <dt>岗位描述</dt><dd>{jdText || '尚未填写'}</dd>
         <dt>选定简历</dt><dd>{resumeId || '尚未选择'}</dd>
@@ -225,6 +229,7 @@ export default function InterviewPreparationProposalDrawer({
             <label key={option.evidence_id}>
               <input
                 type="checkbox"
+                disabled={resultUnknown}
                 checked={selectedEvidenceIds.includes(option.evidence_id)}
                 onChange={() => setSelectedEvidenceIds((current) => current.includes(option.evidence_id)
                   ? current.filter((id) => id !== option.evidence_id)
@@ -237,7 +242,7 @@ export default function InterviewPreparationProposalDrawer({
       )}
       <label>
         选择简历
-        <select value={resumeId} onChange={(event) => setResumeId(Number(event.target.value))}>
+        <select disabled={resultUnknown} value={resumeId} onChange={(event) => setResumeId(Number(event.target.value))}>
           <option value={0}>请选择简历</option>
           {resumeOptions.map((resume) => (
             <option key={resume.id} value={resume.id}>{resume.title || resume.name || `简历 ${resume.id}`}</option>
@@ -246,11 +251,11 @@ export default function InterviewPreparationProposalDrawer({
       </label>
       <label>
         粘贴 JD
-        <textarea value={jdText} onChange={(event) => setJdText(event.target.value)} placeholder="仅粘贴岗位描述文本，不会抓取链接。" />
+        <textarea disabled={resultUnknown} value={jdText} onChange={(event) => setJdText(event.target.value)} placeholder="仅粘贴岗位描述文本，不会抓取链接。" />
       </label>
       <label>
         可选用户断言（不会发送给 AI）
-        <textarea value={assertionsText} onChange={(event) => setAssertionsText(event.target.value)} placeholder="每行一条本次准备的补充信息" />
+        <textarea disabled={resultUnknown} value={assertionsText} onChange={(event) => setAssertionsText(event.target.value)} placeholder="每行一条本次准备的补充信息" />
       </label>
       {history.length > 0 && (
         <aside aria-label="历史面试准备建议">
@@ -288,7 +293,7 @@ export default function InterviewPreparationProposalDrawer({
         </section>
       ))}
       <button type="button" disabled={!hasInput || busy} onClick={() => void generate()}>
-        {busy ? '正在生成…' : '生成面试准备建议'}
+        {busy ? '正在生成…' : resultUnknown ? '使用原尝试重试' : '生成面试准备建议'}
       </button>
       <button type="button" onClick={onClose}>关闭</button>
     </section>

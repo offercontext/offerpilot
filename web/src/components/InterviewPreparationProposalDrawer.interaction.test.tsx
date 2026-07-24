@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const service = vi.hoisted(() => {
   class InterviewPreparationProposalError extends Error {
-    constructor(public status: number, public code: string, message = '') {
+    constructor(public status: number, public code: string | null, message = '') {
       super(message);
     }
   }
@@ -98,6 +98,67 @@ describe('InterviewPreparationProposalDrawer interaction', () => {
     });
     expect(container?.textContent).toContain('AI 服务暂不可用，请稍后重试');
     expect(container?.textContent).not.toContain('API key secret');
+  });
+
+  it('keeps the same attempt after a raw server failure and remount', async () => {
+    service.create.mockRejectedValueOnce(new service.InterviewPreparationProposalError(500, null));
+    const attemptChanges: Array<{ key: string; result_unknown: boolean } | null> = [];
+    const draftChanges: unknown[] = [];
+    const props = {
+      open: true,
+      context,
+      onClose: () => {},
+      onDraftChange: (draft: unknown) => draftChanges.push(draft),
+      onAttemptStateChange: (state: { key: string; result_unknown: boolean } | null) => attemptChanges.push(state),
+    };
+    act(() => root?.render(<InterviewPreparationProposalDrawer {...props} />));
+    await act(async () => {
+      container?.querySelectorAll('button')[0]?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+    const unknownAttempt = attemptChanges.find((state) => state?.result_unknown);
+    expect(unknownAttempt).toEqual({ key: expect.any(String), result_unknown: true });
+    expect(draftChanges).not.toContain(null);
+    act(() => root?.render(<InterviewPreparationProposalDrawer {...props} attemptState={unknownAttempt!} />));
+    expect(container?.textContent).toContain('上次请求结果待确认，请使用原尝试重试');
+
+    act(() => root?.unmount());
+    service.create.mockResolvedValueOnce({
+      id: 21,
+      application_id: 7,
+      event_id: 11,
+      resume_id: 13,
+      attempt_status: 'ready',
+      proposal_status: 'safe_empty',
+      source_status: 'current',
+      source_states: { jd: 'not_checked' },
+      proposal: {
+        preparation_directions: [], story_prompts: [], review_points: [],
+        interviewer_questions: [], items_to_clarify: [],
+      },
+    });
+    const reusedDraft = {
+      attemptState: unknownAttempt!,
+      resumeId: 13,
+      jdText: context.jdText,
+      assertionsText: context.userAssertions.join('\n'),
+      knowledgeSelections: [],
+    };
+    root = createRoot(container!);
+    act(() => root?.render(
+      <InterviewPreparationProposalDrawer
+        {...props}
+        attemptState={unknownAttempt!}
+        draft={reusedDraft}
+      />,
+    ));
+    await act(async () => {
+      container?.querySelectorAll('button')[0]?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(service.create).toHaveBeenLastCalledWith(expect.objectContaining({
+      idempotency_key: unknownAttempt!.key,
+    }));
   });
 
   it('clears the draft and attempt key after a definite validation failure', async () => {

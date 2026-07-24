@@ -252,6 +252,61 @@ def test_ready_different_snapshot_returns_409_and_original_ready_remains_stable(
     factory.kw["bind"].dispose()
 
 
+def test_late_stale_owner_cannot_invalidate_ready_proposal(tmp_path) -> None:
+    factory, ids = _setup(tmp_path)
+    repository = InterviewPreparationProposalsRepository(factory)
+    first = _generate(repository, ids, "late-owner-key-0001", SafeEmptyModel())
+    assert first.proposal is not None
+
+    with factory() as session:
+        row = session.scalar(select(InterviewPreparationProposal))
+        assert row is not None
+        snapshot = json.loads(row.input_snapshot_json)
+
+    result = repository._call_and_store(
+        model=SafeEmptyModel(),
+        owner_revision=1,
+        owner_token="stale-provider-token",
+        application_id=ids[0],
+        event_id=ids[1],
+        resume_id=ids[2],
+        jd_text=JD_TEXT,
+        knowledge_selections=[],
+        user_assertions=["I led the migration."],
+        idempotency_key="late-owner-key-0001",
+        source_fingerprint="stale-fingerprint",
+        snapshot=snapshot,
+        on_diagnostic=None,
+    )
+
+    assert result.pending is False
+    assert result.proposal is not None
+    assert result.proposal.id == first.proposal.id
+    with factory() as session:
+        row = session.scalar(select(InterviewPreparationProposal))
+        assert row is not None
+        assert row.attempt_status == "ready"
+    factory.kw["bind"].dispose()
+
+
+def test_invalidated_attempt_is_never_returned_as_pending(tmp_path) -> None:
+    factory, ids = _setup(tmp_path)
+    repository = InterviewPreparationProposalsRepository(factory)
+    with pytest.raises(InterviewPreparationProviderError):
+        _generate(repository, ids, "invalidated-key-0001", FailingModel())
+    with factory() as session:
+        row = session.scalar(select(InterviewPreparationProposal))
+        assert row is not None
+        row.attempt_status = "invalidated"
+        row.invalidation_reason = "source_conflict"
+        session.commit()
+
+    with pytest.raises(InterviewPreparationConflictError) as exc_info:
+        _generate(repository, ids, "invalidated-key-0001", SafeEmptyModel())
+    assert exc_info.value.code == "interview_preparation_attempt_invalidated"
+    factory.kw["bind"].dispose()
+
+
 def test_event_delete_keeps_history_readable_and_source_changed(tmp_path) -> None:
     factory, ids = _setup(tmp_path)
     repository = InterviewPreparationProposalsRepository(factory)

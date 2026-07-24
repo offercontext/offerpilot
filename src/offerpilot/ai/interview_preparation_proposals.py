@@ -116,13 +116,18 @@ def validate_interview_preparation(
         raise _model_error("invalid top-level fields", "unexpected_field")
     _validate_snapshot(snapshot)
     normalized: dict[str, Any] = {}
+    seen_item_ids: set[str] = set()
     for field in PREPARATION_FIELDS:
         items = payload[field]
         if not isinstance(items, list) or len(items) > MAX_ITEMS:
             raise _model_error(f"{field} exceeds the item limit", "limit_exceeded")
         normalized[field] = []
         for item in items:
-            normalized[field].append(_validate_item(item, snapshot))
+            normalized_item = _validate_item(item, snapshot)
+            if normalized_item["id"] in seen_item_ids:
+                raise _model_error("item ids must be globally unique", "invalid_item_shape")
+            seen_item_ids.add(normalized_item["id"])
+            normalized[field].append(normalized_item)
     return normalized
 
 
@@ -248,7 +253,7 @@ def _validate_ref(ref: Any, snapshot: dict[str, Any]) -> dict[str, str]:
     excerpt = ref.get("excerpt")
     if source not in _ALLOWED_SOURCES or not isinstance(path, str) or not isinstance(excerpt, str):
         raise _model_error("unknown evidence ref", "unknown_evidence_ref")
-    if not excerpt:
+    if not excerpt.strip():
         raise _model_error("evidence excerpt is empty", "excerpt_mismatch")
     if source == "jd":
         if path != "/jd/text" or excerpt not in snapshot["jd"]["text"]:
@@ -261,7 +266,11 @@ def _validate_ref(ref: Any, snapshot: dict[str, Any]) -> dict[str, str]:
             raise _model_error("Resume evidence excerpt does not match", "excerpt_mismatch")
     else:
         evidence = next(
-            (item for item in snapshot["knowledge_evidence"] if item.get("id") == path),
+            (
+                item
+                for item in snapshot["knowledge_evidence"]
+                if item.get("provider_path") == path
+            ),
             None,
         )
         if evidence is None:
@@ -289,7 +298,12 @@ def _resolve_resume_pointer(content: dict[str, Any], path: str) -> Any:
         normalized_parts.append(token)
         if isinstance(current, dict) and token in current:
             current = current[token]
-        elif isinstance(current, list) and token.isdigit() and int(token) < len(current):
+        elif (
+            isinstance(current, list)
+            and token.isdigit()
+            and (token == "0" or not token.startswith("0"))
+            and int(token) < len(current)
+        ):
             current = current[int(token)]
         else:
             raise _model_error("Resume path does not exist", "unknown_evidence_ref")
@@ -314,8 +328,7 @@ def _initial_prompt(snapshot: dict[str, Any]) -> str:
     resume.pop("id", None)
     knowledge_evidence = [
         {
-            "id": item.get("id"),
-            "path": item.get("path"),
+            "path": item.get("provider_path"),
             "excerpt": item.get("excerpt"),
         }
         for item in snapshot.get("knowledge_evidence", [])

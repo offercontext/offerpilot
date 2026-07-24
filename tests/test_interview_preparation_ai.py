@@ -38,6 +38,7 @@ def _snapshot() -> dict[str, object]:
             {
                 "id": "evidence-1",
                 "path": "/knowledge/evidence/evidence-1",
+                "provider_path": "/knowledge_evidence/001",
                 "excerpt": "A rollback is safe when the observable signal is defined first.",
             }
         ],
@@ -76,7 +77,7 @@ def _proposal() -> dict[str, object]:
                 "evidence_refs": [
                     _ref(
                         "knowledge_evidence",
-                        "evidence-1",
+                        "/knowledge_evidence/001",
                         "A rollback is safe when the observable signal is defined first.",
                     )
                 ],
@@ -144,6 +145,42 @@ def test_validator_rejects_forged_refs_non_leaf_resume_and_unicode_rewrite() -> 
     with pytest.raises(InterviewPreparationModelError) as exc_info:
         validate_interview_preparation(payload, snapshot)
     assert exc_info.value.validation_category == "excerpt_mismatch"
+
+
+@pytest.mark.parametrize(
+    ("source", "path", "excerpt"),
+    [
+        ("jd", "/jd/text", " \t"),
+        ("resume", "/skills/0", "\n"),
+        ("knowledge_evidence", "/knowledge_evidence/001", "  "),
+    ],
+)
+def test_validator_rejects_blank_evidence_excerpts(
+    source: str, path: str, excerpt: str
+) -> None:
+    payload = copy.deepcopy(_proposal())
+    payload["preparation_directions"][0]["evidence_refs"][0] = _ref(  # type: ignore[index]
+        source, path, excerpt
+    )
+    with pytest.raises(InterviewPreparationModelError) as exc_info:
+        validate_interview_preparation(payload, _snapshot())
+    assert exc_info.value.validation_category == "excerpt_mismatch"
+
+
+def test_validator_rejects_duplicate_ids_across_arrays_and_noncanonical_array_pointer() -> None:
+    payload = copy.deepcopy(_proposal())
+    payload["story_prompts"][0]["id"] = payload["preparation_directions"][0]["id"]  # type: ignore[index]
+    with pytest.raises(InterviewPreparationModelError) as exc_info:
+        validate_interview_preparation(payload, _snapshot())
+    assert exc_info.value.validation_category == "invalid_item_shape"
+
+    payload = copy.deepcopy(_proposal())
+    payload["story_prompts"][0]["evidence_refs"][0] = _ref(  # type: ignore[index]
+        "resume", "/skills/00", "Python"
+    )
+    with pytest.raises(InterviewPreparationModelError) as exc_info:
+        validate_interview_preparation(payload, _snapshot())
+    assert exc_info.value.validation_category == "unknown_evidence_ref"
 
 
 def test_validator_rejects_item_and_evidence_limits() -> None:
@@ -221,6 +258,8 @@ def test_provider_payload_omits_internal_application_event_resume_and_note_ids()
     assert '"application_id"' not in provider_text
     assert '"event_id"' not in provider_text
     assert '"note_version_id"' not in provider_text
+    assert "evidence-1" not in provider_text
+    assert "/knowledge/evidence/evidence-1" not in provider_text
     assert '"id":4' not in provider_text
     assert '"id":9' not in provider_text
 

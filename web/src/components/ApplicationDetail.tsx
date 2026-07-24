@@ -14,6 +14,7 @@ import {
   Spin,
   Popconfirm,
   Space,
+  Modal,
 } from 'antd';
 import {
   ArrowLeftOutlined,
@@ -29,6 +30,7 @@ import { STATUS_LABELS } from '@/types/application';
 import { listNotesByApp, createNote, deleteNote as removeNote, updateNote } from '@/services/notes';
 import { listEvents } from '@/services/events';
 import type { CreateNoteInput, InterviewNote } from '@/types/note';
+import type { ScheduleEvent } from '@/types/event';
 import { EVENT_TYPE_LABELS } from '@/types/event';
 import ScheduleEventForm from '@/components/ScheduleEventForm';
 import ReviewFormDrawer from './ReviewFormDrawer';
@@ -107,6 +109,7 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
   const [reviewEventID, setReviewEventID] = useState<number | null>(null);
   const [preparationOpen, setPreparationOpen] = useState(false);
   const [preparationEventID, setPreparationEventID] = useState<number | null>(null);
+  const [pilotPreparationChoices, setPilotPreparationChoices] = useState<ScheduleEvent[]>([]);
 
   useEffect(() => {
     setMaterialKitPrefill({});
@@ -144,10 +147,14 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
 
   useEffect(() => {
     if (!application || !open || pilotInterviewPreparationApplicationId !== application.id || !eventsQuery.data) return;
-    const interviewEvent = eventsQuery.data.find((event) => event.event_type === 'interview');
-    if (!interviewEvent) return;
-    setPreparationEventID(interviewEvent.id);
-    setPreparationOpen(true);
+    const interviewEvents = eventsQuery.data.filter((event) => event.event_type === 'interview');
+    if (interviewEvents.length === 0) return;
+    if (interviewEvents.length === 1) {
+      setPreparationEventID(interviewEvents[0].id);
+      setPreparationOpen(true);
+    } else {
+      setPilotPreparationChoices(interviewEvents);
+    }
     onPilotInterviewPreparationFocusConsumed?.();
   }, [application, eventsQuery.data, open, onPilotInterviewPreparationFocusConsumed, pilotInterviewPreparationApplicationId]);
 
@@ -211,6 +218,9 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
     setReviewProposalOpen(false);
     setKnowledgeCaptureOpen(false);
     setReviewEventID(null);
+    setPilotPreparationChoices([]);
+    setPreparationOpen(false);
+    setPreparationEventID(null);
     onClose();
   };
 
@@ -360,6 +370,28 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
 
   return (
     <>
+      <Modal
+        open={pilotPreparationChoices.length > 1}
+        title="选择要准备的面试"
+        footer={null}
+        onCancel={() => setPilotPreparationChoices([])}
+      >
+        <Space direction="vertical" style={{ width: '100%' }}>
+          {pilotPreparationChoices.map((event) => (
+            <Button
+              key={event.id}
+              block
+              onClick={() => {
+                setPreparationEventID(event.id);
+                setPreparationOpen(true);
+                setPilotPreparationChoices([]);
+              }}
+            >
+              {event.subtype || '面试'} · {event.scheduled_at}
+            </Button>
+          ))}
+        </Space>
+      </Modal>
       <section className={styles.detailWorkspace} {...applicationDragBinding}>
         <div className={styles.header}>
           <Button type="link" className={styles.backButton} icon={<ArrowLeftOutlined />} onClick={closeDetail}>
