@@ -46,11 +46,15 @@
 
 ### 3.2 Opportunity Fit 新生成严格契约
 
-新 Proposal 顶层只允许 `summary`、`conditions`、`risks`、`questions`、`next_steps`、`source` 和版本字段；禁止 `recommendation`、score、probability、accept/decline 等裁决字段。`summary` 是固定中文安全摘要或带证据摘要，最多 1 条；`conditions`、`risks`、`next_steps` 各最多 8 条，`questions` 最多 6 条；每项 `id`、`text`、`evidence_refs`、`rationale` 只能是规定字符串/数组字段，id 在整个 Proposal 内唯一。
+新 Proposal 顶层只允许 `schema_version: 2`、`source`、`summary`、`conditions`、`risks`、`questions`、`next_steps`；禁止 `recommendation`、score、probability、accept/decline 等裁决字段。`source` 必须是精确对象 `{"kind":"opportunity_fit","contract_version":"opportunity_fit.v2","snapshot_version":"1"}`；`summary` 必须是 `{text:string,rationale:string,evidence_refs:EvidenceRef[]}`，文本和理由各最多 1000 字符，正常摘要至少一条引用，只有固定安全空摘要允许零引用。`conditions`、`risks`、`next_steps` 最多各 8 条，`questions` 最多 6 条；前三类每项只能有 `{id,text,rationale,evidence_refs}`，问题只能有 `{question_id,text,evidence_refs}`，所有字符串非空且最多 1000 字符，`evidence_refs` 最多 4 条，所有条目的 `id/question_id` 在其版本规则下唯一。
 
-`conditions` 和 `risks` 必须至少有一条合规 JD、Resume 或用户断言引用；每条引用的 `source/path/excerpt` 必须命中本次冻结快照并逐字相等。`next_steps` 若是具体动作同样需要引用；没有证据时只能返回安全空数组和固定中文“当前资料不足，无法给出可验证的继续建议”。`questions` 只允许版本化的无前提固定问题集合，或带至少一条逐字证据引用的问题；禁止把“面试官/岗位一定会”写进无引用问题。
+EvidenceRef 只能是 `{source,path,excerpt}`：`source` 仅为 `jd`、`resume` 或 `user_assertion`；JD 路径只能指向冻结 `/jd_text`，Resume 路径必须是冻结 `content_json` 的规范 JSON Pointer 字符串叶子节点，用户断言路径只能是 `/user_assertions/<index>/text`；`excerpt` 必须是对应冻结字符串的非空、逐字连续子串。`conditions` 和 `risks` 必须至少一条真实引用；`next_steps` 只要是具体动作也必须引用。无上下文前提的问题只能使用服务端版本化 allowlist：`opportunity_fit.question.v1.jd_success_criteria`（“请确认该岗位最重要的成功标准是什么？”）、`opportunity_fit.question.v1.team_expectations`（“请确认该岗位团队希望优先解决的问题是什么？”）、`opportunity_fit.question.v1.interview_process`（“请确认面试流程、参与者和后续安排是什么？”）、`opportunity_fit.question.v1.missing_candidate_detail`（“请补充当前资料中尚未说明、但你希望核对的信息。”）；服务端按 `question_id` 派生固定文本。其他问题必须至少一条逐字引用，不能把“面试官/岗位一定会”藏进无引用问题。没有可验证依据时只返回固定中文安全空结构“当前资料不足，无法给出可验证的继续建议”，不打分、不预测。
 
-严格解析拒绝额外字段、重复键、非有限数值、空白摘录、伪造路径、跨 Application 来源、旧枚举和超限数组；Provider 网络未知保留幂等键，契约失败不写 Review。响应 schema、Chat system prompt、`OpportunityFitReview` 前端类型及历史适配器都必须遵守同一 allowlist。材料 Proposal 的“接受/拒绝变更”只表示用户确认某条 Resume 改写，继续保留并与机会判断的模型输出隔离。
+**持久化兼容方案固定如下。** 当前表没有独立 `recommendation` 列，旧值位于 `triage_json` 内；增量迁移新增 `proposal_schema_version INTEGER NOT NULL DEFAULT 1`、`proposal_json TEXT NULL`、`proposal_sha256 TEXT NULL`，并将现有 `triage_json/triage_sha256` 及对应 deep-review 列改为可空但不改写旧行。现有行固定为 `proposal_schema_version=1`，继续原样保存和读取旧 `triage_json`、`deep_review_json` 及其哈希；其中的 `recommendation=advance|hold|decline` 是历史事实，只读展示，不回写、不重新哈希。新行固定为 `proposal_schema_version=2`，只写 `proposal_json` 与 `proposal_sha256`，旧阶段列均为 `NULL`，不创建或填充 `recommendation`。
+
+v1 的 canonical JSON、`source_fingerprint_sha256`、`triage_sha256`、`deep_review_sha256` 和幂等读取规则全部保持数据库原值；v2 的 `proposal_json` 使用 UTF-8、紧凑分隔符、排序键、拒绝重复键/非有限数值的 canonical JSON，`proposal_sha256` 是该字节串的 SHA-256，`source_fingerprint_sha256` 仍只哈希冻结输入快照。`application_id + idempotency_key` 仍是唯一键：同 key 且快照相同按 `proposal_schema_version` 返回原行，同 key 快照不同或版本不匹配稳定返回 `409 opportunity_fit_idempotency_conflict`；历史行不得因读取或新契约而迁移、重算或覆盖。
+
+API 与前端使用 `schema_version` 判别联合：v1 响应保留现有 `recommendation`、`triage`、`deep_review` 字段并标为历史只读；v2 响应返回 `schema_version:2`、`proposal`、`source`、`source_fingerprint_sha256`、`proposal_hash`、状态和时间字段，不返回 `recommendation`。`OpportunityFitReviewV1` 与 `OpportunityFitReviewV2` 作为两套前端类型，历史适配器只把 v1 映射成“历史事实”，不生成新的决策按钮；新建、Chat 提示词、后端 schema/校验、API 响应和前端 v2 类型必须同批切换。严格解析拒绝额外字段、重复键、非有限数值、空白摘录、伪造路径、跨 Application 来源和超限数组；Provider 网络未知保留幂等键，契约失败不写 Review。材料 Proposal 的“接受/拒绝变更”只表示用户确认某条 Resume 改写，继续保留并与机会判断模型语义隔离。
 
 ### 3.3 Agent 写入状态机、审计和配置迁移
 
