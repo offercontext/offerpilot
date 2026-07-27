@@ -1,3 +1,5 @@
+import json
+
 from typer.testing import CliRunner
 
 from offerpilot.ai.types import Assistant
@@ -346,6 +348,43 @@ def test_analyze_jd_cli_persists_result(monkeypatch, tmp_path):
     assert "Backend role" in rows[0].result
 
 
+def test_analyze_jd_cli_rejects_url_without_building_ai_model(monkeypatch, tmp_path):
+    monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
+    monkeypatch.setattr(
+        "offerpilot.cli._build_ai_model",
+        lambda: (_ for _ in ()).throw(AssertionError("AI model must not be built")),
+    )
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["analyze", "--jd-url", "https://jobs.example.test/backend"])
+
+    assert result.exit_code == 2
+    assert json.loads(result.output) == {
+        "code": "jd_text_required",
+        "error": "jd_text is required; jd_url is record-only",
+    }
+
+
+def test_analyze_jd_cli_rejects_jd_and_url_without_external_work(monkeypatch, tmp_path):
+    monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
+    monkeypatch.setattr(
+        "offerpilot.cli._build_ai_model",
+        lambda: (_ for _ in ()).throw(AssertionError("AI model must not be built")),
+    )
+    runner = CliRunner()
+
+    result = runner.invoke(
+        app,
+        ["analyze", "--jd", "Backend JD", "--jd-url", "https://jobs.example.test/backend"],
+    )
+
+    assert result.exit_code == 2
+    assert json.loads(result.output) == {
+        "code": "jd_url_not_supported",
+        "error": "jd_url is record-only",
+    }
+
+
 def test_resume_match_cli_persists_match(monkeypatch, tmp_path):
     monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
     _write_ai_config(tmp_path)
@@ -364,6 +403,26 @@ def test_resume_match_cli_persists_match(monkeypatch, tmp_path):
     matches = resumes.list_matches(resume.id)
     assert len(matches) == 1
     assert "strong fit" in matches[0].result
+
+
+def test_resume_match_cli_rejects_url_without_building_ai_model(monkeypatch, tmp_path):
+    monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
+    monkeypatch.setattr(
+        "offerpilot.cli._build_ai_model",
+        lambda: (_ for _ in ()).throw(AssertionError("AI model must not be built")),
+    )
+    runner = CliRunner()
+
+    result = runner.invoke(
+        app,
+        ["resume", "match", "--resume", "999", "--jd-url", "https://jobs.example.test/backend"],
+    )
+
+    assert result.exit_code == 2
+    assert json.loads(result.output) == {
+        "code": "jd_text_required",
+        "error": "jd_text is required; jd_url is record-only",
+    }
 
 
 def test_question_generate_cli_from_notes(monkeypatch, tmp_path):

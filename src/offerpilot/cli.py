@@ -178,8 +178,7 @@ def analyze_command(
     app_id: int = typer.Option(0, "--app", "-a", help="linked application ID"),
 ) -> None:
     jd_text = _read_dash_stdin(jd)
-    if bool(jd_text) == bool(jd_url):
-        raise typer.BadParameter("provide exactly one of --jd or --jd-url")
+    _validate_cli_jd_input(jd_text, jd_url)
     try:
         result = analyze_jd(
             _build_ai_model(),
@@ -528,8 +527,7 @@ def resume_match(
     app_id: int = typer.Option(0, "--app", "-a", help="linked application ID"),
 ) -> None:
     jd_text = _read_dash_stdin(jd)
-    if bool(jd_text) == bool(jd_url):
-        raise typer.BadParameter("provide exactly one of --jd or --jd-url")
+    _validate_cli_jd_input(jd_text, jd_url)
     try:
         result = match_resume(
             _build_ai_model(),
@@ -810,6 +808,30 @@ def _read_dash_stdin(value: str) -> str:
     if value == "-":
         return sys.stdin.read()
     return value
+
+
+def _validate_cli_jd_input(jd_text: str, jd_url: str) -> None:
+    if jd_url:
+        if not jd_text.strip():
+            typer.echo(
+                json.dumps(
+                    {
+                        "code": "jd_text_required",
+                        "error": "jd_text is required; jd_url is record-only",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            raise typer.Exit(code=2)
+        typer.echo(
+            json.dumps(
+                {"code": "jd_url_not_supported", "error": "jd_url is record-only"},
+                ensure_ascii=False,
+            )
+        )
+        raise typer.Exit(code=2)
+    if not jd_text.strip():
+        raise typer.BadParameter("jd_text_required")
 
 
 def _print_config(data_dir: Path, cfg: Config) -> None:

@@ -1,12 +1,8 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
-from html import unescape
 from typing import Any
-
-import httpx
 
 from offerpilot.ai.agent import ChatModel
 from offerpilot.ai.types import Message
@@ -46,13 +42,14 @@ def analyze_jd(
     jd_url: str = "",
     application_id: int | None = None,
 ) -> JDAnalysisResult:
+    if jd_url:
+        if not jd_text.strip():
+            raise ValueError("jd_text_required")
+        raise ValueError("jd_url_not_supported")
+    if not jd_text.strip():
+        raise ValueError("jd_text_required")
     source = "text"
     text = jd_text
-    if not text and jd_url:
-        text = fetch_text_from_url(jd_url)
-        source = "url"
-    if not text:
-        raise ValueError("jd_text or jd_url is required")
 
     result = complete_json(model, system=structured_ai_system(), user=jd_analysis_prompt(text))
     analysis = repo.create(
@@ -85,11 +82,13 @@ def match_resume(
     if not resume.parsed_data:
         raise ValueError("Resume has no text content")
 
+    if jd_url:
+        if not jd_text.strip():
+            raise ValueError("jd_text_required")
+        raise ValueError("jd_url_not_supported")
+    if not jd_text.strip():
+        raise ValueError("jd_text_required")
     text = jd_text
-    if not text and jd_url:
-        text = fetch_text_from_url(jd_url)
-    if not text:
-        raise ValueError("jd_text or jd_url is required")
 
     result = complete_json(
         model,
@@ -324,34 +323,6 @@ def clamp_question_count(count: int) -> int:
     if count <= 0:
         return 8
     return min(count, 20)
-
-
-def fetch_text_from_url(url: str) -> str:
-    if not url:
-        raise RuntimeError("empty JD URL")
-    try:
-        response = httpx.get(
-            url,
-            headers={"User-Agent": "OfferPilot/0.1 (local job-search workbench)"},
-            timeout=20,
-        )
-    except Exception as exc:
-        raise RuntimeError(f"fetch JD URL failed (you can paste the JD text instead): {exc}") from exc
-    if response.status_code >= 400:
-        raise RuntimeError(
-            f"JD URL returned HTTP {response.status_code} - please paste the JD text instead"
-        )
-    return clean_html_to_text(response.text)
-
-
-def clean_html_to_text(value: str) -> str:
-    text = re.sub(r"(?is)<(script|style|noscript)\b[^>]*>.*?</\1>", "", value)
-    text = re.sub(r"(?i)<br\s*/?>", "\n", text)
-    text = re.sub(r"<[^>]+>", "", text)
-    text = unescape(text.replace("&nbsp;", " "))
-    text = re.sub(r"[ \t\r\f\v]+", " ", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return truncate_for_prompt(text.strip())
 
 
 def truncate_for_prompt(value: str, max_chars: int = 12000) -> str:

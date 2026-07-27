@@ -47,8 +47,52 @@ def test_jd_analyze_requires_text_or_url_before_ai(tmp_path):
 
     response = client.post("/api/jd/analyze", json={})
 
-    assert response.status_code == 400
-    assert response.json() == {"error": "jd_text or jd_url is required"}
+    assert response.status_code == 422
+    assert response.json() == {
+        "error": "jd_text is required",
+        "error_code": "jd_text_required",
+    }
+
+
+def test_jd_analyze_rejects_url_without_external_request(tmp_path, monkeypatch):
+    def fail_external_request(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("URL fallback must not perform an HTTP request")
+
+    monkeypatch.setattr("httpx.get", fail_external_request)
+    client = TestClient(create_app(data_dir=tmp_path))
+
+    response = client.post(
+        "/api/jd/analyze",
+        json={"jd_url": "https://jobs.example.test/backend"},
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "error": "jd_text is required",
+        "error_code": "jd_text_required",
+    }
+
+
+def test_jd_analyze_rejects_url_even_when_text_is_present(tmp_path, monkeypatch):
+    def fail_external_request(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("URL fallback must not perform an HTTP request")
+
+    monkeypatch.setattr("httpx.get", fail_external_request)
+    client = TestClient(create_app(data_dir=tmp_path))
+
+    response = client.post(
+        "/api/jd/analyze",
+        json={
+            "jd_text": "Backend JD",
+            "jd_url": "https://jobs.example.test/backend",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "error": "jd_url is record-only",
+        "error_code": "jd_url_not_supported",
+    }
 
 
 def test_jd_analyze_returns_503_without_configured_ai(tmp_path):
@@ -147,3 +191,52 @@ def test_resume_match_validates_resume_text_and_jd(tmp_path):
     missing_resume = client.post("/api/resumes/999/match", json={"jd_text": "x"})
     assert missing_resume.status_code == 404
     assert missing_resume.json() == {"error": "Resume not found"}
+
+
+def test_resume_match_rejects_url_without_external_request(tmp_path, monkeypatch):
+    def fail_external_request(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("URL fallback must not perform an HTTP request")
+
+    monkeypatch.setattr("httpx.get", fail_external_request)
+    client = TestClient(create_app(data_dir=tmp_path))
+    resume = client.post(
+        "/api/resumes",
+        json={"name": "Backend resume", "text": "Python FastAPI"},
+    ).json()
+
+    response = client.post(
+        f"/api/resumes/{resume['id']}/match",
+        json={"jd_url": "https://jobs.example.test/backend"},
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "error": "jd_text is required",
+        "error_code": "jd_text_required",
+    }
+
+
+def test_resume_match_rejects_url_even_when_text_is_present(tmp_path, monkeypatch):
+    def fail_external_request(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("URL fallback must not perform an HTTP request")
+
+    monkeypatch.setattr("httpx.get", fail_external_request)
+    client = TestClient(create_app(data_dir=tmp_path))
+    resume = client.post(
+        "/api/resumes",
+        json={"name": "Backend resume", "text": "Python FastAPI"},
+    ).json()
+
+    response = client.post(
+        f"/api/resumes/{resume['id']}/match",
+        json={
+            "jd_text": "Backend JD",
+            "jd_url": "https://jobs.example.test/backend",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "error": "jd_url is record-only",
+        "error_code": "jd_url_not_supported",
+    }

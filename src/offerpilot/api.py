@@ -3,7 +3,6 @@ import re
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from datetime import datetime, timedelta, timezone
-from html import unescape
 from hashlib import sha256
 from importlib.metadata import PackageNotFoundError, version as package_version
 from io import BytesIO
@@ -15,7 +14,6 @@ from time import perf_counter
 from typing import Any, Callable, Generator, Literal, Optional, cast
 from uuid import UUID, uuid4
 
-import httpx
 from fastapi import BackgroundTasks, Body, FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
@@ -2304,15 +2302,13 @@ def create_app(
     @app.post("/api/jd/analyze", status_code=201)
     def analyze_jd(payload: dict[str, Any] = Body(...)) -> JSONResponse:
         jd_text = str(payload.get("jd_text") or "")
+        if payload.get("jd_url"):
+            if not jd_text.strip():
+                return error_response(422, "jd_text is required", code="jd_text_required")
+            return error_response(422, "jd_url is record-only", code="jd_url_not_supported")
+        if not jd_text.strip():
+            return error_response(422, "jd_text is required", code="jd_text_required")
         jd_source = "text"
-        if not jd_text and payload.get("jd_url"):
-            try:
-                jd_text = _fetch_text_from_url(str(payload["jd_url"]))
-            except RuntimeError as exc:
-                return error_response(400, str(exc))
-            jd_source = "url"
-        if not jd_text:
-            return error_response(400, "jd_text or jd_url is required")
         model = _chat_model(chat_model, resolved_data_dir)
         if isinstance(model, JSONResponse):
             return model
@@ -2620,13 +2616,12 @@ def create_app(
             return error_response(400, "Resume has no text content")
 
         jd_text = str(payload.get("jd_text") or "")
-        if not jd_text and payload.get("jd_url"):
-            try:
-                jd_text = _fetch_text_from_url(str(payload["jd_url"]))
-            except RuntimeError as exc:
-                return error_response(400, str(exc))
-        if not jd_text:
-            return error_response(400, "jd_text or jd_url is required")
+        if payload.get("jd_url"):
+            if not jd_text.strip():
+                return error_response(422, "jd_text is required", code="jd_text_required")
+            return error_response(422, "jd_url is record-only", code="jd_url_not_supported")
+        if not jd_text.strip():
+            return error_response(422, "jd_text is required", code="jd_text_required")
 
         model = _chat_model(chat_model, resolved_data_dir)
         if isinstance(model, JSONResponse):
@@ -7170,36 +7165,6 @@ def _compact_json_value(value: Any) -> str:
         return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     except TypeError as exc:
         raise ValueError("invalid json") from exc
-
-
-def _fetch_text_from_url(url: str) -> str:
-    if not url:
-        raise RuntimeError("empty JD URL")
-    try:
-        response = httpx.get(
-            url,
-            headers={"User-Agent": "OfferPilot/0.1 (local job-search workbench)"},
-            timeout=20,
-        )
-    except Exception as exc:
-        raise RuntimeError(
-            f"fetch JD URL failed (you can paste the JD text instead): {exc}"
-        ) from exc
-    if response.status_code >= 400:
-        raise RuntimeError(
-            f"JD URL returned HTTP {response.status_code} - please paste the JD text instead"
-        )
-    return _clean_html_to_text(response.text)
-
-
-def _clean_html_to_text(value: str) -> str:
-    text = re.sub(r"(?is)<(script|style|noscript)\b[^>]*>.*?</\1>", "", value)
-    text = re.sub(r"(?i)<br\s*/?>", "\n", text)
-    text = re.sub(r"<[^>]+>", "", text)
-    text = unescape(text.replace("&nbsp;", " "))
-    text = re.sub(r"[ \t\r\f\v]+", " ", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return _truncate_for_prompt(text.strip())
 
 
 def _truncate_for_prompt(value: str, max_chars: int = 12000) -> str:
