@@ -1138,6 +1138,32 @@ def _cleanup_real_ai_smoke_records(
                     ApplicationMaterialKit.application_id == application_id
                 )
             )
+            v2_stages = list(
+                session.scalars(
+                    select(OpportunityFitReviewStage).where(
+                        OpportunityFitReviewStage.application_id == application_id
+                    )
+                )
+            )
+            while v2_stages:
+                parent_stage_ids = {
+                    stage.parent_triage_stage_id
+                    for stage in v2_stages
+                    if stage.parent_triage_stage_id is not None
+                }
+                leaf_stages = [stage for stage in v2_stages if stage.id not in parent_stage_ids]
+                if not leaf_stages:
+                    raise RuntimeError("cannot order deletion of Opportunity Fit v2 stages")
+                for stage in leaf_stages:
+                    session.delete(stage)
+                session.flush()
+                leaf_ids = {stage.id for stage in leaf_stages}
+                v2_stages = [stage for stage in v2_stages if stage.id not in leaf_ids]
+            session.execute(
+                delete(OpportunityFitReviewSession).where(
+                    OpportunityFitReviewSession.application_id == application_id
+                )
+            )
             session.execute(
                 delete(OpportunityFitReview).where(
                     OpportunityFitReview.application_id == application_id
@@ -1191,10 +1217,8 @@ def _capture_real_ai_browser_domain_baseline(
                 for resume_id in selected_resume_ids
             }
             return {
-                "application_status": application.status,
-                "application_closed_reason": application.closed_reason,
-                "application_deleted_at": (
-                    application.deleted_at.isoformat() if application.deleted_at is not None else None
+                "application_snapshot_hash": sha256_text(
+                    canonical_json(_real_ai_browser_application_snapshot(application))
                 ),
                 "material_kit_count": session.scalar(
                     select(func.count())
@@ -1289,7 +1313,39 @@ def _real_ai_browser_event_snapshot(event: ApplicationEvent | None) -> dict[str,
         "duration_minutes": event.duration_minutes,
         "location": event.location,
         "notes": event.notes,
+        "remind_at": event.remind_at.isoformat() if event.remind_at else None,
         "status": event.status,
+    }
+
+
+def _real_ai_browser_application_snapshot(application: Application) -> dict[str, Any]:
+    return {
+        "id": application.id,
+        "company_name": application.company_name,
+        "position_name": application.position_name,
+        "job_url": application.job_url,
+        "status": application.status,
+        "source": application.source,
+        "notes": application.notes,
+        "applied_at": application.applied_at.isoformat() if application.applied_at else None,
+        "first_pending_at": application.first_pending_at.isoformat()
+        if application.first_pending_at
+        else None,
+        "first_applied_at": application.first_applied_at.isoformat()
+        if application.first_applied_at
+        else None,
+        "first_written_test_at": application.first_written_test_at.isoformat()
+        if application.first_written_test_at
+        else None,
+        "first_interview_at": application.first_interview_at.isoformat()
+        if application.first_interview_at
+        else None,
+        "first_offer_at": application.first_offer_at.isoformat() if application.first_offer_at else None,
+        "closed_reason": application.closed_reason,
+        "closed_at": application.closed_at.isoformat() if application.closed_at else None,
+        "deleted_at": application.deleted_at.isoformat() if application.deleted_at else None,
+        "created_at": application.created_at.isoformat() if application.created_at else None,
+        "updated_at": application.updated_at.isoformat() if application.updated_at else None,
     }
 
 
@@ -1299,11 +1355,13 @@ def _real_ai_browser_resume_snapshot(resume: Resume | None) -> dict[str, Any] | 
     return {
         "id": resume.id,
         "name": resume.name,
+        "file_path": resume.file_path,
         "title": resume.title,
         "parsed_data": resume.parsed_data,
         "parse_status": resume.parse_status,
         "parent_resume_id": resume.parent_resume_id,
         "source": resume.source,
+        "source_file_path": resume.source_file_path,
         "content_json": resume.content_json,
         "is_master": resume.is_master,
         "deleted_at": resume.deleted_at.isoformat() if resume.deleted_at else None,
@@ -1335,6 +1393,12 @@ def _assert_real_ai_smoke_data_clean(data_dir: Path) -> None:
             )
             opportunity_fit_review_count = session.scalar(
                 select(func.count()).select_from(OpportunityFitReview)
+            )
+            opportunity_fit_session_count = session.scalar(
+                select(func.count()).select_from(OpportunityFitReviewSession)
+            )
+            opportunity_fit_stage_count = session.scalar(
+                select(func.count()).select_from(OpportunityFitReviewStage)
             )
             application_count = session.scalar(select(func.count()).select_from(Application))
             evidence_bundle_count = session.scalar(
@@ -1368,6 +1432,10 @@ def _assert_real_ai_smoke_data_clean(data_dir: Path) -> None:
         raise RuntimeError("real-ai smoke left interview preparation proposals")
     if opportunity_fit_review_count != 0:
         raise RuntimeError("real-ai smoke left opportunity fit reviews")
+    if opportunity_fit_session_count != 0:
+        raise RuntimeError("real-ai smoke left opportunity fit v2 sessions")
+    if opportunity_fit_stage_count != 0:
+        raise RuntimeError("real-ai smoke left opportunity fit v2 stages")
     if application_count != 0:
         raise RuntimeError("real-ai smoke left applications")
     if evidence_bundle_count != 0:

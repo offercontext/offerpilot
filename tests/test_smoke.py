@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from sqlalchemy import func, select
 from typer.testing import CliRunner
 
 from offerpilot.cli import app
@@ -666,10 +667,171 @@ def test_real_ai_browser_domain_baseline_detects_cross_domain_writes(tmp_path):
     if bind is not None:
         bind.dispose()
 
-    with pytest.raises(RuntimeError, match="application_status"):
+    with pytest.raises(RuntimeError, match="application_snapshot_hash"):
         _assert_real_ai_browser_no_cross_domain_writes(
             data_dir, application_id, baseline, [event_id], [resume_id]
         )
+
+
+def test_real_ai_browser_cleanup_removes_v2_parent_child_stages(tmp_path):
+    data_dir = tmp_path / "data"
+    session_factory = session_factory_for_data_dir(data_dir)
+    with session_factory() as session:
+        application = Application(company_name="Browser smoke", position_name="QA")
+        session.add(application)
+        session.flush()
+        review_session = OpportunityFitReviewSession(
+            application_id=application.id,
+            triage_idempotency_key="browser-v2-cleanup",
+        )
+        session.add(review_session)
+        session.flush()
+        triage = OpportunityFitReviewStage(
+            review_id=review_session.id,
+            application_id=application.id,
+            stage="triage",
+            idempotency_key="browser-v2-cleanup-triage",
+            source_snapshot_json="{}",
+            source_fingerprint_sha256="triage-fingerprint",
+            proposal_json="{}",
+            proposal_sha256="triage-proposal",
+        )
+        session.add(triage)
+        session.flush()
+        session.add(
+            OpportunityFitReviewStage(
+                review_id=review_session.id,
+                application_id=application.id,
+                parent_triage_stage_id=triage.id,
+                stage="deep_review",
+                idempotency_key="browser-v2-cleanup-deep",
+                source_snapshot_json="{}",
+                source_fingerprint_sha256="deep-fingerprint",
+                proposal_json="{}",
+                proposal_sha256="deep-proposal",
+            )
+        )
+        session.commit()
+        application_id = application.id
+    bind = session_factory.kw.get("bind")
+    if bind is not None:
+        bind.dispose()
+
+    _cleanup_real_ai_browser_records(data_dir, application_id, [])
+    _assert_real_ai_smoke_data_clean(data_dir)
+
+    session_factory = session_factory_for_data_dir(data_dir)
+    with session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(OpportunityFitReviewSession)) == 0
+        assert session.scalar(select(func.count()).select_from(OpportunityFitReviewStage)) == 0
+        assert session.scalar(select(func.count()).select_from(Application)) == 0
+    bind = session_factory.kw.get("bind")
+    if bind is not None:
+        bind.dispose()
+
+
+def test_real_ai_browser_domain_baseline_covers_event_and_resume_file_paths(tmp_path):
+    data_dir = tmp_path / "data"
+    session_factory = session_factory_for_data_dir(data_dir)
+    with session_factory() as session:
+        application = Application(company_name="Browser smoke", position_name="QA")
+        event = ApplicationEvent(application_id=0, event_type="interview", status="todo")
+        resume = Resume(title="Browser smoke resume", content_json="{}")
+        session.add(application)
+        session.flush()
+        event.application_id = application.id
+        session.add_all([event, resume])
+        session.commit()
+        application_id, event_id, resume_id = application.id, event.id, resume.id
+    bind = session_factory.kw.get("bind")
+    if bind is not None:
+        bind.dispose()
+
+    baseline = _capture_real_ai_browser_domain_baseline(data_dir, application_id, [event_id], [resume_id])
+    session_factory = session_factory_for_data_dir(data_dir)
+    with session_factory() as session:
+        session.get(ApplicationEvent, event_id).remind_at = datetime(2026, 7, 27, tzinfo=timezone.utc)
+        session.commit()
+    bind = session_factory.kw.get("bind")
+    if bind is not None:
+        bind.dispose()
+    with pytest.raises(RuntimeError, match="event_snapshot_hash"):
+        _assert_real_ai_browser_no_cross_domain_writes(
+            data_dir, application_id, baseline, [event_id], [resume_id]
+        )
+
+    session_factory = session_factory_for_data_dir(data_dir)
+    with session_factory() as session:
+        session.get(ApplicationEvent, event_id).remind_at = None
+        session.get(Resume, resume_id).file_path = "C:/resume.pdf"
+        session.commit()
+    bind = session_factory.kw.get("bind")
+    if bind is not None:
+        bind.dispose()
+    with pytest.raises(RuntimeError, match="resume_snapshot_hash"):
+        _assert_real_ai_browser_no_cross_domain_writes(
+            data_dir, application_id, baseline, [event_id], [resume_id]
+        )
+
+    session_factory = session_factory_for_data_dir(data_dir)
+    with session_factory() as session:
+        session.get(Resume, resume_id).file_path = ""
+        session.get(Resume, resume_id).source_file_path = "C:/source.docx"
+        session.commit()
+    bind = session_factory.kw.get("bind")
+    if bind is not None:
+        bind.dispose()
+    with pytest.raises(RuntimeError, match="resume_snapshot_hash"):
+        _assert_real_ai_browser_no_cross_domain_writes(
+            data_dir, application_id, baseline, [event_id], [resume_id]
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("company_name", "Changed company"),
+        ("position_name", "Changed position"),
+        ("job_url", "https://example.test/job"),
+        ("status", "closed"),
+        ("source", "changed-source"),
+        ("notes", "changed notes"),
+        ("applied_at", datetime(2026, 7, 26, tzinfo=timezone.utc)),
+        ("first_pending_at", datetime(2026, 7, 26, tzinfo=timezone.utc)),
+        ("first_applied_at", datetime(2026, 7, 26, tzinfo=timezone.utc)),
+        ("first_written_test_at", datetime(2026, 7, 26, tzinfo=timezone.utc)),
+        ("first_interview_at", datetime(2026, 7, 26, tzinfo=timezone.utc)),
+        ("first_offer_at", datetime(2026, 7, 26, tzinfo=timezone.utc)),
+        ("closed_reason", "changed reason"),
+        ("closed_at", datetime(2026, 7, 26, tzinfo=timezone.utc)),
+        ("deleted_at", datetime(2026, 7, 26, tzinfo=timezone.utc)),
+        ("created_at", datetime(2026, 7, 26, tzinfo=timezone.utc)),
+        ("updated_at", datetime(2026, 7, 26, tzinfo=timezone.utc)),
+    ],
+)
+def test_real_ai_browser_domain_baseline_covers_application_fields(tmp_path, field, value):
+    data_dir = tmp_path / "data"
+    session_factory = session_factory_for_data_dir(data_dir)
+    with session_factory() as session:
+        application = Application(company_name="Browser smoke", position_name="QA")
+        session.add(application)
+        session.commit()
+        application_id = application.id
+    bind = session_factory.kw.get("bind")
+    if bind is not None:
+        bind.dispose()
+
+    baseline = _capture_real_ai_browser_domain_baseline(data_dir, application_id)
+    session_factory = session_factory_for_data_dir(data_dir)
+    with session_factory() as session:
+        setattr(session.get(Application, application_id), field, value)
+        session.commit()
+    bind = session_factory.kw.get("bind")
+    if bind is not None:
+        bind.dispose()
+
+    with pytest.raises(RuntimeError, match="application_snapshot_hash"):
+        _assert_real_ai_browser_no_cross_domain_writes(data_dir, application_id, baseline)
 
 
 def test_real_ai_browser_domain_baseline_covers_opportunity_fit_v2(tmp_path):
