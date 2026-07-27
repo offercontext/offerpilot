@@ -99,8 +99,12 @@ export default function OfferCenterView({
         <Col>
           <Space size="large">
             <Statistic title="Offer 总数" value={offers.length} />
-            <Statistic title="平均年总包" value={offers.length ? wan(stats.avg) : '—'} />
-            <Statistic title="最高签字费" value={offers.length ? wan(stats.maxSigning) : '—'} />
+            {offers.length >= 2 ? (
+              <>
+                <Statistic title="平均年总包" value={wan(stats.avg)} />
+                <Statistic title="最高签字费" value={wan(stats.maxSigning)} />
+              </>
+            ) : null}
           </Space>
         </Col>
         <Col>
