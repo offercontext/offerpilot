@@ -1,5 +1,6 @@
 import json
 import os
+import secrets
 from pathlib import Path
 from typing import Any, Literal
 
@@ -61,6 +62,7 @@ class Config(BaseModel):
     auth_token: str = ""
     log_level: str = "INFO"
     skills: list[SkillPackage] = Field(default_factory=list)
+    confirmation_secret: str = ""
 
     @field_validator("chat_auto_approve_writes", mode="before")
     @classmethod
@@ -135,7 +137,9 @@ def resolve_data_dir() -> Path:
 def load_config(data_dir: Path) -> Config:
     path = data_dir / "config.json"
     if not path.exists():
-        return Config()
+        cfg = Config(confirmation_secret=secrets.token_urlsafe(32))
+        save_config(data_dir, cfg)
+        return cfg
 
     raw: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
     legacy_fallback = str(raw.pop("fallback_provider_id", "") or "")
@@ -150,6 +154,9 @@ def load_config(data_dir: Path) -> Config:
         cfg.local_port = DEFAULT_PORT
     cfg.runtime_mode = normalize_runtime_mode(cfg.runtime_mode)
     cfg.log_level = _normalize_log_level(cfg.log_level)
+    if not cfg.confirmation_secret:
+        cfg.confirmation_secret = secrets.token_urlsafe(32)
+        save_config(data_dir, cfg)
     return cfg
 
 

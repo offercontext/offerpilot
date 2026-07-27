@@ -51,6 +51,20 @@ _GAP_STATUSES = {"met", "unmet", "unknown"}
 _DEADLINE_STATUSES = {"stated", "not_stated"}
 _DEEP_PATHS = {"prepare_materials", "clarify_first", "do_not_pursue"}
 _ACTION_KINDS = {"open_material_kit", "add_assertion", "record_deadline"}
+_V2_SOURCE = {
+    "kind": "opportunity_fit",
+    "contract_version": "opportunity_fit.v2",
+    "snapshot_version": "1",
+}
+_V2_QUESTION_TEXT = {
+    "opportunity_fit.question.v1.jd_success_criteria": "请确认该岗位最重要的成功标准是什么？",
+    "opportunity_fit.question.v1.team_expectations": "请确认该岗位团队希望优先解决的问题是什么？",
+    "opportunity_fit.question.v1.interview_process": "请确认面试流程、参与者和后续安排是什么？",
+    "opportunity_fit.question.v1.missing_candidate_detail": "请补充当前资料中尚未说明、但你希望核对的信息。",
+}
+_V2_SAFE_EMPTY_TEXT = "当前资料不足，无法给出可验证的继续建议"
+_V2_SAFE_EMPTY_RATIONALE = "当前没有足够的冻结证据支持具体建议。"
+_V2_MAX_ITEMS = {"conditions": 8, "risks": 8, "questions": 6, "next_steps": 8}
 
 
 def build_source_snapshot(
@@ -235,6 +249,135 @@ def validate_deep_review(
     return ValidatedOpportunityOutput(payload=copy.deepcopy(payload))
 
 
+def validate_triage_v2(
+    payload: dict[str, Any], snapshot: dict[str, Any]
+) -> ValidatedOpportunityOutput:
+    return _validate_v2_stage(payload, snapshot, expected_stage="triage")
+
+
+def validate_deep_review_v2(
+    payload: dict[str, Any], snapshot: dict[str, Any]
+) -> ValidatedOpportunityOutput:
+    return _validate_v2_stage(payload, snapshot, expected_stage="deep_review")
+
+
+def _validate_v2_stage(
+    payload: dict[str, Any],
+    snapshot: dict[str, Any],
+    *,
+    expected_stage: str,
+) -> ValidatedOpportunityOutput:
+    _require_exact_fields(
+        payload,
+        {
+            "schema_version",
+            "stage",
+            "source",
+            "summary",
+            "conditions",
+            "risks",
+            "questions",
+            "next_steps",
+        },
+        "opportunity fit v2",
+    )
+    if payload.get("schema_version") != 2 or payload.get("stage") != expected_stage:
+        raise OpportunityFitModelError("opportunity fit v2 stage is invalid")
+    if payload.get("source") != _V2_SOURCE:
+        raise OpportunityFitModelError("opportunity fit v2 source is invalid")
+
+    summary = payload.get("summary")
+    if not isinstance(summary, dict):
+        raise OpportunityFitModelError("summary must be an object")
+    _require_exact_fields(summary, {"text", "rationale", "evidence_refs"}, "summary")
+    summary_text = _require_non_empty_string(summary.get("text"), "summary text")
+    _require_bounded_string(summary.get("rationale"), "summary rationale")
+    summary_refs = _validate_v2_refs(summary.get("evidence_refs"), snapshot)
+    if not summary_refs and summary_text != _V2_SAFE_EMPTY_TEXT:
+        raise OpportunityFitModelError("summary needs evidence_refs")
+    if summary_text == _V2_SAFE_EMPTY_TEXT and summary.get("rationale") != _V2_SAFE_EMPTY_RATIONALE:
+        raise OpportunityFitModelError("safe empty summary rationale is invalid")
+
+    ids: set[str] = set()
+    for field in ("conditions", "risks", "next_steps"):
+        items = _require_v2_items(payload.get(field), field, _V2_MAX_ITEMS[field])
+        for item in items:
+            _require_exact_fields(item, {"id", "text", "rationale", "evidence_refs"}, field)
+            item_id = _require_non_empty_string(item.get("id"), f"{field} id")
+            if item_id in ids:
+                raise OpportunityFitModelError("v2 item ids must be globally unique")
+            ids.add(item_id)
+            _require_bounded_string(item.get("text"), f"{field} text")
+            _require_bounded_string(item.get("rationale"), f"{field} rationale")
+            refs = _validate_v2_refs(item.get("evidence_refs"), snapshot)
+            if not refs:
+                raise OpportunityFitModelError(f"{field} items need evidence_refs")
+
+    questions = _require_v2_items(payload.get("questions"), "questions", _V2_MAX_ITEMS["questions"])
+    question_ids: set[str] = set()
+    for item in questions:
+        _require_exact_fields(item, {"question_id", "text", "evidence_refs"}, "question")
+        question_id = _require_non_empty_string(item.get("question_id"), "question_id")
+        if question_id in question_ids:
+            raise OpportunityFitModelError("question_id must be unique")
+        question_ids.add(question_id)
+        if question_id in _V2_QUESTION_TEXT:
+            if item.get("text") != _V2_QUESTION_TEXT[question_id]:
+                raise OpportunityFitModelError("fixed question text is invalid")
+            _validate_v2_refs(item.get("evidence_refs"), snapshot)
+        else:
+            _require_bounded_string(item.get("text"), "question text")
+            if not _validate_v2_refs(item.get("evidence_refs"), snapshot):
+                raise OpportunityFitModelError("contextual questions need evidence_refs")
+
+    validated = copy.deepcopy(payload)
+    validated["summary"]["evidence_refs"] = summary_refs
+    return ValidatedOpportunityOutput(payload=validated)
+
+
+def _require_v2_items(value: Any, field: str, maximum: int) -> list[dict[str, Any]]:
+    items = _require_list(value, field)
+    if len(items) > maximum:
+        raise OpportunityFitModelError(f"{field} exceeds maximum length")
+    return items
+
+
+def _require_bounded_string(value: Any, label: str, maximum: int = 1000) -> str:
+    result = _require_string(value, label)
+    if len(result) > maximum:
+        raise OpportunityFitModelError(f"{label} exceeds maximum length")
+    return result
+
+
+def _validate_v2_refs(refs: Any, snapshot: dict[str, Any]) -> list[dict[str, str]]:
+    if not isinstance(refs, list):
+        raise OpportunityFitModelError("evidence_refs must be an array")
+    if len(refs) > 4:
+        raise OpportunityFitModelError("evidence_refs exceeds maximum length")
+    validated: list[dict[str, str]] = []
+    for ref in refs:
+        if not isinstance(ref, dict):
+            raise OpportunityFitModelError("evidence reference must be an object")
+        _require_exact_fields(ref, _EVIDENCE_REF_FIELDS, "evidence reference")
+        source = _require_string(ref.get("source"), "evidence source")
+        path = _require_string(ref.get("path"), "evidence path")
+        excerpt = _require_non_empty_string(ref.get("excerpt"), "evidence excerpt")
+        if source == "jd":
+            if path != "/jd_text":
+                raise OpportunityFitModelError("v2 JD evidence path is invalid")
+            expected = _snapshot_value(snapshot, "jd", "text")
+        elif source == "resume":
+            expected = _resume_value(snapshot, path)
+        elif source == "user_assertion":
+            expected = _assertion_value(snapshot, path)
+        else:
+            raise OpportunityFitModelError("unsupported evidence source")
+        if excerpt not in expected:
+            raise OpportunityFitModelError("evidence excerpt does not match snapshot")
+        validated.append({"source": source, "path": path, "excerpt": excerpt})
+    return validated
+
+
 def generate_triage(model: ChatModel, snapshot: dict[str, Any]) -> ValidatedOpportunityOutput:
     return _generate(
         model,
@@ -254,6 +397,28 @@ def generate_deep_review(
         _deep_review_system(),
         _deep_review_prompt(snapshot, triage),
         lambda payload: validate_deep_review(payload, snapshot),
+    )
+
+
+def generate_triage_v2(model: ChatModel, snapshot: dict[str, Any]) -> ValidatedOpportunityOutput:
+    return _generate(
+        model,
+        _v2_system("triage"),
+        _v2_prompt(snapshot, None),
+        lambda payload: validate_triage_v2(payload, snapshot),
+    )
+
+
+def generate_deep_review_v2(
+    model: ChatModel,
+    snapshot: dict[str, Any],
+    triage: dict[str, Any],
+) -> ValidatedOpportunityOutput:
+    return _generate(
+        model,
+        _v2_system("deep_review"),
+        _v2_prompt(snapshot, triage),
+        lambda payload: validate_deep_review_v2(payload, snapshot),
     )
 
 
@@ -481,6 +646,31 @@ def _triage_system() -> str:
         "use unknown rather than inventing a candidate fact. The server derives the visible "
         "summary from these validated, referenced entries; do not return a summary field. "
         "If unsure, return empty fit_signals rather than citing JD as candidate evidence."
+    )
+
+
+def _v2_system(stage: str) -> str:
+    return (
+        f"You are an evidence-gated opportunity fit analyst for the {stage} stage. "
+        "Return raw JSON only. The exact top-level fields are schema_version, stage, source, "
+        "summary, conditions, risks, questions, next_steps. schema_version must be 2 and "
+        f"stage must be {stage}. Never return recommendation, score, probability, advance, "
+        "hold, or decline. source must be exactly "
+        '{"kind":"opportunity_fit","contract_version":"opportunity_fit.v2",'
+        '"snapshot_version":"1"}. Every specific item needs evidence_refs copied exactly '
+        "from the frozen snapshot. JD evidence uses /jd_text; resume paths resolve to string "
+        "leaves; excerpts must be non-empty substrings. Fixed questions use their question_id "
+        "and server-defined text. If evidence is insufficient, return the fixed safe-empty "
+        f"summary and empty arrays; do not invent facts or decisions."
+    )
+
+
+def _v2_prompt(snapshot: dict[str, Any], triage: dict[str, Any] | None) -> str:
+    parent = f"\nConfirmed Triage: {json.dumps(triage, ensure_ascii=False, sort_keys=True)}" if triage else ""
+    return (
+        "Use only this frozen snapshot and the confirmed Triage when present. "
+        "Do not use old AI recommendations, outside pages, or hidden context. "
+        f"Snapshot: {json.dumps(snapshot, ensure_ascii=False, sort_keys=True)}{parent}"
     )
 
 

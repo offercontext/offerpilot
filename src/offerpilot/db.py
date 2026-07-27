@@ -63,6 +63,26 @@ def init_database(db_path: Path) -> SessionFactory:
     _ensure_schema_migrations(engine)
     _reset_knowledge_legacy_tables(engine, db_path.parent)
     Base.metadata.create_all(engine)
+    opportunity_fit_v2_migrations = [
+        _ensure_column(
+            engine,
+            "opportunity_fit_review_stages",
+            "provider_call_token",
+            "TEXT NOT NULL DEFAULT ''",
+        ),
+        _ensure_column(
+            engine,
+            "opportunity_fit_review_stages",
+            "lease_expires_at",
+            "DATETIME",
+        ),
+    ]
+    if any(opportunity_fit_v2_migrations):
+        _record_migration(
+            engine,
+            "0013_opportunity_fit_v2",
+            "Add neutral two-stage opportunity fit review sessions and stages",
+        )
     # InterviewNote existed before event-bound review notes.  create_all creates
     # the column on a fresh database; existing databases need the nullable column
     # added before the migration-only indexes are created.
@@ -100,6 +120,11 @@ def init_database(db_path: Path) -> SessionFactory:
         engine,
         "0012_interview_preparation_proposals",
         "Add evidence-gated interview preparation proposals",
+    )
+    _record_migration(
+        engine,
+        "0013_opportunity_fit_v2",
+        "Add neutral two-stage opportunity fit review sessions and stages",
     )
     # ``attempt_id`` was added after the initial KI-10 schema.  Add it before
     # creating the integrity triggers below so existing databases can use the

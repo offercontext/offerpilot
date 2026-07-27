@@ -96,6 +96,9 @@ from offerpilot.repositories.material_revision_proposals import (
 )
 from offerpilot.repositories.opportunity_fit_reviews import (
     HUMAN_APPLICATION_SOURCES,
+    OpportunityFitReviewConfirmationConsumed,
+    OpportunityFitReviewConfirmationExpired,
+    OpportunityFitReviewConflictError,
     OpportunityFitReviewNotFound,
     OpportunityFitReviewValidationError,
     OpportunityFitReviewsRepository,
@@ -656,6 +659,7 @@ def create_app(
     resolved_data_dir = data_dir or resolve_data_dir()
     resolved_static_dir = static_dir or _find_static_dir()
     session_factory = session_factory_for_data_dir(resolved_data_dir)
+    app_config = load_config(resolved_data_dir)
     applications = ApplicationsRepository(session_factory)
     chat = ChatRepository(session_factory)
     events = ApplicationEventsRepository(session_factory)
@@ -667,14 +671,16 @@ def create_app(
     material_kits = MaterialKitsRepository(session_factory)
     evidence_bundles = EvidenceBundlesRepository(session_factory)
     material_revision_proposals = MaterialRevisionProposalsRepository(session_factory)
-    opportunity_fit_reviews = OpportunityFitReviewsRepository(session_factory)
+    opportunity_fit_reviews = OpportunityFitReviewsRepository(
+        session_factory, confirmation_secret=app_config.confirmation_secret
+    )
     interview_review_proposals = InterviewReviewProposalsRepository(session_factory)
     interview_preparation_proposals = InterviewPreparationProposalsRepository(session_factory)
     interview_knowledge_capture = InterviewKnowledgeCaptureRepository(session_factory)
     mock_sessions = MockSessionsRepository(session_factory)
     wakeups = WakeupsRepository(session_factory)
     knowledge_repository = KnowledgeRepository(session_factory)
-    knowledge_config = load_config(resolved_data_dir)
+    knowledge_config = app_config
     knowledge_service = KnowledgeIngestService(
         knowledge_repository,
         resolved_data_dir,
@@ -1782,6 +1788,43 @@ def create_app(
     def create_opportunity_fit_review(
         app_id: int, payload: dict[str, Any] = Body(...)
     ) -> JSONResponse:
+        if payload.get("schema_version") == 2:
+            parsed_v2 = _opportunity_fit_v2_create_payload(payload)
+            if isinstance(parsed_v2, JSONResponse):
+                return parsed_v2
+            app_model = applications.get(app_id)
+            if app_model is None or app_model.source not in HUMAN_APPLICATION_SOURCES:
+                return error_response(404, "Application not found")
+            model = _chat_model(chat_model, resolved_data_dir)
+            if isinstance(model, JSONResponse):
+                return error_response(
+                    502,
+                    "AI provider request failed. Please retry.",
+                    code="opportunity_fit_provider_error",
+                )
+            try:
+                root, stage, created, token = opportunity_fit_reviews.create_triage_v2(
+                    app_id, model=model, **parsed_v2
+                )
+            except OpportunityFitReviewNotFound:
+                return error_response(404, "Application or resume not found")
+            except OpportunityFitReviewConflictError as exc:
+                return error_response(409, str(exc), code="opportunity_fit_idempotency_conflict")
+            except OpportunityFitModelError as exc:
+                append_log_entry(resolved_data_dir, "WARNING", f"opportunity_fit_{exc.failure_category}")
+                if exc.failure_category == "provider_error":
+                    return error_response(
+                        502,
+                        "AI provider request failed. Please retry.",
+                        code="opportunity_fit_provider_error",
+                    )
+                return error_response(
+                    502,
+                    "AI output could not be verified. Please retry.",
+                    code="opportunity_fit_unverifiable",
+                )
+            response = _opportunity_fit_v2_stage_json(root, stage, confirmation_token=token)
+            return JSONResponse(response, status_code=201 if created else 200)
         parsed = _opportunity_fit_create_payload(payload)
         if isinstance(parsed, JSONResponse):
             return parsed
@@ -1856,8 +1899,80 @@ def create_app(
             return error_response(404, "Opportunity fit review not found")
         return JSONResponse(_opportunity_fit_review_detail_json(review))
 
+    @app.post(
+        "/api/applications/{app_id}/opportunity-fit-reviews/{review_id}/triage/{stage_id}/confirm"
+    )
+    def confirm_opportunity_fit_triage(
+        app_id: int,
+        review_id: int,
+        stage_id: int,
+        payload: dict[str, Any] = Body(...),
+    ) -> JSONResponse:
+        token = payload.get("confirmation_token")
+        if not isinstance(token, str) or not token:
+            return error_response(422, "confirmation_token is required")
+        try:
+            stage = opportunity_fit_reviews.confirm_triage_v2(review_id, stage_id, token)
+        except OpportunityFitReviewNotFound:
+            return error_response(404, "Opportunity fit review not found")
+        except OpportunityFitReviewConfirmationExpired:
+            return error_response(
+                410,
+                "Triage confirmation has expired. Please generate a new review.",
+                code="opportunity_fit_triage_confirmation_expired",
+            )
+        except OpportunityFitReviewConfirmationConsumed:
+            return error_response(
+                409,
+                "Triage has already been confirmed.",
+                code="opportunity_fit_triage_confirmation_consumed",
+            )
+        except OpportunityFitReviewConflictError as exc:
+            return error_response(409, str(exc), code="opportunity_fit_confirmation_conflict")
+        if stage.application_id != app_id:
+            return error_response(404, "Opportunity fit review not found")
+        return JSONResponse(_opportunity_fit_v2_stage_json(None, stage))
+
     @app.post("/api/applications/{app_id}/opportunity-fit-reviews/{review_id}/deep-review", status_code=201)
-    def create_opportunity_fit_deep_review(app_id: int, review_id: int) -> JSONResponse:
+    def create_opportunity_fit_deep_review(
+        app_id: int, review_id: int, payload: dict[str, Any] | None = Body(None)
+    ) -> JSONResponse:
+        if payload is not None and payload.get("schema_version") == 2:
+            parsed_v2 = _opportunity_fit_v2_deep_payload(payload)
+            if isinstance(parsed_v2, JSONResponse):
+                return parsed_v2
+            app_model = applications.get(app_id)
+            if app_model is None or app_model.source not in HUMAN_APPLICATION_SOURCES:
+                return error_response(404, "Application not found")
+            model = _chat_model(chat_model, resolved_data_dir)
+            if isinstance(model, JSONResponse):
+                return error_response(
+                    502,
+                    "AI provider request failed. Please retry.",
+                    code="opportunity_fit_provider_error",
+                )
+            try:
+                stage, created = opportunity_fit_reviews.create_deep_review_v2(
+                    app_id, review_id, model=model, **parsed_v2
+                )
+            except OpportunityFitReviewNotFound:
+                return error_response(404, "Opportunity fit review not found")
+            except OpportunityFitReviewConflictError as exc:
+                return error_response(409, str(exc), code="opportunity_fit_source_conflict")
+            except OpportunityFitModelError as exc:
+                append_log_entry(resolved_data_dir, "WARNING", f"opportunity_fit_{exc.failure_category}")
+                if exc.failure_category == "provider_error":
+                    return error_response(
+                        502,
+                        "AI provider request failed. Please retry.",
+                        code="opportunity_fit_provider_error",
+                    )
+                return error_response(
+                    502,
+                    "AI output could not be verified. Please retry.",
+                    code="opportunity_fit_unverifiable",
+                )
+            return JSONResponse(_opportunity_fit_v2_stage_json(None, stage), status_code=201 if created else 200)
         app_model = applications.get(app_id)
         if app_model is None or app_model.source not in HUMAN_APPLICATION_SOURCES:
             return error_response(404, "Application not found")
@@ -6624,6 +6739,61 @@ def _opportunity_fit_create_payload(
         "candidate_assertions": assertions,
         "idempotency_key": idempotency_key,
     }
+
+
+def _opportunity_fit_v2_create_payload(
+    payload: dict[str, Any],
+) -> dict[str, Any] | JSONResponse:
+    base = _opportunity_fit_create_payload(payload)
+    if isinstance(base, JSONResponse):
+        return base
+    return base
+
+
+def _opportunity_fit_v2_deep_payload(
+    payload: dict[str, Any],
+) -> dict[str, Any] | JSONResponse:
+    base = _opportunity_fit_create_payload(payload)
+    if isinstance(base, JSONResponse):
+        return base
+    parent = payload.get("parent_triage_stage_id")
+    if isinstance(parent, bool):
+        return error_response(422, "parent_triage_stage_id must be a positive integer")
+    try:
+        parent_id = int(parent or 0)
+    except (TypeError, ValueError):
+        return error_response(422, "parent_triage_stage_id must be a positive integer")
+    if parent_id <= 0:
+        return error_response(422, "parent_triage_stage_id must be a positive integer")
+    return {**base, "parent_triage_stage_id": parent_id}
+
+
+def _opportunity_fit_v2_stage_json(
+    root: Any,
+    stage: Any,
+    *,
+    confirmation_token: str = "",
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "id": stage.id,
+        "review_id": stage.review_id,
+        "stage_id": stage.id,
+        "application_id": stage.application_id,
+        "resume_id": stage.resume_id,
+        "stage": stage.stage,
+        "schema_version": stage.proposal_schema_version,
+        "stage_status": stage.status,
+        "parent_triage_stage_id": stage.parent_triage_stage_id,
+        "idempotency_key": stage.idempotency_key,
+        "source_fingerprint_sha256": stage.source_fingerprint_sha256,
+        "proposal_sha256": stage.proposal_sha256,
+        "created_at": stage.created_at.isoformat() if stage.created_at else "",
+    }
+    if stage.proposal_json and stage.proposal_json != "{}":
+        result["proposal"] = json.loads(stage.proposal_json)
+    if confirmation_token:
+        result["confirmation_token"] = confirmation_token
+    return result
 
 
 def _opportunity_fit_review_summary_json(review: Any) -> dict[str, Any]:

@@ -9,7 +9,9 @@ from offerpilot.ai.opportunity_fit_reviews import (
     OpportunityFitModelError,
     generate_deep_review,
     generate_triage,
+    validate_deep_review_v2,
     validate_deep_review,
+    validate_triage_v2,
     validate_triage,
 )
 from offerpilot.ai.types import Assistant
@@ -142,6 +144,75 @@ def deep_review_payload() -> dict[str, object]:
     }
 
 
+def v2_ref(source: str = "resume", path: str = "/raw_text", excerpt: str = "Built APIs") -> dict[str, str]:
+    return {"source": source, "path": path, "excerpt": excerpt}
+
+
+def v2_source() -> dict[str, str]:
+    return {
+        "kind": "opportunity_fit",
+        "contract_version": "opportunity_fit.v2",
+        "snapshot_version": "1",
+    }
+
+
+def triage_v2_payload() -> dict[str, object]:
+    return {
+        "schema_version": 2,
+        "stage": "triage",
+        "source": v2_source(),
+        "summary": {
+            "text": "现有 API 经验可作为继续核对的条件依据。",
+            "rationale": "该判断直接来自冻结简历。",
+            "evidence_refs": [v2_ref()],
+        },
+        "conditions": [
+            {
+                "id": "api-experience",
+                "text": "可继续核对 API 相关经历。",
+                "rationale": "简历记录了 API 构建经历。",
+                "evidence_refs": [v2_ref()],
+            }
+        ],
+        "risks": [
+            {
+                "id": "kubernetes-evidence",
+                "text": "Kubernetes 经验仍需核对。",
+                "rationale": "岗位描述要求 Kubernetes，而简历未提供对应事实。",
+                "evidence_refs": [
+                    v2_ref("jd", "/jd_text", snapshot()["jd"]["text"]),
+                ],
+            }
+        ],
+        "questions": [
+            {
+                "question_id": "opportunity_fit.question.v1.jd_success_criteria",
+                "text": "请确认该岗位最重要的成功标准是什么？",
+                "evidence_refs": [],
+            }
+        ],
+        "next_steps": [
+            {
+                "id": "confirm-kubernetes",
+                "text": "补充 Kubernetes 经验的原始事实。",
+                "rationale": "当前资料不足以验证该要求。",
+                "evidence_refs": [
+                    v2_ref("jd", "/jd_text", snapshot()["jd"]["text"]),
+                ],
+            }
+        ],
+    }
+
+
+def deep_v2_payload() -> dict[str, object]:
+    payload = triage_v2_payload()
+    payload["stage"] = "deep_review"
+    payload["conditions"] = []
+    payload["risks"] = []
+    payload["next_steps"] = []
+    return payload
+
+
 class ScriptedModel:
     def __init__(self, responses: list[object]) -> None:
         self.responses = list(responses)
@@ -176,6 +247,51 @@ def test_derived_summary_does_not_claim_candidate_evidence_from_jd_only() -> Non
 def test_valid_deep_review_is_strictly_validated() -> None:
     result = validate_deep_review(deep_review_payload(), snapshot())
     assert result.payload["recommended_path"] == "clarify_first"
+
+
+def test_valid_v2_triage_and_deep_review_are_strictly_validated() -> None:
+    triage = validate_triage_v2(triage_v2_payload(), snapshot())
+    deep = validate_deep_review_v2(deep_v2_payload(), snapshot())
+
+    assert triage.payload["stage"] == "triage"
+    assert deep.payload["stage"] == "deep_review"
+
+
+def test_v2_rejects_legacy_decision_and_uncited_summary() -> None:
+    payload = triage_v2_payload()
+    payload["recommendation"] = "advance"
+    with pytest.raises(OpportunityFitModelError):
+        validate_triage_v2(payload, snapshot())
+
+    payload = triage_v2_payload()
+    payload["summary"] = {
+        "text": "候选人保证满足全部岗位要求。",
+        "rationale": "模型判断。",
+        "evidence_refs": [],
+    }
+    with pytest.raises(OpportunityFitModelError):
+        validate_triage_v2(payload, snapshot())
+
+
+def test_v2_requires_evidence_for_conditions_and_risks() -> None:
+    payload = triage_v2_payload()
+    payload["conditions"][0]["evidence_refs"] = []
+    with pytest.raises(OpportunityFitModelError):
+        validate_triage_v2(payload, snapshot())
+
+
+def test_v2_deep_rejects_uncited_specific_gap() -> None:
+    payload = deep_v2_payload()
+    payload["risks"] = [
+        {
+            "id": "gap",
+            "text": "候选人能力不足。",
+            "rationale": "模型判断。",
+            "evidence_refs": [],
+        }
+    ]
+    with pytest.raises(OpportunityFitModelError):
+        validate_deep_review_v2(payload, snapshot())
 
 
 def test_deep_review_rejects_uncited_gap() -> None:

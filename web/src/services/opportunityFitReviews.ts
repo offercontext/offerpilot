@@ -2,6 +2,8 @@ import type {
   CreateOpportunityFitReviewInput,
   OpportunityFitReview,
   OpportunityFitReviewSummary,
+  CreateOpportunityFitV2Input,
+  OpportunityFitV2StageResponse,
 } from '@/types/opportunityFitReview';
 import { createApiClient } from './http';
 
@@ -14,6 +16,42 @@ export async function createOpportunityFitReview(
   const { data } = await http.post<OpportunityFitReview>(
     `/applications/${applicationID}/opportunity-fit-reviews`,
     input,
+  );
+  return data;
+}
+
+export async function createOpportunityFitV2Triage(
+  applicationID: number,
+  input: CreateOpportunityFitV2Input,
+): Promise<OpportunityFitV2StageResponse> {
+  const { data } = await http.post<OpportunityFitV2StageResponse>(
+    `/applications/${applicationID}/opportunity-fit-reviews`,
+    input,
+  );
+  return data;
+}
+
+export async function confirmOpportunityFitV2Triage(
+  applicationID: number,
+  reviewID: number,
+  stageID: number,
+  confirmationToken: string,
+): Promise<OpportunityFitV2StageResponse> {
+  const { data } = await http.post<OpportunityFitV2StageResponse>(
+    `/applications/${applicationID}/opportunity-fit-reviews/${reviewID}/triage/${stageID}/confirm`,
+    { confirmation_token: confirmationToken },
+  );
+  return data;
+}
+
+export async function createOpportunityFitV2DeepReview(
+  applicationID: number,
+  reviewID: number,
+  input: CreateOpportunityFitV2Input & { parent_triage_stage_id: number },
+): Promise<OpportunityFitV2StageResponse> {
+  const { data } = await http.post<OpportunityFitV2StageResponse>(
+    `/applications/${applicationID}/opportunity-fit-reviews/${reviewID}/deep-review`,
+    { ...input, schema_version: 2 },
   );
   return data;
 }

@@ -82,6 +82,44 @@ def _deep() -> dict[str, object]:
     }
 
 
+def _v2_payload(stage: str) -> dict[str, object]:
+    return {
+        "schema_version": 2,
+        "stage": stage,
+        "source": {
+            "kind": "opportunity_fit",
+            "contract_version": "opportunity_fit.v2",
+            "snapshot_version": "1",
+        },
+        "summary": {
+            "text": "The API experience is relevant to the role.",
+            "rationale": "The frozen resume provides a directly relevant example.",
+            "evidence_refs": [
+                {"source": "resume", "path": "/raw_text", "excerpt": "Built APIs"}
+            ],
+        },
+        "conditions": [
+            {
+                "id": "api",
+                "text": "Confirm the scope of API work.",
+                "rationale": "The resume contains one API example.",
+                "evidence_refs": [
+                    {"source": "resume", "path": "/raw_text", "excerpt": "Built APIs"}
+                ],
+            }
+        ],
+        "risks": [],
+        "questions": [
+            {
+                "question_id": "opportunity_fit.question.v1.jd_success_criteria",
+                "text": "请确认该岗位最重要的成功标准是什么？",
+                "evidence_refs": [],
+            }
+        ],
+        "next_steps": [],
+    }
+
+
 class ReviewModel:
     def __init__(self) -> None:
         self.calls = 0
@@ -91,6 +129,15 @@ class ReviewModel:
         return Assistant(
             content=json.dumps(_triage() if self.calls == 1 else _deep(), ensure_ascii=False)
         )
+
+
+class V2ReviewModel:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def complete(self, messages, tools):  # type: ignore[no-untyped-def]
+        self.calls += 1
+        return Assistant(content=json.dumps(_v2_payload("triage" if self.calls == 1 else "deep_review"), ensure_ascii=False))
 
 
 def _ready(tmp_path, model=None):
@@ -250,6 +297,45 @@ def test_api_does_not_retry_provider_failure(tmp_path) -> None:
     )
     assert response.status_code == 502
     assert model.calls == 1
+
+
+def test_api_v2_requires_confirmation_before_deep_and_preserves_v1_contract(tmp_path) -> None:
+    client, application, resume = _ready(tmp_path, V2ReviewModel())
+    path = f"/api/applications/{application['id']}/opportunity-fit-reviews"
+    payload = {
+        "schema_version": 2,
+        "resume_id": resume["id"],
+        "jd_text": "Kubernetes preferred",
+        "jd_source_label": "copy",
+        "candidate_assertions": [],
+        "idempotency_key": "c6e6f3a0-75c7-477c-a560-8fdc67ec6bf6",
+    }
+    created = client.post(path, json=payload)
+    assert created.status_code == 201
+    body = created.json()
+    assert body["schema_version"] == 2
+    assert body["stage"] == "triage"
+    assert "recommendation" not in body["proposal"]
+    assert "source_snapshot_json" not in body
+
+    deep_payload = {
+        **payload,
+        "parent_triage_stage_id": body["stage_id"],
+        "idempotency_key": "f9b4a7cc-6e4c-4a87-9f64-3e22d3491e5b",
+    }
+    deep = client.post(f"{path}/{body['review_id']}/deep-review", json=deep_payload)
+    assert deep.status_code == 409
+
+    confirmed = client.post(
+        f"{path}/{body['review_id']}/triage/{body['stage_id']}/confirm",
+        json={"confirmation_token": body["confirmation_token"]},
+    )
+    assert confirmed.status_code == 200
+    assert confirmed.json()["stage_status"] == "confirmed"
+
+    deep = client.post(f"{path}/{body['review_id']}/deep-review", json=deep_payload)
+    assert deep.status_code == 201
+    assert deep.json()["stage"] == "deep_review"
 
 
 def test_api_hides_soft_deleted_application(tmp_path) -> None:

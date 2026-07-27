@@ -365,6 +365,82 @@ class OpportunityFitReview(Base):
     deep_reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class OpportunityFitReviewSession(Base):
+    __tablename__ = "opportunity_fit_review_sessions"
+    __table_args__ = (
+        UniqueConstraint(
+            "application_id",
+            "triage_idempotency_key",
+            name="uq_opportunity_fit_sessions_application_triage_key",
+        ),
+        Index("idx_opportunity_fit_sessions_application_created", "application_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    application_id: Mapped[int] = mapped_column(
+        ForeignKey("applications.id", ondelete="CASCADE"), nullable=False
+    )
+    triage_idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
+    proposal_schema_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=2, server_default="2"
+    )
+    status: Mapped[str] = mapped_column(String, nullable=False, default="active", server_default="active")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
+
+
+class OpportunityFitReviewStage(Base):
+    __tablename__ = "opportunity_fit_review_stages"
+    __table_args__ = (
+        UniqueConstraint(
+            "application_id",
+            "stage",
+            "idempotency_key",
+            name="uq_opportunity_fit_stages_application_stage_key",
+        ),
+        Index("idx_opportunity_fit_stages_review_created", "review_id", "created_at"),
+        Index("idx_opportunity_fit_stages_parent", "parent_triage_stage_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    review_id: Mapped[int] = mapped_column(
+        ForeignKey("opportunity_fit_review_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    application_id: Mapped[int] = mapped_column(
+        ForeignKey("applications.id", ondelete="CASCADE"), nullable=False
+    )
+    resume_id: Mapped[int | None] = mapped_column(
+        ForeignKey("resumes.id", ondelete="SET NULL"), nullable=True
+    )
+    parent_triage_stage_id: Mapped[int | None] = mapped_column(
+        ForeignKey("opportunity_fit_review_stages.id", ondelete="RESTRICT"), nullable=True
+    )
+    stage: Mapped[str] = mapped_column(String, nullable=False)
+    proposal_schema_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=2, server_default="2"
+    )
+    idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
+    source_snapshot_json: Mapped[str] = mapped_column(String, nullable=False)
+    source_fingerprint_sha256: Mapped[str] = mapped_column(String, nullable=False)
+    proposal_json: Mapped[str] = mapped_column(String, nullable=False)
+    proposal_sha256: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="ready", server_default="ready")
+    stage_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    provider_call_token: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default=""
+    )
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    confirmation_token_hash: Mapped[str] = mapped_column(
+        String, nullable=False, default="", server_default=""
+    )
+    confirmation_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
+
+
 class InterviewReviewProposal(Base):
     __tablename__ = "interview_review_proposals"
     __table_args__ = (
@@ -689,6 +765,8 @@ APPLICATION_FOREIGN_KEY_MODELS = (
     ApplicationEvidenceBundle,
     MaterialRevisionProposal,
     OpportunityFitReview,
+    OpportunityFitReviewSession,
+    OpportunityFitReviewStage,
     Question,
     MockSession,
 )

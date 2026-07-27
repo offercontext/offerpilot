@@ -78,3 +78,47 @@ export interface CreateOpportunityFitReviewInput {
   candidate_assertions: string[];
   idempotency_key: string;
 }
+
+export type OpportunityFitV2EvidenceRef = {
+  source: 'jd' | 'resume' | 'user_assertion';
+  path: string;
+  excerpt: string;
+};
+
+export interface OpportunityFitV2Proposal {
+  schema_version: 2;
+  stage: 'triage' | 'deep_review';
+  source: { kind: 'opportunity_fit'; contract_version: 'opportunity_fit.v2'; snapshot_version: '1' };
+  summary: { text: string; rationale: string; evidence_refs: OpportunityFitV2EvidenceRef[] };
+  conditions: Array<{ id: string; text: string; rationale: string; evidence_refs: OpportunityFitV2EvidenceRef[] }>;
+  risks: Array<{ id: string; text: string; rationale: string; evidence_refs: OpportunityFitV2EvidenceRef[] }>;
+  questions: Array<{ question_id: string; text: string; evidence_refs: OpportunityFitV2EvidenceRef[] }>;
+  next_steps: Array<{ id: string; text: string; rationale: string; evidence_refs: OpportunityFitV2EvidenceRef[] }>;
+}
+
+export interface OpportunityFitV2StageResponse {
+  id: number;
+  review_id: number;
+  stage_id: number;
+  application_id: number;
+  resume_id: number | null;
+  stage: 'triage' | 'deep_review';
+  schema_version: 2;
+  stage_status: 'generating' | 'ready' | 'confirmed';
+  parent_triage_stage_id: number | null;
+  idempotency_key: string;
+  source_fingerprint_sha256: string;
+  proposal_sha256: string;
+  proposal?: OpportunityFitV2Proposal;
+  confirmation_token?: string;
+  created_at: string;
+}
+
+export interface CreateOpportunityFitV2Input {
+  schema_version: 2;
+  resume_id: number;
+  jd_text: string;
+  jd_source_label: string;
+  candidate_assertions: string[];
+  idempotency_key: string;
+}

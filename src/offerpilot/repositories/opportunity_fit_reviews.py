@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import hashlib
+import hmac
+import json
+import secrets
 from typing import Any
 
 from sqlalchemy import select, text
@@ -11,9 +15,17 @@ from offerpilot.ai.agent import ChatModel
 from offerpilot.ai.opportunity_fit_reviews import (
     build_source_snapshot,
     generate_deep_review,
+    generate_deep_review_v2,
     generate_triage,
+    generate_triage_v2,
 )
-from offerpilot.models import Application, OpportunityFitReview, Resume
+from offerpilot.models import (
+    Application,
+    OpportunityFitReview,
+    OpportunityFitReviewSession,
+    OpportunityFitReviewStage,
+    Resume,
+)
 from offerpilot.repositories.json_contract import (
     JsonContractError,
     canonical_json,
@@ -34,12 +46,244 @@ class OpportunityFitReviewConflictError(ValueError):
     pass
 
 
+class OpportunityFitReviewConfirmationExpired(ValueError):
+    pass
+
+
+class OpportunityFitReviewConfirmationConsumed(OpportunityFitReviewConflictError):
+    pass
+
+
 HUMAN_APPLICATION_SOURCES = frozenset({"cli", "manual", "web"})
 
 
 class OpportunityFitReviewsRepository:
-    def __init__(self, session_factory: sessionmaker[Session]):
+    def __init__(self, session_factory: sessionmaker[Session], confirmation_secret: str = ""):
         self._session_factory = session_factory
+        self._confirmation_secret = confirmation_secret or "development-only-confirmation-secret"
+
+    def create_triage_v2(
+        self,
+        application_id: int,
+        resume_id: int,
+        jd_text: str,
+        jd_source_label: str,
+        candidate_assertions: list[str],
+        idempotency_key: str,
+        model: ChatModel,
+    ) -> tuple[OpportunityFitReviewSession, OpportunityFitReviewStage, bool, str]:
+        with self._session_factory() as session:
+            application = _visible_application(session, application_id)
+            if application is None:
+                raise OpportunityFitReviewNotFound()
+            snapshot = _build_snapshot(
+                session, application, resume_id, jd_text, jd_source_label, candidate_assertions
+            )
+            fingerprint = sha256_text(canonical_json(snapshot))
+            existing = _find_v2_session(session, application_id, idempotency_key)
+            if existing is not None:
+                stage = _find_v2_stage(session, existing.id, "triage", idempotency_key)
+                if stage is None:
+                    raise OpportunityFitReviewConflictError("v2 triage stage is missing")
+                if stage.source_fingerprint_sha256 != fingerprint:
+                    raise OpportunityFitReviewConflictError("opportunity fit idempotency conflict")
+                return existing, stage, False, _confirmation_token_for_stage(
+                    stage, self._confirmation_secret
+                )
+
+        # The first write claims the root and stage before calling the provider.  A
+        # unique application/key constraint makes concurrent first requests converge.
+        provider_token = secrets.token_urlsafe(24)
+        lease = datetime.now(timezone.utc) + timedelta(minutes=2)
+        snapshot_json = canonical_json(snapshot)
+        with self._session_factory() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            if _visible_application(session, application_id) is None:
+                raise OpportunityFitReviewNotFound()
+            existing = _find_v2_session(session, application_id, idempotency_key)
+            if existing is not None:
+                stage = _find_v2_stage(session, existing.id, "triage", idempotency_key)
+                if stage is None:
+                    raise OpportunityFitReviewConflictError("v2 triage stage is missing")
+                if stage.source_fingerprint_sha256 != fingerprint:
+                    raise OpportunityFitReviewConflictError("opportunity fit idempotency conflict")
+                return existing, stage, False, _confirmation_token_for_stage(
+                    stage, self._confirmation_secret
+                )
+            root = OpportunityFitReviewSession(
+                application_id=application_id,
+                triage_idempotency_key=idempotency_key,
+                proposal_schema_version=2,
+            )
+            session.add(root)
+            session.flush()
+            stage = OpportunityFitReviewStage(
+                review_id=root.id,
+                application_id=application_id,
+                resume_id=resume_id,
+                stage="triage",
+                proposal_schema_version=2,
+                idempotency_key=idempotency_key,
+                source_snapshot_json=snapshot_json,
+                source_fingerprint_sha256=fingerprint,
+                proposal_json="{}",
+                proposal_sha256="",
+                status="generating",
+                provider_call_token=provider_token,
+                lease_expires_at=lease,
+            )
+            session.add(stage)
+            try:
+                session.commit()
+            except IntegrityError:
+                session.rollback()
+                root = _find_v2_session(session, application_id, idempotency_key)
+                if root is None:
+                    raise
+                stage = _find_v2_stage(session, root.id, "triage", idempotency_key)
+                if stage is None:
+                    raise OpportunityFitReviewConflictError("v2 triage stage is missing")
+                if stage.source_fingerprint_sha256 != fingerprint:
+                    raise OpportunityFitReviewConflictError("opportunity fit idempotency conflict")
+                return root, stage, False, _confirmation_token_for_stage(
+                    stage, self._confirmation_secret
+                )
+            session.refresh(root)
+            session.refresh(stage)
+
+        triage = generate_triage_v2(model, snapshot)
+        proposal_json = canonical_json(triage.payload)
+        with self._session_factory() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            stage = session.get(OpportunityFitReviewStage, stage.id)
+            if stage is None:
+                raise OpportunityFitReviewNotFound()
+            if stage.status != "generating" or stage.provider_call_token != provider_token:
+                root = session.get(OpportunityFitReviewSession, stage.review_id)
+                if root is None:
+                    raise OpportunityFitReviewNotFound()
+                return root, stage, False, _confirmation_token_for_stage(
+                    stage, self._confirmation_secret
+                )
+            stage.status = "ready"
+            stage.proposal_json = proposal_json
+            stage.proposal_sha256 = sha256_text(proposal_json)
+            stage.provider_call_token = ""
+            stage.lease_expires_at = None
+            expires_at = datetime.now(timezone.utc) + timedelta(minutes=30)
+            stage.confirmation_expires_at = expires_at
+            token = _confirmation_token(stage, self._confirmation_secret, expires_at=expires_at)
+            stage.confirmation_token_hash = _hash_token(token)
+            session.commit()
+            root = session.get(OpportunityFitReviewSession, stage.review_id)
+            assert root is not None
+            session.refresh(stage)
+            return root, stage, True, token
+
+    def confirm_triage_v2(
+        self, review_id: int, stage_id: int, confirmation_token: str
+    ) -> OpportunityFitReviewStage:
+        with self._session_factory() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            stage = session.get(OpportunityFitReviewStage, stage_id)
+            if stage is None or stage.review_id != review_id or stage.stage != "triage":
+                raise OpportunityFitReviewNotFound()
+            if stage.status == "confirmed":
+                raise OpportunityFitReviewConfirmationConsumed()
+            expires_at = _as_utc(stage.confirmation_expires_at)
+            if expires_at is None or expires_at <= datetime.now(timezone.utc):
+                raise OpportunityFitReviewConfirmationExpired()
+            if not _verify_confirmation_token(stage, confirmation_token, self._confirmation_secret):
+                raise OpportunityFitReviewConflictError("confirmation token is invalid")
+            result = session.execute(
+                text(
+                    "UPDATE opportunity_fit_review_stages SET status='confirmed', confirmed_at=CURRENT_TIMESTAMP "
+                    "WHERE id=:id AND review_id=:review_id AND stage='triage' AND status='ready' "
+                    "AND stage_generation=:generation AND confirmation_token_hash=:token_hash "
+                    "AND confirmed_at IS NULL"
+                ),
+                {
+                    "id": stage_id,
+                    "review_id": review_id,
+                    "generation": stage.stage_generation,
+                    "token_hash": stage.confirmation_token_hash,
+                },
+            )
+            if result.rowcount != 1:
+                raise OpportunityFitReviewConfirmationConsumed()
+            session.commit()
+            session.refresh(stage)
+            return stage
+
+    def create_deep_review_v2(
+        self,
+        application_id: int,
+        review_id: int,
+        parent_triage_stage_id: int,
+        resume_id: int,
+        jd_text: str,
+        jd_source_label: str,
+        candidate_assertions: list[str],
+        idempotency_key: str,
+        model: ChatModel,
+    ) -> tuple[OpportunityFitReviewStage, bool]:
+        with self._session_factory() as session:
+            application = _visible_application(session, application_id)
+            root = session.get(OpportunityFitReviewSession, review_id)
+            parent = session.get(OpportunityFitReviewStage, parent_triage_stage_id)
+            if application is None or root is None or root.application_id != application_id:
+                raise OpportunityFitReviewNotFound()
+            if parent is None or parent.review_id != review_id or parent.application_id != application_id:
+                raise OpportunityFitReviewConflictError("opportunity fit parent stage is invalid")
+            if parent.stage != "triage" or parent.status != "confirmed":
+                raise OpportunityFitReviewConflictError("triage must be confirmed before deep review")
+            snapshot = _build_snapshot(
+                session, application, resume_id, jd_text, jd_source_label, candidate_assertions
+            )
+            snapshot_json = canonical_json(snapshot)
+            fingerprint = sha256_text(snapshot_json)
+            if fingerprint != parent.source_fingerprint_sha256:
+                raise OpportunityFitReviewConflictError("opportunity fit source changed")
+            existing = _find_v2_stage(session, review_id, "deep_review", idempotency_key)
+            if existing is not None:
+                if existing.source_fingerprint_sha256 != fingerprint:
+                    raise OpportunityFitReviewConflictError("opportunity fit idempotency conflict")
+                return existing, False
+
+        deep = generate_deep_review_v2(model, snapshot, json.loads(parent.proposal_json))
+        proposal_json = canonical_json(deep.payload)
+        with self._session_factory() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            existing = _find_v2_stage(session, review_id, "deep_review", idempotency_key)
+            if existing is not None:
+                if existing.source_fingerprint_sha256 != fingerprint:
+                    raise OpportunityFitReviewConflictError("opportunity fit idempotency conflict")
+                return existing, False
+            stage = OpportunityFitReviewStage(
+                review_id=review_id,
+                application_id=application_id,
+                resume_id=resume_id,
+                parent_triage_stage_id=parent_triage_stage_id,
+                stage="deep_review",
+                proposal_schema_version=2,
+                idempotency_key=idempotency_key,
+                source_snapshot_json=snapshot_json,
+                source_fingerprint_sha256=fingerprint,
+                proposal_json=proposal_json,
+                proposal_sha256=sha256_text(proposal_json),
+                status="ready",
+            )
+            session.add(stage)
+            try:
+                session.commit()
+            except IntegrityError:
+                session.rollback()
+                existing = _find_v2_stage(session, review_id, "deep_review", idempotency_key)
+                if existing is None:
+                    raise
+                return existing, False
+            session.refresh(stage)
+            return stage, True
 
     def create_triage(
         self,
@@ -217,6 +461,92 @@ def _find_by_idempotency(
         select(OpportunityFitReview)
         .where(OpportunityFitReview.application_id == application_id)
         .where(OpportunityFitReview.idempotency_key == idempotency_key)
+    )
+
+
+def _find_v2_session(
+    session: Session, application_id: int, idempotency_key: str
+) -> OpportunityFitReviewSession | None:
+    return session.scalar(
+        select(OpportunityFitReviewSession)
+        .where(OpportunityFitReviewSession.application_id == application_id)
+        .where(OpportunityFitReviewSession.triage_idempotency_key == idempotency_key)
+    )
+
+
+def _find_v2_stage(
+    session: Session, review_id: int, stage: str, idempotency_key: str
+) -> OpportunityFitReviewStage | None:
+    return session.scalar(
+        select(OpportunityFitReviewStage)
+        .where(OpportunityFitReviewStage.review_id == review_id)
+        .where(OpportunityFitReviewStage.stage == stage)
+        .where(OpportunityFitReviewStage.idempotency_key == idempotency_key)
+    )
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _confirmation_payload(
+    stage: OpportunityFitReviewStage, expires_at: datetime
+) -> str:
+    return canonical_json(
+        {
+            "review_id": stage.review_id,
+            "stage_id": stage.id,
+            "stage_generation": stage.stage_generation,
+            "expires_at": expires_at.astimezone(timezone.utc).isoformat(),
+        }
+    )
+
+
+def _confirmation_token(
+    stage: OpportunityFitReviewStage,
+    secret: str,
+    *,
+    expires_at: datetime,
+) -> str:
+    payload = _confirmation_payload(stage, expires_at)
+    signature = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{payload}.{signature}"
+
+
+def _confirmation_token_for_stage(stage: OpportunityFitReviewStage, secret: str) -> str:
+    expires_at = _as_utc(stage.confirmation_expires_at)
+    if stage.status != "ready" or expires_at is None or expires_at <= datetime.now(timezone.utc):
+        return ""
+    return _confirmation_token(stage, secret, expires_at=expires_at)
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _verify_confirmation_token(
+    stage: OpportunityFitReviewStage, token: str, secret: str
+) -> bool:
+    try:
+        payload, signature = token.rsplit(".", 1)
+        data = json.loads(payload)
+        expires_at = datetime.fromisoformat(str(data["expires_at"])).astimezone(timezone.utc)
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return False
+    if data != {
+        "review_id": stage.review_id,
+        "stage_id": stage.id,
+        "stage_generation": stage.stage_generation,
+        "expires_at": expires_at.isoformat(),
+    }:
+        return False
+    expected = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(signature, expected) and hmac.compare_digest(
+        _hash_token(token), stage.confirmation_token_hash
     )
 
 
