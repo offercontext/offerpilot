@@ -107,7 +107,7 @@ export default function OfferCenterView({
           <Space>
             <Button
               icon={<SwapOutlined />}
-              disabled={selectedIds.length < 1}
+              disabled={selectedIds.length < 2}
               onClick={() => setCompareOpen(true)}
             >
               对比选中 ({selectedIds.length})

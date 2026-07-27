@@ -2393,7 +2393,7 @@ def create_app(
     def compare_offers(ids: str = "") -> JSONResponse:
         if not ids:
             return error_response(400, "ids query param is required")
-        compared: list[dict[str, Any]] = []
+        parsed_ids: list[int] = []
         for part in ids.split(","):
             raw_id = part.strip()
             if not raw_id:
@@ -2401,10 +2401,23 @@ def create_app(
             try:
                 offer_id = int(raw_id)
             except ValueError:
-                return error_response(400, f"invalid id in ids: {raw_id}")
+                return error_response(422, "ids must contain positive integers", code="offer_comparison_invalid_ids")
+            if offer_id <= 0:
+                return error_response(422, "ids must contain positive integers", code="offer_comparison_invalid_ids")
+            if offer_id not in parsed_ids:
+                parsed_ids.append(offer_id)
+        if len(parsed_ids) < 2:
+            return error_response(
+                422,
+                "at least two distinct visible offers are required",
+                code="offer_comparison_requires_two_offers",
+            )
+        compared: list[dict[str, Any]] = []
+        for offer_id in parsed_ids:
             offer = offers.get(offer_id)
-            if offer is not None:
-                compared.append(_offer_json(offer))
+            if offer is None:
+                return error_response(404, "offer not found", code="offer_comparison_offer_not_found")
+            compared.append(_offer_json(offer))
         return JSONResponse(compared)
 
     @app.get("/api/offers/{offer_id}")

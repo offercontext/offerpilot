@@ -89,7 +89,7 @@ def test_offer_api_validation_and_application_binding(tmp_path):
     assert missing_app.json() == {"error": "application not found"}
 
 
-def test_offer_compare_preserves_request_order_and_skips_missing(tmp_path):
+def test_offer_compare_requires_two_distinct_visible_offers_and_preserves_order(tmp_path):
     client = TestClient(create_app(data_dir=tmp_path))
     first = client.post(
         "/api/offers",
@@ -100,18 +100,26 @@ def test_offer_compare_preserves_request_order_and_skips_missing(tmp_path):
         json={"company_name": "B", "position_name": "Backend", "months_per_year": 12},
     ).json()
 
-    response = client.get(f"/api/offers/compare?ids={second['id']},999,{first['id']}")
+    response = client.get(f"/api/offers/compare?ids={second['id']},{first['id']}")
 
     assert response.status_code == 200
     assert [offer["id"] for offer in response.json()] == [second["id"], first["id"]]
+
+    duplicate = client.get(f"/api/offers/compare?ids={first['id']},{first['id']}")
+    assert duplicate.status_code == 422
+    assert duplicate.json()["error_code"] == "offer_comparison_requires_two_offers"
+
+    missing = client.get(f"/api/offers/compare?ids={second['id']},999")
+    assert missing.status_code == 404
+    assert missing.json()["error_code"] == "offer_comparison_offer_not_found"
 
     missing_ids = client.get("/api/offers/compare")
     assert missing_ids.status_code == 400
     assert missing_ids.json() == {"error": "ids query param is required"}
 
     bad_id = client.get("/api/offers/compare?ids=abc")
-    assert bad_id.status_code == 400
-    assert bad_id.json() == {"error": "invalid id in ids: abc"}
+    assert bad_id.status_code == 422
+    assert bad_id.json()["error_code"] == "offer_comparison_invalid_ids"
 
 
 def test_offer_update_keeps_application_id_immutable(tmp_path):
