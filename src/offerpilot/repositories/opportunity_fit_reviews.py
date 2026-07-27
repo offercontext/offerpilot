@@ -60,7 +60,48 @@ HUMAN_APPLICATION_SOURCES = frozenset({"cli", "manual", "web"})
 class OpportunityFitReviewsRepository:
     def __init__(self, session_factory: sessionmaker[Session], confirmation_secret: str = ""):
         self._session_factory = session_factory
-        self._confirmation_secret = confirmation_secret or "development-only-confirmation-secret"
+        self._confirmation_secret = confirmation_secret
+
+    def _require_confirmation_secret(self) -> str:
+        if not self._confirmation_secret:
+            raise RuntimeError("persistent opportunity-fit confirmation secret is required")
+        return self._confirmation_secret
+
+    def peek_triage_v2(
+        self,
+        application_id: int,
+        resume_id: int,
+        jd_text: str,
+        jd_source_label: str,
+        candidate_assertions: list[str],
+        idempotency_key: str,
+    ) -> tuple[OpportunityFitReviewSession, OpportunityFitReviewStage, str] | None:
+        """Return a stable, non-expired attempt before resolving an AI provider.
+
+        This is intentionally a short read-only fast path.  The repository still
+        repeats every check and claims the lease in ``create_triage_v2`` so a
+        provider lookup cannot weaken the database race guarantees.
+        """
+        confirmation_secret = self._require_confirmation_secret()
+        with self._session_factory() as session:
+            application = _visible_application(session, application_id)
+            if application is None:
+                raise OpportunityFitReviewNotFound()
+            snapshot = _build_snapshot(
+                session, application, resume_id, jd_text, jd_source_label, candidate_assertions
+            )
+            fingerprint = sha256_text(canonical_json(snapshot))
+            existing = _find_v2_session(session, application_id, idempotency_key)
+            if existing is None:
+                return None
+            stage = _find_v2_stage(session, existing.id, "triage", idempotency_key)
+            if stage is None:
+                raise OpportunityFitReviewConflictError("v2 triage stage is missing")
+            if stage.source_fingerprint_sha256 != fingerprint:
+                raise OpportunityFitReviewConflictError("opportunity fit idempotency conflict")
+            if _v2_lease_expired(stage):
+                return None
+            return existing, stage, _confirmation_token_for_stage(stage, confirmation_secret)
 
     def create_triage_v2(
         self,
@@ -72,6 +113,7 @@ class OpportunityFitReviewsRepository:
         idempotency_key: str,
         model: ChatModel,
     ) -> tuple[OpportunityFitReviewSession, OpportunityFitReviewStage, bool, str]:
+        confirmation_secret = self._require_confirmation_secret()
         provider_token = ""
         should_call_provider = False
         was_created = False
@@ -92,7 +134,7 @@ class OpportunityFitReviewsRepository:
                     raise OpportunityFitReviewConflictError("opportunity fit idempotency conflict")
                 if not _v2_lease_expired(stage):
                     return existing, stage, False, _confirmation_token_for_stage(
-                        stage, self._confirmation_secret
+                        stage, confirmation_secret
                     )
 
         # The first write claims the root and stage before calling the provider.  A
@@ -113,7 +155,7 @@ class OpportunityFitReviewsRepository:
                     raise OpportunityFitReviewConflictError("opportunity fit idempotency conflict")
                 if not _v2_lease_expired(stage):
                     return existing, stage, False, _confirmation_token_for_stage(
-                        stage, self._confirmation_secret
+                        stage, confirmation_secret
                     )
                 stage.stage_generation += 1
                 stage.status = "generating"
@@ -160,14 +202,14 @@ class OpportunityFitReviewsRepository:
                 if stage.source_fingerprint_sha256 != fingerprint:
                     raise OpportunityFitReviewConflictError("opportunity fit idempotency conflict")
                 return winner, stage, False, _confirmation_token_for_stage(
-                    stage, self._confirmation_secret
+                    stage, confirmation_secret
                 )
             session.refresh(root)
             session.refresh(stage)
 
         if not should_call_provider:
             return root, stage, False, _confirmation_token_for_stage(
-                stage, self._confirmation_secret
+                stage, confirmation_secret
             )
 
         try:
@@ -186,7 +228,7 @@ class OpportunityFitReviewsRepository:
                 if winner is None:
                     raise OpportunityFitReviewNotFound()
                 return winner, stage, False, _confirmation_token_for_stage(
-                    stage, self._confirmation_secret
+                    stage, confirmation_secret
                 )
             stage.status = "ready"
             stage.proposal_json = proposal_json
@@ -195,7 +237,7 @@ class OpportunityFitReviewsRepository:
             stage.lease_expires_at = None
             expires_at = datetime.now(timezone.utc) + timedelta(minutes=30)
             stage.confirmation_expires_at = expires_at
-            token = _confirmation_token(stage, self._confirmation_secret, expires_at=expires_at)
+            token = _confirmation_token(stage, confirmation_secret, expires_at=expires_at)
             stage.confirmation_token_hash = _hash_token(token)
             session.commit()
             root_after = session.get(OpportunityFitReviewSession, stage.review_id)
@@ -207,6 +249,7 @@ class OpportunityFitReviewsRepository:
     def confirm_triage_v2(
         self, review_id: int, stage_id: int, confirmation_token: str
     ) -> OpportunityFitReviewStage:
+        confirmation_secret = self._require_confirmation_secret()
         with self._session_factory() as session:
             session.execute(text("BEGIN IMMEDIATE"))
             stage = session.get(OpportunityFitReviewStage, stage_id)
@@ -217,7 +260,7 @@ class OpportunityFitReviewsRepository:
             expires_at = _as_utc(stage.confirmation_expires_at)
             if expires_at is None or expires_at <= datetime.now(timezone.utc):
                 raise OpportunityFitReviewConfirmationExpired()
-            if not _verify_confirmation_token(stage, confirmation_token, self._confirmation_secret):
+            if not _verify_confirmation_token(stage, confirmation_token, confirmation_secret):
                 raise OpportunityFitReviewConflictError("confirmation token is invalid")
             result = session.execute(
                 text(

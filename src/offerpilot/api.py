@@ -1797,6 +1797,19 @@ def create_app(
             app_model = applications.get(app_id)
             if app_model is None or app_model.source not in HUMAN_APPLICATION_SOURCES:
                 return error_response(404, "Application not found")
+            try:
+                cached = opportunity_fit_reviews.peek_triage_v2(app_id, **parsed_v2)
+            except OpportunityFitReviewNotFound:
+                return error_response(404, "Application or resume not found")
+            except OpportunityFitReviewConflictError as exc:
+                return error_response(409, str(exc), code="opportunity_fit_idempotency_conflict")
+            if cached is not None:
+                cached_root, cached_stage, cached_token = cached
+                cached_status = 202 if cached_stage.status in {"generating", "provider_unknown"} else 200
+                return JSONResponse(
+                    _opportunity_fit_v2_stage_json(cached_root, cached_stage, confirmation_token=cached_token),
+                    status_code=cached_status,
+                )
             model = _chat_model(chat_model, resolved_data_dir)
             if isinstance(model, JSONResponse):
                 return error_response(
@@ -1904,7 +1917,16 @@ def create_app(
         return JSONResponse(items)
 
     @app.get("/api/applications/{app_id}/opportunity-fit-reviews/{review_id}")
-    def get_opportunity_fit_review(app_id: int, review_id: int) -> JSONResponse:
+    def get_opportunity_fit_review(
+        app_id: int,
+        review_id: int,
+        schema_version: int | None = Query(default=None),
+    ) -> JSONResponse:
+        if schema_version == 2:
+            v2 = opportunity_fit_reviews.get_v2(app_id, review_id)
+            if v2 is None:
+                return error_response(404, "Opportunity fit review not found")
+            return JSONResponse(_opportunity_fit_v2_session_json(v2[0], v2[1]))
         review = opportunity_fit_reviews.get(app_id, review_id)
         if review is None:
             v2 = opportunity_fit_reviews.get_v2(app_id, review_id)

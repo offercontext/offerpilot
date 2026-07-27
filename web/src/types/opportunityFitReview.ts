@@ -114,6 +114,29 @@ export interface OpportunityFitV2StageResponse {
   created_at: string;
 }
 
+export interface OpportunityFitV2SessionSummary {
+  id: number;
+  review_id: number;
+  application_id: number;
+  schema_version: 2;
+  status: 'active';
+  triage_idempotency_key: string;
+  stage_count: number;
+  latest_stage: OpportunityFitV2StageResponse | null;
+  created_at: string;
+}
+
+export interface OpportunityFitV2SessionResponse {
+  id: number;
+  review_id: number;
+  application_id: number;
+  schema_version: 2;
+  status: 'active';
+  triage_idempotency_key: string;
+  stages: OpportunityFitV2StageResponse[];
+  created_at: string;
+}
+
 export interface CreateOpportunityFitV2Input {
   schema_version: 2;
   resume_id: number;

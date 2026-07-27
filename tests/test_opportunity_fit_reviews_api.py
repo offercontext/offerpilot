@@ -317,6 +317,10 @@ def test_api_v2_requires_confirmation_before_deep_and_preserves_v1_contract(tmp_
     assert body["stage"] == "triage"
     assert "recommendation" not in body["proposal"]
     assert "source_snapshot_json" not in body
+    detail = client.get(f"{path}/{body['review_id']}", params={"schema_version": 2})
+    assert detail.status_code == 200
+    assert detail.json()["schema_version"] == 2
+    assert detail.json()["review_id"] == body["review_id"]
 
     deep_payload = {
         **payload,

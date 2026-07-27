@@ -4,6 +4,8 @@ import type {
   OpportunityFitReviewSummary,
   CreateOpportunityFitV2Input,
   OpportunityFitV2StageResponse,
+  OpportunityFitV2SessionResponse,
+  OpportunityFitV2SessionSummary,
 } from '@/types/opportunityFitReview';
 import { createApiClient } from './http';
 
@@ -81,6 +83,32 @@ export async function createOpportunityFitDeepReview(
 ): Promise<OpportunityFitReview> {
   const { data } = await http.post<OpportunityFitReview>(
     `/applications/${applicationID}/opportunity-fit-reviews/${reviewID}/deep-review`,
+  );
+  return data;
+}
+
+export async function listOpportunityFitV2Reviews(
+  applicationID: number,
+): Promise<OpportunityFitV2SessionSummary[]> {
+  const { data } = await http.get<unknown[]>(
+    `/applications/${applicationID}/opportunity-fit-reviews`,
+  );
+  return data.filter((item): item is OpportunityFitV2SessionSummary => {
+    if (typeof item !== 'object' || item === null) return false;
+    const record = item as Record<string, unknown>;
+    return record.schema_version === 2
+      && typeof record.review_id === 'number'
+      && typeof record.stage_count === 'number';
+  });
+}
+
+export async function getOpportunityFitV2Review(
+  applicationID: number,
+  reviewID: number,
+): Promise<OpportunityFitV2SessionResponse> {
+  const { data } = await http.get<OpportunityFitV2SessionResponse>(
+    `/applications/${applicationID}/opportunity-fit-reviews/${reviewID}`,
+    { params: { schema_version: 2 } },
   );
   return data;
 }
