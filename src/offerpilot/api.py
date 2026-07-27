@@ -1826,7 +1826,8 @@ def create_app(
                     code="opportunity_fit_unverifiable",
                 )
             response = _opportunity_fit_v2_stage_json(root, stage, confirmation_token=token)
-            return JSONResponse(response, status_code=201 if created else 200)
+            status_code = 202 if stage.status in {"generating", "provider_unknown"} else (201 if created else 200)
+            return JSONResponse(response, status_code=status_code)
         parsed = _opportunity_fit_create_payload(payload)
         if isinstance(parsed, JSONResponse):
             return parsed
@@ -1985,7 +1986,8 @@ def create_app(
                     "AI output could not be verified. Please retry.",
                     code="opportunity_fit_unverifiable",
                 )
-            return JSONResponse(_opportunity_fit_v2_stage_json(None, stage), status_code=201 if created else 200)
+            status_code = 202 if stage.status in {"generating", "provider_unknown"} else (201 if created else 200)
+            return JSONResponse(_opportunity_fit_v2_stage_json(None, stage), status_code=status_code)
         app_model = applications.get(app_id)
         if app_model is None or app_model.source not in HUMAN_APPLICATION_SOURCES:
             return error_response(404, "Application not found")

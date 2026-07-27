@@ -151,7 +151,11 @@ class OpportunityFitReviewsRepository:
             session.refresh(root)
             session.refresh(stage)
 
-        triage = generate_triage_v2(model, snapshot)
+        try:
+            triage = generate_triage_v2(model, snapshot)
+        except Exception:
+            _mark_v2_provider_unknown(self._session_factory, stage.id, provider_token)
+            raise
         proposal_json = canonical_json(triage.payload)
         with self._session_factory() as session:
             session.execute(text("BEGIN IMMEDIATE"))
@@ -296,16 +300,8 @@ class OpportunityFitReviewsRepository:
                 if existing.source_fingerprint_sha256 != fingerprint:
                     raise OpportunityFitReviewConflictError("opportunity fit idempotency conflict")
                 return existing, False
-
-        deep = generate_deep_review_v2(model, snapshot, json.loads(parent.proposal_json))
-        proposal_json = canonical_json(deep.payload)
-        with self._session_factory() as session:
-            session.execute(text("BEGIN IMMEDIATE"))
-            existing = _find_v2_stage(session, review_id, "deep_review", idempotency_key)
-            if existing is not None:
-                if existing.source_fingerprint_sha256 != fingerprint:
-                    raise OpportunityFitReviewConflictError("opportunity fit idempotency conflict")
-                return existing, False
+            provider_token = secrets.token_urlsafe(24)
+            lease = datetime.now(timezone.utc) + timedelta(minutes=2)
             stage = OpportunityFitReviewStage(
                 review_id=review_id,
                 application_id=application_id,
@@ -316,9 +312,11 @@ class OpportunityFitReviewsRepository:
                 idempotency_key=idempotency_key,
                 source_snapshot_json=snapshot_json,
                 source_fingerprint_sha256=fingerprint,
-                proposal_json=proposal_json,
-                proposal_sha256=sha256_text(proposal_json),
-                status="ready",
+                proposal_json="{}",
+                proposal_sha256="",
+                status="generating",
+                provider_call_token=provider_token,
+                lease_expires_at=lease,
             )
             session.add(stage)
             try:
@@ -329,6 +327,27 @@ class OpportunityFitReviewsRepository:
                 if existing is None:
                     raise
                 return existing, False
+            session.refresh(stage)
+
+        try:
+            deep = generate_deep_review_v2(model, snapshot, json.loads(parent.proposal_json))
+        except Exception:
+            _mark_v2_provider_unknown(self._session_factory, stage.id, provider_token)
+            raise
+        proposal_json = canonical_json(deep.payload)
+        with self._session_factory() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            stage = session.get(OpportunityFitReviewStage, stage.id)
+            if stage is None:
+                raise OpportunityFitReviewNotFound()
+            if stage.status != "generating" or stage.provider_call_token != provider_token:
+                return stage, False
+            stage.status = "ready"
+            stage.proposal_json = proposal_json
+            stage.proposal_sha256 = sha256_text(proposal_json)
+            stage.provider_call_token = ""
+            stage.lease_expires_at = None
+            session.commit()
             session.refresh(stage)
             return stage, True
 
@@ -530,6 +549,17 @@ def _find_v2_stage(
         .where(OpportunityFitReviewStage.stage == stage)
         .where(OpportunityFitReviewStage.idempotency_key == idempotency_key)
     )
+
+
+def _mark_v2_provider_unknown(
+    session_factory: sessionmaker[Session], stage_id: int, provider_token: str
+) -> None:
+    with session_factory() as session:
+        session.execute(text("BEGIN IMMEDIATE"))
+        stage = session.get(OpportunityFitReviewStage, stage_id)
+        if stage is not None and stage.status == "generating" and stage.provider_call_token == provider_token:
+            stage.status = "provider_unknown"
+            session.commit()
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
