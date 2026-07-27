@@ -145,6 +145,7 @@ export default function PilotOpportunityFitV2Card({
   const deepReady = draft.deep?.stage_status === 'ready';
   const triagePending = Boolean(draft.triage && ['generating', 'provider_unknown'].includes(draft.triage.stage_status));
   const deepPending = Boolean(draft.deep && ['generating', 'provider_unknown'].includes(draft.deep.stage_status));
+  const isHistorical = draft.historical || Boolean(legacyReview);
   const input: CreateOpportunityFitV2Input = {
     schema_version: 2,
     resume_id: draft.resumeId ?? 0,
@@ -189,7 +190,7 @@ export default function PilotOpportunityFitV2Card({
       ) : null}
 
       {draft.error ? <p role="alert">{draft.error}</p> : null}
-      {draft.historical ? (
+      {isHistorical ? (
         <button type="button" onClick={onStartNew}>开始新的岗位评估</button>
       ) : (
         <>
@@ -232,7 +233,7 @@ export default function PilotOpportunityFitV2Card({
       )}
 
       {triageLoading ? <p role="status">正在等待 AI 返回评估结果</p> : null}
-      {draft.error && draft.triageKey && !draft.triage && !draft.historical ? (
+      {draft.error && draft.triageKey && !draft.triage && !isHistorical ? (
         <button type="button" onClick={() => onStartTriage(input)}>使用原尝试重试 Triage</button>
       ) : null}
       {triagePending ? (
@@ -252,7 +253,7 @@ export default function PilotOpportunityFitV2Card({
         <button type="button" disabled={deepLoading} onClick={() => setConfirmation('deep')}>开始 Deep Review</button>
       ) : null}
       {deepLoading ? <p role="status">正在进行 Deep Review</p> : null}
-      {draft.error && draft.deepKey && !draft.deep && !draft.historical ? (
+      {draft.error && draft.deepKey && !draft.deep && !isHistorical ? (
         <button type="button" onClick={() => onStartDeepReview()}>使用原尝试重试 Deep Review</button>
       ) : null}
       {deepPending ? (
@@ -265,13 +266,13 @@ export default function PilotOpportunityFitV2Card({
         <section>
           <h3>Deep Review（证据化结果）</h3>
           <ProposalView proposal={draft.deep.proposal} />
-          {onPrepareMaterials && draft.resumeId && !draft.historical ? (
+          {onPrepareMaterials && draft.resumeId && !isHistorical ? (
             <button type="button" onClick={() => onPrepareMaterials(draft.resumeId!, draft.jdText)}>去准备材料</button>
           ) : null}
         </section>
       ) : null}
 
-      {!draft.historical && (draft.triage?.stage_status === 'confirmed' || draft.deep?.stage_status === 'ready') ? (
+      {!isHistorical && (draft.triage?.stage_status === 'confirmed' || draft.deep?.stage_status === 'ready') ? (
         <button type="button" onClick={onStartNew}>开始新的岗位评估</button>
       ) : null}
 

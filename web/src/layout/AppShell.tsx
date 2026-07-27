@@ -659,6 +659,7 @@ function AppShellContent() {
     if (!pilotV2Draft) return;
     try {
       const result = await getOpportunityFitReview(pilotV2Draft.applicationId, reviewId);
+      updatePilotV2Draft({ triage: null, deep: null, historical: true, error: null });
       setPilotLegacyReview(result);
     } catch (error) {
       if (isOpportunityFitNotFoundError(error)) handlePilotNotFound();
