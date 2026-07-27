@@ -37,6 +37,14 @@ def test_load_missing_config_returns_defaults(tmp_path):
     assert cfg.log_level == "INFO"
 
 
+def test_confirmation_secret_survives_config_reload(tmp_path):
+    first = load_config(tmp_path)
+    second = load_config(tmp_path)
+
+    assert first.confirmation_secret
+    assert second.confirmation_secret == first.confirmation_secret
+
+
 def test_load_config_disables_legacy_agent_auto_approval(tmp_path):
     (tmp_path / "config.json").write_text(
         json.dumps({"chat_auto_approve_writes": True}),
@@ -85,6 +93,7 @@ def test_save_and_load_config_round_trip(tmp_path):
         runtime_mode="server",
         auth_enabled=True,
         log_level="DEBUG",
+        confirmation_secret="test-confirmation-secret",
     )
 
     save_config(tmp_path, cfg)
