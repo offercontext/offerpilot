@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event, Lock
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import sessionmaker
 
 from offerpilot.ai.types import Assistant
 from offerpilot.db import init_database
@@ -15,6 +19,7 @@ from offerpilot.repositories.opportunity_fit_reviews import (
     OpportunityFitReviewNotFound,
     OpportunityFitReviewsRepository,
 )
+from offerpilot.ai.opportunity_fit_reviews import OpportunityFitModelError
 from offerpilot.repositories.resumes import ResumeCreate, ResumesRepository
 
 
@@ -150,6 +155,14 @@ class V2ReviewModel:
         self.calls += 1
         payload = _v2_triage() if self.calls == 1 else _v2_deep()
         return Assistant(content=json.dumps(payload, ensure_ascii=False))
+
+
+class FailOnceV2ReviewModel(V2ReviewModel):
+    def complete(self, messages, tools):  # type: ignore[no-untyped-def]
+        self.calls += 1
+        if self.calls == 1:
+            raise TimeoutError("provider timeout")
+        return Assistant(content=json.dumps(_v2_triage(), ensure_ascii=False))
 
 
 def _ready(tmp_path):
@@ -330,3 +343,100 @@ def test_v2_confirmation_token_is_single_use_and_deep_requires_confirmation(tmp_
     )
     assert deep_created is True
     assert deep.stage == "deep_review"
+
+
+def test_v2_expired_provider_lease_is_taken_over_before_the_next_provider_call(tmp_path) -> None:
+    factory, application, resume = _ready(tmp_path)
+    repository = OpportunityFitReviewsRepository(factory, confirmation_secret="test-secret")
+    model = FailOnceV2ReviewModel()
+    key = "a3b06b63-8f2b-45c9-ae1f-43dc4da8874f"
+
+    with pytest.raises(OpportunityFitModelError):
+        repository.create_triage_v2(
+            application.id, resume.id, "Kubernetes preferred", "copy", [], key, model
+        )
+
+    with factory() as session:
+        stage = session.scalar(select(OpportunityFitReviewStage))
+        assert stage is not None
+        old_generation = stage.stage_generation
+        old_token = stage.provider_call_token
+        stage.lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        session.commit()
+
+    _root, stage, created, _confirmation_token = repository.create_triage_v2(
+        application.id, resume.id, "Kubernetes preferred", "copy", [], key, model
+    )
+
+    assert created is False
+    assert stage.status == "ready"
+    assert stage.stage_generation == old_generation + 1
+    assert stage.provider_call_token == ""
+    assert stage.proposal_sha256
+    assert model.calls == 2
+    assert old_token
+
+
+def test_v2_expired_lease_two_connections_only_one_owner_calls_provider(tmp_path) -> None:
+    factory, application, resume = _ready(tmp_path)
+    repository = OpportunityFitReviewsRepository(factory, confirmation_secret="test-secret")
+    setup_model = FailOnceV2ReviewModel()
+    key = "7dbf4fcb-67ad-4a9d-942e-8e9d1d8b7e26"
+
+    with pytest.raises(OpportunityFitModelError):
+        repository.create_triage_v2(
+            application.id, resume.id, "Kubernetes preferred", "copy", [], key, setup_model
+        )
+    with factory() as session:
+        stage = session.scalar(select(OpportunityFitReviewStage))
+        assert stage is not None
+        stage.lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        session.commit()
+
+    engine_a = create_engine(factory.kw["bind"].url, connect_args={"check_same_thread": False})
+    engine_b = create_engine(factory.kw["bind"].url, connect_args={"check_same_thread": False})
+    factory_a = sessionmaker(bind=engine_a, expire_on_commit=False)
+    factory_b = sessionmaker(bind=engine_b, expire_on_commit=False)
+    repository_a = OpportunityFitReviewsRepository(factory_a, confirmation_secret="test-secret")
+    repository_b = OpportunityFitReviewsRepository(factory_b, confirmation_secret="test-secret")
+
+    started = Event()
+    release = Event()
+    calls = 0
+    calls_lock = Lock()
+
+    class BlockingModel(V2ReviewModel):
+        def complete(self, messages, tools):  # type: ignore[no-untyped-def]
+            nonlocal calls
+            with calls_lock:
+                calls += 1
+            started.set()
+            assert release.wait(timeout=5)
+            return Assistant(content=json.dumps(_v2_triage(), ensure_ascii=False))
+
+    model = BlockingModel()
+
+    def invoke(repo):
+        return repo.create_triage_v2(
+            application.id, resume.id, "Kubernetes preferred", "copy", [], key, model
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first_future = pool.submit(invoke, repository_a)
+        assert started.wait(timeout=5)
+        second_future = pool.submit(invoke, repository_b)
+        second = second_future.result(timeout=5)
+        release.set()
+        first = first_future.result(timeout=5)
+
+    assert calls == 1
+    assert first[1].status == "ready"
+    assert second[1].status in {"generating", "ready"}
+    with factory() as session:
+        stages = list(session.scalars(select(OpportunityFitReviewStage)))
+        roots = list(session.scalars(select(OpportunityFitReviewSession)))
+        assert len(roots) == 1
+        assert len(stages) == 1
+        assert stages[0].stage_generation == 2
+    engine_a.dispose()
+    engine_b.dispose()

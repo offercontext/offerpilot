@@ -72,6 +72,9 @@ class OpportunityFitReviewsRepository:
         idempotency_key: str,
         model: ChatModel,
     ) -> tuple[OpportunityFitReviewSession, OpportunityFitReviewStage, bool, str]:
+        provider_token = ""
+        should_call_provider = False
+        was_created = False
         with self._session_factory() as session:
             application = _visible_application(session, application_id)
             if application is None:
@@ -87,9 +90,10 @@ class OpportunityFitReviewsRepository:
                     raise OpportunityFitReviewConflictError("v2 triage stage is missing")
                 if stage.source_fingerprint_sha256 != fingerprint:
                     raise OpportunityFitReviewConflictError("opportunity fit idempotency conflict")
-                return existing, stage, False, _confirmation_token_for_stage(
-                    stage, self._confirmation_secret
-                )
+                if not _v2_lease_expired(stage):
+                    return existing, stage, False, _confirmation_token_for_stage(
+                        stage, self._confirmation_secret
+                    )
 
         # The first write claims the root and stage before calling the provider.  A
         # unique application/key constraint makes concurrent first requests converge.
@@ -107,32 +111,42 @@ class OpportunityFitReviewsRepository:
                     raise OpportunityFitReviewConflictError("v2 triage stage is missing")
                 if stage.source_fingerprint_sha256 != fingerprint:
                     raise OpportunityFitReviewConflictError("opportunity fit idempotency conflict")
-                return existing, stage, False, _confirmation_token_for_stage(
-                    stage, self._confirmation_secret
+                if not _v2_lease_expired(stage):
+                    return existing, stage, False, _confirmation_token_for_stage(
+                        stage, self._confirmation_secret
+                    )
+                stage.stage_generation += 1
+                stage.status = "generating"
+                stage.provider_call_token = provider_token
+                stage.lease_expires_at = lease
+                root = existing
+                should_call_provider = True
+            else:
+                root = OpportunityFitReviewSession(
+                    application_id=application_id,
+                    triage_idempotency_key=idempotency_key,
+                    proposal_schema_version=2,
                 )
-            root = OpportunityFitReviewSession(
-                application_id=application_id,
-                triage_idempotency_key=idempotency_key,
-                proposal_schema_version=2,
-            )
-            session.add(root)
-            session.flush()
-            stage = OpportunityFitReviewStage(
-                review_id=root.id,
-                application_id=application_id,
-                resume_id=resume_id,
-                stage="triage",
-                proposal_schema_version=2,
-                idempotency_key=idempotency_key,
-                source_snapshot_json=snapshot_json,
-                source_fingerprint_sha256=fingerprint,
-                proposal_json="{}",
-                proposal_sha256="",
-                status="generating",
-                provider_call_token=provider_token,
-                lease_expires_at=lease,
-            )
-            session.add(stage)
+                session.add(root)
+                session.flush()
+                stage = OpportunityFitReviewStage(
+                    review_id=root.id,
+                    application_id=application_id,
+                    resume_id=resume_id,
+                    stage="triage",
+                    proposal_schema_version=2,
+                    idempotency_key=idempotency_key,
+                    source_snapshot_json=snapshot_json,
+                    source_fingerprint_sha256=fingerprint,
+                    proposal_json="{}",
+                    proposal_sha256="",
+                    status="generating",
+                    provider_call_token=provider_token,
+                    lease_expires_at=lease,
+                )
+                session.add(stage)
+                should_call_provider = True
+                was_created = True
             try:
                 session.commit()
             except IntegrityError:
@@ -150,6 +164,11 @@ class OpportunityFitReviewsRepository:
                 )
             session.refresh(root)
             session.refresh(stage)
+
+        if not should_call_provider:
+            return root, stage, False, _confirmation_token_for_stage(
+                stage, self._confirmation_secret
+            )
 
         try:
             triage = generate_triage_v2(model, snapshot)
@@ -183,7 +202,7 @@ class OpportunityFitReviewsRepository:
             if root_after is None:
                 raise OpportunityFitReviewNotFound()
             session.refresh(stage)
-            return root_after, stage, True, token
+            return root_after, stage, was_created, token
 
     def confirm_triage_v2(
         self, review_id: int, stage_id: int, confirmation_token: str
@@ -300,26 +319,35 @@ class OpportunityFitReviewsRepository:
             if existing is not None:
                 if existing.source_fingerprint_sha256 != fingerprint:
                     raise OpportunityFitReviewConflictError("opportunity fit idempotency conflict")
-                return existing, False
-            provider_token = secrets.token_urlsafe(24)
-            lease = datetime.now(timezone.utc) + timedelta(minutes=2)
-            stage = OpportunityFitReviewStage(
-                review_id=review_id,
-                application_id=application_id,
-                resume_id=resume_id,
-                parent_triage_stage_id=parent_triage_stage_id,
-                stage="deep_review",
-                proposal_schema_version=2,
-                idempotency_key=idempotency_key,
-                source_snapshot_json=snapshot_json,
-                source_fingerprint_sha256=fingerprint,
-                proposal_json="{}",
-                proposal_sha256="",
-                status="generating",
-                provider_call_token=provider_token,
-                lease_expires_at=lease,
-            )
-            session.add(stage)
+                if not _v2_lease_expired(existing):
+                    return existing, False
+                provider_token = secrets.token_urlsafe(24)
+                lease = datetime.now(timezone.utc) + timedelta(minutes=2)
+                existing.stage_generation += 1
+                existing.status = "generating"
+                existing.provider_call_token = provider_token
+                existing.lease_expires_at = lease
+                stage = existing
+            else:
+                provider_token = secrets.token_urlsafe(24)
+                lease = datetime.now(timezone.utc) + timedelta(minutes=2)
+                stage = OpportunityFitReviewStage(
+                    review_id=review_id,
+                    application_id=application_id,
+                    resume_id=resume_id,
+                    parent_triage_stage_id=parent_triage_stage_id,
+                    stage="deep_review",
+                    proposal_schema_version=2,
+                    idempotency_key=idempotency_key,
+                    source_snapshot_json=snapshot_json,
+                    source_fingerprint_sha256=fingerprint,
+                    proposal_json="{}",
+                    proposal_sha256="",
+                    status="generating",
+                    provider_call_token=provider_token,
+                    lease_expires_at=lease,
+                )
+                session.add(stage)
             try:
                 session.commit()
             except IntegrityError:
@@ -327,6 +355,8 @@ class OpportunityFitReviewsRepository:
                 existing = _find_v2_stage(session, review_id, "deep_review", idempotency_key)
                 if existing is None:
                     raise
+                if existing.source_fingerprint_sha256 != fingerprint:
+                    raise OpportunityFitReviewConflictError("opportunity fit idempotency conflict")
                 return existing, False
             session.refresh(stage)
 
@@ -550,6 +580,13 @@ def _find_v2_stage(
         .where(OpportunityFitReviewStage.stage == stage)
         .where(OpportunityFitReviewStage.idempotency_key == idempotency_key)
     )
+
+
+def _v2_lease_expired(stage: OpportunityFitReviewStage) -> bool:
+    if stage.status not in {"generating", "provider_unknown"}:
+        return False
+    expires_at = _as_utc(stage.lease_expires_at)
+    return expires_at is None or expires_at <= datetime.now(timezone.utc)
 
 
 def _mark_v2_provider_unknown(
