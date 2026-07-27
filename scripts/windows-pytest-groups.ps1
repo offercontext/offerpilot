@@ -75,7 +75,8 @@ try {
         $groupCollection = Invoke-CheckedPytest @('--collect-only', '-q', '--disable-warnings') $group.Key
         $nodes = @(Get-NodeIds $groupCollection | Sort-Object -Unique)
         $nodes | ForEach-Object { $groupNodeIds.Add($_) }
-        $null = Invoke-CheckedPytest @('-q', '--disable-warnings') $group.Value $group.Key
+        $runArguments = @('-q', '--disable-warnings') + @($group.Value)
+        $null = Invoke-CheckedPytest -Arguments $runArguments -Label $group.Key
     }
 
     $expected = @($allNodeIds | Sort-Object -Unique)
