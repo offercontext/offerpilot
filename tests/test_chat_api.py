@@ -3815,7 +3815,7 @@ def test_chat_undo_rejects_invalid_conversation_id_without_server_error(
     assert response.json()["error"] == "conversation_id must be a positive integer"
 
 
-def test_chat_auto_approve_executes_write_without_pending(tmp_path):
+def test_chat_auto_approve_still_requires_confirmation_for_write(tmp_path):
     save_config(tmp_path, Config(api_key="sk-test", chat_auto_approve_writes=True))
     app_client = TestClient(create_app(data_dir=tmp_path))
     application = app_client.post(
@@ -3841,8 +3841,9 @@ def test_chat_auto_approve_executes_write_without_pending(tmp_path):
     response = client.post("/api/chat", json={"message": "改成 offer", "conversation_id": 0})
 
     assert response.status_code == 200
-    assert response.json()["type"] == "message"
-    assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "offer"
+    assert response.json()["type"] == "confirmation_required"
+    assert response.json()["pending_action"]["tool_name"] == "update_application_status"
+    assert app_client.get(f"/api/applications/{application['id']}").json()["status"] == "interview"
 
 
 def test_pending_action_confirmation_token_is_opaque_and_stable_across_reload(tmp_path):
