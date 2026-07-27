@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import and_, exists, nullslast, or_, select
+from sqlalchemy import exists, nullslast, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from offerpilot.ai.interview_review_proposals import build_interview_review_snapshot
@@ -107,7 +107,7 @@ def _item(
         note_source_status=_note_source_status(event, note, review),
         has_review_proposal=review is not None,
         review_summary=_review_summary(review),
-        has_confirmed_knowledge=_has_confirmed_knowledge(session, event.id, note),
+        has_confirmed_knowledge=_has_confirmed_knowledge(session, event.id),
         preparation_available=True,
     )
 
@@ -120,23 +120,13 @@ def _latest_event_review(session: Session, event_id: int) -> InterviewReviewProp
     )
 
 
-def _has_confirmed_knowledge(
-    session: Session, event_id: int, note: InterviewNote | None
-) -> bool:
-    knowledge_conditions = [KnowledgeCapturedSourceMetadata.application_event_id == event_id]
-    if note is not None:
-        knowledge_conditions.append(
-            and_(
-                KnowledgeCapturedSourceMetadata.application_event_id.is_(None),
-                KnowledgeCapturedSourceMetadata.origin_note_id == note.id,
-            )
-        )
+def _has_confirmed_knowledge(session: Session, event_id: int) -> bool:
     return bool(
         session.scalar(
             select(
                 exists(
                     select(1).where(
-                        or_(*knowledge_conditions)
+                        KnowledgeCapturedSourceMetadata.application_event_id == event_id
                     )
                 )
             )

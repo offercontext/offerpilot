@@ -131,6 +131,57 @@ def test_interview_index_marks_changed_review_source(tmp_path) -> None:
     assert item["note_source_status"] == "source_changed"
 
 
+def test_interview_index_does_not_assign_ambiguous_capture_to_any_event(tmp_path) -> None:
+    client, _applications, _application, first_event, note = _ready(tmp_path)
+    second_event = ApplicationEventsRepository(session_factory_for_data_dir(tmp_path)).create(
+        ApplicationEventCreate(
+            application_id=note.application_id,
+            event_type="interview",
+            scheduled_at=datetime(2026, 7, 29, 9, tzinfo=timezone.utc),
+            duration_minutes=60,
+        )
+    )
+    with session_factory_for_data_dir(tmp_path)() as session:
+        source = KnowledgeSource(
+            source_hash="ambiguous-index-source",
+            source_kind="captured_interview_note",
+            title_hint="Ambiguous capture",
+            main_filename="interview-note.txt",
+            main_media_type="text/plain",
+            main_relative_path="captured://interview-note/ambiguous",
+            total_bytes=1,
+        )
+        session.add(source)
+        session.flush()
+        session.add(
+            KnowledgeCapturedSourceMetadata(
+                source_id=source.id,
+                origin_note_id=note.id,
+                application_event_id=None,
+                note_fingerprint="ambiguous-note-fingerprint",
+                selected_fragments_json="[]",
+                capture_schema_version="interview-note-capture-v1",
+            )
+        )
+        for event_id in (first_event.id, second_event.id):
+            session.add(
+                InterviewReviewProposal(
+                    note_id=note.id,
+                    application_event_id=event_id,
+                    idempotency_key=f"ambiguous-index-review-{event_id}",
+                    input_snapshot_json="{}",
+                    source_fingerprint=f"ambiguous-index-fingerprint-{event_id}",
+                    proposal_json="{}",
+                    proposal_hash=f"ambiguous-index-hash-{event_id}",
+                )
+            )
+        session.commit()
+
+    items = {item["event_id"]: item for item in client.get("/api/interviews").json()["items"]}
+    assert items[first_event.id]["has_confirmed_knowledge"] is False
+    assert items[second_event.id]["has_confirmed_knowledge"] is False
+
+
 def test_interview_index_keeps_review_history_after_note_unbind(tmp_path) -> None:
     client, _applications, _application, event, note = _ready(tmp_path)
     with session_factory_for_data_dir(tmp_path)() as session:
