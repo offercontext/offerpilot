@@ -215,6 +215,53 @@ class OpportunityFitReviewsRepository:
             session.refresh(stage)
             return stage
 
+    def list_v2(self, application_id: int) -> list[tuple[OpportunityFitReviewSession, list[OpportunityFitReviewStage]]]:
+        with self._session_factory() as session:
+            if _visible_application(session, application_id) is None:
+                raise OpportunityFitReviewNotFound()
+            roots = list(
+                session.scalars(
+                    select(OpportunityFitReviewSession)
+                    .where(OpportunityFitReviewSession.application_id == application_id)
+                    .order_by(OpportunityFitReviewSession.created_at.desc(), OpportunityFitReviewSession.id.desc())
+                )
+            )
+            return [
+                (
+                    root,
+                    list(
+                        session.scalars(
+                            select(OpportunityFitReviewStage)
+                            .where(OpportunityFitReviewStage.review_id == root.id)
+                            .order_by(OpportunityFitReviewStage.created_at.asc(), OpportunityFitReviewStage.id.asc())
+                        )
+                    ),
+                )
+                for root in roots
+            ]
+
+    def get_v2(
+        self, application_id: int, review_id: int
+    ) -> tuple[OpportunityFitReviewSession, list[OpportunityFitReviewStage]] | None:
+        with self._session_factory() as session:
+            if _visible_application(session, application_id) is None:
+                return None
+            root = session.scalar(
+                select(OpportunityFitReviewSession)
+                .where(OpportunityFitReviewSession.id == review_id)
+                .where(OpportunityFitReviewSession.application_id == application_id)
+            )
+            if root is None:
+                return None
+            stages = list(
+                session.scalars(
+                    select(OpportunityFitReviewStage)
+                    .where(OpportunityFitReviewStage.review_id == root.id)
+                    .order_by(OpportunityFitReviewStage.created_at.asc(), OpportunityFitReviewStage.id.asc())
+                )
+            )
+            return root, stages
+
     def create_deep_review_v2(
         self,
         application_id: int,

@@ -1890,15 +1890,26 @@ def create_app(
         app_model = applications.get(app_id)
         if app_model is None or app_model.source not in HUMAN_APPLICATION_SOURCES:
             return error_response(404, "Application not found")
-        return JSONResponse(
-            [_opportunity_fit_review_summary_json(item) for item in opportunity_fit_reviews.list(app_id)]
-        )
+        items: list[dict[str, Any]] = [
+            _opportunity_fit_review_summary_json(item) for item in opportunity_fit_reviews.list(app_id)
+        ]
+        try:
+            items.extend(
+                _opportunity_fit_v2_session_json(root, stages, summary=True)
+                for root, stages in opportunity_fit_reviews.list_v2(app_id)
+            )
+        except OpportunityFitReviewNotFound:
+            return error_response(404, "Application not found")
+        return JSONResponse(items)
 
     @app.get("/api/applications/{app_id}/opportunity-fit-reviews/{review_id}")
     def get_opportunity_fit_review(app_id: int, review_id: int) -> JSONResponse:
         review = opportunity_fit_reviews.get(app_id, review_id)
         if review is None:
-            return error_response(404, "Opportunity fit review not found")
+            v2 = opportunity_fit_reviews.get_v2(app_id, review_id)
+            if v2 is None:
+                return error_response(404, "Opportunity fit review not found")
+            return JSONResponse(_opportunity_fit_v2_session_json(v2[0], v2[1]))
         return JSONResponse(_opportunity_fit_review_detail_json(review))
 
     @app.post(
@@ -6839,6 +6850,27 @@ def _interview_index_item_json(item: Any) -> dict[str, Any]:
         "note_id": item.note_id,
         "note_source_status": item.note_source_status,
     }
+
+
+def _opportunity_fit_v2_session_json(
+    root: Any, stages: list[Any], *, summary: bool = False
+) -> dict[str, Any]:
+    stage_payloads = [_opportunity_fit_v2_stage_json(root, stage) for stage in stages]
+    result: dict[str, Any] = {
+        "id": root.id,
+        "review_id": root.id,
+        "application_id": root.application_id,
+        "schema_version": root.proposal_schema_version,
+        "status": root.status,
+        "triage_idempotency_key": root.triage_idempotency_key,
+        "stages": stage_payloads,
+        "created_at": root.created_at.isoformat() if root.created_at else "",
+    }
+    if summary:
+        result["stage_count"] = len(stage_payloads)
+        result["latest_stage"] = stage_payloads[-1] if stage_payloads else None
+        result.pop("stages", None)
+    return result
 
 
 def _opportunity_fit_review_summary_json(review: Any) -> dict[str, Any]:
