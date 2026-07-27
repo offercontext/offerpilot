@@ -116,17 +116,28 @@ def init_database(db_path: Path) -> SessionFactory:
         "application_event_id",
         "INTEGER REFERENCES application_events(id) ON DELETE SET NULL",
     )
-    if interview_knowledge_event_added:
-        with engine.begin() as conn:
-            conn.execute(
-                text(
-                    "UPDATE knowledge_captured_source_metadata "
-                    "SET application_event_id = ("
-                    "SELECT application_event_id FROM interview_notes "
-                    "WHERE interview_notes.id = knowledge_captured_source_metadata.origin_note_id) "
-                    "WHERE application_event_id IS NULL"
-                )
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE knowledge_captured_source_metadata "
+                "SET application_event_id = ("
+                "SELECT application_event_id FROM interview_notes "
+                "WHERE interview_notes.id = knowledge_captured_source_metadata.origin_note_id) "
+                "WHERE application_event_id IS NULL"
             )
+        )
+        conn.execute(
+            text(
+                "UPDATE knowledge_captured_source_metadata "
+                "SET application_event_id = ("
+                "SELECT application_event_id FROM interview_review_proposals "
+                "WHERE interview_review_proposals.note_id = knowledge_captured_source_metadata.origin_note_id "
+                "AND interview_review_proposals.application_event_id IS NOT NULL "
+                "ORDER BY interview_review_proposals.created_at DESC, interview_review_proposals.id DESC "
+                "LIMIT 1) "
+                "WHERE application_event_id IS NULL"
+            )
+        )
     with engine.begin() as conn:
         conn.execute(
             text(
@@ -1203,8 +1214,8 @@ def _ensure_interview_review_history_schema(engine) -> bool:  # type: ignore[no-
                 """
             )
         )
-        conn.execute(text("CREATE INDEX idx_interview_review_proposals_note ON interview_review_proposals(note_id)"))
         conn.execute(text("DROP TABLE interview_review_proposals_legacy"))
+        conn.execute(text("CREATE INDEX idx_interview_review_proposals_note ON interview_review_proposals(note_id)"))
         conn.commit()
         conn.execute(text("PRAGMA foreign_keys=ON"))
     return True
