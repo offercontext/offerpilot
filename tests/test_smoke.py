@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from typer.testing import CliRunner
 
 from offerpilot.cli import app
@@ -11,11 +11,15 @@ from offerpilot.models import (
     Application,
     ApplicationEvent,
     ApplicationMaterialKit,
+    Conversation,
     MaterialRevisionProposal,
     OpportunityFitReview,
     OpportunityFitReviewSession,
     OpportunityFitReviewStage,
+    MockSession,
+    Question,
     Resume,
+    Wakeup,
 )
 from offerpilot.repositories.json_contract import canonical_json, sha256_text
 from offerpilot.smoke import (
@@ -730,6 +734,92 @@ def test_real_ai_browser_cleanup_removes_v2_parent_child_stages(tmp_path):
         bind.dispose()
 
 
+def test_real_ai_browser_cleanup_removes_question_mock_and_reminder_records(tmp_path):
+    data_dir = tmp_path / "data"
+    session_factory = session_factory_for_data_dir(data_dir)
+    with session_factory() as session:
+        application = Application(company_name="Browser smoke", position_name="QA")
+        conversation = Conversation(title="browser smoke")
+        session.add_all([application, conversation])
+        session.flush()
+        session.add_all(
+            [
+                Question(application_id=application.id, question="How?"),
+                MockSession(
+                    conversation_id=conversation.id,
+                    application_id=application.id,
+                    title="browser smoke",
+                    role="QA",
+                ),
+                Wakeup(kind="browser-smoke", due_at=datetime(2026, 7, 27, tzinfo=timezone.utc)),
+            ]
+        )
+        session.commit()
+        application_id = application.id
+    bind = session_factory.kw.get("bind")
+    if bind is not None:
+        bind.dispose()
+
+    _cleanup_real_ai_browser_records(data_dir, application_id, [])
+    _assert_real_ai_smoke_data_clean(data_dir)
+
+    session_factory = session_factory_for_data_dir(data_dir)
+    with session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(Question)) == 0
+        assert session.scalar(select(func.count()).select_from(MockSession)) == 0
+        assert session.scalar(select(func.count()).select_from(Wakeup)) == 0
+    bind = session_factory.kw.get("bind")
+    if bind is not None:
+        bind.dispose()
+
+
+def test_real_ai_smoke_data_clean_rejects_question_mock_and_reminder_residue(tmp_path):
+    data_dir = tmp_path / "data"
+    session_factory = session_factory_for_data_dir(data_dir)
+    with session_factory() as session:
+        conversation = Conversation(title="browser smoke")
+        session.add(conversation)
+        session.flush()
+        session.add_all(
+            [
+                Question(question="How?"),
+                MockSession(
+                    conversation_id=conversation.id,
+                    title="browser smoke",
+                    role="QA",
+                ),
+                Wakeup(kind="browser-smoke", due_at=datetime(2026, 7, 27, tzinfo=timezone.utc)),
+            ]
+        )
+        session.commit()
+    bind = session_factory.kw.get("bind")
+    if bind is not None:
+        bind.dispose()
+
+    with pytest.raises(RuntimeError, match="questions"):
+        _assert_real_ai_smoke_data_clean(data_dir)
+
+    session_factory = session_factory_for_data_dir(data_dir)
+    with session_factory() as session:
+        session.execute(delete(Question))
+        session.commit()
+    bind = session_factory.kw.get("bind")
+    if bind is not None:
+        bind.dispose()
+    with pytest.raises(RuntimeError, match="mock sessions"):
+        _assert_real_ai_smoke_data_clean(data_dir)
+
+    session_factory = session_factory_for_data_dir(data_dir)
+    with session_factory() as session:
+        session.execute(delete(MockSession))
+        session.commit()
+    bind = session_factory.kw.get("bind")
+    if bind is not None:
+        bind.dispose()
+    with pytest.raises(RuntimeError, match="reminders"):
+        _assert_real_ai_smoke_data_clean(data_dir)
+
+
 def test_real_ai_browser_domain_baseline_covers_event_and_resume_file_paths(tmp_path):
     data_dir = tmp_path / "data"
     session_factory = session_factory_for_data_dir(data_dir)
@@ -743,6 +833,7 @@ def test_real_ai_browser_domain_baseline_covers_event_and_resume_file_paths(tmp_
         session.add_all([event, resume])
         session.commit()
         application_id, event_id, resume_id = application.id, event.id, resume.id
+        event_created_at, resume_created_at = event.created_at, resume.created_at
     bind = session_factory.kw.get("bind")
     if bind is not None:
         bind.dispose()
@@ -763,6 +854,19 @@ def test_real_ai_browser_domain_baseline_covers_event_and_resume_file_paths(tmp_
     session_factory = session_factory_for_data_dir(data_dir)
     with session_factory() as session:
         session.get(ApplicationEvent, event_id).remind_at = None
+        session.get(ApplicationEvent, event_id).created_at = datetime(2026, 7, 26, tzinfo=timezone.utc)
+        session.commit()
+    bind = session_factory.kw.get("bind")
+    if bind is not None:
+        bind.dispose()
+    with pytest.raises(RuntimeError, match="event_snapshot_hash"):
+        _assert_real_ai_browser_no_cross_domain_writes(
+            data_dir, application_id, baseline, [event_id], [resume_id]
+        )
+
+    session_factory = session_factory_for_data_dir(data_dir)
+    with session_factory() as session:
+        session.get(ApplicationEvent, event_id).created_at = event_created_at
         session.get(Resume, resume_id).file_path = "C:/resume.pdf"
         session.commit()
     bind = session_factory.kw.get("bind")
@@ -777,6 +881,7 @@ def test_real_ai_browser_domain_baseline_covers_event_and_resume_file_paths(tmp_
     with session_factory() as session:
         session.get(Resume, resume_id).file_path = ""
         session.get(Resume, resume_id).source_file_path = "C:/source.docx"
+        session.get(Resume, resume_id).created_at = datetime(2026, 7, 26, tzinfo=timezone.utc)
         session.commit()
     bind = session_factory.kw.get("bind")
     if bind is not None:
@@ -785,6 +890,16 @@ def test_real_ai_browser_domain_baseline_covers_event_and_resume_file_paths(tmp_
         _assert_real_ai_browser_no_cross_domain_writes(
             data_dir, application_id, baseline, [event_id], [resume_id]
         )
+
+    session_factory = session_factory_for_data_dir(data_dir)
+    with session_factory() as session:
+        resume = session.get(Resume, resume_id)
+        resume.source_file_path = ""
+        resume.created_at = resume_created_at
+        session.commit()
+    bind = session_factory.kw.get("bind")
+    if bind is not None:
+        bind.dispose()
 
 
 @pytest.mark.parametrize(
@@ -831,6 +946,31 @@ def test_real_ai_browser_domain_baseline_covers_application_fields(tmp_path, fie
         bind.dispose()
 
     with pytest.raises(RuntimeError, match="application_snapshot_hash"):
+        _assert_real_ai_browser_no_cross_domain_writes(data_dir, application_id, baseline)
+
+
+def test_real_ai_browser_domain_baseline_detects_added_application(tmp_path):
+    data_dir = tmp_path / "data"
+    session_factory = session_factory_for_data_dir(data_dir)
+    with session_factory() as session:
+        application = Application(company_name="Browser smoke", position_name="QA")
+        session.add(application)
+        session.commit()
+        application_id = application.id
+    bind = session_factory.kw.get("bind")
+    if bind is not None:
+        bind.dispose()
+
+    baseline = _capture_real_ai_browser_domain_baseline(data_dir, application_id)
+    session_factory = session_factory_for_data_dir(data_dir)
+    with session_factory() as session:
+        session.add(Application(company_name="Unexpected application", position_name="QA"))
+        session.commit()
+    bind = session_factory.kw.get("bind")
+    if bind is not None:
+        bind.dispose()
+
+    with pytest.raises(RuntimeError, match="application_count"):
         _assert_real_ai_browser_no_cross_domain_writes(data_dir, application_id, baseline)
 
 

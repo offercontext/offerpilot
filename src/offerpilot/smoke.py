@@ -1133,6 +1133,9 @@ def _cleanup_real_ai_smoke_records(
             session.execute(delete(InterviewKnowledgeCaptureAttempt).where(InterviewKnowledgeCaptureAttempt.note_id.in_(captured_note_ids)))
             session.execute(delete(InterviewNote).where(InterviewNote.application_id == application_id))
             session.execute(delete(ApplicationEvent).where(ApplicationEvent.application_id == application_id))
+            session.execute(delete(Question).where(Question.application_id == application_id))
+            session.execute(delete(MockSession).where(MockSession.application_id == application_id))
+            session.execute(delete(Wakeup))
             session.execute(
                 delete(ApplicationMaterialKit).where(
                     ApplicationMaterialKit.application_id == application_id
@@ -1220,6 +1223,7 @@ def _capture_real_ai_browser_domain_baseline(
                 "application_snapshot_hash": sha256_text(
                     canonical_json(_real_ai_browser_application_snapshot(application))
                 ),
+                "application_count": session.scalar(select(func.count()).select_from(Application)),
                 "material_kit_count": session.scalar(
                     select(func.count())
                     .select_from(ApplicationMaterialKit)
@@ -1315,6 +1319,7 @@ def _real_ai_browser_event_snapshot(event: ApplicationEvent | None) -> dict[str,
         "notes": event.notes,
         "remind_at": event.remind_at.isoformat() if event.remind_at else None,
         "status": event.status,
+        "created_at": event.created_at.isoformat() if event.created_at else None,
     }
 
 
@@ -1365,6 +1370,7 @@ def _real_ai_browser_resume_snapshot(resume: Resume | None) -> dict[str, Any] | 
         "content_json": resume.content_json,
         "is_master": resume.is_master,
         "deleted_at": resume.deleted_at.isoformat() if resume.deleted_at else None,
+        "created_at": resume.created_at.isoformat() if resume.created_at else None,
     }
 
 
@@ -1391,6 +1397,9 @@ def _assert_real_ai_smoke_data_clean(data_dir: Path) -> None:
             interview_preparation_proposal_count = session.scalar(
                 select(func.count()).select_from(InterviewPreparationProposal)
             )
+            question_count = session.scalar(select(func.count()).select_from(Question))
+            mock_session_count = session.scalar(select(func.count()).select_from(MockSession))
+            reminder_count = session.scalar(select(func.count()).select_from(Wakeup))
             opportunity_fit_review_count = session.scalar(
                 select(func.count()).select_from(OpportunityFitReview)
             )
@@ -1430,6 +1439,12 @@ def _assert_real_ai_smoke_data_clean(data_dir: Path) -> None:
         raise RuntimeError("real-ai smoke left interview review proposals")
     if interview_preparation_proposal_count != 0:
         raise RuntimeError("real-ai smoke left interview preparation proposals")
+    if question_count != 0:
+        raise RuntimeError("real-ai smoke left questions")
+    if mock_session_count != 0:
+        raise RuntimeError("real-ai smoke left mock sessions")
+    if reminder_count != 0:
+        raise RuntimeError("real-ai smoke left reminders")
     if opportunity_fit_review_count != 0:
         raise RuntimeError("real-ai smoke left opportunity fit reviews")
     if opportunity_fit_session_count != 0:
