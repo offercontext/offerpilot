@@ -545,6 +545,32 @@ def test_real_ai_http_smoke_isolates_config_and_removes_temporary_data(monkeypat
     assert not observed["data_dir"].exists()
 
 
+def test_local_http_smoke_isolates_user_data(monkeypatch, tmp_path):
+    import offerpilot.smoke as smoke
+
+    source_data = tmp_path / "user-data"
+    source_data.mkdir()
+    marker = source_data / "user-marker.txt"
+    marker.write_text("must remain unchanged", encoding="utf-8")
+    observed: dict[str, Path] = {}
+
+    def fake_http_smoke(data_dir: Path, static_dir: Path | None, *, real_ai: bool) -> SmokeReport:
+        observed["data_dir"] = data_dir
+        assert real_ai is False
+        assert data_dir != source_data
+        (data_dir / "smoke-only.txt").write_text("isolated", encoding="utf-8")
+        return SmokeReport(ok=True, steps=[])
+
+    monkeypatch.setattr(smoke, "_run_http_smoke", fake_http_smoke)
+    before = marker.read_bytes()
+
+    report = run_http_smoke(source_data, real_ai=False)
+
+    assert report.ok is True
+    assert marker.read_bytes() == before
+    assert not observed["data_dir"].exists()
+
+
 def test_real_ai_smoke_cleanup_removes_material_records_and_active_resume(tmp_path):
     data_dir = tmp_path / "isolated"
     session_factory = session_factory_for_data_dir(data_dir)
@@ -761,6 +787,16 @@ def test_real_ai_browser_cleanup_removes_question_mock_and_reminder_records(tmp_
         bind.dispose()
 
     _cleanup_real_ai_browser_records(data_dir, application_id, [])
+    with pytest.raises(RuntimeError, match="reminders"):
+        _assert_real_ai_smoke_data_clean(data_dir)
+
+    session_factory = session_factory_for_data_dir(data_dir)
+    with session_factory() as session:
+        session.execute(delete(Wakeup))
+        session.commit()
+    bind = session_factory.kw.get("bind")
+    if bind is not None:
+        bind.dispose()
     _assert_real_ai_smoke_data_clean(data_dir)
 
     session_factory = session_factory_for_data_dir(data_dir)
@@ -1108,7 +1144,17 @@ def test_real_ai_opportunity_fit_smoke_requires_verified_triage_without_snapshot
 
 
 def test_cli_verify_local_runs_http_smoke(monkeypatch, tmp_path):
-    monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path / "data"))
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    marker = data_dir / "user-marker.txt"
+    marker.write_text("must remain unchanged", encoding="utf-8")
+    (data_dir / "config.json").write_text('{"model":"local-test"}\n', encoding="utf-8")
+    before = {
+        path.relative_to(data_dir).as_posix(): path.read_bytes()
+        for path in data_dir.rglob("*")
+        if path.is_file()
+    }
+    monkeypatch.setenv("OFFERPILOT_DATA", str(data_dir))
     runner = CliRunner()
 
     result = runner.invoke(app, ["verify", "--profile", "local", "--static-dir", str(_static_dir(tmp_path))])
@@ -1120,6 +1166,12 @@ def test_cli_verify_local_runs_http_smoke(monkeypatch, tmp_path):
     assert "http_application_event_crud" in result.output
     assert "http_health" in result.output
     assert "http_confirm_action" in result.output
+    after = {
+        path.relative_to(data_dir).as_posix(): path.read_bytes()
+        for path in data_dir.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
 
 
 def test_real_ai_interview_review_smoke_allows_verified_evidence_excerpt():

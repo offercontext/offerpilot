@@ -327,14 +327,14 @@ def run_http_smoke(
     *,
     real_ai: bool = False,
 ) -> SmokeReport:
-    if not real_ai:
-        return _run_http_smoke(data_dir, static_dir=static_dir, real_ai=False)
-
-    with tempfile.TemporaryDirectory(prefix="offerpilot-real-ai-verify-") as temp_dir:
+    prefix = "offerpilot-real-ai-verify-" if real_ai else "offerpilot-local-verify-"
+    with tempfile.TemporaryDirectory(prefix=prefix) as temp_dir:
         isolated_data_dir = Path(temp_dir)
-        _copy_real_ai_config(data_dir, isolated_data_dir)
-        report = _run_http_smoke(isolated_data_dir, static_dir=static_dir, real_ai=True)
-        _assert_real_ai_smoke_data_clean(isolated_data_dir)
+        if real_ai:
+            _copy_real_ai_config(data_dir, isolated_data_dir)
+        report = _run_http_smoke(isolated_data_dir, static_dir=static_dir, real_ai=real_ai)
+        if real_ai:
+            _assert_real_ai_smoke_data_clean(isolated_data_dir)
         return report
 
 
@@ -415,6 +415,8 @@ def _run_http_smoke(
             finally:
                 cleanup = client.delete(f"/api/applications/{application_id}")
                 _assert_status(cleanup.status_code, 200, "http_cleanup")
+                deleted_application = client.get(f"/api/applications/{application_id}")
+                _assert_status(deleted_application.status_code, 404, "http_cleanup_visibility")
                 if real_ai:
                     _cleanup_real_ai_smoke_records(data_dir, application_id, smoke_resume_ids)
                 steps.append(SmokeStep("http_cleanup", f"deleted smoke application #{application_id}"))
@@ -1135,7 +1137,6 @@ def _cleanup_real_ai_smoke_records(
             session.execute(delete(ApplicationEvent).where(ApplicationEvent.application_id == application_id))
             session.execute(delete(Question).where(Question.application_id == application_id))
             session.execute(delete(MockSession).where(MockSession.application_id == application_id))
-            session.execute(delete(Wakeup))
             session.execute(
                 delete(ApplicationMaterialKit).where(
                     ApplicationMaterialKit.application_id == application_id
