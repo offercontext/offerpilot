@@ -205,10 +205,10 @@ def test_existing_captured_knowledge_backfills_event_from_review_history(tmp_pat
         ).scalar_one()
         note_id = session.execute(
             text(
-                "INSERT INTO interview_notes (application_id, company, position) "
-                "VALUES (:application_id, 'Legacy', 'Engineer') RETURNING id"
+                "INSERT INTO interview_notes (application_id, application_event_id, company, position) "
+                "VALUES (:application_id, :event_id, 'Legacy', 'Engineer') RETURNING id"
             ),
-            {"application_id": application_id},
+            {"application_id": application_id, "event_id": event_id},
         ).scalar_one()
         source = KnowledgeSource(
             source_hash="legacy-captured-source",
@@ -250,3 +250,73 @@ def test_existing_captured_knowledge_backfills_event_from_review_history(tmp_pat
         metadata = session.get(KnowledgeCapturedSourceMetadata, source.id)
         assert metadata is not None
         assert metadata.application_event_id == event_id
+
+
+def test_existing_captured_knowledge_stays_unattributed_for_multiple_review_events(tmp_path) -> None:
+    db_path = tmp_path / "data.db"
+    factory = init_database(db_path)
+    with factory() as session:
+        application_id = session.execute(
+            text(
+                "INSERT INTO applications (company_name, position_name, source, status) "
+                "VALUES ('Legacy', 'Engineer', 'manual', 'applied') RETURNING id"
+            )
+        ).scalar_one()
+        event_ids = [
+            session.execute(
+                text(
+                    "INSERT INTO application_events (application_id, event_type) "
+                    "VALUES (:application_id, 'interview') RETURNING id"
+                ),
+                {"application_id": application_id},
+            ).scalar_one()
+            for _ in range(2)
+        ]
+        note_id = session.execute(
+            text(
+                "INSERT INTO interview_notes (application_id, application_event_id, company, position) "
+                "VALUES (:application_id, :event_id, 'Legacy', 'Engineer') RETURNING id"
+            ),
+            {"application_id": application_id, "event_id": event_ids[0]},
+        ).scalar_one()
+        source = KnowledgeSource(
+            source_hash="ambiguous-captured-source",
+            source_kind="captured_interview_note",
+            title_hint="Ambiguous capture",
+            main_filename="interview-note.txt",
+            main_media_type="text/plain",
+            main_relative_path="captured://interview-note/ambiguous",
+            total_bytes=1,
+        )
+        session.add(source)
+        session.flush()
+        session.add(
+            KnowledgeCapturedSourceMetadata(
+                source_id=source.id,
+                origin_note_id=note_id,
+                application_event_id=None,
+                note_fingerprint="ambiguous-note-fingerprint",
+                selected_fragments_json="[]",
+                capture_schema_version="interview-note-capture-v1",
+            )
+        )
+        for event_id in event_ids:
+            session.add(
+                InterviewReviewProposal(
+                    note_id=note_id,
+                    application_event_id=event_id,
+                    idempotency_key=f"ambiguous-review-{event_id}",
+                    input_snapshot_json="{}",
+                    source_fingerprint=f"ambiguous-source-{event_id}",
+                    proposal_json="{}",
+                    proposal_hash=f"ambiguous-proposal-{event_id}",
+                )
+            )
+        session.commit()
+
+    init_database(db_path)
+
+    with factory() as session:
+        metadata = session.get(KnowledgeCapturedSourceMetadata, source.id)
+        assert metadata is not None
+        assert metadata.application_event_id is None

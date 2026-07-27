@@ -121,20 +121,10 @@ def init_database(db_path: Path) -> SessionFactory:
             text(
                 "UPDATE knowledge_captured_source_metadata "
                 "SET application_event_id = ("
-                "SELECT application_event_id FROM interview_notes "
-                "WHERE interview_notes.id = knowledge_captured_source_metadata.origin_note_id) "
-                "WHERE application_event_id IS NULL"
-            )
-        )
-        conn.execute(
-            text(
-                "UPDATE knowledge_captured_source_metadata "
-                "SET application_event_id = ("
-                "SELECT application_event_id FROM interview_review_proposals "
+                "SELECT CASE WHEN COUNT(DISTINCT application_event_id) = 1 "
+                "THEN MIN(application_event_id) END FROM interview_review_proposals "
                 "WHERE interview_review_proposals.note_id = knowledge_captured_source_metadata.origin_note_id "
-                "AND interview_review_proposals.application_event_id IS NOT NULL "
-                "ORDER BY interview_review_proposals.created_at DESC, interview_review_proposals.id DESC "
-                "LIMIT 1) "
+                "AND interview_review_proposals.application_event_id IS NOT NULL) "
                 "WHERE application_event_id IS NULL"
             )
         )
