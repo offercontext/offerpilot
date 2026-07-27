@@ -7,12 +7,12 @@ import { listEvents } from '@/services/events';
 import { listOffers } from '@/services/offers';
 import { getPracticeStats } from '@/services/questions';
 import {
-  derivePipelineInsights,
   type ActionCommand,
   type PipelineInsight,
   type PipelineInsightKind,
   type PipelinePriority,
 } from '@/lib/pipelineInsights';
+import { deriveActionHints } from '@/lib/actionHints';
 import ActionDetailDrawer from '@/features/pipeline/ActionDetailDrawer';
 import type { ViewMode } from '@/layout/navigation';
 import styles from './reminders.module.css';
@@ -92,7 +92,7 @@ export default function RemindersView({ onNavigate, onOpenDetailById }: Props) {
   const offers = rawOffers ?? [];
 
   const insights = useMemo(
-    () => derivePipelineInsights({ apps, events, offers, practiceStats: practiceStatsQ.data, weeklyTarget: 6, now }),
+    () => deriveActionHints({ apps, events, offers, practiceStats: practiceStatsQ.data, weeklyTarget: 6, now }),
     [apps, events, offers, practiceStatsQ.data, now],
   );
 

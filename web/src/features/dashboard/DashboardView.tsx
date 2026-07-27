@@ -8,11 +8,11 @@ import { listOffers } from '@/services/offers';
 import { getApplicationMaterialKit } from '@/services/materialKits';
 import { getPracticeStats } from '@/services/questions';
 import {
-  derivePipelineInsights,
   summarizePipelineHealth,
   type ActionCommand,
   type PipelineInsight,
 } from '@/lib/pipelineInsights';
+import { deriveActionHints } from '@/lib/actionHints';
 import { deriveMissionControl } from '@/lib/missionControl';
 import { computeKpis, computeFunnel, computeMomentum } from '@/lib/insights';
 import type { ViewMode } from '@/layout/navigation';
@@ -117,7 +117,7 @@ export default function DashboardView({ onNavigate, onOpenDetailById, onAddAppli
   const funnel = useMemo(() => computeFunnel(apps), [apps]);
   const momentum = useMemo(() => computeMomentum(apps, 4, now), [apps, now]);
   const insights = useMemo(
-    () => derivePipelineInsights({ apps, events, offers, practiceStats: practiceStatsQ.data, weeklyTarget: 6, now }),
+    () => deriveActionHints({ apps, events, offers, practiceStats: practiceStatsQ.data, weeklyTarget: 6, now }),
     [apps, events, offers, practiceStatsQ.data, now],
   );
   const health = useMemo(() => summarizePipelineHealth(apps, insights, 6, now), [apps, insights, now]);
