@@ -1,41 +1,51 @@
-import { useState } from 'react';
-import { App as AntApp, Button, Empty, Input, Space, Typography } from 'antd';
-import { SaveOutlined } from '@ant-design/icons';
+import { useEffect, useState } from 'react';
+import { Alert, Empty, List, Spin, Typography } from 'antd';
+import { listInterviews } from '@/services/interviews';
+import type { InterviewIndexItem } from '@/types/interviewIndex';
 
 const { Paragraph, Title } = Typography;
 
 export default function InterviewV01View() {
-  const [draft, setDraft] = useState('');
-  const { message } = AntApp.useApp();
+  const [items, setItems] = useState<InterviewIndexItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
 
-  function saveDraft() {
-    message.info('操作完成');
-  }
+  useEffect(() => {
+    let active = true;
+    listInterviews().then((result) => {
+      if (active) setItems(result.items);
+    }).catch(() => {
+      if (active) setError(true);
+    }).finally(() => {
+      if (active) setLoading(false);
+    });
+    return () => { active = false; };
+  }, []);
 
   return (
     <div style={{ padding: 24 }}>
       <div style={{ marginBottom: 20 }}>
-        <Title level={3} style={{ margin: 0 }}>
-          面试
-        </Title>
+        <Title level={3} style={{ margin: 0 }}>面试</Title>
         <Paragraph type="secondary" style={{ margin: '6px 0 0' }}>
-          暂无面试记录
+          查看已安排的面试事件与复盘入口
         </Paragraph>
       </div>
-
-      <Empty description="暂无面试记录" image={Empty.PRESENTED_IMAGE_SIMPLE}>
-        <Space direction="vertical" size={12} style={{ width: 'min(560px, 100%)' }}>
-          <Input.TextArea
-            rows={4}
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            placeholder="临时备注"
-          />
-          <Button type="primary" icon={<SaveOutlined />} onClick={saveDraft}>
-            保存
-          </Button>
-        </Space>
-      </Empty>
+      {loading ? <Spin aria-label="正在加载面试列表" /> : null}
+      {error ? <Alert type="error" showIcon message="面试列表暂时无法加载，请稍后重试。" /> : null}
+      {!loading && !error && items.length === 0 ? <Empty description="暂无已安排的面试" image={Empty.PRESENTED_IMAGE_SIMPLE} /> : null}
+      {!loading && !error && items.length > 0 ? (
+        <List
+          dataSource={items}
+          renderItem={(item) => (
+            <List.Item>
+              <List.Item.Meta
+                title={`${item.company_name} · ${item.position_name}`}
+                description={`${new Date(item.scheduled_at).toLocaleString()}${item.note_id ? ' · 已有复盘' : ' · 待记录复盘'}`}
+              />
+            </List.Item>
+          )}
+        />
+      ) : null}
     </div>
   );
 }

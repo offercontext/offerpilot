@@ -125,6 +125,7 @@ from offerpilot.repositories.interview_knowledge_capture import (
     InterviewKnowledgeSourceChanged,
     InterviewKnowledgeValidationError,
 )
+from offerpilot.repositories.interview_index import InterviewIndexRepository
 from offerpilot.repositories.mock import MockSessionCreate, MockSessionsRepository
 from offerpilot.repositories.notes import (
     UNSET,
@@ -677,6 +678,7 @@ def create_app(
     interview_review_proposals = InterviewReviewProposalsRepository(session_factory)
     interview_preparation_proposals = InterviewPreparationProposalsRepository(session_factory)
     interview_knowledge_capture = InterviewKnowledgeCaptureRepository(session_factory)
+    interview_index = InterviewIndexRepository(session_factory)
     mock_sessions = MockSessionsRepository(session_factory)
     wakeups = WakeupsRepository(session_factory)
     knowledge_repository = KnowledgeRepository(session_factory)
@@ -2122,6 +2124,23 @@ def create_app(
             return error_response(404, "Application not found")
         rows = events.list(month=month, application_id=application_id, event_type=event_type)
         return JSONResponse([_event_with_application_json(item) for item in rows])
+
+    @app.get("/api/interviews")
+    def list_interviews(limit: int = 50, cursor: str = "") -> JSONResponse:
+        if limit < 1 or limit > 200:
+            return error_response(422, "limit must be between 1 and 200", code="interview_index_invalid_pagination")
+        try:
+            items, next_cursor = interview_index.list(limit=limit, cursor=cursor)
+        except ValueError as exc:
+            return error_response(422, str(exc), code="interview_index_invalid_pagination")
+        return JSONResponse({"items": [_interview_index_item_json(item) for item in items], "next_cursor": next_cursor})
+
+    @app.get("/api/interviews/{event_id}")
+    def get_interview_index_item(event_id: int) -> JSONResponse:
+        item = interview_index.get(event_id)
+        if item is None:
+            return error_response(404, "Interview not found", code="interview_not_found")
+        return JSONResponse(_interview_index_item_json(item))
 
     @app.post("/api/application-events", status_code=201)
     def create_application_event(payload: dict[str, Any] = Body(...)) -> JSONResponse:
@@ -6794,6 +6813,19 @@ def _opportunity_fit_v2_stage_json(
     if confirmation_token:
         result["confirmation_token"] = confirmation_token
     return result
+
+
+def _interview_index_item_json(item: Any) -> dict[str, Any]:
+    scheduled_at = item.scheduled_at
+    return {
+        "application_id": item.application_id,
+        "event_id": item.event_id,
+        "company_name": item.company_name,
+        "position_name": item.position_name,
+        "scheduled_at": scheduled_at.isoformat() if hasattr(scheduled_at, "isoformat") else str(scheduled_at),
+        "note_id": item.note_id,
+        "note_source_status": item.note_source_status,
+    }
 
 
 def _opportunity_fit_review_summary_json(review: Any) -> dict[str, Any]:
