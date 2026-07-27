@@ -42,8 +42,11 @@ from offerpilot.models import (
     KnowledgeNoteVersion,
     KnowledgeSource,
     MaterialRevisionProposal,
+    MockSession,
     OpportunityFitReview,
+    Question,
     Resume,
+    Wakeup,
 )
 from offerpilot.repositories.json_contract import canonical_json, sha256_text
 
@@ -1160,6 +1163,77 @@ def _cleanup_real_ai_browser_records(
 ) -> None:
     """Remove only the synthetic records created by the isolated browser harness."""
     _cleanup_real_ai_smoke_records(data_dir, application_id, resume_ids)
+
+
+def _capture_real_ai_browser_domain_baseline(data_dir: Path, application_id: int) -> dict[str, Any]:
+    """Capture scoped data that the interview-preparation browser flow must not mutate."""
+    session_factory = session_factory_for_data_dir(data_dir)
+    try:
+        with session_factory() as session:
+            application = session.get(Application, application_id)
+            if application is None:
+                raise RuntimeError(f"browser smoke application {application_id} is missing")
+            return {
+                "application_status": application.status,
+                "application_closed_reason": application.closed_reason,
+                "application_deleted_at": (
+                    application.deleted_at.isoformat() if application.deleted_at is not None else None
+                ),
+                "material_kit_count": session.scalar(
+                    select(func.count())
+                    .select_from(ApplicationMaterialKit)
+                    .where(ApplicationMaterialKit.application_id == application_id)
+                ),
+                "material_proposal_count": session.scalar(
+                    select(func.count())
+                    .select_from(MaterialRevisionProposal)
+                    .where(MaterialRevisionProposal.application_id == application_id)
+                ),
+                "opportunity_fit_count": session.scalar(
+                    select(func.count())
+                    .select_from(OpportunityFitReview)
+                    .where(OpportunityFitReview.application_id == application_id)
+                ),
+                "question_count": session.scalar(
+                    select(func.count()).select_from(Question).where(Question.application_id == application_id)
+                ),
+                "mock_session_count": session.scalar(
+                    select(func.count())
+                    .select_from(MockSession)
+                    .where(MockSession.application_id == application_id)
+                ),
+                "reminder_count": session.scalar(select(func.count()).select_from(Wakeup)),
+                "knowledge_note_count": session.scalar(select(func.count()).select_from(KnowledgeNote)),
+                "knowledge_source_count": session.scalar(select(func.count()).select_from(KnowledgeSource)),
+                "knowledge_evidence_count": session.scalar(select(func.count()).select_from(KnowledgeEvidence)),
+                "knowledge_capture_attempt_count": session.scalar(
+                    select(func.count()).select_from(InterviewKnowledgeCaptureAttempt)
+                ),
+                # Memory has no persistent model/table in the current product schema.
+                "memory_count": 0,
+            }
+    finally:
+        bind = session_factory.kw.get("bind")
+        if bind is not None:
+            bind.dispose()
+
+
+def _assert_real_ai_browser_no_cross_domain_writes(
+    data_dir: Path,
+    application_id: int,
+    baseline: dict[str, Any],
+) -> None:
+    current = _capture_real_ai_browser_domain_baseline(data_dir, application_id)
+    differences = {
+        key: {"before": baseline.get(key), "after": value}
+        for key, value in current.items()
+        if baseline.get(key) != value
+    }
+    if differences:
+        raise RuntimeError(
+            "real-ai browser flow created cross-domain writes: "
+            + json.dumps(differences, ensure_ascii=False, sort_keys=True)
+        )
 
 
 def _assert_real_ai_smoke_data_clean(data_dir: Path) -> None:

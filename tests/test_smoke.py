@@ -18,6 +18,8 @@ from offerpilot.smoke import (
     SmokeStep,
     SmokeReport,
     _assert_real_ai_smoke_data_clean,
+    _assert_real_ai_browser_no_cross_domain_writes,
+    _capture_real_ai_browser_domain_baseline,
     _cleanup_real_ai_browser_records,
     _cleanup_real_ai_smoke_records,
     _run_real_ai_interview_review_smoke,
@@ -616,6 +618,44 @@ def test_real_ai_browser_cleanup_is_scoped_to_temp_data(tmp_path):
         bind.dispose()
 
 
+def test_real_ai_browser_domain_baseline_detects_cross_domain_writes(tmp_path):
+    data_dir = tmp_path / "data"
+    session_factory = session_factory_for_data_dir(data_dir)
+    with session_factory() as session:
+        application = Application(company_name="Browser smoke", position_name="QA")
+        session.add(application)
+        session.commit()
+        application_id = application.id
+    bind = session_factory.kw.get("bind")
+    if bind is not None:
+        bind.dispose()
+
+    baseline = _capture_real_ai_browser_domain_baseline(data_dir, application_id)
+    _assert_real_ai_browser_no_cross_domain_writes(data_dir, application_id, baseline)
+
+    session_factory = session_factory_for_data_dir(data_dir)
+    with session_factory() as session:
+        session.get(Application, application_id).status = "offer"
+        session.commit()
+    bind = session_factory.kw.get("bind")
+    if bind is not None:
+        bind.dispose()
+
+    with pytest.raises(RuntimeError, match="application_status"):
+        _assert_real_ai_browser_no_cross_domain_writes(data_dir, application_id, baseline)
+
+    session_factory = session_factory_for_data_dir(data_dir)
+    with session_factory() as session:
+        session.add(ApplicationMaterialKit(application_id=application_id, jd_snapshot="changed"))
+        session.commit()
+    bind = session_factory.kw.get("bind")
+    if bind is not None:
+        bind.dispose()
+
+    with pytest.raises(RuntimeError, match="material_kit_count"):
+        _assert_real_ai_browser_no_cross_domain_writes(data_dir, application_id, baseline)
+
+
 def test_real_ai_browser_harness_isolated_and_uses_base_url():
     harness = Path(__file__).parents[1] / "scripts" / "pilot-real-ai-browser-harness.ps1"
     source = harness.read_text(encoding="utf-8")
@@ -630,6 +670,13 @@ def test_real_ai_browser_harness_isolated_and_uses_base_url():
     assert "准备面试" in source
     assert "面试准备建议 drawer" in source
     assert "Do not substitute the application-detail 材料包 action" in source
+    assert "_capture_real_ai_browser_domain_baseline" in source
+    assert "_assert_real_ai_browser_no_cross_domain_writes" in source
+    assert "PILOT_BROWSER_HARNESS_BASELINE_JSON" in source
+    assert "cross-domain write assertion" in source
+    assert source.index("_assert_real_ai_browser_no_cross_domain_writes") < source.index(
+        "_cleanup_real_ai_browser_records"
+    )
     assert "$baseUrl/applications/$applicationId" not in source
     assert "_cleanup_real_ai_browser_records" in source
     assert "if ($LASTEXITCODE -ne 0)" in source

@@ -101,6 +101,18 @@ try {
   } | ConvertTo-Json)
   $interviewNoteId = [int]$interviewNote.id
 
+  $env:PILOT_BROWSER_HARNESS_DATA = $tempData
+  $env:PILOT_BROWSER_HARNESS_APPLICATION_ID = [string]$applicationId
+  Push-Location $repo
+  try {
+    $baselineJson = & uv run python -c "import json, os; from pathlib import Path; from offerpilot.smoke import _capture_real_ai_browser_domain_baseline; print(json.dumps(_capture_real_ai_browser_domain_baseline(Path(os.environ['PILOT_BROWSER_HARNESS_DATA']), int(os.environ['PILOT_BROWSER_HARNESS_APPLICATION_ID']))))"
+    if ($LASTEXITCODE -ne 0) { throw "Isolated browser domain baseline capture failed with exit code $LASTEXITCODE." }
+    $env:PILOT_BROWSER_HARNESS_BASELINE_JSON = ($baselineJson -join '')
+  }
+  finally {
+    Pop-Location
+  }
+
   Write-Host "Isolated browser harness is ready: $baseUrl"
   Write-Host "Synthetic Application ID: $applicationId; Resume ID: $($resumeIds -join ', '); Interview Event ID: $interviewEventId; Interview Note ID: $interviewNoteId"
   Write-Host 'Interview-preparation acceptance is a separate path: open the top-level 面试 view, locate Pilot Browser Smoke 路 Verification Engineer, and click the row action “准备面试”. Do not substitute the application-detail 材料包 action; the expected destination is the native 面试准备建议 drawer.'
@@ -125,6 +137,8 @@ finally {
     $env:PILOT_BROWSER_HARNESS_RESUME_IDS = ($resumeIds -join ',')
     Push-Location $repo
     try {
+      & uv run python -c "import json, os; from pathlib import Path; from offerpilot.smoke import _assert_real_ai_browser_no_cross_domain_writes; _assert_real_ai_browser_no_cross_domain_writes(Path(os.environ['PILOT_BROWSER_HARNESS_DATA']), int(os.environ['PILOT_BROWSER_HARNESS_APPLICATION_ID']), json.loads(os.environ['PILOT_BROWSER_HARNESS_BASELINE_JSON']))"
+      if ($LASTEXITCODE -ne 0) { throw "Isolated browser cross-domain write assertion failed with exit code $LASTEXITCODE." }
       & uv run python -c "import os; from pathlib import Path; from offerpilot.smoke import _cleanup_real_ai_browser_records; _cleanup_real_ai_browser_records(Path(os.environ['PILOT_BROWSER_HARNESS_DATA']), int(os.environ['PILOT_BROWSER_HARNESS_APPLICATION_ID']), [int(value) for value in os.environ['PILOT_BROWSER_HARNESS_RESUME_IDS'].split(',') if value])"
       if ($LASTEXITCODE -ne 0) { throw "Isolated browser harness record cleanup failed with exit code $LASTEXITCODE." }
       & uv run python -c "import os; from pathlib import Path; from offerpilot.smoke import _assert_real_ai_smoke_data_clean; _assert_real_ai_smoke_data_clean(Path(os.environ['PILOT_BROWSER_HARNESS_DATA']))"
@@ -137,6 +151,7 @@ finally {
       Remove-Item Env:PILOT_BROWSER_HARNESS_DATA -ErrorAction SilentlyContinue
       Remove-Item Env:PILOT_BROWSER_HARNESS_APPLICATION_ID -ErrorAction SilentlyContinue
       Remove-Item Env:PILOT_BROWSER_HARNESS_RESUME_IDS -ErrorAction SilentlyContinue
+      Remove-Item Env:PILOT_BROWSER_HARNESS_BASELINE_JSON -ErrorAction SilentlyContinue
     }
   }
 
