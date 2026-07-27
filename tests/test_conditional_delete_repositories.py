@@ -10,6 +10,8 @@ from offerpilot.models import (
     ApplicationMaterialKit,
     MaterialRevisionProposal,
     OpportunityFitReview,
+    OpportunityFitReviewSession,
+    OpportunityFitReviewStage,
     Base,
     Conversation,
     InterviewNote,
@@ -67,6 +69,11 @@ def _application_dependency(model, application_id):
             source_snapshot_json="{}",
             triage_json="{}",
             triage_sha256="1" * 64,
+        )
+    if model is OpportunityFitReviewSession:
+        return model(
+            application_id=application_id,
+            triage_idempotency_key="8f4a6b48-b554-49a0-bccf-b1bf211ef824",
         )
     if model is Question:
         return model(application_id=application_id, question="Why?")
@@ -130,6 +137,23 @@ def test_application_delete_if_matches_rejects_every_fk_dependency(tmp_path, dep
             session.flush()
             dependency = _application_dependency(dependency_model, app.id)
             dependency.material_kit_id = kit.id
+        elif dependency_model is OpportunityFitReviewStage:
+            review_session = OpportunityFitReviewSession(
+                application_id=app.id,
+                triage_idempotency_key="stage-parent-review",
+            )
+            session.add(review_session)
+            session.flush()
+            dependency = OpportunityFitReviewStage(
+                review_id=review_session.id,
+                application_id=app.id,
+                stage="triage",
+                idempotency_key="stage-parent-key",
+                source_snapshot_json="{}",
+                source_fingerprint_sha256="0" * 64,
+                proposal_json="{}",
+                proposal_sha256="1" * 64,
+            )
         else:
             dependency = _application_dependency(dependency_model, app.id)
         session.add(dependency)

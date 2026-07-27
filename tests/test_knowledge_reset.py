@@ -68,6 +68,7 @@ def _qualified_config() -> Config:
         providers=[provider],
         active_provider_id="default",
         runtime_mode="local",
+        confirmation_secret="test-confirmation-secret",
     )
 
 

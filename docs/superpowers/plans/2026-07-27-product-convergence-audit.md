@@ -177,3 +177,15 @@ for name, tool in registry.items():
 - [ ] 分组门禁完成后分别运行 `uv run ruff check .`、`uv run mypy src`、进入 `web` 运行 `npm.cmd test -- --run` 和 `npm.cmd run build`；每条原生命令后检查 `$LASTEXITCODE`，非零即 `throw`。再运行 `uv run oc smoke --static-dir web/dist` 和 `uv run oc verify --profile local --static-dir web/dist`，同样逐次检查退出码；不使用命令连接符合并执行。
 - [ ] 使用临时隔离数据目录执行 real-AI verify 和浏览器走查；断言 URL 输入零外联、Agent 写入逐次确认、Opportunity Fit v1 历史/v2 新结果、面试索引列表排除与深链 404、Offer 0/重复/1/2 护栏，且无自动状态变更、投递、知识扩张或招聘平台请求。停止精确服务进程并清理临时目录，最后验证源数据目录未变化。
 - [ ] 完成独立 CR 和问题回归后，再提交发布报告；本计划阶段不执行代码、不运行实现测试。
+
+## 10. 实际发布验证收口（2026-07-27）
+
+本次收口已进入发布验证阶段；未新增产品功能、API、数据库迁移或外部访问权限。
+
+- [x] 后端全量按稳定文件组完成：总收集数 1514，分组为 agent 425、domain 71、knowledge 658、proposals 271、misc 89；并集覆盖 1514/1514，无遗漏或重复。各组退出码均为 0；knowledge 组 4 个符号链接能力测试按既定 Windows 权限条件跳过。
+- [x] 静态与前端门禁完成：ruff、mypy、前端全量测试和生产构建均退出码 0。
+- [x] `oc smoke`、隔离 `local verify`、隔离 `real-ai verify` 均退出码 0；real-AI 覆盖面试准备、材料提案、Opportunity Fit Triage/Deep、面试复盘建议、知识沉淀与 Chat 写入确认。local/real-AI 使用临时数据目录，源数据目录未写入。
+- [ ] 真实浏览器双阶段尚未全部通过：阶段一“面试 → 准备面试 → 选择简历/JD → 人工确认 → 真实生成 → 关闭重开 → 历史查看”已完成并显示有效证据；阶段一边界未发现跨领域写入。阶段二浏览器 Triage 两次真实调用均返回 `502 opportunity_fit_unverifiable`，因此未声称 Triage/Deep 浏览器闭环通过；对应 API real-AI verify 已通过。发布前仍需重新完成阶段二浏览器闭环。
+- [x] 临时浏览器服务、合成数据和配置副本已停止/清理；隔离库残留为零，正式数据目录未被修改。
+
+本节记录实际命令和证据；全量包装脚本单次运行受本地工具时限限制，已使用相同 manifest 分组逻辑逐组完成并核对覆盖集合，未以单次超时作为通过依据。
