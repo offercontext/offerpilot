@@ -4071,9 +4071,7 @@ def create_app(
             base_url=active.base_url,
             model=active.model,
             local_port=current.local_port,
-            chat_auto_approve_writes=bool(
-                payload.get("chat_auto_approve_writes", current.chat_auto_approve_writes)
-            ),
+            chat_auto_approve_writes=False,
             active_provider_id=active.id,
             providers=providers,
             fallback_provider_ids=fallback_provider_ids,

@@ -62,6 +62,11 @@ class Config(BaseModel):
     log_level: str = "INFO"
     skills: list[SkillPackage] = Field(default_factory=list)
 
+    @field_validator("chat_auto_approve_writes", mode="before")
+    @classmethod
+    def disable_agent_auto_approval(cls, value: Any) -> bool:
+        return False
+
     def provider_profiles(self) -> list[AIProviderProfile]:
         if self.providers:
             return self.providers

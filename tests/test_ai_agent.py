@@ -1663,6 +1663,32 @@ def test_always_confirm_write_pauses_even_when_auto_approve_is_enabled():
     assert added[-1].tool_calls[0].name == "delete_note"
 
 
+def test_every_write_pauses_even_when_auto_approve_is_enabled():
+    calls: list[str] = []
+    registry = {
+        "write_tool": {
+            "write": True,
+            "handler": lambda args: calls.append(args) or "written",
+            "validate": lambda args: "",
+            "describe": lambda args: "写入测试数据",
+        }
+    }
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[ToolCall(id="write-1", name="write_tool", args="{}")]
+            )
+        ]
+    )
+
+    added, reply, pending = run_turn(model, registry, [], auto_approve=True, max_iter=8)
+
+    assert added
+    assert reply == ""
+    assert pending is not None
+    assert calls == []
+
+
 def test_auto_approved_write_still_runs_validation_before_execution():
     calls = []
     registry = {

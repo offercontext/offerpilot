@@ -143,7 +143,7 @@ def config(
         next_config = _sync_active_provider_config(next_config, model=model)
         changed = True
     if auto_approve is not None:
-        next_config.chat_auto_approve_writes = auto_approve
+        next_config.chat_auto_approve_writes = False
         changed = True
     if runtime_mode is not None:
         parsed_runtime_mode = normalize_runtime_mode(runtime_mode, next_config.runtime_mode)

@@ -966,7 +966,7 @@ def _select_tool_calls(tool_calls: list[Any], registry: dict[str, dict[str, Any]
 def _requires_confirmation(tool: dict[str, Any], auto_approve: bool) -> bool:
     if not bool(tool.get("write")):
         return False
-    return not auto_approve or bool(tool.get("always_confirm"))
+    return True
 
 
 def _tool_public_label(tool: dict[str, Any], fallback: str) -> str:

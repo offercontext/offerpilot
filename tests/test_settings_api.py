@@ -48,7 +48,7 @@ def test_put_settings_preserves_blank_api_key(tmp_path):
     )
 
     assert response.status_code == 200
-    assert response.json()["chat_auto_approve_writes"] is True
+    assert response.json()["chat_auto_approve_writes"] is False
     assert response.json()["runtime_mode"] == "server"
     assert response.json()["auth_enabled"] is True
     assert response.json()["log_level"] == "DEBUG"
@@ -302,7 +302,7 @@ def test_put_settings_without_providers_preserves_existing_provider_profiles(tmp
 
     assert response.status_code == 200
     cfg = load_config(tmp_path)
-    assert cfg.chat_auto_approve_writes is True
+    assert cfg.chat_auto_approve_writes is False
     assert cfg.active_provider_id == "deepseek"
     assert [(profile.id, profile.api_key) for profile in cfg.providers] == [
         ("openai", "sk-openai"),

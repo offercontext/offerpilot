@@ -37,6 +37,17 @@ def test_load_missing_config_returns_defaults(tmp_path):
     assert cfg.log_level == "INFO"
 
 
+def test_load_config_disables_legacy_agent_auto_approval(tmp_path):
+    (tmp_path / "config.json").write_text(
+        json.dumps({"chat_auto_approve_writes": True}),
+        encoding="utf-8",
+    )
+
+    cfg = load_config(tmp_path)
+
+    assert cfg.chat_auto_approve_writes is False
+
+
 @pytest.mark.parametrize(
     ("raw_capability", "expected"),
     [(True, True), ("true", False), ("1", False), (1, False), (None, False)],
