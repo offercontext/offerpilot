@@ -39,7 +39,7 @@ export interface InterviewReviewProposalContent {
 
 export interface InterviewReviewProposal {
   id: number;
-  note_id: number;
+  note_id: number | null;
   application_event_id?: number | null;
   source_fingerprint: string;
   source_status: InterviewReviewSourceStatus;

@@ -7,6 +7,7 @@ export interface InterviewIndexItem {
   note_id: number | null;
   note_source_status: 'current' | 'source_changed' | null;
   has_review_proposal: boolean;
+  review_summary: string | null;
   has_confirmed_knowledge: boolean;
   preparation_available: boolean;
 }

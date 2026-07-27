@@ -63,6 +63,19 @@ def init_database(db_path: Path) -> SessionFactory:
     _ensure_schema_migrations(engine)
     _reset_knowledge_legacy_tables(engine, db_path.parent)
     Base.metadata.create_all(engine)
+    interview_review_history_rebuilt = _ensure_interview_review_history_schema(engine)
+    interview_knowledge_event_added = _ensure_column(
+        engine,
+        "knowledge_captured_source_metadata",
+        "application_event_id",
+        "INTEGER",
+    )
+    if interview_review_history_rebuilt or interview_knowledge_event_added:
+        _record_migration(
+            engine,
+            "0015_interview_review_history_retention",
+            "Retain interview review and confirmed knowledge history after note changes",
+        )
     opportunity_fit_v2_migrations = [
         _ensure_column(
             engine,
@@ -103,6 +116,17 @@ def init_database(db_path: Path) -> SessionFactory:
         "application_event_id",
         "INTEGER REFERENCES application_events(id) ON DELETE SET NULL",
     )
+    if interview_knowledge_event_added:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE knowledge_captured_source_metadata "
+                    "SET application_event_id = ("
+                    "SELECT application_event_id FROM interview_notes "
+                    "WHERE interview_notes.id = knowledge_captured_source_metadata.origin_note_id) "
+                    "WHERE application_event_id IS NULL"
+                )
+            )
     with engine.begin() as conn:
         conn.execute(
             text(
@@ -1130,6 +1154,60 @@ def _ensure_column(engine, table: str, column: str, definition: str) -> bool:  #
             return False
         conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {definition}"))
         return True
+
+
+def _ensure_interview_review_history_schema(engine) -> bool:  # type: ignore[no-untyped-def]
+    """Make review proposals survive note deletion without rewriting their payloads."""
+    with engine.connect() as conn:
+        columns = conn.execute(text("PRAGMA table_info(interview_review_proposals)")).fetchall()
+        foreign_keys = conn.execute(text("PRAGMA foreign_key_list(interview_review_proposals)")).fetchall()
+    note_column = next((row for row in columns if row[1] == "note_id"), None)
+    note_foreign_key = next((row for row in foreign_keys if row[3] == "note_id"), None)
+    if note_column is None or (note_column[3] == 0 and note_foreign_key is not None and str(note_foreign_key[6]).upper() == "SET NULL"):
+        return False
+
+    with engine.connect() as conn:
+        conn.execute(text("PRAGMA foreign_keys=OFF"))
+        conn.execute(text("ALTER TABLE interview_review_proposals RENAME TO interview_review_proposals_legacy"))
+        conn.execute(
+            text(
+                """
+                CREATE TABLE interview_review_proposals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    note_id INTEGER REFERENCES interview_notes(id) ON DELETE SET NULL,
+                    application_event_id INTEGER REFERENCES application_events(id) ON DELETE SET NULL,
+                    idempotency_key VARCHAR NOT NULL,
+                    input_snapshot_json VARCHAR NOT NULL,
+                    source_fingerprint VARCHAR NOT NULL,
+                    proposal_json VARCHAR NOT NULL,
+                    proposal_hash VARCHAR NOT NULL,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT uq_interview_review_proposals_note_key
+                        UNIQUE (note_id, idempotency_key)
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO interview_review_proposals (
+                    id, note_id, application_event_id, idempotency_key,
+                    input_snapshot_json, source_fingerprint, proposal_json,
+                    proposal_hash, created_at
+                )
+                SELECT id, note_id, application_event_id, idempotency_key,
+                       input_snapshot_json, source_fingerprint, proposal_json,
+                       proposal_hash, created_at
+                FROM interview_review_proposals_legacy
+                """
+            )
+        )
+        conn.execute(text("CREATE INDEX idx_interview_review_proposals_note ON interview_review_proposals(note_id)"))
+        conn.execute(text("DROP TABLE interview_review_proposals_legacy"))
+        conn.commit()
+        conn.execute(text("PRAGMA foreign_keys=ON"))
+    return True
 
 
 def _backfill_resume_v01(engine) -> bool:  # type: ignore[no-untyped-def]

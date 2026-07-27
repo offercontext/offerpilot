@@ -67,7 +67,7 @@ export async function listOpportunityFitReviews(
   return data.filter((item): item is OpportunityFitReviewSummary => {
     if (typeof item !== 'object' || item === null) return false;
     const record = item as Record<string, unknown>;
-    return record.schema_version !== 2 && typeof record.id === 'number';
+    return record.schema_version === 1 && typeof record.id === 'number';
   });
 }
 

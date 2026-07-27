@@ -255,6 +255,7 @@ class OpportunityFitSummaryOut(BaseModel):
 
 class OpportunityFitReviewSummaryOut(BaseModel):
     id: int
+    schema_version: Literal[1] = 1
     application_id: int
     resume_id: int | None
     status: Literal["triage_complete", "deep_reviewed"]
@@ -269,7 +270,7 @@ class OpportunityFitReviewSummaryOut(BaseModel):
 
 class InterviewReviewProposalOut(BaseModel):
     id: int
-    note_id: int
+    note_id: int | None
     application_event_id: int | None = None
     source_fingerprint: str
     source_status: Literal["current", "source_changed"]

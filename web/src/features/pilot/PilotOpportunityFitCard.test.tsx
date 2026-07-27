@@ -14,6 +14,7 @@ import type { OpportunityFitReview, OpportunityFitReviewSummary } from '@/types/
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const review = {
+  schema_version: 1,
   id: 17,
   application_id: 7,
   resume_id: 11,
@@ -234,6 +235,7 @@ describe('PilotOpportunityFitCard', () => {
     await act(async () => root?.render(
       <Harness
         historicalReviews={[{
+          schema_version: 1,
           id: 42,
           application_id: 7,
           resume_id: 11,

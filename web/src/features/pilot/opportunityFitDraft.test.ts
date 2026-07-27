@@ -23,6 +23,7 @@ declare global {
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 const review: OpportunityFitReview = {
+  schema_version: 1,
   id: 11,
   application_id: 7,
   resume_id: 3,

@@ -4,6 +4,7 @@ import { cancelPilotTriage, isOpportunityFitNotFoundError, restorePilotHistorica
 import type { OpportunityFitReview } from '@/types/opportunityFitReview';
 
 const review = {
+  schema_version: 1,
   id: 1,
   application_id: 7,
   resume_id: 3,

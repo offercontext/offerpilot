@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import exists, nullslast, select
+from sqlalchemy import and_, exists, nullslast, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from offerpilot.ai.interview_review_proposals import build_interview_review_snapshot
 from offerpilot.models import (
     Application,
     ApplicationEvent,
@@ -13,7 +15,6 @@ from offerpilot.models import (
     InterviewReviewProposal,
     KnowledgeCapturedSourceMetadata,
 )
-from offerpilot.ai.interview_review_proposals import build_interview_review_snapshot
 from offerpilot.repositories.json_contract import canonical_json, sha256_text
 
 
@@ -27,6 +28,7 @@ class InterviewIndexItem:
     note_id: int | None
     note_source_status: str | None
     has_review_proposal: bool
+    review_summary: str | None
     has_confirmed_knowledge: bool
     preparation_available: bool
 
@@ -38,14 +40,7 @@ class InterviewIndexRepository:
     def list(self, *, limit: int = 50, cursor: str = "") -> tuple[list[InterviewIndexItem], str | None]:
         offset = _parse_cursor(cursor)
         statement = (
-            select(
-                ApplicationEvent,
-                Application.company_name,
-                Application.position_name,
-                InterviewNote,
-                exists(select(1).where(InterviewReviewProposal.note_id == InterviewNote.id)),
-                exists(select(1).where(KnowledgeCapturedSourceMetadata.origin_note_id == InterviewNote.id)),
-            )
+            select(ApplicationEvent, Application.company_name, Application.position_name, InterviewNote)
             .join(Application, Application.id == ApplicationEvent.application_id)
             .outerjoin(InterviewNote, InterviewNote.application_event_id == ApplicationEvent.id)
             .where(Application.deleted_at.is_(None))
@@ -62,25 +57,12 @@ class InterviewIndexRepository:
             rows = session.execute(statement).all()
             has_more = len(rows) > limit
             rows = rows[:limit]
-            items = [
-                _item(
-                    row[0], row[1], row[2], row[3], bool(row[4]), bool(row[5]),
-                    _note_source_status(session, row[0], row[3]),
-                )
-                for row in rows
-            ]
+            items = [_item(session, row[0], row[1], row[2], row[3]) for row in rows]
         return items, str(offset + limit) if has_more else None
 
     def get(self, event_id: int) -> InterviewIndexItem | None:
         statement = (
-            select(
-                ApplicationEvent,
-                Application.company_name,
-                Application.position_name,
-                InterviewNote,
-                exists(select(1).where(InterviewReviewProposal.note_id == InterviewNote.id)),
-                exists(select(1).where(KnowledgeCapturedSourceMetadata.origin_note_id == InterviewNote.id)),
-            )
+            select(ApplicationEvent, Application.company_name, Application.position_name, InterviewNote)
             .join(Application, Application.id == ApplicationEvent.application_id)
             .outerjoin(InterviewNote, InterviewNote.application_event_id == ApplicationEvent.id)
             .where(Application.deleted_at.is_(None))
@@ -89,10 +71,7 @@ class InterviewIndexRepository:
         )
         with self._session_factory() as session:
             row = session.execute(statement).first()
-            return None if row is None else _item(
-                row[0], row[1], row[2], row[3], bool(row[4]), bool(row[5]),
-                _note_source_status(session, row[0], row[3]),
-            )
+            return None if row is None else _item(session, row[0], row[1], row[2], row[3])
 
 
 def _parse_cursor(value: str) -> int:
@@ -108,17 +87,16 @@ def _parse_cursor(value: str) -> int:
 
 
 def _item(
+    session: Session,
     event: ApplicationEvent,
     company_name: str,
     position_name: str,
     note: InterviewNote | None,
-    has_review_proposal: bool,
-    has_confirmed_knowledge: bool,
-    note_source_status: str | None,
 ) -> InterviewIndexItem:
     scheduled_at = event.scheduled_at or datetime.min
     if scheduled_at.tzinfo is None or scheduled_at.utcoffset() is None:
         scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
+    review = _latest_event_review(session, event.id)
     return InterviewIndexItem(
         application_id=event.application_id,
         event_id=event.id,
@@ -126,26 +104,66 @@ def _item(
         position_name=position_name,
         scheduled_at=scheduled_at,
         note_id=note.id if note is not None else None,
-        note_source_status=note_source_status,
-        has_review_proposal=has_review_proposal,
-        has_confirmed_knowledge=has_confirmed_knowledge,
+        note_source_status=_note_source_status(event, note, review),
+        has_review_proposal=review is not None,
+        review_summary=_review_summary(review),
+        has_confirmed_knowledge=_has_confirmed_knowledge(session, event.id, note),
         preparation_available=True,
     )
 
 
-def _note_source_status(
-    session: Session, event: ApplicationEvent, note: InterviewNote | None
-) -> str | None:
-    if note is None:
-        return None
-    proposal = session.scalar(
+def _latest_event_review(session: Session, event_id: int) -> InterviewReviewProposal | None:
+    return session.scalar(
         select(InterviewReviewProposal)
-        .where(InterviewReviewProposal.note_id == note.id)
+        .where(InterviewReviewProposal.application_event_id == event_id)
         .order_by(InterviewReviewProposal.created_at.desc(), InterviewReviewProposal.id.desc())
     )
+
+
+def _has_confirmed_knowledge(
+    session: Session, event_id: int, note: InterviewNote | None
+) -> bool:
+    knowledge_conditions = [KnowledgeCapturedSourceMetadata.application_event_id == event_id]
+    if note is not None:
+        knowledge_conditions.append(
+            and_(
+                KnowledgeCapturedSourceMetadata.application_event_id.is_(None),
+                KnowledgeCapturedSourceMetadata.origin_note_id == note.id,
+            )
+        )
+    return bool(
+        session.scalar(
+            select(
+                exists(
+                    select(1).where(
+                        or_(*knowledge_conditions)
+                    )
+                )
+            )
+        )
+    )
+
+
+def _review_summary(proposal: InterviewReviewProposal | None) -> str | None:
     if proposal is None:
-        return "current"
-    if note.application_event_id != event.id:
+        return None
+    try:
+        payload = json.loads(proposal.proposal_json)
+        summary = payload.get("summary") if isinstance(payload, dict) else None
+        text = summary.get("text") if isinstance(summary, dict) else None
+        return text if isinstance(text, str) and text else None
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _note_source_status(
+    event: ApplicationEvent,
+    note: InterviewNote | None,
+    proposal: InterviewReviewProposal | None,
+) -> str | None:
+    if proposal is None:
+        return "current" if note is not None else None
+    if note is None or note.application_event_id != event.id:
         return "source_changed"
     try:
         current = build_interview_review_snapshot(note, event)

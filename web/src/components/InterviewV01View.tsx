@@ -7,9 +7,10 @@ const { Paragraph, Title } = Typography;
 
 interface Props {
   onOpenApplication?: (applicationId: number) => void;
+  onOpenPreparation?: (applicationId: number, eventId: number) => void;
 }
 
-export default function InterviewV01View({ onOpenApplication }: Props) {
+export default function InterviewV01View({ onOpenApplication, onOpenPreparation }: Props) {
   const [items, setItems] = useState<InterviewIndexItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -46,7 +47,7 @@ export default function InterviewV01View({ onOpenApplication }: Props) {
                 查看投递详情
               </Button>,
               item.preparation_available ? (
-                <Button key="prepare" type="link" onClick={() => onOpenApplication?.(item.application_id)}>
+                <Button key="prepare" type="link" onClick={() => onOpenPreparation?.(item.application_id, item.event_id)}>
                   准备面试
                 </Button>
               ) : null,
@@ -57,6 +58,7 @@ export default function InterviewV01View({ onOpenApplication }: Props) {
                   <Space wrap>
                     <span>{new Date(item.scheduled_at).toLocaleString()}</span>
                     <Tag>{item.note_id ? '已有复盘' : '待记录复盘'}</Tag>
+                    {item.review_summary ? <span>{item.review_summary}</span> : null}
                     {item.note_source_status === 'source_changed' ? <Tag color="warning">来源已变化</Tag> : null}
                     {item.has_review_proposal ? <Tag color="blue">有复盘建议</Tag> : null}
                     {item.has_confirmed_knowledge ? <Tag color="green">已有确认知识</Tag> : null}

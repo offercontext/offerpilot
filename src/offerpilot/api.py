@@ -1831,6 +1831,12 @@ def create_app(
                 return error_response(404, "Application or resume not found")
             except OpportunityFitReviewConflictError as exc:
                 return error_response(409, str(exc), code="opportunity_fit_idempotency_conflict")
+            except OpportunityFitReviewConfirmationExpired:
+                return error_response(
+                    410,
+                    "Triage confirmation has expired. Please generate a new review.",
+                    code="opportunity_fit_triage_confirmation_expired",
+                )
             except OpportunityFitModelError as exc:
                 append_log_entry(resolved_data_dir, "WARNING", f"opportunity_fit_{exc.failure_category}")
                 if exc.failure_category == "provider_error":
@@ -6885,6 +6891,7 @@ def _interview_index_item_json(item: Any) -> dict[str, Any]:
         "note_id": item.note_id,
         "note_source_status": item.note_source_status,
         "has_review_proposal": item.has_review_proposal,
+        "review_summary": item.review_summary,
         "has_confirmed_knowledge": item.has_confirmed_knowledge,
         "preparation_available": item.preparation_available,
     }

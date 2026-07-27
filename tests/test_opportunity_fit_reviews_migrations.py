@@ -67,3 +67,59 @@ def test_existing_v1_review_bytes_and_hashes_survive_v2_migration(tmp_path) -> N
         assert session.execute(
             text("SELECT COUNT(*) FROM opportunity_fit_review_stages")
         ).scalar_one() == 0
+
+
+def test_legacy_v1_ddl_is_upgraded_without_rewriting_bytes_or_hashes(tmp_path) -> None:
+    db_path = tmp_path / "data.db"
+    factory = init_database(db_path)
+    snapshot = '{"legacy":"snapshot"}'
+    triage = '{"recommendation":"hold"}'
+    with factory() as session:
+        app_id = session.execute(
+            text(
+                "INSERT INTO applications (company_name, position_name, source, status) "
+                "VALUES ('Legacy', 'Engineer', 'manual', 'applied') RETURNING id"
+            )
+        ).scalar_one()
+        session.execute(text("DROP TABLE opportunity_fit_reviews"))
+        session.execute(
+            text(
+                """
+                CREATE TABLE opportunity_fit_reviews (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    application_id INTEGER NOT NULL,
+                    resume_id INTEGER,
+                    idempotency_key VARCHAR NOT NULL,
+                    source_fingerprint_sha256 VARCHAR NOT NULL,
+                    source_snapshot_json VARCHAR NOT NULL,
+                    triage_json VARCHAR NOT NULL,
+                    triage_sha256 VARCHAR NOT NULL,
+                    deep_review_json VARCHAR,
+                    deep_review_sha256 VARCHAR,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    deep_reviewed_at DATETIME
+                )
+                """
+            )
+        )
+        session.execute(
+            text(
+                "INSERT INTO opportunity_fit_reviews "
+                "(application_id, idempotency_key, source_fingerprint_sha256, "
+                "source_snapshot_json, triage_json, triage_sha256) "
+                "VALUES (:app_id, 'raw-old-key', 'raw-source', :snapshot, :triage, 'raw-triage')"
+            ),
+            {"app_id": app_id, "snapshot": snapshot, "triage": triage},
+        )
+        session.commit()
+
+    upgraded = init_database(db_path)
+
+    with upgraded() as session:
+        row = session.execute(
+            text(
+                "SELECT source_snapshot_json, triage_json, source_fingerprint_sha256, "
+                "triage_sha256, proposal_schema_version FROM opportunity_fit_reviews"
+            )
+        ).one()
+        assert tuple(row) == (snapshot, triage, "raw-source", "raw-triage", 1)

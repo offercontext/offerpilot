@@ -13,6 +13,10 @@ from offerpilot.db import session_factory_for_data_dir
 from offerpilot.models import OpportunityFitReview
 from offerpilot.models import OpportunityFitReviewStage
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
+from offerpilot.repositories.opportunity_fit_reviews import (
+    OpportunityFitReviewConfirmationExpired,
+    OpportunityFitReviewsRepository,
+)
 
 
 def _triage() -> dict[str, object]:
@@ -196,10 +200,12 @@ def test_api_creates_lists_and_deep_reviews_without_snapshot_leak(tmp_path) -> N
     listed = client.get(path)
     assert listed.status_code == 200
     assert listed.json()[0]["id"] == body["id"]
+    assert listed.json()[0]["schema_version"] == 1
     assert listed.json()[0]["summary"]["evidence_refs"]
 
     detail = client.get(f"{path}/{body['id']}")
     assert detail.status_code == 200
+    assert detail.json()["schema_version"] == 1
     assert detail.json()["source"]["resume"]["title"] == "Backend Resume"
     assert detail.json()["source"]["jd"]["text"] == "Kubernetes preferred"
 
@@ -443,6 +449,30 @@ def test_v2_expired_confirmation_returns_stable_error_and_allows_new_key(tmp_pat
     replay = client.post(path, json=payload)
     assert replay.status_code == 410
     assert replay.json()["error_code"] == "opportunity_fit_triage_confirmation_expired"
+
+
+def test_v2_confirmation_expiry_between_peek_and_write_returns_410(tmp_path, monkeypatch) -> None:
+    client, application, resume = _ready(tmp_path, V2ReviewModel())
+    path = f"/api/applications/{application['id']}/opportunity-fit-reviews"
+    payload = {
+        "schema_version": 2,
+        "resume_id": resume["id"],
+        "jd_text": "Kubernetes preferred",
+        "jd_source_label": "copy",
+        "candidate_assertions": [],
+        "idempotency_key": "d6fb6bd6-41cc-4f3f-b7b2-936ec5d8e8c5",
+    }
+    monkeypatch.setattr(OpportunityFitReviewsRepository, "peek_triage_v2", lambda *_args, **_kwargs: None)
+
+    def expired_create(*_args, **_kwargs):
+        raise OpportunityFitReviewConfirmationExpired()
+
+    monkeypatch.setattr(OpportunityFitReviewsRepository, "create_triage_v2", expired_create)
+
+    response = client.post(path, json=payload)
+
+    assert response.status_code == 410
+    assert response.json()["error_code"] == "opportunity_fit_triage_confirmation_expired"
 
 
 def test_api_v2_contract_failure_does_not_leave_history_stage(tmp_path) -> None:

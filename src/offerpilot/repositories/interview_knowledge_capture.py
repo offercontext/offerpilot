@@ -451,6 +451,7 @@ class InterviewKnowledgeCaptureRepository:
                 metadata = KnowledgeCapturedSourceMetadata(
                     source_id=source.id,
                     origin_note_id=note_id,
+                    application_event_id=current_note.application_event_id,
                     note_fingerprint=current_fingerprint,
                     selected_fragments_json=attempt.selected_fragments_json,
                     capture_schema_version="interview-note-capture-v1",

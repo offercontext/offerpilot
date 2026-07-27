@@ -72,6 +72,7 @@ interface ApplicationDetailProps {
   pilotInterviewReviewApplicationId?: number | null;
   onPilotInterviewReviewFocusConsumed?: () => void;
   pilotInterviewPreparationApplicationId?: number | null;
+  pilotInterviewPreparationEventId?: number | null;
   onPilotInterviewPreparationFocusConsumed?: () => void;
   onAttachToPilot?: (attachment: import('@/types/chat').PilotContextAttachment) => void;
   interviewReviewProposalAttempts?: Record<number, InterviewReviewProposalAttemptState>;
@@ -91,7 +92,7 @@ interface ApplicationDetailProps {
   interviewPreparationKnowledgeOptions?: InterviewPreparationKnowledgeOption[];
 }
 
-export default function ApplicationDetail({ application, open, onClose, onMockInterview, onAskPilot, onOpenPilotOpportunityFit, pilotInterviewReviewApplicationId, onPilotInterviewReviewFocusConsumed, pilotInterviewPreparationApplicationId, onPilotInterviewPreparationFocusConsumed, onAttachToPilot, interviewReviewProposalAttempts, onInterviewReviewProposalAttemptChange, onInterviewNoteChanged, interviewKnowledgeCaptureDrafts, onInterviewKnowledgeCaptureDraftChange, onInterviewKnowledgeCaptureNoteChanged, resumes = [], interviewPreparationAttempts, onInterviewPreparationAttemptChange, interviewPreparationDrafts, onInterviewPreparationDraftChange, interviewPreparationKnowledgeOptions = [] }: ApplicationDetailProps) {
+export default function ApplicationDetail({ application, open, onClose, onMockInterview, onAskPilot, onOpenPilotOpportunityFit, pilotInterviewReviewApplicationId, onPilotInterviewReviewFocusConsumed, pilotInterviewPreparationApplicationId, pilotInterviewPreparationEventId, onPilotInterviewPreparationFocusConsumed, onAttachToPilot, interviewReviewProposalAttempts, onInterviewReviewProposalAttemptChange, onInterviewNoteChanged, interviewKnowledgeCaptureDrafts, onInterviewKnowledgeCaptureDraftChange, onInterviewKnowledgeCaptureNoteChanged, resumes = [], interviewPreparationAttempts, onInterviewPreparationAttemptChange, interviewPreparationDrafts, onInterviewPreparationDraftChange, interviewPreparationKnowledgeOptions = [] }: ApplicationDetailProps) {
   const queryClient = useQueryClient();
   const [form] = Form.useForm();
   const [eventFormOpen, setEventFormOpen] = useState(false);
@@ -149,6 +150,15 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
     if (!application || !open || pilotInterviewPreparationApplicationId !== application.id || !eventsQuery.data) return;
     const interviewEvents = eventsQuery.data.filter((event) => event.event_type === 'interview');
     if (interviewEvents.length === 0) return;
+    const requestedEvent = pilotInterviewPreparationEventId == null
+      ? null
+      : interviewEvents.find((event) => event.id === pilotInterviewPreparationEventId) ?? null;
+    if (requestedEvent) {
+      setPreparationEventID(requestedEvent.id);
+      setPreparationOpen(true);
+      onPilotInterviewPreparationFocusConsumed?.();
+      return;
+    }
     if (interviewEvents.length === 1) {
       setPreparationEventID(interviewEvents[0].id);
       setPreparationOpen(true);
@@ -156,7 +166,7 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
       setPilotPreparationChoices(interviewEvents);
     }
     onPilotInterviewPreparationFocusConsumed?.();
-  }, [application, eventsQuery.data, open, onPilotInterviewPreparationFocusConsumed, pilotInterviewPreparationApplicationId]);
+  }, [application, eventsQuery.data, open, pilotInterviewPreparationEventId, onPilotInterviewPreparationFocusConsumed, pilotInterviewPreparationApplicationId]);
 
   const invalidateNotes = () => {
     if (application) queryClient.invalidateQueries({ queryKey: ['notes', application.id] });

@@ -456,9 +456,9 @@ class InterviewReviewProposal(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    note_id: Mapped[int] = mapped_column(
-        ForeignKey("interview_notes.id", ondelete="CASCADE"),
-        nullable=False,
+    note_id: Mapped[int | None] = mapped_column(
+        ForeignKey("interview_notes.id", ondelete="SET NULL"),
+        nullable=True,
     )
     application_event_id: Mapped[int | None] = mapped_column(
         ForeignKey("application_events.id", ondelete="SET NULL"),
@@ -635,6 +635,7 @@ class KnowledgeCapturedSourceMetadata(Base):
         ForeignKey("knowledge_sources.id", ondelete="CASCADE"), primary_key=True
     )
     origin_note_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    application_event_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     note_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
     selected_fragments_json: Mapped[str] = mapped_column(Text, nullable=False)
     capture_schema_version: Mapped[str] = mapped_column(String, nullable=False)

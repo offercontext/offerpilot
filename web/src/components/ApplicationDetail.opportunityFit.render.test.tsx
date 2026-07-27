@@ -236,4 +236,24 @@ describe('ApplicationDetail opportunity fit handoff', () => {
     act(() => (dialogButtons[1] as HTMLButtonElement).click());
     expect(container?.textContent).toContain('面试准备建议');
   });
+  it('opens the explicitly requested interview preparation event without showing a choice dialog', async () => {
+    state.events = [
+      { id: 31, event_type: 'interview', subtype: 'technical', scheduled_at: '2026-07-24T10:00:00Z' },
+      { id: 32, event_type: 'interview', subtype: 'behavioral', scheduled_at: '2026-07-25T10:00:00Z' },
+    ];
+    act(() => root?.render(
+      <ApplicationDetail
+        application={application}
+        open
+        onClose={vi.fn()}
+        pilotInterviewPreparationApplicationId={7}
+        pilotInterviewPreparationEventId={32}
+        onPilotInterviewPreparationFocusConsumed={vi.fn()}
+      />,
+    ));
+    await act(async () => { await Promise.resolve(); });
+
+    expect(container?.querySelector('[role="dialog"]')).toBeNull();
+    expect(container?.textContent).toContain('面试准备建议');
+  });
 });

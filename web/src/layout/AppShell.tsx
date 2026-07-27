@@ -144,6 +144,7 @@ function AppShellContent() {
   const [pilotLegacyReview, setPilotLegacyReview] = useState<OpportunityFitReview | null>(null);
   const [pilotInterviewReviewApplicationId, setPilotInterviewReviewApplicationId] = useState<number | null>(null);
   const [pilotInterviewPreparationApplicationId, setPilotInterviewPreparationApplicationId] = useState<number | null>(null);
+  const [pilotInterviewPreparationEventId, setPilotInterviewPreparationEventId] = useState<number | null>(null);
   const pilotApplicationContextRef = useRef(pilotApplicationContext);
   pilotApplicationContextRef.current = pilotApplicationContext;
   const [aiSettingsOpen, setAISettingsOpen] = useState(false);
@@ -549,11 +550,12 @@ function AppShellContent() {
     setSelected(app);
   };
 
-  const openPilotInterviewPreparation = (applicationId: number) => {
+  const openPilotInterviewPreparation = (applicationId: number, eventId?: number) => {
     const app = apps.find((item) => item.id === applicationId);
     if (!app) return;
     exitPilotContext();
     setPilotInterviewPreparationApplicationId(applicationId);
+    setPilotInterviewPreparationEventId(eventId ?? null);
     setView('board');
     setSelected(app);
   };
@@ -767,7 +769,11 @@ function AppShellContent() {
       pilotInterviewReviewApplicationId={pilotInterviewReviewApplicationId}
       onPilotInterviewReviewFocusConsumed={() => setPilotInterviewReviewApplicationId(null)}
       pilotInterviewPreparationApplicationId={pilotInterviewPreparationApplicationId}
-      onPilotInterviewPreparationFocusConsumed={() => setPilotInterviewPreparationApplicationId(null)}
+      pilotInterviewPreparationEventId={pilotInterviewPreparationEventId}
+      onPilotInterviewPreparationFocusConsumed={() => {
+        setPilotInterviewPreparationApplicationId(null);
+        setPilotInterviewPreparationEventId(null);
+      }}
       onAttachToPilot={attachToPilot}
       interviewReviewProposalAttempts={interviewReviewProposalAttempts}
       onInterviewReviewProposalAttemptChange={updateInterviewReviewProposalAttempt}
@@ -842,7 +848,12 @@ function AppShellContent() {
           )}
           {view === 'knowledge' && <KnowledgeSourcesView />}
           {view === 'questions' && <QuestionBankView />}
-          {view === 'interview' && <InterviewV01View onOpenApplication={goDetailById} />}
+          {view === 'interview' && (
+            <InterviewV01View
+              onOpenApplication={goDetailById}
+              onOpenPreparation={openPilotInterviewPreparation}
+            />
+          )}
           {view === 'resumes' && (
             <ResumeLibraryView
               onAttachToPilot={attachToPilot}

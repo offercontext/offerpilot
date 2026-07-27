@@ -52,6 +52,7 @@ export interface OpportunityFitSource {
 }
 
 export interface OpportunityFitReviewSummary {
+  schema_version: 1;
   id: number;
   application_id: number;
   resume_id: number | null;
