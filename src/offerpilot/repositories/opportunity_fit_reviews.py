@@ -137,15 +137,15 @@ class OpportunityFitReviewsRepository:
                 session.commit()
             except IntegrityError:
                 session.rollback()
-                root = _find_v2_session(session, application_id, idempotency_key)
-                if root is None:
+                winner = _find_v2_session(session, application_id, idempotency_key)
+                if winner is None:
                     raise
-                stage = _find_v2_stage(session, root.id, "triage", idempotency_key)
+                stage = _find_v2_stage(session, winner.id, "triage", idempotency_key)
                 if stage is None:
                     raise OpportunityFitReviewConflictError("v2 triage stage is missing")
                 if stage.source_fingerprint_sha256 != fingerprint:
                     raise OpportunityFitReviewConflictError("opportunity fit idempotency conflict")
-                return root, stage, False, _confirmation_token_for_stage(
+                return winner, stage, False, _confirmation_token_for_stage(
                     stage, self._confirmation_secret
                 )
             session.refresh(root)
@@ -163,10 +163,10 @@ class OpportunityFitReviewsRepository:
             if stage is None:
                 raise OpportunityFitReviewNotFound()
             if stage.status != "generating" or stage.provider_call_token != provider_token:
-                root = session.get(OpportunityFitReviewSession, stage.review_id)
-                if root is None:
+                winner = session.get(OpportunityFitReviewSession, stage.review_id)
+                if winner is None:
                     raise OpportunityFitReviewNotFound()
-                return root, stage, False, _confirmation_token_for_stage(
+                return winner, stage, False, _confirmation_token_for_stage(
                     stage, self._confirmation_secret
                 )
             stage.status = "ready"
@@ -179,10 +179,11 @@ class OpportunityFitReviewsRepository:
             token = _confirmation_token(stage, self._confirmation_secret, expires_at=expires_at)
             stage.confirmation_token_hash = _hash_token(token)
             session.commit()
-            root = session.get(OpportunityFitReviewSession, stage.review_id)
-            assert root is not None
+            root_after = session.get(OpportunityFitReviewSession, stage.review_id)
+            if root_after is None:
+                raise OpportunityFitReviewNotFound()
             session.refresh(stage)
-            return root, stage, True, token
+            return root_after, stage, True, token
 
     def confirm_triage_v2(
         self, review_id: int, stage_id: int, confirmation_token: str
@@ -213,7 +214,7 @@ class OpportunityFitReviewsRepository:
                     "token_hash": stage.confirmation_token_hash,
                 },
             )
-            if result.rowcount != 1:
+            if getattr(result, "rowcount", 0) != 1:
                 raise OpportunityFitReviewConfirmationConsumed()
             session.commit()
             session.refresh(stage)
@@ -337,19 +338,19 @@ class OpportunityFitReviewsRepository:
         proposal_json = canonical_json(deep.payload)
         with self._session_factory() as session:
             session.execute(text("BEGIN IMMEDIATE"))
-            stage = session.get(OpportunityFitReviewStage, stage.id)
-            if stage is None:
+            current_stage = session.get(OpportunityFitReviewStage, stage.id)
+            if current_stage is None:
                 raise OpportunityFitReviewNotFound()
-            if stage.status != "generating" or stage.provider_call_token != provider_token:
-                return stage, False
-            stage.status = "ready"
-            stage.proposal_json = proposal_json
-            stage.proposal_sha256 = sha256_text(proposal_json)
-            stage.provider_call_token = ""
-            stage.lease_expires_at = None
+            if current_stage.status != "generating" or current_stage.provider_call_token != provider_token:
+                return current_stage, False
+            current_stage.status = "ready"
+            current_stage.proposal_json = proposal_json
+            current_stage.proposal_sha256 = sha256_text(proposal_json)
+            current_stage.provider_call_token = ""
+            current_stage.lease_expires_at = None
             session.commit()
-            session.refresh(stage)
-            return stage, True
+            session.refresh(current_stage)
+            return current_stage, True
 
     def create_triage(
         self,

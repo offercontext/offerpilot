@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timezone
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
@@ -70,7 +70,7 @@ def _parse_cursor(value: str) -> int:
 
 
 def _item(event: ApplicationEvent, company_name: str, position_name: str, note: InterviewNote | None) -> InterviewIndexItem:
-    scheduled_at = event.scheduled_at
+    scheduled_at = event.scheduled_at or datetime.min
     if scheduled_at.tzinfo is None or scheduled_at.utcoffset() is None:
         scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
     return InterviewIndexItem(
