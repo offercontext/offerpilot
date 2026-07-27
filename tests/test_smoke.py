@@ -78,6 +78,7 @@ def test_http_smoke_uses_real_http_and_cleans_test_application(tmp_path):
         "http_list_applications",
         "http_resume_crud",
         "http_application_event_crud",
+        "http_proposal_terminal_matrix",
         "http_chat_pending",
         "http_confirm_action",
         "http_pending_cleared",

@@ -41,6 +41,24 @@ function newAttemptKey() {
   return crypto.randomUUID?.() ?? `interview-review-${Date.now()}`;
 }
 
+function safeErrorMessage(error: unknown): string {
+  const typed = error instanceof InterviewReviewProposalError ? error : null;
+  switch (typed?.code) {
+    case 'interview_review_provider_error':
+      return 'AI 服务暂不可用，请稍后重试。';
+    case 'interview_review_unverifiable':
+      return 'AI 建议未通过证据校验，原复盘未受影响，请重试。';
+    case 'interview_review_source_conflict':
+      return '复盘来源已变化，请重新核对后再生成。';
+    case 'interview_review_event_required':
+      return '请先绑定有效的面试事件。';
+    case 'interview_review_not_found':
+      return '面试复盘已不可见，请重新打开投递。';
+    default:
+      return '复盘建议暂时不可用，请稍后重试。';
+  }
+}
+
 function EvidenceRefs({ refs }: { refs: InterviewReviewEvidenceRef[] }) {
   if (refs.length === 0) return null;
   return (
@@ -102,7 +120,7 @@ export default function InterviewReviewProposalDrawer({
     setLoading(true);
     listInterviewReviewProposals(note.id)
       .then(setHistory)
-      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : '复盘建议暂时不可用，请稍后重试。'))
+      .catch((cause: unknown) => setError(safeErrorMessage(cause)))
       .finally(() => setLoading(false));
   }, [open, note.id]);
 
@@ -114,7 +132,7 @@ export default function InterviewReviewProposalDrawer({
     try {
       setSelected(await getInterviewReviewProposal(note.id, proposalID));
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '复盘建议暂时不可用，请稍后重试。');
+      setError(safeErrorMessage(cause));
     } finally {
       setLoading(false);
     }
@@ -138,8 +156,9 @@ export default function InterviewReviewProposalDrawer({
       onAttemptStateChange?.(null);
     } catch (cause) {
       const safe = cause instanceof InterviewReviewProposalError ? cause : null;
-      setError(safe?.message ?? '复盘建议暂时不可用，请稍后重试。');
-      if (safe?.code) onAttemptStateChange?.(null);
+      setError(safeErrorMessage(cause));
+      const resultUnknown = !safe?.code || safe.code === 'interview_review_provider_error';
+      if (!resultUnknown) onAttemptStateChange?.(null);
       else {
         onAttemptStateChange?.({ key, result_unknown: true, event_id: currentEventID });
       }

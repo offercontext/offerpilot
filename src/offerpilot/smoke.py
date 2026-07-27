@@ -402,6 +402,9 @@ def _run_http_smoke(
                     _run_real_ai_interview_knowledge_capture_smoke(client, steps, application_id)
                     _run_real_ai_write_smoke(client, steps, company, application_id)
                 else:
+                    _run_local_proposal_terminal_smoke(
+                        client, steps, application_id, data_dir, smoke_resume_ids
+                    )
                     _run_deterministic_chat_smoke(client, steps, application_id)
                     _run_chat_card_regression_smoke(client, steps, application_id, step_prefix="http_")
             finally:
@@ -1389,6 +1392,182 @@ def _run_application_event_http_smoke(
         SmokeStep(
             "http_application_event_crud",
             "application event create, update, read, list, and delete endpoints worked",
+        )
+    )
+
+
+def _run_local_proposal_terminal_smoke(
+    client: httpx.Client,
+    steps: list[SmokeStep],
+    application_id: int,
+    data_dir: Path,
+    resume_ids: list[int],
+) -> None:
+    """Exercise the five proposal terminal contracts without an external provider.
+
+    The local profile intentionally uses a chat model that cannot produce proposal
+    JSON.  This keeps the smoke deterministic while proving that each flow has its
+    own safe contract-failure behavior and that knowledge capture can fall back to
+    a direct, user-confirmed preview.
+    """
+    resume_content = {
+        "raw_text": "Built local smoke services.",
+        "skills": ["Python"],
+        "experience": [],
+        "projects": [],
+        "career_intent": {"target_roles": []},
+    }
+    resume_response = client.post(
+        "/api/resumes",
+        json={
+            "title": "Local proposal terminal smoke resume",
+            "text": resume_content["raw_text"],
+            "content_json": resume_content,
+        },
+    )
+    _assert_status(resume_response.status_code, 201, "http_proposal_terminal_resume")
+    resume_id = int(resume_response.json()["id"])
+    resume_ids.append(resume_id)
+
+    session_factory = session_factory_for_data_dir(data_dir)
+    try:
+        with session_factory() as session:
+            session.add(
+                ApplicationMaterialKit(
+                    application_id=application_id,
+                    resume_id=resume_id,
+                    jd_snapshot="Build reliable local smoke services.",
+                    content_json=canonical_json({"summary": "local smoke kit"}),
+                )
+            )
+            session.commit()
+    finally:
+        bind = session_factory.kw.get("bind")
+        if bind is not None:
+            bind.dispose()
+
+    material_response = client.post(
+        f"/api/applications/{application_id}/material-revision-proposals",
+        json={"instructions": "Highlight reliability.", "user_assertions": []},
+    )
+    _assert_status(material_response.status_code, 502, "http_material_contract_failure")
+    if material_response.json().get("error_code") != "material_proposal_unverifiable":
+        raise RuntimeError("material contract failure used the wrong error code")
+    if client.get(f"/api/applications/{application_id}/material-revision-proposals").json():
+        raise RuntimeError("material contract failure wrote a proposal")
+
+    opportunity_response = client.post(
+        f"/api/applications/{application_id}/opportunity-fit-reviews",
+        json={
+            "resume_id": resume_id,
+            "jd_text": "Build reliable local smoke services.",
+            "jd_source_label": "local smoke",
+            "candidate_assertions": [],
+            "idempotency_key": "f3a1bd2e-6f1f-4dd4-bc5f-1a0c9be4f001",
+        },
+    )
+    _assert_status(opportunity_response.status_code, 502, "http_opportunity_contract_failure")
+    if opportunity_response.json().get("error_code") != "opportunity_fit_unverifiable":
+        raise RuntimeError("opportunity contract failure used the wrong error code")
+    if client.get(f"/api/applications/{application_id}/opportunity-fit-reviews").json():
+        raise RuntimeError("opportunity contract failure wrote a review")
+
+    event_response = client.post(
+        "/api/application-events",
+        json={
+            "application_id": application_id,
+            "event_type": "interview",
+            "subtype": "terminal-matrix",
+            "scheduled_at": "2026-07-24T10:00:00Z",
+            "duration_minutes": 30,
+        },
+    )
+    _assert_status(event_response.status_code, 201, "http_proposal_terminal_event")
+    event_id = int(event_response.json()["id"])
+    note_response = client.post(
+        f"/api/applications/{application_id}/notes",
+        json={
+            "company": "Local smoke",
+            "position": "Verification Engineer",
+            "round": "technical",
+            "date": "2026-07-24",
+            "questions": "I explained the rollback plan.",
+            "self_reflection": "I should state the tradeoff earlier.",
+            "difficulty_points": "Structuring the answer was difficult.",
+            "mood": "focused",
+            "application_event_id": event_id,
+        },
+    )
+    _assert_status(note_response.status_code, 201, "http_proposal_terminal_note")
+    note_id = int(note_response.json()["id"])
+
+    review_response = client.post(
+        f"/api/notes/{note_id}/interview-review-proposals",
+        json={"idempotency_key": "local-proposal-matrix-review-01"},
+    )
+    _assert_status(review_response.status_code, 201, "http_interview_review_safe_empty")
+    review_body = review_response.json()
+    if review_body.get("proposal", {}).get("observations") != []:
+        raise RuntimeError("interview review contract failure was not a safe empty result")
+    review_replay = client.post(
+        f"/api/notes/{note_id}/interview-review-proposals",
+        json={"idempotency_key": "local-proposal-matrix-review-01"},
+    )
+    _assert_status(review_replay.status_code, 200, "http_interview_review_safe_empty_replay")
+
+    selected_fragment = {
+        "fragment_id": "local-question",
+        "path": "/questions",
+        "start": 0,
+        "end": len("I explained the rollback plan."),
+        "text": "I explained the rollback plan.",
+    }
+    no_evidence = client.post(
+        f"/api/notes/{note_id}/knowledge-capture/preview",
+        json={"attempt_key": "local-proposal-matrix-empty", "mode": "ai", "selected_fragments": []},
+    )
+    _assert_status(no_evidence.status_code, 422, "http_knowledge_no_evidence")
+    knowledge_response = client.post(
+        f"/api/notes/{note_id}/knowledge-capture/preview",
+        json={
+            "attempt_key": "local-proposal-matrix-knowledge-01",
+            "mode": "ai",
+            "selected_fragments": [selected_fragment],
+        },
+    )
+    _assert_status(knowledge_response.status_code, 200, "http_knowledge_safe_empty")
+    if knowledge_response.json().get("preview_status") != "safe_empty":
+        raise RuntimeError("knowledge contract failure was not a safe empty preview")
+    direct_response = client.post(
+        f"/api/notes/{note_id}/knowledge-capture/preview",
+        json={
+            "attempt_key": "local-proposal-matrix-knowledge-01",
+            "mode": "direct",
+            "selected_fragments": [selected_fragment],
+        },
+    )
+    _assert_status(direct_response.status_code, 200, "http_knowledge_direct_fallback")
+    if direct_response.json().get("preview_status") != "direct_ready":
+        raise RuntimeError("knowledge direct fallback was not available")
+
+    preparation_response = client.post(
+        f"/api/applications/{application_id}/interview-preparation-proposals",
+        json={
+            "event_id": event_id,
+            "resume_id": resume_id,
+            "jd_text": "Build reliable local smoke services.",
+            "knowledge_selections": [],
+            "user_assertions": [],
+            "idempotency_key": "local-proposal-matrix-prep-01",
+        },
+    )
+    _assert_status(preparation_response.status_code, 201, "http_interview_preparation_safe_empty")
+    if preparation_response.json().get("proposal_status") != "safe_empty":
+        raise RuntimeError("interview preparation contract failure was not a safe empty result")
+    steps.append(
+        SmokeStep(
+            "http_proposal_terminal_matrix",
+            "local profile covered contract failures, safe-empty results, no-evidence rejection, replay, and direct knowledge fallback",
         )
     )
 

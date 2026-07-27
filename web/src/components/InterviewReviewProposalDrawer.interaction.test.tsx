@@ -11,12 +11,22 @@ const service = vi.hoisted(() => ({
   list: vi.fn(),
 }));
 
-vi.mock('@/services/interviewReviewProposals', () => ({
+vi.mock('@/services/interviewReviewProposals', () => {
+  class InterviewReviewProposalError extends Error {
+    readonly code?: string;
+
+    constructor(message: string, code?: string) {
+      super(message);
+      this.code = code;
+    }
+  }
+  return {
   createInterviewReviewProposal: service.create,
   getInterviewReviewProposal: service.get,
   listInterviewReviewProposals: service.list,
-  InterviewReviewProposalError: class InterviewReviewProposalError extends Error {},
-}));
+    InterviewReviewProposalError,
+  };
+});
 vi.mock('./InterviewReviewProposalDrawer.module.css', () => ({ default: {} }));
 vi.mock('antd', () => {
   const Typography = {
@@ -188,6 +198,58 @@ describe('InterviewReviewProposalDrawer attempt ownership', () => {
     });
 
     expect(service.create).toHaveBeenNthCalledWith(2, 7, '00000000-0000-0000-0000-000000000002');
+  });
+
+  it('retains the attempt key after a stable provider 502', async () => {
+    service.create.mockRejectedValueOnce(
+      new (await import('@/services/interviewReviewProposals')).InterviewReviewProposalError(
+        'provider detail must not be shown',
+        'interview_review_provider_error',
+      ),
+    );
+
+    act(() => root?.render(<Harness />));
+    const generate = () => {
+      const buttons = [...(container?.querySelectorAll('button') || [])];
+      return buttons[buttons.length - 1] as HTMLButtonElement;
+    };
+
+    await act(async () => {
+      generate().click();
+      await Promise.resolve();
+    });
+
+    expect(service.create).toHaveBeenCalledWith(7, '00000000-0000-0000-0000-000000000001');
+    expect(container?.textContent).not.toContain('provider detail must not be shown');
+
+    act(() => {
+      [...(container?.querySelectorAll('button') || [])]
+        .find((button) => button.textContent === '鍏抽棴')
+        ?.click();
+    });
+    service.create.mockResolvedValueOnce({
+      id: 20,
+      created_at: '2026-07-22T00:00:00Z',
+      source_status: 'current',
+      proposal: {
+        summary: { text: 'safe', evidence_refs: [] },
+        observations: [],
+        clarifications: [],
+        practice_focuses: [],
+        next_questions: [],
+      },
+    });
+    act(() => {
+      [...(container?.querySelectorAll('button') || [])]
+        .find((button) => button.textContent === '閲嶆柊鎵撳紑')
+        ?.click();
+    });
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => {
+      generate().click();
+      await Promise.resolve();
+    });
+    expect(service.create).toHaveBeenNthCalledWith(2, 7, '00000000-0000-0000-0000-000000000001');
   });
 
   it('keeps the key when the parent unmounts during a pending request', async () => {
