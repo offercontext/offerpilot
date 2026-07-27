@@ -50,54 +50,51 @@ describe('AppShell source contract', () => {
   });
 
   it('restores historical Pilot reviews through the frozen review APIs', () => {
+    expect(source).toContain('listOpportunityFitV2Reviews');
+    expect(source).toContain('getOpportunityFitV2Review');
     expect(source).toContain('listOpportunityFitReviews');
     expect(source).toContain('getOpportunityFitReview');
-    expect(source).toContain("['opportunity-fit-reviews'");
-    expect(source).toContain('pilotHistoricalReviewId');
-    expect(source).toContain('setPilotHistoricalReviewId');
-    expect(source).toContain('viewPilotHistoricalReview');
-    expect(source).toContain("type: 'reset_for_new_review'");
+    expect(source).toContain("['opportunity-fit-v2-reviews'");
+    expect(source).toContain('viewPilotV2History');
+    expect(source).toContain('viewPilotLegacyHistory');
+    expect(source).toContain('setPilotLegacyReview');
     expect(source).not.toContain('const latest = summaries[0]');
-    expect(source).toContain('restorePilotHistoricalReview');
-    expect(source).toContain('pilotHistoricalReviewId !== null');
-    expect(source).toContain('pilotHistoryQuery.error');
-    expect(source).toContain('pilotHistoricalReviewQuery.error');
+    expect(source).toContain('legacyHistory={pilotLegacyHistoryQuery.data ?? []}');
+    expect(source).toContain('history={pilotV2HistoryQuery.data ?? []}');
     expect(source).toContain('handlePilotNotFound');
   });
 
   it('clears the Pilot context when the historical list is no longer visible', () => {
-    expect(source).toContain('isOpportunityFitNotFoundError(pilotHistoryQuery.error)');
+    expect(source).toContain('isOpportunityFitNotFoundError(pilotV2HistoryQuery.error)');
+    expect(source).toContain('isOpportunityFitNotFoundError(pilotLegacyHistoryQuery.error)');
     expect(source).toContain('handlePilotNotFound();');
     expect(source).toContain('discardMaterialKitHandoff(current.applicationId);');
     expect(source).toContain('setPilotApplicationContext(null);');
   });
 
   it('clears the Pilot context when a historical detail is no longer visible', () => {
-    expect(source).toContain('isOpportunityFitNotFoundError(pilotHistoricalReviewQuery.error)');
-    expect(source).toContain('setPilotHistoricalReviewId(null);');
+    expect(source).toContain('if (isOpportunityFitNotFoundError(error)) handlePilotNotFound();');
     expect(source).toContain('exitPilotContext({ preserveUnknownAttempt: false });');
   });
 
   it('routes a missing Triage application through the shared Pilot cleanup', () => {
-    const triageStart = source.indexOf('const startPilotTriage =');
-    const triageEnd = source.indexOf('const startPilotDeepReview =', triageStart);
-    expect(source.slice(triageStart, triageEnd)).toContain('onNotFound: handlePilotNotFound');
+    const triageStart = source.indexOf('const startPilotV2Triage =');
+    const triageEnd = source.indexOf('const confirmPilotV2Triage =', triageStart);
+    expect(source.slice(triageStart, triageEnd)).toContain('isOpportunityFitNotFoundError(error)');
   });
 
   it('routes a missing Deep Review application through the shared Pilot cleanup', () => {
-    const deepReviewStart = source.indexOf('const startPilotDeepReview =');
-    const deepReviewEnd = source.indexOf('const preparePilotMaterials =', deepReviewStart);
-    expect(source.slice(deepReviewStart, deepReviewEnd)).toContain('onNotFound: handlePilotNotFound');
+    const deepReviewStart = source.indexOf('const startPilotV2DeepReview =');
+    const deepReviewEnd = source.indexOf('const viewPilotV2History =', deepReviewStart);
+    expect(source.slice(deepReviewStart, deepReviewEnd)).toContain('isOpportunityFitNotFoundError(error)');
   });
 
   it('retains an unknown Pilot attempt when the flow is canceled', () => {
-    expect(source).toContain('shouldRetainOpportunityFitDraft');
-    expect(source).toContain('cancelPilotTriage');
     expect(source).toContain('const exitPilotContext = ({ preserveUnknownAttempt = true }');
     expect(source).toContain('exitPilotContext();');
-    expect(source).toContain('if (shouldRetainOpportunityFitDraft(store.getState())) return;');
-    expect(source).toContain('findRetainedPilotDraftKey');
-    expect(source).toContain('onNotFound: handlePilotNotFound');
+    expect(source).toContain('draft.resultUnknown || requestPending');
+    expect(source).toContain("error: '结果待确认，请使用原尝试重试。'");
+    expect(source).toContain('pilotV2DraftsRef.current.delete(current.applicationId);');
   });
 
   it('renders Pilot as a normal tab with the expanded assistant workspace', () => {

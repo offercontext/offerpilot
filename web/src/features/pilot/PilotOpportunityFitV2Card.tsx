@@ -41,6 +41,8 @@ interface Props {
   onViewLegacyHistory?: (reviewId: number) => void;
   onStartNew: () => void;
   onPrepareMaterials?: (resumeId: number, jdText: string) => void;
+  onOpenInterviewReview?: (applicationId: number) => void;
+  onOpenInterviewPreparation?: (applicationId: number) => void;
   onCancel: () => void;
 }
 
@@ -126,6 +128,8 @@ export default function PilotOpportunityFitV2Card({
   onViewLegacyHistory,
   onStartNew,
   onPrepareMaterials,
+  onOpenInterviewReview,
+  onOpenInterviewPreparation,
   onCancel,
 }: Props) {
   const [confirmation, setConfirmation] = useState<'triage' | 'deep' | null>(null);
@@ -269,6 +273,13 @@ export default function PilotOpportunityFitV2Card({
 
       {!draft.historical && (draft.triage?.stage_status === 'confirmed' || draft.deep?.stage_status === 'ready') ? (
         <button type="button" onClick={onStartNew}>开始新的岗位评估</button>
+      ) : null}
+
+      {onOpenInterviewReview ? (
+        <button type="button" onClick={() => onOpenInterviewReview(draft.applicationId)}>打开面试复盘</button>
+      ) : null}
+      {onOpenInterviewPreparation ? (
+        <button type="button" onClick={() => onOpenInterviewPreparation(draft.applicationId)}>打开面试准备</button>
       ) : null}
 
       <button type="button" onClick={onCancel}>取消流程</button>

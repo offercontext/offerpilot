@@ -77,6 +77,9 @@ vi.mock('@/components/ApplicationDetail', () => ({
 vi.mock('@/features/pilot/PilotOpportunityFitCard', () => ({
   default: (props: any) => <section data-testid="pilot-opportunity-fit-card" data-draft-key={props.draft.pilotDraftKey} data-application-id={props.draft.applicationId} />,
 }));
+vi.mock('@/features/pilot/PilotOpportunityFitV2Card', () => ({
+  default: (props: any) => <section data-testid="pilot-opportunity-fit-v2-card" data-draft-key={props.draft.triageKey ?? 'new'} data-application-id={props.draft.applicationId} />,
+}));
 vi.mock('@/components/ChatPanel', () => ({
   default: (props: any) => (
     <section data-testid={`chat-${props.variant ?? 'drawer'}`}>
@@ -168,7 +171,7 @@ describe('AppShell evidence navigation', () => {
     act(() => view.querySelector<HTMLButtonElement>('[data-testid="open-pilot-opportunity-fit"]')?.click());
     await flush();
 
-    const card = view.querySelector('[data-testid="pilot-opportunity-fit-card"]');
+    const card = view.querySelector('[data-testid="pilot-opportunity-fit-v2-card"]');
     expect(card?.getAttribute('data-application-id')).toBe('7');
     const draftKey = card?.getAttribute('data-draft-key');
     expect(draftKey).toBeTruthy();
@@ -176,7 +179,7 @@ describe('AppShell evidence navigation', () => {
     act(() => view.querySelector<HTMLButtonElement>('[data-testid="nav-board"]')?.click());
     act(() => view.querySelector<HTMLButtonElement>('[data-testid="nav-pilot"]')?.click());
     await flush();
-    expect(view.querySelector('[data-testid="pilot-opportunity-fit-card"]')?.getAttribute('data-draft-key')).toBe(draftKey);
+    expect(view.querySelector('[data-testid="pilot-opportunity-fit-v2-card"]')?.getAttribute('data-draft-key')).toBe(draftKey);
   });
 
   it('invalidates the same-month calendar query after Pilot data changes', async () => {

@@ -540,6 +540,24 @@ function AppShellContent() {
     setView('pilot');
   };
 
+  const openPilotInterviewReview = (applicationId: number) => {
+    const app = apps.find((item) => item.id === applicationId);
+    if (!app) return;
+    exitPilotContext();
+    setPilotInterviewReviewApplicationId(applicationId);
+    setView('board');
+    setSelected(app);
+  };
+
+  const openPilotInterviewPreparation = (applicationId: number) => {
+    const app = apps.find((item) => item.id === applicationId);
+    if (!app) return;
+    exitPilotContext();
+    setPilotInterviewPreparationApplicationId(applicationId);
+    setView('board');
+    setSelected(app);
+  };
+
   const updatePilotV2Draft = (patch: Partial<PilotOpportunityFitV2Draft>) => {
     if (!pilotV2Draft) return;
     const next = { ...pilotV2Draft, ...patch };
@@ -833,6 +851,8 @@ function AppShellContent() {
                   onViewLegacyHistory={(reviewId) => void viewPilotLegacyHistory(reviewId)}
                   onStartNew={startNewPilotV2Review}
                   onPrepareMaterials={(resumeId, jdText) => preparePilotMaterials({ applicationId: pilotApplicationContext.applicationId, resumeId, jdText })}
+                  onOpenInterviewReview={openPilotInterviewReview}
+                  onOpenInterviewPreparation={openPilotInterviewPreparation}
                   onCancel={() => {
                     exitPilotContext();
                     setView('dashboard');
