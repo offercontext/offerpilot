@@ -122,7 +122,7 @@ def config(
     auto_approve: Optional[bool] = typer.Option(
         None,
         "--auto-approve/--no-auto-approve",
-        help="let the AI assistant run write actions without confirmation",
+        help="已弃用：Agent 写操作始终需要逐次人工确认；该参数不会启用自动写入",
     ),
 ) -> None:
     data_dir = resolve_data_dir()

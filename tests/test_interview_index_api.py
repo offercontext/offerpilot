@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from offerpilot.api import create_app
 from offerpilot.db import session_factory_for_data_dir
+from offerpilot.models import InterviewReviewProposal
 from offerpilot.repositories.application_events import ApplicationEventCreate, ApplicationEventsRepository
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
 from offerpilot.repositories.notes import NoteCreate, NotesRepository
@@ -50,8 +51,11 @@ def test_interview_index_lists_visible_events_and_bound_notes(tmp_path) -> None:
             "company_name": "Acme",
             "position_name": "Backend",
             "scheduled_at": "2026-07-28T09:00:00+00:00",
-            "note_id": note.id,
-            "note_source_status": "current",
+        "note_id": note.id,
+        "note_source_status": "current",
+        "has_review_proposal": False,
+        "has_confirmed_knowledge": False,
+        "preparation_available": True,
         }
     ]
 
@@ -71,3 +75,55 @@ def test_interview_index_rejects_invalid_pagination(tmp_path) -> None:
     client, *_ = _ready(tmp_path)
     assert client.get("/api/interviews?limit=0").status_code == 422
     assert client.get("/api/interviews?limit=201").status_code == 422
+
+
+def test_interview_index_puts_unscheduled_events_last_and_uses_recent_tie_breakers(tmp_path) -> None:
+    client, _applications, application, scheduled, _note = _ready(tmp_path)
+    events = ApplicationEventsRepository(session_factory_for_data_dir(tmp_path))
+    unscheduled = events.create(
+        ApplicationEventCreate(
+            application_id=application.id,
+            event_type="interview",
+            scheduled_at=None,
+            duration_minutes=None,
+        )
+    )
+    later = events.create(
+        ApplicationEventCreate(
+            application_id=application.id,
+            event_type="interview",
+            scheduled_at=datetime(2026, 7, 29, 9, tzinfo=timezone.utc),
+            duration_minutes=60,
+        )
+    )
+
+    items = client.get("/api/interviews").json()["items"]
+    assert [item["event_id"] for item in items] == [scheduled.id, later.id, unscheduled.id]
+
+
+def test_interview_index_exposes_preparation_entry(tmp_path) -> None:
+    client, *_ = _ready(tmp_path)
+
+    item = client.get("/api/interviews").json()["items"][0]
+
+    assert item["preparation_available"] is True
+
+
+def test_interview_index_marks_changed_review_source(tmp_path) -> None:
+    client, _applications, _application, event, note = _ready(tmp_path)
+    with session_factory_for_data_dir(tmp_path)() as session:
+        session.add(
+            InterviewReviewProposal(
+                note_id=note.id,
+                application_event_id=event.id,
+                idempotency_key="review-index-source-change",
+                input_snapshot_json="{}",
+                source_fingerprint="old-fingerprint",
+                proposal_json="{}",
+                proposal_hash="proposal-hash",
+            )
+        )
+        session.commit()
+
+    item = client.get("/api/interviews").json()["items"][0]
+    assert item["note_source_status"] == "source_changed"

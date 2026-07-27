@@ -1801,6 +1801,12 @@ def create_app(
                 cached = opportunity_fit_reviews.peek_triage_v2(app_id, **parsed_v2)
             except OpportunityFitReviewNotFound:
                 return error_response(404, "Application or resume not found")
+            except OpportunityFitReviewConfirmationExpired:
+                return error_response(
+                    410,
+                    "Triage confirmation has expired. Please generate a new review.",
+                    code="opportunity_fit_triage_confirmation_expired",
+                )
             except OpportunityFitReviewConflictError as exc:
                 return error_response(409, str(exc), code="opportunity_fit_idempotency_conflict")
             if cached is not None:
@@ -1948,7 +1954,7 @@ def create_app(
         if not isinstance(token, str) or not token:
             return error_response(422, "confirmation_token is required")
         try:
-            stage = opportunity_fit_reviews.confirm_triage_v2(review_id, stage_id, token)
+            stage = opportunity_fit_reviews.confirm_triage_v2(app_id, review_id, stage_id, token)
         except OpportunityFitReviewNotFound:
             return error_response(404, "Opportunity fit review not found")
         except OpportunityFitReviewConfirmationExpired:
@@ -1965,8 +1971,6 @@ def create_app(
             )
         except OpportunityFitReviewConflictError as exc:
             return error_response(409, str(exc), code="opportunity_fit_confirmation_conflict")
-        if stage.application_id != app_id:
-            return error_response(404, "Opportunity fit review not found")
         return JSONResponse(_opportunity_fit_v2_stage_json(None, stage))
 
     @app.post("/api/applications/{app_id}/opportunity-fit-reviews/{review_id}/deep-review", status_code=201)
@@ -1994,7 +1998,12 @@ def create_app(
             except OpportunityFitReviewNotFound:
                 return error_response(404, "Opportunity fit review not found")
             except OpportunityFitReviewConflictError as exc:
-                return error_response(409, str(exc), code="opportunity_fit_source_conflict")
+                code = (
+                    "opportunity_fit_idempotency_conflict"
+                    if "idempotency" in str(exc)
+                    else "opportunity_fit_source_conflict"
+                )
+                return error_response(409, str(exc), code=code)
             except OpportunityFitModelError as exc:
                 append_log_entry(resolved_data_dir, "WARNING", f"opportunity_fit_{exc.failure_category}")
                 if exc.failure_category == "provider_error":
@@ -4266,6 +4275,7 @@ def create_app(
             log_level=str(payload.get("log_level") or current.log_level).upper(),
             onboarding_force_open=current.onboarding_force_open,
             skills=current.skills,
+            confirmation_secret=current.confirmation_secret,
         )
         api_key = payload.get("api_key")
         if api_key:
@@ -6216,6 +6226,7 @@ def _redacted_backup_config(data_dir: Path) -> str:
     payload = load_config(data_dir).model_dump()
     payload["api_key"] = ""
     payload["auth_token"] = ""
+    payload["confirmation_secret"] = ""
     for provider in payload["providers"]:
         provider["api_key"] = ""
     return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
@@ -6873,6 +6884,9 @@ def _interview_index_item_json(item: Any) -> dict[str, Any]:
         "scheduled_at": scheduled_at.isoformat() if hasattr(scheduled_at, "isoformat") else str(scheduled_at),
         "note_id": item.note_id,
         "note_source_status": item.note_source_status,
+        "has_review_proposal": item.has_review_proposal,
+        "has_confirmed_knowledge": item.has_confirmed_knowledge,
+        "preparation_available": item.preparation_available,
     }
 
 

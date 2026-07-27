@@ -104,6 +104,7 @@ export function getOpportunityFitErrorMessage(error: unknown): string {
   if (errorCode === 'opportunity_fit_unverifiable') return OPPORTUNITY_FIT_COPY.errors.unverifiable;
   if (errorCode === 'opportunity_fit_provider_error') return OPPORTUNITY_FIT_COPY.errors.providerUnavailable;
   if (status === 404) return OPPORTUNITY_FIT_COPY.errors.notFound;
+  if (status === 410) return '岗位评估确认已过期，请开始新的评估。';
   if (status === 409) return OPPORTUNITY_FIT_COPY.errors.generalConflict;
   if (status === 422) return OPPORTUNITY_FIT_COPY.errors.invalidRequest;
   if (status === 502) return OPPORTUNITY_FIT_COPY.errors.aiServiceUnavailable;

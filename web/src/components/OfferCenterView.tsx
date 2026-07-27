@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Row, Col, Button, Space, Statistic, Spin, Empty, message } from 'antd';
 import { PlusOutlined, SwapOutlined } from '@ant-design/icons';
@@ -16,10 +16,6 @@ interface Props {
   onAttachToPilot?: (attachment: import('@/types/chat').PilotContextAttachment) => void;
   focusOfferId?: number;
   onEvidenceFocusConsumed?: () => void;
-}
-
-function wan(n: number): string {
-  return (n / 10000).toFixed(1) + '万';
 }
 
 export default function OfferCenterView({
@@ -52,86 +48,37 @@ export default function OfferCenterView({
     onEvidenceFocusConsumed?.();
   }, [focusOfferId, isLoading, isError, isFetching, offers, onEvidenceFocusConsumed]);
 
-  const stats = useMemo(() => {
-    if (offers.length === 0) return { avg: 0, maxSigning: 0 };
-    const avg = offers.reduce((s, o) => s + o.total_cash, 0) / offers.length;
-    const maxSigning = Math.max(...offers.map((o) => o.signing_bonus));
-    return { avg, maxSigning };
-  }, [offers]);
-
   const toggleSelect = (id: number) =>
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
-
   const selectedOffers = offers.filter((o) => selectedIds.includes(o.id));
 
   if (isLoading) {
-    return (
-      <div role="status" style={{ textAlign: 'center', padding: 48 }}>
-        <Spin size="large" />
-        <div>正在加载 Offer</div>
-      </div>
-    );
+    return <div role="status" style={{ textAlign: 'center', padding: 48 }}><Spin size="large" /><div>正在加载 Offer</div></div>;
   }
-
   if (isError) {
-    return (
-      <div role="alert" style={{ textAlign: 'center', padding: 48 }}>
-        <Empty description="加载 Offer 失败">
-          <Button onClick={() => void refetch()}>重试</Button>
-        </Empty>
-      </div>
-    );
+    return <div role="alert" style={{ textAlign: 'center', padding: 48 }}><Empty description="加载 Offer 失败"><Button onClick={() => void refetch()}>重试</Button></Empty></div>;
   }
-
   if (compareOpen) {
-    return (
-      <OfferCompareDrawer
-        open={compareOpen}
-        onClose={() => setCompareOpen(false)}
-        offers={selectedOffers}
-      />
-    );
+    return <OfferCompareDrawer open={compareOpen} onClose={() => setCompareOpen(false)} offers={selectedOffers} />;
   }
 
   return (
     <div>
       <Row justify="space-between" align="middle" style={{ marginBottom: 16 }}>
-        <Col>
-          <Space size="large">
-            <Statistic title="Offer 总数" value={offers.length} />
-            {offers.length >= 2 ? (
-              <>
-                <Statistic title="平均年总包" value={wan(stats.avg)} />
-                <Statistic title="最高签字费" value={wan(stats.maxSigning)} />
-              </>
-            ) : null}
-          </Space>
-        </Col>
+        <Col><Space size="large"><Statistic title="Offer 总数" value={offers.length} /></Space></Col>
         <Col>
           <Space>
-            <Button
-              icon={<SwapOutlined />}
-              disabled={selectedIds.length < 2}
-              onClick={() => setCompareOpen(true)}
-            >
+            <Button icon={<SwapOutlined />} disabled={selectedIds.length < 2} onClick={() => setCompareOpen(true)}>
               对比选中 ({selectedIds.length})
             </Button>
-            <Button
-              type="primary"
-              icon={<PlusOutlined />}
-              onClick={() => {
-                setEditing(null);
-                setAddOpen(true);
-              }}
-            >
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => { setEditing(null); setAddOpen(true); }}>
               录入 Offer
             </Button>
           </Space>
         </Col>
       </Row>
-
       {offers.length === 0 ? (
-        <Empty description="还没有 offer，点击「录入 Offer」开始" />
+        <Empty description="还没有 Offer，点击“录入 Offer”开始" />
       ) : (
         <Row gutter={[16, 16]}>
           {offers.map((offer) => (
@@ -142,22 +89,13 @@ export default function OfferCenterView({
                 onToggleSelect={toggleSelect}
                 onCoach={onCoach}
                 onAttachToPilot={onAttachToPilot}
-                onView={(o) => {
-                  setEditing(o);
-                  setAddOpen(true);
-                }}
+                onView={(o) => { setEditing(o); setAddOpen(true); }}
               />
             </Col>
           ))}
         </Row>
       )}
-
-      <AddOfferForm
-        open={addOpen}
-        onClose={() => setAddOpen(false)}
-        applications={applications}
-        editing={editing}
-      />
+      <AddOfferForm open={addOpen} onClose={() => setAddOpen(false)} applications={applications} editing={editing} />
     </div>
   );
 }

@@ -83,6 +83,17 @@ def init_database(db_path: Path) -> SessionFactory:
             "0013_opportunity_fit_v2",
             "Add neutral two-stage opportunity fit review sessions and stages",
         )
+    _ensure_column(
+        engine,
+        "opportunity_fit_reviews",
+        "proposal_schema_version",
+        "INTEGER NOT NULL DEFAULT 1",
+    )
+    _record_migration(
+        engine,
+        "0014_opportunity_fit_v1_schema_marker",
+        "Mark legacy opportunity fit reviews as schema version 1",
+    )
     # InterviewNote existed before event-bound review notes.  create_all creates
     # the column on a fresh database; existing databases need the nullable column
     # added before the migration-only indexes are created.

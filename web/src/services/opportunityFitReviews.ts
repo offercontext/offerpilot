@@ -61,10 +61,14 @@ export async function createOpportunityFitV2DeepReview(
 export async function listOpportunityFitReviews(
   applicationID: number,
 ): Promise<OpportunityFitReviewSummary[]> {
-  const { data } = await http.get<OpportunityFitReviewSummary[]>(
+  const { data } = await http.get<unknown[]>(
     `/applications/${applicationID}/opportunity-fit-reviews`,
   );
-  return data;
+  return data.filter((item): item is OpportunityFitReviewSummary => {
+    if (typeof item !== 'object' || item === null) return false;
+    const record = item as Record<string, unknown>;
+    return record.schema_version !== 2 && typeof record.id === 'number';
+  });
 }
 
 export async function getOpportunityFitReview(

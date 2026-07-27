@@ -6,6 +6,9 @@ export interface InterviewIndexItem {
   scheduled_at: string;
   note_id: number | null;
   note_source_status: 'current' | 'source_changed' | null;
+  has_review_proposal: boolean;
+  has_confirmed_knowledge: boolean;
+  preparation_available: boolean;
 }
 
 export interface InterviewIndexResponse {

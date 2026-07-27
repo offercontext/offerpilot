@@ -293,14 +293,19 @@ def _validate_v2_stage(
     summary_text = _require_non_empty_string(summary.get("text"), "summary text")
     _require_bounded_string(summary.get("rationale"), "summary rationale")
     summary_refs = _validate_v2_refs(summary.get("evidence_refs"), snapshot)
-    if not summary_refs and summary_text != _V2_SAFE_EMPTY_TEXT:
+    safe_empty = summary_text == _V2_SAFE_EMPTY_TEXT
+    if not summary_refs and not safe_empty:
         raise OpportunityFitModelError("summary needs evidence_refs")
-    if summary_text == _V2_SAFE_EMPTY_TEXT and summary.get("rationale") != _V2_SAFE_EMPTY_RATIONALE:
+    if safe_empty and summary.get("rationale") != _V2_SAFE_EMPTY_RATIONALE:
         raise OpportunityFitModelError("safe empty summary rationale is invalid")
+    if safe_empty and summary_refs:
+        raise OpportunityFitModelError("safe empty summary cannot cite evidence")
 
     ids: set[str] = set()
     for field in ("conditions", "risks", "next_steps"):
         items = _require_v2_items(payload.get(field), field, _V2_MAX_ITEMS[field])
+        if field in {"conditions", "risks"} and not items and not safe_empty:
+            raise OpportunityFitModelError(f"normal v2 output needs non-empty {field}")
         for item in items:
             _require_exact_fields(item, {"id", "text", "rationale", "evidence_refs"}, field)
             item_id = _require_non_empty_string(item.get("id"), f"{field} id")
@@ -314,13 +319,18 @@ def _validate_v2_stage(
                 raise OpportunityFitModelError(f"{field} items need evidence_refs")
 
     questions = _require_v2_items(payload.get("questions"), "questions", _V2_MAX_ITEMS["questions"])
+    if safe_empty and any(payload.get(field) for field in ("conditions", "risks", "questions", "next_steps")):
+        raise OpportunityFitModelError("safe empty output must contain only empty arrays")
     question_ids: set[str] = set()
     for item in questions:
         _require_exact_fields(item, {"question_id", "text", "evidence_refs"}, "question")
         question_id = _require_non_empty_string(item.get("question_id"), "question_id")
         if question_id in question_ids:
             raise OpportunityFitModelError("question_id must be unique")
+        if question_id in ids:
+            raise OpportunityFitModelError("v2 item ids must be globally unique")
         question_ids.add(question_id)
+        ids.add(question_id)
         if question_id in _V2_QUESTION_TEXT:
             if item.get("text") != _V2_QUESTION_TEXT[question_id]:
                 raise OpportunityFitModelError("fixed question text is invalid")
@@ -344,6 +354,8 @@ def _require_v2_items(value: Any, field: str, maximum: int) -> list[dict[str, An
 
 def _require_bounded_string(value: Any, label: str, maximum: int = 1000) -> str:
     result = _require_string(value, label)
+    if not result.strip():
+        raise OpportunityFitModelError(f"{label} must be non-empty")
     if len(result) > maximum:
         raise OpportunityFitModelError(f"{label} exceeds maximum length")
     return result
@@ -454,6 +466,7 @@ def _generate(
                 assistant.content,
                 allow_fenced=False,
                 reject_non_finite=True,
+                reject_duplicate_keys=True,
             )
         except Exception as exc:
             repair_category = "invalid_json"

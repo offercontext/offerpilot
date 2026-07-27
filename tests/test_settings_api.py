@@ -1,4 +1,6 @@
 import json
+from io import BytesIO
+from zipfile import ZipFile
 
 import pytest
 from fastapi.testclient import TestClient
@@ -53,6 +55,29 @@ def test_put_settings_preserves_blank_api_key(tmp_path):
     assert response.json()["auth_enabled"] is True
     assert response.json()["log_level"] == "DEBUG"
     assert load_config(tmp_path).api_key == "sk-secret"
+
+
+def test_put_settings_preserves_confirmation_secret_and_backup_redacts_it(tmp_path):
+    secret = "persistent-confirmation-secret"
+    save_config(tmp_path, Config(confirmation_secret=secret))
+    client = TestClient(create_app(data_dir=tmp_path))
+
+    response = client.put(
+        "/api/settings",
+        json={"active_provider_id": "default", "chat_auto_approve_writes": False},
+    )
+
+    assert response.status_code == 200
+    assert load_config(tmp_path).confirmation_secret == secret
+
+    backup = client.get("/api/settings/backup")
+    assert backup.status_code == 200
+    assert secret not in backup.text
+
+    archive = client.get("/api/backups/export")
+    assert archive.status_code == 200
+    with ZipFile(BytesIO(archive.content)) as bundle:
+        assert secret not in bundle.read("config.json").decode("utf-8")
 
 
 def test_put_settings_preserves_onboarding_reopen_preference(tmp_path):

@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from offerpilot.ai.agent import ChatModel
 from offerpilot.ai.opportunity_fit_reviews import (
+    OpportunityFitModelError,
     build_source_snapshot,
     generate_deep_review,
     generate_deep_review_v2,
@@ -99,6 +100,8 @@ class OpportunityFitReviewsRepository:
                 raise OpportunityFitReviewConflictError("v2 triage stage is missing")
             if stage.source_fingerprint_sha256 != fingerprint:
                 raise OpportunityFitReviewConflictError("opportunity fit idempotency conflict")
+            if _v2_confirmation_expired(stage):
+                raise OpportunityFitReviewConfirmationExpired()
             if _v2_lease_expired(stage):
                 return None
             return existing, stage, _confirmation_token_for_stage(stage, confirmation_secret)
@@ -132,6 +135,8 @@ class OpportunityFitReviewsRepository:
                     raise OpportunityFitReviewConflictError("v2 triage stage is missing")
                 if stage.source_fingerprint_sha256 != fingerprint:
                     raise OpportunityFitReviewConflictError("opportunity fit idempotency conflict")
+                if _v2_confirmation_expired(stage):
+                    raise OpportunityFitReviewConfirmationExpired()
                 if not _v2_lease_expired(stage):
                     return existing, stage, False, _confirmation_token_for_stage(
                         stage, confirmation_secret
@@ -153,6 +158,8 @@ class OpportunityFitReviewsRepository:
                     raise OpportunityFitReviewConflictError("v2 triage stage is missing")
                 if stage.source_fingerprint_sha256 != fingerprint:
                     raise OpportunityFitReviewConflictError("opportunity fit idempotency conflict")
+                if _v2_confirmation_expired(stage):
+                    raise OpportunityFitReviewConfirmationExpired()
                 if not _v2_lease_expired(stage):
                     return existing, stage, False, _confirmation_token_for_stage(
                         stage, confirmation_secret
@@ -214,6 +221,12 @@ class OpportunityFitReviewsRepository:
 
         try:
             triage = generate_triage_v2(model, snapshot)
+        except OpportunityFitModelError as exc:
+            if exc.failure_category == "provider_error":
+                _mark_v2_provider_unknown(self._session_factory, stage.id, provider_token)
+            else:
+                _delete_v2_unconfirmed_stage(self._session_factory, stage.id, provider_token)
+            raise
         except Exception:
             _mark_v2_provider_unknown(self._session_factory, stage.id, provider_token)
             raise
@@ -247,13 +260,19 @@ class OpportunityFitReviewsRepository:
             return root_after, stage, was_created, token
 
     def confirm_triage_v2(
-        self, review_id: int, stage_id: int, confirmation_token: str
+        self, application_id: int, review_id: int, stage_id: int, confirmation_token: str
     ) -> OpportunityFitReviewStage:
         confirmation_secret = self._require_confirmation_secret()
         with self._session_factory() as session:
             session.execute(text("BEGIN IMMEDIATE"))
-            stage = session.get(OpportunityFitReviewStage, stage_id)
-            if stage is None or stage.review_id != review_id or stage.stage != "triage":
+            stage = session.scalar(
+                select(OpportunityFitReviewStage)
+                .where(OpportunityFitReviewStage.id == stage_id)
+                .where(OpportunityFitReviewStage.review_id == review_id)
+                .where(OpportunityFitReviewStage.application_id == application_id)
+                .where(OpportunityFitReviewStage.stage == "triage")
+            )
+            if stage is None:
                 raise OpportunityFitReviewNotFound()
             if stage.status == "confirmed":
                 raise OpportunityFitReviewConfirmationConsumed()
@@ -395,16 +414,27 @@ class OpportunityFitReviewsRepository:
                 session.commit()
             except IntegrityError:
                 session.rollback()
-                existing = _find_v2_stage(session, review_id, "deep_review", idempotency_key)
+                existing = _find_v2_stage_by_application_key(
+                    session, application_id, "deep_review", idempotency_key
+                )
                 if existing is None:
                     raise
-                if existing.source_fingerprint_sha256 != fingerprint:
+                if (
+                    existing.review_id != review_id
+                    or existing.source_fingerprint_sha256 != fingerprint
+                ):
                     raise OpportunityFitReviewConflictError("opportunity fit idempotency conflict")
                 return existing, False
             session.refresh(stage)
 
         try:
             deep = generate_deep_review_v2(model, snapshot, json.loads(parent.proposal_json))
+        except OpportunityFitModelError as exc:
+            if exc.failure_category == "provider_error":
+                _mark_v2_provider_unknown(self._session_factory, stage.id, provider_token)
+            else:
+                _delete_v2_unconfirmed_stage(self._session_factory, stage.id, provider_token)
+            raise
         except Exception:
             _mark_v2_provider_unknown(self._session_factory, stage.id, provider_token)
             raise
@@ -625,10 +655,28 @@ def _find_v2_stage(
     )
 
 
+def _find_v2_stage_by_application_key(
+    session: Session, application_id: int, stage: str, idempotency_key: str
+) -> OpportunityFitReviewStage | None:
+    return session.scalar(
+        select(OpportunityFitReviewStage)
+        .where(OpportunityFitReviewStage.application_id == application_id)
+        .where(OpportunityFitReviewStage.stage == stage)
+        .where(OpportunityFitReviewStage.idempotency_key == idempotency_key)
+    )
+
+
 def _v2_lease_expired(stage: OpportunityFitReviewStage) -> bool:
     if stage.status not in {"generating", "provider_unknown"}:
         return False
     expires_at = _as_utc(stage.lease_expires_at)
+    return expires_at is None or expires_at <= datetime.now(timezone.utc)
+
+
+def _v2_confirmation_expired(stage: OpportunityFitReviewStage) -> bool:
+    if stage.stage != "triage" or stage.status != "ready":
+        return False
+    expires_at = _as_utc(stage.confirmation_expires_at)
     return expires_at is None or expires_at <= datetime.now(timezone.utc)
 
 
@@ -641,6 +689,29 @@ def _mark_v2_provider_unknown(
         if stage is not None and stage.status == "generating" and stage.provider_call_token == provider_token:
             stage.status = "provider_unknown"
             session.commit()
+
+
+def _delete_v2_unconfirmed_stage(
+    session_factory: sessionmaker[Session], stage_id: int, provider_token: str
+) -> None:
+    with session_factory() as session:
+        session.execute(text("BEGIN IMMEDIATE"))
+        stage = session.get(OpportunityFitReviewStage, stage_id)
+        if stage is None or stage.status != "generating" or stage.provider_call_token != provider_token:
+            return
+        review_id = stage.review_id
+        session.delete(stage)
+        session.flush()
+        remaining = session.scalar(
+            select(OpportunityFitReviewStage.id)
+            .where(OpportunityFitReviewStage.review_id == review_id)
+            .limit(1)
+        )
+        if remaining is None:
+            root = session.get(OpportunityFitReviewSession, review_id)
+            if root is not None:
+                session.delete(root)
+        session.commit()
 
 
 def _as_utc(value: datetime | None) -> datetime | None:

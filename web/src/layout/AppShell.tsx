@@ -588,6 +588,16 @@ function AppShellContent() {
       const result = await createOpportunityFitV2Triage(pilotV2Draft.applicationId, { ...input, idempotency_key: key });
       updatePilotV2Draft({ triage: result, triageKey: key, resultUnknown: false, error: null });
     } catch (error) {
+      if (
+        typeof error === 'object'
+        && error !== null
+        && typeof (error as { response?: { data?: { error_code?: unknown } } }).response?.data?.error_code === 'string'
+        && (error as { response: { data: { error_code: string } } }).response.data.error_code
+          === 'opportunity_fit_triage_confirmation_expired'
+      ) {
+        startNewPilotV2Review();
+        return;
+      }
       const disposition = v2FailureDisposition(error);
       updatePilotV2Draft({
         triageKey: disposition === 'unknown' ? key : null,
@@ -609,6 +619,16 @@ function AppShellContent() {
       );
       updatePilotV2Draft({ triage: result, resultUnknown: false, error: null });
     } catch (error) {
+      if (
+        typeof error === 'object'
+        && error !== null
+        && typeof (error as { response?: { data?: { error_code?: unknown } } }).response?.data?.error_code === 'string'
+        && (error as { response: { data: { error_code: string } } }).response.data.error_code
+          === 'opportunity_fit_triage_confirmation_expired'
+      ) {
+        startNewPilotV2Review();
+        return;
+      }
       updatePilotV2Draft({ error: v2ErrorMessage(error) });
     }
   };
@@ -822,7 +842,7 @@ function AppShellContent() {
           )}
           {view === 'knowledge' && <KnowledgeSourcesView />}
           {view === 'questions' && <QuestionBankView />}
-          {view === 'interview' && <InterviewV01View />}
+          {view === 'interview' && <InterviewV01View onOpenApplication={goDetailById} />}
           {view === 'resumes' && (
             <ResumeLibraryView
               onAttachToPilot={attachToPilot}

@@ -9,6 +9,7 @@ from offerpilot.ai.opportunity_fit_reviews import (
     OpportunityFitModelError,
     generate_deep_review,
     generate_triage,
+    generate_triage_v2,
     validate_deep_review_v2,
     validate_deep_review,
     validate_triage_v2,
@@ -207,9 +208,6 @@ def triage_v2_payload() -> dict[str, object]:
 def deep_v2_payload() -> dict[str, object]:
     payload = triage_v2_payload()
     payload["stage"] = "deep_review"
-    payload["conditions"] = []
-    payload["risks"] = []
-    payload["next_steps"] = []
     return payload
 
 
@@ -278,6 +276,31 @@ def test_v2_requires_evidence_for_conditions_and_risks() -> None:
     payload["conditions"][0]["evidence_refs"] = []
     with pytest.raises(OpportunityFitModelError):
         validate_triage_v2(payload, snapshot())
+
+    payload = triage_v2_payload()
+    payload["risks"] = []
+    with pytest.raises(OpportunityFitModelError):
+        validate_triage_v2(payload, snapshot())
+
+
+def test_v2_rejects_whitespace_text_and_rationale() -> None:
+    payload = triage_v2_payload()
+    payload["conditions"][0]["text"] = " \t"
+    with pytest.raises(OpportunityFitModelError):
+        validate_triage_v2(payload, snapshot())
+
+    payload = triage_v2_payload()
+    payload["conditions"][0]["rationale"] = " \t"
+    with pytest.raises(OpportunityFitModelError):
+        validate_triage_v2(payload, snapshot())
+
+
+def test_v2_rejects_duplicate_json_keys() -> None:
+    duplicate = '{"schema_version":2,"schema_version":2}'
+    model = ScriptedModel([duplicate, duplicate])
+    with pytest.raises(OpportunityFitModelError):
+        generate_triage_v2(model, snapshot())
+    assert model.calls == 2
 
 
 def test_v2_deep_rejects_uncited_specific_gap() -> None:

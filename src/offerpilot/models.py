@@ -353,6 +353,9 @@ class OpportunityFitReview(Base):
         ForeignKey("resumes.id", ondelete="SET NULL"), nullable=True
     )
     idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
+    proposal_schema_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
     source_fingerprint_sha256: Mapped[str] = mapped_column(String, nullable=False)
     source_snapshot_json: Mapped[str] = mapped_column(String, nullable=False)
     triage_json: Mapped[str] = mapped_column(String, nullable=False)

@@ -3,12 +3,15 @@ from __future__ import annotations
 import json
 
 from fastapi.testclient import TestClient
+from datetime import datetime, timedelta, timezone
+
 from sqlalchemy import select
 
 from offerpilot.ai.types import Assistant
 from offerpilot.api import create_app
 from offerpilot.db import session_factory_for_data_dir
 from offerpilot.models import OpportunityFitReview
+from offerpilot.models import OpportunityFitReviewStage
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
 
 
@@ -108,7 +111,16 @@ def _v2_payload(stage: str) -> dict[str, object]:
                 ],
             }
         ],
-        "risks": [],
+        "risks": [
+            {
+                "id": "kubernetes-risk",
+                "text": "Kubernetes experience needs confirmation.",
+                "rationale": "The JD prefers Kubernetes while the resume does not cite it.",
+                "evidence_refs": [
+                    {"source": "jd", "path": "/jd_text", "excerpt": "Kubernetes preferred"}
+                ],
+            }
+        ],
         "questions": [
             {
                 "question_id": "opportunity_fit.question.v1.jd_success_criteria",
@@ -340,6 +352,121 @@ def test_api_v2_requires_confirmation_before_deep_and_preserves_v1_contract(tmp_
     deep = client.post(f"{path}/{body['review_id']}/deep-review", json=deep_payload)
     assert deep.status_code == 201
     assert deep.json()["stage"] == "deep_review"
+
+
+def test_v2_confirmation_checks_application_before_consuming_token(tmp_path) -> None:
+    client, application, resume = _ready(tmp_path, V2ReviewModel())
+    other = client.post(
+        "/api/applications",
+        json={"company_name": "Other", "position_name": "Backend"},
+    ).json()
+    path = f"/api/applications/{application['id']}/opportunity-fit-reviews"
+    created_response = client.post(
+        path,
+        json={
+            "schema_version": 2,
+            "resume_id": resume["id"],
+            "jd_text": "Kubernetes preferred",
+            "jd_source_label": "copy",
+            "candidate_assertions": [],
+            "idempotency_key": "3b0d4a20-2d22-4aab-9d3f-2fdb1b8b93f7",
+        },
+    )
+    assert created_response.status_code == 201
+    created = created_response.json()
+
+    wrong = client.post(
+        f"/api/applications/{other['id']}/opportunity-fit-reviews/{created['review_id']}"
+        f"/triage/{created['stage_id']}/confirm",
+        json={"confirmation_token": created["confirmation_token"]},
+    )
+    assert wrong.status_code == 404
+
+    correct = client.post(
+        f"{path}/{created['review_id']}/triage/{created['stage_id']}/confirm",
+        json={"confirmation_token": created["confirmation_token"]},
+    )
+    assert correct.status_code == 200
+    assert correct.json()["stage_status"] == "confirmed"
+
+
+def test_v2_confirmation_token_survives_settings_save_and_app_restart(tmp_path) -> None:
+    client, application, resume = _ready(tmp_path, V2ReviewModel())
+    path = f"/api/applications/{application['id']}/opportunity-fit-reviews"
+    created = client.post(
+        path,
+        json={
+            "schema_version": 2,
+            "resume_id": resume["id"],
+            "jd_text": "Kubernetes preferred",
+            "jd_source_label": "copy",
+            "candidate_assertions": [],
+            "idempotency_key": "c3a1df1f-68be-4d6a-9a58-cc5f3f0b4f4f",
+        },
+    )
+    assert created.status_code == 201
+    body = created.json()
+
+    settings = client.put("/api/settings", json={"log_level": "DEBUG"})
+    assert settings.status_code == 200
+
+    restarted = TestClient(create_app(data_dir=tmp_path, chat_model=V2ReviewModel()))
+    confirmed = restarted.post(
+        f"{path}/{body['review_id']}/triage/{body['stage_id']}/confirm",
+        json={"confirmation_token": body["confirmation_token"]},
+    )
+
+    assert confirmed.status_code == 200
+    assert confirmed.json()["stage_status"] == "confirmed"
+
+
+def test_v2_expired_confirmation_returns_stable_error_and_allows_new_key(tmp_path) -> None:
+    client, application, resume = _ready(tmp_path, V2ReviewModel())
+    path = f"/api/applications/{application['id']}/opportunity-fit-reviews"
+    payload = {
+        "schema_version": 2,
+        "resume_id": resume["id"],
+        "jd_text": "Kubernetes preferred",
+        "jd_source_label": "copy",
+        "candidate_assertions": [],
+        "idempotency_key": "7b8f2df6-03c6-4a2b-a8f9-cf4bca93a9ef",
+    }
+    created = client.post(path, json=payload)
+    assert created.status_code == 201
+    body = created.json()
+    with session_factory_for_data_dir(tmp_path)() as session:
+        stage = session.get(OpportunityFitReviewStage, body["stage_id"])
+        assert stage is not None
+        stage.confirmation_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        session.commit()
+
+    replay = client.post(path, json=payload)
+    assert replay.status_code == 410
+    assert replay.json()["error_code"] == "opportunity_fit_triage_confirmation_expired"
+
+
+def test_api_v2_contract_failure_does_not_leave_history_stage(tmp_path) -> None:
+    class InvalidV2Model:
+        def complete(self, messages, tools):  # type: ignore[no-untyped-def]
+            return Assistant(content='{"schema_version":2,"stage":"triage","extra":true}')
+
+    client, application, resume = _ready(tmp_path, InvalidV2Model())
+    path = f"/api/applications/{application['id']}/opportunity-fit-reviews"
+    response = client.post(
+        path,
+        json={
+            "schema_version": 2,
+            "resume_id": resume["id"],
+            "jd_text": "JD",
+            "jd_source_label": "copy",
+            "candidate_assertions": [],
+            "idempotency_key": "f4fbcae0-98fa-4cba-93d2-f7b7d4ccbbcb",
+        },
+    )
+
+    assert response.status_code == 502
+    assert response.json()["error_code"] == "opportunity_fit_unverifiable"
+    assert client.get(path).json() == []
 
 
 def test_api_hides_soft_deleted_application(tmp_path) -> None:

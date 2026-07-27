@@ -24,6 +24,15 @@ def _write_ai_config(data_dir):
     save_config(data_dir, Config(api_key="sk-test"))
 
 
+def test_config_auto_approve_help_declares_deprecation(monkeypatch, tmp_path):
+    monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
+    result = CliRunner().invoke(app, ["config", "--help"])
+
+    assert result.exit_code == 0
+    assert "已弃用" in result.output
+    assert "without confirmation" not in result.output
+
+
 def test_add_and_list_application(monkeypatch, tmp_path):
     monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path))
     runner = CliRunner()

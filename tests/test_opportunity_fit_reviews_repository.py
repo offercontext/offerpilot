@@ -129,7 +129,16 @@ def _v2_triage() -> dict[str, object]:
                 ],
             }
         ],
-        "risks": [],
+        "risks": [
+            {
+                "id": "kubernetes-risk",
+                "text": "Kubernetes experience needs confirmation.",
+                "rationale": "The JD prefers Kubernetes while the resume does not cite it.",
+                "evidence_refs": [
+                    {"source": "jd", "path": "/jd_text", "excerpt": "Kubernetes preferred"}
+                ],
+            }
+        ],
         "questions": [
             {
                 "question_id": "opportunity_fit.question.v1.jd_success_criteria",
@@ -325,10 +334,10 @@ def test_v2_confirmation_token_is_single_use_and_deep_requires_confirmation(tmp_
             model,
         )
 
-    confirmed = repository.confirm_triage_v2(session.id, triage.id, token)
+    confirmed = repository.confirm_triage_v2(application.id, session.id, triage.id, token)
     assert confirmed.status == "confirmed"
     with pytest.raises(OpportunityFitReviewConflictError):
-        repository.confirm_triage_v2(session.id, triage.id, token)
+        repository.confirm_triage_v2(application.id, session.id, triage.id, token)
 
     deep, deep_created = repository.create_deep_review_v2(
         application.id,
@@ -440,3 +449,54 @@ def test_v2_expired_lease_two_connections_only_one_owner_calls_provider(tmp_path
         assert stages[0].stage_generation == 2
     engine_a.dispose()
     engine_b.dispose()
+
+
+def test_v2_deep_same_key_across_roots_returns_idempotency_conflict(tmp_path) -> None:
+    factory, application, resume = _ready(tmp_path)
+    repository = OpportunityFitReviewsRepository(factory, confirmation_secret="test-secret")
+
+    first_root, first_triage, _created, first_token = repository.create_triage_v2(
+        application.id,
+        resume.id,
+        "Kubernetes preferred",
+        "copy",
+        [],
+        "triage-root-one",
+        V2ReviewModel(),
+    )
+    repository.confirm_triage_v2(application.id, first_root.id, first_triage.id, first_token)
+    repository.create_deep_review_v2(
+        application.id,
+        first_root.id,
+        first_triage.id,
+        resume.id,
+        "Kubernetes preferred",
+        "copy",
+        [],
+        "deep-shared-key",
+        V2ReviewModel(),
+    )
+
+    second_root, second_triage, _created, second_token = repository.create_triage_v2(
+        application.id,
+        resume.id,
+        "Kubernetes preferred",
+        "copy",
+        [],
+        "triage-root-two",
+        V2ReviewModel(),
+    )
+    repository.confirm_triage_v2(application.id, second_root.id, second_triage.id, second_token)
+
+    with pytest.raises(OpportunityFitReviewConflictError, match="idempotency"):
+        repository.create_deep_review_v2(
+            application.id,
+            second_root.id,
+            second_triage.id,
+            resume.id,
+            "Kubernetes preferred",
+            "copy",
+            [],
+            "deep-shared-key",
+            V2ReviewModel(),
+        )
