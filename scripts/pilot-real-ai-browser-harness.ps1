@@ -103,7 +103,9 @@ try {
 
   Write-Host "Isolated browser harness is ready: $baseUrl"
   Write-Host "Synthetic Application ID: $applicationId; Resume ID: $($resumeIds -join ', '); Interview Event ID: $interviewEventId; Interview Note ID: $interviewNoteId"
-  Write-Host 'Open the base URL in the in-app browser. Navigate to the application list/board, open Pilot Browser Smoke · Verification Engineer, click 在 Pilot 中评估, and complete the Triage → Deep Review → 准备材料 flow.'
+  Write-Host 'Interview-preparation acceptance is a separate path: open the top-level 面试 view, locate Pilot Browser Smoke 路 Verification Engineer, and click the row action “准备面试”. Do not substitute the application-detail 材料包 action; the expected destination is the native 面试准备建议 drawer.'
+  Write-Host 'In that drawer, choose the synthetic resume, paste a non-empty JD, confirm the AI disclosure, generate the real preparation proposal, then reopen the same interview and use history to view the frozen result. Assert no Material Kit, Application, Event, Resume, Knowledge, Question, Memory, reminder, or application-status write occurred.'
+  Write-Host 'Open the base URL in the in-app browser. For the Opportunity Fit path, navigate to the application list/board, open Pilot Browser Smoke · Verification Engineer, click 在 Pilot 中评估, and complete the Triage → Deep Review flow.'
   Write-Host 'Then open the interview event, save a review, select original fragments, optionally generate an AI note preview, edit it, and confirm saving to Knowledge. Reopen Knowledge to verify the frozen evidence; do not create practice, Memory, or other follow-up assets.'
   Write-Host 'Verify requests stay on local /api and the configured AI provider, then return here.'
   [void](Read-Host 'Press Enter after browser acceptance')

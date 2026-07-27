@@ -57,6 +57,7 @@ vi.mock('./Sidebar', () => ({
       <button type="button" data-testid="nav-pilot" onClick={() => props.onChange('pilot')}>Pilot</button>
       <button type="button" data-testid="nav-board" onClick={() => props.onChange('board')}>Board</button>
       <button type="button" data-testid="nav-offers" onClick={() => props.onChange('offers')}>Offers</button>
+      <button type="button" data-testid="nav-interview" onClick={() => props.onChange('interview')}>Interview</button>
     </nav>
   ),
 }));
@@ -69,8 +70,24 @@ vi.mock('@/components/ApplicationDetail', () => ({
   default: (props: any) => (
     <section data-testid="application-detail">
       {props.application.id}
+      {props.pilotInterviewPreparationApplicationId ? (
+        <section
+          data-testid="interview-preparation-drawer"
+          data-application-id={props.pilotInterviewPreparationApplicationId}
+          data-event-id={props.pilotInterviewPreparationEventId ?? 'none'}
+        />
+      ) : null}
       <button type="button" data-testid="close-application" onClick={props.onClose}>Close</button>
       <button type="button" data-testid="open-pilot-opportunity-fit" onClick={() => props.onOpenPilotOpportunityFit?.(props.application)}>Evaluate</button>
+    </section>
+  ),
+}));
+vi.mock('@/components/InterviewV01View', () => ({
+  default: (props: any) => (
+    <section data-testid="interview-index">
+      <button type="button" data-testid="open-interview-preparation" onClick={() => props.onOpenPreparation?.(7, 11)}>
+        Prepare interview
+      </button>
     </section>
   ),
 }));
@@ -216,6 +233,20 @@ describe('AppShell evidence navigation', () => {
     await flush();
 
     expect(view.querySelector('[data-testid="offer-focus"]')?.textContent).toBe('none');
+  });
+
+  it('opens the native preparation drawer for the selected interview event from the top-level index', async () => {
+    const view = render(<AppShell />);
+    await flush();
+
+    act(() => view.querySelector<HTMLButtonElement>('[data-testid="nav-interview"]')?.click());
+    await flush();
+    act(() => view.querySelector<HTMLButtonElement>('[data-testid="open-interview-preparation"]')?.click());
+    await flush();
+
+    const drawer = view.querySelector('[data-testid="interview-preparation-drawer"]');
+    expect(drawer?.getAttribute('data-application-id')).toBe('7');
+    expect(drawer?.getAttribute('data-event-id')).toBe('11');
   });
 
   it('clears an errored evidence target when the user leaves its destination', async () => {

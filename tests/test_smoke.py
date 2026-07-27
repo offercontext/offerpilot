@@ -626,6 +626,10 @@ def test_real_ai_browser_harness_isolated_and_uses_base_url():
     assert "http://127.0.0.1:$port" in source
     assert "/api/application-events" in source
     assert "optionally generate an AI note preview" in source
+    assert "top-level 面试" in source
+    assert "准备面试" in source
+    assert "面试准备建议 drawer" in source
+    assert "Do not substitute the application-detail 材料包 action" in source
     assert "$baseUrl/applications/$applicationId" not in source
     assert "_cleanup_real_ai_browser_records" in source
     assert "if ($LASTEXITCODE -ne 0)" in source
