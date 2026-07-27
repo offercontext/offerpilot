@@ -8,9 +8,12 @@ from offerpilot.cli import app
 from offerpilot.db import session_factory_for_data_dir
 from offerpilot.models import (
     Application,
+    ApplicationEvent,
     ApplicationMaterialKit,
     MaterialRevisionProposal,
     OpportunityFitReview,
+    OpportunityFitReviewSession,
+    OpportunityFitReviewStage,
     Resume,
 )
 from offerpilot.repositories.json_contract import canonical_json, sha256_text
@@ -623,6 +626,57 @@ def test_real_ai_browser_domain_baseline_detects_cross_domain_writes(tmp_path):
     session_factory = session_factory_for_data_dir(data_dir)
     with session_factory() as session:
         application = Application(company_name="Browser smoke", position_name="QA")
+        event = ApplicationEvent(application_id=0, event_type="interview", status="todo")
+        resume = Resume(title="Browser smoke resume", content_json='{"skills":["Python"]}')
+        session.add(application)
+        session.flush()
+        event.application_id = application.id
+        session.add_all([event, resume])
+        session.commit()
+        application_id, event_id, resume_id = application.id, event.id, resume.id
+    bind = session_factory.kw.get("bind")
+    if bind is not None:
+        bind.dispose()
+
+    baseline = _capture_real_ai_browser_domain_baseline(data_dir, application_id, [event_id], [resume_id])
+    _assert_real_ai_browser_no_cross_domain_writes(
+        data_dir, application_id, baseline, [event_id], [resume_id]
+    )
+
+    session_factory = session_factory_for_data_dir(data_dir)
+    with session_factory() as session:
+        session.get(ApplicationEvent, event_id).status = "done"
+        session.get(Resume, resume_id).content_json = '{"skills":["Python","SQLite"]}'
+        session.commit()
+    bind = session_factory.kw.get("bind")
+    if bind is not None:
+        bind.dispose()
+
+    with pytest.raises(RuntimeError, match="event_snapshot_hash"):
+        _assert_real_ai_browser_no_cross_domain_writes(
+            data_dir, application_id, baseline, [event_id], [resume_id]
+        )
+
+    session_factory = session_factory_for_data_dir(data_dir)
+    with session_factory() as session:
+        session.get(Application, application_id).status = "offer"
+        session.add(ApplicationMaterialKit(application_id=application_id, jd_snapshot="changed"))
+        session.commit()
+    bind = session_factory.kw.get("bind")
+    if bind is not None:
+        bind.dispose()
+
+    with pytest.raises(RuntimeError, match="application_status"):
+        _assert_real_ai_browser_no_cross_domain_writes(
+            data_dir, application_id, baseline, [event_id], [resume_id]
+        )
+
+
+def test_real_ai_browser_domain_baseline_covers_opportunity_fit_v2(tmp_path):
+    data_dir = tmp_path / "data"
+    session_factory = session_factory_for_data_dir(data_dir)
+    with session_factory() as session:
+        application = Application(company_name="Browser smoke", position_name="QA")
         session.add(application)
         session.commit()
         application_id = application.id
@@ -631,28 +685,32 @@ def test_real_ai_browser_domain_baseline_detects_cross_domain_writes(tmp_path):
         bind.dispose()
 
     baseline = _capture_real_ai_browser_domain_baseline(data_dir, application_id)
-    _assert_real_ai_browser_no_cross_domain_writes(data_dir, application_id, baseline)
-
     session_factory = session_factory_for_data_dir(data_dir)
     with session_factory() as session:
-        session.get(Application, application_id).status = "offer"
+        review_session = OpportunityFitReviewSession(
+            application_id=application_id,
+            triage_idempotency_key="browser-v2-baseline",
+        )
+        session.add(review_session)
+        session.flush()
+        session.add(
+            OpportunityFitReviewStage(
+                review_id=review_session.id,
+                application_id=application_id,
+                stage="triage",
+                idempotency_key="browser-v2-stage-baseline",
+                source_snapshot_json="{}",
+                source_fingerprint_sha256="fingerprint",
+                proposal_json="{}",
+                proposal_sha256="proposal",
+            )
+        )
         session.commit()
     bind = session_factory.kw.get("bind")
     if bind is not None:
         bind.dispose()
 
-    with pytest.raises(RuntimeError, match="application_status"):
-        _assert_real_ai_browser_no_cross_domain_writes(data_dir, application_id, baseline)
-
-    session_factory = session_factory_for_data_dir(data_dir)
-    with session_factory() as session:
-        session.add(ApplicationMaterialKit(application_id=application_id, jd_snapshot="changed"))
-        session.commit()
-    bind = session_factory.kw.get("bind")
-    if bind is not None:
-        bind.dispose()
-
-    with pytest.raises(RuntimeError, match="material_kit_count"):
+    with pytest.raises(RuntimeError, match="opportunity_fit_session_count"):
         _assert_real_ai_browser_no_cross_domain_writes(data_dir, application_id, baseline)
 
 
@@ -673,7 +731,7 @@ def test_real_ai_browser_harness_isolated_and_uses_base_url():
     assert "_capture_real_ai_browser_domain_baseline" in source
     assert "_assert_real_ai_browser_no_cross_domain_writes" in source
     assert "PILOT_BROWSER_HARNESS_BASELINE_JSON" in source
-    assert "cross-domain write assertion" in source
+    assert "interview-preparation boundary assertion" in source
     assert source.index("_assert_real_ai_browser_no_cross_domain_writes") < source.index(
         "_cleanup_real_ai_browser_records"
     )

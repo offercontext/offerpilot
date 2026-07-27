@@ -44,6 +44,8 @@ from offerpilot.models import (
     MaterialRevisionProposal,
     MockSession,
     OpportunityFitReview,
+    OpportunityFitReviewSession,
+    OpportunityFitReviewStage,
     Question,
     Resume,
     Wakeup,
@@ -1165,7 +1167,12 @@ def _cleanup_real_ai_browser_records(
     _cleanup_real_ai_smoke_records(data_dir, application_id, resume_ids)
 
 
-def _capture_real_ai_browser_domain_baseline(data_dir: Path, application_id: int) -> dict[str, Any]:
+def _capture_real_ai_browser_domain_baseline(
+    data_dir: Path,
+    application_id: int,
+    event_ids: list[int] | None = None,
+    resume_ids: list[int] | None = None,
+) -> dict[str, Any]:
     """Capture scoped data that the interview-preparation browser flow must not mutate."""
     session_factory = session_factory_for_data_dir(data_dir)
     try:
@@ -1173,6 +1180,16 @@ def _capture_real_ai_browser_domain_baseline(data_dir: Path, application_id: int
             application = session.get(Application, application_id)
             if application is None:
                 raise RuntimeError(f"browser smoke application {application_id} is missing")
+            selected_event_ids = sorted(event_ids or [])
+            selected_resume_ids = sorted(resume_ids or [])
+            event_snapshots = {
+                str(event_id): _real_ai_browser_event_snapshot(session.get(ApplicationEvent, event_id))
+                for event_id in selected_event_ids
+            }
+            resume_snapshots = {
+                str(resume_id): _real_ai_browser_resume_snapshot(session.get(Resume, resume_id))
+                for resume_id in selected_resume_ids
+            }
             return {
                 "application_status": application.status,
                 "application_closed_reason": application.closed_reason,
@@ -1194,6 +1211,16 @@ def _capture_real_ai_browser_domain_baseline(data_dir: Path, application_id: int
                     .select_from(OpportunityFitReview)
                     .where(OpportunityFitReview.application_id == application_id)
                 ),
+                "opportunity_fit_session_count": session.scalar(
+                    select(func.count())
+                    .select_from(OpportunityFitReviewSession)
+                    .where(OpportunityFitReviewSession.application_id == application_id)
+                ),
+                "opportunity_fit_stage_count": session.scalar(
+                    select(func.count())
+                    .select_from(OpportunityFitReviewStage)
+                    .where(OpportunityFitReviewStage.application_id == application_id)
+                ),
                 "question_count": session.scalar(
                     select(func.count()).select_from(Question).where(Question.application_id == application_id)
                 ),
@@ -1209,6 +1236,16 @@ def _capture_real_ai_browser_domain_baseline(data_dir: Path, application_id: int
                 "knowledge_capture_attempt_count": session.scalar(
                     select(func.count()).select_from(InterviewKnowledgeCaptureAttempt)
                 ),
+                "interview_event_count": session.scalar(
+                    select(func.count())
+                    .select_from(ApplicationEvent)
+                    .where(ApplicationEvent.application_id == application_id)
+                ),
+                "event_snapshot_hash": sha256_text(canonical_json(event_snapshots)),
+                "resume_count": session.scalar(
+                    select(func.count()).select_from(Resume).where(Resume.deleted_at.is_(None))
+                ),
+                "resume_snapshot_hash": sha256_text(canonical_json(resume_snapshots)),
                 # Memory has no persistent model/table in the current product schema.
                 "memory_count": 0,
             }
@@ -1222,8 +1259,10 @@ def _assert_real_ai_browser_no_cross_domain_writes(
     data_dir: Path,
     application_id: int,
     baseline: dict[str, Any],
+    event_ids: list[int] | None = None,
+    resume_ids: list[int] | None = None,
 ) -> None:
-    current = _capture_real_ai_browser_domain_baseline(data_dir, application_id)
+    current = _capture_real_ai_browser_domain_baseline(data_dir, application_id, event_ids, resume_ids)
     differences = {
         key: {"before": baseline.get(key), "after": value}
         for key, value in current.items()
@@ -1234,6 +1273,41 @@ def _assert_real_ai_browser_no_cross_domain_writes(
             "real-ai browser flow created cross-domain writes: "
             + json.dumps(differences, ensure_ascii=False, sort_keys=True)
         )
+
+
+def _real_ai_browser_event_snapshot(event: ApplicationEvent | None) -> dict[str, Any] | None:
+    if event is None:
+        return None
+    return {
+        "id": event.id,
+        "application_id": event.application_id,
+        "event_type": event.event_type,
+        "subtype": event.subtype,
+        "tags": event.tags,
+        "round": event.round,
+        "scheduled_at": event.scheduled_at.isoformat() if event.scheduled_at else None,
+        "duration_minutes": event.duration_minutes,
+        "location": event.location,
+        "notes": event.notes,
+        "status": event.status,
+    }
+
+
+def _real_ai_browser_resume_snapshot(resume: Resume | None) -> dict[str, Any] | None:
+    if resume is None:
+        return None
+    return {
+        "id": resume.id,
+        "name": resume.name,
+        "title": resume.title,
+        "parsed_data": resume.parsed_data,
+        "parse_status": resume.parse_status,
+        "parent_resume_id": resume.parent_resume_id,
+        "source": resume.source,
+        "content_json": resume.content_json,
+        "is_master": resume.is_master,
+        "deleted_at": resume.deleted_at.isoformat() if resume.deleted_at else None,
+    }
 
 
 def _assert_real_ai_smoke_data_clean(data_dir: Path) -> None:
