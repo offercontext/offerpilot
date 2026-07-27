@@ -72,7 +72,7 @@ try {
         if ($group.Value.Count -eq 0) {
             continue
         }
-        $groupCollection = Invoke-CheckedPytest @('--collect-only', '-q', '--disable-warnings') $group.Key
+        $groupCollection = Invoke-CheckedPytest -Arguments (@('--collect-only', '-q', '--disable-warnings') + @($group.Value)) -Label "$($group.Key) collect"
         $nodes = @(Get-NodeIds $groupCollection | Sort-Object -Unique)
         $nodes | ForEach-Object { $groupNodeIds.Add($_) }
         $runArguments = @('-q', '--disable-warnings') + @($group.Value)
