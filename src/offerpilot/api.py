@@ -126,6 +126,11 @@ from offerpilot.repositories.interview_knowledge_capture import (
     InterviewKnowledgeValidationError,
 )
 from offerpilot.repositories.interview_index import InterviewIndexRepository
+from offerpilot.repositories.mock_interviews import (
+    MockInterviewIdempotencyConflict,
+    MockInterviewRepository,
+    MockInterviewTurnIdempotencyConflict,
+)
 from offerpilot.repositories.notes import (
     UNSET,
     NoteBindingError,
@@ -676,6 +681,7 @@ def create_app(
     interview_preparation_proposals = InterviewPreparationProposalsRepository(session_factory)
     interview_knowledge_capture = InterviewKnowledgeCaptureRepository(session_factory)
     interview_index = InterviewIndexRepository(session_factory)
+    mock_interviews = MockInterviewRepository(session_factory)
     wakeups = WakeupsRepository(session_factory)
     knowledge_repository = KnowledgeRepository(session_factory)
     knowledge_config = app_config
@@ -4042,6 +4048,55 @@ def create_app(
     @app.api_route("/api/mock/sessions/{session_id}/end", methods=["POST"])
     def legacy_mock_route_removed(session_id: int | None = None) -> JSONResponse:
         return error_response(404, "legacy mock interview is no longer available")
+
+    @app.post(
+        "/api/applications/{application_id}/events/{event_id}/mock-interview/attempts"
+    )
+    def start_mock_interview_attempt(
+        application_id: int,
+        event_id: int,
+        payload: dict[str, Any] = Body(...),
+    ) -> JSONResponse:
+        try:
+            resume_id = int(payload["resume_id"])
+            jd_text = payload["jd_text"]
+            attempt_key = str(payload["attempt_idempotency_key"])
+            question_key = str(payload["initial_question_idempotency_key"])
+            if not isinstance(jd_text, str):
+                raise ValueError("jd_text must be a string")
+            result = mock_interviews.create_or_replay_start(
+                application_id,
+                event_id,
+                resume_id,
+                jd_text,
+                int(payload["preparation_proposal_id"])
+                if payload.get("preparation_proposal_id") is not None
+                else None,
+                attempt_key,
+                question_key,
+            )
+        except KeyError as exc:
+            return error_response(422, f"missing field: {exc.args[0]}")
+        except MockInterviewIdempotencyConflict:
+            return error_response(409, "mock_interview_idempotency_conflict")
+        except MockInterviewTurnIdempotencyConflict:
+            return error_response(409, "mock_interview_turn_idempotency_conflict")
+        except LookupError:
+            return error_response(404, "mock_interview_application_not_found")
+        except ValueError as exc:
+            return error_response(422, str(exc))
+
+        response = {
+            "attempt_id": result.attempt.id,
+            "attempt_status": result.attempt.attempt_status,
+            "generation_revision": result.attempt.generation_revision,
+            "turn": {
+                "turn_no": result.turn.turn_no,
+                "question": result.turn.question_text,
+                "answer": result.turn.answer_text,
+            },
+        }
+        return JSONResponse(response, status_code=201 if result.created else 200)
 
     @app.get("/api/logs")
     def get_logs(
