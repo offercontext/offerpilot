@@ -25,6 +25,61 @@ SAFE_EMPTY_FEEDBACK = {
 
 _FIELDS = set(SAFE_EMPTY_FEEDBACK)
 _ITEM_FIELDS = {"id", "text", "evidence_refs"}
+_FEEDBACK_ITEM_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["id", "text", "evidence_refs"],
+    "properties": {
+        "id": {"type": "string", "minLength": 1, "maxLength": 120},
+        "text": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "evidence_refs": {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["source", "path", "excerpt"],
+                "properties": {
+                    "source": {"type": "string", "minLength": 1},
+                    "path": {"type": "string", "minLength": 1},
+                    "excerpt": {"type": "string", "minLength": 1},
+                },
+            },
+        },
+    },
+}
+MOCK_INTERVIEW_FEEDBACK_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "schema_version",
+        "proposal_status",
+        "strengths",
+        "practice_points",
+        "follow_up_questions",
+        "next_practice_steps",
+    ],
+    "properties": {
+        "schema_version": {"const": "mock-interview-feedback-v1"},
+        "proposal_status": {"enum": ["normal", "safe_empty"]},
+        "strengths": {"type": "array", "maxItems": 8, "items": _FEEDBACK_ITEM_SCHEMA},
+        "practice_points": {"type": "array", "maxItems": 8, "items": _FEEDBACK_ITEM_SCHEMA},
+        "follow_up_questions": {"type": "array", "maxItems": 8, "items": _FEEDBACK_ITEM_SCHEMA},
+        "next_practice_steps": {"type": "array", "maxItems": 8, "items": _FEEDBACK_ITEM_SCHEMA},
+    },
+    "oneOf": [
+        {
+            "properties": {
+                "proposal_status": {"const": "safe_empty"},
+                "strengths": {"maxItems": 0},
+                "practice_points": {"maxItems": 0},
+                "follow_up_questions": {"maxItems": 0},
+                "next_practice_steps": {"maxItems": 0},
+            },
+        },
+        {"properties": {"proposal_status": {"const": "normal"}}},
+    ],
+}
 _FIXED_QUESTIONS = {
     "clarify_answer": "您希望进一步澄清哪一部分？",
     "add_example": "您希望补充一个具体例子吗？",
@@ -408,19 +463,29 @@ def generate_question(
 
 
 def _complete_feedback(model: Any, prompt: str) -> Assistant:
+    schema_text = json.dumps(MOCK_INTERVIEW_FEEDBACK_SCHEMA, ensure_ascii=False, separators=(",", ":"))
     messages = [
         Message(
             role="system",
             content=(
                 "你是文本模拟面试练习助手。只返回符合 mock-interview-feedback-v1 的原始 JSON。"
+                "顶层必须严格包含 schema_version、proposal_status、strengths、practice_points、"
+                "follow_up_questions、next_practice_steps，且不得有额外字段。"
+                "normal 的每项必须包含 id、text、evidence_refs；每个 evidence_refs 项必须严格包含 "
+                "source、path、excerpt 三个字符串字段。safe_empty 必须是四个空数组的固定结构。"
                 "不得评分、预测录用或编造证据。没有可靠建议时返回安全空结构。"
+                "完整 JSON Schema 如下：" + schema_text
             ),
         ),
         Message(role="user", content=prompt),
     ]
     schema = {
         "type": "json_schema",
-        "json_schema": {"name": "mock_interview_feedback", "strict": True, "schema": {"type": "object"}},
+        "json_schema": {
+            "name": "mock_interview_feedback",
+            "strict": True,
+            "schema": MOCK_INTERVIEW_FEEDBACK_SCHEMA,
+        },
     }
     if getattr(model, "supports_json_schema", False):
         return cast(Assistant, model.complete(messages, [], response_format=schema))

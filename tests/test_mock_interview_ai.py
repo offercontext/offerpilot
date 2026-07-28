@@ -3,6 +3,7 @@ import json
 import pytest
 
 from offerpilot.ai.mock_interview import (
+    MOCK_INTERVIEW_FEEDBACK_SCHEMA,
     SAFE_EMPTY_FEEDBACK,
     MockInterviewContractError,
     MockInterviewUnverifiableError,
@@ -37,6 +38,20 @@ class _QuestionRepairModel:
     def complete(self, messages, tools, **kwargs):
         self.calls += 1
         self.messages.append(messages)
+        return Assistant(content=next(self.outputs))
+
+
+class _SchemaCaptureModel:
+    supports_json_schema = True
+
+    def __init__(self, outputs):
+        self.outputs = iter(outputs)
+        self.calls = 0
+        self.response_formats = []
+
+    def complete(self, messages, tools, **kwargs):
+        self.calls += 1
+        self.response_formats.append(kwargs.get("response_format"))
         return Assistant(content=next(self.outputs))
 
 
@@ -109,6 +124,51 @@ def test_feedback_structural_evidence_error_is_repaired_once():
 
     assert proposal == _feedback()
     assert diagnostic["repair_count"] == 1
+    assert model.calls == 2
+
+
+def test_feedback_text_prompt_declares_complete_contract():
+    model = _QuestionRepairModel([json.dumps(_feedback(), ensure_ascii=False)])
+
+    generate_feedback(model, _snapshot(), _turns())
+
+    prompt = model.messages[0][0].content
+    for field in ("schema_version", "proposal_status", "strengths", "practice_points", "follow_up_questions", "next_practice_steps"):
+        assert field in prompt
+    assert "evidence_refs" in prompt
+    assert "source" in prompt
+    assert "safe_empty" in prompt
+    assert "normal" in prompt
+
+
+def test_feedback_native_schema_declares_complete_contract():
+    model = _SchemaCaptureModel([json.dumps(_feedback(), ensure_ascii=False)])
+
+    generate_feedback(model, _snapshot(), _turns())
+
+    response_format = model.response_formats[0]
+    assert response_format["json_schema"]["schema"] == MOCK_INTERVIEW_FEEDBACK_SCHEMA
+    schema = response_format["json_schema"]["schema"]
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == {
+        "schema_version", "proposal_status", "strengths", "practice_points",
+        "follow_up_questions", "next_practice_steps",
+    }
+    item_schema = schema["properties"]["strengths"]["items"]
+    assert item_schema["additionalProperties"] is False
+    assert set(item_schema["required"]) == {"id", "text", "evidence_refs"}
+    ref_schema = item_schema["properties"]["evidence_refs"]["items"]
+    assert set(ref_schema["required"]) == {"source", "path", "excerpt"}
+
+
+def test_feedback_repeated_structural_failure_is_terminal():
+    invalid = json.dumps({**_feedback(), "extra": "raw model output"}, ensure_ascii=False)
+    model = _QuestionRepairModel([invalid, invalid])
+
+    with pytest.raises(MockInterviewUnverifiableError) as error:
+        generate_feedback(model, _snapshot(), _turns())
+
+    assert error.value.category == "unexpected_field"
     assert model.calls == 2
 
 
