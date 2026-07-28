@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from offerpilot.models import (
     Application,
     ApplicationEvent,
+    MockInterviewFeedbackProposal,
     MockInterviewAttempt,
     MockInterviewTurn,
     Resume,
@@ -221,6 +222,82 @@ class MockInterviewRepository:
             session.commit()
             session.refresh(attempt)
             return attempt
+
+    def feedback_context(
+        self, attempt_id: int, application_id: int, event_id: int
+    ) -> tuple[MockInterviewAttempt, list[MockInterviewTurn]]:
+        with self._session_factory() as session:
+            attempt = session.get(MockInterviewAttempt, attempt_id)
+            if (
+                attempt is None
+                or attempt.application_id != application_id
+                or attempt.event_id != event_id
+            ):
+                raise LookupError("mock interview attempt not found")
+            application = session.get(Application, application_id)
+            event = session.get(ApplicationEvent, event_id)
+            if application is None or application.deleted_at is not None:
+                raise LookupError("application not found")
+            if (
+                event is None
+                or event.application_id != application_id
+                or event.event_type != "interview"
+                or event.scheduled_at is None
+            ):
+                raise LookupError("event not found")
+            turns = session.scalars(
+                select(MockInterviewTurn)
+                .where(MockInterviewTurn.attempt_id == attempt_id)
+                .order_by(MockInterviewTurn.turn_no.asc())
+            ).all()
+            session.expunge(attempt)
+            for turn in turns:
+                session.expunge(turn)
+            return attempt, turns
+
+    def create_or_replay_feedback(
+        self,
+        attempt_id: int,
+        feedback_idempotency_key: str,
+        proposal: dict[str, Any],
+        proposal_status: str,
+        failure_category: str = "",
+    ) -> tuple[MockInterviewFeedbackProposal, bool]:
+        if not feedback_idempotency_key:
+            raise ValueError("feedback_idempotency_key is required")
+        with self._session_factory() as session:
+            self._begin_immediate(session)
+            attempt = session.get(MockInterviewAttempt, attempt_id)
+            if attempt is None:
+                raise LookupError("mock interview attempt not found")
+            existing = session.scalar(
+                select(MockInterviewFeedbackProposal).where(
+                    MockInterviewFeedbackProposal.attempt_id == attempt_id,
+                    MockInterviewFeedbackProposal.idempotency_key == feedback_idempotency_key,
+                )
+            )
+            if existing is not None:
+                session.expunge(existing)
+                return existing, False
+            proposal_json = canonical_json(proposal)
+            record = MockInterviewFeedbackProposal(
+                attempt_id=attempt_id,
+                idempotency_key=feedback_idempotency_key,
+                input_snapshot_json=attempt.input_snapshot_json,
+                source_fingerprint=attempt.source_fingerprint,
+                transcript_fingerprint=attempt.transcript_fingerprint,
+                proposal_json=proposal_json,
+                proposal_hash=sha256_text(proposal_json),
+                proposal_status=proposal_status,
+                failure_category=failure_category,
+            )
+            session.add(record)
+            attempt.attempt_status = "feedback_ready"
+            attempt.completed_at = datetime.now(timezone.utc)
+            session.commit()
+            session.refresh(record)
+            session.expunge(record)
+            return record, True
 
     @staticmethod
     def _begin_immediate(session: Session) -> None:

@@ -75,3 +75,31 @@ def test_start_rejects_cross_application_event(tmp_path):
     )
 
     assert response.status_code == 422
+
+
+def test_submit_answer_and_finish_persist_safe_empty_feedback(tmp_path):
+    client, app_id, event_id, resume_id = _client(tmp_path)
+    base = f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts"
+    started = client.post(
+        base,
+        json={
+            "resume_id": resume_id,
+            "jd_text": "需要 Python",
+            "attempt_idempotency_key": "attempt-1",
+            "initial_question_idempotency_key": "question-1",
+        },
+    ).json()
+    attempt_id = started["attempt_id"]
+
+    answered = client.post(
+        f"{base}/{attempt_id}/turns",
+        json={"turn_no": 1, "answer_text": "我做过 Python 服务", "turn_idempotency_key": "answer-1"},
+    )
+    finished = client.post(
+        f"{base}/{attempt_id}/finish",
+        json={"feedback_idempotency_key": "feedback-1"},
+    )
+
+    assert answered.status_code == 200
+    assert finished.status_code == 201
+    assert finished.json()["proposal"]["proposal_status"] == "safe_empty"

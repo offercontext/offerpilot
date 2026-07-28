@@ -36,6 +36,7 @@ from offerpilot.ai.interview_knowledge_capture import (
     InterviewKnowledgeProviderError,
     generate_interview_knowledge_preview,
 )
+from offerpilot.ai.mock_interview import MockInterviewProviderError, generate_feedback
 from offerpilot.ai.opportunity_fit_reviews import OpportunityFitModelError, validate_triage
 from offerpilot.ai.client import ConfiguredAIClient
 from offerpilot.ai.tools import editable_fields_for_tool, offerpilot_tool_registry
@@ -130,6 +131,11 @@ from offerpilot.repositories.mock_interviews import (
     MockInterviewIdempotencyConflict,
     MockInterviewRepository,
     MockInterviewTurnIdempotencyConflict,
+)
+from offerpilot.repositories.mock_interview_review_drafts import (
+    MockInterviewReviewDraftAlreadyConfirmed,
+    MockInterviewReviewDraftRepository,
+    MockInterviewReviewDraftValidationError,
 )
 from offerpilot.repositories.notes import (
     UNSET,
@@ -682,6 +688,7 @@ def create_app(
     interview_knowledge_capture = InterviewKnowledgeCaptureRepository(session_factory)
     interview_index = InterviewIndexRepository(session_factory)
     mock_interviews = MockInterviewRepository(session_factory)
+    mock_interview_review_drafts = MockInterviewReviewDraftRepository(session_factory)
     wakeups = WakeupsRepository(session_factory)
     knowledge_repository = KnowledgeRepository(session_factory)
     knowledge_config = app_config
@@ -4097,6 +4104,135 @@ def create_app(
             },
         }
         return JSONResponse(response, status_code=201 if result.created else 200)
+
+    @app.post(
+        "/api/applications/{application_id}/events/{event_id}/mock-interview/attempts/{attempt_id}/turns"
+    )
+    def answer_mock_interview_turn(
+        application_id: int,
+        event_id: int,
+        attempt_id: int,
+        payload: dict[str, Any] = Body(...),
+    ) -> JSONResponse:
+        try:
+            turn_no = int(payload["turn_no"])
+            answer_text = payload["answer_text"]
+            turn_key = str(payload["turn_idempotency_key"])
+            if not isinstance(answer_text, str):
+                raise ValueError("answer_text must be a string")
+            mock_interviews.feedback_context(attempt_id, application_id, event_id)
+            attempt = mock_interviews.submit_answer(attempt_id, turn_no, answer_text, turn_key)
+        except KeyError as exc:
+            return error_response(422, f"missing field: {exc.args[0]}")
+        except MockInterviewTurnIdempotencyConflict:
+            return error_response(409, "mock_interview_turn_idempotency_conflict")
+        except LookupError:
+            return error_response(404, "mock_interview_attempt_not_found")
+        except ValueError as exc:
+            return error_response(422, str(exc))
+        return JSONResponse(
+            {
+                "attempt_id": attempt.id,
+                "attempt_status": attempt.attempt_status,
+                "transcript_fingerprint": attempt.transcript_fingerprint,
+            }
+        )
+
+    @app.post(
+        "/api/applications/{application_id}/events/{event_id}/mock-interview/attempts/{attempt_id}/finish"
+    )
+    def finish_mock_interview(
+        application_id: int,
+        event_id: int,
+        attempt_id: int,
+        payload: dict[str, Any] = Body(...),
+    ) -> JSONResponse:
+        try:
+            feedback_key = str(payload["feedback_idempotency_key"])
+            attempt, turns = mock_interviews.feedback_context(
+                attempt_id, application_id, event_id
+            )
+        except KeyError as exc:
+            return error_response(422, f"missing field: {exc.args[0]}")
+        except LookupError:
+            return error_response(404, "mock_interview_attempt_not_found")
+        try:
+            snapshot = json.loads(attempt.input_snapshot_json)
+            turn_payload = [
+                {
+                    "turn_no": turn.turn_no,
+                    "question": turn.question_text,
+                    "answer": turn.answer_text,
+                }
+                for turn in turns
+            ]
+            model = _chat_model(chat_model, resolved_data_dir)
+            if isinstance(model, JSONResponse):
+                model = None
+            proposal, diagnostic = generate_feedback(model, snapshot, turn_payload)
+        except MockInterviewProviderError:
+            return error_response(502, "AI 服务暂不可用，请稍后重试。", "mock_interview_provider_error")
+        record, created = mock_interviews.create_or_replay_feedback(
+            attempt_id,
+            feedback_key,
+            proposal,
+            proposal["proposal_status"],
+            str(diagnostic.get("failure_category", "")),
+        )
+        return JSONResponse(
+            {
+                "proposal_id": record.id,
+                "proposal_status": record.proposal_status,
+                "proposal_hash": record.proposal_hash,
+                "proposal": json.loads(record.proposal_json),
+            },
+            status_code=201 if created else 200,
+        )
+
+    @app.post(
+        "/api/applications/{application_id}/events/{event_id}/mock-interview/attempts/{attempt_id}/review-drafts"
+    )
+    def confirm_mock_interview_review_draft(
+        application_id: int,
+        event_id: int,
+        attempt_id: int,
+        payload: dict[str, Any] = Body(...),
+    ) -> JSONResponse:
+        try:
+            proposal_id = int(payload["proposal_id"])
+            confirmation_key = str(payload["confirmation_idempotency_key"])
+            selected_blocks = payload["selected_blocks"]
+            if not isinstance(selected_blocks, list):
+                raise ValueError("selected_blocks must be an array")
+            attempt, _ = mock_interviews.feedback_context(attempt_id, application_id, event_id)
+            if attempt.id != attempt_id:
+                raise LookupError("mock interview attempt not found")
+            draft, created = mock_interview_review_drafts.confirm_review_draft(
+                proposal_id, confirmation_key, selected_blocks
+            )
+        except KeyError as exc:
+            return error_response(422, f"missing field: {exc.args[0]}")
+        except MockInterviewReviewDraftAlreadyConfirmed:
+            return error_response(
+                409,
+                "mock_interview_review_draft_already_confirmed",
+                "mock_interview_review_draft_already_confirmed",
+            )
+        except (MockInterviewReviewDraftValidationError, ValueError) as exc:
+            return error_response(422, str(exc))
+        except LookupError:
+            return error_response(404, "mock_interview_attempt_not_found")
+        return JSONResponse(
+            {
+                "draft_id": draft.id,
+                "status": draft.status,
+                "application_id": draft.application_id,
+                "event_id": draft.event_id,
+                "content_hash": draft.content_hash,
+                "selected_blocks": json.loads(draft.selected_blocks_json),
+            },
+            status_code=201 if created else 200,
+        )
 
     @app.get("/api/logs")
     def get_logs(
