@@ -256,6 +256,104 @@ def test_expired_question_lease_has_one_cas_takeover(tmp_path):
     assert second is None
 
 
+def test_question_claim_freezes_transcript_under_write_lock(tmp_path):
+    factory = init_database(tmp_path / "data.db")
+    app_id, event_id, _, resume_id, _ = _seed(factory)
+    repo = MockInterviewRepository(factory)
+    attempt = _start_ready(
+        repo, app_id, event_id, resume_id, "JD text", None, "attempt-1", "question-1"
+    ).attempt
+    repo.submit_answer(attempt.id, 1, "first answer", "answer-1")
+
+    claim = repo.claim_question(attempt.id, 2, "question-2")
+
+    assert claim is not None
+    assert list(claim.turns) == [{
+        "turn_no": 1,
+        "question": "Question grounded in the JD.",
+        "answer": "first answer",
+    }]
+
+
+def test_stale_question_completion_returns_conflict_not_attempt(tmp_path):
+    factory = init_database(tmp_path / "data.db")
+    app_id, event_id, _, resume_id, _ = _seed(factory)
+    repo = MockInterviewRepository(factory)
+    attempt = _start_ready(
+        repo, app_id, event_id, resume_id, "JD text", None, "attempt-1", "question-1"
+    ).attempt
+    repo.submit_answer(attempt.id, 1, "first answer", "answer-1")
+    claim = repo.claim_question(attempt.id, 2, "question-2")
+    assert claim is not None
+
+    with factory() as session:
+        stored = session.get(MockInterviewAttempt, attempt.id)
+        assert stored is not None
+        stored.generation_revision += 1
+        session.commit()
+
+    assert repo.complete_question(
+        attempt.id,
+        2,
+        claim.revision,
+        claim.provider_call_token,
+        claim.transcript_fingerprint,
+        "stale question",
+    ) is None
+
+
+def test_expired_second_question_lease_can_be_claimed_once(tmp_path):
+    factory = init_database(tmp_path / "data.db")
+    app_id, event_id, _, resume_id, _ = _seed(factory)
+    repo = MockInterviewRepository(factory)
+    attempt = _start_ready(
+        repo, app_id, event_id, resume_id, "JD text", None, "attempt-1", "question-1"
+    ).attempt
+    repo.submit_answer(attempt.id, 1, "first answer", "answer-1")
+    first = repo.claim_question(attempt.id, 2, "question-2")
+    assert first is not None
+    with factory() as session:
+        stored = session.get(MockInterviewAttempt, attempt.id)
+        assert stored is not None
+        stored.provider_lease_until = datetime.now(timezone.utc) - timedelta(seconds=1)
+        session.commit()
+
+    owners = [repo.claim_question(attempt.id, 2, "question-2"), repo.claim_question(attempt.id, 2, "question-2")]
+    assert sum(owner is not None for owner in owners) == 1
+
+
+def test_expired_second_question_dual_connections_have_one_owner(tmp_path):
+    path = tmp_path / "data.db"
+    factory = init_database(path)
+    app_id, event_id, _, resume_id, _ = _seed(factory)
+    repo = MockInterviewRepository(factory)
+    attempt = _start_ready(
+        repo, app_id, event_id, resume_id, "JD text", None, "attempt-1", "question-1"
+    ).attempt
+    repo.submit_answer(attempt.id, 1, "first answer", "answer-1")
+    first = repo.claim_question(attempt.id, 2, "question-2")
+    assert first is not None
+    with factory() as session:
+        stored = session.get(MockInterviewAttempt, attempt.id)
+        assert stored is not None
+        stored.provider_lease_until = datetime.now(timezone.utc) - timedelta(seconds=1)
+        session.commit()
+
+    barrier = threading.Barrier(2)
+    owners = []
+
+    def claim() -> None:
+        barrier.wait()
+        owners.append(MockInterviewRepository(init_database(path)).claim_question(attempt.id, 2, "question-2"))
+
+    threads = [threading.Thread(target=claim) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sum(owner is not None for owner in owners) == 1
+
+
 def test_next_question_claim_and_completion_persist_a_second_turn(tmp_path):
     factory = init_database(tmp_path / "data.db")
     app_id, event_id, _, resume_id, _ = _seed(factory)
@@ -356,6 +454,27 @@ def test_feedback_completion_rechecks_sources_after_provider_returns(tmp_path):
             {"schema_version": "mock-interview-feedback-v1", "proposal_status": "safe_empty", "strengths": [], "practice_points": [], "follow_up_questions": [], "next_practice_steps": []},
             "safe_empty",
         )
+
+
+def test_provider_and_contract_failure_recheck_sources_before_persisting_status(tmp_path):
+    factory = init_database(tmp_path / "data.db")
+    app_id, event_id, _, resume_id, _ = _seed(factory)
+    repo = MockInterviewRepository(factory)
+    attempt = repo.create_or_replay_start(
+        app_id, event_id, resume_id, "JD text", None, "attempt-1", "question-1"
+    ).attempt
+    with factory() as session:
+        event = session.get(ApplicationEvent, event_id)
+        assert event is not None
+        event.status = "cancelled"
+        session.commit()
+
+    with pytest.raises(MockInterviewSourceChanged):
+        repo.mark_provider_unknown(attempt.id, 1, attempt.provider_call_token, "question")
+    with factory() as session:
+        stored = session.get(MockInterviewAttempt, attempt.id)
+        assert stored is not None
+        assert stored.attempt_status == "source_conflict"
 
 
 def test_feedback_contract_failure_does_not_create_proposal(tmp_path):

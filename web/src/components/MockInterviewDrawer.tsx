@@ -72,6 +72,10 @@ function blocks(proposal: MockInterviewProposal | null): MockInterviewFeedbackBl
 }
 
 function safeError(error: unknown): string {
+  const errorCode = typeof error === 'object' && error !== null
+    ? (error as { response?: { data?: { error_code?: string } } }).response?.data?.error_code
+    : undefined;
+  if (errorCode === 'mock_interview_unverifiable') return 'AI 输出未通过验证，请重新开始本次模拟面试。';
   const status = typeof error === 'object' && error !== null
     ? (error as { response?: { status?: number } }).response?.status
     : undefined;

@@ -12,6 +12,14 @@ function base(applicationId: number, eventId: number): string {
   return `/applications/${applicationId}/events/${eventId}/mock-interview/attempts`;
 }
 
+export async function discardMockInterviewAttempt(input: {
+  applicationId: number;
+  eventId: number;
+  attemptId: number;
+}): Promise<void> {
+  await http.delete(`${base(input.applicationId, input.eventId)}/${input.attemptId}`);
+}
+
 export async function startMockInterview(input: {
   applicationId: number;
   eventId: number;

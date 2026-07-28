@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from sqlalchemy import select
@@ -26,6 +27,14 @@ def test_mock_interview_smoke_requires_four_array_safe_empty_shape():
     assert all(SAFE_EMPTY_FEEDBACK[field] == [] for field in (
         "strengths", "practice_points", "follow_up_questions", "next_practice_steps"
     ))
+
+
+def test_browser_harness_requires_real_two_turn_draft_and_browser_network_evidence():
+    script = (Path(__file__).parents[1] / "scripts" / "mock-interview-real-ai-browser-harness.ps1").read_text(encoding="utf-8")
+    assert "Count -ge 2" in script
+    assert "review_draft" in script
+    assert "sec_fetch_mode" in script
+    assert "provider_proxy_connect" in script or "provider-egress-proxy.py" in script
 
 
 def test_mock_interview_smoke_rejects_untraceable_turn_evidence():

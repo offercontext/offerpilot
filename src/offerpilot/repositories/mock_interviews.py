@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from offerpilot.models import (
@@ -37,6 +37,14 @@ class MockInterviewSourceChanged(ValueError):
     pass
 
 
+class MockInterviewContractFailed(ValueError):
+    pass
+
+
+class MockInterviewAttemptConfirmed(ValueError):
+    pass
+
+
 _ASCII_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$")
 
 
@@ -50,6 +58,22 @@ class MockInterviewStartResult:
 
 @dataclass(frozen=True)
 class MockInterviewFeedbackClaim:
+    revision: int
+    provider_call_token: str
+    transcript_fingerprint: str
+    turns: tuple[dict[str, Any], ...]
+
+    def __iter__(self) -> Iterator[Any]:
+        yield self.revision
+        yield self.provider_call_token
+        yield self.transcript_fingerprint
+
+    def __getitem__(self, index: int) -> Any:
+        return (self.revision, self.provider_call_token, self.transcript_fingerprint)[index]
+
+
+@dataclass(frozen=True)
+class MockInterviewQuestionClaim:
     revision: int
     provider_call_token: str
     transcript_fingerprint: str
@@ -102,6 +126,8 @@ class MockInterviewRepository:
                 )
             )
             if existing is not None:
+                if existing.attempt_status == "contract_failed":
+                    raise MockInterviewContractFailed("mock_interview_unverifiable")
                 turn = session.scalar(
                     select(MockInterviewTurn).where(
                         MockInterviewTurn.attempt_id == existing.id,
@@ -213,13 +239,15 @@ class MockInterviewRepository:
 
     def claim_question(
         self, attempt_id: int, turn_no: int, question_idempotency_key: str
-    ) -> tuple[int, str, str] | None:
+    ) -> MockInterviewQuestionClaim | None:
         _validate_key(question_idempotency_key, "question_idempotency_key")
         with self._session_factory() as session:
             self._begin_immediate(session)
             attempt = session.get(MockInterviewAttempt, attempt_id)
             if attempt is None:
                 raise LookupError("mock interview attempt not found")
+            if attempt.attempt_status == "contract_failed":
+                raise MockInterviewContractFailed("mock_interview_unverifiable")
             self._assert_attempt_sources(session, attempt)
             existing_turn = session.scalar(
                 select(MockInterviewTurn).where(
@@ -234,7 +262,7 @@ class MockInterviewRepository:
             if existing_turn is not None:
                 if existing_turn.question_idempotency_key != question_idempotency_key:
                     raise MockInterviewTurnIdempotencyConflict("question key changed")
-                if turn_no != 1 or existing_turn.turn_status not in {"awaiting_answer", "generating_question"}:
+                if existing_turn.turn_status not in {"awaiting_answer", "generating_question"}:
                     return None
             else:
                 previous = session.scalar(
@@ -246,6 +274,18 @@ class MockInterviewRepository:
                 if turn_no < 2 or previous is None or not previous.answer_text.strip():
                     raise ValueError("previous turn must be answered")
             transcript_fingerprint = attempt.transcript_fingerprint
+            frozen_turns = tuple(
+                {
+                    "turn_no": turn.turn_no,
+                    "question": turn.question_text,
+                    "answer": turn.answer_text,
+                }
+                for turn in session.scalars(
+                    select(MockInterviewTurn)
+                    .where(MockInterviewTurn.attempt_id == attempt_id)
+                    .order_by(MockInterviewTurn.turn_no.asc())
+                ).all()
+            )
             attempt.generation_revision += 1
             attempt.provider_call_token = _token()
             attempt.provider_lease_until = _lease_until()
@@ -256,14 +296,19 @@ class MockInterviewRepository:
                         attempt_id=attempt_id,
                         turn_no=turn_no,
                         question_idempotency_key=question_idempotency_key,
-                        question_source_snapshot_json=attempt.input_snapshot_json,
+                        question_source_snapshot_json=canonical_json(_question_source_snapshot(attempt)),
                         turn_status="generating_question",
                     )
                 )
             else:
                 existing_turn.turn_status = "generating_question"
             session.commit()
-            return attempt.generation_revision, attempt.provider_call_token, transcript_fingerprint
+            return MockInterviewQuestionClaim(
+                attempt.generation_revision,
+                attempt.provider_call_token,
+                transcript_fingerprint,
+                frozen_turns,
+            )
 
     def complete_question(
         self,
@@ -290,7 +335,7 @@ class MockInterviewRepository:
                 or attempt.provider_call_token != provider_call_token
                 or attempt.transcript_fingerprint != transcript_fingerprint
             ):
-                return attempt
+                return None
             try:
                 self._assert_attempt_sources(session, attempt)
             except MockInterviewSourceChanged:
@@ -318,6 +363,14 @@ class MockInterviewRepository:
                 return None
             if attempt.generation_revision != revision or attempt.provider_call_token != provider_call_token:
                 return attempt
+            try:
+                self._assert_attempt_sources(session, attempt)
+            except MockInterviewSourceChanged:
+                attempt.attempt_status = "source_conflict"
+                attempt.failure_category = "source_conflict"
+                attempt.provider_lease_until = None
+                session.commit()
+                raise
             attempt.attempt_status = "provider_unknown"
             attempt.failure_category = "provider_error"
             session.commit()
@@ -333,6 +386,8 @@ class MockInterviewRepository:
             attempt = session.get(MockInterviewAttempt, attempt_id)
             if attempt is None:
                 raise LookupError("mock interview attempt not found")
+            if attempt.attempt_status == "contract_failed":
+                raise MockInterviewContractFailed("mock_interview_unverifiable")
             self._assert_attempt_sources(session, attempt)
             existing = session.scalar(
                 select(MockInterviewFeedbackProposal).where(
@@ -454,7 +509,7 @@ class MockInterviewRepository:
         revision: int,
         provider_call_token: str,
         category: str,
-        status: str = "feedback_unverifiable",
+        status: str = "contract_failed",
     ) -> MockInterviewAttempt | None:
         with self._session_factory() as session:
             self._begin_immediate(session)
@@ -463,6 +518,14 @@ class MockInterviewRepository:
                 return None
             if attempt.generation_revision != revision or attempt.provider_call_token != provider_call_token:
                 return attempt
+            try:
+                self._assert_attempt_sources(session, attempt)
+            except MockInterviewSourceChanged:
+                attempt.attempt_status = "source_conflict"
+                attempt.failure_category = "source_conflict"
+                attempt.provider_lease_until = None
+                session.commit()
+                raise
             attempt.attempt_status = status
             attempt.failure_category = category
             attempt.provider_lease_until = None
@@ -503,10 +566,64 @@ class MockInterviewRepository:
                 session.expunge(turn)
             return attempt, turns
 
+    def discard_attempt(self, application_id: int, event_id: int, attempt_id: int) -> None:
+        with self._session_factory() as session:
+            self._begin_immediate(session)
+            application = session.get(Application, application_id)
+            event = session.get(ApplicationEvent, event_id)
+            attempt = session.get(MockInterviewAttempt, attempt_id)
+            if application is None or application.deleted_at is not None:
+                raise LookupError("application not found")
+            if event is None or event.application_id != application_id or event.event_type != "interview":
+                raise LookupError("event not found")
+            if attempt is None:
+                session.commit()
+                return
+            if attempt.application_id != application_id or attempt.event_id != event_id:
+                raise LookupError("mock interview attempt not found")
+            proposal_exists = session.scalar(
+                select(MockInterviewFeedbackProposal.id).where(
+                    MockInterviewFeedbackProposal.attempt_id == attempt_id
+                )
+            )
+            if proposal_exists is not None or attempt.attempt_status in {"feedback_ready", "confirmed"}:
+                raise MockInterviewAttemptConfirmed("mock_interview_attempt_confirmed")
+            session.execute(
+                delete(MockInterviewTurn).where(MockInterviewTurn.attempt_id == attempt_id)
+            )
+            session.delete(attempt)
+            session.commit()
+
     def question_context(
         self, attempt_id: int, application_id: int, event_id: int
     ) -> tuple[MockInterviewAttempt, list[MockInterviewTurn]]:
         return self.feedback_context(attempt_id, application_id, event_id)
+
+    def attempt_context(
+        self, attempt_id: int, application_id: int, event_id: int
+    ) -> MockInterviewAttempt:
+        with self._session_factory() as session:
+            attempt = session.get(MockInterviewAttempt, attempt_id)
+            if (
+                attempt is None
+                or attempt.application_id != application_id
+                or attempt.event_id != event_id
+            ):
+                raise LookupError("mock interview attempt not found")
+            application = session.get(Application, application_id)
+            event = session.get(ApplicationEvent, event_id)
+            if application is None or application.deleted_at is not None:
+                raise LookupError("application not found")
+            if (
+                event is None
+                or event.application_id != application_id
+                or event.event_type != "interview"
+                or event.scheduled_at is None
+            ):
+                raise LookupError("event not found")
+            self._assert_attempt_sources(session, attempt)
+            session.expunge(attempt)
+            return attempt
 
     def get_turn(self, attempt_id: int, turn_no: int) -> MockInterviewTurn | None:
         with self._session_factory() as session:

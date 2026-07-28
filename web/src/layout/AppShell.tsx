@@ -35,6 +35,7 @@ import type { InterviewReviewProposalAttemptState } from '@/components/Interview
 import type { InterviewKnowledgeCaptureDraft } from '@/components/InterviewKnowledgeCaptureDrawer';
 import type { InterviewPreparationAttemptState, InterviewPreparationDraft, InterviewPreparationKnowledgeOption } from '@/components/InterviewPreparationProposalDrawer';
 import MockInterviewDrawer, { type MockInterviewDrawerDraft } from '@/components/MockInterviewDrawer';
+import { discardMockInterviewAttempt } from '@/services/mockInterviews';
 import ResumeUploadModal from '@/components/ResumeUploadModal';
 import ChatPanel from '@/components/ChatPanel';
 import type { EvidenceTarget } from '@/components/ChatPanel/model';
@@ -602,6 +603,52 @@ function AppShellContent() {
     setMockInterviewDraft(next);
   };
 
+  const closeMockInterview = async () => {
+    const context = mockInterviewContext;
+    const draft = mockInterviewDraft;
+    if (!context || !draft) {
+      setMockInterviewContext(null);
+      setMockInterviewDraft(null);
+      return;
+    }
+    if (!draft.attemptId && draft.attemptKey) {
+      const retained = {
+        ...draft,
+        resultUnknown: true,
+        error: '操作结果待确认，请稍后使用原尝试重试。',
+      };
+      mockInterviewDraftsRef.current.set(`${context.applicationId}:${context.eventId}`, retained);
+      setMockInterviewContext(null);
+      setMockInterviewDraft(null);
+      return;
+    }
+    if (!draft.attemptId || draft.resultUnknown) {
+      setMockInterviewContext(null);
+      setMockInterviewDraft(null);
+      return;
+    }
+    try {
+      await discardMockInterviewAttempt({
+        applicationId: context.applicationId,
+        eventId: context.eventId,
+        attemptId: draft.attemptId,
+      });
+      mockInterviewDraftsRef.current.delete(`${context.applicationId}:${context.eventId}`);
+      setMockInterviewContext(null);
+      setMockInterviewDraft(null);
+    } catch (error) {
+      const response = (error as { response?: { status?: number; data?: { error_code?: string } } })?.response;
+      if (response?.status === 404 || response?.data?.error_code === 'mock_interview_attempt_confirmed') {
+        mockInterviewDraftsRef.current.delete(`${context.applicationId}:${context.eventId}`);
+        setMockInterviewContext(null);
+        setMockInterviewDraft(null);
+        message.info(response?.data?.error_code === 'mock_interview_attempt_confirmed' ? '本次模拟面试已保存，可在历史记录中查看。' : '本次模拟面试已关闭。');
+        return;
+      }
+      updateMockInterviewDraft({ error: '操作结果待确认，请稍后使用原尝试重试。' });
+    }
+  };
+
   const updatePilotV2Draft = (patch: Partial<PilotOpportunityFitV2Draft>) => {
     if (!pilotV2Draft) return;
     const next = { ...pilotV2Draft, ...patch };
@@ -1067,7 +1114,7 @@ function AppShellContent() {
           resumes={resumes}
           draft={mockInterviewDraft}
           onDraftChange={updateMockInterviewDraft}
-          onClose={() => setMockInterviewContext(null)}
+          onClose={() => void closeMockInterview()}
         />
       ) : null}
       </Layout>

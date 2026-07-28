@@ -19,8 +19,17 @@ class _MockInterviewModel:
         )
 
 
-def _client(tmp_path):
-    client = TestClient(create_app(data_dir=tmp_path, chat_model=_MockInterviewModel()))
+class _InvalidQuestionModel:
+    supports_json_schema = False
+    calls = 0
+
+    def complete(self, messages, tools, **kwargs):
+        self.calls += 1
+        return Assistant(content='{"unexpected":true}')
+
+
+def _client(tmp_path, model=None):
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model or _MockInterviewModel()))
     application = client.post(
         "/api/applications",
         json={"company_name": "Acme", "position_name": "Engineer", "status": "interview"},
@@ -119,3 +128,44 @@ def test_submit_answer_and_finish_persist_safe_empty_feedback(tmp_path):
     assert answered.status_code == 200
     assert finished.status_code == 201
     assert finished.json()["proposal_status"] == "safe_empty"
+
+
+def test_contract_failure_is_terminal_for_same_attempt_key(tmp_path):
+    model = _InvalidQuestionModel()
+    client, app_id, event_id, resume_id = _client(tmp_path, model)
+    path = f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts"
+    payload = {
+        "resume_id": resume_id,
+        "jd_text": "JD Python",
+        "attempt_idempotency_key": "attempt-contract",
+        "initial_question_idempotency_key": "question-contract",
+    }
+
+    first = client.post(path, json=payload)
+    first_calls = model.calls
+    second = client.post(path, json=payload)
+
+    assert first.status_code == 502
+    assert second.status_code == 502
+    assert first.json()["error_code"] == "mock_interview_unverifiable"
+    assert second.json()["error_code"] == "mock_interview_unverifiable"
+    assert first_calls == 2
+    assert model.calls == first_calls
+
+
+def test_delete_unconfirmed_attempt_is_idempotent(tmp_path):
+    client, app_id, event_id, resume_id = _client(tmp_path)
+    base = f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts"
+    started = client.post(base, json={
+        "resume_id": resume_id,
+        "jd_text": "JD Python",
+        "attempt_idempotency_key": "attempt-delete",
+        "initial_question_idempotency_key": "question-delete",
+    })
+    attempt_id = started.json()["attempt_id"]
+
+    deleted = client.delete(f"{base}/{attempt_id}")
+    replay_delete = client.delete(f"{base}/{attempt_id}")
+
+    assert deleted.status_code == 200
+    assert replay_delete.status_code == 200

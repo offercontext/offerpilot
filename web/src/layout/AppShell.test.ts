@@ -77,6 +77,14 @@ describe('AppShell source contract', () => {
     expect(source).toContain('exitPilotContext({ preserveUnknownAttempt: false });');
   });
 
+  it('deletes ordinary mock attempts but retains unknown results across drawer unmounts', () => {
+    expect(source).toContain('discardMockInterviewAttempt');
+    expect(source).toContain('if (!draft.attemptId && draft.attemptKey)');
+    expect(source).toContain('if (!draft.attemptId || draft.resultUnknown)');
+    expect(source).toContain('setMockInterviewContext(null);');
+    expect(source).toContain('操作结果待确认，请稍后使用原尝试重试。');
+  });
+
   it('routes a missing Triage application through the shared Pilot cleanup', () => {
     const triageStart = source.indexOf('const startPilotV2Triage =');
     const triageEnd = source.indexOf('const confirmPilotV2Triage =', triageStart);
