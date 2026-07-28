@@ -1,156 +1,157 @@
+param(
+    [ValidateSet('agent', 'domain', 'knowledge', 'proposals', 'misc')]
+    [string]$Group,
+    [Parameter(Mandatory = $true)]
+    [string]$ResultDir,
+    [switch]$Aggregate
+)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
+New-Item -ItemType Directory -Force -Path $ResultDir | Out-Null
 
-function Invoke-CheckedPytest {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string[]]$Arguments,
-        [Parameter(Mandatory = $true)]
-        [string]$Label
+function Get-NodeIds([object[]]$Output) {
+    @($Output | ForEach-Object {
+        $line = ([string]$_).Trim()
+        if ($line -match '^(tests[\/].+::.+)$') { $Matches[1].Replace('/', '\') }
+    } | Where-Object { $_ })
+}
+
+function Get-TestFiles {
+    @(
+        Get-ChildItem -Path (Join-Path $repoRoot 'tests') -Recurse -File -Filter 'test_*.py' |
+            ForEach-Object { $_.FullName.Substring($repoRoot.Length + 1).Replace('/', '\') } |
+            Sort-Object -Unique
     )
+}
 
-    Write-Host "== $Label =="
-    $output = & uv run pytest @Arguments 2>&1
-    $exitCode = $LASTEXITCODE
-    if ($exitCode -ne 0) {
-        $output | ForEach-Object { Write-Host $_ }
-        throw "$Label failed with exit code $exitCode"
+function Get-Groups([string[]]$TestFiles) {
+    $groups = [ordered]@{
+        agent = @($TestFiles | Where-Object { $_ -match '\\test_(ai_|chat_|config|settings_api|auth_api|cli)' })
+        domain = @($TestFiles | Where-Object { $_ -match '\\test_(applications|events|notes|resumes|offers|questions|jd_resume_ai_api|module_workflows)' })
+        knowledge = @($TestFiles | Where-Object { $_ -match '\\test_(knowledge|ki)' })
+        proposals = @($TestFiles | Where-Object { $_ -match '\\test_(opportunity_fit|interview|material|evidence|smoke)' })
+        misc = @()
     }
-    return @($output)
+    $assigned = @($groups.Values | ForEach-Object { $_ })
+    $groups.misc = @($TestFiles | Where-Object { $assigned -notcontains $_ })
+    $assigned = @($groups.Values | ForEach-Object { $_ })
+    $unassigned = @($TestFiles | Where-Object { $assigned -notcontains $_ })
+    if ($unassigned.Count -gt 0) { throw "unassigned test files: $($unassigned -join ', ')" }
+    $groups
 }
 
-function Get-NodeIds {
-    param([Parameter(Mandatory = $true)][object[]]$Output)
-
-    return @(
-        $Output | ForEach-Object {
-            $line = ([string]$_).Trim()
-            if ($line -match '^(tests[\\/].+::.+)$') {
-                $Matches[1].Replace('/', '\\')
-            }
-        } | Where-Object { $_ }
+function Get-AllowedSkips {
+    $reason = [Text.Encoding]::UTF8.GetString(
+        [Convert]::FromBase64String('5b2T5YmN546v5aKD5rKh5pyJ5Yib5bu656ym5Y+36ZO+5o6l55qE5p2D6ZmQ')
     )
+    @{
+        'tests\test_knowledge_ingest_integrity.py::test_failed_commit_cleanup_does_not_follow_symlink' = $reason
+        'tests\test_knowledge_reset.py::test_cli_rejects_knowledge_root_symlink_with_external_sentinels' = $reason
+        'tests\test_knowledge_reset.py::test_cli_rejects_legacy_reset_root_symlink_with_external_sentinels' = $reason
+        'tests\test_knowledge_reset.py::test_cli_does_not_follow_nested_escape_symlink' = $reason
+    }
 }
 
-function Get-SkipsFromJunit {
-    param([Parameter(Mandatory = $true)][string]$Path)
-
+function Get-SkipsFromJunit([string]$Path) {
     [xml]$report = Get-Content -LiteralPath $Path -Raw -Encoding utf8
     foreach ($testcase in @($report.testsuites.testsuite.testcase)) {
-        $skipped = $testcase.skipped
-        if ($null -eq $skipped) {
-            continue
-        }
+        $skippedProperty = $testcase.PSObject.Properties['skipped']
+        if ($null -eq $skippedProperty -or $null -eq $skippedProperty.Value) { continue }
         $module = [string]$testcase.classname
-        if ($module -notmatch '^tests\.(.+)$') {
-            throw "cannot map JUnit testcase module to a pytest node: $module"
-        }
-        $relativeModule = $Matches[1].Replace('.', '\')
+        if ($module -notmatch '^tests\.(.+)$') { throw "cannot map JUnit testcase module: $module" }
+        $relative = $Matches[1].Replace('.', '\')
         [pscustomobject]@{
-            NodeId = "tests\$relativeModule.py::$([string]$testcase.name)"
-            Reason = [string]$skipped.message
+            NodeId = "tests\$relative.py::$([string]$testcase.name)"
+            Reason = [string]$testcase.skipped.message
         }
     }
 }
 
-$allowedSymlinkSkipReason = [Text.Encoding]::UTF8.GetString(
-    [Convert]::FromBase64String('5b2T5YmN546v5aKD5rKh5pyJ5Yib5bu656ym5Y+36ZO+5o6l55qE5p2D6ZmQ')
-)
-$allowedSkipReasons = @{
-    'tests\test_knowledge_ingest_integrity.py::test_failed_commit_cleanup_does_not_follow_symlink' = $allowedSymlinkSkipReason
-    'tests\test_knowledge_reset.py::test_cli_rejects_knowledge_root_symlink_with_external_sentinels' = $allowedSymlinkSkipReason
-    'tests\test_knowledge_reset.py::test_cli_rejects_legacy_reset_root_symlink_with_external_sentinels' = $allowedSymlinkSkipReason
-    'tests\test_knowledge_reset.py::test_cli_does_not_follow_nested_escape_symlink' = $allowedSymlinkSkipReason
+function Get-Sha256([string]$Path) {
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
 }
 
-$collection = Invoke-CheckedPytest @('--collect-only', '-q', '--disable-warnings') 'collect full test manifest'
-$allNodeIdsRaw = @(Get-NodeIds $collection)
-$duplicateManifest = @($allNodeIdsRaw | Group-Object | Where-Object Count -gt 1)
-if ($duplicateManifest.Count -gt 0) {
-    throw "pytest full manifest contains duplicate node ids: $($duplicateManifest.Name -join ', ')"
-}
-$allNodeIds = @($allNodeIdsRaw | Sort-Object)
-if ($allNodeIds.Count -eq 0) {
-    throw 'pytest collection returned no test node ids'
-}
+function Invoke-Group([string]$Name, [string[]]$Files) {
+    if ($Files.Count -eq 0) { throw "pytest group $Name has no files" }
+    $collectPath = Join-Path $ResultDir "$Name.collect.txt"
+    $junitPath = Join-Path $ResultDir "$Name.junit.xml"
+    $runPath = Join-Path $ResultDir "$Name.run.txt"
+    $markerPath = Join-Path $ResultDir "$Name.complete.json"
+    $collectOutput = @(& uv run pytest --collect-only -q --disable-warnings @Files 2>&1 | Tee-Object -FilePath $collectPath)
+    $collectExit = $LASTEXITCODE
+    if ($collectExit -ne 0) { throw "$Name collection failed with exit code $collectExit" }
+    $nodes = @(Get-NodeIds $collectOutput)
+    $duplicates = @($nodes | Group-Object | Where-Object Count -gt 1)
+    if ($duplicates.Count -gt 0) { throw "$Name collection contains duplicate node ids: $($duplicates.Name -join ', ')" }
+    if ($nodes.Count -eq 0) { throw "$Name collection returned no tests" }
 
-$testFiles = @(
-    Get-ChildItem -Path (Join-Path $repoRoot 'tests') -Recurse -File -Filter 'test_*.py' |
-        ForEach-Object { $_.FullName.Substring($repoRoot.Length + 1) } |
-        ForEach-Object { $_.Replace('/', '\\') } |
-        Sort-Object -Unique
-)
-
-$groups = [ordered]@{
-    agent = @($testFiles | Where-Object { $_ -match '\\test_(ai_|chat_|config|settings_api|auth_api|cli)'} )
-    domain = @($testFiles | Where-Object { $_ -match '\\test_(applications|events|notes|resumes|offers|questions|jd_resume_ai_api|module_workflows)' })
-    knowledge = @($testFiles | Where-Object { $_ -match '\\test_(knowledge|ki)' })
-    proposals = @($testFiles | Where-Object { $_ -match '\\test_(opportunity_fit|interview|material|evidence|smoke)' })
-    misc = @()
-}
-
-$assigned = @($groups.Values | ForEach-Object { $_ })
-$groups.misc = @($testFiles | Where-Object { $assigned -notcontains $_ })
-$assigned = @($groups.Values | ForEach-Object { $_ })
-$unassigned = @($testFiles | Where-Object { $assigned -notcontains $_ })
-if ($unassigned.Count -gt 0) {
-    throw "unassigned test files: $($unassigned -join ', ')"
-}
-
-$manifestPath = Join-Path $env:TEMP ("offerpilot-pytest-manifest-{0}.txt" -f [guid]::NewGuid())
-$allNodeIds | Set-Content -Path $manifestPath -Encoding utf8
-try {
-    $groupNodeIds = [System.Collections.Generic.List[string]]::new()
-    foreach ($group in $groups.GetEnumerator()) {
-        if ($group.Value.Count -eq 0) {
-            continue
-        }
-        $groupCollection = Invoke-CheckedPytest -Arguments (@('--collect-only', '-q', '--disable-warnings') + @($group.Value)) -Label "$($group.Key) collect"
-        $nodesRaw = @(Get-NodeIds $groupCollection)
-        $duplicateGroup = @($nodesRaw | Group-Object | Where-Object Count -gt 1)
-        if ($duplicateGroup.Count -gt 0) {
-            throw "$($group.Key) contains duplicate collected node ids: $($duplicateGroup.Name -join ', ')"
-        }
-        $nodes = @($nodesRaw | Sort-Object)
-        $nodes | ForEach-Object { $groupNodeIds.Add($_) }
-        $junitPath = Join-Path $env:TEMP ("offerpilot-pytest-$($group.Key)-{0}.xml" -f [guid]::NewGuid())
-        $runArguments = @('-q', '-rs', '--disable-warnings', "--junitxml=$junitPath") + @($group.Value)
-        $null = Invoke-CheckedPytest -Arguments $runArguments -Label $group.Key
-        if (-not (Test-Path -LiteralPath $junitPath)) {
-            throw "$($group.Key) did not produce the required JUnit report"
-        }
-        try {
-            foreach ($skip in @(Get-SkipsFromJunit -Path $junitPath)) {
-                if (-not $allowedSkipReasons.ContainsKey($skip.NodeId)) {
-                    throw "$($group.Key) has an unexpected skipped test: $($skip.NodeId)"
-                }
-                if ($allowedSkipReasons[$skip.NodeId] -ne $skip.Reason) {
-                    throw "$($group.Key) has an unexpected skip reason for $($skip.NodeId): $($skip.Reason)"
-                }
-                Write-Host "allowed skip: $($skip.NodeId) [$($skip.Reason)]"
-            }
-        }
-        finally {
-            Remove-Item -LiteralPath $junitPath -Force -ErrorAction SilentlyContinue
+    $null = & uv run pytest -q -rs --disable-warnings "--junitxml=$junitPath" @Files 2>&1 | Tee-Object -FilePath $runPath
+    $runExit = $LASTEXITCODE
+    if (-not (Test-Path -LiteralPath $junitPath)) { throw "$Name did not produce JUnit" }
+    $allowed = Get-AllowedSkips
+    foreach ($skip in @(Get-SkipsFromJunit $junitPath)) {
+        if (-not $allowed.ContainsKey($skip.NodeId) -or $allowed[$skip.NodeId] -ne $skip.Reason) {
+            throw "$Name has an unexpected skip: $($skip.NodeId) [$($skip.Reason)]"
         }
     }
-
-    $duplicateGrouped = @($groupNodeIds | Group-Object | Where-Object Count -gt 1)
-    if ($duplicateGrouped.Count -gt 0) {
-        throw "pytest group coverage contains duplicate node ids: $($duplicateGrouped.Name -join ', ')"
+    [xml]$junit = Get-Content -LiteralPath $junitPath -Raw -Encoding utf8
+    $suite = @($junit.testsuites.testsuite) | Select-Object -First 1
+    $marker = [ordered]@{
+        group = $Name
+        exit_code = [int]$runExit
+        collected_count = [int]$nodes.Count
+        tests = [int]$suite.tests
+        failures = [int]$suite.failures
+        errors = [int]$suite.errors
+        skipped = [int]$suite.skipped
+        collect_sha256 = Get-Sha256 $collectPath
+        junit_sha256 = Get-Sha256 $junitPath
     }
-    $expected = @($allNodeIds | Sort-Object)
-    $actual = @($groupNodeIds | Sort-Object)
-    $expectedText = $expected -join "`n"
-    $actualText = $actual -join "`n"
-    if ($expectedText -ne $actualText) {
-        throw "pytest group coverage differs from the locked manifest; see $manifestPath"
-    }
-    Write-Host "All pytest groups passed; collected node coverage matches $($expected.Count) tests."
+    $marker | ConvertTo-Json | Set-Content -LiteralPath $markerPath -Encoding utf8
+    if ($runExit -ne 0) { throw "$Name pytest failed with exit code $runExit" }
+    Write-Host "$Name completed: $($nodes.Count) collected, $($suite.tests) executed, $($suite.skipped) allowed skips"
 }
-finally {
-    Remove-Item -LiteralPath $manifestPath -Force -ErrorAction SilentlyContinue
+
+function Invoke-Aggregate {
+    $manifestPath = Join-Path $ResultDir 'full-manifest.txt'
+    if (-not (Test-Path -LiteralPath $manifestPath)) { throw 'full-manifest.txt is missing' }
+    $manifest = @(Get-NodeIds (Get-Content -LiteralPath $manifestPath -Encoding utf8))
+    $manifestDuplicates = @($manifest | Group-Object | Where-Object Count -gt 1)
+    if ($manifestDuplicates.Count -gt 0) { throw 'full manifest contains duplicate node ids' }
+    $all = [System.Collections.Generic.List[string]]::new()
+    foreach ($name in @('agent', 'domain', 'knowledge', 'proposals', 'misc')) {
+        $collectPath = Join-Path $ResultDir "$name.collect.txt"
+        $junitPath = Join-Path $ResultDir "$name.junit.xml"
+        $markerPath = Join-Path $ResultDir "$name.complete.json"
+        foreach ($path in @($collectPath, $junitPath, $markerPath)) {
+            if (-not (Test-Path -LiteralPath $path)) { throw "$name result is missing: $path" }
+        }
+        $marker = Get-Content -LiteralPath $markerPath -Raw -Encoding utf8 | ConvertFrom-Json
+        if ($marker.group -ne $name -or [int]$marker.exit_code -ne 0) { throw "$name completion marker is not successful" }
+        if ($marker.collect_sha256 -ne (Get-Sha256 $collectPath) -or $marker.junit_sha256 -ne (Get-Sha256 $junitPath)) {
+            throw "$name completion marker does not match persisted results"
+        }
+        $nodes = @(Get-NodeIds (Get-Content -LiteralPath $collectPath -Encoding utf8))
+        $duplicates = @($nodes | Group-Object | Where-Object Count -gt 1)
+        if ($duplicates.Count -gt 0) { throw "$name aggregate input contains duplicate node ids" }
+        if ([int]$marker.collected_count -ne $nodes.Count) { throw "$name collected count mismatches marker" }
+        foreach ($node in $nodes) { $all.Add($node) }
+    }
+    $duplicates = @($all | Group-Object | Where-Object Count -gt 1)
+    if ($duplicates.Count -gt 0) { throw "pytest group coverage contains duplicate node ids: $($duplicates.Name -join ', ')" }
+    if ((@($manifest | Sort-Object) -join "`n") -ne (@($all | Sort-Object) -join "`n")) {
+        throw 'pytest group coverage differs from full manifest'
+    }
+    Write-Host "All pytest groups passed; coverage matches $($manifest.Count) tests."
+}
+
+if ($Aggregate) {
+    Invoke-Aggregate
+} else {
+    if (-not $Group) { throw '-Group is required unless -Aggregate is used' }
+    $groups = Get-Groups (Get-TestFiles)
+    Invoke-Group $Group @($groups[$Group])
 }
