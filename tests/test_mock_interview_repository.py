@@ -6,12 +6,20 @@ import pytest
 from sqlalchemy import select
 
 from offerpilot.db import init_database
-from offerpilot.models import Application, ApplicationEvent, MockInterviewAttempt, MockInterviewTurn, Resume
+from offerpilot.models import (
+    Application,
+    ApplicationEvent,
+    InterviewPreparationProposal,
+    MockInterviewAttempt,
+    MockInterviewTurn,
+    Resume,
+)
 from offerpilot.repositories.mock_interviews import (
     MockInterviewIdempotencyConflict,
     MockInterviewRepository,
     MockInterviewSourceChanged,
     MockInterviewTurnIdempotencyConflict,
+    provider_mock_interview_snapshot,
 )
 
 
@@ -175,6 +183,102 @@ def test_question_source_snapshot_keeps_only_minimal_question_evidence(tmp_path)
         assert turn is not None
         snapshot = json.loads(turn.question_source_snapshot_json)
         assert set(snapshot) == {"jd", "resume", "selected_preparation"}
+
+
+def test_provider_snapshot_excludes_preparation_database_identity_and_full_proposal():
+    attempt = MockInterviewAttempt(
+        input_snapshot_json=json.dumps({
+            "jd": {"text": "JD"},
+            "resume": {"content_json": {"raw_text": "Resume"}},
+            "selected_preparation": [{
+                "proposal_id": 17,
+                "source_fingerprint": "source-hash",
+                "proposal_hash": "proposal-hash",
+                "items": [{"id": "direction-1", "text": "Prepare", "evidence_refs": []}],
+                "evidence": [],
+            }],
+            "proposal": {"all_sections": ["must not be sent"]},
+        })
+    )
+
+    snapshot = provider_mock_interview_snapshot(attempt)
+
+    assert snapshot["selected_preparation"] == [{
+        "items": [{"text": "Prepare", "evidence_refs": []}],
+        "evidence": [],
+    }]
+    assert "proposal" not in snapshot
+    assert "proposal_id" not in json.dumps(snapshot)
+    assert "source-hash" not in json.dumps(snapshot)
+
+
+def test_preparation_selection_freezes_only_selected_items(tmp_path):
+    factory = init_database(tmp_path / "data.db")
+    app_id, event_id, _, resume_id, _ = _seed(factory)
+    proposal_body = {
+        "preparation_directions": [{
+            "id": "direction-1", "text": "Prepare Python examples", "evidence_refs": [
+                {"source": "jd", "path": "/jd/text", "excerpt": "Python"}
+            ],
+        }],
+        "story_prompts": [{"id": "story-1", "text": "Unused story", "evidence_refs": []}],
+        "review_points": [],
+        "interviewer_questions": [],
+        "items_to_clarify": [],
+    }
+    with factory() as session:
+        event = session.get(ApplicationEvent, event_id)
+        resume = session.get(Resume, resume_id)
+        assert event is not None and resume is not None
+        proposal = InterviewPreparationProposal(
+            application_id=app_id,
+            application_event_id=event_id,
+            resume_id=resume_id,
+            idempotency_key="preparation-1",
+            attempt_status="ready",
+            proposal_status="normal",
+            input_snapshot_json=json.dumps({
+                "event": {
+                    "id": event_id,
+                    "event_type": event.event_type,
+                    "subtype": event.subtype,
+                    "round": event.round,
+                    "scheduled_at": event.scheduled_at.isoformat(),
+                    "duration_minutes": event.duration_minutes,
+                    "status": event.status,
+                },
+                "resume": {"id": resume_id, "content_json": json.loads(resume.content_json)},
+                "knowledge_evidence": [],
+            }),
+            source_fingerprint="source-1",
+            proposal_json=json.dumps(proposal_body),
+            proposal_hash="proposal-1",
+        )
+        session.add(proposal)
+        session.commit()
+        proposal_id = proposal.id
+
+    repo = MockInterviewRepository(factory)
+    result = repo.create_or_replay_start(
+        app_id,
+        event_id,
+        resume_id,
+        "JD Python",
+        proposal_id,
+        "attempt-preparation-1",
+        "question-preparation-1",
+        {"proposal_id": proposal_id, "item_ids": ["direction-1"]},
+    )
+    provider_snapshot = provider_mock_interview_snapshot(result.attempt)
+    stored = json.loads(result.attempt.input_snapshot_json)
+
+    assert [item["id"] for item in stored["selected_preparation"][0]["items"]] == ["direction-1"]
+    assert provider_snapshot["selected_preparation"][0]["items"] == [{
+        "text": "Prepare Python examples",
+        "evidence_refs": [{"source": "jd", "path": "/jd/text", "excerpt": "Python"}],
+    }]
+    assert "story-1" not in json.dumps(provider_snapshot)
+    assert str(proposal_id) not in json.dumps(provider_snapshot)
 
 
 def test_same_initial_question_key_replays_first_turn(tmp_path):

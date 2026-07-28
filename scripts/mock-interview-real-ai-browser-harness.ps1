@@ -5,6 +5,8 @@ $sourceData = if ($env:OFFERPILOT_DATA) { $env:OFFERPILOT_DATA } else { Join-Pat
 $tempData = Join-Path ([IO.Path]::GetTempPath()) ('offerpilot-mock-interview-' + [Guid]::NewGuid().ToString('N'))
 $httpAudit = Join-Path $tempData 'http-audit.jsonl'
 $providerAudit = Join-Path $tempData 'provider-audit.jsonl'
+$browserAudit = Join-Path $tempData 'browser-network.jsonl'
+$browserStop = Join-Path $tempData 'browser-network.stop'
 $probe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
 $probe.Start()
 $port = ([Net.IPEndPoint]$probe.LocalEndpoint).Port
@@ -16,6 +18,7 @@ $proxyProbe.Stop()
 $baseUrl = "http://127.0.0.1:$port"
 $server = $null
 $proxyServer = $null
+$browserAuditor = $null
 $applicationId = $null
 $eventId = $null
 $resumeIds = @()
@@ -64,6 +67,12 @@ try {
     Copy-Item -LiteralPath $sourceConfig -Destination (Join-Path $tempData 'config.json')
   }
   $providerEndpoint = [Uri](Get-ProviderEndpointTuple (Join-Path $tempData 'config.json'))
+  if ($providerEndpoint.Scheme -ne 'https') {
+    throw 'The mock interview harness requires an HTTPS provider endpoint.'
+  }
+  if (-not $env:MOCK_INTERVIEW_CDP_URL) {
+    throw 'Set MOCK_INTERVIEW_CDP_URL to the in-app browser CDP debugging endpoint before running this harness.'
+  }
   $env:OFFERPILOT_DATA = $tempData
   $env:OFFERPILOT_HTTP_AUDIT_FILE = $httpAudit
   $proxyServer = Start-Process powershell -WindowStyle Hidden -PassThru -ArgumentList @(
@@ -91,6 +100,10 @@ try {
     } else { Start-Sleep -Milliseconds 500 }
   }
   if (-not $healthy) { throw "Isolated service did not become healthy on $baseUrl." }
+  $browserAuditor = Start-Process powershell -WindowStyle Hidden -PassThru -ArgumentList @(
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command',
+    "Set-Location '$repo'; uv run python scripts/browser-network-audit.py --debugging-url '$($env:MOCK_INTERVIEW_CDP_URL)' --audit '$browserAudit' --stop-file '$browserStop'"
+  )
 
   $resume = Invoke-RestMethod -Method Post -Uri "$baseUrl/api/resumes" -ContentType 'application/json' -Body (@{
     title = 'Mock Interview Browser Smoke Resume'
@@ -151,6 +164,23 @@ try {
     throw 'Real browser flow did not create a confirmed non-empty review draft.'
   }
   if (-not (Test-Path -LiteralPath $httpAudit)) { throw 'Browser request audit is missing.' }
+  New-Item -ItemType File -Force -Path $browserStop | Out-Null
+  if ($browserAuditor) { $browserAuditor.WaitForExit(10000) | Out-Null }
+  if (-not (Test-Path -LiteralPath $browserAudit)) { throw 'CDP browser request audit is missing.' }
+  $browserRecords = @(Get-Content -LiteralPath $browserAudit | ForEach-Object { $_ | ConvertFrom-Json })
+  foreach ($record in $browserRecords) {
+    $uri = [Uri]$record.url
+    if ($uri.Scheme -notin @('http', 'https')) { continue }
+    if ($uri.Host -ne '127.0.0.1' -or $uri.Port -ne $port) {
+      throw "Browser request escaped the local origin: $($record.url)"
+    }
+    if ($uri.AbsolutePath -ne '/' -and $uri.AbsolutePath -notlike '/api/*' -and $uri.AbsolutePath -notlike '/*.*') {
+      throw "Browser request used an unapproved local path: $($record.url)"
+    }
+  }
+  if (@($browserRecords | Where-Object { ([Uri]$_.url).AbsolutePath -like '/api/*' }).Count -eq 0) {
+    throw 'CDP audit did not record a browser API request.'
+  }
   if (-not (Test-Path -LiteralPath $providerAudit)) { throw 'Provider egress audit is missing.' }
   $httpRecords = @(Get-Content -LiteralPath $httpAudit | ForEach-Object { $_ | ConvertFrom-Json })
   foreach ($record in $httpRecords) {
@@ -182,6 +212,10 @@ try {
   if ($proxyServer) {
     $proxyTree = @(Get-ProcessTree ([int]$proxyServer.Id) | Sort-Object -Descending)
     foreach ($processId in $proxyTree) { Stop-Process -Id ([int]$processId) -Force -ErrorAction SilentlyContinue }
+  }
+  if ($browserAuditor) {
+    $browserTree = @(Get-ProcessTree ([int]$browserAuditor.Id) | Sort-Object -Descending)
+    foreach ($processId in $browserTree) { Stop-Process -Id ([int]$processId) -Force -ErrorAction SilentlyContinue }
   }
   if ($applicationId) {
     Push-Location $repo

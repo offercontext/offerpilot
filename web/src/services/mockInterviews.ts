@@ -28,6 +28,7 @@ export async function startMockInterview(input: {
   attemptKey: string;
   questionKey: string;
   preparationProposalId?: number;
+  preparationItemIds?: string[];
 }): Promise<MockInterviewAttemptResponse | MockInterviewPendingResponse> {
   const { data } = await http.post<MockInterviewAttemptResponse | MockInterviewPendingResponse>(base(input.applicationId, input.eventId), {
     resume_id: input.resumeId,
@@ -35,6 +36,9 @@ export async function startMockInterview(input: {
     attempt_idempotency_key: input.attemptKey,
     initial_question_idempotency_key: input.questionKey,
     preparation_proposal_id: input.preparationProposalId,
+    preparation_selection: input.preparationProposalId && input.preparationItemIds?.length
+      ? { proposal_id: input.preparationProposalId, item_ids: input.preparationItemIds }
+      : undefined,
   });
   return data;
 }

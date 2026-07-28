@@ -110,6 +110,7 @@ function createMockInterviewDraft(): MockInterviewDrawerDraft {
     proposalId: null,
     proposal: null,
     selectedIds: [],
+    preparationItemIds: [],
     resultUnknown: false,
     error: null,
   };

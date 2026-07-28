@@ -140,6 +140,7 @@ from offerpilot.repositories.mock_interviews import (
     MockInterviewRepository,
     MockInterviewSourceChanged,
     MockInterviewTurnIdempotencyConflict,
+    provider_mock_interview_snapshot,
 )
 from offerpilot.repositories.mock_interview_review_drafts import (
     MockInterviewReviewDraftAlreadyConfirmed,
@@ -4133,6 +4134,9 @@ def create_app(
             question_key = str(payload["initial_question_idempotency_key"])
             if not isinstance(jd_text, str):
                 raise ValueError("jd_text must be a string")
+            preparation_selection = payload.get("preparation_selection")
+            if preparation_selection is not None and not isinstance(preparation_selection, dict):
+                raise ValueError("preparation_selection must be an object")
             result = mock_interviews.create_or_replay_start(
                 application_id,
                 event_id,
@@ -4143,13 +4147,14 @@ def create_app(
                 else None,
                 attempt_key,
                 question_key,
+                preparation_selection,
             )
         except KeyError as exc:
             return error_response(422, f"missing field: {exc.args[0]}")
         except MockInterviewIdempotencyConflict:
             return error_response(409, "mock_interview_idempotency_conflict")
         except MockInterviewTurnIdempotencyConflict:
-            return error_response(409, "mock_interview_turn_idempotency_conflict")
+            return error_response(409, "mock_interview_turn_idempotency_conflict", "mock_interview_turn_idempotency_conflict")
         except MockInterviewSourceChanged:
             return error_response(409, "mock_interview_source_conflict")
         except MockInterviewContractFailed:
@@ -4188,7 +4193,7 @@ def create_app(
                 raise MockInterviewProviderError("mock_interview_provider_error")
             question = generate_question(
                 configured_model,
-                json.loads(result.attempt.input_snapshot_json),
+                provider_mock_interview_snapshot(result.attempt),
                 [],
             )
             completed = mock_interviews.complete_question(
@@ -4285,6 +4290,8 @@ def create_app(
             attempt = mock_interviews.attempt_context(attempt_id, application_id, event_id)
             existing = mock_interviews.get_turn(attempt_id, turn_no)
             if existing is not None and existing.turn_status == "awaiting_answer":
+                if existing.question_idempotency_key != question_key:
+                    raise MockInterviewTurnIdempotencyConflict("question key changed")
                 return JSONResponse({
                     "attempt_id": attempt.id,
                     "attempt_status": attempt.attempt_status,
@@ -4311,7 +4318,7 @@ def create_app(
             configured_model = _chat_model(chat_model, resolved_data_dir)
             if isinstance(configured_model, JSONResponse):
                 raise MockInterviewProviderError("mock_interview_provider_error")
-            snapshot = json.loads(attempt.input_snapshot_json)
+            snapshot = provider_mock_interview_snapshot(attempt)
             question = generate_question(configured_model, snapshot, list(claim.turns))
             completed = mock_interviews.complete_question(
                 attempt_id, turn_no, revision, provider_token, transcript_fingerprint, question
@@ -4346,7 +4353,7 @@ def create_app(
         except MockInterviewContractFailed:
             return error_response(502, "mock interview output could not be verified; please start a new attempt", "mock_interview_unverifiable")
         except MockInterviewTurnIdempotencyConflict:
-            return error_response(409, "mock_interview_turn_idempotency_conflict")
+            return error_response(409, "mock_interview_turn_idempotency_conflict", "mock_interview_turn_idempotency_conflict")
         except MockInterviewSourceChanged:
             return error_response(409, "mock_interview_source_conflict")
         except LookupError:
@@ -4428,7 +4435,7 @@ def create_app(
             )
         revision, provider_token, transcript_fingerprint = claim
         try:
-            snapshot = json.loads(attempt.input_snapshot_json)
+            snapshot = provider_mock_interview_snapshot(attempt)
             turn_payload = list(claim.turns)
             configured_model = _chat_model(chat_model, resolved_data_dir)
             legacy_model: ChatModel | None = (

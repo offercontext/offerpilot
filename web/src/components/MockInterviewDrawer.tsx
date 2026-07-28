@@ -30,6 +30,7 @@ export interface MockInterviewDrawerDraft {
   answerSubmitted: boolean;
   editedBlocks: Record<string, string>;
   preparationProposalId?: number;
+  preparationItemIds: string[];
   attemptId: number | null;
   turnNo: number;
   question: string;
@@ -116,6 +117,7 @@ function clearDefiniteAttempt(onDraftChange: Props['onDraftChange']) {
     proposalId: null,
     proposal: null,
     selectedIds: [],
+    preparationItemIds: [],
     editedBlocks: {},
     resultUnknown: false,
     pendingOperation: undefined,
@@ -164,7 +166,10 @@ export default function MockInterviewDrawer({
     try {
       const result = await startMockInterview({
         applicationId, eventId, resumeId: draft.resumeId, jdText: draft.jdText,
-        attemptKey, questionKey, preparationProposalId: draft.preparationProposalId,
+        attemptKey,
+        questionKey,
+        preparationProposalId: draft.preparationProposalId,
+        preparationItemIds: draft.preparationItemIds,
       });
       if (!('turn' in result)) {
         onDraftChange({ attemptId: result.attempt_id, pendingOperation: 'start', resultUnknown: true, retryAfterMs: result.retry_after_ms, error: safeError({ response: { status: 202 } }) });
@@ -317,7 +322,24 @@ export default function MockInterviewDrawer({
                 aria-label="选择面试准备建议"
                 placeholder="可选：选择已确认的面试准备建议"
                 value={draft.preparationProposalId}
-                onChange={(value) => onDraftChange({ preparationProposalId: value })}
+                onChange={(value) => onDraftChange({ preparationProposalId: value, preparationItemIds: [] })}
+                dropdownRender={(menu) => (
+                  <>
+                    {menu}
+                    <Select
+                      mode="multiple"
+                      aria-label="preparation items"
+                      value={draft.preparationItemIds}
+                      onChange={(value) => onDraftChange({ preparationItemIds: value as string[] })}
+                      options={preparations
+                        .find((item) => item.id === draft.preparationProposalId)
+                        ? Object.values(preparations.find((item) => item.id === draft.preparationProposalId)!.proposal)
+                          .flat()
+                          .map((item) => ({ value: item.id, label: item.text }))
+                        : []}
+                    />
+                  </>
+                )}
                 options={preparations.map((item) => ({ value: item.id, label: `准备建议 · ${new Date(item.created_at).toLocaleString()}` }))}
               />
             ) : null}

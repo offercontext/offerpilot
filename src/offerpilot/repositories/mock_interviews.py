@@ -101,6 +101,7 @@ class MockInterviewRepository:
         preparation_proposal_id: int | None,
         attempt_idempotency_key: str,
         initial_question_idempotency_key: str,
+        preparation_selection: dict[str, Any] | None = None,
     ) -> MockInterviewStartResult:
         if not jd_text.strip():
             raise ValueError("jd_text must not be blank")
@@ -116,6 +117,7 @@ class MockInterviewRepository:
                 resume_id,
                 jd_text,
                 preparation_proposal_id,
+                preparation_selection,
             )
             fingerprint = sha256_text(canonical_json(snapshot))
             existing = session.scalar(
@@ -581,13 +583,18 @@ class MockInterviewRepository:
                 return
             if attempt.application_id != application_id or attempt.event_id != event_id:
                 raise LookupError("mock interview attempt not found")
-            proposal_exists = session.scalar(
-                select(MockInterviewFeedbackProposal.id).where(
+            draft_exists = session.scalar(
+                select(MockInterviewReviewDraft.id).where(
+                    MockInterviewReviewDraft.attempt_id == attempt_id
+                )
+            )
+            if draft_exists is not None or attempt.attempt_status == "confirmed":
+                raise MockInterviewAttemptConfirmed("mock_interview_attempt_confirmed")
+            session.execute(
+                delete(MockInterviewFeedbackProposal).where(
                     MockInterviewFeedbackProposal.attempt_id == attempt_id
                 )
             )
-            if proposal_exists is not None or attempt.attempt_status in {"feedback_ready", "confirmed"}:
-                raise MockInterviewAttemptConfirmed("mock_interview_attempt_confirmed")
             session.execute(
                 delete(MockInterviewTurn).where(MockInterviewTurn.attempt_id == attempt_id)
             )
@@ -792,6 +799,7 @@ class MockInterviewRepository:
         resume_id: int,
         jd_text: str,
         preparation_proposal_id: int | None,
+        preparation_selection: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         application = session.get(Application, application_id)
         event = session.get(ApplicationEvent, event_id)
@@ -827,7 +835,7 @@ class MockInterviewRepository:
             },
             "jd": {"text": jd_text},
             "selected_preparation": _selected_preparation_snapshot(
-                session, application_id, event_id, preparation_proposal_id
+                session, application_id, event_id, preparation_proposal_id, preparation_selection
             ),
             "turns": [],
         }
@@ -852,12 +860,35 @@ def _transcript_fingerprint(turns: list[MockInterviewTurn]) -> str:
 
 
 def _question_source_snapshot(attempt: MockInterviewAttempt) -> dict[str, Any]:
+    return _provider_mock_interview_snapshot(attempt)
+
+
+def _provider_mock_interview_snapshot(attempt: MockInterviewAttempt) -> dict[str, Any]:
     snapshot = json.loads(attempt.input_snapshot_json)
     return {
         "jd": snapshot.get("jd", {}),
         "resume": snapshot.get("resume", {}),
-        "selected_preparation": snapshot.get("selected_preparation", []),
+        "selected_preparation": [
+            {
+                "items": [
+                    {
+                        "text": entry.get("text", ""),
+                        "evidence_refs": entry.get("evidence_refs", []),
+                    }
+                    for entry in item.get("items", [])
+                    if isinstance(entry, dict)
+                ],
+                "evidence": item.get("evidence", []),
+            }
+            for item in snapshot.get("selected_preparation", [])
+            if isinstance(item, dict)
+        ],
     }
+
+
+def provider_mock_interview_snapshot(attempt: MockInterviewAttempt) -> dict[str, Any]:
+    """Return only source text needed by the model, never DB identifiers or full proposals."""
+    return _provider_mock_interview_snapshot(attempt)
 
 
 def _token() -> str:
@@ -888,9 +919,25 @@ def _selected_preparation_snapshot(
     application_id: int,
     event_id: int,
     proposal_id: int | None,
+    selection: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     if proposal_id is None:
+        if selection is not None:
+            raise ValueError("preparation_selection requires preparation_proposal_id")
         return []
+    if selection is None:
+        raise ValueError("preparation_selection is required when using preparation_proposal_id")
+    if selection.get("proposal_id") != proposal_id:
+        raise ValueError("preparation_selection proposal_id must match preparation_proposal_id")
+    item_ids = selection.get("item_ids")
+    if (
+        not isinstance(item_ids, list)
+        or not item_ids
+        or len(item_ids) > 8
+        or any(not isinstance(item_id, str) or not item_id.strip() for item_id in item_ids)
+        or len(set(item_ids)) != len(item_ids)
+    ):
+        raise ValueError("preparation_selection item_ids must be a non-empty unique list")
     proposal = session.get(InterviewPreparationProposal, proposal_id)
     if (
         proposal is None
@@ -909,11 +956,30 @@ def _selected_preparation_snapshot(
         raise ValueError("preparation proposal is invalid")
     if not _preparation_sources_current(session, proposal):
         raise ValueError("preparation proposal source changed")
+    items_by_id = {
+        item["id"]: item
+        for field in ("preparation_directions", "story_prompts", "review_points", "interviewer_questions", "items_to_clarify")
+        for item in value.get(field, [])
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    }
+    if any(item_id not in items_by_id for item_id in item_ids):
+        raise ValueError("preparation_selection contains an unknown item")
+    selected_items = [items_by_id[item_id] for item_id in item_ids]
+    evidence: list[dict[str, str]] = []
+    seen_evidence: set[tuple[str, str, str]] = set()
+    for item in selected_items:
+        for ref in item.get("evidence_refs", []):
+            key = (ref["source"], ref["path"], ref["excerpt"])
+            if key not in seen_evidence:
+                seen_evidence.add(key)
+                evidence.append({"source": key[0], "path": key[1], "excerpt": key[2]})
     return [
         {
             "source_fingerprint": proposal.source_fingerprint,
             "proposal_hash": proposal.proposal_hash,
-            "proposal": value,
+            "proposal_id": proposal.id,
+            "items": selected_items,
+            "evidence": evidence,
         }
     ]
 
@@ -972,4 +1038,16 @@ def _assert_preparation_snapshot(
         .where(InterviewPreparationProposal.proposal_status.in_(["normal", "safe_empty"]))
     )
     if proposal is None or not _preparation_sources_current(session, proposal):
+        raise MockInterviewSourceChanged("mock_interview_source_conflict")
+    try:
+        current = _selected_preparation_snapshot(
+            session,
+            application_id,
+            event_id,
+            proposal.id,
+            {"proposal_id": proposal.id, "item_ids": [entry["id"] for entry in item["items"]]},
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise MockInterviewSourceChanged("mock_interview_source_conflict") from exc
+    if canonical_json(current[0]["items"]) != canonical_json(item.get("items")):
         raise MockInterviewSourceChanged("mock_interview_source_conflict")

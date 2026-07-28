@@ -37,6 +37,19 @@ def test_browser_harness_requires_real_two_turn_draft_and_browser_network_eviden
     assert "provider_proxy_connect" in script or "provider-egress-proxy.py" in script
 
 
+def test_browser_harness_rejects_non_https_provider_before_starting_proxy():
+    script = (Path(__file__).parents[1] / "scripts" / "mock-interview-real-ai-browser-harness.ps1").read_text(encoding="utf-8")
+    assert "requires an HTTPS provider endpoint" in script
+
+
+def test_browser_harness_requires_cdp_network_audit():
+    script = (Path(__file__).parents[1] / "scripts" / "mock-interview-real-ai-browser-harness.ps1").read_text(encoding="utf-8")
+    auditor = (Path(__file__).parents[1] / "scripts" / "browser-network-audit.py").read_text(encoding="utf-8")
+    assert "MOCK_INTERVIEW_CDP_URL" in script
+    assert "Network.requestWillBeSent" in auditor
+    assert "CDP browser request audit is missing" in script
+
+
 def test_mock_interview_smoke_rejects_untraceable_turn_evidence():
     proposal = {
         **SAFE_EMPTY_FEEDBACK,

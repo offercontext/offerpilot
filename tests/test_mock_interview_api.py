@@ -169,3 +169,49 @@ def test_delete_unconfirmed_attempt_is_idempotent(tmp_path):
 
     assert deleted.status_code == 200
     assert replay_delete.status_code == 200
+
+
+def test_delete_feedback_proposal_without_confirmed_draft_removes_attempt(tmp_path):
+    client, app_id, event_id, resume_id = _client(tmp_path)
+    base = f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts"
+    started = client.post(base, json={
+        "resume_id": resume_id,
+        "jd_text": "JD Python",
+        "attempt_idempotency_key": "attempt-proposal-delete",
+        "initial_question_idempotency_key": "question-proposal-delete",
+    }).json()
+    attempt_id = started["attempt_id"]
+    client.post(
+        f"{base}/{attempt_id}/turns",
+        json={"turn_no": 1, "answer_text": "My answer", "turn_idempotency_key": "answer-proposal-delete"},
+    )
+    finished = client.post(
+        f"{base}/{attempt_id}/finish",
+        json={"feedback_idempotency_key": "feedback-proposal-delete"},
+    )
+    assert finished.status_code == 201
+
+    deleted = client.delete(f"{base}/{attempt_id}")
+
+    assert deleted.status_code == 200
+    history = client.get(base)
+    assert history.status_code == 200
+    assert history.json()["items"] == []
+
+
+def test_ready_question_replay_with_different_key_is_conflict(tmp_path):
+    client, app_id, event_id, resume_id = _client(tmp_path)
+    base = f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts"
+    started = client.post(base, json={
+        "resume_id": resume_id,
+        "jd_text": "JD Python",
+        "attempt_idempotency_key": "attempt-question-replay",
+        "initial_question_idempotency_key": "question-original",
+    }).json()
+    response = client.post(
+        f"{base}/{started['attempt_id']}/turns/1/question",
+        json={"question_idempotency_key": "question-different"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "mock_interview_turn_idempotency_conflict"
