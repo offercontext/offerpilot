@@ -81,12 +81,17 @@ Attempt 是一次事件绑定的完整练习输入和状态容器。
 | `attempt_status` | `generating_question`、`awaiting_answer`、`finishing`、`feedback_ready`、`provider_unknown`、`contract_failed`、`source_changed`、`cancelled` |
 | `generation_revision` / `provider_call_token` / `provider_lease_until` | Provider owner 的 CAS/lease；token 只保存不可预测随机值，日志不记录；lease 续期和接管必须短事务完成 |
 | `current_turn_no` | 已持久化的最后一轮编号，单调递增 |
+| `transcript_fingerprint` | 按已提交 Turn 的稳定顺序计算；回答追加时更新，不参与 Attempt 来源漂移判断 |
 | `failure_category` | 仅保存稳定分类，不保存原始模型输出、输入快照、证据摘录或密钥 |
 | `created_at` / `completed_at` / `cancelled_at` | 审计时间 |
 
-事件、投递和 Resume 标识是审计用快照标识，不使用 `ON DELETE CASCADE` 删除 Attempt。Application 软删除后，Application-scoped 读取返回 404；事件物理删除、Resume 删除或其内容变化时，保留快照的历史 Attempt/Proposal 可在 Application 仍可见时只读显示并标记 `source_changed`。未确认且明确取消的 Attempt 可物理清理其子数据；未知结果 Attempt 不能被普通关闭删除。
+表中的 `idempotency_key` 明确定义为 `attempt_idempotency_key`；Turn 和 Feedback Proposal 的 key 不复用该字段。事件、投递和 Resume 标识是审计用快照标识，不使用 `ON DELETE CASCADE` 删除 Attempt。Application 软删除后，Application-scoped 读取返回 404；事件物理删除、Resume 删除或其内容变化时，保留快照的历史 Attempt/Proposal 可在 Application 仍可见时只读显示并标记 `source_changed`。未确认且明确取消的 Attempt 可物理清理其子数据；未知结果 Attempt 不能被普通关闭删除。
 
 ### 4.2 `mock_interview_turns`
+
+Turn 幂等字段和指纹规则是本节的完整契约：`turn_idempotency_key` 与 `question_idempotency_key` 必须持久化；数据库约束为 `UNIQUE(attempt_id, turn_no, turn_idempotency_key)` 和 `UNIQUE(attempt_id, turn_no, question_idempotency_key)`。首题使用独立的 `initial_question_idempotency_key`；提交回答使用 `turn_idempotency_key`；生成下一题使用 `question_idempotency_key`。同一 key 与同一 payload 重放返回原 Turn/问题（首次 201，重放 200），不同 payload 返回 `409 mock_interview_turn_idempotency_conflict`，不新增 Turn。
+
+Attempt 的 `source_fingerprint`（实现中可命名为 `input_fingerprint`）只覆盖不可变的 Application/Event/Resume/JD/可选准备建议快照；它不包含 Turn。另存按 Turn 顺序 canonical 序列化的 `transcript_fingerprint`，每次成功追加回答后更新。问题和反馈回写的 CAS 同时匹配 `generation_revision + provider_call_token + expected_transcript_fingerprint`；transcript 指纹变化是正常练习进展，不是来源漂移。只有 source/input fingerprint 变化才返回 `409 mock_interview_source_conflict`。
 
 每个 Turn 隶属于一个 Attempt，使用 `attempt_id + turn_no` 唯一约束，`attempt_id` 对已确认历史使用限制删除语义。
 
@@ -98,9 +103,17 @@ Turn 的 Provider 路径使用服务端 canonical ID `/turns/001/question` 与 `
 
 Feedback Proposal 是不可变的结构化建议快照。一个 Attempt 可有多个由用户明确触发的结束尝试，但每个 `(attempt_id, idempotency_key)` 只能有一条。Proposal 一旦写入不可更新，历史读取不调用 AI。
 
-字段至少包括：`id`、`attempt_id`、`idempotency_key`、`input_snapshot_json`、`source_fingerprint`、`proposal_json`、`proposal_hash`、`proposal_status`（`normal`/`safe_empty`）、`failure_category`、`created_at`。写入使用 Attempt 的来源快照和所有 Turn 的冻结哈希；晚到 Provider 不能覆盖 ready 结果。
+字段至少包括：`id`、`attempt_id`、`idempotency_key`、`input_snapshot_json`、`source_fingerprint`、`transcript_fingerprint`、`proposal_json`、`proposal_hash`、`proposal_status`（`normal`/`safe_empty`）、`failure_category`、`created_at`。写入使用 Attempt 的不可变来源快照和结束时的 Turn transcript fingerprint；晚到 Provider 不能覆盖 ready 结果。
 
-严格输出顶层只能包含 `schema_version`、`proposal_status`、`strengths`、`practice_points`、`follow_up_questions`、`next_practice_steps` 六个字段。四个数组各最多 8 条；每项只能包含 `id`、`text`、`evidence_refs`，`id` 全局唯一，`text` 为 1–1,000 个 Unicode 字符且不得为空白，`evidence_refs` 为 1–4 项非空数组。每项至少引用一个证据；数组没有足够可验证内容时使用固定安全空结构，不能填入分数、弱点标签、录用判断、confidence、recommendation 或额外字段。
+严格输出顶层只能包含 `schema_version`、`proposal_status`、`strengths`、`practice_points`、`follow_up_questions`、`next_practice_steps` 六个字段。四个数组各最多 8 条；每项只能包含 `id`、`text`、`evidence_refs`，`id` 全局唯一，`text` 为 1–1,000 个 Unicode 字符且不得为空白。除版本化固定无前提问题这一明确例外外，`evidence_refs` 为 1–4 项非空数组且每项至少引用一个证据；数组没有足够可验证内容时使用固定安全空结构，不能填入分数、弱点标签、录用判断、confidence、recommendation 或额外字段。
+
+四类数组的证据规则进一步收紧：
+
+- `strengths` 和 `practice_points` 每项至少包含一条 `source=turn`、路径为 `/turns/<n>/answer` 的回答证据；可以同时引用 JD/Resume，但不能只用岗位要求或既有简历事实来断言本次表现。
+- `follow_up_questions` 的上下文相关问题必须有至少一条回答或冻结来源引用。无依据问题只能使用服务端版本化常量集合 `mock_interview_questions_v1`，此时 `id` 必须是固定 `question_id`，`text` 必须逐字等于该常量，`evidence_refs` 才允许为空；模型不能自行创造无证据例外。
+- `next_practice_steps` 每项至少引用一条回答证据；若步骤还涉及岗位方向或已有经历，必须再引用对应 JD/Resume 证据。不得只凭 JD/Resume 将未观察到的能力写成表现结论。
+- `mock_interview_questions_v1` 当前完整 allowlist 只有：`clarify_answer` → “您希望进一步澄清哪一部分？”、`add_example` → “您希望补充一个具体例子吗？”、`choose_next_focus` → “下一次练习时，您想先补充哪一步？”；新增固定问题必须提升常量版本，不能通过自然语言相似度放行。
+- `normal` 结果若任一具体条目不满足上述规则即契约失败；`safe_empty` 只能是四个数组全部为空的固定结构，不能带摘要、解释或隐含判断。
 
 Evidence ref 只允许：
 
@@ -116,7 +129,7 @@ Evidence ref 只允许：
 
 ### 4.4 `mock_interview_review_drafts`
 
-用户二次确认后创建独立草稿，至少包括：`id`、`attempt_id`、`proposal_id`、`application_id`、`event_id`、`selected_blocks_json`、`content_hash`、`source_fingerprint`、`status=confirmed`、`created_at`。`selected_blocks_json` 只能包含用户选中的 Proposal 条目及其用户编辑结果和原 Evidence refs；用户编辑不改变原 Proposal。
+用户二次确认后创建独立草稿，至少包括：`id`、`attempt_id`、`proposal_id`、`confirmation_idempotency_key`、`application_id`、`event_id`、`selected_blocks_json`、`content_hash`、`source_fingerprint`、`status=confirmed`、`created_at`。数据库必须有 `UNIQUE(proposal_id)`；首次确认用客户端生成且服务端严格校验的 confirmation key 原子插入，双击/并发请求由唯一约束兜底。相同 key 重放返回原草稿 200，不再次写入；同一 Proposal 使用不同 key 时返回稳定 `409 mock_interview_review_draft_already_confirmed`，不能创建第二份草稿。`selected_blocks_json` 只能包含用户选中的 Proposal 条目及其用户编辑结果和原 Evidence refs；用户编辑不改变原 Proposal。
 
 该表不与 `interview_notes` 建立覆盖关系，也不把自己伪装成主复盘。后续若要形成正式 InterviewNote，必须另有明确的、单独确认的业务流程；本首期不提供该转换按钮。该草稿不进入 Knowledge Source、Question、Memory、提醒或其他领域的自动输入。
 
@@ -174,7 +187,7 @@ Application/Event/Resume 的数据库 ID、`job_url`、事件地点、会议链�
 | lease 到期 | `BEGIN IMMEDIATE` 原子 CAS 为 `generating_*`、递增 revision、换 token、设置新 lease；两个接管者只有一个成功 | 成功接管者仍使用原 key；另一方 202 |
 | Provider 返回合法 Proposal/问题 | CAS 成功后写入 Turn 或不可变 Proposal，状态变为 `awaiting_answer`/`feedback_ready`，201；同 key 重放 200 | 用户可查看；历史只读 |
 | 稳定契约失败 | 最多一次修复仍失败，返回 `502 mock_interview_unverifiable`，不写 Feedback Proposal；Attempt 进入 `contract_failed`，失败分类脱敏保存 | 这是确定失败，可新建 key；不展示模型原文，不把失败伪装为评分 |
-| 没有可验证反馈证据 | 不调用 Provider 或由服务端生成并校验固定 `safe_empty` Proposal，201；五类数组为空 | 展示“暂无可验证的练习建议”，不是系统错误 |
+| 没有可验证反馈证据 | 不调用 Provider 或由服务端生成并校验固定 `safe_empty` Proposal，201；四类数组为空 | 展示“暂无可验证的练习建议”，不是系统错误 |
 | 来源变化 | 回写前重算 Event/Resume/准备建议/Turn fingerprint；CAS 标记 `source_changed`，返回 `409 mock_interview_source_conflict`，不写结果 | 冻结原历史只读；用户必须重新配置并生成新 key |
 | 普通取消/关闭 | 只有确定未进行中的 Attempt 才能短事务删除未确认 Attempt、Turns 和未确认 Proposal；接口幂等 | 清除本地草稿 |
 | 取消时结果未知 | 不删除服务端 Attempt，不清除原 key，保留 `provider_unknown`/进行中状态 | 关闭后可恢复；不得生成新 key |
@@ -198,7 +211,7 @@ POST   /api/applications/{application_id}/events/{event_id}/mock-interview/attem
 DELETE /api/applications/{application_id}/events/{event_id}/mock-interview/attempts/{attempt_id}
 ```
 
-POST 创建只接受 `resume_id`、原始 `jd_text`、可选 `preparation_proposal_id`、客户端 `idempotency_key`；不接受 `job_url`、snapshot、fingerprint、proposal、内部 ID 列表或 Provider 输出。Turn/finish 分别使用自己的客户端幂等 key，并在同一 Attempt 内校验。
+POST 创建只接受 `resume_id`、原始 `jd_text`、可选 `preparation_proposal_id`、客户端 `attempt_idempotency_key` 和 `initial_question_idempotency_key`；不接受 `job_url`、snapshot、fingerprint、proposal、内部 ID 列表或 Provider 输出。提交回答使用 `turn_idempotency_key`，生成下一题使用 `question_idempotency_key`，结束反馈使用 `feedback_idempotency_key`；每个 key 都在同一 Attempt 内校验并按第 4.2/4.3 节重放。
 
 前端只按稳定 `error_code`/HTTP 状态映射中文：404“当前投递或面试事件不可用”、422“请先选择简历并补充有效的 JD/面试事件”、409“当前来源已变化，请重新开始”、410“本次练习已过期”、502 Provider 未知“AI 服务结果待确认，请使用原尝试重试”、契约失败“AI 输出未通过验证，未创建反馈建议，请重新开始”。未知错误使用统一中文兜底；不得透传 `response.data.error`、Axios message、Python exception 或模型内容。
 
@@ -245,11 +258,11 @@ UI 固定文案全部中文，至少包含“开始文本模拟面试”“本�
 
 - 入口：仅可见、未软删除、已排期、`event_type=interview`；跨 Application、未排期、非 interview、缺 Resume、空 JD、URL fallback 均为稳定 404/422，且 Provider 未被调用。
 - 迁移：真实旧 DDL、旧命名索引、旧会话/消息清理、普通 Chat 保留、新表建立和重复迁移幂等。
-- Attempt/Turn：冻结快照逐字、canonical hash、回答顺序、同 Turn key 重放、修改输入创建新 key、普通取消删除、未知取消保留。
+- Attempt/Turn：冻结输入 `source_fingerprint` 与可变 `transcript_fingerprint` 分离；覆盖首题、回答提交、下一题、结束反馈各自 key 的唯一约束、同 key 重放、不同 payload 冲突、回答正常追加不触发来源漂移、修改输入创建新 key、普通取消删除、未知取消保留。
 - 并发：两个独立 SQLite connection 的首次请求只插入一个 Attempt/只调用一次 Provider；lease 到期两个 owner 仅一个接管；晚到 owner 不能覆盖 ready；陈旧 revision/token CAS 失败。
 - 失败：Provider/网络/超时保留 key；稳定契约失败为 502 且不写 Proposal；安全空结构严格校验；来源变化 409；事件删除、Resume 删除、Application 软删除按本设计返回；日志不含敏感字段。
 - 证据：JD、Resume canonical Pointer、Turn 路径和逐字摘录逐项校验；伪造 source/path、空白/拼接/Unicode 改写摘录和额外字段拒绝。
-- HITL：未确认不生成 Review Draft；确认原子创建一份独立草稿；原 `InterviewNote` 不变；Knowledge/Question/Memory/Wakeup/MockSession/Application/Event/Resume/投递状态均无跨领域写入。
+- HITL：未确认不生成 Review Draft；两个独立连接并发确认只原子创建一份，`UNIQUE(proposal_id)` 和同 key 重放均覆盖；原 `InterviewNote` 不变；Knowledge/Question/Memory/Wakeup/MockSession/Application/Event/Resume/投递状态均无跨领域写入。
 - 旧接口：`/api/mock/sessions` 及其子路径不可用；旧模型/仓储/类型不再注册或被 import。
 
 ### 10.2 前端专项
@@ -258,6 +271,7 @@ UI 固定文案全部中文，至少包含“开始文本模拟面试”“本�
 - 配置、确认弹窗、逐题文本对话、结束反馈、逐项选择、二次确认、取消和历史只读均有交互测试。
 - `generating`/`provider_unknown` 重挂载后控件仍冻结且复用原 key；确定失败才清 key；成功后重新开始使用新 key。
 - 404/409/422/410/502 和未知错误只显示安全中文，不显示 Axios、服务端原文、模型原文或密钥。
+- 反馈校验覆盖：strengths/practice_points 缺少回答证据被拒绝；只引用 JD/Resume 伪装为表现被拒绝；follow-up 固定 `question_id` 与逐字常量通过，任意自造无证据问题被拒绝；next_practice_steps 缺少回答证据被拒绝。
 - 旧 MockStudio、旧 service/type、旧 `/mock` 导航入口不再出现；不把 Feedback Proposal 文案渲染成分数、录用判断或“弱点画像”。
 
 ### 10.3 隔离 real-AI API 与浏览器验收
@@ -272,7 +286,9 @@ API smoke 至少创建三组不同的合成已排期面试事件，逐组选择 
 2. 逐题文本回答→结束复盘→查看结构化反馈；
 3. 用户选择反馈条目→二次确认→查看独立模拟练习复盘草稿；
 4. 关闭后重开历史，只读显示冻结事件、Turn、Proposal 和来源状态；未知结果路径用同 key 恢复；
-5. 数据库断言 Application/Event/Resume/JD、正式 InterviewNote、Material Kit、Knowledge、Question、Memory、Wakeup、Reminder、投递状态和旧 MockSession 均未被意外改变，且浏览器网络只到本地 `/api` 与已配置 AI Provider。
+5. 数据库断言 Application/Event/Resume/JD、正式 InterviewNote、Material Kit、Knowledge、Question、Memory、Wakeup、Reminder、投递状态和旧 MockSession 均未被意外改变。浏览器网络 allowlist 只允许本地静态资源和本地 `/api`；浏览器不得直接访问 AI Provider 或任何外部域名。AI Provider 外联只能由服务端发起，服务端 harness 单独校验实际目标为配置的 AI endpoint，且不属于招聘平台或公司网站。
+
+浏览器 harness 必须记录浏览器网络请求清单并对 provider 域名直接请求失败；服务端 harness 单独记录 provider 目标主机、请求次数与是否为配置 endpoint。两份证据不能合并成“浏览器访问 Provider”。
 
 清理按依赖顺序删除子表、Attempt、合成 Event/Application/Resume 及临时配置；清理前先比较跨领域基线，清理后再断言隔离目录无残留。源数据目录需做全文件快照前后比较并完全一致。
 
