@@ -38,6 +38,7 @@ export interface MockInterviewProposalResponse {
 export interface MockInterviewPendingResponse {
   attempt_id: number;
   attempt_status: 'generating_question' | 'generating_feedback' | 'provider_unknown';
+  retry_after_ms: number;
 }
 
 export interface MockInterviewHistoryItem extends MockInterviewProposalResponse {

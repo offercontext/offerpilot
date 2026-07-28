@@ -6,10 +6,11 @@ import pytest
 from sqlalchemy import select
 
 from offerpilot.db import init_database
-from offerpilot.models import Application, ApplicationEvent, MockInterviewAttempt, Resume
+from offerpilot.models import Application, ApplicationEvent, MockInterviewAttempt, MockInterviewTurn, Resume
 from offerpilot.repositories.mock_interviews import (
     MockInterviewIdempotencyConflict,
     MockInterviewRepository,
+    MockInterviewSourceChanged,
     MockInterviewTurnIdempotencyConflict,
 )
 
@@ -38,12 +39,27 @@ def _seed(factory):
         return application.id, event.id, second_event.id, resume.id, other_resume.id
 
 
+def _start_ready(repo, *args, **kwargs):
+    result = repo.create_or_replay_start(*args, **kwargs)
+    if result.question_claim is not None:
+        revision, token, transcript_fingerprint = result.question_claim
+        repo.complete_question(
+            result.attempt.id,
+            1,
+            revision,
+            token,
+            transcript_fingerprint,
+            "Question grounded in the JD.",
+        )
+    return result
+
+
 def test_start_requires_visible_scheduled_interview_and_selected_resume(tmp_path):
     factory = init_database(tmp_path / "data.db")
     app_id, event_id, _, resume_id, _ = _seed(factory)
     repo = MockInterviewRepository(factory)
 
-    result = repo.create_or_replay_start(
+    result = _start_ready(repo,
         app_id, event_id, resume_id, "JD text", None, "attempt-1", "question-1"
     )
     attempt = result.attempt
@@ -66,7 +82,7 @@ def test_answer_updates_transcript_not_source_fingerprint(tmp_path):
     factory = init_database(tmp_path / "data.db")
     app_id, event_id, _, resume_id, _ = _seed(factory)
     repo = MockInterviewRepository(factory)
-    result = repo.create_or_replay_start(
+    result = _start_ready(repo,
         app_id, event_id, resume_id, "JD text", None, "attempt-1", "question-1"
     )
     attempt, turn = result.attempt, result.turn
@@ -84,12 +100,12 @@ def test_same_attempt_key_same_input_replays_existing_attempt(tmp_path):
     factory = init_database(tmp_path / "data.db")
     app_id, event_id, _, resume_id, _ = _seed(factory)
     repo = MockInterviewRepository(factory)
-    first_result = repo.create_or_replay_start(
+    first_result = _start_ready(repo,
         app_id, event_id, resume_id, "JD text", None, "attempt-1", "question-1"
     )
     first, first_turn = first_result.attempt, first_result.turn
 
-    replay_result = repo.create_or_replay_start(
+    replay_result = _start_ready(repo,
         app_id, event_id, resume_id, "JD text", None, "attempt-1", "question-1"
     )
     replay, replay_turn = replay_result.attempt, replay_result.turn
@@ -112,7 +128,7 @@ def test_same_turn_key_different_answer_returns_turn_idempotency_conflict(tmp_pa
     factory = init_database(tmp_path / "data.db")
     app_id, event_id, _, resume_id, _ = _seed(factory)
     repo = MockInterviewRepository(factory)
-    attempt = repo.create_or_replay_start(
+    attempt = _start_ready(repo,
         app_id, event_id, resume_id, "JD text", None, "attempt-1", "question-1"
     ).attempt
     repo.submit_answer(attempt.id, 1, "first", "answer-1")
@@ -125,7 +141,7 @@ def test_editing_submitted_answer_requires_new_attempt(tmp_path):
     factory = init_database(tmp_path / "data.db")
     app_id, event_id, _, resume_id, _ = _seed(factory)
     repo = MockInterviewRepository(factory)
-    attempt = repo.create_or_replay_start(
+    attempt = _start_ready(repo,
         app_id, event_id, resume_id, "JD text", None, "attempt-1", "question-1"
     ).attempt
     repo.submit_answer(attempt.id, 1, "first", "answer-1")
@@ -139,7 +155,7 @@ def test_initial_question_key_is_persisted_on_first_turn(tmp_path):
     app_id, event_id, _, resume_id, _ = _seed(factory)
     repo = MockInterviewRepository(factory)
 
-    result = repo.create_or_replay_start(
+    result = _start_ready(repo,
         app_id, event_id, resume_id, "JD text", None, "attempt-1", "initial-question-1"
     )
     turn = result.turn
@@ -147,15 +163,29 @@ def test_initial_question_key_is_persisted_on_first_turn(tmp_path):
     assert turn.question_idempotency_key == "initial-question-1"
 
 
+def test_question_source_snapshot_keeps_only_minimal_question_evidence(tmp_path):
+    factory = init_database(tmp_path / "data.db")
+    app_id, event_id, _, resume_id, _ = _seed(factory)
+    repo = MockInterviewRepository(factory)
+    result = repo.create_or_replay_start(
+        app_id, event_id, resume_id, "JD text", None, "attempt-1", "question-1"
+    )
+    with factory() as session:
+        turn = session.scalar(select(MockInterviewTurn).where(MockInterviewTurn.attempt_id == result.attempt.id))
+        assert turn is not None
+        snapshot = json.loads(turn.question_source_snapshot_json)
+        assert set(snapshot) == {"jd", "resume", "selected_preparation"}
+
+
 def test_same_initial_question_key_replays_first_turn(tmp_path):
     factory = init_database(tmp_path / "data.db")
     app_id, event_id, _, resume_id, _ = _seed(factory)
     repo = MockInterviewRepository(factory)
-    first = repo.create_or_replay_start(
+    first = _start_ready(repo,
         app_id, event_id, resume_id, "JD text", None, "attempt-1", "initial-question-1"
     ).attempt
 
-    replay_result = repo.create_or_replay_start(
+    replay_result = _start_ready(repo,
         app_id, event_id, resume_id, "JD text", None, "attempt-1", "initial-question-1"
     )
     replay, turn = replay_result.attempt, replay_result.turn
@@ -189,7 +219,7 @@ def test_concurrent_first_start_creates_one_attempt_and_one_provider_owner(tmp_p
         repo = MockInterviewRepository(init_database(path))
         barrier.wait()
         results.append(
-            repo.create_or_replay_start(
+        _start_ready(repo,
                 app_id, event_id, resume_id, "JD text", None, "attempt-1", "question-1"
             )
         )
@@ -210,7 +240,7 @@ def test_expired_question_lease_has_one_cas_takeover(tmp_path):
     factory = init_database(tmp_path / "data.db")
     app_id, event_id, _, resume_id, _ = _seed(factory)
     repo = MockInterviewRepository(factory)
-    attempt = repo.create_or_replay_start(
+    attempt = _start_ready(repo,
         app_id, event_id, resume_id, "JD text", None, "attempt-1", "question-1"
     ).attempt
     with factory() as session:
@@ -230,7 +260,7 @@ def test_next_question_claim_and_completion_persist_a_second_turn(tmp_path):
     factory = init_database(tmp_path / "data.db")
     app_id, event_id, _, resume_id, _ = _seed(factory)
     repo = MockInterviewRepository(factory)
-    attempt = repo.create_or_replay_start(
+    attempt = _start_ready(repo,
         app_id, event_id, resume_id, "JD text", None, "attempt-1", "question-1"
     ).attempt
     repo.submit_answer(attempt.id, 1, "My answer", "answer-1")
@@ -259,7 +289,7 @@ def test_feedback_claim_uses_lease_and_cas_completion(tmp_path):
     factory = init_database(tmp_path / "data.db")
     app_id, event_id, _, resume_id, _ = _seed(factory)
     repo = MockInterviewRepository(factory)
-    attempt = repo.create_or_replay_start(
+    attempt = _start_ready(repo,
         app_id, event_id, resume_id, "JD text", None, "attempt-1", "question-1"
     ).attempt
     repo.submit_answer(attempt.id, 1, "My answer", "answer-1")
@@ -282,6 +312,50 @@ def test_feedback_claim_uses_lease_and_cas_completion(tmp_path):
     assert replay is not None
     assert replay.id == proposal.id
     assert replay_created is False
+
+
+def test_feedback_claim_returns_the_transcript_frozen_under_its_write_lock(tmp_path):
+    factory = init_database(tmp_path / "data.db")
+    app_id, event_id, _, resume_id, _ = _seed(factory)
+    repo = MockInterviewRepository(factory)
+    attempt = _start_ready(
+        repo, app_id, event_id, resume_id, "JD text", None, "attempt-1", "question-1"
+    ).attempt
+    repo.submit_answer(attempt.id, 1, "first answer", "answer-1")
+
+    claim = repo.claim_feedback(attempt.id, "feedback-1")
+
+    assert claim is not None
+    assert list(claim.turns) == [{"turn_no": 1, "question": "Question grounded in the JD.", "answer": "first answer"}]
+
+
+def test_feedback_completion_rechecks_sources_after_provider_returns(tmp_path):
+    factory = init_database(tmp_path / "data.db")
+    app_id, event_id, _, resume_id, _ = _seed(factory)
+    repo = MockInterviewRepository(factory)
+    attempt = _start_ready(
+        repo, app_id, event_id, resume_id, "JD text", None, "attempt-1", "question-1"
+    ).attempt
+    repo.submit_answer(attempt.id, 1, "first answer", "answer-1")
+    claim = repo.claim_feedback(attempt.id, "feedback-1")
+    assert claim is not None
+
+    with factory() as session:
+        event = session.get(ApplicationEvent, event_id)
+        assert event is not None
+        event.status = "cancelled"
+        session.commit()
+
+    with pytest.raises(MockInterviewSourceChanged):
+        repo.complete_feedback(
+            attempt.id,
+            "feedback-1",
+            claim.revision,
+            claim.provider_call_token,
+            claim.transcript_fingerprint,
+            {"schema_version": "mock-interview-feedback-v1", "proposal_status": "safe_empty", "strengths": [], "practice_points": [], "follow_up_questions": [], "next_practice_steps": []},
+            "safe_empty",
+        )
 
 
 def test_feedback_contract_failure_does_not_create_proposal(tmp_path):

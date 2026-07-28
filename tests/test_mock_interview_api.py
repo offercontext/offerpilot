@@ -2,11 +2,25 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 
+from offerpilot.ai.types import Assistant
 from offerpilot.api import create_app
 
 
+class _MockInterviewModel:
+    supports_json_schema = False
+
+    def complete(self, messages, tools, **kwargs):
+        if any("mock-interview-feedback-v1" in message.content for message in messages):
+            return Assistant(
+                content='{"schema_version":"mock-interview-feedback-v1","proposal_status":"safe_empty","strengths":[],"practice_points":[],"follow_up_questions":[],"next_practice_steps":[]}'
+            )
+        return Assistant(
+            content='{"question":"请结合 JD 说明你会如何准备。","evidence_refs":[{"source":"jd","path":"/jd/text","excerpt":"Python"}]}'
+        )
+
+
 def _client(tmp_path):
-    client = TestClient(create_app(data_dir=tmp_path))
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=_MockInterviewModel()))
     application = client.post(
         "/api/applications",
         json={"company_name": "Acme", "position_name": "Engineer", "status": "interview"},
@@ -54,6 +68,8 @@ def test_start_and_same_key_replay_are_idempotent(tmp_path):
     assert first.status_code == 201
     assert replay.status_code == 200
     assert first.json()["attempt_id"] == replay.json()["attempt_id"]
+    assert first.json()["turn"]["question"]
+    assert "请介绍一次" not in first.json()["turn"]["question"]
 
 
 def test_start_rejects_cross_application_event(tmp_path):
@@ -101,5 +117,5 @@ def test_submit_answer_and_finish_persist_safe_empty_feedback(tmp_path):
     )
 
     assert answered.status_code == 200
-    assert finished.status_code == 502
-    assert finished.json()["error_code"] == "mock_interview_provider_error"
+    assert finished.status_code == 201
+    assert finished.json()["proposal_status"] == "safe_empty"

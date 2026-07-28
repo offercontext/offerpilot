@@ -2,14 +2,22 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 
+from offerpilot.ai.types import Assistant
 from offerpilot.api import create_app
 from offerpilot.db import session_factory_for_data_dir
 from offerpilot.models import MockInterviewFeedbackProposal
 from offerpilot.repositories.json_contract import canonical_json, sha256_text
 
 
+class _MockInterviewModel:
+    supports_json_schema = False
+
+    def complete(self, messages, tools, **kwargs):
+        return Assistant(content='{"question":"Describe the Python service tradeoff.","evidence_refs":[{"source":"jd","path":"/jd/text","excerpt":"Python"}]}')
+
+
 def _setup(tmp_path):
-    client = TestClient(create_app(data_dir=tmp_path))
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=_MockInterviewModel()))
     application = client.post(
         "/api/applications",
         json={"company_name": "Acme", "position_name": "Engineer", "status": "interview"},

@@ -20,8 +20,8 @@ export async function startMockInterview(input: {
   attemptKey: string;
   questionKey: string;
   preparationProposalId?: number;
-}): Promise<MockInterviewAttemptResponse> {
-  const { data } = await http.post<MockInterviewAttemptResponse>(base(input.applicationId, input.eventId), {
+}): Promise<MockInterviewAttemptResponse | MockInterviewPendingResponse> {
+  const { data } = await http.post<MockInterviewAttemptResponse | MockInterviewPendingResponse>(base(input.applicationId, input.eventId), {
     resume_id: input.resumeId,
     jd_text: input.jdText,
     attempt_idempotency_key: input.attemptKey,

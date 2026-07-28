@@ -38,6 +38,8 @@ export interface MockInterviewDrawerDraft {
   proposal: MockInterviewProposal | null;
   selectedIds: string[];
   resultUnknown: boolean;
+  retryAfterMs?: number;
+  pendingOperation?: 'start' | 'question' | 'feedback';
   error: string | null;
 }
 
@@ -87,6 +89,35 @@ function safeError(error: unknown): string {
       : '操作结果待确认，请使用原尝试重试。';
 }
 
+function isUnknownResult(error: unknown): boolean {
+  const response = (error as { response?: { status?: number; data?: { error_code?: string } } })?.response;
+  const status = response?.status;
+  const code = response?.data?.error_code;
+  if (code === 'mock_interview_unverifiable') return false;
+  return !status || status >= 500 || code === 'mock_interview_provider_error';
+}
+
+function clearDefiniteAttempt(onDraftChange: Props['onDraftChange']) {
+  onDraftChange({
+    attemptId: null,
+    attemptKey: null,
+    questionKey: null,
+    feedbackKey: null,
+    turnKey: null,
+    nextQuestionKey: null,
+    confirmationKey: null,
+    answerSubmitted: false,
+    question: '',
+    answer: '',
+    proposalId: null,
+    proposal: null,
+    selectedIds: [],
+    editedBlocks: {},
+    resultUnknown: false,
+    pendingOperation: undefined,
+  });
+}
+
 export default function MockInterviewDrawer({
   open, applicationId, eventId, resumes, draft, onDraftChange, onClose,
 }: Props) {
@@ -131,17 +162,22 @@ export default function MockInterviewDrawer({
         applicationId, eventId, resumeId: draft.resumeId, jdText: draft.jdText,
         attemptKey, questionKey, preparationProposalId: draft.preparationProposalId,
       });
+      if (!('turn' in result)) {
+        onDraftChange({ attemptId: result.attempt_id, pendingOperation: 'start', resultUnknown: true, retryAfterMs: result.retry_after_ms, error: safeError({ response: { status: 202 } }) });
+        return;
+      }
       onDraftChange({
         attemptId: result.attempt_id,
         turnNo: result.turn.turn_no,
         question: result.turn.question,
         answer: result.turn.answer,
         resultUnknown: false,
+        pendingOperation: undefined,
         error: null,
       });
     } catch (error) {
-      const status = (error as { response?: { status?: number } })?.response?.status;
-      onDraftChange({ resultUnknown: !status || status === 502, error: safeError(error) });
+      if (isUnknownResult(error)) onDraftChange({ resultUnknown: true, error: safeError(error) });
+      else { clearDefiniteAttempt(onDraftChange); onDraftChange({ error: safeError(error) }); }
     } finally { setWorking(false); }
   };
 
@@ -157,8 +193,8 @@ export default function MockInterviewDrawer({
       });
       onDraftChange({ error: null, resultUnknown: false, answerSubmitted: true });
     } catch (error) {
-      const status = (error as { response?: { status?: number } })?.response?.status;
-      onDraftChange({ resultUnknown: !status || status === 502, error: safeError(error) });
+      if (isUnknownResult(error)) onDraftChange({ resultUnknown: true, error: safeError(error) });
+      else { clearDefiniteAttempt(onDraftChange); onDraftChange({ error: safeError(error) }); }
     } finally { setWorking(false); }
   };
 
@@ -173,7 +209,7 @@ export default function MockInterviewDrawer({
         turnNo: draft.turnNo + 1, questionKey: nextQuestionKey,
       });
       if (!('turn' in result)) {
-        onDraftChange({ resultUnknown: true, error: '结果待确认，请使用原尝试重试。' });
+        onDraftChange({ pendingOperation: 'question', resultUnknown: true, retryAfterMs: result.retry_after_ms, error: '结果待确认，请使用原尝试重试。' });
         return;
       }
       onDraftChange({
@@ -184,11 +220,12 @@ export default function MockInterviewDrawer({
         nextQuestionKey: null,
         turnKey: null,
         resultUnknown: false,
+        pendingOperation: undefined,
         error: null,
       });
     } catch (error) {
-      const status = (error as { response?: { status?: number } })?.response?.status;
-      onDraftChange({ resultUnknown: !status || status === 502, error: safeError(error) });
+      if (isUnknownResult(error)) onDraftChange({ resultUnknown: true, error: safeError(error) });
+      else { clearDefiniteAttempt(onDraftChange); onDraftChange({ error: safeError(error) }); }
     } finally { setWorking(false); }
   };
 
@@ -200,13 +237,13 @@ export default function MockInterviewDrawer({
     try {
       const result = await finishMockInterview({ applicationId, eventId, attemptId: draft.attemptId, feedbackKey });
       if (!('proposal' in result)) {
-        onDraftChange({ resultUnknown: true, error: '结果待确认，请使用原尝试重试。' });
+        onDraftChange({ pendingOperation: 'feedback', resultUnknown: true, retryAfterMs: result.retry_after_ms, error: '结果待确认，请使用原尝试重试。' });
         return;
       }
-      onDraftChange({ proposalId: result.proposal_id, proposal: result.proposal, selectedIds: [], resultUnknown: false, error: null });
+      onDraftChange({ proposalId: result.proposal_id, proposal: result.proposal, selectedIds: [], resultUnknown: false, pendingOperation: undefined, error: null });
     } catch (error) {
-      const status = (error as { response?: { status?: number } })?.response?.status;
-      onDraftChange({ resultUnknown: !status || status === 502, error: safeError(error) });
+      if (isUnknownResult(error)) onDraftChange({ resultUnknown: true, error: safeError(error) });
+      else { clearDefiniteAttempt(onDraftChange); onDraftChange({ error: safeError(error) }); }
     } finally { setWorking(false); }
   };
 
@@ -232,7 +269,27 @@ export default function MockInterviewDrawer({
       <Space direction="vertical" size="middle" style={{ width: '100%' }}>
         <span style={{ color: 'var(--op-muted)' }}>仅用于练习表达。AI 不提供录用判断、通过率或岗位匹配分。</span>
         {draft.error ? <Alert type="warning" showIcon message={draft.error} /> : null}
-        {pending ? <Alert type="info" message="结果待确认，请使用原尝试重试；输入已冻结。" /> : null}
+        {pending ? (
+          <Alert
+            type="info"
+            message="结果待确认，请使用原尝试重试；输入已冻结。"
+            action={(
+              <Button
+                size="small"
+                onClick={() => void (
+                  draft.pendingOperation === 'feedback'
+                    ? finish()
+                    : draft.pendingOperation === 'question'
+                      ? nextQuestion()
+                      : start()
+                )}
+                disabled={working}
+              >
+                使用原尝试重试
+              </Button>
+            )}
+          />
+        ) : null}
         {!draft.attemptId && !draft.proposal ? (
           <>
             <Select
@@ -279,7 +336,7 @@ export default function MockInterviewDrawer({
               autoSize={{ minRows: 5, maxRows: 12 }}
             />
             <Button onClick={() => void answer()} disabled={!draft.answer.trim() || working}>提交回答</Button>
-            <Button type="primary" onClick={() => void finish()} disabled={!draft.answer.trim() || working}>结束并生成复盘建议</Button>
+            <Button type="primary" onClick={() => void finish()} disabled={!draft.answer.trim() || !draft.answerSubmitted || working}>结束并生成复盘建议</Button>
           </>
         ) : null}
         {draft.attemptId && !draft.proposal && draft.answerSubmitted ? (
@@ -332,7 +389,37 @@ export default function MockInterviewDrawer({
             dataSource={history}
             renderItem={(item) => (
               <List.Item>
-                <Space><span>{new Date(item.created_at).toLocaleString()}</span><Tag>{item.proposal_status === 'safe_empty' ? '暂无可验证建议' : '有复盘建议'}</Tag></Space>
+                <Space direction="vertical" style={{ width: '100%' }}>
+                  <Space>
+                    <span>{new Date(item.created_at).toLocaleString()}</span>
+                    <Tag>{item.proposal_status === 'safe_empty' ? '暂无可验证建议' : '复盘建议（只读）'}</Tag>
+                    {item.source_status === 'source_changed' ? <Tag color="warning">来源已变化</Tag> : null}
+                  </Space>
+                  {(item.turns ?? []).map((turn) => (
+                    <div key={turn.turn_no}>
+                      <div>第 {turn.turn_no} 题：{turn.question}</div>
+                      <div style={{ color: 'var(--op-muted)' }}>回答：{turn.answer || '（未提交）'}</div>
+                    </div>
+                  ))}
+                  {blocks(item.proposal).map((block) => (
+                    <div key={block.id}>
+                      <div>{block.text}</div>
+                      <div style={{ color: 'var(--op-muted)' }}>
+                        {block.evidence_refs.map((ref) => `${ref.source} ${ref.path}: ${ref.excerpt}`).join('；')}
+                      </div>
+                    </div>
+                  ))}
+                  {item.review_draft ? (
+                    <div>
+                      <Tag color="green">已确认复盘草稿</Tag>
+                      {Array.isArray(item.review_draft.selected_blocks)
+                        ? item.review_draft.selected_blocks.map((selected, index) => (
+                          <div key={index}>{typeof selected === 'object' && selected !== null && 'text' in selected ? String(selected.text) : ''}</div>
+                        ))
+                        : null}
+                    </div>
+                  ) : null}
+                </Space>
               </List.Item>
             )}
           />

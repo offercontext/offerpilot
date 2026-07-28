@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
@@ -700,6 +701,16 @@ def _mock_interview_history_json(repository: Any, row: Any) -> dict[str, Any]:
     }
 
 
+def _mock_interview_retry_after_ms(attempt: Any) -> int:
+    lease_until = getattr(attempt, "provider_lease_until", None)
+    if lease_until is None:
+        return 1000
+    if lease_until.tzinfo is None:
+        lease_until = lease_until.replace(tzinfo=timezone.utc)
+    remaining = int((lease_until - datetime.now(timezone.utc)).total_seconds() * 1000)
+    return max(250, min(5000, remaining))
+
+
 def create_app(
     data_dir: Optional[Path] = None,
     chat_model: Optional[ChatModel] = None,
@@ -769,6 +780,17 @@ def create_app(
         knowledge_runtime.stop(timeout=5)
     @app.middleware("http")
     async def cors_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
+        audit_path = os.getenv("OFFERPILOT_HTTP_AUDIT_FILE")
+        if audit_path:
+            with open(audit_path, "a", encoding="utf-8") as audit:
+                audit.write(json.dumps({
+                    "kind": "inbound",
+                    "scheme": request.url.scheme,
+                    "host": request.url.hostname,
+                    "port": request.url.port,
+                    "method": request.method,
+                    "path": request.url.path,
+                }, ensure_ascii=True) + "\n")
         if request.method == "OPTIONS":
             response = Response(status_code=200)
         else:
@@ -4130,17 +4152,75 @@ def create_app(
         except ValueError as exc:
             return error_response(422, str(exc))
 
-        response = {
-            "attempt_id": result.attempt.id,
-            "attempt_status": result.attempt.attempt_status,
-            "generation_revision": result.attempt.generation_revision,
-            "turn": {
-                "turn_no": result.turn.turn_no,
-                "question": result.turn.question_text,
-                "answer": result.turn.answer_text,
-            },
-        }
-        return JSONResponse(response, status_code=201 if result.created else 200)
+        if result.question_claim is None and result.turn.turn_status == "generating_question":
+            return JSONResponse(
+                {
+                    "attempt_id": result.attempt.id,
+                    "attempt_status": result.attempt.attempt_status,
+                    "generation_revision": result.attempt.generation_revision,
+                    "retry_after_ms": _mock_interview_retry_after_ms(result.attempt),
+                },
+                status_code=202,
+            )
+        if result.question_claim is None:
+            response = {
+                "attempt_id": result.attempt.id,
+                "attempt_status": result.attempt.attempt_status,
+                "generation_revision": result.attempt.generation_revision,
+                "turn": {
+                    "turn_no": result.turn.turn_no,
+                    "question": result.turn.question_text,
+                    "answer": result.turn.answer_text,
+                },
+            }
+            return JSONResponse(response, status_code=200)
+        revision, provider_token, transcript_fingerprint = result.question_claim
+        try:
+            configured_model = _chat_model(chat_model, resolved_data_dir)
+            if isinstance(configured_model, JSONResponse):
+                raise MockInterviewProviderError("mock_interview_provider_error")
+            question = generate_question(
+                configured_model,
+                json.loads(result.attempt.input_snapshot_json),
+                [],
+            )
+            completed = mock_interviews.complete_question(
+                result.attempt.id,
+                1,
+                revision,
+                provider_token,
+                transcript_fingerprint,
+                question,
+            )
+            if completed is None:
+                return error_response(409, "mock_interview_transcript_conflict")
+            current = mock_interviews.get_turn(result.attempt.id, 1)
+            assert current is not None
+            return JSONResponse(
+                {
+                    "attempt_id": completed.id,
+                    "attempt_status": completed.attempt_status,
+                    "generation_revision": completed.generation_revision,
+                    "turn": {
+                        "turn_no": current.turn_no,
+                        "question": current.question_text,
+                        "answer": current.answer_text,
+                    },
+                },
+                status_code=201 if result.created else 200,
+            )
+        except MockInterviewProviderError:
+            mock_interviews.mark_provider_unknown(
+                result.attempt.id, revision, provider_token, "question"
+            )
+            return error_response(502, "AI service is temporarily unavailable", "mock_interview_provider_error")
+        except MockInterviewUnverifiableError as exc:
+            mock_interviews.mark_contract_failure(
+                result.attempt.id, revision, provider_token, exc.category, "question_unverifiable"
+            )
+            return error_response(502, "mock interview output could not be verified", "mock_interview_unverifiable")
+        except MockInterviewSourceChanged:
+            return error_response(409, "mock_interview_source_conflict")
 
     @app.post(
         "/api/applications/{application_id}/events/{event_id}/mock-interview/attempts/{attempt_id}/turns"
@@ -4209,7 +4289,11 @@ def create_app(
                         "turn": {"turn_no": current.turn_no, "question": current.question_text, "answer": current.answer_text},
                     })
                 return JSONResponse(
-                    {"attempt_id": attempt_id, "attempt_status": "generating_question"},
+                    {
+                        "attempt_id": attempt_id,
+                        "attempt_status": "generating_question",
+                        "retry_after_ms": _mock_interview_retry_after_ms(attempt),
+                    },
                     status_code=202,
                 )
             revision, provider_token, transcript_fingerprint = claim
@@ -4292,22 +4376,29 @@ def create_app(
             return error_response(404, "mock_interview_attempt_not_found")
         except MockInterviewSourceChanged:
             return error_response(409, "mock_interview_source_conflict")
+        if not turns or not turns[-1].answer_text.strip():
+            return error_response(422, "mock_interview_answer_required")
         existing, _ = mock_interviews.get_feedback(attempt_id, feedback_key)
         if existing is not None:
             return JSONResponse(_mock_interview_proposal_json(existing), status_code=200)
-        claim = mock_interviews.claim_feedback(attempt_id, feedback_key)
+        try:
+            claim = mock_interviews.claim_feedback(attempt_id, feedback_key)
+        except MockInterviewSourceChanged:
+            return error_response(409, "mock_interview_source_conflict")
         if claim is None:
+            current = mock_interviews.feedback_context(attempt_id, application_id, event_id)[0]
             return JSONResponse(
-                {"attempt_id": attempt_id, "attempt_status": "generating_feedback"},
+                {
+                    "attempt_id": attempt_id,
+                    "attempt_status": current.attempt_status,
+                    "retry_after_ms": _mock_interview_retry_after_ms(current),
+                },
                 status_code=202,
             )
         revision, provider_token, transcript_fingerprint = claim
         try:
             snapshot = json.loads(attempt.input_snapshot_json)
-            turn_payload = [
-                {"turn_no": turn.turn_no, "question": turn.question_text, "answer": turn.answer_text}
-                for turn in turns
-            ]
+            turn_payload = list(claim.turns)
             configured_model = _chat_model(chat_model, resolved_data_dir)
             legacy_model: ChatModel | None = (
                 None if isinstance(configured_model, JSONResponse) else configured_model
@@ -4321,55 +4412,25 @@ def create_app(
         except MockInterviewProviderError:
             mock_interviews.mark_provider_unknown(attempt_id, revision, provider_token, "feedback")
             return error_response(502, "AI service is temporarily unavailable", "mock_interview_provider_error")
-        record, created = mock_interviews.complete_feedback(
-            attempt_id,
-            feedback_key,
-            revision,
-            provider_token,
-            transcript_fingerprint,
-            proposal,
-            proposal["proposal_status"],
-            str(diagnostic.get("failure_category", "")),
-        )
+        try:
+            record, created = mock_interviews.complete_feedback(
+                attempt_id,
+                feedback_key,
+                revision,
+                provider_token,
+                transcript_fingerprint,
+                proposal,
+                proposal["proposal_status"],
+                str(diagnostic.get("failure_category", "")),
+            )
+        except MockInterviewSourceChanged:
+            return error_response(409, "mock_interview_source_conflict")
         if record is None:
             replay, _ = mock_interviews.get_feedback(attempt_id, feedback_key)
             if replay is not None:
                 return JSONResponse(_mock_interview_proposal_json(replay), status_code=200)
             return error_response(409, "mock_interview_transcript_conflict")
         return JSONResponse(_mock_interview_proposal_json(record), status_code=201 if created else 200)
-        if False:
-            snapshot = json.loads(attempt.input_snapshot_json)
-            turn_payload = [
-                {
-                    "turn_no": turn.turn_no,
-                    "question": turn.question_text,
-                    "answer": turn.answer_text,
-                }
-                for turn in turns
-            ]
-            configured_model = _chat_model(chat_model, resolved_data_dir)
-            model: ChatModel | None = (
-                None if isinstance(configured_model, JSONResponse) else configured_model
-            )
-            proposal, diagnostic = generate_feedback(model, snapshot, turn_payload)
-        if False:
-            return error_response(502, "AI 服务暂不可用，请稍后重试。", "mock_interview_provider_error")
-        record, created = mock_interviews.create_or_replay_feedback(
-            attempt_id,
-            feedback_key,
-            proposal,
-            proposal["proposal_status"],
-            str(diagnostic.get("failure_category", "")),
-        )
-        return JSONResponse(
-            {
-                "proposal_id": record.id,
-                "proposal_status": record.proposal_status,
-                "proposal_hash": record.proposal_hash,
-                "proposal": json.loads(record.proposal_json),
-            },
-            status_code=201 if created else 200,
-        )
 
     @app.post(
         "/api/applications/{application_id}/events/{event_id}/mock-interview/attempts/{attempt_id}/review-drafts"

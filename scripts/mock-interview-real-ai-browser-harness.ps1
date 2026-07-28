@@ -3,6 +3,8 @@ $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $sourceData = if ($env:OFFERPILOT_DATA) { $env:OFFERPILOT_DATA } else { Join-Path $HOME '.offerpilot' }
 $tempData = Join-Path ([IO.Path]::GetTempPath()) ('offerpilot-mock-interview-' + [Guid]::NewGuid().ToString('N'))
+$httpAudit = Join-Path $tempData 'http-audit.jsonl'
+$providerAudit = Join-Path $tempData 'provider-audit.jsonl'
 $probe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
 $probe.Start()
 $port = ([Net.IPEndPoint]$probe.LocalEndpoint).Port
@@ -34,13 +36,6 @@ function Assert-PortOwner([int]$rootProcessId, [int]$expectedPort) {
   return $true
 }
 
-function Invoke-Json([string]$method, [string]$uri, [hashtable]$body) {
-  if (-not $uri.StartsWith($baseUrl, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "Browser/API request escaped the isolated local origin: $uri"
-  }
-  Invoke-RestMethod -Method $method -Uri $uri -ContentType 'application/json' -Body ($body | ConvertTo-Json -Depth 12)
-}
-
 function Get-ProviderEndpointTuple([string]$configPath) {
   if (-not (Test-Path -LiteralPath $configPath)) { throw 'The isolated real-AI config is missing.' }
   $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
@@ -64,6 +59,8 @@ try {
     Copy-Item -LiteralPath $sourceConfig -Destination (Join-Path $tempData 'config.json')
   }
   $env:OFFERPILOT_DATA = $tempData
+  $env:OFFERPILOT_HTTP_AUDIT_FILE = $httpAudit
+  $env:OFFERPILOT_PROVIDER_AUDIT_FILE = $providerAudit
   $server = Start-Process powershell -WindowStyle Hidden -PassThru -ArgumentList @(
     '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command',
     "Set-Location '$repo'; `$env:OFFERPILOT_DATA = '$tempData'; uv run oc start --port $port"
@@ -118,20 +115,30 @@ try {
   Write-Host 'Select the synthetic resume, paste a non-empty JD, start the text session, submit an answer, finish, select feedback if present, and use the second confirmation to save the independent review draft.'
   Write-Host 'Close and reopen the event to view read-only history. Browser requests must stay on local static resources and /api; Provider egress is server-side only.'
   $providerEndpoint = Get-ProviderEndpointTuple (Join-Path $tempData 'config.json')
-  Write-Host "Verified server-side Provider endpoint tuple: $providerEndpoint"
-  $attempt = Invoke-Json POST "$baseUrl/api/applications/$applicationId/events/$eventId/mock-interview/attempts" @{
-    resume_id = [int]$resumeIds[0]; jd_text = 'Prepare a reliable Python service explanation.'
-    attempt_idempotency_key = 'browser-attempt-1'; initial_question_idempotency_key = 'browser-question-1'
+  Write-Host "Configured Provider endpoint tuple: $providerEndpoint"
+  Write-Host "Open $baseUrl in the in-app browser and complete the real text mock-interview flow for the synthetic event."
+  Write-Host 'The harness only observes the browser result; it does not submit the mock-interview API on your behalf.'
+  $history = $null
+  for ($attempt = 0; $attempt -lt 180; $attempt++) {
+    try {
+      $history = Invoke-RestMethod -Uri "$baseUrl/api/applications/$applicationId/events/$eventId/mock-interview/attempts"
+      if (@($history.items).Count -gt 0 -and @($history.items[0].turns).Count -gt 0) { break }
+    } catch { }
+    Start-Sleep -Seconds 1
   }
-  $attemptId = [int]$attempt.attempt_id
-  $answer = Invoke-Json POST "$baseUrl/api/applications/$applicationId/events/$eventId/mock-interview/attempts/$attemptId/turns" @{
-    turn_no = 1; answer_text = 'I explained the rollback plan and the safety signal.'; turn_idempotency_key = 'browser-answer-1'
+  if ($null -eq $history -or @($history.items).Count -lt 1) { throw 'Real browser flow did not create read-only history.' }
+  if (@($history.items[0].turns).Count -lt 1) { throw 'Real browser history did not contain frozen turns.' }
+  if (-not (Test-Path -LiteralPath $httpAudit)) { throw 'Browser request audit is missing.' }
+  if (-not (Test-Path -LiteralPath $providerAudit)) { throw 'Provider egress audit is missing.' }
+  $httpRecords = @(Get-Content -LiteralPath $httpAudit | ForEach-Object { $_ | ConvertFrom-Json })
+  foreach ($record in $httpRecords) {
+    if ($record.host -ne '127.0.0.1' -or ($record.path -notlike '/api/*' -and $record.path -notlike '/*.*')) { throw 'Browser request escaped the local origin.' }
   }
-  $feedback = Invoke-WebRequest -Method Post -Uri "$baseUrl/api/applications/$applicationId/events/$eventId/mock-interview/attempts/$attemptId/finish" -ContentType 'application/json' -Body (@{ feedback_idempotency_key = 'browser-feedback-1' } | ConvertTo-Json)
-  if ($feedback.StatusCode -notin @(200, 201)) { throw "Mock interview browser flow did not complete feedback: $($feedback.StatusCode)" }
-  $history = Invoke-RestMethod -Uri "$baseUrl/api/applications/$applicationId/events/$eventId/mock-interview/attempts"
-  if (@($history.items).Count -lt 1) { throw 'Mock interview browser flow did not expose read-only history.' }
-  Write-Host 'Local browser/API request whitelist, server Provider endpoint tuple, feedback, and history checks passed.'
+  $providerRecords = @(Get-Content -LiteralPath $providerAudit | ForEach-Object { $_ | ConvertFrom-Json })
+  foreach ($record in $providerRecords) {
+    if ("$($record.scheme)://$($record.host):$($record.port)" -ne $providerEndpoint) { throw 'Provider egress did not match the configured endpoint tuple.' }
+  }
+  Write-Host 'Real browser history, local request audit, and configured Provider egress checks passed.'
 
   Push-Location $repo
   try {
@@ -163,4 +170,6 @@ try {
   Remove-Item Env:MOCK_INTERVIEW_HARNESS_EVENT -ErrorAction SilentlyContinue
   Remove-Item Env:MOCK_INTERVIEW_HARNESS_RESUME -ErrorAction SilentlyContinue
   Remove-Item Env:MOCK_INTERVIEW_HARNESS_BASELINE -ErrorAction SilentlyContinue
+  Remove-Item Env:OFFERPILOT_HTTP_AUDIT_FILE -ErrorAction SilentlyContinue
+  Remove-Item Env:OFFERPILOT_PROVIDER_AUDIT_FILE -ErrorAction SilentlyContinue
 }

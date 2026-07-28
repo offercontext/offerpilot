@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import urlparse
 
 from litellm import completion
 
@@ -114,6 +116,7 @@ class ConfiguredAIClient:
         if response_format is not None and provider.supports_json_schema:
             payload["response_format"] = response_format
 
+        _audit_provider_endpoint(provider.base_url)
         response = completion(**payload)
         message = _first_choice_message(response)
         calls = []
@@ -156,6 +159,7 @@ class ConfiguredAIClient:
             payload["tools"] = [_openai_tool(tool) for tool in tools]
             payload["tool_choice"] = "auto"
 
+        _audit_provider_endpoint(provider.base_url)
         content_parts: list[str] = []
         tool_calls: dict[int, dict[str, Any]] = {}
         provider_blocks: dict[str, Any] = {}
@@ -213,6 +217,22 @@ def _litellm_model(provider: AIProviderProfile) -> str:
     if provider.provider:
         return f"{provider.provider}/{provider.model}"
     return provider.model
+
+
+def _audit_provider_endpoint(base_url: str) -> None:
+    path = os.getenv("OFFERPILOT_PROVIDER_AUDIT_FILE")
+    if not path:
+        return
+    parsed = urlparse(base_url)
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    with open(path, "a", encoding="utf-8") as audit:
+        audit.write(
+            json.dumps(
+                {"kind": "provider_egress", "scheme": parsed.scheme, "host": parsed.hostname, "port": port},
+                ensure_ascii=True,
+            )
+            + "\n"
+        )
 
 
 def _litellm_api_base(provider: AIProviderProfile) -> str:
