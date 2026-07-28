@@ -286,7 +286,7 @@ def _classify_provider_failure(error: Exception) -> str:
         return "network_timeout"
     if status is not None and status >= 500:
         return "provider_http_5xx"
-    if "proxy" in error_name:
+    if "proxy" in error_name or "connecterror" in error_name:
         return "proxy_failure"
     if any(
         marker in error_name

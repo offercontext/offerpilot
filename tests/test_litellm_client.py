@@ -282,6 +282,7 @@ def test_client_emits_redacted_provider_failure_diagnostic(monkeypatch):
     [
         (lambda: type("Provider503Error", (RuntimeError,), {"status_code": 503})(), "provider_http_5xx", 503),
         (lambda: type("ProxyError", (RuntimeError,), {})(), "proxy_failure", None),
+        (lambda: type("ConnectError", (RuntimeError,), {})(), "proxy_failure", None),
         (lambda: type("RemoteProtocolError", (RuntimeError,), {})(), "response_lost", None),
     ],
 )
