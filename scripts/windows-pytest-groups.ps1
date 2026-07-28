@@ -35,8 +35,44 @@ function Get-NodeIds {
     )
 }
 
+function Get-SkipsFromJunit {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    [xml]$report = Get-Content -LiteralPath $Path -Raw -Encoding utf8
+    foreach ($testcase in @($report.testsuites.testsuite.testcase)) {
+        $skipped = $testcase.skipped
+        if ($null -eq $skipped) {
+            continue
+        }
+        $module = [string]$testcase.classname
+        if ($module -notmatch '^tests\.(.+)$') {
+            throw "cannot map JUnit testcase module to a pytest node: $module"
+        }
+        $relativeModule = $Matches[1].Replace('.', '\')
+        [pscustomobject]@{
+            NodeId = "tests\$relativeModule.py::$([string]$testcase.name)"
+            Reason = [string]$skipped.message
+        }
+    }
+}
+
+$allowedSymlinkSkipReason = [Text.Encoding]::UTF8.GetString(
+    [Convert]::FromBase64String('5b2T5YmN546v5aKD5rKh5pyJ5Yib5bu656ym5Y+36ZO+5o6l55qE5p2D6ZmQ')
+)
+$allowedSkipReasons = @{
+    'tests\test_knowledge_ingest_integrity.py::test_failed_commit_cleanup_does_not_follow_symlink' = $allowedSymlinkSkipReason
+    'tests\test_knowledge_reset.py::test_cli_rejects_knowledge_root_symlink_with_external_sentinels' = $allowedSymlinkSkipReason
+    'tests\test_knowledge_reset.py::test_cli_rejects_legacy_reset_root_symlink_with_external_sentinels' = $allowedSymlinkSkipReason
+    'tests\test_knowledge_reset.py::test_cli_does_not_follow_nested_escape_symlink' = $allowedSymlinkSkipReason
+}
+
 $collection = Invoke-CheckedPytest @('--collect-only', '-q', '--disable-warnings') 'collect full test manifest'
-$allNodeIds = @(Get-NodeIds $collection | Sort-Object -Unique)
+$allNodeIdsRaw = @(Get-NodeIds $collection)
+$duplicateManifest = @($allNodeIdsRaw | Group-Object | Where-Object Count -gt 1)
+if ($duplicateManifest.Count -gt 0) {
+    throw "pytest full manifest contains duplicate node ids: $($duplicateManifest.Name -join ', ')"
+}
+$allNodeIds = @($allNodeIdsRaw | Sort-Object)
 if ($allNodeIds.Count -eq 0) {
     throw 'pytest collection returned no test node ids'
 }
@@ -73,14 +109,41 @@ try {
             continue
         }
         $groupCollection = Invoke-CheckedPytest -Arguments (@('--collect-only', '-q', '--disable-warnings') + @($group.Value)) -Label "$($group.Key) collect"
-        $nodes = @(Get-NodeIds $groupCollection | Sort-Object -Unique)
+        $nodesRaw = @(Get-NodeIds $groupCollection)
+        $duplicateGroup = @($nodesRaw | Group-Object | Where-Object Count -gt 1)
+        if ($duplicateGroup.Count -gt 0) {
+            throw "$($group.Key) contains duplicate collected node ids: $($duplicateGroup.Name -join ', ')"
+        }
+        $nodes = @($nodesRaw | Sort-Object)
         $nodes | ForEach-Object { $groupNodeIds.Add($_) }
-        $runArguments = @('-q', '--disable-warnings') + @($group.Value)
+        $junitPath = Join-Path $env:TEMP ("offerpilot-pytest-$($group.Key)-{0}.xml" -f [guid]::NewGuid())
+        $runArguments = @('-q', '-rs', '--disable-warnings', "--junitxml=$junitPath") + @($group.Value)
         $null = Invoke-CheckedPytest -Arguments $runArguments -Label $group.Key
+        if (-not (Test-Path -LiteralPath $junitPath)) {
+            throw "$($group.Key) did not produce the required JUnit report"
+        }
+        try {
+            foreach ($skip in @(Get-SkipsFromJunit -Path $junitPath)) {
+                if (-not $allowedSkipReasons.ContainsKey($skip.NodeId)) {
+                    throw "$($group.Key) has an unexpected skipped test: $($skip.NodeId)"
+                }
+                if ($allowedSkipReasons[$skip.NodeId] -ne $skip.Reason) {
+                    throw "$($group.Key) has an unexpected skip reason for $($skip.NodeId): $($skip.Reason)"
+                }
+                Write-Host "allowed skip: $($skip.NodeId) [$($skip.Reason)]"
+            }
+        }
+        finally {
+            Remove-Item -LiteralPath $junitPath -Force -ErrorAction SilentlyContinue
+        }
     }
 
-    $expected = @($allNodeIds | Sort-Object -Unique)
-    $actual = @($groupNodeIds | Sort-Object -Unique)
+    $duplicateGrouped = @($groupNodeIds | Group-Object | Where-Object Count -gt 1)
+    if ($duplicateGrouped.Count -gt 0) {
+        throw "pytest group coverage contains duplicate node ids: $($duplicateGrouped.Name -join ', ')"
+    }
+    $expected = @($allNodeIds | Sort-Object)
+    $actual = @($groupNodeIds | Sort-Object)
     $expectedText = $expected -join "`n"
     $actualText = $actual -join "`n"
     if ($expectedText -ne $actualText) {

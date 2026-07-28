@@ -189,3 +189,9 @@ for name, tool in registry.items():
 - [x] 临时浏览器服务、合成数据和配置副本已停止/清理；隔离库残留为零，正式数据目录未被修改。
 
 本节记录实际命令和证据；全量包装脚本单次运行受本地工具时限限制，已使用相同 manifest 分组逻辑逐组完成并核对覆盖集合，未以单次超时作为通过依据。
+
+## 11. 分组门禁脚本收口（2026-07-28）
+
+- [x] `scripts/windows-pytest-groups.ps1` 现在为每组生成并解析 JUnit 报告，只有四个固定符号链接测试且原因精确为 Windows 无权限时才允许 skip；额外 skip、原因变化或非允许 node id 均失败。
+- [x] 完整 manifest、各组 manifest 与跨组 node id 均在去重前检查重复；重复 node id 不再被 `Sort-Object -Unique` 掩盖。
+- [x] 修复后重新执行五组：agent 425 passed/0 skip、domain 71 passed/0 skip、knowledge 654 passed/4 allowed skip、proposals 271 passed/0 skip、misc 89 passed/0 skip。
