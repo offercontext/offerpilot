@@ -224,3 +224,79 @@ def test_expired_question_lease_has_one_cas_takeover(tmp_path):
 
     assert first is not None
     assert second is None
+
+
+def test_next_question_claim_and_completion_persist_a_second_turn(tmp_path):
+    factory = init_database(tmp_path / "data.db")
+    app_id, event_id, _, resume_id, _ = _seed(factory)
+    repo = MockInterviewRepository(factory)
+    attempt = repo.create_or_replay_start(
+        app_id, event_id, resume_id, "JD text", None, "attempt-1", "question-1"
+    ).attempt
+    repo.submit_answer(attempt.id, 1, "My answer", "answer-1")
+
+    owner = repo.claim_question(attempt.id, 2, "question-2")
+    assert owner is not None
+    revision, token, transcript_fingerprint = owner
+    completed = repo.complete_question(
+        attempt.id, 2, revision, token, transcript_fingerprint, "Tell me about the tradeoff."
+    )
+
+    assert completed is not None
+    with factory() as session:
+        turns = list(
+            session.query(__import__("offerpilot.models", fromlist=["MockInterviewTurn"]).MockInterviewTurn)
+            .filter_by(attempt_id=attempt.id)
+            .order_by(__import__("offerpilot.models", fromlist=["MockInterviewTurn"]).MockInterviewTurn.turn_no)
+        )
+        assert [(turn.turn_no, turn.question_idempotency_key, turn.question_text) for turn in turns] == [
+            (1, "question-1", turns[0].question_text),
+            (2, "question-2", "Tell me about the tradeoff."),
+        ]
+
+
+def test_feedback_claim_uses_lease_and_cas_completion(tmp_path):
+    factory = init_database(tmp_path / "data.db")
+    app_id, event_id, _, resume_id, _ = _seed(factory)
+    repo = MockInterviewRepository(factory)
+    attempt = repo.create_or_replay_start(
+        app_id, event_id, resume_id, "JD text", None, "attempt-1", "question-1"
+    ).attempt
+    repo.submit_answer(attempt.id, 1, "My answer", "answer-1")
+
+    owner = repo.claim_feedback(attempt.id, "feedback-1")
+    assert owner is not None
+    revision, token, transcript_fingerprint = owner
+    assert repo.claim_feedback(attempt.id, "feedback-1") is None
+    proposal, created = repo.complete_feedback(
+        attempt.id,
+        "feedback-1",
+        revision,
+        token,
+        transcript_fingerprint,
+        {"schema_version": "mock-interview-feedback-v1", "proposal_status": "safe_empty", "strengths": [], "practice_points": [], "follow_up_questions": [], "next_practice_steps": []},
+        "safe_empty",
+    )
+    assert created is True
+    replay, replay_created = repo.get_feedback(attempt.id, "feedback-1")
+    assert replay is not None
+    assert replay.id == proposal.id
+    assert replay_created is False
+
+
+def test_feedback_contract_failure_does_not_create_proposal(tmp_path):
+    from offerpilot.ai.mock_interview import MockInterviewUnverifiableError, generate_feedback
+    from offerpilot.ai.types import Assistant
+
+    class InvalidModel:
+        supports_json_schema = False
+
+        def complete(self, *_args, **_kwargs):
+            return Assistant(content="{\"unexpected\":true}")
+
+    with pytest.raises(MockInterviewUnverifiableError):
+        generate_feedback(
+            InvalidModel(),
+            {"jd": {"text": "JD"}, "resume": {"content_json": {}}},
+            [{"turn_no": 1, "question": "Q", "answer": "A"}],
+        )

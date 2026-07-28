@@ -101,5 +101,5 @@ def test_submit_answer_and_finish_persist_safe_empty_feedback(tmp_path):
     )
 
     assert answered.status_code == 200
-    assert finished.status_code == 201
-    assert finished.json()["proposal"]["proposal_status"] == "safe_empty"
+    assert finished.status_code == 502
+    assert finished.json()["error_code"] == "mock_interview_provider_error"

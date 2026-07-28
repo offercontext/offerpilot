@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -14,8 +14,10 @@ from offerpilot.models import (
     ApplicationEvent,
     MockInterviewFeedbackProposal,
     MockInterviewAttempt,
+    MockInterviewReviewDraft,
     MockInterviewTurn,
     Resume,
+    InterviewPreparationProposal,
 )
 from offerpilot.repositories.json_contract import canonical_json, sha256_text
 
@@ -30,6 +32,9 @@ class MockInterviewTurnIdempotencyConflict(ValueError):
 
 class MockInterviewSourceChanged(ValueError):
     pass
+
+
+_ASCII_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$")
 
 
 @dataclass(frozen=True)
@@ -55,8 +60,8 @@ class MockInterviewRepository:
     ) -> MockInterviewStartResult:
         if not jd_text.strip():
             raise ValueError("jd_text must not be blank")
-        if not attempt_idempotency_key or not initial_question_idempotency_key:
-            raise ValueError("idempotency keys are required")
+        _validate_key(attempt_idempotency_key, "attempt_idempotency_key")
+        _validate_key(initial_question_idempotency_key, "initial_question_idempotency_key")
 
         with self._session_factory() as session:
             self._begin_immediate(session)
@@ -98,8 +103,8 @@ class MockInterviewRepository:
                 source_fingerprint=fingerprint,
                 attempt_status="awaiting_answer",
                 generation_revision=1,
-                provider_call_token=_token(),
-                provider_lease_until=_lease_until(),
+                provider_call_token="",
+                provider_lease_until=None,
                 transcript_fingerprint=_transcript_fingerprint([]),
             )
             session.add(attempt)
@@ -124,8 +129,7 @@ class MockInterviewRepository:
         answer_text: str,
         turn_idempotency_key: str,
     ) -> MockInterviewAttempt:
-        if not turn_idempotency_key:
-            raise ValueError("turn_idempotency_key is required")
+        _validate_key(turn_idempotency_key, "turn_idempotency_key")
         with self._session_factory() as session:
             self._begin_immediate(session)
             attempt = session.get(MockInterviewAttempt, attempt_id)
@@ -142,6 +146,8 @@ class MockInterviewRepository:
                 if turn.turn_idempotency_key != turn_idempotency_key or turn.answer_text != answer_text:
                     raise MockInterviewTurnIdempotencyConflict("submitted answer changed")
                 return attempt
+            if turn.turn_status != "awaiting_answer":
+                raise ValueError("turn is still being generated")
             if turn.turn_idempotency_key and turn.turn_idempotency_key != turn_idempotency_key:
                 raise MockInterviewTurnIdempotencyConflict("submitted answer key changed")
             turn.turn_idempotency_key = turn_idempotency_key
@@ -162,22 +168,56 @@ class MockInterviewRepository:
 
     def claim_question(
         self, attempt_id: int, turn_no: int, question_idempotency_key: str
-    ) -> tuple[int, str] | None:
+    ) -> tuple[int, str, str] | None:
+        _validate_key(question_idempotency_key, "question_idempotency_key")
         with self._session_factory() as session:
             self._begin_immediate(session)
             attempt = session.get(MockInterviewAttempt, attempt_id)
             if attempt is None:
                 raise LookupError("mock interview attempt not found")
+            existing_turn = session.scalar(
+                select(MockInterviewTurn).where(
+                    MockInterviewTurn.attempt_id == attempt_id,
+                    MockInterviewTurn.turn_no == turn_no,
+                )
+            )
             now = datetime.now(timezone.utc)
             lease_until = _as_utc(attempt.provider_lease_until)
             if lease_until is not None and lease_until > now:
                 return None
+            if existing_turn is not None:
+                if existing_turn.question_idempotency_key != question_idempotency_key:
+                    raise MockInterviewTurnIdempotencyConflict("question key changed")
+                if turn_no != 1 or existing_turn.turn_status != "awaiting_answer":
+                    return None
+            else:
+                previous = session.scalar(
+                    select(MockInterviewTurn).where(
+                        MockInterviewTurn.attempt_id == attempt_id,
+                        MockInterviewTurn.turn_no == turn_no - 1,
+                    )
+                )
+                if turn_no < 2 or previous is None or not previous.answer_text.strip():
+                    raise ValueError("previous turn must be answered")
+            transcript_fingerprint = attempt.transcript_fingerprint
             attempt.generation_revision += 1
             attempt.provider_call_token = _token()
             attempt.provider_lease_until = _lease_until()
             attempt.attempt_status = "generating_question"
+            if existing_turn is None:
+                session.add(
+                    MockInterviewTurn(
+                        attempt_id=attempt_id,
+                        turn_no=turn_no,
+                        question_idempotency_key=question_idempotency_key,
+                        question_source_snapshot_json=attempt.input_snapshot_json,
+                        turn_status="generating_question",
+                    )
+                )
+            else:
+                existing_turn.turn_status = "generating_question"
             session.commit()
-            return attempt.generation_revision, attempt.provider_call_token
+            return attempt.generation_revision, attempt.provider_call_token, transcript_fingerprint
 
     def complete_question(
         self,
@@ -207,6 +247,7 @@ class MockInterviewRepository:
                 return attempt
             turn.question_text = question_text
             turn.turn_status = "awaiting_answer"
+            attempt.current_turn_no = max(attempt.current_turn_no, turn_no)
             attempt.attempt_status = "awaiting_answer"
             attempt.provider_lease_until = None
             session.commit()
@@ -225,6 +266,129 @@ class MockInterviewRepository:
                 return attempt
             attempt.attempt_status = "provider_unknown"
             attempt.failure_category = "provider_error"
+            session.commit()
+            session.refresh(attempt)
+            return attempt
+
+    def claim_feedback(
+        self, attempt_id: int, feedback_idempotency_key: str
+    ) -> tuple[int, str, str] | None:
+        _validate_key(feedback_idempotency_key, "feedback_idempotency_key")
+        with self._session_factory() as session:
+            self._begin_immediate(session)
+            attempt = session.get(MockInterviewAttempt, attempt_id)
+            if attempt is None:
+                raise LookupError("mock interview attempt not found")
+            existing = session.scalar(
+                select(MockInterviewFeedbackProposal).where(
+                    MockInterviewFeedbackProposal.attempt_id == attempt_id,
+                    MockInterviewFeedbackProposal.idempotency_key == feedback_idempotency_key,
+                )
+            )
+            if existing is not None:
+                return None
+            now = datetime.now(timezone.utc)
+            lease_until = _as_utc(attempt.provider_lease_until)
+            if lease_until is not None and lease_until > now:
+                return None
+            attempt.generation_revision += 1
+            attempt.provider_call_token = _token()
+            attempt.provider_lease_until = _lease_until()
+            attempt.attempt_status = "generating_feedback"
+            attempt.failure_category = ""
+            revision = attempt.generation_revision
+            token = attempt.provider_call_token
+            transcript_fingerprint = attempt.transcript_fingerprint
+            session.commit()
+            return revision, token, transcript_fingerprint
+
+    def get_feedback(
+        self, attempt_id: int, feedback_idempotency_key: str
+    ) -> tuple[MockInterviewFeedbackProposal | None, bool]:
+        _validate_key(feedback_idempotency_key, "feedback_idempotency_key")
+        with self._session_factory() as session:
+            record = session.scalar(
+                select(MockInterviewFeedbackProposal).where(
+                    MockInterviewFeedbackProposal.attempt_id == attempt_id,
+                    MockInterviewFeedbackProposal.idempotency_key == feedback_idempotency_key,
+                )
+            )
+            if record is None:
+                return None, False
+            session.expunge(record)
+            return record, False
+
+    def complete_feedback(
+        self,
+        attempt_id: int,
+        feedback_idempotency_key: str,
+        revision: int,
+        provider_call_token: str,
+        transcript_fingerprint: str,
+        proposal: dict[str, Any],
+        proposal_status: str,
+        failure_category: str = "",
+    ) -> tuple[MockInterviewFeedbackProposal | None, bool]:
+        _validate_key(feedback_idempotency_key, "feedback_idempotency_key")
+        with self._session_factory() as session:
+            self._begin_immediate(session)
+            attempt = session.get(MockInterviewAttempt, attempt_id)
+            if attempt is None:
+                raise LookupError("mock interview attempt not found")
+            existing = session.scalar(
+                select(MockInterviewFeedbackProposal).where(
+                    MockInterviewFeedbackProposal.attempt_id == attempt_id,
+                    MockInterviewFeedbackProposal.idempotency_key == feedback_idempotency_key,
+                )
+            )
+            if existing is not None:
+                session.expunge(existing)
+                return existing, False
+            if (
+                attempt.generation_revision != revision
+                or attempt.provider_call_token != provider_call_token
+                or attempt.transcript_fingerprint != transcript_fingerprint
+            ):
+                return None, False
+            proposal_json = canonical_json(proposal)
+            record = MockInterviewFeedbackProposal(
+                attempt_id=attempt_id,
+                idempotency_key=feedback_idempotency_key,
+                input_snapshot_json=attempt.input_snapshot_json,
+                source_fingerprint=attempt.source_fingerprint,
+                transcript_fingerprint=transcript_fingerprint,
+                proposal_json=proposal_json,
+                proposal_hash=sha256_text(proposal_json),
+                proposal_status=proposal_status,
+                failure_category=failure_category,
+            )
+            session.add(record)
+            attempt.attempt_status = "feedback_ready"
+            attempt.provider_lease_until = None
+            attempt.completed_at = datetime.now(timezone.utc)
+            session.commit()
+            session.refresh(record)
+            session.expunge(record)
+            return record, True
+
+    def mark_contract_failure(
+        self,
+        attempt_id: int,
+        revision: int,
+        provider_call_token: str,
+        category: str,
+        status: str = "feedback_unverifiable",
+    ) -> MockInterviewAttempt | None:
+        with self._session_factory() as session:
+            self._begin_immediate(session)
+            attempt = session.get(MockInterviewAttempt, attempt_id)
+            if attempt is None:
+                return None
+            if attempt.generation_revision != revision or attempt.provider_call_token != provider_call_token:
+                return attempt
+            attempt.attempt_status = status
+            attempt.failure_category = category
+            attempt.provider_lease_until = None
             session.commit()
             session.refresh(attempt)
             return attempt
@@ -261,6 +425,23 @@ class MockInterviewRepository:
             for turn in turns:
                 session.expunge(turn)
             return attempt, turns
+
+    def question_context(
+        self, attempt_id: int, application_id: int, event_id: int
+    ) -> tuple[MockInterviewAttempt, list[MockInterviewTurn]]:
+        return self.feedback_context(attempt_id, application_id, event_id)
+
+    def get_turn(self, attempt_id: int, turn_no: int) -> MockInterviewTurn | None:
+        with self._session_factory() as session:
+            turn = session.scalar(
+                select(MockInterviewTurn).where(
+                    MockInterviewTurn.attempt_id == attempt_id,
+                    MockInterviewTurn.turn_no == turn_no,
+                )
+            )
+            if turn is not None:
+                session.expunge(turn)
+            return turn
 
     def validate_event_context(self, application_id: int, event_id: int) -> None:
         with self._session_factory() as session:
@@ -346,6 +527,9 @@ class MockInterviewRepository:
         self, application_id: int, event_id: int
     ) -> list[MockInterviewFeedbackProposal]:
         with self._session_factory() as session:
+            application = session.get(Application, application_id)
+            if application is None or application.deleted_at is not None:
+                raise LookupError("application not found")
             rows = list(session.scalars(
                 select(MockInterviewFeedbackProposal)
                 .join(
@@ -361,6 +545,40 @@ class MockInterviewRepository:
             for row in rows:
                 session.expunge(row)
             return rows
+
+    def history_details(
+        self, proposal_id: int
+    ) -> tuple[list[MockInterviewTurn], MockInterviewReviewDraft | None]:
+        with self._session_factory() as session:
+            proposal = session.get(MockInterviewFeedbackProposal, proposal_id)
+            if proposal is None:
+                return [], None
+            turns = list(session.scalars(
+                select(MockInterviewTurn)
+                .where(MockInterviewTurn.attempt_id == proposal.attempt_id)
+                .order_by(MockInterviewTurn.turn_no.asc())
+            ).all())
+            draft = session.scalar(
+                select(MockInterviewReviewDraft).where(
+                    MockInterviewReviewDraft.proposal_id == proposal_id
+                )
+            )
+            for item in turns:
+                session.expunge(item)
+            if draft is not None:
+                session.expunge(draft)
+            return turns, draft
+
+    def source_status(self, attempt_id: int) -> str:
+        with self._session_factory() as session:
+            attempt = session.get(MockInterviewAttempt, attempt_id)
+            if attempt is None:
+                return "source_changed"
+            try:
+                self._assert_attempt_sources(session, attempt)
+            except MockInterviewSourceChanged:
+                return "source_changed"
+            return "current"
 
     @staticmethod
     def _begin_immediate(session: Session) -> None:
@@ -408,7 +626,9 @@ class MockInterviewRepository:
                 "content_json": _json_object(resume.content_json),
             },
             "jd": {"text": jd_text},
-            "selected_preparation": [] if preparation_proposal_id is None else [preparation_proposal_id],
+            "selected_preparation": _selected_preparation_snapshot(
+                session, application_id, event_id, preparation_proposal_id
+            ),
             "turns": [],
         }
 
@@ -432,7 +652,9 @@ def _transcript_fingerprint(turns: list[MockInterviewTurn]) -> str:
 
 
 def _token() -> str:
-    return hashlib.sha256(f"{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()
+    import secrets
+
+    return secrets.token_urlsafe(32)
 
 
 def _lease_until() -> datetime:
@@ -445,3 +667,35 @@ def _as_utc(value: datetime | None) -> datetime | None:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _validate_key(value: str, field: str) -> None:
+    if not isinstance(value, str) or _ASCII_KEY.fullmatch(value) is None:
+        raise ValueError(f"{field} must be an ASCII idempotency key")
+
+
+def _selected_preparation_snapshot(
+    session: Session,
+    application_id: int,
+    event_id: int,
+    proposal_id: int | None,
+) -> list[dict[str, Any]]:
+    if proposal_id is None:
+        return []
+    proposal = session.get(InterviewPreparationProposal, proposal_id)
+    if (
+        proposal is None
+        or proposal.application_id != application_id
+        or proposal.application_event_id != event_id
+        or proposal.attempt_status != "ready"
+        or proposal.proposal_status not in {"normal", "safe_empty"}
+        or not proposal.proposal_json
+    ):
+        raise ValueError("preparation proposal is not available for this interview event")
+    try:
+        value = json.loads(proposal.proposal_json)
+    except json.JSONDecodeError as exc:
+        raise ValueError("preparation proposal is invalid") from exc
+    if not isinstance(value, dict):
+        raise ValueError("preparation proposal is invalid")
+    return [value]

@@ -26,6 +26,8 @@ export interface MockInterviewAttemptResponse {
   turn: MockInterviewTurn;
 }
 
+export interface MockInterviewQuestionResponse extends MockInterviewAttemptResponse {}
+
 export interface MockInterviewProposalResponse {
   proposal_id: number;
   proposal_status: 'normal' | 'safe_empty';
@@ -33,9 +35,17 @@ export interface MockInterviewProposalResponse {
   proposal: MockInterviewProposal;
 }
 
+export interface MockInterviewPendingResponse {
+  attempt_id: number;
+  attempt_status: 'generating_question' | 'generating_feedback' | 'provider_unknown';
+}
+
 export interface MockInterviewHistoryItem extends MockInterviewProposalResponse {
   attempt_id: number;
   source_fingerprint: string;
   transcript_fingerprint: string;
   created_at: string;
+  source_status?: 'current' | 'source_changed';
+  turns?: MockInterviewTurn[];
+  review_draft?: { draft_id: number; status: string; selected_blocks: unknown[] } | null;
 }

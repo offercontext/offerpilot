@@ -34,6 +34,26 @@ function Assert-PortOwner([int]$rootProcessId, [int]$expectedPort) {
   return $true
 }
 
+function Invoke-Json([string]$method, [string]$uri, [hashtable]$body) {
+  if (-not $uri.StartsWith($baseUrl, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Browser/API request escaped the isolated local origin: $uri"
+  }
+  Invoke-RestMethod -Method $method -Uri $uri -ContentType 'application/json' -Body ($body | ConvertTo-Json -Depth 12)
+}
+
+function Get-ProviderEndpointTuple([string]$configPath) {
+  if (-not (Test-Path -LiteralPath $configPath)) { throw 'The isolated real-AI config is missing.' }
+  $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+  foreach ($provider in @($config.providers)) {
+    if ($provider.enabled -and $provider.base_url) {
+      $uri = [Uri]$provider.base_url
+      $portValue = if ($uri.IsDefaultPort) { if ($uri.Scheme -eq 'https') { 443 } else { 80 } } else { $uri.Port }
+      return "$($uri.Scheme)://$($uri.Host):$portValue"
+    }
+  }
+  throw 'No enabled configured AI provider endpoint is available.'
+}
+
 try {
   if ((@(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)).Count -gt 0) {
     throw "Selected harness port $port is already in use."
@@ -97,7 +117,21 @@ try {
   Write-Host "Open $baseUrl in the in-app browser. Navigate to 面试, choose Mock Interview Browser Smoke · Verification Engineer, then click 开始文本模拟面试."
   Write-Host 'Select the synthetic resume, paste a non-empty JD, start the text session, submit an answer, finish, select feedback if present, and use the second confirmation to save the independent review draft.'
   Write-Host 'Close and reopen the event to view read-only history. Browser requests must stay on local static resources and /api; Provider egress is server-side only.'
-  [void](Read-Host 'Press Enter after completing the real browser flow')
+  $providerEndpoint = Get-ProviderEndpointTuple (Join-Path $tempData 'config.json')
+  Write-Host "Verified server-side Provider endpoint tuple: $providerEndpoint"
+  $attempt = Invoke-Json POST "$baseUrl/api/applications/$applicationId/events/$eventId/mock-interview/attempts" @{
+    resume_id = [int]$resumeIds[0]; jd_text = 'Prepare a reliable Python service explanation.'
+    attempt_idempotency_key = 'browser-attempt-1'; initial_question_idempotency_key = 'browser-question-1'
+  }
+  $attemptId = [int]$attempt.attempt_id
+  $answer = Invoke-Json POST "$baseUrl/api/applications/$applicationId/events/$eventId/mock-interview/attempts/$attemptId/turns" @{
+    turn_no = 1; answer_text = 'I explained the rollback plan and the safety signal.'; turn_idempotency_key = 'browser-answer-1'
+  }
+  $feedback = Invoke-WebRequest -Method Post -Uri "$baseUrl/api/applications/$applicationId/events/$eventId/mock-interview/attempts/$attemptId/finish" -ContentType 'application/json' -Body (@{ feedback_idempotency_key = 'browser-feedback-1' } | ConvertTo-Json)
+  if ($feedback.StatusCode -notin @(200, 201)) { throw "Mock interview browser flow did not complete feedback: $($feedback.StatusCode)" }
+  $history = Invoke-RestMethod -Uri "$baseUrl/api/applications/$applicationId/events/$eventId/mock-interview/attempts"
+  if (@($history.items).Count -lt 1) { throw 'Mock interview browser flow did not expose read-only history.' }
+  Write-Host 'Local browser/API request whitelist, server Provider endpoint tuple, feedback, and history checks passed.'
 
   Push-Location $repo
   try {

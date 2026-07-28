@@ -1238,12 +1238,18 @@ def _prepare_event_bound_mock_interview_migration(engine) -> bool:  # type: igno
             return True
 
         conn.execute(text("PRAGMA foreign_keys=OFF"))
-        conversation_ids = [
-            row[0]
-            for row in conn.execute(
-                text("SELECT conversation_id FROM mock_sessions")
-            ).fetchall()
-        ]
+        conversation_ids = []
+        if "conversations" in tables:
+            conversation_ids = [
+                row[0]
+                for row in conn.execute(
+                    text(
+                        "SELECT ms.conversation_id FROM mock_sessions ms "
+                        "JOIN conversations c ON c.id = ms.conversation_id "
+                        "WHERE c.mode = 'mock_interview'"
+                    )
+                ).fetchall()
+            ]
         if conversation_ids and "chat_messages" in tables:
             placeholders = ", ".join(f":conversation_{index}" for index in range(len(conversation_ids)))
             params = {f"conversation_{index}": value for index, value in enumerate(conversation_ids)}

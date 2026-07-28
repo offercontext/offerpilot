@@ -205,6 +205,12 @@ class MockInterviewProviderError(RuntimeError):
     pass
 
 
+class MockInterviewUnverifiableError(RuntimeError):
+    def __init__(self, category: str):
+        self.category = category
+        super().__init__(category)
+
+
 def generate_feedback(
     model: Any, snapshot: dict[str, Any], turns: list[dict[str, Any]]
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -221,9 +227,7 @@ def generate_feedback(
             "no_answer_evidence", False, 0, 0, ""
         )
     if model is None:
-        return dict(SAFE_EMPTY_FEEDBACK), build_mock_interview_diagnostic(
-            "no_provider", False, 0, 0, ""
-        )
+        raise MockInterviewProviderError("mock_interview_provider_error")
 
     started = perf_counter()
     repair_count = 0
@@ -247,10 +251,94 @@ def generate_feedback(
                 repair_count = 1
                 continue
             break
-    return dict(SAFE_EMPTY_FEEDBACK), build_mock_interview_diagnostic(
-        last_category, repair_count > 0, repair_count,
-        int((perf_counter() - started) * 1000), ""
-    )
+    raise MockInterviewUnverifiableError(last_category)
+
+
+def generate_question(
+    model: Any, snapshot: dict[str, Any], turns: list[dict[str, Any]]
+) -> str:
+    if model is None:
+        raise MockInterviewProviderError("mock_interview_provider_error")
+    last_category = "invalid_json"
+    for attempt in range(2):
+        messages = [
+            Message(
+                role="system",
+                content=(
+                    "只返回原始 JSON，字段必须严格为 question 和 evidence_refs。"
+                    "question 必须是非空字符串；evidence_refs 必须引用当前冻结 JD、简历或已回答轮次。"
+                    "不得评分、预测录用或添加额外字段。"
+                ),
+            ),
+            Message(
+                role="user",
+                content=json.dumps(
+                    {
+                        "snapshot": snapshot,
+                        "turns": turns,
+                        "repair_failure_category": last_category if attempt else None,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            ),
+        ]
+        try:
+            schema = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "mock_interview_question",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["question", "evidence_refs"],
+                        "properties": {
+                            "question": {"type": "string", "minLength": 1, "maxLength": 1000},
+                            "evidence_refs": {
+                                "type": "array",
+                                "maxItems": 4,
+                                "items": {
+                                    "type": "object",
+                                    "additionalProperties": False,
+                                    "required": ["source", "path", "excerpt"],
+                                    "properties": {
+                                        "source": {"type": "string"},
+                                        "path": {"type": "string"},
+                                        "excerpt": {"type": "string", "minLength": 1},
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            }
+            if getattr(model, "supports_json_schema", False):
+                assistant = cast(Assistant, model.complete(messages, [], response_format=schema))
+            else:
+                assistant = cast(Assistant, model.complete(messages, []))
+            parsed = parse_mock_interview_json(assistant.content)
+            if set(parsed) != {"question", "evidence_refs"}:
+                raise MockInterviewContractError("unexpected_field")
+            question = parsed["question"]
+            refs = parsed["evidence_refs"]
+            if not isinstance(question, str) or not question.strip() or len(question) > 1000:
+                raise MockInterviewContractError("blank_value")
+            if not isinstance(refs, list) or not refs:
+                raise MockInterviewContractError("missing_evidence_ref")
+            for ref in refs:
+                _validate_reference(ref, snapshot, turns)
+            return question
+        except MockInterviewProviderError:
+            raise
+        except MockInterviewContractError as exc:
+            last_category = exc.category
+            if attempt == 0 and should_retry_mock_interview_format(last_category):
+                continue
+            raise MockInterviewUnverifiableError(last_category) from exc
+        except Exception as exc:
+            raise MockInterviewProviderError("mock_interview_provider_error") from exc
+    raise MockInterviewUnverifiableError(last_category)
 
 
 def _complete_feedback(model: Any, prompt: str) -> Assistant:

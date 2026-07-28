@@ -36,7 +36,12 @@ from offerpilot.ai.interview_knowledge_capture import (
     InterviewKnowledgeProviderError,
     generate_interview_knowledge_preview,
 )
-from offerpilot.ai.mock_interview import MockInterviewProviderError, generate_feedback
+from offerpilot.ai.mock_interview import (
+    MockInterviewProviderError,
+    MockInterviewUnverifiableError,
+    generate_feedback,
+    generate_question,
+)
 from offerpilot.ai.opportunity_fit_reviews import OpportunityFitModelError, validate_triage
 from offerpilot.ai.client import ConfiguredAIClient
 from offerpilot.ai.tools import editable_fields_for_tool, offerpilot_tool_registry
@@ -658,6 +663,41 @@ def _resolve_knowledge_download_path(
 
 class UndoConflictError(RuntimeError):
     pass
+
+
+def _mock_interview_proposal_json(record: Any) -> dict[str, Any]:
+    return {
+        "proposal_id": record.id,
+        "proposal_status": record.proposal_status,
+        "proposal_hash": record.proposal_hash,
+        "proposal": json.loads(record.proposal_json),
+    }
+
+
+def _mock_interview_history_json(repository: Any, row: Any) -> dict[str, Any]:
+    turns, draft = repository.history_details(row.id)
+    source_status = repository.source_status(row.attempt_id)
+    return {
+        **_mock_interview_proposal_json(row),
+        "attempt_id": row.attempt_id,
+        "source_fingerprint": row.source_fingerprint,
+        "transcript_fingerprint": row.transcript_fingerprint,
+        "created_at": row.created_at.isoformat(),
+        "source_status": source_status,
+        "turns": [
+            {"turn_no": turn.turn_no, "question": turn.question_text, "answer": turn.answer_text}
+            for turn in turns
+        ],
+        "review_draft": (
+            {
+                "draft_id": draft.id,
+                "status": draft.status,
+                "selected_blocks": json.loads(draft.selected_blocks_json),
+            }
+            if draft is not None
+            else None
+        ),
+    }
 
 
 def create_app(
@@ -4051,12 +4091,6 @@ def create_app(
         chat.delete_conversation(conversation_id)
         return {"status": "deleted"}
 
-    @app.api_route("/api/mock/sessions", methods=["GET", "POST"])
-    @app.api_route("/api/mock/sessions/{session_id}", methods=["GET", "DELETE"])
-    @app.api_route("/api/mock/sessions/{session_id}/end", methods=["POST"])
-    def legacy_mock_route_removed(session_id: int | None = None) -> JSONResponse:
-        return error_response(404, "legacy mock interview is no longer available")
-
     @app.post(
         "/api/applications/{application_id}/events/{event_id}/mock-interview/attempts"
     )
@@ -4143,28 +4177,96 @@ def create_app(
             }
         )
 
+    @app.post(
+        "/api/applications/{application_id}/events/{event_id}/mock-interview/attempts/{attempt_id}/turns/{turn_no}/question"
+    )
+    def generate_mock_interview_question(
+        application_id: int,
+        event_id: int,
+        attempt_id: int,
+        turn_no: int,
+        payload: dict[str, Any] = Body(...),
+    ) -> JSONResponse:
+        try:
+            question_key = str(payload["question_idempotency_key"])
+            attempt, turns = mock_interviews.question_context(
+                attempt_id, application_id, event_id
+            )
+            existing = mock_interviews.get_turn(attempt_id, turn_no)
+            if existing is not None and existing.turn_status == "awaiting_answer":
+                return JSONResponse({
+                    "attempt_id": attempt.id,
+                    "attempt_status": attempt.attempt_status,
+                    "turn": {"turn_no": existing.turn_no, "question": existing.question_text, "answer": existing.answer_text},
+                })
+            claim = mock_interviews.claim_question(attempt_id, turn_no, question_key)
+            if claim is None:
+                current = mock_interviews.get_turn(attempt_id, turn_no)
+                if current is not None and current.turn_status == "awaiting_answer":
+                    return JSONResponse({
+                        "attempt_id": attempt_id,
+                        "attempt_status": "awaiting_answer",
+                        "turn": {"turn_no": current.turn_no, "question": current.question_text, "answer": current.answer_text},
+                    })
+                return JSONResponse(
+                    {"attempt_id": attempt_id, "attempt_status": "generating_question"},
+                    status_code=202,
+                )
+            revision, provider_token, transcript_fingerprint = claim
+            configured_model = _chat_model(chat_model, resolved_data_dir)
+            if isinstance(configured_model, JSONResponse):
+                raise MockInterviewProviderError("mock_interview_provider_error")
+            snapshot = json.loads(attempt.input_snapshot_json)
+            turn_payload = [
+                {"turn_no": turn.turn_no, "question": turn.question_text, "answer": turn.answer_text}
+                for turn in turns
+            ]
+            question = generate_question(configured_model, snapshot, turn_payload)
+            completed = mock_interviews.complete_question(
+                attempt_id, turn_no, revision, provider_token, transcript_fingerprint, question
+            )
+            if completed is None:
+                return error_response(409, "mock_interview_transcript_conflict")
+            current = mock_interviews.get_turn(attempt_id, turn_no)
+            assert current is not None
+            return JSONResponse({
+                "attempt_id": completed.id,
+                "attempt_status": completed.attempt_status,
+                "turn": {"turn_no": current.turn_no, "question": current.question_text, "answer": current.answer_text},
+            }, status_code=201)
+        except KeyError as exc:
+            return error_response(422, f"missing field: {exc.args[0]}")
+        except MockInterviewProviderError:
+            if "claim" in locals() and claim is not None:
+                mock_interviews.mark_provider_unknown(attempt_id, claim[0], claim[1], "question")
+            return error_response(502, "AI service is temporarily unavailable", "mock_interview_provider_error")
+        except MockInterviewUnverifiableError as exc:
+            if "claim" in locals() and claim is not None:
+                mock_interviews.mark_contract_failure(
+                    attempt_id, claim[0], claim[1], exc.category, "question_unverifiable"
+                )
+            return error_response(502, "mock interview output could not be verified", "mock_interview_unverifiable")
+        except MockInterviewTurnIdempotencyConflict:
+            return error_response(409, "mock_interview_turn_idempotency_conflict")
+        except MockInterviewSourceChanged:
+            return error_response(409, "mock_interview_source_conflict")
+        except LookupError:
+            return error_response(404, "mock_interview_attempt_not_found")
+        except ValueError as exc:
+            return error_response(422, str(exc))
+
     @app.get(
         "/api/applications/{application_id}/events/{event_id}/mock-interview/attempts"
     )
     def list_mock_interview_history(application_id: int, event_id: int) -> JSONResponse:
         try:
-            mock_interviews.validate_event_context(application_id, event_id)
+            rows = mock_interviews.list_feedback_history(application_id, event_id)
         except LookupError:
-            return error_response(404, "mock_interview_event_not_found")
-        rows = mock_interviews.list_feedback_history(application_id, event_id)
+            return error_response(404, "mock_interview_application_not_found")
         return JSONResponse(
             {
                 "items": [
-                    {
-                        "attempt_id": row.attempt_id,
-                        "proposal_id": row.id,
-                        "proposal_status": row.proposal_status,
-                        "proposal_hash": row.proposal_hash,
-                        "proposal": json.loads(row.proposal_json),
-                        "source_fingerprint": row.source_fingerprint,
-                        "transcript_fingerprint": row.transcript_fingerprint,
-                        "created_at": row.created_at.isoformat(),
-                    }
+                    _mock_interview_history_json(mock_interviews, row)
                     for row in rows
                 ]
             }
@@ -4190,7 +4292,52 @@ def create_app(
             return error_response(404, "mock_interview_attempt_not_found")
         except MockInterviewSourceChanged:
             return error_response(409, "mock_interview_source_conflict")
+        existing, _ = mock_interviews.get_feedback(attempt_id, feedback_key)
+        if existing is not None:
+            return JSONResponse(_mock_interview_proposal_json(existing), status_code=200)
+        claim = mock_interviews.claim_feedback(attempt_id, feedback_key)
+        if claim is None:
+            return JSONResponse(
+                {"attempt_id": attempt_id, "attempt_status": "generating_feedback"},
+                status_code=202,
+            )
+        revision, provider_token, transcript_fingerprint = claim
         try:
+            snapshot = json.loads(attempt.input_snapshot_json)
+            turn_payload = [
+                {"turn_no": turn.turn_no, "question": turn.question_text, "answer": turn.answer_text}
+                for turn in turns
+            ]
+            configured_model = _chat_model(chat_model, resolved_data_dir)
+            legacy_model: ChatModel | None = (
+                None if isinstance(configured_model, JSONResponse) else configured_model
+            )
+            proposal, diagnostic = generate_feedback(legacy_model, snapshot, turn_payload)
+        except MockInterviewUnverifiableError:
+            mock_interviews.mark_contract_failure(
+                attempt_id, revision, provider_token, "contract_unverifiable"
+            )
+            return error_response(502, "mock interview output could not be verified", "mock_interview_unverifiable")
+        except MockInterviewProviderError:
+            mock_interviews.mark_provider_unknown(attempt_id, revision, provider_token, "feedback")
+            return error_response(502, "AI service is temporarily unavailable", "mock_interview_provider_error")
+        record, created = mock_interviews.complete_feedback(
+            attempt_id,
+            feedback_key,
+            revision,
+            provider_token,
+            transcript_fingerprint,
+            proposal,
+            proposal["proposal_status"],
+            str(diagnostic.get("failure_category", "")),
+        )
+        if record is None:
+            replay, _ = mock_interviews.get_feedback(attempt_id, feedback_key)
+            if replay is not None:
+                return JSONResponse(_mock_interview_proposal_json(replay), status_code=200)
+            return error_response(409, "mock_interview_transcript_conflict")
+        return JSONResponse(_mock_interview_proposal_json(record), status_code=201 if created else 200)
+        if False:
             snapshot = json.loads(attempt.input_snapshot_json)
             turn_payload = [
                 {
@@ -4205,7 +4352,7 @@ def create_app(
                 None if isinstance(configured_model, JSONResponse) else configured_model
             )
             proposal, diagnostic = generate_feedback(model, snapshot, turn_payload)
-        except MockInterviewProviderError:
+        if False:
             return error_response(502, "AI 服务暂不可用，请稍后重试。", "mock_interview_provider_error")
         record, created = mock_interviews.create_or_replay_feedback(
             attempt_id,
@@ -4239,11 +4386,13 @@ def create_app(
             selected_blocks = payload["selected_blocks"]
             if not isinstance(selected_blocks, list):
                 raise ValueError("selected_blocks must be an array")
-            attempt, _ = mock_interviews.feedback_context(attempt_id, application_id, event_id)
-            if attempt.id != attempt_id:
-                raise LookupError("mock interview attempt not found")
             draft, created = mock_interview_review_drafts.confirm_review_draft(
-                proposal_id, confirmation_key, selected_blocks
+                application_id,
+                event_id,
+                attempt_id,
+                proposal_id,
+                confirmation_key,
+                selected_blocks,
             )
         except KeyError as exc:
             return error_response(422, f"missing field: {exc.args[0]}")

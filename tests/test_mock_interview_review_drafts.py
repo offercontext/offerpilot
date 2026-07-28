@@ -132,3 +132,30 @@ def test_confirm_requires_explicit_confirmation_and_valid_selected_blocks(tmp_pa
     )
     assert missing.status_code == 422
     assert invalid.status_code == 422
+
+
+def test_confirm_rejects_proposal_from_another_attempt_context(tmp_path):
+    client, app_id, event_id, attempt_id, proposal_id = _setup(tmp_path)
+    other_app = client.post(
+        "/api/applications",
+        json={"company_name": "Other", "position_name": "Engineer", "status": "interview"},
+    ).json()
+    other_event = client.post(
+        "/api/application-events",
+        json={
+            "application_id": other_app["id"],
+            "event_type": "interview",
+            "scheduled_at": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
+            "duration_minutes": 30,
+        },
+    ).json()
+    path = f"/api/applications/{other_app['id']}/events/{other_event['id']}/mock-interview/attempts/{attempt_id}/review-drafts"
+    response = client.post(
+        path,
+        json={
+            "proposal_id": proposal_id,
+            "confirmation_idempotency_key": "cross-context-confirm",
+            "selected_blocks": [],
+        },
+    )
+    assert response.status_code in {404, 422}

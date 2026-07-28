@@ -2,6 +2,7 @@ import type {
   MockInterviewAttemptResponse,
   MockInterviewHistoryItem,
   MockInterviewProposalResponse,
+  MockInterviewPendingResponse,
 } from '@/types/mockInterview';
 import { createApiClient } from './http';
 
@@ -18,13 +19,29 @@ export async function startMockInterview(input: {
   jdText: string;
   attemptKey: string;
   questionKey: string;
+  preparationProposalId?: number;
 }): Promise<MockInterviewAttemptResponse> {
   const { data } = await http.post<MockInterviewAttemptResponse>(base(input.applicationId, input.eventId), {
     resume_id: input.resumeId,
     jd_text: input.jdText,
     attempt_idempotency_key: input.attemptKey,
     initial_question_idempotency_key: input.questionKey,
+    preparation_proposal_id: input.preparationProposalId,
   });
+  return data;
+}
+
+export async function generateMockInterviewQuestion(input: {
+  applicationId: number;
+  eventId: number;
+  attemptId: number;
+  turnNo: number;
+  questionKey: string;
+}): Promise<MockInterviewAttemptResponse | MockInterviewPendingResponse> {
+  const { data } = await http.post<MockInterviewAttemptResponse | MockInterviewPendingResponse>(
+    `${base(input.applicationId, input.eventId)}/${input.attemptId}/turns/${input.turnNo}/question`,
+    { question_idempotency_key: input.questionKey },
+  );
   return data;
 }
 
@@ -49,8 +66,8 @@ export async function finishMockInterview(input: {
   eventId: number;
   attemptId: number;
   feedbackKey: string;
-}): Promise<MockInterviewProposalResponse> {
-  const { data } = await http.post<MockInterviewProposalResponse>(
+}): Promise<MockInterviewProposalResponse | MockInterviewPendingResponse> {
+  const { data } = await http.post<MockInterviewProposalResponse | MockInterviewPendingResponse>(
     `${base(input.applicationId, input.eventId)}/${input.attemptId}/finish`,
     { feedback_idempotency_key: input.feedbackKey },
   );
