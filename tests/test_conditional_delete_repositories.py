@@ -13,10 +13,8 @@ from offerpilot.models import (
     OpportunityFitReviewSession,
     OpportunityFitReviewStage,
     Base,
-    Conversation,
     InterviewNote,
     JDAnalysis,
-    MockSession,
     Offer,
     Question,
     Resume,
@@ -120,16 +118,6 @@ def test_application_delete_if_matches_rejects_every_fk_dependency(tmp_path, dep
                 application_id=app.id,
                 jd_text="JD",
                 result="{}",
-            )
-        elif dependency_model is MockSession:
-            conversation = Conversation(title="Mock")
-            session.add(conversation)
-            session.flush()
-            dependency = MockSession(
-                conversation_id=conversation.id,
-                application_id=app.id,
-                title="Mock",
-                role="Engineer",
             )
         elif dependency_model is MaterialRevisionProposal:
             kit = ApplicationMaterialKit(application_id=app.id)

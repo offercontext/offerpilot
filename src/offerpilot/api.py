@@ -126,7 +126,6 @@ from offerpilot.repositories.interview_knowledge_capture import (
     InterviewKnowledgeValidationError,
 )
 from offerpilot.repositories.interview_index import InterviewIndexRepository
-from offerpilot.repositories.mock import MockSessionCreate, MockSessionsRepository
 from offerpilot.repositories.notes import (
     UNSET,
     NoteBindingError,
@@ -156,7 +155,6 @@ from offerpilot.schemas import (
     OpportunityFitReviewOut,
     OpportunityFitReviewSummaryOut,
     OpportunityFitSummaryOut,
-    MockSessionOut,
     OfferOut,
     QuestionOut,
     QuestionReviewOut,
@@ -218,7 +216,6 @@ CHAT_PAGE_CONTEXT_VIEWS = {
     "reminders",
     "interview",
     "reviews",
-    "mock",
     "offers",
     "knowledge",
     "questions",
@@ -679,7 +676,6 @@ def create_app(
     interview_preparation_proposals = InterviewPreparationProposalsRepository(session_factory)
     interview_knowledge_capture = InterviewKnowledgeCaptureRepository(session_factory)
     interview_index = InterviewIndexRepository(session_factory)
-    mock_sessions = MockSessionsRepository(session_factory)
     wakeups = WakeupsRepository(session_factory)
     knowledge_repository = KnowledgeRepository(session_factory)
     knowledge_config = app_config
@@ -4041,119 +4037,11 @@ def create_app(
         chat.delete_conversation(conversation_id)
         return {"status": "deleted"}
 
-    @app.get("/api/mock/sessions")
-    def list_mock_sessions(status: str = "") -> list[dict[str, Any]]:
-        return [_mock_session_json(session) for session in mock_sessions.list(status=status)]
-
-    @app.post("/api/mock/sessions", status_code=201)
-    def create_mock_session(payload: dict[str, Any] = Body(...)) -> JSONResponse:
-        role = str(payload.get("role") or "").strip()
-        if not role:
-            return error_response(400, "role is required")
-        company = str(payload.get("company") or "")
-        title = str(payload.get("title") or "").strip() or (
-            f"{company} · {role}" if company else role or "模拟面试"
-        )
-        conversation = chat.create_conversation(title, mode="mock_interview")
-        session_model = mock_sessions.create(
-            MockSessionCreate(
-                conversation_id=conversation.id,
-                application_id=int(payload["application_id"])
-                if payload.get("application_id") is not None
-                else None,
-                title=conversation.title,
-                role=role,
-                company=company,
-                round_type=str(payload.get("round_type") or "technical"),
-                difficulty=str(payload.get("difficulty") or "medium"),
-                question_count=int(payload.get("question_count") or 5),
-                duration_min=int(payload.get("duration_min") or 0),
-                question_source=str(payload.get("question_source") or "mixed"),
-            )
-        )
-        return JSONResponse(
-            {
-                "session": _mock_session_json(session_model),
-                "conversation_id": conversation.id,
-                "conversation": _conversation_json(conversation, applications),
-            },
-            status_code=201,
-        )
-
-    @app.get("/api/mock/sessions/{session_id}")
-    def get_mock_session(session_id: int) -> JSONResponse:
-        session_model = mock_sessions.get(session_id)
-        if session_model is None:
-            return error_response(404, "session not found")
-        return JSONResponse(
-            {
-                "session": _mock_session_json(session_model),
-                "messages": [
-                    ChatMessageOut.model_validate(item).model_dump(mode="json")
-                    for item in chat.list_messages(session_model.conversation_id)
-                ],
-            }
-        )
-
-    @app.post("/api/mock/sessions/{session_id}/end")
-    def end_mock_session(
-        session_id: int, payload: dict[str, Any] = Body(default={})
-    ) -> JSONResponse:
-        session_model = mock_sessions.get(session_id)
-        if session_model is None:
-            return error_response(404, "session not found")
-        auto_save_note = bool(payload.get("auto_save_note"))
-        if session_model.status == "completed" and auto_save_note:
-            feedback = _stored_feedback(session_model.feedback)
-            note_id = _save_mock_feedback_note(applications, notes, session_model, feedback)
-            return JSONResponse(
-                {
-                    "session": _mock_session_json(session_model),
-                    "feedback": feedback,
-                    "saved_note_id": note_id,
-                }
-            )
-        if session_model.status != "in_progress":
-            return error_response(409, "session already ended")
-
-        model = _chat_model(chat_model, resolved_data_dir)
-        if isinstance(model, JSONResponse):
-            return model
-        transcript = _mock_transcript(chat.list_messages(session_model.conversation_id))
-        try:
-            feedback = _complete_json(
-                model,
-                system="你是一位面试评估专家，严格按JSON输出。",
-                user=_mock_scoring_prompt(session_model, transcript),
-            )
-        except RuntimeError as exc:
-            mock_sessions.abort(session_id)
-            return error_response(502, "评分失败：" + str(exc))
-        feedback_json = json.dumps(feedback, ensure_ascii=False)
-        done = mock_sessions.finish(session_id, feedback, feedback_json)
-        if done is None:
-            return error_response(404, "session not found")
-        response_payload: dict[str, Any] = {
-            "session": _mock_session_json(done),
-            "feedback": feedback,
-            "parse_error": False,
-        }
-        if auto_save_note:
-            response_payload["saved_note_id"] = _save_mock_feedback_note(
-                applications,
-                notes,
-                done,
-                feedback,
-            )
-        return JSONResponse(response_payload)
-
-    @app.delete("/api/mock/sessions/{session_id}")
-    def delete_mock_session(session_id: int) -> JSONResponse:
-        session_model = mock_sessions.get(session_id)
-        if session_model is None:
-            return error_response(404, "session not found")
-        chat.delete_conversation(session_model.conversation_id)
-        return JSONResponse({"status": "deleted"})
+    @app.api_route("/api/mock/sessions", methods=["GET", "POST"])
+    @app.api_route("/api/mock/sessions/{session_id}", methods=["GET", "DELETE"])
+    @app.api_route("/api/mock/sessions/{session_id}/end", methods=["POST"])
+    def legacy_mock_route_removed(session_id: int | None = None) -> JSONResponse:
+        return error_response(404, "legacy mock interview is no longer available")
 
     @app.get("/api/logs")
     def get_logs(
@@ -7052,10 +6940,6 @@ def _evidence_bundle_submitted_at(payload: dict[str, Any]) -> datetime:
     return submitted_at
 
 
-def _mock_session_json(session_model: Any) -> dict[str, Any]:
-    return MockSessionOut.model_validate(session_model).model_dump(mode="json", exclude_none=True)
-
-
 def _question_from_payload(
     payload: dict[str, Any],
     source_type: str | None = None,
@@ -7272,80 +7156,6 @@ Resume:
 JD:
 {_truncate_for_prompt(jd_text)}"""
 
-
-def _mock_scoring_prompt(session_model: Any, transcript: str) -> str:
-    return f"""请根据以下模拟面试转写进行评分，只返回 JSON：
-{{
-  "score_overall": 0,
-  "score_communication": 0,
-  "score_depth": 0,
-  "score_structure": 0,
-  "score_confidence": 0,
-  "summary": "总结",
-  "strengths": [],
-  "weaknesses": [],
-  "drills": []
-}}
-
-目标岗位：{session_model.role}
-面试轮次：{session_model.round_type}
-难度：{session_model.difficulty}
-
-转写：
-{transcript}"""
-
-
-def _mock_transcript(messages: list[Any]) -> str:
-    lines: list[str] = []
-    for message in messages:
-        if not message.content or message.role == "tool":
-            continue
-        who = "面试官" if message.role == "assistant" else "候选人"
-        lines.append(f"{who}：{message.content}")
-    return "\n".join(lines)
-
-
-def _stored_feedback(raw: str) -> dict[str, Any]:
-    if not raw:
-        return {}
-    try:
-        value = json.loads(raw)
-    except json.JSONDecodeError:
-        return {"raw": raw}
-    return value if isinstance(value, dict) else {"raw": value}
-
-
-def _save_mock_feedback_note(
-    applications: ApplicationsRepository,
-    notes: NotesRepository,
-    session_model: Any,
-    feedback: dict[str, Any],
-) -> int:
-    company = session_model.company
-    position = session_model.role or "模拟面试"
-    application_id = session_model.application_id
-    if application_id is not None:
-        app_model = applications.get(application_id)
-        if app_model is not None:
-            company = company or app_model.company_name
-            position = position or app_model.position_name
-    weaknesses = feedback.get("weaknesses") or []
-    if not isinstance(weaknesses, list):
-        weaknesses = []
-    note = notes.create(
-        NoteCreate(
-            application_id=application_id,
-            company=str(company or ""),
-            position=str(position or "模拟面试"),
-            round=f"模拟面试·{session_model.round_type}",
-            date=datetime.now(timezone.utc).date().isoformat(),
-            self_reflection=str(feedback.get("summary") or ""),
-            difficulty_points="待加强：" + "；".join(str(item) for item in weaknesses)
-            if weaknesses
-            else "",
-        )
-    )
-    return note.id
 
 
 def _questions_prompt(source_label: str, context_text: str, count: int) -> str:

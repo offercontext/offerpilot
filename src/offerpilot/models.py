@@ -712,49 +712,92 @@ class QuestionReview(Base):
     )
 
 
-class MockSession(Base):
-    __tablename__ = "mock_sessions"
+class MockInterviewAttempt(Base):
+    __tablename__ = "mock_interview_attempts"
     __table_args__ = (
-        Index("idx_mock_sessions_conv", "conversation_id"),
-        Index("idx_mock_sessions_status", "status"),
+        UniqueConstraint("application_id", "event_id", "idempotency_key"),
+        Index("idx_mock_interview_attempts_event", "application_id", "event_id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    conversation_id: Mapped[int] = mapped_column(
-        ForeignKey("conversations.id", ondelete="CASCADE"),
-        nullable=False,
+    application_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    resume_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
+    input_snapshot_json: Mapped[str] = mapped_column(Text, nullable=False)
+    source_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
+    attempt_status: Mapped[str] = mapped_column(String, nullable=False)
+    generation_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    provider_call_token: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    provider_lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    current_turn_no: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    transcript_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
+    failure_category: Mapped[str] = mapped_column(String, default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.current_timestamp())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class MockInterviewTurn(Base):
+    __tablename__ = "mock_interview_turns"
+    __table_args__ = (
+        UniqueConstraint("attempt_id", "turn_no"),
+        UniqueConstraint("attempt_id", "turn_no", "turn_idempotency_key"),
+        UniqueConstraint("attempt_id", "turn_no", "question_idempotency_key"),
+        Index("idx_mock_interview_turns_attempt", "attempt_id", "turn_no"),
     )
-    application_id: Mapped[int | None] = mapped_column(
-        ForeignKey("applications.id", ondelete="SET NULL"),
-        nullable=True,
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    attempt_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    turn_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    question_idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
+    turn_idempotency_key: Mapped[str] = mapped_column(String, default="", server_default="")
+    question_text: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    answer_text: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    question_source_snapshot_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}", server_default="{}")
+    answer_sha256: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    turn_status: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.current_timestamp())
+
+
+class MockInterviewFeedbackProposal(Base):
+    __tablename__ = "mock_interview_feedback_proposals"
+    __table_args__ = (
+        UniqueConstraint("attempt_id", "idempotency_key"),
+        Index("idx_mock_interview_feedback_attempt", "attempt_id"),
     )
-    title: Mapped[str] = mapped_column(String, nullable=False)
-    role: Mapped[str] = mapped_column(String, nullable=False)
-    company: Mapped[str] = mapped_column(String, default="", server_default="")
-    round_type: Mapped[str] = mapped_column(String, default="technical", server_default="technical")
-    difficulty: Mapped[str] = mapped_column(String, default="medium", server_default="medium")
-    question_count: Mapped[int] = mapped_column(default=5, server_default="5")
-    duration_min: Mapped[int] = mapped_column(default=0, server_default="0")
-    question_source: Mapped[str] = mapped_column(String, default="mixed", server_default="mixed")
-    status: Mapped[str] = mapped_column(String, default="in_progress", server_default="in_progress")
-    question_index: Mapped[int] = mapped_column(default=0, server_default="0")
-    started_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.current_timestamp(),
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    attempt_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
+    input_snapshot_json: Mapped[str] = mapped_column(Text, nullable=False)
+    source_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
+    transcript_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
+    proposal_json: Mapped[str] = mapped_column(Text, nullable=False)
+    proposal_hash: Mapped[str] = mapped_column(String, nullable=False)
+    proposal_status: Mapped[str] = mapped_column(String, nullable=False)
+    failure_category: Mapped[str] = mapped_column(String, default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.current_timestamp())
+
+
+class MockInterviewReviewDraft(Base):
+    __tablename__ = "mock_interview_review_drafts"
+    __table_args__ = (
+        UniqueConstraint("proposal_id"),
+        Index("idx_mock_interview_review_drafts_attempt", "attempt_id"),
     )
-    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    score_overall: Mapped[int | None] = mapped_column(nullable=True)
-    score_communication: Mapped[int | None] = mapped_column(nullable=True)
-    score_depth: Mapped[int | None] = mapped_column(nullable=True)
-    score_structure: Mapped[int | None] = mapped_column(nullable=True)
-    score_confidence: Mapped[int | None] = mapped_column(nullable=True)
-    feedback: Mapped[str] = mapped_column(String, default="", server_default="")
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.current_timestamp(),
-    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    attempt_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    proposal_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    confirmation_idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
+    application_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    selected_blocks_json: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String, nullable=False)
+    source_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="confirmed", server_default="confirmed")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.current_timestamp())
 
 
 # Every model with a direct foreign key to applications.id. Conditional application
@@ -772,7 +815,6 @@ APPLICATION_FOREIGN_KEY_MODELS = (
     OpportunityFitReviewSession,
     OpportunityFitReviewStage,
     Question,
-    MockSession,
 )
 
 

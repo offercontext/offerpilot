@@ -61,8 +61,15 @@ def init_database(db_path: Path) -> SessionFactory:
 
     _reset_incompatible_v01_tables(engine)
     _ensure_schema_migrations(engine)
+    mock_interview_migration_needed = _prepare_event_bound_mock_interview_migration(engine)
     _reset_knowledge_legacy_tables(engine, db_path.parent)
     Base.metadata.create_all(engine)
+    if mock_interview_migration_needed:
+        _record_migration(
+            engine,
+            "0016_event_bound_mock_interview",
+            "Replace legacy MockSession with event-bound text mock interview tables",
+        )
     interview_review_history_rebuilt = _ensure_interview_review_history_schema(engine)
     interview_knowledge_event_added = _ensure_column(
         engine,
@@ -1208,6 +1215,55 @@ def _ensure_interview_review_history_schema(engine) -> bool:  # type: ignore[no-
         conn.execute(text("CREATE INDEX idx_interview_review_proposals_note ON interview_review_proposals(note_id)"))
         conn.commit()
         conn.execute(text("PRAGMA foreign_keys=ON"))
+
+
+def _prepare_event_bound_mock_interview_migration(engine) -> bool:  # type: ignore[no-untyped-def]
+    """Remove the destructive legacy MockSession path before creating new tables."""
+
+    with engine.begin() as conn:
+        already_migrated = conn.execute(
+            text("SELECT 1 FROM schema_migrations WHERE version = '0016_event_bound_mock_interview'")
+        ).first()
+        if already_migrated is not None:
+            return False
+
+        tables = {
+            row[0]
+            for row in conn.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            ).fetchall()
+        }
+        if "mock_sessions" not in tables:
+            return True
+
+        conn.execute(text("PRAGMA foreign_keys=OFF"))
+        conversation_ids = [
+            row[0]
+            for row in conn.execute(
+                text("SELECT conversation_id FROM mock_sessions")
+            ).fetchall()
+        ]
+        if conversation_ids and "chat_messages" in tables:
+            placeholders = ", ".join(f":conversation_{index}" for index in range(len(conversation_ids)))
+            params = {f"conversation_{index}": value for index, value in enumerate(conversation_ids)}
+            conn.execute(
+                text(f"DELETE FROM chat_messages WHERE conversation_id IN ({placeholders})"),
+                params,
+            )
+        if conversation_ids and "conversations" in tables:
+            placeholders = ", ".join(f":conversation_{index}" for index in range(len(conversation_ids)))
+            params = {f"conversation_{index}": value for index, value in enumerate(conversation_ids)}
+            conn.execute(
+                text(
+                    f"DELETE FROM conversations WHERE id IN ({placeholders}) AND mode = 'mock_interview'"
+                ),
+                params,
+            )
+        conn.execute(text("DROP INDEX IF EXISTS idx_mock_sessions_conv"))
+        conn.execute(text("DROP INDEX IF EXISTS idx_mock_sessions_status"))
+        conn.execute(text("DROP TABLE IF EXISTS mock_sessions"))
+        conn.execute(text("PRAGMA foreign_keys=ON"))
+        return True
     return True
 
 

@@ -23,7 +23,6 @@ from offerpilot.models import (
     ApplicationMaterialKit,
     Conversation,
     JDAnalysis,
-    MockSession,
     Question,
     Resume,
     ResumeMatch,
@@ -1542,7 +1541,7 @@ def test_chat_created_application_undo_rejects_same_value_later_edit(tmp_path):
 
 @pytest.mark.parametrize(
     "dependency",
-    ["event", "note", "offer", "resume_match", "jd_analysis", "material_kit", "question", "mock"],
+    ["event", "note", "offer", "resume_match", "jd_analysis", "material_kit", "question"],
 )
 def test_chat_created_application_undo_rejects_new_dependencies(tmp_path, dependency):
     client, pending, confirmed = _created_application_with_undo(
@@ -1602,15 +1601,7 @@ def test_chat_created_application_undo_rejects_new_dependencies(tmp_path, depend
             elif dependency == "question":
                 dependency_row = Question(application_id=application_id, question="Why?")
             else:
-                conversation = Conversation(title="Mock")
-                session.add(conversation)
-                session.flush()
-                dependency_row = MockSession(
-                    conversation_id=conversation.id,
-                    application_id=application_id,
-                    title="Mock",
-                    role="Engineer",
-                )
+                dependency_row = Question(application_id=application_id, question="Why?")
             session.add(dependency_row)
             session.commit()
             dependency_id = dependency_row.id

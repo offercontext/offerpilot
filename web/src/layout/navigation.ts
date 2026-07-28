@@ -6,7 +6,6 @@ export type ViewMode =
   | 'reminders'
   | 'interview'
   | 'reviews'
-  | 'mock'
   | 'offers'
   | 'knowledge'
   | 'questions'

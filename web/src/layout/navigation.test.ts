@@ -48,6 +48,5 @@ describe('module navigation contract', () => {
     ]);
     expect(moduleTabsForView('interview')).toEqual([{ view: 'interview', label: '面试' }]);
     expect(moduleTabsForView('pilot')).toEqual([{ view: 'pilot', label: '会话中心' }]);
-    expect(() => resolveModuleForView('mock')).toThrow('View mock is not part of v0.1 navigation');
   });
 });

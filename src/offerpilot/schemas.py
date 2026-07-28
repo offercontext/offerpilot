@@ -318,33 +318,6 @@ class EvidenceBundlePreviewOut(BaseModel):
     sources: dict[str, Any]
 
 
-class MockSessionOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    conversation_id: int
-    application_id: int | None = None
-    title: str
-    role: str
-    company: str
-    round_type: str
-    difficulty: str
-    question_count: int
-    duration_min: int
-    question_source: str
-    status: str
-    question_index: int
-    started_at: datetime
-    ended_at: datetime | None = None
-    score_overall: int | None = None
-    score_communication: int | None = None
-    score_depth: int | None = None
-    score_structure: int | None = None
-    score_confidence: int | None = None
-    feedback: str
-    created_at: datetime
-
-
 class KnowledgeSourceOut(BaseModel):
     id: int
     source_kind: str

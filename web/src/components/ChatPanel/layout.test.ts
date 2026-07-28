@@ -7,7 +7,6 @@ import contextPanel from './ContextPanel.tsx?raw';
 import evidenceList from './EvidenceList.tsx?raw';
 import processTimeline from './ProcessTimeline.tsx?raw';
 import threadRail from './ThreadRail.tsx?raw';
-import mockChat from '../MockStudio/MockChat.tsx?raw';
 import composer from './Composer.tsx?raw';
 
 async function loadCss(): Promise<string> {
@@ -594,11 +593,6 @@ describe('ChatPanel docked layout contract', () => {
     expect(messageBubble).toContain('taskCardsEnabled');
     expect(component).toContain('actionsDisabled={composerDisabled}');
     expect(component).toContain('继续处理：${action}');
-  });
-
-  it('keeps Mock Studio outside Pilot task-card action flows', () => {
-    expect(mockChat).toContain('taskCardsEnabled={false}');
-    expect(mockChat).toContain('onAction={() => undefined}');
   });
 
   it('focuses and highlights the Pilot composer from an onboarding token without sending a message', async () => {
