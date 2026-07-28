@@ -6,6 +6,7 @@ from sqlalchemy import delete, func, select
 from typer.testing import CliRunner
 
 from offerpilot.cli import app
+from offerpilot.ai.opportunity_fit_reviews import build_source_snapshot
 from offerpilot.db import session_factory_for_data_dir
 from offerpilot.models import (
     Application,
@@ -1112,31 +1113,122 @@ def test_real_ai_material_proposal_smoke_rejects_renamed_snapshot_leak():
 
 def test_real_ai_opportunity_fit_smoke_requires_verified_triage_without_snapshot_leak():
     class Response:
-        status_code = 201
-
-        def __init__(self, payload: dict[str, object] | None = None) -> None:
+        def __init__(self, payload: dict[str, object] | None = None, status_code: int = 201) -> None:
+            self.status_code = status_code
             self._payload = payload or {}
 
         def json(self) -> dict[str, object]:
             return self._payload
 
     class Client:
+        def __init__(self) -> None:
+            self.seen_payloads: list[dict[str, object]] = []
+
+        def _snapshot(self) -> dict[str, object]:
+            return build_source_snapshot(
+                application_id=7,
+                company_name="Smoke Company",
+                position_name="Smoke Position",
+                resume_id=41,
+                resume_title="AI Opportunity Fit Smoke Resume",
+                resume_content={"raw_text": "Built API services and led migration.", "skills": ["Python"]},
+                jd_text="Build reliable API quality workflows.",
+                jd_source_label="Smoke pasted JD",
+                candidate_assertions=["I led the migration."],
+            )
+
+        def _stage(self, stage: str, status: str, stage_id: int, parent: int | None = None) -> dict[str, object]:
+            snapshot = self._snapshot()
+            proposal = {
+                "schema_version": 2,
+                "stage": stage,
+                "source": {
+                    "kind": "opportunity_fit",
+                    "contract_version": "opportunity_fit.v2",
+                    "snapshot_version": "1",
+                },
+                "summary": {
+                    "text": "Built API services support the role.",
+                    "rationale": "The resume records API service work.",
+                    "evidence_refs": [
+                        {"source": "resume", "path": "/raw_text", "excerpt": "Built API services"}
+                    ],
+                },
+                "conditions": [
+                    {
+                        "id": "api",
+                        "text": "Confirm the scope of API service work.",
+                        "rationale": "The resume contains API service work.",
+                        "evidence_refs": [
+                            {"source": "resume", "path": "/raw_text", "excerpt": "Built API services"}
+                        ],
+                    }
+                ],
+                "risks": [
+                    {
+                        "id": "quality",
+                        "text": "Quality workflow scope needs confirmation.",
+                        "rationale": "The JD asks for reliable API quality workflows.",
+                        "evidence_refs": [
+                            {
+                                "source": "jd",
+                                "path": "/jd_text",
+                                "excerpt": "Build reliable API quality workflows.",
+                            }
+                        ],
+                    }
+                ],
+                "questions": [],
+                "next_steps": [],
+            }
+            return {
+                "id": stage_id,
+                "review_id": 8,
+                "stage_id": stage_id,
+                "application_id": 7,
+                "resume_id": 41,
+                "stage": stage,
+                "schema_version": 2,
+                "stage_status": status,
+                "parent_triage_stage_id": parent,
+                "idempotency_key": f"smoke-{stage}-{stage_id}",
+                "source_fingerprint_sha256": sha256_text(canonical_json(snapshot)),
+                "proposal_sha256": sha256_text(canonical_json(proposal)),
+                "created_at": "2026-07-28T00:00:00Z",
+                "proposal": proposal,
+                **({"confirmation_token": "smoke-confirmation-token"} if stage == "triage" and status == "ready" else {}),
+            }
+
         def post(self, path: str, json: dict[str, object] | None = None) -> Response:
             if path == "/api/resumes":
                 return Response({"id": 41})
             if path.endswith("opportunity-fit-reviews"):
-                return Response({"id": 8, "triage": {"summary": {"text": "safe", "evidence_refs": []}}})
+                assert json is not None
+                self.seen_payloads.append(json)
+                return Response(self._stage("triage", "ready", 8))
+            if path.endswith("/triage/8/confirm"):
+                return Response(self._stage("triage", "confirmed", 8), status_code=200)
             if path.endswith("deep-review"):
-                return Response({"deep_review": {"recommended_path": "clarify_first"}})
+                assert json is not None
+                self.seen_payloads.append(json)
+                return Response(self._stage("deep_review", "ready", 9, parent=8))
             raise AssertionError(path)
 
-        def delete(self, path: str) -> Response:
-            response = Response()
-            response.status_code = 200
-            return response
+        def get(self, path: str) -> Response:
+            if path == "/api/applications/7":
+                return Response({"company_name": "Smoke Company", "position_name": "Smoke Position"}, status_code=200)
+            if "schema_version=2" in path:
+                return Response(
+                    {"schema_version": 2, "stages": [{"stage": "triage"}, {"stage": "deep_review"}]},
+                    status_code=200,
+                )
+            raise AssertionError(path)
 
     steps: list[SmokeStep] = []
-    _run_real_ai_opportunity_fit_smoke(Client(), steps, 7)
+    client = Client()
+    _run_real_ai_opportunity_fit_smoke(client, steps, 7)
+    assert client.seen_payloads[0]["schema_version"] == 2
+    assert client.seen_payloads[1]["schema_version"] == 2
     assert [step.name for step in steps] == [
         "http_opportunity_fit_review",
         "http_opportunity_fit_deep_review",

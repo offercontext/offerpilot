@@ -22,6 +22,12 @@ from offerpilot.ai.interview_preparation_proposals import (
     InterviewPreparationModelError,
     validate_interview_preparation,
 )
+from offerpilot.ai.opportunity_fit_reviews import (
+    OpportunityFitModelError,
+    build_source_snapshot,
+    validate_deep_review_v2,
+    validate_triage_v2,
+)
 from offerpilot.ai.types import Assistant, Message, ToolCall
 from offerpilot.api import create_app
 from offerpilot.db import session_factory_for_data_dir
@@ -804,33 +810,97 @@ def _run_real_ai_opportunity_fit_smoke(
         if resume_ids is not None:
             resume_ids.append(resume_id)
 
+        application_response = client.get(f"/api/applications/{application_id}")
+        _assert_status(application_response.status_code, 200, "http_opportunity_fit_application")
+        application = application_response.json()
+        resume_payload = created_resume.json()
+        if not isinstance(application, dict) or not isinstance(resume_payload, dict):
+            raise RuntimeError("opportunity fit smoke source response was invalid")
+        snapshot = build_source_snapshot(
+            application_id=application_id,
+            company_name=str(application.get("company_name") or ""),
+            position_name=str(application.get("position_name") or ""),
+            resume_id=resume_id,
+            resume_title=str(resume_payload.get("title") or "AI Opportunity Fit Smoke Resume"),
+            resume_content={
+                "raw_text": "Built API services and led migration.",
+                "skills": ["Python"],
+            },
+            jd_text="Build reliable API quality workflows.",
+            jd_source_label="Smoke pasted JD",
+            candidate_assertions=["I led the migration."],
+        )
+        triage_payload = {
+            "schema_version": 2,
+            "resume_id": resume_id,
+            "jd_text": "Build reliable API quality workflows.",
+            "jd_source_label": "Smoke pasted JD",
+            "candidate_assertions": ["I led the migration."],
+            "idempotency_key": "f36f6d0b-1d1e-4e9a-aec1-9fef6b2f3b90",
+        }
         review = client.post(
             f"/api/applications/{application_id}/opportunity-fit-reviews",
-            json={
-                "resume_id": resume_id,
-                "jd_text": "Build reliable API quality workflows.",
-                "jd_source_label": "Smoke pasted JD",
-                "candidate_assertions": ["I led the migration."],
-                "idempotency_key": "f36f6d0b-1d1e-4e9a-aec1-9fef6b2f3b90",
-            },
+            json=triage_payload,
         )
         _assert_status(review.status_code, 201, "http_opportunity_fit_review")
         body = review.json()
-        if not isinstance(body, dict) or "triage" not in body or "source_snapshot_json" in body:
-            raise RuntimeError("opportunity fit smoke response leaked frozen source data")
-        triage = body.get("triage")
-        if not isinstance(triage, dict):
-            raise RuntimeError("opportunity fit smoke response did not contain triage")
-        review_id = body.get("id")
-        if not isinstance(review_id, int):
-            raise RuntimeError("opportunity fit smoke response did not contain a review id")
+        _validate_opportunity_fit_v2_stage_response(
+            body,
+            application_id=application_id,
+            resume_id=resume_id,
+            expected_stage="triage",
+            expected_status="ready",
+            snapshot=snapshot,
+        )
+        review_id = body["review_id"]
+        stage_id = body["stage_id"]
+        confirmation_token = body.get("confirmation_token")
+        if not isinstance(confirmation_token, str) or not confirmation_token:
+            raise RuntimeError("opportunity fit smoke response did not contain a confirmation token")
+        confirmed = client.post(
+            f"/api/applications/{application_id}/opportunity-fit-reviews/{review_id}/triage/{stage_id}/confirm",
+            json={"confirmation_token": confirmation_token},
+        )
+        _assert_status(confirmed.status_code, 200, "http_opportunity_fit_triage_confirm")
+        _validate_opportunity_fit_v2_stage_response(
+            confirmed.json(),
+            application_id=application_id,
+            resume_id=resume_id,
+            expected_stage="triage",
+            expected_status="confirmed",
+            snapshot=snapshot,
+        )
         deep_review = client.post(
-            f"/api/applications/{application_id}/opportunity-fit-reviews/{review_id}/deep-review"
+            f"/api/applications/{application_id}/opportunity-fit-reviews/{review_id}/deep-review",
+            json={
+                **triage_payload,
+                "idempotency_key": "4f9b6b33-4f1f-4cb6-87f4-ef5a9c5c9d8b",
+                "parent_triage_stage_id": stage_id,
+            },
         )
         _assert_status(deep_review.status_code, 201, "http_opportunity_fit_deep_review")
-        deep_body = deep_review.json()
-        if not isinstance(deep_body, dict) or not isinstance(deep_body.get("deep_review"), dict):
-            raise RuntimeError("opportunity fit smoke response did not contain deep review")
+        _validate_opportunity_fit_v2_stage_response(
+            deep_review.json(),
+            application_id=application_id,
+            resume_id=resume_id,
+            expected_stage="deep_review",
+            expected_status="ready",
+            expected_parent_stage_id=stage_id,
+            snapshot=snapshot,
+        )
+        history = client.get(
+            f"/api/applications/{application_id}/opportunity-fit-reviews/{review_id}?schema_version=2"
+        )
+        _assert_status(history.status_code, 200, "http_opportunity_fit_history")
+        history_body = history.json()
+        if (
+            not isinstance(history_body, dict)
+            or history_body.get("schema_version") != 2
+            or not isinstance(history_body.get("stages"), list)
+            or [stage.get("stage") for stage in history_body["stages"] if isinstance(stage, dict)]
+            != ["triage", "deep_review"]
+        ):
+            raise RuntimeError("opportunity fit smoke history was invalid")
         steps.append(
             SmokeStep(
                 "http_opportunity_fit_review",
@@ -845,6 +915,77 @@ def _run_real_ai_opportunity_fit_smoke(
         )
     finally:
         del anchor_resume_id, resume_id
+
+
+def _validate_opportunity_fit_v2_stage_response(
+    body: object,
+    *,
+    application_id: int,
+    resume_id: int,
+    expected_stage: str,
+    expected_status: str,
+    snapshot: dict[str, Any],
+    expected_parent_stage_id: int | None = None,
+) -> None:
+    if not isinstance(body, dict) or "source_snapshot_json" in body:
+        raise RuntimeError("opportunity fit v2 smoke response leaked frozen source data")
+    expected_fields = {
+        "id",
+        "review_id",
+        "stage_id",
+        "application_id",
+        "resume_id",
+        "stage",
+        "schema_version",
+        "stage_status",
+        "parent_triage_stage_id",
+        "idempotency_key",
+        "source_fingerprint_sha256",
+        "proposal_sha256",
+        "created_at",
+        "proposal",
+    }
+    allowed_fields = expected_fields | ({"confirmation_token"} if expected_stage == "triage" and expected_status == "ready" else set())
+    if set(body) != allowed_fields:
+        raise RuntimeError("opportunity fit v2 smoke response fields were invalid")
+    if any(
+        type(body[field]) is not int or body[field] != expected
+        for field, expected in (("application_id", application_id), ("resume_id", resume_id))
+    ):
+        raise RuntimeError("opportunity fit v2 smoke response ownership was invalid")
+    if (
+        type(body["id"]) is not int
+        or body["id"] <= 0
+        or type(body["review_id"]) is not int
+        or body["review_id"] <= 0
+        or body["stage_id"] != body["id"]
+        or body["schema_version"] != 2
+        or body["stage"] != expected_stage
+        or body["stage_status"] != expected_status
+        or body["parent_triage_stage_id"] != expected_parent_stage_id
+    ):
+        raise RuntimeError("opportunity fit v2 smoke response metadata was invalid")
+    if not isinstance(body["idempotency_key"], str) or not body["idempotency_key"]:
+        raise RuntimeError("opportunity fit v2 smoke response metadata was invalid")
+    if not all(
+        isinstance(body[field], str) and len(body[field]) == 64
+        for field in ("source_fingerprint_sha256", "proposal_sha256")
+    ):
+        raise RuntimeError("opportunity fit v2 smoke response hashes were invalid")
+    if not isinstance(body["created_at"], str) or not body["created_at"]:
+        raise RuntimeError("opportunity fit v2 smoke response metadata was invalid")
+    proposal = body["proposal"]
+    if not isinstance(proposal, dict):
+        raise RuntimeError("opportunity fit v2 smoke response did not contain a proposal")
+    try:
+        validator = validate_triage_v2 if expected_stage == "triage" else validate_deep_review_v2
+        validator(proposal, snapshot)
+    except OpportunityFitModelError as exc:
+        raise RuntimeError("opportunity fit v2 smoke evidence was not traceable") from exc
+    if body["source_fingerprint_sha256"] != sha256_text(canonical_json(snapshot)):
+        raise RuntimeError("opportunity fit v2 smoke source fingerprint was invalid")
+    if body["proposal_sha256"] != sha256_text(canonical_json(proposal)):
+        raise RuntimeError("opportunity fit v2 smoke proposal hash was invalid")
 
 
 def _run_real_ai_interview_review_smoke(

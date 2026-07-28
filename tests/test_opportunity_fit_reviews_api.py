@@ -10,6 +10,7 @@ from sqlalchemy import select
 from offerpilot.ai.types import Assistant
 from offerpilot.api import create_app
 from offerpilot.db import session_factory_for_data_dir
+from offerpilot.diagnostics import read_recent_log_entries
 from offerpilot.models import OpportunityFitReview
 from offerpilot.models import OpportunityFitReviewStage
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
@@ -478,7 +479,9 @@ def test_v2_confirmation_expiry_between_peek_and_write_returns_410(tmp_path, mon
 def test_api_v2_contract_failure_does_not_leave_history_stage(tmp_path) -> None:
     class InvalidV2Model:
         def complete(self, messages, tools):  # type: ignore[no-untyped-def]
-            return Assistant(content='{"schema_version":2,"stage":"triage","extra":true}')
+            invalid = _v2_payload("triage")
+            invalid["extra"] = "PRIVATE_MODEL_OUTPUT"
+            return Assistant(content=json.dumps(invalid, ensure_ascii=False))
 
     client, application, resume = _ready(tmp_path, InvalidV2Model())
     path = f"/api/applications/{application['id']}/opportunity-fit-reviews"
@@ -497,6 +500,10 @@ def test_api_v2_contract_failure_does_not_leave_history_stage(tmp_path) -> None:
     assert response.status_code == 502
     assert response.json()["error_code"] == "opportunity_fit_unverifiable"
     assert client.get(path).json() == []
+    entries = read_recent_log_entries(tmp_path)
+    assert any(entry["message"] == "opportunity_fit_unexpected_field" for entry in entries)
+    assert all("extra" not in entry["message"] for entry in entries)
+    assert all("PRIVATE_MODEL_OUTPUT" not in entry["message"] for entry in entries)
 
 
 def test_api_hides_soft_deleted_application(tmp_path) -> None:

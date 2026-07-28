@@ -298,9 +298,104 @@ def test_v2_rejects_whitespace_text_and_rationale() -> None:
 def test_v2_rejects_duplicate_json_keys() -> None:
     duplicate = '{"schema_version":2,"schema_version":2}'
     model = ScriptedModel([duplicate, duplicate])
-    with pytest.raises(OpportunityFitModelError):
+    with pytest.raises(OpportunityFitModelError) as error:
         generate_triage_v2(model, snapshot())
     assert model.calls == 2
+    assert error.value.failure_category == "duplicate_json_key"
+    assert "duplicate_json_key" in model.prompts[1]
+
+
+@pytest.mark.parametrize(
+    ("reply", "expected_category"),
+    [
+        ("[]", "root_object_invalid"),
+        ("not json", "invalid_json"),
+    ],
+)
+def test_v2_classifies_json_shape_failures(reply: str, expected_category: str) -> None:
+    model = ScriptedModel([reply, reply])
+
+    with pytest.raises(OpportunityFitModelError) as error:
+        generate_triage_v2(model, snapshot())
+
+    assert error.value.failure_category == expected_category
+    assert expected_category in model.prompts[1]
+
+
+def test_v2_classifies_field_shape_failures_without_model_content() -> None:
+    invalid = copy.deepcopy(triage_v2_payload())
+    invalid["conditions"][0]["text"] = 123
+    model = ScriptedModel([invalid, invalid])
+
+    with pytest.raises(OpportunityFitModelError) as error:
+        generate_triage_v2(model, snapshot())
+
+    assert error.value.failure_category == "invalid_field_type"
+    assert "invalid_field_type" in model.prompts[1]
+    assert "123" not in model.prompts[1]
+
+
+def test_v2_classifies_missing_extra_empty_and_limit_failures() -> None:
+    missing = copy.deepcopy(triage_v2_payload())
+    del missing["conditions"]
+    with pytest.raises(OpportunityFitModelError) as missing_error:
+        validate_triage_v2(missing, snapshot())
+    assert missing_error.value.failure_category == "missing_field"
+
+    extra = copy.deepcopy(triage_v2_payload())
+    extra["unexpected"] = True
+    with pytest.raises(OpportunityFitModelError) as extra_error:
+        validate_triage_v2(extra, snapshot())
+    assert extra_error.value.failure_category == "unexpected_field"
+
+    empty = copy.deepcopy(triage_v2_payload())
+    empty["conditions"][0]["rationale"] = " \t"
+    with pytest.raises(OpportunityFitModelError) as empty_error:
+        validate_triage_v2(empty, snapshot())
+    assert empty_error.value.failure_category == "empty_value"
+
+    limited = copy.deepcopy(triage_v2_payload())
+    limited["conditions"] = [copy.deepcopy(limited["conditions"][0]) for _ in range(9)]
+    with pytest.raises(OpportunityFitModelError) as limit_error:
+        validate_triage_v2(limited, snapshot())
+    assert limit_error.value.failure_category == "quantity_limit"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected_category"),
+    [
+        (
+            "source",
+            {"source": "attacker", "path": "/raw_text", "excerpt": "Built APIs"},
+            "evidence_source_invalid",
+        ),
+        (
+            "path",
+            {"source": "resume", "path": "/missing", "excerpt": "Built APIs"},
+            "evidence_path_invalid",
+        ),
+        (
+            "excerpt",
+            {"source": "resume", "path": "/raw_text", "excerpt": "Invented"},
+            "evidence_excerpt_invalid",
+        ),
+        (
+            "excerpt",
+            {"source": "resume", "path": "/raw_text", "excerpt": " \t"},
+            "empty_value",
+        ),
+    ],
+)
+def test_v2_classifies_evidence_reference_failures(
+    field: str, value: dict[str, str], expected_category: str
+) -> None:
+    payload = copy.deepcopy(triage_v2_payload())
+    payload["conditions"][0]["evidence_refs"] = [value]
+
+    with pytest.raises(OpportunityFitModelError) as error:
+        validate_triage_v2(payload, snapshot())
+
+    assert error.value.failure_category == expected_category
 
 
 def test_v2_deep_rejects_uncited_specific_gap() -> None:

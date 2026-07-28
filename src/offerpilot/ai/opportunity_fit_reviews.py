@@ -65,6 +65,28 @@ _V2_QUESTION_TEXT = {
 _V2_SAFE_EMPTY_TEXT = "当前资料不足，无法给出可验证的继续建议"
 _V2_SAFE_EMPTY_RATIONALE = "当前没有足够的冻结证据支持具体建议。"
 _V2_MAX_ITEMS = {"conditions": 8, "risks": 8, "questions": 6, "next_steps": 8}
+_V2_REPAIR_INSTRUCTIONS = {
+    "invalid_json": "Return valid JSON with no Markdown fences or commentary.",
+    "duplicate_json_key": "Emit each JSON object key exactly once.",
+    "root_object_invalid": "Return one JSON object as the root value, not an array or scalar.",
+    "missing_field": "Include every required field and no optional substitute field.",
+    "unexpected_field": "Remove every field not explicitly listed in the v2 contract.",
+    "invalid_field_type": (
+        "Use strings for text, rationale, id, source, path, and excerpt; arrays for lists; "
+        "and objects for summary, items, and every evidence reference. An evidence_refs item "
+        "must be exactly {source, path, excerpt}, never a string."
+    ),
+    "empty_value": "Replace blank or whitespace-only required strings with exact snapshot-backed values.",
+    "quantity_limit": "Keep within the stated array and evidence_refs limits.",
+    "evidence_source_invalid": "Use only the allowed evidence source values and never invent a source.",
+    "evidence_path_invalid": (
+        "Use exactly /jd_text for JD, a relative string-leaf path such as /raw_text or /skills/0 "
+        "for resume, and /user_assertions/<index>/text for user assertions."
+    ),
+    "evidence_excerpt_invalid": "Copy each excerpt as a non-empty contiguous substring of its referenced snapshot value.",
+    "missing_evidence_ref": "Add a valid evidence reference to every concrete item, or use the exact safe-empty response.",
+    "semantic_invalid": "Return the exact v2 structure and safe-empty semantics; never add a decision or unsupported claim.",
+}
 
 
 def build_source_snapshot(
@@ -267,7 +289,12 @@ def _validate_v2_stage(
     *,
     expected_stage: str,
 ) -> ValidatedOpportunityOutput:
-    _require_exact_fields(
+    if not isinstance(payload, dict):
+        raise OpportunityFitModelError(
+            "opportunity fit v2 must be an object",
+            failure_category="root_object_invalid",
+        )
+    _v2_require_exact_fields(
         payload,
         {
             "schema_version",
@@ -282,112 +309,165 @@ def _validate_v2_stage(
         "opportunity fit v2",
     )
     if payload.get("schema_version") != 2 or payload.get("stage") != expected_stage:
-        raise OpportunityFitModelError("opportunity fit v2 stage is invalid")
+        raise OpportunityFitModelError("opportunity fit v2 stage is invalid", failure_category="semantic_invalid")
     if payload.get("source") != _V2_SOURCE:
-        raise OpportunityFitModelError("opportunity fit v2 source is invalid")
+        raise OpportunityFitModelError("opportunity fit v2 source is invalid", failure_category="semantic_invalid")
 
     summary = payload.get("summary")
     if not isinstance(summary, dict):
-        raise OpportunityFitModelError("summary must be an object")
-    _require_exact_fields(summary, {"text", "rationale", "evidence_refs"}, "summary")
-    summary_text = _require_non_empty_string(summary.get("text"), "summary text")
-    _require_bounded_string(summary.get("rationale"), "summary rationale")
+        raise OpportunityFitModelError("summary must be an object", failure_category="invalid_field_type")
+    _v2_require_exact_fields(summary, {"text", "rationale", "evidence_refs"}, "summary")
+    summary_text = _v2_require_non_empty_string(summary.get("text"), "summary text")
+    _v2_require_bounded_string(summary.get("rationale"), "summary rationale")
     summary_refs = _validate_v2_refs(summary.get("evidence_refs"), snapshot)
     safe_empty = summary_text == _V2_SAFE_EMPTY_TEXT
     if not summary_refs and not safe_empty:
-        raise OpportunityFitModelError("summary needs evidence_refs")
+        raise OpportunityFitModelError("summary needs evidence_refs", failure_category="missing_evidence_ref")
     if safe_empty and summary.get("rationale") != _V2_SAFE_EMPTY_RATIONALE:
-        raise OpportunityFitModelError("safe empty summary rationale is invalid")
+        raise OpportunityFitModelError(
+            "safe empty summary rationale is invalid", failure_category="semantic_invalid"
+        )
     if safe_empty and summary_refs:
-        raise OpportunityFitModelError("safe empty summary cannot cite evidence")
+        raise OpportunityFitModelError(
+            "safe empty summary cannot cite evidence", failure_category="semantic_invalid"
+        )
 
     ids: set[str] = set()
     for field in ("conditions", "risks", "next_steps"):
-        items = _require_v2_items(payload.get(field), field, _V2_MAX_ITEMS[field])
+        items = _v2_require_items(payload.get(field), field, _V2_MAX_ITEMS[field])
         if field in {"conditions", "risks"} and not items and not safe_empty:
-            raise OpportunityFitModelError(f"normal v2 output needs non-empty {field}")
+            raise OpportunityFitModelError(
+                f"normal v2 output needs non-empty {field}", failure_category="semantic_invalid"
+            )
         for item in items:
-            _require_exact_fields(item, {"id", "text", "rationale", "evidence_refs"}, field)
-            item_id = _require_non_empty_string(item.get("id"), f"{field} id")
+            _v2_require_exact_fields(item, {"id", "text", "rationale", "evidence_refs"}, field)
+            item_id = _v2_require_non_empty_string(item.get("id"), f"{field} id")
             if item_id in ids:
-                raise OpportunityFitModelError("v2 item ids must be globally unique")
+                raise OpportunityFitModelError(
+                    "v2 item ids must be globally unique", failure_category="semantic_invalid"
+                )
             ids.add(item_id)
-            _require_bounded_string(item.get("text"), f"{field} text")
-            _require_bounded_string(item.get("rationale"), f"{field} rationale")
+            _v2_require_bounded_string(item.get("text"), f"{field} text")
+            _v2_require_bounded_string(item.get("rationale"), f"{field} rationale")
             refs = _validate_v2_refs(item.get("evidence_refs"), snapshot)
             if not refs:
-                raise OpportunityFitModelError(f"{field} items need evidence_refs")
+                raise OpportunityFitModelError(
+                    f"{field} items need evidence_refs", failure_category="missing_evidence_ref"
+                )
 
-    questions = _require_v2_items(payload.get("questions"), "questions", _V2_MAX_ITEMS["questions"])
+    questions = _v2_require_items(payload.get("questions"), "questions", _V2_MAX_ITEMS["questions"])
     if safe_empty and any(payload.get(field) for field in ("conditions", "risks", "questions", "next_steps")):
-        raise OpportunityFitModelError("safe empty output must contain only empty arrays")
+        raise OpportunityFitModelError(
+            "safe empty output must contain only empty arrays", failure_category="semantic_invalid"
+        )
     question_ids: set[str] = set()
     for item in questions:
-        _require_exact_fields(item, {"question_id", "text", "evidence_refs"}, "question")
-        question_id = _require_non_empty_string(item.get("question_id"), "question_id")
+        _v2_require_exact_fields(item, {"question_id", "text", "evidence_refs"}, "question")
+        question_id = _v2_require_non_empty_string(item.get("question_id"), "question_id")
         if question_id in question_ids:
-            raise OpportunityFitModelError("question_id must be unique")
+            raise OpportunityFitModelError("question_id must be unique", failure_category="semantic_invalid")
         if question_id in ids:
-            raise OpportunityFitModelError("v2 item ids must be globally unique")
+            raise OpportunityFitModelError(
+                "v2 item ids must be globally unique", failure_category="semantic_invalid"
+            )
         question_ids.add(question_id)
         ids.add(question_id)
         if question_id in _V2_QUESTION_TEXT:
             if item.get("text") != _V2_QUESTION_TEXT[question_id]:
-                raise OpportunityFitModelError("fixed question text is invalid")
+                raise OpportunityFitModelError("fixed question text is invalid", failure_category="semantic_invalid")
             _validate_v2_refs(item.get("evidence_refs"), snapshot)
         else:
-            _require_bounded_string(item.get("text"), "question text")
+            _v2_require_bounded_string(item.get("text"), "question text")
             if not _validate_v2_refs(item.get("evidence_refs"), snapshot):
-                raise OpportunityFitModelError("contextual questions need evidence_refs")
+                raise OpportunityFitModelError(
+                    "contextual questions need evidence_refs", failure_category="missing_evidence_ref"
+                )
 
     validated = copy.deepcopy(payload)
     validated["summary"]["evidence_refs"] = summary_refs
     return ValidatedOpportunityOutput(payload=validated)
 
 
-def _require_v2_items(value: Any, field: str, maximum: int) -> list[dict[str, Any]]:
-    items = _require_list(value, field)
+def _v2_require_items(value: Any, field: str, maximum: int) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+        raise OpportunityFitModelError(f"{field} must be an array of objects", failure_category="invalid_field_type")
+    items = value
     if len(items) > maximum:
-        raise OpportunityFitModelError(f"{field} exceeds maximum length")
+        raise OpportunityFitModelError(f"{field} exceeds maximum length", failure_category="quantity_limit")
     return items
 
 
-def _require_bounded_string(value: Any, label: str, maximum: int = 1000) -> str:
-    result = _require_string(value, label)
+def _v2_require_bounded_string(value: Any, label: str, maximum: int = 1000) -> str:
+    result = _v2_require_string(value, label)
     if not result.strip():
-        raise OpportunityFitModelError(f"{label} must be non-empty")
+        raise OpportunityFitModelError(f"{label} must be non-empty", failure_category="empty_value")
     if len(result) > maximum:
-        raise OpportunityFitModelError(f"{label} exceeds maximum length")
+        raise OpportunityFitModelError(f"{label} exceeds maximum length", failure_category="quantity_limit")
     return result
 
 
 def _validate_v2_refs(refs: Any, snapshot: dict[str, Any]) -> list[dict[str, str]]:
     if not isinstance(refs, list):
-        raise OpportunityFitModelError("evidence_refs must be an array")
+        raise OpportunityFitModelError("evidence_refs must be an array", failure_category="invalid_field_type")
     if len(refs) > 4:
-        raise OpportunityFitModelError("evidence_refs exceeds maximum length")
+        raise OpportunityFitModelError("evidence_refs exceeds maximum length", failure_category="quantity_limit")
     validated: list[dict[str, str]] = []
     for ref in refs:
         if not isinstance(ref, dict):
-            raise OpportunityFitModelError("evidence reference must be an object")
-        _require_exact_fields(ref, _EVIDENCE_REF_FIELDS, "evidence reference")
-        source = _require_string(ref.get("source"), "evidence source")
-        path = _require_string(ref.get("path"), "evidence path")
-        excerpt = _require_non_empty_string(ref.get("excerpt"), "evidence excerpt")
+            raise OpportunityFitModelError("evidence reference must be an object", failure_category="invalid_field_type")
+        _v2_require_exact_fields(ref, _EVIDENCE_REF_FIELDS, "evidence reference")
+        source = _v2_require_string(ref.get("source"), "evidence source")
+        path = _v2_require_string(ref.get("path"), "evidence path")
+        excerpt = _v2_require_non_empty_string(ref.get("excerpt"), "evidence excerpt")
         if source == "jd":
             if path != "/jd_text":
-                raise OpportunityFitModelError("v2 JD evidence path is invalid")
+                raise OpportunityFitModelError("v2 JD evidence path is invalid", failure_category="evidence_path_invalid")
             expected = _snapshot_value(snapshot, "jd", "text")
         elif source == "resume":
-            expected = _resume_value(snapshot, path)
+            try:
+                expected = _resume_value(snapshot, path)
+            except OpportunityFitModelError as exc:
+                raise OpportunityFitModelError(
+                    "v2 resume evidence path is invalid", failure_category="evidence_path_invalid"
+                ) from exc
         elif source == "user_assertion":
-            expected = _assertion_value(snapshot, path)
+            try:
+                expected = _assertion_value(snapshot, path)
+            except OpportunityFitModelError as exc:
+                raise OpportunityFitModelError(
+                    "v2 user assertion evidence path is invalid", failure_category="evidence_path_invalid"
+                ) from exc
         else:
-            raise OpportunityFitModelError("unsupported evidence source")
+            raise OpportunityFitModelError("unsupported evidence source", failure_category="evidence_source_invalid")
         if excerpt not in expected:
-            raise OpportunityFitModelError("evidence excerpt does not match snapshot")
+            raise OpportunityFitModelError(
+                "evidence excerpt does not match snapshot", failure_category="evidence_excerpt_invalid"
+            )
         validated.append({"source": source, "path": path, "excerpt": excerpt})
     return validated
+
+
+def _v2_require_exact_fields(value: Any, expected: set[str], label: str) -> None:
+    if not isinstance(value, dict):
+        raise OpportunityFitModelError(f"{label} must be an object", failure_category="invalid_field_type")
+    fields = set(value)
+    if expected - fields:
+        raise OpportunityFitModelError(f"{label} has missing fields", failure_category="missing_field")
+    if fields - expected:
+        raise OpportunityFitModelError(f"{label} has unexpected fields", failure_category="unexpected_field")
+
+
+def _v2_require_string(value: Any, label: str) -> str:
+    if not isinstance(value, str):
+        raise OpportunityFitModelError(f"{label} must be a string", failure_category="invalid_field_type")
+    return value
+
+
+def _v2_require_non_empty_string(value: Any, label: str) -> str:
+    result = _v2_require_string(value, label)
+    if not result.strip():
+        raise OpportunityFitModelError(f"{label} must be non-empty", failure_category="empty_value")
+    return result
 
 
 def generate_triage(model: ChatModel, snapshot: dict[str, Any]) -> ValidatedOpportunityOutput:
@@ -418,6 +498,7 @@ def generate_triage_v2(model: ChatModel, snapshot: dict[str, Any]) -> ValidatedO
         _v2_system("triage"),
         _v2_prompt(snapshot, None),
         lambda payload: validate_triage_v2(payload, snapshot),
+        v2=True,
     )
 
 
@@ -431,6 +512,7 @@ def generate_deep_review_v2(
         _v2_system("deep_review"),
         _v2_prompt(snapshot, triage),
         lambda payload: validate_deep_review_v2(payload, snapshot),
+        v2=True,
     )
 
 
@@ -439,18 +521,30 @@ def _generate(
     system: str,
     prompt: str,
     validator: Callable[[dict[str, Any]], ValidatedOpportunityOutput],
+    *,
+    v2: bool = False,
 ) -> ValidatedOpportunityOutput:
-    repair_category = "invalid_change_shape"
+    repair_category = "invalid_json" if v2 else "invalid_change_shape"
     for attempt in range(2):
         user = prompt
         if attempt == 1:
-            user = (
-                f"{prompt}\n\n"
-                "Repair category: invalid_change_shape. Return only raw JSON matching the contract. "
-                "Do not return Markdown, explanations, the previous response, or new facts. "
-                "If evidence is insufficient, use unknown or an empty array. Never use JD evidence "
-                "as a candidate fact and never put a JD reference in fit_signals."
-            )
+            if v2:
+                repair_instruction = (
+                    "Return only raw JSON matching the contract. Do not return Markdown, explanations, "
+                    "the previous response, or new facts. Use only the same frozen snapshot. "
+                    f"{_V2_REPAIR_INSTRUCTIONS.get(repair_category, _V2_REPAIR_INSTRUCTIONS['semantic_invalid'])} "
+                    f"If evidence is insufficient, use the fixed safe-empty response: summary.text must be "
+                    f"{json.dumps(_V2_SAFE_EMPTY_TEXT, ensure_ascii=False)}, summary.rationale must be "
+                    f"{json.dumps(_V2_SAFE_EMPTY_RATIONALE, ensure_ascii=False)}, and all arrays must be empty."
+                )
+            else:
+                repair_instruction = (
+                    "Return only raw JSON matching the contract. Do not return Markdown, explanations, "
+                    "the previous response, or new facts. If evidence is insufficient, use unknown or "
+                    "an empty array. Never use JD evidence as a candidate fact and never put a JD "
+                    "reference in fit_signals."
+                )
+            user = f"{prompt}\n\nRepair category: {repair_category}. {repair_instruction}"
         try:
             assistant = model.complete(
                 [Message(role="system", content=system), Message(role="user", content=user)],
@@ -469,7 +563,7 @@ def _generate(
                 reject_duplicate_keys=True,
             )
         except Exception as exc:
-            repair_category = "invalid_json"
+            repair_category = _json_failure_category(exc) if v2 else "invalid_change_shape"
             if attempt == 0:
                 continue
             raise OpportunityFitModelError(
@@ -490,6 +584,15 @@ def _generate(
         "model output could not be verified",
         failure_category=repair_category,
     )
+
+
+def _json_failure_category(error: Exception) -> str:
+    message = str(error)
+    if "duplicate JSON key" in message:
+        return "duplicate_json_key"
+    if "must be a JSON object" in message:
+        return "root_object_invalid"
+    return "invalid_json"
 
 
 def _validate_refs(
@@ -670,11 +773,25 @@ def _v2_system(stage: str) -> str:
         f"stage must be {stage}. Never return recommendation, score, probability, advance, "
         "hold, or decline. source must be exactly "
         '{"kind":"opportunity_fit","contract_version":"opportunity_fit.v2",'
-        '"snapshot_version":"1"}. Every specific item needs evidence_refs copied exactly '
-        "from the frozen snapshot. JD evidence uses /jd_text; resume paths resolve to string "
-        "leaves; excerpts must be non-empty substrings. Fixed questions use their question_id "
-        "and server-defined text. If evidence is insufficient, return the fixed safe-empty "
-        f"summary and empty arrays; do not invent facts or decisions."
+        '"snapshot_version":"1"}. summary is exactly '
+        '{"text":string,"rationale":string,"evidence_refs":array}; every condition, risk, '
+        'or next_step is exactly {"id":string,"text":string,"rationale":string,"evidence_refs":array}; '
+        'every question is exactly {"question_id":string,"text":string,"evidence_refs":array}. '
+        'Every evidence_refs array contains objects exactly like '
+        '{"source":"resume","path":"/raw_text","excerpt":"exact contiguous text"}; '
+        "never put a plain string in evidence_refs and never omit source, path, or excerpt. "
+        "Use at most 8 conditions, 8 risks, 6 questions, 8 next_steps, and 4 evidence_refs per item. "
+        "All strings must be non-blank. Every concrete summary, condition, risk, and next_step needs "
+        "at least one exact evidence reference. Evidence source is exactly jd, resume, or user_assertion. "
+        "JD evidence uses exactly /jd_text; resume evidence uses a relative JSON path such as /raw_text "
+        "or /skills/0 and never starts with /content_json; user_assertion evidence uses exactly "
+        "/user_assertions/<index>/text. These paths resolve to string leaves; excerpts must be non-empty "
+        "contiguous substrings copied exactly from the frozen "
+        "snapshot. Fixed questions use their question_id and server-defined text. If evidence is "
+        f"insufficient, return summary.text exactly {json.dumps(_V2_SAFE_EMPTY_TEXT, ensure_ascii=False)}, "
+        f"summary.rationale exactly {json.dumps(_V2_SAFE_EMPTY_RATIONALE, ensure_ascii=False)}, "
+        "and all four arrays empty. Never return recommendation, score, probability, advance, hold, "
+        "decline, or any extra field."
     )
 
 
