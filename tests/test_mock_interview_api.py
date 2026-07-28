@@ -25,7 +25,23 @@ class _InvalidQuestionModel:
 
     def complete(self, messages, tools, **kwargs):
         self.calls += 1
-        return Assistant(content='{"unexpected":true}')
+        return Assistant(content='{"unexpected":"raw model output"}')
+
+
+class _StructuralRepairQuestionModel:
+    supports_json_schema = False
+
+    def __init__(self, second_response):
+        self.second_response = second_response
+        self.calls = 0
+
+    def complete(self, messages, tools, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            return Assistant(content='{"question":"Q","evidence_refs":[null]}')
+        if isinstance(self.second_response, Exception):
+            raise self.second_response
+        return Assistant(content=self.second_response)
 
 
 def _client(tmp_path, model=None):
@@ -97,10 +113,82 @@ def test_contract_failure_logs_only_safe_category(tmp_path):
 
     assert response.status_code == 502
     assert response.json()["error_code"] == "mock_interview_unverifiable"
+    assert "raw model output" not in response.text
     log_text = (tmp_path / "logs" / "offerpilot.log").read_text(encoding="utf-8")
     assert "mock_interview_contract_failure" in log_text
     assert "unexpected_field" in log_text
+    assert "raw model output" not in log_text
     assert "Reliability engineering interview JD" not in log_text
+
+
+def test_structural_question_failure_is_repaired_once(tmp_path):
+    model = _StructuralRepairQuestionModel(
+        '{"question":"请结合 Python 经验回答。","evidence_refs":[{"source":"jd","path":"/jd/text","excerpt":"Python"}]}'
+    )
+    client, app_id, event_id, resume_id = _client(tmp_path, model)
+
+    response = client.post(
+        f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts",
+        json={
+            "resume_id": resume_id,
+            "jd_text": "JD Python",
+            "attempt_idempotency_key": "repair-success",
+            "initial_question_idempotency_key": "repair-question",
+        },
+    )
+
+    assert response.status_code == 201
+    assert model.calls == 2
+
+
+def test_repair_provider_failure_preserves_original_key(tmp_path):
+    model = _StructuralRepairQuestionModel(RuntimeError("provider raw secret"))
+    client, app_id, event_id, resume_id = _client(tmp_path, model)
+    path = f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts"
+    payload = {
+        "resume_id": resume_id,
+        "jd_text": "JD Python",
+        "attempt_idempotency_key": "repair-provider-unknown",
+        "initial_question_idempotency_key": "repair-provider-question",
+    }
+
+    first = client.post(path, json=payload)
+    replay = client.post(path, json=payload)
+
+    assert first.status_code == 502
+    assert first.json()["error_code"] == "mock_interview_provider_error"
+    assert "provider raw secret" not in first.text
+    assert replay.status_code == 202
+    assert replay.json()["attempt_status"] == "provider_unknown"
+    assert model.calls == 2
+    log_text = (tmp_path / "logs" / "offerpilot.log").read_text(encoding="utf-8")
+    assert "provider raw secret" not in log_text
+    assert "JD Python" not in log_text
+
+
+def test_repeated_structural_failure_is_terminal_and_replay_skips_provider(tmp_path):
+    model = _StructuralRepairQuestionModel(
+        '{"question":"Q2","evidence_refs":[null]}'
+    )
+    client, app_id, event_id, resume_id = _client(tmp_path, model)
+    path = f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts"
+    payload = {
+        "resume_id": resume_id,
+        "jd_text": "JD Python",
+        "attempt_idempotency_key": "repair-terminal",
+        "initial_question_idempotency_key": "repair-terminal-question",
+    }
+
+    first = client.post(path, json=payload)
+    calls_after_failure = model.calls
+    replay = client.post(path, json=payload)
+
+    assert first.status_code == 502
+    assert first.json()["error_code"] == "mock_interview_unverifiable"
+    assert replay.status_code == 502
+    assert replay.json()["error_code"] == "mock_interview_unverifiable"
+    assert calls_after_failure == 2
+    assert model.calls == calls_after_failure
 
 
 def test_start_rejects_cross_application_event(tmp_path):

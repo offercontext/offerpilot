@@ -1,11 +1,18 @@
+import json
+
 import pytest
 
 from offerpilot.ai.mock_interview import (
     SAFE_EMPTY_FEEDBACK,
     MockInterviewContractError,
+    MockInterviewUnverifiableError,
+    generate_feedback,
+    generate_question,
     parse_mock_interview_json,
+    should_retry_mock_interview_format,
     validate_feedback,
 )
+from offerpilot.ai.types import Assistant
 
 
 def _snapshot():
@@ -17,6 +24,112 @@ def _snapshot():
 
 def _turns():
     return [{"turn_no": 1, "question": "介绍项目", "answer": "我做过 Python 服务"}]
+
+
+class _QuestionRepairModel:
+    supports_json_schema = False
+
+    def __init__(self, outputs):
+        self.outputs = iter(outputs)
+        self.calls = 0
+        self.messages = []
+
+    def complete(self, messages, tools, **kwargs):
+        self.calls += 1
+        self.messages.append(messages)
+        return Assistant(content=next(self.outputs))
+
+
+def _valid_question():
+    return (
+        '{"question":"请分享一次经历？",'
+        '"evidence_refs":[{"source":"turn","path":"/turns/001/answer",'
+        '"excerpt":"我做过 Python 服务"}]}'
+    )
+
+
+def test_structural_evidence_error_is_repaired_once():
+    model = _QuestionRepairModel([
+        '{"question":"请分享一次经历？","evidence_refs":[null]}',
+        _valid_question(),
+    ])
+
+    question = generate_question(model, _snapshot(), _turns())
+
+    assert question == "请分享一次经历？"
+    assert model.calls == 2
+    repair_prompt = model.messages[1][0].content
+    assert "evidence_ref_not_object" in repair_prompt
+    assert "/jd/text" in repair_prompt
+    assert "raw model output" not in repair_prompt
+
+
+def test_repeated_structural_evidence_error_is_terminal():
+    model = _QuestionRepairModel([
+        '{"question":"Q","evidence_refs":[null]}',
+        '{"question":"Q2","evidence_refs":[null]}',
+    ])
+
+    with pytest.raises(MockInterviewUnverifiableError) as error:
+        generate_question(model, _snapshot(), _turns())
+
+    assert error.value.category == "evidence_ref_not_object"
+    assert model.calls == 2
+
+
+def test_semantic_evidence_failures_never_enter_format_repair():
+    assert not should_retry_mock_interview_format("unknown_evidence_ref")
+    assert not should_retry_mock_interview_format("excerpt_mismatch")
+    assert not should_retry_mock_interview_format("limit_exceeded")
+    assert not should_retry_mock_interview_format("missing_evidence_ref")
+
+
+def test_repaired_shape_is_revalidated_for_forged_reference():
+    model = _QuestionRepairModel([
+        '{"question":"Q","evidence_refs":[null]}',
+        '{"question":"Q2","evidence_refs":[{"source":"attacker","path":"/x","excerpt":"伪造"}]}',
+    ])
+
+    with pytest.raises(MockInterviewUnverifiableError) as error:
+        generate_question(model, _snapshot(), _turns())
+
+    assert error.value.category == "unknown_evidence_ref"
+    assert model.calls == 2
+
+
+def test_feedback_structural_evidence_error_is_repaired_once():
+    invalid = _feedback(strengths=[{
+        "id": "s1",
+        "text": "回答引用了实际项目",
+        "evidence_refs": [{"source": "turn", "path": "/turns/001/answer"}],
+    }])
+    model = _QuestionRepairModel([json.dumps(invalid, ensure_ascii=False), json.dumps(_feedback(), ensure_ascii=False)])
+
+    proposal, diagnostic = generate_feedback(model, _snapshot(), _turns())
+
+    assert proposal == _feedback()
+    assert diagnostic["repair_count"] == 1
+    assert model.calls == 2
+
+
+@pytest.mark.parametrize(
+    ("reference", "category"),
+    [
+        ({"source": "turn", "path": "/turns/001/answer"}, "evidence_ref_missing_field"),
+        ({"source": "turn", "path": 1, "excerpt": "回答"}, "evidence_ref_field_type"),
+    ],
+)
+def test_evidence_reference_shape_failures_have_stable_categories(reference, category):
+    model = _QuestionRepairModel([
+        '{"question":"Q","evidence_refs":[' + str(reference).replace("'", '"') + ']}',
+        '{"question":"Q2","evidence_refs":[' + str(reference).replace("'", '"') + ']}',
+    ])
+
+    with pytest.raises(MockInterviewUnverifiableError) as error:
+        generate_question(model, _snapshot(), _turns())
+
+    assert error.value.category == category
+    assert model.calls == 2
 
 
 def _feedback(**overrides):

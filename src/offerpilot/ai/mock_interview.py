@@ -36,12 +36,12 @@ _FORMAT_REPAIR_CATEGORIES = {
     "root_not_object",
     "unexpected_field",
     "field_type",
-    "blank_value",
-    "limit_exceeded",
-    "missing_evidence_ref",
-    "missing_turn_evidence",
-    "unknown_evidence_ref",
-    "excerpt_mismatch",
+    "item_shape",
+    "evidence_refs_not_array",
+    "evidence_ref_not_object",
+    "evidence_ref_missing_field",
+    "evidence_ref_unexpected_field",
+    "evidence_ref_field_type",
 }
 
 
@@ -107,8 +107,10 @@ def _validate_item(
         raise MockInterviewContractError("blank_value")
     seen_ids.add(item_id)
     refs = item["evidence_refs"]
-    if not isinstance(refs, list) or len(refs) > 4:
-        raise MockInterviewContractError("evidence_shape")
+    if not isinstance(refs, list):
+        raise MockInterviewContractError("evidence_refs_not_array")
+    if len(refs) > 4:
+        raise MockInterviewContractError("limit_exceeded")
     if field in {"strengths", "practice_points", "next_practice_steps"}:
         if not refs or not any(ref.get("source") == "turn" for ref in refs if isinstance(ref, dict)):
             raise MockInterviewContractError("missing_turn_evidence")
@@ -125,10 +127,18 @@ def _validate_item(
 
 
 def _validate_reference(ref: Any, snapshot: dict[str, Any], turns: list[dict[str, Any]]) -> None:
-    if not isinstance(ref, dict) or set(ref) != {"source", "path", "excerpt"}:
-        raise MockInterviewContractError("evidence_shape")
+    required_fields = {"source", "path", "excerpt"}
+    if not isinstance(ref, dict):
+        raise MockInterviewContractError("evidence_ref_not_object")
+    ref_fields = set(ref)
+    if ref_fields != required_fields:
+        if required_fields - ref_fields:
+            raise MockInterviewContractError("evidence_ref_missing_field")
+        raise MockInterviewContractError("evidence_ref_unexpected_field")
     source, path, excerpt = ref["source"], ref["path"], ref["excerpt"]
-    if not all(isinstance(value, str) for value in (source, path, excerpt)) or not excerpt.strip():
+    if not all(isinstance(value, str) for value in (source, path, excerpt)):
+        raise MockInterviewContractError("evidence_ref_field_type")
+    if not excerpt.strip():
         raise MockInterviewContractError("blank_value")
     if source == "jd" and path == "/jd/text":
         value = snapshot.get("jd", {}).get("text")
@@ -181,6 +191,21 @@ def _reject_constant(value: str) -> None:
 
 def should_retry_mock_interview_format(category: str) -> bool:
     return category in _FORMAT_REPAIR_CATEGORIES
+
+
+def _format_repair_instruction(category: str) -> str:
+    return (
+        " Format repair: the previous response failed the structural check "
+        f"{category!r}. Return only one raw JSON object matching the declared schema."
+        " Each evidence reference must be an object with exactly these string fields: "
+        "source, path, excerpt. Allowed references are exactly jd + /jd/text, "
+        "resume + /resume/content_json/<string-leaf-pointer>, or turn + "
+        "/turns/<turn-number>/answer. The excerpt must be a non-empty contiguous "
+        "substring copied verbatim from that allowed frozen value, including its "
+        "original punctuation, spacing, and Unicode. If a path or excerpt cannot "
+        "be copied exactly from the supplied input, do not invent it. Do not repeat "
+        "or explain the previous response."
+    )
 
 
 def build_mock_interview_diagnostic(
@@ -277,13 +302,16 @@ def generate_question(
         raise MockInterviewProviderError("mock_interview_provider_error")
     last_category = "invalid_json"
     for attempt in range(2):
+        repair_instruction = _format_repair_instruction(last_category) if attempt else ""
         messages = [
             Message(
                 role="system",
                 content=(
                     "只返回原始 JSON，字段必须严格为 question 和 evidence_refs。"
                     "question 必须是非空字符串；evidence_refs 必须引用当前冻结 JD、简历或已回答轮次。"
+                    "source/path/excerpt 必须使用允许的规范路径，excerpt 必须从对应输入逐字连续复制，不得改写、拼接或猜测。"
                     "不得评分、预测录用或添加额外字段。"
+                    + repair_instruction
                 ),
             ),
             Message(
@@ -340,7 +368,9 @@ def generate_question(
             refs = parsed["evidence_refs"]
             if not isinstance(question, str) or not question.strip() or len(question) > 1000:
                 raise MockInterviewContractError("blank_value")
-            if not isinstance(refs, list) or not refs:
+            if not isinstance(refs, list):
+                raise MockInterviewContractError("evidence_refs_not_array")
+            if not refs:
                 raise MockInterviewContractError("missing_evidence_ref")
             for ref in refs:
                 _validate_reference(ref, snapshot, turns)
@@ -401,5 +431,5 @@ def _feedback_prompt(snapshot: dict[str, Any], turns: list[dict[str, Any]], fail
     payload = {"snapshot": snapshot, "turns": turns}
     if failure_category:
         payload["repair_failure_category"] = failure_category
-        payload["repair_instruction"] = "只返回符合契约的 raw JSON；不要补造证据或扩大输入。"
+        payload["repair_instruction"] = _format_repair_instruction(failure_category)
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
