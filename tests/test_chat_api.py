@@ -21,7 +21,6 @@ from offerpilot.config import Config, save_config
 from offerpilot.db import session_factory_for_data_dir
 from offerpilot.models import (
     ApplicationMaterialKit,
-    Conversation,
     JDAnalysis,
     Question,
     Resume,

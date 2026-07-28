@@ -4200,9 +4200,10 @@ def create_app(
                 }
                 for turn in turns
             ]
-            model = _chat_model(chat_model, resolved_data_dir)
-            if isinstance(model, JSONResponse):
-                model = None
+            configured_model = _chat_model(chat_model, resolved_data_dir)
+            model: ChatModel | None = (
+                None if isinstance(configured_model, JSONResponse) else configured_model
+            )
             proposal, diagnostic = generate_feedback(model, snapshot, turn_payload)
         except MockInterviewProviderError:
             return error_response(502, "AI 服务暂不可用，请稍后重试。", "mock_interview_provider_error")

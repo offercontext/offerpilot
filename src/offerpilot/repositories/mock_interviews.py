@@ -149,11 +149,11 @@ class MockInterviewRepository:
             turn.answer_sha256 = sha256_text(answer_text)
             turn.turn_status = "answered"
             attempt.current_turn_no = max(attempt.current_turn_no, turn_no)
-            turns = session.scalars(
+            turns = list(session.scalars(
                 select(MockInterviewTurn)
                 .where(MockInterviewTurn.attempt_id == attempt_id)
                 .order_by(MockInterviewTurn.turn_no.asc())
-            ).all()
+            ).all())
             attempt.transcript_fingerprint = _transcript_fingerprint(turns)
             attempt.attempt_status = "awaiting_answer"
             session.commit()
@@ -252,11 +252,11 @@ class MockInterviewRepository:
             ):
                 raise LookupError("event not found")
             self._assert_attempt_sources(session, attempt)
-            turns = session.scalars(
+            turns = list(session.scalars(
                 select(MockInterviewTurn)
                 .where(MockInterviewTurn.attempt_id == attempt_id)
                 .order_by(MockInterviewTurn.turn_no.asc())
-            ).all()
+            ).all())
             session.expunge(attempt)
             for turn in turns:
                 session.expunge(turn)
@@ -346,7 +346,7 @@ class MockInterviewRepository:
         self, application_id: int, event_id: int
     ) -> list[MockInterviewFeedbackProposal]:
         with self._session_factory() as session:
-            rows = session.scalars(
+            rows = list(session.scalars(
                 select(MockInterviewFeedbackProposal)
                 .join(
                     MockInterviewAttempt,
@@ -357,7 +357,7 @@ class MockInterviewRepository:
                     MockInterviewAttempt.event_id == event_id,
                 )
                 .order_by(MockInterviewFeedbackProposal.created_at.desc())
-            ).all()
+            ).all())
             for row in rows:
                 session.expunge(row)
             return rows

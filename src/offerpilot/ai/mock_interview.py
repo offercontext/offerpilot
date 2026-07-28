@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 from time import perf_counter
-from typing import Any
+from typing import Any, cast
 
 from offerpilot.ai.types import Assistant, Message
 
@@ -269,8 +269,8 @@ def _complete_feedback(model: Any, prompt: str) -> Assistant:
         "json_schema": {"name": "mock_interview_feedback", "strict": True, "schema": {"type": "object"}},
     }
     if getattr(model, "supports_json_schema", False):
-        return model.complete(messages, [], response_format=schema)
-    return model.complete(messages, [])
+        return cast(Assistant, model.complete(messages, [], response_format=schema))
+    return cast(Assistant, model.complete(messages, []))
 
 
 def _feedback_prompt(snapshot: dict[str, Any], turns: list[dict[str, Any]], failure_category: str) -> str:

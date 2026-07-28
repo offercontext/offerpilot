@@ -1215,6 +1215,7 @@ def _ensure_interview_review_history_schema(engine) -> bool:  # type: ignore[no-
         conn.execute(text("CREATE INDEX idx_interview_review_proposals_note ON interview_review_proposals(note_id)"))
         conn.commit()
         conn.execute(text("PRAGMA foreign_keys=ON"))
+    return True
 
 
 def _prepare_event_bound_mock_interview_migration(engine) -> bool:  # type: ignore[no-untyped-def]
