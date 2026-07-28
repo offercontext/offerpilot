@@ -14,10 +14,10 @@ from offerpilot.models import (
     ApplicationMaterialKit,
     Conversation,
     MaterialRevisionProposal,
+    MockInterviewAttempt,
     OpportunityFitReview,
     OpportunityFitReviewSession,
     OpportunityFitReviewStage,
-    MockSession,
     Question,
     Resume,
     Wakeup,
@@ -772,11 +772,17 @@ def test_real_ai_browser_cleanup_removes_question_mock_and_reminder_records(tmp_
         session.add_all(
             [
                 Question(application_id=application.id, question="How?"),
-                MockSession(
-                    conversation_id=conversation.id,
+                MockInterviewAttempt(
                     application_id=application.id,
-                    title="browser smoke",
-                    role="QA",
+                    event_id=0,
+                    resume_id=0,
+                    idempotency_key="browser-smoke",
+                    input_snapshot_json="{}",
+                    source_fingerprint="source",
+                    attempt_status="cancelled",
+                    generation_revision=1,
+                    provider_call_token="token",
+                    transcript_fingerprint="transcript",
                 ),
                 Wakeup(kind="browser-smoke", due_at=datetime(2026, 7, 27, tzinfo=timezone.utc)),
             ]
@@ -803,7 +809,7 @@ def test_real_ai_browser_cleanup_removes_question_mock_and_reminder_records(tmp_
     session_factory = session_factory_for_data_dir(data_dir)
     with session_factory() as session:
         assert session.scalar(select(func.count()).select_from(Question)) == 0
-        assert session.scalar(select(func.count()).select_from(MockSession)) == 0
+        assert session.scalar(select(func.count()).select_from(MockInterviewAttempt)) == 0
         assert session.scalar(select(func.count()).select_from(Wakeup)) == 0
     bind = session_factory.kw.get("bind")
     if bind is not None:
@@ -820,10 +826,17 @@ def test_real_ai_smoke_data_clean_rejects_question_mock_and_reminder_residue(tmp
         session.add_all(
             [
                 Question(question="How?"),
-                MockSession(
-                    conversation_id=conversation.id,
-                    title="browser smoke",
-                    role="QA",
+                MockInterviewAttempt(
+                    application_id=0,
+                    event_id=0,
+                    resume_id=0,
+                    idempotency_key="browser-smoke",
+                    input_snapshot_json="{}",
+                    source_fingerprint="source",
+                    attempt_status="cancelled",
+                    generation_revision=1,
+                    provider_call_token="token",
+                    transcript_fingerprint="transcript",
                 ),
                 Wakeup(kind="browser-smoke", due_at=datetime(2026, 7, 27, tzinfo=timezone.utc)),
             ]
@@ -843,12 +856,12 @@ def test_real_ai_smoke_data_clean_rejects_question_mock_and_reminder_residue(tmp
     bind = session_factory.kw.get("bind")
     if bind is not None:
         bind.dispose()
-    with pytest.raises(RuntimeError, match="mock sessions"):
+    with pytest.raises(RuntimeError, match="mock interview records"):
         _assert_real_ai_smoke_data_clean(data_dir)
 
     session_factory = session_factory_for_data_dir(data_dir)
     with session_factory() as session:
-        session.execute(delete(MockSession))
+        session.execute(delete(MockInterviewAttempt))
         session.commit()
     bind = session_factory.kw.get("bind")
     if bind is not None:

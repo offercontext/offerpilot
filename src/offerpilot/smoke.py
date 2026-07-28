@@ -48,7 +48,10 @@ from offerpilot.models import (
     KnowledgeNoteVersion,
     KnowledgeSource,
     MaterialRevisionProposal,
-    MockSession,
+    MockInterviewAttempt,
+    MockInterviewFeedbackProposal,
+    MockInterviewReviewDraft,
+    MockInterviewTurn,
     OpportunityFitReview,
     OpportunityFitReviewSession,
     OpportunityFitReviewStage,
@@ -411,6 +414,7 @@ def _run_http_smoke(
                     _run_real_ai_opportunity_fit_smoke(client, steps, application_id, smoke_resume_ids)
                     _run_real_ai_interview_review_smoke(client, steps, application_id)
                     _run_real_ai_interview_knowledge_capture_smoke(client, steps, application_id)
+                    _run_real_ai_mock_interview_smoke(client, steps, application_id, smoke_resume_ids)
                     _run_real_ai_write_smoke(client, steps, company, application_id)
                 else:
                     _run_local_proposal_terminal_smoke(
@@ -1176,6 +1180,81 @@ def _run_real_ai_interview_knowledge_capture_smoke(
     )
 
 
+def _run_real_ai_mock_interview_smoke(
+    client: httpx.Client,
+    steps: list[SmokeStep],
+    application_id: int,
+    resume_ids: list[int],
+) -> None:
+    """Exercise three independent event-bound text attempts through the HTTP API."""
+    for index in range(3):
+        resume = client.post(
+            "/api/resumes",
+            json={
+                "title": f"Mock Interview Smoke Resume {index + 1}",
+                "text": "Built a Python service and explained the rollback plan.",
+                "content_json": {"raw_text": "Built a Python service and explained the rollback plan."},
+            },
+        )
+        _assert_status(resume.status_code, 201, f"http_mock_interview_resume_{index}")
+        resume_id = int(resume.json()["id"])
+        resume_ids.append(resume_id)
+        event = client.post(
+            "/api/application-events",
+            json={
+                "application_id": application_id,
+                "event_type": "interview",
+                "subtype": "mock-interview",
+                "scheduled_at": "2026-07-28T10:00:00Z",
+                "duration_minutes": 30,
+            },
+        )
+        _assert_status(event.status_code, 201, f"http_mock_interview_event_{index}")
+        event_id = int(event.json()["id"])
+        base = f"/api/applications/{application_id}/events/{event_id}/mock-interview/attempts"
+        start = client.post(
+            base,
+            json={
+                "resume_id": resume_id,
+                "jd_text": "需要能够维护 Python 服务并说明可靠性取舍。",
+                "attempt_idempotency_key": f"real-ai-mock-attempt-{index}",
+                "initial_question_idempotency_key": f"real-ai-mock-question-{index}",
+            },
+        )
+        _assert_status(start.status_code, 201, f"http_mock_interview_start_{index}")
+        started = start.json()
+        attempt_id = int(started["attempt_id"])
+        answer = client.post(
+            f"{base}/{attempt_id}/turns",
+            json={
+                "turn_no": 1,
+                "answer_text": "我负责过 Python 服务的发布与回滚，并用指标确认风险。",
+                "turn_idempotency_key": f"real-ai-mock-answer-{index}",
+            },
+        )
+        _assert_status(answer.status_code, 200, f"http_mock_interview_answer_{index}")
+        finish = client.post(
+            f"{base}/{attempt_id}/finish",
+            json={"feedback_idempotency_key": f"real-ai-mock-feedback-{index}"},
+        )
+        _assert_status(finish.status_code, 201, f"http_mock_interview_finish_{index}")
+        body = finish.json()
+        if set(body) != {"proposal_id", "proposal_status", "proposal_hash", "proposal"}:
+            raise RuntimeError("mock interview feedback response exposed non-public fields")
+        if body["proposal_status"] not in {"normal", "safe_empty"}:
+            raise RuntimeError("mock interview feedback returned an invalid status")
+        history = client.get(base)
+        _assert_status(history.status_code, 200, f"http_mock_interview_history_{index}")
+        if not history.json().get("items"):
+            raise RuntimeError("mock interview feedback history was empty")
+    steps.append(
+        SmokeStep(
+            "http_mock_interview",
+            "three isolated text mock-interview attempts reached feedback and read-only history",
+        )
+    )
+
+
 def _validate_interview_review_smoke_evidence(
     proposal: Any,
     marker: str,
@@ -1275,9 +1354,40 @@ def _cleanup_real_ai_smoke_records(
             session.execute(delete(KnowledgeSource).where(KnowledgeSource.id.in_(captured_source_ids)))
             session.execute(delete(InterviewKnowledgeCaptureAttempt).where(InterviewKnowledgeCaptureAttempt.note_id.in_(captured_note_ids)))
             session.execute(delete(InterviewNote).where(InterviewNote.application_id == application_id))
+            attempt_ids = list(
+                session.scalars(
+                    select(MockInterviewAttempt.id).where(
+                        MockInterviewAttempt.application_id == application_id
+                    )
+                )
+            )
+            proposal_ids = list(
+                session.scalars(
+                    select(MockInterviewFeedbackProposal.id).where(
+                        MockInterviewFeedbackProposal.attempt_id.in_(attempt_ids)
+                    )
+                )
+            )
+            if proposal_ids:
+                session.execute(
+                    delete(MockInterviewReviewDraft).where(
+                        MockInterviewReviewDraft.proposal_id.in_(proposal_ids)
+                    )
+                )
+            if attempt_ids:
+                session.execute(
+                    delete(MockInterviewFeedbackProposal).where(
+                        MockInterviewFeedbackProposal.id.in_(proposal_ids)
+                    )
+                )
+                session.execute(
+                    delete(MockInterviewTurn).where(MockInterviewTurn.attempt_id.in_(attempt_ids))
+                )
+                session.execute(
+                    delete(MockInterviewAttempt).where(MockInterviewAttempt.id.in_(attempt_ids))
+                )
             session.execute(delete(ApplicationEvent).where(ApplicationEvent.application_id == application_id))
             session.execute(delete(Question).where(Question.application_id == application_id))
-            session.execute(delete(MockSession).where(MockSession.application_id == application_id))
             session.execute(
                 delete(ApplicationMaterialKit).where(
                     ApplicationMaterialKit.application_id == application_id
@@ -1393,11 +1503,6 @@ def _capture_real_ai_browser_domain_baseline(
                 ),
                 "question_count": session.scalar(
                     select(func.count()).select_from(Question).where(Question.application_id == application_id)
-                ),
-                "mock_session_count": session.scalar(
-                    select(func.count())
-                    .select_from(MockSession)
-                    .where(MockSession.application_id == application_id)
                 ),
                 "reminder_count": session.scalar(select(func.count()).select_from(Wakeup)),
                 "knowledge_note_count": session.scalar(select(func.count()).select_from(KnowledgeNote)),
@@ -1540,7 +1645,12 @@ def _assert_real_ai_smoke_data_clean(data_dir: Path) -> None:
                 select(func.count()).select_from(InterviewPreparationProposal)
             )
             question_count = session.scalar(select(func.count()).select_from(Question))
-            mock_session_count = session.scalar(select(func.count()).select_from(MockSession))
+            mock_attempt_count = session.scalar(select(func.count()).select_from(MockInterviewAttempt))
+            mock_turn_count = session.scalar(select(func.count()).select_from(MockInterviewTurn))
+            mock_proposal_count = session.scalar(
+                select(func.count()).select_from(MockInterviewFeedbackProposal)
+            )
+            mock_draft_count = session.scalar(select(func.count()).select_from(MockInterviewReviewDraft))
             reminder_count = session.scalar(select(func.count()).select_from(Wakeup))
             opportunity_fit_review_count = session.scalar(
                 select(func.count()).select_from(OpportunityFitReview)
@@ -1583,8 +1693,8 @@ def _assert_real_ai_smoke_data_clean(data_dir: Path) -> None:
         raise RuntimeError("real-ai smoke left interview preparation proposals")
     if question_count != 0:
         raise RuntimeError("real-ai smoke left questions")
-    if mock_session_count != 0:
-        raise RuntimeError("real-ai smoke left mock sessions")
+    if mock_attempt_count != 0 or mock_turn_count != 0 or mock_proposal_count != 0 or mock_draft_count != 0:
+        raise RuntimeError("real-ai smoke left mock interview records")
     if reminder_count != 0:
         raise RuntimeError("real-ai smoke left reminders")
     if opportunity_fit_review_count != 0:
