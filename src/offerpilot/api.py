@@ -130,6 +130,7 @@ from offerpilot.repositories.interview_index import InterviewIndexRepository
 from offerpilot.repositories.mock_interviews import (
     MockInterviewIdempotencyConflict,
     MockInterviewRepository,
+    MockInterviewSourceChanged,
     MockInterviewTurnIdempotencyConflict,
 )
 from offerpilot.repositories.mock_interview_review_drafts import (
@@ -4088,6 +4089,8 @@ def create_app(
             return error_response(409, "mock_interview_idempotency_conflict")
         except MockInterviewTurnIdempotencyConflict:
             return error_response(409, "mock_interview_turn_idempotency_conflict")
+        except MockInterviewSourceChanged:
+            return error_response(409, "mock_interview_source_conflict")
         except LookupError:
             return error_response(404, "mock_interview_application_not_found")
         except ValueError as exc:
@@ -4128,6 +4131,8 @@ def create_app(
             return error_response(409, "mock_interview_turn_idempotency_conflict")
         except LookupError:
             return error_response(404, "mock_interview_attempt_not_found")
+        except MockInterviewSourceChanged:
+            return error_response(409, "mock_interview_source_conflict")
         except ValueError as exc:
             return error_response(422, str(exc))
         return JSONResponse(
@@ -4183,6 +4188,8 @@ def create_app(
             return error_response(422, f"missing field: {exc.args[0]}")
         except LookupError:
             return error_response(404, "mock_interview_attempt_not_found")
+        except MockInterviewSourceChanged:
+            return error_response(409, "mock_interview_source_conflict")
         try:
             snapshot = json.loads(attempt.input_snapshot_json)
             turn_payload = [
@@ -4247,6 +4254,8 @@ def create_app(
             )
         except (MockInterviewReviewDraftValidationError, ValueError) as exc:
             return error_response(422, str(exc))
+        except MockInterviewSourceChanged:
+            return error_response(409, "mock_interview_source_conflict")
         except LookupError:
             return error_response(404, "mock_interview_attempt_not_found")
         return JSONResponse(

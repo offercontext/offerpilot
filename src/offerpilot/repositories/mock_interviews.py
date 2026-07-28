@@ -28,6 +28,10 @@ class MockInterviewTurnIdempotencyConflict(ValueError):
     pass
 
 
+class MockInterviewSourceChanged(ValueError):
+    pass
+
+
 @dataclass(frozen=True)
 class MockInterviewStartResult:
     attempt: MockInterviewAttempt
@@ -133,6 +137,7 @@ class MockInterviewRepository:
             )
             if attempt is None or turn is None:
                 raise LookupError("mock interview turn not found")
+            self._assert_attempt_sources(session, attempt)
             if turn.answer_text:
                 if turn.turn_idempotency_key != turn_idempotency_key or turn.answer_text != answer_text:
                     raise MockInterviewTurnIdempotencyConflict("submitted answer changed")
@@ -246,6 +251,7 @@ class MockInterviewRepository:
                 or event.scheduled_at is None
             ):
                 raise LookupError("event not found")
+            self._assert_attempt_sources(session, attempt)
             turns = session.scalars(
                 select(MockInterviewTurn)
                 .where(MockInterviewTurn.attempt_id == attempt_id)
@@ -269,6 +275,28 @@ class MockInterviewRepository:
                 or event.scheduled_at is None
             ):
                 raise LookupError("event not found")
+
+    @staticmethod
+    def _assert_attempt_sources(session: Session, attempt: MockInterviewAttempt) -> None:
+        snapshot = json.loads(attempt.input_snapshot_json)
+        jd_text = str(snapshot.get("jd", {}).get("text", ""))
+        try:
+            current = MockInterviewRepository._build_input_snapshot(
+                session,
+                attempt.application_id,
+                attempt.event_id,
+                attempt.resume_id,
+                jd_text,
+                None,
+            )
+        except (LookupError, ValueError) as exc:
+            raise MockInterviewSourceChanged("mock_interview_source_conflict") from exc
+        if (
+            current.get("application") != snapshot.get("application")
+            or current.get("event") != snapshot.get("event")
+            or current.get("resume") != snapshot.get("resume")
+        ):
+            raise MockInterviewSourceChanged("mock_interview_source_conflict")
 
     def create_or_replay_feedback(
         self,
