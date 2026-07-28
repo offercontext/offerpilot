@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
+import time
+import uuid
 from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
@@ -10,6 +13,14 @@ from litellm import completion
 
 from offerpilot.ai.types import Assistant, Message, ToolCall
 from offerpilot.config import AIProviderProfile, Config
+
+
+class ProviderCallError(RuntimeError):
+    """A provider failure with safe, non-content diagnostics."""
+
+    def __init__(self, diagnostic: dict[str, Any]):
+        self.diagnostic = diagnostic
+        super().__init__("AI provider request failed")
 
 
 class ConfiguredAIClient:
@@ -34,6 +45,8 @@ class ConfiguredAIClient:
         for index, provider in enumerate(providers):
             if not provider.api_key:
                 continue
+            correlation_id = uuid.uuid4().hex[:16]
+            started = time.perf_counter()
             try:
                 assistant = self._complete_with_provider(
                     provider, messages, tools, response_format
@@ -49,7 +62,18 @@ class ConfiguredAIClient:
                         f"AI provider {provider.id} failed; trying fallback {providers[index + 1].id}",
                     )
                     continue
-                raise
+                diagnostic = _provider_failure_diagnostic(
+                    provider,
+                    exc,
+                    correlation_id=correlation_id,
+                    elapsed_ms=int((time.perf_counter() - started) * 1000),
+                )
+                self._emit(
+                    "WARNING",
+                    "ai_provider_failure "
+                    + json.dumps(diagnostic, ensure_ascii=True, separators=(",", ":")),
+                )
+                raise ProviderCallError(diagnostic) from exc
         if last_error is not None:
             raise last_error
         raise ValueError("AI is not configured: run `oc config` to set your API key")
@@ -233,6 +257,76 @@ def _audit_provider_endpoint(base_url: str) -> None:
             )
             + "\n"
         )
+
+
+def _provider_failure_diagnostic(
+    provider: AIProviderProfile,
+    error: Exception,
+    *,
+    correlation_id: str,
+    elapsed_ms: int,
+) -> dict[str, Any]:
+    failure_category = _classify_provider_failure(error)
+    provider_request_id = _provider_request_id(error)
+    return {
+        "provider_id": provider.id,
+        "failure_category": failure_category,
+        "http_status": _provider_status_code(error),
+        "timeout": failure_category == "network_timeout",
+        "elapsed_ms": max(0, elapsed_ms),
+        "correlation_id": correlation_id,
+        "provider_request_id": provider_request_id,
+    }
+
+
+def _classify_provider_failure(error: Exception) -> str:
+    error_name = type(error).__name__.lower()
+    status = _provider_status_code(error)
+    if "timeout" in error_name or isinstance(error, TimeoutError):
+        return "network_timeout"
+    if status is not None and status >= 500:
+        return "provider_http_5xx"
+    if "proxy" in error_name:
+        return "proxy_failure"
+    if any(
+        marker in error_name
+        for marker in ("remoteprotocol", "incompleteread", "responseclosed", "readerror")
+    ):
+        return "response_lost"
+    return "provider_exception"
+
+
+def _provider_status_code(error: Exception) -> int | None:
+    candidates: list[Any] = [
+        getattr(error, "status_code", None),
+        getattr(error, "http_status", None),
+    ]
+    response = getattr(error, "response", None)
+    if response is not None:
+        candidates.append(getattr(response, "status_code", None))
+    for candidate in candidates:
+        try:
+            if candidate is not None:
+                return int(candidate)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _provider_request_id(error: Exception) -> str:
+    values = [getattr(error, "request_id", None), getattr(error, "requestId", None)]
+    response = getattr(error, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers is not None:
+        for name in ("x-request-id", "request-id"):
+            try:
+                values.append(headers.get(name))
+            except AttributeError:
+                pass
+    for value in values:
+        if value:
+            return hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:12]
+    return ""
 
 
 def _litellm_api_base(provider: AIProviderProfile) -> str:

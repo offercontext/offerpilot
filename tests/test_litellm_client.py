@@ -247,3 +247,64 @@ def test_client_falls_back_to_configured_provider_after_primary_failure(monkeypa
     assert assistant.content == "fallback ok"
     assert [call["api_key"] for call in calls] == ["sk-primary", "sk-backup"]
     assert calls[1]["model"] == "openai/gpt-4o-mini"
+
+
+def test_client_emits_redacted_provider_failure_diagnostic(monkeypatch):
+    events: list[tuple[str, str]] = []
+
+    def fake_completion(**kwargs: Any) -> Any:
+        raise TimeoutError("secret prompt and API key must not be logged")
+
+    monkeypatch.setattr(ai_client, "completion", fake_completion)
+    client = ConfiguredAIClient(
+        Config(api_key="sk-test", base_url="https://provider.example/v1", model="gpt-test"),
+        on_provider_event=lambda level, message: events.append((level, message)),
+    )
+
+    with pytest.raises(ai_client.ProviderCallError) as caught:
+        client.complete([Message(role="user", content="sensitive input")], [])
+
+    assert caught.value.diagnostic["failure_category"] == "network_timeout"
+    assert caught.value.diagnostic["http_status"] is None
+    assert isinstance(caught.value.diagnostic["elapsed_ms"], int)
+    assert caught.value.diagnostic["correlation_id"]
+    assert len(events) == 1
+    level, message = events[0]
+    assert level == "WARNING"
+    assert message.startswith("ai_provider_failure ")
+    assert "secret prompt" not in message
+    assert "sensitive input" not in message
+    assert "sk-test" not in message
+
+
+@pytest.mark.parametrize(
+    ("error_factory", "expected_category", "expected_status"),
+    [
+        (lambda: type("Provider503Error", (RuntimeError,), {"status_code": 503})(), "provider_http_5xx", 503),
+        (lambda: type("ProxyError", (RuntimeError,), {})(), "proxy_failure", None),
+        (lambda: type("RemoteProtocolError", (RuntimeError,), {})(), "response_lost", None),
+    ],
+)
+def test_client_classifies_provider_boundary_failures(
+    monkeypatch, error_factory, expected_category, expected_status
+):
+    events: list[tuple[str, str]] = []
+
+    def fake_completion(**kwargs: Any) -> Any:
+        raise error_factory()
+
+    monkeypatch.setattr(ai_client, "completion", fake_completion)
+    client = ConfiguredAIClient(
+        Config(api_key="sk-test", base_url="https://provider.example/v1", model="gpt-test"),
+        on_provider_event=lambda level, message: events.append((level, message)),
+    )
+
+    with pytest.raises(ai_client.ProviderCallError):
+        client.complete([Message(role="user", content="sensitive input")], [])
+
+    diagnostic = json.loads(events[0][1].removeprefix("ai_provider_failure "))
+    assert diagnostic["failure_category"] == expected_category
+    assert diagnostic["http_status"] == expected_status
+    assert diagnostic["timeout"] is False
+    assert diagnostic["elapsed_ms"] >= 0
+    assert diagnostic["correlation_id"]
