@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  Alert, Button, Drawer, Empty, Input, List, Select, Space, Spin, Tag, Typography,
+  Alert, Button, Drawer, Empty, Input, List, Select, Space, Spin, Tag,
 } from 'antd';
 import {
   confirmMockInterviewReviewDraft,
@@ -14,8 +14,6 @@ import type {
   MockInterviewHistoryItem,
   MockInterviewProposal,
 } from '@/types/mockInterview';
-
-const { Text, Title } = Typography;
 
 export interface MockInterviewDrawerDraft {
   resumeId?: number;
@@ -165,7 +163,7 @@ export default function MockInterviewDrawer({
   return (
     <Drawer open={open} width={560} title="文本模拟面试" onClose={onClose}>
       <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-        <Text type="secondary">仅用于练习表达。AI 不提供录用判断、通过率或岗位匹配分。</Text>
+        <span style={{ color: 'var(--op-muted)' }}>仅用于练习表达。AI 不提供录用判断、通过率或岗位匹配分。</span>
         {draft.error ? <Alert type="warning" showIcon message={draft.error} /> : null}
         {pending ? <Alert type="info" message="结果待确认，请使用原尝试重试；输入已冻结。" /> : null}
         {!draft.attemptId && !draft.proposal ? (
@@ -185,7 +183,7 @@ export default function MockInterviewDrawer({
               onChange={(event) => onDraftChange({ jdText: event.target.value })}
               autoSize={{ minRows: 5, maxRows: 12 }}
             />
-            <Text type="secondary">本次输入将发送给当前配置的 AI 服务。请勿粘贴无关敏感信息。</Text>
+            <span style={{ color: 'var(--op-muted)' }}>本次输入将发送给当前配置的 AI 服务。请勿粘贴无关敏感信息。</span>
             <Button type="primary" onClick={() => void start()} disabled={!draft.resumeId || !draft.jdText.trim() || working}>
               开始文本模拟面试
             </Button>
@@ -194,7 +192,7 @@ export default function MockInterviewDrawer({
         {working && !draft.proposal ? <Spin tip="正在处理，请稍候" /> : null}
         {draft.attemptId && !draft.proposal ? (
           <>
-            <Title level={5}>第 {draft.turnNo} 题</Title>
+            <h3>第 {draft.turnNo} 题</h3>
             <p>{draft.question || '请介绍一次与本次岗位相关的经历。'}</p>
             <Input.TextArea
               aria-label="回答"
@@ -226,7 +224,7 @@ export default function MockInterviewDrawer({
                   })}
                 />{' '}
                 {item.text}
-                {item.evidence_refs.map((ref) => <Text key={`${item.id}-${ref.path}`} type="secondary">（{ref.source}：{ref.excerpt}）</Text>)}
+                {item.evidence_refs.map((ref) => <span key={`${item.id}-${ref.path}`} style={{ color: 'var(--op-muted)' }}>（{ref.source}：{ref.excerpt}）</span>)}
               </label>
             ))}
             {draft.proposal.proposal_status === 'normal' && selectedBlocks.length > 0 && !confirming ? (
@@ -242,9 +240,9 @@ export default function MockInterviewDrawer({
           </>
         ) : null}
         <section aria-label="历史模拟面试">
-          <Title level={5}>历史记录（只读）</Title>
+          <h3>历史记录（只读）</h3>
           {loadingHistory ? <Spin size="small" /> : null}
-          {!loadingHistory && history.length === 0 ? <Text type="secondary">暂无历史记录</Text> : null}
+          {!loadingHistory && history.length === 0 ? <span style={{ color: 'var(--op-muted)' }}>暂无历史记录</span> : null}
           <List
             size="small"
             dataSource={history}
