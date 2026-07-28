@@ -8,6 +8,7 @@ import type {
   OpportunityFitReview,
   OpportunityFitReviewSummary,
 } from '@/types/opportunityFitReview';
+import type { ScheduleEvent } from '@/types/event';
 
 export interface PilotOpportunityFitV2Draft {
   applicationId: number;
@@ -43,6 +44,8 @@ interface Props {
   onPrepareMaterials?: (resumeId: number, jdText: string) => void;
   onOpenInterviewReview?: (applicationId: number) => void;
   onOpenInterviewPreparation?: (applicationId: number) => void;
+  interviewEvents?: ScheduleEvent[];
+  onOpenMockInterview?: (applicationId: number, eventId: number) => void;
   onCancel: () => void;
 }
 
@@ -130,6 +133,8 @@ export default function PilotOpportunityFitV2Card({
   onPrepareMaterials,
   onOpenInterviewReview,
   onOpenInterviewPreparation,
+  interviewEvents = [],
+  onOpenMockInterview,
   onCancel,
 }: Props) {
   const [confirmation, setConfirmation] = useState<'triage' | 'deep' | null>(null);
@@ -159,8 +164,20 @@ export default function PilotOpportunityFitV2Card({
     <section aria-labelledby="pilot-opportunity-fit-v2-title">
       <header>
         <h2 id="pilot-opportunity-fit-v2-title">岗位评估</h2>
-        <p>AI 仅提供带证据的条件、风险和待确认问题，不替你做投递或 Offer 决定。</p>
-      </header>
+      <p>AI 仅提供带证据的条件、风险和待确认问题，不替你做投递或 Offer 决定。</p>
+    </header>
+
+      {interviewEvents.length > 0 ? (
+        <section aria-label="文本模拟面试入口">
+          <h3>文本模拟面试</h3>
+          <p>请选择一场已安排的面试事件开始练习。</p>
+          {interviewEvents.map((event) => (
+            <button key={event.id} type="button" onClick={() => onOpenMockInterview?.(draft.applicationId, event.id)}>
+              开始：第 {event.round || 1} 轮面试
+            </button>
+          ))}
+        </section>
+      ) : null}
 
       <aside aria-label="历史岗位评估">
         <h3>历史评估（只读）</h3>

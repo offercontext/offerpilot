@@ -8,9 +8,10 @@ const { Paragraph, Title } = Typography;
 interface Props {
   onOpenApplication?: (applicationId: number) => void;
   onOpenPreparation?: (applicationId: number, eventId: number) => void;
+  onOpenMockInterview?: (applicationId: number, eventId: number) => void;
 }
 
-export default function InterviewV01View({ onOpenApplication, onOpenPreparation }: Props) {
+export default function InterviewV01View({ onOpenApplication, onOpenPreparation, onOpenMockInterview }: Props) {
   const [items, setItems] = useState<InterviewIndexItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -51,6 +52,9 @@ export default function InterviewV01View({ onOpenApplication, onOpenPreparation 
                   准备面试
                 </Button>
               ) : null,
+              <Button key="mock" type="link" onClick={() => onOpenMockInterview?.(item.application_id, item.event_id)}>
+                开始文本模拟面试
+              </Button>,
             ]}>
               <List.Item.Meta
                 title={`${item.company_name} · ${item.position_name}`}

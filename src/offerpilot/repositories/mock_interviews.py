@@ -92,7 +92,7 @@ class MockInterviewRepository:
                 idempotency_key=attempt_idempotency_key,
                 input_snapshot_json=canonical_json(snapshot),
                 source_fingerprint=fingerprint,
-                attempt_status="generating_question",
+                attempt_status="awaiting_answer",
                 generation_revision=1,
                 provider_call_token=_token(),
                 provider_lease_until=_lease_until(),
@@ -104,7 +104,8 @@ class MockInterviewRepository:
                 attempt_id=attempt.id,
                 turn_no=1,
                 question_idempotency_key=initial_question_idempotency_key,
-                turn_status="generating_question",
+                question_text="请介绍一次与本次岗位相关的经历。",
+                turn_status="awaiting_answer",
             )
             session.add(turn)
             session.commit()
@@ -255,6 +256,20 @@ class MockInterviewRepository:
                 session.expunge(turn)
             return attempt, turns
 
+    def validate_event_context(self, application_id: int, event_id: int) -> None:
+        with self._session_factory() as session:
+            application = session.get(Application, application_id)
+            event = session.get(ApplicationEvent, event_id)
+            if application is None or application.deleted_at is not None:
+                raise LookupError("application not found")
+            if (
+                event is None
+                or event.application_id != application_id
+                or event.event_type != "interview"
+                or event.scheduled_at is None
+            ):
+                raise LookupError("event not found")
+
     def create_or_replay_feedback(
         self,
         attempt_id: int,
@@ -298,6 +313,26 @@ class MockInterviewRepository:
             session.refresh(record)
             session.expunge(record)
             return record, True
+
+    def list_feedback_history(
+        self, application_id: int, event_id: int
+    ) -> list[MockInterviewFeedbackProposal]:
+        with self._session_factory() as session:
+            rows = session.scalars(
+                select(MockInterviewFeedbackProposal)
+                .join(
+                    MockInterviewAttempt,
+                    MockInterviewAttempt.id == MockInterviewFeedbackProposal.attempt_id,
+                )
+                .where(
+                    MockInterviewAttempt.application_id == application_id,
+                    MockInterviewAttempt.event_id == event_id,
+                )
+                .order_by(MockInterviewFeedbackProposal.created_at.desc())
+            ).all()
+            for row in rows:
+                session.expunge(row)
+            return rows
 
     @staticmethod
     def _begin_immediate(session: Session) -> None:

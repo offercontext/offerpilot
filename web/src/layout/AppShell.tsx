@@ -34,6 +34,7 @@ import ApplicationDetail from '@/components/ApplicationDetail';
 import type { InterviewReviewProposalAttemptState } from '@/components/InterviewReviewProposalDrawer';
 import type { InterviewKnowledgeCaptureDraft } from '@/components/InterviewKnowledgeCaptureDrawer';
 import type { InterviewPreparationAttemptState, InterviewPreparationDraft, InterviewPreparationKnowledgeOption } from '@/components/InterviewPreparationProposalDrawer';
+import MockInterviewDrawer, { type MockInterviewDrawerDraft } from '@/components/MockInterviewDrawer';
 import ResumeUploadModal from '@/components/ResumeUploadModal';
 import ChatPanel from '@/components/ChatPanel';
 import type { EvidenceTarget } from '@/components/ChatPanel/model';
@@ -85,6 +86,24 @@ function createPilotOpportunityFitV2Draft(applicationId: number): PilotOpportuni
     triage: null,
     deep: null,
     historical: false,
+    resultUnknown: false,
+    error: null,
+  };
+}
+
+function createMockInterviewDraft(): MockInterviewDrawerDraft {
+  return {
+    jdText: '',
+    attemptKey: null,
+    questionKey: null,
+    feedbackKey: null,
+    attemptId: null,
+    turnNo: 1,
+    question: '',
+    answer: '',
+    proposalId: null,
+    proposal: null,
+    selectedIds: [],
     resultUnknown: false,
     error: null,
   };
@@ -145,6 +164,9 @@ function AppShellContent() {
   const [pilotInterviewReviewApplicationId, setPilotInterviewReviewApplicationId] = useState<number | null>(null);
   const [pilotInterviewPreparationApplicationId, setPilotInterviewPreparationApplicationId] = useState<number | null>(null);
   const [pilotInterviewPreparationEventId, setPilotInterviewPreparationEventId] = useState<number | null>(null);
+  const [mockInterviewContext, setMockInterviewContext] = useState<{ applicationId: number; eventId: number } | null>(null);
+  const mockInterviewDraftsRef = useRef(new Map<string, MockInterviewDrawerDraft>());
+  const [mockInterviewDraft, setMockInterviewDraft] = useState<MockInterviewDrawerDraft | null>(null);
   const pilotApplicationContextRef = useRef(pilotApplicationContext);
   pilotApplicationContextRef.current = pilotApplicationContext;
   const [aiSettingsOpen, setAISettingsOpen] = useState(false);
@@ -560,6 +582,21 @@ function AppShellContent() {
     setSelected(app);
   };
 
+  const openMockInterview = (applicationId: number, eventId: number) => {
+    const draftKey = `${applicationId}:${eventId}`;
+    const draft = mockInterviewDraftsRef.current.get(draftKey) ?? createMockInterviewDraft();
+    mockInterviewDraftsRef.current.set(draftKey, draft);
+    setMockInterviewDraft(draft);
+    setMockInterviewContext({ applicationId, eventId });
+  };
+
+  const updateMockInterviewDraft = (patch: Partial<MockInterviewDrawerDraft>) => {
+    if (!mockInterviewContext || !mockInterviewDraft) return;
+    const next = { ...mockInterviewDraft, ...patch };
+    mockInterviewDraftsRef.current.set(`${mockInterviewContext.applicationId}:${mockInterviewContext.eventId}`, next);
+    setMockInterviewDraft(next);
+  };
+
   const updatePilotV2Draft = (patch: Partial<PilotOpportunityFitV2Draft>) => {
     if (!pilotV2Draft) return;
     const next = { ...pilotV2Draft, ...patch };
@@ -852,6 +889,7 @@ function AppShellContent() {
             <InterviewV01View
               onOpenApplication={goDetailById}
               onOpenPreparation={openPilotInterviewPreparation}
+              onOpenMockInterview={openMockInterview}
             />
           )}
           {view === 'resumes' && (
@@ -885,6 +923,8 @@ function AppShellContent() {
                   onPrepareMaterials={(resumeId, jdText) => preparePilotMaterials({ applicationId: pilotApplicationContext.applicationId, resumeId, jdText })}
                   onOpenInterviewReview={openPilotInterviewReview}
                   onOpenInterviewPreparation={openPilotInterviewPreparation}
+                  interviewEvents={events.filter((event) => event.application_id === pilotApplicationContext.applicationId && event.event_type === 'interview' && Boolean(event.scheduled_at))}
+                  onOpenMockInterview={openMockInterview}
                   onCancel={() => {
                     exitPilotContext();
                     setView('dashboard');
@@ -1014,6 +1054,17 @@ function AppShellContent() {
           onOpenEvidence={openEvidence}
         />
       )}
+      {mockInterviewContext && mockInterviewDraft ? (
+        <MockInterviewDrawer
+          open
+          applicationId={mockInterviewContext.applicationId}
+          eventId={mockInterviewContext.eventId}
+          resumes={resumes}
+          draft={mockInterviewDraft}
+          onDraftChange={updateMockInterviewDraft}
+          onClose={() => setMockInterviewContext(null)}
+        />
+      ) : null}
       </Layout>
     </DndContext>
   );

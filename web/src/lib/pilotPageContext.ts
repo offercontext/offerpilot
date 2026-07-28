@@ -13,7 +13,6 @@ export const PILOT_VIEW_LABELS: Record<ViewMode, string> = {
   reminders: '提醒',
   interview: '面试',
   reviews: '面试复盘',
-  mock: '模拟面试',
   offers: 'Offer',
   knowledge: '知识库',
   questions: '题库',

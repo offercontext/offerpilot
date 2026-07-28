@@ -4138,6 +4138,33 @@ def create_app(
             }
         )
 
+    @app.get(
+        "/api/applications/{application_id}/events/{event_id}/mock-interview/attempts"
+    )
+    def list_mock_interview_history(application_id: int, event_id: int) -> JSONResponse:
+        try:
+            mock_interviews.validate_event_context(application_id, event_id)
+        except LookupError:
+            return error_response(404, "mock_interview_event_not_found")
+        rows = mock_interviews.list_feedback_history(application_id, event_id)
+        return JSONResponse(
+            {
+                "items": [
+                    {
+                        "attempt_id": row.attempt_id,
+                        "proposal_id": row.id,
+                        "proposal_status": row.proposal_status,
+                        "proposal_hash": row.proposal_hash,
+                        "proposal": json.loads(row.proposal_json),
+                        "source_fingerprint": row.source_fingerprint,
+                        "transcript_fingerprint": row.transcript_fingerprint,
+                        "created_at": row.created_at.isoformat(),
+                    }
+                    for row in rows
+                ]
+            }
+        )
+
     @app.post(
         "/api/applications/{application_id}/events/{event_id}/mock-interview/attempts/{attempt_id}/finish"
     )
