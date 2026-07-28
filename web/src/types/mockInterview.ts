@@ -39,4 +39,3 @@ export interface MockInterviewHistoryItem extends MockInterviewProposalResponse 
   transcript_fingerprint: string;
   created_at: string;
 }
-

@@ -68,5 +68,3 @@ def test_notes_to_practice_generation_review_workflow(tmp_path):
     assert stats["mastered"] == 1
     assert stats["due"] == 0
     assert stats["today_reviews"] == 1
-
-

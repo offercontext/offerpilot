@@ -11,4 +11,3 @@ def test_legacy_mock_collection_and_item_routes_are_unavailable(tmp_path):
     assert client.get("/api/mock/sessions/1").status_code == 404
     assert client.post("/api/mock/sessions/1/end", json={}).status_code == 404
     assert client.delete("/api/mock/sessions/1").status_code == 404
-
