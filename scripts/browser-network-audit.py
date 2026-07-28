@@ -111,11 +111,22 @@ class BrowserAudit:
         session_id = message.get("sessionId")
         if not isinstance(session_id, str) or session_id not in self.target_sessions.values():
             return
+        target_id = next(
+            (candidate for candidate, candidate_session in self.target_sessions.items() if candidate_session == session_id),
+            None,
+        )
         params = message.get("params")
         request = params.get("request") if isinstance(params, dict) else None
+        method = request.get("method") if isinstance(request, dict) else None
         url = request.get("url") if isinstance(request, dict) else None
-        if isinstance(url, str) and self.handle is not None:
-            self.handle.write(json.dumps({"kind": "browser_request", "url": url}, ensure_ascii=False) + "\n")
+        if target_id and isinstance(method, str) and isinstance(url, str) and self.handle is not None:
+            self.handle.write(json.dumps({
+                "kind": "browser_request",
+                "target_id": target_id,
+                "session_id": session_id,
+                "method": method,
+                "url": url,
+            }, ensure_ascii=False) + "\n")
             self.handle.flush()
 
     async def run(self, base_url: str, ready_file: Path, ready_timeout_seconds: float) -> None:

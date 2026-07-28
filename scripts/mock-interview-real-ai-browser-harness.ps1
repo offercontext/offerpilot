@@ -178,6 +178,9 @@ try {
   if (-not (Test-Path -LiteralPath $browserAudit)) { throw 'CDP browser request audit is missing.' }
   $browserRecords = @(Get-Content -LiteralPath $browserAudit | ForEach-Object { $_ | ConvertFrom-Json })
   foreach ($record in $browserRecords) {
+    if (-not $record.target_id -or -not $record.session_id -or -not $record.method) {
+      throw 'CDP browser request is missing target/session/method metadata.'
+    }
     $uri = [Uri]$record.url
     if ($uri.Scheme -notin @('http', 'https')) { continue }
     if ($uri.Host -ne '127.0.0.1' -or $uri.Port -ne $port) {
@@ -190,6 +193,37 @@ try {
   if (@($browserRecords | Where-Object { ([Uri]$_.url).AbsolutePath -like '/api/*' }).Count -eq 0) {
     throw 'CDP audit did not record a browser API request.'
   }
+  $flowBase = "/api/applications/$applicationId/events/$eventId/mock-interview/attempts"
+  $flowRecords = @($browserRecords | Where-Object {
+    ([Uri]$_.url).Host -eq '127.0.0.1' -and
+    ([Uri]$_.url).Port -eq $port -and
+    ([Uri]$_.url).AbsolutePath -like '/api/*'
+  })
+  function Find-FlowRequestIndex([object[]]$records, [int]$start, [string]$method, [string]$path, [string]$pathPattern) {
+    for ($index = $start; $index -lt $records.Count; $index++) {
+      $uri = [Uri]$records[$index].url
+      if ($records[$index].method -ne $method) { continue }
+      if ($path -and $uri.AbsolutePath -ne $path) { continue }
+      if ($pathPattern -and $uri.AbsolutePath -notmatch $pathPattern) { continue }
+      return $index
+    }
+    return -1
+  }
+  $createIndex = Find-FlowRequestIndex $flowRecords 0 'POST' $flowBase ''
+  if ($createIndex -lt 0) { throw 'CDP audit missed browser Attempt creation.' }
+  $attemptPathMatch = [regex]::Match(([Uri]$flowRecords[$createIndex].url).AbsolutePath, "^$([regex]::Escape($flowBase))/([0-9]+)$")
+  if (-not $attemptPathMatch.Success) { throw 'Browser Attempt creation path did not contain a numeric attempt id.' }
+  $attemptId = $attemptPathMatch.Groups[1].Value
+  $answerIndex = Find-FlowRequestIndex $flowRecords ($createIndex + 1) 'POST' "$flowBase/$attemptId/turns" ''
+  if ($answerIndex -lt 0) { throw 'CDP audit missed browser answer submission.' }
+  $questionIndex = Find-FlowRequestIndex $flowRecords ($answerIndex + 1) 'POST' '' "^$([regex]::Escape($flowBase))/$attemptId/turns/[0-9]+/question$"
+  if ($questionIndex -lt 0) { throw 'CDP audit missed browser next-question request.' }
+  $finishIndex = Find-FlowRequestIndex $flowRecords ($questionIndex + 1) 'POST' "$flowBase/$attemptId/finish" ''
+  if ($finishIndex -lt 0) { throw 'CDP audit missed browser feedback request.' }
+  $draftIndex = Find-FlowRequestIndex $flowRecords ($finishIndex + 1) 'POST' "$flowBase/$attemptId/review-drafts" ''
+  if ($draftIndex -lt 0) { throw 'CDP audit missed browser Review Draft confirmation.' }
+  $historyIndex = Find-FlowRequestIndex $flowRecords ($draftIndex + 1) 'GET' $flowBase ''
+  if ($historyIndex -lt 0) { throw 'CDP audit missed browser read-only history request.' }
   if (-not (Test-Path -LiteralPath $providerAudit)) { throw 'Provider egress audit is missing.' }
   $httpRecords = @(Get-Content -LiteralPath $httpAudit | ForEach-Object { $_ | ConvertFrom-Json })
   foreach ($record in $httpRecords) {

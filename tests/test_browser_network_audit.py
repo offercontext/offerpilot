@@ -19,11 +19,13 @@ class _FakeCdp:
         wrong_target: bool = False,
         no_attach: bool = False,
         drop_after_navigation: bool = False,
+        emit_unowned_request: bool = False,
     ) -> None:
         self.reject_network = reject_network
         self.wrong_target = wrong_target
         self.no_attach = no_attach
         self.drop_after_navigation = drop_after_navigation
+        self.emit_unowned_request = emit_unowned_request
         self.expected_url = "http://127.0.0.1:18766/"
         self.ready = threading.Event()
         self.loop: asyncio.AbstractEventLoop | None = None
@@ -81,8 +83,14 @@ class _FakeCdp:
                     await websocket.send(json.dumps({
                         "method": "Network.requestWillBeSent",
                         "sessionId": session_id,
-                        "params": {"request": {"url": self.expected_url}},
+                        "params": {"request": {"method": "GET", "url": self.expected_url}},
                     }))
+                    if self.emit_unowned_request:
+                        await websocket.send(json.dumps({
+                            "method": "Network.requestWillBeSent",
+                            "sessionId": "unowned-session",
+                            "params": {"request": {"method": "POST", "url": self.expected_url + "api/other-tab"}},
+                        }))
                     if self.drop_after_navigation:
                         await asyncio.sleep(0.1)
                         await websocket.close()
@@ -180,5 +188,20 @@ def test_browser_network_audit_propagates_post_ready_disconnect(tmp_path):
     try:
         result = _run_auditor(tmp_path / "disconnect", fake, stop_delay_seconds=0.5)
         assert result.returncode != 0
+    finally:
+        fake.close()
+
+
+def test_browser_network_audit_ignores_requests_from_another_target(tmp_path):
+    fake = _FakeCdp(emit_unowned_request=True)
+    try:
+        result = _run_auditor(tmp_path / "unowned", fake)
+        assert result.returncode == 0, result.stderr
+        records = [json.loads(line) for line in (tmp_path / "unowned" / "browser.jsonl").read_text(encoding="utf-8").splitlines()]
+        assert len(records) == 1
+        assert records[0]["target_id"] == "main-target"
+        assert records[0]["session_id"] == "main-session"
+        assert records[0]["method"] == "GET"
+        assert all("other-tab" not in record["url"] for record in records)
     finally:
         fake.close()

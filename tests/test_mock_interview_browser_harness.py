@@ -63,6 +63,11 @@ def test_browser_harness_binds_cdp_to_local_target_and_ready_handshake():
     assert "Target.setAutoAttach" in auditor
     assert "Target.setDiscoverTargets" in auditor
     assert "Page.navigate" in auditor
+    assert "Find-FlowRequestIndex" in script
+    assert "review-drafts" in script
+    assert "turns/[0-9]+/question" in script
+    assert "target_id" in script
+    assert "session_id" in script
 
 
 def test_mock_interview_smoke_rejects_untraceable_turn_evidence():
