@@ -19,7 +19,7 @@
 - Do not reintroduce `MockSession`, `/api/mock/*`, `Conversation(mode="mock_interview")`, free scores, automatic InterviewNote saving, audio, transcription, URL fetching, recruiting-platform access, automatic status changes, Knowledge/Question/Memory/Reminder writes, or generic mock-interview entry points.
 - Use `input_fingerprint`/`source_fingerprint` only for immutable Application/Event/Resume/JD/selected-preparation input. Use `transcript_fingerprint` only for ordered Turns and provider CAS. A normal answer append never becomes `source_changed`.
 - `strengths` and `practice_points` require a Turn answer ref. `next_practice_steps` require a Turn answer ref and add JD/Resume refs when they mention role or prior experience. `follow_up_questions` either carry evidence or exactly match the versioned fixed-question allowlist.
-- The browser may contact only local static resources and local `/api`. Provider egress is server-side only; a server harness separately verifies the configured AI endpoint and rejects recruiting-platform/company-web targets.
+- The browser may contact only local static resources and local `/api`. Provider egress is server-side only; the server harness parses the configured Provider URL and requires every recorded Provider request to match its exact `(scheme, host, effective port)` triple.
 - Every task ends with separate `git add` and `git commit` commands. No shell command may combine them with `&&`.
 
 ## File map before implementation
@@ -32,7 +32,7 @@
 | HTTP API | `src/offerpilot/api.py` |
 | Backend tests | `tests/test_mock_interview_migrations.py`, `tests/test_mock_interview_repository.py`, `tests/test_mock_interview_ai.py`, `tests/test_mock_interview_api.py`, `tests/test_mock_interview_review_drafts.py`, plus targeted updates to `tests/test_chat_api.py`, `tests/test_conditional_delete_repositories.py`, and `tests/test_smoke.py` |
 | Frontend service/types/state | `web/src/services/mockInterviews.ts`, `web/src/types/mockInterview.ts`, `web/src/layout/AppShell.tsx` |
-| Frontend entry and drawer | `web/src/components/InterviewV01View.tsx`, `web/src/components/ApplicationDetail.tsx`, new `web/src/components/MockInterviewDrawer.tsx` and `web/src/components/MockInterviewDrawer.module.css` plus tests, `web/src/features/pilot/PilotOpportunityFitV2Card.tsx`, and `web/src/layout/AppShell.tsx` |
+| Frontend entry and drawer | `web/src/components/InterviewV01View.tsx`, new `web/src/components/MockInterviewDrawer.tsx` and `web/src/components/MockInterviewDrawer.module.css` plus tests, `web/src/features/pilot/PilotOpportunityFitV2Card.tsx`, and `web/src/layout/AppShell.tsx` |
 | Legacy frontend removal | Delete `web/src/components/MockStudio/MockChat.tsx`, `MockResultCard.tsx`, `MockStudioView.tsx`, `MockStudio.module.css`, `RadarChart.tsx`, `web/src/services/mock.ts`, `web/src/types/mock.ts`; modify `web/src/layout/navigation.ts`, `navigation.test.ts`, `web/src/components/ChatPanel/capabilities.ts`, and `conversationList.test.ts` |
 | Isolated runtime acceptance | `src/offerpilot/smoke.py`, `tests/test_smoke.py`, new `scripts/mock-interview-real-ai-browser-harness.ps1` |
 
@@ -122,6 +122,8 @@ Add exact tests:
 
 Add these exact tests: `test_start_requires_visible_scheduled_interview_and_selected_resume`, `test_start_rejects_empty_jd_without_provider_call`, `test_answer_updates_transcript_not_source_fingerprint`, `test_same_attempt_key_same_input_replays_existing_attempt`, `test_same_attempt_key_different_input_returns_idempotency_conflict`, `test_same_turn_key_different_answer_returns_turn_idempotency_conflict`, and `test_editing_submitted_answer_requires_new_attempt`. The assertions must cover the stored frozen fields, status code, key reuse, and the distinction between input and transcript fingerprints.
 
+Also add `test_initial_question_key_is_persisted_on_first_turn`, `test_same_initial_question_key_replays_first_turn`, and `test_different_initial_question_key_returns_turn_idempotency_conflict`. `initial_question_idempotency_key` is stored on the first Turn as its `question_idempotency_key`, participates in `UNIQUE(attempt_id, turn_no, question_idempotency_key)`, and is checked against the existing first Turn before any new insert; changing it for the same Attempt/turn returns 409 without a second Provider call.
+
 Run:
 
 ```powershell
@@ -162,7 +164,7 @@ cancel_unconfirmed(attempt_id)
 get_attempt_history(application_id, event_id, attempt_id)
 ```
 
-`create_or_replay_start()` must insert the Attempt and first-question owner atomically. Every model call owner receives a new revision/token and closes the session before calling the Provider. Completion and failure writes use `WHERE attempt_status, generation_revision, provider_call_token, expected_transcript_fingerprint`; a failed CAS returns current state without changing it. A stale transcript is a concurrency result, never `source_changed`.
+`create_or_replay_start()` must insert the Attempt and first-question owner atomically. It persists `initial_question_idempotency_key` as the first Turn's `question_idempotency_key` before the first Provider call; the first Turn is protected by both `UNIQUE(attempt_id, turn_no)` and `UNIQUE(attempt_id, turn_no, question_idempotency_key)`. A same-key/same-payload start replays that Turn, while a different initial question key for the same Attempt and turn returns `409 mock_interview_turn_idempotency_conflict` without a second Provider call. Every model call owner receives a new revision/token and closes the session before calling the Provider. Completion and failure writes use `WHERE attempt_status, generation_revision, provider_call_token, expected_transcript_fingerprint`; a failed CAS returns current state without changing it. A stale transcript is a concurrency result, never `source_changed`.
 
 - [ ] **Step 4: Add application/event-scoped HTTP validation and replay responses.**
 
@@ -231,8 +233,6 @@ Reject every unknown field and validate the exact evidence rules from the design
 
 Use `response_format` only when the configured capability is the real JSON boolean `True`; otherwise use strict JSON text. On a contract failure, call once more with only a category such as `invalid_json`, `unexpected_field`, `missing_evidence_ref`, `unknown_evidence_ref`, `excerpt_mismatch`, or `limit_exceeded`. Provider/network/timeout errors skip repair and preserve the original operation key.
 
-Add diagnostics tests asserting logs contain only category, repair flag/count, elapsed time, and a redacted Provider request identifier:
-
 Add diagnostics tests asserting logs contain only category, repair flag/count, elapsed time, and a redacted Provider request identifier: `test_contract_failure_diagnostic_never_contains_model_input_or_raw_output`, `test_provider_error_is_not_retried_as_format_repair`, and `test_format_repair_uses_same_snapshot_and_at_most_one_retry`.
 
 - [ ] **Step 4: Wire question and feedback completion through the repository CAS.**
@@ -300,12 +300,12 @@ git add src/offerpilot/models.py src/offerpilot/repositories/mock_interview_revi
 git commit -m "feat: AI add confirmed mock interview review drafts"
 ```
 
-## Task 5: Interview index, Application detail, Pilot, history, and Chinese UI
+## Task 5: Interview index, Pilot, history, and Chinese UI
 
 **Files:**
 
 - Create: `web/src/types/mockInterview.ts`, `web/src/services/mockInterviews.ts`, `web/src/components/MockInterviewDrawer.tsx`, `web/src/components/MockInterviewDrawer.module.css`, `web/src/components/MockInterviewDrawer.test.tsx`, `web/src/components/MockInterviewDrawer.interaction.test.tsx`, `web/src/layout/AppShell.mockInterview.test.tsx`
-- Modify: `web/src/components/InterviewV01View.tsx`, `web/src/components/InterviewV01View.test.tsx`, `web/src/components/ApplicationDetail.tsx`, `web/src/layout/AppShell.tsx`, `web/src/features/pilot/PilotOpportunityFitV2Card.tsx`, and `web/src/features/pilot/PilotOpportunityFitV2Card.test.tsx`
+- Modify: `web/src/components/InterviewV01View.tsx`, `web/src/components/InterviewV01View.test.tsx`, `web/src/layout/AppShell.tsx`, `web/src/features/pilot/PilotOpportunityFitV2Card.tsx`, and `web/src/features/pilot/PilotOpportunityFitV2Card.test.tsx`
 - Modify: `tests/test_interview_index_api.py`, `tests/test_mock_interview_api.py`
 
 - [ ] **Step 1: Write failing entry and state-ownership tests.**
@@ -338,7 +338,7 @@ Do not render score/ranking/hiring language. Do not invoke Knowledge/Question/Me
 
 - [ ] **Step 4: Wire both entrances and history.**
 
-Add the index event action and Application detail action. Pilot can open the same drawer only with an explicitly selected `applicationId + eventId`; it cannot create a generic mock session. History requests are read-only and show frozen Attempt/Turn/Proposal/Review Draft data, with `source_changed` disabling generation while preserving the old view.
+Add the index event action and the Pilot action. Pilot can open the same drawer only with an explicitly selected `applicationId + eventId`; it cannot create a generic mock session. History requests are read-only and show frozen Attempt/Turn/Proposal/Review Draft data, with `source_changed` disabling generation while preserving the old view.
 
 Run:
 
@@ -389,7 +389,7 @@ For `local` and `real-ai`, snapshot the source data directory before/after and r
 
 - [ ] **Step 3: Implement the browser harness with the correct network boundary.**
 
-Start the isolated service on a verified free dynamic port. Open the local base URL, navigate top-level “面试”, select a specific scheduled event, configure Resume/JD/preparation, complete text turns, finish, select feedback, confirm, close, and reopen read-only history. Record browser requests and fail on any non-local host or direct Provider request. Separately record server outbound Provider target and fail if it is not the configured endpoint or is a recruiting/company web target.
+Start the isolated service on a verified free dynamic port. Open the local base URL, navigate top-level “面试”, select a specific scheduled event, configure Resume/JD/preparation, complete text turns, finish, select feedback, confirm, close, and reopen read-only history. Record browser requests and fail on any non-local host or direct Provider request. Separately record every server outbound Provider request, parse both it and the temporary configuration URL, and require exact equality of `(scheme, host, effective port)`; a different triple fails, while a matching configured Provider host is accepted without hostname heuristics.
 
 - [ ] **Step 4: Run the isolated runtime checks.**
 
@@ -417,6 +417,7 @@ git commit -m "test: AI verify isolated mock interview flow"
 **Files:**
 
 - Review all changed files from the task commits; modify only files required by discovered regressions.
+- Modify: `scripts/windows-pytest-groups.ps1` to support one named group per invocation, a caller-supplied result directory, and a separate aggregate mode.
 - Update: `docs/superpowers/plans/2026-07-28-event-bound-mock-interview.md` only with checked completion state after implementation is actually verified.
 - Create: a short release verification report under `docs/superpowers/reports/` only after all gates finish.
 
@@ -424,16 +425,31 @@ git commit -m "test: AI verify isolated mock interview flow"
 
 Provide the complete diff from the pre-implementation baseline to an independent reviewer. Require explicit checks for: old Mock route removal, no score/decision fields, database-level Attempt/Turn/draft uniqueness, two-connection lease/CAS, input/transcript fingerprint separation, Turn-answer evidence, fixed-question IDs, no raw diagnostics, no direct browser Provider access, and no cross-domain writes. Any P0/P1/P2 finding must be fixed with a regression test before proceeding.
 
-- [ ] **Step 2: Collect the full backend manifest and stable groups.**
+- [ ] **Step 2: Run the backend gate as five persisted group jobs plus one aggregate job.**
 
-Run:
+The PowerShell script must accept `-Group agent|domain|knowledge|proposals|misc`, `-ResultDir $gateDir`, and `-Aggregate -ResultDir $gateDir`. A group invocation runs only its group, writes `agent.collect.txt`/`agent.junit.xml` (and the corresponding file for each group) into `ResultDir`, checks its own exit code, rejects duplicate node IDs before sorting, parses JUnit skips, and allows only the four exact symlink-permission node/reason pairs. The aggregate invocation reads the persisted files, rejects duplicate node IDs before any `Sort-Object -Unique`, compares the union to the full manifest, and verifies that every group exited zero.
+
+Run the following from a temporary directory and remove it in `finally`; do not create a manifest in the repository root:
 
 ```powershell
-uv run pytest --collect-only -q > .pytest-collect-mock-interview.txt
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-pytest-groups.ps1
+$gateDir = Join-Path ([System.IO.Path]::GetTempPath()) ("offerpilot-pytest-gate-" + [guid]::NewGuid().ToString())
+New-Item -ItemType Directory -Path $gateDir | Out-Null
+try {
+    uv run pytest --collect-only -q --disable-warnings | Out-File (Join-Path $gateDir 'full-manifest.txt') -Encoding utf8
+    if ($LASTEXITCODE -ne 0) { throw "full manifest collection failed with exit code $LASTEXITCODE" }
+    foreach ($group in @('agent', 'domain', 'knowledge', 'proposals', 'misc')) {
+        powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-pytest-groups.ps1 -Group $group -ResultDir $gateDir
+        if ($LASTEXITCODE -ne 0) { throw "$group pytest group failed with exit code $LASTEXITCODE" }
+    }
+    powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-pytest-groups.ps1 -Aggregate -ResultDir $gateDir
+    if ($LASTEXITCODE -ne 0) { throw "pytest group aggregate failed with exit code $LASTEXITCODE" }
+}
+finally {
+    Remove-Item -LiteralPath $gateDir -Recurse -Force -ErrorAction SilentlyContinue
+}
 ```
 
-The manifest and five group node-id union must match exactly with no duplicate node IDs. Every group must exit 0. Only the four repository-approved Windows symlink-permission tests may skip, with the expected permission reason; any other skip/failure blocks release.
+The persisted full manifest and five group node-id union must match exactly with no duplicate node IDs. Every group must exit 0. Only the four repository-approved Windows symlink-permission tests may skip, with the expected permission reason; any other skip/failure blocks release. The final report records each group exit code, JUnit path contents, collected/ran count, and allowed skips before the temporary directory is removed.
 
 - [ ] **Step 3: Run static, frontend, and local gates.**
 
@@ -470,10 +486,10 @@ git commit -m "docs: AI record mock interview release verification"
 
 ## Self-review checklist before handing this plan to review
 
-- [ ] Every design requirement maps to Task 1–7: destructive `0016`, Attempt/Turn/CAS, strict question/feedback/Evidence/safe-empty/diagnostics, HITL draft uniqueness, index/detail/Pilot/history/Chinese UI, isolated API/browser/cleanup, and independent CR/release gates.
+- [ ] Every design requirement maps to Task 1–7: destructive `0016`, Attempt/Turn/CAS, strict question/feedback/Evidence/safe-empty/diagnostics, HITL draft uniqueness, index/Pilot/history/Chinese UI, isolated API/browser/cleanup, and independent CR/release gates.
 - [ ] `source_fingerprint`/`input_fingerprint` never includes Turn; `transcript_fingerprint` never triggers `source_changed`.
 - [ ] Start, initial question, answer submission, next question, feedback, and review-draft confirmation each have a named key, unique scope, first/replay status, and different-payload conflict behavior.
 - [ ] `safe_empty` is consistently exactly the four feedback arrays: `strengths`, `practice_points`, `follow_up_questions`, `next_practice_steps`.
 - [ ] No plan step permits direct browser access to a Provider; server-side Provider egress is a separate assertion.
-- [ ] No `TODO`, `TBD`, “implement later”, or unspecified implementation choice remains.
+- [ ] No unresolved placeholder language or unspecified implementation choice remains.
 - [ ] Before committing this plan, run `git diff --check` and confirm the worktree contains only this new plan file.
