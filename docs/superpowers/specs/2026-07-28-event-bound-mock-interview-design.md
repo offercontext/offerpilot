@@ -188,13 +188,14 @@ Application/Event/Resume 的数据库 ID、`job_url`、事件地点、会议链�
 | Provider 返回合法 Proposal/问题 | CAS 成功后写入 Turn 或不可变 Proposal，状态变为 `awaiting_answer`/`feedback_ready`，201；同 key 重放 200 | 用户可查看；历史只读 |
 | 稳定契约失败 | 最多一次修复仍失败，返回 `502 mock_interview_unverifiable`，不写 Feedback Proposal；Attempt 进入 `contract_failed`，失败分类脱敏保存 | 这是确定失败，可新建 key；不展示模型原文，不把失败伪装为评分 |
 | 没有可验证反馈证据 | 不调用 Provider 或由服务端生成并校验固定 `safe_empty` Proposal，201；四类数组为空 | 展示“暂无可验证的练习建议”，不是系统错误 |
-| 来源变化 | 回写前重算 Event/Resume/准备建议/Turn fingerprint；CAS 标记 `source_changed`，返回 `409 mock_interview_source_conflict`，不写结果 | 冻结原历史只读；用户必须重新配置并生成新 key |
+| 来源变化 | 回写前只重算不可变 Application/Event/Resume/JD/Preparation 的 `input_fingerprint`；该指纹变化时 CAS 标记 `source_changed`，返回 `409 mock_interview_source_conflict`，不写结果 | 冻结原历史只读；用户必须重新配置并生成新 key |
+| transcript 并发推进 | 回写前发现 `transcript_fingerprint` 已推进时，不标记 `source_changed`；返回当前 Attempt/Turn 的安全状态或稳定并发冲突，丢弃陈旧 owner 结果 | 继续使用当前 Turn；同 key 重放返回已有结果 |
 | 普通取消/关闭 | 只有确定未进行中的 Attempt 才能短事务删除未确认 Attempt、Turns 和未确认 Proposal；接口幂等 | 清除本地草稿 |
 | 取消时结果未知 | 不删除服务端 Attempt，不清除原 key，保留 `provider_unknown`/进行中状态 | 关闭后可恢复；不得生成新 key |
 | 事件删除/改为非 interview/Resume 删除 | 新建和继续调用返回稳定 404/409；既有冻结历史在 Application 可见时只读并标 `source_changed` | 禁止继续生成和提交草稿 |
 | Application 软删除 | 所有 application-scoped 读写统一 404 并清除 Drawer/Pilot 当前上下文；不把隐藏数据泄露到全局索引 | 显示固定中文 404，不可 handoff |
 
-同 key 的 fingerprint 不同，无论 Attempt 状态都返回 `409 mock_interview_idempotency_conflict`；ready 结果保持不可变，不被冲突请求改写。用户修改 Resume/JD/准备选择或回答后，必须新建 key；历史 key 不可复用到新快照。
+同 key 的不可变 input fingerprint 不同，无论 Attempt 状态都返回 `409 mock_interview_idempotency_conflict`；ready 结果保持不可变，不被冲突请求改写。Turn 变化只更新 `transcript_fingerprint`，用于 CAS 防晚到回写并绑定问题/反馈输入，不触发 `source_changed`。同一 Turn 幂等键但回答载荷不同返回 `409 mock_interview_turn_idempotency_conflict`；用户修改已提交回答必须创建新 Attempt。用户修改 Resume/JD/准备选择后也必须新建 key；历史 key 不可复用到新快照。
 
 ## 7. API 与中文错误契约
 
