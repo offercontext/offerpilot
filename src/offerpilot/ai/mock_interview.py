@@ -202,12 +202,16 @@ def build_mock_interview_diagnostic(
 
 
 class MockInterviewProviderError(RuntimeError):
-    pass
+    def __init__(self, category: str, diagnostic: dict[str, Any] | None = None):
+        self.category = category
+        self.diagnostic = diagnostic or {}
+        super().__init__(category)
 
 
 class MockInterviewUnverifiableError(RuntimeError):
-    def __init__(self, category: str):
+    def __init__(self, category: str, diagnostic: dict[str, Any] | None = None):
         self.category = category
+        self.diagnostic = diagnostic or {}
         super().__init__(category)
 
 
@@ -237,7 +241,11 @@ def generate_feedback(
         try:
             assistant = _complete_feedback(model, prompt)
         except Exception as exc:
-            raise MockInterviewProviderError("mock_interview_provider_error") from exc
+            diagnostic = getattr(exc, "diagnostic", None)
+            raise MockInterviewProviderError(
+                "mock_interview_provider_error",
+                diagnostic if isinstance(diagnostic, dict) else None,
+            ) from exc
         try:
             parsed = parse_mock_interview_json(assistant.content)
             validated = validate_feedback(parsed, snapshot, turns)
@@ -251,7 +259,15 @@ def generate_feedback(
                 repair_count = 1
                 continue
             break
-    raise MockInterviewUnverifiableError(last_category)
+    raise MockInterviewUnverifiableError(
+        last_category,
+        {
+            "failure_category": last_category,
+            "repair_attempted": repair_count > 0,
+            "repair_count": repair_count,
+            "elapsed_ms": int((perf_counter() - started) * 1000),
+        },
+    )
 
 
 def generate_question(
@@ -335,10 +351,30 @@ def generate_question(
             last_category = exc.category
             if attempt == 0 and should_retry_mock_interview_format(last_category):
                 continue
-            raise MockInterviewUnverifiableError(last_category) from exc
+            raise MockInterviewUnverifiableError(
+                last_category,
+                {
+                    "failure_category": last_category,
+                    "repair_attempted": attempt > 0,
+                    "repair_count": 1 if attempt > 0 else 0,
+                    "elapsed_ms": 0,
+                },
+            ) from exc
         except Exception as exc:
-            raise MockInterviewProviderError("mock_interview_provider_error") from exc
-    raise MockInterviewUnverifiableError(last_category)
+            diagnostic = getattr(exc, "diagnostic", None)
+            raise MockInterviewProviderError(
+                "mock_interview_provider_error",
+                diagnostic if isinstance(diagnostic, dict) else None,
+            ) from exc
+    raise MockInterviewUnverifiableError(
+        last_category,
+        {
+            "failure_category": last_category,
+            "repair_attempted": True,
+            "repair_count": 1,
+            "elapsed_ms": 0,
+        },
+    )
 
 
 def _complete_feedback(model: Any, prompt: str) -> Assistant:

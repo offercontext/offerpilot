@@ -81,6 +81,28 @@ def test_start_and_same_key_replay_are_idempotent(tmp_path):
     assert "请介绍一次" not in first.json()["turn"]["question"]
 
 
+def test_contract_failure_logs_only_safe_category(tmp_path):
+    client, app_id, event_id, resume_id = _client(tmp_path, _InvalidQuestionModel())
+    path = f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts"
+
+    response = client.post(
+        path,
+        json={
+            "resume_id": resume_id,
+            "jd_text": "Reliability engineering interview JD",
+            "attempt_idempotency_key": "diagnostic-attempt",
+            "initial_question_idempotency_key": "diagnostic-question",
+        },
+    )
+
+    assert response.status_code == 502
+    assert response.json()["error_code"] == "mock_interview_unverifiable"
+    log_text = (tmp_path / "logs" / "offerpilot.log").read_text(encoding="utf-8")
+    assert "mock_interview_contract_failure" in log_text
+    assert "unexpected_field" in log_text
+    assert "Reliability engineering interview JD" not in log_text
+
+
 def test_start_rejects_cross_application_event(tmp_path):
     client, app_id, event_id, resume_id = _client(tmp_path)
     second = client.post(

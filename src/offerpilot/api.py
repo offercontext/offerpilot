@@ -714,6 +714,35 @@ def _mock_interview_retry_after_ms(attempt: Any) -> int:
     return max(250, min(5000, remaining))
 
 
+def _log_mock_interview_ai_failure(
+    data_dir: Path,
+    *,
+    attempt_id: int,
+    stage: str,
+    kind: str,
+    diagnostic: dict[str, Any] | None,
+) -> None:
+    diagnostic = diagnostic or {}
+    payload = {
+        "attempt_id": attempt_id,
+        "stage": stage,
+        "failure_category": str(diagnostic.get("failure_category") or kind),
+        "repair_attempted": bool(diagnostic.get("repair_attempted", False)),
+        "repair_count": int(diagnostic.get("repair_count") or 0),
+        "elapsed_ms": int(diagnostic.get("elapsed_ms") or 0),
+        "http_status": diagnostic.get("http_status"),
+        "timeout": bool(diagnostic.get("timeout", False)),
+        "correlation_id": str(diagnostic.get("correlation_id") or ""),
+        "provider_request_id": str(diagnostic.get("provider_request_id") or ""),
+    }
+    append_log_entry(
+        data_dir,
+        "WARNING",
+        f"mock_interview_{kind}_failure "
+        + json.dumps(payload, ensure_ascii=True, separators=(",", ":")),
+    )
+
+
 def create_app(
     data_dir: Optional[Path] = None,
     chat_model: Optional[ChatModel] = None,
@@ -4221,7 +4250,14 @@ def create_app(
                 },
                 status_code=201 if result.created else 200,
             )
-        except MockInterviewProviderError:
+        except MockInterviewProviderError as exc:
+            _log_mock_interview_ai_failure(
+                resolved_data_dir,
+                attempt_id=result.attempt.id,
+                stage="question",
+                kind="provider",
+                diagnostic=exc.diagnostic,
+            )
             try:
                 mock_interviews.mark_provider_unknown(
                     result.attempt.id, revision, provider_token, "question"
@@ -4230,6 +4266,13 @@ def create_app(
                 return error_response(409, "mock_interview_source_conflict")
             return error_response(502, "AI service is temporarily unavailable", "mock_interview_provider_error")
         except MockInterviewUnverifiableError as exc:
+            _log_mock_interview_ai_failure(
+                resolved_data_dir,
+                attempt_id=result.attempt.id,
+                stage="question",
+                kind="contract",
+                diagnostic=exc.diagnostic,
+            )
             try:
                 mock_interviews.mark_contract_failure(
                     result.attempt.id, revision, provider_token, exc.category, "contract_failed"
@@ -4332,7 +4375,14 @@ def create_app(
             }, status_code=201)
         except KeyError as exc:
             return error_response(422, f"missing field: {exc.args[0]}")
-        except MockInterviewProviderError:
+        except MockInterviewProviderError as exc:
+            _log_mock_interview_ai_failure(
+                resolved_data_dir,
+                attempt_id=attempt_id,
+                stage="question",
+                kind="provider",
+                diagnostic=exc.diagnostic,
+            )
             if "claim" in locals() and claim is not None:
                 try:
                     mock_interviews.mark_provider_unknown(attempt_id, claim[0], claim[1], "question")
@@ -4340,6 +4390,13 @@ def create_app(
                     return error_response(409, "mock_interview_source_conflict")
             return error_response(502, "AI service is temporarily unavailable", "mock_interview_provider_error")
         except MockInterviewUnverifiableError as exc:
+            _log_mock_interview_ai_failure(
+                resolved_data_dir,
+                attempt_id=attempt_id,
+                stage="question",
+                kind="contract",
+                diagnostic=exc.diagnostic,
+            )
             if "claim" in locals() and claim is not None:
                 try:
                     mock_interviews.mark_contract_failure(
@@ -4440,7 +4497,14 @@ def create_app(
                 None if isinstance(configured_model, JSONResponse) else configured_model
             )
             proposal, diagnostic = generate_feedback(legacy_model, snapshot, turn_payload)
-        except MockInterviewUnverifiableError:
+        except MockInterviewUnverifiableError as exc:
+            _log_mock_interview_ai_failure(
+                resolved_data_dir,
+                attempt_id=attempt_id,
+                stage="feedback",
+                kind="contract",
+                diagnostic=exc.diagnostic,
+            )
             try:
                 mock_interviews.mark_contract_failure(
                     attempt_id, revision, provider_token, "contract_unverifiable", "contract_failed"
@@ -4448,7 +4512,14 @@ def create_app(
             except MockInterviewSourceChanged:
                 return error_response(409, "mock_interview_source_conflict")
             return error_response(502, "mock interview output could not be verified; please start a new attempt", "mock_interview_unverifiable")
-        except MockInterviewProviderError:
+        except MockInterviewProviderError as exc:
+            _log_mock_interview_ai_failure(
+                resolved_data_dir,
+                attempt_id=attempt_id,
+                stage="feedback",
+                kind="provider",
+                diagnostic=exc.diagnostic,
+            )
             try:
                 mock_interviews.mark_provider_unknown(attempt_id, revision, provider_token, "feedback")
             except MockInterviewSourceChanged:
