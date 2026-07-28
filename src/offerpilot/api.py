@@ -4288,16 +4288,14 @@ def create_app(
         try:
             question_key = str(payload["question_idempotency_key"])
             attempt = mock_interviews.attempt_context(attempt_id, application_id, event_id)
-            existing = mock_interviews.get_turn(attempt_id, turn_no)
-            if existing is not None and existing.turn_status == "awaiting_answer":
-                if existing.question_idempotency_key != question_key:
-                    raise MockInterviewTurnIdempotencyConflict("question key changed")
+            claim = mock_interviews.claim_question(attempt_id, turn_no, question_key)
+            if claim is not None and claim.replay_turn is not None:
+                replay = claim.replay_turn
                 return JSONResponse({
                     "attempt_id": attempt.id,
-                    "attempt_status": attempt.attempt_status,
-                    "turn": {"turn_no": existing.turn_no, "question": existing.question_text, "answer": existing.answer_text},
+                    "attempt_status": "awaiting_answer",
+                    "turn": {"turn_no": replay.turn_no, "question": replay.question_text, "answer": replay.answer_text},
                 })
-            claim = mock_interviews.claim_question(attempt_id, turn_no, question_key)
             if claim is None:
                 current = mock_interviews.get_turn(attempt_id, turn_no)
                 if current is not None and current.turn_status == "awaiting_answer":

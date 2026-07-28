@@ -357,7 +357,9 @@ def test_expired_question_lease_has_one_cas_takeover(tmp_path):
     second = repo.claim_question(attempt.id, 1, "question-1")
 
     assert first is not None
-    assert second is None
+    assert first.replay_turn is not None
+    assert second is not None
+    assert second.replay_turn is not None
 
 
 def test_question_claim_freezes_transcript_under_write_lock(tmp_path):
@@ -456,6 +458,47 @@ def test_expired_second_question_dual_connections_have_one_owner(tmp_path):
     for thread in threads:
         thread.join()
     assert sum(owner is not None for owner in owners) == 1
+
+
+def test_completed_question_replay_does_not_reclaim_provider_lease(tmp_path):
+    factory = init_database(tmp_path / "data.db")
+    app_id, event_id, _, resume_id, _ = _seed(factory)
+    repo = MockInterviewRepository(factory)
+    attempt = _start_ready(
+        repo, app_id, event_id, resume_id, "JD text", None, "attempt-replay", "question-1"
+    ).attempt
+
+    replay = repo.claim_question(attempt.id, 1, "question-1")
+
+    assert replay is not None
+    assert replay.replay_turn is not None
+    assert replay.replay_turn.question_text == "Question grounded in the JD."
+
+
+def test_question_retry_freezes_only_completed_previous_turns(tmp_path):
+    factory = init_database(tmp_path / "data.db")
+    app_id, event_id, _, resume_id, _ = _seed(factory)
+    repo = MockInterviewRepository(factory)
+    attempt = _start_ready(
+        repo, app_id, event_id, resume_id, "JD text", None, "attempt-freeze", "question-1"
+    ).attempt
+    repo.submit_answer(attempt.id, 1, "first answer", "answer-1")
+    first_claim = repo.claim_question(attempt.id, 2, "question-2")
+    assert first_claim is not None
+    with factory() as session:
+        stored = session.get(MockInterviewAttempt, attempt.id)
+        assert stored is not None
+        stored.provider_lease_until = datetime.now(timezone.utc) - timedelta(seconds=1)
+        session.commit()
+
+    retry = repo.claim_question(attempt.id, 2, "question-2")
+
+    assert retry is not None
+    assert list(retry.turns) == [{
+        "turn_no": 1,
+        "question": "Question grounded in the JD.",
+        "answer": "first answer",
+    }]
 
 
 def test_next_question_claim_and_completion_persist_a_second_turn(tmp_path):

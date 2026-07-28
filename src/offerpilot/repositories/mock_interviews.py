@@ -78,6 +78,7 @@ class MockInterviewQuestionClaim:
     provider_call_token: str
     transcript_fingerprint: str
     turns: tuple[dict[str, Any], ...]
+    replay_turn: MockInterviewTurn | None = None
 
     def __iter__(self) -> Iterator[Any]:
         yield self.revision
@@ -264,6 +265,16 @@ class MockInterviewRepository:
             if existing_turn is not None:
                 if existing_turn.question_idempotency_key != question_idempotency_key:
                     raise MockInterviewTurnIdempotencyConflict("question key changed")
+                if existing_turn.turn_status == "awaiting_answer":
+                    session.expunge(attempt)
+                    session.expunge(existing_turn)
+                    return MockInterviewQuestionClaim(
+                        attempt.generation_revision,
+                        "",
+                        attempt.transcript_fingerprint,
+                        tuple(),
+                        existing_turn,
+                    )
                 if existing_turn.turn_status not in {"awaiting_answer", "generating_question"}:
                     return None
             else:
@@ -285,6 +296,7 @@ class MockInterviewRepository:
                 for turn in session.scalars(
                     select(MockInterviewTurn)
                     .where(MockInterviewTurn.attempt_id == attempt_id)
+                    .where(MockInterviewTurn.turn_status.in_(["answered", "awaiting_answer"]))
                     .order_by(MockInterviewTurn.turn_no.asc())
                 ).all()
             )

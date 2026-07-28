@@ -50,6 +50,16 @@ def test_browser_harness_requires_cdp_network_audit():
     assert "CDP browser request audit is missing" in script
 
 
+def test_browser_harness_binds_cdp_to_local_target_and_ready_handshake():
+    script = (Path(__file__).parents[1] / "scripts" / "mock-interview-real-ai-browser-harness.ps1").read_text(encoding="utf-8")
+    auditor = (Path(__file__).parents[1] / "scripts" / "browser-network-audit.py").read_text(encoding="utf-8")
+    assert "--expected-url" in script
+    assert "--ready-file" in script
+    assert "--expected-url" in auditor
+    assert "--ready-file" in auditor
+    assert "ExitCode" in script
+
+
 def test_mock_interview_smoke_rejects_untraceable_turn_evidence():
     proposal = {
         **SAFE_EMPTY_FEEDBACK,

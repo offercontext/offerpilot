@@ -7,6 +7,7 @@ $httpAudit = Join-Path $tempData 'http-audit.jsonl'
 $providerAudit = Join-Path $tempData 'provider-audit.jsonl'
 $browserAudit = Join-Path $tempData 'browser-network.jsonl'
 $browserStop = Join-Path $tempData 'browser-network.stop'
+$browserReady = Join-Path $tempData 'browser-network.ready'
 $probe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
 $probe.Start()
 $port = ([Net.IPEndPoint]$probe.LocalEndpoint).Port
@@ -102,8 +103,14 @@ try {
   if (-not $healthy) { throw "Isolated service did not become healthy on $baseUrl." }
   $browserAuditor = Start-Process powershell -WindowStyle Hidden -PassThru -ArgumentList @(
     '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command',
-    "Set-Location '$repo'; uv run python scripts/browser-network-audit.py --debugging-url '$($env:MOCK_INTERVIEW_CDP_URL)' --audit '$browserAudit' --stop-file '$browserStop'"
+    "Set-Location '$repo'; uv run python scripts/browser-network-audit.py --debugging-url '$($env:MOCK_INTERVIEW_CDP_URL)' --expected-url '$baseUrl' --audit '$browserAudit' --stop-file '$browserStop' --ready-file '$browserReady'"
   )
+  for ($attempt = 0; $attempt -lt 240; $attempt++) {
+    if ($browserAuditor.HasExited) { throw 'CDP browser auditor exited before the Network ready handshake.' }
+    if (Test-Path -LiteralPath $browserReady) { break }
+    Start-Sleep -Milliseconds 500
+  }
+  if (-not (Test-Path -LiteralPath $browserReady)) { throw 'CDP browser auditor did not complete its Network ready handshake.' }
 
   $resume = Invoke-RestMethod -Method Post -Uri "$baseUrl/api/resumes" -ContentType 'application/json' -Body (@{
     title = 'Mock Interview Browser Smoke Resume'
@@ -166,6 +173,7 @@ try {
   if (-not (Test-Path -LiteralPath $httpAudit)) { throw 'Browser request audit is missing.' }
   New-Item -ItemType File -Force -Path $browserStop | Out-Null
   if ($browserAuditor) { $browserAuditor.WaitForExit(10000) | Out-Null }
+  if ($browserAuditor -and $browserAuditor.ExitCode -ne 0) { throw "CDP browser auditor exited with code $($browserAuditor.ExitCode)." }
   if (-not (Test-Path -LiteralPath $browserAudit)) { throw 'CDP browser request audit is missing.' }
   $browserRecords = @(Get-Content -LiteralPath $browserAudit | ForEach-Object { $_ | ConvertFrom-Json })
   foreach ($record in $browserRecords) {
