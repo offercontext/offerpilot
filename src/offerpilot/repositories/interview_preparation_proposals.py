@@ -825,6 +825,14 @@ def _set_source_status(session: Session, row: InterviewPreparationProposal) -> N
     setattr(row, "source_states", states)
 
 
+def source_is_current_for_mock_interview(
+    session: Session, row: InterviewPreparationProposal
+) -> bool:
+    """Return the same source decision used by the preparation history API."""
+    _set_source_status(session, row)
+    return getattr(row, "source_status", "source_changed") != "source_changed"
+
+
 def _lease_until() -> datetime:
     return _db_now() + timedelta(seconds=LEASE_SECONDS)
 

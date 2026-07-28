@@ -20,6 +20,9 @@ from offerpilot.models import (
     InterviewPreparationProposal,
 )
 from offerpilot.repositories.json_contract import canonical_json, sha256_text
+from offerpilot.repositories.interview_preparation_proposals import (
+    source_is_current_for_mock_interview,
+)
 
 
 class MockInterviewIdempotencyConflict(ValueError):
@@ -801,6 +804,8 @@ def _selected_preparation_snapshot(
 def _preparation_sources_current(
     session: Session, proposal: InterviewPreparationProposal
 ) -> bool:
+    if not source_is_current_for_mock_interview(session, proposal):
+        return False
     try:
         snapshot = json.loads(proposal.input_snapshot_json)
         event_snapshot = snapshot["event"]
