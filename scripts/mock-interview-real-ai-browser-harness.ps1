@@ -211,11 +211,11 @@ try {
   }
   $createIndex = Find-FlowRequestIndex $flowRecords 0 'POST' $flowBase ''
   if ($createIndex -lt 0) { throw 'CDP audit missed browser Attempt creation.' }
-  $attemptPathMatch = [regex]::Match(([Uri]$flowRecords[$createIndex].url).AbsolutePath, "^$([regex]::Escape($flowBase))/([0-9]+)$")
-  if (-not $attemptPathMatch.Success) { throw 'Browser Attempt creation path did not contain a numeric attempt id.' }
-  $attemptId = $attemptPathMatch.Groups[1].Value
-  $answerIndex = Find-FlowRequestIndex $flowRecords ($createIndex + 1) 'POST' "$flowBase/$attemptId/turns" ''
+  $answerIndex = Find-FlowRequestIndex $flowRecords ($createIndex + 1) 'POST' '' "^$([regex]::Escape($flowBase))/([0-9]+)/turns$"
   if ($answerIndex -lt 0) { throw 'CDP audit missed browser answer submission.' }
+  $answerPathMatch = [regex]::Match(([Uri]$flowRecords[$answerIndex].url).AbsolutePath, "^$([regex]::Escape($flowBase))/([0-9]+)/turns$")
+  if (-not $answerPathMatch.Success) { throw 'Browser answer path did not contain a numeric attempt id.' }
+  $attemptId = $answerPathMatch.Groups[1].Value
   $questionIndex = Find-FlowRequestIndex $flowRecords ($answerIndex + 1) 'POST' '' "^$([regex]::Escape($flowBase))/$attemptId/turns/[0-9]+/question$"
   if ($questionIndex -lt 0) { throw 'CDP audit missed browser next-question request.' }
   $finishIndex = Find-FlowRequestIndex $flowRecords ($questionIndex + 1) 'POST' "$flowBase/$attemptId/finish" ''

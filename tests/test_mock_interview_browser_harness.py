@@ -66,6 +66,7 @@ def test_browser_harness_binds_cdp_to_local_target_and_ready_handshake():
     assert "Find-FlowRequestIndex" in script
     assert "review-drafts" in script
     assert "turns/[0-9]+/question" in script
+    assert "answerPathMatch" in script
     assert "target_id" in script
     assert "session_id" in script
 

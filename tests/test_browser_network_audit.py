@@ -86,11 +86,20 @@ class _FakeCdp:
                         "params": {"request": {"method": "GET", "url": self.expected_url}},
                     }))
                     if self.emit_unowned_request:
-                        await websocket.send(json.dumps({
-                            "method": "Network.requestWillBeSent",
-                            "sessionId": "unowned-session",
-                            "params": {"request": {"method": "POST", "url": self.expected_url + "api/other-tab"}},
-                        }))
+                        unowned_flow = (
+                            ("POST", "/api/applications/1/events/2/mock-interview/attempts"),
+                            ("POST", "/api/applications/1/events/2/mock-interview/attempts/99/turns"),
+                            ("POST", "/api/applications/1/events/2/mock-interview/attempts/99/turns/2/question"),
+                            ("POST", "/api/applications/1/events/2/mock-interview/attempts/99/finish"),
+                            ("POST", "/api/applications/1/events/2/mock-interview/attempts/99/review-drafts"),
+                            ("GET", "/api/applications/1/events/2/mock-interview/attempts"),
+                        )
+                        for unowned_method, unowned_path in unowned_flow:
+                            await websocket.send(json.dumps({
+                                "method": "Network.requestWillBeSent",
+                                "sessionId": "unowned-session",
+                                "params": {"request": {"method": unowned_method, "url": self.expected_url.rstrip("/") + unowned_path}},
+                            }))
                     if self.drop_after_navigation:
                         await asyncio.sleep(0.1)
                         await websocket.close()
@@ -202,6 +211,6 @@ def test_browser_network_audit_ignores_requests_from_another_target(tmp_path):
         assert records[0]["target_id"] == "main-target"
         assert records[0]["session_id"] == "main-session"
         assert records[0]["method"] == "GET"
-        assert all("other-tab" not in record["url"] for record in records)
+        assert all("mock-interview" not in record["url"] for record in records)
     finally:
         fake.close()
