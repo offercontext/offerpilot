@@ -74,12 +74,27 @@ function Get-Sha256([string]$Path) {
     (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
 }
 
+function Get-JunitSummary([string]$Path) {
+    [xml]$report = Get-Content -LiteralPath $Path -Raw -Encoding utf8
+    $suite = @($report.testsuites.testsuite) | Select-Object -First 1
+    if ($null -eq $suite) { throw "JUnit report has no testsuite: $Path" }
+    [pscustomobject]@{
+        tests = [int]$suite.tests
+        failures = [int]$suite.failures
+        errors = [int]$suite.errors
+        skipped = [int]$suite.skipped
+    }
+}
+
 function Invoke-Group([string]$Name, [string[]]$Files) {
     if ($Files.Count -eq 0) { throw "pytest group $Name has no files" }
     $collectPath = Join-Path $ResultDir "$Name.collect.txt"
     $junitPath = Join-Path $ResultDir "$Name.junit.xml"
     $runPath = Join-Path $ResultDir "$Name.run.txt"
     $markerPath = Join-Path $ResultDir "$Name.complete.json"
+    if (Test-Path -LiteralPath $markerPath) {
+        Remove-Item -LiteralPath $markerPath -Force
+    }
     $collectOutput = @(& uv run pytest --collect-only -q --disable-warnings @Files 2>&1 | Tee-Object -FilePath $collectPath)
     $collectExit = $LASTEXITCODE
     if ($collectExit -ne 0) { throw "$Name collection failed with exit code $collectExit" }
@@ -97,22 +112,23 @@ function Invoke-Group([string]$Name, [string[]]$Files) {
             throw "$Name has an unexpected skip: $($skip.NodeId) [$($skip.Reason)]"
         }
     }
-    [xml]$junit = Get-Content -LiteralPath $junitPath -Raw -Encoding utf8
-    $suite = @($junit.testsuites.testsuite) | Select-Object -First 1
+    $summary = Get-JunitSummary $junitPath
+    if ($runExit -ne 0) { throw "$Name pytest failed with exit code $runExit" }
     $marker = [ordered]@{
+        marker_version = 1
+        status = 'completed'
         group = $Name
-        exit_code = [int]$runExit
+        exit_code = 0
         collected_count = [int]$nodes.Count
-        tests = [int]$suite.tests
-        failures = [int]$suite.failures
-        errors = [int]$suite.errors
-        skipped = [int]$suite.skipped
+        test_count = $summary.tests
+        failures = $summary.failures
+        errors = $summary.errors
+        skipped = $summary.skipped
         collect_sha256 = Get-Sha256 $collectPath
         junit_sha256 = Get-Sha256 $junitPath
     }
     $marker | ConvertTo-Json | Set-Content -LiteralPath $markerPath -Encoding utf8
-    if ($runExit -ne 0) { throw "$Name pytest failed with exit code $runExit" }
-    Write-Host "$Name completed: $($nodes.Count) collected, $($suite.tests) executed, $($suite.skipped) allowed skips"
+    Write-Host "$Name completed: $($nodes.Count) collected, $($summary.tests) tests, $($summary.skipped) allowed skips"
 }
 
 function Invoke-Aggregate {
@@ -126,11 +142,16 @@ function Invoke-Aggregate {
         $collectPath = Join-Path $ResultDir "$name.collect.txt"
         $junitPath = Join-Path $ResultDir "$name.junit.xml"
         $markerPath = Join-Path $ResultDir "$name.complete.json"
-        foreach ($path in @($collectPath, $junitPath, $markerPath)) {
+        foreach ($path in @($collectPath, $junitPath)) {
             if (-not (Test-Path -LiteralPath $path)) { throw "$name result is missing: $path" }
         }
+        if (-not (Test-Path -LiteralPath $markerPath)) {
+            throw "$name completion marker is missing: $markerPath"
+        }
         $marker = Get-Content -LiteralPath $markerPath -Raw -Encoding utf8 | ConvertFrom-Json
-        if ($marker.group -ne $name -or [int]$marker.exit_code -ne 0) { throw "$name completion marker is not successful" }
+        if ($marker.marker_version -ne 1 -or $marker.status -ne 'completed' -or $marker.group -ne $name -or [int]$marker.exit_code -ne 0) {
+            throw "$name completion marker is not successful"
+        }
         if ($marker.collect_sha256 -ne (Get-Sha256 $collectPath) -or $marker.junit_sha256 -ne (Get-Sha256 $junitPath)) {
             throw "$name completion marker does not match persisted results"
         }
@@ -138,6 +159,11 @@ function Invoke-Aggregate {
         $duplicates = @($nodes | Group-Object | Where-Object Count -gt 1)
         if ($duplicates.Count -gt 0) { throw "$name aggregate input contains duplicate node ids" }
         if ([int]$marker.collected_count -ne $nodes.Count) { throw "$name collected count mismatches marker" }
+        $summary = Get-JunitSummary $junitPath
+        if ([int]$marker.test_count -ne $summary.tests) { throw "$name test count mismatches marker" }
+        if ([int]$marker.failures -ne $summary.failures) { throw "$name failure count mismatches marker" }
+        if ([int]$marker.errors -ne $summary.errors) { throw "$name error count mismatches marker" }
+        if ([int]$marker.skipped -ne $summary.skipped) { throw "$name skip count mismatches marker" }
         foreach ($node in $nodes) { $all.Add($node) }
     }
     $duplicates = @($all | Group-Object | Where-Object Count -gt 1)
