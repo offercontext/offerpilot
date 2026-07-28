@@ -58,6 +58,11 @@ def test_browser_harness_binds_cdp_to_local_target_and_ready_handshake():
     assert "--expected-url" in auditor
     assert "--ready-file" in auditor
     assert "ExitCode" in script
+    assert "/json/version" in auditor
+    assert "Target.createTarget" in auditor
+    assert "Target.setAutoAttach" in auditor
+    assert "Target.setDiscoverTargets" in auditor
+    assert "Page.navigate" in auditor
 
 
 def test_mock_interview_smoke_rejects_untraceable_turn_evidence():

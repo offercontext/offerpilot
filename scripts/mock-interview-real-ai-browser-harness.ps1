@@ -112,6 +112,7 @@ try {
   }
   if (-not (Test-Path -LiteralPath $browserReady)) { throw 'CDP browser auditor did not complete its Network ready handshake.' }
 
+  Write-Host "The browser-level CDP auditor created and navigated the dedicated target to $baseUrl. Continue in that target; do not open a second tab."
   $resume = Invoke-RestMethod -Method Post -Uri "$baseUrl/api/resumes" -ContentType 'application/json' -Body (@{
     title = 'Mock Interview Browser Smoke Resume'
     text = 'Built Python services and explained rollback tradeoffs.'
@@ -146,11 +147,11 @@ try {
     $env:MOCK_INTERVIEW_HARNESS_BASELINE = ($baseline -join '')
   } finally { Pop-Location }
 
-  Write-Host "Open $baseUrl in the in-app browser. Navigate to 面试, choose Mock Interview Browser Smoke · Verification Engineer, then click 开始文本模拟面试."
+  Write-Host "Use the dedicated browser target already navigated to $baseUrl. Navigate to 面试, choose Mock Interview Browser Smoke · Verification Engineer, then click 开始文本模拟面试."
   Write-Host 'Select the synthetic resume, paste a non-empty JD, start the text session, submit an answer, finish, select feedback if present, and use the second confirmation to save the independent review draft.'
   Write-Host 'Close and reopen the event to view read-only history. Browser requests must stay on local static resources and /api; Provider egress is server-side only.'
   Write-Host "Configured Provider endpoint tuple: $($providerEndpoint.Scheme)://$($providerEndpoint.Host):$($providerEndpoint.Port)"
-  Write-Host "Open $baseUrl in the in-app browser and complete the real text mock-interview flow for the synthetic event."
+  Write-Host 'Complete the real text mock-interview flow in the dedicated target; opening another tab is not audited.'
   Write-Host 'The harness only observes the browser result; it does not submit the mock-interview API on your behalf.'
   $history = $null
   for ($attempt = 0; $attempt -lt 180; $attempt++) {
