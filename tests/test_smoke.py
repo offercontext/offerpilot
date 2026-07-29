@@ -85,6 +85,22 @@ class _MockInterviewAcceptanceModel:
         }, ensure_ascii=False))
 
 
+class _RecordingHttpClient:
+    def __init__(self, client):
+        self.client = client
+        self.posts: list[tuple[str, dict[str, object]]] = []
+
+    def post(self, path: str, json: dict[str, object]):
+        self.posts.append((path, json.copy()))
+        return self.client.post(path, json=json)
+
+    def get(self, path: str):
+        return self.client.get(path)
+
+    def delete(self, path: str):
+        return self.client.delete(path)
+
+
 def _static_dir(tmp_path: Path) -> Path:
     static_dir = tmp_path / "dist"
     static_dir.mkdir()
@@ -119,6 +135,21 @@ def test_cli_smoke_prints_checked_steps(monkeypatch, tmp_path):
     assert "confirm_action" in result.output
 
 
+def test_cli_mock_interview_verify_has_isolated_real_ai_entry(monkeypatch, tmp_path):
+    monkeypatch.setenv("OFFERPILOT_DATA", str(tmp_path / "data"))
+    monkeypatch.setattr(
+        "offerpilot.cli.run_mock_interview_real_ai_smoke",
+        lambda data_dir, static_dir=None: SmokeReport(
+            ok=True, steps=[SmokeStep("http_mock_interview", "complete")]
+        ),
+    )
+    result = CliRunner().invoke(app, ["verify-mock-interview"])
+
+    assert result.exit_code == 0
+    assert "http_mock_interview" in result.output
+    assert "Verify mock-interview real-ai passed" in result.output
+
+
 def test_http_smoke_uses_real_http_and_cleans_test_application(tmp_path):
     report = run_http_smoke(data_dir=tmp_path / "data", static_dir=_static_dir(tmp_path), real_ai=False)
 
@@ -151,16 +182,49 @@ def test_real_ai_mock_interview_smoke_restarts_unverifiable_attempts_and_confirm
             json={"company_name": "Smoke", "position_name": "Engineer", "status": "interview"},
         ).json()
         steps: list[SmokeStep] = []
+        recording_client = _RecordingHttpClient(client)
 
         _run_real_ai_mock_interview_smoke(
-            client, steps, application["id"], [], data_dir
+            recording_client, steps, application["id"], [], data_dir
         )
+
+        resume_posts = [path for path, _ in recording_client.posts if path == "/api/resumes"]
+        event_posts = [path for path, _ in recording_client.posts if path == "/api/application-events"]
+        start_posts = [
+            payload
+            for path, payload in recording_client.posts
+            if path.endswith("/mock-interview/attempts")
+        ]
+        assert resume_posts == ["/api/resumes"]
+        assert event_posts == ["/api/application-events"]
+        assert len(start_posts) == 3
+        assert len({payload["resume_id"] for payload in start_posts}) == 1
+        assert len({payload["jd_text"] for payload in start_posts}) == 1
+        assert len({payload["attempt_idempotency_key"] for payload in start_posts}) == 3
+        assert len({payload["initial_question_idempotency_key"] for payload in start_posts}) == 3
+        round_keys = [
+            value
+            for _, payload in recording_client.posts
+            for key, value in payload.items()
+            if key.endswith("idempotency_key")
+        ]
+        assert len(round_keys) == len(set(round_keys))
+        event_ids = {
+            path.split("/")[5]
+            for path, _ in recording_client.posts
+            if "/mock-interview/attempts" in path
+        }
+        assert len(event_ids) == 1
 
     with session_factory_for_data_dir(data_dir)() as session:
         assert session.scalar(select(func.count()).select_from(MockInterviewAttempt)) == 1
         assert session.scalar(select(func.count()).select_from(MockInterviewTurn)) == 2
         assert session.scalar(select(func.count()).select_from(MockInterviewFeedbackProposal)) == 1
         assert session.scalar(select(func.count()).select_from(MockInterviewReviewDraft)) == 1
+        attempt = session.scalar(select(MockInterviewAttempt))
+        assert attempt is not None
+        assert str(attempt.event_id) in event_ids
+        assert attempt.resume_id == start_posts[0]["resume_id"]
     assert "unverifiable" in steps[-1].detail
     assert "success" in steps[-1].detail
     assert model.feedback_calls == 5

@@ -30,7 +30,7 @@ from offerpilot.repositories.offers import OfferCreate, OffersRepository
 from offerpilot.repositories.questions import QuestionsRepository
 from offerpilot.repositories.resumes import ResumeCreate, ResumesRepository
 from offerpilot.repositories.wakeups import WakeupCreate, WakeupsRepository
-from offerpilot.smoke import run_core_smoke, run_http_smoke
+from offerpilot.smoke import run_core_smoke, run_http_smoke, run_mock_interview_real_ai_smoke
 from offerpilot.skills import SkillRegistryError, register_skill, skills_payload, update_skill
 
 app = typer.Typer(help="OfferPilot - your local job search workbench")
@@ -230,6 +230,19 @@ def verify(
     for step in report.steps:
         typer.echo(f"ok {step.name}: {step.detail}")
     typer.echo(f"Verify {profile} passed")
+
+
+@app.command("verify-mock-interview")
+def verify_mock_interview(
+    profile: str = typer.Option("real-ai", "--profile", help="real-ai only"),
+    static_dir: Optional[Path] = typer.Option(None, "--static-dir", help="built frontend dist directory"),
+) -> None:
+    if profile != "real-ai":
+        raise typer.BadParameter("--profile must be real-ai for Mock Interview verification")
+    report = run_mock_interview_real_ai_smoke(resolve_data_dir(), static_dir=static_dir)
+    for step in report.steps:
+        typer.echo(f"ok {step.name}: {step.detail}")
+    typer.echo("Verify mock-interview real-ai passed")
 
 
 @knowledge_app.command("reset")

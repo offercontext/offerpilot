@@ -1191,35 +1191,35 @@ def _run_real_ai_mock_interview_smoke(
 ) -> None:
     """Exercise bounded user restarts and one complete two-turn interview flow."""
     outcomes: list[str] = []
-    for index in range(3):
-        resume = client.post(
-            "/api/resumes",
-            json={
-                "title": f"Mock Interview Smoke Resume {index + 1}",
-                "text": "Built a Python service and explained the rollback plan.",
-                "content_json": {"raw_text": "Built a Python service and explained the rollback plan."},
-            },
-        )
-        _assert_status(resume.status_code, 201, f"http_mock_interview_resume_{index}")
-        resume_id = int(resume.json()["id"])
-        resume_ids.append(resume_id)
-        event = client.post(
-            "/api/application-events",
-            json={
-                "application_id": application_id,
-                "event_type": "interview",
-                "subtype": "mock-interview",
-                "scheduled_at": "2026-07-28T10:00:00Z",
-                "duration_minutes": 30,
-            },
-        )
-        _assert_status(event.status_code, 201, f"http_mock_interview_event_{index}")
-        event_id = int(event.json()["id"])
-        baseline = _capture_real_ai_browser_domain_baseline(
-            data_dir, application_id, [event_id], [resume_id]
-        )
-        base = f"/api/applications/{application_id}/events/{event_id}/mock-interview/attempts"
+    resume = client.post(
+        "/api/resumes",
+        json={
+            "title": "Mock Interview Smoke Resume",
+            "text": "Built a Python service and explained the rollback plan.",
+            "content_json": {"raw_text": "Built a Python service and explained the rollback plan."},
+        },
+    )
+    _assert_status(resume.status_code, 201, "http_mock_interview_resume")
+    resume_id = int(resume.json()["id"])
+    resume_ids.append(resume_id)
+    event = client.post(
+        "/api/application-events",
+        json={
+            "application_id": application_id,
+            "event_type": "interview",
+            "subtype": "mock-interview",
+            "scheduled_at": "2026-07-28T10:00:00Z",
+            "duration_minutes": 30,
+        },
+    )
+    _assert_status(event.status_code, 201, "http_mock_interview_event")
+    event_id = int(event.json()["id"])
+    baseline = _capture_real_ai_browser_domain_baseline(
+        data_dir, application_id, [event_id], [resume_id]
+    )
+    base = f"/api/applications/{application_id}/events/{event_id}/mock-interview/attempts"
 
+    for index in range(3):
         def handle_unverifiable(response: Any, stage: str) -> bool:
             if response.status_code != 502 or response.json().get("error_code") != "mock_interview_unverifiable":
                 return False
@@ -1327,6 +1327,12 @@ def _run_real_ai_mock_interview_smoke(
             if isinstance(item, dict)
         ):
             raise RuntimeError("mock interview feedback history was empty")
+        _assert_mock_interview_attempt_context(
+            data_dir, attempt_id, application_id, event_id, resume_id
+        )
+        _assert_real_ai_browser_no_cross_domain_writes(
+            data_dir, application_id, baseline, [event_id], [resume_id]
+        )
         outcomes.append(f"attempt_{index + 1}:success")
         break
     if not outcomes or not outcomes[-1].endswith(":success"):
@@ -1343,6 +1349,47 @@ def _run_real_ai_mock_interview_smoke(
     )
 
 
+def run_mock_interview_real_ai_smoke(
+    source_data_dir: Path,
+    static_dir: Path | None = None,
+) -> SmokeReport:
+    """Run only the Mock Interview real-AI smoke in an isolated data directory."""
+    steps: list[SmokeStep] = []
+    with tempfile.TemporaryDirectory(prefix="offerpilot-mock-interview-real-ai-") as temp_dir:
+        isolated_data_dir = Path(temp_dir)
+        _copy_real_ai_config(source_data_dir, isolated_data_dir)
+        app = create_app(data_dir=isolated_data_dir, static_dir=static_dir)
+        application_id: int | None = None
+        resume_ids: list[int] = []
+        try:
+            with _running_server(app) as base_url:
+                with httpx.Client(base_url=base_url, timeout=90.0) as client:
+                    settings = client.get("/api/settings")
+                    _assert_status(settings.status_code, 200, "mock_interview_real_ai_settings")
+                    if not bool(settings.json().get("has_api_key")):
+                        raise RuntimeError("mock-interview real-ai smoke requires a configured API key")
+                    created = client.post(
+                        "/api/applications",
+                        json={
+                            "company_name": "Mock Interview Real AI Smoke",
+                            "position_name": "Verification Engineer",
+                            "status": "interview",
+                            "source": "smoke",
+                        },
+                    )
+                    _assert_status(created.status_code, 201, "mock_interview_real_ai_application")
+                    application_id = int(created.json()["id"])
+                    _run_real_ai_mock_interview_smoke(
+                        client, steps, application_id, resume_ids, isolated_data_dir
+                    )
+        finally:
+            _dispose_smoke_app_database(app)
+            if application_id is not None:
+                _cleanup_real_ai_smoke_records(isolated_data_dir, application_id, resume_ids)
+            _assert_real_ai_smoke_data_clean(isolated_data_dir)
+        return SmokeReport(ok=True, steps=steps)
+
+
 def _mock_interview_attempt_ids(data_dir: Path, application_id: int, event_id: int) -> list[int]:
     session_factory = session_factory_for_data_dir(data_dir)
     try:
@@ -1353,6 +1400,29 @@ def _mock_interview_attempt_ids(data_dir: Path, application_id: int, event_id: i
                     MockInterviewAttempt.event_id == event_id,
                 )
             ).all())
+    finally:
+        bind = session_factory.kw.get("bind")
+        if bind is not None:
+            bind.dispose()
+
+
+def _assert_mock_interview_attempt_context(
+    data_dir: Path,
+    attempt_id: int,
+    application_id: int,
+    event_id: int,
+    resume_id: int,
+) -> None:
+    session_factory = session_factory_for_data_dir(data_dir)
+    try:
+        with session_factory() as session:
+            attempt = session.get(MockInterviewAttempt, attempt_id)
+            if attempt is None or (
+                attempt.application_id != application_id
+                or attempt.event_id != event_id
+                or attempt.resume_id != resume_id
+            ):
+                raise RuntimeError("mock interview history changed its source context")
     finally:
         bind = session_factory.kw.get("bind")
         if bind is not None:
@@ -1394,6 +1464,14 @@ def _assert_mock_interview_failed_attempt_clean(
     session_factory = session_factory_for_data_dir(data_dir)
     try:
         with session_factory() as session:
+            attempt_count = session.scalar(
+                select(func.count()).select_from(MockInterviewAttempt).where(
+                    MockInterviewAttempt.application_id == application_id,
+                    MockInterviewAttempt.event_id == event_id,
+                )
+            )
+            if attempt_count:
+                raise RuntimeError("mock interview failed attempt was not deleted")
             for model in (MockInterviewTurn, MockInterviewFeedbackProposal, MockInterviewReviewDraft):
                 count = session.scalar(
                     select(func.count()).select_from(model).where(model.attempt_id == attempt_id)
