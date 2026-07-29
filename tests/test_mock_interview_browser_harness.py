@@ -77,10 +77,25 @@ def test_mock_interview_smoke_rejects_untraceable_turn_evidence():
         "proposal_status": "normal",
         "strengths": [{
             "id": "s1", "text": "亮点",
-            "evidence_refs": [{"source": "turn", "path": "/turns/1/answer", "excerpt": "伪造"}],
+            "evidence_refs": [{"source": "turn", "path": "/turns/001/answer", "excerpt": "伪造"}],
         }],
     }
     with pytest.raises(MockInterviewContractError, match="excerpt_mismatch"):
+        validate_feedback(proposal, {"jd": {"text": "JD"}, "resume": {"content_json": {}}}, [
+            {"turn_no": 1, "answer": "真实回答"},
+        ])
+
+
+def test_mock_interview_smoke_rejects_noncanonical_turn_evidence_path():
+    proposal = {
+        **SAFE_EMPTY_FEEDBACK,
+        "proposal_status": "normal",
+        "strengths": [{
+            "id": "s1", "text": "亮点",
+            "evidence_refs": [{"source": "turn", "path": "/turns/1/answer", "excerpt": "真实回答"}],
+        }],
+    }
+    with pytest.raises(MockInterviewContractError, match="unknown_evidence_ref"):
         validate_feedback(proposal, {"jd": {"text": "JD"}, "resume": {"content_json": {}}}, [
             {"turn_no": 1, "answer": "真实回答"},
         ])
