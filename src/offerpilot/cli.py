@@ -234,15 +234,23 @@ def verify(
 
 @app.command("verify-mock-interview")
 def verify_mock_interview(
-    profile: str = typer.Option("real-ai", "--profile", help="real-ai only"),
-    static_dir: Optional[Path] = typer.Option(None, "--static-dir", help="built frontend dist directory"),
+    profile: str = typer.Option(
+        "real-ai",
+        "--profile",
+        help="隔离 Mock API 验收，仅支持 real-ai；不替代完整 verify 或浏览器/CDP 发布证据",
+    ),
+    static_dir: Optional[Path] = typer.Option(
+        None,
+        "--static-dir",
+        help="built frontend dist directory（隔离 Mock API 验收使用）",
+    ),
 ) -> None:
     if profile != "real-ai":
         raise typer.BadParameter("--profile must be real-ai for Mock Interview verification")
     report = run_mock_interview_real_ai_smoke(resolve_data_dir(), static_dir=static_dir)
     for step in report.steps:
         typer.echo(f"ok {step.name}: {step.detail}")
-    typer.echo("Verify mock-interview real-ai passed")
+    typer.echo("隔离 Mock API 验收通过（不替代完整 verify 或浏览器/CDP 发布证据）")
 
 
 @knowledge_app.command("reset")

@@ -144,10 +144,15 @@ def test_cli_mock_interview_verify_has_isolated_real_ai_entry(monkeypatch, tmp_p
         ),
     )
     result = CliRunner().invoke(app, ["verify-mock-interview"])
+    help_result = CliRunner().invoke(app, ["verify-mock-interview", "--help"])
 
     assert result.exit_code == 0
     assert "http_mock_interview" in result.output
-    assert "Verify mock-interview real-ai passed" in result.output
+    assert "隔离 Mock API 验收通过" in result.output
+    assert "不替代完整 verify 或浏览器/CDP 发布证据" in result.output
+    assert "隔离 Mock API 验收" in help_result.output
+    assert "不替代完整" in help_result.output
+    assert "浏览器/CDP" in help_result.output
 
 
 def test_http_smoke_uses_real_http_and_cleans_test_application(tmp_path):
