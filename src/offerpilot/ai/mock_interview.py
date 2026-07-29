@@ -195,18 +195,17 @@ def _validate_reference(ref: Any, snapshot: dict[str, Any], turns: list[dict[str
         raise MockInterviewContractError("evidence_ref_field_type")
     if not excerpt.strip():
         raise MockInterviewContractError("blank_value")
-    if source == "jd" and path == "/jd/text":
-        value = snapshot.get("jd", {}).get("text")
-    elif source == "resume" and path.startswith("/resume/content_json/"):
-        value = _resolve_resume_pointer(snapshot, path)
-    elif source == "turn" and path.startswith("/turns/") and path.endswith("/answer"):
-        try:
-            turn_no = int(path.split("/")[2])
-        except (IndexError, ValueError) as exc:
-            raise MockInterviewContractError("unknown_evidence_ref") from exc
-        value = next((turn.get("answer") for turn in turns if turn.get("turn_no") == turn_no), None)
-    else:
+    catalog_entry = next(
+        (
+            entry
+            for entry in build_mock_interview_evidence_catalog(snapshot, turns)
+            if entry["source"] == source and entry["path"] == path
+        ),
+        None,
+    )
+    if catalog_entry is None:
         raise MockInterviewContractError("unknown_evidence_ref")
+    value = catalog_entry["value"]
     if not isinstance(value, str) or excerpt not in value:
         raise MockInterviewContractError("excerpt_mismatch")
 
@@ -229,6 +228,70 @@ def _resolve_resume_pointer(snapshot: dict[str, Any], path: str) -> str:
     if not isinstance(value, str):
         raise MockInterviewContractError("unknown_evidence_ref")
     return value
+
+
+def _escape_json_pointer_token(value: str) -> str:
+    return value.replace("~", "~0").replace("/", "~1")
+
+
+def _append_resume_string_leaves(
+    value: Any, path: str, catalog: list[dict[str, str]]
+) -> None:
+    if isinstance(value, dict):
+        for key in sorted(value):
+            if isinstance(key, str):
+                _append_resume_string_leaves(
+                    value[key], f"{path}/{_escape_json_pointer_token(key)}", catalog
+                )
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _append_resume_string_leaves(item, f"{path}/{index}", catalog)
+        return
+    if isinstance(value, str) and value:
+        catalog.append({"source": "resume", "path": path, "value": value})
+
+
+def build_mock_interview_evidence_catalog(
+    snapshot: dict[str, Any], turns: list[dict[str, Any]]
+) -> list[dict[str, str]]:
+    """Build the stable, provider-facing catalog for the frozen interview input."""
+    catalog: list[dict[str, str]] = []
+    jd = snapshot.get("jd")
+    jd_text = jd.get("text") if isinstance(jd, dict) else None
+    if isinstance(jd_text, str) and jd_text:
+        catalog.append({"source": "jd", "path": "/jd/text", "value": jd_text})
+
+    resume = snapshot.get("resume")
+    resume_content = resume.get("content_json") if isinstance(resume, dict) else None
+    _append_resume_string_leaves(resume_content, "/resume/content_json", catalog)
+
+    completed_turns: list[tuple[int, str]] = []
+    for turn in turns:
+        if not isinstance(turn, dict):
+            continue
+        answer = turn.get("answer")
+        turn_no = turn.get("turn_no")
+        if not isinstance(answer, str) or not answer.strip():
+            continue
+        if isinstance(turn_no, bool) or not isinstance(turn_no, (int, str)):
+            continue
+        try:
+            normalized_turn_no = int(turn_no)
+        except ValueError:
+            continue
+        if normalized_turn_no < 1:
+            continue
+        completed_turns.append((normalized_turn_no, answer))
+    for turn_no, answer in sorted(completed_turns, key=lambda item: item[0]):
+        catalog.append(
+            {
+                "source": "turn",
+                "path": f"/turns/{turn_no:03d}/answer",
+                "value": answer,
+            }
+        )
+    return catalog
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -271,14 +334,29 @@ def build_mock_interview_diagnostic(
     provider_request_id: str,
     _sensitive_value: str = "",
 ) -> dict[str, Any]:
-    redacted_request_id = hashlib.sha256(provider_request_id.encode("utf-8")).hexdigest()[:12] if provider_request_id else ""
+    redacted_request_id = _redact_provider_request_id(provider_request_id)
     return {
         "failure_category": failure_category,
         "repair_attempted": repair_attempted,
         "repair_count": repair_count,
         "elapsed_ms": elapsed_ms,
-        "provider_request_id": f"request-redacted-{redacted_request_id}" if redacted_request_id else "",
+        "provider_request_id": redacted_request_id,
     }
+
+
+def _redact_provider_request_id(provider_request_id: str) -> str:
+    if not provider_request_id:
+        return ""
+    digest = hashlib.sha256(provider_request_id.encode("utf-8")).hexdigest()[:12]
+    return f"request-redacted-{digest}"
+
+
+def _assistant_provider_request_id(assistant: Assistant) -> str:
+    blocks = getattr(assistant, "provider_blocks", None)
+    if not isinstance(blocks, dict):
+        return ""
+    value = blocks.get("request_id")
+    return value if isinstance(value, str) else ""
 
 
 class MockInterviewProviderError(RuntimeError):
@@ -317,10 +395,12 @@ def generate_feedback(
     repair_count = 0
     last_category = "invalid_json"
     failure_categories: list[str] = []
+    provider_request_id = ""
     for attempt in range(2):
         prompt = _feedback_prompt(snapshot, turns, last_category if attempt else "")
         try:
             assistant = _complete_feedback(model, prompt)
+            provider_request_id = _assistant_provider_request_id(assistant)
         except Exception as exc:
             diagnostic = getattr(exc, "diagnostic", None)
             safe_diagnostic = dict(diagnostic) if isinstance(diagnostic, dict) else {}
@@ -335,7 +415,7 @@ def generate_feedback(
             validated = validate_feedback(parsed, snapshot, turns)
             return validated, build_mock_interview_diagnostic(
                 "", repair_count > 0, repair_count,
-                int((perf_counter() - started) * 1000), ""
+                int((perf_counter() - started) * 1000), provider_request_id
             )
         except MockInterviewContractError as exc:
             last_category = exc.category
@@ -352,6 +432,7 @@ def generate_feedback(
             "repair_count": repair_count,
             "elapsed_ms": int((perf_counter() - started) * 1000),
             "failure_categories": failure_categories,
+            "provider_request_id": _redact_provider_request_id(provider_request_id),
         },
     )
 
@@ -363,6 +444,7 @@ def generate_question(
         raise MockInterviewProviderError("mock_interview_provider_error")
     last_category = "invalid_json"
     failure_categories: list[str] = []
+    provider_request_id = ""
     for attempt in range(2):
         repair_instruction = _format_repair_instruction(last_category) if attempt else ""
         messages = [
@@ -373,6 +455,9 @@ def generate_question(
                     "question 必须是非空字符串；evidence_refs 必须引用当前冻结 JD、简历或已回答轮次。"
                     "source/path/excerpt 必须使用允许的规范路径，excerpt 必须从对应输入逐字连续复制，不得改写、拼接或猜测。"
                     "不得评分、预测录用或添加额外字段。"
+                    "evidence_catalog is the only allowed evidence directory; source/path must exactly "
+                    "select one catalog entry, and excerpt must be a non-empty contiguous substring "
+                    "of that entry's value."
                     + repair_instruction
                 ),
             ),
@@ -381,6 +466,7 @@ def generate_question(
                 content=json.dumps(
                     {
                         "snapshot": snapshot,
+                        "evidence_catalog": build_mock_interview_evidence_catalog(snapshot, turns),
                         "turns": turns,
                         "repair_failure_category": last_category if attempt else None,
                     },
@@ -423,6 +509,7 @@ def generate_question(
                 assistant = cast(Assistant, model.complete(messages, [], response_format=schema))
             else:
                 assistant = cast(Assistant, model.complete(messages, []))
+            provider_request_id = _assistant_provider_request_id(assistant)
             parsed = parse_mock_interview_json(assistant.content)
             if set(parsed) != {"question", "evidence_refs"}:
                 raise MockInterviewContractError("unexpected_field")
@@ -454,6 +541,7 @@ def generate_question(
                     "repair_count": 1 if attempt > 0 else 0,
                     "elapsed_ms": 0,
                     "failure_categories": failure_categories,
+                    "provider_request_id": _redact_provider_request_id(provider_request_id),
                 },
             ) from exc
         except Exception as exc:
@@ -473,6 +561,7 @@ def generate_question(
             "repair_count": 1,
             "elapsed_ms": 0,
             "failure_categories": failure_categories,
+            "provider_request_id": _redact_provider_request_id(provider_request_id),
         },
     )
 
@@ -490,6 +579,9 @@ def _complete_feedback(model: Any, prompt: str) -> Assistant:
                 "source、path、excerpt 三个字符串字段。safe_empty 必须是四个空数组的固定结构。"
                 "不得评分、预测录用或编造证据。没有可靠建议时返回安全空结构。"
                 "完整 JSON Schema 如下：" + schema_text
+                + " evidence_catalog is the only allowed evidence directory; source/path must exactly "
+                "select one catalog entry, and excerpt must be a non-empty contiguous substring "
+                "of that entry's value."
             ),
         ),
         Message(role="user", content=prompt),
@@ -508,7 +600,11 @@ def _complete_feedback(model: Any, prompt: str) -> Assistant:
 
 
 def _feedback_prompt(snapshot: dict[str, Any], turns: list[dict[str, Any]], failure_category: str) -> str:
-    payload = {"snapshot": snapshot, "turns": turns}
+    payload = {
+        "snapshot": snapshot,
+        "evidence_catalog": build_mock_interview_evidence_catalog(snapshot, turns),
+        "turns": turns,
+    }
     if failure_category:
         payload["repair_failure_category"] = failure_category
         payload["repair_instruction"] = _format_repair_instruction(failure_category)

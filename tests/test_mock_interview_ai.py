@@ -7,6 +7,7 @@ from offerpilot.ai.mock_interview import (
     SAFE_EMPTY_FEEDBACK,
     MockInterviewContractError,
     MockInterviewUnverifiableError,
+    build_mock_interview_evidence_catalog,
     generate_feedback,
     generate_question,
     parse_mock_interview_json,
@@ -53,6 +54,19 @@ class _SchemaCaptureModel:
         self.calls += 1
         self.response_formats.append(kwargs.get("response_format"))
         return Assistant(content=next(self.outputs))
+
+
+class _ProviderBlockModel:
+    supports_json_schema = False
+
+    def __init__(self, content, request_id):
+        self.content = content
+        self.request_id = request_id
+        self.messages = []
+
+    def complete(self, messages, tools, **kwargs):
+        self.messages.append(messages)
+        return Assistant(content=self.content, provider_blocks={"request_id": self.request_id})
 
 
 def _valid_question():
@@ -193,6 +207,77 @@ def test_evidence_reference_shape_failures_have_stable_categories(reference, cat
 
     assert error.value.category == category
     assert model.calls == 2
+
+
+def test_evidence_catalog_uses_stable_escaped_paths_and_completed_turns_only():
+    snapshot = {
+        "jd": {"text": "需要 Python"},
+        "resume": {
+            "content_json": {
+                "z": "Z",
+                "a/b~c": "路径内容",
+                "empty": "",
+                "nested": ["第一项", {"answer": "第二项 🚀 e\u0301"}],
+            }
+        },
+    }
+    turns = [
+        {"turn_no": 2, "question": "Q2", "answer": "完成回答"},
+        {"turn_no": 3, "question": "Q3", "answer": "   "},
+    ]
+
+    catalog = build_mock_interview_evidence_catalog(snapshot, turns)
+
+    assert catalog == [
+        {"source": "jd", "path": "/jd/text", "value": "需要 Python"},
+        {"source": "resume", "path": "/resume/content_json/a~1b~0c", "value": "路径内容"},
+        {"source": "resume", "path": "/resume/content_json/nested/0", "value": "第一项"},
+        {"source": "resume", "path": "/resume/content_json/nested/1/answer", "value": "第二项 🚀 e\u0301"},
+        {"source": "resume", "path": "/resume/content_json/z", "value": "Z"},
+        {"source": "turn", "path": "/turns/002/answer", "value": "完成回答"},
+    ]
+
+
+def test_provider_payload_contains_catalog_without_internal_ids_or_unfinished_turn():
+    model = _QuestionRepairModel([_valid_question()])
+    snapshot = {
+        **_snapshot(),
+        "application": {"id": 42, "company_name": "secret"},
+    }
+    turns = [
+        {"turn_no": 1, "question": "Q1", "answer": "我做过 Python 服务"},
+        {"turn_no": 2, "question": "Q2", "answer": ""},
+    ]
+
+    generate_question(model, snapshot, turns)
+
+    payload = json.loads(model.messages[0][1].content)
+    assert payload["evidence_catalog"][-1] == {
+        "source": "turn", "path": "/turns/001/answer", "value": "我做过 Python 服务"
+    }
+    assert all("id" not in entry for entry in payload["evidence_catalog"])
+    assert "secret" not in json.dumps(payload["evidence_catalog"], ensure_ascii=False)
+    assert "Q2" not in json.dumps(payload["evidence_catalog"], ensure_ascii=False)
+
+
+def test_contract_failure_redacts_provider_request_id():
+    model = _ProviderBlockModel('{"unexpected":true}', "provider-request-123")
+
+    with pytest.raises(MockInterviewUnverifiableError) as error:
+        generate_question(model, _snapshot(), _turns())
+
+    assert error.value.diagnostic["provider_request_id"] == "request-redacted-488ab4c1c10b"
+    assert "provider-request-123" not in str(error.value.diagnostic)
+
+
+def test_feedback_contract_failure_redacts_provider_request_id():
+    model = _ProviderBlockModel('{"unexpected":true}', "provider-request-123")
+
+    with pytest.raises(MockInterviewUnverifiableError) as error:
+        generate_feedback(model, _snapshot(), _turns())
+
+    assert error.value.diagnostic["provider_request_id"] == "request-redacted-488ab4c1c10b"
+    assert "provider-request-123" not in str(error.value.diagnostic)
 
 
 def _feedback(**overrides):
