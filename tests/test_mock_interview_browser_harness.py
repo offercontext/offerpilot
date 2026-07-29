@@ -1,6 +1,7 @@
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 
 import pytest
 from sqlalchemy import select
@@ -16,7 +17,12 @@ from offerpilot.models import (
     MockInterviewTurn,
     Resume,
 )
-from offerpilot.smoke import _cleanup_real_ai_smoke_records, _assert_real_ai_smoke_data_clean
+from offerpilot.smoke import (
+    _assert_real_ai_smoke_data_clean,
+    _cleanup_real_ai_smoke_records,
+    _mock_interview_browser_failure_diagnostics,
+    _select_mock_interview_browser_success,
+)
 
 
 def test_mock_interview_smoke_requires_four_array_safe_empty_shape():
@@ -35,6 +41,80 @@ def test_browser_harness_requires_real_two_turn_draft_and_browser_network_eviden
     assert "review_draft" in script
     assert "sec_fetch_mode" in script
     assert "provider_proxy_connect" in script or "provider-egress-proxy.py" in script
+
+
+def test_browser_harness_allows_three_same_context_attempts_and_selects_success_by_id():
+    script = (Path(__file__).parents[1] / "scripts" / "mock-interview-real-ai-browser-harness.ps1").read_text(encoding="utf-8")
+    auditor = (Path(__file__).parents[1] / "scripts" / "browser-network-audit.py").read_text(encoding="utf-8")
+    assert "重新开始本次模拟面试" in script
+    assert "AI 输出未通过验证" in script
+    assert "$maxBrowserAttempts = 3" in script
+    assert "flowBase" in script
+    assert "createIndexes" in script
+    assert "successfulAttemptId" in script
+    assert "attempt_id" in script
+    assert "history.items | Where-Object" in script
+    assert "createRecords" in script
+    assert "jd_text_sha256" in script
+    assert "request_context" in auditor
+
+
+def test_browser_harness_fake_cdp_two_failures_then_success_selects_third_attempt():
+    flow_base = "/api/applications/7/events/8/mock-interview/attempts"
+    cdp_records = [
+        {"method": "POST", "url": f"http://127.0.0.1{flow_base}"},
+        {"method": "POST", "url": f"http://127.0.0.1{flow_base}/101/turns"},
+        {"method": "POST", "url": f"http://127.0.0.1{flow_base}"},
+        {"method": "POST", "url": f"http://127.0.0.1{flow_base}/102/turns"},
+        {"method": "POST", "url": f"http://127.0.0.1{flow_base}"},
+        {"method": "POST", "url": f"http://127.0.0.1{flow_base}/103/turns"},
+    ]
+    create_records = [record for record in cdp_records if record["url"].endswith(flow_base)]
+    answer_attempt_ids = [
+        int(re.search(r"/attempts/(\d+)/turns$", record["url"]).group(1))
+        for record in cdp_records
+        if re.search(r"/attempts/(\d+)/turns$", record["url"])
+    ]
+    assert len(create_records) == 3
+    assert answer_attempt_ids == [101, 102, 103]
+    history = [
+        {"attempt_id": 101, "turns": [], "proposal_status": "unverifiable", "review_draft": None},
+        {"attempt_id": 102, "turns": [{"turn_no": 1}], "proposal_status": "unverifiable", "review_draft": None},
+        {
+            "attempt_id": 103,
+            "turns": [{"turn_no": 1}, {"turn_no": 2}],
+            "proposal_status": "normal",
+            "review_draft": {"status": "confirmed"},
+        },
+    ]
+    assert _select_mock_interview_browser_success(history, [101, 102, 103])["attempt_id"] == 103
+    assert _mock_interview_browser_failure_diagnostics(history[:2], [101, 102]) == [
+        "attempt_101:unverifiable",
+        "attempt_102:unverifiable",
+    ]
+
+
+def test_browser_harness_fake_cdp_three_failures_has_no_success():
+    flow_base = "/api/applications/7/events/8/mock-interview/attempts"
+    cdp_records = [
+        {"method": "POST", "url": f"http://127.0.0.1{flow_base}"},
+        {"method": "POST", "url": f"http://127.0.0.1{flow_base}/201/turns"},
+        {"method": "POST", "url": f"http://127.0.0.1{flow_base}"},
+        {"method": "POST", "url": f"http://127.0.0.1{flow_base}/202/turns"},
+        {"method": "POST", "url": f"http://127.0.0.1{flow_base}"},
+        {"method": "POST", "url": f"http://127.0.0.1{flow_base}/203/turns"},
+    ]
+    assert sum(record["url"].endswith(flow_base) for record in cdp_records) == 3
+    history = [
+        {"attempt_id": attempt_id, "turns": [], "proposal_status": "unverifiable", "review_draft": None}
+        for attempt_id in (201, 202, 203)
+    ]
+    assert _select_mock_interview_browser_success(history, [201, 202, 203]) is None
+    assert _mock_interview_browser_failure_diagnostics(history, [201, 202, 203]) == [
+        "attempt_201:unverifiable",
+        "attempt_202:unverifiable",
+        "attempt_203:unverifiable",
+    ]
 
 
 def test_browser_harness_rejects_non_https_provider_before_starting_proxy():

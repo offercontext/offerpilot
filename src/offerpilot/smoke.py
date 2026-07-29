@@ -1406,6 +1406,55 @@ def _mock_interview_attempt_ids(data_dir: Path, application_id: int, event_id: i
             bind.dispose()
 
 
+def _select_mock_interview_browser_success(
+    history_items: list[dict[str, Any]], attempt_ids: list[int]
+) -> dict[str, Any] | None:
+    """Select a confirmed browser result by its Attempt ID, never by list order."""
+    allowed_ids = {int(attempt_id) for attempt_id in attempt_ids}
+    for item in history_items:
+        if not isinstance(item, dict):
+            continue
+        raw_attempt_id = item.get("attempt_id")
+        if raw_attempt_id is None:
+            continue
+        try:
+            attempt_id = int(raw_attempt_id)
+        except (TypeError, ValueError):
+            continue
+        draft = item.get("review_draft")
+        turns = item.get("turns")
+        if (
+            attempt_id in allowed_ids
+            and isinstance(turns, list)
+            and len(turns) >= 2
+            and item.get("proposal_status") == "normal"
+            and isinstance(draft, dict)
+            and draft.get("status") == "confirmed"
+        ):
+            return item
+    return None
+
+
+def _mock_interview_browser_failure_diagnostics(
+    history_items: list[dict[str, Any]], attempt_ids: list[int]
+) -> list[str]:
+    """Return only stable Attempt/status diagnostics for failed browser attempts."""
+    by_id = {
+        int(item["attempt_id"]): item
+        for item in history_items
+        if isinstance(item, dict)
+        and str(item.get("attempt_id", "")).isdigit()
+    }
+    diagnostics: list[str] = []
+    for attempt_id in attempt_ids:
+        item = by_id.get(int(attempt_id), {})
+        status = item.get("proposal_status")
+        if not isinstance(status, str) or not status:
+            status = "unverifiable"
+        diagnostics.append(f"attempt_{int(attempt_id)}:{status}")
+    return diagnostics
+
+
 def _assert_mock_interview_attempt_context(
     data_dir: Path,
     attempt_id: int,

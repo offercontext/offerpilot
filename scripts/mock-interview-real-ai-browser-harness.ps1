@@ -135,6 +135,8 @@ try {
     duration_minutes = 30
   } | ConvertTo-Json)
   $eventId = [int]$event.id
+  $flowBase = "/api/applications/$applicationId/events/$eventId/mock-interview/attempts"
+  $maxBrowserAttempts = 3
 
   Push-Location $repo
   try {
@@ -149,27 +151,79 @@ try {
 
   Write-Host "Use the dedicated browser target already navigated to $baseUrl. Navigate to 面试, choose Mock Interview Browser Smoke · Verification Engineer, then click 开始文本模拟面试."
   Write-Host 'Select the synthetic resume, paste a non-empty JD, start the text session, submit an answer, finish, select feedback if present, and use the second confirmation to save the independent review draft.'
+  # 操作提示包含“AI 输出未通过验证”和“重新开始本次模拟面试”。
+  Write-Host ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('QUkg6L6T5Ye65pyq6YCa6L+H6aqM6K+BIC0g54K55Ye7IOmHjeaWsOW8gOWni+acrOasoeaooeaLn+mdouivlSAtIOacgOWkmjPmrKEgLSDkvb/nlKjlkIzkuIDnroDljoYgSkQg5ZKM6Z2i6K+V5LqL5Lu2')))
+  Write-Host 'If the UI says AI output could not be verified, click 重新开始本次模拟面试 and repeat with the same resume, JD, and interview event. Use at most three attempts; do not retry a terminally failed Attempt.'
   Write-Host 'Close and reopen the event to view read-only history. Browser requests must stay on local static resources and /api; Provider egress is server-side only.'
   Write-Host "Configured Provider endpoint tuple: $($providerEndpoint.Scheme)://$($providerEndpoint.Host):$($providerEndpoint.Port)"
   Write-Host 'Complete the real text mock-interview flow in the dedicated target; opening another tab is not audited.'
   Write-Host 'The harness only observes the browser result; it does not submit the mock-interview API on your behalf.'
   $history = $null
-  for ($attempt = 0; $attempt -lt 180; $attempt++) {
+  $successfulAttemptId = $null
+  $browserAttemptIds = @()
+  $failureDiagnostics = @()
+  $browserFlowFailure = $false
+  $maxAttemptsObservedAt = $null
+  for ($attempt = 0; $attempt -lt 360; $attempt++) {
     try {
       $history = Invoke-RestMethod -Uri "$baseUrl/api/applications/$applicationId/events/$eventId/mock-interview/attempts"
-      if (
-        @($history.items).Count -gt 0 -and
-        @($history.items[0].turns).Count -ge 2 -and
-        $history.items[0].proposal_status -eq 'normal' -and
-        $null -ne $history.items[0].review_draft
-      ) { break }
-    } catch { }
+      foreach ($item in @($history.items)) {
+        if ($null -ne $item.attempt_id -and $browserAttemptIds -notcontains [int]$item.attempt_id) {
+          $browserAttemptIds += [int]$item.attempt_id
+        }
+      }
+      $successful = @($history.items | Where-Object {
+        $browserAttemptIds -contains [int]$_.attempt_id -and
+        @($_.turns).Count -ge 2 -and
+        $_.proposal_status -eq 'normal' -and
+        $null -ne $_.review_draft -and
+        $_.review_draft.status -eq 'confirmed'
+      }) | Select-Object -First 1
+      if ($null -ne $successful) {
+        $successfulAttemptId = [int]$successful.attempt_id
+        break
+      }
+      if (Test-Path -LiteralPath $browserAudit) {
+        $liveCreates = @(
+          Get-Content -LiteralPath $browserAudit -ErrorAction SilentlyContinue |
+            ForEach-Object { try { $_ | ConvertFrom-Json } catch { $null } } |
+            Where-Object { $_ -and $_.method -eq 'POST' -and ([Uri]$_.url).AbsolutePath -eq $flowBase }
+        )
+        if ($liveCreates.Count -gt $maxBrowserAttempts) {
+          throw "Browser created more than $maxBrowserAttempts mock interview Attempts in one flow."
+        }
+        if ($liveCreates.Count -eq $maxBrowserAttempts) {
+          if ($null -eq $maxAttemptsObservedAt) { $maxAttemptsObservedAt = Get-Date }
+          elseif (((Get-Date) - $maxAttemptsObservedAt).TotalSeconds -ge 30) { break }
+        }
+      }
+    } catch {
+      if ($_.Exception.Message -like 'Browser created more than*') { throw }
+    }
     Start-Sleep -Seconds 1
   }
-  if ($null -eq $history -or @($history.items).Count -lt 1) { throw 'Real browser flow did not create read-only history.' }
-  if (@($history.items[0].turns).Count -lt 2) { throw 'Real browser history did not contain two frozen turns.' }
-  if ($history.items[0].proposal_status -ne 'normal' -or $null -eq $history.items[0].review_draft) {
-    throw 'Real browser flow did not create a confirmed non-empty review draft.'
+  if ($null -eq $history) { throw 'Real browser flow did not return history.' }
+  if ($null -eq $successfulAttemptId) {
+    $category = 'mock_interview_unverifiable'
+    Push-Location $repo
+    try {
+      $diagnostic = & uv run python -c "import os; from pathlib import Path; from offerpilot.smoke import _latest_mock_interview_failure_category; print(_latest_mock_interview_failure_category(Path(os.environ['MOCK_INTERVIEW_HARNESS_DATA']), 'feedback') or _latest_mock_interview_failure_category(Path(os.environ['MOCK_INTERVIEW_HARNESS_DATA']), 'question') or 'mock_interview_unverifiable')"
+      Assert-ExitCode 'browser failure diagnostic'
+      if (($diagnostic -join '').Trim()) { $category = ($diagnostic -join '').Trim() }
+    } finally { Pop-Location }
+    $failureDiagnostics = @('stage=mock_interview;category=' + $category)
+    Write-Host ('Mock interview browser attempts failed: ' + ($failureDiagnostics -join ';'))
+    $browserFlowFailure = $true
+  }
+  $successfulHistoryItem = @($history.items | Where-Object { [int]$_.attempt_id -eq $successfulAttemptId }) | Select-Object -First 1
+  if (-not $browserFlowFailure) {
+    if ($null -eq $successfulHistoryItem) { throw 'Browser history did not contain the selected successful Attempt ID.' }
+    Push-Location $repo
+    try {
+      $env:MOCK_INTERVIEW_HARNESS_ATTEMPT = [string]$successfulAttemptId
+      & uv run python -c "import os; from pathlib import Path; from offerpilot.smoke import _assert_mock_interview_attempt_context; _assert_mock_interview_attempt_context(Path(os.environ['MOCK_INTERVIEW_HARNESS_DATA']), int(os.environ['MOCK_INTERVIEW_HARNESS_ATTEMPT']), int(os.environ['MOCK_INTERVIEW_HARNESS_APPLICATION']), int(os.environ['MOCK_INTERVIEW_HARNESS_EVENT']), int(os.environ['MOCK_INTERVIEW_HARNESS_RESUME']))"
+      Assert-ExitCode 'successful Attempt source context assertion'
+    } finally { Pop-Location }
   }
   if (-not (Test-Path -LiteralPath $httpAudit)) { throw 'Browser request audit is missing.' }
   New-Item -ItemType File -Force -Path $browserStop | Out-Null
@@ -193,7 +247,6 @@ try {
   if (@($browserRecords | Where-Object { ([Uri]$_.url).AbsolutePath -like '/api/*' }).Count -eq 0) {
     throw 'CDP audit did not record a browser API request.'
   }
-  $flowBase = "/api/applications/$applicationId/events/$eventId/mock-interview/attempts"
   $flowRecords = @($browserRecords | Where-Object {
     ([Uri]$_.url).Host -eq '127.0.0.1' -and
     ([Uri]$_.url).Port -eq $port -and
@@ -209,13 +262,56 @@ try {
     }
     return -1
   }
-  $createIndex = Find-FlowRequestIndex $flowRecords 0 'POST' $flowBase ''
-  if ($createIndex -lt 0) { throw 'CDP audit missed browser Attempt creation.' }
-  $answerIndex = Find-FlowRequestIndex $flowRecords ($createIndex + 1) 'POST' '' "^$([regex]::Escape($flowBase))/([0-9]+)/turns$"
+  $createIndexes = @(
+    for ($index = 0; $index -lt $flowRecords.Count; $index++) {
+      $uri = [Uri]$flowRecords[$index].url
+      if ($flowRecords[$index].method -eq 'POST' -and $uri.AbsolutePath -eq $flowBase) { $index }
+    }
+  )
+  if ($createIndexes.Count -lt 1 -or $createIndexes.Count -gt $maxBrowserAttempts) {
+    throw "CDP audit recorded $($createIndexes.Count) Attempt creations; expected one to three user attempts."
+  }
+  $createRecords = @($createIndexes | ForEach-Object { $flowRecords[$_] })
+  $createContexts = @($createRecords | ForEach-Object { $_.request_context })
+  if ($createContexts.Count -ne $createRecords.Count -or @($createContexts | Where-Object {
+    $null -eq $_.resume_id -or [string]::IsNullOrWhiteSpace([string]$_.jd_text_sha256)
+  }).Count -gt 0) {
+    throw 'CDP audit did not capture the redacted resume/JD context for every Attempt creation.'
+  }
+  $resumeContextIds = @($createContexts | ForEach-Object { [int]$_.resume_id } | Sort-Object -Unique)
+  $jdContextHashes = @($createContexts | ForEach-Object { [string]$_.jd_text_sha256 } | Sort-Object -Unique)
+  if ($resumeContextIds.Count -ne 1 -or $resumeContextIds[0] -ne [int]$resumeIds[0] -or $jdContextHashes.Count -ne 1) {
+    throw 'Browser restart Attempts did not reuse the same Resume and JD context.'
+  }
+  if ($browserFlowFailure) {
+    if (-not (Test-Path -LiteralPath $providerAudit)) { throw 'Provider egress audit is missing.' }
+  }
+  if ($browserFlowFailure) { $answerIndex = -1 }
+  else {
+  $answerPathPattern = "^$([regex]::Escape($flowBase))/([0-9]+)/turns$"
+  $answerIndexes = @(
+    for ($index = 0; $index -lt $flowRecords.Count; $index++) {
+      $uri = [Uri]$flowRecords[$index].url
+      if ($flowRecords[$index].method -eq 'POST' -and $uri.AbsolutePath -match $answerPathPattern) { $index }
+    }
+  )
+  $answerAttemptIds = @(
+    $answerIndexes | ForEach-Object {
+      $match = [regex]::Match(([Uri]$flowRecords[$_].url).AbsolutePath, $answerPathPattern)
+      if ($match.Success) { [int]$match.Groups[1].Value }
+    } | Sort-Object -Unique
+  )
+  if ($answerAttemptIds -notcontains $successfulAttemptId) {
+    throw 'CDP audit did not record an answer for the successful Attempt ID.'
+  }
+  $answerIndex = $answerIndexes | Where-Object {
+    $match = [regex]::Match(([Uri]$flowRecords[$_].url).AbsolutePath, $answerPathPattern)
+    $match.Success -and [int]$match.Groups[1].Value -eq $successfulAttemptId
+  } | Select-Object -First 1
   if ($answerIndex -lt 0) { throw 'CDP audit missed browser answer submission.' }
   $answerPathMatch = [regex]::Match(([Uri]$flowRecords[$answerIndex].url).AbsolutePath, "^$([regex]::Escape($flowBase))/([0-9]+)/turns$")
   if (-not $answerPathMatch.Success) { throw 'Browser answer path did not contain a numeric attempt id.' }
-  $attemptId = $answerPathMatch.Groups[1].Value
+  $attemptId = [string]$successfulAttemptId
   $questionIndex = Find-FlowRequestIndex $flowRecords ($answerIndex + 1) 'POST' '' "^$([regex]::Escape($flowBase))/$attemptId/turns/[0-9]+/question$"
   if ($questionIndex -lt 0) { throw 'CDP audit missed browser next-question request.' }
   $finishIndex = Find-FlowRequestIndex $flowRecords ($questionIndex + 1) 'POST' "$flowBase/$attemptId/finish" ''
@@ -224,6 +320,7 @@ try {
   if ($draftIndex -lt 0) { throw 'CDP audit missed browser Review Draft confirmation.' }
   $historyIndex = Find-FlowRequestIndex $flowRecords ($draftIndex + 1) 'GET' $flowBase ''
   if ($historyIndex -lt 0) { throw 'CDP audit missed browser read-only history request.' }
+  }
   if (-not (Test-Path -LiteralPath $providerAudit)) { throw 'Provider egress audit is missing.' }
   $httpRecords = @(Get-Content -LiteralPath $httpAudit | ForEach-Object { $_ | ConvertFrom-Json })
   foreach ($record in $httpRecords) {
@@ -247,6 +344,7 @@ try {
     & uv run python -c "import json, os; from pathlib import Path; from offerpilot.smoke import _assert_real_ai_browser_no_cross_domain_writes; _assert_real_ai_browser_no_cross_domain_writes(Path(os.environ['MOCK_INTERVIEW_HARNESS_DATA']), int(os.environ['MOCK_INTERVIEW_HARNESS_APPLICATION']), json.loads(os.environ['MOCK_INTERVIEW_HARNESS_BASELINE']), [int(os.environ['MOCK_INTERVIEW_HARNESS_EVENT'])], [int(os.environ['MOCK_INTERVIEW_HARNESS_RESUME'])])"
     Assert-ExitCode 'cross-domain boundary assertion'
   } finally { Pop-Location }
+  if ($browserFlowFailure) { throw 'Real browser flow did not complete a confirmed Attempt after three user attempts.' }
 } finally {
   if ($server) {
     $tree = @(Get-ProcessTree ([int]$server.Id) | Sort-Object -Descending)
@@ -279,6 +377,7 @@ try {
   Remove-Item Env:MOCK_INTERVIEW_HARNESS_APPLICATION -ErrorAction SilentlyContinue
   Remove-Item Env:MOCK_INTERVIEW_HARNESS_EVENT -ErrorAction SilentlyContinue
   Remove-Item Env:MOCK_INTERVIEW_HARNESS_RESUME -ErrorAction SilentlyContinue
+  Remove-Item Env:MOCK_INTERVIEW_HARNESS_ATTEMPT -ErrorAction SilentlyContinue
   Remove-Item Env:MOCK_INTERVIEW_HARNESS_BASELINE -ErrorAction SilentlyContinue
   Remove-Item Env:OFFERPILOT_HTTP_AUDIT_FILE -ErrorAction SilentlyContinue
 }

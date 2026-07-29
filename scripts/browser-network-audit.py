@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -120,13 +121,30 @@ class BrowserAudit:
         method = request.get("method") if isinstance(request, dict) else None
         url = request.get("url") if isinstance(request, dict) else None
         if target_id and isinstance(method, str) and isinstance(url, str) and self.handle is not None:
-            self.handle.write(json.dumps({
+            record: dict[str, object] = {
                 "kind": "browser_request",
                 "target_id": target_id,
                 "session_id": session_id,
                 "method": method,
                 "url": url,
-            }, ensure_ascii=False) + "\n")
+            }
+            post_data = request.get("postData") if isinstance(request, dict) else None
+            if isinstance(post_data, str):
+                try:
+                    payload = json.loads(post_data)
+                except json.JSONDecodeError:
+                    payload = None
+                if isinstance(payload, dict):
+                    request_context: dict[str, object] = {}
+                    if isinstance(payload.get("resume_id"), int):
+                        request_context["resume_id"] = payload["resume_id"]
+                    if isinstance(payload.get("jd_text"), str):
+                        request_context["jd_text_sha256"] = hashlib.sha256(
+                            payload["jd_text"].encode("utf-8")
+                        ).hexdigest()
+                    if request_context:
+                        record["request_context"] = request_context
+            self.handle.write(json.dumps(record, ensure_ascii=False) + "\n")
             self.handle.flush()
 
     async def run(self, base_url: str, ready_file: Path, ready_timeout_seconds: float) -> None:
