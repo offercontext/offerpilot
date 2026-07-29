@@ -1223,6 +1223,7 @@ def _run_real_ai_mock_interview_smoke(
         def handle_unverifiable(response: Any, stage: str) -> bool:
             if response.status_code != 502 or response.json().get("error_code") != "mock_interview_unverifiable":
                 return False
+            attempt_id: int | None = None
             attempt_ids = _mock_interview_attempt_ids(data_dir, application_id, event_id)
             if len(attempt_ids) > 1:
                 raise RuntimeError("mock interview failure created multiple attempts")
@@ -1238,7 +1239,7 @@ def _run_real_ai_mock_interview_smoke(
                     data_dir, application_id, baseline, [event_id], [resume_id]
                 )
             diagnostic_stage = "feedback" if stage == "feedback" else "question"
-            failure_category = _latest_mock_interview_failure_category(data_dir, diagnostic_stage)
+            failure_category = _latest_mock_interview_failure_category(data_dir, diagnostic_stage, attempt_id)
             outcomes.append(
                 f"attempt_{index + 1}:{stage}:mock_interview_unverifiable:"
                 f"{failure_category or 'unknown'}"
@@ -1456,15 +1457,15 @@ def _mock_interview_attempt_state(
             bind.dispose()
 
 
-def _assert_mock_interview_attempt_restart_state(category: str, state: str) -> None:
+def _assert_mock_interview_attempt_restart_state(kind: str, category: str, state: str) -> None:
     """Reject an invalid cleanup/retention result for a failed browser Attempt."""
-    provider_categories = {"provider", "provider_error", "network_error", "timeout", "provider_unknown"}
-    category_tokens = {token.strip() for token in category.split(",") if token.strip()}
-    if category_tokens & provider_categories and state == "deleted":
+    if kind not in {"provider", "contract"}:
+        raise RuntimeError("missing mock interview Attempt failure diagnostic")
+    if kind == "provider" and state == "deleted":
         raise RuntimeError("A provider-unknown Attempt was deleted before the browser restart.")
-    if state == "retained:contract_failed":
-        raise RuntimeError("A terminally unverifiable Attempt was retained after the browser restart.")
-    if not category_tokens & provider_categories and category != "mock_interview_unverifiable" and state.startswith("retained:"):
+    if kind == "provider" and not state.startswith("retained:"):
+        raise RuntimeError("A provider-unknown Attempt was not retained for the browser restart.")
+    if kind == "contract" and state.startswith("retained:"):
         raise RuntimeError("A terminally unverifiable Attempt was retained after the browser restart.")
 
 
@@ -1540,28 +1541,48 @@ def _assert_mock_interview_attempt_context(
             bind.dispose()
 
 
-def _latest_mock_interview_failure_category(data_dir: Path, stage: str) -> str:
+def _latest_mock_interview_failure_diagnostic(
+    data_dir: Path, attempt_id: int, stage: str | None = None
+) -> dict[str, str] | None:
     log_path = data_dir / "logs" / "offerpilot.log"
     if not log_path.is_file():
-        return ""
-    marker = f"mock_interview_{stage}_failure "
+        return None
     try:
         lines = log_path.read_text(encoding="utf-8").splitlines()
     except OSError:
-        return ""
+        return None
     for line in reversed(lines):
-        if marker not in line:
-            continue
-        try:
-            payload = json.loads(line.split(marker, 1)[1])
-        except (IndexError, json.JSONDecodeError):
-            return ""
-        categories = payload.get("failure_categories")
-        if isinstance(categories, list) and all(isinstance(item, str) for item in categories):
-            return ",".join(categories[:2])
-        category = payload.get("failure_category")
-        return category if isinstance(category, str) else ""
-    return ""
+        for kind in ("provider", "contract"):
+            marker = f"mock_interview_{kind}_failure "
+            if marker not in line:
+                continue
+            try:
+                payload = json.loads(line.split(marker, 1)[1])
+            except (IndexError, json.JSONDecodeError):
+                continue
+            try:
+                logged_attempt_id = int(payload.get("attempt_id"))
+            except (TypeError, ValueError):
+                continue
+            if logged_attempt_id != attempt_id or (stage is not None and payload.get("stage") != stage):
+                continue
+            categories = payload.get("failure_categories")
+            if isinstance(categories, list) and all(isinstance(item, str) for item in categories):
+                category = ",".join(categories[:2])
+            else:
+                raw_category = payload.get("failure_category")
+                category = raw_category if isinstance(raw_category, str) else ""
+            return {"kind": kind, "category": category}
+    return None
+
+
+def _latest_mock_interview_failure_category(
+    data_dir: Path, stage: str, attempt_id: int | None = None
+) -> str:
+    if attempt_id is None:
+        return ""
+    diagnostic = _latest_mock_interview_failure_diagnostic(data_dir, attempt_id, stage)
+    return diagnostic["category"] if diagnostic is not None else ""
 
 
 def _assert_mock_interview_failed_attempt_clean(

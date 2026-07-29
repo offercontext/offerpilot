@@ -50,7 +50,11 @@ function Test-TransientHistoryError($errorRecord) {
         [System.Net.WebExceptionStatus]::RequestCanceled
       )
     }
-    if ($exception -is [System.Net.Http.HttpRequestException]) { return $true }
+    if ($exception -is [System.Net.Http.HttpRequestException]) {
+      $statusCode = $exception.Data['StatusCode']
+      if ($null -eq $statusCode -and $null -ne $exception.Response) { $statusCode = $exception.Response.StatusCode }
+      return $null -eq $statusCode
+    }
     $exception = $exception.InnerException
   }
   return $false
@@ -62,15 +66,19 @@ function Inspect-MockInterviewAttempt([int]$attemptId) {
     $env:MOCK_INTERVIEW_HARNESS_ATTEMPT = [string]$attemptId
     $attemptState = & uv run python -c "import os; from pathlib import Path; from offerpilot.smoke import _mock_interview_attempt_state; print(_mock_interview_attempt_state(Path(os.environ['MOCK_INTERVIEW_HARNESS_DATA']), int(os.environ['MOCK_INTERVIEW_HARNESS_APPLICATION']), int(os.environ['MOCK_INTERVIEW_HARNESS_EVENT']), int(os.environ['MOCK_INTERVIEW_HARNESS_RESUME']), int(os.environ['MOCK_INTERVIEW_HARNESS_ATTEMPT'])))"
     Assert-ExitCode 'browser Attempt lifecycle inspection'
-    $category = & uv run python -c "import os; from pathlib import Path; from offerpilot.smoke import _latest_mock_interview_failure_category; print(_latest_mock_interview_failure_category(Path(os.environ['MOCK_INTERVIEW_HARNESS_DATA']), 'feedback') or _latest_mock_interview_failure_category(Path(os.environ['MOCK_INTERVIEW_HARNESS_DATA']), 'question') or 'mock_interview_unverifiable')"
+    $diagnostic = & uv run python -c "import json, os; from pathlib import Path; from offerpilot.smoke import _latest_mock_interview_failure_diagnostic; value = _latest_mock_interview_failure_diagnostic(Path(os.environ['MOCK_INTERVIEW_HARNESS_DATA']), int(os.environ['MOCK_INTERVIEW_HARNESS_ATTEMPT'])); raise SystemExit(2) if value is None else print(json.dumps(value, ensure_ascii=True, separators=(',', ':')))"
     Assert-ExitCode 'browser Attempt failure diagnostic'
-    $categoryValue = (($category -join '').Trim() -replace '[^\x00-\x7F]', '?')
+    $diagnosticJson = ($diagnostic -join '').Trim() | ConvertFrom-Json
+    $kindValue = ([string]$diagnosticJson.kind).Trim()
+    $categoryValue = ([string]$diagnosticJson.category).Trim() -replace '[^\x00-\x7F]', '?'
     $stateValue = (($attemptState -join '').Trim())
+    if ([string]::IsNullOrWhiteSpace($kindValue) -or [string]::IsNullOrWhiteSpace($categoryValue)) { throw 'Browser Attempt failure diagnostic is incomplete.' }
+    $env:MOCK_INTERVIEW_HARNESS_KIND = $kindValue
     $env:MOCK_INTERVIEW_HARNESS_CATEGORY = $categoryValue
     $env:MOCK_INTERVIEW_HARNESS_STATE = $stateValue
-    & uv run python -c "import os; from offerpilot.smoke import _assert_mock_interview_attempt_restart_state; _assert_mock_interview_attempt_restart_state(os.environ['MOCK_INTERVIEW_HARNESS_CATEGORY'], os.environ['MOCK_INTERVIEW_HARNESS_STATE'])"
+    & uv run python -c "import os; from offerpilot.smoke import _assert_mock_interview_attempt_restart_state; _assert_mock_interview_attempt_restart_state(os.environ['MOCK_INTERVIEW_HARNESS_KIND'], os.environ['MOCK_INTERVIEW_HARNESS_CATEGORY'], os.environ['MOCK_INTERVIEW_HARNESS_STATE'])"
     Assert-ExitCode 'browser Attempt lifecycle assertion'
-    return "attempt=$attemptId;category=$categoryValue;state=$stateValue"
+    return "attempt=$attemptId;kind=$kindValue;category=$categoryValue;state=$stateValue"
   } finally { Pop-Location }
 }
 
@@ -267,15 +275,8 @@ try {
   }
   if ($null -eq $history) { throw 'Real browser flow did not return history.' }
   if ($null -eq $successfulAttemptId) {
-    $category = 'mock_interview_unverifiable'
-    Push-Location $repo
-    try {
-      $diagnostic = & uv run python -c "import os; from pathlib import Path; from offerpilot.smoke import _latest_mock_interview_failure_category; print(_latest_mock_interview_failure_category(Path(os.environ['MOCK_INTERVIEW_HARNESS_DATA']), 'feedback') or _latest_mock_interview_failure_category(Path(os.environ['MOCK_INTERVIEW_HARNESS_DATA']), 'question') or 'mock_interview_unverifiable')"
-      Assert-ExitCode 'browser failure diagnostic'
-      if (($diagnostic -join '').Trim()) { $category = ($diagnostic -join '').Trim() }
-    } finally { Pop-Location }
-    $category = ($category -replace '[^\x00-\x7F]', '?')
-    $failureDiagnostics = @('stage=mock_interview;category=' + $category) + $attemptLifecycleDiagnostics
+    if ($attemptLifecycleDiagnostics.Count -eq 0) { throw 'No mock interview Attempt failure diagnostics were recorded.' }
+    $failureDiagnostics = @('stage=mock_interview') + $attemptLifecycleDiagnostics
     Write-Host ('Mock interview browser attempts failed: ' + ($failureDiagnostics -join ';'))
     $browserFlowFailure = $true
   }

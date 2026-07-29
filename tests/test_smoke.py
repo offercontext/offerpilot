@@ -258,14 +258,14 @@ def test_real_ai_mock_interview_smoke_reads_only_safe_failure_categories(tmp_pat
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
     (log_dir / "offerpilot.log").write_text(
-        'WARNING mock_interview_feedback_failure '
-        '{"failure_category":"unknown_evidence_ref","failure_categories":'
+        'WARNING mock_interview_contract_failure '
+        '{"attempt_id":77,"stage":"feedback","failure_category":"unknown_evidence_ref","failure_categories":'
         '["unknown_evidence_ref","excerpt_mismatch"],"provider_request_id":'
         '"request-redacted-abc123"}\n',
         encoding="utf-8",
     )
 
-    assert _latest_mock_interview_failure_category(tmp_path, "feedback") == (
+    assert _latest_mock_interview_failure_category(tmp_path, "feedback", 77) == (
         "unknown_evidence_ref,excerpt_mismatch"
     )
 

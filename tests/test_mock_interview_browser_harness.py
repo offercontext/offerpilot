@@ -21,6 +21,7 @@ from offerpilot.smoke import (
     _assert_real_ai_smoke_data_clean,
     _cleanup_real_ai_smoke_records,
     _assert_mock_interview_attempt_restart_state,
+    _latest_mock_interview_failure_diagnostic,
     _mock_interview_attempt_state,
     _mock_interview_browser_failure_diagnostics,
     _select_mock_interview_browser_success,
@@ -48,6 +49,7 @@ def test_browser_harness_requires_real_two_turn_draft_and_browser_network_eviden
 def test_browser_harness_allows_three_same_context_attempts_and_selects_success_by_id():
     script = (Path(__file__).parents[1] / "scripts" / "mock-interview-real-ai-browser-harness.ps1").read_text(encoding="utf-8")
     auditor = (Path(__file__).parents[1] / "scripts" / "browser-network-audit.py").read_text(encoding="utf-8")
+    api = (Path(__file__).parents[1] / "src" / "offerpilot" / "api.py").read_text(encoding="utf-8")
     assert "$maxBrowserAttempts = 3" in script
     assert "flowBase" in script
     assert "createIndexes" in script
@@ -59,6 +61,8 @@ def test_browser_harness_allows_three_same_context_attempts_and_selects_success_
     assert "request_context" in auditor
     assert "attemptLifecycleDiagnostics" in script
     assert "_mock_interview_attempt_state" in script
+    assert "_latest_mock_interview_failure_diagnostic" in script
+    assert "mock_interview_{kind}_failure" in api
     assert "category=" in script
     assert "_assert_mock_interview_attempt_restart_state" in script
 
@@ -67,29 +71,75 @@ def test_browser_harness_does_not_swallow_lifecycle_failures_and_checks_final_at
     script = (Path(__file__).parents[1] / "scripts" / "mock-interview-real-ai-browser-harness.ps1").read_text(encoding="utf-8")
     loop_end = script.index("if ($null -eq $history)")
     assert "Test-TransientHistoryError" in script
+    assert "StatusCode" in script
+    assert "return $null -eq $statusCode" in script
     assert "Browser created more than*" not in script
     assert script.rfind("foreach ($attemptId in @($knownAttemptIds") < loop_end
     assert "checkedAttemptIds -notcontains $_" in script
 
 
 @pytest.mark.parametrize(
-    ("category", "state"),
+    ("kind", "category", "state"),
     [
-        ("contract_failed", "retained:contract_failed"),
+        ("contract", "contract_failed", "retained:contract_failed"),
     ],
 )
-def test_browser_harness_rejects_retained_terminal_attempt(category, state):
+def test_browser_harness_rejects_retained_terminal_attempt(kind, category, state):
     with pytest.raises(RuntimeError, match="terminally unverifiable"):
-        _assert_mock_interview_attempt_restart_state(category, state)
+        _assert_mock_interview_attempt_restart_state(kind, category, state)
 
 
 def test_browser_harness_rejects_deleted_provider_unknown_attempt():
     with pytest.raises(RuntimeError, match="provider-unknown"):
-        _assert_mock_interview_attempt_restart_state("provider_unknown", "deleted")
+        _assert_mock_interview_attempt_restart_state("provider", "provider_unknown", "deleted")
 
 
 def test_browser_harness_accepts_composite_provider_failure_category_when_retained():
-    _assert_mock_interview_attempt_restart_state("provider_error,timeout", "retained:provider_unknown")
+    _assert_mock_interview_attempt_restart_state("provider", "provider_error,timeout", "retained:provider_unknown")
+
+
+def test_browser_harness_uses_attempt_scoped_provider_and_contract_diagnostics(tmp_path):
+    log_path = tmp_path / "logs" / "offerpilot.log"
+    log_path.parent.mkdir()
+    log_path.write_text(
+        "\n".join(
+            [
+                'mock_interview_provider_failure {"attempt_id":301,"stage":"feedback","failure_category":"provider_http_5xx"}',
+                'mock_interview_contract_failure {"attempt_id":302,"stage":"question","failure_category":"unknown_evidence_ref"}',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    assert _latest_mock_interview_failure_diagnostic(tmp_path, 301, "feedback") == {
+        "kind": "provider",
+        "category": "provider_http_5xx",
+    }
+    assert _latest_mock_interview_failure_diagnostic(tmp_path, 302, "question") == {
+        "kind": "contract",
+        "category": "unknown_evidence_ref",
+    }
+    assert _latest_mock_interview_failure_diagnostic(tmp_path, 301, "question") is None
+
+
+@pytest.mark.parametrize(
+    "category",
+    ["network_timeout", "provider_http_5xx", "proxy_failure", "response_lost", "provider_exception"],
+)
+def test_browser_harness_provider_failure_categories_require_retention(category):
+    _assert_mock_interview_attempt_restart_state("provider", category, "retained:provider_unknown")
+    with pytest.raises(RuntimeError, match="provider-unknown"):
+        _assert_mock_interview_attempt_restart_state("provider", category, "deleted")
+
+
+def test_browser_harness_contract_failure_requires_deletion():
+    _assert_mock_interview_attempt_restart_state("contract", "unknown_evidence_ref", "deleted")
+    with pytest.raises(RuntimeError, match="terminally unverifiable"):
+        _assert_mock_interview_attempt_restart_state("contract", "unknown_evidence_ref", "retained:contract_failed")
+
+
+def test_browser_harness_missing_failure_diagnostic_is_not_treated_as_unverifiable_fallback():
+    with pytest.raises(RuntimeError, match="missing"):
+        _assert_mock_interview_attempt_restart_state("", "", "retained:provider_unknown")
 
 
 def test_browser_harness_runtime_output_is_ascii_and_has_no_encoded_prompt_path():
