@@ -316,15 +316,19 @@ def generate_feedback(
     started = perf_counter()
     repair_count = 0
     last_category = "invalid_json"
+    failure_categories: list[str] = []
     for attempt in range(2):
         prompt = _feedback_prompt(snapshot, turns, last_category if attempt else "")
         try:
             assistant = _complete_feedback(model, prompt)
         except Exception as exc:
             diagnostic = getattr(exc, "diagnostic", None)
+            safe_diagnostic = dict(diagnostic) if isinstance(diagnostic, dict) else {}
+            if failure_categories:
+                safe_diagnostic.setdefault("failure_categories", failure_categories)
             raise MockInterviewProviderError(
                 "mock_interview_provider_error",
-                diagnostic if isinstance(diagnostic, dict) else None,
+                safe_diagnostic or None,
             ) from exc
         try:
             parsed = parse_mock_interview_json(assistant.content)
@@ -335,6 +339,7 @@ def generate_feedback(
             )
         except MockInterviewContractError as exc:
             last_category = exc.category
+            failure_categories.append(last_category)
             if attempt == 0 and should_retry_mock_interview_format(last_category):
                 repair_count = 1
                 continue
@@ -346,6 +351,7 @@ def generate_feedback(
             "repair_attempted": repair_count > 0,
             "repair_count": repair_count,
             "elapsed_ms": int((perf_counter() - started) * 1000),
+            "failure_categories": failure_categories,
         },
     )
 
@@ -356,6 +362,7 @@ def generate_question(
     if model is None:
         raise MockInterviewProviderError("mock_interview_provider_error")
     last_category = "invalid_json"
+    failure_categories: list[str] = []
     for attempt in range(2):
         repair_instruction = _format_repair_instruction(last_category) if attempt else ""
         messages = [
@@ -427,6 +434,8 @@ def generate_question(
                 raise MockInterviewContractError("evidence_refs_not_array")
             if not refs:
                 raise MockInterviewContractError("missing_evidence_ref")
+            if len(refs) > 4:
+                raise MockInterviewContractError("limit_exceeded")
             for ref in refs:
                 _validate_reference(ref, snapshot, turns)
             return question
@@ -434,6 +443,7 @@ def generate_question(
             raise
         except MockInterviewContractError as exc:
             last_category = exc.category
+            failure_categories.append(last_category)
             if attempt == 0 and should_retry_mock_interview_format(last_category):
                 continue
             raise MockInterviewUnverifiableError(
@@ -443,13 +453,17 @@ def generate_question(
                     "repair_attempted": attempt > 0,
                     "repair_count": 1 if attempt > 0 else 0,
                     "elapsed_ms": 0,
+                    "failure_categories": failure_categories,
                 },
             ) from exc
         except Exception as exc:
             diagnostic = getattr(exc, "diagnostic", None)
+            safe_diagnostic = dict(diagnostic) if isinstance(diagnostic, dict) else {}
+            if failure_categories:
+                safe_diagnostic.setdefault("failure_categories", failure_categories)
             raise MockInterviewProviderError(
                 "mock_interview_provider_error",
-                diagnostic if isinstance(diagnostic, dict) else None,
+                safe_diagnostic or None,
             ) from exc
     raise MockInterviewUnverifiableError(
         last_category,
@@ -458,6 +472,7 @@ def generate_question(
             "repair_attempted": True,
             "repair_count": 1,
             "elapsed_ms": 0,
+            "failure_categories": failure_categories,
         },
     )
 

@@ -27,4 +27,4 @@ def test_provider_error_is_not_retried_as_format_repair():
 
 def test_format_repair_uses_same_snapshot_and_at_most_one_retry():
     assert should_retry_mock_interview_format("unexpected_field") is True
-    assert should_retry_mock_interview_format("limit_exceeded") is True
+    assert should_retry_mock_interview_format("limit_exceeded") is False

@@ -735,6 +735,9 @@ def _log_mock_interview_ai_failure(
         "correlation_id": str(diagnostic.get("correlation_id") or ""),
         "provider_request_id": str(diagnostic.get("provider_request_id") or ""),
     }
+    failure_categories = diagnostic.get("failure_categories")
+    if isinstance(failure_categories, list) and all(isinstance(item, str) for item in failure_categories):
+        payload["failure_categories"] = failure_categories[:2]
     append_log_entry(
         data_dir,
         "WARNING",

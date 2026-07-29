@@ -89,6 +89,9 @@ def test_repeated_structural_evidence_error_is_terminal():
         generate_question(model, _snapshot(), _turns())
 
     assert error.value.category == "evidence_ref_not_object"
+    assert error.value.diagnostic["failure_categories"] == [
+        "evidence_ref_not_object", "evidence_ref_not_object"
+    ]
     assert model.calls == 2
 
 

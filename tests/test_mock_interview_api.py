@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
@@ -42,6 +43,21 @@ class _StructuralRepairQuestionModel:
         if isinstance(self.second_response, Exception):
             raise self.second_response
         return Assistant(content=self.second_response)
+
+
+class _OverLimitQuestionModel:
+    supports_json_schema = False
+
+    def __init__(self):
+        self.calls = 0
+
+    def complete(self, messages, tools, **kwargs):
+        self.calls += 1
+        ref = {"source": "jd", "path": "/jd/text", "excerpt": "Python"}
+        return Assistant(content=json.dumps({
+            "question": "Q",
+            "evidence_refs": [ref] * 5,
+        }, ensure_ascii=False))
 
 
 def _client(tmp_path, model=None):
@@ -189,6 +205,27 @@ def test_repeated_structural_failure_is_terminal_and_replay_skips_provider(tmp_p
     assert replay.json()["error_code"] == "mock_interview_unverifiable"
     assert calls_after_failure == 2
     assert model.calls == calls_after_failure
+
+
+def test_over_limit_failure_is_terminal_without_retry_or_replay_provider_call(tmp_path):
+    model = _OverLimitQuestionModel()
+    client, app_id, event_id, resume_id = _client(tmp_path, model)
+    path = f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts"
+    payload = {
+        "resume_id": resume_id,
+        "jd_text": "JD Python",
+        "attempt_idempotency_key": "over-limit-terminal",
+        "initial_question_idempotency_key": "over-limit-question",
+    }
+
+    first = client.post(path, json=payload)
+    replay = client.post(path, json=payload)
+
+    assert first.status_code == 502
+    assert first.json()["error_code"] == "mock_interview_unverifiable"
+    assert replay.status_code == 502
+    assert replay.json()["error_code"] == "mock_interview_unverifiable"
+    assert model.calls == 1
 
 
 def test_start_rejects_cross_application_event(tmp_path):
