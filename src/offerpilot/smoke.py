@@ -1456,6 +1456,18 @@ def _mock_interview_attempt_state(
             bind.dispose()
 
 
+def _assert_mock_interview_attempt_restart_state(category: str, state: str) -> None:
+    """Reject an invalid cleanup/retention result for a failed browser Attempt."""
+    provider_categories = {"provider", "provider_error", "network_error", "timeout", "provider_unknown"}
+    category_tokens = {token.strip() for token in category.split(",") if token.strip()}
+    if category_tokens & provider_categories and state == "deleted":
+        raise RuntimeError("A provider-unknown Attempt was deleted before the browser restart.")
+    if state == "retained:contract_failed":
+        raise RuntimeError("A terminally unverifiable Attempt was retained after the browser restart.")
+    if not category_tokens & provider_categories and category != "mock_interview_unverifiable" and state.startswith("retained:"):
+        raise RuntimeError("A terminally unverifiable Attempt was retained after the browser restart.")
+
+
 def _select_mock_interview_browser_success(
     history_items: list[dict[str, Any]], attempt_ids: list[int]
 ) -> dict[str, Any] | None:

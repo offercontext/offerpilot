@@ -35,6 +35,45 @@ function Assert-ExitCode([string]$label) {
   if ($LASTEXITCODE -ne 0) { throw "$label failed with exit code $LASTEXITCODE" }
 }
 
+function Test-TransientHistoryError($errorRecord) {
+  $exception = $errorRecord.Exception
+  while ($null -ne $exception) {
+    if ($exception -is [System.Net.WebException]) {
+      return $exception.Status -in @(
+        [System.Net.WebExceptionStatus]::ConnectionClosed,
+        [System.Net.WebExceptionStatus]::ConnectFailure,
+        [System.Net.WebExceptionStatus]::NameResolutionFailure,
+        [System.Net.WebExceptionStatus]::ReceiveFailure,
+        [System.Net.WebExceptionStatus]::SendFailure,
+        [System.Net.WebExceptionStatus]::Timeout,
+        [System.Net.WebExceptionStatus]::ProxyNameResolutionFailure,
+        [System.Net.WebExceptionStatus]::RequestCanceled
+      )
+    }
+    if ($exception -is [System.Net.Http.HttpRequestException]) { return $true }
+    $exception = $exception.InnerException
+  }
+  return $false
+}
+
+function Inspect-MockInterviewAttempt([int]$attemptId) {
+  Push-Location $repo
+  try {
+    $env:MOCK_INTERVIEW_HARNESS_ATTEMPT = [string]$attemptId
+    $attemptState = & uv run python -c "import os; from pathlib import Path; from offerpilot.smoke import _mock_interview_attempt_state; print(_mock_interview_attempt_state(Path(os.environ['MOCK_INTERVIEW_HARNESS_DATA']), int(os.environ['MOCK_INTERVIEW_HARNESS_APPLICATION']), int(os.environ['MOCK_INTERVIEW_HARNESS_EVENT']), int(os.environ['MOCK_INTERVIEW_HARNESS_RESUME']), int(os.environ['MOCK_INTERVIEW_HARNESS_ATTEMPT'])))"
+    Assert-ExitCode 'browser Attempt lifecycle inspection'
+    $category = & uv run python -c "import os; from pathlib import Path; from offerpilot.smoke import _latest_mock_interview_failure_category; print(_latest_mock_interview_failure_category(Path(os.environ['MOCK_INTERVIEW_HARNESS_DATA']), 'feedback') or _latest_mock_interview_failure_category(Path(os.environ['MOCK_INTERVIEW_HARNESS_DATA']), 'question') or 'mock_interview_unverifiable')"
+    Assert-ExitCode 'browser Attempt failure diagnostic'
+    $categoryValue = (($category -join '').Trim() -replace '[^\x00-\x7F]', '?')
+    $stateValue = (($attemptState -join '').Trim())
+    $env:MOCK_INTERVIEW_HARNESS_CATEGORY = $categoryValue
+    $env:MOCK_INTERVIEW_HARNESS_STATE = $stateValue
+    & uv run python -c "import os; from offerpilot.smoke import _assert_mock_interview_attempt_restart_state; _assert_mock_interview_attempt_restart_state(os.environ['MOCK_INTERVIEW_HARNESS_CATEGORY'], os.environ['MOCK_INTERVIEW_HARNESS_STATE'])"
+    Assert-ExitCode 'browser Attempt lifecycle assertion'
+    return "attempt=$attemptId;category=$categoryValue;state=$stateValue"
+  } finally { Pop-Location }
+}
+
 function Assert-PortOwner([int]$rootProcessId, [int]$expectedPort) {
   $listeners = @(Get-NetTCPConnection -LocalPort $expectedPort -State Listen -ErrorAction SilentlyContinue)
   if ($listeners.Count -eq 0) { return $false }
@@ -169,69 +208,62 @@ try {
   for ($attempt = 0; $attempt -lt 360; $attempt++) {
     try {
       $history = Invoke-RestMethod -Uri "$baseUrl/api/applications/$applicationId/events/$eventId/mock-interview/attempts"
-      foreach ($item in @($history.items)) {
-        if ($null -ne $item.attempt_id -and $browserAttemptIds -notcontains [int]$item.attempt_id) {
-          $browserAttemptIds += [int]$item.attempt_id
-        }
-      }
-      $successful = @($history.items | Where-Object {
-        $browserAttemptIds -contains [int]$_.attempt_id -and
-        @($_.turns).Count -ge 2 -and
-        $_.proposal_status -eq 'normal' -and
-        $null -ne $_.review_draft -and
-        $_.review_draft.status -eq 'confirmed'
-      }) | Select-Object -First 1
-      if ($null -ne $successful) {
-        $successfulAttemptId = [int]$successful.attempt_id
-        break
-      }
-      if (Test-Path -LiteralPath $browserAudit) {
-        $liveCreates = @(
-          Get-Content -LiteralPath $browserAudit -ErrorAction SilentlyContinue |
-            ForEach-Object { try { $_ | ConvertFrom-Json } catch { $null } } |
-            Where-Object { $_ -and $_.method -eq 'POST' -and ([Uri]$_.url).AbsolutePath -eq $flowBase }
-        )
-        if ($liveCreates.Count -gt $maxBrowserAttempts) {
-          throw "Browser created more than $maxBrowserAttempts mock interview Attempts in one flow."
-        }
-        if ($liveCreates.Count -gt $lastCreateCount) {
-          Push-Location $repo
-          try {
-            foreach ($priorAttemptId in @($knownAttemptIds | Where-Object { $checkedAttemptIds -notcontains $_ })) {
-              $env:MOCK_INTERVIEW_HARNESS_ATTEMPT = [string]$priorAttemptId
-              $attemptState = & uv run python -c "import os; from pathlib import Path; from offerpilot.smoke import _mock_interview_attempt_state; print(_mock_interview_attempt_state(Path(os.environ['MOCK_INTERVIEW_HARNESS_DATA']), int(os.environ['MOCK_INTERVIEW_HARNESS_APPLICATION']), int(os.environ['MOCK_INTERVIEW_HARNESS_EVENT']), int(os.environ['MOCK_INTERVIEW_HARNESS_RESUME']), int(os.environ['MOCK_INTERVIEW_HARNESS_ATTEMPT'])))"
-              Assert-ExitCode 'browser Attempt lifecycle inspection'
-              $category = & uv run python -c "import os; from pathlib import Path; from offerpilot.smoke import _latest_mock_interview_failure_category; print(_latest_mock_interview_failure_category(Path(os.environ['MOCK_INTERVIEW_HARNESS_DATA']), 'feedback') or _latest_mock_interview_failure_category(Path(os.environ['MOCK_INTERVIEW_HARNESS_DATA']), 'question') or 'mock_interview_unverifiable')"
-              Assert-ExitCode 'browser Attempt failure diagnostic'
-              $categoryValue = (($category -join '').Trim() -replace '[^\x00-\x7F]', '?')
-              $stateValue = (($attemptState -join '').Trim())
-              $providerFailure = $categoryValue -in @('provider', 'provider_error', 'network_error', 'timeout')
-              if ($providerFailure -and $stateValue -eq 'deleted') {
-                throw 'A provider-unknown Attempt was deleted before the browser restart.'
-              }
-              if (-not $providerFailure -and $categoryValue -ne 'mock_interview_unverifiable' -and $stateValue -like 'retained:*') {
-                throw 'A terminally unverifiable Attempt was retained after the browser restart.'
-              }
-              $attemptLifecycleDiagnostics += "attempt=$priorAttemptId;category=$categoryValue;state=$stateValue"
-              $checkedAttemptIds += [int]$priorAttemptId
-            }
-            $currentAttemptIds = & uv run python -c "import os; from pathlib import Path; from offerpilot.smoke import _mock_interview_attempt_ids; print(' '.join(str(item) for item in _mock_interview_attempt_ids(Path(os.environ['MOCK_INTERVIEW_HARNESS_DATA']), int(os.environ['MOCK_INTERVIEW_HARNESS_APPLICATION']), int(os.environ['MOCK_INTERVIEW_HARNESS_EVENT']))))"
-            Assert-ExitCode 'browser Attempt id inspection'
-            foreach ($currentAttemptId in (($currentAttemptIds -join '').Trim() -split '\s+' | Where-Object { $_ })) {
-              if ($knownAttemptIds -notcontains [int]$currentAttemptId) { $knownAttemptIds += [int]$currentAttemptId }
-            }
-            $lastCreateCount = $liveCreates.Count
-          } finally { Pop-Location }
-        }
-        if ($liveCreates.Count -eq $maxBrowserAttempts) {
-          if ($null -eq $maxAttemptsObservedAt) { $maxAttemptsObservedAt = Get-Date }
-          elseif (((Get-Date) - $maxAttemptsObservedAt).TotalSeconds -ge 30) { break }
-        }
-      }
     } catch {
-      if ($_.Exception.Message -like 'Browser created more than*') { throw }
+      if (-not (Test-TransientHistoryError $_)) { throw }
+      Start-Sleep -Seconds 1
+      continue
+    }
+    foreach ($item in @($history.items)) {
+      if ($null -ne $item.attempt_id -and $browserAttemptIds -notcontains [int]$item.attempt_id) {
+        $browserAttemptIds += [int]$item.attempt_id
+      }
+    }
+    $successful = @($history.items | Where-Object {
+      $browserAttemptIds -contains [int]$_.attempt_id -and
+      @($_.turns).Count -ge 2 -and
+      $_.proposal_status -eq 'normal' -and
+      $null -ne $_.review_draft -and
+      $_.review_draft.status -eq 'confirmed'
+    }) | Select-Object -First 1
+    if ($null -ne $successful) {
+      $successfulAttemptId = [int]$successful.attempt_id
+      break
+    }
+    if (Test-Path -LiteralPath $browserAudit) {
+      $liveCreates = @(
+        Get-Content -LiteralPath $browserAudit -ErrorAction SilentlyContinue |
+          ForEach-Object { try { $_ | ConvertFrom-Json } catch { $null } } |
+          Where-Object { $_ -and $_.method -eq 'POST' -and ([Uri]$_.url).AbsolutePath -eq $flowBase }
+      )
+      if ($liveCreates.Count -gt $maxBrowserAttempts) {
+        throw "Browser created more than $maxBrowserAttempts mock interview Attempts in one flow."
+      }
+      if ($liveCreates.Count -gt $lastCreateCount) {
+        foreach ($priorAttemptId in @($knownAttemptIds | Where-Object { $checkedAttemptIds -notcontains $_ })) {
+          $attemptLifecycleDiagnostics += @(Inspect-MockInterviewAttempt ([int]$priorAttemptId))
+          $checkedAttemptIds += [int]$priorAttemptId
+        }
+        Push-Location $repo
+        try {
+          $currentAttemptIds = & uv run python -c "import os; from pathlib import Path; from offerpilot.smoke import _mock_interview_attempt_ids; print(' '.join(str(item) for item in _mock_interview_attempt_ids(Path(os.environ['MOCK_INTERVIEW_HARNESS_DATA']), int(os.environ['MOCK_INTERVIEW_HARNESS_APPLICATION']), int(os.environ['MOCK_INTERVIEW_HARNESS_EVENT']))))"
+          Assert-ExitCode 'browser Attempt id inspection'
+          foreach ($currentAttemptId in (($currentAttemptIds -join '').Trim() -split '\s+' | Where-Object { $_ })) {
+            if ($knownAttemptIds -notcontains [int]$currentAttemptId) { $knownAttemptIds += [int]$currentAttemptId }
+          }
+          $lastCreateCount = $liveCreates.Count
+        } finally { Pop-Location }
+      }
+      if ($liveCreates.Count -eq $maxBrowserAttempts) {
+        if ($null -eq $maxAttemptsObservedAt) { $maxAttemptsObservedAt = Get-Date }
+        elseif (((Get-Date) - $maxAttemptsObservedAt).TotalSeconds -ge 30) { break }
+      }
     }
     Start-Sleep -Seconds 1
+  }
+  foreach ($attemptId in @($knownAttemptIds | Where-Object { $checkedAttemptIds -notcontains $_ })) {
+    if ($null -ne $successfulAttemptId -and [int]$attemptId -eq $successfulAttemptId) { continue }
+    $attemptLifecycleDiagnostics += @(Inspect-MockInterviewAttempt ([int]$attemptId))
+    $checkedAttemptIds += [int]$attemptId
   }
   if ($null -eq $history) { throw 'Real browser flow did not return history.' }
   if ($null -eq $successfulAttemptId) {

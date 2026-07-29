@@ -20,6 +20,7 @@ from offerpilot.models import (
 from offerpilot.smoke import (
     _assert_real_ai_smoke_data_clean,
     _cleanup_real_ai_smoke_records,
+    _assert_mock_interview_attempt_restart_state,
     _mock_interview_attempt_state,
     _mock_interview_browser_failure_diagnostics,
     _select_mock_interview_browser_success,
@@ -59,8 +60,36 @@ def test_browser_harness_allows_three_same_context_attempts_and_selects_success_
     assert "attemptLifecycleDiagnostics" in script
     assert "_mock_interview_attempt_state" in script
     assert "category=" in script
-    assert "provider-unknown Attempt was deleted" in script
-    assert "terminally unverifiable Attempt was retained" in script
+    assert "_assert_mock_interview_attempt_restart_state" in script
+
+
+def test_browser_harness_does_not_swallow_lifecycle_failures_and_checks_final_attempt():
+    script = (Path(__file__).parents[1] / "scripts" / "mock-interview-real-ai-browser-harness.ps1").read_text(encoding="utf-8")
+    loop_end = script.index("if ($null -eq $history)")
+    assert "Test-TransientHistoryError" in script
+    assert "Browser created more than*" not in script
+    assert script.rfind("foreach ($attemptId in @($knownAttemptIds") < loop_end
+    assert "checkedAttemptIds -notcontains $_" in script
+
+
+@pytest.mark.parametrize(
+    ("category", "state"),
+    [
+        ("contract_failed", "retained:contract_failed"),
+    ],
+)
+def test_browser_harness_rejects_retained_terminal_attempt(category, state):
+    with pytest.raises(RuntimeError, match="terminally unverifiable"):
+        _assert_mock_interview_attempt_restart_state(category, state)
+
+
+def test_browser_harness_rejects_deleted_provider_unknown_attempt():
+    with pytest.raises(RuntimeError, match="provider-unknown"):
+        _assert_mock_interview_attempt_restart_state("provider_unknown", "deleted")
+
+
+def test_browser_harness_accepts_composite_provider_failure_category_when_retained():
+    _assert_mock_interview_attempt_restart_state("provider_error,timeout", "retained:provider_unknown")
 
 
 def test_browser_harness_runtime_output_is_ascii_and_has_no_encoded_prompt_path():
