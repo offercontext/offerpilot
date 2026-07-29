@@ -1,11 +1,15 @@
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import delete, func, select
 from typer.testing import CliRunner
 
+from offerpilot.ai.types import Assistant
 from offerpilot.cli import app
+from offerpilot.api import create_app
 from offerpilot.ai.opportunity_fit_reviews import build_source_snapshot
 from offerpilot.db import session_factory_for_data_dir
 from offerpilot.models import (
@@ -15,6 +19,9 @@ from offerpilot.models import (
     Conversation,
     MaterialRevisionProposal,
     MockInterviewAttempt,
+    MockInterviewFeedbackProposal,
+    MockInterviewReviewDraft,
+    MockInterviewTurn,
     OpportunityFitReview,
     OpportunityFitReviewSession,
     OpportunityFitReviewStage,
@@ -31,15 +38,51 @@ from offerpilot.smoke import (
     _capture_real_ai_browser_domain_baseline,
     _cleanup_real_ai_browser_records,
     _cleanup_real_ai_smoke_records,
+    _latest_mock_interview_failure_category,
     _run_real_ai_interview_review_smoke,
     _run_real_ai_interview_knowledge_capture_smoke,
     _run_real_ai_interview_preparation_smoke,
+    _run_real_ai_mock_interview_smoke,
     _run_real_ai_material_proposal_smoke,
     _run_real_ai_opportunity_fit_smoke,
     _validate_interview_preparation_proposal_response,
     run_core_smoke,
     run_http_smoke,
 )
+
+
+class _MockInterviewAcceptanceModel:
+    supports_json_schema = False
+
+    def __init__(self, success_after: int | None = 5) -> None:
+        self.feedback_calls = 0
+        self.success_after = success_after
+
+    def complete(self, messages, tools, **kwargs):
+        if any("mock-interview-feedback-v1" in message.content for message in messages):
+            self.feedback_calls += 1
+            if self.success_after is None or self.feedback_calls < self.success_after:
+                return Assistant(content='{"unexpected":true}')
+            return Assistant(content=json.dumps({
+                "schema_version": "mock-interview-feedback-v1",
+                "proposal_status": "normal",
+                "strengths": [{
+                    "id": "strength-1",
+                    "text": "回答包含具体经历。",
+                    "evidence_refs": [{
+                        "source": "turn",
+                        "path": "/turns/001/answer",
+                        "excerpt": "Python",
+                    }],
+                }],
+                "practice_points": [],
+                "follow_up_questions": [],
+                "next_practice_steps": [],
+            }, ensure_ascii=False))
+        return Assistant(content=json.dumps({
+            "question": "请继续说明这段经历。",
+            "evidence_refs": [{"source": "jd", "path": "/jd/text", "excerpt": "Python"}],
+        }, ensure_ascii=False))
 
 
 def _static_dir(tmp_path: Path) -> Path:
@@ -97,6 +140,65 @@ def test_http_smoke_uses_real_http_and_cleans_test_application(tmp_path):
         "http_chat_create_event_card",
         "http_cleanup",
     ]
+
+
+def test_real_ai_mock_interview_smoke_restarts_unverifiable_attempts_and_confirms_success(tmp_path):
+    model = _MockInterviewAcceptanceModel()
+    data_dir = tmp_path / "data"
+    with TestClient(create_app(data_dir=data_dir, chat_model=model)) as client:
+        application = client.post(
+            "/api/applications",
+            json={"company_name": "Smoke", "position_name": "Engineer", "status": "interview"},
+        ).json()
+        steps: list[SmokeStep] = []
+
+        _run_real_ai_mock_interview_smoke(
+            client, steps, application["id"], [], data_dir
+        )
+
+    with session_factory_for_data_dir(data_dir)() as session:
+        assert session.scalar(select(func.count()).select_from(MockInterviewAttempt)) == 1
+        assert session.scalar(select(func.count()).select_from(MockInterviewTurn)) == 2
+        assert session.scalar(select(func.count()).select_from(MockInterviewFeedbackProposal)) == 1
+        assert session.scalar(select(func.count()).select_from(MockInterviewReviewDraft)) == 1
+    assert "unverifiable" in steps[-1].detail
+    assert "success" in steps[-1].detail
+    assert model.feedback_calls == 5
+
+
+def test_real_ai_mock_interview_smoke_fails_after_three_unverifiable_restarts(tmp_path):
+    model = _MockInterviewAcceptanceModel(success_after=None)
+    data_dir = tmp_path / "data"
+    with TestClient(create_app(data_dir=data_dir, chat_model=model)) as client:
+        application = client.post(
+            "/api/applications",
+            json={"company_name": "Smoke", "position_name": "Engineer", "status": "interview"},
+        ).json()
+        with pytest.raises(RuntimeError, match="did not complete"):
+            _run_real_ai_mock_interview_smoke(client, [], application["id"], [], data_dir)
+
+    with session_factory_for_data_dir(data_dir)() as session:
+        assert session.scalar(select(func.count()).select_from(MockInterviewAttempt)) == 0
+        assert session.scalar(select(func.count()).select_from(MockInterviewTurn)) == 0
+        assert session.scalar(select(func.count()).select_from(MockInterviewFeedbackProposal)) == 0
+        assert session.scalar(select(func.count()).select_from(MockInterviewReviewDraft)) == 0
+    assert model.feedback_calls == 6
+
+
+def test_real_ai_mock_interview_smoke_reads_only_safe_failure_categories(tmp_path):
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    (log_dir / "offerpilot.log").write_text(
+        'WARNING mock_interview_feedback_failure '
+        '{"failure_category":"unknown_evidence_ref","failure_categories":'
+        '["unknown_evidence_ref","excerpt_mismatch"],"provider_request_id":'
+        '"request-redacted-abc123"}\n',
+        encoding="utf-8",
+    )
+
+    assert _latest_mock_interview_failure_category(tmp_path, "feedback") == (
+        "unknown_evidence_ref,excerpt_mismatch"
+    )
 
 
 def test_real_ai_interview_preparation_smoke_retries_pending_results_with_same_request(monkeypatch):

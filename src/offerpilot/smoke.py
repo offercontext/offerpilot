@@ -414,7 +414,9 @@ def _run_http_smoke(
                     _run_real_ai_opportunity_fit_smoke(client, steps, application_id, smoke_resume_ids)
                     _run_real_ai_interview_review_smoke(client, steps, application_id)
                     _run_real_ai_interview_knowledge_capture_smoke(client, steps, application_id)
-                    _run_real_ai_mock_interview_smoke(client, steps, application_id, smoke_resume_ids)
+                    _run_real_ai_mock_interview_smoke(
+                        client, steps, application_id, smoke_resume_ids, data_dir
+                    )
                     _run_real_ai_write_smoke(client, steps, company, application_id)
                 else:
                     _run_local_proposal_terminal_smoke(
@@ -1185,8 +1187,10 @@ def _run_real_ai_mock_interview_smoke(
     steps: list[SmokeStep],
     application_id: int,
     resume_ids: list[int],
+    data_dir: Path,
 ) -> None:
-    """Exercise three independent event-bound text attempts through the HTTP API."""
+    """Exercise bounded user restarts and one complete two-turn interview flow."""
+    outcomes: list[str] = []
     for index in range(3):
         resume = client.post(
             "/api/resumes",
@@ -1211,7 +1215,36 @@ def _run_real_ai_mock_interview_smoke(
         )
         _assert_status(event.status_code, 201, f"http_mock_interview_event_{index}")
         event_id = int(event.json()["id"])
+        baseline = _capture_real_ai_browser_domain_baseline(
+            data_dir, application_id, [event_id], [resume_id]
+        )
         base = f"/api/applications/{application_id}/events/{event_id}/mock-interview/attempts"
+
+        def handle_unverifiable(response: Any, stage: str) -> bool:
+            if response.status_code != 502 or response.json().get("error_code") != "mock_interview_unverifiable":
+                return False
+            attempt_ids = _mock_interview_attempt_ids(data_dir, application_id, event_id)
+            if len(attempt_ids) > 1:
+                raise RuntimeError("mock interview failure created multiple attempts")
+            if attempt_ids:
+                attempt_id = attempt_ids[0]
+                deleted = client.delete(f"{base}/{attempt_id}")
+                _assert_status(deleted.status_code, 200, f"http_mock_interview_cleanup_{index}_{stage}")
+                _assert_mock_interview_failed_attempt_clean(
+                    data_dir, application_id, event_id, resume_id, attempt_id, baseline
+                )
+            else:
+                _assert_real_ai_browser_no_cross_domain_writes(
+                    data_dir, application_id, baseline, [event_id], [resume_id]
+                )
+            diagnostic_stage = "feedback" if stage == "feedback" else "question"
+            failure_category = _latest_mock_interview_failure_category(data_dir, diagnostic_stage)
+            outcomes.append(
+                f"attempt_{index + 1}:{stage}:mock_interview_unverifiable:"
+                f"{failure_category or 'unknown'}"
+            )
+            return True
+
         start = client.post(
             base,
             json={
@@ -1221,6 +1254,8 @@ def _run_real_ai_mock_interview_smoke(
                 "initial_question_idempotency_key": f"real-ai-mock-question-{index}",
             },
         )
+        if handle_unverifiable(start, "start"):
+            continue
         _assert_status(start.status_code, 201, f"http_mock_interview_start_{index}")
         started = start.json()
         attempt_id = int(started["attempt_id"])
@@ -1233,26 +1268,166 @@ def _run_real_ai_mock_interview_smoke(
             },
         )
         _assert_status(answer.status_code, 200, f"http_mock_interview_answer_{index}")
+        question = client.post(
+            f"{base}/{attempt_id}/turns/2/question",
+            json={"question_idempotency_key": f"real-ai-mock-question-2-{index}"},
+        )
+        if handle_unverifiable(question, "question_2"):
+            continue
+        _assert_status(question.status_code, 201, f"http_mock_interview_question_2_{index}")
+        answer_two = client.post(
+            f"{base}/{attempt_id}/turns",
+            json={
+                "turn_no": 2,
+                "answer_text": "我确认了回滚后的服务指标与数据一致性。",
+                "turn_idempotency_key": f"real-ai-mock-answer-2-{index}",
+            },
+        )
+        _assert_status(answer_two.status_code, 200, f"http_mock_interview_answer_2_{index}")
         finish = client.post(
             f"{base}/{attempt_id}/finish",
             json={"feedback_idempotency_key": f"real-ai-mock-feedback-{index}"},
         )
+        if handle_unverifiable(finish, "feedback"):
+            continue
         _assert_status(finish.status_code, 201, f"http_mock_interview_finish_{index}")
         body = finish.json()
         if set(body) != {"proposal_id", "proposal_status", "proposal_hash", "proposal"}:
             raise RuntimeError("mock interview feedback response exposed non-public fields")
         if body["proposal_status"] not in {"normal", "safe_empty"}:
             raise RuntimeError("mock interview feedback returned an invalid status")
+        selected_block = _first_mock_interview_feedback_block(body["proposal"])
+        if selected_block is None:
+            deleted = client.delete(f"{base}/{attempt_id}")
+            _assert_status(deleted.status_code, 200, f"http_mock_interview_cleanup_{index}_safe_empty")
+            _assert_mock_interview_failed_attempt_clean(
+                data_dir, application_id, event_id, resume_id, attempt_id, baseline
+            )
+            outcomes.append(f"attempt_{index + 1}:safe_empty")
+            continue
+        draft = client.post(
+            f"{base}/{attempt_id}/review-drafts",
+            json={
+                "proposal_id": body["proposal_id"],
+                "confirmation_idempotency_key": f"real-ai-mock-confirm-{index}",
+                "selected_blocks": [selected_block],
+            },
+        )
+        _assert_status(draft.status_code, 201, f"http_mock_interview_confirm_{index}")
         history = client.get(base)
         _assert_status(history.status_code, 200, f"http_mock_interview_history_{index}")
-        if not history.json().get("items"):
+        history_items = history.json().get("items")
+        if not isinstance(history_items, list) or not any(
+            item.get("attempt_id") == attempt_id
+            and isinstance(item.get("turns"), list)
+            and len(item["turns"]) >= 2
+            and isinstance(item.get("review_draft"), dict)
+            and item["review_draft"].get("status") == "confirmed"
+            for item in history_items
+            if isinstance(item, dict)
+        ):
             raise RuntimeError("mock interview feedback history was empty")
+        outcomes.append(f"attempt_{index + 1}:success")
+        break
+    if not outcomes or not outcomes[-1].endswith(":success"):
+        raise RuntimeError(
+            "mock interview real-ai attempts did not complete: "
+            + json.dumps(outcomes, ensure_ascii=True, separators=(",", ":"))
+        )
     steps.append(
         SmokeStep(
             "http_mock_interview",
-            "three isolated text mock-interview attempts reached feedback and read-only history",
+            "bounded mock-interview attempts: "
+            + json.dumps(outcomes, ensure_ascii=True, separators=(",", ":")),
         )
     )
+
+
+def _mock_interview_attempt_ids(data_dir: Path, application_id: int, event_id: int) -> list[int]:
+    session_factory = session_factory_for_data_dir(data_dir)
+    try:
+        with session_factory() as session:
+            return list(session.scalars(
+                select(MockInterviewAttempt.id).where(
+                    MockInterviewAttempt.application_id == application_id,
+                    MockInterviewAttempt.event_id == event_id,
+                )
+            ).all())
+    finally:
+        bind = session_factory.kw.get("bind")
+        if bind is not None:
+            bind.dispose()
+
+
+def _latest_mock_interview_failure_category(data_dir: Path, stage: str) -> str:
+    log_path = data_dir / "logs" / "offerpilot.log"
+    if not log_path.is_file():
+        return ""
+    marker = f"mock_interview_{stage}_failure "
+    try:
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    for line in reversed(lines):
+        if marker not in line:
+            continue
+        try:
+            payload = json.loads(line.split(marker, 1)[1])
+        except (IndexError, json.JSONDecodeError):
+            return ""
+        categories = payload.get("failure_categories")
+        if isinstance(categories, list) and all(isinstance(item, str) for item in categories):
+            return ",".join(categories[:2])
+        category = payload.get("failure_category")
+        return category if isinstance(category, str) else ""
+    return ""
+
+
+def _assert_mock_interview_failed_attempt_clean(
+    data_dir: Path,
+    application_id: int,
+    event_id: int,
+    resume_id: int,
+    attempt_id: int,
+    baseline: dict[str, Any],
+) -> None:
+    session_factory = session_factory_for_data_dir(data_dir)
+    try:
+        with session_factory() as session:
+            for model in (MockInterviewTurn, MockInterviewFeedbackProposal, MockInterviewReviewDraft):
+                count = session.scalar(
+                    select(func.count()).select_from(model).where(model.attempt_id == attempt_id)
+                )
+                if count:
+                    raise RuntimeError(f"mock interview failed attempt left {model.__name__} rows")
+    finally:
+        bind = session_factory.kw.get("bind")
+        if bind is not None:
+            bind.dispose()
+    _assert_real_ai_browser_no_cross_domain_writes(
+        data_dir, application_id, baseline, [event_id], [resume_id]
+    )
+
+
+def _first_mock_interview_feedback_block(proposal: Any) -> dict[str, Any] | None:
+    if not isinstance(proposal, dict):
+        return None
+    for field in ("strengths", "practice_points", "follow_up_questions", "next_practice_steps"):
+        items = proposal.get(field)
+        if isinstance(items, list):
+            for item in items:
+                if (
+                    isinstance(item, dict)
+                    and isinstance(item.get("id"), str)
+                    and isinstance(item.get("text"), str)
+                    and isinstance(item.get("evidence_refs"), list)
+                ):
+                    return {
+                        "id": item["id"],
+                        "text": item["text"],
+                        "evidence_refs": item["evidence_refs"],
+                    }
+    return None
 
 
 def _validate_interview_review_smoke_evidence(
