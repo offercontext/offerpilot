@@ -41,7 +41,7 @@ export interface MockInterviewDrawerDraft {
   selectedIds: string[];
   resultUnknown: boolean;
   retryAfterMs?: number;
-  pendingOperation?: 'start' | 'question' | 'feedback' | 'discard';
+  pendingOperation?: 'start' | 'answer' | 'question' | 'feedback' | 'discard';
   error: string | null;
 }
 
@@ -264,7 +264,7 @@ export default function MockInterviewDrawer({
       });
       onDraftChange({ error: null, resultUnknown: false, answerSubmitted: true });
     } catch (error) {
-      if (isUnknownResult(error)) onDraftChange({ resultUnknown: true, error: safeError(error) });
+      if (isUnknownResult(error)) onDraftChange({ pendingOperation: 'answer', resultUnknown: true, error: safeError(error) });
       else { await clearDefiniteAttempt(error, draft.attemptKey ?? undefined); }
     } finally { setWorking(false); }
   };
@@ -295,7 +295,7 @@ export default function MockInterviewDrawer({
         error: null,
       });
     } catch (error) {
-      if (isUnknownResult(error)) onDraftChange({ resultUnknown: true, error: safeError(error) });
+      if (isUnknownResult(error)) onDraftChange({ pendingOperation: 'question', resultUnknown: true, error: safeError(error) });
       else { await clearDefiniteAttempt(error, draft.attemptKey ?? undefined); }
     } finally { setWorking(false); }
   };
@@ -313,7 +313,7 @@ export default function MockInterviewDrawer({
       }
       onDraftChange({ proposalId: result.proposal_id, proposal: result.proposal, selectedIds: [], resultUnknown: false, pendingOperation: undefined, error: null });
     } catch (error) {
-      if (isUnknownResult(error)) onDraftChange({ resultUnknown: true, error: safeError(error) });
+      if (isUnknownResult(error)) onDraftChange({ pendingOperation: 'feedback', resultUnknown: true, error: safeError(error) });
       else { await clearDefiniteAttempt(error, draft.attemptKey ?? undefined); }
     } finally { setWorking(false); }
   };
@@ -335,6 +335,17 @@ export default function MockInterviewDrawer({
     } finally { setWorking(false); }
   };
 
+  const retryPendingOperation = () => {
+    switch (draft.pendingOperation) {
+      case 'start': return start();
+      case 'answer': return answer();
+      case 'question': return nextQuestion();
+      case 'feedback': return finish();
+      case 'discard': return clearDefiniteAttempt();
+      default: return undefined;
+    }
+  };
+
   return (
     <Drawer open={open} width={560} title="文本模拟面试" onClose={onClose}>
       <Space direction="vertical" size="middle" style={{ width: '100%' }}>
@@ -347,15 +358,7 @@ export default function MockInterviewDrawer({
             action={(
               <Button
                 size="small"
-                onClick={() => void (
-                  draft.pendingOperation === 'feedback'
-                    ? finish()
-                    : draft.pendingOperation === 'question'
-                      ? nextQuestion()
-                      : draft.pendingOperation === 'discard'
-                        ? clearDefiniteAttempt()
-                      : start()
-                )}
+                onClick={() => void retryPendingOperation()}
                 disabled={working}
               >
                 使用原尝试重试

@@ -260,4 +260,55 @@ describe('MockInterviewDrawer failed-attempt cleanup', () => {
       resultUnknown: false,
     });
   });
+
+  it.each([
+    ['answer', { attemptId: 501, attemptKey: 'answer-attempt', answer: 'answer' }, services.submitMockInterviewAnswer],
+    ['question', { attemptId: 502, attemptKey: 'question-attempt', answer: 'answer', answerSubmitted: true }, services.generateMockInterviewQuestion],
+    ['feedback', { attemptId: 503, attemptKey: 'feedback-attempt', answer: 'answer', answerSubmitted: true }, services.finishMockInterview],
+  ])('retries an unknown %s result through the same endpoint and key after remount', async (_operation, patch, operation) => {
+    operation
+      .mockRejectedValueOnce({ response: { status: 502, data: { error_code: 'mock_interview_provider_error', attempt_id: patch.attemptId } } })
+      .mockResolvedValueOnce(_operation === 'answer'
+        ? { attempt_id: patch.attemptId, attempt_status: 'in_progress', transcript_fingerprint: 'fingerprint' }
+        : _operation === 'question'
+          ? { attempt_id: patch.attemptId, turn: { turn_no: 2, question: 'Next question', answer: '' } }
+          : {
+            attempt_id: patch.attemptId,
+            proposal_id: 9,
+            proposal: {
+              proposal_status: 'safe_empty',
+              strengths: [],
+              practice_points: [],
+              follow_up_questions: [],
+              next_practice_steps: [],
+            },
+          });
+    render({ ...baseDraft, ...patch });
+
+    const initialButtonIndex = _operation === 'answer' ? 0 : _operation === 'question' ? 2 : 1;
+    act(() => drawerButtons()[initialButtonIndex]?.click());
+    await flush();
+    const firstRequest = operation.mock.calls[0][0];
+    const expectedKey = _operation === 'answer'
+      ? firstRequest.turnKey
+      : _operation === 'question'
+        ? firstRequest.questionKey
+        : firstRequest.feedbackKey;
+    expect(JSON.parse(container?.querySelector('[data-testid="draft-state"]')?.textContent ?? '{}')).toMatchObject({
+      attemptId: patch.attemptId,
+      pendingOperation: _operation,
+      resultUnknown: true,
+    });
+
+    await retryDiscardAfterRemount();
+    const retryRequest = operation.mock.calls[1][0];
+    expect(operation).toHaveBeenCalledTimes(2);
+    expect(retryRequest).toMatchObject({
+      attemptId: patch.attemptId,
+      ...(_operation === 'answer' ? { turnKey: expectedKey } : {}),
+      ...(_operation === 'question' ? { questionKey: expectedKey } : {}),
+      ...(_operation === 'feedback' ? { feedbackKey: expectedKey } : {}),
+    });
+    expect(services.startMockInterview).not.toHaveBeenCalled();
+  });
 });

@@ -38,4 +38,13 @@ describe('MockInterviewDrawer safety display contract', () => {
     expect(source).toContain('if (status === 404)');
     expect(source).toContain('resetDraft(sourceError);');
   });
+
+  it('records and dispatches each post-start unknown operation', () => {
+    expect(source).toContain("pendingOperation?: 'start' | 'answer' | 'question' | 'feedback' | 'discard';");
+    expect(source).toContain("pendingOperation: 'answer'");
+    expect(source).toContain("case 'answer': return answer();");
+    expect(source).toContain('turnKey');
+    expect(source).toContain('nextQuestionKey');
+    expect(source).toContain('feedbackKey');
+  });
 });
