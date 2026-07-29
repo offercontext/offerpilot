@@ -149,11 +149,9 @@ try {
     $env:MOCK_INTERVIEW_HARNESS_BASELINE = ($baseline -join '')
   } finally { Pop-Location }
 
-  Write-Host "Use the dedicated browser target already navigated to $baseUrl. Navigate to 面试, choose Mock Interview Browser Smoke · Verification Engineer, then click 开始文本模拟面试."
+  Write-Host "Use the dedicated browser target already navigated to $baseUrl. Open Interview, choose Mock Interview Browser Smoke - Verification Engineer, then start the text mock interview."
   Write-Host 'Select the synthetic resume, paste a non-empty JD, start the text session, submit an answer, finish, select feedback if present, and use the second confirmation to save the independent review draft.'
-  # 操作提示包含“AI 输出未通过验证”和“重新开始本次模拟面试”。
-  Write-Host ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('QUkg6L6T5Ye65pyq6YCa6L+H6aqM6K+BIC0g54K55Ye7IOmHjeaWsOW8gOWni+acrOasoeaooeaLn+mdouivlSAtIOacgOWkmjPmrKEgLSDkvb/nlKjlkIzkuIDnroDljoYgSkQg5ZKM6Z2i6K+V5LqL5Lu2')))
-  Write-Host 'If the UI says AI output could not be verified, click 重新开始本次模拟面试 and repeat with the same resume, JD, and interview event. Use at most three attempts; do not retry a terminally failed Attempt.'
+  Write-Host 'If AI output cannot be verified, click Restart this mock interview and repeat with the same resume, JD, and event. Use at most three attempts; do not retry a terminally failed Attempt.'
   Write-Host 'Close and reopen the event to view read-only history. Browser requests must stay on local static resources and /api; Provider egress is server-side only.'
   Write-Host "Configured Provider endpoint tuple: $($providerEndpoint.Scheme)://$($providerEndpoint.Host):$($providerEndpoint.Port)"
   Write-Host 'Complete the real text mock-interview flow in the dedicated target; opening another tab is not audited.'
@@ -162,6 +160,10 @@ try {
   $successfulAttemptId = $null
   $browserAttemptIds = @()
   $failureDiagnostics = @()
+  $attemptLifecycleDiagnostics = @()
+  $knownAttemptIds = @()
+  $checkedAttemptIds = @()
+  $lastCreateCount = 0
   $browserFlowFailure = $false
   $maxAttemptsObservedAt = $null
   for ($attempt = 0; $attempt -lt 360; $attempt++) {
@@ -192,6 +194,35 @@ try {
         if ($liveCreates.Count -gt $maxBrowserAttempts) {
           throw "Browser created more than $maxBrowserAttempts mock interview Attempts in one flow."
         }
+        if ($liveCreates.Count -gt $lastCreateCount) {
+          Push-Location $repo
+          try {
+            foreach ($priorAttemptId in @($knownAttemptIds | Where-Object { $checkedAttemptIds -notcontains $_ })) {
+              $env:MOCK_INTERVIEW_HARNESS_ATTEMPT = [string]$priorAttemptId
+              $attemptState = & uv run python -c "import os; from pathlib import Path; from offerpilot.smoke import _mock_interview_attempt_state; print(_mock_interview_attempt_state(Path(os.environ['MOCK_INTERVIEW_HARNESS_DATA']), int(os.environ['MOCK_INTERVIEW_HARNESS_APPLICATION']), int(os.environ['MOCK_INTERVIEW_HARNESS_EVENT']), int(os.environ['MOCK_INTERVIEW_HARNESS_RESUME']), int(os.environ['MOCK_INTERVIEW_HARNESS_ATTEMPT'])))"
+              Assert-ExitCode 'browser Attempt lifecycle inspection'
+              $category = & uv run python -c "import os; from pathlib import Path; from offerpilot.smoke import _latest_mock_interview_failure_category; print(_latest_mock_interview_failure_category(Path(os.environ['MOCK_INTERVIEW_HARNESS_DATA']), 'feedback') or _latest_mock_interview_failure_category(Path(os.environ['MOCK_INTERVIEW_HARNESS_DATA']), 'question') or 'mock_interview_unverifiable')"
+              Assert-ExitCode 'browser Attempt failure diagnostic'
+              $categoryValue = (($category -join '').Trim() -replace '[^\x00-\x7F]', '?')
+              $stateValue = (($attemptState -join '').Trim())
+              $providerFailure = $categoryValue -in @('provider', 'provider_error', 'network_error', 'timeout')
+              if ($providerFailure -and $stateValue -eq 'deleted') {
+                throw 'A provider-unknown Attempt was deleted before the browser restart.'
+              }
+              if (-not $providerFailure -and $categoryValue -ne 'mock_interview_unverifiable' -and $stateValue -like 'retained:*') {
+                throw 'A terminally unverifiable Attempt was retained after the browser restart.'
+              }
+              $attemptLifecycleDiagnostics += "attempt=$priorAttemptId;category=$categoryValue;state=$stateValue"
+              $checkedAttemptIds += [int]$priorAttemptId
+            }
+            $currentAttemptIds = & uv run python -c "import os; from pathlib import Path; from offerpilot.smoke import _mock_interview_attempt_ids; print(' '.join(str(item) for item in _mock_interview_attempt_ids(Path(os.environ['MOCK_INTERVIEW_HARNESS_DATA']), int(os.environ['MOCK_INTERVIEW_HARNESS_APPLICATION']), int(os.environ['MOCK_INTERVIEW_HARNESS_EVENT']))))"
+            Assert-ExitCode 'browser Attempt id inspection'
+            foreach ($currentAttemptId in (($currentAttemptIds -join '').Trim() -split '\s+' | Where-Object { $_ })) {
+              if ($knownAttemptIds -notcontains [int]$currentAttemptId) { $knownAttemptIds += [int]$currentAttemptId }
+            }
+            $lastCreateCount = $liveCreates.Count
+          } finally { Pop-Location }
+        }
         if ($liveCreates.Count -eq $maxBrowserAttempts) {
           if ($null -eq $maxAttemptsObservedAt) { $maxAttemptsObservedAt = Get-Date }
           elseif (((Get-Date) - $maxAttemptsObservedAt).TotalSeconds -ge 30) { break }
@@ -211,9 +242,13 @@ try {
       Assert-ExitCode 'browser failure diagnostic'
       if (($diagnostic -join '').Trim()) { $category = ($diagnostic -join '').Trim() }
     } finally { Pop-Location }
-    $failureDiagnostics = @('stage=mock_interview;category=' + $category)
+    $category = ($category -replace '[^\x00-\x7F]', '?')
+    $failureDiagnostics = @('stage=mock_interview;category=' + $category) + $attemptLifecycleDiagnostics
     Write-Host ('Mock interview browser attempts failed: ' + ($failureDiagnostics -join ';'))
     $browserFlowFailure = $true
+  }
+  if ($attemptLifecycleDiagnostics.Count -gt 0) {
+    Write-Host ('Restart lifecycle audit: ' + ($attemptLifecycleDiagnostics -join '|'))
   }
   $successfulHistoryItem = @($history.items | Where-Object { [int]$_.attempt_id -eq $successfulAttemptId }) | Select-Object -First 1
   if (-not $browserFlowFailure) {

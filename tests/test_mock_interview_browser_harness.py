@@ -20,6 +20,7 @@ from offerpilot.models import (
 from offerpilot.smoke import (
     _assert_real_ai_smoke_data_clean,
     _cleanup_real_ai_smoke_records,
+    _mock_interview_attempt_state,
     _mock_interview_browser_failure_diagnostics,
     _select_mock_interview_browser_success,
 )
@@ -46,8 +47,6 @@ def test_browser_harness_requires_real_two_turn_draft_and_browser_network_eviden
 def test_browser_harness_allows_three_same_context_attempts_and_selects_success_by_id():
     script = (Path(__file__).parents[1] / "scripts" / "mock-interview-real-ai-browser-harness.ps1").read_text(encoding="utf-8")
     auditor = (Path(__file__).parents[1] / "scripts" / "browser-network-audit.py").read_text(encoding="utf-8")
-    assert "重新开始本次模拟面试" in script
-    assert "AI 输出未通过验证" in script
     assert "$maxBrowserAttempts = 3" in script
     assert "flowBase" in script
     assert "createIndexes" in script
@@ -57,6 +56,47 @@ def test_browser_harness_allows_three_same_context_attempts_and_selects_success_
     assert "createRecords" in script
     assert "jd_text_sha256" in script
     assert "request_context" in auditor
+    assert "attemptLifecycleDiagnostics" in script
+    assert "_mock_interview_attempt_state" in script
+    assert "category=" in script
+    assert "provider-unknown Attempt was deleted" in script
+    assert "terminally unverifiable Attempt was retained" in script
+
+
+def test_browser_harness_runtime_output_is_ascii_and_has_no_encoded_prompt_path():
+    script = (Path(__file__).parents[1] / "scripts" / "mock-interview-real-ai-browser-harness.ps1").read_text(encoding="utf-8")
+    executable_output = [
+        line for line in script.splitlines()
+        if "Write-Host" in line or "throw " in line
+    ]
+    assert executable_output
+    assert all(all(ord(character) < 128 for character in line) for line in executable_output)
+    assert "FromBase64String" not in script
+
+
+def test_browser_harness_records_failed_attempt_cleanup_or_retention(tmp_path):
+    data_dir = tmp_path / "data"
+    factory = session_factory_for_data_dir(data_dir)
+    with factory() as session:
+        application = Application(company_name="Smoke", position_name="QA")
+        session.add(application)
+        session.flush()
+        event = ApplicationEvent(application_id=application.id, event_type="interview")
+        resume = Resume(title="Smoke", content_json=json.dumps({}))
+        session.add_all([event, resume])
+        session.flush()
+        attempt = MockInterviewAttempt(
+            application_id=application.id, event_id=event.id, resume_id=resume.id,
+            idempotency_key="attempt", input_snapshot_json="{}", source_fingerprint="source",
+            attempt_status="provider_unknown", generation_revision=1,
+            provider_call_token="token", transcript_fingerprint="transcript",
+        )
+        session.add(attempt)
+        session.commit()
+        application_id, event_id, resume_id, attempt_id = application.id, event.id, resume.id, attempt.id
+    assert _mock_interview_attempt_state(
+        data_dir, application_id, event_id, resume_id, attempt_id
+    ) == "retained:provider_unknown"
 
 
 def test_browser_harness_fake_cdp_two_failures_then_success_selects_third_attempt():

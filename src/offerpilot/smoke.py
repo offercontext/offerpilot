@@ -1406,6 +1406,56 @@ def _mock_interview_attempt_ids(data_dir: Path, application_id: int, event_id: i
             bind.dispose()
 
 
+def _mock_interview_attempt_state(
+    data_dir: Path,
+    application_id: int,
+    event_id: int,
+    resume_id: int,
+    attempt_id: int,
+) -> str:
+    """Return a safe lifecycle state and reject orphaned or misbound rows."""
+    session_factory = session_factory_for_data_dir(data_dir)
+    try:
+        with session_factory() as session:
+            attempt = session.get(MockInterviewAttempt, attempt_id)
+            if attempt is None:
+                for model in (
+                    MockInterviewTurn,
+                    MockInterviewFeedbackProposal,
+                    MockInterviewReviewDraft,
+                ):
+                    child_count = session.scalar(
+                        select(func.count()).select_from(model).where(model.attempt_id == attempt_id)
+                    )
+                    if child_count:
+                        raise RuntimeError(
+                            f"mock interview attempt {attempt_id} left orphaned {model.__name__} rows"
+                        )
+                return "deleted"
+            if (
+                attempt.application_id != application_id
+                or attempt.event_id != event_id
+                or attempt.resume_id != resume_id
+            ):
+                raise RuntimeError("mock interview browser attempt changed its source context")
+            if attempt.attempt_status not in {
+                "generating_question",
+                "awaiting_answer",
+                "provider_unknown",
+                "generating_feedback",
+                "feedback_ready",
+                "source_conflict",
+                "contract_failed",
+                "confirmed",
+            }:
+                raise RuntimeError("mock interview browser attempt has an unknown lifecycle state")
+            return f"retained:{attempt.attempt_status}"
+    finally:
+        bind = session_factory.kw.get("bind")
+        if bind is not None:
+            bind.dispose()
+
+
 def _select_mock_interview_browser_success(
     history_items: list[dict[str, Any]], attempt_ids: list[int]
 ) -> dict[str, Any] | None:
