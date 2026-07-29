@@ -4189,8 +4189,13 @@ def create_app(
             return error_response(409, "mock_interview_turn_idempotency_conflict", "mock_interview_turn_idempotency_conflict")
         except MockInterviewSourceChanged:
             return error_response(409, "mock_interview_source_conflict")
-        except MockInterviewContractFailed:
-            return error_response(502, "mock interview output could not be verified; please start a new attempt", "mock_interview_unverifiable")
+        except MockInterviewContractFailed as exc:
+            return error_response(
+                502,
+                "mock interview output could not be verified; please start a new attempt",
+                "mock_interview_unverifiable",
+                details={"attempt_id": exc.attempt_id} if exc.attempt_id is not None else None,
+            )
         except LookupError:
             return error_response(404, "mock_interview_application_not_found")
         except ValueError as exc:
@@ -4267,7 +4272,12 @@ def create_app(
                 )
             except MockInterviewSourceChanged:
                 return error_response(409, "mock_interview_source_conflict")
-            return error_response(502, "AI service is temporarily unavailable", "mock_interview_provider_error")
+            return error_response(
+                502,
+                "AI service is temporarily unavailable",
+                "mock_interview_provider_error",
+                details={"attempt_id": result.attempt.id},
+            )
         except MockInterviewUnverifiableError as exc:
             _log_mock_interview_ai_failure(
                 resolved_data_dir,
@@ -4282,7 +4292,12 @@ def create_app(
                 )
             except MockInterviewSourceChanged:
                 return error_response(409, "mock_interview_source_conflict")
-            return error_response(502, "mock interview output could not be verified; please start a new attempt", "mock_interview_unverifiable")
+            return error_response(
+                502,
+                "mock interview output could not be verified; please start a new attempt",
+                "mock_interview_unverifiable",
+                details={"attempt_id": result.attempt.id},
+            )
         except MockInterviewSourceChanged:
             return error_response(409, "mock_interview_source_conflict")
 
@@ -4391,7 +4406,12 @@ def create_app(
                     mock_interviews.mark_provider_unknown(attempt_id, claim[0], claim[1], "question")
                 except MockInterviewSourceChanged:
                     return error_response(409, "mock_interview_source_conflict")
-            return error_response(502, "AI service is temporarily unavailable", "mock_interview_provider_error")
+            return error_response(
+                502,
+                "AI service is temporarily unavailable",
+                "mock_interview_provider_error",
+                details={"attempt_id": attempt_id},
+            )
         except MockInterviewUnverifiableError as exc:
             _log_mock_interview_ai_failure(
                 resolved_data_dir,
@@ -4407,9 +4427,19 @@ def create_app(
                     )
                 except MockInterviewSourceChanged:
                     return error_response(409, "mock_interview_source_conflict")
-            return error_response(502, "mock interview output could not be verified; please start a new attempt", "mock_interview_unverifiable")
+            return error_response(
+                502,
+                "mock interview output could not be verified; please start a new attempt",
+                "mock_interview_unverifiable",
+                details={"attempt_id": attempt_id},
+            )
         except MockInterviewContractFailed:
-            return error_response(502, "mock interview output could not be verified; please start a new attempt", "mock_interview_unverifiable")
+            return error_response(
+                502,
+                "mock interview output could not be verified; please start a new attempt",
+                "mock_interview_unverifiable",
+                details={"attempt_id": attempt_id},
+            )
         except MockInterviewTurnIdempotencyConflict:
             return error_response(409, "mock_interview_turn_idempotency_conflict", "mock_interview_turn_idempotency_conflict")
         except MockInterviewSourceChanged:
@@ -4480,7 +4510,12 @@ def create_app(
         except MockInterviewSourceChanged:
             return error_response(409, "mock_interview_source_conflict")
         except MockInterviewContractFailed:
-            return error_response(502, "mock interview output could not be verified; please start a new attempt", "mock_interview_unverifiable")
+            return error_response(
+                502,
+                "mock interview output could not be verified; please start a new attempt",
+                "mock_interview_unverifiable",
+                details={"attempt_id": attempt_id},
+            )
         if claim is None:
             current = mock_interviews.feedback_context(attempt_id, application_id, event_id)[0]
             return JSONResponse(
@@ -4514,7 +4549,12 @@ def create_app(
                 )
             except MockInterviewSourceChanged:
                 return error_response(409, "mock_interview_source_conflict")
-            return error_response(502, "mock interview output could not be verified; please start a new attempt", "mock_interview_unverifiable")
+            return error_response(
+                502,
+                "mock interview output could not be verified; please start a new attempt",
+                "mock_interview_unverifiable",
+                details={"attempt_id": attempt_id},
+            )
         except MockInterviewProviderError as exc:
             _log_mock_interview_ai_failure(
                 resolved_data_dir,
@@ -4527,7 +4567,12 @@ def create_app(
                 mock_interviews.mark_provider_unknown(attempt_id, revision, provider_token, "feedback")
             except MockInterviewSourceChanged:
                 return error_response(409, "mock_interview_source_conflict")
-            return error_response(502, "AI service is temporarily unavailable", "mock_interview_provider_error")
+            return error_response(
+                502,
+                "AI service is temporarily unavailable",
+                "mock_interview_provider_error",
+                details={"attempt_id": attempt_id},
+            )
         try:
             record, created = mock_interviews.complete_feedback(
                 attempt_id,
@@ -4763,10 +4808,18 @@ def create_app(
     return app
 
 
-def error_response(status_code: int, message: str, code: str = "") -> JSONResponse:
-    payload: dict[str, str] = {"error": message}
+def error_response(
+    status_code: int,
+    message: str,
+    code: str = "",
+    *,
+    details: dict[str, Any] | None = None,
+) -> JSONResponse:
+    payload: dict[str, Any] = {"error": message}
     if code:
         payload["error_code"] = code
+    if details:
+        payload.update(details)
     return JSONResponse(payload, status_code=status_code)
 
 

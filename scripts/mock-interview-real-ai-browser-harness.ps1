@@ -51,7 +51,8 @@ function Test-TransientHistoryError($errorRecord) {
       )
     }
     if ($exception -is [System.Net.Http.HttpRequestException]) {
-      $statusCode = $exception.Data['StatusCode']
+      $statusCode = $exception.StatusCode
+      if ($null -eq $statusCode) { $statusCode = $exception.Data['StatusCode'] }
       if ($null -eq $statusCode -and $null -ne $exception.Response) { $statusCode = $exception.Response.StatusCode }
       return $null -eq $statusCode
     }

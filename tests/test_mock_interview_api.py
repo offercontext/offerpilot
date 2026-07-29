@@ -129,6 +129,7 @@ def test_contract_failure_logs_only_safe_category(tmp_path):
 
     assert response.status_code == 502
     assert response.json()["error_code"] == "mock_interview_unverifiable"
+    assert isinstance(response.json().get("attempt_id"), int)
     assert "raw model output" not in response.text
     log_text = (tmp_path / "logs" / "offerpilot.log").read_text(encoding="utf-8")
     assert "mock_interview_contract_failure" in log_text
@@ -173,6 +174,7 @@ def test_repair_provider_failure_preserves_original_key(tmp_path):
 
     assert first.status_code == 502
     assert first.json()["error_code"] == "mock_interview_provider_error"
+    assert isinstance(first.json().get("attempt_id"), int)
     assert "provider raw secret" not in first.text
     assert replay.status_code == 202
     assert replay.json()["attempt_status"] == "provider_unknown"
@@ -203,6 +205,7 @@ def test_repeated_structural_failure_is_terminal_and_replay_skips_provider(tmp_p
     assert first.json()["error_code"] == "mock_interview_unverifiable"
     assert replay.status_code == 502
     assert replay.json()["error_code"] == "mock_interview_unverifiable"
+    assert first.json()["attempt_id"] == replay.json()["attempt_id"]
     assert calls_after_failure == 2
     assert model.calls == calls_after_failure
 
@@ -225,6 +228,7 @@ def test_over_limit_failure_is_terminal_without_retry_or_replay_provider_call(tm
     assert first.json()["error_code"] == "mock_interview_unverifiable"
     assert replay.status_code == 502
     assert replay.json()["error_code"] == "mock_interview_unverifiable"
+    assert first.json()["attempt_id"] == replay.json()["attempt_id"]
     assert model.calls == 1
 
 
@@ -296,6 +300,7 @@ def test_contract_failure_is_terminal_for_same_attempt_key(tmp_path):
     assert second.status_code == 502
     assert first.json()["error_code"] == "mock_interview_unverifiable"
     assert second.json()["error_code"] == "mock_interview_unverifiable"
+    assert first.json()["attempt_id"] == second.json()["attempt_id"]
     assert first_calls == 2
     assert model.calls == first_calls
 

@@ -38,7 +38,9 @@ class MockInterviewSourceChanged(ValueError):
 
 
 class MockInterviewContractFailed(ValueError):
-    pass
+    def __init__(self, message: str, attempt_id: int | None = None):
+        super().__init__(message)
+        self.attempt_id = attempt_id
 
 
 class MockInterviewAttemptConfirmed(ValueError):
@@ -130,7 +132,7 @@ class MockInterviewRepository:
             )
             if existing is not None:
                 if existing.attempt_status == "contract_failed":
-                    raise MockInterviewContractFailed("mock_interview_unverifiable")
+                    raise MockInterviewContractFailed("mock_interview_unverifiable", existing.id)
                 turn = session.scalar(
                     select(MockInterviewTurn).where(
                         MockInterviewTurn.attempt_id == existing.id,

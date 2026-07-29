@@ -10,4 +10,12 @@ describe('MockInterviewDrawer safety display contract', () => {
     expect(source).not.toContain('error.response.data.error');
     expect(source).not.toContain('response.data.error');
   });
+
+  it('cleans deterministic failed attempts before clearing the draft', () => {
+    expect(source).toContain('async function clearDefiniteAttempt');
+    expect(source).toContain('discardMockInterviewAttempt');
+    expect(source).toContain('response?.data?.attempt_id');
+    expect(source).toContain("pendingOperation: 'discard'");
+    expect(source).toContain('mock_interview_unverifiable');
+  });
 });

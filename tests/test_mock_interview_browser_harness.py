@@ -78,6 +78,13 @@ def test_browser_harness_does_not_swallow_lifecycle_failures_and_checks_final_at
     assert "checkedAttemptIds -notcontains $_" in script
 
 
+def test_browser_harness_prefers_modern_http_status_code_property():
+    script = (Path(__file__).parents[1] / "scripts" / "mock-interview-real-ai-browser-harness.ps1").read_text(encoding="utf-8")
+    status_property = script.index("$statusCode = $exception.StatusCode")
+    legacy_data = script.index("$statusCode = $exception.Data['StatusCode']")
+    assert status_property < legacy_data
+
+
 @pytest.mark.parametrize(
     ("kind", "category", "state"),
     [
@@ -98,14 +105,31 @@ def test_browser_harness_accepts_composite_provider_failure_category_when_retain
     _assert_mock_interview_attempt_restart_state("provider", "provider_error,timeout", "retained:provider_unknown")
 
 
+def test_browser_harness_rejects_provider_attempt_with_wrong_retained_state():
+    with pytest.raises(RuntimeError, match="provider-unknown"):
+        _assert_mock_interview_attempt_restart_state(
+            "provider", "provider_http_5xx", "retained:contract_failed"
+        )
+
+
 def test_browser_harness_uses_attempt_scoped_provider_and_contract_diagnostics(tmp_path):
     log_path = tmp_path / "logs" / "offerpilot.log"
     log_path.parent.mkdir()
     log_path.write_text(
         "\n".join(
             [
-                'mock_interview_provider_failure {"attempt_id":301,"stage":"feedback","failure_category":"provider_http_5xx"}',
-                'mock_interview_contract_failure {"attempt_id":302,"stage":"question","failure_category":"unknown_evidence_ref"}',
+                json.dumps(
+                    {
+                        "level": "WARNING",
+                        "message": 'mock_interview_provider_failure {"attempt_id":301,"stage":"feedback","failure_category":"provider_http_5xx"}',
+                    }
+                ),
+                json.dumps(
+                    {
+                        "level": "WARNING",
+                        "message": 'mock_interview_contract_failure {"attempt_id":302,"stage":"question","failure_category":"unknown_evidence_ref"}',
+                    }
+                ),
             ]
         ),
         encoding="utf-8",

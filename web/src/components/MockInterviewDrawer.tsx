@@ -4,6 +4,7 @@ import {
 } from 'antd';
 import {
   confirmMockInterviewReviewDraft,
+  discardMockInterviewAttempt,
   finishMockInterview,
   generateMockInterviewQuestion,
   listMockInterviewHistory,
@@ -40,7 +41,7 @@ export interface MockInterviewDrawerDraft {
   selectedIds: string[];
   resultUnknown: boolean;
   retryAfterMs?: number;
-  pendingOperation?: 'start' | 'question' | 'feedback';
+  pendingOperation?: 'start' | 'question' | 'feedback' | 'discard';
   error: string | null;
 }
 
@@ -102,28 +103,6 @@ function isUnknownResult(error: unknown): boolean {
   return !status || status >= 500 || code === 'mock_interview_provider_error';
 }
 
-function clearDefiniteAttempt(onDraftChange: Props['onDraftChange']) {
-  onDraftChange({
-    attemptId: null,
-    attemptKey: null,
-    questionKey: null,
-    feedbackKey: null,
-    turnKey: null,
-    nextQuestionKey: null,
-    confirmationKey: null,
-    answerSubmitted: false,
-    question: '',
-    answer: '',
-    proposalId: null,
-    proposal: null,
-    selectedIds: [],
-    preparationItemIds: [],
-    editedBlocks: {},
-    resultUnknown: false,
-    pendingOperation: undefined,
-  });
-}
-
 export default function MockInterviewDrawer({
   open, applicationId, eventId, resumes, draft, onDraftChange, onClose,
 }: Props) {
@@ -157,6 +136,47 @@ export default function MockInterviewDrawer({
   );
   const pending = draft.resultUnknown;
 
+  async function clearDefiniteAttempt(sourceError?: unknown): Promise<boolean> {
+    const response = (sourceError as { response?: { data?: { attempt_id?: unknown } } })?.response;
+    const responseAttemptId = response?.data?.attempt_id;
+    const attemptId = draft.attemptId ?? (typeof responseAttemptId === 'number' ? responseAttemptId : null);
+    if (!attemptId) {
+      if (draft.attemptKey) {
+        onDraftChange({ resultUnknown: true, pendingOperation: 'discard', error: safeError({}) });
+        return false;
+      }
+      onDraftChange({ attemptId: null, attemptKey: null, resultUnknown: false, pendingOperation: undefined, error: safeError(sourceError) });
+      return true;
+    }
+    try {
+      await discardMockInterviewAttempt({ applicationId, eventId, attemptId });
+      onDraftChange({
+        attemptId: null,
+        attemptKey: null,
+        questionKey: null,
+        feedbackKey: null,
+        turnKey: null,
+        nextQuestionKey: null,
+        confirmationKey: null,
+        answerSubmitted: false,
+        question: '',
+        answer: '',
+        proposalId: null,
+        proposal: null,
+        selectedIds: [],
+        preparationItemIds: [],
+        editedBlocks: {},
+        resultUnknown: false,
+        pendingOperation: undefined,
+        error: safeError(sourceError),
+      });
+      return true;
+    } catch {
+      onDraftChange({ resultUnknown: true, pendingOperation: 'discard', error: safeError({}) });
+      return false;
+    }
+  }
+
   const start = async () => {
     if (!draft.resumeId || !draft.jdText.trim()) return;
     const attemptKey = draft.attemptKey ?? key();
@@ -186,7 +206,7 @@ export default function MockInterviewDrawer({
       });
     } catch (error) {
       if (isUnknownResult(error)) onDraftChange({ resultUnknown: true, error: safeError(error) });
-      else { clearDefiniteAttempt(onDraftChange); onDraftChange({ error: safeError(error) }); }
+      else { await clearDefiniteAttempt(error); }
     } finally { setWorking(false); }
   };
 
@@ -203,7 +223,7 @@ export default function MockInterviewDrawer({
       onDraftChange({ error: null, resultUnknown: false, answerSubmitted: true });
     } catch (error) {
       if (isUnknownResult(error)) onDraftChange({ resultUnknown: true, error: safeError(error) });
-      else { clearDefiniteAttempt(onDraftChange); onDraftChange({ error: safeError(error) }); }
+      else { await clearDefiniteAttempt(error); }
     } finally { setWorking(false); }
   };
 
@@ -234,7 +254,7 @@ export default function MockInterviewDrawer({
       });
     } catch (error) {
       if (isUnknownResult(error)) onDraftChange({ resultUnknown: true, error: safeError(error) });
-      else { clearDefiniteAttempt(onDraftChange); onDraftChange({ error: safeError(error) }); }
+      else { await clearDefiniteAttempt(error); }
     } finally { setWorking(false); }
   };
 
@@ -252,7 +272,7 @@ export default function MockInterviewDrawer({
       onDraftChange({ proposalId: result.proposal_id, proposal: result.proposal, selectedIds: [], resultUnknown: false, pendingOperation: undefined, error: null });
     } catch (error) {
       if (isUnknownResult(error)) onDraftChange({ resultUnknown: true, error: safeError(error) });
-      else { clearDefiniteAttempt(onDraftChange); onDraftChange({ error: safeError(error) }); }
+      else { await clearDefiniteAttempt(error); }
     } finally { setWorking(false); }
   };
 
@@ -290,6 +310,8 @@ export default function MockInterviewDrawer({
                     ? finish()
                     : draft.pendingOperation === 'question'
                       ? nextQuestion()
+                      : draft.pendingOperation === 'discard'
+                        ? clearDefiniteAttempt()
                       : start()
                 )}
                 disabled={working}
@@ -299,7 +321,7 @@ export default function MockInterviewDrawer({
             )}
           />
         ) : null}
-        {!draft.attemptId && !draft.proposal ? (
+        {!draft.attemptId && !draft.proposal && !draft.resultUnknown ? (
           <>
             <Select
               aria-label="选择简历"

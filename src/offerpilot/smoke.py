@@ -1239,7 +1239,19 @@ def _run_real_ai_mock_interview_smoke(
                     data_dir, application_id, baseline, [event_id], [resume_id]
                 )
             diagnostic_stage = "feedback" if stage == "feedback" else "question"
-            failure_category = _latest_mock_interview_failure_category(data_dir, diagnostic_stage, attempt_id)
+            diagnostic = (
+                _latest_mock_interview_failure_diagnostic(data_dir, attempt_id, diagnostic_stage)
+                if attempt_id is not None
+                else None
+            )
+            if (
+                attempt_id is None
+                or diagnostic is None
+                or diagnostic.get("kind") not in {"provider", "contract"}
+                or not diagnostic.get("category")
+            ):
+                raise RuntimeError("mock interview failure diagnostic missing")
+            failure_category = diagnostic["category"]
             outcomes.append(
                 f"attempt_{index + 1}:{stage}:mock_interview_unverifiable:"
                 f"{failure_category or 'unknown'}"
@@ -1461,9 +1473,7 @@ def _assert_mock_interview_attempt_restart_state(kind: str, category: str, state
     """Reject an invalid cleanup/retention result for a failed browser Attempt."""
     if kind not in {"provider", "contract"}:
         raise RuntimeError("missing mock interview Attempt failure diagnostic")
-    if kind == "provider" and state == "deleted":
-        raise RuntimeError("A provider-unknown Attempt was deleted before the browser restart.")
-    if kind == "provider" and not state.startswith("retained:"):
+    if kind == "provider" and state != "retained:provider_unknown":
         raise RuntimeError("A provider-unknown Attempt was not retained for the browser restart.")
     if kind == "contract" and state.startswith("retained:"):
         raise RuntimeError("A terminally unverifiable Attempt was retained after the browser restart.")
@@ -1552,12 +1562,19 @@ def _latest_mock_interview_failure_diagnostic(
     except OSError:
         return None
     for line in reversed(lines):
+        try:
+            log_row = json.loads(line)
+        except json.JSONDecodeError:
+            log_row = None
+        message = log_row.get("message") if isinstance(log_row, dict) else line
+        if not isinstance(message, str):
+            continue
         for kind in ("provider", "contract"):
             marker = f"mock_interview_{kind}_failure "
-            if marker not in line:
+            if marker not in message:
                 continue
             try:
-                payload = json.loads(line.split(marker, 1)[1])
+                payload = json.loads(message.split(marker, 1)[1])
             except (IndexError, json.JSONDecodeError):
                 continue
             try:
