@@ -136,43 +136,76 @@ export default function MockInterviewDrawer({
   );
   const pending = draft.resultUnknown;
 
-  async function clearDefiniteAttempt(sourceError?: unknown): Promise<boolean> {
-    const response = (sourceError as { response?: { data?: { attempt_id?: unknown } } })?.response;
+  function resetDraft(error?: unknown): void {
+    onDraftChange({
+      attemptId: null,
+      attemptKey: null,
+      questionKey: null,
+      feedbackKey: null,
+      turnKey: null,
+      nextQuestionKey: null,
+      confirmationKey: null,
+      answerSubmitted: false,
+      question: '',
+      answer: '',
+      proposalId: null,
+      proposal: null,
+      selectedIds: [],
+      preparationItemIds: [],
+      editedBlocks: {},
+      resultUnknown: false,
+      pendingOperation: undefined,
+      error: error === undefined ? null : safeError(error),
+    });
+  }
+
+  async function clearDefiniteAttempt(sourceError?: unknown, attemptKeyOverride?: string): Promise<boolean> {
+    const response = (sourceError as { response?: { status?: number; data?: { attempt_id?: unknown } } })?.response;
     const responseAttemptId = response?.data?.attempt_id;
+    const currentAttemptKey = attemptKeyOverride ?? draft.attemptKey;
     const attemptId = draft.attemptId ?? (typeof responseAttemptId === 'number' ? responseAttemptId : null);
     if (!attemptId) {
-      if (draft.attemptKey) {
-        onDraftChange({ resultUnknown: true, pendingOperation: 'discard', error: safeError({}) });
+      if (response?.status === 422) {
+        resetDraft(sourceError);
+        return true;
+      }
+      if (currentAttemptKey) {
+        onDraftChange({
+          attemptId: null,
+          attemptKey: currentAttemptKey,
+          resultUnknown: true,
+          pendingOperation: 'discard',
+          error: safeError({}),
+        });
         return false;
       }
-      onDraftChange({ attemptId: null, attemptKey: null, resultUnknown: false, pendingOperation: undefined, error: safeError(sourceError) });
+      resetDraft(sourceError);
       return true;
     }
+    onDraftChange({
+      attemptId,
+      attemptKey: currentAttemptKey ?? null,
+      resultUnknown: true,
+      pendingOperation: 'discard',
+      error: safeError({}),
+    });
     try {
       await discardMockInterviewAttempt({ applicationId, eventId, attemptId });
-      onDraftChange({
-        attemptId: null,
-        attemptKey: null,
-        questionKey: null,
-        feedbackKey: null,
-        turnKey: null,
-        nextQuestionKey: null,
-        confirmationKey: null,
-        answerSubmitted: false,
-        question: '',
-        answer: '',
-        proposalId: null,
-        proposal: null,
-        selectedIds: [],
-        preparationItemIds: [],
-        editedBlocks: {},
-        resultUnknown: false,
-        pendingOperation: undefined,
-        error: safeError(sourceError),
-      });
+      resetDraft(sourceError);
       return true;
-    } catch {
-      onDraftChange({ resultUnknown: true, pendingOperation: 'discard', error: safeError({}) });
+    } catch (error) {
+      const status = (error as { response?: { status?: number } })?.response?.status;
+      if (status === 404) {
+        resetDraft(sourceError);
+        return true;
+      }
+      onDraftChange({
+        attemptId,
+        attemptKey: currentAttemptKey ?? null,
+        resultUnknown: true,
+        pendingOperation: 'discard',
+        error: safeError({}),
+      });
       return false;
     }
   }
@@ -205,8 +238,17 @@ export default function MockInterviewDrawer({
         error: null,
       });
     } catch (error) {
-      if (isUnknownResult(error)) onDraftChange({ resultUnknown: true, error: safeError(error) });
-      else { await clearDefiniteAttempt(error); }
+      if (isUnknownResult(error)) {
+        const response = (error as { response?: { data?: { attempt_id?: unknown } } })?.response;
+        const responseAttemptId = response?.data?.attempt_id;
+        onDraftChange({
+          attemptId: typeof responseAttemptId === 'number' ? responseAttemptId : draft.attemptId,
+          attemptKey,
+          pendingOperation: 'start',
+          resultUnknown: true,
+          error: safeError(error),
+        });
+      } else { await clearDefiniteAttempt(error, attemptKey); }
     } finally { setWorking(false); }
   };
 
@@ -223,7 +265,7 @@ export default function MockInterviewDrawer({
       onDraftChange({ error: null, resultUnknown: false, answerSubmitted: true });
     } catch (error) {
       if (isUnknownResult(error)) onDraftChange({ resultUnknown: true, error: safeError(error) });
-      else { await clearDefiniteAttempt(error); }
+      else { await clearDefiniteAttempt(error, draft.attemptKey ?? undefined); }
     } finally { setWorking(false); }
   };
 
@@ -254,7 +296,7 @@ export default function MockInterviewDrawer({
       });
     } catch (error) {
       if (isUnknownResult(error)) onDraftChange({ resultUnknown: true, error: safeError(error) });
-      else { await clearDefiniteAttempt(error); }
+      else { await clearDefiniteAttempt(error, draft.attemptKey ?? undefined); }
     } finally { setWorking(false); }
   };
 
@@ -272,7 +314,7 @@ export default function MockInterviewDrawer({
       onDraftChange({ proposalId: result.proposal_id, proposal: result.proposal, selectedIds: [], resultUnknown: false, pendingOperation: undefined, error: null });
     } catch (error) {
       if (isUnknownResult(error)) onDraftChange({ resultUnknown: true, error: safeError(error) });
-      else { await clearDefiniteAttempt(error); }
+      else { await clearDefiniteAttempt(error, draft.attemptKey ?? undefined); }
     } finally { setWorking(false); }
   };
 

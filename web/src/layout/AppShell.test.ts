@@ -85,6 +85,11 @@ describe('AppShell source contract', () => {
     expect(source).toContain('操作结果待确认，请稍后使用原尝试重试。');
   });
 
+  it('merges mock interview patches from the keyed current draft', () => {
+    expect(source).toContain('mockInterviewDraftsRef.current.get(draftKey)');
+    expect(source).toContain('const next = { ...currentDraft, ...patch };');
+  });
+
   it('routes a missing Triage application through the shared Pilot cleanup', () => {
     const triageStart = source.indexOf('const startPilotV2Triage =');
     const triageEnd = source.indexOf('const confirmPilotV2Triage =', triageStart);

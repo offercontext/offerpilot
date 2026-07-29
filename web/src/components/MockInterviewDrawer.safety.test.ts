@@ -15,7 +15,27 @@ describe('MockInterviewDrawer safety display contract', () => {
     expect(source).toContain('async function clearDefiniteAttempt');
     expect(source).toContain('discardMockInterviewAttempt');
     expect(source).toContain('response?.data?.attempt_id');
+    expect(source).toContain('attemptKeyOverride');
+    expect(source).toContain('attemptId,');
+    expect(source).toContain('attemptKey: currentAttemptKey');
     expect(source).toContain("pendingOperation: 'discard'");
     expect(source).toContain('mock_interview_unverifiable');
+  });
+
+  it('clears a pre-attempt 422 without waiting for a DELETE', () => {
+    expect(source).toContain('response?.status === 422');
+    expect(source).toContain('attemptKey: null');
+  });
+
+  it('retains the server Attempt and original key for an unknown start result', () => {
+    expect(source).toContain('pendingOperation: \'start\'');
+    expect(source).toContain("typeof responseAttemptId === 'number' ? responseAttemptId : draft.attemptId");
+    expect(source).toContain('attemptKey,');
+  });
+
+  it('treats an already absent Attempt as a successful discard', () => {
+    expect(source).toContain('const status = (error as { response?: { status?: number } })?.response?.status;');
+    expect(source).toContain('if (status === 404)');
+    expect(source).toContain('resetDraft(sourceError);');
   });
 });

@@ -599,8 +599,10 @@ function AppShellContent() {
 
   const updateMockInterviewDraft = (patch: Partial<MockInterviewDrawerDraft>) => {
     if (!mockInterviewContext || !mockInterviewDraft) return;
-    const next = { ...mockInterviewDraft, ...patch };
-    mockInterviewDraftsRef.current.set(`${mockInterviewContext.applicationId}:${mockInterviewContext.eventId}`, next);
+    const draftKey = `${mockInterviewContext.applicationId}:${mockInterviewContext.eventId}`;
+    const currentDraft = mockInterviewDraftsRef.current.get(draftKey) ?? mockInterviewDraft;
+    const next = { ...currentDraft, ...patch };
+    mockInterviewDraftsRef.current.set(draftKey, next);
     setMockInterviewDraft(next);
   };
 
