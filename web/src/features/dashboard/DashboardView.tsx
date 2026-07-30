@@ -35,6 +35,14 @@ import {
   ONBOARDING_QUERY_KEY,
   setOnboardingForceOpen,
 } from '@/services/onboarding';
+import NextStepSuggestions from '@/components/NextStepSuggestions';
+import {
+  deriveNextStepSuggestions,
+  type NextStepDestination,
+  type NextStepFacts,
+  type ReadonlyDestination,
+  type SuggestionSessionState,
+} from '@/lib/nextStepSuggestions';
 
 type DetailAction = ActionCommand & { id?: string };
 type DetailInsight = PipelineInsight & {
@@ -60,9 +68,22 @@ interface Props {
   onOpenDetailById: (id: number) => void;
   onAddApplication: () => void;
   onOnboardingAction: (action: OnboardingAction) => void;
+  nextStepFactsForApplication: (applicationId: number) => NextStepFacts;
+  suggestionSessionStates: Record<string, SuggestionSessionState>;
+  onSetDisposition: (applicationId: number, suggestionId: string, state: SuggestionSessionState | null) => void;
+  onNextStepNavigate: (destination: NextStepDestination | ReadonlyDestination) => void;
 }
 
-export default function DashboardView({ onNavigate, onOpenDetailById, onAddApplication, onOnboardingAction }: Props) {
+export default function DashboardView({
+  onNavigate,
+  onOpenDetailById,
+  onAddApplication,
+  onOnboardingAction,
+  nextStepFactsForApplication,
+  suggestionSessionStates,
+  onSetDisposition,
+  onNextStepNavigate,
+}: Props) {
   const queryClient = useQueryClient();
   const [now, setNow] = useState(() => dayjs());
   const [selectedInsightId, setSelectedInsightId] = useState<string | null>(null);
@@ -144,6 +165,32 @@ export default function DashboardView({ onNavigate, onOpenDetailById, onAddAppli
   const focusReadiness = effectiveFocusApplicationId
     ? mission.readiness.find((item) => item.applicationId === effectiveFocusApplicationId)
     : undefined;
+  const workbenchFacts = useMemo(() => {
+    if (!focusApplication) return null;
+    const baseFacts = nextStepFactsForApplication(focusApplication.id);
+    const materialKit = hasPartialMaterialKitCoverage || materialKitsQ.isLoading || materialKitsQ.isError || !materialKitsQ.isSuccess
+      ? { status: 'unknown' as const, reason: 'not_loaded' as const }
+      : {
+        status: 'known' as const,
+        value: missionMaterialKits?.find((kit) => kit.application_id === focusApplication.id) ?? null,
+      };
+    return { ...baseFacts, materialKit };
+  }, [
+    focusApplication,
+    hasPartialMaterialKitCoverage,
+    materialKitsQ.isError,
+    materialKitsQ.isLoading,
+    materialKitsQ.isSuccess,
+    missionMaterialKits,
+    nextStepFactsForApplication,
+  ]);
+  const workbenchSuggestions = workbenchFacts
+    ? deriveNextStepSuggestions(workbenchFacts, 'workbench', now.toDate())
+    : null;
+  const workbenchCandidate = workbenchSuggestions?.candidates[0];
+  const workbenchSessionState = workbenchCandidate
+    ? suggestionSessionStates[`${focusApplication?.id}:${workbenchCandidate.id}`] ?? null
+    : null;
   const nextMissionAction = mission.actions[0];
   const selectedInsight = useMemo(
     () => insights.find((item) => item.id === selectedInsightId) ?? null,
@@ -238,6 +285,15 @@ export default function DashboardView({ onNavigate, onOpenDetailById, onAddAppli
   return (
     <div className={styles.grid}>
       {onboarding}
+      {focusApplication && workbenchSuggestions ? (
+        <NextStepSuggestions
+          applicationId={focusApplication.id}
+          suggestions={workbenchSuggestions}
+          sessionState={workbenchSessionState}
+          onSetDisposition={onSetDisposition}
+          onNavigate={onNextStepNavigate}
+        />
+      ) : null}
       <MissionHeader
         summary={mission}
         nextAction={nextMissionAction}

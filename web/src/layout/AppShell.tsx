@@ -50,6 +50,12 @@ import {
 import { getPracticeStats } from '@/services/questions';
 import { fetchConfirmedInterviewKnowledgeNotes } from '@/services/knowledge';
 import { buildPilotPageContext } from '@/lib/pilotPageContext';
+import {
+  type NextStepDestination,
+  type NextStepFacts,
+  type ReadonlyDestination,
+  type SuggestionSessionState,
+} from '@/lib/nextStepSuggestions';
 import { PilotAttachmentProvider } from '@/features/pilot/PilotAttachmentContext';
 import {
   usePilotAttachmentStore,
@@ -232,11 +238,11 @@ function AppShellContent() {
     queryKey: ['applications'],
     queryFn: () => listApplications(),
   });
-  const { data: events = [] } = useQuery({
+  const { data: eventsData } = useQuery({
     queryKey: ['events'],
     queryFn: () => listEvents(),
   });
-  const { data: offers = [] } = useQuery({
+  const { data: offersData } = useQuery({
     queryKey: ['offers'],
     queryFn: () => listOffers(),
   });
@@ -245,16 +251,17 @@ function AppShellContent() {
     queryFn: () => getPracticeStats(),
     retry: false,
   });
-  const { data: resumes = [] } = useQuery({
+  const { data: resumesData } = useQuery({
     queryKey: ['resumes'],
     queryFn: listResumes,
     enabled: true,
   });
-  const { data: confirmedInterviewKnowledgeNotes = [] } = useQuery({
+  const { data: confirmedInterviewKnowledgeNotesData } = useQuery({
     queryKey: ['knowledge', 'confirmed-interview-notes'],
     queryFn: fetchConfirmedInterviewKnowledgeNotes,
     staleTime: 30000,
   });
+  const confirmedInterviewKnowledgeNotes = confirmedInterviewKnowledgeNotesData ?? [];
   const interviewPreparationKnowledgeOptions = useMemo<InterviewPreparationKnowledgeOption[]>(
     () => confirmedInterviewKnowledgeNotes
       .filter((note) => note.source_status === 'frozen')
@@ -300,8 +307,54 @@ function AppShellContent() {
   // React Query's `= []` default only applies when data is `undefined`, so an
   // explicit null-coalesce is needed to keep downstream iterators safe.
   const apps = applications ?? [];
-  const evs = events ?? [];
-  const ofrs = offers ?? [];
+  const evs = eventsData ?? [];
+  const ofrs = offersData ?? [];
+  const resumes = resumesData ?? [];
+  const [suggestionSessionStates, setSuggestionSessionStates] = useState<Record<string, SuggestionSessionState>>({});
+
+  const buildNextStepFacts = (applicationId: number): NextStepFacts => {
+    const application = apps.find((item) => item.id === applicationId);
+    return {
+      application: application
+        ? { status: 'known', value: application }
+        : { status: 'unknown', reason: 'not_visible' },
+      availableResumes: resumesData === undefined
+        ? { status: 'unknown', reason: 'not_loaded' }
+        : { status: 'known', value: resumes },
+      events: eventsData === undefined
+        ? { status: 'unknown', reason: 'not_loaded' }
+        : { status: 'known', value: evs.filter((event) => event.application_id === applicationId) },
+      offers: offersData === undefined
+        ? { status: 'unknown', reason: 'not_loaded' }
+        : { status: 'known', value: ofrs.filter((offer) => offer.application_id === applicationId) },
+      confirmedKnowledge: confirmedInterviewKnowledgeNotesData === undefined
+        ? { status: 'unknown', reason: 'not_loaded' }
+        : { status: 'known', value: confirmedInterviewKnowledgeNotes },
+      practiceStats: practiceStats === undefined
+        ? { status: 'unknown', reason: 'not_loaded' }
+        : { status: 'known', value: practiceStats },
+      jd: { status: 'unknown', reason: 'not_supported' },
+      fitReview: { status: 'unknown', reason: 'not_loaded' },
+      materialKit: { status: 'unknown', reason: 'not_loaded' },
+      interviewPreparationHistory: { status: 'unknown', reason: 'not_loaded' },
+      mockInterviewHistory: { status: 'unknown', reason: 'not_loaded' },
+    };
+  };
+
+  const updateSuggestionSessionState = (
+    applicationId: number,
+    suggestionId: string,
+    state: SuggestionSessionState | null,
+  ) => {
+    // The session scope is applicationId + suggestionId; it is never persisted.
+    const key = `${applicationId}:${suggestionId}`;
+    setSuggestionSessionStates((current) => {
+      const next = { ...current };
+      if (state?.stateKey) next[key] = state;
+      else delete next[key];
+      return next;
+    });
+  };
 
   const qc = useQueryClient();
   const refreshWorkspaceData = () => {
@@ -845,6 +898,38 @@ function AppShellContent() {
     navigateToView(item.primaryAction.target);
   };
 
+  const handleNextStepNavigate = (destination: NextStepDestination | ReadonlyDestination) => {
+    switch (destination.kind) {
+      case 'application_detail':
+      case 'material_kit_entry':
+        goDetailById(destination.applicationId);
+        return;
+      case 'pilot_opportunity_fit':
+        {
+          const app = apps.find((item) => item.id === destination.applicationId);
+          if (app) startPilotOpportunityFit(app);
+        }
+        return;
+      case 'interview_event':
+        openPilotInterviewPreparation(destination.applicationId, destination.eventId);
+        return;
+      case 'interview_event_selection':
+        navigateToView('interview');
+        return;
+      case 'interview_review':
+      case 'interview_review_history':
+      case 'interview_review_selection':
+        openPilotInterviewReview(destination.applicationId);
+        return;
+      case 'opportunity_fit_history':
+        {
+          const app = apps.find((item) => item.id === destination.applicationId);
+          if (app) startPilotOpportunityFit(app);
+        }
+        return;
+    }
+  };
+
   const calendarEvidenceFocus = evidenceFocus?.kind === 'event' ? evidenceFocus : undefined;
   const offerEvidenceFocus = evidenceFocus?.kind === 'offer' ? evidenceFocus : undefined;
   const resumeEvidenceFocus = evidenceFocus?.kind === 'resume' ? evidenceFocus : undefined;
@@ -904,6 +989,10 @@ function AppShellContent() {
               onOpenDetailById={goDetailById}
               onAddApplication={() => setAddOpen(true)}
               onOnboardingAction={handleOnboardingAction}
+              nextStepFactsForApplication={buildNextStepFacts}
+              suggestionSessionStates={suggestionSessionStates}
+              onSetDisposition={updateSuggestionSessionState}
+              onNextStepNavigate={handleNextStepNavigate}
             />
           )}
           {view === 'board' && (
@@ -978,7 +1067,7 @@ function AppShellContent() {
                   onPrepareMaterials={(resumeId, jdText) => preparePilotMaterials({ applicationId: pilotApplicationContext.applicationId, resumeId, jdText })}
                   onOpenInterviewReview={openPilotInterviewReview}
                   onOpenInterviewPreparation={openPilotInterviewPreparation}
-                  interviewEvents={events.filter((event) => event.application_id === pilotApplicationContext.applicationId && event.event_type === 'interview' && Boolean(event.scheduled_at))}
+                  interviewEvents={evs.filter((event) => event.application_id === pilotApplicationContext.applicationId && event.event_type === 'interview' && Boolean(event.scheduled_at))}
                   onOpenMockInterview={openMockInterview}
                   onCancel={() => {
                     exitPilotContext();
