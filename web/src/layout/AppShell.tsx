@@ -938,7 +938,12 @@ function AppShellContent() {
   };
 
   const isNextStepNavigationAvailable = (destination: NextStepDestination | ReadonlyDestination) => (
-    !['interview_review', 'interview_review_history', 'interview_review_selection'].includes(destination.kind)
+    ![
+      'interview_review',
+      'interview_review_history',
+      'interview_review_selection',
+      'opportunity_fit_history',
+    ].includes(destination.kind)
   );
 
   const calendarEvidenceFocus = evidenceFocus?.kind === 'event' ? evidenceFocus : undefined;
