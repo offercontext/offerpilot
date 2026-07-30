@@ -31,6 +31,12 @@ describe('next-step suggestions AppShell integration contract', () => {
     expect(appShellSource).not.toContain('saveSuggestion');
   });
 
+  it('prunes a stale state entry instead of only ignoring it while rendering', () => {
+    expect(appShellSource).toContain('delete next[key]');
+    expect(appShellSource).toContain('existing.stateKey === selectedNextStepCandidate.stateKey');
+    expect(dashboardSource).toContain('onPruneDisposition');
+  });
+
   it('does not drop review destination context when no typed adapter exists', () => {
     expect(appShellSource).toContain('interview_review_history');
     expect(appShellSource).toContain('opportunity_fit_history');

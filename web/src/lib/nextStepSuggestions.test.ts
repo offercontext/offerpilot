@@ -1,10 +1,12 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
   deriveNextStepSuggestions,
+  deriveMaterialKitFact,
   type NextStepFacts,
   type ResumeFact,
   type InterviewReviewHistoryDestination,
   type InterviewEventSelectionDestination,
+  type OpportunityFitHistoryDestination,
 } from './nextStepSuggestions';
 import type { Application } from '@/types/application';
 import type { ScheduleEvent } from '@/types/event';
@@ -97,6 +99,29 @@ describe('next-step suggestion destination types', () => {
     expect(deriveNextStepSuggestions).toBeTypeOf('function');
   });
 
+  it('keeps incomplete Material Kit coverage unknown and marks complete coverage known', () => {
+    expect(deriveMaterialKitFact({ applicationId: 1, status: 'loading', complete: false }).status).toBe('unknown');
+    expect(deriveMaterialKitFact({ applicationId: 1, status: 'error', complete: false }).status).toBe('unknown');
+    expect(deriveMaterialKitFact({
+      applicationId: 1,
+      status: 'success',
+      complete: false,
+      kits: [{ application_id: 1 }],
+    }).status).toBe('unknown');
+    expect(deriveMaterialKitFact({
+      applicationId: 1,
+      status: 'success',
+      complete: true,
+      kits: [{ application_id: 1 }],
+    }).status).toBe('known');
+    expect(deriveMaterialKitFact({
+      applicationId: 2,
+      status: 'success',
+      complete: true,
+      kits: [{ application_id: 1 }],
+    })).toEqual({ status: 'known', value: null });
+  });
+
   it('requires complete history and selection contexts at compile time', () => {
     const validHistory: InterviewReviewHistoryDestination = {
       kind: 'interview_review_history',
@@ -105,6 +130,12 @@ describe('next-step suggestion destination types', () => {
       reviewId: 3,
     };
     expectTypeOf(validHistory).toMatchTypeOf<InterviewReviewHistoryDestination>();
+    const validOpportunityHistory: OpportunityFitHistoryDestination = {
+      kind: 'opportunity_fit_history',
+      applicationId: 1,
+      reviewId: 4,
+    };
+    expectTypeOf(validOpportunityHistory).toMatchTypeOf<OpportunityFitHistoryDestination>();
 
     // @ts-expect-error review history cannot omit reviewId
     const incompleteHistory: InterviewReviewHistoryDestination = {
@@ -266,5 +297,20 @@ describe('deriveNextStepSuggestions', () => {
 
     expect(after.candidates[0]?.stateKey).not.toBe(before.candidates[0]?.stateKey);
     expect(after.candidates[0]?.stateKey).not.toContain('resume v2');
+  });
+
+  it('changes the stateKey when the unique historical review changes', () => {
+    const before = deriveNextStepSuggestions(makeFacts({
+      events: { status: 'known', value: [makeInterviewEvent(7, '2026-07-29T10:00:00+08:00')] },
+      fitReview: { status: 'known', value: { reviewCountByEvent: { 7: 1 }, reviewIdByEvent: { 7: 19 } } },
+    }), 'detail', now);
+    const after = deriveNextStepSuggestions(makeFacts({
+      events: { status: 'known', value: [makeInterviewEvent(7, '2026-07-29T10:00:00+08:00')] },
+      fitReview: { status: 'known', value: { reviewCountByEvent: { 7: 1 }, reviewIdByEvent: { 7: 20 } } },
+    }), 'detail', now);
+
+    expect(before.candidates[0]?.destination).toEqual(expect.objectContaining({ reviewId: 19 }));
+    expect(after.candidates[0]?.destination).toEqual(expect.objectContaining({ reviewId: 20 }));
+    expect(after.candidates[0]?.stateKey).not.toBe(before.candidates[0]?.stateKey);
   });
 });

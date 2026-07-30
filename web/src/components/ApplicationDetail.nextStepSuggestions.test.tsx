@@ -12,6 +12,8 @@ describe('ApplicationDetail next-step suggestion contract', () => {
     expect(applicationDetailSource).toContain('nextStepSessionState');
     expect(applicationDetailSource).toContain('onSetDisposition');
     expect(applicationDetailSource).toContain('onNextStepNavigate');
+    expect(applicationDetailSource).toContain('onNextStepReadonlyNavigate');
+    expect(applicationDetailSource).toContain('isReadonlyNavigationAvailable');
   });
 
   it('does not add a material-kit action when its fact is unknown', () => {

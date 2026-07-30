@@ -11,8 +11,10 @@ export interface NextStepSuggestionsProps {
   suggestions: Suggestions;
   sessionState: SuggestionSessionState | null;
   onSetDisposition: (applicationId: number, suggestionId: string, state: SuggestionSessionState | null) => void;
-  onNavigate: (destination: NextStepDestination | ReadonlyDestination) => void;
-  isNavigationAvailable?: (destination: NextStepDestination | ReadonlyDestination) => boolean;
+  onNavigate: (destination: NextStepDestination) => void;
+  isNavigationAvailable?: (destination: NextStepDestination) => boolean;
+  onNavigateReadonly?: (destination: ReadonlyDestination) => void;
+  isReadonlyNavigationAvailable?: (destination: ReadonlyDestination) => boolean;
 }
 
 function isCurrentSessionState(
@@ -29,6 +31,8 @@ export default function NextStepSuggestions({
   onSetDisposition,
   onNavigate,
   isNavigationAvailable,
+  onNavigateReadonly,
+  isReadonlyNavigationAvailable,
 }: NextStepSuggestionsProps) {
   const candidate = suggestions.candidates[0];
   const activeState = candidate && isCurrentSessionState(sessionState, candidate.stateKey) ? sessionState : null;
@@ -96,11 +100,13 @@ export default function NextStepSuggestions({
                   ))}
                 </div>
               </div>
-              {risk.readonlyDestination && (isNavigationAvailable?.(risk.readonlyDestination) ?? true) ? (
-                <button type="button" onClick={() => onNavigate(risk.readonlyDestination as ReadonlyDestination)}>
+              {risk.readonlyDestination
+                && onNavigateReadonly
+                && (isReadonlyNavigationAvailable?.(risk.readonlyDestination) ?? false) ? (
+                <button type="button" onClick={() => onNavigateReadonly(risk.readonlyDestination as ReadonlyDestination)}>
                   查看来源
                 </button>
-              ) : null}
+              ) : risk.readonlyDestination ? <span>暂不可打开</span> : null}
             </article>
           ))}
         </div>

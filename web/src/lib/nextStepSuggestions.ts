@@ -176,6 +176,7 @@ function makeStateKey(
   facts: NextStepFacts,
   candidateId: string,
   context: SuggestionContext,
+  destination: NextStepDestination,
   eventIdentity = 'none',
 ): string {
   const applicationId = facts.application.status === 'known' ? facts.application.value.id : 'unknown';
@@ -187,7 +188,25 @@ function makeStateKey(
     facts.jd.status,
     (facts.sourceRisks ?? []).map((risk) => risk.stateKey).sort().join(','),
     eventIdentity,
+    stableStringify(destination),
   ].join('|');
+}
+
+export type MaterialKitQueryFact = {
+  applicationId: number;
+  status: 'loading' | 'error' | 'success';
+  complete: boolean;
+  kits?: Array<{ application_id?: number }>;
+};
+
+export function deriveMaterialKitFact(input: MaterialKitQueryFact): FactState<unknown> {
+  if (input.status !== 'success' || !input.complete) {
+    return { status: 'unknown', reason: 'not_loaded' };
+  }
+  return {
+    status: 'known',
+    value: input.kits?.find((kit) => kit.application_id === input.applicationId) ?? null,
+  };
 }
 
 function isValidDuration(value: unknown): value is number {
@@ -271,7 +290,7 @@ function candidate(
 ): NextStepCandidate {
   return {
     id,
-    stateKey: makeStateKey(facts, id, context, eventIdentity),
+    stateKey: makeStateKey(facts, id, context, destination, eventIdentity),
     title,
     reason,
     destination,

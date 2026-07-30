@@ -420,6 +420,18 @@ function AppShellContent() {
   const selectedNextStepSessionState = selectedNextStepCandidate
     ? suggestionSessionStates[`${selectedApp?.id}:${selectedNextStepCandidate.id}`] ?? null
     : null;
+
+  useEffect(() => {
+    if (!selectedApp || !selectedNextStepCandidate) return;
+    const key = `${selectedApp.id}:${selectedNextStepCandidate.id}`;
+    setSuggestionSessionStates((current) => {
+      const existing = current[key];
+      if (!existing || existing.stateKey === selectedNextStepCandidate.stateKey) return current;
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+  }, [selectedApp, selectedNextStepCandidate]);
   const coachedOffer = ofrs.find((offer) => offer.id === coachOfferId);
   const pageContext = useMemo(
     () =>
@@ -937,6 +949,14 @@ function AppShellContent() {
     }
   };
 
+  const handleNextStepReadonlyNavigate = (destination: ReadonlyDestination) => {
+    if (destination.kind === 'application_detail') goDetailById(destination.applicationId);
+  };
+
+  const isNextStepReadonlyNavigationAvailable = (destination: ReadonlyDestination) => (
+    destination.kind === 'application_detail'
+  );
+
   const isNextStepNavigationAvailable = (destination: NextStepDestination | ReadonlyDestination) => (
     ![
       'interview_review',
@@ -985,6 +1005,8 @@ function AppShellContent() {
       onSetDisposition={updateSuggestionSessionState}
       onNextStepNavigate={handleNextStepNavigate}
       isNavigationAvailable={isNextStepNavigationAvailable}
+      onNextStepReadonlyNavigate={handleNextStepReadonlyNavigate}
+      isReadonlyNavigationAvailable={isNextStepReadonlyNavigationAvailable}
     />
   ) : (
     <>
@@ -1015,6 +1037,18 @@ function AppShellContent() {
               onSetDisposition={updateSuggestionSessionState}
               onNextStepNavigate={handleNextStepNavigate}
               isNextStepNavigationAvailable={isNextStepNavigationAvailable}
+              onNextStepReadonlyNavigate={handleNextStepReadonlyNavigate}
+              isNextStepReadonlyNavigationAvailable={isNextStepReadonlyNavigationAvailable}
+              onPruneDisposition={(applicationId, suggestionId, stateKey) => {
+                const key = `${applicationId}:${suggestionId}`;
+                setSuggestionSessionStates((current) => {
+                  const existing = current[key];
+                  if (!existing || existing.stateKey === stateKey) return current;
+                  const next = { ...current };
+                  delete next[key];
+                  return next;
+                });
+              }}
             />
           )}
           {view === 'board' && (

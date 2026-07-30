@@ -38,6 +38,7 @@ import {
 import NextStepSuggestions from '@/components/NextStepSuggestions';
 import {
   deriveNextStepSuggestions,
+  deriveMaterialKitFact,
   type NextStepDestination,
   type NextStepFacts,
   type ReadonlyDestination,
@@ -73,6 +74,9 @@ interface Props {
   onSetDisposition: (applicationId: number, suggestionId: string, state: SuggestionSessionState | null) => void;
   onNextStepNavigate: (destination: NextStepDestination | ReadonlyDestination) => void;
   isNextStepNavigationAvailable: (destination: NextStepDestination | ReadonlyDestination) => boolean;
+  onNextStepReadonlyNavigate: (destination: ReadonlyDestination) => void;
+  isNextStepReadonlyNavigationAvailable: (destination: ReadonlyDestination) => boolean;
+  onPruneDisposition: (applicationId: number, suggestionId: string, stateKey: string) => void;
 }
 
 export default function DashboardView({
@@ -85,6 +89,9 @@ export default function DashboardView({
   onSetDisposition,
   onNextStepNavigate,
   isNextStepNavigationAvailable,
+  onNextStepReadonlyNavigate,
+  isNextStepReadonlyNavigationAvailable,
+  onPruneDisposition,
 }: Props) {
   const queryClient = useQueryClient();
   const [now, setNow] = useState(() => dayjs());
@@ -170,12 +177,12 @@ export default function DashboardView({
   const workbenchFacts = useMemo(() => {
     if (!focusApplication) return null;
     const baseFacts = nextStepFactsForApplication(focusApplication.id);
-    const materialKit = hasPartialMaterialKitCoverage || materialKitsQ.isLoading || materialKitsQ.isError || !materialKitsQ.isSuccess
-      ? { status: 'unknown' as const, reason: 'not_loaded' as const }
-      : {
-        status: 'known' as const,
-        value: missionMaterialKits?.find((kit) => kit.application_id === focusApplication.id) ?? null,
-      };
+    const materialKit = deriveMaterialKitFact({
+      applicationId: focusApplication.id,
+      status: materialKitsQ.isError ? 'error' : materialKitsQ.isLoading ? 'loading' : 'success',
+      complete: !hasPartialMaterialKitCoverage && materialKitsQ.isSuccess,
+      kits: missionMaterialKits,
+    });
     return { ...baseFacts, materialKit };
   }, [
     focusApplication,
@@ -193,6 +200,12 @@ export default function DashboardView({
   const workbenchSessionState = workbenchCandidate
     ? suggestionSessionStates[`${focusApplication?.id}:${workbenchCandidate.id}`] ?? null
     : null;
+
+  useEffect(() => {
+    if (focusApplication && workbenchCandidate) {
+      onPruneDisposition(focusApplication.id, workbenchCandidate.id, workbenchCandidate.stateKey);
+    }
+  }, [focusApplication, onPruneDisposition, workbenchCandidate]);
   const nextMissionAction = mission.actions[0];
   const selectedInsight = useMemo(
     () => insights.find((item) => item.id === selectedInsightId) ?? null,
@@ -295,6 +308,8 @@ export default function DashboardView({
           onSetDisposition={onSetDisposition}
           onNavigate={onNextStepNavigate}
           isNavigationAvailable={isNextStepNavigationAvailable}
+          onNavigateReadonly={onNextStepReadonlyNavigate}
+          isReadonlyNavigationAvailable={isNextStepReadonlyNavigationAvailable}
         />
       ) : null}
       <MissionHeader

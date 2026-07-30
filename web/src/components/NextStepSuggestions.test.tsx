@@ -3,7 +3,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import NextStepSuggestions from './NextStepSuggestions';
-import type { NextStepSuggestions as Suggestions, SuggestionSessionState } from '@/lib/nextStepSuggestions';
+import type { NextStepSuggestions as Suggestions, ReadonlyDestination, SuggestionSessionState } from '@/lib/nextStepSuggestions';
 
 const firstCandidate = {
   id: 'first',
@@ -37,6 +37,8 @@ function render(
   onSetDisposition = vi.fn(),
   onNavigate = vi.fn(),
   isNavigationAvailable = () => true,
+  onNavigateReadonly?: (destination: ReadonlyDestination) => void,
+  isReadonlyNavigationAvailable = () => false,
 ) {
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -50,6 +52,8 @@ function render(
         onSetDisposition={onSetDisposition}
         onNavigate={onNavigate}
         isNavigationAvailable={isNavigationAvailable}
+        onNavigateReadonly={onNavigateReadonly}
+        isReadonlyNavigationAvailable={isReadonlyNavigationAvailable}
       />,
     );
   });
@@ -83,6 +87,19 @@ describe('NextStepSuggestions', () => {
 
     expect(view?.textContent).toContain('第一项行动');
     expect(view?.textContent).not.toContain('第二项行动');
+  });
+
+  it('passes the exact primary destination without issuing a write request', () => {
+    const onNavigate = vi.fn();
+    const { view } = render(7, suggestions([{
+      ...firstCandidate,
+      destination: { kind: 'interview_event', applicationId: 7, eventId: 31 },
+    }]), null, vi.fn(), onNavigate);
+    const forward = view?.querySelector('button');
+
+    act(() => forward?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+
+    expect(onNavigate).toHaveBeenCalledWith({ kind: 'interview_event', applicationId: 7, eventId: 31 });
   });
 
   it('binds session disposition callbacks to applicationId', () => {
@@ -154,6 +171,48 @@ describe('NextStepSuggestions', () => {
     const risk = view?.querySelector('[data-testid="source-risk"]');
     act(() => risk?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
     expect(onNavigate).not.toHaveBeenCalled();
+  });
+
+  it('does not reuse the primary navigation for a source risk', () => {
+    const onNavigate = vi.fn();
+    const { view } = render(1, {
+      candidates: [],
+      sourceRisks: [{
+        id: 'risk-interview',
+        stateKey: 'risk-interview-state',
+        title: '来源已变化',
+        reason: '请先核对面试来源。',
+        sources: [],
+        readonlyDestination: { kind: 'interview_event', applicationId: 1, eventId: 9 },
+      }],
+    }, null, vi.fn(), onNavigate);
+
+    expect(view?.textContent).toContain('来源已变化');
+    expect(view?.textContent).toContain('暂不可打开');
+    act(() => view?.querySelector('[data-testid="source-risk"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(onNavigate).not.toHaveBeenCalled();
+  });
+
+  it('uses a separate readonly adapter and preserves opportunity-fit history context', () => {
+    const onNavigateReadonly = vi.fn();
+    const { view } = render(1, {
+      candidates: [],
+      sourceRisks: [{
+        id: 'risk-fit',
+        stateKey: 'risk-fit-state',
+        title: '岗位评估来源已变化',
+        reason: '请查看历史评估。',
+        sources: [],
+        readonlyDestination: { kind: 'opportunity_fit_history', applicationId: 1, reviewId: 27 },
+      }],
+    }, null, vi.fn(), vi.fn(), () => true, onNavigateReadonly, () => true);
+    act(() => view?.querySelector('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+
+    expect(onNavigateReadonly).toHaveBeenCalledWith({
+      kind: 'opportunity_fit_history',
+      applicationId: 1,
+      reviewId: 27,
+    });
   });
 
   it('only shows the candidate again when a saved stateKey is stale', () => {
