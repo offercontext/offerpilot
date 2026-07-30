@@ -17,14 +17,14 @@
 ## File map and ownership
 
 - Create web/src/lib/nextStepSuggestions.ts: fact-state types, discriminated destinations, stable state-key construction, valid interview classification, candidate/risk derivation.
-- Create web/src/lib/nextStepSuggestions.test.ts: exhaustive pure-rule tests using explicit fact snapshots.
+- Create web/src/lib/nextStepSuggestions.test.ts: exhaustive pure-rule tests using explicit fact snapshots and compile-time destination assertions.
 - Create web/src/components/NextStepSuggestions.tsx: presentational card, source-risk notice, snooze/ignore session callbacks, and destination dispatch.
 - Create web/src/components/NextStepSuggestions.module.css: layout and collapsed/ignored visual states using existing design tokens.
 - Create web/src/components/NextStepSuggestions.test.tsx: rendering, session disposition, Chinese fixed copy, source labels, and no-navigation assertions.
 - Modify web/src/layout/AppShell.tsx: construct workbench/detail fact snapshots from already loaded data, own SuggestionSessionState, and pass only existing navigation callbacks.
 - Create web/src/layout/AppShell.nextStepSuggestions.test.tsx: workbench/detail fact-boundary and no-write integration tests.
 - Modify web/src/components/ApplicationDetail.tsx: render the controlled suggestion component for the current application and map existing detail/Pilot/interview callbacks.
-- Modify web/src/features/dashboard/DashboardView.tsx: render the workbench suggestion region using the fact snapshot supplied by AppShell; do not add a new query.
+- Modify web/src/features/dashboard/DashboardView.tsx: reuse its existing Material Kit query for the workbench fact snapshot, with explicit loading/error/partial-coverage states; do not add a new query.
 - Modify web/src/components/InterviewV01View.tsx only if the existing event-selection callback needs a typed adapter; do not add a second event-selection heuristic.
 - Modify existing navigation tests only where a destination adapter is already covered, keeping the new assertions in the dedicated files above.
 
@@ -56,7 +56,23 @@ const workbenchFacts = {
 } satisfies NextStepFacts;
 ~~~
 
-Assert that TypeScript accepts only fully formed destinations. A review history destination must contain applicationId, eventId, and reviewId; a selection destination must contain applicationId and must not require an event or review ID.
+Assert that TypeScript accepts only fully formed destinations. A review history destination must contain applicationId, eventId, and reviewId; a selection destination must contain applicationId and must not require an event or review ID. Use compile-time negative assertions rather than comments alone:
+
+~~~ts
+// @ts-expect-error review history cannot omit reviewId
+const incompleteHistory: InterviewReviewHistoryDestination = {
+  kind: 'interview_review_history',
+  applicationId: 1,
+  eventId: 2,
+};
+
+// @ts-expect-error a multi-event selection cannot guess an eventId
+const guessedSelection: InterviewEventSelectionDestination = {
+  kind: 'interview_event_selection',
+  applicationId: 1,
+  eventId: 2,
+};
+~~~
 
 - [ ] **Step 2: Run the focused test to verify it fails.**
 
@@ -108,10 +124,11 @@ Do not add optional eventId or reviewId fields to any destination. SourceRiskNot
 - [ ] **Step 4: Run the focused type tests.**
 
 ~~~powershell
+npx tsc -b --pretty false
 npm.cmd test -- --run src/lib/nextStepSuggestions.test.ts
 ~~~
 
-Expected: PASS for the type and fixture assertions.
+Expected: TypeScript accepts the valid union cases, reports the two intentional @ts-expect-error cases as expected, and the focused tests pass.
 
 - [ ] **Step 5: Commit the type boundary.**
 
@@ -166,13 +183,21 @@ Implement deriveNextStepSuggestions(facts, context, now) with no React, service,
 - treat unknown as unknown and never infer absence;
 - keep JD permanently unknown/not_supported in this slice;
 - require a known, non-empty Resume collection before attaching a current Resume source;
-- use a stable sorted available-Resume-set identifier in stateKey, never a nonexistent current-resume identity;
+- use a stable sorted available-Resume-set identifier whose entries are id + version tuples in stateKey, never a nonexistent current-resume identity; prefer an existing content fingerprint or updated_at when present, otherwise use a deterministic canonical fingerprint of the Resume content_json and identity fields;
 - validate event dates and durations before current/future/ended classification;
 - return all candidates for tests but let the renderer choose one main action;
 - return source risks separately, always visible and independent of snooze/ignore;
 - set status=frozen only for existing frozen Proposal/Review/Material/confirmed Knowledge inputs, changed only for explicit source-status facts, and current only for known current inputs.
 
-Use stable serialization of sorted numeric IDs and explicit fact statuses for stateKey; do not use timestamps, array arrival order, or unstable object JSON.
+Use stable serialization of sorted { id, version } Resume tuples and explicit fact statuses for stateKey; do not use only numeric IDs, arrival order, wall-clock time, or unstable object JSON. Add a regression where the Resume ID is unchanged but its version/content fingerprint changes: the old snoozed/ignored state must no longer hide the candidate.
+
+The regression must be explicit:
+
+~~~ts
+const before = deriveNextStepSuggestions(factsWithResumeVersion('v1'), 'detail', now);
+const after = deriveNextStepSuggestions(factsWithResumeVersion('v2'), 'detail', now);
+expect(after.candidates[0].stateKey).not.toBe(before.candidates[0].stateKey);
+~~~
 
 - [ ] **Step 5: Run the pure-rule suite.**
 
@@ -210,6 +235,7 @@ Assert:
 - a risk without readonlyDestination renders plain text and clicking its container does not invoke navigation;
 - a risk with a destination invokes only the provided read-only navigation callback;
 - known-empty Resume collection does not render “当前使用来源”;
+- two applications with the same suggestionId call onSetDisposition with their own applicationId and cannot change each other’s state;
 - fixed system copy is Chinese while dynamic company, position, JD, Resume, and evidence text remains unchanged;
 - no service, mutation, handoff, or browser-storage mock is called.
 
@@ -229,12 +255,12 @@ Use props equivalent to:
 type NextStepSuggestionsProps = {
   suggestions: NextStepSuggestions;
   sessionState: SuggestionSessionState | null;
-  onSetDisposition: (suggestionId: string, state: SuggestionSessionState | null) => void;
+  onSetDisposition: (applicationId: number, suggestionId: string, state: SuggestionSessionState | null) => void;
   onNavigate: (destination: NextStepDestination | ReadonlyDestination) => void;
 };
 ~~~
 
-The component must only call onNavigate with an already validated discriminated destination. It must not import services, call fetch, call AI, mutate handoff state, or write localStorage. Use fixed Chinese copy for labels, empty states, source status, and action buttons. Preserve dynamic source text exactly.
+The component must only call onNavigate with an already validated discriminated destination. It must call onSetDisposition with the immutable applicationId supplied by the parent, so two applications with the same suggestionId cannot share session state. It must not import services, call fetch, call AI, mutate handoff state, or write localStorage. Use fixed Chinese copy for labels, empty states, source status, and action buttons. Preserve dynamic source text exactly.
 
 - [ ] **Step 4: Run the component tests.**
 
@@ -264,10 +290,11 @@ git commit -m "feat: AI render read-only next-step suggestions"
 
 Use existing query mocks and navigation callbacks to assert:
 
-- AppShell supplies only currently loaded global facts: Application, Event, Offer, Resume, confirmed Knowledge, and practice stats;
-- Material Kit, Fit Review, interview preparation history, and Mock Interview history are passed as unknown/not_loaded rather than fetched;
+- AppShell supplies currently loaded global facts: Application, Event, Offer, Resume, confirmed Knowledge, and practice stats. DashboardView retains and reuses its existing Material Kit query for the workbench only;
+- the workbench Material Kit fact is known only when the existing query has settled successfully and covers every displayed active application; loading, error, and partial coverage are explicit unknown/not_loaded states;
+- Fit Review, interview preparation history, and Mock Interview history remain unknown/not_loaded rather than being fetched;
 - JD is unknown/not_supported, and no new JD request occurs;
-- the workbench with insufficient per-application facts renders exactly one neutral application_detail action and does not render “缺 JD/未评估/缺材料”;
+- the workbench with insufficient per-application facts renders exactly one neutral application_detail action and does not render “缺 JD/未评估/缺材料”; when the existing Material Kit query is loading, errored, or partially covering applications it is insufficient, not an empty Material Kit;
 - ApplicationDetail receives the same fact snapshot shape, but only known local facts can produce concrete actions;
 - invoking the same pure function with the same explicit fact snapshot from workbench and detail produces equal candidates and source risks;
 - session state is keyed by applicationId + suggestionId, survives component remount within AppShell, and resets when stateKey changes;
@@ -297,7 +324,7 @@ Update state using the current map entry, not a stale render closure. On each re
 
 - [ ] **Step 4: Implement fact adapters without new requests.**
 
-Construct one NextStepFacts adapter in AppShell and pass the explicit snapshot to DashboardView and ApplicationDetail. Do not use an empty array to infer an empty source when the underlying query is not loaded; use unknown for not-loaded queries. A known empty Resume array is the only case that may produce “选择简历”, and it must have no current-source tag.
+Construct one NextStepFacts adapter for the shared rule function. AppShell passes global facts to ApplicationDetail; DashboardView combines those facts with its already-existing Material Kit query and passes a per-application snapshot to the same rule function. Do not add another Material Kit request. Treat loading, error, and partial coverage as unknown; only a settled, successful, complete result is known. A known empty Resume array is the only case that may produce “选择简历”, and it must have no current-source tag. ApplicationDetail does not generate a Material Kit action unless it already has a known Material Kit fact and an existing no-write entry callback; otherwise the candidate is omitted rather than rendering an inert button.
 
 - [ ] **Step 5: Run integration tests.**
 
@@ -335,7 +362,9 @@ Cover:
 - multiple ended events -> interview_review_selection without a guessed Review ID;
 - Material Kit navigation does not write materialKitHandoff and does not auto-open the drawer;
 - Pilot navigation does not start AI or create a proposal;
-- unknown fact states render empty/neutral content instead of guessed actions.
+- unknown fact states render empty/neutral content instead of guessed actions;
+- detail pages with unknown Material Kit facts do not render a Material Kit “前往” button; the workbench uses only the existing settled/complete Material Kit query;
+- two applications with the same suggestionId receive separate applicationId-bound disposition callbacks and cannot hide each other’s candidate.
 
 - [ ] **Step 2: Run the tests to verify they fail.**
 
@@ -351,7 +380,7 @@ Map each destination kind to existing callbacks only:
 
 - application_detail -> existing detail opener;
 - pilot_opportunity_fit -> existing Pilot opportunity-fit opener;
-- material_kit_entry -> existing detail navigation, not materialKitHandoff;
+- material_kit_entry -> an existing user-clicked, no-write Material Kit entry callback only when the current surface can provide it; ApplicationDetail omits this candidate when it cannot, rather than mapping it back to the already-open detail or creating a handoff;
 - interview_event -> existing event-selection/index opener with exact event ID;
 - interview_event_selection -> existing interview index opener with application ID;
 - interview_review / interview_review_history / selection -> existing read-only review entry;
@@ -392,6 +421,9 @@ Scan only known fixed phrases. Reject fixed English such as Next step, Snooze, I
 - workbench insufficient facts uses “查看投递详情以确认下一步”;
 - “来源已变化” remains visible regardless of session disposition;
 - empty known Resume set never shows “当前使用来源”;
+- Resume ID unchanged but version/content fingerprint changed resets the session disposition;
+- two applications with the same suggestionId do not share snoozed/ignored state;
+- the first candidate in the rule function’s priority order, not merely an arbitrary candidate, is the rendered main action;
 - no service/API write method is imported by the new component.
 
 - [ ] **Step 2: Run the regression tests.**
@@ -469,6 +501,8 @@ Report final commit SHAs, focused/full front-end test counts, build result, diff
 - [ ] No task adds a backend route, API call, database field, AI call, handoff write, or persistent user decision.
 - [ ] Destination IDs are required by discriminated union; no optional-ID fallback remains.
 - [ ] The known-empty Resume regression explicitly rejects “当前使用来源”.
+- [ ] Destination tests include @ts-expect-error compile-time negatives.
+- [ ] Component tests assert the first priority candidate and applicationId-bound session callbacks.
 - [ ] The workbench neutral suggestion and detail empty state have distinct tests.
 - [ ] Fixed-copy scanning is limited to known phrases and does not reject user-provided English data.
 - [ ] No placeholder text appears in this plan.
