@@ -2,7 +2,7 @@
 
 Date: 2026-07-30
 Branch: `feat/20260724-evidence-gated-interview-preparation`
-Validation HEAD: `056d9d6`
+Validation HEAD: `056d9d6` (code under validation; this report is updated separately)
 Status: not pushed, not merged
 
 ## Narrow fix in this validation round
@@ -25,17 +25,17 @@ Status: not pushed, not merged
   - Mock Interview bounded attempts ended with `attempt_1:feedback:mock_interview_unverifiable:excerpt_mismatch`, `attempt_2:question_2:mock_interview_unverifiable:excerpt_mismatch`, then `attempt_3:success`; terminal failures were preserved and the successful retry used a new Attempt.
 - `uv run oc verify-mock-interview --static-dir web/dist`: exit 0, `attempt_1:success`.
 
-The earlier full release gate at `399462c` also passed: backend groups covered 1630 collected node IDs with no duplicates and only the four defined Windows symlink-capability skips; Ruff, Mypy, 203 frontend suites / 657 tests, TypeScript, production build, local smoke, and isolated local verify all exited 0. The current fix changes only the Mock Interview AI module and its tests; the focused post-fix gates above were rerun.
+The earlier full release gate at `399462c` passed: backend groups covered 1630 collected node IDs with no duplicates and only the four defined Windows symlink-capability skips; Ruff, Mypy, 203 frontend suites / 657 tests, TypeScript, production build, local smoke, and isolated local verify all exited 0. On the final HEAD, Ruff, Mypy, frontend tests, TypeScript, production build, local smoke, local verify, real-AI verify, and the isolated Mock Interview API verify were rerun successfully. The final grouped backend gate was attempted with the persisted five-group workflow: `agent` and `domain` completed successfully; `knowledge` exceeded the 900-second local execution limit before producing its completion marker, so `proposals`, `misc`, and the aggregate were not run. This is a release-gate timeout, not a passing full-backend result.
 
 ## Browser evidence
 
 - The previously completed local read-only browser walk-through remains valid: dashboard suggestion, snooze/ignore session behavior, detail navigation, no write calls, and no console errors.
-- A fresh isolated browser/CDP run reached the real two-turn feedback stage and produced a feedback Proposal with Turn evidence. The subsequent confirmation response was classified by the UI as `result_unknown`, so the final confirmation-and-history portion did not complete in that run. The system retained the original confirmation attempt as designed.
-- Therefore this report does not claim a fresh isolated browser confirmation/history closure. API-level real-AI verification passed; it is not a substitute for that browser evidence.
+- A fresh isolated browser/CDP run completed the real two-turn flow, feedback generation, user selection, and confirmation. The review-draft confirmation returned HTTP `201`; the drawer was then closed and reopened immediately, and the read-only history displayed the confirmed review draft and frozen turn content. The CDP auditor verified the dedicated target's complete key-request sequence and local-browser allowlist; the server-side Provider egress check matched the configured Provider endpoint tuple.
+- The successful run did not need the result-unknown confirmation retry. The existing retry tests and prior browser evidence cover retention of the original `attemptId`, `confirmationKey`, and `selected_blocks`; this run confirms the normal 201/history path.
 
 ## Cleanup and remaining risk
 
 - Temporary isolated data, services, provider proxy, standalone browser, and CDP auditor were stopped and removed.
 - No secret, Resume/JD content, or model output was recorded in this report.
 - No push or merge was performed.
-- Remaining release risk: repeat the isolated browser run until the confirmation and read-only history steps complete; retain any Provider/result-unknown outcome as evidence rather than bypassing the gate.
+- Remaining release risk: the final grouped backend gate is incomplete because the `knowledge` group exceeded the local 900-second limit; no claim of a fully green release gate is made. Provider output remains externally variable, but the isolated browser confirmation/history path completed without weakening evidence or HITL rules.
