@@ -10,6 +10,25 @@ const state = vi.hoisted(() => ({
   material: { status: 'success' as 'loading' | 'error' | 'success', kits: [] as unknown[] },
   applications: [] as unknown[],
   setOnboardingForceOpen: vi.fn(),
+  writes: {
+    createApplication: vi.fn(),
+    updateApplication: vi.fn(),
+    generateApplicationMaterialKit: vi.fn(),
+    updateMaterialKit: vi.fn(),
+    createMaterialRevisionProposal: vi.fn(),
+    acceptMaterialRevisionProposal: vi.fn(),
+    rejectMaterialRevisionProposal: vi.fn(),
+    createInterviewPreparationProposal: vi.fn(),
+    createInterviewReviewProposal: vi.fn(),
+    createInterviewKnowledgePreview: vi.fn(),
+    confirmInterviewKnowledgeCapture: vi.fn(),
+    createMockInterviewAttempt: vi.fn(),
+    submitMockInterviewTurn: vi.fn(),
+    createMockInterviewFeedback: vi.fn(),
+    confirmMockInterviewReviewDraft: vi.fn(),
+    createEvent: vi.fn(),
+    updateEvent: vi.fn(),
+  },
 }));
 
 const app = {
@@ -47,10 +66,43 @@ vi.mock('@tanstack/react-query', () => ({
   },
 }));
 
-vi.mock('@/services/applications', () => ({ listApplications: vi.fn() }));
-vi.mock('@/services/events', () => ({ listEvents: vi.fn() }));
+vi.mock('@/services/applications', () => ({
+  listApplications: vi.fn(),
+  createApplication: state.writes.createApplication,
+  updateApplication: state.writes.updateApplication,
+}));
+vi.mock('@/services/events', () => ({
+  listEvents: vi.fn(),
+  createEvent: state.writes.createEvent,
+  updateEvent: state.writes.updateEvent,
+}));
 vi.mock('@/services/offers', () => ({ listOffers: vi.fn() }));
-vi.mock('@/services/materialKits', () => ({ getApplicationMaterialKit: vi.fn() }));
+vi.mock('@/services/materialKits', () => ({
+  getApplicationMaterialKit: vi.fn(),
+  generateApplicationMaterialKit: state.writes.generateApplicationMaterialKit,
+  updateMaterialKit: state.writes.updateMaterialKit,
+}));
+vi.mock('@/services/materialRevisionProposals', () => ({
+  createMaterialRevisionProposal: state.writes.createMaterialRevisionProposal,
+  acceptMaterialRevisionProposal: state.writes.acceptMaterialRevisionProposal,
+  rejectMaterialRevisionProposal: state.writes.rejectMaterialRevisionProposal,
+}));
+vi.mock('@/services/interviewPreparationProposals', () => ({
+  createInterviewPreparationProposal: state.writes.createInterviewPreparationProposal,
+}));
+vi.mock('@/services/interviewReviewProposals', () => ({
+  createInterviewReviewProposal: state.writes.createInterviewReviewProposal,
+}));
+vi.mock('@/services/interviewKnowledgeCapture', () => ({
+  createInterviewKnowledgePreview: state.writes.createInterviewKnowledgePreview,
+  confirmInterviewKnowledgeCapture: state.writes.confirmInterviewKnowledgeCapture,
+}));
+vi.mock('@/services/mockInterviews', () => ({
+  createMockInterviewAttempt: state.writes.createMockInterviewAttempt,
+  submitMockInterviewTurn: state.writes.submitMockInterviewTurn,
+  createMockInterviewFeedback: state.writes.createMockInterviewFeedback,
+  confirmMockInterviewReviewDraft: state.writes.confirmMockInterviewReviewDraft,
+}));
 vi.mock('@/services/questions', () => ({ getPracticeStats: vi.fn() }));
 vi.mock('@/services/onboarding', () => ({
   getOnboarding: vi.fn(),
@@ -81,7 +133,20 @@ vi.mock('@/components/NextStepSuggestions', () => ({
   default: (props: any) => (
     <section data-testid="next-step-suggestions">
       <output data-testid="candidate-id">{props.suggestions.candidates[0]?.id ?? 'none'}</output>
+      <output data-testid="candidate-state-key">{props.suggestions.candidates[0]?.stateKey ?? 'none'}</output>
+      <output data-testid="session-disposition">{props.sessionState?.disposition ?? 'none'}</output>
       <button type="button" data-testid="run-suggestion" onClick={() => props.onNavigate(props.suggestions.candidates[0].destination)} />
+      <button
+        type="button"
+        data-testid="snooze-suggestion"
+        onClick={() => {
+          const candidate = props.suggestions.candidates[0];
+          props.onSetDisposition(props.applicationId, candidate.id, {
+            stateKey: candidate.stateKey,
+            disposition: 'snoozed',
+          });
+        }}
+      />
     </section>
   ),
 }));
@@ -119,23 +184,35 @@ const facts: NextStepFacts = {
   mockInterviewHistory: { status: 'known' as const, value: [] },
 };
 
+let resumeVersion = 'v1';
+
 let root: Root | undefined;
 let container: HTMLDivElement | undefined;
 
-function renderDashboard(sessionStates: Record<string, { stateKey: string; disposition: 'snoozed' | 'ignored' }> = {}) {
+function renderDashboard(
+  sessionStates: Record<string, { stateKey: string; disposition: 'snoozed' | 'ignored' }> = {},
+  getFacts: () => NextStepFacts = () => facts,
+) {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
-  const onSetDisposition = vi.fn();
+  const onSetDisposition = vi.fn((applicationId: number, suggestionId: string, nextState: { stateKey: string; disposition: 'snoozed' | 'ignored' } | null) => {
+    const key = `${applicationId}:${suggestionId}`;
+    if (nextState) sessionStates[key] = nextState;
+    else delete sessionStates[key];
+  });
   const onNextStepNavigate = vi.fn();
-  const onPruneDisposition = vi.fn();
-  act(() => root?.render(
+  const onPruneDisposition = vi.fn((applicationId: number, suggestionId: string, stateKey: string) => {
+    const key = `${applicationId}:${suggestionId}`;
+    if (sessionStates[key] && sessionStates[key].stateKey !== stateKey) delete sessionStates[key];
+  });
+  const render = (factsProvider = getFacts) => act(() => root?.render(
     <DashboardView
       onNavigate={vi.fn()}
       onOpenDetailById={vi.fn()}
       onAddApplication={vi.fn()}
       onOnboardingAction={vi.fn()}
-      nextStepFactsForApplication={() => facts}
+      nextStepFactsForApplication={factsProvider}
       suggestionSessionStates={sessionStates}
       onSetDisposition={onSetDisposition}
       onNextStepNavigate={onNextStepNavigate}
@@ -145,12 +222,15 @@ function renderDashboard(sessionStates: Record<string, { stateKey: string; dispo
       onPruneDisposition={onPruneDisposition}
     />,
   ));
-  return { view: container, onSetDisposition, onNextStepNavigate, onPruneDisposition };
+  render();
+  return { view: container, onSetDisposition, onNextStepNavigate, onPruneDisposition, rerender: render };
 }
 
 beforeEach(() => {
   state.material = { status: 'success', kits: [] };
   state.applications = [app];
+  resumeVersion = 'v1';
+  Object.values(state.writes).forEach((write) => write.mockClear());
 });
 
 afterEach(() => {
@@ -185,11 +265,41 @@ describe('DashboardView next-step facts', () => {
     expect(onPruneDisposition).toHaveBeenCalledWith(1, 'application_detail', expect.any(String));
   });
 
+  it('clears a snoozed state after a real rerender changes the Resume version', () => {
+    const sessionStates: Record<string, { stateKey: string; disposition: 'snoozed' | 'ignored' }> = {};
+    const getFacts = () => ({
+      ...facts,
+      availableResumes: { status: 'known' as const, value: [{ id: 3, version: resumeVersion } as never] },
+    });
+    state.material = { status: 'loading', kits: [] };
+    const { view, rerender, onSetDisposition } = renderDashboard(sessionStates, getFacts);
+
+    const snoozeButton = view?.querySelector<HTMLButtonElement>('[data-testid="snooze-suggestion"]');
+    expect(snoozeButton).not.toBeNull();
+    act(() => snoozeButton?.click());
+    expect(onSetDisposition).toHaveBeenCalledTimes(1);
+    expect(onSetDisposition.mock.calls[0]).toEqual([
+      1,
+      'application_detail',
+      { stateKey: expect.any(String), disposition: 'snoozed' },
+    ]);
+    expect(sessionStates['1:application_detail']?.disposition).toBe('snoozed');
+    rerender();
+    expect(view?.querySelector('[data-testid="session-disposition"]')?.textContent).toBe('snoozed');
+
+    resumeVersion = 'v2';
+    rerender(() => getFacts());
+    expect(sessionStates['1:application_detail']).toBeUndefined();
+    rerender(() => getFacts());
+    expect(view?.querySelector('[data-testid="session-disposition"]')?.textContent).toBe('none');
+  });
+
   it('navigates the mounted suggestion without invoking write callbacks', () => {
     const { view, onNextStepNavigate, onSetDisposition } = renderDashboard();
     act(() => view?.querySelector<HTMLButtonElement>('[data-testid="run-suggestion"]')?.click());
     expect(onNextStepNavigate).toHaveBeenCalled();
     expect(onSetDisposition).not.toHaveBeenCalled();
     expect(state.setOnboardingForceOpen).not.toHaveBeenCalled();
+    Object.values(state.writes).forEach((write) => expect(write).not.toHaveBeenCalled());
   });
 });
