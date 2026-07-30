@@ -50,6 +50,7 @@ import type { Resume } from '@/types/resume';
 import MaterialKitDrawer from './MaterialKitDrawer';
 import OpportunityFitReviewDrawer from './OpportunityFitReviewDrawer';
 import type { OpportunityFitReview } from '@/types/opportunityFitReview';
+import { SourceStateTag } from './ui/SourceStateTag';
 import { createPilotAttachmentDragBinding } from './PilotAttachmentHandle';
 import { consumeMaterialKitHandoff } from '@/features/pilot/materialKitHandoff';
 import NextStepSuggestions from './NextStepSuggestions';
@@ -426,6 +427,7 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
               {application.company_name} · {application.position_name}
             </Title>
             <Tag color="green">{STATUS_LABELS[application.status]}</Tag>
+            <SourceStateTag state="current" detail="当前投递" />
           </div>
         </div>
 

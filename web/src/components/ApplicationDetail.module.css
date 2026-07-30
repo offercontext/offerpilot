@@ -34,6 +34,11 @@
   margin-bottom: 16px;
 }
 
+.actionRow :global(.ant-btn) {
+  min-height: var(--op-control-height);
+  border-radius: var(--op-control-radius);
+}
+
 @media (max-width: 760px) {
   .actionRow {
     align-items: stretch;

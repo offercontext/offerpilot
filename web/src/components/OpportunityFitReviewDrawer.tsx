@@ -37,6 +37,7 @@ import {
   opportunityFitRecommendedPathLabel,
   opportunityFitStatusLabel,
 } from './opportunityFitCopy';
+import { SourceStateTag } from './ui/SourceStateTag';
 
 interface Props {
   application: Application | null;
@@ -260,7 +261,7 @@ export default function OpportunityFitReviewDrawer({
             <Tag color={opportunityFitRecommendationColor(review.recommendation)}>
               {opportunityFitRecommendationLabel(review.recommendation)}
             </Tag>
-            <Tag>{OPPORTUNITY_FIT_COPY.drawer.sourceFrozen}</Tag>
+            <SourceStateTag state="frozen" detail={OPPORTUNITY_FIT_COPY.drawer.sourceFrozen} />
             <Tag>{OPPORTUNITY_FIT_COPY.drawer.humanConfirmation}</Tag>
           </Space>
           <Typography.Title level={4}>{OPPORTUNITY_FIT_COPY.drawer.triage}</Typography.Title>

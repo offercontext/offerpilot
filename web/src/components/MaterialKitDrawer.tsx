@@ -49,6 +49,8 @@ import {
 import { listResumes } from '@/services/resumes';
 import { createMaterialRevisionProposal } from '@/services/materialRevisionProposals';
 import MaterialProposalReviewModal from './MaterialProposalReviewModal';
+import { ConfirmationPanel } from './ui/ConfirmationPanel';
+import { SourceStateTag } from './ui/SourceStateTag';
 import styles from './MaterialKitDrawer.module.css';
 import { getMaterialKitStatusForSave } from './materialKitStatus';
 import {
@@ -697,6 +699,7 @@ export default function MaterialKitDrawer({ application, open, onClose, initialR
               <Typography.Paragraph className={styles.position}>
                 {application?.position_name || '请选择一个投递记录'}
               </Typography.Paragraph>
+              <SourceStateTag state="current" detail="当前投递" />
             </div>
 
             <Form layout="vertical" className={styles.contextForm}>
@@ -1014,7 +1017,12 @@ export default function MaterialKitDrawer({ application, open, onClose, initialR
           </Space>
         )}
       >
-        <div className={styles.confirmationBody}>
+        <ConfirmationPanel
+          title="确认投递证据"
+          description="请核对当前展示的来源后再确认；确认不会替你执行平台操作。"
+          sources={[{ state: 'frozen', detail: '已确认投递证据快照' }]}
+          className={styles.confirmationBody}
+        >
           <Typography.Text className={styles.confirmationKind}>用户确认，非平台回执</Typography.Text>
           <Typography.Paragraph className={styles.confirmationHint}>
             请根据下方只读来源摘要核对本次投递；确认后会保留这份材料快照的哈希。
@@ -1072,7 +1080,7 @@ export default function MaterialKitDrawer({ application, open, onClose, initialR
           </Form>
 
           {confirmationError ? <Alert type="error" showIcon message={confirmationError} /> : null}
-        </div>
+        </ConfirmationPanel>
       </Modal>
       <Modal
         open={evidenceDetailOpen}
