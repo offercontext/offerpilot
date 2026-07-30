@@ -31,7 +31,9 @@
 | 面试准备与模拟面试 | `web/src/components/InterviewPreparationProposalDrawer.tsx`、`web/src/components/MockInterviewDrawer.tsx` | 统一显示为“为该面试做准备”，进入事件入口后由用户选择准备建议或模拟练习 |
 | 历史来源状态 | 现有各 Proposal/Review 的 `source_status` 或等价历史字段 | 只读展示为来源风险，不改变当前草稿和不触发重新生成 |
 
-若现有页面尚未把某个事实传给组件，应传递显式的 `unknown`，不得把缺失字段解释为“没有”。当前代码没有 Application 级规范 JD 或已选 Resume 字段，AppShell 也没有全局加载每个投递的评估、材料包、面试准备/模拟历史；本切片不补这些数据源，只允许在事实快照中表达 `known | unknown`。
+若现有页面尚未把某个事实传给组件，应传递显式的 `unknown`，不得把缺失字段解释为“没有”。当前代码没有 Application 级规范 JD 或已选 Resume 字段，AppShell 也没有全局加载每个投递的评估、材料包、面试准备/模拟历史；本切片不新增读取请求，只允许在事实快照中表达 `known | unknown`。
+
+工作台因事实不完整时只展示中性建议“查看投递详情以确认下一步”，不生成“未评估”“缺材料”“缺 JD”等结论。投递详情只有在其已有输入明确提供 `known` 事实时，才生成对应的具体行动建议。
 
 ## 3. 建议领域结构
 
@@ -46,24 +48,71 @@ type FactState<T> =
   | { status: 'known'; value: T; version?: string }
   | { status: 'unknown'; reason: 'not_loaded' | 'not_supported' | 'not_visible' };
 
-type NextStepDestination = {
-  kind:
-    | 'application_detail'
-    | 'pilot_opportunity_fit'
-    | 'material_kit_entry'
-    | 'interview_event'
-    | 'interview_event_selection'
-    | 'interview_review'
-    | 'interview_review_selection';
+type ApplicationDestination = {
+  kind: 'application_detail';
   applicationId: number;
-  eventId?: number;
-  reviewId?: number;
 };
+
+type OpportunityFitDestination = {
+  kind: 'pilot_opportunity_fit';
+  applicationId: number;
+};
+
+type MaterialKitDestination = {
+  kind: 'material_kit_entry';
+  applicationId: number;
+};
+
+type InterviewEventDestination = {
+  kind: 'interview_event';
+  applicationId: number;
+  eventId: number;
+};
+
+type InterviewEventSelectionDestination = {
+  kind: 'interview_event_selection';
+  applicationId: number;
+};
+
+type InterviewReviewDestination = {
+  kind: 'interview_review';
+  applicationId: number;
+  eventId: number;
+};
+
+type InterviewReviewSelectionDestination = {
+  kind: 'interview_review_selection';
+  applicationId: number;
+};
+
+type OpportunityFitHistoryDestination = {
+  kind: 'opportunity_fit_history';
+  applicationId: number;
+  reviewId: number;
+};
+
+type NextStepDestination =
+  | ApplicationDestination
+  | OpportunityFitDestination
+  | MaterialKitDestination
+  | InterviewEventDestination
+  | InterviewEventSelectionDestination
+  | InterviewReviewDestination
+  | InterviewReviewSelectionDestination
+  | OpportunityFitHistoryDestination;
+
+type ReadonlyDestination =
+  | ApplicationDestination
+  | InterviewEventDestination
+  | InterviewEventSelectionDestination
+  | InterviewReviewDestination
+  | InterviewReviewSelectionDestination
+  | OpportunityFitHistoryDestination;
 
 type NextStepSource = {
   label: string;
   status: 'current' | 'frozen' | 'changed' | 'unknown';
-  readonlyDestination?: NextStepDestination;
+  readonlyDestination?: ReadonlyDestination;
 };
 
 type NextStepCandidate = {
@@ -81,7 +130,7 @@ type SourceRiskNotice = {
   title: string;
   reason: string;
   sources: NextStepSource[];
-  readonlyDestination?: NextStepDestination;
+  readonlyDestination?: ReadonlyDestination;
 };
 
 type NextStepSuggestions = {
@@ -124,9 +173,9 @@ type NextStepSuggestions = {
 
 只有 `event_type='interview'`、当前投递可见、`scheduled_at` 有效且时间语义可判定的事件可以进入面试准备建议：
 
-- 当前事件：只有 `duration_minutes` 为有效非负数且当前时间处于 `scheduled_at` 到 `scheduled_at + duration_minutes` 的区间时，才判为当前事件；缺失或异常时长的事件状态为 `unknown`，不进入准备候选；
-- 未来事件：`scheduled_at` 晚于当前时间；
-- 已结束事件：不进入准备建议，进入复盘/知识沉淀候选；
+- 当前事件：只有 `duration_minutes` 为正的有限整数且当前时间处于 `scheduled_at` 到 `scheduled_at + duration_minutes` 的区间时，才判为当前事件；缺失、`NaN`、零、负数或其他异常时长的事件状态为 `unknown`，不进入任何面试入口；
+- 未来事件：只有 `scheduled_at` 可解析且 `duration_minutes` 为正的有限整数时，才按 `scheduled_at` 晚于当前时间判定；
+- 已结束事件：只有上述两个时间字段均有效时，才进入复盘/知识沉淀候选；
 - 缺失、无法解析或异常的 `scheduled_at`：状态为 `unknown`，排除出当前/未来/已结束判断；软删除投递或不可见事件：不生成候选；详情/深链的 404 仍由既有上下文清理逻辑处理。
 
 多个当前或未来事件按 `scheduled_at ASC` 排序，同一时间按 `created_at DESC`、`id DESC` 排序。规则函数不得自动选择其中一个事件；主行动显示“选择面试事件”，点击进入带 `applicationId` 的事件索引或已有事件选择入口。只有用户明确选择后，才生成带具体 `eventId` 的后续导航。
@@ -162,20 +211,31 @@ Offer 本切片不生成新的比较、平均值、排名或“最优 Offer”�
 
 “稍后处理”和“忽略”都不调用 API、不改变投递状态、不写入 localStorage、不改变 Proposal/Review/Material Kit，也不触发 handoff。刷新页面时两者均恢复显示。
 
-会话状态由 AppShell 持有并按 `applicationId + suggestionId` 管理，工作台与投递详情共享同一状态。每个建议的 `stateKey` 必须至少包含：
+会话状态由 AppShell 持有并按 `applicationId + suggestionId` 管理，工作台与投递详情共享同一状态。持久化结构为：
+
+```ts
+type SuggestionSessionState = {
+  stateKey: string;
+  disposition: 'snoozed' | 'ignored';
+};
+```
+
+只有保存的 `stateKey` 与当前候选建议完全一致时，`snoozed` 才进入可恢复的折叠区，`ignored` 才从当前列表隐藏；不一致时删除旧状态并重新展示建议。来源风险提示永远可见，不读取或写入该会话状态。
+
+每个建议的 `stateKey` 必须至少包含：
 
 `applicationId + suggestionId + destination context + known resume identity + JD fact status + event identity/status + relevant frozen source status`
 
-当已知来源状态、目标事件或已知 Resume 版本变化时，生成新的 `stateKey`，旧的稍后/忽略状态不再适用。JD 在本切片为 unknown，不根据不存在的全局 JD 版本声称发生变化；若未来入口提供已确认输入版本，必须将其作为显式事实传入后再参与 `stateKey`。状态只影响当前显示，不构成用户的业务决定。
+当已知来源状态、目标事件或已知 Resume 版本变化时，生成新的 `stateKey`，旧的稍后/忽略状态不再适用。JD 在本切片为 unknown，不根据不存在的全局 JD 版本声称发生变化；若未来入口提供已确认输入版本，必须将其作为显式事实传入后再参与 `stateKey`。状态只影响当前显示，不构成用户的业务决定。没有 `readonlyDestination` 的来源风险只能展示文字，不提供可点击导航。
 
 ## 6. 导航与安全约束
 
-点击主行动只调用现有导航回调，并携带完整上下文：
+点击主行动只调用现有导航回调，并携带由判别联合类型强制完整的上下文：
 
 - 岗位评估：`applicationId`；
 - 材料入口：`applicationId`，不传递或写入新的 handoff；
 - 单一面试事件入口：`applicationId + eventId`；多个事件入口：仅 `applicationId`；
-- 历史复盘：确定事件时 `applicationId + eventId`，只有明确存在的 Review 才再携带 `reviewId`；多个事件时仅 `applicationId`。
+- 历史复盘：确定事件时 `applicationId + eventId`；评估历史只读入口使用 `applicationId + reviewId`；多个事件时仅 `applicationId`。不存在的 ID 不得以可选字段或空值传入。
 
 建议组件不得直接调用 `axios.post/put/delete`、Proposal 生成 service、Material Kit handoff writer、Mock Interview start、复盘确认或 Knowledge 写入。用户到达现有入口后，仍必须通过原有确认和人工确认流程完成后续动作。
 
@@ -187,7 +247,7 @@ Offer 本切片不生成新的比较、平均值、排名或“最优 Offer”�
 
 - `web/src/lib/nextStepSuggestions.test.ts`：Resume/JD/评估/材料事实分别覆盖 `known` 与 `unknown`；未知状态不得生成“缺失”结论；当前/未来/已结束面试、无效时间字段、多事件排序与选择目标、软删除/不可见事件、来源变化独立输出；
 - `web/src/components/NextStepSuggestions.test.tsx`：只渲染一个主行动和一个来源风险；稍后进入折叠区、忽略隐藏、恢复可见；状态键变化重置旧状态；动态 JD/职位名/证据原文不被翻译；
-- `web/src/layout/AppShell.nextStepSuggestions.test.tsx`：相同事实快照输入在工作台与详情得到相同派生结果；点击导航携带正确 `applicationId/eventId/reviewId`；多个事件不自动选择；未知事实不会被补成缺失；
+- `web/src/layout/AppShell.nextStepSuggestions.test.tsx`：规则函数接收相同事实快照时得到相同派生结果；工作台信息不足时只显示中性建议，详情页传入已知事实后才显示具体建议；点击导航携带正确 `applicationId/eventId/reviewId`；多个事件不自动选择；未知事实不会被补成缺失；
 - 现有 `ApplicationDetail`、`AppShell` 和 `InterviewV01View` 入口测试：点击建议只调用导航 mock，所有 API 写 service 的调用次数保持为零；
 - `web/src/layout/workspaceDrilldown.test.tsx` 或等价现有门禁：固定文案中文化边界，不禁止英文用户数据、JD、简历和证据摘录。
 
