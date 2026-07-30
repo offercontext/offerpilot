@@ -89,22 +89,24 @@ function Harness({ initial = baseDraft }: { initial?: MockInterviewDrawerDraft }
   return (
     <>
       <button type="button" data-testid="toggle-drawer" onClick={() => setOpen((value) => !value)}>toggle</button>
-      <MockInterviewDrawer
-        open={open}
-        applicationId={7}
-        eventId={11}
-        resumes={[{ id: 3, title: 'Resume' }]}
-        draft={draft}
-        onDraftChange={(patch) => {
-          patches.current.push(patch);
-          setDraft((current) => {
-            const next = { ...current, ...patch };
-            draftRef.current = next;
-            return next;
-          });
-        }}
-        onClose={() => setOpen(false)}
-      />
+      {open ? (
+        <MockInterviewDrawer
+          open
+          applicationId={7}
+          eventId={11}
+          resumes={[{ id: 3, title: 'Resume' }]}
+          draft={draft}
+          onDraftChange={(patch) => {
+            patches.current.push(patch);
+            setDraft((current) => {
+              const next = { ...current, ...patch };
+              draftRef.current = next;
+              return next;
+            });
+          }}
+          onClose={() => setOpen(false)}
+        />
+      ) : null}
       <output data-testid="draft-state">{JSON.stringify(draftRef.current)}</output>
     </>
   );
@@ -259,6 +261,50 @@ describe('MockInterviewDrawer failed-attempt cleanup', () => {
       attemptKey: null,
       resultUnknown: false,
     });
+  });
+
+  it('replays an unknown confirmation after remount with the same key and selected blocks', async () => {
+    services.confirmMockInterviewReviewDraft
+      .mockRejectedValueOnce({ response: { status: 502, data: { error_code: 'mock_interview_provider_error' } } })
+      .mockResolvedValueOnce({ draft_id: 77, status: 'confirmed' });
+    const proposal = {
+      schema_version: '1',
+      proposal_status: 'normal' as const,
+      strengths: [{ id: 'strength-1', text: 'Clear answer', evidence_refs: [{ source: 'turn', path: '/turns/001/answer', excerpt: 'answer' }] }],
+      practice_points: [],
+      follow_up_questions: [],
+      next_practice_steps: [],
+    };
+    render({
+      ...baseDraft,
+      attemptId: 700,
+      attemptKey: 'attempt-700',
+      proposalId: 701,
+      proposal,
+      selectedIds: ['strength-1'],
+    });
+
+    act(() => drawerButtons()[0]?.click());
+    await flush();
+    act(() => drawerButtons()[0]?.click());
+    await flush();
+    const firstRequest = services.confirmMockInterviewReviewDraft.mock.calls[0][0];
+    expect(JSON.parse(container?.querySelector('[data-testid="draft-state"]')?.textContent ?? '{}')).toMatchObject({
+      attemptId: 700,
+      confirmationKey: firstRequest.confirmationKey,
+      pendingOperation: 'confirm',
+      resultUnknown: true,
+    });
+    expect([...container?.querySelectorAll('input, textarea') ?? []].every((control) => (control as HTMLInputElement).disabled)).toBe(true);
+    expect(drawerButtons().slice(1).every((button) => button.disabled)).toBe(true);
+
+    await retryDiscardAfterRemount();
+    const secondRequest = services.confirmMockInterviewReviewDraft.mock.calls[1][0];
+    expect(secondRequest.confirmationKey).toBe(firstRequest.confirmationKey);
+    expect(secondRequest.selectedBlocks).toEqual(firstRequest.selectedBlocks);
+    const finalDraft = JSON.parse(container?.querySelector('[data-testid="draft-state"]')?.textContent ?? '{}');
+    expect(finalDraft).toMatchObject({ resultUnknown: false });
+    expect(finalDraft).not.toHaveProperty('pendingOperation');
   });
 
   it.each([

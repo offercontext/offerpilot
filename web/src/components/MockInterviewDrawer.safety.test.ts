@@ -40,9 +40,11 @@ describe('MockInterviewDrawer safety display contract', () => {
   });
 
   it('records and dispatches each post-start unknown operation', () => {
-    expect(source).toContain("pendingOperation?: 'start' | 'answer' | 'question' | 'feedback' | 'discard';");
+    expect(source).toContain("pendingOperation?: 'start' | 'answer' | 'question' | 'feedback' | 'confirm' | 'discard';");
     expect(source).toContain("pendingOperation: 'answer'");
     expect(source).toContain("case 'answer': return answer();");
+    expect(source).toContain("pendingOperation: 'confirm'");
+    expect(source).toContain("case 'confirm': return confirmDraft();");
     expect(source).toContain('turnKey');
     expect(source).toContain('nextQuestionKey');
     expect(source).toContain('feedbackKey');

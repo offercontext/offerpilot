@@ -41,7 +41,7 @@ export interface MockInterviewDrawerDraft {
   selectedIds: string[];
   resultUnknown: boolean;
   retryAfterMs?: number;
-  pendingOperation?: 'start' | 'answer' | 'question' | 'feedback' | 'discard';
+  pendingOperation?: 'start' | 'answer' | 'question' | 'feedback' | 'confirm' | 'discard';
   error: string | null;
 }
 
@@ -329,9 +329,13 @@ export default function MockInterviewDrawer({
         confirmationKey, selectedBlocks,
       });
       setConfirming(false);
-      onDraftChange({ error: null });
+      onDraftChange({ error: null, resultUnknown: false, pendingOperation: undefined });
     } catch (error) {
-      onDraftChange({ error: safeError(error) });
+      if (isUnknownResult(error)) {
+        onDraftChange({ pendingOperation: 'confirm', resultUnknown: true, error: safeError(error) });
+      } else {
+        onDraftChange({ error: safeError(error) });
+      }
     } finally { setWorking(false); }
   };
 
@@ -341,6 +345,7 @@ export default function MockInterviewDrawer({
       case 'answer': return answer();
       case 'question': return nextQuestion();
       case 'feedback': return finish();
+      case 'confirm': return confirmDraft();
       case 'discard': return clearDefiniteAttempt();
       default: return undefined;
     }
