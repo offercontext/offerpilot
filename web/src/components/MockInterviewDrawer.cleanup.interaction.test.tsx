@@ -297,6 +297,9 @@ describe('MockInterviewDrawer failed-attempt cleanup', () => {
     });
     expect([...container?.querySelectorAll('input, textarea') ?? []].every((control) => (control as HTMLInputElement).disabled)).toBe(true);
     expect(drawerButtons().slice(1).every((button) => button.disabled)).toBe(true);
+    drawerButtons().slice(1).forEach((button) => button.click());
+    await flush();
+    expect(services.confirmMockInterviewReviewDraft).toHaveBeenCalledTimes(1);
 
     await retryDiscardAfterRemount();
     const secondRequest = services.confirmMockInterviewReviewDraft.mock.calls[1][0];
