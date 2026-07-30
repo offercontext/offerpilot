@@ -25,6 +25,7 @@ export interface NextStepFacts {
   materialKit: FactState<unknown>;
   interviewPreparationHistory: FactState<unknown>;
   mockInterviewHistory: FactState<unknown>;
+  sourceRisks?: SourceRiskNotice[];
 }
 
 export type ApplicationDestination = {
@@ -184,12 +185,27 @@ function makeStateKey(
     context,
     resumeSetKey(facts),
     facts.jd.status,
+    (facts.sourceRisks ?? []).map((risk) => risk.stateKey).sort().join(','),
     eventIdentity,
   ].join('|');
 }
 
 function isValidDuration(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && Number.isInteger(value) && value > 0;
+}
+
+function parseScheduledAt(value: string): number | null {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return null;
+  const datePart = value.slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(datePart)) {
+    const [year, month, day] = datePart.split('-').map(Number);
+    const utc = new Date(Date.UTC(year, month - 1, day));
+    if (utc.getUTCFullYear() !== year || utc.getUTCMonth() !== month - 1 || utc.getUTCDate() !== day) {
+      return null;
+    }
+  }
+  return timestamp;
 }
 
 function classifyInterviewEvents(facts: NextStepFacts, now: Date) {
@@ -203,10 +219,9 @@ function classifyInterviewEvents(facts: NextStepFacts, now: Date) {
     if ('deleted_at' in event && event.deleted_at) return false;
     if (['cancelled', 'deleted', 'soft_deleted'].includes(event.status)) return false;
     if (!isValidDuration(event.duration_minutes)) return false;
-    const start = Date.parse(event.scheduled_at);
-    return Number.isFinite(start);
+    return parseScheduledAt(event.scheduled_at) !== null;
   }).map((event) => {
-    const start = Date.parse(event.scheduled_at);
+    const start = parseScheduledAt(event.scheduled_at) as number;
     const end = start + event.duration_minutes * 60_000;
     return { event, start, end };
   });
@@ -269,7 +284,7 @@ export function deriveNextStepSuggestions(
   context: SuggestionContext,
   now: Date,
 ): NextStepSuggestions {
-  if (facts.application.status === 'unknown') return { candidates: [], sourceRisks: [] };
+  if (facts.application.status === 'unknown') return { candidates: [], sourceRisks: facts.sourceRisks ?? [] };
   const applicationId = facts.application.value.id;
 
   if (
@@ -287,7 +302,7 @@ export function deriveNextStepSuggestions(
         { kind: 'application_detail', applicationId },
         [],
       )],
-      sourceRisks: [],
+      sourceRisks: facts.sourceRisks ?? [],
     };
   }
 
@@ -384,5 +399,5 @@ export function deriveNextStepSuggestions(
     ));
   }
 
-  return { candidates, sourceRisks: [] };
+  return { candidates, sourceRisks: facts.sourceRisks ?? [] };
 }

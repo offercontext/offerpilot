@@ -227,6 +227,25 @@ describe('deriveNextStepSuggestions', () => {
     expect(result.candidates.some((candidate) => candidate.destination.kind.startsWith('interview_'))).toBe(false);
   });
 
+  it('treats calendar-invalid dates as unknown and keeps explicit source risks separate', () => {
+    const result = deriveNextStepSuggestions(makeFacts({
+      events: {
+        status: 'known',
+        value: [makeInterviewEvent(7, '2026-02-30T10:00:00+08:00')],
+      },
+      sourceRisks: [{
+        id: 'jd-risk',
+        stateKey: 'jd-risk-v1',
+        title: '来源状态需要确认',
+        reason: '当前输入尚未形成冻结来源。',
+        sources: [{ label: '岗位描述', status: 'changed' }],
+      }],
+    }), 'detail', now);
+
+    expect(result.candidates.some((candidate) => candidate.destination.kind.startsWith('interview_'))).toBe(false);
+    expect(result.sourceRisks.map((risk) => risk.id)).toEqual(['jd-risk']);
+  });
+
   it('changes the stateKey when the Resume version changes without changing its ID', () => {
     const before = deriveNextStepSuggestions(
       makeFacts({
