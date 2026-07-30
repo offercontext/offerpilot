@@ -1,0 +1,36 @@
+// @vitest-environment jsdom
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, describe, expect, it } from 'vitest';
+import { SourceStateTag } from './SourceStateTag';
+
+let root: Root | null = null;
+let container: HTMLDivElement | null = null;
+
+afterEach(() => {
+  act(() => root?.unmount());
+  root = null;
+  container?.remove();
+  container = null;
+});
+
+function render(state: 'current' | 'frozen' | 'changed' | 'unknown') {
+  container = document.createElement('div');
+  document.body.appendChild(container);
+  root = createRoot(container);
+  act(() => root?.render(<SourceStateTag state={state} detail="简历版本已变化" />));
+  return container;
+}
+
+describe('SourceStateTag', () => {
+  it.each([
+    ['current', '当前使用来源'],
+    ['frozen', '已冻结来源'],
+    ['changed', '来源已变化'],
+    ['unknown', '来源暂不可确认'],
+  ] as const)('renders the fixed Chinese label for %s', (state, label) => {
+    const view = render(state);
+    expect(view.textContent).toContain(label);
+    expect(view.textContent).toContain('简历版本已变化');
+  });
+});
