@@ -922,12 +922,11 @@ function AppShellContent() {
         openPilotInterviewPreparation(destination.applicationId, destination.eventId);
         return;
       case 'interview_event_selection':
-        navigateToView('interview');
+        goDetailById(destination.applicationId);
         return;
       case 'interview_review':
       case 'interview_review_history':
       case 'interview_review_selection':
-        openPilotInterviewReview(destination.applicationId);
         return;
       case 'opportunity_fit_history':
         {
@@ -937,6 +936,10 @@ function AppShellContent() {
         return;
     }
   };
+
+  const isNextStepNavigationAvailable = (destination: NextStepDestination | ReadonlyDestination) => (
+    !['interview_review', 'interview_review_history', 'interview_review_selection'].includes(destination.kind)
+  );
 
   const calendarEvidenceFocus = evidenceFocus?.kind === 'event' ? evidenceFocus : undefined;
   const offerEvidenceFocus = evidenceFocus?.kind === 'offer' ? evidenceFocus : undefined;
@@ -976,6 +979,7 @@ function AppShellContent() {
       nextStepSessionState={selectedNextStepSessionState}
       onSetDisposition={updateSuggestionSessionState}
       onNextStepNavigate={handleNextStepNavigate}
+      isNavigationAvailable={isNextStepNavigationAvailable}
     />
   ) : (
     <>
@@ -1005,6 +1009,7 @@ function AppShellContent() {
               suggestionSessionStates={suggestionSessionStates}
               onSetDisposition={updateSuggestionSessionState}
               onNextStepNavigate={handleNextStepNavigate}
+              isNextStepNavigationAvailable={isNextStepNavigationAvailable}
             />
           )}
           {view === 'board' && (

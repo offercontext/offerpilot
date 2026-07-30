@@ -12,6 +12,7 @@ export interface NextStepSuggestionsProps {
   sessionState: SuggestionSessionState | null;
   onSetDisposition: (applicationId: number, suggestionId: string, state: SuggestionSessionState | null) => void;
   onNavigate: (destination: NextStepDestination | ReadonlyDestination) => void;
+  isNavigationAvailable?: (destination: NextStepDestination | ReadonlyDestination) => boolean;
 }
 
 function isCurrentSessionState(
@@ -27,11 +28,15 @@ export default function NextStepSuggestions({
   sessionState,
   onSetDisposition,
   onNavigate,
+  isNavigationAvailable,
 }: NextStepSuggestionsProps) {
   const candidate = suggestions.candidates[0];
   const activeState = candidate && isCurrentSessionState(sessionState, candidate.stateKey) ? sessionState : null;
   const isSnoozed = activeState?.disposition === 'snoozed';
   const isIgnored = activeState?.disposition === 'ignored';
+  const candidateNavigationAvailable = candidate
+    ? isNavigationAvailable?.(candidate.destination) ?? true
+    : false;
 
   return (
     <section className={styles.root} aria-label="下一步建议">
@@ -46,7 +51,11 @@ export default function NextStepSuggestions({
             ))}
           </div>
           <div className={styles.actions}>
-            <button type="button" onClick={() => onNavigate(candidate.destination)}>前往</button>
+            <button
+              type="button"
+              disabled={!candidateNavigationAvailable}
+              onClick={() => onNavigate(candidate.destination)}
+            >前往</button>
             <button
               type="button"
               onClick={() => onSetDisposition(applicationId, candidate.id, {
@@ -87,7 +96,7 @@ export default function NextStepSuggestions({
                   ))}
                 </div>
               </div>
-              {risk.readonlyDestination ? (
+              {risk.readonlyDestination && (isNavigationAvailable?.(risk.readonlyDestination) ?? true) ? (
                 <button type="button" onClick={() => onNavigate(risk.readonlyDestination as ReadonlyDestination)}>
                   查看来源
                 </button>

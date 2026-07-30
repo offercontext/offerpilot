@@ -101,9 +101,10 @@ interface ApplicationDetailProps {
   nextStepSessionState?: SuggestionSessionState | null;
   onSetDisposition?: (applicationId: number, suggestionId: string, state: SuggestionSessionState | null) => void;
   onNextStepNavigate?: (destination: NextStepDestination | ReadonlyDestination) => void;
+  isNavigationAvailable?: (destination: NextStepDestination | ReadonlyDestination) => boolean;
 }
 
-export default function ApplicationDetail({ application, open, onClose, onMockInterview, onAskPilot, onOpenPilotOpportunityFit, pilotInterviewReviewApplicationId, onPilotInterviewReviewFocusConsumed, pilotInterviewPreparationApplicationId, pilotInterviewPreparationEventId, onPilotInterviewPreparationFocusConsumed, onAttachToPilot, interviewReviewProposalAttempts, onInterviewReviewProposalAttemptChange, onInterviewNoteChanged, interviewKnowledgeCaptureDrafts, onInterviewKnowledgeCaptureDraftChange, onInterviewKnowledgeCaptureNoteChanged, resumes = [], interviewPreparationAttempts, onInterviewPreparationAttemptChange, interviewPreparationDrafts, onInterviewPreparationDraftChange, interviewPreparationKnowledgeOptions = [], nextStepSuggestions, nextStepSessionState = null, onSetDisposition, onNextStepNavigate }: ApplicationDetailProps) {
+export default function ApplicationDetail({ application, open, onClose, onMockInterview, onAskPilot, onOpenPilotOpportunityFit, pilotInterviewReviewApplicationId, onPilotInterviewReviewFocusConsumed, pilotInterviewPreparationApplicationId, pilotInterviewPreparationEventId, onPilotInterviewPreparationFocusConsumed, onAttachToPilot, interviewReviewProposalAttempts, onInterviewReviewProposalAttemptChange, onInterviewNoteChanged, interviewKnowledgeCaptureDrafts, onInterviewKnowledgeCaptureDraftChange, onInterviewKnowledgeCaptureNoteChanged, resumes = [], interviewPreparationAttempts, onInterviewPreparationAttemptChange, interviewPreparationDrafts, onInterviewPreparationDraftChange, interviewPreparationKnowledgeOptions = [], nextStepSuggestions, nextStepSessionState = null, onSetDisposition, onNextStepNavigate, isNavigationAvailable }: ApplicationDetailProps) {
   const queryClient = useQueryClient();
   const [form] = Form.useForm();
   const [eventFormOpen, setEventFormOpen] = useState(false);
@@ -433,6 +434,7 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
             sessionState={nextStepSessionState}
             onSetDisposition={onSetDisposition}
             onNavigate={onNextStepNavigate}
+            isNavigationAvailable={isNavigationAvailable}
           />
         )}
 

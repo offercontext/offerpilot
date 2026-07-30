@@ -30,4 +30,10 @@ describe('next-step suggestions AppShell integration contract', () => {
     expect(appShellSource).not.toContain('localStorage.setItem');
     expect(appShellSource).not.toContain('saveSuggestion');
   });
+
+  it('does not drop review destination context when no typed adapter exists', () => {
+    expect(appShellSource).toContain('interview_review_history');
+    expect(appShellSource).toContain('isNextStepNavigationAvailable');
+    expect(appShellSource).not.toContain('openPilotInterviewReview(destination.applicationId)');
+  });
 });

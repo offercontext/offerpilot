@@ -23,7 +23,7 @@ const secondCandidate = {
   sources: [],
 };
 
-function suggestions(candidates = [firstCandidate, secondCandidate]): Suggestions {
+function suggestions(candidates: Suggestions['candidates'] = [firstCandidate, secondCandidate]): Suggestions {
   return { candidates, sourceRisks: [] };
 }
 
@@ -36,6 +36,7 @@ function render(
   sessionState: SuggestionSessionState | null = null,
   onSetDisposition = vi.fn(),
   onNavigate = vi.fn(),
+  isNavigationAvailable = () => true,
 ) {
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -48,6 +49,7 @@ function render(
         sessionState={sessionState}
         onSetDisposition={onSetDisposition}
         onNavigate={onNavigate}
+        isNavigationAvailable={isNavigationAvailable}
       />,
     );
   });
@@ -59,6 +61,20 @@ afterEach(() => {
   container?.remove();
   root = null;
   container = null;
+});
+
+describe('destination safety', () => {
+  it('disables destinations that cannot preserve their required context', () => {
+    const { view, onNavigate } = render(1, suggestions([{
+      ...firstCandidate,
+      destination: { kind: 'interview_review_history', applicationId: 1, eventId: 4, reviewId: 9 },
+    }]), null, vi.fn(), vi.fn(), () => false);
+
+    const navigate = view?.querySelector('button');
+    expect(navigate).toHaveProperty('disabled', true);
+    act(() => navigate?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(onNavigate).not.toHaveBeenCalled();
+  });
 });
 
 describe('NextStepSuggestions', () => {

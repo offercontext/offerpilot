@@ -72,6 +72,7 @@ interface Props {
   suggestionSessionStates: Record<string, SuggestionSessionState>;
   onSetDisposition: (applicationId: number, suggestionId: string, state: SuggestionSessionState | null) => void;
   onNextStepNavigate: (destination: NextStepDestination | ReadonlyDestination) => void;
+  isNextStepNavigationAvailable: (destination: NextStepDestination | ReadonlyDestination) => boolean;
 }
 
 export default function DashboardView({
@@ -83,6 +84,7 @@ export default function DashboardView({
   suggestionSessionStates,
   onSetDisposition,
   onNextStepNavigate,
+  isNextStepNavigationAvailable,
 }: Props) {
   const queryClient = useQueryClient();
   const [now, setNow] = useState(() => dayjs());
@@ -292,6 +294,7 @@ export default function DashboardView({
           sessionState={workbenchSessionState}
           onSetDisposition={onSetDisposition}
           onNavigate={onNextStepNavigate}
+          isNavigationAvailable={isNextStepNavigationAvailable}
         />
       ) : null}
       <MissionHeader
