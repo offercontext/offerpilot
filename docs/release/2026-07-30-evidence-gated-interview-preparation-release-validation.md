@@ -1,8 +1,10 @@
 # 发布验证报告：证据门控面试与下一步建议
 
-日期：2026-07-30  
-分支：`feat/20260724-evidence-gated-interview-preparation`  
-验证 HEAD：`399462c`  
+日期：2026-07-30
+
+分支：`feat/20260724-evidence-gated-interview-preparation`
+
+验证 HEAD：`399462c`
 状态：未发布；未推送；未合并
 
 ## 代码与差异卫生
