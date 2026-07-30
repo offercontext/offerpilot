@@ -176,6 +176,8 @@ def _validate_item(
         raise MockInterviewContractError("evidence_refs_not_array")
     if len(refs) > 4:
         raise MockInterviewContractError("limit_exceeded")
+    for ref in refs:
+        _validate_reference(ref, snapshot, turns)
     if field in {"strengths", "practice_points", "next_practice_steps"}:
         if not refs or not any(ref.get("source") == "turn" for ref in refs if isinstance(ref, dict)):
             raise MockInterviewContractError("missing_turn_evidence")
@@ -187,8 +189,6 @@ def _validate_item(
         raise MockInterviewContractError("missing_evidence_ref")
     if not refs and field != "follow_up_questions":
         raise MockInterviewContractError("missing_evidence_ref")
-    for ref in refs:
-        _validate_reference(ref, snapshot, turns)
 
 
 def _validate_reference(ref: Any, snapshot: dict[str, Any], turns: list[dict[str, Any]]) -> None:

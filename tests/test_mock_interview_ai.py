@@ -291,6 +291,52 @@ def test_semantic_feedback_reference_failure_is_not_repaired():
 @pytest.mark.parametrize(
     ("reference", "category"),
     [
+        (
+            {"source": "attacker", "path": "/x", "excerpt": "forged"},
+            "unknown_evidence_ref",
+        ),
+        (
+            {"source": "jd", "path": "/jd/text", "excerpt": "not in jd"},
+            "excerpt_mismatch",
+        ),
+        (
+            {
+                "source": "resume",
+                "path": "/resume/content_json/missing",
+                "excerpt": "forged",
+            },
+            "unknown_evidence_ref",
+        ),
+    ],
+)
+def test_invalid_feedback_reference_without_turn_is_not_repaired(reference, category):
+    model = _QuestionRepairModel(
+        [
+            json.dumps(
+                _feedback(
+                    strengths=[
+                        {
+                            "id": "s1",
+                            "text": "invalid reference",
+                            "evidence_refs": [reference],
+                        }
+                    ]
+                ),
+                ensure_ascii=False,
+            )
+        ]
+    )
+
+    with pytest.raises(MockInterviewUnverifiableError) as error:
+        generate_feedback(model, _snapshot(), _turns())
+
+    assert error.value.category == category
+    assert model.calls == 1
+
+
+@pytest.mark.parametrize(
+    ("reference", "category"),
+    [
         ({"source": "turn", "path": "/turns/001/answer"}, "evidence_ref_missing_field"),
         ({"source": "turn", "path": 1, "excerpt": "回答"}, "evidence_ref_field_type"),
     ],
