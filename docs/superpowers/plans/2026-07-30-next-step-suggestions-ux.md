@@ -10,6 +10,8 @@
 
 **Design source:** docs/superpowers/specs/2026-07-30-next-step-suggestions-ux-design.md
 
+**Feature baseline:** 05b1178. The implementation diff for this slice must be measured from this commit, not from origin/main, because the branch already contains unrelated historical backend work.
+
 **Scope boundary:** This plan does not add backend routes, database fields, queries for per-application Material Kit/Fit/Interview history, AI calls, handoffs, automatic status changes, reminders, Offer aggregation, or persistent snooze/ignore state.
 
 ---
@@ -128,7 +130,7 @@ npx tsc -b --pretty false
 npm.cmd test -- --run src/lib/nextStepSuggestions.test.ts
 ~~~
 
-Expected: TypeScript accepts the valid union cases, reports the two intentional @ts-expect-error cases as expected, and the focused tests pass.
+Expected: tsc exits with code 0; the two @ts-expect-error annotations suppress exactly the intentional invalid assignments, and the focused tests pass.
 
 - [ ] **Step 5: Commit the type boundary.**
 
@@ -183,13 +185,13 @@ Implement deriveNextStepSuggestions(facts, context, now) with no React, service,
 - treat unknown as unknown and never infer absence;
 - keep JD permanently unknown/not_supported in this slice;
 - require a known, non-empty Resume collection before attaching a current Resume source;
-- use a stable sorted available-Resume-set identifier whose entries are id + version tuples in stateKey, never a nonexistent current-resume identity; prefer an existing content fingerprint or updated_at when present, otherwise use a deterministic canonical fingerprint of the Resume content_json and identity fields;
+- use a stable sorted available-Resume-set identifier whose entries are id + version tuples in stateKey, never a nonexistent current-resume identity; prefer an existing content fingerprint or updated_at when present, otherwise hash a deterministic canonical representation of the Resume content_json and identity fields;
 - validate event dates and durations before current/future/ended classification;
 - return all candidates for tests but let the renderer choose one main action;
 - return source risks separately, always visible and independent of snooze/ignore;
 - set status=frozen only for existing frozen Proposal/Review/Material/confirmed Knowledge inputs, changed only for explicit source-status facts, and current only for known current inputs.
 
-Use stable serialization of sorted { id, version } Resume tuples and explicit fact statuses for stateKey; do not use only numeric IDs, arrival order, wall-clock time, or unstable object JSON. Add a regression where the Resume ID is unchanged but its version/content fingerprint changes: the old snoozed/ignored state must no longer hide the candidate.
+Use stable serialization of sorted { id, version } Resume tuples and explicit fact statuses for stateKey; do not use only numeric IDs, arrival order, wall-clock time, or unstable object JSON. The version must be an opaque existing version/fingerprint or a deterministic digest; never concatenate raw content_json into stateKey. Add a regression where the Resume ID is unchanged but its version/content fingerprint changes: the old snoozed/ignored state must no longer hide the candidate.
 
 The regression must be explicit:
 
@@ -470,11 +472,16 @@ Expected: exit code 0. Existing React act warnings may remain, but no test may f
 - [ ] **Step 3: Verify the no-backend-change boundary.**
 
 ~~~powershell
-git diff --name-only origin/main..HEAD -- src tests
-git diff --name-only origin/main..HEAD -- web/src/services web/src/types
+$featureBase = '05b1178'
+$backendChanges = git diff --name-only "$featureBase..HEAD" -- src tests
+$serviceChanges = git diff --name-only "$featureBase..HEAD" -- web/src/services web/src/types
+
+if ($backendChanges -or $serviceChanges) {
+  throw 'Next-step suggestions must not add backend, service, or shared API/type changes.'
+}
 ~~~
 
-Expected: no modified backend/API/database/service/type files beyond the explicitly listed front-end files; the implementation must not add a read request or write route.
+Expected: the script exits successfully with no output. This check measures only changes introduced after 05b1178; the full branch hygiene check remains the origin/main diff check in the next step.
 
 - [ ] **Step 4: Run static checks and diff hygiene.**
 
