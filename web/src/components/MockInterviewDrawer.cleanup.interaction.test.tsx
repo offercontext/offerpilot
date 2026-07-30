@@ -299,6 +299,11 @@ describe('MockInterviewDrawer failed-attempt cleanup', () => {
       pendingOperation: _operation,
       resultUnknown: true,
     });
+    expect([...container?.querySelectorAll('textarea') ?? []].every((textarea) => textarea.disabled)).toBe(true);
+    expect(drawerButtons().slice(1).every((button) => button.disabled)).toBe(true);
+    drawerButtons().slice(1).forEach((button) => button.click());
+    await flush();
+    expect(operation).toHaveBeenCalledTimes(1);
 
     await retryDiscardAfterRemount();
     const retryRequest = operation.mock.calls[1][0];

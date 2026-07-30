@@ -424,16 +424,17 @@ export default function MockInterviewDrawer({
             <Input.TextArea
               aria-label="回答"
               value={draft.answer}
+              disabled={pending || working}
               onChange={(event) => onDraftChange({ answer: event.target.value })}
               placeholder="输入你的回答"
               autoSize={{ minRows: 5, maxRows: 12 }}
             />
-            <Button onClick={() => void answer()} disabled={!draft.answer.trim() || working}>提交回答</Button>
-            <Button type="primary" onClick={() => void finish()} disabled={!draft.answer.trim() || !draft.answerSubmitted || working}>结束并生成复盘建议</Button>
+            <Button onClick={() => void answer()} disabled={!draft.answer.trim() || pending || working}>提交回答</Button>
+            <Button type="primary" onClick={() => void finish()} disabled={!draft.answer.trim() || !draft.answerSubmitted || pending || working}>结束并生成复盘建议</Button>
           </>
         ) : null}
         {draft.attemptId && !draft.proposal && draft.answerSubmitted ? (
-          <Button onClick={() => void nextQuestion()} disabled={working}>生成下一题</Button>
+          <Button onClick={() => void nextQuestion()} disabled={pending || working}>生成下一题</Button>
         ) : null}
         {draft.proposal ? (
           <>
@@ -447,6 +448,7 @@ export default function MockInterviewDrawer({
                 <input
                   type="checkbox"
                   checked={draft.selectedIds.includes(item.id)}
+                  disabled={pending || working}
                   onChange={(event) => onDraftChange({
                     selectedIds: event.target.checked
                       ? [...draft.selectedIds, item.id]
@@ -455,6 +457,7 @@ export default function MockInterviewDrawer({
                 />{' '}
                 <Input.TextArea
                   value={draft.editedBlocks[item.id] ?? item.text}
+                  disabled={pending || working}
                   onChange={(event) => onDraftChange({ editedBlocks: { ...draft.editedBlocks, [item.id]: event.target.value } })}
                   autoSize={{ minRows: 2, maxRows: 5 }}
                 />
@@ -462,13 +465,13 @@ export default function MockInterviewDrawer({
               </label>
             ))}
             {draft.proposal.proposal_status === 'normal' && selectedBlocks.length > 0 && !confirming ? (
-              <Button onClick={() => setConfirming(true)}>准备保存复盘草稿</Button>
+              <Button onClick={() => setConfirming(true)} disabled={pending || working}>准备保存复盘草稿</Button>
             ) : null}
             {confirming ? (
               <Alert
                 type="info"
                 message="确认后将保存独立的模拟练习复盘草稿，不会覆盖正式复盘或写入知识库。"
-                action={<Button type="primary" onClick={() => void confirmDraft()} disabled={working}>确认保存</Button>}
+                action={<Button type="primary" onClick={() => void confirmDraft()} disabled={pending || working}>确认保存</Button>}
               />
             ) : null}
           </>
