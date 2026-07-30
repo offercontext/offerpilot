@@ -256,4 +256,35 @@ describe('ApplicationDetail opportunity fit handoff', () => {
     expect(container?.querySelector('[role="dialog"]')).toBeNull();
     expect(container?.textContent).toContain('面试准备建议');
   });
+
+  it('mounts next-step navigation with exact context and performs no write', () => {
+    const onNavigate = vi.fn();
+    const onSetDisposition = vi.fn();
+    act(() => root?.render(
+      <ApplicationDetail
+        application={application}
+        open
+        onClose={vi.fn()}
+        nextStepSuggestions={{
+          candidates: [{
+            id: 'prepare-event',
+            stateKey: 'prepare-event-v1',
+            title: 'Prepare event',
+            reason: 'Use the selected interview context.',
+            destination: { kind: 'interview_event', applicationId: 7, eventId: 32 },
+            sources: [],
+          }],
+          sourceRisks: [],
+        }}
+        onSetDisposition={onSetDisposition}
+        onNextStepNavigate={onNavigate}
+      />,
+    ));
+
+    act(() => (container?.querySelector('article button') as HTMLButtonElement)?.click());
+
+    expect(onNavigate).toHaveBeenCalledWith({ kind: 'interview_event', applicationId: 7, eventId: 32 });
+    expect(onSetDisposition).not.toHaveBeenCalled();
+    expect(state.analyzeJD).not.toHaveBeenCalled();
+  });
 });

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act } from 'react';
+import { act, useEffect } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import AppShell from './AppShell';
@@ -128,7 +128,41 @@ vi.mock('@/components/KanbanBoard', () => ({ default: () => <div data-testid="bo
 vi.mock('@/components/OfferCenterView', () => ({
   default: (props: any) => <output data-testid="offer-focus">{props.focusOfferId ?? 'none'}</output>,
 }));
-vi.mock('@/features/dashboard/DashboardView', () => ({ default: () => <div data-testid="dashboard" /> }));
+vi.mock('@/features/dashboard/DashboardView', () => ({
+  default: (props: any) => (
+    <DashboardTestHarness props={props} />
+  ),
+}));
+
+function DashboardTestHarness({ props }: { props: any }) {
+  useEffect(() => {
+    if (props.suggestionSessionStates?.['7:application_detail']) {
+      props.onPruneDisposition?.(7, 'application_detail', 'current-state');
+    }
+  }, [props]);
+  return (
+    <div data-testid="dashboard">
+      <button
+        type="button"
+        data-testid="readonly-application-detail"
+        onClick={() => props.onNextStepReadonlyNavigate?.({ kind: 'application_detail', applicationId: 7 })}
+      />
+      <button
+        type="button"
+        data-testid="readonly-opportunity-history"
+        onClick={() => props.onNextStepReadonlyNavigate?.({ kind: 'opportunity_fit_history', applicationId: 7, reviewId: 12 })}
+      />
+      <button
+        type="button"
+        data-testid="set-stale-disposition"
+        onClick={() => props.onSetDisposition?.(7, 'application_detail', { stateKey: 'stale-state', disposition: 'ignored' })}
+      />
+      <output data-testid="suggestion-session-state">
+        {props.suggestionSessionStates?.['7:application_detail']?.stateKey ?? ''}
+      </output>
+    </div>
+  );
+}
 vi.mock('@/features/pilot/PilotAttachmentContext', () => ({
   PilotAttachmentProvider: (props: any) => <>{props.children}</>,
   usePilotAttachmentStore: () => ({ addAttachment: vi.fn(), createNewDraftWithAttachment: vi.fn() }),
@@ -265,5 +299,30 @@ describe('AppShell evidence navigation', () => {
     await flush();
 
     expect(view.querySelector('[data-testid="offer-focus"]')?.textContent).toBe('none');
+  });
+
+  it('mounts the readonly adapter without turning source-risk navigation into a write flow', async () => {
+    const view = render(<AppShell />);
+    await flush();
+
+    act(() => view.querySelector<HTMLButtonElement>('[data-testid="readonly-application-detail"]')?.click());
+    await flush();
+    expect(view.querySelector('[data-testid="application-detail"]')?.textContent).toContain('7');
+
+    act(() => view.querySelector<HTMLButtonElement>('[data-testid="close-application"]')?.click());
+    await flush();
+    act(() => view.querySelector<HTMLButtonElement>('[data-testid="readonly-opportunity-history"]')?.click());
+    await flush();
+    expect(view.querySelector('[data-testid="application-detail"]')).toBeNull();
+  });
+
+  it('removes a stale disposition from the mounted AppShell state table', async () => {
+    const view = render(<AppShell />);
+    await flush();
+
+    act(() => view.querySelector<HTMLButtonElement>('[data-testid="set-stale-disposition"]')?.click());
+    await flush();
+
+    expect(view.querySelector('[data-testid="suggestion-session-state"]')?.textContent).toBe('');
   });
 });
