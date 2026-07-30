@@ -52,6 +52,13 @@ import OpportunityFitReviewDrawer from './OpportunityFitReviewDrawer';
 import type { OpportunityFitReview } from '@/types/opportunityFitReview';
 import { createPilotAttachmentDragBinding } from './PilotAttachmentHandle';
 import { consumeMaterialKitHandoff } from '@/features/pilot/materialKitHandoff';
+import NextStepSuggestions from './NextStepSuggestions';
+import type {
+  NextStepDestination,
+  NextStepSuggestions as NextStepSuggestionsModel,
+  ReadonlyDestination,
+  SuggestionSessionState,
+} from '@/lib/nextStepSuggestions';
 import styles from './ApplicationDetail.module.css';
 
 const { Title, Paragraph, Text } = Typography;
@@ -90,9 +97,13 @@ interface ApplicationDetailProps {
   interviewPreparationDrafts?: Record<string, InterviewPreparationDraft>;
   onInterviewPreparationDraftChange?: (key: string, draft: InterviewPreparationDraft | null) => void;
   interviewPreparationKnowledgeOptions?: InterviewPreparationKnowledgeOption[];
+  nextStepSuggestions?: NextStepSuggestionsModel;
+  nextStepSessionState?: SuggestionSessionState | null;
+  onSetDisposition?: (applicationId: number, suggestionId: string, state: SuggestionSessionState | null) => void;
+  onNextStepNavigate?: (destination: NextStepDestination | ReadonlyDestination) => void;
 }
 
-export default function ApplicationDetail({ application, open, onClose, onMockInterview, onAskPilot, onOpenPilotOpportunityFit, pilotInterviewReviewApplicationId, onPilotInterviewReviewFocusConsumed, pilotInterviewPreparationApplicationId, pilotInterviewPreparationEventId, onPilotInterviewPreparationFocusConsumed, onAttachToPilot, interviewReviewProposalAttempts, onInterviewReviewProposalAttemptChange, onInterviewNoteChanged, interviewKnowledgeCaptureDrafts, onInterviewKnowledgeCaptureDraftChange, onInterviewKnowledgeCaptureNoteChanged, resumes = [], interviewPreparationAttempts, onInterviewPreparationAttemptChange, interviewPreparationDrafts, onInterviewPreparationDraftChange, interviewPreparationKnowledgeOptions = [] }: ApplicationDetailProps) {
+export default function ApplicationDetail({ application, open, onClose, onMockInterview, onAskPilot, onOpenPilotOpportunityFit, pilotInterviewReviewApplicationId, onPilotInterviewReviewFocusConsumed, pilotInterviewPreparationApplicationId, pilotInterviewPreparationEventId, onPilotInterviewPreparationFocusConsumed, onAttachToPilot, interviewReviewProposalAttempts, onInterviewReviewProposalAttemptChange, onInterviewNoteChanged, interviewKnowledgeCaptureDrafts, onInterviewKnowledgeCaptureDraftChange, onInterviewKnowledgeCaptureNoteChanged, resumes = [], interviewPreparationAttempts, onInterviewPreparationAttemptChange, interviewPreparationDrafts, onInterviewPreparationDraftChange, interviewPreparationKnowledgeOptions = [], nextStepSuggestions, nextStepSessionState = null, onSetDisposition, onNextStepNavigate }: ApplicationDetailProps) {
   const queryClient = useQueryClient();
   const [form] = Form.useForm();
   const [eventFormOpen, setEventFormOpen] = useState(false);
@@ -414,6 +425,16 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
             <Tag color="green">{STATUS_LABELS[application.status]}</Tag>
           </div>
         </div>
+
+        {nextStepSuggestions && onSetDisposition && onNextStepNavigate && (
+          <NextStepSuggestions
+            applicationId={application.id}
+            suggestions={nextStepSuggestions}
+            sessionState={nextStepSessionState}
+            onSetDisposition={onSetDisposition}
+            onNavigate={onNextStepNavigate}
+          />
+        )}
 
         <div className={styles.actionRow}>
           {onAskPilot && (

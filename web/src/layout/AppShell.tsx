@@ -51,6 +51,7 @@ import { getPracticeStats } from '@/services/questions';
 import { fetchConfirmedInterviewKnowledgeNotes } from '@/services/knowledge';
 import { buildPilotPageContext } from '@/lib/pilotPageContext';
 import {
+  deriveNextStepSuggestions,
   type NextStepDestination,
   type NextStepFacts,
   type ReadonlyDestination,
@@ -411,6 +412,13 @@ function AppShellContent() {
 
   const selectedApp = selected
     ? apps.find((a) => a.id === selected.id) ?? null
+    : null;
+  const selectedNextStepSuggestions = selectedApp
+    ? deriveNextStepSuggestions(buildNextStepFacts(selectedApp.id), 'detail', now.toDate())
+    : null;
+  const selectedNextStepCandidate = selectedNextStepSuggestions?.candidates[0];
+  const selectedNextStepSessionState = selectedNextStepCandidate
+    ? suggestionSessionStates[`${selectedApp?.id}:${selectedNextStepCandidate.id}`] ?? null
     : null;
   const coachedOffer = ofrs.find((offer) => offer.id === coachOfferId);
   const pageContext = useMemo(
@@ -964,6 +972,10 @@ function AppShellContent() {
       interviewPreparationDrafts={interviewPreparationDrafts}
       onInterviewPreparationDraftChange={updateInterviewPreparationDraft}
       interviewPreparationKnowledgeOptions={interviewPreparationKnowledgeOptions}
+      nextStepSuggestions={selectedNextStepSuggestions ?? undefined}
+      nextStepSessionState={selectedNextStepSessionState}
+      onSetDisposition={updateSuggestionSessionState}
+      onNextStepNavigate={handleNextStepNavigate}
     />
   ) : (
     <>
