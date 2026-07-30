@@ -158,6 +158,19 @@ def test_feedback_text_prompt_declares_complete_contract():
     assert "normal" in prompt
 
 
+def test_feedback_prompt_requires_turn_evidence_for_observed_fields():
+    model = _QuestionRepairModel([json.dumps(_feedback(), ensure_ascii=False)])
+
+    generate_feedback(model, _snapshot(), _turns())
+
+    prompt = model.messages[0][0].content
+    for field in ("strengths", "practice_points", "next_practice_steps"):
+        assert field in prompt
+    assert 'source="turn"' in prompt
+    assert "at least one completed-turn evidence reference" in prompt
+    assert "safe_empty" in prompt
+
+
 def test_feedback_native_schema_declares_complete_contract():
     model = _SchemaCaptureModel([json.dumps(_feedback(), ensure_ascii=False)])
 
@@ -187,6 +200,92 @@ def test_feedback_repeated_structural_failure_is_terminal():
 
     assert error.value.category == "unexpected_field"
     assert model.calls == 2
+
+
+def test_missing_turn_evidence_is_repaired_once_when_second_response_adds_turn_ref():
+    marker = "model-only-feedback-marker"
+    first = _feedback(
+        strengths=[{
+            "id": "s1",
+            "text": marker,
+            "evidence_refs": [{
+                "source": "jd",
+                "path": "/jd/text",
+                "excerpt": _snapshot()["jd"]["text"],
+            }],
+        }]
+    )
+    model = _QuestionRepairModel([
+        json.dumps(first, ensure_ascii=False),
+        json.dumps(_feedback(), ensure_ascii=False),
+    ])
+
+    proposal, diagnostic = generate_feedback(model, _snapshot(), _turns())
+
+    assert proposal == _feedback()
+    assert diagnostic["repair_count"] == 1
+    assert model.calls == 2
+    repair_messages = model.messages[1]
+    repair_prompt = "\n".join(message.content for message in repair_messages)
+    assert "missing_turn_evidence" in repair_prompt
+    assert "at least one completed-turn evidence reference" in repair_prompt
+    assert marker not in repair_prompt
+
+
+def test_repaired_missing_turn_evidence_with_forged_turn_reference_fails():
+    first = _feedback(
+        strengths=[{
+            "id": "s1",
+            "text": "JD-only claim",
+            "evidence_refs": [{
+                "source": "jd",
+                "path": "/jd/text",
+                "excerpt": _snapshot()["jd"]["text"],
+            }],
+        }]
+    )
+    second = _feedback(
+        strengths=[{
+            "id": "s1",
+            "text": "forged turn claim",
+            "evidence_refs": [{
+                "source": "turn",
+                "path": "/turns/999/answer",
+                "excerpt": "forged answer",
+            }],
+        }]
+    )
+    model = _QuestionRepairModel([
+        json.dumps(first, ensure_ascii=False),
+        json.dumps(second, ensure_ascii=False),
+    ])
+
+    with pytest.raises(MockInterviewUnverifiableError) as error:
+        generate_feedback(model, _snapshot(), _turns())
+
+    assert error.value.category == "unknown_evidence_ref"
+    assert model.calls == 2
+
+
+def test_semantic_feedback_reference_failure_is_not_repaired():
+    forged = _feedback(
+        strengths=[{
+            "id": "s1",
+            "text": "forged turn claim",
+            "evidence_refs": [{
+                "source": "turn",
+                "path": "/turns/999/answer",
+                "excerpt": "forged answer",
+            }],
+        }]
+    )
+    model = _QuestionRepairModel([json.dumps(forged, ensure_ascii=False)])
+
+    with pytest.raises(MockInterviewUnverifiableError) as error:
+        generate_feedback(model, _snapshot(), _turns())
+
+    assert error.value.category == "unknown_evidence_ref"
+    assert model.calls == 1
 
 
 @pytest.mark.parametrize(

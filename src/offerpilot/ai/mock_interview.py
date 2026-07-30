@@ -97,7 +97,17 @@ _FORMAT_REPAIR_CATEGORIES = {
     "evidence_ref_missing_field",
     "evidence_ref_unexpected_field",
     "evidence_ref_field_type",
+    "missing_turn_evidence",
 }
+
+_FEEDBACK_TURN_EVIDENCE_RULE = (
+    ' For a normal result, every item in strengths, practice_points, and '
+    'next_practice_steps must include at least one completed-turn evidence '
+    'reference with source="turn". JD and Resume references are supplementary '
+    'only and cannot replace the required Turn reference. If no completed-turn '
+    'evidence supports a normal item or suggestion, return the exact safe_empty '
+    'object instead of guessing.'
+)
 
 
 def parse_mock_interview_json(raw: str) -> dict[str, Any]:
@@ -312,7 +322,7 @@ def should_retry_mock_interview_format(category: str) -> bool:
 
 
 def _format_repair_instruction(category: str) -> str:
-    return (
+    instruction = (
         " Format repair: the previous response failed the structural check "
         f"{category!r}. Return only one raw JSON object matching the declared schema."
         " Each evidence reference must be an object with exactly these string fields: "
@@ -324,6 +334,9 @@ def _format_repair_instruction(category: str) -> str:
         "be copied exactly from the supplied input, do not invent it. Do not repeat "
         "or explain the previous response."
     )
+    if category == "missing_turn_evidence":
+        instruction += _FEEDBACK_TURN_EVIDENCE_RULE
+    return instruction
 
 
 def build_mock_interview_diagnostic(
@@ -582,6 +595,7 @@ def _complete_feedback(model: Any, prompt: str) -> Assistant:
                 + " evidence_catalog is the only allowed evidence directory; source/path must exactly "
                 "select one catalog entry, and excerpt must be a non-empty contiguous substring "
                 "of that entry's value."
+                + _FEEDBACK_TURN_EVIDENCE_RULE
             ),
         ),
         Message(role="user", content=prompt),
