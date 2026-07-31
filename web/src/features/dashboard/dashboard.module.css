@@ -280,6 +280,13 @@
   justify-content: flex-end;
 }
 
+.actionEmptyButtons :global(.ant-btn),
+.missionHeaderAction :global(.ant-btn),
+.seeAllActions :global(.ant-btn) {
+  min-height: var(--op-control-height);
+  border-radius: var(--op-control-radius);
+}
+
 .rhythmCard,
 .quickCard {
   padding: 16px;
