@@ -12,6 +12,8 @@ import {
   deleteUnconfirmedInterviewKnowledgeAttempt,
   InterviewKnowledgeCaptureError,
 } from '@/services/interviewKnowledgeCapture';
+import { ConfirmationPanel } from './ui/ConfirmationPanel';
+import { SourceStateTag } from './ui/SourceStateTag';
 
 const { Text, Paragraph, Title } = Typography;
 
@@ -216,6 +218,7 @@ export default function InterviewKnowledgeCaptureDrawer({ open, note, draft, onD
         style={{ marginBottom: 16 }}
       />
       <Title level={5}>用户选中的原始片段</Title>
+      <SourceStateTag state="frozen" detail="仅保存所选面试原始片段" />
       <List
         size="small"
         dataSource={SOURCE_FIELDS}
@@ -282,17 +285,23 @@ export default function InterviewKnowledgeCaptureDrawer({ open, note, draft, onD
           ))}
         </>
       )}
-      <Space style={{ marginTop: 16 }} wrap>
-        <Button onClick={() => handlePreview('direct')} disabled={!draft.selectedFragments.length} loading={busy}>
-          直接保存选中原文
-        </Button>
-        <Button onClick={() => handlePreview('ai')} disabled={!draft.selectedFragments.length} loading={busy}>
-          生成笔记预览
-        </Button>
-        <Button type="primary" onClick={handleConfirm} disabled={!draft.editedBlocks.length} loading={busy}>
-          确认保存到知识库
-        </Button>
-      </Space>
+      <ConfirmationPanel
+        title="确认知识沉淀"
+        description="未确认的预览不会进入知识库；确认时只保存所选原始面试片段及其证据链。"
+        sources={[{ state: 'frozen', detail: '所选原始面试片段' }]}
+      >
+        <Space wrap>
+          <Button onClick={() => handlePreview('direct')} disabled={!draft.selectedFragments.length} loading={busy}>
+            直接保存选中原文
+          </Button>
+          <Button onClick={() => handlePreview('ai')} disabled={!draft.selectedFragments.length} loading={busy}>
+            生成笔记预览
+          </Button>
+          <Button type="primary" onClick={handleConfirm} disabled={!draft.editedBlocks.length} loading={busy}>
+            确认保存到知识库
+          </Button>
+        </Space>
+      </ConfirmationPanel>
     </Drawer>
   );
 }

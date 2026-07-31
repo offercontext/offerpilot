@@ -18,6 +18,8 @@ import type {
   MockInterviewHistoryItem,
   MockInterviewProposal,
 } from '@/types/mockInterview';
+import { ConfirmationPanel } from './ui/ConfirmationPanel';
+import { SourceStateTag } from './ui/SourceStateTag';
 
 export interface MockInterviewDrawerDraft {
   resumeId?: number;
@@ -355,6 +357,7 @@ export default function MockInterviewDrawer({
     <Drawer open={open} width={560} title="文本模拟面试" onClose={onClose}>
       <Space direction="vertical" size="middle" style={{ width: '100%' }}>
         <span style={{ color: 'var(--op-muted)' }}>仅用于练习表达。AI 不提供录用判断、通过率或岗位匹配分。</span>
+        <SourceStateTag state="current" detail="当前面试事件与本次输入" />
         {draft.error ? <Alert type="warning" showIcon message={draft.error} /> : null}
         {pending ? (
           <Alert
@@ -473,11 +476,13 @@ export default function MockInterviewDrawer({
               <Button onClick={() => setConfirming(true)} disabled={pending || working}>准备保存复盘草稿</Button>
             ) : null}
             {confirming ? (
-              <Alert
-                type="info"
-                message="确认后将保存独立的模拟练习复盘草稿，不会覆盖正式复盘或写入知识库。"
-                action={<Button type="primary" onClick={() => void confirmDraft()} disabled={pending || working}>确认保存</Button>}
-              />
+              <ConfirmationPanel
+                title="确认保存模拟练习复盘草稿"
+                description="确认后仅保存独立草稿，不会覆盖正式复盘或写入知识库。"
+                sources={[{ state: 'frozen', detail: '本次模拟面试回答' }]}
+              >
+                <Button type="primary" onClick={() => void confirmDraft()} disabled={pending || working}>确认保存</Button>
+              </ConfirmationPanel>
             ) : null}
           </>
         ) : null}

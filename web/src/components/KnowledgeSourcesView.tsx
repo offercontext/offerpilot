@@ -66,6 +66,7 @@ import type {
   KnowledgeSourceJobsResponse,
   ConfirmedInterviewKnowledgeNote,
 } from '@/types/knowledge';
+import { SourceStateTag } from './ui/SourceStateTag';
 
 const { Paragraph, Text, Title } = Typography;
 
@@ -295,6 +296,7 @@ export default function KnowledgeSourcesView() {
     <div style={{ padding: 24 }}>
       <div style={{ marginBottom: 24 }}>
         <Title level={4}>已确认的面试知识</Title>
+        <SourceStateTag state="frozen" detail="用户确认保存的面试原始片段" />
         <Paragraph type="secondary">
           仅展示用户确认保存的面试原始片段沉淀；来源已冻结，可继续审阅证据链。
         </Paragraph>
