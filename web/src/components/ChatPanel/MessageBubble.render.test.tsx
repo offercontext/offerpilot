@@ -107,6 +107,64 @@ describe('MessageBubble task cards', () => {
     expect(container.textContent).toContain('A normal response.');
   });
 
+  it('renders an assistant confirmation table with the full-width table treatment', () => {
+    const { container } = renderBubble({
+      role: 'assistant',
+      content: [
+        '请先核对确认卡：',
+        '',
+        '| 项目 | 内容 |',
+        '| --- | --- |',
+        '| 公司 | 云栖智能（演示） |',
+        '| 岗位 | AI 应用工程师 |',
+      ].join('\n'),
+    });
+
+    const table = container.querySelector<HTMLTableElement>('table');
+    expect(table).not.toBeNull();
+    expect(table?.className).toContain('markdownTable');
+  });
+
+  it('uses the full-width table treatment for GFM tables without outer pipes', () => {
+    const { container } = renderBubble({
+      role: 'assistant',
+      content: [
+        '请先核对确认卡：',
+        '',
+        '项目 | 内容',
+        '--- | ---',
+        '公司 | 云栖智能（演示）',
+        '岗位 | AI 应用工程师',
+      ].join('\n'),
+    });
+
+    const table = container.querySelector<HTMLTableElement>('table');
+    expect(table).not.toBeNull();
+    expect(table?.className).toContain('markdownTable');
+  });
+
+  it('does not treat a fenced table-like code sample as a confirmation table', () => {
+    const { container } = renderBubble({
+      role: 'assistant',
+      content: ['```text', '| 项目 | 内容 |', '| --- | --- |', '```'].join('\n'),
+    });
+
+    expect(container.querySelector('table')).toBeNull();
+    expect(container.querySelector('pre')).not.toBeNull();
+  });
+
+  it.each([
+    ['a longer closing fence', ['```text', '| 项目 | 内容 |', '| --- | --- |', '````']],
+    ['an unclosed fence', ['```text', '| 项目 | 内容 |', '| --- | --- |']],
+  ])('does not treat a table-like code sample with %s as a confirmation table', (_, lines) => {
+    const { container } = renderBubble({
+      role: 'assistant',
+      content: lines.join('\n'),
+    });
+
+    expect(container.querySelector('table')).toBeNull();
+  });
+
   it('keeps non-Pilot callers on the legacy timeline when task cards are disabled', () => {
     const { container } = renderBubble(
       {

@@ -34,6 +34,10 @@ function Pre({ children }: { children?: React.ReactNode }) {
   );
 }
 
+function MarkdownTable({ children }: { children?: React.ReactNode }) {
+  return <table className={styles.markdownTable}>{children}</table>;
+}
+
 interface Props {
   turn: UITurn;
   index: number;
@@ -81,7 +85,7 @@ export default function MessageBubble({
               turn.content
             ) : (
               <div className={styles.markdown}>
-                <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ pre: Pre }}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ pre: Pre, table: MarkdownTable }}>
                   {turn.content}
                 </ReactMarkdown>
               </div>
