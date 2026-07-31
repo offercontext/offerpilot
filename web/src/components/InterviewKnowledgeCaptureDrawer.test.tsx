@@ -25,4 +25,9 @@ describe('InterviewKnowledgeCaptureDrawer', () => {
     expect(source).not.toContain('error.message');
     expect(source).not.toContain('error.response?.data?.error');
   });
+
+  it('does not claim a frozen source before canonical fragments exist', () => {
+    expect(source).toContain('draft.canonicalFragments.length > 0');
+    expect(source).not.toContain('<SourceStateTag state="frozen" detail="仅保存所选面试原始片段" />');
+  });
 });

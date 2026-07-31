@@ -14,7 +14,7 @@ afterEach(() => {
   container = null;
 });
 
-function render(state: 'current' | 'frozen' | 'changed' | 'unknown') {
+function render(state: 'current' | 'frozen' | 'changed' | 'unknown' | 'pending') {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -28,6 +28,7 @@ describe('SourceStateTag', () => {
     ['frozen', '已冻结来源'],
     ['changed', '来源已变化'],
     ['unknown', '来源暂不可确认'],
+    ['pending', '待确认的证据预览'],
   ] as const)('renders the fixed Chinese label for %s', (state, label) => {
     const view = render(state);
     expect(view.textContent).toContain(label);

@@ -394,6 +394,17 @@ describe('MaterialKitDrawer evidence confirmation', () => {
     expect(confirmButton?.disabled).toBe(true);
   });
 
+  it('labels a ready evidence preview as pending until confirmation', async () => {
+    const view = render();
+    await flush();
+
+    clickByText(view, '确认已投递');
+
+    const modal = view.querySelector<HTMLElement>('[role="dialog"]');
+    expect(modal?.textContent).toContain('待确认的证据预览');
+    expect(modal?.textContent).not.toContain('已确认投递证据快照');
+  });
+
   it('keeps a legacy submitted kit readable, warned, and eligible for historical re-confirmation', async () => {
     queryState.kit = materialKit('submitted');
     evidenceService.confirmEvidenceBundle.mockResolvedValue({ id: 2 });

@@ -1,6 +1,6 @@
 import styles from './SourceStateTag.module.css';
 
-export type SourceState = 'current' | 'frozen' | 'changed' | 'unknown';
+export type SourceState = 'current' | 'frozen' | 'changed' | 'unknown' | 'pending';
 
 export interface SourceStateTagProps {
   state: SourceState;
@@ -12,6 +12,7 @@ const labels: Record<SourceState, string> = {
   frozen: '已冻结来源',
   changed: '来源已变化',
   unknown: '来源暂不可确认',
+  pending: '待确认的证据预览',
 };
 
 export function SourceStateTag({ state, detail }: SourceStateTagProps) {

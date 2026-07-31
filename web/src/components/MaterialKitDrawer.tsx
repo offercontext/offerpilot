@@ -1020,7 +1020,9 @@ export default function MaterialKitDrawer({ application, open, onClose, initialR
         <ConfirmationPanel
           title="确认投递证据"
           description="请核对当前展示的来源后再确认；确认不会替你执行平台操作。"
-          sources={[{ state: 'frozen', detail: '已确认投递证据快照' }]}
+          sources={confirmationPreview?.ready
+            ? [{ state: 'pending', detail: '待确认的证据预览' }]
+            : []}
           className={styles.confirmationBody}
         >
           <Typography.Text className={styles.confirmationKind}>用户确认，非平台回执</Typography.Text>

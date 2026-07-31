@@ -87,6 +87,13 @@ describe('InterviewPreparationProposalDrawer interaction', () => {
     expect(container?.textContent).toContain('暂无可验证的面试准备建议');
   });
 
+  it('does not claim current sources before JD and resume are selected', () => {
+    const emptyContext = { ...context, resumeId: 0, jdText: '' };
+    act(() => root?.render(<InterviewPreparationProposalDrawer open context={emptyContext} onClose={() => {}} />));
+
+    expect(container?.textContent).not.toContain('当前使用来源');
+  });
+
   it('maps a provider error without exposing the original message', async () => {
     service.create.mockRejectedValue(new service.InterviewPreparationProposalError(502, 'interview_preparation_provider_error', 'API key secret'));
     act(() => root?.render(<InterviewPreparationProposalDrawer open context={context} onClose={() => {}} />));

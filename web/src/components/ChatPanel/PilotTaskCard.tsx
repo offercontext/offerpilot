@@ -1,6 +1,7 @@
 import type { EvidenceTarget, ToolStep, TurnPresentation } from './model';
 import ProcessTimeline from './ProcessTimeline';
 import styles from './ChatPanel.module.css';
+import { SourceStateTag, type SourceState } from '../ui/SourceStateTag';
 
 interface Props {
   title: string;
@@ -9,6 +10,9 @@ interface Props {
   disabled: boolean;
   onAction: (action: string) => void;
   onOpenEvidence?: (target: EvidenceTarget) => void;
+  sourceState?: SourceState;
+  resultUnknown?: boolean;
+  operationState?: 'idle' | 'pending' | 'confirming';
 }
 
 function completionStatus(steps: ToolStep[], presentation?: TurnPresentation): string {
@@ -31,9 +35,24 @@ function normalizeActions(actions: string[]): string[] {
   return uniqueActions;
 }
 
-export default function PilotTaskCard({ title, steps, presentation, disabled, onAction, onOpenEvidence }: Props) {
+export default function PilotTaskCard({
+  title,
+  steps,
+  presentation,
+  disabled,
+  onAction,
+  onOpenEvidence,
+  sourceState,
+  resultUnknown = false,
+  operationState = 'idle',
+}: Props) {
   const status = completionStatus(steps, presentation);
   const actions = normalizeActions(presentation?.actions ?? []);
+  const operationLabels = [
+    resultUnknown ? '结果待确认' : null,
+    operationState === 'confirming' ? '等待人工确认' : null,
+    !resultUnknown && operationState === 'pending' ? '操作处理中' : null,
+  ].filter((label): label is string => Boolean(label));
 
   return (
     <article className={styles.taskCard} aria-label={`本轮任务：${title}`}>
@@ -44,6 +63,11 @@ export default function PilotTaskCard({ title, steps, presentation, disabled, on
         </div>
         <span className={styles.taskStatus}>{status}</span>
       </header>
+
+      {sourceState ? <SourceStateTag state={sourceState} detail="Pilot 本轮操作来源" /> : null}
+      {operationLabels.length > 0 ? (
+        <p role="status">{operationLabels.join('，')}{resultUnknown ? '，请使用原尝试重试。' : ''}</p>
+      ) : null}
 
       {steps.length ? <ProcessTimeline steps={steps} summary={status} embedded onOpenEvidence={onOpenEvidence} /> : null}
 

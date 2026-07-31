@@ -357,7 +357,9 @@ export default function MockInterviewDrawer({
     <Drawer open={open} width={560} title="文本模拟面试" onClose={onClose}>
       <Space direction="vertical" size="middle" style={{ width: '100%' }}>
         <span style={{ color: 'var(--op-muted)' }}>仅用于练习表达。AI 不提供录用判断、通过率或岗位匹配分。</span>
-        <SourceStateTag state="current" detail="当前面试事件与本次输入" />
+        {draft.resumeId && draft.jdText.trim() ? (
+          <SourceStateTag state="current" detail="当前面试事件与本次输入" />
+        ) : null}
         {draft.error ? <Alert type="warning" showIcon message={draft.error} /> : null}
         {pending ? (
           <Alert

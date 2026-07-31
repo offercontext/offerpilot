@@ -193,6 +193,12 @@ describe('MockInterviewDrawer failed-attempt cleanup', () => {
     expect(services.discardMockInterviewAttempt).not.toHaveBeenCalled();
   });
 
+  it('does not claim current sources before a resume and JD are present', () => {
+    render({ ...baseDraft, jdText: '', resumeId: undefined });
+
+    expect(container?.textContent).not.toContain('当前使用来源');
+  });
+
   it.each([
     ['answer', { attemptId: 301, attemptKey: 'answer-attempt', answer: 'answer' }, 0],
     ['next question', { attemptId: 302, attemptKey: 'question-attempt', answer: 'answer', answerSubmitted: true }, 2],

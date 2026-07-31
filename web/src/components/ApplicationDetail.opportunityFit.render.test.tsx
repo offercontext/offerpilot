@@ -129,6 +129,14 @@ afterEach(() => {
 });
 
 describe('ApplicationDetail opportunity fit handoff', () => {
+  it('renders the current source tag only for the mounted application context', () => {
+    act(() => root?.render(<ApplicationDetail application={application} open onClose={vi.fn()} />));
+
+    expect(container?.textContent).toContain('当前使用来源');
+    expect(container?.textContent).toContain('当前投递');
+    expect(state.analyzeJD).not.toHaveBeenCalled();
+  });
+
   it('passes historical frozen Resume and JD into Material Kit without opening a URL', () => {
     act(() => root?.render(<ApplicationDetail application={application} open onClose={vi.fn()} />));
 

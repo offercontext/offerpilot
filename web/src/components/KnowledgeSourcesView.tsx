@@ -296,7 +296,9 @@ export default function KnowledgeSourcesView() {
     <div style={{ padding: 24 }}>
       <div style={{ marginBottom: 24 }}>
         <Title level={4}>已确认的面试知识</Title>
-        <SourceStateTag state="frozen" detail="用户确认保存的面试原始片段" />
+        {(confirmedInterviewKnowledgeQuery.data?.length ?? 0) > 0 ? (
+          <SourceStateTag state="frozen" detail="用户确认保存的面试原始片段" />
+        ) : null}
         <Paragraph type="secondary">
           仅展示用户确认保存的面试原始片段沉淀；来源已冻结，可继续审阅证据链。
         </Paragraph>
@@ -310,7 +312,15 @@ export default function KnowledgeSourcesView() {
             renderItem={(item: ConfirmedInterviewKnowledgeNote) => (
               <List.Item>
                 <List.Item.Meta
-                  title={item.title || '未命名面试知识'}
+                    title={(
+                      <Space size={8}>
+                        <SourceStateTag
+                          state={item.source_status === 'source_changed' ? 'changed' : 'frozen'}
+                          detail={item.source_status === 'source_changed' ? '历史快照仍可审阅' : '用户确认保存'}
+                        />
+                        {item.title || '未命名面试知识'}
+                      </Space>
+                    )}
                   description={`${item.source_status === 'source_changed' ? '原复盘已变化，历史来源仍冻结' : '来源已冻结'} · ${item.content.blocks.length} 个内容块 · ${item.content.blocks.reduce((count, block) => count + block.evidence_refs.length, 0)} 条证据`}
                 />
                 <Space direction="vertical" size={4} style={{ width: '100%', marginTop: 8 }}>

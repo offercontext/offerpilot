@@ -3,6 +3,7 @@ import type { ConfirmationInput } from '@/services/chat';
 import { STATUS_LABELS, type ApplicationStatus } from '@/types/application';
 import dayjs from 'dayjs';
 import { toolMeta } from './capabilities';
+import type { SourceState } from '../ui/SourceStateTag';
 
 export type EvidenceKind =
   | 'application'
@@ -65,6 +66,10 @@ export interface UITurn {
   taskTitle?: string;
   /** Structured Pilot conclusion and actions reconstructed from persisted Markdown. */
   presentation?: TurnPresentation;
+  /** Optional control semantics supplied by the owning chat state. */
+  sourceState?: SourceState;
+  resultUnknown?: boolean;
+  operationState?: 'idle' | 'pending' | 'confirming';
 }
 
 export interface TurnPresentation {

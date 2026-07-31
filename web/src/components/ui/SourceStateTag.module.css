@@ -30,11 +30,13 @@
 .frozen { color: #4f46e5; background: #eef2ff; border-color: #e0e7ff; }
 .changed { color: #b45309; background: #fffbeb; border-color: #fde68a; }
 .unknown { color: #6b6f7a; background: #f4f4f7; border-color: #e7e7ee; }
+.pending { color: #8a5a00; background: #fff7e6; border-color: #f0c36d; }
 
 :global([data-theme='dark']) .current { color: #6ee7b7; background: rgba(16, 185, 129, 0.14); border-color: rgba(16, 185, 129, 0.28); }
 :global([data-theme='dark']) .frozen { color: #a5b4fc; background: rgba(99, 102, 241, 0.16); border-color: rgba(99, 102, 241, 0.3); }
 :global([data-theme='dark']) .changed { color: #fcd34d; background: rgba(245, 158, 11, 0.14); border-color: rgba(245, 158, 11, 0.28); }
 :global([data-theme='dark']) .unknown { color: #9ca3af; background: rgba(156, 163, 175, 0.12); border-color: rgba(156, 163, 175, 0.24); }
+:global([data-theme='dark']) .pending { color: #f6c76b; background: rgba(245, 158, 11, 0.14); border-color: rgba(245, 158, 11, 0.28); }
 
 @media (max-width: 560px) {
   .tag {

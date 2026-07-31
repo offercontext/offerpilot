@@ -153,4 +153,25 @@ describe('PilotTaskCard', () => {
     expect(toggle?.getAttribute('aria-expanded')).toBe('true');
     expect(timeline?.textContent).toContain('OfferPilot');
   });
+
+  it('shows source status and freezes actions when a Pilot result is unknown', () => {
+    const onAction = vi.fn();
+    const container = renderCard({
+      title: '等待确认的任务',
+      steps: [],
+      presentation,
+      disabled: true,
+      onAction,
+      sourceState: 'unknown',
+      resultUnknown: true,
+      operationState: 'confirming',
+    });
+
+    expect(container.textContent).toContain('来源暂不可确认');
+    expect(container.textContent).toContain('结果待确认');
+    expect(container.textContent).toContain('等待人工确认');
+    const action = container.querySelector<HTMLButtonElement>('button');
+    act(() => action?.click());
+    expect(onAction).not.toHaveBeenCalled();
+  });
 });

@@ -33,6 +33,10 @@ describe('KnowledgeSourcesView', () => {
     expect(markup).not.toContain('Page');
   });
 
+  it('does not claim frozen interview knowledge when the list is empty', () => {
+    expect(renderWithProviders()).not.toContain('已冻结来源');
+  });
+
   it('does not expose legacy Page/Review/Index/Lint/Config entries', () => {
     const markup = renderWithProviders();
 

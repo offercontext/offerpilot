@@ -219,10 +219,12 @@ export default function InterviewPreparationProposalDrawer({
       <h2>面试准备建议</h2>
       <p>围绕当前面试事件，生成可审阅、可引用的准备建议。</p>
       <p>仅 JD、所选简历和已确认 Knowledge Evidence 会发送给 AI；用户断言仅保存于本次快照，不会发送给 AI。</p>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-        <SourceStateTag state="current" detail="本次输入的岗位描述" />
-        <SourceStateTag state="current" detail="本次选定的简历" />
-      </div>
+      {(jdText.trim() || resumeId > 0) && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          {jdText.trim() ? <SourceStateTag state="current" detail="本次输入的岗位描述" /> : null}
+          {resumeId > 0 ? <SourceStateTag state="current" detail="本次选定的简历" /> : null}
+        </div>
+      )}
       {resultUnknown && (
         <p role="status">上次请求结果待确认，请使用原尝试重试；请不要修改输入。</p>
       )}

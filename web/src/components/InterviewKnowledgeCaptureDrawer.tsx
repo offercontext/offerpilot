@@ -218,7 +218,9 @@ export default function InterviewKnowledgeCaptureDrawer({ open, note, draft, onD
         style={{ marginBottom: 16 }}
       />
       <Title level={5}>用户选中的原始片段</Title>
-      <SourceStateTag state="frozen" detail="仅保存所选面试原始片段" />
+      {draft.canonicalFragments.length > 0 ? (
+        <SourceStateTag state="frozen" detail="仅保存已生成快照的面试原始片段" />
+      ) : null}
       <List
         size="small"
         dataSource={SOURCE_FIELDS}
@@ -288,7 +290,9 @@ export default function InterviewKnowledgeCaptureDrawer({ open, note, draft, onD
       <ConfirmationPanel
         title="确认知识沉淀"
         description="未确认的预览不会进入知识库；确认时只保存所选原始面试片段及其证据链。"
-        sources={[{ state: 'frozen', detail: '所选原始面试片段' }]}
+        sources={draft.canonicalFragments.length > 0
+          ? [{ state: 'frozen', detail: '所选原始面试片段' }]
+          : []}
       >
         <Space wrap>
           <Button onClick={() => handlePreview('direct')} disabled={!draft.selectedFragments.length} loading={busy}>
