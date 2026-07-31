@@ -154,24 +154,20 @@ describe('PilotTaskCard', () => {
     expect(timeline?.textContent).toContain('OfferPilot');
   });
 
-  it('shows source status and freezes actions when a Pilot result is unknown', () => {
+  it('does not invent source or unknown-result state for an ordinary Pilot task', () => {
     const onAction = vi.fn();
     const container = renderCard({
-      title: '等待确认的任务',
+      title: '业务查询',
       steps: [],
       presentation,
-      disabled: true,
+      disabled: false,
       onAction,
-      sourceState: 'unknown',
-      resultUnknown: true,
-      operationState: 'confirming',
     });
 
-    expect(container.textContent).toContain('来源暂不可确认');
-    expect(container.textContent).toContain('结果待确认');
-    expect(container.textContent).toContain('等待人工确认');
-    const action = container.querySelector<HTMLButtonElement>('button');
+    expect(container.textContent).not.toContain('已冻结来源');
+    expect(container.textContent).not.toContain('结果待确认');
+    const action = container.querySelector<HTMLButtonElement>('section[aria-label="下一步"] button');
     act(() => action?.click());
-    expect(onAction).not.toHaveBeenCalled();
+    expect(onAction).toHaveBeenCalledTimes(1);
   });
 });

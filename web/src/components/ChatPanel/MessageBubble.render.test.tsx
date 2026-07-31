@@ -80,6 +80,26 @@ describe('MessageBubble task cards', () => {
     expect(container.querySelectorAll('[aria-label="AI 操作摘要"]')).toHaveLength(1);
   });
 
+  it('does not infer a frozen source from ordinary tool evidence', () => {
+    const { container } = renderBubble({
+      role: 'assistant',
+      content: 'Tool result details.',
+      steps: [{
+        ...completedStep,
+        evidence: [{
+          id: 'query-result-1',
+          kind: 'application',
+          title: '普通查询结果',
+          meta: '当次返回',
+          snippet: '仅当次可验证记录',
+          source: 'applications',
+        }],
+      }],
+    });
+
+    expect(container.textContent).not.toContain('已冻结来源');
+  });
+
   it('keeps an ordinary assistant response as a markdown bubble without a task card', () => {
     const { container } = renderBubble({ role: 'assistant', content: 'A normal response.' });
 

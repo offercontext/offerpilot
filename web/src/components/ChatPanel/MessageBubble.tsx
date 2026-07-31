@@ -73,11 +73,6 @@ export default function MessageBubble({
             disabled={actionsDisabled}
             onAction={onAction}
             onOpenEvidence={onOpenEvidence}
-            sourceState={turn.sourceState ?? (
-              turn.steps?.some((step) => (step.evidence?.length ?? 0) > 0) ? 'frozen' : undefined
-            )}
-            resultUnknown={turn.resultUnknown}
-            operationState={turn.operationState ?? (actionsDisabled ? 'pending' : 'idle')}
           />
         ) : null}
         {(isUser || turn.content.trim()) ? (
