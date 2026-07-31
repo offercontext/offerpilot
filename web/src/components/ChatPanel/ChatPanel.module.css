@@ -788,8 +788,9 @@
 }
 .taskActions button {
   min-width: 0;
+  min-height: var(--op-control-height);
   border: 1px solid var(--op-border);
-  border-radius: 8px;
+  border-radius: var(--op-control-radius);
   padding: 6px 9px;
   background: var(--op-surface);
   color: var(--op-primary);
@@ -810,6 +811,7 @@
 .taskActions button:focus-visible {
   outline: 2px solid var(--op-primary);
   outline-offset: 2px;
+  box-shadow: var(--op-focus-ring);
 }
 .taskActions button:disabled {
   cursor: not-allowed;
