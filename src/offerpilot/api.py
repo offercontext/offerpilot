@@ -44,6 +44,10 @@ from offerpilot.ai.mock_interview import (
     generate_question,
 )
 from offerpilot.ai.opportunity_fit_reviews import OpportunityFitModelError, validate_triage
+from offerpilot.ai.offer_negotiation import (
+    OfferNegotiationModelError,
+    generate_offer_negotiation_proposal,
+)
 from offerpilot.ai.client import ConfiguredAIClient
 from offerpilot.ai.tools import editable_fields_for_tool, offerpilot_tool_registry
 from offerpilot.ai.types import Message, ToolCall
@@ -159,6 +163,11 @@ from offerpilot.repositories.offer_comparison import (
     OfferComparisonError,
     OfferComparisonRepository,
 )
+from offerpilot.repositories.offer_negotiation import (
+    OfferNegotiationError,
+    OfferNegotiationRepository,
+)
+from offerpilot.repositories.json_contract import canonical_json, sha256_text
 from offerpilot.repositories.questions import QuestionCreate, QuestionsRepository, question_hash
 from offerpilot.repositories.resumes import ResumeCreate, ResumeMatchCreate, ResumesRepository
 from offerpilot.repositories.wakeups import WakeupCreate, WakeupsRepository, wakeup_payload
@@ -766,6 +775,7 @@ def create_app(
     notes = NotesRepository(session_factory)
     offers = OffersRepository(session_factory)
     offer_comparison = OfferComparisonRepository(session_factory)
+    offer_negotiation = OfferNegotiationRepository(session_factory)
     resumes = ResumesRepository(session_factory)
     jd_analyses = JDAnalysesRepository(session_factory)
     questions = QuestionsRepository(session_factory)
@@ -2631,6 +2641,123 @@ def create_app(
         except OfferComparisonError as exc:
             return error_response(exc.status_code, exc.message, code=exc.code)
         return JSONResponse(payload)
+
+    @app.post("/api/offers/{offer_id}/negotiation/proposals")
+    def create_offer_negotiation_proposal(
+        offer_id: int, payload: dict[str, Any] = Body(...)
+    ) -> JSONResponse:
+        allowed = {"idempotency_key", "dimension_ids", "goal", "concerns", "scenario"}
+        if set(payload) - allowed:
+            return error_response(422, "谈薪准备输入无效", code="offer_negotiation_invalid_request")
+        dimension_ids = payload.get("dimension_ids", [])
+        brief = {
+            field: payload.get(field, "")
+            for field in ("goal", "concerns", "scenario")
+        }
+        if not isinstance(dimension_ids, list) or any(
+            not isinstance(value, int) or isinstance(value, bool) for value in dimension_ids
+        ):
+            return error_response(422, "比较维度选择无效", code="offer_negotiation_invalid_request")
+        try:
+            result = offer_negotiation.prepare_or_replay(
+                offer_id=offer_id,
+                dimension_ids=dimension_ids,
+                user_brief=brief,
+                idempotency_key=payload.get("idempotency_key", ""),
+            )
+        except OfferNegotiationError as exc:
+            return error_response(exc.status_code, "谈薪准备请求未完成", code=exc.code)
+
+        if result.pending:
+            return JSONResponse(
+                {
+                    "id": result.proposal.id,
+                    "offer_id": result.proposal.offer_id,
+                    "application_id": result.proposal.application_id,
+                    "attempt_status": result.proposal.attempt_status,
+                    "retry_after_ms": 1000,
+                },
+                status_code=202,
+            )
+        if not result.should_call:
+            return JSONResponse(
+                _offer_negotiation_json(result.proposal, offers.get(offer_id)),
+                status_code=200,
+            )
+
+        model = _chat_model(chat_model, resolved_data_dir)
+        if isinstance(model, JSONResponse):
+            return model
+        try:
+            proposal = generate_offer_negotiation_proposal(model, result.snapshot)
+            proposal_hash = sha256_text(canonical_json(proposal))
+            row = offer_negotiation.complete_ready(
+                proposal_id=result.proposal.id,
+                revision=result.revision,
+                provider_call_token=result.owner_token,
+                proposal=proposal,
+                proposal_hash=proposal_hash,
+            )
+        except OfferNegotiationModelError as exc:
+            if exc.validation_category == "provider_error":
+                offer_negotiation.mark_provider_unknown(
+                    proposal_id=result.proposal.id,
+                    revision=result.revision,
+                    provider_call_token=result.owner_token,
+                )
+                append_log_entry(
+                    resolved_data_dir,
+                    "WARNING",
+                    "offer_negotiation_provider_failure "
+                    + json.dumps(
+                        {"failure_category": "provider_error", "repair_count": exc.repair_count},
+                        ensure_ascii=True,
+                        separators=(",", ":"),
+                    ),
+                )
+                return error_response(502, "AI 服务暂不可用，请使用原尝试重试", code="offer_negotiation_provider_error")
+            offer_negotiation.invalidate(
+                proposal_id=result.proposal.id,
+                revision=result.revision,
+                provider_call_token=result.owner_token,
+                reason="contract_failed",
+            )
+            append_log_entry(
+                resolved_data_dir,
+                "WARNING",
+                "offer_negotiation_contract_failure "
+                + json.dumps(
+                    {"failure_category": exc.validation_category, "repair_count": exc.repair_count},
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                ),
+            )
+            return error_response(
+                502,
+                "AI 建议未通过证据校验，请重新开始",
+                code="offer_negotiation_unverifiable",
+            )
+        except OfferNegotiationError as exc:
+            return error_response(exc.status_code, "谈薪准备请求未完成", code=exc.code)
+        return JSONResponse(
+            _offer_negotiation_json(row, offers.get(offer_id)),
+            status_code=201 if result.created else 200,
+        )
+
+    @app.get("/api/offers/{offer_id}/negotiation/proposals")
+    def list_offer_negotiation_proposals(offer_id: int) -> JSONResponse:
+        if offers.get(offer_id) is None:
+            return error_response(404, "Offer 不存在或不可见", code="offer_negotiation_offer_not_found")
+        return JSONResponse(
+            [_offer_negotiation_json(row, offers.get(offer_id)) for row in offer_negotiation.list_for_offer(offer_id)]
+        )
+
+    @app.get("/api/offer-negotiation/proposals/{proposal_id}")
+    def get_offer_negotiation_proposal(proposal_id: int) -> JSONResponse:
+        row = offer_negotiation.get(proposal_id)
+        if row is None:
+            return error_response(404, "谈薪准备记录不存在", code="offer_negotiation_proposal_not_found")
+        return JSONResponse(_offer_negotiation_json(row, offers.get(row.offer_id)))
 
     @app.get("/api/offers/{offer_id}/comparison-values", response_model=None)
     def list_offer_comparison_values(offer_id: int) -> list[dict[str, Any]] | JSONResponse:
@@ -7272,6 +7399,46 @@ def _offer_create_from_payload(
         notes=str(payload.get("notes") or ""),
         assessment=str(payload.get("assessment") or ""),
     )
+
+
+def _offer_negotiation_source_changed(row: Any, offer: Any) -> bool:
+    if offer is None:
+        return True
+    try:
+        stored = json.loads(row.input_snapshot_json).get("offer_snapshot", {})
+    except (TypeError, ValueError):
+        return True
+    fields = (
+        "company_name",
+        "position_name",
+        "base_monthly",
+        "months_per_year",
+        "signing_bonus",
+        "equity",
+        "perks",
+        "deadline",
+        "notes",
+        "assessment",
+    )
+    return any(stored.get(field) != getattr(offer, field, None) for field in fields)
+
+
+def _offer_negotiation_json(row: Any, offer: Any | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "id": row.id,
+        "offer_id": row.offer_id,
+        "application_id": row.application_id,
+        "attempt_status": row.attempt_status,
+        "source_fingerprint": row.source_fingerprint,
+        "source_states": json.loads(row.source_states_json or "{}"),
+        "source_changed": _offer_negotiation_source_changed(row, offer),
+    }
+    if row.proposal_json is not None:
+        proposal = json.loads(row.proposal_json)
+        payload["proposal_status"] = proposal.get("proposal_status")
+        payload["proposal"] = proposal
+        payload["proposal_hash"] = row.proposal_hash
+    return payload
 
 
 def _offer_json(offer: Any) -> dict[str, Any]:
