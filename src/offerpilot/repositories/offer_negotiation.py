@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -11,7 +12,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from offerpilot.ai.offer_negotiation import build_offer_negotiation_snapshot
-from offerpilot.models import Offer, OfferComparisonDimension, OfferComparisonValue, OfferNegotiationProposal
+from offerpilot.models import (
+    Offer,
+    OfferComparisonDimension,
+    OfferComparisonValue,
+    OfferNegotiationBrief,
+    OfferNegotiationProposal,
+)
 from offerpilot.repositories.json_contract import canonical_json, sha256_text
 
 
@@ -198,6 +205,86 @@ class OfferNegotiationRepository:
         with self._session_factory() as session:
             return session.get(OfferNegotiationProposal, proposal_id)
 
+    def confirm_proposal(
+        self,
+        *,
+        proposal_id: int,
+        confirmation_key: str,
+        selected_blocks: list[str],
+        edited_content: dict[str, str],
+    ) -> tuple[OfferNegotiationBrief, bool]:
+        self._validate_key(confirmation_key)
+        if not selected_blocks or len(selected_blocks) > 32 or len(set(selected_blocks)) != len(selected_blocks):
+            raise OfferNegotiationValidationError("selected blocks are invalid")
+        if not isinstance(edited_content, dict):
+            raise OfferNegotiationValidationError("edited content is invalid")
+        with self._session_factory() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            proposal = session.get(OfferNegotiationProposal, proposal_id)
+            if proposal is None:
+                raise OfferNegotiationNotFoundError(
+                    "proposal is not visible", "offer_negotiation_proposal_not_found"
+                )
+            existing = session.scalar(
+                select(OfferNegotiationBrief).where(OfferNegotiationBrief.proposal_id == proposal_id)
+            )
+            if existing is not None:
+                session.commit()
+                return existing, False
+            if proposal.attempt_status != "ready" or proposal.proposal_json is None:
+                raise OfferNegotiationConflictError(
+                    "only a ready proposal can be confirmed", "offer_negotiation_proposal_not_ready"
+                )
+            offer = session.get(Offer, proposal.offer_id)
+            if offer is None or not self._offer_snapshot_matches(session, proposal, offer):
+                raise OfferNegotiationConflictError(
+                    "offer source changed", "offer_negotiation_source_changed"
+                )
+            proposal_payload = json.loads(proposal.proposal_json)
+            blocks = {
+                item["id"]: item
+                for field in ("communication_goals", "clarification_questions", "talking_points", "preparation_checks")
+                for item in proposal_payload.get(field, [])
+            }
+            if any(block_id not in blocks for block_id in selected_blocks):
+                raise OfferNegotiationValidationError("selected block is not in proposal")
+            if any(
+                not isinstance(block_id, str)
+                or not isinstance(value, str)
+                or not value.strip()
+                or len(value) > 600
+                for block_id, value in edited_content.items()
+            ) or any(block_id not in selected_blocks for block_id in edited_content):
+                raise OfferNegotiationValidationError("edited content is invalid")
+            selected = [blocks[block_id] for block_id in selected_blocks]
+            derived = {
+                "blocks": selected,
+                "edits": {block_id: edited_content.get(block_id, blocks[block_id]["text"]) for block_id in selected_blocks},
+                "proposal_hash": proposal.proposal_hash,
+            }
+            brief = OfferNegotiationBrief(
+                proposal_id=proposal.id,
+                offer_id=proposal.offer_id,
+                origin_application_id=proposal.application_id,
+                confirmation_key=confirmation_key,
+                selected_blocks_json=canonical_json(selected_blocks),
+                edited_content_json=canonical_json(derived),
+                content_hash=sha256_text(canonical_json(derived)),
+            )
+            session.add(brief)
+            try:
+                session.commit()
+            except IntegrityError:
+                session.rollback()
+                existing = session.scalar(
+                    select(OfferNegotiationBrief).where(OfferNegotiationBrief.proposal_id == proposal_id)
+                )
+                if existing is None:
+                    raise
+                return existing, False
+            session.refresh(brief)
+            return brief, True
+
     def list_for_offer(self, offer_id: int) -> list[OfferNegotiationProposal]:
         with self._session_factory() as session:
             return list(
@@ -208,12 +295,62 @@ class OfferNegotiationRepository:
                 )
             )
 
+    def get_brief(self, proposal_id: int) -> OfferNegotiationBrief | None:
+        with self._session_factory() as session:
+            return session.scalar(
+                select(OfferNegotiationBrief).where(OfferNegotiationBrief.proposal_id == proposal_id)
+            )
+
     def expire_for_test(self, proposal_id: int) -> None:
         with self._session_factory() as session:
             row = session.get(OfferNegotiationProposal, proposal_id)
             assert row is not None
             row.lease_expires_at = _utcnow() - timedelta(seconds=1)
             session.commit()
+
+    @staticmethod
+    def _offer_snapshot_matches(session: Session, proposal: OfferNegotiationProposal, offer: Offer) -> bool:
+        try:
+            stored = json.loads(proposal.input_snapshot_json)
+            brief = stored["user_brief"]
+            dimensions = stored["dimensions"]
+            offer_snapshot = stored["offer_snapshot"]
+        except (KeyError, TypeError, ValueError):
+            return False
+        fields = (
+            "company_name", "position_name", "base_monthly", "months_per_year", "signing_bonus",
+            "equity", "perks", "deadline", "notes", "assessment",
+        )
+        if any(offer_snapshot.get(field) != getattr(offer, field, None) for field in fields):
+            return False
+        current_dimensions: list[dict[str, Any]] = []
+        for dimension in dimensions:
+            matches = list(
+                session.scalars(
+                    select(OfferComparisonDimension).where(
+                        OfferComparisonDimension.label == dimension.get("label"),
+                        OfferComparisonDimension.archived_at.is_(None),
+                    )
+                )
+            )
+            if len(matches) != 1:
+                return False
+            value = session.scalar(
+                select(OfferComparisonValue).where(
+                    OfferComparisonValue.offer_id == offer.id,
+                    OfferComparisonValue.dimension_id == matches[0].id,
+                )
+            )
+            current_dimensions.append(
+                {"id": matches[0].id, "label": matches[0].label, "value_text": value.value_text if value else None}
+            )
+        current = build_offer_negotiation_snapshot(
+            offer={field: getattr(offer, field, None) for field in fields},
+            dimensions=current_dimensions,
+            user_brief=brief,
+            idempotency_key="",
+        )
+        return sha256_text(canonical_json(current)) == proposal.source_fingerprint
 
     @staticmethod
     def _validate_key(idempotency_key: str) -> None:

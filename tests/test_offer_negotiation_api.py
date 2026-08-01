@@ -139,3 +139,40 @@ def test_history_is_readable_after_offer_delete(tmp_path) -> None:
     history = client.get(f"/api/offer-negotiation/proposals/{proposal_id}")
     assert history.status_code == 200
     assert history.json()["source_changed"] is True
+
+
+def test_confirmation_is_hitl_idempotent_and_history_retains_brief(tmp_path) -> None:
+    model = FakeModel([json.dumps(_payload(), ensure_ascii=False)])
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    offer = _offer(client)
+    generated = _request(client, "E" * 16)
+    proposal_id = generated.json()["id"]
+    confirm_payload = {
+        "confirmation_key": "F" * 16,
+        "selected_blocks": ["goal-1", "point-1"],
+        "edited_content": {"goal-1": "我想确认入职时间"},
+    }
+    confirmed = client.post(
+        f"/api/offer-negotiation/proposals/{proposal_id}/confirm", json=confirm_payload
+    )
+    assert confirmed.status_code == 201
+    replay = client.post(
+        f"/api/offer-negotiation/proposals/{proposal_id}/confirm", json=confirm_payload
+    )
+    assert replay.status_code == 200
+    assert replay.json()["id"] == confirmed.json()["id"]
+    assert client.put(
+        f"/api/offers/{offer['id']}",
+        json={
+            "company_name": "星云数据",
+            "position_name": "后端工程师",
+            "base_monthly": 28000,
+            "months_per_year": 12,
+            "signing_bonus": 0,
+            "notes": "更新后的备注",
+        },
+    ).status_code == 200
+    history = client.get(f"/api/offer-negotiation/proposals/{proposal_id}")
+    assert history.status_code == 200
+    assert history.json()["source_changed"] is True
+    assert history.json()["brief"]["selected_blocks"] == ["goal-1", "point-1"]

@@ -2749,7 +2749,14 @@ def create_app(
         if offers.get(offer_id) is None:
             return error_response(404, "Offer 不存在或不可见", code="offer_negotiation_offer_not_found")
         return JSONResponse(
-            [_offer_negotiation_json(row, offers.get(offer_id)) for row in offer_negotiation.list_for_offer(offer_id)]
+            [
+                _offer_negotiation_json(
+                    row,
+                    offers.get(offer_id),
+                    offer_negotiation.get_brief(row.id),
+                )
+                for row in offer_negotiation.list_for_offer(offer_id)
+            ]
         )
 
     @app.get("/api/offer-negotiation/proposals/{proposal_id}")
@@ -2757,7 +2764,33 @@ def create_app(
         row = offer_negotiation.get(proposal_id)
         if row is None:
             return error_response(404, "谈薪准备记录不存在", code="offer_negotiation_proposal_not_found")
-        return JSONResponse(_offer_negotiation_json(row, offers.get(row.offer_id)))
+        return JSONResponse(
+            _offer_negotiation_json(row, offers.get(row.offer_id), offer_negotiation.get_brief(row.id))
+        )
+
+    @app.post("/api/offer-negotiation/proposals/{proposal_id}/confirm")
+    def confirm_offer_negotiation_proposal(
+        proposal_id: int, payload: dict[str, Any] = Body(...)
+    ) -> JSONResponse:
+        selected_blocks = payload.get("selected_blocks")
+        edited_content = payload.get("edited_content", {})
+        if not isinstance(selected_blocks, list) or not all(
+            isinstance(item, str) for item in selected_blocks
+        ) or not isinstance(edited_content, dict):
+            return error_response(422, "谈薪准备选择无效", code="offer_negotiation_invalid_request")
+        try:
+            brief, created = offer_negotiation.confirm_proposal(
+                proposal_id=proposal_id,
+                confirmation_key=payload.get("confirmation_key", ""),
+                selected_blocks=selected_blocks,
+                edited_content=edited_content,
+            )
+        except OfferNegotiationError as exc:
+            return error_response(exc.status_code, "谈薪准备尚未保存", code=exc.code)
+        return JSONResponse(
+            _offer_negotiation_brief_json(brief),
+            status_code=201 if created else 200,
+        )
 
     @app.get("/api/offers/{offer_id}/comparison-values", response_model=None)
     def list_offer_comparison_values(offer_id: int) -> list[dict[str, Any]] | JSONResponse:
@@ -7423,7 +7456,9 @@ def _offer_negotiation_source_changed(row: Any, offer: Any) -> bool:
     return any(stored.get(field) != getattr(offer, field, None) for field in fields)
 
 
-def _offer_negotiation_json(row: Any, offer: Any | None = None) -> dict[str, Any]:
+def _offer_negotiation_json(
+    row: Any, offer: Any | None = None, brief: Any | None = None
+) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "id": row.id,
         "offer_id": row.offer_id,
@@ -7438,7 +7473,22 @@ def _offer_negotiation_json(row: Any, offer: Any | None = None) -> dict[str, Any
         payload["proposal_status"] = proposal.get("proposal_status")
         payload["proposal"] = proposal
         payload["proposal_hash"] = row.proposal_hash
+    if brief is not None:
+        payload["brief"] = _offer_negotiation_brief_json(brief)
     return payload
+
+
+def _offer_negotiation_brief_json(brief: Any) -> dict[str, Any]:
+    return {
+        "id": brief.id,
+        "proposal_id": brief.proposal_id,
+        "offer_id": brief.offer_id,
+        "application_id": brief.origin_application_id,
+        "selected_blocks": json.loads(brief.selected_blocks_json),
+        "edited_content": json.loads(brief.edited_content_json),
+        "content_hash": brief.content_hash,
+        "confirmed_at": brief.confirmed_at.isoformat() if brief.confirmed_at else None,
+    }
 
 
 def _offer_json(offer: Any) -> dict[str, Any]:

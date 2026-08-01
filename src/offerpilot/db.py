@@ -1159,6 +1159,12 @@ def _record_migration(engine, version: str, description: str) -> None:  # type: 
 def _ensure_offer_negotiation_schema(engine) -> None:  # type: ignore[no-untyped-def]
     """Record the additive Offer comparison and negotiation schema migration."""
 
+    _ensure_column(
+        engine,
+        "offer_negotiation_briefs",
+        "confirmation_key",
+        "TEXT NOT NULL DEFAULT ''",
+    )
     with engine.begin() as conn:
         conn.execute(
             text(

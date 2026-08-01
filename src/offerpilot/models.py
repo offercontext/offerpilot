@@ -248,6 +248,7 @@ class OfferNegotiationBrief(Base):
     proposal_id: Mapped[int] = mapped_column(Integer, nullable=False)
     offer_id: Mapped[int] = mapped_column(Integer, nullable=False)
     origin_application_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    confirmation_key: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
     selected_blocks_json: Mapped[str] = mapped_column(Text, nullable=False)
     edited_content_json: Mapped[str] = mapped_column(Text, nullable=False)
     content_hash: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
