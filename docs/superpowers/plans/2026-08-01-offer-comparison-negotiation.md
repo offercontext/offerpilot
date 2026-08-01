@@ -18,9 +18,34 @@ The following contracts are fixed before implementation:
 
 1. A single visible Offer can start negotiation preparation without comparison. Multiple comparison requires at least two distinct visible IDs and preserves the submitted order.
 2. Comparison has facts, user notes, custom dimensions, values, and missing-information markers only. There is no score, ranking, weight, average, best/optimal label, positive/negative color, or accept/decline recommendation.
-3. Current comparison values may be edited or archived. Confirmed Briefs and Proposals retain frozen source data and ordinary offer_id/application_id integers; current Offer deletion never cascades into historical rows.
-4. Generation input is exactly the selected Offer facts, selected active comparison dimension values, and the user's current goal/concerns/scenario. It excludes full Chat history, other Offers, external sources, URLs, provider internals, and unrelated application data.
-5. The Proposal JSON has exactly proposal_status, communication_goals, clarification_questions, talking_points, and preparation_checks. Normal items have exactly id, text, rationale, and evidence_refs; each evidence reference has exactly source, path, and excerpt. Evidence sources are offer_snapshot or user_brief.
+3. Current comparison values may be edited or archived. Confirmed Briefs and Proposals retain frozen source data and ordinary offer_id/application_id integers; current physical Offer deletion never cascades into historical rows. There is no existing Offer soft-delete state and this task does not introduce one.
+4. Generation input is exactly the selected Offer facts, the explicitly selected active comparison dimension IDs and their server-read values, and the user's current goal/concerns/scenario. It excludes full Chat history, other Offers, external sources, URLs, provider internals, and unrelated application data.
+5. The Proposal JSON has exactly proposal_status, communication_goals, clarification_questions, talking_points, and preparation_checks. Normal items have exactly id, text, rationale, and evidence_refs; each evidence reference has exactly source, path, and excerpt. Evidence sources are offer_snapshot or user_brief. Every clarification question must have at least one validated evidence reference; there is no context-free question exemption or allowlist.
+   The generation request has exactly `idempotency_key`, `dimension_ids`, `goal`, `concerns`, and `scenario`; `dimension_ids` is a user-selected, unique, positive array of 0 to 8 active dimension IDs. The server rejects archived, missing, duplicate, or ninth dimensions with `422` before creating an Attempt. The canonical stored snapshot is:
+
+~~~json
+{
+  "snapshot_version": 1,
+  "offer_snapshot": {
+    "company_name": "...",
+    "position_name": "...",
+    "status": "...",
+    "base_monthly": 0,
+    "months_per_year": 12,
+    "signing_bonus": 0,
+    "equity": "...",
+    "perks": "...",
+    "deadline": "...",
+    "notes": "...",
+    "dimensions": [
+      {"path_id": "dimension_001", "label": "通勤", "value_text": "地铁 35 分钟"}
+    ]
+  },
+  "user_brief": {"goal": "...", "concerns": "...", "scenario": "..."}
+}
+~~~
+
+The server constructs this snapshot from current rows, trims only for blank validation, preserves all stored/user text exactly, and assigns `dimension_001` onward after sorting selected dimensions by numeric dimension ID. The canonical JSON has fixed object/field order and compact separators. Therefore the same selected set in a different request order produces identical snapshot JSON and source fingerprint. Provider evidence paths are exactly `/offer_snapshot/<field>`, `/offer_snapshot/dimensions/<path_id>/<label|value_text>`, and `/user_brief/<goal|concerns|scenario>`; the Provider receives these paths and values but no database IDs. The production validator accepts only these paths, and every excerpt must be a nonblank exact contiguous substring of the referenced value.
 6. 422 creates no Attempt and clears a definite client draft; 404 means the current Offer is unavailable while historical reads remain possible; 409 means snapshot/idempotency/source conflict; 202 and 502 unknown results retain Attempt, key, and frozen input; deterministic contract failure becomes the persisted safe-empty Proposal after at most one permitted repair.
 7. Only explicit user confirmation creates one Brief. Confirmation is unique by Proposal, atomic, replayable, and never creates a Chat message, reminder, material, question, knowledge asset, application mutation, or external action.
 8. Chat remains context_type=application plus context_ref=<application_id> for an associated Offer, or workspace context otherwise. No offer_id field is added to conversation persistence.
@@ -67,16 +92,26 @@ git commit -m "feat: AI add offer negotiation schema"
 - Create: src/offerpilot/repositories/offer_comparison.py, tests/test_offer_comparison_dimensions.py
 - Modify: src/offerpilot/schemas.py, src/offerpilot/api.py, web/src/types/offer.ts, web/src/services/offers.ts
 
-- [ ] Step 1: Add failing repository/API tests for nonblank labels, archive behavior, active-only listing, old archived values remaining readable, one value per Offer/dimension, exact user text preservation, invisible/soft-deleted Offer rejection, and stable Chinese 422 for blank labels/values. Assert no score/rating fields exist.
+- [ ] Step 1: Add failing repository/API tests for nonblank labels, archive behavior, active-only listing, old archived values remaining readable, one value per Offer/dimension, exact user text preservation, missing/physically deleted Offer rejection, and stable Chinese 422 for blank labels/values. Assert no score/rating fields exist.
 - [ ] Step 2: Run uv run pytest tests/test_offer_comparison_dimensions.py -q; it must fail before the endpoints/repository exist.
-- [ ] Step 3: Add repository functions for visible Offer lookup, active dimension listing, value upsert, archive, and current comparison payload assembly. Add these exact routes:
+- [ ] Step 3: Add repository functions for visible Offer lookup, active dimension listing, value upsert, archive, and current comparison payload assembly. Keep the existing GET /api/offers/compare response as Offer[] for compatibility. Add these exact dimension routes:
   - GET /api/offers/comparison-dimensions
   - POST /api/offers/comparison-dimensions with {label}
   - PATCH /api/offers/comparison-dimensions/{dimension_id} with {label?, archived?}
   - GET /api/offers/{offer_id}/comparison-values
   - PUT /api/offers/{offer_id}/comparison-values/{dimension_id} with {value_text}
-  Validate positive IDs, visible Offer ownership, nonblank UTF-8 text, and reject score/rating fields.
-- [ ] Step 4: Add typed OfferComparisonDimension, OfferComparisonValue, request/response types and typed service functions in web/src/types/offer.ts and web/src/services/offers.ts. Do not add an offer_id Chat context field.
+  Add a separate structured read endpoint, GET /api/offers/comparison?ids=1,2&dimension_ids=3,4, with this fixed response shape:
+
+~~~json
+{
+  "offers": ["OfferOut in the requested distinct ID order"],
+  "dimensions": [{"id": 3, "label": "通勤", "values": [{"offer_id": 1, "value_text": "地铁 35 分钟"}]}],
+  "missing": [{"offer_id": 2, "path": "offer_snapshot/perks", "label": "福利"}]
+}
+~~~
+
+The endpoint validates distinct positive visible Offer IDs, preserves Offer request order, accepts at most 8 unique active dimension IDs, sorts returned dimensions by numeric dimension ID, sorts each value list by Offer ID, and returns missing values explicitly as empty information. It never changes the existing `/compare` response type. Validate positive IDs, visible Offer ownership, nonblank UTF-8 text, and reject score/rating fields.
+- [ ] Step 4: Add typed OfferComparisonDimension, OfferComparisonValue, OfferComparisonRead, and request/response types and typed service functions in web/src/types/offer.ts and web/src/services/offers.ts. The comparison UI uses the new structured read endpoint and never interprets the legacy Offer[] response as dimension data. Do not add an offer_id Chat context field.
 - [ ] Step 5: Run uv run pytest tests/test_offer_comparison_dimensions.py -q; run relevant web service tests; commit:
 ~~~powershell
 git add src/offerpilot/repositories/offer_comparison.py src/offerpilot/schemas.py src/offerpilot/api.py tests/test_offer_comparison_dimensions.py web/src/types/offer.ts web/src/services/offers.ts
@@ -104,9 +139,9 @@ git commit -m "feat: AI harden offer comparison"
 - Create: src/offerpilot/ai/offer_negotiation.py, src/offerpilot/repositories/offer_negotiation.py, tests/test_offer_negotiation_ai.py, tests/test_offer_negotiation_repository.py
 - Modify: src/offerpilot/api.py, src/offerpilot/schemas.py
 
-- [ ] Step 1: Add failing AI/repository tests for duplicate JSON keys, fenced JSON, non-object roots, missing/extra fields, wrong types, blank id/text/rationale/excerpt, non-finite values, concrete array limits, duplicate item IDs across all arrays, invalid source/path/excerpt, and forbidden decision/law/market/company-policy assertions. Also cover valid normal, fixed safe_empty with four empty arrays, no-evidence no-provider behavior, one repair for pure structure, terminal 502 for semantic evidence/limit/decision errors, provider/network unknown retaining key, and 422 creating no Attempt.
+- [ ] Step 1: Add failing AI/repository tests for the exact generation payload and snapshot above: same dimension set in different order has the same canonical JSON/fingerprint and `/dimensions/dimension_001/...` paths; archived/ninth/duplicate dimensions return 422 without an Attempt; and Provider payload excludes database IDs. Also cover duplicate JSON keys, fenced JSON, non-object roots, missing/extra fields, wrong types, blank id/text/rationale/excerpt, non-finite values, concrete array limits, duplicate item IDs across all arrays, invalid source/path/excerpt, and forbidden decision/law/market/company-policy assertions. Cover valid normal, fixed safe_empty with four empty arrays, no-evidence no-provider behavior, one repair for pure structure, terminal 502 for semantic evidence/limit/decision errors, provider/network unknown retaining key, and 422 creating no Attempt.
 - [ ] Step 2: Run uv run pytest tests/test_offer_negotiation_ai.py tests/test_offer_negotiation_repository.py -q; expected failure is the absent parser/validator/repository behavior.
-- [ ] Step 3: Define parse_offer_negotiation_json, validate_offer_negotiation, classify_offer_negotiation_failure, and a server-generated SAFE_EMPTY_OFFER_NEGOTIATION. Parse with duplicate-key rejection, reject fenced text/non-finite values, enforce exact fields, and codify these concrete limits: at most 8 items in each of the four arrays, at most 4 evidence_refs per item, at most 64 Unicode characters for id, at most 600 characters for text/rationale, at most 400 characters for excerpt, and at most 8 active comparison dimensions in one snapshot. Validate each reference against the frozen canonical snapshot. Version fixed context-free questions; factual questions require evidence. Only pure structure failures may trigger repair; fake source/path/excerpt, over-limit, duplicate semantic IDs, and forbidden decision language are terminal.
+- [ ] Step 3: Define parse_offer_negotiation_json, validate_offer_negotiation, classify_offer_negotiation_failure, and a server-generated SAFE_EMPTY_OFFER_NEGOTIATION. Parse with duplicate-key rejection, reject fenced text/non-finite values, enforce exact fields, and codify these concrete limits: at most 8 items in each of the four arrays, at most 4 evidence_refs per item, at most 64 Unicode characters for id, at most 600 characters for text/rationale, at most 400 characters for excerpt, and at most 8 active comparison dimensions in one snapshot. Validate each reference against the fixed canonical paths and snapshot values. Every clarification_questions item must include at least one valid evidence reference; there is no context-free allowlist. Only pure structure failures may trigger repair; fake source/path/excerpt, over-limit, duplicate semantic IDs, and forbidden decision language are terminal.
 - [ ] Step 4: Implement prepare_or_replay, claim_generation, mark_provider_unknown, complete_ready, and invalidate. First transaction inserts the row with generating, revision 1, random lease token and unexpired lease before Provider. Same key/different fingerprint is 409. Ready is immutable. Provider-unknown returns 202 while lease is live and can be claimed only after expiry. Writes match status/revision/lease token; a late owner cannot overwrite ready.
 - [ ] Step 5: Add these typed routes: POST /api/offers/{offer_id}/negotiation/proposals for generation, GET /api/offers/{offer_id}/negotiation/proposals for current-Offer history, GET /api/offer-negotiation/proposals/{proposal_id} for immutable history after Offer changes, and POST /api/offer-negotiation/proposals/{proposal_id}/confirm for HITL handoff. Validate visible Offer/current input before creating an Attempt; historical reads return frozen content with source_changed after Offer edit/delete. Use distinct 201/200/202/409/422/502 envelopes and safe Chinese mapping. Diagnostics contain only category, HTTP status, timeout, elapsed time, repair count, and hashed Provider request ID.
 - [ ] Step 6: Run uv run pytest tests/test_offer_negotiation_ai.py tests/test_offer_negotiation_repository.py tests/test_offer_negotiation_api.py -q; commit:
@@ -153,9 +188,9 @@ git commit -m "feat: AI add offer negotiation UI"
 - Modify: existing Pilot attachment/context files under web/src/features/pilot/, web/src/components/ChatPanel/, and web/src/layout/AppShell.tsx only where the current attachment contract requires it.
 - Test: new web/src/components/OfferPilotNegotiation.test.tsx, existing Pilot attachment/context tests, tests/test_chat_api.py, tests/test_chat_repository.py if backend context behavior needs a regression.
 
-- [ ] Step 1: Add failing integration tests for no selected Offer (list and require choice), explicit selected Offer (static card only), associated context_type=application/context_ref, workspace context for unassociated Offer, no persisted offer_id payload, same service functions for Pilot/UI, and no auto-send/provider call before confirmation.
+- [ ] Step 1: Add failing integration tests for the trigger boundary: with no selected Offer and no user action, Pilot renders no Offer card and makes no Offer list, Chat, or Provider request; when the user explicitly clicks the existing “准备谈薪” action, Pilot opens a local selector; before selection it still sends no message, creates no Chat row, and calls no Provider; after explicit selection it renders the static card. Also cover associated context_type=application/context_ref, workspace context for an unassociated Offer, no persisted offer_id payload, the same service functions for Pilot/UI, and no auto-send/provider call before confirmation.
 - [ ] Step 2: Run from web: npm.cmd test -- --run src/components/OfferPilotNegotiation.test.tsx src/features/pilot/PilotAttachmentContext.render.test.tsx.
-- [ ] Step 3: Reuse explicit Offer attachment. Add no new Chat discriminator, API route, prompt, repository, retry state, or auto-approval path. The Pilot action opens the same drawer after explicit selection.
+- [ ] Step 3: Reuse explicit Offer attachment. Add no new Chat discriminator, API route, prompt, repository, retry state, or auto-approval path. The passive Pilot view does not list Offers. Only the user's explicit “准备谈薪” action opens a selector; selecting one Offer creates only local attachment state, then renders the static card and opens the same drawer after the user confirms the action. The UI and Pilot call the same generation, history, and confirmation service functions.
 - [ ] Step 4: Rerun focused tests, Chat tests if changed, and commit:
 ~~~powershell
 git add web/src/features/pilot web/src/components/ChatPanel web/src/layout/AppShell.tsx web/src/components/OfferPilotNegotiation.test.tsx tests/test_chat_api.py tests/test_chat_repository.py
@@ -169,8 +204,8 @@ git commit -m "feat: AI connect offer negotiation to Pilot"
 - Modify only scoped diagnostic/error mapping paths in src/offerpilot/api.py, src/offerpilot/ai/offer_negotiation.py, and web/src/components/OfferNegotiationDrawer.tsx.
 
 - [ ] Step 1: Add failing harness/error tests for redacted Chinese mapping, scoped diagnostics, 422 cleanup, 404 history/source_changed, 409 freeze, 202/502 retained key, and same-key replay.
-- [ ] Step 2: Implement an isolated temporary data directory and redacted config copy. Record only local browser /api requests and actual configured Provider scheme+host+port. Fail closed on any unapproved host or server egress. Never emit keys, Offer/JD/resume text, evidence excerpts, raw model output, or snapshots.
-- [ ] Step 3: Add the real sequence: create two Chinese Offers; add 通勤 and 成长空间; compare in user order without ranking; select one Offer; fill Chinese goal/concerns/scenario; confirm AI; inspect evidence; edit/select blocks; confirm Brief; close/reopen history; explicitly select the same Offer in Pilot and open the same flow. Assert no application/event/resume/material/question/knowledge/reminder/Chat write beyond explicit Offer/Proposal/Brief operations.
+- [ ] Step 2: Implement an isolated temporary data directory and a silent byte-for-byte copy of the real config.json, including the configured Provider secret. Do not print, parse into logs, archive, or report the copied config; delete it in finally. Record only local browser /api requests and the actual configured Provider scheme+host+port. Fail closed on any unapproved host or server egress. Never emit keys, Offer/JD/resume text, evidence excerpts, raw model output, snapshots, or secrets.
+- [ ] Step 3: Add the real sequence: create two Chinese Offers; add 通勤 and 成长空间; compare in user order without ranking; select one Offer; fill Chinese goal/concerns/scenario; confirm AI; inspect evidence; edit/select blocks; confirm Brief; close/reopen history; explicitly trigger Pilot “准备谈薪”, select the same Offer, and open the same flow. Assert no application/event/resume/material/question/knowledge/reminder or Chat row/message write beyond explicit Offer/Proposal/Brief operations. Snapshot the Chat row/message count before and after both UI and Pilot paths.
 - [ ] Step 4: Run uv run pytest tests/test_offer_negotiation_browser_harness.py -q and the Offer-specific isolated real-AI verify command; do not substitute another AI flow.
 - [ ] Step 5: Commit:
 ~~~powershell
@@ -198,11 +233,11 @@ git diff --check main..HEAD
 Record actual exit codes and counts; a timeout is not a pass.
 - [ ] Step 2: Obtain independent code review for history retention, duplicate IDs, duplicate JSON, evidence validation, lease/CAS, confirmation uniqueness, Pilot leakage, cross-domain writes, and raw-content logging. Fix P0/P1 with regression tests; name any accepted P2 in the report.
 - [ ] Step 3: Run grouped backend gate rather than one timeout-prone pytest. Verify collected node-id manifest equals a disjoint group union, no node appears twice, and only the four pre-approved Windows symlink-permission skips occur with exact reasons. Run frontend full tests in stable groups, TypeScript/build, Ruff, Mypy, local smoke, local verify, and Offer-specific real-AI verify.
-- [ ] Step 4: Run isolated browser flow with copied redacted config and temporary OFFERPILOT_DATA. Verify local-only browser traffic, exact Provider endpoint egress, no recruitment access, HITL confirmations, source-changed history, and zero unrelated writes. Stop services, browser targets, and proxy; remove temp data; compare the original user data directory before/after.
+- [ ] Step 4: Run isolated browser flow with the silent exact config copy and temporary OFFERPILOT_DATA. Verify local-only browser traffic, exact Provider endpoint egress, no recruitment access, HITL confirmations, source-changed history, and zero unrelated writes including zero Chat writes. Stop services, browser targets, and proxy; remove temp data and copied config; compare the original user data directory before/after.
 - [ ] Step 5: Write docs/reports/2026-08-01-offer-negotiation-release-verification.md with commit/base, commands, exit codes, counts, skips, focused/AI/browser results, cleanup comparison, review findings, and risks. Do not include secrets, Offer/JD/resume text, evidence excerpts, raw model output, or raw request IDs.
-- [ ] Step 6: Scan changed files for placeholder markers, placeholder error mappings, decision language, and offer_id Chat context fields. Run git diff --check main..HEAD, confirm git status --short is empty, then separately stage and commit the report:
+- [ ] Step 6: Scan changed files for placeholder markers, placeholder error mappings, decision language, and offer_id Chat context fields. Run git diff --check main..HEAD, confirm git status --short is empty, verify that the report is Git-tracked, then separately stage and commit the report:
 ~~~powershell
-git add docs/reports/2026-08-01-offer-negotiation-release-verification.md
+git add -f docs/reports/2026-08-01-offer-negotiation-release-verification.md
 git commit -m "docs: AI record offer negotiation release verification"
 ~~~
 
@@ -210,10 +245,15 @@ git commit -m "docs: AI record offer negotiation release verification"
 
 - [x] Single-Offer negotiation and optional multi-Offer comparison are separate.
 - [x] Custom dimensions preserve user text, support archive, and never become scores.
+- [x] Legacy GET /api/offers/compare remains Offer[]; structured comparison is a separate endpoint with fixed order and missing-value fields.
+- [x] Dimension selection is explicit, bounded at eight, canonically sorted, and represented by stable provider paths in the frozen snapshot.
+- [x] All clarification questions require validated evidence; no unbounded context-free allowlist exists.
 - [x] New migration is unused 0017_offer_comparison_negotiation; fresh and real-old-database upgrades are tested.
 - [x] Proposal snapshot, fingerprint, hash, idempotency, lease/CAS, unknown result, one repair, safe-empty, and source-change history are assigned to tasks.
 - [x] Brief confirmation has transaction-level ownership validation and UNIQUE(proposal_id) replay.
 - [x] UI and Pilot share APIs; Pilot requires explicit Offer selection and no offer_id Chat persistence.
+- [x] Pilot is passive until the user explicitly triggers negotiation; the selector and static card create no Chat write or Provider call.
+- [x] Current Offers are physically deleted by existing behavior; no soft-delete assumption or new soft-delete state is introduced.
 - [x] No auto-decision, auto-send, external recruitment access, cross-domain write, or Offer-state mutation is introduced.
 - [x] Browser verification is isolated, Chinese, redacted, and checks actual local/Provider boundaries.
 - [x] Paths, route names, types, statuses, and error semantics are consistent with the approved design; no placeholder instruction is required.
