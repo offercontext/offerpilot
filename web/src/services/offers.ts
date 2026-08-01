@@ -4,10 +4,73 @@ import type {
   OfferComparisonRead,
   OfferComparisonValue,
   OfferInput,
+  OfferNegotiationBrief,
+  OfferNegotiationPending,
+  OfferNegotiationProposal,
 } from '@/types/offer';
+import { OfferNegotiationError } from '@/types/offer';
 import { createApiClient } from './http';
 
 const http = createApiClient({ baseURL: '/api', timeout: 10000 });
+
+export { OfferNegotiationError } from '@/types/offer';
+
+export interface OfferNegotiationInput {
+  idempotency_key: string;
+  dimension_ids: number[];
+  goal: string;
+  concerns: string;
+  scenario: string;
+}
+
+type OfferNegotiationResponse = OfferNegotiationProposal | OfferNegotiationPending;
+
+function isOfferNegotiationError(error: unknown): error is { response?: { status?: number; data?: { error_code?: unknown } } } {
+  return typeof error === 'object' && error !== null && 'response' in error;
+}
+
+async function offerNegotiationRequest<T>(request: () => Promise<{ data: T }>): Promise<T> {
+  try {
+    return (await request()).data;
+  } catch (error) {
+    if (isOfferNegotiationError(error)) {
+      const response = error.response;
+      const code = typeof response?.data?.error_code === 'string' ? response.data.error_code : null;
+      throw new OfferNegotiationError(response?.status ?? 0, code);
+    }
+    throw new OfferNegotiationError(0, null);
+  }
+}
+
+export function createOfferNegotiationProposal(
+  offerId: number,
+  input: OfferNegotiationInput,
+): Promise<OfferNegotiationResponse> {
+  return offerNegotiationRequest(() => http.post<OfferNegotiationResponse>(
+    `/offers/${offerId}/negotiation/proposals`, input,
+  ));
+}
+
+export function listOfferNegotiationProposals(offerId: number): Promise<OfferNegotiationProposal[]> {
+  return offerNegotiationRequest(() => http.get<OfferNegotiationProposal[]>(
+    `/offers/${offerId}/negotiation/proposals`,
+  ));
+}
+
+export function getOfferNegotiationProposal(proposalId: number): Promise<OfferNegotiationProposal> {
+  return offerNegotiationRequest(() => http.get<OfferNegotiationProposal>(
+    `/offer-negotiation/proposals/${proposalId}`,
+  ));
+}
+
+export function confirmOfferNegotiationProposal(
+  proposalId: number,
+  input: { confirmation_key: string; selected_blocks: string[]; edited_content: Record<string, string> },
+): Promise<OfferNegotiationBrief> {
+  return offerNegotiationRequest(() => http.post<OfferNegotiationBrief>(
+    `/offer-negotiation/proposals/${proposalId}/confirm`, input,
+  ));
+}
 
 export async function listOffers(status?: string): Promise<Offer[]> {
   const { data } = await http.get<Offer[]>('/offers', { params: status ? { status } : {} });

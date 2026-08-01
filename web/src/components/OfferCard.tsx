@@ -11,6 +11,7 @@ interface Props {
   selected: boolean;
   onToggleSelect: (id: number) => void;
   onCoach: (offer: Offer) => void;
+  onNegotiation?: (offer: Offer) => void;
   onView: (offer: Offer) => void;
   onAttachToPilot?: (attachment: import('@/types/chat').PilotContextAttachment) => void;
 }
@@ -19,7 +20,7 @@ function formatWan(n: number): string {
   return (n / 10000).toFixed(1) + '万';
 }
 
-export default function OfferCard({ offer, selected, onToggleSelect, onCoach, onView, onAttachToPilot }: Props) {
+export default function OfferCard({ offer, selected, onToggleSelect, onCoach, onNegotiation, onView, onAttachToPilot }: Props) {
   const offerDragBinding = onAttachToPilot
     ? createPilotAttachmentDragBinding({
         kind: 'offer',
@@ -57,6 +58,11 @@ export default function OfferCard({ offer, selected, onToggleSelect, onCoach, on
         <Button type="primary" size="small" icon={<MessageOutlined />} onClick={() => onCoach(offer)}>
           谈薪教练
         </Button>
+        {onNegotiation && (
+          <Button size="small" onClick={() => onNegotiation(offer)}>
+            开始谈薪准备
+          </Button>
+        )}
         <Button size="small" icon={<EyeOutlined />} onClick={() => onView(offer)}>
           详情
         </Button>

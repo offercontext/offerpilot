@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Row, Col, Button, Space, Statistic, Spin, Empty, message } from 'antd';
 import { PlusOutlined, SwapOutlined } from '@ant-design/icons';
@@ -9,6 +9,7 @@ import OfferCard from '@/components/OfferCard';
 import AddOfferForm from '@/components/AddOfferForm';
 import OfferCompareDrawer from '@/components/OfferCompareDrawer';
 import OfferComparisonDimensionPanel from '@/components/OfferComparisonDimensionPanel';
+import OfferNegotiationDrawer, { type OfferNegotiationDraft } from '@/components/OfferNegotiationDrawer';
 import { findEvidenceFocusRecord } from '@/lib/pilotEvidenceFocus';
 
 interface Props {
@@ -31,6 +32,17 @@ export default function OfferCenterView({
   const [compareOpen, setCompareOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [selectedDimensionIds, setSelectedDimensionIds] = useState<number[]>([]);
+  const [negotiationOffer, setNegotiationOffer] = useState<Offer | null>(null);
+  const [negotiationDrafts, setNegotiationDrafts] = useState<Record<number, OfferNegotiationDraft>>({});
+  const updateNegotiationDraft = useCallback((draft: OfferNegotiationDraft | null) => {
+    if (!negotiationOffer) return;
+    setNegotiationDrafts((current) => {
+      const next = { ...current };
+      if (draft) next[negotiationOffer.id] = draft;
+      else delete next[negotiationOffer.id];
+      return next;
+    });
+  }, [negotiationOffer]);
 
   const { data: offers = [], isLoading, isError, isFetching, refetch } = useQuery({
     queryKey: ['offers'],
@@ -99,6 +111,7 @@ export default function OfferCenterView({
                     selected={selectedIds.includes(offer.id)}
                     onToggleSelect={toggleSelect}
                     onCoach={onCoach}
+                    onNegotiation={setNegotiationOffer}
                     onAttachToPilot={onAttachToPilot}
                     onView={(o) => { setEditing(o); setAddOpen(true); }}
                   />
@@ -109,6 +122,16 @@ export default function OfferCenterView({
         </>
       )}
       <AddOfferForm open={addOpen} onClose={() => setAddOpen(false)} applications={applications} editing={editing} />
+      {negotiationOffer && (
+        <OfferNegotiationDrawer
+          open
+          offer={negotiationOffer}
+          dimensionIds={selectedDimensionIds}
+          draft={negotiationDrafts[negotiationOffer.id]}
+          onDraftChange={updateNegotiationDraft}
+          onClose={() => setNegotiationOffer(null)}
+        />
+      )}
     </div>
   );
 }
