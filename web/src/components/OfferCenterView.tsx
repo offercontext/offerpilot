@@ -66,6 +66,7 @@ export default function OfferCenterView({
       onClose={() => setCompareOpen(false)}
       offers={selectedOffers}
       dimensionIds={selectedDimensionIds}
+      onCoach={onCoach}
     />;
   }
 

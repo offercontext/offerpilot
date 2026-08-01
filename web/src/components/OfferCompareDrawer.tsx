@@ -1,13 +1,16 @@
+import { useEffect, useState } from 'react';
 import { ArrowLeftOutlined } from '@ant-design/icons';
 import { Button, Empty, Table } from 'antd';
-import type { Offer } from '@/types/offer';
+import type { Offer, OfferComparisonRead } from '@/types/offer';
 import { OFFER_STATUS_LABELS } from '@/types/offer';
+import { readOfferComparison } from '@/services/offers';
 
 interface Props {
   open: boolean;
   onClose: () => void;
   offers: Offer[];
   dimensionIds?: number[];
+  onCoach?: (offer: Offer) => void;
 }
 
 interface Row {
@@ -16,58 +19,90 @@ interface Row {
   [companyKey: string]: string | number;
 }
 
-function wan(n: number): string {
-  return (n / 10000).toFixed(1) + '万';
+function formatWan(value: number): string {
+  return `${(value / 10000).toFixed(1)} 万元`;
 }
 
-export default function OfferCompareDrawer({ open, onClose, offers, dimensionIds = [] }: Props) {
+export default function OfferCompareDrawer({
+  open,
+  onClose,
+  offers,
+  dimensionIds = [],
+  onCoach,
+}: Props) {
+  const [comparison, setComparison] = useState<OfferComparisonRead | null>(null);
+
+  useEffect(() => {
+    if (!open || offers.length < 2) {
+      setComparison(null);
+      return;
+    }
+    let current = true;
+    void readOfferComparison(offers.map((offer) => offer.id), dimensionIds)
+      .then((payload) => { if (current) setComparison(payload); })
+      .catch(() => { if (current) setComparison(null); });
+    return () => { current = false; };
+  }, [open, offers, dimensionIds]);
+
+  if (!open) return null;
+  const displayedOffers = comparison?.offers ?? offers;
   const columns = [
     { title: '维度', dataIndex: 'field', key: 'field', fixed: 'left' as const, width: 120 },
-    ...offers.map((o) => ({
-      title: `${o.company_name}`,
-      dataIndex: `c${o.id}`,
-      key: `c${o.id}`,
+    ...displayedOffers.map((offer) => ({
+      title: offer.company_name,
+      dataIndex: `c${offer.id}`,
+      key: `c${offer.id}`,
     })),
   ];
 
-  const fieldRow = (field: string, val: (o: Offer) => string | number): Row => {
+  const fieldRow = (field: string, value: (offer: Offer) => string | number): Row => {
     const row: Row = { key: field, field };
-    offers.forEach((o) => {
-      row[`c${o.id}`] = val(o);
-    });
+    displayedOffers.forEach((offer) => { row[`c${offer.id}`] = value(offer); });
     return row;
   };
 
   const data: Row[] = [
-    fieldRow('岗位', (o) => o.position_name),
-    fieldRow('状态', (o) => OFFER_STATUS_LABELS[o.status]),
-    fieldRow('月薪×薪数', (o) => `${o.base_monthly / 1000}K×${o.months_per_year}`),
-    fieldRow('签字费', (o) => (o.signing_bonus > 0 ? wan(o.signing_bonus) : '无')),
-    fieldRow('年总包', (o) => wan(o.total_cash)),
-    fieldRow('期权', (o) => o.equity || '无'),
-    fieldRow('福利', (o) => o.perks || '无'),
-    fieldRow('截止日', (o) => o.deadline || '无'),
+    fieldRow('职位', (offer) => offer.position_name || '尚未填写'),
+    fieldRow('状态', (offer) => OFFER_STATUS_LABELS[offer.status]),
+    fieldRow('月薪与月数', (offer) => `${offer.base_monthly / 1000}K × ${offer.months_per_year}`),
+    fieldRow('签字费', (offer) => offer.signing_bonus > 0 ? formatWan(offer.signing_bonus) : '尚未填写'),
+    fieldRow('年总包事实', (offer) => formatWan(offer.total_cash)),
+    fieldRow('期权', (offer) => offer.equity || '尚未填写'),
+    fieldRow('福利', (offer) => offer.perks || '尚未填写'),
+    fieldRow('截止时间', (offer) => offer.deadline || '尚未填写'),
   ];
-
-  if (!open) return null;
+  if (comparison) {
+    for (const dimension of comparison.dimensions) {
+      data.push(fieldRow(dimension.label, (offer) => {
+        const cell = dimension.values.find((value) => value.offer_id === offer.id);
+        return cell?.value_text || '尚未填写';
+      }));
+    }
+  }
 
   return (
     <section aria-label="Offer 横向对比" data-selected-dimension-ids={dimensionIds.join(',')}>
       <div style={{ display: 'grid', gap: 8, marginBottom: 18 }}>
-        <Button
-          type="link"
-          icon={<ArrowLeftOutlined />}
-          onClick={onClose}
-          style={{ width: 'fit-content', height: 'auto', padding: 0 }}
-        >
+        <Button type="link" icon={<ArrowLeftOutlined />} onClick={onClose} style={{ width: 'fit-content', height: 'auto', padding: 0 }}>
           返回 Offer 中心
         </Button>
         <h2 style={{ margin: 0 }}>Offer 横向对比</h2>
       </div>
-      {offers.length === 0 ? (
-        <Empty description="请选择至少一个 offer" />
+      {displayedOffers.length === 0 ? (
+        <Empty description="请选择至少两个 Offer" />
       ) : (
-        <Table columns={columns} dataSource={data} pagination={false} scroll={{ x: true }} size="small" bordered />
+        <>
+          <Table columns={columns} dataSource={data} pagination={false} scroll={{ x: true }} size="small" bordered />
+          {onCoach && (
+            <div style={{ display: 'flex', gap: 8, marginTop: 16, flexWrap: 'wrap' }}>
+              {displayedOffers.map((offer) => (
+                <Button key={offer.id} data-action="start-negotiation" data-offer-id={offer.id} onClick={() => onCoach(offer)}>
+                  为 {offer.company_name} 准备谈薪
+                </Button>
+              ))}
+            </div>
+          )}
+        </>
       )}
     </section>
   );
