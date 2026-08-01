@@ -8,6 +8,7 @@ import { listOffers } from '@/services/offers';
 import OfferCard from '@/components/OfferCard';
 import AddOfferForm from '@/components/AddOfferForm';
 import OfferCompareDrawer from '@/components/OfferCompareDrawer';
+import OfferComparisonDimensionPanel from '@/components/OfferComparisonDimensionPanel';
 import { findEvidenceFocusRecord } from '@/lib/pilotEvidenceFocus';
 
 interface Props {
@@ -29,6 +30,7 @@ export default function OfferCenterView({
   const [editing, setEditing] = useState<Offer | null>(null);
   const [compareOpen, setCompareOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [selectedDimensionIds, setSelectedDimensionIds] = useState<number[]>([]);
 
   const { data: offers = [], isLoading, isError, isFetching, refetch } = useQuery({
     queryKey: ['offers'],
@@ -59,7 +61,12 @@ export default function OfferCenterView({
     return <div role="alert" style={{ textAlign: 'center', padding: 48 }}><Empty description="加载 Offer 失败"><Button onClick={() => void refetch()}>重试</Button></Empty></div>;
   }
   if (compareOpen) {
-    return <OfferCompareDrawer open={compareOpen} onClose={() => setCompareOpen(false)} offers={selectedOffers} />;
+    return <OfferCompareDrawer
+      open={compareOpen}
+      onClose={() => setCompareOpen(false)}
+      offers={selectedOffers}
+      dimensionIds={selectedDimensionIds}
+    />;
   }
 
   return (
@@ -80,20 +87,25 @@ export default function OfferCenterView({
       {offers.length === 0 ? (
         <Empty description="还没有 Offer，点击“录入 Offer”开始" />
       ) : (
-        <Row gutter={[16, 16]}>
-          {offers.map((offer) => (
-            <Col key={offer.id} xs={24} sm={12} md={8}>
-              <OfferCard
-                offer={offer}
-                selected={selectedIds.includes(offer.id)}
-                onToggleSelect={toggleSelect}
-                onCoach={onCoach}
-                onAttachToPilot={onAttachToPilot}
-                onView={(o) => { setEditing(o); setAddOpen(true); }}
-              />
-            </Col>
-          ))}
-        </Row>
+        <>
+          <OfferComparisonDimensionPanel offers={offers} onSelectionChange={setSelectedDimensionIds} />
+          <div data-selected-comparison-dimensions={selectedDimensionIds.join(',')}>
+            <Row gutter={[16, 16]}>
+              {offers.map((offer) => (
+                <Col key={offer.id} xs={24} sm={12} md={8}>
+                  <OfferCard
+                    offer={offer}
+                    selected={selectedIds.includes(offer.id)}
+                    onToggleSelect={toggleSelect}
+                    onCoach={onCoach}
+                    onAttachToPilot={onAttachToPilot}
+                    onView={(o) => { setEditing(o); setAddOpen(true); }}
+                  />
+                </Col>
+              ))}
+            </Row>
+          </div>
+        </>
       )}
       <AddOfferForm open={addOpen} onClose={() => setAddOpen(false)} applications={applications} editing={editing} />
     </div>

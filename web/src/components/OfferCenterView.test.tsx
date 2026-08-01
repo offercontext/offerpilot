@@ -12,7 +12,15 @@ Object.defineProperty(window, 'matchMedia', {
 
 const queryState = vi.hoisted(() => ({ offers: [] as Offer[] }));
 vi.mock('@tanstack/react-query', () => ({ useQuery: () => ({ data: queryState.offers, isError: false, isFetching: false, isLoading: false, refetch: vi.fn() }) }));
-vi.mock('@/services/offers', () => ({ listOffers: vi.fn() }));
+vi.mock('@/services/offers', () => ({
+  listOffers: vi.fn(),
+  listOfferComparisonDimensions: vi.fn(async () => []),
+  listOfferComparisonValues: vi.fn(async () => []),
+  createOfferComparisonDimension: vi.fn(),
+  updateOfferComparisonDimension: vi.fn(),
+  saveOfferComparisonValue: vi.fn(),
+  clearOfferComparisonValue: vi.fn(),
+}));
 vi.mock('@/components/OfferCard', () => ({ default: () => <div /> }));
 vi.mock('@/components/AddOfferForm', () => ({ default: () => null }));
 vi.mock('@/components/OfferCompareDrawer', () => ({ default: () => null }));

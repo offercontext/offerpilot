@@ -7,6 +7,7 @@ interface Props {
   open: boolean;
   onClose: () => void;
   offers: Offer[];
+  dimensionIds?: number[];
 }
 
 interface Row {
@@ -19,7 +20,7 @@ function wan(n: number): string {
   return (n / 10000).toFixed(1) + '万';
 }
 
-export default function OfferCompareDrawer({ open, onClose, offers }: Props) {
+export default function OfferCompareDrawer({ open, onClose, offers, dimensionIds = [] }: Props) {
   const columns = [
     { title: '维度', dataIndex: 'field', key: 'field', fixed: 'left' as const, width: 120 },
     ...offers.map((o) => ({
@@ -51,7 +52,7 @@ export default function OfferCompareDrawer({ open, onClose, offers }: Props) {
   if (!open) return null;
 
   return (
-    <section aria-label="Offer 横向对比">
+    <section aria-label="Offer 横向对比" data-selected-dimension-ids={dimensionIds.join(',')}>
       <div style={{ display: 'grid', gap: 8, marginBottom: 18 }}>
         <Button
           type="link"
