@@ -70,6 +70,7 @@ def init_database(db_path: Path) -> SessionFactory:
             "0016_event_bound_mock_interview",
             "Replace legacy MockSession with event-bound text mock interview tables",
         )
+    _ensure_offer_negotiation_schema(engine)
     interview_review_history_rebuilt = _ensure_interview_review_history_schema(engine)
     interview_knowledge_event_added = _ensure_column(
         engine,
@@ -1152,6 +1153,25 @@ def _record_migration(engine, version: str, description: str) -> None:  # type: 
                 """
             ),
             {"version": version, "description": description},
+        )
+
+
+def _ensure_offer_negotiation_schema(engine) -> None:  # type: ignore[no-untyped-def]
+    """Record the additive Offer comparison and negotiation schema migration."""
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_offer_negotiation_proposals_status "
+                "ON offer_negotiation_proposals(attempt_status)"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT OR IGNORE INTO schema_migrations (version, description) "
+                "VALUES ('0017_offer_comparison_negotiation', "
+                "'Add Offer comparison dimensions, values, negotiation proposals and briefs')"
+            )
         )
 
 

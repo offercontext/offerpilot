@@ -166,6 +166,96 @@ class Offer(Base):
         return self.base_monthly * self.months_per_year + self.signing_bonus
 
 
+class OfferComparisonDimension(Base):
+    __tablename__ = "offer_comparison_dimensions"
+    __table_args__ = (Index("idx_offer_comparison_dimensions_active", "archived_at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    label: Mapped[str] = mapped_column(String, nullable=False)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+        onupdate=func.current_timestamp(),
+    )
+
+
+class OfferComparisonValue(Base):
+    __tablename__ = "offer_comparison_values"
+    __table_args__ = (
+        UniqueConstraint("offer_id", "dimension_id", name="uq_offer_comparison_values_offer_dimension"),
+        Index("idx_offer_comparison_values_offer", "offer_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    offer_id: Mapped[int] = mapped_column(
+        ForeignKey("offers.id", ondelete="CASCADE"), nullable=False
+    )
+    dimension_id: Mapped[int] = mapped_column(
+        ForeignKey("offer_comparison_dimensions.id", ondelete="CASCADE"), nullable=False
+    )
+    value_text: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+        onupdate=func.current_timestamp(),
+    )
+
+
+class OfferNegotiationProposal(Base):
+    __tablename__ = "offer_negotiation_proposals"
+    __table_args__ = (
+        UniqueConstraint("offer_id", "idempotency_key", name="uq_offer_negotiation_proposals_offer_key"),
+        Index("idx_offer_negotiation_proposals_offer", "offer_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    offer_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    application_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
+    attempt_status: Mapped[str] = mapped_column(String, nullable=False, default="generating", server_default="generating")
+    source_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
+    input_snapshot_json: Mapped[str] = mapped_column(Text, nullable=False)
+    proposal_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    proposal_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_states_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}", server_default="{}")
+    provider_call_token: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    invalidation_reason: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
+    ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class OfferNegotiationBrief(Base):
+    __tablename__ = "offer_negotiation_briefs"
+    __table_args__ = (
+        UniqueConstraint("proposal_id", name="uq_offer_negotiation_briefs_proposal"),
+        Index("idx_offer_negotiation_briefs_offer", "offer_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    proposal_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    offer_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    origin_application_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    selected_blocks_json: Mapped[str] = mapped_column(Text, nullable=False)
+    edited_content_json: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    confirmed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
+
+
 class Resume(Base):
     __tablename__ = "resumes"
 
