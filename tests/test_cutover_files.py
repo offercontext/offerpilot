@@ -30,40 +30,34 @@ def test_readme_describes_python_first_runtime():
 
     assert "uv sync" in readme
     assert "uv run oc start" in readme
-    assert "FastAPI" in readme
+    assert "docker build -t offerpilot ." in readme
     assert "go build" not in readme
     assert "Go 1.22" not in readme
 
 
-def test_readme_documents_current_v01_contract():
+def test_readme_states_the_product_boundary_and_core_capabilities():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert "AGPLv3" in readme
-    assert "LiteLLM" in readme
-    assert "oc smoke" in readme
-    assert "oc verify --profile local" in readme
-    assert "oc verify --profile real-ai" in readme
-    assert "oc skill trust" in readme
-    assert "oc skill add --manifest" in readme
-    assert "SQLite FTS5 chunk retrieval" in readme
-    assert "Runtime diagnostics are visible" in readme
-    assert "pending -> applied -> written_test -> interview -> offer -> closed" in readme
-    assert "runtime_mode" in readme
-    assert "auth_enabled" in readme
-    assert "auth_token" in readme
-    assert "offerpilot.auth_token" in readme
-    assert "Browser auth gate" in readme
-    assert "oc wakeup dispatch-due" in readme
-    assert "schema_migrations" in readme
-    assert "docs/p0-release-checklist.md" in readme
+    for text in [
+        "# OfferPilot — 本地优先的 AI 求职工作台",
+        "管理简历与投递",
+        "评估岗位匹配、准备投递材料",
+        "准备面试、进行文本模拟与复盘",
+        "汇总已确认的经验与知识",
+        "比较 Offer 已知事实，准备谈薪沟通",
+        "不自动投递",
+        "不替用户决定",
+        "SQLite",
+        "AGPLv3",
+        "## English",
+    ]:
+        assert text in readme
 
 
 def test_docker_smoke_scripts_document_container_smoke_path():
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     shell_script = (ROOT / "scripts" / "docker-smoke.sh").read_text(encoding="utf-8")
     powershell_script = (ROOT / "scripts" / "docker-smoke.ps1").read_text(encoding="utf-8")
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
-
     assert "COPY --from=web /web/dist /app/web/dist" in dockerfile
 
     assert "docker build" in shell_script
@@ -76,15 +70,11 @@ def test_docker_smoke_scripts_document_container_smoke_path():
     assert "oc smoke" in powershell_script
     assert "/app/web/dist" in powershell_script
 
-    assert "scripts/docker-smoke.sh" in readme
-    assert "scripts/docker-smoke.ps1" in readme
 
 
 def test_local_smoke_scripts_exercise_oc_start_with_built_spa():
     shell_script = (ROOT / "scripts" / "local-smoke.sh").read_text(encoding="utf-8")
     powershell_script = (ROOT / "scripts" / "local-smoke.ps1").read_text(encoding="utf-8")
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
-
     assert "npm run build" in shell_script
     assert "uv run oc start" in shell_script
     assert "/api/health" in shell_script
@@ -95,8 +85,6 @@ def test_local_smoke_scripts_exercise_oc_start_with_built_spa():
     assert "/api/health" in powershell_script
     assert "/applications/smoke" in powershell_script
 
-    assert "scripts/local-smoke.sh" in readme
-    assert "scripts/local-smoke.ps1" in readme
 
 
 def test_release_gate_scripts_wrap_required_v01_checks():
