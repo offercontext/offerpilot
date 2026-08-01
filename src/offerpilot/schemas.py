@@ -116,6 +116,46 @@ class OfferOut(BaseModel):
     updated_at: datetime
 
 
+class OfferComparisonDimensionOut(BaseModel):
+    id: int
+    label: str
+    archived_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class OfferComparisonValueOut(BaseModel):
+    id: int
+    offer_id: int
+    dimension_id: int
+    value_text: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class OfferComparisonValueCellOut(BaseModel):
+    offer_id: int
+    value_text: str | None = None
+
+
+class OfferComparisonDimensionReadOut(BaseModel):
+    id: int
+    label: str
+    values: list[OfferComparisonValueCellOut]
+
+
+class OfferComparisonMissingOut(BaseModel):
+    offer_id: int
+    path: str
+    label: str
+
+
+class OfferComparisonReadOut(BaseModel):
+    offers: list[OfferOut]
+    dimensions: list[OfferComparisonDimensionReadOut]
+    missing: list[OfferComparisonMissingOut]
+
+
 class ResumeOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

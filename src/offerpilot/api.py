@@ -155,6 +155,10 @@ from offerpilot.repositories.notes import (
     NotesRepository,
 )
 from offerpilot.repositories.offers import OfferCreate, OffersRepository
+from offerpilot.repositories.offer_comparison import (
+    OfferComparisonError,
+    OfferComparisonRepository,
+)
 from offerpilot.repositories.questions import QuestionCreate, QuestionsRepository, question_hash
 from offerpilot.repositories.resumes import ResumeCreate, ResumeMatchCreate, ResumesRepository
 from offerpilot.repositories.wakeups import WakeupCreate, WakeupsRepository, wakeup_payload
@@ -761,6 +765,7 @@ def create_app(
     events = ApplicationEventsRepository(session_factory)
     notes = NotesRepository(session_factory)
     offers = OffersRepository(session_factory)
+    offer_comparison = OfferComparisonRepository(session_factory)
     resumes = ResumesRepository(session_factory)
     jd_analyses = JDAnalysesRepository(session_factory)
     questions = QuestionsRepository(session_factory)
@@ -2548,6 +2553,120 @@ def create_app(
                 return error_response(422, "application not found")
         offer = offers.create(parsed)
         return JSONResponse(_offer_json(offer), status_code=201)
+
+    @app.get("/api/offers/comparison-dimensions")
+    def list_offer_comparison_dimensions(include_archived: bool = False) -> list[dict[str, Any]]:
+        return [
+            _offer_comparison_dimension_json(dimension)
+            for dimension in offer_comparison.list_dimensions(active_only=not include_archived)
+        ]
+
+    @app.post("/api/offers/comparison-dimensions", status_code=201)
+    def create_offer_comparison_dimension(payload: dict[str, Any] = Body(...)) -> JSONResponse:
+        label = payload.get("label")
+        if not isinstance(label, str) or not label.strip():
+            return error_response(
+                422,
+                "comparison dimension label is required",
+                code="offer_comparison_dimension_label_required",
+            )
+        dimension = offer_comparison.create_dimension(label)
+        return JSONResponse(_offer_comparison_dimension_json(dimension), status_code=201)
+
+    @app.patch("/api/offers/comparison-dimensions/{dimension_id}")
+    def update_offer_comparison_dimension(
+        dimension_id: int, payload: dict[str, Any] = Body(...)
+    ) -> JSONResponse:
+        label = payload.get("label")
+        if label is not None and (not isinstance(label, str) or not label.strip()):
+            return error_response(
+                422,
+                "comparison dimension label is required",
+                code="offer_comparison_dimension_label_required",
+            )
+        archived = payload.get("archived")
+        if archived is not None and not isinstance(archived, bool):
+            return error_response(422, "archived must be boolean", code="offer_comparison_invalid_payload")
+        dimension = offer_comparison.update_dimension(
+            dimension_id,
+            label=label,
+            archived=archived,
+        )
+        if dimension is None:
+            return error_response(404, "comparison dimension not found", code="offer_comparison_dimension_not_found")
+        return JSONResponse(_offer_comparison_dimension_json(dimension))
+
+    @app.get("/api/offers/comparison")
+    def structured_offer_comparison(ids: str = "", dimension_ids: str = "") -> JSONResponse:
+        parsed_offer_ids = _parse_offer_comparison_ids(ids, "offer_comparison_invalid_ids")
+        if isinstance(parsed_offer_ids, JSONResponse):
+            return parsed_offer_ids
+        if len(parsed_offer_ids) < 2:
+            return error_response(
+                422,
+                "at least two distinct visible offers are required",
+                code="offer_comparison_requires_two_offers",
+            )
+        if len(set(parsed_offer_ids)) != len(parsed_offer_ids):
+            return error_response(422, "offer ids must be distinct", code="offer_comparison_invalid_ids")
+        parsed_dimension_ids = _parse_offer_comparison_ids(
+            dimension_ids, "offer_comparison_invalid_dimensions", allow_empty=True
+        )
+        if isinstance(parsed_dimension_ids, JSONResponse):
+            return parsed_dimension_ids
+        if len(set(parsed_dimension_ids)) != len(parsed_dimension_ids):
+            return error_response(
+                422,
+                "dimension ids must be distinct",
+                code="offer_comparison_invalid_dimensions",
+            )
+        if len(parsed_dimension_ids) > 8:
+            return error_response(
+                422,
+                "at most 8 comparison dimensions are allowed",
+                code="offer_comparison_too_many_dimensions",
+            )
+        try:
+            payload = offer_comparison.comparison_payload(parsed_offer_ids, parsed_dimension_ids)
+        except OfferComparisonError as exc:
+            return error_response(exc.status_code, exc.message, code=exc.code)
+        return JSONResponse(payload)
+
+    @app.get("/api/offers/{offer_id}/comparison-values", response_model=None)
+    def list_offer_comparison_values(offer_id: int) -> list[dict[str, Any]] | JSONResponse:
+        try:
+            return [_offer_comparison_value_json(value) for value in offer_comparison.get_values(offer_id)]
+        except OfferComparisonError as exc:
+            return error_response(exc.status_code, exc.message, code=exc.code)
+
+    @app.put("/api/offers/{offer_id}/comparison-values/{dimension_id}")
+    def save_offer_comparison_value(
+        offer_id: int, dimension_id: int, payload: dict[str, Any] = Body(...)
+    ) -> JSONResponse:
+        value_text = payload.get("value_text")
+        if not isinstance(value_text, str) or not value_text.strip():
+            return error_response(
+                422,
+                "comparison value is required",
+                code="offer_comparison_value_required",
+            )
+        try:
+            value = offer_comparison.upsert_value(offer_id, dimension_id, value_text)
+        except OfferComparisonError as exc:
+            return error_response(exc.status_code, exc.message, code=exc.code)
+        return JSONResponse(_offer_comparison_value_json(value))
+
+    @app.delete("/api/offers/{offer_id}/comparison-values/{dimension_id}")
+    def delete_offer_comparison_value(offer_id: int, dimension_id: int) -> JSONResponse:
+        try:
+            value = offer_comparison.clear_value(offer_id, dimension_id)
+        except OfferComparisonError as exc:
+            return error_response(exc.status_code, exc.message, code=exc.code)
+        if value is None:
+            return JSONResponse(
+                {"offer_id": offer_id, "dimension_id": dimension_id, "value_text": None}
+            )
+        return JSONResponse(_offer_comparison_value_json(value) | {"value_text": None})
 
     @app.get("/api/offers/compare")
     def compare_offers(ids: str = "") -> JSONResponse:
@@ -7157,6 +7276,52 @@ def _offer_create_from_payload(
 
 def _offer_json(offer: Any) -> dict[str, Any]:
     return OfferOut.model_validate(offer).model_dump(mode="json", exclude_none=True)
+
+
+def _offer_comparison_dimension_json(dimension: Any) -> dict[str, Any]:
+    return {
+        "id": dimension.id,
+        "label": dimension.label,
+        "archived_at": _json_datetime(dimension.archived_at) if dimension.archived_at else None,
+        "created_at": _json_datetime(dimension.created_at),
+        "updated_at": _json_datetime(dimension.updated_at),
+    }
+
+
+def _offer_comparison_value_json(value: Any) -> dict[str, Any]:
+    return {
+        "id": value.id,
+        "offer_id": value.offer_id,
+        "dimension_id": value.dimension_id,
+        "value_text": value.value_text,
+        "created_at": _json_datetime(value.created_at),
+        "updated_at": _json_datetime(value.updated_at),
+    }
+
+
+def _parse_offer_comparison_ids(
+    raw_ids: str,
+    error_code: str,
+    *,
+    allow_empty: bool = False,
+) -> list[int] | JSONResponse:
+    if not raw_ids and allow_empty:
+        return []
+    if not raw_ids:
+        return error_response(400, "ids query param is required")
+    parsed: list[int] = []
+    for part in raw_ids.split(","):
+        value = part.strip()
+        if not value:
+            return error_response(422, "ids must contain positive integers", code=error_code)
+        try:
+            parsed_id = int(value)
+        except ValueError:
+            return error_response(422, "ids must contain positive integers", code=error_code)
+        if parsed_id <= 0:
+            return error_response(422, "ids must contain positive integers", code=error_code)
+        parsed.append(parsed_id)
+    return parsed
 
 
 def _jd_analysis_json(analysis: Any) -> dict[str, Any]:

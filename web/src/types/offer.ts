@@ -35,6 +35,46 @@ export interface OfferInput {
   assessment?: string;
 }
 
+export interface OfferComparisonDimension {
+  id: number;
+  label: string;
+  archived_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OfferComparisonValue {
+  id: number;
+  offer_id: number;
+  dimension_id: number;
+  value_text: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OfferComparisonValueCell {
+  offer_id: number;
+  value_text: string | null;
+}
+
+export interface OfferComparisonDimensionRead {
+  id: number;
+  label: string;
+  values: OfferComparisonValueCell[];
+}
+
+export interface OfferComparisonMissing {
+  offer_id: number;
+  path: string;
+  label: string;
+}
+
+export interface OfferComparisonRead {
+  offers: Offer[];
+  dimensions: OfferComparisonDimensionRead[];
+  missing: OfferComparisonMissing[];
+}
+
 export const OFFER_STATUS_LABELS: Record<OfferStatus, string> = {
   pending: '待处理',
   negotiating: '谈判中',
