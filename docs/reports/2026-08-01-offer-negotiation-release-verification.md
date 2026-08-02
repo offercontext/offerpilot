@@ -6,7 +6,8 @@
 
 - 工作树：`feat/20260801-offer-negotiation`
 - 功能基线：`14ec28b`
-- 本轮最终提交：`e2d6a5b5edd2f654a0f201cb18cac0498305880e`
+- 核心修复提交：`e2d6a5b5edd2f654a0f201cb18cac0498305880e`
+- 报告后的最终 HEAD：`80aae9c`
 - 未推送、未合并。
 - 本轮未记录密钥、Offer 原文、用户输入、证据摘录、模型原文或 Provider 原始请求标识。
 
