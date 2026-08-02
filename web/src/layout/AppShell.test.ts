@@ -134,6 +134,12 @@ describe('AppShell source contract', () => {
     expect(source).toContain('onAskPilot={startApplicationChat}');
   });
 
+  it('keeps UI and Pilot negotiation drafts separate for the same Offer', () => {
+    expect(source).toContain('offerNegotiationPilotDraftsRef');
+    expect(source).toContain("offerNegotiationEntryPoint === 'pilot'");
+    expect(source).toContain('key={`${offerNegotiationEntryPoint}-${offerNegotiationOffer.id}`}');
+  });
+
   it('derives page context from the active view, application, and coached offer', () => {
     expect(source).toContain('const coachedOffer = ofrs.find((offer) => offer.id === coachOfferId);');
     expect(source).toContain('const pageContext = useMemo(');

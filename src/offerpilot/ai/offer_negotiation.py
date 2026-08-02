@@ -209,13 +209,20 @@ def generate_offer_negotiation_proposal(
             )
         except Exception as exc:
             error = OfferNegotiationModelError("provider request failed", "provider_error")
-            error.provider_request_id = _redact_provider_request_id(getattr(exc, "provider_request_id", ""))
-            status = getattr(exc, "status_code", getattr(exc, "http_status", None))
+            diagnostic = getattr(exc, "diagnostic", None)
+            diagnostic_map = diagnostic if isinstance(diagnostic, dict) else {}
+            error.provider_request_id = _redact_provider_request_id(
+                diagnostic_map.get("provider_request_id", getattr(exc, "provider_request_id", ""))
+            )
+            status = diagnostic_map.get(
+                "http_status",
+                diagnostic_map.get("status_code", getattr(exc, "status_code", getattr(exc, "http_status", None))),
+            )
             try:
                 error.http_status = int(status) if status is not None else None
             except (TypeError, ValueError):
                 error.http_status = None
-            error.timeout = isinstance(exc, TimeoutError) or "timeout" in type(exc).__name__.lower()
+            error.timeout = bool(diagnostic_map.get("timeout", False)) or isinstance(exc, TimeoutError) or "timeout" in type(exc).__name__.lower()
             error.repair_count = attempt
             error.elapsed_ms = int((perf_counter() - started) * 1000)
             _emit_diagnostic(
@@ -434,6 +441,24 @@ def _evidence_catalog(snapshot: dict[str, Any]) -> list[dict[str, str]]:
     return sorted(catalog, key=lambda item: (item["source"], item["path"]))
 
 
+def _provider_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Project the persisted snapshot to the minimum Provider input."""
+    offer_snapshot = snapshot.get("offer_snapshot")
+    if not isinstance(offer_snapshot, dict):
+        return snapshot
+    projected_offer = dict(offer_snapshot)
+    projected_dimensions: list[dict[str, str]] = []
+    for dimension in offer_snapshot.get("dimensions", []):
+        if not isinstance(dimension, dict):
+            continue
+        path_id = dimension.get("path_id")
+        value_text = dimension.get("value_text")
+        if isinstance(path_id, str) and isinstance(value_text, str) and value_text.strip():
+            projected_dimensions.append({"path_id": path_id, "value_text": value_text})
+    projected_offer["dimensions"] = projected_dimensions
+    return {**snapshot, "offer_snapshot": projected_offer}
+
+
 def _system_prompt(snapshot: dict[str, Any]) -> str:
     return (
         "只输出严格 JSON，不要 Markdown。不要做接受、拒绝、放弃、排名或最优 Offer 决定。"
@@ -446,7 +471,7 @@ def _system_prompt(snapshot: dict[str, Any]) -> str:
 
 
 def _generation_prompt(snapshot: dict[str, Any]) -> str:
-    return "基于以下冻结输入生成 Offer 谈薪准备建议，只能引用输入中的路径和原文：" + canonical_json(snapshot)
+    return "基于以下冻结输入生成 Offer 谈薪准备建议，只能引用输入中的路径和原文：" + canonical_json(_provider_snapshot(snapshot))
 
 
 def _repair_prompt(category: str) -> str:

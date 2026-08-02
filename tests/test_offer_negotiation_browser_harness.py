@@ -38,6 +38,8 @@ def test_harness_output_is_ascii_and_checks_the_complete_browser_sequence() -> N
         "source_changed",
     ):
         assert marker in script
+    assert "response_proposal_id" in script
+    assert "response_confirmed_proposal_id" in script
 
 
 def test_harness_does_not_classify_502_by_status_alone() -> None:
@@ -72,6 +74,7 @@ def test_browser_audit_records_pending_response_payloads() -> None:
     assert '"response_retry_after_ms"' in script
     assert '"payload_sha256"' in script
     assert "if int(status or 0) >= 400" not in script
+    assert "asyncio.create_task(self.record_response(message))" in script
 
 
 def test_harness_verifies_browser_history_and_same_payload_provider_retry() -> None:
@@ -79,3 +82,12 @@ def test_harness_verifies_browser_history_and_same_payload_provider_retry() -> N
     assert 'response_status -eq 200' in script
     assert 'payload_sha256' in script
     assert 'original key' in script
+
+
+def test_harness_uses_nullable_diagnostic_presence_and_active_provider_order() -> None:
+    script = HARNESS.read_text(encoding="utf-8")
+    assert "PSObject.Properties.Name" in script
+    assert "active_provider_id" in script
+    assert "fallback_provider_ids" in script
+    assert "providersById.Count -eq 0" in script
+    assert "expectedProposalIds" in script

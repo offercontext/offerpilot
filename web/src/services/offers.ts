@@ -8,6 +8,7 @@ import type {
   OfferNegotiationPending,
   OfferNegotiationProposal,
   OfferNegotiationRead,
+  OfferNegotiationPreview,
 } from '@/types/offer';
 import { OfferNegotiationError } from '@/types/offer';
 import { createApiClient } from './http';
@@ -22,7 +23,10 @@ export interface OfferNegotiationInput {
   goal: string;
   concerns: string;
   scenario: string;
+  source_fingerprint?: string;
 }
+
+export type OfferNegotiationPreviewInput = Omit<OfferNegotiationInput, 'idempotency_key' | 'source_fingerprint'>;
 
 type OfferNegotiationResponse = OfferNegotiationProposal | OfferNegotiationPending;
 
@@ -50,6 +54,15 @@ export function createOfferNegotiationProposal(
 ): Promise<OfferNegotiationResponse> {
   return offerNegotiationRequest(() => http.post<OfferNegotiationResponse>(
     `/offers/${offerId}/negotiation/proposals`, input, { headers: { 'X-OfferPilot-Entrypoint': entrypoint } },
+  ));
+}
+
+export function previewOfferNegotiation(
+  offerId: number,
+  input: OfferNegotiationPreviewInput,
+): Promise<OfferNegotiationPreview> {
+  return offerNegotiationRequest(() => http.post<OfferNegotiationPreview>(
+    `/offers/${offerId}/negotiation/preview`, input,
   ));
 }
 

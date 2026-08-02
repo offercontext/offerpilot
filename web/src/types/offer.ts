@@ -77,6 +77,24 @@ export interface OfferComparisonRead {
 
 export type OfferNegotiationProposalStatus = 'normal' | 'safe_empty';
 
+export interface OfferNegotiationSnapshot {
+  snapshot_version: 1;
+  offer_snapshot: {
+    company_name: string;
+    position_name: string;
+    status: OfferStatus;
+    base_monthly: number | null;
+    months_per_year: number | null;
+    signing_bonus: number | null;
+    equity: string | null;
+    perks: string | null;
+    deadline: string | null;
+    notes: string | null;
+    dimensions: Array<{ path_id: string; label: string; value_text: string | null }>;
+  };
+  user_brief: { goal: string; concerns: string; scenario: string };
+}
+
 export interface OfferNegotiationEvidenceRef {
   source: 'offer_snapshot' | 'user_brief';
   path: string;
@@ -104,6 +122,7 @@ export interface OfferNegotiationProposal {
     preparation_checks: OfferNegotiationBlock[];
   };
   source_fingerprint: string;
+  input_snapshot: OfferNegotiationSnapshot;
   source_changed: boolean;
   source_states: Record<string, unknown>;
   proposal_hash: string | null;
@@ -126,11 +145,17 @@ export interface OfferNegotiationInvalidated {
   source_fingerprint: string;
   source_changed: boolean;
   source_states: Record<string, unknown>;
+  input_snapshot: OfferNegotiationSnapshot;
   proposal?: null;
   proposal_hash?: null;
 }
 
 export type OfferNegotiationRead = OfferNegotiationProposal | OfferNegotiationPending | OfferNegotiationInvalidated;
+
+export interface OfferNegotiationPreview {
+  source_fingerprint: string;
+  snapshot: OfferNegotiationSnapshot;
+}
 
 export interface OfferNegotiationBrief {
   id: number;

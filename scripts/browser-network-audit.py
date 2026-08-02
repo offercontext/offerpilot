@@ -29,6 +29,7 @@ class BrowserAudit:
         self.handle: TextIO | None = None
         self.network_ready_targets: set[str] = set()
         self.request_records: dict[tuple[str, str], dict[str, object]] = {}
+        self.response_tasks: set[asyncio.Task[None]] = set()
 
     async def send(
         self,
@@ -64,7 +65,9 @@ class BrowserAudit:
                 elif message.get("method") == "Network.requestWillBeSent":
                     await self.record_request(message)
                 elif message.get("method") == "Network.responseReceived":
-                    await self.record_response(message)
+                    task = asyncio.create_task(self.record_response(message))
+                    self.response_tasks.add(task)
+                    task.add_done_callback(self.response_tasks.discard)
             if not self.stop_file.exists():
                 self.reader_error = RuntimeError("CDP connection closed before audit stop")
         except asyncio.CancelledError:
@@ -209,6 +212,13 @@ class BrowserAudit:
                     record["response_attempt_status"] = payload["attempt_status"]
                 if isinstance(payload.get("retry_after_ms"), int):
                     record["response_retry_after_ms"] = payload["retry_after_ms"]
+                if isinstance(payload.get("id"), int):
+                    record["response_proposal_id"] = payload["id"]
+                brief = payload.get("brief")
+                if isinstance(brief, dict) and isinstance(brief.get("proposal_id"), int):
+                    record["response_confirmed_proposal_id"] = brief["proposal_id"]
+                if isinstance(payload.get("proposal_id"), int):
+                    record["response_confirmed_proposal_id"] = payload["proposal_id"]
         except (RuntimeError, json.JSONDecodeError, TypeError):
             pass
         if self.handle is not None:
@@ -222,7 +232,7 @@ class BrowserAudit:
             }
             if isinstance(record.get("request_context"), dict):
                 response_record["request_context"] = record["request_context"]
-            for key in ("response_error_code", "response_attempt_status"):
+            for key in ("response_error_code", "response_attempt_status", "response_proposal_id", "response_confirmed_proposal_id"):
                 if key in record:
                     response_record[key] = record[key]
             if "response_retry_after_ms" in record:
@@ -275,6 +285,8 @@ class BrowserAudit:
                 if self.reader_error is not None:
                     raise self.reader_error
         finally:
+            if self.response_tasks:
+                await asyncio.gather(*self.response_tasks, return_exceptions=True)
             reader_task.cancel()
             await asyncio.gather(reader_task, return_exceptions=True)
 

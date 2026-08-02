@@ -187,6 +187,8 @@ function AppShellContent() {
   const [offerNegotiationEntryPoint, setOfferNegotiationEntryPoint] = useState<'ui' | 'pilot'>('ui');
   const offerNegotiationDraftsRef = useRef(new Map<number, OfferNegotiationDraft>());
   const [offerNegotiationDrafts, setOfferNegotiationDrafts] = useState<Record<number, OfferNegotiationDraft>>({});
+  const offerNegotiationPilotDraftsRef = useRef(new Map<number, OfferNegotiationDraft>());
+  const [offerNegotiationPilotDrafts, setOfferNegotiationPilotDrafts] = useState<Record<number, OfferNegotiationDraft>>({});
   const pilotApplicationContextRef = useRef(pilotApplicationContext);
   pilotApplicationContextRef.current = pilotApplicationContext;
   const [aiSettingsOpen, setAISettingsOpen] = useState(false);
@@ -701,9 +703,19 @@ function AppShellContent() {
 
   const handleOfferNegotiationDrawerDraftChange = useCallback((draft: OfferNegotiationDraft | null) => {
     if (offerNegotiationOffer) {
-      updateOfferNegotiationDraft(offerNegotiationOffer.id, draft);
+      if (draft) {
+        offerNegotiationPilotDraftsRef.current.set(offerNegotiationOffer.id, draft);
+        setOfferNegotiationPilotDrafts((current) => ({ ...current, [offerNegotiationOffer.id]: draft }));
+      } else {
+        offerNegotiationPilotDraftsRef.current.delete(offerNegotiationOffer.id);
+        setOfferNegotiationPilotDrafts((current) => {
+          const next = { ...current };
+          delete next[offerNegotiationOffer.id];
+          return next;
+        });
+      }
     }
-  }, [offerNegotiationOffer, updateOfferNegotiationDraft]);
+  }, [offerNegotiationOffer]);
 
   const updateMockInterviewDraft = (patch: Partial<MockInterviewDrawerDraft>) => {
     if (!mockInterviewContext || !mockInterviewDraft) return;
@@ -1310,11 +1322,13 @@ function AppShellContent() {
       ) : null}
       {offerNegotiationOffer ? (
         <OfferNegotiationDrawer
-          key={offerNegotiationOffer.id}
+          key={`${offerNegotiationEntryPoint}-${offerNegotiationOffer.id}`}
           open
           offer={offerNegotiationOffer}
           entrypoint={offerNegotiationEntryPoint}
-          draft={offerNegotiationDrafts[offerNegotiationOffer.id]}
+          draft={offerNegotiationEntryPoint === 'pilot'
+            ? offerNegotiationPilotDrafts[offerNegotiationOffer.id]
+            : offerNegotiationDrafts[offerNegotiationOffer.id]}
           onDraftChange={handleOfferNegotiationDrawerDraftChange}
           onClose={() => setOfferNegotiationOffer(null)}
         />

@@ -49,7 +49,20 @@ function Assert-ExitCode([string]$label) {
 function Get-ProviderEndpoint([string]$configPath) {
   if (-not (Test-Path -LiteralPath $configPath)) { throw 'Provider config is missing.' }
   $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
-  foreach ($provider in @($config.providers)) {
+  $providersById = @{}
+  foreach ($provider in @($config.providers)) { if ($provider.id) { $providersById[[string]$provider.id] = $provider } }
+  if ($providersById.Count -eq 0 -and $config.base_url) {
+    $legacyId = if ($config.active_provider_id) { [string]$config.active_provider_id } else { 'default' }
+    $providersById[$legacyId] = [pscustomobject]@{ id = $legacyId; enabled = $true; base_url = [string]$config.base_url }
+  }
+  $candidateIds = @()
+  if ($config.active_provider_id) { $candidateIds += [string]$config.active_provider_id }
+  if ($config.fallback_provider_ids) { $candidateIds += @($config.fallback_provider_ids | ForEach-Object { [string]$_ }) }
+  if ($config.fallback_provider_id) { $candidateIds += [string]$config.fallback_provider_id }
+  if ($candidateIds.Count -eq 0) { $candidateIds = @($providersById.Keys) }
+  foreach ($providerId in $candidateIds) {
+    if (-not $providersById.ContainsKey($providerId)) { continue }
+    $provider = $providersById[$providerId]
     if ($provider.enabled -and $provider.base_url) {
       $uri = [Uri]$provider.base_url
       $port = if ($uri.IsDefaultPort) { if ($uri.Scheme -eq 'https') { 443 } else { 80 } } else { $uri.Port }
@@ -93,7 +106,7 @@ function Read-BrowserRecords {
   return @(Get-Content -LiteralPath $browserAudit | ForEach-Object { $_ | ConvertFrom-Json })
 }
 
-function Assert-BrowserSequence([object[]]$records, [int]$expectedOfferId, [int]$expectedProposalId) {
+function Assert-BrowserSequence([object[]]$records, [int]$expectedOfferId, [int[]]$expectedProposalIds) {
   $localOrigin = [Uri]$baseUrl
   $bad = @($records | Where-Object {
     $uri = [Uri]$_.url
@@ -104,13 +117,25 @@ function Assert-BrowserSequence([object[]]$records, [int]$expectedOfferId, [int]
   $urls = @($records | ForEach-Object { [string]$_.url })
   if (-not ($urls | Where-Object { $_ -match '/api/offers/comparison([?]|$)' })) { throw 'Browser did not read the structured comparison.' }
   $offerProposalPath = "/api/offers/$expectedOfferId/negotiation/proposals"
-  $proposalPath = "/api/offer-negotiation/proposals/$expectedProposalId"
   $proposalRequests = @($records | Where-Object { $_.method -eq 'POST' -and $_.url -eq "$baseUrl$offerProposalPath" })
   $confirmRequests = @($records | Where-Object { $_.method -eq 'POST' -and $_.url -match "/api/offer-negotiation/proposals/[0-9]+/confirm$" })
-  $historyRequests = @($records | Where-Object { $_.method -eq 'GET' -and $_.url -eq "$baseUrl$proposalPath" -and [int]$_.response_status -eq 200 })
   if ($proposalRequests.Count -lt 2) { throw 'Browser did not complete both UI and Pilot Proposal flows.' }
   if ($confirmRequests.Count -lt 2) { throw 'Browser did not complete both UI and Pilot confirmation flows.' }
-  if ($historyRequests.Count -lt 2) { throw 'Browser did not reopen both UI and Pilot negotiation histories.' }
+  $historyRequests = @()
+  foreach ($proposalId in $expectedProposalIds) {
+    $matches = @($records | Where-Object { $_.method -eq 'GET' -and $_.url -eq "$baseUrl/api/offer-negotiation/proposals/$proposalId" -and [int]$_.response_status -eq 200 })
+    if ($matches.Count -lt 1) { throw "Browser did not reopen proposal $proposalId history." }
+    $historyRequests += $matches
+  }
+  if ($expectedProposalIds.Count -lt 2 -or (@($expectedProposalIds | Sort-Object -Unique).Count -ne $expectedProposalIds.Count)) { throw 'UI and Pilot did not produce distinct proposals.' }
+  foreach ($proposalId in $expectedProposalIds) {
+    if (-not ($records | Where-Object { $_.kind -eq 'browser_response' -and [int]$_.response_proposal_id -eq $proposalId })) {
+      throw "Browser did not receive proposal $proposalId from a generation response."
+    }
+    if (-not ($records | Where-Object { $_.kind -eq 'browser_response' -and [int]$_.response_confirmed_proposal_id -eq $proposalId })) {
+      throw "Browser did not confirm proposal $proposalId."
+    }
+  }
   $proposalKeys = @($proposalRequests | ForEach-Object { $_.request_context.idempotency_key_sha256 } | Where-Object { $_ }) | Sort-Object -Unique
   $confirmationKeys = @($confirmRequests | ForEach-Object { $_.request_context.confirmation_key_sha256 } | Where-Object { $_ }) | Sort-Object -Unique
   if ($proposalKeys.Count -lt 2 -or $confirmationKeys.Count -lt 2) { throw 'UI and Pilot flows did not use distinct idempotency contexts.' }
@@ -142,7 +167,8 @@ function Assert-DiagnosticContract([object[]]$entries, [object[]]$records) {
     $matched++
     $diagnostic = $message.Substring($diagnosticMarker.Length + 1) | ConvertFrom-Json
     foreach ($field in $diagnosticFields) {
-      if ($null -eq $diagnostic.$field) { throw "Offer diagnostic field $field is missing." }
+      if (-not ($diagnostic.PSObject.Properties.Name -contains $field)) { throw "Offer diagnostic field $field is missing." }
+      if ($field -ne 'http_status' -and $null -eq $diagnostic.$field) { throw "Offer diagnostic field $field is null." }
     }
     if ([string]$diagnostic.provider_request_id -and [string]$diagnostic.provider_request_id -match 'key|secret|token') { throw 'Provider diagnostic was not redacted.' }
   }
@@ -253,10 +279,10 @@ try {
   Assert-CountsUnchanged $baselineCounts (Get-DomainCounts)
   $historyRows = @(Invoke-RestMethod -Uri "$baseUrl/api/offers/$($offerIds[0])/negotiation/proposals")
   $confirmed = @($historyRows | Where-Object { $null -ne $_.brief })
-  if ($confirmed.Count -eq 0) { throw 'No confirmed negotiation Brief was found.' }
-  $confirmedProposalId = [int]$confirmed[0].id
+  if ($confirmed.Count -lt 2) { throw 'Both UI and Pilot negotiation Briefs are required.' }
+  $confirmedProposalIds = @($confirmed | ForEach-Object { [int]$_.id })
   $records = Read-BrowserRecords
-  Assert-BrowserSequence $records $offerIds[0] $confirmedProposalId
+  Assert-BrowserSequence $records $offerIds[0] $confirmedProposalIds
   Assert-NegotiationErrorSemantics $records
   $currentOffer = Invoke-RestMethod -Uri "$baseUrl/api/offers/$($offerIds[0])"
   $editBody = @{
@@ -273,7 +299,7 @@ try {
     status = $currentOffer.status
   } | ConvertTo-Json
   Invoke-RestMethod -Method Put -Uri "$baseUrl/api/offers/$($offerIds[0])" -ContentType 'application/json' -Body $editBody | Out-Null
-  $changedHistory = Invoke-RestMethod -Uri "$baseUrl/api/offer-negotiation/proposals/$confirmedProposalId"
+  $changedHistory = Invoke-RestMethod -Uri "$baseUrl/api/offer-negotiation/proposals/$($confirmedProposalIds[0])"
   if (-not $changedHistory.source_changed) { throw 'History did not expose source_changed after Offer edit.' }
   $logEntries = @(Invoke-RestMethod -Uri "$baseUrl/api/logs?limit=200").entries
   Assert-DiagnosticContract $logEntries $records

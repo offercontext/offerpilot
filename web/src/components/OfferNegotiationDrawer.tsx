@@ -2,13 +2,14 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   confirmOfferNegotiationProposal,
   createOfferNegotiationProposal,
+  previewOfferNegotiation,
   getOfferNegotiationProposal,
   listOfferNegotiationProposals,
   listOfferComparisonDimensions,
   listOfferComparisonValues,
   OfferNegotiationError,
 } from '@/services/offers';
-import type { Offer, OfferComparisonDimension, OfferNegotiationBlock, OfferNegotiationProposal, OfferNegotiationPending } from '@/types/offer';
+import type { Offer, OfferComparisonDimension, OfferNegotiationBlock, OfferNegotiationProposal, OfferNegotiationPending, OfferNegotiationPreview, OfferNegotiationSnapshot } from '@/types/offer';
 
 interface Props {
   open: boolean;
@@ -32,6 +33,9 @@ export interface OfferNegotiationDraft {
   selectedBlocks: string[];
   edits: Record<string, string>;
   dimensionIds: number[];
+  sourceFingerprint: string | null;
+  previewSnapshot: OfferNegotiationSnapshot | null;
+  previewInputKey: string | null;
 }
 
 type BlockField = 'communication_goals' | 'clarification_questions' | 'talking_points' | 'preparation_checks';
@@ -75,6 +79,12 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
   const [selectedBlocks, setSelectedBlocks] = useState<string[]>(draft?.selectedBlocks ?? []);
   const [edits, setEdits] = useState<Record<string, string>>(draft?.edits ?? {});
   const [frozenDimensionIds] = useState<number[]>(() => [...(draft?.dimensionIds ?? dimensionIds)]);
+  const [frozenPreview, setFrozenPreview] = useState<OfferNegotiationPreview | null>(() => (
+    draft?.sourceFingerprint && draft.previewSnapshot
+      ? { source_fingerprint: draft.sourceFingerprint, snapshot: draft.previewSnapshot }
+      : null
+  ));
+  const [previewInputKey, setPreviewInputKey] = useState<string | null>(draft?.previewInputKey ?? null);
   const [dimensionFacts, setDimensionFacts] = useState<Array<OfferComparisonDimension & { value_text: string | null }>>([]);
   const [dimensionFactsState, setDimensionFactsState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [busy, setBusy] = useState(false);
@@ -131,12 +141,15 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
       selectedBlocks,
       edits,
       dimensionIds: frozenDimensionIds,
+      sourceFingerprint: frozenPreview?.source_fingerprint ?? null,
+      previewSnapshot: frozenPreview?.snapshot ?? null,
+      previewInputKey,
     };
     const serialized = JSON.stringify(nextDraft);
     if (serialized === lastPersistedDraft.current) return;
     lastPersistedDraft.current = serialized;
     onDraftChange(nextDraft);
-  }, [attemptKey, confirmationKey, concerns, draft?.proposalId, edits, frozenDimensionIds, goal, onDraftChange, open, pendingOperation, proposal, resultUnknown, scenario, selectedBlocks]);
+  }, [attemptKey, confirmationKey, concerns, edits, frozenDimensionIds, frozenPreview, goal, onDraftChange, open, pendingOperation, previewInputKey, proposal, resultUnknown, scenario, selectedBlocks]);
 
   const blocks = useMemo(() => {
     if (!proposal) return [];
@@ -151,18 +164,43 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
     && frozenDimensionIds.every((id) => dimensionFacts.some((dimension) => dimension.id === id))
   );
 
+  const currentInputKey = JSON.stringify({
+    dimension_ids: [...frozenDimensionIds].sort((a, b) => a - b),
+    goal,
+    concerns,
+    scenario,
+  });
+  const activePreview = frozenPreview && previewInputKey === currentInputKey ? frozenPreview : null;
+  const frozenOffer = proposal?.input_snapshot.offer_snapshot ?? activePreview?.snapshot.offer_snapshot;
+
   const generate = async (fromRetry = false) => {
     if ((frozen && !fromRetry) || !goal.trim() || !concerns.trim() || !scenario.trim()) return;
-    if (!window.confirm('本次填写的目标、顾虑和沟通场景将发送给 AI，是否继续？')) return;
-    setBusy(true);
     setError(null);
     try {
+      let preview = frozenPreview;
+      if (!fromRetry && (!preview || previewInputKey !== currentInputKey)) {
+        setBusy(true);
+        preview = await previewOfferNegotiation(offer.id, {
+          dimension_ids: [...frozenDimensionIds].sort((a, b) => a - b),
+          goal,
+          concerns,
+          scenario,
+        });
+        setFrozenPreview(preview);
+        setPreviewInputKey(currentInputKey);
+        setError('已读取本次将发送给 AI 的冻结快照，请核对后再次点击生成。');
+        return;
+      }
+      if (!preview) return;
+      if (!window.confirm('本次填写的目标、顾虑和沟通场景将发送给 AI，是否继续？')) return;
+      setBusy(true);
       const result = await createOfferNegotiationProposal(offer.id, {
         idempotency_key: attemptKey,
         dimension_ids: [...frozenDimensionIds].sort((a, b) => a - b),
         goal,
         concerns,
         scenario,
+        source_fingerprint: preview.source_fingerprint,
       }, entrypoint);
       if (isPending(result)) {
         setResultUnknown(true);
@@ -176,6 +214,8 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
         setPendingOperation(null);
         setAttemptKey(newKey('offer-negotiation'));
         setConfirmationKey(newKey('offer-negotiation-confirm'));
+        setFrozenPreview(null);
+        setPreviewInputKey(null);
         suppressDraftPersistence.current = true;
         onDraftChange?.(null);
       }
@@ -195,6 +235,8 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
         setResultUnknown(false);
         setPendingOperation(null);
         setAttemptKey(newKey('offer-negotiation'));
+        setFrozenPreview(null);
+        setPreviewInputKey(null);
       }
       setError(safeError(caught));
     } finally {
@@ -258,21 +300,25 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
       )}
       <section aria-label="AI input facts" data-testid="offer-negotiation-input-facts">
         <h3>本次将使用的 Offer 事实</h3>
+        <p>{proposal?.input_snapshot || activePreview ? '以下为本次冻结输入' : '当前 Offer 事实，尚未冻结'}</p>
         <dl>
-          <div><dt>公司</dt><dd>{offer.company_name}</dd></div>
-          <div><dt>职位</dt><dd>{offer.position_name}</dd></div>
-          <div><dt>状态</dt><dd>{offer.status}</dd></div>
-          <div><dt>月薪</dt><dd>{offer.base_monthly}</dd></div>
-          <div><dt>计薪月数</dt><dd>{offer.months_per_year}</dd></div>
-          <div><dt>签字费</dt><dd>{offer.signing_bonus}</dd></div>
-          <div><dt>股权</dt><dd>{offer.equity || '尚未填写'}</dd></div>
-          <div><dt>福利</dt><dd>{offer.perks || '尚未填写'}</dd></div>
-          <div><dt>截止时间</dt><dd>{offer.deadline || '尚未填写'}</dd></div>
-          <div><dt>备注</dt><dd>{offer.notes || '尚未填写'}</dd></div>
+          <div><dt>公司</dt><dd>{proposal?.input_snapshot.offer_snapshot.company_name ?? activePreview?.snapshot.offer_snapshot.company_name ?? offer.company_name}</dd></div>
+          <div><dt>职位</dt><dd>{proposal?.input_snapshot.offer_snapshot.position_name ?? activePreview?.snapshot.offer_snapshot.position_name ?? offer.position_name}</dd></div>
+          <div><dt>状态</dt><dd>{proposal?.input_snapshot.offer_snapshot.status ?? activePreview?.snapshot.offer_snapshot.status ?? offer.status}</dd></div>
+          <div><dt>月薪</dt><dd>{proposal?.input_snapshot.offer_snapshot.base_monthly ?? activePreview?.snapshot.offer_snapshot.base_monthly ?? offer.base_monthly}</dd></div>
+          <div><dt>计薪月数</dt><dd>{proposal?.input_snapshot.offer_snapshot.months_per_year ?? activePreview?.snapshot.offer_snapshot.months_per_year ?? offer.months_per_year}</dd></div>
+          <div><dt>签字费</dt><dd>{proposal?.input_snapshot.offer_snapshot.signing_bonus ?? activePreview?.snapshot.offer_snapshot.signing_bonus ?? offer.signing_bonus}</dd></div>
+          <div><dt>股权</dt><dd>{(frozenOffer?.equity ?? offer.equity) || '尚未填写'}</dd></div>
+          <div><dt>福利</dt><dd>{(frozenOffer?.perks ?? offer.perks) || '尚未填写'}</dd></div>
+          <div><dt>截止时间</dt><dd>{(frozenOffer?.deadline ?? offer.deadline) || '尚未填写'}</dd></div>
+          <div><dt>备注</dt><dd>{(frozenOffer?.notes ?? offer.notes) || '尚未填写'}</dd></div>
         </dl>
         {frozenDimensionIds.length > 0 && (
           <ul>
-            {frozenDimensionIds.map((id) => {
+            {(proposal?.input_snapshot.offer_snapshot.dimensions ?? activePreview?.snapshot.offer_snapshot.dimensions ?? []).map((dimension) => (
+              <li key={dimension.path_id}>{dimension.label}：{dimension.value_text?.trim() ? dimension.value_text : '尚未填写'}</li>
+            ))}
+            {!proposal && !activePreview && frozenDimensionIds.map((id) => {
               const dimension = dimensionFacts.find((item) => item.id === id);
               return <li key={id}>{dimension?.label ?? `维度 ${id}`}：{dimension?.value_text?.trim() ? dimension.value_text : '尚未填写'}</li>;
             })}
@@ -290,7 +336,7 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
             onClick={() => void generate()}
             disabled={frozen || !dimensionFactsReady || !goal.trim() || !concerns.trim() || !scenario.trim()}
           >
-            生成谈薪准备草稿
+            {activePreview ? '确认快照并生成谈薪准备草稿' : '预览本次 AI 输入'}
           </button>
         </fieldset>
       )}

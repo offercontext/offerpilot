@@ -98,6 +98,14 @@ def test_snapshot_uses_versioned_offer_fields_without_assessment() -> None:
     assert "assessment" not in snapshot["offer_snapshot"]
 
 
+def test_provider_projection_omits_missing_dimension_label_and_value() -> None:
+    model = FakeModel([json.dumps(_valid_payload(), ensure_ascii=False)])
+    generate_offer_negotiation_proposal(model, _snapshot())
+    prompt = "\n".join(message.content for message in model.calls[0][0])
+    assert '"value_text":null' not in prompt
+    assert '"label":"鎴愰暱绌洪棿"' not in prompt
+
+
 @pytest.mark.parametrize(
     ("source", "path", "excerpt"),
     [

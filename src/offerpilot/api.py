@@ -2642,6 +2642,29 @@ def create_app(
             return error_response(exc.status_code, exc.message, code=exc.code)
         return JSONResponse(payload)
 
+    @app.post("/api/offers/{offer_id}/negotiation/preview")
+    def preview_offer_negotiation(
+        offer_id: int, payload: dict[str, Any] = Body(...)
+    ) -> JSONResponse:
+        allowed = {"dimension_ids", "goal", "concerns", "scenario"}
+        if set(payload) != allowed:
+            return error_response(422, "璋堣柂鍑嗗杈撳叆鏃犳晥", code="offer_negotiation_invalid_request")
+        brief = {field: payload.get(field, "") for field in ("goal", "concerns", "scenario")}
+        dimension_ids = payload.get("dimension_ids")
+        if any(not isinstance(value, str) or not value.strip() for value in brief.values()):
+            return error_response(422, "璋堣柂鍑嗗杈撳叆鏃犳晥", code="offer_negotiation_invalid_request")
+        if not isinstance(dimension_ids, list):
+            return error_response(422, "姣旇緝缁村害閫夋嫨鏃犳晥", code="offer_negotiation_invalid_request")
+        try:
+            snapshot, fingerprint = offer_negotiation.preview(
+                offer_id=offer_id,
+                dimension_ids=dimension_ids,
+                user_brief=brief,
+            )
+        except OfferNegotiationError as exc:
+            return error_response(exc.status_code, "璋堣柂鍑嗗璇锋眰鏈畬鎴?", code=exc.code)
+        return JSONResponse({"source_fingerprint": fingerprint, "snapshot": snapshot})
+
     @app.post("/api/offers/{offer_id}/negotiation/proposals")
     def create_offer_negotiation_proposal(
         offer_id: int, payload: dict[str, Any] = Body(...)
@@ -2673,9 +2696,11 @@ def create_app(
                 )
             return None
 
-        allowed = {"idempotency_key", "dimension_ids", "goal", "concerns", "scenario"}
-        if set(payload) - allowed or not {"idempotency_key", "dimension_ids", "goal", "concerns", "scenario"}.issubset(payload):
+        allowed = {"idempotency_key", "dimension_ids", "goal", "concerns", "scenario", "source_fingerprint"}
+        if set(payload) - allowed or not allowed.issubset(payload):
             return error_response(422, "谈薪准备输入无效", code="offer_negotiation_invalid_request")
+        if not isinstance(payload.get("source_fingerprint"), str) or not re.fullmatch(r"[0-9a-f]{64}", payload["source_fingerprint"]):
+            return error_response(422, "谈薪准备快照无效", code="offer_negotiation_invalid_request")
         dimension_ids = payload.get("dimension_ids", [])
         brief = {
             field: payload.get(field, "")
@@ -2693,6 +2718,7 @@ def create_app(
                 dimension_ids=dimension_ids,
                 user_brief=brief,
                 idempotency_key=payload.get("idempotency_key", ""),
+                expected_source_fingerprint=payload.get("source_fingerprint"),
             )
         except OfferNegotiationError as exc:
             return error_response(exc.status_code, "谈薪准备请求未完成", code=exc.code)
@@ -7520,6 +7546,8 @@ def _offer_negotiation_json(
         "source_states": json.loads(row.source_states_json or "{}"),
         "source_changed": True if repository is None else _offer_negotiation_source_changed(row, offer, repository),
     }
+    if row.input_snapshot_json:
+        payload["input_snapshot"] = json.loads(row.input_snapshot_json)
     if row.proposal_json is not None:
         proposal = json.loads(row.proposal_json)
         payload["proposal_status"] = proposal.get("proposal_status")

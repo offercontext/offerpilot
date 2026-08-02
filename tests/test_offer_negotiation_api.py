@@ -33,6 +33,16 @@ class ProviderTimeoutError(TimeoutError):
     provider_request_id = "provider-timeout-secret"
 
 
+class NestedProviderError(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__("provider failed")
+        self.diagnostic = {
+            "provider_request_id": "nested-provider-secret",
+            "http_status": 503,
+            "timeout": True,
+        }
+
+
 def _offer(client: TestClient) -> dict:
     response = client.post(
         "/api/offers",
@@ -64,7 +74,7 @@ def _payload() -> dict:
                 **item,
                 "id": "question-1",
                 "evidence_refs": [
-                    {"source": "user_brief", "path": "/user_brief/goal", "excerpt": "争取入职时间"}
+                    {"source": "user_brief", "path": "/user_brief/goal", "excerpt": "goal"}
                 ],
             }
         ],
@@ -82,14 +92,19 @@ def _payload() -> dict:
 
 
 def _request(client: TestClient, key: str = "A" * 16) -> object:
+    preview_payload = {
+        "dimension_ids": [],
+        "goal": "goal",
+        "concerns": "concerns",
+        "scenario": "scenario",
+    }
+    preview_fingerprint = client.post("/api/offers/1/negotiation/preview", json=preview_payload).json()["source_fingerprint"]
     return client.post(
         "/api/offers/1/negotiation/proposals",
         json={
             "idempotency_key": key,
-            "dimension_ids": [],
-            "goal": "争取入职时间",
-            "concerns": "通勤",
-            "scenario": "电话沟通",
+            "source_fingerprint": preview_fingerprint,
+            **preview_payload,
         },
     )
 
@@ -102,7 +117,8 @@ def test_generation_replay_is_immutable_and_payload_has_no_database_ids(tmp_path
     assert response.status_code == 201
     body = response.json()
     assert body["proposal_status"] == "normal"
-    assert "input_snapshot" not in body
+    assert body["input_snapshot"]["snapshot_version"] == 1
+    assert body["input_snapshot"]["offer_snapshot"]["company_name"] == "星云数据"
     assert '"id":' not in model.calls[0][0][1].content
 
     replay = _request(client)
@@ -223,6 +239,43 @@ def test_provider_diagnostic_marks_timeout_without_status(tmp_path) -> None:
     assert "provider-timeout-secret" not in failure
 
 
+def test_provider_diagnostic_reads_nested_provider_diagnostic(tmp_path) -> None:
+    model = FakeModel(error=NestedProviderError())
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    _offer(client)
+    response = _request(client, "U" * 16)
+    assert response.status_code == 502
+    entries = client.get("/api/logs?limit=50").json()["entries"]
+    failure = next(entry["message"] for entry in entries if entry["message"].startswith("offer_negotiation_diagnostic "))
+    assert '"http_status":503' in failure
+    assert '"timeout":true' in failure
+    assert "nested-provider-secret" not in failure
+    assert "request-redacted-" in failure
+
+
+def test_generation_rejects_stale_preview_fingerprint_before_provider(tmp_path) -> None:
+    model = FakeModel([json.dumps(_payload(), ensure_ascii=False)])
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    offer = _offer(client)
+    brief = {"goal": "浜夊彇鍏ヨ亴鏃堕棿", "concerns": "閫氬嫟", "scenario": "鐢佃瘽娌熼€?"}
+    preview = client.post(
+        f"/api/offers/{offer['id']}/negotiation/preview",
+        json={"dimension_ids": [], **brief},
+    )
+    assert preview.status_code == 200
+    client.put(
+        f"/api/offers/{offer['id']}",
+        json={"company_name": offer["company_name"], "position_name": offer["position_name"], "base_monthly": 29000},
+    )
+    response = client.post(
+        f"/api/offers/{offer['id']}/negotiation/proposals",
+        json={"idempotency_key": "V" * 16, "dimension_ids": [], **brief, "source_fingerprint": preview.json()["source_fingerprint"]},
+    )
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "offer_negotiation_source_changed"
+    assert model.calls == []
+
+
 def test_history_is_readable_after_offer_delete(tmp_path) -> None:
     model = FakeModel([json.dumps(_payload(), ensure_ascii=False)])
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
@@ -251,10 +304,14 @@ def test_dimension_value_change_marks_history_source_changed(tmp_path) -> None:
         f"/api/offers/{offer['id']}/negotiation/proposals",
         json={
             "idempotency_key": "J" * 16,
+            "source_fingerprint": client.post(
+                f"/api/offers/{offer['id']}/negotiation/preview",
+                json={"dimension_ids": [dimension["id"]], "goal": "goal", "concerns": "concerns", "scenario": "scenario"},
+            ).json()["source_fingerprint"],
             "dimension_ids": [dimension["id"]],
-            "goal": "争取入职时间",
-            "concerns": "通勤",
-            "scenario": "电话沟通",
+            "goal": "goal",
+            "concerns": "concerns",
+            "scenario": "scenario",
         },
     )
     assert generated.status_code == 201

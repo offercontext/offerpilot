@@ -92,6 +92,7 @@ class OfferNegotiationRepository:
         dimension_ids: list[int],
         user_brief: dict[str, str],
         idempotency_key: str,
+        expected_source_fingerprint: str | None = None,
     ) -> OfferNegotiationGenerationResult:
         self._validate_key(idempotency_key)
         with self._session_factory() as session:
@@ -101,6 +102,8 @@ class OfferNegotiationRepository:
                 raise OfferNegotiationNotFoundError("offer is not visible")
             snapshot = self._build_snapshot(session, offer, dimension_ids, user_brief)
             fingerprint = sha256_text(canonical_json(snapshot))
+            if expected_source_fingerprint is not None and expected_source_fingerprint != fingerprint:
+                raise OfferNegotiationConflictError("offer source changed", "offer_negotiation_source_changed")
             existing = session.scalar(
                 select(OfferNegotiationProposal).where(
                     OfferNegotiationProposal.offer_id == offer_id,
@@ -149,6 +152,21 @@ class OfferNegotiationRepository:
             result = self._existing_result(existing, snapshot, fingerprint, session)
             session.commit()
             return result
+
+    def preview(
+        self,
+        *,
+        offer_id: int,
+        dimension_ids: list[int],
+        user_brief: dict[str, str],
+    ) -> tuple[dict[str, Any], str]:
+        """Read and hash the exact generation input without creating an Attempt."""
+        with self._session_factory() as session:
+            offer = session.get(Offer, offer_id)
+            if offer is None:
+                raise OfferNegotiationNotFoundError("offer is not visible")
+            snapshot = self._build_snapshot(session, offer, dimension_ids, user_brief)
+            return snapshot, sha256_text(canonical_json(snapshot))
 
     def complete_ready(
         self,

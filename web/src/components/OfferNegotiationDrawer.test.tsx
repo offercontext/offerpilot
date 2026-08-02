@@ -3,15 +3,16 @@ import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import OfferNegotiationDrawer, { type OfferNegotiationDraft } from './OfferNegotiationDrawer';
-import type { Offer, OfferNegotiationProposal } from '@/types/offer';
+import type { Offer, OfferNegotiationProposal, OfferNegotiationPreview } from '@/types/offer';
 import { OfferNegotiationError } from '@/services/offers';
 
 const service = vi.hoisted(() => ({
   create: vi.fn(),
-  list: vi.fn(async () => []),
-  dimensions: vi.fn(async () => []),
+  list: vi.fn(async (): Promise<any[]> => []),
+  dimensions: vi.fn(async (): Promise<any[]> => []),
   values: vi.fn(async () => []),
   confirm: vi.fn(),
+  preview: vi.fn(),
 }));
 
 vi.mock('@/services/offers', () => ({
@@ -20,6 +21,7 @@ vi.mock('@/services/offers', () => ({
   listOfferComparisonDimensions: service.dimensions,
   listOfferComparisonValues: service.values,
   confirmOfferNegotiationProposal: service.confirm,
+  previewOfferNegotiation: service.preview,
   OfferNegotiationError: class OfferNegotiationError extends Error {
     constructor(public status: number, public code: string | null) { super(code ?? 'error'); }
   },
@@ -40,6 +42,20 @@ const proposal = (): OfferNegotiationProposal => ({
     communication_goals: [{ id: 'goal-1', text: 'Goal', rationale: 'Offer', evidence_refs: [{ source: 'offer_snapshot', path: '/offer_snapshot/company_name', excerpt: 'Company' }] }],
     clarification_questions: [], talking_points: [], preparation_checks: [],
   },
+  input_snapshot: {
+    snapshot_version: 1,
+    offer_snapshot: {
+      company_name: 'Company', position_name: 'Engineer', status: 'pending',
+      base_monthly: 28000, months_per_year: 12, signing_bonus: 0,
+      equity: '', perks: '', deadline: '', notes: '', dimensions: [],
+    },
+    user_brief: { goal: 'Goal', concerns: 'Concern', scenario: 'Call' },
+  },
+});
+
+const preview = (): OfferNegotiationPreview => ({
+  source_fingerprint: 'fingerprint',
+  snapshot: proposal().input_snapshot,
 });
 
 function changeValue(control: HTMLInputElement | HTMLTextAreaElement, value: string) {
@@ -56,6 +72,8 @@ describe('OfferNegotiationDrawer', () => {
   beforeEach(() => {
     service.create.mockReset();
     service.confirm.mockReset();
+    service.preview.mockReset();
+    service.preview.mockResolvedValue(preview());
     service.list.mockResolvedValue([]);
     vi.stubGlobal('confirm', vi.fn(() => true));
     host = document.createElement('div');
@@ -116,6 +134,8 @@ describe('OfferNegotiationDrawer', () => {
       changeValue(inputs[1] as HTMLInputElement, 'Call');
       host?.querySelector<HTMLButtonElement>('[data-testid="offer-negotiation-generate"]')?.click();
     });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => { host?.querySelector<HTMLButtonElement>('[data-testid="offer-negotiation-generate"]')?.click(); });
     expect(service.create.mock.calls[0][1].dimension_ids).toEqual([3, 9]);
   });
 
@@ -140,6 +160,28 @@ describe('OfferNegotiationDrawer', () => {
     expect(host?.querySelector('[data-testid="offer-negotiation-input-facts"]')?.textContent).toContain('用户备注');
   });
 
+  it('renders history from the proposal snapshot rather than the current Offer', async () => {
+    service.list.mockResolvedValue([proposal()]);
+    await act(async () => {
+      root?.render(
+        <OfferNegotiationDrawer
+          open
+          offer={{ ...offer, company_name: 'Current company', equity: 'Current equity', perks: 'Current perks', deadline: 'Current deadline', notes: 'Current notes' }}
+          onClose={vi.fn()}
+        />,
+      );
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => { host?.querySelector<HTMLButtonElement>('section[aria-label="历史谈薪准备"] button')?.click(); });
+    const facts = host?.querySelector('[data-testid="offer-negotiation-input-facts"]')?.textContent ?? '';
+    expect(facts).toContain('Company');
+    expect(facts).not.toContain('Current company');
+    expect(facts).not.toContain('Current equity');
+    expect(facts).not.toContain('Current perks');
+    expect(facts).not.toContain('Current deadline');
+    expect(facts).not.toContain('Current notes');
+  });
+
   it('generates an editable evidence-backed draft and confirms selected blocks', async () => {
     service.create.mockResolvedValue(proposal());
     service.confirm.mockResolvedValue({
@@ -159,6 +201,8 @@ describe('OfferNegotiationDrawer', () => {
       changeValue(textareas[0] as HTMLTextAreaElement, 'Concern');
       changeValue(inputs[1] as HTMLInputElement, 'Call');
     });
+    await act(async () => { host?.querySelector<HTMLButtonElement>('[data-testid="offer-negotiation-generate"]')?.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     await act(async () => { host?.querySelector<HTMLButtonElement>('[data-testid="offer-negotiation-generate"]')?.click(); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     const checkbox = host?.querySelector('article input[type="checkbox"]') as HTMLInputElement;
@@ -184,6 +228,8 @@ describe('OfferNegotiationDrawer', () => {
       changeValue(inputs[1] as HTMLInputElement, 'Call');
       host?.querySelector<HTMLButtonElement>('[data-testid="offer-negotiation-generate"]')?.click();
     });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => { host?.querySelector<HTMLButtonElement>('[data-testid="offer-negotiation-generate"]')?.click(); });
     expect(service.create.mock.calls[0][2]).toBe('pilot');
   });
 
@@ -200,6 +246,8 @@ describe('OfferNegotiationDrawer', () => {
       changeValue(textareas[0] as HTMLTextAreaElement, 'Concern');
       changeValue(inputs[1] as HTMLInputElement, 'Call');
     });
+    await act(async () => { host?.querySelector<HTMLButtonElement>('[data-testid="offer-negotiation-generate"]')?.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     await act(async () => { host?.querySelector<HTMLButtonElement>('[data-testid="offer-negotiation-generate"]')?.click(); });
     expect(host?.querySelector('fieldset')?.hasAttribute('disabled')).toBe(true);
     expect(service.create).toHaveBeenCalledTimes(1);
