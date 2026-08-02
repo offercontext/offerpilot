@@ -1151,6 +1151,7 @@ function AppShellContent() {
                 onAttachmentKeyChange={syncPilotAttachmentKey}
                 onOpenEvidence={openEvidence}
                 onPrepareOfferNegotiation={openOfferNegotiation}
+                offers={ofrs}
               />
             </div>
           )}
@@ -1217,6 +1218,7 @@ function AppShellContent() {
             onAttachmentKeyChange={syncPilotAttachmentKey}
             onOpenEvidence={openEvidence}
             onPrepareOfferNegotiation={openOfferNegotiation}
+            offers={ofrs}
           />
         </aside>
       )}
@@ -1262,6 +1264,7 @@ function AppShellContent() {
           onAttachmentKeyChange={syncPilotAttachmentKey}
           onOpenEvidence={openEvidence}
           onPrepareOfferNegotiation={openOfferNegotiation}
+          offers={ofrs}
         />
       )}
       {mockInterviewContext && mockInterviewDraft ? (

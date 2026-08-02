@@ -117,6 +117,33 @@ def test_lease_claim_and_cas_completion(tmp_path) -> None:
     assert replay.should_call is False
 
 
+def test_late_provider_error_after_ready_does_not_change_ready_state(tmp_path) -> None:
+    factory, repository, offer_id, first_id, _, = _repo(tmp_path)
+    claimed = repository.prepare_or_replay(
+        offer_id=offer_id,
+        dimension_ids=[first_id],
+        user_brief={"goal": "目标", "concerns": "", "scenario": "电话"},
+        idempotency_key="L" * 16,
+    )
+    repository.complete_ready(
+        proposal_id=claimed.proposal.id,
+        revision=claimed.revision,
+        provider_call_token=claimed.owner_token,
+        proposal={"proposal_status": "safe_empty", "communication_goals": [], "clarification_questions": [], "talking_points": [], "preparation_checks": []},
+        proposal_hash="hash",
+    )
+    row = repository.mark_provider_unknown(
+        proposal_id=claimed.proposal.id,
+        revision=claimed.revision,
+        provider_call_token=claimed.owner_token,
+    )
+    assert row.attempt_status == "ready"
+    with factory() as session:
+        persisted = session.get(OfferNegotiationProposal, claimed.proposal.id)
+        assert persisted is not None
+        assert persisted.attempt_status == "ready"
+
+
 def test_provider_unknown_is_pending_until_lease_expiry(tmp_path) -> None:
     _, repository, offer_id, first_id, _, = _repo(tmp_path)
     claimed = repository.prepare_or_replay(

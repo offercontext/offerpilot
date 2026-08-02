@@ -134,7 +134,9 @@ class OfferNegotiationRepository:
                     )
                     if existing is None:
                         raise
-                    return self._existing_result(existing, snapshot, fingerprint, session)
+                    result = self._existing_result(existing, snapshot, fingerprint, session)
+                    session.commit()
+                    return result
                 session.refresh(row)
                 return OfferNegotiationGenerationResult(
                     row, snapshot, fingerprint, True, False, True, row.revision, token
@@ -204,6 +206,15 @@ class OfferNegotiationRepository:
     def get(self, proposal_id: int) -> OfferNegotiationProposal | None:
         with self._session_factory() as session:
             return session.get(OfferNegotiationProposal, proposal_id)
+
+    def source_matches(self, proposal_id: int, offer: Offer | None) -> bool:
+        if offer is None:
+            return False
+        with self._session_factory() as session:
+            row = session.get(OfferNegotiationProposal, proposal_id)
+            if row is None:
+                return False
+            return self._offer_snapshot_matches(session, row, offer)
 
     def confirm_proposal(
         self,

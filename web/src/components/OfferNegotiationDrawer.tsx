@@ -146,7 +146,14 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
       }
     } catch (caught) {
       const known = caught instanceof OfferNegotiationError;
-      if (known && (caught.code === 'offer_negotiation_provider_error' || caught.status === 0)) {
+      if (
+        known &&
+        (
+          caught.code === 'offer_negotiation_provider_error' ||
+          caught.status === 0 ||
+          (caught.status >= 500 && caught.status <= 599 && caught.code == null)
+        )
+      ) {
         setResultUnknown(true);
         setPendingOperation('generate');
       } else {
@@ -213,7 +220,12 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
           <label>本次沟通目标<input value={goal} onChange={(event) => setGoal(event.target.value)} /></label>
           <label>顾虑<textarea value={concerns} onChange={(event) => setConcerns(event.target.value)} /></label>
           <label>沟通场景<input value={scenario} onChange={(event) => setScenario(event.target.value)} /></label>
-          <button type="button" onClick={() => void generate()} disabled={frozen || !goal.trim() || !scenario.trim()}>
+          <button
+            type="button"
+            data-testid="offer-negotiation-generate"
+            onClick={() => void generate()}
+            disabled={frozen || !goal.trim() || !scenario.trim()}
+          >
             生成谈薪准备草稿
           </button>
         </fieldset>
@@ -255,7 +267,7 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
             </section>
           ))}
           {proposal.proposal_status !== 'safe_empty' && !hasBrief && !proposal.source_changed && (
-            <button type="button" onClick={() => void confirm()} disabled={frozen || selectedBlocks.length === 0}>确认保存谈薪准备</button>
+            <button type="button" data-testid="offer-negotiation-confirm" onClick={() => void confirm()} disabled={frozen || selectedBlocks.length === 0}>确认保存谈薪准备</button>
           )}
           {hasBrief && <p>已确认保存，可在历史记录中只读查看。</p>}
         </div>

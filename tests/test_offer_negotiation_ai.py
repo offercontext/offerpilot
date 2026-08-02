@@ -143,3 +143,14 @@ def test_safe_empty_repair_emits_only_redacted_diagnostic() -> None:
     assert diagnostics[0]["repair_attempted"] is True
     assert diagnostics[0]["repair_count"] == 1
     assert diagnostics[0]["provider_request_id"].startswith("request-redacted-")
+
+
+def test_generation_prompt_contains_stable_evidence_catalog_without_database_ids() -> None:
+    model = FakeModel([json.dumps(_valid_payload(), ensure_ascii=False)])
+    generate_offer_negotiation_proposal(model, _snapshot())
+    system_prompt = model.calls[0][0][0].content
+    assert '"source":"offer_snapshot"' in system_prompt
+    assert '"path":"/offer_snapshot/company_name"' in system_prompt
+    assert '"path":"/user_brief/goal"' in system_prompt
+    catalog_text = system_prompt.split("evidence_catalog", 1)[1]
+    assert '"id":' not in catalog_text

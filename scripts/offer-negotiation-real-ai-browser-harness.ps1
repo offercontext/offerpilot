@@ -86,7 +86,7 @@ function Read-BrowserRecords {
   return @(Get-Content -LiteralPath $browserAudit | ForEach-Object { $_ | ConvertFrom-Json })
 }
 
-function Assert-BrowserSequence([object[]]$records) {
+function Assert-BrowserSequence([object[]]$records, [int]$expectedOfferId, [int]$expectedProposalId) {
   $localOrigin = [Uri]$baseUrl
   $bad = @($records | Where-Object {
     $uri = [Uri]$_.url
@@ -96,9 +96,11 @@ function Assert-BrowserSequence([object[]]$records) {
 
   $urls = @($records | ForEach-Object { [string]$_.url })
   if (-not ($urls | Where-Object { $_ -match '/api/offers/comparison([?]|$)' })) { throw 'Browser did not read the structured comparison.' }
-  if (-not ($records | Where-Object { $_.method -eq 'POST' -and $_.url -match '/api/offers/[0-9]+/negotiation/proposals$' })) { throw 'Browser did not generate a Proposal.' }
-  if (-not ($records | Where-Object { $_.method -eq 'POST' -and $_.url -match '/api/offer-negotiation/proposals/[0-9]+/confirm$' })) { throw 'Browser did not confirm a Brief.' }
-  if (-not ($records | Where-Object { $_.method -eq 'GET' -and $_.url -match '/api/offer-negotiation/proposals/[0-9]+$' })) { throw 'Browser did not read negotiation history.' }
+  $offerProposalPath = "/api/offers/$expectedOfferId/negotiation/proposals"
+  $proposalPath = "/api/offer-negotiation/proposals/$expectedProposalId"
+  if (-not ($records | Where-Object { $_.method -eq 'POST' -and $_.url -eq "$baseUrl$offerProposalPath" })) { throw 'Browser did not generate a Proposal for the selected Offer.' }
+  if (-not ($records | Where-Object { $_.method -eq 'POST' -and $_.url -eq "$baseUrl$proposalPath/confirm" })) { throw 'Browser did not confirm the selected Brief.' }
+  if (-not ($records | Where-Object { $_.method -eq 'GET' -and $_.url -eq "$baseUrl$proposalPath" })) { throw 'Browser did not read the selected negotiation history.' }
 }
 
 $providerErrorCode = 'offer_negotiation_provider_error'
@@ -173,12 +175,12 @@ try {
   [void](Read-Host 'Press Enter after the browser acceptance flow is complete')
 
   Assert-CountsUnchanged $baselineCounts (Get-DomainCounts)
-  $records = Read-BrowserRecords
-  Assert-BrowserSequence $records
   $historyRows = @(Invoke-RestMethod -Uri "$baseUrl/api/offers/$($offerIds[0])/negotiation/proposals")
   $confirmed = @($historyRows | Where-Object { $null -ne $_.brief })
   if ($confirmed.Count -eq 0) { throw 'No confirmed negotiation Brief was found.' }
   $confirmedProposalId = [int]$confirmed[0].id
+  $records = Read-BrowserRecords
+  Assert-BrowserSequence $records $offerIds[0] $confirmedProposalId
   $currentOffer = Invoke-RestMethod -Uri "$baseUrl/api/offers/$($offerIds[0])"
   $editBody = @{
     company_name = $currentOffer.company_name

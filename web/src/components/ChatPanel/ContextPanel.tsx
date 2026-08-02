@@ -1,4 +1,4 @@
-import { createElement } from 'react';
+import { createElement, useState } from 'react';
 import { Switch } from 'antd';
 import type { Offer } from '@/types/offer';
 import { OFFER_STATUS_LABELS, OFFER_STATUS_COLORS } from '@/types/offer';
@@ -22,6 +22,8 @@ interface Props {
   onOpenSettings?: () => void;
   onOpenEvidence?: (target: EvidenceTarget) => void;
   onPrepareOfferNegotiation?: (offer: Offer) => void;
+  offers?: Offer[];
+  onSelectOffer?: (offer: Offer) => void;
 }
 
 function formatTotal(total: number): string {
@@ -44,7 +46,10 @@ export default function ContextPanel({
   onOpenSettings,
   onOpenEvidence,
   onPrepareOfferNegotiation,
+  offers = [],
+  onSelectOffer,
 }: Props) {
+  const [offerPickerOpen, setOfferPickerOpen] = useState(false);
   const evidenceSelection = selectEvidence(evidence, 5);
 
   return (
@@ -78,6 +83,35 @@ export default function ContextPanel({
             >
               准备谈薪
             </button>
+          )}
+        </div>
+      )}
+      {!offer && onSelectOffer && offers.length > 0 && (
+        <div>
+          <div className={styles.panelLabel}>谈薪准备</div>
+          <button
+            type="button"
+            className={styles.capItem}
+            data-testid="pilot-choose-offer-negotiation"
+            onClick={() => setOfferPickerOpen(true)}
+          >
+            选择 Offer 后准备谈薪
+          </button>
+          {offerPickerOpen && (
+            <select
+              aria-label="选择 Offer"
+              data-testid="pilot-offer-selector"
+              defaultValue=""
+              onChange={(event) => {
+                const selected = offers.find((item) => String(item.id) === event.target.value);
+                if (selected) onSelectOffer(selected);
+              }}
+            >
+              <option value="">请选择 Offer</option>
+              {offers.map((item) => (
+                <option key={item.id} value={item.id}>{item.company_name}｜{item.position_name}</option>
+              ))}
+            </select>
           )}
         </div>
       )}

@@ -156,6 +156,39 @@ def test_history_is_readable_after_offer_delete(tmp_path) -> None:
     history = client.get(f"/api/offer-negotiation/proposals/{proposal_id}")
     assert history.status_code == 200
     assert history.json()["source_changed"] is True
+    listed = client.get(f"/api/offers/{offer['id']}/negotiation/proposals")
+    assert listed.status_code == 200
+    assert listed.json()[0]["source_changed"] is True
+
+
+def test_dimension_value_change_marks_history_source_changed(tmp_path) -> None:
+    model = FakeModel([json.dumps(_payload(), ensure_ascii=False)])
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    offer = _offer(client)
+    dimension = client.post("/api/offers/comparison-dimensions", json={"label": "通勤"}).json()
+    client.put(
+        f"/api/offers/{offer['id']}/comparison-values/{dimension['id']}",
+        json={"value_text": "地铁 35 分钟"},
+    )
+    generated = client.post(
+        f"/api/offers/{offer['id']}/negotiation/proposals",
+        json={
+            "idempotency_key": "J" * 16,
+            "dimension_ids": [dimension["id"]],
+            "goal": "争取入职时间",
+            "concerns": "通勤",
+            "scenario": "电话沟通",
+        },
+    )
+    assert generated.status_code == 201
+    proposal_id = generated.json()["id"]
+    client.put(
+        f"/api/offers/{offer['id']}/comparison-values/{dimension['id']}",
+        json={"value_text": "公交 50 分钟"},
+    )
+    history = client.get(f"/api/offer-negotiation/proposals/{proposal_id}")
+    assert history.status_code == 200
+    assert history.json()["source_changed"] is True
 
 
 def test_confirmation_is_hitl_idempotent_and_history_retains_brief(tmp_path) -> None:

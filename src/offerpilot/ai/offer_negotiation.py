@@ -194,7 +194,10 @@ def generate_offer_negotiation_proposal(
         response_format = OFFER_NEGOTIATION_RESPONSE_FORMAT if getattr(model, "supports_json_schema", False) is True else None
         try:
             assistant = model.complete(
-                [Message(role="system", content=_system_prompt()), Message(role="user", content=prompt)],
+                [
+                    Message(role="system", content=_system_prompt(snapshot)),
+                    Message(role="user", content=prompt),
+                ],
                 [],
                 response_format=response_format,
             )
@@ -361,12 +364,56 @@ def _reject_non_finite(value: Any) -> None:
             _reject_non_finite(item)
 
 
-def _system_prompt() -> str:
+def _evidence_catalog(snapshot: dict[str, Any]) -> list[dict[str, str]]:
+    catalog: list[dict[str, str]] = []
+    offer_snapshot = snapshot.get("offer_snapshot", {})
+    if isinstance(offer_snapshot, dict):
+        for field, value in offer_snapshot.items():
+            if isinstance(value, (str, int)) and not isinstance(value, bool) and value != "":
+                catalog.append(
+                    {
+                        "source": "offer_snapshot",
+                        "path": f"/offer_snapshot/{field}",
+                        "excerpt": str(value),
+                    }
+                )
+    dimensions = snapshot.get("dimensions", [])
+    if isinstance(dimensions, list):
+        for dimension in dimensions:
+            if not isinstance(dimension, dict):
+                continue
+            value = dimension.get("value_text")
+            path_id = dimension.get("path_id")
+            if isinstance(path_id, str) and isinstance(value, str) and value:
+                catalog.append(
+                    {
+                        "source": "offer_snapshot",
+                        "path": f"/offer_snapshot/dimensions/{path_id}/value_text",
+                        "excerpt": value,
+                    }
+                )
+    user_brief = snapshot.get("user_brief", {})
+    if isinstance(user_brief, dict):
+        for field, value in user_brief.items():
+            if isinstance(value, str) and value:
+                catalog.append(
+                    {
+                        "source": "user_brief",
+                        "path": f"/user_brief/{field}",
+                        "excerpt": value,
+                    }
+                )
+    return sorted(catalog, key=lambda item: (item["source"], item["path"]))
+
+
+def _system_prompt(snapshot: dict[str, Any]) -> str:
     return (
         "只输出严格 JSON，不要 Markdown。不要做接受、拒绝、放弃、排名或最优 Offer 决定。"
         "所有条目必须包含 id、text、rationale、evidence_refs；每个 evidence_refs 必须来自输入目录，"
         "excerpt 必须逐字连续匹配。没有可验证建议时输出 proposal_status=safe_empty 和四个空数组。"
         + json.dumps(OFFER_NEGOTIATION_JSON_SCHEMA, ensure_ascii=False, separators=(",", ":"))
+        + "\n只能从以下 evidence_catalog 逐条选择 source/path/excerpt；不得创造目录外引用："
+        + json.dumps(_evidence_catalog(snapshot), ensure_ascii=False, separators=(",", ":"))
     )
 
 

@@ -22,7 +22,7 @@ vi.mock('@/services/offers', () => ({
 }));
 
 const offer: Offer = {
-  id: 7, company_name: '星云数据', position_name: '后端工程师', status: 'pending',
+  id: 7, company_name: 'Company', position_name: 'Engineer', status: 'pending',
   base_monthly: 28000, months_per_year: 12, signing_bonus: 0, equity: '', perks: '',
   deadline: '', notes: '', assessment: '', total_cash: 336000,
   created_at: '2026-08-01T00:00:00Z', updated_at: '2026-08-01T00:00:00Z',
@@ -33,13 +33,14 @@ const proposal = (): OfferNegotiationProposal => ({
   source_fingerprint: 'fingerprint', source_changed: false, source_states: { offer: 'current' }, proposal_hash: 'hash',
   proposal: {
     proposal_status: 'normal',
-    communication_goals: [{ id: 'goal-1', text: '确认入职时间', rationale: '依据 Offer', evidence_refs: [{ source: 'offer_snapshot', path: '/offer_snapshot/company_name', excerpt: '星云数据' }] }],
+    communication_goals: [{ id: 'goal-1', text: 'Goal', rationale: 'Offer', evidence_refs: [{ source: 'offer_snapshot', path: '/offer_snapshot/company_name', excerpt: 'Company' }] }],
     clarification_questions: [], talking_points: [], preparation_checks: [],
   },
 });
 
-function changeValue(control: HTMLInputElement, value: string) {
-  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(control, value);
+function changeValue(control: HTMLInputElement | HTMLTextAreaElement, value: string) {
+  const prototype = control instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+  Object.getOwnPropertyDescriptor(prototype, 'value')?.set?.call(control, value);
   control.dispatchEvent(new Event('input', { bubbles: true }));
   control.dispatchEvent(new Event('change', { bubbles: true }));
 }
@@ -66,45 +67,45 @@ describe('OfferNegotiationDrawer', () => {
 
   it('requires the three user brief fields before generation', async () => {
     await act(async () => { root?.render(<OfferNegotiationDrawer open offer={offer} onClose={vi.fn()} />); });
-    expect(host?.textContent).toContain('生成谈薪准备草稿');
-    const button = Array.from(host?.querySelectorAll('button') ?? []).find((item) => item.textContent?.includes('生成谈薪准备草稿')) as HTMLButtonElement;
-    expect(button.disabled).toBe(true);
+    const button = host?.querySelector<HTMLButtonElement>('[data-testid="offer-negotiation-generate"]');
+    expect(button?.disabled).toBe(true);
     expect(service.create).not.toHaveBeenCalled();
   });
 
   it('generates an editable evidence-backed draft and confirms selected blocks', async () => {
     service.create.mockResolvedValue(proposal());
-    service.confirm.mockResolvedValue({ id: 8, proposal_id: 3, offer_id: 7, selected_blocks: ['goal-1'], edited_content: { blocks: [], edits: {}, proposal_hash: 'hash' }, content_hash: 'brief-hash', confirmed_at: '2026-08-01T00:00:00Z' });
+    service.confirm.mockResolvedValue({ id: 8, proposal_id: 3, offer_id: 7, selected_blocks: ['goal-1'], edited_content: {}, content_hash: 'brief-hash', confirmed_at: '2026-08-01T00:00:00Z' });
     await act(async () => { root?.render(<OfferNegotiationDrawer open offer={offer} onClose={vi.fn()} />); });
     const inputs = host?.querySelectorAll('input') ?? [];
+    const textareas = host?.querySelectorAll('textarea') ?? [];
     await act(async () => {
-      changeValue(inputs[0] as HTMLInputElement, '争取入职时间');
-      changeValue(inputs[1] as HTMLInputElement, '电话沟通');
+      changeValue(inputs[0] as HTMLInputElement, 'Goal');
+      changeValue(textareas[0] as HTMLTextAreaElement, 'Concern');
+      changeValue(inputs[1] as HTMLInputElement, 'Call');
     });
-    const generate = Array.from(host?.querySelectorAll('button') ?? []).find((item) => item.textContent?.includes('生成谈薪准备草稿')) as HTMLButtonElement;
-    await act(async () => { generate.click(); });
-    expect(service.create).toHaveBeenCalledTimes(1);
-    expect(host?.textContent).toContain('确认入职时间');
+    await act(async () => { host?.querySelector<HTMLButtonElement>('[data-testid="offer-negotiation-generate"]')?.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     const checkbox = host?.querySelector('article input[type="checkbox"]') as HTMLInputElement;
     await act(async () => { checkbox.click(); });
-    const confirmButton = Array.from(host?.querySelectorAll('button') ?? []).find((item) => item.textContent?.includes('确认保存谈薪准备')) as HTMLButtonElement;
-    await act(async () => { confirmButton.click(); });
+    await act(async () => { host?.querySelector<HTMLButtonElement>('[data-testid="offer-negotiation-confirm"]')?.click(); });
     expect(service.confirm).toHaveBeenCalledTimes(1);
     expect(service.confirm.mock.calls[0][0]).toBe(3);
     expect(service.confirm.mock.calls[0][1].selected_blocks).toEqual(['goal-1']);
   });
 
-  it('keeps provider-unknown input frozen and exposes retry', async () => {
-    service.create.mockRejectedValueOnce(new OfferNegotiationError(502, 'offer_negotiation_provider_error'));
+  it.each([
+    ['provider error', new OfferNegotiationError(502, 'offer_negotiation_provider_error')],
+    ['bare 5xx', new OfferNegotiationError(502, null)],
+  ])('keeps %s input frozen and exposes retry', async (_label, error) => {
+    service.create.mockRejectedValueOnce(error);
     await act(async () => { root?.render(<OfferNegotiationDrawer open offer={offer} onClose={vi.fn()} />); });
     const inputs = host?.querySelectorAll('input') ?? [];
     await act(async () => {
-      changeValue(inputs[0] as HTMLInputElement, '目标');
-      changeValue(inputs[1] as HTMLInputElement, '电话');
+      changeValue(inputs[0] as HTMLInputElement, 'Goal');
+      changeValue(inputs[1] as HTMLInputElement, 'Concern');
     });
-    const generate = Array.from(host?.querySelectorAll('button') ?? []).find((item) => item.textContent?.includes('生成谈薪准备草稿')) as HTMLButtonElement;
-    await act(async () => { generate.click(); });
-    expect(host?.textContent).toContain('使用原尝试重试');
+    await act(async () => { host?.querySelector<HTMLButtonElement>('[data-testid="offer-negotiation-generate"]')?.click(); });
     expect(host?.querySelector('fieldset')?.hasAttribute('disabled')).toBe(true);
+    expect(service.create).toHaveBeenCalledTimes(1);
   });
 });

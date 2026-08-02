@@ -30,7 +30,11 @@ const offer: Offer = {
   updated_at: '2026-08-01T00:00:00Z',
 };
 
-function render(offerValue: Offer | null, onPrepareOfferNegotiation: (value: Offer) => void) {
+function render(
+  offerValue: Offer | null,
+  onPrepareOfferNegotiation: (value: Offer) => void,
+  offers: Offer[] = [offer],
+) {
   const host = document.createElement('div');
   document.body.appendChild(host);
   const root: Root = createRoot(host);
@@ -48,6 +52,8 @@ function render(offerValue: Offer | null, onPrepareOfferNegotiation: (value: Off
         onCapability={vi.fn()}
         onToggleAutoApprove={vi.fn()}
         onPrepareOfferNegotiation={onPrepareOfferNegotiation}
+        offers={offers}
+        onSelectOffer={onPrepareOfferNegotiation}
       />,
     );
   });
@@ -65,12 +71,22 @@ describe('Pilot offer negotiation entry', () => {
     host = undefined;
   });
 
-  it('does not show or trigger an Offer action before the user selects an Offer', () => {
+  it('opens an explicit Offer selector without chat or provider work before selection', () => {
     const onPrepare = vi.fn();
     ({ host, root } = render(null, onPrepare));
 
-    expect(host.querySelector('[data-testid="pilot-prepare-offer-negotiation"]')).toBeNull();
-    expect(onPrepare).not.toHaveBeenCalled();
+    const choose = host.querySelector<HTMLButtonElement>('[data-testid="pilot-choose-offer-negotiation"]');
+    expect(choose).not.toBeNull();
+    act(() => choose?.click());
+    const select = host.querySelector<HTMLSelectElement>('[data-testid="pilot-offer-selector"]');
+    expect(select).not.toBeNull();
+    act(() => {
+      select!.value = String(offer.id);
+      select!.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    expect(onPrepare).toHaveBeenCalledTimes(1);
+    expect(onPrepare).toHaveBeenCalledWith(offer);
+    expect(host.textContent).not.toContain('provider');
   });
 
   it('opens the shared Offer flow only after an explicitly selected Offer is present', () => {
