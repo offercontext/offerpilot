@@ -167,6 +167,17 @@ def test_semantic_evidence_failure_is_not_repaired() -> None:
         "请询问公司是否接受远程办公。",
         "接受或拒绝该 Offer 仍由用户自行决定。",
         "不应由系统替用户决定接受或拒绝 Offer。",
+        "建议不要向招聘方透露当前底线。",
+        "请不要忘记确认入职时间。",
+        "建议选择电话沟通谈薪。",
+        "建议选择和公司沟通谈薪。",
+        "建议选择电话沟通方案。",
+        "建议选择谈薪方案。",
+        "建议选择这份 Offer 的谈薪场景。",
+        "建议选择这份 Offer 的电话沟通方案。",
+        "建议选择这份 Offer 的调研方案。",
+        "建议选择与这份 Offer 相关的谈薪方案。",
+        "建议选择与这份 Offer 相关的电话沟通方案。",
         "请确认录用通知中的入职时间。",
         "请说明接受或拒绝该 Offer 前需要确认哪些信息。",
         "请列出接受或拒绝 Offer 前需要询问的问题。",
@@ -197,6 +208,31 @@ def test_legal_negotiation_language_is_not_decision_language(text: str) -> None:
         "请你接受这个 Offer。",
         "请用户拒绝这个岗位。",
         "请立即接受这个 Offer。",
+        "建议接受该 Offer。最终决定权由用户掌握。",
+        "建议接受这个 Offer 并强调最终决定权由用户掌握。",
+        "现在就接受这份 Offer。",
+        "You should accept this Offer.",
+        "I recommend signing this Offer.",
+        "This Offer is worth accepting.",
+        "This is the best Offer.",
+        "You should consider accepting this Offer.",
+        "I recommend taking this Offer.",
+        "We recommend choosing this position.",
+        "Please consider taking this job.",
+        "Please confirm this Offer is the best.",
+        "Please confirm this Offer is worth accepting.",
+        "建议接受这个 Offer 作为首选方案。",
+        "建议选择这个岗位作为首选。",
+        "建议接受这个 Offer吧。",
+        "建议签下这个 Offer。",
+        "不要错过这个机会。",
+        "值得接受这个 Offer。",
+        "建议接受你拿到的 Offer。",
+        "建议接受这家公司的 Offer。",
+        "建议选择这家公司的岗位。",
+        "建议拒绝目前的工作机会。",
+        "请考虑拒绝目前这份 Offer。",
+        "建议接受上述 Offer。",
     ],
 )
 def test_explicit_decision_recommendation_is_terminal(text: str) -> None:
@@ -225,6 +261,39 @@ def test_question_context_does_not_hide_an_unsupported_fact_assertion() -> None:
     assert error.value.validation_category == "forbidden_decision_language"
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "请确认以下事实：公司政策规定所有人必须到岗。",
+        "录用概率高达 90%。",
+        "请确认：公司政策明确规定所有人必须到岗。",
+        "市场薪酬通常是 30k。",
+        "录用概率约为 90%。",
+    ],
+)
+def test_unsupported_fact_assertion_is_terminal(text: str) -> None:
+    payload = _valid_payload()
+    payload["communication_goals"][0]["text"] = text
+    with pytest.raises(OfferNegotiationModelError) as error:
+        validate_offer_negotiation(payload, _snapshot())
+    assert error.value.validation_category == "forbidden_decision_language"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "请确认：你应该接受这份 Offer。",
+        "请确认：建议接受该 Offer。",
+    ],
+)
+def test_question_prefix_does_not_hide_decision_recommendation(text: str) -> None:
+    payload = _valid_payload()
+    payload["communication_goals"][0]["text"] = text
+    with pytest.raises(OfferNegotiationModelError) as error:
+        validate_offer_negotiation(payload, _snapshot())
+    assert error.value.validation_category == "forbidden_decision_language"
+
+
 def test_generation_prompt_explains_allowed_and_forbidden_decision_language() -> None:
     model = FakeModel([json.dumps(_valid_payload(), ensure_ascii=False)])
     generate_offer_negotiation_proposal(model, _snapshot())
@@ -233,6 +302,8 @@ def test_generation_prompt_explains_allowed_and_forbidden_decision_language() ->
     assert "接受或拒绝仍由用户自行决定" in prompt
     assert "建议接受该 Offer" in prompt
     assert "应该拒绝这个岗位" in prompt
+    assert "You should accept this Offer." in prompt
+    assert "建议选择电话沟通谈薪" in prompt
 
 
 def test_safe_empty_has_exact_four_empty_arrays() -> None:
