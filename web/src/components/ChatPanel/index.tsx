@@ -101,6 +101,7 @@ interface Props {
   onOpenEvidence?: (target: EvidenceTarget) => void;
   onboardingFocusToken?: number;
   onOnboardingFocusConsumed?: (token: number) => void;
+  onPrepareOfferNegotiation?: (offer: Offer) => void;
 }
 
 interface ConfirmationExecution {
@@ -197,6 +198,7 @@ export default function ChatPanel({
   onOpenEvidence,
   onboardingFocusToken,
   onOnboardingFocusConsumed,
+  onPrepareOfferNegotiation,
 }: Props) {
   const queryClient = useQueryClient();
   const { message: toast } = AntApp.useApp();
@@ -1563,6 +1565,7 @@ export default function ChatPanel({
             onToggleAutoApprove={toggleAutoApprove}
             onOpenSettings={onOpenSettings}
             onOpenEvidence={onOpenEvidence}
+            onPrepareOfferNegotiation={onPrepareOfferNegotiation}
           />
         </div>
       </div>

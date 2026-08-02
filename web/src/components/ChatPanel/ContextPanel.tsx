@@ -21,6 +21,7 @@ interface Props {
   onToggleAutoApprove: (v: boolean) => void;
   onOpenSettings?: () => void;
   onOpenEvidence?: (target: EvidenceTarget) => void;
+  onPrepareOfferNegotiation?: (offer: Offer) => void;
 }
 
 function formatTotal(total: number): string {
@@ -42,6 +43,7 @@ export default function ContextPanel({
   onToggleAutoApprove,
   onOpenSettings,
   onOpenEvidence,
+  onPrepareOfferNegotiation,
 }: Props) {
   const evidenceSelection = selectEvidence(evidence, 5);
 
@@ -67,6 +69,16 @@ export default function ContextPanel({
               {OFFER_STATUS_LABELS[offer.status]}
             </span>
           </div>
+          {onPrepareOfferNegotiation && (
+            <button
+              type="button"
+              className={styles.capItem}
+              data-testid="pilot-prepare-offer-negotiation"
+              onClick={() => onPrepareOfferNegotiation(offer)}
+            >
+              准备谈薪
+            </button>
+          )}
         </div>
       )}
 

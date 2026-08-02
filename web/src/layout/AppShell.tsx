@@ -24,6 +24,7 @@ import {
 } from '@/features/pilot/pilotOpportunityFitLifecycle';
 import { discardMaterialKitHandoff, writeMaterialKitHandoff } from '@/features/pilot/materialKitHandoff';
 import type { Application } from '@/types/application';
+import type { Offer } from '@/types/offer';
 import type { OpportunityFitReview } from '@/types/opportunityFitReview';
 import { getOpportunityFitErrorMessage } from '@/components/opportunityFitCopy';
 import type { ChatStartRequest, PilotContextAttachment } from '@/types/chat';
@@ -35,6 +36,7 @@ import type { InterviewReviewProposalAttemptState } from '@/components/Interview
 import type { InterviewKnowledgeCaptureDraft } from '@/components/InterviewKnowledgeCaptureDrawer';
 import type { InterviewPreparationAttemptState, InterviewPreparationDraft, InterviewPreparationKnowledgeOption } from '@/components/InterviewPreparationProposalDrawer';
 import MockInterviewDrawer, { type MockInterviewDrawerDraft } from '@/components/MockInterviewDrawer';
+import OfferNegotiationDrawer from '@/components/OfferNegotiationDrawer';
 import { discardMockInterviewAttempt } from '@/services/mockInterviews';
 import ResumeUploadModal from '@/components/ResumeUploadModal';
 import ChatPanel from '@/components/ChatPanel';
@@ -181,6 +183,7 @@ function AppShellContent() {
   const [mockInterviewContext, setMockInterviewContext] = useState<{ applicationId: number; eventId: number } | null>(null);
   const mockInterviewDraftsRef = useRef(new Map<string, MockInterviewDrawerDraft>());
   const [mockInterviewDraft, setMockInterviewDraft] = useState<MockInterviewDrawerDraft | null>(null);
+  const [offerNegotiationOffer, setOfferNegotiationOffer] = useState<Offer | null>(null);
   const pilotApplicationContextRef = useRef(pilotApplicationContext);
   pilotApplicationContextRef.current = pilotApplicationContext;
   const [aiSettingsOpen, setAISettingsOpen] = useState(false);
@@ -670,6 +673,10 @@ function AppShellContent() {
     setMockInterviewContext({ applicationId, eventId });
   };
 
+  const openOfferNegotiation = (offer: Offer) => {
+    setOfferNegotiationOffer(offer);
+  };
+
   const updateMockInterviewDraft = (patch: Partial<MockInterviewDrawerDraft>) => {
     if (!mockInterviewContext || !mockInterviewDraft) return;
     const draftKey = `${mockInterviewContext.applicationId}:${mockInterviewContext.eventId}`;
@@ -1143,6 +1150,7 @@ function AppShellContent() {
                 attachmentDraftKey={pilotAttachmentDraftKey}
                 onAttachmentKeyChange={syncPilotAttachmentKey}
                 onOpenEvidence={openEvidence}
+                onPrepareOfferNegotiation={openOfferNegotiation}
               />
             </div>
           )}
@@ -1208,6 +1216,7 @@ function AppShellContent() {
             attachmentDraftKey={pilotAttachmentDraftKey}
             onAttachmentKeyChange={syncPilotAttachmentKey}
             onOpenEvidence={openEvidence}
+            onPrepareOfferNegotiation={openOfferNegotiation}
           />
         </aside>
       )}
@@ -1252,6 +1261,7 @@ function AppShellContent() {
           attachmentDraftKey={pilotAttachmentDraftKey}
           onAttachmentKeyChange={syncPilotAttachmentKey}
           onOpenEvidence={openEvidence}
+          onPrepareOfferNegotiation={openOfferNegotiation}
         />
       )}
       {mockInterviewContext && mockInterviewDraft ? (
@@ -1263,6 +1273,13 @@ function AppShellContent() {
           draft={mockInterviewDraft}
           onDraftChange={updateMockInterviewDraft}
           onClose={() => void closeMockInterview()}
+        />
+      ) : null}
+      {offerNegotiationOffer ? (
+        <OfferNegotiationDrawer
+          open
+          offer={offerNegotiationOffer}
+          onClose={() => setOfferNegotiationOffer(null)}
         />
       ) : null}
       </Layout>
