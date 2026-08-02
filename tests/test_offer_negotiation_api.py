@@ -23,6 +23,10 @@ class FakeModel:
         return Assistant(content=self.responses.pop(0), provider_blocks={"request_id": "req-1"})
 
 
+class ProviderError(RuntimeError):
+    provider_request_id = "provider-request-secret"
+
+
 def _offer(client: TestClient) -> dict:
     response = client.post(
         "/api/offers",
@@ -127,6 +131,19 @@ def test_provider_error_preserves_attempt_and_key(tmp_path) -> None:
     assert pending.status_code == 202
     assert pending.json()["attempt_status"] == "provider_unknown"
     assert len(model.calls) == 1
+
+
+def test_provider_diagnostic_keeps_only_hashed_request_id(tmp_path) -> None:
+    model = FakeModel(error=ProviderError("provider timeout"))
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    _offer(client)
+    response = _request(client, "R" * 16)
+    assert response.status_code == 502
+    messages = [entry["message"] for entry in client.get("/api/logs?limit=20").json()["entries"]]
+    failure = next(message for message in messages if message.startswith("offer_negotiation_diagnostic"))
+    assert "provider-request-secret" not in failure
+    assert "request-redacted-" in failure
+    assert "repair_count" in failure
 
 
 def test_history_is_readable_after_offer_delete(tmp_path) -> None:

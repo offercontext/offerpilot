@@ -30,7 +30,12 @@ from offerpilot.repositories.offers import OfferCreate, OffersRepository
 from offerpilot.repositories.questions import QuestionsRepository
 from offerpilot.repositories.resumes import ResumeCreate, ResumesRepository
 from offerpilot.repositories.wakeups import WakeupCreate, WakeupsRepository
-from offerpilot.smoke import run_core_smoke, run_http_smoke, run_mock_interview_real_ai_smoke
+from offerpilot.smoke import (
+    run_core_smoke,
+    run_http_smoke,
+    run_mock_interview_real_ai_smoke,
+    run_offer_negotiation_real_ai_smoke,
+)
 from offerpilot.skills import SkillRegistryError, register_skill, skills_payload, update_skill
 
 app = typer.Typer(help="OfferPilot - your local job search workbench")
@@ -251,6 +256,20 @@ def verify_mock_interview(
     for step in report.steps:
         typer.echo(f"ok {step.name}: {step.detail}")
     typer.echo("隔离 Mock API 验收通过（不替代完整 verify 或浏览器/CDP 发布证据）")
+
+
+@app.command("verify-offer-negotiation")
+def verify_offer_negotiation(
+    static_dir: Optional[Path] = typer.Option(
+        None,
+        "--static-dir",
+        help="isolated Offer negotiation API acceptance; not full verify or browser/CDP evidence",
+    ),
+) -> None:
+    report = run_offer_negotiation_real_ai_smoke(resolve_data_dir(), static_dir=static_dir)
+    for step in report.steps:
+        typer.echo(f"ok {step.name}: {step.detail}")
+    typer.echo("Isolated Offer negotiation API acceptance passed")
 
 
 @knowledge_app.command("reset")

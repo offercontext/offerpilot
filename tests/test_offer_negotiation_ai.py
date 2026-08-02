@@ -122,6 +122,8 @@ def test_semantic_evidence_failure_is_not_repaired() -> None:
         generate_offer_negotiation_proposal(model, _snapshot())
     assert error.value.validation_category == "unknown_evidence_ref"
     assert len(model.calls) == 1
+    assert error.value.provider_request_id.startswith("request-redacted-")
+    assert "req-1" not in error.value.provider_request_id
 
 
 def test_safe_empty_has_exact_four_empty_arrays() -> None:
@@ -129,3 +131,15 @@ def test_safe_empty_has_exact_four_empty_arrays() -> None:
     assert set(empty) == set(OFFER_NEGOTIATION_FIELDS)
     assert all(value == [] for key, value in empty.items() if key != "proposal_status")
     assert empty["proposal_status"] == "safe_empty"
+
+
+def test_safe_empty_repair_emits_only_redacted_diagnostic() -> None:
+    diagnostics: list[dict[str, object]] = []
+    model = FakeModel(["{", "{"])
+    result = generate_offer_negotiation_proposal(model, _snapshot(), on_diagnostic=diagnostics.append)
+    assert result["proposal_status"] == "safe_empty"
+    assert len(diagnostics) == 1
+    assert diagnostics[0]["failure_category"] == "invalid_json"
+    assert diagnostics[0]["repair_attempted"] is True
+    assert diagnostics[0]["repair_count"] == 1
+    assert diagnostics[0]["provider_request_id"].startswith("request-redacted-")

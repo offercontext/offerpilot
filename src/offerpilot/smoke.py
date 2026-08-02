@@ -36,6 +36,8 @@ from offerpilot.models import (
     ApplicationEvidenceBundle,
     ApplicationEvent,
     ApplicationMaterialKit,
+    ChatMessage,
+    Conversation,
     InterviewKnowledgeCaptureAttempt,
     InterviewNote,
     InterviewReviewProposal,
@@ -1401,6 +1403,148 @@ def run_mock_interview_real_ai_smoke(
                 _cleanup_real_ai_smoke_records(isolated_data_dir, application_id, resume_ids)
             _assert_real_ai_smoke_data_clean(isolated_data_dir)
         return SmokeReport(ok=True, steps=steps)
+
+
+def run_offer_negotiation_real_ai_smoke(
+    source_data_dir: Path,
+    static_dir: Path | None = None,
+) -> SmokeReport:
+    """Run the Offer negotiation real-AI API flow in an isolated data directory."""
+    steps: list[SmokeStep] = []
+    with tempfile.TemporaryDirectory(prefix="offerpilot-offer-negotiation-real-ai-") as temp_dir:
+        isolated_data_dir = Path(temp_dir)
+        _copy_real_ai_config(source_data_dir, isolated_data_dir)
+        app = create_app(data_dir=isolated_data_dir, static_dir=static_dir)
+        try:
+            with _running_server(app) as base_url:
+                with httpx.Client(base_url=base_url, timeout=120.0) as client:
+                    settings = client.get("/api/settings")
+                    _assert_status(settings.status_code, 200, "offer_negotiation_real_ai_settings")
+                    if not bool(settings.json().get("has_api_key")):
+                        raise RuntimeError("offer negotiation real-ai smoke requires a configured API key")
+                    first = client.post(
+                        "/api/offers",
+                        json={
+                            "company_name": "星云数据",
+                            "position_name": "后端工程师",
+                            "base_monthly": 28000,
+                            "months_per_year": 12,
+                            "signing_bonus": 0,
+                        },
+                    )
+                    second = client.post(
+                        "/api/offers",
+                        json={
+                            "company_name": "远山科技",
+                            "position_name": "平台工程师",
+                            "base_monthly": 30000,
+                            "months_per_year": 12,
+                            "signing_bonus": 0,
+                        },
+                    )
+                    _assert_status(first.status_code, 201, "offer_negotiation_real_ai_first_offer")
+                    _assert_status(second.status_code, 201, "offer_negotiation_real_ai_second_offer")
+                    offer_id = int(first.json()["id"])
+                    second_offer_id = int(second.json()["id"])
+                    dimension = client.post(
+                        "/api/offers/comparison-dimensions", json={"label": "通勤"}
+                    )
+                    _assert_status(dimension.status_code, 201, "offer_negotiation_real_ai_dimension")
+                    dimension_id = int(dimension.json()["id"])
+                    for target_id, value in ((offer_id, "地铁35分钟"), (second_offer_id, "公交50分钟")):
+                        saved = client.put(
+                            f"/api/offers/{target_id}/comparison-values/{dimension_id}",
+                            json={"value_text": value},
+                        )
+                        _assert_status(saved.status_code, 200, "offer_negotiation_real_ai_dimension_value")
+
+                    chat_before = _chat_domain_counts(isolated_data_dir)
+                    payload = {
+                        "idempotency_key": "offer-real-ai-000001",
+                        "dimension_ids": [dimension_id],
+                        "goal": "争取明确入职时间",
+                        "concerns": "通勤安排",
+                        "scenario": "与招聘方电话沟通",
+                    }
+                    result = client.post(f"/api/offers/{offer_id}/negotiation/proposals", json=payload)
+                    if result.status_code == 502 and result.json().get("error_code") == "offer_negotiation_provider_error":
+                        result = client.post(f"/api/offers/{offer_id}/negotiation/proposals", json=payload)
+                    if result.status_code not in {200, 201}:
+                        code = result.json().get("error_code", "unknown")
+                        category = "unknown"
+                        try:
+                            for entry in client.get("/api/logs?limit=20").json().get("entries", []):
+                                message = str(entry.get("message", ""))
+                                if message.startswith("offer_negotiation_diagnostic "):
+                                    category = str(json.loads(message.split(" ", 1)[1]).get("failure_category") or "unknown")
+                                    break
+                        except (ValueError, TypeError, httpx.HTTPError):
+                            category = "unknown"
+                        raise RuntimeError(
+                            f"offer negotiation real-ai proposal failed: {result.status_code}:{code}:{category}"
+                        )
+                    proposal_body = result.json()
+                    if proposal_body.get("proposal_status") != "normal":
+                        raise RuntimeError("offer negotiation real-ai returned safe_empty")
+                    proposal_id = int(proposal_body["id"])
+                    proposal = proposal_body.get("proposal") or {}
+                    block_ids = [
+                        item["id"]
+                        for field in ("communication_goals", "clarification_questions", "talking_points", "preparation_checks")
+                        for item in proposal.get(field, [])
+                        if isinstance(item, dict) and isinstance(item.get("id"), str)
+                    ]
+                    if not block_ids:
+                        raise RuntimeError("offer negotiation real-ai returned no confirmable blocks")
+                    confirmed = client.post(
+                        f"/api/offer-negotiation/proposals/{proposal_id}/confirm",
+                        json={
+                            "confirmation_key": "offer-confirm-000001",
+                            "selected_blocks": block_ids[:2],
+                            "edited_content": {},
+                        },
+                    )
+                    _assert_status(confirmed.status_code, 201, "offer_negotiation_real_ai_confirm")
+                    replay = client.get(f"/api/offer-negotiation/proposals/{proposal_id}")
+                    _assert_status(replay.status_code, 200, "offer_negotiation_real_ai_history")
+                    if replay.json().get("brief") is None:
+                        raise RuntimeError("offer negotiation real-ai history has no confirmed Brief")
+                    updated = client.put(
+                        f"/api/offers/{offer_id}",
+                        json={
+                            "company_name": "星云数据",
+                            "position_name": "后端工程师",
+                            "base_monthly": 28000,
+                            "months_per_year": 12,
+                            "signing_bonus": 0,
+                            "notes": "source changed after confirmation",
+                        },
+                    )
+                    _assert_status(updated.status_code, 200, "offer_negotiation_real_ai_source_change")
+                    changed = client.get(f"/api/offer-negotiation/proposals/{proposal_id}")
+                    _assert_status(changed.status_code, 200, "offer_negotiation_real_ai_changed_history")
+                    if changed.json().get("source_changed") is not True:
+                        raise RuntimeError("offer negotiation real-ai history did not mark source_changed")
+                    if _chat_domain_counts(isolated_data_dir) != chat_before:
+                        raise RuntimeError("offer negotiation real-ai wrote Chat data")
+                    steps.append(SmokeStep("http_offer_negotiation", "isolated Offer negotiation API flow passed"))
+        finally:
+            _dispose_smoke_app_database(app)
+    return SmokeReport(ok=True, steps=steps)
+
+
+def _chat_domain_counts(data_dir: Path) -> dict[str, int]:
+    session_factory = session_factory_for_data_dir(data_dir)
+    try:
+        with session_factory() as session:
+            return {
+                "conversations": int(session.scalar(select(func.count()).select_from(Conversation)) or 0),
+                "messages": int(session.scalar(select(func.count()).select_from(ChatMessage)) or 0),
+            }
+    finally:
+        bind = session_factory.kw.get("bind")
+        if bind is not None:
+            bind.dispose()
 
 
 def _mock_interview_attempt_ids(data_dir: Path, application_id: int, event_id: int) -> list[int]:

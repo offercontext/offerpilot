@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import re
+from collections.abc import Callable
 from time import perf_counter
 from typing import Any
 
@@ -30,6 +32,7 @@ _SHAPE_CATEGORIES = {
     "missing_field",
     "invalid_field_type",
 }
+OfferNegotiationDiagnosticSink = Callable[[dict[str, Any]], None]
 _ID_RE = re.compile(r"^[\x21-\x7e]{1,64}$")
 _FORBIDDEN = re.compile(r"接受|拒绝|放弃|最优|最佳|应该选|通过率|录用|市场薪酬|法律结论|公司政策|tax|salary market", re.I)
 
@@ -91,6 +94,14 @@ class OfferNegotiationModelError(ValueError):
         self.provider_request_id = ""
         self.repair_count = 0
         self.elapsed_ms = 0
+
+
+def _redact_provider_request_id(value: object) -> str:
+    request_id = str(value or "")
+    if not request_id:
+        return ""
+    digest = hashlib.sha256(request_id.encode("utf-8")).hexdigest()[:12]
+    return f"request-redacted-{digest}"
 
 
 def safe_empty_offer_negotiation_proposal() -> dict[str, Any]:
@@ -169,9 +180,15 @@ def validate_offer_negotiation(payload: dict[str, Any], snapshot: dict[str, Any]
     return normalized
 
 
-def generate_offer_negotiation_proposal(model: ChatModel, snapshot: dict[str, Any]) -> dict[str, Any]:
+def generate_offer_negotiation_proposal(
+    model: ChatModel,
+    snapshot: dict[str, Any],
+    *,
+    on_diagnostic: OfferNegotiationDiagnosticSink | None = None,
+) -> dict[str, Any]:
     started = perf_counter()
     last_category = "invalid_json"
+    provider_request_id = ""
     for attempt in range(2):
         prompt = _generation_prompt(snapshot) if attempt == 0 else _repair_prompt(last_category)
         response_format = OFFER_NEGOTIATION_RESPONSE_FORMAT if getattr(model, "supports_json_schema", False) is True else None
@@ -183,10 +200,21 @@ def generate_offer_negotiation_proposal(model: ChatModel, snapshot: dict[str, An
             )
         except Exception as exc:
             error = OfferNegotiationModelError("provider request failed", "provider_error")
-            error.provider_request_id = str(getattr(exc, "provider_request_id", ""))
+            error.provider_request_id = _redact_provider_request_id(getattr(exc, "provider_request_id", ""))
             error.repair_count = attempt
             error.elapsed_ms = int((perf_counter() - started) * 1000)
+            _emit_diagnostic(
+                on_diagnostic,
+                failure_category="provider_error",
+                repair_attempted=attempt > 0,
+                repair_count=attempt,
+                elapsed_ms=error.elapsed_ms,
+                provider_request_id=error.provider_request_id,
+            )
             raise error from exc
+        provider_request_id = _redact_provider_request_id(
+            getattr(assistant, "provider_blocks", {}).get("request_id")
+        )
         try:
             parsed = parse_json_reply(
                 assistant.content,
@@ -201,10 +229,50 @@ def generate_offer_negotiation_proposal(model: ChatModel, snapshot: dict[str, An
             last_category = "duplicate_json_key" if "duplicate" in str(exc).lower() else "invalid_json"
         if last_category not in _SHAPE_CATEGORIES:
             error = OfferNegotiationModelError("proposal is not verifiable", last_category)
+            error.provider_request_id = provider_request_id
             error.repair_count = attempt
             error.elapsed_ms = int((perf_counter() - started) * 1000)
+            _emit_diagnostic(
+                on_diagnostic,
+                failure_category=last_category,
+                repair_attempted=attempt > 0,
+                repair_count=attempt,
+                elapsed_ms=error.elapsed_ms,
+                provider_request_id=provider_request_id,
+            )
             raise error
+    _emit_diagnostic(
+        on_diagnostic,
+        failure_category=last_category,
+        repair_attempted=True,
+        repair_count=1,
+        elapsed_ms=int((perf_counter() - started) * 1000),
+        provider_request_id=provider_request_id,
+    )
     return safe_empty_offer_negotiation_proposal()
+
+
+def _emit_diagnostic(
+    sink: OfferNegotiationDiagnosticSink | None,
+    *,
+    failure_category: str,
+    repair_attempted: bool,
+    repair_count: int,
+    elapsed_ms: int,
+    provider_request_id: str,
+) -> None:
+    if sink is None:
+        return
+    sink(
+        {
+            "failure_category": failure_category,
+            "failure_categories": [failure_category],
+            "repair_attempted": repair_attempted,
+            "repair_count": repair_count,
+            "elapsed_ms": max(0, elapsed_ms),
+            "provider_request_id": provider_request_id,
+        }
+    )
 
 
 def _validate_item(item: Any, snapshot: dict[str, Any]) -> dict[str, Any]:

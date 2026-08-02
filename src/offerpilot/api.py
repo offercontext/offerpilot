@@ -2689,7 +2689,16 @@ def create_app(
         if isinstance(model, JSONResponse):
             return model
         try:
-            proposal = generate_offer_negotiation_proposal(model, result.snapshot)
+            proposal = generate_offer_negotiation_proposal(
+                model,
+                result.snapshot,
+                on_diagnostic=lambda diagnostic: append_log_entry(
+                    resolved_data_dir,
+                    "WARNING",
+                    "offer_negotiation_diagnostic "
+                    + json.dumps(diagnostic, ensure_ascii=True, separators=(",", ":")),
+                ),
+            )
             proposal_hash = sha256_text(canonical_json(proposal))
             row = offer_negotiation.complete_ready(
                 proposal_id=result.proposal.id,
@@ -2705,32 +2714,12 @@ def create_app(
                     revision=result.revision,
                     provider_call_token=result.owner_token,
                 )
-                append_log_entry(
-                    resolved_data_dir,
-                    "WARNING",
-                    "offer_negotiation_provider_failure "
-                    + json.dumps(
-                        {"failure_category": "provider_error", "repair_count": exc.repair_count},
-                        ensure_ascii=True,
-                        separators=(",", ":"),
-                    ),
-                )
                 return error_response(502, "AI 服务暂不可用，请使用原尝试重试", code="offer_negotiation_provider_error")
             offer_negotiation.invalidate(
                 proposal_id=result.proposal.id,
                 revision=result.revision,
                 provider_call_token=result.owner_token,
                 reason="contract_failed",
-            )
-            append_log_entry(
-                resolved_data_dir,
-                "WARNING",
-                "offer_negotiation_contract_failure "
-                + json.dumps(
-                    {"failure_category": exc.validation_category, "repair_count": exc.repair_count},
-                    ensure_ascii=True,
-                    separators=(",", ":"),
-                ),
             )
             return error_response(
                 502,
