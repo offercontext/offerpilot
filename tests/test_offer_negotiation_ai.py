@@ -161,6 +161,80 @@ def test_semantic_evidence_failure_is_not_repaired() -> None:
     assert "req-1" not in error.value.provider_request_id
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "请询问公司是否接受远程办公。",
+        "接受或拒绝该 Offer 仍由用户自行决定。",
+        "不应由系统替用户决定接受或拒绝 Offer。",
+        "请确认录用通知中的入职时间。",
+        "请说明接受或拒绝该 Offer 前需要确认哪些信息。",
+        "请列出接受或拒绝 Offer 前需要询问的问题。",
+        "建议说明：接受或拒绝仍由用户自行决定。",
+        "建议接受或拒绝，最终由用户自行决定。",
+    ],
+)
+def test_legal_negotiation_language_is_not_decision_language(text: str) -> None:
+    payload = _valid_payload()
+    payload["communication_goals"][0]["text"] = text
+    result = validate_offer_negotiation(payload, _snapshot())
+    assert result["proposal_status"] == "normal"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "建议接受该 Offer。",
+        "你应该拒绝这个岗位。",
+        "这份 Offer 是最优选择，请直接接受。",
+        "建议你考虑接受该 Offer。",
+        "你应该考虑拒绝这个岗位。",
+        "接受这份 Offer 会更好。",
+        "推荐你认真考虑拒绝这个 Offer。",
+        "建议你优先考虑接受这份 Offer。",
+        "最好仔细考虑后选择这个岗位。",
+        "请直接接受这个 Offer。",
+        "请你接受这个 Offer。",
+        "请用户拒绝这个岗位。",
+        "请立即接受这个 Offer。",
+    ],
+)
+def test_explicit_decision_recommendation_is_terminal(text: str) -> None:
+    payload = _valid_payload()
+    payload["communication_goals"][0]["text"] = text
+    with pytest.raises(OfferNegotiationModelError) as error:
+        validate_offer_negotiation(payload, _snapshot())
+    assert error.value.validation_category == "forbidden_decision_language"
+
+
+def test_explicit_decision_language_is_terminal_and_not_repaired() -> None:
+    invalid = _valid_payload()
+    invalid["communication_goals"][0]["text"] = "建议接受该 Offer。"
+    model = FakeModel([json.dumps(invalid, ensure_ascii=False), json.dumps(_valid_payload(), ensure_ascii=False)])
+    with pytest.raises(OfferNegotiationModelError) as error:
+        generate_offer_negotiation_proposal(model, _snapshot())
+    assert error.value.validation_category == "forbidden_decision_language"
+    assert len(model.calls) == 1
+
+
+def test_question_context_does_not_hide_an_unsupported_fact_assertion() -> None:
+    payload = _valid_payload()
+    payload["communication_goals"][0]["text"] = "请确认公司政策是否允许远程办公，公司政策规定所有人必须到岗。"
+    with pytest.raises(OfferNegotiationModelError) as error:
+        validate_offer_negotiation(payload, _snapshot())
+    assert error.value.validation_category == "forbidden_decision_language"
+
+
+def test_generation_prompt_explains_allowed_and_forbidden_decision_language() -> None:
+    model = FakeModel([json.dumps(_valid_payload(), ensure_ascii=False)])
+    generate_offer_negotiation_proposal(model, _snapshot())
+    prompt = "\n".join(message.content for message in model.calls[0][0])
+    assert "请询问公司是否接受远程办公" in prompt
+    assert "接受或拒绝仍由用户自行决定" in prompt
+    assert "建议接受该 Offer" in prompt
+    assert "应该拒绝这个岗位" in prompt
+
+
 def test_safe_empty_has_exact_four_empty_arrays() -> None:
     empty = safe_empty_offer_negotiation_proposal()
     assert set(empty) == set(OFFER_NEGOTIATION_FIELDS)
