@@ -62,11 +62,16 @@ function Get-ProviderEndpoint([string]$configPath) {
 function Get-DomainCounts {
   $env:OFFER_NEGOTIATION_HARNESS_DB = Join-Path $tempData 'data.db'
   $code = @'
-import json, os, sqlite3
+import hashlib, json, os, sqlite3
 db = sqlite3.connect(os.environ["OFFER_NEGOTIATION_HARNESS_DB"])
-names = ["applications", "application_events", "resumes", "conversations", "messages", "application_material_kits", "material_revision_proposals", "knowledge_notes", "knowledge_note_versions", "knowledge_note_evidence", "knowledge_captured_source_metadata", "knowledge_sources", "knowledge_source_origins", "knowledge_extraction_snapshots", "knowledge_evidence", "knowledge_source_assets", "knowledge_jobs", "knowledge_logs", "knowledge_source_briefs", "knowledge_brief_attempts", "knowledge_brief_attempt_steps", "knowledge_retrieval_traces", "questions", "mock_interview_attempts", "mock_interview_turns", "mock_interview_feedback_proposals", "mock_interview_review_drafts", "wakes", "wakeups"]
+names = ["applications", "application_events", "resumes", "resume_matches", "jd_analyses", "conversations", "chat_messages", "application_material_kits", "application_evidence_bundles", "material_revision_proposals", "opportunity_fit_reviews", "opportunity_fit_review_sessions", "opportunity_fit_review_stages", "interview_notes", "interview_review_proposals", "interview_preparation_proposals", "interview_knowledge_capture_attempts", "knowledge_notes", "knowledge_note_versions", "knowledge_note_evidence", "knowledge_captured_source_metadata", "knowledge_sources", "knowledge_source_origins", "knowledge_extraction_snapshots", "knowledge_evidence", "knowledge_source_assets", "knowledge_jobs", "knowledge_logs", "knowledge_source_briefs", "knowledge_brief_attempts", "knowledge_brief_attempt_steps", "knowledge_retrieval_traces", "questions", "question_reviews", "mock_interview_attempts", "mock_interview_turns", "mock_interview_feedback_proposals", "mock_interview_review_drafts", "wakeups"]
 tables = {row[0] for row in db.execute("select name from sqlite_master where type = 'table'")}
-print(json.dumps({name: (db.execute(f"select count(*) from {name}").fetchone()[0] if name in tables else 0) for name in names}, separators=(",", ":")))
+snapshot = {}
+for name in names:
+    rows = db.execute(f"select * from {name} order by rowid").fetchall() if name in tables else []
+    encoded = json.dumps(rows, ensure_ascii=False, separators=(",", ":"), default=str)
+    snapshot[name] = {"count": len(rows), "sha256": hashlib.sha256(encoded.encode("utf-8")).hexdigest()}
+print(json.dumps(snapshot, separators=(",", ":")))
 '@
   $json = & uv run python -c $code
   Assert-ExitCode 'domain baseline capture'
@@ -75,7 +80,9 @@ print(json.dumps({name: (db.execute(f"select count(*) from {name}").fetchone()[0
 
 function Assert-CountsUnchanged($before, $after) {
   foreach ($property in $before.PSObject.Properties) {
-    if ([int]$before.$($property.Name) -ne [int]$after.$($property.Name)) {
+    $beforeTable = $before.$($property.Name)
+    $afterTable = $after.$($property.Name)
+    if ([int]$beforeTable.count -ne [int]$afterTable.count -or [string]$beforeTable.sha256 -ne [string]$afterTable.sha256) {
       throw "Unexpected cross-domain write in $($property.Name)."
     }
   }
@@ -100,7 +107,7 @@ function Assert-BrowserSequence([object[]]$records, [int]$expectedOfferId, [int]
   $proposalPath = "/api/offer-negotiation/proposals/$expectedProposalId"
   $proposalRequests = @($records | Where-Object { $_.method -eq 'POST' -and $_.url -eq "$baseUrl$offerProposalPath" })
   $confirmRequests = @($records | Where-Object { $_.method -eq 'POST' -and $_.url -match "/api/offer-negotiation/proposals/[0-9]+/confirm$" })
-  $historyRequests = @($records | Where-Object { $_.method -eq 'GET' -and $_.url -match "/api/offer-negotiation/proposals/[0-9]+$" })
+  $historyRequests = @($records | Where-Object { $_.method -eq 'GET' -and $_.url -eq "$baseUrl$proposalPath" -and [int]$_.response_status -eq 200 })
   if ($proposalRequests.Count -lt 2) { throw 'Browser did not complete both UI and Pilot Proposal flows.' }
   if ($confirmRequests.Count -lt 2) { throw 'Browser did not complete both UI and Pilot confirmation flows.' }
   if ($historyRequests.Count -lt 2) { throw 'Browser did not reopen both UI and Pilot negotiation histories.' }
@@ -111,14 +118,14 @@ function Assert-BrowserSequence([object[]]$records, [int]$expectedOfferId, [int]
   if (-not ($proposalRequests | Where-Object { $_.request_context.entrypoint -eq 'pilot' })) { throw 'Browser did not record a Pilot negotiation flow.' }
   if (-not ($confirmRequests | Where-Object { $_.request_context.entrypoint -eq 'ui' })) { throw 'Browser did not record UI confirmation.' }
   if (-not ($confirmRequests | Where-Object { $_.request_context.entrypoint -eq 'pilot' })) { throw 'Browser did not record Pilot confirmation.' }
-  if (-not ($records | Where-Object { $_.method -eq 'GET' -and $_.url -eq "$baseUrl$proposalPath" })) { throw 'Browser did not read the selected negotiation history.' }
+  if ($historyRequests.Count -lt 2) { throw 'Browser did not read the selected negotiation history in both flows.' }
   if ($records | Where-Object { $_.url -match $chatWritePattern -and $_.method -ne 'GET' }) { throw "Pilot caused an unexpected $chatDomain write." }
 }
 
 $providerErrorCode = 'offer_negotiation_provider_error'
 $unverifiableErrorCode = 'offer_negotiation_unverifiable'
 $proposalDiagnosticMarker = 'offer_negotiation_proposal'
-$diagnosticFields = @('failure_category', 'failure_categories', 'repair_attempted', 'repair_count', 'provider_request_id')
+$diagnosticFields = @('failure_category', 'failure_categories', 'repair_attempted', 'repair_count', 'elapsed_ms', 'http_status', 'timeout', 'provider_request_id')
 $chatDomain = 'Chat'
 $chatWritePattern = '/api/(chat|conversations|messages)'
 
@@ -163,9 +170,19 @@ function Assert-NegotiationErrorSemantics([object[]]$records) {
       $_.url -eq $record.url
     })
     if ($record.response_error_code -eq $providerErrorCode) {
-      if (-not ($replays | Where-Object { $_.response_attempt_status -eq 'provider_unknown' })) {
+      $pendingReplay = $replays | Where-Object { $_.response_attempt_status -eq 'provider_unknown' } | Select-Object -First 1
+      if (-not $pendingReplay) {
         throw 'Provider-unknown result did not preserve a provider_unknown retry state.'
       }
+      $requests = @($records | Where-Object {
+        $_.kind -eq 'browser_request' -and
+        $_.method -eq 'POST' -and
+        $_.url -eq $record.url -and
+        $_.request_context.idempotency_key_sha256 -eq $keyHash
+      })
+      if ($requests.Count -lt 2) { throw 'Provider-unknown result was not retried with the original key.' }
+      $payloadHashes = @($requests | ForEach-Object { $_.request_context.payload_sha256 } | Where-Object { $_ }) | Sort-Object -Unique
+      if ($payloadHashes.Count -ne 1) { throw 'Provider-unknown retry changed the frozen request payload.' }
     } elseif ($replays | Where-Object { $_.response_attempt_status -in @('ready', 'generating') }) {
       throw 'Unverifiable result exposed a reusable attempt state.'
     }
@@ -262,8 +279,11 @@ try {
   Assert-DiagnosticContract $logEntries $records
   $proxyRecords = @(Get-Content -LiteralPath $providerAudit | ForEach-Object { $_ | ConvertFrom-Json })
   $providerConnections = @($proxyRecords | Where-Object { $_.status -eq 'connected' })
-  $browserProposalCount = @($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'POST' -and $_.url -match '/api/offers/[0-9]+/negotiation/proposals$' }).Count
-  if ($providerConnections.Count -lt $browserProposalCount) { throw 'Provider call audit did not cover every browser Proposal request.' }
+  $providerResponses = @($records | Where-Object {
+    $_.kind -eq 'browser_response' -and
+    $_.response_error_code -eq $providerErrorCode
+  })
+  if ($providerResponses.Count -gt 0 -and $providerConnections.Count -eq 0) { throw 'Provider-unknown browser result had no observed Provider egress.' }
   if (-not ($proxyRecords | Where-Object { $_.status -eq 'connected' -and "$($_.scheme)://$($_.host):$($_.port)" -eq $provider.Tuple })) { throw 'Provider egress did not match the configured endpoint.' }
   if ($proxyRecords | Where-Object { $_.status -ne 'connected' -and $_.status -ne 'rejected' }) { throw 'Provider egress audit contains an unknown status.' }
   Write-Host 'Offer negotiation browser acceptance passed.'

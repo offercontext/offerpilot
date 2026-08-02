@@ -56,8 +56,8 @@ def test_first_claim_persists_snapshot_and_same_set_is_idempotent(tmp_path) -> N
     assert second.proposal.id == first.proposal.id
     assert first.snapshot == second.snapshot
     assert "id" not in first.snapshot["offer_snapshot"]
-    assert first.snapshot["dimensions"][0]["path_id"] == "dimension_001"
-    assert first.snapshot["dimensions"][0]["value_text"] == "地铁 35 分钟"
+    assert first.snapshot["offer_snapshot"]["dimensions"][0]["path_id"] == "dimension_001"
+    assert first.snapshot["offer_snapshot"]["dimensions"][0]["value_text"] == "地铁 35 分钟"
     with factory() as session:
         assert session.scalar(select(OfferNegotiationProposal).where(OfferNegotiationProposal.id == first.proposal.id))
 
@@ -67,14 +67,14 @@ def test_key_different_snapshot_is_conflict_and_ready_is_immutable(tmp_path) -> 
     first = repository.prepare_or_replay(
         offer_id=offer_id,
         dimension_ids=[first_id],
-        user_brief={"goal": "目标一", "concerns": "", "scenario": "电话"},
+        user_brief={"goal": "目标一", "concerns": "顾虑", "scenario": "电话"},
         idempotency_key="B" * 16,
     )
     with pytest.raises(OfferNegotiationConflictError) as error:
         repository.prepare_or_replay(
             offer_id=offer_id,
             dimension_ids=[second_id],
-            user_brief={"goal": "目标二", "concerns": "", "scenario": "电话"},
+            user_brief={"goal": "目标二", "concerns": "顾虑", "scenario": "电话"},
             idempotency_key="B" * 16,
         )
     assert error.value.code == "offer_negotiation_idempotency_conflict"
@@ -92,7 +92,7 @@ def test_duplicate_dimension_label_does_not_change_existing_source(tmp_path) -> 
     claimed = repository.prepare_or_replay(
         offer_id=offer_id,
         dimension_ids=[first_id],
-        user_brief={"goal": "目标", "concerns": "", "scenario": "电话"},
+        user_brief={"goal": "目标", "concerns": "顾虑", "scenario": "电话"},
         idempotency_key="Z" * 16,
     )
     with factory() as session:
@@ -125,7 +125,7 @@ def test_application_reassignment_invalidates_frozen_source(tmp_path) -> None:
     claimed = repository.prepare_or_replay(
         offer_id=offer_id,
         dimension_ids=[first_id],
-        user_brief={"goal": "鐩爣", "concerns": "", "scenario": "鐢佃瘽"},
+        user_brief={"goal": "鐩爣", "concerns": "顾虑", "scenario": "鐢佃瘽"},
         idempotency_key="A" * 16,
     )
     completed = repository.complete_ready(
@@ -151,7 +151,7 @@ def test_legacy_snapshot_is_read_only_when_identity_fields_are_missing(tmp_path)
     claimed = repository.prepare_or_replay(
         offer_id=offer_id,
         dimension_ids=[first_id],
-        user_brief={"goal": "鐩爣", "concerns": "", "scenario": "鐢佃瘽"},
+        user_brief={"goal": "鐩爣", "concerns": "顾虑", "scenario": "鐢佃瘽"},
         idempotency_key="L" * 16,
     )
     with factory() as session:
@@ -173,7 +173,7 @@ def test_legacy_snapshot_is_read_only_when_identity_fields_are_missing(tmp_path)
                 "assessment": offer.assessment,
             },
             "dimensions": [
-                {"path_id": "dimension_001", "label": current["dimensions"][0]["label"], "value_text": current["dimensions"][0]["value_text"]}
+                {"path_id": "dimension_001", "label": current["offer_snapshot"]["dimensions"][0]["label"], "value_text": current["offer_snapshot"]["dimensions"][0]["value_text"]}
             ],
             "user_brief": current["user_brief"],
         }
@@ -195,7 +195,7 @@ def test_invalid_dimensions_do_not_create_attempt(tmp_path) -> None:
         repository.prepare_or_replay(
             offer_id=offer_id,
             dimension_ids=[first_id] * 2,
-            user_brief={"goal": "", "concerns": "", "scenario": ""},
+            user_brief={"goal": "", "concerns": "顾虑", "scenario": ""},
             idempotency_key="C" * 16,
         )
     with factory() as session:
@@ -207,7 +207,7 @@ def test_lease_claim_and_cas_completion(tmp_path) -> None:
     claimed = repository.prepare_or_replay(
         offer_id=offer_id,
         dimension_ids=[first_id],
-        user_brief={"goal": "目标", "concerns": "", "scenario": "电话"},
+        user_brief={"goal": "目标", "concerns": "顾虑", "scenario": "电话"},
         idempotency_key="D" * 16,
     )
     assert claimed.owner_token
@@ -222,7 +222,7 @@ def test_lease_claim_and_cas_completion(tmp_path) -> None:
     replay = repository.prepare_or_replay(
         offer_id=offer_id,
         dimension_ids=[first_id],
-        user_brief={"goal": "目标", "concerns": "", "scenario": "电话"},
+        user_brief={"goal": "目标", "concerns": "顾虑", "scenario": "电话"},
         idempotency_key="D" * 16,
     )
     assert replay.proposal.id == completed.id
@@ -234,7 +234,7 @@ def test_late_provider_error_after_ready_does_not_change_ready_state(tmp_path) -
     claimed = repository.prepare_or_replay(
         offer_id=offer_id,
         dimension_ids=[first_id],
-        user_brief={"goal": "目标", "concerns": "", "scenario": "电话"},
+        user_brief={"goal": "目标", "concerns": "顾虑", "scenario": "电话"},
         idempotency_key="L" * 16,
     )
     repository.complete_ready(
@@ -261,7 +261,7 @@ def test_provider_unknown_is_pending_until_lease_expiry(tmp_path) -> None:
     claimed = repository.prepare_or_replay(
         offer_id=offer_id,
         dimension_ids=[first_id],
-        user_brief={"goal": "目标", "concerns": "", "scenario": "电话"},
+        user_brief={"goal": "目标", "concerns": "顾虑", "scenario": "电话"},
         idempotency_key="E" * 16,
     )
     repository.mark_provider_unknown(
@@ -272,7 +272,7 @@ def test_provider_unknown_is_pending_until_lease_expiry(tmp_path) -> None:
     pending = repository.prepare_or_replay(
         offer_id=offer_id,
         dimension_ids=[first_id],
-        user_brief={"goal": "目标", "concerns": "", "scenario": "电话"},
+        user_brief={"goal": "目标", "concerns": "顾虑", "scenario": "电话"},
         idempotency_key="E" * 16,
     )
     assert pending.pending is True
@@ -281,7 +281,7 @@ def test_provider_unknown_is_pending_until_lease_expiry(tmp_path) -> None:
     takeover = repository.prepare_or_replay(
         offer_id=offer_id,
         dimension_ids=[first_id],
-        user_brief={"goal": "目标", "concerns": "", "scenario": "电话"},
+        user_brief={"goal": "目标", "concerns": "顾虑", "scenario": "电话"},
         idempotency_key="E" * 16,
     )
     assert takeover.should_call is True

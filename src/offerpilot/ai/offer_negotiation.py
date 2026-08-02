@@ -94,6 +94,8 @@ class OfferNegotiationModelError(ValueError):
         self.provider_request_id = ""
         self.repair_count = 0
         self.elapsed_ms = 0
+        self.http_status: int | None = None
+        self.timeout = False
 
 
 def _redact_provider_request_id(value: object) -> str:
@@ -122,6 +124,10 @@ def build_offer_negotiation_snapshot(
     idempotency_key: str,
 ) -> dict[str, Any]:
     del idempotency_key
+    for field in ("goal", "concerns", "scenario"):
+        value = user_brief.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{field} must not be blank")
     fields = (
         "company_name", "position_name", "status", "base_monthly", "months_per_year",
         "signing_bonus", "equity", "perks", "deadline", "notes",
@@ -138,8 +144,7 @@ def build_offer_negotiation_snapshot(
     ]
     return {
         "snapshot_version": 1,
-        "offer_snapshot": offer_snapshot,
-        "dimensions": canonical_dimensions,
+        "offer_snapshot": {**offer_snapshot, "dimensions": canonical_dimensions},
         "user_brief": {
             "goal": user_brief.get("goal", ""),
             "concerns": user_brief.get("concerns", ""),
@@ -205,6 +210,12 @@ def generate_offer_negotiation_proposal(
         except Exception as exc:
             error = OfferNegotiationModelError("provider request failed", "provider_error")
             error.provider_request_id = _redact_provider_request_id(getattr(exc, "provider_request_id", ""))
+            status = getattr(exc, "status_code", getattr(exc, "http_status", None))
+            try:
+                error.http_status = int(status) if status is not None else None
+            except (TypeError, ValueError):
+                error.http_status = None
+            error.timeout = isinstance(exc, TimeoutError) or "timeout" in type(exc).__name__.lower()
             error.repair_count = attempt
             error.elapsed_ms = int((perf_counter() - started) * 1000)
             _emit_diagnostic(
@@ -214,6 +225,8 @@ def generate_offer_negotiation_proposal(
                 repair_count=attempt,
                 elapsed_ms=error.elapsed_ms,
                 provider_request_id=error.provider_request_id,
+                http_status=error.http_status,
+                timeout=error.timeout,
             )
             raise error from exc
         provider_request_id = _redact_provider_request_id(
@@ -264,6 +277,8 @@ def _emit_diagnostic(
     repair_count: int,
     elapsed_ms: int,
     provider_request_id: str,
+    http_status: int | None = None,
+    timeout: bool = False,
 ) -> None:
     if sink is None:
         return
@@ -275,6 +290,8 @@ def _emit_diagnostic(
             "repair_count": repair_count,
             "elapsed_ms": max(0, elapsed_ms),
             "provider_request_id": provider_request_id,
+            "http_status": http_status,
+            "timeout": timeout,
         }
     )
 
@@ -286,12 +303,18 @@ def _validate_item(item: Any, snapshot: dict[str, Any]) -> dict[str, Any]:
     text = item.get("text")
     rationale = item.get("rationale")
     refs = item.get("evidence_refs")
-    if not isinstance(item_id, str) or not _ID_RE.fullmatch(item_id):
+    if not isinstance(item_id, str) or not item_id:
         raise OfferNegotiationModelError("item id is invalid", "invalid_item_shape")
-    if not isinstance(text, str) or not text.strip() or len(text) > 600:
+    if len(item_id) > 64:
+        raise OfferNegotiationModelError("item id exceeds the limit", "limit_exceeded")
+    if not _ID_RE.fullmatch(item_id):
+        raise OfferNegotiationModelError("item id is invalid", "invalid_item_shape")
+    if not isinstance(text, str) or not text.strip():
         raise OfferNegotiationModelError("item text is invalid", "invalid_item_shape")
-    if not isinstance(rationale, str) or not rationale.strip() or len(rationale) > 600:
+    if not isinstance(rationale, str) or not rationale.strip():
         raise OfferNegotiationModelError("item rationale is invalid", "invalid_item_shape")
+    if len(text) > 600 or len(rationale) > 600:
+        raise OfferNegotiationModelError("item text exceeds the limit", "limit_exceeded")
     if _FORBIDDEN.search(text) or _FORBIDDEN.search(rationale):
         raise OfferNegotiationModelError("decision language is not allowed", "forbidden_decision_language")
     if not isinstance(refs, list) or not refs or len(refs) > 4:
@@ -345,7 +368,8 @@ def _resolve_snapshot_path(snapshot: dict[str, Any], source: str, path: str) -> 
         dimension_match = re.fullmatch(r"/offer_snapshot/dimensions/(dimension_[0-9]{3})/value_text", path)
         if dimension_match:
             path_id = dimension_match.group(1)
-            dimension = next((item for item in snapshot.get("dimensions", []) if item.get("path_id") == path_id), None)
+            dimensions = snapshot.get("offer_snapshot", {}).get("dimensions", [])
+            dimension = next((item for item in dimensions if item.get("path_id") == path_id), None)
             if dimension is None or not isinstance(dimension.get("value_text"), str) or not dimension["value_text"]:
                 raise OfferNegotiationModelError("missing dimension value has no evidence", "unknown_evidence_ref")
             return dimension["value_text"]
@@ -381,7 +405,7 @@ def _evidence_catalog(snapshot: dict[str, Any]) -> list[dict[str, str]]:
                         "excerpt": str(value),
                     }
                 )
-    dimensions = snapshot.get("dimensions", [])
+    dimensions = offer_snapshot.get("dimensions", [])
     if isinstance(dimensions, list):
         for dimension in dimensions:
             if not isinstance(dimension, dict):

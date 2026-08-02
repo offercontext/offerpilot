@@ -22,7 +22,7 @@ export default function OfferComparisonDimensionPanel({ offers, onSelectionChang
 
   const reload = async () => {
     const [nextDimensions, valueLists] = await Promise.all([
-      listOfferComparisonDimensions(false),
+      listOfferComparisonDimensions(true),
       Promise.all(offers.map((offer) => listOfferComparisonValues(offer.id))),
     ]);
     setDimensions(nextDimensions);

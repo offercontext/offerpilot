@@ -1,20 +1,24 @@
 // @vitest-environment jsdom
-import { act } from 'react';
+import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import OfferNegotiationDrawer from './OfferNegotiationDrawer';
+import OfferNegotiationDrawer, { type OfferNegotiationDraft } from './OfferNegotiationDrawer';
 import type { Offer, OfferNegotiationProposal } from '@/types/offer';
 import { OfferNegotiationError } from '@/services/offers';
 
 const service = vi.hoisted(() => ({
   create: vi.fn(),
   list: vi.fn(async () => []),
+  dimensions: vi.fn(async () => []),
+  values: vi.fn(async () => []),
   confirm: vi.fn(),
 }));
 
 vi.mock('@/services/offers', () => ({
   createOfferNegotiationProposal: service.create,
   listOfferNegotiationProposals: service.list,
+  listOfferComparisonDimensions: service.dimensions,
+  listOfferComparisonValues: service.values,
   confirmOfferNegotiationProposal: service.confirm,
   OfferNegotiationError: class OfferNegotiationError extends Error {
     constructor(public status: number, public code: string | null) { super(code ?? 'error'); }
@@ -72,9 +76,81 @@ describe('OfferNegotiationDrawer', () => {
     expect(service.create).not.toHaveBeenCalled();
   });
 
+  it('does not loop when the parent stores each draft update', async () => {
+    let renderCount = 0;
+    function Wrapper() {
+      const [draft, setDraft] = useState<OfferNegotiationDraft | null>(null);
+      renderCount += 1;
+      return <OfferNegotiationDrawer open offer={offer} draft={draft ?? undefined} onClose={vi.fn()} onDraftChange={setDraft} />;
+    }
+    await act(async () => { root?.render(<Wrapper />); });
+    expect(renderCount).toBeLessThan(6);
+  });
+
+  it('requires a non-blank concerns field before generation', async () => {
+    await act(async () => { root?.render(<OfferNegotiationDrawer open offer={offer} onClose={vi.fn()} />); });
+    const inputs = host?.querySelectorAll('input') ?? [];
+    const textareas = host?.querySelectorAll('textarea') ?? [];
+    await act(async () => {
+      changeValue(inputs[0] as HTMLInputElement, 'Goal');
+      changeValue(textareas[0] as HTMLTextAreaElement, ' \t');
+      changeValue(inputs[1] as HTMLInputElement, 'Call');
+    });
+    expect(host?.querySelector<HTMLButtonElement>('[data-testid="offer-negotiation-generate"]')?.disabled).toBe(true);
+    expect(service.create).not.toHaveBeenCalled();
+  });
+
+  it('uses the frozen dimension ids when creating a proposal', async () => {
+    service.create.mockResolvedValue(proposal());
+    service.dimensions.mockResolvedValueOnce([
+      { id: 9, label: '成长空间', archived_at: null },
+      { id: 3, label: '通勤', archived_at: null },
+    ]);
+    await act(async () => { root?.render(<OfferNegotiationDrawer open offer={offer} dimensionIds={[9, 3]} onClose={vi.fn()} />); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const inputs = host?.querySelectorAll('input') ?? [];
+    const textareas = host?.querySelectorAll('textarea') ?? [];
+    await act(async () => {
+      changeValue(inputs[0] as HTMLInputElement, 'Goal');
+      changeValue(textareas[0] as HTMLTextAreaElement, 'Concern');
+      changeValue(inputs[1] as HTMLInputElement, 'Call');
+      host?.querySelector<HTMLButtonElement>('[data-testid="offer-negotiation-generate"]')?.click();
+    });
+    expect(service.create.mock.calls[0][1].dimension_ids).toEqual([3, 9]);
+  });
+
+  it('blocks generation when selected dimension facts cannot be loaded', async () => {
+    service.dimensions.mockRejectedValueOnce(new Error('dimension read failed'));
+    await act(async () => { root?.render(<OfferNegotiationDrawer open offer={offer} dimensionIds={[3]} onClose={vi.fn()} />); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const inputs = host?.querySelectorAll('input') ?? [];
+    const textareas = host?.querySelectorAll('textarea') ?? [];
+    await act(async () => {
+      changeValue(inputs[0] as HTMLInputElement, 'Goal');
+      changeValue(textareas[0] as HTMLTextAreaElement, 'Concern');
+      changeValue(inputs[1] as HTMLInputElement, 'Call');
+    });
+    expect(host?.querySelector<HTMLButtonElement>('[data-testid="offer-negotiation-generate"]')?.disabled).toBe(true);
+    expect(service.create).not.toHaveBeenCalled();
+  });
+
+  it('shows the complete frozen Offer facts before generation', async () => {
+    await act(async () => { root?.render(<OfferNegotiationDrawer open offer={{ ...offer, equity: '期权', perks: '补充医疗', deadline: '周五', notes: '用户备注' }} onClose={vi.fn()} />); });
+    expect(host?.querySelector('[data-testid="offer-negotiation-input-facts"]')?.textContent).toContain('期权');
+    expect(host?.querySelector('[data-testid="offer-negotiation-input-facts"]')?.textContent).toContain('用户备注');
+  });
+
   it('generates an editable evidence-backed draft and confirms selected blocks', async () => {
     service.create.mockResolvedValue(proposal());
-    service.confirm.mockResolvedValue({ id: 8, proposal_id: 3, offer_id: 7, selected_blocks: ['goal-1'], edited_content: {}, content_hash: 'brief-hash', confirmed_at: '2026-08-01T00:00:00Z' });
+    service.confirm.mockResolvedValue({
+      id: 8,
+      proposal_id: 3,
+      offer_id: 7,
+      selected_blocks: ['goal-1'],
+      edited_content: { blocks: proposal().proposal.communication_goals, edits: { 'goal-1': '用户最终编辑的表达' }, proposal_hash: 'hash' },
+      content_hash: 'brief-hash',
+      confirmed_at: '2026-08-01T00:00:00Z',
+    });
     await act(async () => { root?.render(<OfferNegotiationDrawer open offer={offer} onClose={vi.fn()} />); });
     const inputs = host?.querySelectorAll('input') ?? [];
     const textareas = host?.querySelectorAll('textarea') ?? [];
@@ -92,6 +168,7 @@ describe('OfferNegotiationDrawer', () => {
     expect(service.confirm.mock.calls[0][0]).toBe(3);
     expect(service.confirm.mock.calls[0][1].selected_blocks).toEqual(['goal-1']);
     expect(service.create.mock.calls[0][2]).toBe('ui');
+    expect(host?.textContent).toContain('用户最终编辑的表达');
   });
 
   it('marks Pilot-generated requests without changing the API payload', async () => {
@@ -117,9 +194,11 @@ describe('OfferNegotiationDrawer', () => {
     service.create.mockRejectedValueOnce(error);
     await act(async () => { root?.render(<OfferNegotiationDrawer open offer={offer} onClose={vi.fn()} />); });
     const inputs = host?.querySelectorAll('input') ?? [];
+    const textareas = host?.querySelectorAll('textarea') ?? [];
     await act(async () => {
       changeValue(inputs[0] as HTMLInputElement, 'Goal');
-      changeValue(inputs[1] as HTMLInputElement, 'Concern');
+      changeValue(textareas[0] as HTMLTextAreaElement, 'Concern');
+      changeValue(inputs[1] as HTMLInputElement, 'Call');
     });
     await act(async () => { host?.querySelector<HTMLButtonElement>('[data-testid="offer-negotiation-generate"]')?.click(); });
     expect(host?.querySelector('fieldset')?.hasAttribute('disabled')).toBe(true);

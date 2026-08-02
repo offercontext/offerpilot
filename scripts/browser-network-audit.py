@@ -139,6 +139,14 @@ class BrowserAudit:
                     payload = None
                 if isinstance(payload, dict):
                     request_context: dict[str, object] = {}
+                    request_context["payload_sha256"] = hashlib.sha256(
+                        json.dumps(
+                            payload,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ).encode("utf-8")
+                    ).hexdigest()
                     if isinstance(payload.get("resume_id"), int):
                         request_context["resume_id"] = payload["resume_id"]
                     if isinstance(payload.get("jd_text"), str):
@@ -189,19 +197,20 @@ class BrowserAudit:
         status = response.get("status")
         if isinstance(status, (int, float)):
             record["response_status"] = int(status)
-        if int(status or 0) >= 400:
-            try:
-                body_result = await self.send("Network.getResponseBody", {"requestId": request_id}, session_id)
-                body = body_result.get("result")
-                body_text = body.get("body") if isinstance(body, dict) else None
-                payload = json.loads(body_text) if isinstance(body_text, str) else None
-                if isinstance(payload, dict):
-                    if isinstance(payload.get("error_code"), str):
-                        record["response_error_code"] = payload["error_code"]
-                    if isinstance(payload.get("attempt_status"), str):
-                        record["response_attempt_status"] = payload["attempt_status"]
-            except (RuntimeError, json.JSONDecodeError, TypeError):
-                pass
+        try:
+            body_result = await self.send("Network.getResponseBody", {"requestId": request_id}, session_id)
+            body = body_result.get("result")
+            body_text = body.get("body") if isinstance(body, dict) else None
+            payload = json.loads(body_text) if isinstance(body_text, str) else None
+            if isinstance(payload, dict):
+                if isinstance(payload.get("error_code"), str):
+                    record["response_error_code"] = payload["error_code"]
+                if isinstance(payload.get("attempt_status"), str):
+                    record["response_attempt_status"] = payload["attempt_status"]
+                if isinstance(payload.get("retry_after_ms"), int):
+                    record["response_retry_after_ms"] = payload["retry_after_ms"]
+        except (RuntimeError, json.JSONDecodeError, TypeError):
+            pass
         if self.handle is not None:
             response_record = {
                 "kind": "browser_response",
@@ -216,6 +225,8 @@ class BrowserAudit:
             for key in ("response_error_code", "response_attempt_status"):
                 if key in record:
                     response_record[key] = record[key]
+            if "response_retry_after_ms" in record:
+                response_record["response_retry_after_ms"] = record["response_retry_after_ms"]
             self.handle.write(json.dumps(response_record, ensure_ascii=False) + "\n")
             self.handle.flush()
 

@@ -84,10 +84,11 @@ def test_snapshot_dimension_order_is_canonical_and_missing_values_have_no_eviden
     first = _snapshot(dimension_order=[2, 1])
     second = _snapshot(dimension_order=[1, 2])
     assert first == second
-    assert first["dimensions"] == [
+    assert first["offer_snapshot"]["dimensions"] == [
         {"path_id": "dimension_001", "label": "通勤", "value_text": "地铁 35 分钟"},
         {"path_id": "dimension_002", "label": "成长空间", "value_text": None},
     ]
+    assert "dimensions" not in first
 
 
 def test_snapshot_uses_versioned_offer_fields_without_assessment() -> None:
@@ -180,3 +181,27 @@ def test_generation_prompt_contains_stable_evidence_catalog_without_database_ids
     assert '"path":"/user_brief/goal"' in system_prompt
     catalog_text = system_prompt.split("evidence_catalog", 1)[1]
     assert '"id":' not in catalog_text
+
+
+@pytest.mark.parametrize("field", ["goal", "concerns", "scenario"])
+def test_snapshot_rejects_blank_user_brief(field: str) -> None:
+    brief = {"goal": "目标", "concerns": "顾虑", "scenario": "电话"}
+    brief[field] = " \t"
+    with pytest.raises(ValueError):
+        build_offer_negotiation_snapshot(
+            offer={"company_name": "公司", "position_name": "岗位"},
+            dimensions=[],
+            user_brief=brief,
+            idempotency_key="A" * 16,
+        )
+
+
+@pytest.mark.parametrize("field", ["text", "rationale"])
+def test_length_limit_is_terminal_not_repairable(field: str) -> None:
+    payload = _valid_payload()
+    payload["communication_goals"][0][field] = "x" * 601
+    model = FakeModel([json.dumps(payload, ensure_ascii=False), json.dumps(_valid_payload(), ensure_ascii=False)])
+    with pytest.raises(OfferNegotiationModelError) as error:
+        generate_offer_negotiation_proposal(model, _snapshot())
+    assert error.value.validation_category == "limit_exceeded"
+    assert len(model.calls) == 1

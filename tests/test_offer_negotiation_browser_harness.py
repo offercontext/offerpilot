@@ -46,3 +46,36 @@ def test_harness_does_not_classify_502_by_status_alone() -> None:
     assert "offer_negotiation_unverifiable" in script
     assert "status -eq 502" not in script
     assert "error_code" in script
+
+
+def test_harness_uses_real_chat_and_cross_domain_tables() -> None:
+    script = HARNESS.read_text(encoding="utf-8")
+    assert '"chat_messages"' in script
+    assert '"messages"' not in script
+    for table in (
+        '"application_events"',
+        '"application_evidence_bundles"',
+        '"opportunity_fit_review_sessions"',
+        '"opportunity_fit_review_stages"',
+        '"interview_notes"',
+        '"interview_preparation_proposals"',
+        '"mock_interview_review_drafts"',
+        '"wakeups"',
+    ):
+        assert table in script
+    assert '"sha256"' in script
+
+
+def test_browser_audit_records_pending_response_payloads() -> None:
+    script = (Path(__file__).parents[1] / "scripts" / "browser-network-audit.py").read_text(encoding="utf-8")
+    assert '"response_attempt_status"' in script
+    assert '"response_retry_after_ms"' in script
+    assert '"payload_sha256"' in script
+    assert "if int(status or 0) >= 400" not in script
+
+
+def test_harness_verifies_browser_history_and_same_payload_provider_retry() -> None:
+    script = HARNESS.read_text(encoding="utf-8")
+    assert 'response_status -eq 200' in script
+    assert 'payload_sha256' in script
+    assert 'original key' in script

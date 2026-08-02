@@ -1,4 +1,4 @@
-import { Component, lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Component, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { DndContext, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button, Layout, Spin, Tabs, message } from 'antd';
@@ -681,7 +681,7 @@ function AppShellContent() {
     setOfferNegotiationEntryPoint(entrypoint);
   };
 
-  const updateOfferNegotiationDraft = (offerId: number, draft: OfferNegotiationDraft | null) => {
+  const updateOfferNegotiationDraft = useCallback((offerId: number, draft: OfferNegotiationDraft | null) => {
     if (draft) {
       offerNegotiationDraftsRef.current.set(offerId, draft);
       setOfferNegotiationDrafts((current) => ({ ...current, [offerId]: draft }));
@@ -693,7 +693,17 @@ function AppShellContent() {
         return next;
       });
     }
-  };
+  }, []);
+
+  const handleOfferNegotiationDraftChange = useCallback((offerId: number, draft: OfferNegotiationDraft | null) => {
+    updateOfferNegotiationDraft(offerId, draft);
+  }, [updateOfferNegotiationDraft]);
+
+  const handleOfferNegotiationDrawerDraftChange = useCallback((draft: OfferNegotiationDraft | null) => {
+    if (offerNegotiationOffer) {
+      updateOfferNegotiationDraft(offerNegotiationOffer.id, draft);
+    }
+  }, [offerNegotiationOffer, updateOfferNegotiationDraft]);
 
   const updateMockInterviewDraft = (patch: Partial<MockInterviewDrawerDraft>) => {
     if (!mockInterviewContext || !mockInterviewDraft) return;
@@ -1105,7 +1115,7 @@ function AppShellContent() {
               onCoach={(offer) => openChat(offer.id)}
               onAttachToPilot={attachToPilot}
               negotiationDrafts={offerNegotiationDrafts}
-              onNegotiationDraftChange={(offerId, draft) => updateOfferNegotiationDraft(offerId, draft)}
+              onNegotiationDraftChange={handleOfferNegotiationDraftChange}
               focusOfferId={offerEvidenceFocus?.id}
               onEvidenceFocusConsumed={offerEvidenceFocus ? () => clearEvidenceFocus(offerEvidenceFocus) : undefined}
             />
@@ -1300,11 +1310,12 @@ function AppShellContent() {
       ) : null}
       {offerNegotiationOffer ? (
         <OfferNegotiationDrawer
+          key={offerNegotiationOffer.id}
           open
           offer={offerNegotiationOffer}
           entrypoint={offerNegotiationEntryPoint}
           draft={offerNegotiationDrafts[offerNegotiationOffer.id]}
-          onDraftChange={(draft) => updateOfferNegotiationDraft(offerNegotiationOffer.id, draft)}
+          onDraftChange={handleOfferNegotiationDrawerDraftChange}
           onClose={() => setOfferNegotiationOffer(null)}
         />
       ) : null}

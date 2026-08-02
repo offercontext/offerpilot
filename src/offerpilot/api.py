@@ -2681,6 +2681,8 @@ def create_app(
             field: payload.get(field, "")
             for field in ("goal", "concerns", "scenario")
         }
+        if any(not isinstance(value, str) or not value.strip() for value in brief.values()):
+            return error_response(422, "谈薪准备输入无效", code="offer_negotiation_invalid_request")
         if not isinstance(dimension_ids, list) or any(
             not isinstance(value, int) or isinstance(value, bool) for value in dimension_ids
         ):
@@ -7525,6 +7527,8 @@ def _offer_negotiation_json(
         payload["proposal_hash"] = row.proposal_hash
     if brief is not None:
         payload["brief"] = _offer_negotiation_brief_json(brief)
+    if row.attempt_status in {"generating", "provider_unknown"}:
+        payload["retry_after_ms"] = 1000
     return payload
 
 

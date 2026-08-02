@@ -332,8 +332,8 @@ class OfferNegotiationRepository:
         try:
             stored = json.loads(proposal.input_snapshot_json)
             brief = stored["user_brief"]
-            dimensions = stored["dimensions"]
             offer_snapshot = stored["offer_snapshot"]
+            dimensions = offer_snapshot["dimensions"]
             source_states = json.loads(proposal.source_states_json or "{}")
         except (KeyError, TypeError, ValueError):
             return False
@@ -400,7 +400,8 @@ class OfferNegotiationRepository:
         if len(set(dimension_ids)) != len(dimension_ids):
             raise OfferNegotiationValidationError("dimension ids must be unique")
         for field in ("goal", "concerns", "scenario"):
-            if not isinstance(user_brief.get(field, ""), str):
+            value = user_brief.get(field, "")
+            if not isinstance(value, str) or not value.strip():
                 raise OfferNegotiationValidationError("user brief is invalid")
         dimensions: list[dict[str, Any]] = []
         for dimension_id in sorted(dimension_ids):

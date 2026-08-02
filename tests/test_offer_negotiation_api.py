@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from fastapi.testclient import TestClient
 
 from offerpilot.ai.types import Assistant
@@ -25,6 +26,11 @@ class FakeModel:
 
 class ProviderError(RuntimeError):
     provider_request_id = "provider-request-secret"
+    status_code = 503
+
+
+class ProviderTimeoutError(TimeoutError):
+    provider_request_id = "provider-timeout-secret"
 
 
 def _offer(client: TestClient) -> dict:
@@ -118,6 +124,24 @@ def test_generation_requires_all_user_brief_fields(tmp_path) -> None:
     assert model.calls == []
 
 
+@pytest.mark.parametrize("field", ["goal", "concerns", "scenario"])
+def test_generation_rejects_blank_user_brief_fields(tmp_path, field: str) -> None:
+    model = FakeModel([json.dumps(_payload(), ensure_ascii=False)])
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    _offer(client)
+    payload = {
+        "idempotency_key": "W" * 16,
+        "dimension_ids": [],
+        "goal": "目标",
+        "concerns": "顾虑",
+        "scenario": "电话",
+    }
+    payload[field] = " \t"
+    response = client.post("/api/offers/1/negotiation/proposals", json=payload)
+    assert response.status_code == 422
+    assert model.calls == []
+
+
 def test_invalidated_attempts_are_not_in_history_list(tmp_path) -> None:
     invalid = _payload()
     invalid["communication_goals"][0]["evidence_refs"][0]["source"] = "attacker"
@@ -157,6 +181,20 @@ def test_provider_error_preserves_attempt_and_key(tmp_path) -> None:
     assert len(model.calls) == 1
 
 
+def test_pending_history_includes_retry_after_ms(tmp_path) -> None:
+    model = FakeModel(error=TimeoutError("provider timeout"))
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    _offer(client)
+    response = _request(client, "Y" * 16)
+    assert response.status_code == 502
+    pending_response = _request(client, "Y" * 16)
+    assert pending_response.status_code == 202
+    pending = client.get(f"/api/offer-negotiation/proposals/{pending_response.json()['id']}")
+    assert pending.status_code == 200
+    assert pending.json()["attempt_status"] == "provider_unknown"
+    assert pending.json()["retry_after_ms"] == 1000
+
+
 def test_provider_diagnostic_keeps_only_hashed_request_id(tmp_path) -> None:
     model = FakeModel(error=ProviderError("provider timeout"))
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
@@ -168,6 +206,21 @@ def test_provider_diagnostic_keeps_only_hashed_request_id(tmp_path) -> None:
     assert "provider-request-secret" not in failure
     assert "request-redacted-" in failure
     assert "repair_count" in failure
+    assert '"http_status":503' in failure
+    assert '"timeout":false' in failure
+
+
+def test_provider_diagnostic_marks_timeout_without_status(tmp_path) -> None:
+    model = FakeModel(error=ProviderTimeoutError("provider timeout"))
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    _offer(client)
+    response = _request(client, "T" * 16)
+    assert response.status_code == 502
+    entries = client.get("/api/logs?limit=50").json()["entries"]
+    failure = next(entry["message"] for entry in entries if entry["message"].startswith("offer_negotiation_diagnostic "))
+    assert '"http_status":null' in failure
+    assert '"timeout":true' in failure
+    assert "provider-timeout-secret" not in failure
 
 
 def test_history_is_readable_after_offer_delete(tmp_path) -> None:

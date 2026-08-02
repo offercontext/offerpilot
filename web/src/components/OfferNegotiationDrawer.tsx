@@ -4,9 +4,11 @@ import {
   createOfferNegotiationProposal,
   getOfferNegotiationProposal,
   listOfferNegotiationProposals,
+  listOfferComparisonDimensions,
+  listOfferComparisonValues,
   OfferNegotiationError,
 } from '@/services/offers';
-import type { Offer, OfferNegotiationBlock, OfferNegotiationProposal, OfferNegotiationPending } from '@/types/offer';
+import type { Offer, OfferComparisonDimension, OfferNegotiationBlock, OfferNegotiationProposal, OfferNegotiationPending } from '@/types/offer';
 
 interface Props {
   open: boolean;
@@ -29,6 +31,7 @@ export interface OfferNegotiationDraft {
   proposalId: number | null;
   selectedBlocks: string[];
   edits: Record<string, string>;
+  dimensionIds: number[];
 }
 
 type BlockField = 'communication_goals' | 'clarification_questions' | 'talking_points' | 'preparation_checks';
@@ -71,11 +74,15 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
   const [history, setHistory] = useState<OfferNegotiationProposal[]>([]);
   const [selectedBlocks, setSelectedBlocks] = useState<string[]>(draft?.selectedBlocks ?? []);
   const [edits, setEdits] = useState<Record<string, string>>(draft?.edits ?? {});
+  const [frozenDimensionIds] = useState<number[]>(() => [...(draft?.dimensionIds ?? dimensionIds)]);
+  const [dimensionFacts, setDimensionFacts] = useState<Array<OfferComparisonDimension & { value_text: string | null }>>([]);
+  const [dimensionFactsState, setDimensionFactsState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [busy, setBusy] = useState(false);
   const [resultUnknown, setResultUnknown] = useState(draft?.resultUnknown ?? false);
   const [error, setError] = useState<string | null>(null);
   const [pendingOperation, setPendingOperation] = useState<PendingOperation>(draft?.pendingOperation ?? null);
   const suppressDraftPersistence = useRef(false);
+  const lastPersistedDraft = useRef<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -89,12 +96,30 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
   }, [draft?.proposalId, offer.id, open]);
 
   useEffect(() => {
+    if (!open) return;
+    setDimensionFactsState('loading');
+    void Promise.all([listOfferComparisonDimensions(true), listOfferComparisonValues(offer.id)])
+      .then(([dimensions, values]) => {
+        const valuesById = new Map(values.map((value) => [value.dimension_id, value.value_text]));
+        setDimensionFacts(dimensions.map((dimension) => ({
+          ...dimension,
+          value_text: valuesById.get(dimension.id) ?? null,
+        })));
+        setDimensionFactsState('ready');
+      })
+      .catch(() => {
+        setDimensionFacts([]);
+        setDimensionFactsState('error');
+      });
+  }, [offer.id, open]);
+
+  useEffect(() => {
     if (!open || !onDraftChange) return;
     if (suppressDraftPersistence.current) {
       suppressDraftPersistence.current = false;
       return;
     }
-    onDraftChange({
+    const nextDraft: OfferNegotiationDraft = {
       attemptKey,
       confirmationKey,
       goal,
@@ -105,8 +130,13 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
       proposalId: proposal?.id ?? draft?.proposalId ?? null,
       selectedBlocks,
       edits,
-    });
-  }, [attemptKey, confirmationKey, concerns, draft?.proposalId, edits, goal, onDraftChange, open, pendingOperation, proposal, resultUnknown, scenario, selectedBlocks]);
+      dimensionIds: frozenDimensionIds,
+    };
+    const serialized = JSON.stringify(nextDraft);
+    if (serialized === lastPersistedDraft.current) return;
+    lastPersistedDraft.current = serialized;
+    onDraftChange(nextDraft);
+  }, [attemptKey, confirmationKey, concerns, draft?.proposalId, edits, frozenDimensionIds, goal, onDraftChange, open, pendingOperation, proposal, resultUnknown, scenario, selectedBlocks]);
 
   const blocks = useMemo(() => {
     if (!proposal) return [];
@@ -116,16 +146,20 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
   if (!open) return null;
   const frozen = resultUnknown || busy;
   const hasBrief = Boolean(proposal?.brief);
+  const dimensionFactsReady = frozenDimensionIds.length === 0 || (
+    dimensionFactsState === 'ready'
+    && frozenDimensionIds.every((id) => dimensionFacts.some((dimension) => dimension.id === id))
+  );
 
   const generate = async (fromRetry = false) => {
-    if ((frozen && !fromRetry) || !goal.trim() || !scenario.trim()) return;
+    if ((frozen && !fromRetry) || !goal.trim() || !concerns.trim() || !scenario.trim()) return;
     if (!window.confirm('本次填写的目标、顾虑和沟通场景将发送给 AI，是否继续？')) return;
     setBusy(true);
     setError(null);
     try {
       const result = await createOfferNegotiationProposal(offer.id, {
         idempotency_key: attemptKey,
-        dimension_ids: [...dimensionIds].sort((a, b) => a - b),
+        dimension_ids: [...frozenDimensionIds].sort((a, b) => a - b),
         goal,
         concerns,
         scenario,
@@ -222,6 +256,29 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
       {resultUnknown && (
         <button type="button" onClick={retry} disabled={busy}>使用原尝试重试</button>
       )}
+      <section aria-label="AI input facts" data-testid="offer-negotiation-input-facts">
+        <h3>本次将使用的 Offer 事实</h3>
+        <dl>
+          <div><dt>公司</dt><dd>{offer.company_name}</dd></div>
+          <div><dt>职位</dt><dd>{offer.position_name}</dd></div>
+          <div><dt>状态</dt><dd>{offer.status}</dd></div>
+          <div><dt>月薪</dt><dd>{offer.base_monthly}</dd></div>
+          <div><dt>计薪月数</dt><dd>{offer.months_per_year}</dd></div>
+          <div><dt>签字费</dt><dd>{offer.signing_bonus}</dd></div>
+          <div><dt>股权</dt><dd>{offer.equity || '尚未填写'}</dd></div>
+          <div><dt>福利</dt><dd>{offer.perks || '尚未填写'}</dd></div>
+          <div><dt>截止时间</dt><dd>{offer.deadline || '尚未填写'}</dd></div>
+          <div><dt>备注</dt><dd>{offer.notes || '尚未填写'}</dd></div>
+        </dl>
+        {frozenDimensionIds.length > 0 && (
+          <ul>
+            {frozenDimensionIds.map((id) => {
+              const dimension = dimensionFacts.find((item) => item.id === id);
+              return <li key={id}>{dimension?.label ?? `维度 ${id}`}：{dimension?.value_text?.trim() ? dimension.value_text : '尚未填写'}</li>;
+            })}
+          </ul>
+        )}
+      </section>
       {!proposal && (
         <fieldset disabled={frozen}>
           <label>本次沟通目标<input value={goal} onChange={(event) => setGoal(event.target.value)} /></label>
@@ -231,12 +288,14 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
             type="button"
             data-testid="offer-negotiation-generate"
             onClick={() => void generate()}
-            disabled={frozen || !goal.trim() || !scenario.trim()}
+            disabled={frozen || !dimensionFactsReady || !goal.trim() || !concerns.trim() || !scenario.trim()}
           >
             生成谈薪准备草稿
           </button>
         </fieldset>
       )}
+      {dimensionFactsState === 'loading' && <p role="status">正在读取本次谈薪准备所需的 Offer 事实……</p>}
+      {dimensionFactsState === 'error' && <p role="alert">Offer 自定义维度暂时无法读取，请稍后重试。</p>}
       {proposal && (
         <div aria-label="谈薪准备草稿">
           {proposal.proposal_status === 'safe_empty' ? (
@@ -276,7 +335,16 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
           {proposal.proposal_status !== 'safe_empty' && !hasBrief && !proposal.source_changed && (
             <button type="button" data-testid="offer-negotiation-confirm" onClick={() => void confirm()} disabled={frozen || selectedBlocks.length === 0}>确认保存谈薪准备</button>
           )}
-          {hasBrief && <p>已确认保存，可在历史记录中只读查看。</p>}
+          {hasBrief && (
+            <section aria-label="saved negotiation brief">
+              <p>已确认保存，以下是本次实际保存的内容：</p>
+              {(proposal.brief?.edited_content.blocks ?? [])
+                .filter((block) => proposal.brief?.selected_blocks.includes(block.id))
+                .map((block) => (
+                  <p key={block.id}>{proposal.brief?.edited_content.edits?.[block.id] ?? block.text}</p>
+                ))}
+            </section>
+          )}
         </div>
       )}
       {history.length > 0 && (

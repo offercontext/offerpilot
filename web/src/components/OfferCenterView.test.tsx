@@ -20,13 +20,23 @@ vi.mock('@/services/offers', () => ({
   updateOfferComparisonDimension: vi.fn(),
   saveOfferComparisonValue: vi.fn(),
   clearOfferComparisonValue: vi.fn(),
+  listOfferNegotiationProposals: vi.fn(async () => []),
+  getOfferNegotiationProposal: vi.fn(async () => null),
+  createOfferNegotiationProposal: vi.fn(),
+  confirmOfferNegotiationProposal: vi.fn(),
+  OfferNegotiationError: class OfferNegotiationError extends Error {
+    constructor(public status: number, public code: string | null) { super(code ?? 'error'); }
+  },
 }));
 vi.mock('@/components/OfferCard', () => ({ default: ({ offer, onToggleSelect }: { offer: Offer; onToggleSelect: (id: number) => void }) => (
   <button type="button" data-testid={`select-${offer.id}`} onClick={() => onToggleSelect(offer.id)}>{offer.company_name}</button>
 ) }));
 vi.mock('@/components/AddOfferForm', () => ({ default: () => null }));
-vi.mock('@/components/OfferCompareDrawer', () => ({ default: ({ offers }: { offers: Offer[] }) => (
-  <div data-testid="compare-offers">{offers.map((offer) => offer.id).join(',')}</div>
+vi.mock('@/components/OfferCompareDrawer', () => ({ default: ({ offers, onNegotiation }: { offers: Offer[]; onNegotiation?: (offer: Offer) => void }) => (
+  <div data-testid="compare-offers">
+    {offers.map((offer) => offer.id).join(',')}
+    <button type="button" data-testid="compare-negotiate" onClick={() => onNegotiation?.(offers[0])}>prepare</button>
+  </div>
 ) }));
 
 const offer = (id: number): Offer => ({
@@ -67,6 +77,19 @@ describe('OfferCenterView comparison guardrails', () => {
     await act(async () => { host?.querySelector<HTMLButtonElement>('[data-testid="select-2"]')?.click(); });
     await act(async () => { host?.querySelector<HTMLButtonElement>('[data-testid="select-1"]')?.click(); });
     await act(async () => { host?.querySelector<HTMLButtonElement>('button:not([data-testid])')?.click(); });
-    expect(host?.querySelector('[data-testid="compare-offers"]')?.textContent).toBe('2,1');
+    expect(host?.querySelector('[data-testid="compare-offers"]')?.textContent).toContain('2,1');
+  });
+
+  it('closes comparison before opening the negotiation drawer', async () => {
+    queryState.offers = [offer(1), offer(2)];
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    root = createRoot(host);
+    await act(async () => { root?.render(<OfferCenterView applications={[]} onCoach={vi.fn()} />); });
+    await act(async () => { host?.querySelector<HTMLButtonElement>('[data-testid="select-1"]')?.click(); });
+    await act(async () => { host?.querySelector<HTMLButtonElement>('[data-testid="select-2"]')?.click(); });
+    await act(async () => { host?.querySelector<HTMLButtonElement>('button:not([data-testid])')?.click(); });
+    await act(async () => { host?.querySelector<HTMLButtonElement>('[data-testid="compare-negotiate"]')?.click(); });
+    expect(host?.querySelector('[data-testid="offer-negotiation-drawer"]')).not.toBeNull();
   });
 });
