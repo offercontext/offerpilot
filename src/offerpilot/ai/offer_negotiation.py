@@ -123,8 +123,8 @@ def build_offer_negotiation_snapshot(
 ) -> dict[str, Any]:
     del idempotency_key
     fields = (
-        "company_name", "position_name", "base_monthly", "months_per_year",
-        "signing_bonus", "equity", "perks", "deadline", "notes", "assessment",
+        "company_name", "position_name", "status", "base_monthly", "months_per_year",
+        "signing_bonus", "equity", "perks", "deadline", "notes",
     )
     offer_snapshot = {field: offer.get(field) for field in fields}
     sorted_dimensions = sorted(dimensions, key=lambda item: int(item["id"]))
@@ -137,6 +137,7 @@ def build_offer_negotiation_snapshot(
         for index, item in enumerate(sorted_dimensions, start=1)
     ]
     return {
+        "snapshot_version": 1,
         "offer_snapshot": offer_snapshot,
         "dimensions": canonical_dimensions,
         "user_brief": {
@@ -312,7 +313,7 @@ def _validate_ref(ref: Any, snapshot: dict[str, Any]) -> dict[str, str]:
     if not excerpt.strip() or len(excerpt) > 400:
         raise OfferNegotiationModelError("evidence excerpt is invalid", "excerpt_mismatch")
     if source == "offer_snapshot":
-        value = _resolve_snapshot_path(snapshot, path)
+        value = _resolve_snapshot_path(snapshot, source, path)
         if not isinstance(value, (str, int)) or value is None:
             raise OfferNegotiationModelError("offer evidence path is invalid", "unknown_evidence_ref")
         expected = str(value)
@@ -321,36 +322,39 @@ def _validate_ref(ref: Any, snapshot: dict[str, Any]) -> dict[str, str]:
         if isinstance(value, str) and excerpt not in value:
             raise OfferNegotiationModelError("evidence excerpt does not match", "excerpt_mismatch")
     else:
-        value = _resolve_snapshot_path(snapshot, path)
+        value = _resolve_snapshot_path(snapshot, source, path)
         if not isinstance(value, str) or excerpt not in value:
             raise OfferNegotiationModelError("user brief excerpt does not match", "excerpt_mismatch")
     return {"source": source, "path": path, "excerpt": excerpt}
 
 
-def _resolve_snapshot_path(snapshot: dict[str, Any], path: str) -> Any:
-    if not path.startswith("/"):
-        raise OfferNegotiationModelError("evidence path is invalid", "unknown_evidence_ref")
-    if path.startswith("/offer_snapshot/dimensions/"):
-        parts = path.split("/")
-        if len(parts) != 5 or parts[4] != "value_text":
-            raise OfferNegotiationModelError("dimension evidence path is invalid", "unknown_evidence_ref")
-        path_id = parts[3]
-        dimension = next((item for item in snapshot["dimensions"] if item["path_id"] == path_id), None)
-        if dimension is None or dimension.get("value_text") is None:
-            raise OfferNegotiationModelError("missing dimension value has no evidence", "unknown_evidence_ref")
-        return dimension["value_text"]
-    current: Any = snapshot
-    for part in path[1:].split("/"):
-        if isinstance(current, dict) and part in current:
-            current = current[part]
-        elif isinstance(current, list) and part.isdigit() and (part == "0" or not part.startswith("0")):
-            index = int(part)
-            if index >= len(current):
-                raise OfferNegotiationModelError("evidence path is unknown", "unknown_evidence_ref")
-            current = current[index]
-        else:
-            raise OfferNegotiationModelError("evidence path is unknown", "unknown_evidence_ref")
-    return current
+def _resolve_snapshot_path(snapshot: dict[str, Any], source: str, path: str) -> Any:
+    if source == "offer_snapshot":
+        fixed_fields = {
+            "company_name", "position_name", "status", "base_monthly", "months_per_year",
+            "signing_bonus", "equity", "perks", "deadline", "notes",
+        }
+        prefix = "/offer_snapshot/"
+        if path.startswith(prefix):
+            field = path[len(prefix):]
+            if field in fixed_fields:
+                value = snapshot.get("offer_snapshot", {}).get(field)
+                if value is None or isinstance(value, (dict, list, bool)):
+                    raise OfferNegotiationModelError("offer evidence path is invalid", "unknown_evidence_ref")
+                return value
+        dimension_match = re.fullmatch(r"/offer_snapshot/dimensions/(dimension_[0-9]{3})/value_text", path)
+        if dimension_match:
+            path_id = dimension_match.group(1)
+            dimension = next((item for item in snapshot.get("dimensions", []) if item.get("path_id") == path_id), None)
+            if dimension is None or not isinstance(dimension.get("value_text"), str) or not dimension["value_text"]:
+                raise OfferNegotiationModelError("missing dimension value has no evidence", "unknown_evidence_ref")
+            return dimension["value_text"]
+    elif source == "user_brief":
+        if path in {"/user_brief/goal", "/user_brief/concerns", "/user_brief/scenario"}:
+            value = snapshot.get("user_brief", {}).get(path.rsplit("/", 1)[-1])
+            if isinstance(value, str) and value:
+                return value
+    raise OfferNegotiationModelError("evidence path is unknown", "unknown_evidence_ref")
 
 
 def _reject_non_finite(value: Any) -> None:

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Row, Col, Button, Space, Statistic, Spin, Empty, message } from 'antd';
 import { PlusOutlined, SwapOutlined } from '@ant-design/icons';
@@ -18,6 +18,8 @@ interface Props {
   onAttachToPilot?: (attachment: import('@/types/chat').PilotContextAttachment) => void;
   focusOfferId?: number;
   onEvidenceFocusConsumed?: () => void;
+  negotiationDrafts?: Record<number, OfferNegotiationDraft>;
+  onNegotiationDraftChange?: (offerId: number, draft: OfferNegotiationDraft | null) => void;
 }
 
 export default function OfferCenterView({
@@ -26,6 +28,8 @@ export default function OfferCenterView({
   onAttachToPilot,
   focusOfferId,
   onEvidenceFocusConsumed,
+  negotiationDrafts: controlledNegotiationDrafts,
+  onNegotiationDraftChange,
 }: Props) {
   const [addOpen, setAddOpen] = useState(false);
   const [editing, setEditing] = useState<Offer | null>(null);
@@ -33,16 +37,21 @@ export default function OfferCenterView({
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [selectedDimensionIds, setSelectedDimensionIds] = useState<number[]>([]);
   const [negotiationOffer, setNegotiationOffer] = useState<Offer | null>(null);
-  const [negotiationDrafts, setNegotiationDrafts] = useState<Record<number, OfferNegotiationDraft>>({});
-  const updateNegotiationDraft = useCallback((draft: OfferNegotiationDraft | null) => {
+  const [localNegotiationDrafts, setLocalNegotiationDrafts] = useState<Record<number, OfferNegotiationDraft>>({});
+  const negotiationDrafts = controlledNegotiationDrafts ?? localNegotiationDrafts;
+  const updateNegotiationDraft = (draft: OfferNegotiationDraft | null) => {
     if (!negotiationOffer) return;
-    setNegotiationDrafts((current) => {
+    if (onNegotiationDraftChange) {
+      onNegotiationDraftChange(negotiationOffer.id, draft);
+      return;
+    }
+    setLocalNegotiationDrafts((current) => {
       const next = { ...current };
       if (draft) next[negotiationOffer.id] = draft;
       else delete next[negotiationOffer.id];
       return next;
     });
-  }, [negotiationOffer]);
+  };
 
   const { data: offers = [], isLoading, isError, isFetching, refetch } = useQuery({
     queryKey: ['offers'],
@@ -64,7 +73,9 @@ export default function OfferCenterView({
 
   const toggleSelect = (id: number) =>
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
-  const selectedOffers = offers.filter((o) => selectedIds.includes(o.id));
+  const selectedOffers = selectedIds
+    .map((id) => offers.find((offer) => offer.id === id))
+    .filter((offer): offer is Offer => Boolean(offer));
 
   if (isLoading) {
     return <div role="status" style={{ textAlign: 'center', padding: 48 }}><Spin size="large" /><div>正在加载 Offer</div></div>;
@@ -79,6 +90,7 @@ export default function OfferCenterView({
       offers={selectedOffers}
       dimensionIds={selectedDimensionIds}
       onCoach={onCoach}
+      onNegotiation={setNegotiationOffer}
     />;
   }
 
@@ -126,6 +138,7 @@ export default function OfferCenterView({
         <OfferNegotiationDrawer
           open
           offer={negotiationOffer}
+          entrypoint="ui"
           dimensionIds={selectedDimensionIds}
           draft={negotiationDrafts[negotiationOffer.id]}
           onDraftChange={updateNegotiationDraft}

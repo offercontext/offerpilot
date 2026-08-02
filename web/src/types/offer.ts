@@ -105,7 +105,7 @@ export interface OfferNegotiationProposal {
   };
   source_fingerprint: string;
   source_changed: boolean;
-  source_states: Record<string, string>;
+  source_states: Record<string, unknown>;
   proposal_hash: string | null;
   brief?: OfferNegotiationBrief;
 }
@@ -117,6 +117,20 @@ export interface OfferNegotiationPending {
   attempt_status: 'generating' | 'provider_unknown';
   retry_after_ms: number;
 }
+
+export interface OfferNegotiationInvalidated {
+  id: number;
+  offer_id: number;
+  application_id?: number | null;
+  attempt_status: 'invalidated';
+  source_fingerprint: string;
+  source_changed: boolean;
+  source_states: Record<string, unknown>;
+  proposal?: null;
+  proposal_hash?: null;
+}
+
+export type OfferNegotiationRead = OfferNegotiationProposal | OfferNegotiationPending | OfferNegotiationInvalidated;
 
 export interface OfferNegotiationBrief {
   id: number;

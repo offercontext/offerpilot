@@ -53,7 +53,6 @@ function render(
         onToggleAutoApprove={vi.fn()}
         onPrepareOfferNegotiation={onPrepareOfferNegotiation}
         offers={offers}
-        onSelectOffer={onPrepareOfferNegotiation}
       />,
     );
   });
@@ -84,6 +83,10 @@ describe('Pilot offer negotiation entry', () => {
       select!.value = String(offer.id);
       select!.dispatchEvent(new Event('change', { bubbles: true }));
     });
+    expect(onPrepare).not.toHaveBeenCalled();
+    expect(host.textContent).toContain('已选择 Offer');
+    const prepare = host.querySelector<HTMLButtonElement>('[data-testid="pilot-prepare-offer-negotiation"]');
+    act(() => prepare?.click());
     expect(onPrepare).toHaveBeenCalledTimes(1);
     expect(onPrepare).toHaveBeenCalledWith(offer);
     expect(host.textContent).not.toContain('provider');

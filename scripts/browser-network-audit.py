@@ -28,6 +28,7 @@ class BrowserAudit:
         self.reader_error: BaseException | None = None
         self.handle: TextIO | None = None
         self.network_ready_targets: set[str] = set()
+        self.request_records: dict[tuple[str, str], dict[str, object]] = {}
 
     async def send(
         self,
@@ -62,6 +63,8 @@ class BrowserAudit:
                     await self.attached(message["params"])
                 elif message.get("method") == "Network.requestWillBeSent":
                     await self.record_request(message)
+                elif message.get("method") == "Network.responseReceived":
+                    await self.record_response(message)
             if not self.stop_file.exists():
                 self.reader_error = RuntimeError("CDP connection closed before audit stop")
         except asyncio.CancelledError:
@@ -142,9 +145,78 @@ class BrowserAudit:
                         request_context["jd_text_sha256"] = hashlib.sha256(
                             payload["jd_text"].encode("utf-8")
                         ).hexdigest()
+                    for key in ("idempotency_key", "confirmation_key"):
+                        value = payload.get(key)
+                        if isinstance(value, str) and value:
+                            request_context[f"{key}_sha256"] = hashlib.sha256(
+                                value.encode("utf-8")
+                            ).hexdigest()
+                    selected_blocks = payload.get("selected_blocks")
+                    if isinstance(selected_blocks, list):
+                        request_context["selected_blocks_sha256"] = hashlib.sha256(
+                            json.dumps(
+                                selected_blocks,
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                            ).encode("utf-8")
+                        ).hexdigest()
+                    headers = request.get("headers") if isinstance(request, dict) else None
+                    entrypoint = None
+                    if isinstance(headers, dict):
+                        entrypoint = headers.get("X-OfferPilot-Entrypoint", headers.get("x-offerpilot-entrypoint"))
+                    if isinstance(entrypoint, str) and entrypoint in {"ui", "pilot"}:
+                        request_context["entrypoint"] = entrypoint
                     if request_context:
                         record["request_context"] = request_context
             self.handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+            self.handle.flush()
+            request_id = message.get("params", {}).get("requestId") if isinstance(message.get("params"), dict) else None
+            if isinstance(request_id, str):
+                self.request_records[(session_id, request_id)] = record
+
+    async def record_response(self, message: dict[str, object]) -> None:
+        session_id = message.get("sessionId")
+        params = message.get("params")
+        if not isinstance(session_id, str) or not isinstance(params, dict):
+            return
+        request_id = params.get("requestId")
+        response = params.get("response")
+        if not isinstance(request_id, str) or not isinstance(response, dict):
+            return
+        record = self.request_records.get((session_id, request_id))
+        if record is None:
+            return
+        status = response.get("status")
+        if isinstance(status, (int, float)):
+            record["response_status"] = int(status)
+        if int(status or 0) >= 400:
+            try:
+                body_result = await self.send("Network.getResponseBody", {"requestId": request_id}, session_id)
+                body = body_result.get("result")
+                body_text = body.get("body") if isinstance(body, dict) else None
+                payload = json.loads(body_text) if isinstance(body_text, str) else None
+                if isinstance(payload, dict):
+                    if isinstance(payload.get("error_code"), str):
+                        record["response_error_code"] = payload["error_code"]
+                    if isinstance(payload.get("attempt_status"), str):
+                        record["response_attempt_status"] = payload["attempt_status"]
+            except (RuntimeError, json.JSONDecodeError, TypeError):
+                pass
+        if self.handle is not None:
+            response_record = {
+                "kind": "browser_response",
+                "target_id": record.get("target_id"),
+                "session_id": session_id,
+                "method": record.get("method"),
+                "url": record.get("url"),
+                "response_status": record.get("response_status"),
+            }
+            if isinstance(record.get("request_context"), dict):
+                response_record["request_context"] = record["request_context"]
+            for key in ("response_error_code", "response_attempt_status"):
+                if key in record:
+                    response_record[key] = record[key]
+            self.handle.write(json.dumps(response_record, ensure_ascii=False) + "\n")
             self.handle.flush()
 
     async def run(self, base_url: str, ready_file: Path, ready_timeout_seconds: float) -> None:

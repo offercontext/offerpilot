@@ -2674,7 +2674,7 @@ def create_app(
             return None
 
         allowed = {"idempotency_key", "dimension_ids", "goal", "concerns", "scenario"}
-        if set(payload) - allowed:
+        if set(payload) - allowed or not {"idempotency_key", "dimension_ids", "goal", "concerns", "scenario"}.issubset(payload):
             return error_response(422, "谈薪准备输入无效", code="offer_negotiation_invalid_request")
         dimension_ids = payload.get("dimension_ids", [])
         brief = {
@@ -2712,9 +2712,34 @@ def create_app(
                 status_code=200,
             )
 
-        model = _chat_model(chat_model, resolved_data_dir)
+        try:
+            model = _chat_model(chat_model, resolved_data_dir)
+        except Exception:
+            try:
+                offer_negotiation.mark_provider_unknown(
+                    proposal_id=result.proposal.id,
+                    revision=result.revision,
+                    provider_call_token=result.owner_token,
+                )
+            except OfferNegotiationError:
+                recovered = recover_after_late_provider_call()
+                if recovered is not None:
+                    return recovered
+                raise
+            return error_response(502, "AI 服务暂不可用，请使用原尝试重试", code="offer_negotiation_provider_error")
         if isinstance(model, JSONResponse):
-            return model
+            try:
+                offer_negotiation.mark_provider_unknown(
+                    proposal_id=result.proposal.id,
+                    revision=result.revision,
+                    provider_call_token=result.owner_token,
+                )
+            except OfferNegotiationError:
+                recovered = recover_after_late_provider_call()
+                if recovered is not None:
+                    return recovered
+                raise
+            return error_response(502, "AI 服务暂不可用，请使用原尝试重试", code="offer_negotiation_provider_error")
         try:
             proposal = generate_offer_negotiation_proposal(
                 model,

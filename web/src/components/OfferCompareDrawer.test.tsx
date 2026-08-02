@@ -57,7 +57,7 @@ it('renders only factual comparison rows and preserves explicit Offer action IDs
     missing: [{ offer_id: 2, path: 'offer_snapshot/dimensions/1/value_text', label: '通勤' }],
   };
   readComparison.mockResolvedValue(comparison);
-  const onCoach = vi.fn();
+  const onNegotiation = vi.fn();
   host = document.createElement('div');
   document.body.appendChild(host);
   root = createRoot(host);
@@ -68,7 +68,7 @@ it('renders only factual comparison rows and preserves explicit Offer action IDs
         onClose={vi.fn()}
         offers={offers}
         dimensionIds={[1]}
-        onCoach={onCoach}
+        onNegotiation={onNegotiation}
       />,
     );
   });
@@ -82,5 +82,5 @@ it('renders only factual comparison rows and preserves explicit Offer action IDs
   await act(async () => {
     host?.querySelector<HTMLButtonElement>('button[data-action="start-negotiation"][data-offer-id="2"]')?.click();
   });
-  expect(onCoach).toHaveBeenCalledWith(offers[0]);
+  expect(onNegotiation).toHaveBeenCalledWith(offers[0]);
 });

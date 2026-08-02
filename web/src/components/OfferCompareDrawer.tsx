@@ -11,6 +11,7 @@ interface Props {
   offers: Offer[];
   dimensionIds?: number[];
   onCoach?: (offer: Offer) => void;
+  onNegotiation?: (offer: Offer) => void;
 }
 
 interface Row {
@@ -29,6 +30,7 @@ export default function OfferCompareDrawer({
   offers,
   dimensionIds = [],
   onCoach,
+  onNegotiation,
 }: Props) {
   const [comparison, setComparison] = useState<OfferComparisonRead | null>(null);
 
@@ -93,10 +95,10 @@ export default function OfferCompareDrawer({
       ) : (
         <>
           <Table columns={columns} dataSource={data} pagination={false} scroll={{ x: true }} size="small" bordered />
-          {onCoach && (
+          {(onNegotiation || onCoach) && (
             <div style={{ display: 'flex', gap: 8, marginTop: 16, flexWrap: 'wrap' }}>
               {displayedOffers.map((offer) => (
-                <Button key={offer.id} data-action="start-negotiation" data-offer-id={offer.id} onClick={() => onCoach(offer)}>
+                <Button key={offer.id} data-action="start-negotiation" data-offer-id={offer.id} onClick={() => (onNegotiation ?? onCoach)?.(offer)}>
                   为 {offer.company_name} 准备谈薪
                 </Button>
               ))}

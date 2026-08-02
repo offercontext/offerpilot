@@ -21,9 +21,13 @@ vi.mock('@/services/offers', () => ({
   saveOfferComparisonValue: vi.fn(),
   clearOfferComparisonValue: vi.fn(),
 }));
-vi.mock('@/components/OfferCard', () => ({ default: () => <div /> }));
+vi.mock('@/components/OfferCard', () => ({ default: ({ offer, onToggleSelect }: { offer: Offer; onToggleSelect: (id: number) => void }) => (
+  <button type="button" data-testid={`select-${offer.id}`} onClick={() => onToggleSelect(offer.id)}>{offer.company_name}</button>
+) }));
 vi.mock('@/components/AddOfferForm', () => ({ default: () => null }));
-vi.mock('@/components/OfferCompareDrawer', () => ({ default: () => null }));
+vi.mock('@/components/OfferCompareDrawer', () => ({ default: ({ offers }: { offers: Offer[] }) => (
+  <div data-testid="compare-offers">{offers.map((offer) => offer.id).join(',')}</div>
+) }));
 
 const offer = (id: number): Offer => ({
   id, company_name: `Company ${id}`, position_name: 'Engineer', status: 'pending',
@@ -52,5 +56,17 @@ describe('OfferCenterView comparison guardrails', () => {
 
     expect(host.textContent).not.toContain('平均年总包');
     expect(host.textContent).not.toContain('最高签字费');
+  });
+
+  it('preserves the user selection order in comparison columns', async () => {
+    queryState.offers = [offer(1), offer(2)];
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    root = createRoot(host);
+    await act(async () => { root?.render(<OfferCenterView applications={[]} onCoach={vi.fn()} />); });
+    await act(async () => { host?.querySelector<HTMLButtonElement>('[data-testid="select-2"]')?.click(); });
+    await act(async () => { host?.querySelector<HTMLButtonElement>('[data-testid="select-1"]')?.click(); });
+    await act(async () => { host?.querySelector<HTMLButtonElement>('button:not([data-testid])')?.click(); });
+    expect(host?.querySelector('[data-testid="compare-offers"]')?.textContent).toBe('2,1');
   });
 });

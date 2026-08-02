@@ -1569,7 +1569,6 @@ export default function ChatPanel({
             onOpenEvidence={onOpenEvidence}
             onPrepareOfferNegotiation={onPrepareOfferNegotiation}
             offers={offers}
-            onSelectOffer={onPrepareOfferNegotiation}
           />
         </div>
       </div>

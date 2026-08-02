@@ -23,7 +23,6 @@ interface Props {
   onOpenEvidence?: (target: EvidenceTarget) => void;
   onPrepareOfferNegotiation?: (offer: Offer) => void;
   offers?: Offer[];
-  onSelectOffer?: (offer: Offer) => void;
 }
 
 function formatTotal(total: number): string {
@@ -47,31 +46,32 @@ export default function ContextPanel({
   onOpenEvidence,
   onPrepareOfferNegotiation,
   offers = [],
-  onSelectOffer,
 }: Props) {
   const [offerPickerOpen, setOfferPickerOpen] = useState(false);
+  const [selectedOffer, setSelectedOffer] = useState<Offer | null>(null);
   const evidenceSelection = selectEvidence(evidence, 5);
+  const activeOffer = offer ?? selectedOffer;
 
   return (
     <aside className={`${styles.context} ${floating ? styles.contextFloating : ''}`}>
-      {isNego && offer && (
+      {activeOffer && (isNego || selectedOffer !== null) && (
         <div>
-          <div className={styles.panelLabel}>当前绑定 Offer</div>
+          <div className={styles.panelLabel}>{offer ? '当前绑定 Offer' : '已选择 Offer'}</div>
           <div className={styles.offerCard}>
-            <div className={styles.offerCompany}>{offer.company_name}</div>
-            <div className={styles.offerRole}>{offer.position_name}</div>
+            <div className={styles.offerCompany}>{activeOffer.company_name}</div>
+            <div className={styles.offerRole}>{activeOffer.position_name}</div>
             <div className={styles.offerTotal}>
-              {formatTotal(offer.total_cash)}
+              {formatTotal(activeOffer.total_cash)}
               <span className={styles.offerUnit}>w 总包/年</span>
             </div>
             <span
               className={styles.offerStatus}
               style={{
-                color: OFFER_STATUS_COLORS[offer.status],
-                background: `${OFFER_STATUS_COLORS[offer.status]}1f`,
+                color: OFFER_STATUS_COLORS[activeOffer.status],
+                background: `${OFFER_STATUS_COLORS[activeOffer.status]}1f`,
               }}
             >
-              {OFFER_STATUS_LABELS[offer.status]}
+              {OFFER_STATUS_LABELS[activeOffer.status]}
             </span>
           </div>
           {onPrepareOfferNegotiation && (
@@ -79,14 +79,14 @@ export default function ContextPanel({
               type="button"
               className={styles.capItem}
               data-testid="pilot-prepare-offer-negotiation"
-              onClick={() => onPrepareOfferNegotiation(offer)}
+              onClick={() => onPrepareOfferNegotiation(activeOffer)}
             >
               准备谈薪
             </button>
           )}
         </div>
       )}
-      {!offer && onSelectOffer && offers.length > 0 && (
+      {!activeOffer && onPrepareOfferNegotiation && offers.length > 0 && (
         <div>
           <div className={styles.panelLabel}>谈薪准备</div>
           <button
@@ -104,7 +104,10 @@ export default function ContextPanel({
               defaultValue=""
               onChange={(event) => {
                 const selected = offers.find((item) => String(item.id) === event.target.value);
-                if (selected) onSelectOffer(selected);
+                if (selected) {
+                  setSelectedOffer(selected);
+                  setOfferPickerOpen(false);
+                }
               }}
             >
               <option value="">请选择 Offer</option>

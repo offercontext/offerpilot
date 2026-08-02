@@ -105,6 +105,30 @@ def test_generation_replay_is_immutable_and_payload_has_no_database_ids(tmp_path
     assert len(model.calls) == 1
 
 
+def test_generation_requires_all_user_brief_fields(tmp_path) -> None:
+    model = FakeModel([json.dumps(_payload(), ensure_ascii=False)])
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    _offer(client)
+    response = client.post(
+        "/api/offers/1/negotiation/proposals",
+        json={"idempotency_key": "M" * 16, "dimension_ids": [], "goal": "目标", "scenario": "电话"},
+    )
+    assert response.status_code == 422
+    assert response.json()["error_code"] == "offer_negotiation_invalid_request"
+    assert model.calls == []
+
+
+def test_invalidated_attempts_are_not_in_history_list(tmp_path) -> None:
+    invalid = _payload()
+    invalid["communication_goals"][0]["evidence_refs"][0]["source"] = "attacker"
+    model = FakeModel([json.dumps(invalid, ensure_ascii=False)])
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    _offer(client)
+    response = _request(client, "N" * 16)
+    assert response.status_code == 502
+    assert client.get("/api/offers/1/negotiation/proposals").json() == []
+
+
 def test_semantic_failure_is_502_and_same_key_does_not_call_again(tmp_path) -> None:
     invalid = _payload()
     invalid["communication_goals"][0]["evidence_refs"][0]["source"] = "attacker"
@@ -187,6 +211,29 @@ def test_dimension_value_change_marks_history_source_changed(tmp_path) -> None:
         json={"value_text": "公交 50 分钟"},
     )
     history = client.get(f"/api/offer-negotiation/proposals/{proposal_id}")
+    assert history.status_code == 200
+    assert history.json()["source_changed"] is True
+
+
+def test_offer_status_change_marks_frozen_negotiation_source_changed(tmp_path) -> None:
+    model = FakeModel([json.dumps(_payload(), ensure_ascii=False)])
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    offer = _offer(client)
+    generated = _request(client, "S" * 16)
+    assert generated.status_code == 201
+    updated = client.put(
+        f"/api/offers/{offer['id']}",
+        json={
+            "company_name": offer["company_name"],
+            "position_name": offer["position_name"],
+            "base_monthly": offer["base_monthly"],
+            "months_per_year": offer["months_per_year"],
+            "signing_bonus": offer["signing_bonus"],
+            "status": "negotiating",
+        },
+    )
+    assert updated.status_code == 200
+    history = client.get(f"/api/offer-negotiation/proposals/{generated.json()['id']}")
     assert history.status_code == 200
     assert history.json()["source_changed"] is True
 

@@ -52,11 +52,11 @@ const dimension = (id: number, label = `维度 ${id}`): OfferComparisonDimension
 let root: Root | null = null;
 let host: HTMLDivElement | null = null;
 
-function render() {
+function render(onSelectionChange?: (dimensionIds: number[]) => void) {
   host = document.createElement('div');
   document.body.appendChild(host);
   root = createRoot(host);
-  act(() => root?.render(<OfferComparisonDimensionPanel offers={[offer(1), offer(2)]} />));
+  act(() => root?.render(<OfferComparisonDimensionPanel offers={[offer(1), offer(2)]} onSelectionChange={onSelectionChange} />));
   return host;
 }
 
@@ -89,7 +89,8 @@ describe('OfferComparisonDimensionPanel', () => {
     });
     serviceState.clear.mockResolvedValue(undefined);
     serviceState.update.mockResolvedValue({ ...dimension(1, '通勤'), archived_at: '2026-07-02T00:00:00Z' });
-    const rendered = render();
+    const onSelectionChange = vi.fn();
+    const rendered = render(onSelectionChange);
 
     await act(async () => {});
     const labelInput = rendered.querySelector<HTMLInputElement>('input[placeholder="新比较维度"]');
@@ -123,6 +124,7 @@ describe('OfferComparisonDimensionPanel', () => {
       rendered.querySelector<HTMLButtonElement>('button[data-action="archive-dimension"][data-dimension-id="1"]')?.click();
     });
     expect(serviceState.update).toHaveBeenCalledWith(1, { archived: true });
+    expect(onSelectionChange).toHaveBeenLastCalledWith([]);
   });
 
   it('limits active selection to eight dimensions and reports selected ids', async () => {

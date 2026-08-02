@@ -116,7 +116,11 @@ class OfferNegotiationRepository:
                     attempt_status="generating",
                     source_fingerprint=fingerprint,
                     input_snapshot_json=canonical_json(snapshot),
-                    source_states_json=canonical_json({"offer": "current"}),
+                    source_states_json=canonical_json({
+                        "offer": "current",
+                        "application_id": offer.application_id,
+                        "dimension_ids": sorted(dimension_ids),
+                    }),
                     provider_call_token=token,
                     lease_expires_at=_lease_until(),
                     revision=1,
@@ -301,7 +305,11 @@ class OfferNegotiationRepository:
             return list(
                 session.scalars(
                     select(OfferNegotiationProposal)
-                    .where(OfferNegotiationProposal.offer_id == offer_id)
+                    .where(
+                        OfferNegotiationProposal.offer_id == offer_id,
+                        OfferNegotiationProposal.attempt_status == "ready",
+                        OfferNegotiationProposal.proposal_json.is_not(None),
+                    )
                     .order_by(OfferNegotiationProposal.created_at.desc(), OfferNegotiationProposal.id.desc())
                 )
             )
@@ -326,34 +334,44 @@ class OfferNegotiationRepository:
             brief = stored["user_brief"]
             dimensions = stored["dimensions"]
             offer_snapshot = stored["offer_snapshot"]
+            source_states = json.loads(proposal.source_states_json or "{}")
         except (KeyError, TypeError, ValueError):
             return False
+        if stored.get("snapshot_version") is None:
+            # v1 snapshots lack the status and dimension identities required to
+            # prove that a confirmation still targets the original facts. They
+            # remain readable as historical, source-changed records only.
+            return False
+        if (
+            stored.get("snapshot_version") != 1
+            or proposal.application_id != offer.application_id
+            or source_states.get("application_id") != offer.application_id
+        ):
+            return False
         fields = (
-            "company_name", "position_name", "base_monthly", "months_per_year", "signing_bonus",
-            "equity", "perks", "deadline", "notes", "assessment",
+            "company_name", "position_name", "status", "base_monthly", "months_per_year", "signing_bonus",
+            "equity", "perks", "deadline", "notes",
         )
         if any(offer_snapshot.get(field) != getattr(offer, field, None) for field in fields):
             return False
         current_dimensions: list[dict[str, Any]] = []
-        for dimension in dimensions:
-            matches = list(
-                session.scalars(
-                    select(OfferComparisonDimension).where(
-                        OfferComparisonDimension.label == dimension.get("label"),
-                        OfferComparisonDimension.archived_at.is_(None),
-                    )
-                )
-            )
-            if len(matches) != 1:
+        dimension_ids = source_states.get("dimension_ids")
+        if not isinstance(dimension_ids, list) or len(dimension_ids) != len(dimensions):
+            return False
+        for dimension, dimension_id in zip(dimensions, dimension_ids, strict=True):
+            if not isinstance(dimension_id, int) or isinstance(dimension_id, bool) or dimension_id <= 0:
+                return False
+            match = session.get(OfferComparisonDimension, dimension_id)
+            if match is None:
                 return False
             value = session.scalar(
                 select(OfferComparisonValue).where(
                     OfferComparisonValue.offer_id == offer.id,
-                    OfferComparisonValue.dimension_id == matches[0].id,
+                    OfferComparisonValue.dimension_id == dimension_id,
                 )
             )
             current_dimensions.append(
-                {"id": matches[0].id, "label": matches[0].label, "value_text": value.value_text if value else None}
+                {"id": match.id, "label": match.label, "value_text": value.value_text if value else None}
             )
         current = build_offer_negotiation_snapshot(
             offer={field: getattr(offer, field, None) for field in fields},
@@ -404,6 +422,7 @@ class OfferNegotiationRepository:
             offer={
                 "company_name": offer.company_name,
                 "position_name": offer.position_name,
+                "status": offer.status,
                 "base_monthly": offer.base_monthly,
                 "months_per_year": offer.months_per_year,
                 "signing_bonus": offer.signing_bonus,
@@ -411,7 +430,6 @@ class OfferNegotiationRepository:
                 "perks": offer.perks,
                 "deadline": offer.deadline,
                 "notes": offer.notes,
-                "assessment": offer.assessment,
             },
             dimensions=dimensions,
             user_brief=user_brief,
@@ -426,12 +444,6 @@ class OfferNegotiationRepository:
         session: Session,
     ) -> OfferNegotiationGenerationResult:
         if row.source_fingerprint != fingerprint:
-            if row.attempt_status in {"generating", "provider_unknown"}:
-                row.attempt_status = "invalidated"
-                row.invalidation_reason = "source_changed"
-                row.provider_call_token = ""
-                row.lease_expires_at = None
-                session.commit()
             raise OfferNegotiationConflictError("source snapshot changed")
         if row.attempt_status == "ready":
             return OfferNegotiationGenerationResult(row, snapshot, fingerprint, False, False, False, row.revision, "")

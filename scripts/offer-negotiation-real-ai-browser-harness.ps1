@@ -64,7 +64,7 @@ function Get-DomainCounts {
   $code = @'
 import json, os, sqlite3
 db = sqlite3.connect(os.environ["OFFER_NEGOTIATION_HARNESS_DB"])
-names = ["applications", "application_events", "resumes", "conversations", "messages", "questions", "mock_interview_attempts", "mock_interview_turns", "mock_interview_feedback_proposals", "mock_interview_review_drafts", "wakeup"]
+names = ["applications", "application_events", "resumes", "conversations", "messages", "application_material_kits", "material_revision_proposals", "knowledge_notes", "knowledge_note_versions", "knowledge_note_evidence", "knowledge_captured_source_metadata", "knowledge_sources", "knowledge_source_origins", "knowledge_extraction_snapshots", "knowledge_evidence", "knowledge_source_assets", "knowledge_jobs", "knowledge_logs", "knowledge_source_briefs", "knowledge_brief_attempts", "knowledge_brief_attempt_steps", "knowledge_retrieval_traces", "questions", "mock_interview_attempts", "mock_interview_turns", "mock_interview_feedback_proposals", "mock_interview_review_drafts", "wakes", "wakeups"]
 tables = {row[0] for row in db.execute("select name from sqlite_master where type = 'table'")}
 print(json.dumps({name: (db.execute(f"select count(*) from {name}").fetchone()[0] if name in tables else 0) for name in names}, separators=(",", ":")))
 '@
@@ -98,9 +98,21 @@ function Assert-BrowserSequence([object[]]$records, [int]$expectedOfferId, [int]
   if (-not ($urls | Where-Object { $_ -match '/api/offers/comparison([?]|$)' })) { throw 'Browser did not read the structured comparison.' }
   $offerProposalPath = "/api/offers/$expectedOfferId/negotiation/proposals"
   $proposalPath = "/api/offer-negotiation/proposals/$expectedProposalId"
-  if (-not ($records | Where-Object { $_.method -eq 'POST' -and $_.url -eq "$baseUrl$offerProposalPath" })) { throw 'Browser did not generate a Proposal for the selected Offer.' }
-  if (-not ($records | Where-Object { $_.method -eq 'POST' -and $_.url -eq "$baseUrl$proposalPath/confirm" })) { throw 'Browser did not confirm the selected Brief.' }
+  $proposalRequests = @($records | Where-Object { $_.method -eq 'POST' -and $_.url -eq "$baseUrl$offerProposalPath" })
+  $confirmRequests = @($records | Where-Object { $_.method -eq 'POST' -and $_.url -match "/api/offer-negotiation/proposals/[0-9]+/confirm$" })
+  $historyRequests = @($records | Where-Object { $_.method -eq 'GET' -and $_.url -match "/api/offer-negotiation/proposals/[0-9]+$" })
+  if ($proposalRequests.Count -lt 2) { throw 'Browser did not complete both UI and Pilot Proposal flows.' }
+  if ($confirmRequests.Count -lt 2) { throw 'Browser did not complete both UI and Pilot confirmation flows.' }
+  if ($historyRequests.Count -lt 2) { throw 'Browser did not reopen both UI and Pilot negotiation histories.' }
+  $proposalKeys = @($proposalRequests | ForEach-Object { $_.request_context.idempotency_key_sha256 } | Where-Object { $_ }) | Sort-Object -Unique
+  $confirmationKeys = @($confirmRequests | ForEach-Object { $_.request_context.confirmation_key_sha256 } | Where-Object { $_ }) | Sort-Object -Unique
+  if ($proposalKeys.Count -lt 2 -or $confirmationKeys.Count -lt 2) { throw 'UI and Pilot flows did not use distinct idempotency contexts.' }
+  if (-not ($proposalRequests | Where-Object { $_.request_context.entrypoint -eq 'ui' })) { throw 'Browser did not record a UI negotiation flow.' }
+  if (-not ($proposalRequests | Where-Object { $_.request_context.entrypoint -eq 'pilot' })) { throw 'Browser did not record a Pilot negotiation flow.' }
+  if (-not ($confirmRequests | Where-Object { $_.request_context.entrypoint -eq 'ui' })) { throw 'Browser did not record UI confirmation.' }
+  if (-not ($confirmRequests | Where-Object { $_.request_context.entrypoint -eq 'pilot' })) { throw 'Browser did not record Pilot confirmation.' }
   if (-not ($records | Where-Object { $_.method -eq 'GET' -and $_.url -eq "$baseUrl$proposalPath" })) { throw 'Browser did not read the selected negotiation history.' }
+  if ($records | Where-Object { $_.url -match $chatWritePattern -and $_.method -ne 'GET' }) { throw "Pilot caused an unexpected $chatDomain write." }
 }
 
 $providerErrorCode = 'offer_negotiation_provider_error'
@@ -108,9 +120,56 @@ $unverifiableErrorCode = 'offer_negotiation_unverifiable'
 $proposalDiagnosticMarker = 'offer_negotiation_proposal'
 $diagnosticFields = @('failure_category', 'failure_categories', 'repair_attempted', 'repair_count', 'provider_request_id')
 $chatDomain = 'Chat'
+$chatWritePattern = '/api/(chat|conversations|messages)'
 
 function Get-NegotiationErrorCode($body) {
   return [string]$body.error_code
+}
+
+function Assert-DiagnosticContract([object[]]$entries, [object[]]$records) {
+  $matched = 0
+  foreach ($entry in $entries) {
+    $message = [string]$entry.message
+    $diagnosticMarker = $proposalDiagnosticMarker.Replace('proposal', 'diagnostic')
+    if (-not $message.StartsWith($diagnosticMarker + ' ')) { continue }
+    $matched++
+    $diagnostic = $message.Substring($diagnosticMarker.Length + 1) | ConvertFrom-Json
+    foreach ($field in $diagnosticFields) {
+      if ($null -eq $diagnostic.$field) { throw "Offer diagnostic field $field is missing." }
+    }
+    if ([string]$diagnostic.provider_request_id -and [string]$diagnostic.provider_request_id -match 'key|secret|token') { throw 'Provider diagnostic was not redacted.' }
+  }
+  $errorResponses = @($records | Where-Object {
+    $_.kind -eq 'browser_response' -and
+    $_.response_error_code -in @($providerErrorCode, $unverifiableErrorCode)
+  })
+  if ($errorResponses.Count -gt 0 -and $matched -eq 0) { throw 'Browser error responses had no matching diagnostic record.' }
+}
+
+function Assert-NegotiationErrorSemantics([object[]]$records) {
+  $badGatewayStatus = 500 + 2
+  $unclassified502 = @($records | Where-Object {
+    $_.kind -eq 'browser_response' -and [int]$_.response_status -eq $badGatewayStatus -and
+    $_.response_error_code -notin @($providerErrorCode, $unverifiableErrorCode)
+  })
+  if ($unclassified502.Count -gt 0) { throw 'Browser observed a 502 without a stable negotiation error code.' }
+  foreach ($record in @($records | Where-Object { $_.response_error_code -eq $providerErrorCode -or $_.response_error_code -eq $unverifiableErrorCode })) {
+    if ([int]$record.response_status -ne 502) { throw 'Offer negotiation error code was returned with a non-502 status.' }
+    $keyHash = [string]$record.request_context.idempotency_key_sha256
+    if (-not $keyHash) { throw 'Offer negotiation error was not tied to an idempotency key hash.' }
+    $replays = @($records | Where-Object {
+      $_.kind -eq 'browser_response' -and
+      $_.request_context.idempotency_key_sha256 -eq $keyHash -and
+      $_.url -eq $record.url
+    })
+    if ($record.response_error_code -eq $providerErrorCode) {
+      if (-not ($replays | Where-Object { $_.response_attempt_status -eq 'provider_unknown' })) {
+        throw 'Provider-unknown result did not preserve a provider_unknown retry state.'
+      }
+    } elseif ($replays | Where-Object { $_.response_attempt_status -in @('ready', 'generating') }) {
+      throw 'Unverifiable result exposed a reusable attempt state.'
+    }
+  }
 }
 
 try {
@@ -181,6 +240,7 @@ try {
   $confirmedProposalId = [int]$confirmed[0].id
   $records = Read-BrowserRecords
   Assert-BrowserSequence $records $offerIds[0] $confirmedProposalId
+  Assert-NegotiationErrorSemantics $records
   $currentOffer = Invoke-RestMethod -Uri "$baseUrl/api/offers/$($offerIds[0])"
   $editBody = @{
     company_name = $currentOffer.company_name
@@ -198,7 +258,12 @@ try {
   Invoke-RestMethod -Method Put -Uri "$baseUrl/api/offers/$($offerIds[0])" -ContentType 'application/json' -Body $editBody | Out-Null
   $changedHistory = Invoke-RestMethod -Uri "$baseUrl/api/offer-negotiation/proposals/$confirmedProposalId"
   if (-not $changedHistory.source_changed) { throw 'History did not expose source_changed after Offer edit.' }
+  $logEntries = @(Invoke-RestMethod -Uri "$baseUrl/api/logs?limit=200").entries
+  Assert-DiagnosticContract $logEntries $records
   $proxyRecords = @(Get-Content -LiteralPath $providerAudit | ForEach-Object { $_ | ConvertFrom-Json })
+  $providerConnections = @($proxyRecords | Where-Object { $_.status -eq 'connected' })
+  $browserProposalCount = @($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'POST' -and $_.url -match '/api/offers/[0-9]+/negotiation/proposals$' }).Count
+  if ($providerConnections.Count -lt $browserProposalCount) { throw 'Provider call audit did not cover every browser Proposal request.' }
   if (-not ($proxyRecords | Where-Object { $_.status -eq 'connected' -and "$($_.scheme)://$($_.host):$($_.port)" -eq $provider.Tuple })) { throw 'Provider egress did not match the configured endpoint.' }
   if ($proxyRecords | Where-Object { $_.status -ne 'connected' -and $_.status -ne 'rejected' }) { throw 'Provider egress audit contains an unknown status.' }
   Write-Host 'Offer negotiation browser acceptance passed.'

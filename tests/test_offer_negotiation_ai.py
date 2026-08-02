@@ -40,6 +40,7 @@ def _snapshot(*, dimension_order: list[int] | None = None) -> dict:
             "id": 9,
             "company_name": "星云数据",
             "position_name": "后端工程师",
+            "status": "pending",
             "base_monthly": 28000,
             "months_per_year": 12,
             "signing_bonus": 0,
@@ -75,7 +76,7 @@ def _valid_payload() -> dict:
         "communication_goals": [_item(item_id="goal-1")],
         "clarification_questions": [_item(path="/offer_snapshot/position_name", excerpt="后端工程师", item_id="question-1")],
         "talking_points": [_item(path="/offer_snapshot/base_monthly", excerpt="28000", item_id="point-1")],
-        "preparation_checks": [_item(path="/user_brief/goal", excerpt="争取入职时间", item_id="check-1")],
+        "preparation_checks": [_item(source="user_brief", path="/user_brief/goal", excerpt="争取入职时间", item_id="check-1")],
     }
 
 
@@ -87,6 +88,31 @@ def test_snapshot_dimension_order_is_canonical_and_missing_values_have_no_eviden
         {"path_id": "dimension_001", "label": "通勤", "value_text": "地铁 35 分钟"},
         {"path_id": "dimension_002", "label": "成长空间", "value_text": None},
     ]
+
+
+def test_snapshot_uses_versioned_offer_fields_without_assessment() -> None:
+    snapshot = _snapshot()
+    assert snapshot["snapshot_version"] == 1
+    assert snapshot["offer_snapshot"]["status"] == "pending"
+    assert "assessment" not in snapshot["offer_snapshot"]
+
+
+@pytest.mark.parametrize(
+    ("source", "path", "excerpt"),
+    [
+        ("user_brief", "/offer_snapshot/company_name", "星云数据"),
+        ("offer_snapshot", "/offer_snapshot/dimensions/dimension_001/label", "通勤"),
+        ("offer_snapshot", "/user_brief/goal", "争取入职时间"),
+    ],
+)
+def test_evidence_source_has_a_fixed_path_allowlist(source: str, path: str, excerpt: str) -> None:
+    payload = _valid_payload()
+    payload["communication_goals"][0]["evidence_refs"] = [
+        {"source": source, "path": path, "excerpt": excerpt}
+    ]
+    with pytest.raises(OfferNegotiationModelError) as error:
+        validate_offer_negotiation(payload, _snapshot())
+    assert error.value.validation_category == "unknown_evidence_ref"
 
 
 def test_numeric_evidence_requires_exact_ascii_representation() -> None:

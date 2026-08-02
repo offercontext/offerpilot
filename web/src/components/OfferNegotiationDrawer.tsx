@@ -15,6 +15,7 @@ interface Props {
   onClose: () => void;
   draft?: OfferNegotiationDraft;
   onDraftChange?: (draft: OfferNegotiationDraft | null) => void;
+  entrypoint?: 'ui' | 'pilot';
 }
 
 export interface OfferNegotiationDraft {
@@ -60,7 +61,7 @@ function isPending(value: OfferNegotiationProposal | OfferNegotiationPending): v
   return value.attempt_status === 'generating' || value.attempt_status === 'provider_unknown';
 }
 
-export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [], onClose, draft, onDraftChange }: Props) {
+export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [], onClose, draft, onDraftChange, entrypoint = 'ui' }: Props) {
   const [goal, setGoal] = useState(draft?.goal ?? '');
   const [concerns, setConcerns] = useState(draft?.concerns ?? '');
   const [scenario, setScenario] = useState(draft?.scenario ?? '');
@@ -83,7 +84,7 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
       draft?.proposalId ? getOfferNegotiationProposal(draft.proposalId) : Promise.resolve(null),
     ]).then(([items, restored]) => {
       setHistory(items);
-      if (restored) setProposal(restored);
+      if (restored && 'proposal' in restored && restored.proposal) setProposal(restored);
     }).catch(() => setHistory([]));
   }, [draft?.proposalId, offer.id, open]);
 
@@ -128,7 +129,7 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
         goal,
         concerns,
         scenario,
-      });
+      }, entrypoint);
       if (isPending(result)) {
         setResultUnknown(true);
         setPendingOperation('generate');
@@ -177,14 +178,20 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
         confirmation_key: confirmationKey,
         selected_blocks: selectedBlocks,
         edited_content: edits,
-      });
+      }, entrypoint);
       setProposal((current) => current ? { ...current, brief } : current);
       setResultUnknown(false);
       setPendingOperation(null);
       suppressDraftPersistence.current = true;
       onDraftChange?.(null);
     } catch (caught) {
-      if (caught instanceof OfferNegotiationError && (caught.code === 'offer_negotiation_provider_error' || caught.status === 0)) {
+      if (caught instanceof OfferNegotiationError && caught.code === 'offer_negotiation_source_changed') {
+        setProposal((current) => current ? { ...current, source_changed: true } : current);
+      } else if (caught instanceof OfferNegotiationError && (
+        caught.code === 'offer_negotiation_provider_error'
+        || caught.status === 0
+        || (caught.status >= 500 && caught.code == null)
+      )) {
         setResultUnknown(true);
         setPendingOperation('confirm');
       }

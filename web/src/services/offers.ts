@@ -7,6 +7,7 @@ import type {
   OfferNegotiationBrief,
   OfferNegotiationPending,
   OfferNegotiationProposal,
+  OfferNegotiationRead,
 } from '@/types/offer';
 import { OfferNegotiationError } from '@/types/offer';
 import { createApiClient } from './http';
@@ -45,9 +46,10 @@ async function offerNegotiationRequest<T>(request: () => Promise<{ data: T }>): 
 export function createOfferNegotiationProposal(
   offerId: number,
   input: OfferNegotiationInput,
+  entrypoint: 'ui' | 'pilot' = 'ui',
 ): Promise<OfferNegotiationResponse> {
   return offerNegotiationRequest(() => http.post<OfferNegotiationResponse>(
-    `/offers/${offerId}/negotiation/proposals`, input,
+    `/offers/${offerId}/negotiation/proposals`, input, { headers: { 'X-OfferPilot-Entrypoint': entrypoint } },
   ));
 }
 
@@ -57,8 +59,8 @@ export function listOfferNegotiationProposals(offerId: number): Promise<OfferNeg
   ));
 }
 
-export function getOfferNegotiationProposal(proposalId: number): Promise<OfferNegotiationProposal> {
-  return offerNegotiationRequest(() => http.get<OfferNegotiationProposal>(
+export function getOfferNegotiationProposal(proposalId: number): Promise<OfferNegotiationRead> {
+  return offerNegotiationRequest(() => http.get<OfferNegotiationRead>(
     `/offer-negotiation/proposals/${proposalId}`,
   ));
 }
@@ -66,9 +68,11 @@ export function getOfferNegotiationProposal(proposalId: number): Promise<OfferNe
 export function confirmOfferNegotiationProposal(
   proposalId: number,
   input: { confirmation_key: string; selected_blocks: string[]; edited_content: Record<string, string> },
+  entrypoint: 'ui' | 'pilot' = 'ui',
 ): Promise<OfferNegotiationBrief> {
   return offerNegotiationRequest(() => http.post<OfferNegotiationBrief>(
     `/offer-negotiation/proposals/${proposalId}/confirm`, input,
+    { headers: { 'X-OfferPilot-Entrypoint': entrypoint } },
   ));
 }
 

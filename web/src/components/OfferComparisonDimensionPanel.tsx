@@ -22,7 +22,7 @@ export default function OfferComparisonDimensionPanel({ offers, onSelectionChang
 
   const reload = async () => {
     const [nextDimensions, valueLists] = await Promise.all([
-      listOfferComparisonDimensions(true),
+      listOfferComparisonDimensions(false),
       Promise.all(offers.map((offer) => listOfferComparisonValues(offer.id))),
     ]);
     setDimensions(nextDimensions);
@@ -58,7 +58,11 @@ export default function OfferComparisonDimensionPanel({ offers, onSelectionChang
   const archiveDimension = async (id: number) => {
     const updated = await updateOfferComparisonDimension(id, { archived: true });
     setDimensions((current) => current.map((dimension) => dimension.id === id ? updated : dimension));
-    setSelectedIds((current) => current.filter((item) => item !== id));
+    setSelectedIds((current) => {
+      const next = current.filter((item) => item !== id);
+      onSelectionChange?.(next);
+      return next;
+    });
   };
 
   const saveValue = async (offerId: number, dimensionId: number) => {
@@ -102,29 +106,33 @@ export default function OfferComparisonDimensionPanel({ offers, onSelectionChang
               <span style={{ marginLeft: 8 }}>{dimension.label}</span>
               {!active && <span style={{ marginLeft: 8, color: '#6b7280' }}>已归档（仅历史可读）</span>}
             </label>
-            {active && (
-              <div style={{ margin: '8px 0 0 24px' }}>
-                {offers.map((offer) => {
-                  const key = `${offer.id}:${dimension.id}`;
-                  return (
-                    <div key={key} style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-                      <span style={{ width: 110 }}>{offer.company_name}</span>
-                      <input
-                        data-offer-id={offer.id}
-                        data-dimension-id={dimension.id}
-                        aria-label={`${offer.company_name}-${dimension.label}`}
-                        value={draftValues[key] ?? ''}
-                        placeholder="尚未填写"
-                        onChange={(event) => setDraftValues((current) => ({ ...current, [key]: event.target.value }))}
-                      />
-                      <button type="button" data-action="save-value" data-offer-id={offer.id} onClick={() => void saveValue(offer.id, dimension.id)}>保存</button>
-                      <button type="button" data-action="clear-value" data-offer-id={offer.id} onClick={() => void clearValue(offer.id, dimension.id)}>清除值</button>
-                    </div>
-                  );
-                })}
-                <button type="button" data-action="archive-dimension" data-dimension-id={dimension.id} onClick={() => void archiveDimension(dimension.id)}>归档维度</button>
-              </div>
-            )}
+            <div style={{ margin: '8px 0 0 24px' }}>
+              {offers.map((offer) => {
+                const key = `${offer.id}:${dimension.id}`;
+                return (
+                  <div key={key} style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                    <span style={{ width: 110 }}>{offer.company_name}</span>
+                    {active ? (
+                      <>
+                        <input
+                          data-offer-id={offer.id}
+                          data-dimension-id={dimension.id}
+                          aria-label={`${offer.company_name}-${dimension.label}`}
+                          value={draftValues[key] ?? ''}
+                          placeholder="尚未填写"
+                          onChange={(event) => setDraftValues((current) => ({ ...current, [key]: event.target.value }))}
+                        />
+                        <button type="button" data-action="save-value" data-offer-id={offer.id} onClick={() => void saveValue(offer.id, dimension.id)}>保存</button>
+                        <button type="button" data-action="clear-value" data-offer-id={offer.id} onClick={() => void clearValue(offer.id, dimension.id)}>清除值</button>
+                      </>
+                    ) : (
+                      <span data-testid="archived-dimension-value">{draftValues[key] || '尚未填写'}</span>
+                    )}
+                  </div>
+                );
+              })}
+              {active && <button type="button" data-action="archive-dimension" data-dimension-id={dimension.id} onClick={() => void archiveDimension(dimension.id)}>归档维度</button>}
+            </div>
           </div>
         );
       })}

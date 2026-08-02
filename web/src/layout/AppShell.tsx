@@ -36,7 +36,7 @@ import type { InterviewReviewProposalAttemptState } from '@/components/Interview
 import type { InterviewKnowledgeCaptureDraft } from '@/components/InterviewKnowledgeCaptureDrawer';
 import type { InterviewPreparationAttemptState, InterviewPreparationDraft, InterviewPreparationKnowledgeOption } from '@/components/InterviewPreparationProposalDrawer';
 import MockInterviewDrawer, { type MockInterviewDrawerDraft } from '@/components/MockInterviewDrawer';
-import OfferNegotiationDrawer from '@/components/OfferNegotiationDrawer';
+import OfferNegotiationDrawer, { type OfferNegotiationDraft } from '@/components/OfferNegotiationDrawer';
 import { discardMockInterviewAttempt } from '@/services/mockInterviews';
 import ResumeUploadModal from '@/components/ResumeUploadModal';
 import ChatPanel from '@/components/ChatPanel';
@@ -184,6 +184,9 @@ function AppShellContent() {
   const mockInterviewDraftsRef = useRef(new Map<string, MockInterviewDrawerDraft>());
   const [mockInterviewDraft, setMockInterviewDraft] = useState<MockInterviewDrawerDraft | null>(null);
   const [offerNegotiationOffer, setOfferNegotiationOffer] = useState<Offer | null>(null);
+  const [offerNegotiationEntryPoint, setOfferNegotiationEntryPoint] = useState<'ui' | 'pilot'>('ui');
+  const offerNegotiationDraftsRef = useRef(new Map<number, OfferNegotiationDraft>());
+  const [offerNegotiationDrafts, setOfferNegotiationDrafts] = useState<Record<number, OfferNegotiationDraft>>({});
   const pilotApplicationContextRef = useRef(pilotApplicationContext);
   pilotApplicationContextRef.current = pilotApplicationContext;
   const [aiSettingsOpen, setAISettingsOpen] = useState(false);
@@ -673,8 +676,23 @@ function AppShellContent() {
     setMockInterviewContext({ applicationId, eventId });
   };
 
-  const openOfferNegotiation = (offer: Offer) => {
+  const openOfferNegotiation = (offer: Offer, entrypoint: 'ui' | 'pilot' = 'ui') => {
     setOfferNegotiationOffer(offer);
+    setOfferNegotiationEntryPoint(entrypoint);
+  };
+
+  const updateOfferNegotiationDraft = (offerId: number, draft: OfferNegotiationDraft | null) => {
+    if (draft) {
+      offerNegotiationDraftsRef.current.set(offerId, draft);
+      setOfferNegotiationDrafts((current) => ({ ...current, [offerId]: draft }));
+    } else {
+      offerNegotiationDraftsRef.current.delete(offerId);
+      setOfferNegotiationDrafts((current) => {
+        const next = { ...current };
+        delete next[offerId];
+        return next;
+      });
+    }
   };
 
   const updateMockInterviewDraft = (patch: Partial<MockInterviewDrawerDraft>) => {
@@ -1086,6 +1104,8 @@ function AppShellContent() {
               applications={apps}
               onCoach={(offer) => openChat(offer.id)}
               onAttachToPilot={attachToPilot}
+              negotiationDrafts={offerNegotiationDrafts}
+              onNegotiationDraftChange={(offerId, draft) => updateOfferNegotiationDraft(offerId, draft)}
               focusOfferId={offerEvidenceFocus?.id}
               onEvidenceFocusConsumed={offerEvidenceFocus ? () => clearEvidenceFocus(offerEvidenceFocus) : undefined}
             />
@@ -1150,7 +1170,7 @@ function AppShellContent() {
                 attachmentDraftKey={pilotAttachmentDraftKey}
                 onAttachmentKeyChange={syncPilotAttachmentKey}
                 onOpenEvidence={openEvidence}
-                onPrepareOfferNegotiation={openOfferNegotiation}
+              onPrepareOfferNegotiation={(offer) => openOfferNegotiation(offer, 'pilot')}
                 offers={ofrs}
               />
             </div>
@@ -1217,7 +1237,7 @@ function AppShellContent() {
             attachmentDraftKey={pilotAttachmentDraftKey}
             onAttachmentKeyChange={syncPilotAttachmentKey}
             onOpenEvidence={openEvidence}
-            onPrepareOfferNegotiation={openOfferNegotiation}
+            onPrepareOfferNegotiation={(offer) => openOfferNegotiation(offer, 'pilot')}
             offers={ofrs}
           />
         </aside>
@@ -1263,7 +1283,7 @@ function AppShellContent() {
           attachmentDraftKey={pilotAttachmentDraftKey}
           onAttachmentKeyChange={syncPilotAttachmentKey}
           onOpenEvidence={openEvidence}
-          onPrepareOfferNegotiation={openOfferNegotiation}
+          onPrepareOfferNegotiation={(offer) => openOfferNegotiation(offer, 'pilot')}
           offers={ofrs}
         />
       )}
@@ -1282,6 +1302,9 @@ function AppShellContent() {
         <OfferNegotiationDrawer
           open
           offer={offerNegotiationOffer}
+          entrypoint={offerNegotiationEntryPoint}
+          draft={offerNegotiationDrafts[offerNegotiationOffer.id]}
+          onDraftChange={(draft) => updateOfferNegotiationDraft(offerNegotiationOffer.id, draft)}
           onClose={() => setOfferNegotiationOffer(null)}
         />
       ) : null}

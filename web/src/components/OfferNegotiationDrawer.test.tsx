@@ -91,6 +91,23 @@ describe('OfferNegotiationDrawer', () => {
     expect(service.confirm).toHaveBeenCalledTimes(1);
     expect(service.confirm.mock.calls[0][0]).toBe(3);
     expect(service.confirm.mock.calls[0][1].selected_blocks).toEqual(['goal-1']);
+    expect(service.create.mock.calls[0][2]).toBe('ui');
+  });
+
+  it('marks Pilot-generated requests without changing the API payload', async () => {
+    service.create.mockResolvedValue(proposal());
+    await act(async () => {
+      root?.render(<OfferNegotiationDrawer open offer={offer} entrypoint="pilot" onClose={vi.fn()} />);
+    });
+    const inputs = host?.querySelectorAll('input') ?? [];
+    const textareas = host?.querySelectorAll('textarea') ?? [];
+    await act(async () => {
+      changeValue(inputs[0] as HTMLInputElement, 'Goal');
+      changeValue(textareas[0] as HTMLTextAreaElement, 'Concern');
+      changeValue(inputs[1] as HTMLInputElement, 'Call');
+      host?.querySelector<HTMLButtonElement>('[data-testid="offer-negotiation-generate"]')?.click();
+    });
+    expect(service.create.mock.calls[0][2]).toBe('pilot');
   });
 
   it.each([
