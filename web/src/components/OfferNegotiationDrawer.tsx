@@ -172,6 +172,18 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
   });
   const activePreview = frozenPreview && previewInputKey === currentInputKey ? frozenPreview : null;
   const frozenOffer = proposal?.input_snapshot.offer_snapshot ?? activePreview?.snapshot.offer_snapshot;
+  const displayedOffer = frozenOffer ?? offer;
+  const visibleDimensions = proposal?.input_snapshot.offer_snapshot.dimensions
+    ?? activePreview?.snapshot.offer_snapshot.dimensions
+    ?? frozenDimensionIds.map((id) => {
+      const dimension = dimensionFacts.find((item) => item.id === id);
+      return {
+        path_id: `dimension_${id}`,
+        label: dimension?.label ?? `维度 ${id}`,
+        value_text: dimension?.value_text ?? null,
+      };
+    });
+  const visibleBrief = proposal?.input_snapshot.user_brief ?? activePreview?.snapshot.user_brief;
 
   const generate = async (fromRetry = false) => {
     if ((frozen && !fromRetry) || !goal.trim() || !concerns.trim() || !scenario.trim()) return;
@@ -302,26 +314,29 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
         <h3>本次将使用的 Offer 事实</h3>
         <p>{proposal?.input_snapshot || activePreview ? '以下为本次冻结输入' : '当前 Offer 事实，尚未冻结'}</p>
         <dl>
-          <div><dt>公司</dt><dd>{proposal?.input_snapshot.offer_snapshot.company_name ?? activePreview?.snapshot.offer_snapshot.company_name ?? offer.company_name}</dd></div>
-          <div><dt>职位</dt><dd>{proposal?.input_snapshot.offer_snapshot.position_name ?? activePreview?.snapshot.offer_snapshot.position_name ?? offer.position_name}</dd></div>
-          <div><dt>状态</dt><dd>{proposal?.input_snapshot.offer_snapshot.status ?? activePreview?.snapshot.offer_snapshot.status ?? offer.status}</dd></div>
-          <div><dt>月薪</dt><dd>{proposal?.input_snapshot.offer_snapshot.base_monthly ?? activePreview?.snapshot.offer_snapshot.base_monthly ?? offer.base_monthly}</dd></div>
-          <div><dt>计薪月数</dt><dd>{proposal?.input_snapshot.offer_snapshot.months_per_year ?? activePreview?.snapshot.offer_snapshot.months_per_year ?? offer.months_per_year}</dd></div>
-          <div><dt>签字费</dt><dd>{proposal?.input_snapshot.offer_snapshot.signing_bonus ?? activePreview?.snapshot.offer_snapshot.signing_bonus ?? offer.signing_bonus}</dd></div>
-          <div><dt>股权</dt><dd>{(frozenOffer?.equity ?? offer.equity) || '尚未填写'}</dd></div>
-          <div><dt>福利</dt><dd>{(frozenOffer?.perks ?? offer.perks) || '尚未填写'}</dd></div>
-          <div><dt>截止时间</dt><dd>{(frozenOffer?.deadline ?? offer.deadline) || '尚未填写'}</dd></div>
-          <div><dt>备注</dt><dd>{(frozenOffer?.notes ?? offer.notes) || '尚未填写'}</dd></div>
+          <div><dt>公司</dt><dd>{displayedOffer.company_name}</dd></div>
+          <div><dt>职位</dt><dd>{displayedOffer.position_name}</dd></div>
+          <div><dt>状态</dt><dd>{displayedOffer.status}</dd></div>
+          <div><dt>月薪</dt><dd>{displayedOffer.base_monthly ?? '尚未填写'}</dd></div>
+          <div><dt>计薪月数</dt><dd>{displayedOffer.months_per_year ?? '尚未填写'}</dd></div>
+          <div><dt>签字费</dt><dd>{displayedOffer.signing_bonus ?? '尚未填写'}</dd></div>
+          <div><dt>股权</dt><dd>{displayedOffer.equity || '尚未填写'}</dd></div>
+          <div><dt>福利</dt><dd>{displayedOffer.perks || '尚未填写'}</dd></div>
+          <div><dt>截止时间</dt><dd>{displayedOffer.deadline || '尚未填写'}</dd></div>
+          <div><dt>备注</dt><dd>{displayedOffer.notes || '尚未填写'}</dd></div>
+          {visibleBrief && (
+            <>
+              <div><dt>本次目标</dt><dd>{visibleBrief.goal}</dd></div>
+              <div><dt>本次顾虑</dt><dd>{visibleBrief.concerns}</dd></div>
+              <div><dt>沟通场景</dt><dd>{visibleBrief.scenario}</dd></div>
+            </>
+          )}
         </dl>
-        {frozenDimensionIds.length > 0 && (
+        {visibleDimensions.length > 0 && (
           <ul>
-            {(proposal?.input_snapshot.offer_snapshot.dimensions ?? activePreview?.snapshot.offer_snapshot.dimensions ?? []).map((dimension) => (
+            {visibleDimensions.map((dimension) => (
               <li key={dimension.path_id}>{dimension.label}：{dimension.value_text?.trim() ? dimension.value_text : '尚未填写'}</li>
             ))}
-            {!proposal && !activePreview && frozenDimensionIds.map((id) => {
-              const dimension = dimensionFacts.find((item) => item.id === id);
-              return <li key={id}>{dimension?.label ?? `维度 ${id}`}：{dimension?.value_text?.trim() ? dimension.value_text : '尚未填写'}</li>;
-            })}
           </ul>
         )}
       </section>

@@ -46,7 +46,7 @@ function Assert-ExitCode([string]$label) {
   if ($LASTEXITCODE -ne 0) { throw "$label failed." }
 }
 
-function Get-ProviderEndpoint([string]$configPath) {
+function Get-ProviderEndpoints([string]$configPath) {
   if (-not (Test-Path -LiteralPath $configPath)) { throw 'Provider config is missing.' }
   $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
   $providersById = @{}
@@ -60,16 +60,21 @@ function Get-ProviderEndpoint([string]$configPath) {
   if ($config.fallback_provider_ids) { $candidateIds += @($config.fallback_provider_ids | ForEach-Object { [string]$_ }) }
   if ($config.fallback_provider_id) { $candidateIds += [string]$config.fallback_provider_id }
   if ($candidateIds.Count -eq 0) { $candidateIds = @($providersById.Keys) }
+  $seen = @{}
   foreach ($providerId in $candidateIds) {
     if (-not $providersById.ContainsKey($providerId)) { continue }
     $provider = $providersById[$providerId]
     if ($provider.enabled -and $provider.base_url) {
       $uri = [Uri]$provider.base_url
       $port = if ($uri.IsDefaultPort) { if ($uri.Scheme -eq 'https') { 443 } else { 80 } } else { $uri.Port }
-      return [pscustomobject]@{ Scheme = $uri.Scheme; Host = $uri.Host; Port = $port; Tuple = "$($uri.Scheme)://$($uri.Host):$port" }
+      $tuple = "$($uri.Scheme)://$($uri.Host):$port"
+      if (-not $seen.ContainsKey($tuple)) {
+        $seen[$tuple] = $true
+        [pscustomobject]@{ Scheme = $uri.Scheme; Host = $uri.Host; Port = $port; Tuple = $tuple }
+      }
     }
   }
-  throw 'No enabled Provider endpoint is configured.'
+  if ($seen.Count -eq 0) { throw 'No enabled Provider endpoint is configured.' }
 }
 
 function Get-DomainCounts {
@@ -121,12 +126,12 @@ function Assert-BrowserSequence([object[]]$records, [int]$expectedOfferId, [int[
   $confirmRequests = @($records | Where-Object { $_.method -eq 'POST' -and $_.url -match "/api/offer-negotiation/proposals/[0-9]+/confirm$" })
   if ($proposalRequests.Count -lt 2) { throw 'Browser did not complete both UI and Pilot Proposal flows.' }
   if ($confirmRequests.Count -lt 2) { throw 'Browser did not complete both UI and Pilot confirmation flows.' }
-  $historyRequests = @()
-  foreach ($proposalId in $expectedProposalIds) {
-    $matches = @($records | Where-Object { $_.method -eq 'GET' -and $_.url -eq "$baseUrl/api/offer-negotiation/proposals/$proposalId" -and [int]$_.response_status -eq 200 })
-    if ($matches.Count -lt 1) { throw "Browser did not reopen proposal $proposalId history." }
-    $historyRequests += $matches
-  }
+  $historyRequests = @($records | Where-Object {
+    $_.method -eq 'GET' -and
+    $_.url -eq "$baseUrl/api/offers/$expectedOfferId/negotiation/proposals" -and
+    [int]$_.response_status -eq 200
+  })
+  if ($historyRequests.Count -lt 2) { throw 'Browser did not read negotiation history in both flows.' }
   if ($expectedProposalIds.Count -lt 2 -or (@($expectedProposalIds | Sort-Object -Unique).Count -ne $expectedProposalIds.Count)) { throw 'UI and Pilot did not produce distinct proposals.' }
   foreach ($proposalId in $expectedProposalIds) {
     if (-not ($records | Where-Object { $_.kind -eq 'browser_response' -and [int]$_.response_proposal_id -eq $proposalId })) {
@@ -134,6 +139,9 @@ function Assert-BrowserSequence([object[]]$records, [int]$expectedOfferId, [int[
     }
     if (-not ($records | Where-Object { $_.kind -eq 'browser_response' -and [int]$_.response_confirmed_proposal_id -eq $proposalId })) {
       throw "Browser did not confirm proposal $proposalId."
+    }
+    if (-not ($historyRequests | Where-Object { @($_.response_proposal_ids) -contains $proposalId })) {
+      throw "Browser history did not contain proposal $proposalId."
     }
   }
   $proposalKeys = @($proposalRequests | ForEach-Object { $_.request_context.idempotency_key_sha256 } | Where-Object { $_ }) | Sort-Object -Unique
@@ -143,7 +151,6 @@ function Assert-BrowserSequence([object[]]$records, [int]$expectedOfferId, [int[
   if (-not ($proposalRequests | Where-Object { $_.request_context.entrypoint -eq 'pilot' })) { throw 'Browser did not record a Pilot negotiation flow.' }
   if (-not ($confirmRequests | Where-Object { $_.request_context.entrypoint -eq 'ui' })) { throw 'Browser did not record UI confirmation.' }
   if (-not ($confirmRequests | Where-Object { $_.request_context.entrypoint -eq 'pilot' })) { throw 'Browser did not record Pilot confirmation.' }
-  if ($historyRequests.Count -lt 2) { throw 'Browser did not read the selected negotiation history in both flows.' }
   if ($records | Where-Object { $_.url -match $chatWritePattern -and $_.method -ne 'GET' }) { throw "Pilot caused an unexpected $chatDomain write." }
 }
 
@@ -219,8 +226,10 @@ try {
   if ([string]::IsNullOrWhiteSpace($cdpUrl)) { throw 'Set OFFER_NEGOTIATION_CDP_URL before running this harness.' }
   New-Item -ItemType Directory -Force -Path $tempData | Out-Null
   Copy-Item -LiteralPath (Join-Path $sourceData 'config.json') -Destination (Join-Path $tempData 'config.json')
-  $provider = Get-ProviderEndpoint (Join-Path $tempData 'config.json')
-  if ($provider.Scheme -ne 'https') { throw 'The configured Provider must use HTTPS.' }
+  $providers = @(Get-ProviderEndpoints (Join-Path $tempData 'config.json'))
+  if (@($providers | Where-Object { $_.Scheme -ne 'https' }).Count -gt 0) { throw 'The configured Provider must use HTTPS.' }
+  $providerAllowlist = Join-Path $tempData 'provider-allowlist.json'
+  $providers | ConvertTo-Json -Compress | Set-Content -LiteralPath $providerAllowlist -Encoding utf8
 
   $port = Get-FreePort
   $proxyPort = Get-FreePort
@@ -233,7 +242,7 @@ try {
 
   $proxy = Start-Process powershell -WindowStyle Hidden -PassThru -ArgumentList @(
     '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command',
-    "Set-Location '$repo'; uv run python scripts/provider-egress-proxy.py --port $proxyPort --audit '$providerAudit' --expected-scheme $($provider.Scheme) --expected-host $($provider.Host) --expected-port $($provider.Port)"
+    "Set-Location '$repo'; uv run python scripts/provider-egress-proxy.py --port $proxyPort --audit '$providerAudit' --expected-endpoints-file '$providerAllowlist'"
   )
   $server = Start-Process powershell -WindowStyle Hidden -PassThru -ArgumentList @(
     '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command',
@@ -310,7 +319,12 @@ try {
     $_.response_error_code -eq $providerErrorCode
   })
   if ($providerResponses.Count -gt 0 -and $providerConnections.Count -eq 0) { throw 'Provider-unknown browser result had no observed Provider egress.' }
-  if (-not ($proxyRecords | Where-Object { $_.status -eq 'connected' -and "$($_.scheme)://$($_.host):$($_.port)" -eq $provider.Tuple })) { throw 'Provider egress did not match the configured endpoint.' }
+  $providerTuples = @($providers | ForEach-Object { $_.Tuple })
+  foreach ($proxyRecord in $proxyRecords) {
+    $proxyTuple = "$($proxyRecord.scheme)://$($proxyRecord.host):$($proxyRecord.port)"
+    if ($proxyRecord.status -eq 'connected' -and $proxyTuple -notin $providerTuples) { throw 'Provider egress did not match the configured endpoint allowlist.' }
+  }
+  if (-not ($proxyRecords | Where-Object { $_.status -eq 'connected' -and "$($_.scheme)://$($_.host):$($_.port)" -in $providerTuples })) { throw 'Provider egress did not match the configured endpoint allowlist.' }
   if ($proxyRecords | Where-Object { $_.status -ne 'connected' -and $_.status -ne 'rejected' }) { throw 'Provider egress audit contains an unknown status.' }
   Write-Host 'Offer negotiation browser acceptance passed.'
 } catch {

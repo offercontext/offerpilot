@@ -30,6 +30,7 @@ class BrowserAudit:
         self.network_ready_targets: set[str] = set()
         self.request_records: dict[tuple[str, str], dict[str, object]] = {}
         self.response_tasks: set[asyncio.Task[None]] = set()
+        self.response_finished: dict[tuple[str, str], asyncio.Event] = {}
 
     async def send(
         self,
@@ -65,9 +66,21 @@ class BrowserAudit:
                 elif message.get("method") == "Network.requestWillBeSent":
                     await self.record_request(message)
                 elif message.get("method") == "Network.responseReceived":
+                    params = message.get("params")
+                    request_id = params.get("requestId") if isinstance(params, dict) else None
+                    session_id = message.get("sessionId")
+                    if isinstance(session_id, str) and isinstance(request_id, str):
+                        self.response_finished.setdefault((session_id, request_id), asyncio.Event())
                     task = asyncio.create_task(self.record_response(message))
                     self.response_tasks.add(task)
                     task.add_done_callback(self.response_tasks.discard)
+                elif message.get("method") in {"Network.loadingFinished", "Network.loadingFailed"}:
+                    params = message.get("params")
+                    request_id = params.get("requestId") if isinstance(params, dict) else None
+                    session_id = message.get("sessionId")
+                    if isinstance(session_id, str) and isinstance(request_id, str):
+                        finished = self.response_finished.setdefault((session_id, request_id), asyncio.Event())
+                        finished.set()
             if not self.stop_file.exists():
                 self.reader_error = RuntimeError("CDP connection closed before audit stop")
         except asyncio.CancelledError:
@@ -201,6 +214,14 @@ class BrowserAudit:
         if isinstance(status, (int, float)):
             record["response_status"] = int(status)
         try:
+            finished = self.response_finished.setdefault((session_id, request_id), asyncio.Event())
+            body_ready = True
+            try:
+                await asyncio.wait_for(finished.wait(), timeout=10.0)
+            except asyncio.TimeoutError:
+                body_ready = False
+            if not body_ready:
+                raise RuntimeError("response body did not finish before audit timeout")
             body_result = await self.send("Network.getResponseBody", {"requestId": request_id}, session_id)
             body = body_result.get("result")
             body_text = body.get("body") if isinstance(body, dict) else None
@@ -219,6 +240,14 @@ class BrowserAudit:
                     record["response_confirmed_proposal_id"] = brief["proposal_id"]
                 if isinstance(payload.get("proposal_id"), int):
                     record["response_confirmed_proposal_id"] = payload["proposal_id"]
+            elif isinstance(payload, list):
+                proposal_ids = [
+                    item["id"]
+                    for item in payload
+                    if isinstance(item, dict) and isinstance(item.get("id"), int)
+                ]
+                if proposal_ids:
+                    record["response_proposal_ids"] = proposal_ids
         except (RuntimeError, json.JSONDecodeError, TypeError):
             pass
         if self.handle is not None:
@@ -232,7 +261,13 @@ class BrowserAudit:
             }
             if isinstance(record.get("request_context"), dict):
                 response_record["request_context"] = record["request_context"]
-            for key in ("response_error_code", "response_attempt_status", "response_proposal_id", "response_confirmed_proposal_id"):
+            for key in (
+                "response_error_code",
+                "response_attempt_status",
+                "response_proposal_id",
+                "response_proposal_ids",
+                "response_confirmed_proposal_id",
+            ):
                 if key in record:
                     response_record[key] = record[key]
             if "response_retry_after_ms" in record:

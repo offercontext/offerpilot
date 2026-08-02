@@ -287,3 +287,36 @@ def test_provider_unknown_is_pending_until_lease_expiry(tmp_path) -> None:
     assert takeover.should_call is True
     assert takeover.revision == claimed.revision + 1
     assert takeover.owner_token != claimed.owner_token
+
+
+def test_provider_unknown_takeover_reuses_frozen_snapshot_after_offer_change(tmp_path) -> None:
+    factory, repository, offer_id, first_id, _, = _repo(tmp_path)
+    brief = {"goal": "目标", "concerns": "顾虑", "scenario": "电话"}
+    claimed = repository.prepare_or_replay(
+        offer_id=offer_id,
+        dimension_ids=[first_id],
+        user_brief=brief,
+        idempotency_key="F" * 16,
+    )
+    repository.mark_provider_unknown(
+        proposal_id=claimed.proposal.id,
+        revision=claimed.revision,
+        provider_call_token=claimed.owner_token,
+    )
+    repository.expire_for_test(claimed.proposal.id)
+    with factory() as session:
+        offer = session.get(Offer, offer_id)
+        assert offer is not None
+        offer.base_monthly = 31000
+        session.commit()
+
+    takeover = repository.prepare_or_replay(
+        offer_id=offer_id,
+        dimension_ids=[first_id],
+        user_brief=brief,
+        idempotency_key="F" * 16,
+        expected_source_fingerprint=claimed.source_fingerprint,
+    )
+    assert takeover.should_call is True
+    assert takeover.snapshot == claimed.snapshot
+    assert takeover.source_fingerprint == claimed.source_fingerprint

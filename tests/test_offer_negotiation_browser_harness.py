@@ -75,6 +75,8 @@ def test_browser_audit_records_pending_response_payloads() -> None:
     assert '"payload_sha256"' in script
     assert "if int(status or 0) >= 400" not in script
     assert "asyncio.create_task(self.record_response(message))" in script
+    assert "Network.loadingFinished" in script
+    assert "wait_for" in script
 
 
 def test_harness_verifies_browser_history_and_same_payload_provider_retry() -> None:
@@ -82,6 +84,8 @@ def test_harness_verifies_browser_history_and_same_payload_provider_retry() -> N
     assert 'response_status -eq 200' in script
     assert 'payload_sha256' in script
     assert 'original key' in script
+    assert 'negotiation/proposals"' in script
+    assert 'proposal $proposalId history' not in script
 
 
 def test_harness_uses_nullable_diagnostic_presence_and_active_provider_order() -> None:
@@ -91,3 +95,15 @@ def test_harness_uses_nullable_diagnostic_presence_and_active_provider_order() -
     assert "fallback_provider_ids" in script
     assert "providersById.Count -eq 0" in script
     assert "expectedProposalIds" in script
+    assert "Get-ProviderEndpoints" in script
+    assert "expected-endpoints-file" in script
+    proxy = (Path(__file__).parents[1] / "scripts" / "provider-egress-proxy.py").read_text(encoding="utf-8")
+    assert "utf-8-sig" in proxy
+
+
+def test_offer_real_ai_smoke_previews_before_generation() -> None:
+    smoke = (Path(__file__).parents[1] / "src" / "offerpilot" / "smoke.py").read_text(encoding="utf-8")
+    start = smoke.index("def run_offer_negotiation_real_ai_smoke")
+    section = smoke[start:]
+    assert "/negotiation/preview" in section
+    assert 'payload["source_fingerprint"]' in section

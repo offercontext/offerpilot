@@ -140,6 +140,17 @@ def test_generation_requires_all_user_brief_fields(tmp_path) -> None:
     assert model.calls == []
 
 
+def test_preview_invalid_request_uses_chinese_safe_message(tmp_path) -> None:
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=FakeModel()))
+    _offer(client)
+    response = client.post(
+        "/api/offers/1/negotiation/preview",
+        json={"dimension_ids": [], "goal": "", "concerns": "顾虑", "scenario": "电话"},
+    )
+    assert response.status_code == 422
+    assert response.json()["error"] == "谈薪准备输入无效"
+
+
 @pytest.mark.parametrize("field", ["goal", "concerns", "scenario"])
 def test_generation_rejects_blank_user_brief_fields(tmp_path, field: str) -> None:
     model = FakeModel([json.dumps(_payload(), ensure_ascii=False)])

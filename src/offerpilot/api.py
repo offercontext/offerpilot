@@ -2648,13 +2648,13 @@ def create_app(
     ) -> JSONResponse:
         allowed = {"dimension_ids", "goal", "concerns", "scenario"}
         if set(payload) != allowed:
-            return error_response(422, "璋堣柂鍑嗗杈撳叆鏃犳晥", code="offer_negotiation_invalid_request")
+            return error_response(422, "谈薪准备输入无效", code="offer_negotiation_invalid_request")
         brief = {field: payload.get(field, "") for field in ("goal", "concerns", "scenario")}
         dimension_ids = payload.get("dimension_ids")
         if any(not isinstance(value, str) or not value.strip() for value in brief.values()):
-            return error_response(422, "璋堣柂鍑嗗杈撳叆鏃犳晥", code="offer_negotiation_invalid_request")
+            return error_response(422, "谈薪准备输入无效", code="offer_negotiation_invalid_request")
         if not isinstance(dimension_ids, list):
-            return error_response(422, "姣旇緝缁村害閫夋嫨鏃犳晥", code="offer_negotiation_invalid_request")
+            return error_response(422, "比较维度选择无效", code="offer_negotiation_invalid_request")
         try:
             snapshot, fingerprint = offer_negotiation.preview(
                 offer_id=offer_id,
@@ -2662,7 +2662,7 @@ def create_app(
                 user_brief=brief,
             )
         except OfferNegotiationError as exc:
-            return error_response(exc.status_code, "璋堣柂鍑嗗璇锋眰鏈畬鎴?", code=exc.code)
+            return error_response(exc.status_code, "谈薪准备请求未完成", code=exc.code)
         return JSONResponse({"source_fingerprint": fingerprint, "snapshot": snapshot})
 
     @app.post("/api/offers/{offer_id}/negotiation/proposals")

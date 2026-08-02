@@ -100,16 +100,27 @@ class OfferNegotiationRepository:
             offer = session.get(Offer, offer_id)
             if offer is None:
                 raise OfferNegotiationNotFoundError("offer is not visible")
-            snapshot = self._build_snapshot(session, offer, dimension_ids, user_brief)
-            fingerprint = sha256_text(canonical_json(snapshot))
-            if expected_source_fingerprint is not None and expected_source_fingerprint != fingerprint:
-                raise OfferNegotiationConflictError("offer source changed", "offer_negotiation_source_changed")
             existing = session.scalar(
                 select(OfferNegotiationProposal).where(
                     OfferNegotiationProposal.offer_id == offer_id,
                     OfferNegotiationProposal.idempotency_key == idempotency_key,
                 )
             )
+            if existing is not None:
+                result = self._replay_existing(
+                    existing,
+                    dimension_ids=dimension_ids,
+                    user_brief=user_brief,
+                    expected_source_fingerprint=expected_source_fingerprint,
+                    session=session,
+                )
+                session.commit()
+                return result
+
+            snapshot = self._build_snapshot(session, offer, dimension_ids, user_brief)
+            fingerprint = sha256_text(canonical_json(snapshot))
+            if expected_source_fingerprint is not None and expected_source_fingerprint != fingerprint:
+                raise OfferNegotiationConflictError("offer source changed", "offer_negotiation_source_changed")
             if existing is None:
                 token = uuid4().hex
                 row = OfferNegotiationProposal(
@@ -141,7 +152,13 @@ class OfferNegotiationRepository:
                     )
                     if existing is None:
                         raise
-                    result = self._existing_result(existing, snapshot, fingerprint, session)
+                    result = self._replay_existing(
+                        existing,
+                        dimension_ids=dimension_ids,
+                        user_brief=user_brief,
+                        expected_source_fingerprint=expected_source_fingerprint,
+                        session=session,
+                    )
                     session.commit()
                     return result
                 session.refresh(row)
@@ -149,9 +166,7 @@ class OfferNegotiationRepository:
                     row, snapshot, fingerprint, True, False, True, row.revision, token
                 )
 
-            result = self._existing_result(existing, snapshot, fingerprint, session)
-            session.commit()
-            return result
+            raise AssertionError("new offer negotiation proposal was not inserted")
 
     def preview(
         self,
@@ -481,6 +496,62 @@ class OfferNegotiationRepository:
         row.lease_expires_at = _lease_until()
         session.flush()
         return OfferNegotiationGenerationResult(row, snapshot, fingerprint, True, False, False, row.revision, token)
+
+    def _replay_existing(
+        self,
+        row: OfferNegotiationProposal,
+        *,
+        dimension_ids: list[int],
+        user_brief: dict[str, str],
+        expected_source_fingerprint: str | None,
+        session: Session,
+    ) -> OfferNegotiationGenerationResult:
+        try:
+            snapshot = json.loads(row.input_snapshot_json)
+            source_states = json.loads(row.source_states_json or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise OfferNegotiationConflictError("stored offer snapshot is invalid") from exc
+        if not self._request_matches_stored_snapshot(
+            snapshot,
+            source_states,
+            dimension_ids=dimension_ids,
+            user_brief=user_brief,
+        ):
+            raise OfferNegotiationConflictError("source snapshot changed")
+        if (
+            expected_source_fingerprint is not None
+            and expected_source_fingerprint != row.source_fingerprint
+        ):
+            raise OfferNegotiationConflictError("offer source changed", "offer_negotiation_source_changed")
+        return self._existing_result(row, snapshot, row.source_fingerprint, session)
+
+    @staticmethod
+    def _request_matches_stored_snapshot(
+        snapshot: object,
+        source_states: object,
+        *,
+        dimension_ids: list[int],
+        user_brief: dict[str, str],
+    ) -> bool:
+        if not isinstance(snapshot, dict) or not isinstance(source_states, dict):
+            return False
+        stored_brief = snapshot.get("user_brief")
+        stored_dimension_ids = source_states.get("dimension_ids")
+        if not isinstance(stored_brief, dict) or not isinstance(stored_dimension_ids, list):
+            return False
+        if any(not isinstance(value, int) or isinstance(value, bool) for value in stored_dimension_ids):
+            return False
+        return (
+            sorted(dimension_ids) == sorted(stored_dimension_ids)
+            and {
+                field: user_brief.get(field)
+                for field in ("goal", "concerns", "scenario")
+            }
+            == {
+                field: stored_brief.get(field)
+                for field in ("goal", "concerns", "scenario")
+            }
+        )
 
     @staticmethod
     def _owns(row: OfferNegotiationProposal, revision: int, token: str) -> bool:

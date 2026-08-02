@@ -47,7 +47,8 @@ const proposal = (): OfferNegotiationProposal => ({
     offer_snapshot: {
       company_name: 'Company', position_name: 'Engineer', status: 'pending',
       base_monthly: 28000, months_per_year: 12, signing_bonus: 0,
-      equity: '', perks: '', deadline: '', notes: '', dimensions: [],
+      equity: null, perks: null, deadline: null, notes: null,
+      dimensions: [{ path_id: 'dimension_001', label: '通勤', value_text: '地铁 35 分钟' }],
     },
     user_brief: { goal: 'Goal', concerns: 'Concern', scenario: 'Call' },
   },
@@ -180,6 +181,11 @@ describe('OfferNegotiationDrawer', () => {
     expect(facts).not.toContain('Current perks');
     expect(facts).not.toContain('Current deadline');
     expect(facts).not.toContain('Current notes');
+    expect(facts).toContain('Goal');
+    expect(facts).toContain('Concern');
+    expect(facts).toContain('Call');
+    expect(facts).toContain('通勤');
+    expect(facts).toContain('地铁 35 分钟');
   });
 
   it('generates an editable evidence-backed draft and confirms selected blocks', async () => {

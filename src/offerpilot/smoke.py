@@ -1466,6 +1466,16 @@ def run_offer_negotiation_real_ai_smoke(
                         "concerns": "通勤安排",
                         "scenario": "与招聘方电话沟通",
                     }
+                    preview = client.post(
+                        f"/api/offers/{offer_id}/negotiation/preview",
+                        json={key: payload[key] for key in ("dimension_ids", "goal", "concerns", "scenario")},
+                    )
+                    _assert_status(preview.status_code, 200, "offer_negotiation_real_ai_preview")
+                    preview_body = preview.json()
+                    source_fingerprint = preview_body.get("source_fingerprint")
+                    if not isinstance(source_fingerprint, str) or not source_fingerprint:
+                        raise RuntimeError("offer negotiation real-ai preview had no source fingerprint")
+                    payload["source_fingerprint"] = source_fingerprint
                     result = client.post(f"/api/offers/{offer_id}/negotiation/proposals", json=payload)
                     if result.status_code == 502 and result.json().get("error_code") == "offer_negotiation_provider_error":
                         result = client.post(f"/api/offers/{offer_id}/negotiation/proposals", json=payload)
