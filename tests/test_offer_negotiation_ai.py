@@ -140,6 +140,24 @@ def test_provider_projection_omits_missing_dimension_label_and_value() -> None:
     assert '"label":"成长空间"' not in prompt
 
 
+def test_evidence_catalog_omits_blank_values_but_preserves_nonblank_raw_text() -> None:
+    snapshot = _snapshot()
+    snapshot["offer_snapshot"]["notes"] = " \t"
+    snapshot["offer_snapshot"]["equity"] = "   "
+    snapshot["offer_snapshot"]["perks"] = "\n"
+    snapshot["offer_snapshot"]["deadline"] = "  "
+    snapshot["offer_snapshot"]["dimensions"][1]["value_text"] = " \t"
+    model = FakeModel([_json(_valid_payload())])
+    generate_offer_negotiation_proposal(model, snapshot)
+    catalog = model.calls[0][0][0].content.split("evidence_catalog", 1)[1]
+    assert "/offer_snapshot/notes" not in catalog
+    assert "/offer_snapshot/equity" not in catalog
+    assert "/offer_snapshot/perks" not in catalog
+    assert "/offer_snapshot/deadline" not in catalog
+    assert "dimension_002" not in catalog
+    assert "地铁 35 分钟" in catalog
+
+
 @pytest.mark.parametrize(
     ("source", "path", "excerpt"),
     [
@@ -283,6 +301,25 @@ def test_excerpt_over_limit_is_terminal_limit_exceeded() -> None:
     with pytest.raises(OfferNegotiationModelError) as error:
         generate_offer_negotiation_proposal(model, _snapshot())
     assert error.value.validation_category == "limit_exceeded"
+    assert len(model.calls) == 1
+
+
+def test_empty_excerpt_is_structural_and_repairs_once() -> None:
+    invalid = _valid_payload()
+    invalid["communication_goals"][0]["evidence_refs"][0]["excerpt"] = ""
+    model = FakeModel([_json(invalid), _json(_valid_payload())])
+    result = generate_offer_negotiation_proposal(model, _snapshot())
+    assert result["proposal_status"] == "normal"
+    assert len(model.calls) == 2
+
+
+def test_whitespace_excerpt_is_semantic_and_not_repaired() -> None:
+    invalid = _valid_payload()
+    invalid["communication_goals"][0]["evidence_refs"][0]["excerpt"] = " \t"
+    model = FakeModel([_json(invalid), _json(_valid_payload())])
+    with pytest.raises(OfferNegotiationModelError) as error:
+        generate_offer_negotiation_proposal(model, _snapshot())
+    assert error.value.validation_category == "excerpt_mismatch"
     assert len(model.calls) == 1
 
 

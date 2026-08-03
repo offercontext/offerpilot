@@ -408,6 +408,8 @@ def _validate_ref(ref: Any, snapshot: dict[str, Any]) -> dict[str, str]:
         raise OfferNegotiationModelError("evidence reference field type is invalid", "invalid_evidence_shape")
     if source not in _ALLOWED_SOURCES:
         raise OfferNegotiationModelError("evidence reference is unknown", "unknown_evidence_ref")
+    if excerpt == "":
+        raise OfferNegotiationModelError("evidence excerpt shape is invalid", "invalid_evidence_shape")
     if len(excerpt) > 400:
         raise OfferNegotiationModelError("evidence excerpt exceeds the limit", "limit_exceeded")
     if not excerpt.strip():
@@ -474,7 +476,11 @@ def _evidence_catalog(snapshot: dict[str, Any]) -> list[dict[str, str]]:
     offer_snapshot = snapshot.get("offer_snapshot", {})
     if isinstance(offer_snapshot, dict):
         for field, value in offer_snapshot.items():
-            if isinstance(value, (str, int)) and not isinstance(value, bool) and value != "":
+            if (
+                isinstance(value, (str, int))
+                and not isinstance(value, bool)
+                and (not isinstance(value, str) or value.strip())
+            ):
                 catalog.append(
                     {
                         "source": "offer_snapshot",
@@ -489,7 +495,7 @@ def _evidence_catalog(snapshot: dict[str, Any]) -> list[dict[str, str]]:
                 continue
             value = dimension.get("value_text")
             path_id = dimension.get("path_id")
-            if isinstance(path_id, str) and isinstance(value, str) and value:
+            if isinstance(path_id, str) and isinstance(value, str) and value.strip():
                 catalog.append(
                     {
                         "source": "offer_snapshot",
