@@ -9,7 +9,7 @@
 ## 代码与环境
 
 - 分支：`feat/20260801-offer-negotiation`
-- UI 代码验证基线：`2d718e3`
+- UI 代码验证基线：`ec3e855`
 - 服务：隔离临时数据目录中的本地 OfferPilot；真实浏览器端口为本次临时服务端口
 - 配置：从现有配置静默复制到隔离目录；未输出或修改密钥
 - 案例：中文候选人“筱哲”；Offer 为“星云数据｜后端工程师”和“远山科技｜平台工程师”
@@ -100,7 +100,7 @@ tests/test_calendar_api.py::test_calendar_includes_applications_and_events
 | `uv run ruff check .` | 通过 |
 | `uv run mypy src` | 通过；64 source files |
 | `git diff --check` | 通过 |
-| `npm.cmd test -- --run src/components/ChatPanel/PilotOfferSelectionCard.test.tsx src/components/OfferCard.test.tsx src/components/OfferCenterView.test.tsx src/components/OfferCompareDrawer.test.tsx src/components/OfferComparisonDimensionPanel.test.tsx src/components/offer-negotiation/OfferNegotiationPresentation.test.tsx src/components/OfferNegotiationDrawer.test.tsx src/components/OfferPilotNegotiation.test.tsx src/layout/AppShell.offerNegotiation.test.tsx --reporter=dot` | 退出码 0；9 文件、44 passed；既有 React `act()` 警告 |
+| `npm.cmd test -- --run src/components/ChatPanel/PilotOfferSelectionCard.test.tsx src/components/OfferCard.test.tsx src/components/OfferCenterView.test.tsx src/components/OfferCompareDrawer.test.tsx src/components/OfferComparisonDimensionPanel.test.tsx src/components/offer-negotiation/OfferNegotiationPresentation.test.tsx src/components/OfferNegotiationDrawer.test.tsx src/components/OfferPilotNegotiation.test.tsx src/layout/AppShell.offerNegotiation.test.tsx --reporter=dot` | 退出码 0；9 文件、47 passed；既有 React `act()` 警告 |
 | `npm.cmd test -- --run --minWorkers=1 --maxWorkers=1 --reporter=json` | 未完成；180 秒工具时限超时，未生成 JSON 汇总，不宣称前端全量通过 |
 | `npm.cmd run build` | 通过 |
 | `uv run oc smoke --static-dir web/dist` | 通过 |
@@ -131,6 +131,6 @@ tests/test_calendar_api.py::test_calendar_includes_applications_and_events
 - Provider 输出仍存在偶发未知结果；系统按既有协议保留原尝试，未扩大重试或放宽证据校验。
 - 本次截图重录使用同一隔离中文案例；`04` 与 `09` 明确展示发送前确认，不冒充已生成 Proposal，`05` 展示 UI 已确认历史，`10` 展示 Pilot 已确认历史。截图不把新的 Provider 波动表述为稳定通过；此前已确认的 Provider 成功闭环不因本次重录被改写。
 - 完整后端门禁被 `test_calendar_includes_applications_and_events` 阻塞；在修复测试数据时序或得到明确上游修复前，不应推送或合并。
-- 当前前端全量串行运行在工具时限内超时；定向受影响集合为 9 文件、44 passed，不能替代全量结果。
+- 当前前端全量串行运行在工具时限内超时；定向受影响集合为 9 文件、47 passed，不能替代全量结果。
 - 全量 real-AI verify 受隔离数据库打开失败阻塞；专用 Offer real-AI API 验收已通过，但不能替代全量 real-AI 或浏览器证据。
 - 当前未推送、未合并；本报告不构成发布批准。
