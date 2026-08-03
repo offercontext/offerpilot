@@ -13,7 +13,7 @@
 - 服务：隔离临时数据目录中的本地 OfferPilot；真实浏览器端口为本次临时服务端口
 - 配置：从现有配置静默复制到隔离目录；未输出或修改密钥
 - 案例：中文候选人“筱哲”；Offer 为“星云数据｜后端工程师”和“远山科技｜平台工程师”
-- 浏览器：亮色模式；截图均为单视口原始截图，尺寸为 `1440×900` 或 `1455×909`，未拼接长图、未缩放或补白
+- 浏览器：亮色模式；`02`、`10` 已基于 `ec3e855` 后的最终 UI 重新录制，均为 `1455×1200` 单视口原始截图；未拼接长图、未缩放或补白
 
 ## UI 入口
 
@@ -115,7 +115,7 @@ tests/test_calendar_api.py::test_calendar_includes_applications_and_events
 | 文件 | 尺寸 | 证明内容 |
 | --- | ---: | --- |
 | [01-ui-offer-center-light.png](./01-ui-offer-center-light.png) | 1440×900 | UI：Offer 中心、比较维度与两张中文 Offer 卡 |
-| [02-ui-offer-comparison.png](./02-ui-offer-comparison.png) | 1440×900 | UI：用户选择后的并排比较，无排名或推荐结论 |
+| [02-ui-offer-comparison.png](./02-ui-offer-comparison.png) | 1455×1200 | UI：用户选择后的并排比较，含当前自定义比较维度，无排名或推荐结论；SHA-256 `d4337e97d48944a904dc0ba4eafb4ad31adf61315814a24c921e2e592389c647` |
 | [03-ui-source-confirmation-frozen.png](./03-ui-source-confirmation-frozen.png) | 1440×900 | UI：生成前来源确认与冻结提示 |
 | [04-ui-input-confirmation.png](./04-ui-input-confirmation.png) | 1455×909 | UI：确认发送前核对冻结 Offer 事实与本次谈薪输入 |
 | [05-ui-confirmed-history.png](./05-ui-confirmed-history.png) | 1455×909 | UI：确认后的 Brief 与历史只读查看 |
@@ -123,7 +123,7 @@ tests/test_calendar_api.py::test_calendar_includes_applications_and_events
 | [07-pilot-answer-selected-offer.png](./07-pilot-answer-selected-offer.png) | 1455×909 | Pilot：用户选择后展示明确 Offer 上下文，并可更换 Offer |
 | [08-pilot-source-confirmation-frozen.png](./08-pilot-source-confirmation-frozen.png) | 1440×900 | Pilot：来源确认与冻结提示 |
 | [09-pilot-input-confirmation.png](./09-pilot-input-confirmation.png) | 1455×909 | Pilot：确认发送前查看已选 Offer、冻结事实与本次谈薪输入 |
-| [10-pilot-confirmed-history.png](./10-pilot-confirmed-history.png) | 1455×909 | Pilot：确认保存后的 Brief 与历史只读查看 |
+| [10-pilot-confirmed-history.png](./10-pilot-confirmed-history.png) | 1455×1200 | Pilot：确认保存后的 Brief 与历史只读查看，含当前 Offer 上下文与冻结事实；SHA-256 `f4f0bae5f13d0bfcac02a970b93cdd998414ef72cdb6b974de1675910b7e1ab4` |
 | [11-single-offer-coach.png](./11-single-offer-coach.png) | 1455×909 | 既有单 Offer“谈薪教练”入口保持可用 |
 
 ## 剩余风险与下一步
