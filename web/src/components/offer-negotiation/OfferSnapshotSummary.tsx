@@ -43,7 +43,7 @@ export default function OfferSnapshotSummary({ offer, brief, sourceState }: Prop
       </div>
       <div className={styles.snapshotFacts}>
         <span>月薪与月数：{formatMonthly(offer)}</span>
-        <span>签字费：{offer.signing_bonus == null || offer.signing_bonus === 0 ? '尚未填写' : offer.signing_bonus}</span>
+        <span data-testid="snapshot-signing-bonus">签字费：{offer.signing_bonus == null ? '尚未填写' : offer.signing_bonus}</span>
         <span>截止时间：{offer.deadline || '尚未填写'}</span>
       </div>
       {brief && (

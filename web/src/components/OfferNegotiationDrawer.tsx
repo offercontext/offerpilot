@@ -226,6 +226,18 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
       setPreviewInputKey(currentInputKey);
       setShowGenerateConfirmation(true);
     } catch (caught) {
+      if (caught instanceof OfferNegotiationError && caught.status === 422) {
+        setAttemptKey(newKey('offer-negotiation'));
+        setConfirmationKey(newKey('offer-negotiation-confirm'));
+        setResultUnknown(false);
+        setPendingOperation(null);
+        setFrozenPreview(null);
+        setPreviewInputKey(null);
+        setShowGenerateConfirmation(false);
+        lastPersistedDraft.current = null;
+        suppressDraftPersistence.current = true;
+        onDraftChange?.(null);
+      }
       setError(safeError(caught));
     } finally {
       setBusy(false);

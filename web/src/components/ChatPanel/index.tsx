@@ -276,6 +276,13 @@ export default function ChatPanel({
 
   const activeConv = conversations.find((c) => c.id === convID);
   const isNego = activeConv ? activeConv.mode === 'nego_coach' : offerId !== undefined;
+  const contextResetKey = JSON.stringify({
+    conversationId: convID ?? null,
+    draftRequestKey: draftContext?.requestKey ?? null,
+    offerId: offerId ?? null,
+    pageContext: incomingPageContextKey,
+    isNego,
+  });
   const capabilities = capabilitiesForMode(isNego);
   const activePending = resolveActivePendingAction(pending, conversations, convID);
   activePendingRef.current = activePending;
@@ -1569,6 +1576,7 @@ export default function ChatPanel({
             onOpenEvidence={onOpenEvidence}
             onPrepareOfferNegotiation={onPrepareOfferNegotiation}
             offers={offers}
+            contextKey={contextResetKey}
           />
         </div>
       </div>

@@ -35,7 +35,7 @@ export default function NegotiationProposalCard({ block, selected, editedText, d
           <span key={`${ref.source}-${ref.path}`}>{evidenceLabel(ref.path)}：{ref.excerpt}</span>
         ))}
       </div>
-      <button type="button" className={styles.evidenceToggle} data-action="toggle-evidence" onClick={() => { setExpanded((current) => !current); onToggle(); }}>
+      <button type="button" className={styles.evidenceToggle} data-action="toggle-evidence" onClick={() => setExpanded((current) => !current)}>
         {expanded ? '收起证据路径' : '查看证据路径'}
       </button>
       {expanded && <div className={styles.rawEvidence}>{block.evidence_refs.map((ref) => <code key={`${ref.source}-${ref.path}`}>{ref.path}: {ref.excerpt}</code>)}</div>}

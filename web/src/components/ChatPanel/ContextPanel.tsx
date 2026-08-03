@@ -1,4 +1,4 @@
-import { createElement, useState } from 'react';
+import { createElement, useEffect, useState } from 'react';
 import { Switch } from 'antd';
 import type { Offer } from '@/types/offer';
 import { OFFER_STATUS_LABELS, OFFER_STATUS_COLORS } from '@/types/offer';
@@ -24,6 +24,7 @@ interface Props {
   onOpenEvidence?: (target: EvidenceTarget) => void;
   onPrepareOfferNegotiation?: (offer: Offer) => void;
   offers?: Offer[];
+  contextKey?: string;
 }
 
 function formatTotal(total: number): string {
@@ -47,9 +48,14 @@ export default function ContextPanel({
   onOpenEvidence,
   onPrepareOfferNegotiation,
   offers = [],
+  contextKey = '',
 }: Props) {
   const [offerPickerOpen, setOfferPickerOpen] = useState(false);
   const [selectedOffer, setSelectedOffer] = useState<Offer | null>(null);
+  useEffect(() => {
+    setSelectedOffer(null);
+    setOfferPickerOpen(false);
+  }, [contextKey, isNego, offer?.id]);
   const evidenceSelection = selectEvidence(evidence, 5);
   const activeOffer = offer ?? selectedOffer;
 

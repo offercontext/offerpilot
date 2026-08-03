@@ -84,7 +84,7 @@ export default function OfferCompareDrawer({
     fieldRow('职位', (offer) => displayValue(offer.position_name)),
     fieldRow('状态', (offer) => OFFER_STATUS_LABELS[offer.status]),
     fieldRow('月薪与月数', (offer) => `${offer.base_monthly / 1000}K × ${offer.months_per_year}`),
-    fieldRow('签字费', (offer) => offer.signing_bonus > 0 ? formatWan(offer.signing_bonus) : missingValue()),
+    fieldRow('签字费', (offer) => offer.signing_bonus == null ? missingValue() : formatWan(offer.signing_bonus)),
     fieldRow('年总包事实', (offer) => formatWan(offer.total_cash)),
     fieldRow('期权', (offer) => displayValue(offer.equity)),
     fieldRow('福利', (offer) => displayValue(offer.perks)),

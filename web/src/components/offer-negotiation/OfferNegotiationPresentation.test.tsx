@@ -91,6 +91,12 @@ describe('Offer negotiation presentation components', () => {
     expect(rendered.textContent).not.toContain('/offer_snapshot/base_monthly');
   });
 
+  it('keeps a zero signing bonus as a real Offer fact', () => {
+    const rendered = mount(<OfferSnapshotSummary offer={{ ...snapshot.offer_snapshot, signing_bonus: 0 }} sourceState="current" />);
+    expect(rendered.querySelector('[data-testid="snapshot-signing-bonus"]')?.textContent).toContain('0');
+    expect(rendered.querySelector('[data-testid="snapshot-signing-bonus"]')?.textContent).not.toContain('灏氭湭濉啓');
+  });
+
   it('reports field validation next to the controlled field', () => {
     const rendered = mount(
       <NegotiationBriefForm
@@ -104,13 +110,13 @@ describe('Offer negotiation presentation components', () => {
     expect(rendered.querySelector('label[for="negotiation-goal"]')).not.toBeNull();
   });
 
-  it('reveals raw evidence only after the user expands it', () => {
+  it('reveals raw evidence without changing the selected block', () => {
     const onToggle = vi.fn();
     const rendered = mount(<NegotiationProposalCard block={block} selected={false} editedText={block.text} disabled={false} onToggle={onToggle} onEdit={vi.fn()} />);
     expect(rendered.textContent).toContain('Offer 固定月薪');
     expect(rendered.textContent).not.toContain('/offer_snapshot/base_monthly');
     act(() => rendered.querySelector<HTMLButtonElement>('[data-action="toggle-evidence"]')?.click());
-    expect(onToggle).toHaveBeenCalledTimes(1);
+    expect(onToggle).not.toHaveBeenCalled();
   });
 
   it('shows real confirmation time but never invents a generation time', () => {

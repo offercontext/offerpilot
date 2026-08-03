@@ -85,6 +85,22 @@ it('renders only factual comparison rows and preserves explicit Offer action IDs
   expect(onNegotiation).toHaveBeenCalledWith(offers[0]);
 });
 
+it('renders a zero signing bonus as a factual comparison value', async () => {
+  const offers = [{ ...offer(2), signing_bonus: 0 }, offer(1)];
+  readComparison.mockResolvedValue({ offers, dimensions: [], missing: [] } satisfies OfferComparisonRead);
+  host = document.createElement('div');
+  document.body.appendChild(host);
+  root = createRoot(host);
+
+  await act(async () => {
+    root?.render(<OfferCompareDrawer open onClose={vi.fn()} offers={offers} dimensionIds={[]} />);
+  });
+
+  const fixedFacts = host.querySelector('[data-section="fixed-facts"]');
+  expect(fixedFacts?.textContent).toContain('0');
+  expect(fixedFacts?.textContent).not.toContain('灏氭湭濉啓');
+});
+
 it('renders structured factual groups and rich Offer headers', async () => {
   const offers = [offer(2), offer(1)];
   readComparison.mockResolvedValue({

@@ -34,6 +34,7 @@ function render(
   offerValue: Offer | null,
   onPrepareOfferNegotiation: (value: Offer) => void,
   offers: Offer[] = [offer],
+  contextKey = 'conversation:one',
 ) {
   const host = document.createElement('div');
   document.body.appendChild(host);
@@ -53,6 +54,7 @@ function render(
         onToggleAutoApprove={vi.fn()}
         onPrepareOfferNegotiation={onPrepareOfferNegotiation}
         offers={offers}
+        contextKey={contextKey}
       />,
     );
   });
@@ -101,5 +103,71 @@ describe('Pilot offer negotiation entry', () => {
     act(() => button?.click());
     expect(onPrepare).toHaveBeenCalledTimes(1);
     expect(onPrepare).toHaveBeenCalledWith(offer);
+  });
+
+  it('clears a selected Offer when the conversation context changes without an explicit Offer', () => {
+    const onPrepare = vi.fn();
+    ({ host, root } = render(null, onPrepare, [offer], 'conversation:one'));
+
+    act(() => host?.querySelector<HTMLButtonElement>('[data-testid="pilot-choose-offer-negotiation"]')?.click());
+    act(() => host?.querySelector<HTMLInputElement>(`input[value="${offer.id}"]`)?.click());
+    act(() => host?.querySelector<HTMLButtonElement>('[data-action="continue-offer-negotiation"]')?.click());
+    expect(host?.querySelector('[data-testid="pilot-prepare-offer-negotiation"]')).not.toBeNull();
+
+    act(() => {
+      root?.render(
+        <ContextPanel
+          isNego
+          offer={null}
+          capabilities={[]}
+          evidence={[]}
+          autoApprove={false}
+          hasKey
+          degraded={false}
+          disabled={false}
+          onCapability={vi.fn()}
+          onToggleAutoApprove={vi.fn()}
+          onPrepareOfferNegotiation={onPrepare}
+          offers={[offer]}
+          contextKey="conversation:two"
+        />,
+      );
+    });
+
+    expect(host?.querySelector('[data-testid="pilot-prepare-offer-negotiation"]')).toBeNull();
+    expect(host?.querySelector('[data-testid="pilot-choose-offer-negotiation"]')).not.toBeNull();
+  });
+
+  it('clears a selected Offer when the Pilot context changes', () => {
+    const onPrepare = vi.fn();
+    const otherOffer = { ...offer, id: 99, company_name: '远山科技' };
+    ({ host, root } = render(null, onPrepare));
+
+    act(() => host?.querySelector<HTMLButtonElement>('[data-testid="pilot-choose-offer-negotiation"]')?.click());
+    act(() => host?.querySelector<HTMLInputElement>(`input[value="${offer.id}"]`)?.click());
+    act(() => host?.querySelector<HTMLButtonElement>('[data-action="continue-offer-negotiation"]')?.click());
+    expect(host?.textContent).toContain('已选择 Offer');
+
+    act(() => {
+      root?.render(
+        <ContextPanel
+          isNego
+          offer={otherOffer}
+          capabilities={[]}
+          evidence={[]}
+          autoApprove={false}
+          hasKey
+          degraded={false}
+          disabled={false}
+          onCapability={vi.fn()}
+          onToggleAutoApprove={vi.fn()}
+          onPrepareOfferNegotiation={onPrepare}
+          offers={[otherOffer]}
+        />,
+      );
+    });
+
+    expect(host?.textContent).not.toContain('已选择 Offer');
+    expect(host?.textContent).toContain('远山科技');
   });
 });

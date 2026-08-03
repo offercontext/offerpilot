@@ -155,6 +155,25 @@ describe('OfferNegotiationDrawer', () => {
     expect(service.create).not.toHaveBeenCalled();
   });
 
+  it('clears the persisted draft when preview rejects the request before an Attempt exists', async () => {
+    service.preview.mockRejectedValueOnce(new OfferNegotiationError(422, 'offer_negotiation_invalid_request'));
+    const onDraftChange = vi.fn();
+    await act(async () => { root?.render(<OfferNegotiationDrawer open offer={offer} onClose={vi.fn()} onDraftChange={onDraftChange} />); });
+    const inputs = host?.querySelectorAll('input') ?? [];
+    const textareas = host?.querySelectorAll('textarea') ?? [];
+    await act(async () => {
+      changeValue(inputs[0] as HTMLInputElement, 'Goal');
+      changeValue(textareas[0] as HTMLTextAreaElement, 'Concern');
+      changeValue(inputs[1] as HTMLInputElement, 'Call');
+      host?.querySelector<HTMLButtonElement>('[data-testid="offer-negotiation-generate"]')?.click();
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    expect(service.create).not.toHaveBeenCalled();
+    const latestDraftUpdate = onDraftChange.mock.calls[onDraftChange.mock.calls.length - 1];
+    expect(latestDraftUpdate?.[0]).toBeNull();
+  });
+
   it('shows the complete frozen Offer facts before generation', async () => {
     await act(async () => { root?.render(<OfferNegotiationDrawer open offer={{ ...offer, equity: '期权', perks: '补充医疗', deadline: '周五', notes: '用户备注' }} onClose={vi.fn()} />); });
     expect(host?.querySelector('[data-testid="offer-negotiation-input-facts"]')?.textContent).toContain('期权');

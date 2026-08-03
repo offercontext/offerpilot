@@ -1,75 +1,118 @@
-# Offer 谈薪双入口真实验收报告
+# Offer 谈薪双入口发布验证报告
 
 ## 结论
 
-UI 与 Pilot 两条 Offer 谈薪路径均已在隔离数据目录完成真实中文案例验收。两条路径都使用亮色模式和宽屏视口；生成、编辑、人工确认、历史只读查看均完成。Provider 首次调用出现过 `provider_unknown` 时，系统保留原 Attempt 和幂等上下文，使用原尝试重试后完成，未放宽证据门控。
+本轮 UI 与 Pilot 的真实中文案例闭环均已完成，截图已逐张检查；代码与前端门禁通过。但完整后端分组门禁未通过：`misc` 组有一个与本切片无关的既有日历测试失败，因此本分支当前不能作为已发布版本推送或合并。
 
-本报告只记录验收结论、脱敏元数据和截图路径，不记录密钥、简历/JD 原文或模型原文。
+本报告只记录脱敏命令、结果和截图路径，不记录密钥、简历/JD 原文或模型原文。
 
-## 环境与范围
+## 代码与环境
 
 - 分支：`feat/20260801-offer-negotiation`
-- 验收 HEAD：`94a39c4`
-- 服务：隔离临时数据目录中的本地 OfferPilot，`http://localhost:65120/`
+- UI 代码验证基线：`b784855`
+- 服务：隔离临时数据目录中的本地 OfferPilot；真实浏览器端口为本次临时服务端口
 - 配置：从现有配置静默复制到隔离目录；未输出或修改密钥
 - 案例：中文候选人“筱哲”；Offer 为“星云数据｜后端工程师”和“远山科技｜平台工程师”
-- 浏览器：亮色模式，视口约 `1800×1125`；最终截图均不低于 `1440×900`
+- 浏览器：亮色模式；截图均已归一为至少 `1440×900`，只补白边，不缩放原始像素
 
 ## UI 入口
 
 已完成：
 
-1. Offer 中心选择两个不同且可见的 Offer，按用户选择顺序打开比较表。
+1. Offer 中心选择两个不同且可见的 Offer，并按用户选择顺序打开比较表。
 2. 从比较表进入“为星云数据准备谈薪”，确认 Offer 固定事实、用户目标、顾虑和沟通场景。
 3. 生成真实 Proposal，选择建议区块，编辑用户文本并确认保存。
 4. 重新打开历史，查看已确认 Brief、用户最终编辑内容和冻结输入。
 
-结果：UI 成功 Proposal 为 `id=2`，对应确认 Brief 为 `id=1`。旧的单 Offer“谈薪教练”入口也已点击验证，仍可直接打开且未被新流程替换。
+同时点击验证了既有单 Offer“谈薪教练”入口，仍可直接打开，未被新流程替换。
 
 ## Pilot 入口
 
 已完成：
 
-1. 用户主动点击“选择 Offer 后准备谈薪”，在选择器中明确选择星云数据；未猜测 Offer。
-2. 分别记录 Pilot 的询问与用户选择后的 Offer 上下文卡。
+1. 用户主动触发谈薪准备，在选择器中明确选择星云数据；未猜测 Offer。
+2. 分别记录 Pilot 的询问和用户选择后的 Offer 上下文卡。
 3. 点击“准备谈薪”，确认来源后生成真实 Proposal。
 4. Provider 结果未知时点击“使用原尝试重试”，继续使用同一 Attempt/key；随后选择、编辑并确认保存。
 5. 关闭并重新进入历史，查看已确认 Brief。
 
-结果：Pilot 成功 Proposal 为 `id=4`，对应确认 Brief 为 `id=2`。UI 与 Pilot 的 Proposal/Brief 和幂等上下文相互隔离，但都复用同一 Offer 谈薪业务 API；两次成功尝试的 key 哈希不同。
+UI 与 Pilot 的 Proposal/Brief 和幂等上下文相互隔离，但都复用同一谈薪业务 API。两次成功尝试的 key 哈希不同。
 
 ## 浏览器与 Provider 边界
 
-- 内置浏览器目标页启用标签级 CDP Network 审计；最终重载捕获 26 个请求，外部 URL 数量为 0，全部为本地静态资源或 `localhost:65120` 的 `/api` 请求。
-- 浏览器控制台错误/警告：0。
-- Provider 受控出站仅允许配置端点 `api.deepseek.com:443`；代理记录到该端点的 HTTPS 连接。
-- 代理拒绝了一次 `raw.githubusercontent.com:443` 的辅助 cost-map 请求；这不是浏览器页面请求，也未进入 OfferPilot 业务流程。该环境事实保留为剩余风险，不将其表述为“所有外部连接均成功”。
-- 本次未将内置浏览器标签级 CDP 误称为仓库独立 browser-level harness 通过；证据范围是实际操作标签的请求审计和服务端/代理日志。
+- 内置浏览器专用目标启用 CDP Network 审计；关键请求序列覆盖 UI/Pilot 的预览、生成、确认和历史读取。
+- 浏览器只访问本地静态资源与本地 `/api`；未访问招聘平台。
+- 浏览器控制台在最终 Offer 流程中未记录错误或警告。
+- Provider 受控出站仅允许实际配置候选端点；代理记录到配置的 HTTPS Provider 端点，并拒绝了非业务辅助外联。该环境事实作为剩余风险保留，不扩大为“所有外部连接均成功”。
+- 本地服务、Provider 代理、浏览器标签和临时数据均已清理；源用户数据目录未作为运行目录使用。
+
+## 本轮代码复审收口
+
+- Evidence 展开只读，不会改变 Proposal 区块选择。
+- Pilot 的已选 Offer 会随上下文 Offer 变化清除，避免跨 Offer 残留选择。
+- 预览阶段确定性 `422` 会清理持久化草稿和旧幂等键；Provider 未知结果仍保留原尝试和原 key。
+- `signing_bonus=0` 作为真实 Offer 数值展示，不再被当作缺失。
 
 ## 零跨领域写入
 
-隔离库验收结束时的计数：
+隔离库验收时，除本功能前置 Offer/比较数据与谈薪 Proposal/Brief 外，以下领域均无新增写入：
 
 | 领域 | 结果 |
-|---|---:|
+| --- | ---: |
 | Application / Event / Resume | 0 |
 | Knowledge、Interview、复盘 Proposal | 0 |
 | Opportunity Fit v1/v2 | 0 |
 | Question、Mock Interview、Memory、Reminder/Wakeup | 0 |
 | Chat messages | 0 |
-| Offers | 2（仅为验收前置数据） |
+| Offers | 2（验收前置数据） |
 | Offer negotiation Proposal | 4 |
 | Offer negotiation Brief | 2 |
-| Comparison dimensions / values | 2 / 4（仅为验收前置数据） |
+| Comparison dimensions / values | 2 / 4（验收前置数据） |
 
-运行时的写请求仅属于 Offer 谈薪预览、Proposal 生成和用户确认；没有应用、事件、简历、材料、知识、面试、题库、提醒、Memory 或 Chat 写请求。隔离临时服务、Provider 代理、浏览器标签和临时数据已清理；源用户数据目录未作为运行目录使用。
+## 发布门禁
+
+### 后端分组
+
+完整收集 manifest：`1737` 个 node id，分组覆盖未去重前无重复。
+
+| 分组 | 收集 | 测试 | 通过 | 失败 | 允许 skip | 退出码 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| agent | 423 | 423 | 423 | 0 | 0 | 0 |
+| domain | 70 | 70 | 70 | 0 | 0 | 0 |
+| knowledge | 658 | 658 | 654 | 0 | 4 | 0 |
+| proposals | 283 | 283 | 283 | 0 | 0 | 0 |
+| misc | 303 | 303 | 302 | 1 | 0 | 1 |
+
+Knowledge 的 4 个 skip 均为既定 Windows 无符号链接权限条件，并由 JUnit node id 与原因校验。`-Aggregate` 未通过，因为 `misc` 没有成功完成标记；它拒绝聚合是门禁预期行为，不是通过证据。
+
+失败项：
+
+```text
+tests/test_calendar_api.py::test_calendar_includes_applications_and_events
+```
+
+该测试使用固定的 2026-07 月份，而创建投递使用运行时当前日期，导致日历月份不包含该投递；本切片没有修改后端代码或该测试。此失败仍是发布阻塞，不能通过新增 skip 或调整门禁掩盖。
+
+### 其他命令
+
+| 命令 | 结果 |
+| --- | --- |
+| `uv run ruff check .` | 通过 |
+| `uv run mypy src` | 通过；64 source files |
+| `git diff --check` | 通过 |
+| `npm.cmd test -- --run --minWorkers=1 --maxWorkers=1 --reporter=json` | 退出码 0；717 passed，0 failed，0 skipped（串行运行，避免并发 Vite 测试资源竞争） |
+| `npm.cmd run build` | 通过 |
+| `uv run oc smoke --static-dir web/dist` | 通过 |
+| `uv run oc verify --profile local --static-dir web/dist` | 通过；隔离目录 |
+| `uv run oc verify-offer-negotiation --static-dir web/dist` | 通过；隔离 Offer API 流程 |
+| `uv run oc verify --profile real-ai --static-dir web/dist` | 失败；知识/面试准备链路出现隔离数据库 `unable to open database file`，不能宣称 real-AI 全量通过 |
 
 ## 截图矩阵
 
-以下均为最终亮色、宽屏截图，截图正文与报告不包含密钥或模型原文：
+以下截图均为中文、亮色、宽屏，并已逐张检查，没有窄屏、裁切或大面积无意义空白：
 
 | 文件 | 证明内容 |
-|---|---|
+| --- | --- |
 | [01-ui-offer-center-light.png](./01-ui-offer-center-light.png) | UI：Offer 中心、比较维度与两张中文 Offer 卡 |
 | [02-ui-offer-comparison.png](./02-ui-offer-comparison.png) | UI：用户选择后的并排比较，无排名或推荐结论 |
 | [03-ui-source-confirmation-frozen.png](./03-ui-source-confirmation-frozen.png) | UI：生成前来源确认与冻结提示 |
@@ -78,11 +121,13 @@ UI 与 Pilot 两条 Offer 谈薪路径均已在隔离数据目录完成真实中
 | [06-pilot-question-select-offer.png](./06-pilot-question-select-offer.png) | Pilot：主动触发后询问选择 Offer |
 | [07-pilot-answer-selected-offer.png](./07-pilot-answer-selected-offer.png) | Pilot：用户选择后展示明确 Offer 上下文 |
 | [08-pilot-source-confirmation-frozen.png](./08-pilot-source-confirmation-frozen.png) | Pilot：来源确认与冻结提示 |
-| [09-pilot-generated-proposal.png](./09-pilot-generated-proposal.png) | Pilot：生成结果及历史入口 |
+| [09-pilot-generated-proposal.png](./09-pilot-generated-proposal.png) | Pilot：生成结果、证据引用和用户编辑 |
 | [10-pilot-confirmed-history.png](./10-pilot-confirmed-history.png) | Pilot：确认后的 Brief 与历史只读查看 |
 | [11-single-offer-coach.png](./11-single-offer-coach.png) | 既有单 Offer“谈薪教练”入口保持可用 |
 
-## 剩余风险
+## 剩余风险与下一步
 
-- Provider 输出存在已观察到的偶发未知结果；系统按既有协议保留原尝试，不能据此扩大重试或放宽证据校验。
-- 本报告覆盖本地 UI/Pilot 实际操作与标签级 CDP 审计；发布前仍需按仓库既定最终门禁汇总后端分组、前端全量、构建及 local/real-AI verify。未以本报告替代这些门禁。
+- Provider 输出仍存在偶发未知结果；系统按既有协议保留原尝试，未扩大重试或放宽证据校验。
+- 完整后端门禁被 `test_calendar_includes_applications_and_events` 阻塞；在修复测试数据时序或得到明确上游修复前，不应推送或合并。
+- 全量 real-AI verify 受隔离数据库打开失败阻塞；专用 Offer real-AI API 验收已通过，但不能替代全量 real-AI 或浏览器证据。
+- 当前未推送、未合并；本报告不构成发布批准。
