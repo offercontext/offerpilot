@@ -60,8 +60,8 @@ def _offer(client: TestClient) -> dict:
 
 def _payload() -> dict:
     item = {
-        "text": "确认岗位信息",
-        "rationale": "依据冻结 Offer",
+        "intent": "confirm_fact",
+        "topic": "offer_fact",
         "evidence_refs": [
             {"source": "offer_snapshot", "path": "/offer_snapshot/company_name", "excerpt": "星云数据"}
         ],
@@ -73,6 +73,7 @@ def _payload() -> dict:
             {
                 **item,
                 "id": "question-1",
+                "intent": "prepare_question",
                 "evidence_refs": [
                     {"source": "user_brief", "path": "/user_brief/goal", "excerpt": "goal"}
                 ],
@@ -82,6 +83,7 @@ def _payload() -> dict:
             {
                 **item,
                 "id": "point-1",
+                "intent": "prepare_response",
                 "evidence_refs": [
                     {"source": "offer_snapshot", "path": "/offer_snapshot/base_monthly", "excerpt": "28000"}
                 ],

@@ -21,9 +21,31 @@ OFFER_NEGOTIATION_FIELDS = (
     "preparation_checks",
 )
 _ARRAY_FIELDS = OFFER_NEGOTIATION_FIELDS[1:]
-_ITEM_FIELDS = {"id", "text", "rationale", "evidence_refs"}
+_ITEM_FIELDS = {"id", "intent", "topic", "evidence_refs"}
 _REF_FIELDS = {"source", "path", "excerpt"}
 _ALLOWED_SOURCES = {"offer_snapshot", "user_brief"}
+_ALLOWED_INTENTS = {
+    "confirm_fact",
+    "prepare_question",
+    "prepare_request",
+    "prepare_response",
+}
+_ALLOWED_TOPICS = {
+    "offer_fact",
+    "user_goal",
+    "user_concern",
+    "user_scenario",
+    "comparison_dimension",
+    "communication_context",
+}
+_TOPIC_LABELS = {
+    "offer_fact": "Offer 固定事实",
+    "user_goal": "本次谈薪目标",
+    "user_concern": "本次谈薪顾虑",
+    "user_scenario": "本次沟通场景",
+    "comparison_dimension": "自定义比较维度",
+    "communication_context": "沟通上下文",
+}
 _SHAPE_CATEGORIES = {
     "invalid_json",
     "duplicate_json_key",
@@ -31,104 +53,10 @@ _SHAPE_CATEGORIES = {
     "invalid_item_shape",
     "missing_field",
     "invalid_field_type",
+    "missing_evidence_ref",
 }
 OfferNegotiationDiagnosticSink = Callable[[dict[str, Any]], None]
 _ID_RE = re.compile(r"^[\x21-\x7e]{1,64}$")
-_DECISION_OBJECT_GAP = r"[^\u3002\uff01\uff1f!?；;，,\n：:（）()]{0,20}"
-_NEGOTIATION_ACTIVITY_TAIL_RE = re.compile(
-    r"^(?:的|相关的|对应的)?(?:谈薪|沟通|协商|电话沟通|调研)(?:场景|方式|方案)?"
-)
-_DECISION_ACTION_TO_OBJECT_RE = re.compile(
-    r"(?:不要\s*)?(?:接受|接下|拒绝|婉拒|放弃|选择|签下|错过)\s*"
-    rf"{_DECISION_OBJECT_GAP}\s*"
-    r"(?:Offer|offer|岗位|职位|机会)"
-)
-_DECISION_OBJECT_TO_ACTION_RE = re.compile(
-    rf"{_DECISION_OBJECT_GAP}\s*"
-    r"(?:Offer|offer|岗位|职位|机会)\s*"
-    r"(?:(?:是|为|值得|不值得|适合|应该|应当|最好|不要|不应|不该)\s*)?"
-    r"(?:接受|接下|拒绝|婉拒|放弃|选择|签下|错过)"
-)
-_ENGLISH_DECISION_RE = re.compile(
-    r"(?:\b(?:you\s+)?(?:should|must|need\s+to|recommend(?:ed)?(?:\s+that)?|please)\s+"
-    r"(?:directly\s+|immediately\s+|just\s+)?(?:consider\s+)?"
-    r"(?:accept|accepting|reject|rejecting|decline|declining|choose|choosing|"
-    r"sign|signing|take|taking|drop|dropping)\b"
-    r"[^.!?;\n]{0,40}\b(?:this|that|the)?\s*(?:offer|job|position|role|opportunity)\b)"
-    r"|(?:\b(?:i|we)\s+recommend(?:ed)?(?:\s+that)?\s+(?:you\s+)?"
-    r"(?:accept|accepting|reject|rejecting|decline|declining|choose|choosing|"
-    r"sign|signing|take|taking|drop|dropping)\b"
-    r"[^.!?;\n]{0,40}\b(?:this|that|the)?\s*(?:offer|job|position|role|opportunity)\b)"
-    r"|(?:\b(?:this|that|the)\s+(?:offer|job|position|role|opportunity)\b"
-    r"[^.!?;\n]{0,30}\b(?:is\s+)?(?:worth\s+(?:accepting|rejecting|taking|signing)|"
-    r"(?:the\s+)?(?:best|optimal|top)\b))"
-    r"|(?:\bthis\s+is\s+(?:the\s+)?(?:best|optimal|top)\s+"
-    r"(?:offer|job|position|role|opportunity)\b)"
-    r"|(?:\b(?:accept|reject|decline|choose|sign|take|drop)\b"
-    r"[^.!?;\n]{0,40}\b(?:this|that|the)\s*(?:offer|job|position|role|opportunity)\b)"
-    r"|(?:\bgo\s+with\s+(?:this|that|the)\s+(?:offer|job|position|role|opportunity)\b)",
-    re.I,
-)
-_DECISION_RIGHTS_RE = re.compile(
-    r"(?:由|替|让)\s*(?:你|用户)(?:自行|自己)?(?:来)?\s*决定|决定权"
-)
-_DECISION_RECOMMENDATION_TRIGGER_RE = re.compile(
-    r"(?:建议|推荐|应该|应当|务必|最好|值得|现在|直接|立即|尽快|不要错过|签下|"
-    r"you\s+should|must|need\s+to|recommend(?:ed)?(?:\s+that)?|"
-    r"please\s*(?:(?:you|user)\s*)?(?:(?:directly|immediately|just)\s*)?"
-    r"(?:accept|reject|decline|choose|sign|take|drop))",
-    re.I,
-)
-_ENGLISH_RANKING_RE = re.compile(
-    r"(?:\b(?:this|that|the)\s+(?:offer|job|position|role|opportunity)\b"
-    r"[^.!?;\n]{0,30}\b(?:is\s+)?(?:worth\s+(?:accepting|rejecting|taking|signing)|"
-    r"(?:the\s+)?(?:best|optimal|top)\b)"
-    r"|\bthis\s+is\s+(?:the\s+)?(?:best|optimal|top)\s+"
-    r"(?:offer|job|position|role|opportunity)\b"
-    r"|\b(?:this|that|the)\s+(?:offer|job|position|role|opportunity)\b"
-    r"[^.!?;\n]{0,30}\b(?:is\s+)?(?:better|worse|more\s+suitable|superior)\s+than\b)",
-    re.I,
-)
-_DECISION_RANKING_RE = re.compile(
-    r"(?:Offer|offer|岗位|职位|机会)\s*"
-    r"(?:排名\s*(?:第)?[一二三四五六七八九十\d]+|"
-    r"(?:比|较|相较于)[^。！？!?；;，,\n]{0,16}(?:更好|更差|更合适|更优|优于|胜过))"
-)
-_EXPLICIT_DECISION_RE = re.compile(
-    r"(?:Offer|岗位|职位|方案|选择)[\s]*(?:是|为)[\s]*(?:最优|最佳)"
-    r"|(?:最优|最佳)[\s]*(?:Offer|岗位|职位|方案|选择)"
-    r"|(?<!是否)(?:接受|拒绝|放弃|选择)[^。！？!?；;\n]{0,16}(?:会更好|更好|更合适|更优|最优|最佳)",
-    re.I,
-)
-_UNSUPPORTED_FACT_RE = re.compile(
-    r"(?:市场薪酬|法律结论|公司政策|公司制度)[\s]*"
-    r"(?:(?:明确|通常|一般|据称|大约|约|相关)[\s]*)?"
-    r"(?:[:：]|是|为|规定|要求|保证|意味着|表明|允许|不允许)"
-    r"|(?:通过率|(?:拿到|获得|得到)?录用(?:的)?概率|成功率)[\s]*"
-    r"(?:(?:明确|通常|一般|大约|约|大致|可能)[\s]*)?"
-    r"(?:是|为|高达|达到|高于|低于|保证|意味着)"
-    r"|(?:会|将|一定|保证|预测|预估|可能(?:会)?)[\s]*(?:被)?录用"
-    r"|(?:tax|salary market)[\s]+(?:is|means|shows|guarantees)"
-    r"|(?:company\s+(?:policy|rules?|regulations?))\s+"
-    r"(?:requires?|mandates?|prohibits?|allows?|does\s+not\s+allow)",
-    re.I,
-)
-_QUESTION_CONTEXT_RE = re.compile(
-    r"(?:请询问|请确认|请问|请说明|请列出|请提供|请告诉|请解释|请核对|请整理|"
-    r"询问|确认|说明|列出|提供|告诉|解释|核对|整理|是否|能否|可否|可以否|"
-    r"前需要|需要确认|需要询问|问题|please\s+(?:ask|confirm|explain|list|provide|tell)|"
-    r"whether|\bif\b)",
-    re.I,
-)
-_TRUE_QUESTION_RE = re.compile(
-    r"[?？]|是否|能否|可否|可以吗|吗\b|whether\b|\bif\b|\bwhich\b|\bwhat\b|"
-    r"\bwhy\b|\bhow\b",
-    re.I,
-)
-_FACT_ASSERTION_JOIN_RE = re.compile(
-    r"(?:且|并且|但是|但|而且|以及|同时|\band\b|\bbut\b|\bas\s+well\s+as\b)",
-    re.I,
-)
 
 OFFER_NEGOTIATION_JSON_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -138,17 +66,17 @@ OFFER_NEGOTIATION_JSON_SCHEMA: dict[str, Any] = {
         "proposal_status": {"enum": ["normal", "safe_empty"]},
         **{
             field: {
-                "type": "array",
-                "maxItems": 8,
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["id", "text", "rationale", "evidence_refs"],
-                    "properties": {
-                        "id": {"type": "string", "minLength": 1, "maxLength": 64},
-                        "text": {"type": "string", "minLength": 1, "maxLength": 600},
-                        "rationale": {"type": "string", "minLength": 1, "maxLength": 600},
-                        "evidence_refs": {
+                    "type": "array",
+                    "maxItems": 8,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["id", "intent", "topic", "evidence_refs"],
+                        "properties": {
+                            "id": {"type": "string", "minLength": 1, "maxLength": 64},
+                            "intent": {"enum": sorted(_ALLOWED_INTENTS)},
+                            "topic": {"enum": sorted(_ALLOWED_TOPICS)},
+                            "evidence_refs": {
                             "type": "array",
                             "minItems": 1,
                             "maxItems": 4,
@@ -248,6 +176,7 @@ def build_offer_negotiation_snapshot(
 
 
 def validate_offer_negotiation(payload: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Validate the constrained Provider contract and render public text server-side."""
     _reject_non_finite(payload)
     if not isinstance(payload, dict):
         raise OfferNegotiationModelError("proposal must be an object", "invalid_item_shape")
@@ -401,8 +330,8 @@ def _validate_item(item: Any, snapshot: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(item, dict) or set(item) != _ITEM_FIELDS:
         raise OfferNegotiationModelError("item fields are invalid", "invalid_item_shape")
     item_id = item.get("id")
-    text = item.get("text")
-    rationale = item.get("rationale")
+    intent = item.get("intent")
+    topic = item.get("topic")
     refs = item.get("evidence_refs")
     if not isinstance(item_id, str) or not item_id:
         raise OfferNegotiationModelError("item id is invalid", "invalid_item_shape")
@@ -410,84 +339,39 @@ def _validate_item(item: Any, snapshot: dict[str, Any]) -> dict[str, Any]:
         raise OfferNegotiationModelError("item id exceeds the limit", "limit_exceeded")
     if not _ID_RE.fullmatch(item_id):
         raise OfferNegotiationModelError("item id is invalid", "invalid_item_shape")
-    if not isinstance(text, str) or not text.strip():
-        raise OfferNegotiationModelError("item text is invalid", "invalid_item_shape")
-    if not isinstance(rationale, str) or not rationale.strip():
-        raise OfferNegotiationModelError("item rationale is invalid", "invalid_item_shape")
-    if len(text) > 600 or len(rationale) > 600:
-        raise OfferNegotiationModelError("item text exceeds the limit", "limit_exceeded")
-    if _contains_forbidden_decision_language(text) or _contains_forbidden_decision_language(rationale):
-        raise OfferNegotiationModelError("decision language is not allowed", "forbidden_decision_language")
-    if not isinstance(refs, list) or not refs or len(refs) > 4:
+    if intent not in _ALLOWED_INTENTS or topic not in _ALLOWED_TOPICS:
+        raise OfferNegotiationModelError("intent or topic is invalid", "invalid_field_type")
+    if not isinstance(refs, list) or not refs:
         raise OfferNegotiationModelError("evidence_refs is invalid", "missing_evidence_ref")
+    if len(refs) > 4:
+        raise OfferNegotiationModelError("evidence_refs exceeds the limit", "limit_exceeded")
+    checked_refs = [_validate_ref(ref, snapshot) for ref in refs]
+    rendered = _render_item(item_id, intent, topic, checked_refs)
     return {
         "id": item_id,
-        "text": text,
-        "rationale": rationale,
-        "evidence_refs": [_validate_ref(ref, snapshot) for ref in refs],
+        "text": rendered[0],
+        "rationale": rendered[1],
+        "evidence_refs": checked_refs,
     }
 
 
-def _contains_forbidden_decision_language(value: str) -> bool:
-    def decision_object_matches(pattern: re.Pattern[str], clause: str) -> list[re.Match[str]]:
-        matches: list[re.Match[str]] = []
-        for match in pattern.finditer(clause):
-            tail = clause[match.end() :].lstrip()
-            if _NEGOTIATION_ACTIVITY_TAIL_RE.match(tail):
-                continue
-            matched_text = match.group(0)
-            if re.search(r"(?:沟通|交流|联系|询问|确认|了解)的?机会$", matched_text):
-                continue
-            matches.append(match)
-        return matches
-
-    for outer_clause in re.split(r"[。！？!?；;\n，,]", value):
-        clauses = re.split(r"[:：（）()]", outer_clause)
-        for clause_index, clause in enumerate(clauses):
-            has_true_question = _TRUE_QUESTION_RE.search(clause) is not None
-            for fact_clause in _FACT_ASSERTION_JOIN_RE.split(clause):
-                if _UNSUPPORTED_FACT_RE.search(fact_clause) and not _TRUE_QUESTION_RE.search(fact_clause):
-                    return True
-            if _EXPLICIT_DECISION_RE.search(clause) and not has_true_question:
-                return True
-            if (
-                (_ENGLISH_RANKING_RE.search(clause) or _DECISION_RANKING_RE.search(clause))
-                and not has_true_question
-            ):
-                return True
-            matches = [
-                *decision_object_matches(_DECISION_ACTION_TO_OBJECT_RE, clause),
-                *decision_object_matches(_DECISION_OBJECT_TO_ACTION_RE, clause),
-            ]
-            english_match = _ENGLISH_DECISION_RE.search(clause)
-            if english_match is not None:
-                matches.append(english_match)
-            if not matches:
-                continue
-            parent_has_recommendation = (
-                _DECISION_RECOMMENDATION_TRIGGER_RE.search("".join(clauses[:clause_index]))
-                is not None
-            )
-            for match in matches:
-                question_match = _QUESTION_CONTEXT_RE.search(clause)
-                question_allows_match = False
-                if question_match is not None and question_match.end() <= match.start():
-                    between_question_and_match = clause[question_match.end() : match.start()]
-                    question_allows_match = (
-                        _DECISION_RECOMMENDATION_TRIGGER_RE.search(between_question_and_match)
-                        is None
-                    )
-                if question_allows_match:
-                    continue
-                has_rights_context = _DECISION_RIGHTS_RE.search(clause) is not None
-                has_recommendation_context = (
-                    parent_has_recommendation
-                    or _DECISION_RECOMMENDATION_TRIGGER_RE.search(clause) is not None
-                )
-                if has_rights_context and not has_recommendation_context:
-                    continue
-                return True
-    return False
+def _render_item(
+    item_id: str,
+    intent: str,
+    topic: str,
+    evidence_refs: list[dict[str, str]],
+) -> tuple[str, str]:
+    del item_id, evidence_refs
+    label = _TOPIC_LABELS[topic]
+    text_templates = {
+        "confirm_fact": f"请确认{label}中的相关信息。",
+        "prepare_question": f"可向对方确认与{label}相关的问题。",
+        "prepare_request": f"可以围绕{label}准备沟通请求。",
+        "prepare_response": f"准备围绕{label}表达你的诉求。",
+    }
+    text = text_templates[intent]
+    rationale = "该建议由系统依据已提供的冻结来源生成，最终沟通内容由你决定。"
+    return text, rationale
 
 
 def _validate_ref(ref: Any, snapshot: dict[str, Any]) -> dict[str, str]:
@@ -617,16 +501,12 @@ def _provider_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
 
 def _system_prompt(snapshot: dict[str, Any]) -> str:
     return (
-        "只输出严格 JSON，不要 Markdown。不要替用户做接受、拒绝、放弃、排名或最优 Offer 决定。"
-        "决策边界示例：允许‘请询问公司是否接受远程办公’、‘接受或拒绝仍由用户自行决定’、"
-        "‘请确认录用通知中的入职时间’；禁止‘建议接受该 Offer’、‘应该拒绝这个岗位’、‘这份 Offer 是最优选择’。"
-        "同样禁止‘现在就接受这份 Offer’、‘建议签下这个 Offer’、‘不要错过这个机会’和‘You should accept this Offer.’；"
-        "还禁止‘建议接下这个 Offer’、‘建议婉拒这个 Offer’、‘这份 Offer 排名第一’、‘这份 Offer 比另一份更好’和‘Go with this offer.’；"
-        "允许‘建议不要向招聘方透露当前底线’、‘建议选择电话沟通谈薪’和‘请不要忘记确认入职时间’。"
-        "允许‘请确认公司政策是否允许远程办公’和‘建议询问接受 Offer 前需要完成哪些流程’，但禁止陈述公司制度、市场薪酬或录用概率等未经证实的事实。"
-        "不要仅因‘接受’、‘拒绝’、‘录用’或‘公司政策’单个词出现就拒绝合法问询；禁止明确替用户决定或无依据断言。"
-        "所有条目必须包含 id、text、rationale、evidence_refs；每个 evidence_refs 必须来自输入目录，"
-        "excerpt 必须逐字连续匹配。没有可验证建议时输出 proposal_status=safe_empty 和四个空数组。"
+        "只输出严格 JSON，不要 Markdown。Provider 只能返回受限的意图和主题枚举，不能输出自由文本。"
+        "intent 只能是 confirm_fact、prepare_question、prepare_request、prepare_response；"
+        "topic 只能是 offer_fact、user_goal、user_concern、user_scenario、comparison_dimension、communication_context。"
+        "每条记录必须包含 id、intent、topic、evidence_refs；每个 evidence_refs 必须来自输入目录，"
+        "excerpt 必须逐字连续匹配。系统会根据 intent/topic 生成中文 text/rationale，模型不得自行写入决定、排名、"
+        "优劣、市场薪酬、法律结论、公司政策或录用概率。没有可验证建议时输出 proposal_status=safe_empty 和四个空数组。"
         + json.dumps(OFFER_NEGOTIATION_JSON_SCHEMA, ensure_ascii=False, separators=(",", ":"))
         + "\n只能从以下 evidence_catalog 逐条选择 source/path/excerpt；不得创造目录外引用："
         + json.dumps(_evidence_catalog(snapshot), ensure_ascii=False, separators=(",", ":"))
@@ -641,5 +521,6 @@ def _repair_prompt(category: str) -> str:
     return (
         "上次输出未通过机器校验。只修复失败类别：" + category
         + "。请重新输出完整严格 JSON；不要输出解释、原始模型内容或输入快照。"
+        + "只能返回受限 intent/topic/evidence_refs，不得返回 text 或 rationale。"
         + json.dumps(OFFER_NEGOTIATION_JSON_SCHEMA, ensure_ascii=False, separators=(",", ":"))
     )
