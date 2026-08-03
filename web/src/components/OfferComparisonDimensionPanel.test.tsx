@@ -147,4 +147,48 @@ describe('OfferComparisonDimensionPanel', () => {
     expect(onSelectionChange).toHaveBeenLastCalledWith([1, 2, 3, 4, 5, 6, 7, 8]);
     expect(host.textContent).toContain('最多选择 8 个比较维度');
   });
+
+  it('renders each active dimension as a structured settings group', async () => {
+    serviceState.values = [
+      {
+        id: 1,
+        offer_id: 1,
+        dimension_id: 1,
+        value_text: '地铁 35 分钟',
+        created_at: '2026-07-01T00:00:00Z',
+        updated_at: '2026-07-01T00:00:00Z',
+      },
+    ];
+    const rendered = render();
+    await act(async () => {});
+
+    const card = rendered.querySelector('[data-testid="comparison-dimension-card"]');
+    expect(card).not.toBeNull();
+    expect(card?.textContent).toContain('通勤');
+    expect(card?.textContent).toContain('Company 1');
+    expect(card?.textContent).toContain('Company 2');
+    expect(rendered.querySelector('[data-action="create-dimension"]')?.textContent).toContain('新增维度');
+    expect(rendered.querySelectorAll('[data-action="save-value"]')).toHaveLength(2);
+    expect(rendered.querySelectorAll('[data-action="clear-value"]')).toHaveLength(2);
+    expect(rendered.textContent).toContain('已选择 0/8');
+  });
+
+  it('keeps archived values readable and marks blank values as missing', async () => {
+    serviceState.dimensions = [
+      { ...dimension(1, '通勤'), archived_at: '2026-07-02T00:00:00Z' },
+    ];
+    serviceState.values = [{
+      id: 1,
+      offer_id: 1,
+      dimension_id: 1,
+      value_text: '地铁 35 分钟',
+      created_at: '2026-07-01T00:00:00Z',
+      updated_at: '2026-07-01T00:00:00Z',
+    }];
+    const rendered = render();
+    await act(async () => {});
+    expect(rendered.querySelector('[data-testid="archived-dimension-value"]')?.textContent).toContain('地铁 35 分钟');
+    expect(rendered.textContent).not.toContain('可用于比较');
+    expect(rendered.textContent).toContain('已归档，仅历史可读');
+  });
 });

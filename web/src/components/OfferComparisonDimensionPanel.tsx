@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Alert, Button, Card, Checkbox, Empty, Input, Spin, Tag, Tooltip } from 'antd';
 import type { Offer, OfferComparisonDimension } from '@/types/offer';
 import {
   clearOfferComparisonValue,
@@ -8,6 +9,7 @@ import {
   saveOfferComparisonValue,
   updateOfferComparisonDimension,
 } from '@/services/offers';
+import styles from './OfferComparisonDimensionPanel.module.css';
 
 interface Props {
   offers: Offer[];
@@ -19,19 +21,28 @@ export default function OfferComparisonDimensionPanel({ offers, onSelectionChang
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [draftLabel, setDraftLabel] = useState('');
   const [draftValues, setDraftValues] = useState<Record<string, string>>({});
+  const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error'>('loading');
 
   const reload = async () => {
-    const [nextDimensions, valueLists] = await Promise.all([
-      listOfferComparisonDimensions(true),
-      Promise.all(offers.map((offer) => listOfferComparisonValues(offer.id))),
-    ]);
-    setDimensions(nextDimensions);
-    const nextValues: Record<string, string> = {};
-    valueLists.flat().forEach((value) => {
-      nextValues[`${value.offer_id}:${value.dimension_id}`] = value.value_text ?? '';
-    });
-    setDraftValues(nextValues);
-    setSelectedIds((current) => current.filter((id) => nextDimensions.some((dimension) => dimension.id === id && dimension.archived_at === null)));
+    setLoadState('loading');
+    try {
+      const [nextDimensions, valueLists] = await Promise.all([
+        listOfferComparisonDimensions(true),
+        Promise.all(offers.map((offer) => listOfferComparisonValues(offer.id))),
+      ]);
+      setDimensions(nextDimensions);
+      const nextValues: Record<string, string> = {};
+      valueLists.flat().forEach((value) => {
+        nextValues[`${value.offer_id}:${value.dimension_id}`] = value.value_text ?? '';
+      });
+      setDraftValues(nextValues);
+      setSelectedIds((current) => current.filter((id) => nextDimensions.some((dimension) => dimension.id === id && dimension.archived_at === null)));
+      setLoadState('ready');
+    } catch {
+      setDimensions([]);
+      setDraftValues({});
+      setLoadState('error');
+    }
   };
 
   useEffect(() => {
@@ -77,44 +88,59 @@ export default function OfferComparisonDimensionPanel({ offers, onSelectionChang
     setDraftValues((current) => ({ ...current, [`${offerId}:${dimensionId}`]: '' }));
   };
 
+  if (loadState === 'loading') {
+    return <section className={styles.panel} aria-label="自定义比较维度"><div className={styles.loading} role="status"><Spin size="small" /> 正在加载比较维度</div></section>;
+  }
+
+  if (loadState === 'error') {
+    return <section className={styles.panel} aria-label="自定义比较维度"><Alert message="比较维度暂时无法加载" type="error" action={<Button size="small" onClick={() => void reload()}>重试</Button>} /></section>;
+  }
+
   return (
-    <section aria-label="自定义比较维度" style={{ margin: '16px 0', padding: 16, border: '1px solid #e5e7eb', borderRadius: 8 }}>
-      <h3 style={{ marginTop: 0 }}>管理比较维度</h3>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-        <input
+    <section className={styles.panel} aria-label="自定义比较维度">
+      <div className={styles.panelHeader}>
+        <div>
+          <h3 className={styles.title}>管理比较维度</h3>
+          <p className={styles.help}>最多选择 8 个比较维度。空白值表示尚未填写，不代表负面判断。</p>
+        </div>
+        <Tag color="blue">已选择 {selectedIds.length}/8</Tag>
+      </div>
+      <div className={styles.createRow}>
+        <Input
           aria-label="新比较维度"
           placeholder="新比较维度"
           value={draftLabel}
           onChange={(event) => setDraftLabel(event.target.value)}
         />
-        <button type="button" data-action="create-dimension" onClick={() => void createDimension()}>新增维度</button>
+        <Button type="primary" data-action="create-dimension" onClick={() => void createDimension()}>新增维度</Button>
       </div>
-      <p style={{ color: '#6b7280' }}>最多选择 8 个比较维度。空白值表示尚未填写。</p>
-      {dimensions.map((dimension) => {
+      {dimensions.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有自定义比较维度" /> : dimensions.map((dimension) => {
         const active = dimension.archived_at === null;
+        const selected = selectedIds.includes(dimension.id);
+        const selectionBlocked = !selected && selectedIds.length >= 8;
         return (
-          <div key={dimension.id} data-dimension-id={dimension.id} style={{ padding: '8px 0', borderTop: '1px solid #f3f4f6' }}>
-            <label>
+          <Card key={dimension.id} className={styles.dimensionCard} data-testid="comparison-dimension-card" data-dimension-id={dimension.id} size="small">
+            <div className={styles.dimensionHeader}>
+              <label>
               {active && (
-                <input
-                  type="checkbox"
-                  checked={selectedIds.includes(dimension.id)}
-                  disabled={!selectedIds.includes(dimension.id) && selectedIds.length >= 8}
-                  onChange={(event) => selectDimension(dimension.id, event.target.checked)}
-                />
+                <Checkbox checked={selected} disabled={selectionBlocked} onChange={(event) => selectDimension(dimension.id, event.target.checked)}>
+                  {dimension.label}
+                </Checkbox>
               )}
-              <span style={{ marginLeft: 8 }}>{dimension.label}</span>
-              {!active && <span style={{ marginLeft: 8, color: '#6b7280' }}>已归档（仅历史可读）</span>}
-            </label>
-            <div style={{ margin: '8px 0 0 24px' }}>
+              {!active && <><span>{dimension.label}</span><Tag className={styles.archiveTag}>已归档，仅历史可读</Tag></>}
+              </label>
+              {active ? <Tag color="green">可用于比较</Tag> : null}
+            </div>
+            <div className={styles.offerValues}>
               {offers.map((offer) => {
                 const key = `${offer.id}:${dimension.id}`;
                 return (
-                  <div key={key} style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-                    <span style={{ width: 110 }}>{offer.company_name}</span>
+                  <div key={key} className={styles.offerValue}>
+                    <label htmlFor={`dimension-${dimension.id}-offer-${offer.id}`}>{offer.company_name}</label>
                     {active ? (
                       <>
-                        <input
+                        <Input
+                          id={`dimension-${dimension.id}-offer-${offer.id}`}
                           data-offer-id={offer.id}
                           data-dimension-id={dimension.id}
                           aria-label={`${offer.company_name}-${dimension.label}`}
@@ -122,18 +148,20 @@ export default function OfferComparisonDimensionPanel({ offers, onSelectionChang
                           placeholder="尚未填写"
                           onChange={(event) => setDraftValues((current) => ({ ...current, [key]: event.target.value }))}
                         />
-                        <button type="button" data-action="save-value" data-offer-id={offer.id} onClick={() => void saveValue(offer.id, dimension.id)}>保存</button>
-                        <button type="button" data-action="clear-value" data-offer-id={offer.id} onClick={() => void clearValue(offer.id, dimension.id)}>清除值</button>
+                        <div className={styles.valueActions}>
+                          <Button size="small" data-action="save-value" data-offer-id={offer.id} onClick={() => void saveValue(offer.id, dimension.id)}>保存</Button>
+                          <Tooltip title="恢复为尚未填写，不会写入‘未知’等伪事实"><Button size="small" data-action="clear-value" data-offer-id={offer.id} onClick={() => void clearValue(offer.id, dimension.id)}>清除值</Button></Tooltip>
+                        </div>
                       </>
                     ) : (
-                      <span data-testid="archived-dimension-value">{draftValues[key] || '尚未填写'}</span>
+                      <span data-testid="archived-dimension-value" className={styles.archivedValue}>{draftValues[key] || '尚未填写'}</span>
                     )}
                   </div>
                 );
               })}
-              {active && <button type="button" data-action="archive-dimension" data-dimension-id={dimension.id} onClick={() => void archiveDimension(dimension.id)}>归档维度</button>}
+              {active && <Button type="link" danger data-action="archive-dimension" data-dimension-id={dimension.id} onClick={() => void archiveDimension(dimension.id)}>归档维度</Button>}
             </div>
-          </div>
+          </Card>
         );
       })}
     </section>
