@@ -4,6 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Offer } from '@/types/offer';
 import OfferCenterView from './OfferCenterView';
+import { confirmOfferNegotiationProposal, createOfferNegotiationProposal } from '@/services/offers';
 
 Object.defineProperty(window, 'matchMedia', {
   writable: true,
@@ -91,5 +92,21 @@ describe('OfferCenterView comparison guardrails', () => {
     await act(async () => { host?.querySelector<HTMLButtonElement>('button:not([data-testid])')?.click(); });
     await act(async () => { host?.querySelector<HTMLButtonElement>('[data-testid="compare-negotiate"]')?.click(); });
     expect(host?.querySelector('[data-testid="offer-negotiation-drawer"]')).not.toBeNull();
+  });
+
+  it('keeps comparison reads and evidence expansion free of negotiation writes', async () => {
+    queryState.offers = [offer(1), offer(2)];
+    vi.mocked(createOfferNegotiationProposal).mockClear();
+    vi.mocked(confirmOfferNegotiationProposal).mockClear();
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    root = createRoot(host);
+    await act(async () => { root?.render(<OfferCenterView applications={[]} onCoach={vi.fn()} />); });
+    await act(async () => { host?.querySelector<HTMLButtonElement>('[data-testid="select-1"]')?.click(); });
+    await act(async () => { host?.querySelector<HTMLButtonElement>('[data-testid="select-2"]')?.click(); });
+    await act(async () => { host?.querySelector<HTMLButtonElement>('button:not([data-testid])')?.click(); });
+    expect(host?.querySelector('[data-testid="compare-offers"]')).not.toBeNull();
+    expect(createOfferNegotiationProposal).not.toHaveBeenCalled();
+    expect(confirmOfferNegotiationProposal).not.toHaveBeenCalled();
   });
 });
