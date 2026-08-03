@@ -1,0 +1,123 @@
+// @vitest-environment jsdom
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { OfferNegotiationBlock, OfferNegotiationProposal, OfferNegotiationSnapshot } from '@/types/offer';
+import OfferSnapshotSummary from './OfferSnapshotSummary';
+import NegotiationBriefForm from './NegotiationBriefForm';
+import NegotiationProposalCard from './NegotiationProposalCard';
+import NegotiationHistoryList from './NegotiationHistoryList';
+
+const snapshot: OfferNegotiationSnapshot = {
+  snapshot_version: 1,
+  offer_snapshot: {
+    company_name: '星云数据',
+    position_name: '后端工程师',
+    status: 'pending',
+    base_monthly: 28000,
+    months_per_year: 12,
+    signing_bonus: 0,
+    equity: null,
+    perks: '补充医疗、弹性办公',
+    deadline: '2026-08-15',
+    notes: '筱哲｜一线业务平台方向',
+    dimensions: [{ path_id: 'dimension_001', label: '通勤', value_text: '地铁 35 分钟' }],
+  },
+  user_brief: { goal: '确认薪资结构', concerns: '远程安排', scenario: '电话沟通' },
+};
+
+const block: OfferNegotiationBlock = {
+  id: 'goal-1',
+  text: '确认薪资构成和沟通时间',
+  rationale: '基于 Offer 固定事实准备沟通。',
+  evidence_refs: [{ source: 'offer_snapshot', path: '/offer_snapshot/base_monthly', excerpt: '28000' }],
+};
+
+const proposal: OfferNegotiationProposal = {
+  id: 12,
+  offer_id: 7,
+  application_id: null,
+  attempt_status: 'ready',
+  proposal_status: 'normal',
+  proposal: {
+    proposal_status: 'normal',
+    communication_goals: [block],
+    clarification_questions: [],
+    talking_points: [],
+    preparation_checks: [],
+  },
+  source_fingerprint: 'source',
+  input_snapshot: snapshot,
+  source_changed: false,
+  source_states: {},
+  proposal_hash: 'proposal',
+  brief: {
+    id: 3,
+    proposal_id: 12,
+    offer_id: 7,
+    application_id: null,
+    selected_blocks: ['goal-1'],
+    edited_content: { blocks: [block], edits: { 'goal-1': '用户编辑后的表达' }, proposal_hash: 'proposal' },
+    content_hash: 'brief',
+    confirmed_at: '2026-08-01T08:00:00Z',
+  },
+};
+
+describe('Offer negotiation presentation components', () => {
+  let root: Root | null = null;
+  let host: HTMLDivElement | null = null;
+
+  afterEach(() => {
+    act(() => root?.unmount());
+    host?.remove();
+    root = null;
+    host = null;
+  });
+
+  function mount(element: React.ReactElement) {
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => root?.render(element));
+    return host;
+  }
+
+  it('shows a compact frozen summary and keeps full facts available', () => {
+    const rendered = mount(<OfferSnapshotSummary offer={snapshot.offer_snapshot} brief={snapshot.user_brief} sourceState="frozen" />);
+    expect(rendered.textContent).toContain('后端工程师');
+    expect(rendered.textContent).toContain('28K × 12');
+    expect(rendered.textContent).toContain('已冻结来源');
+    expect(rendered.textContent).toContain('查看完整来源');
+    expect(rendered.textContent).not.toContain('/offer_snapshot/base_monthly');
+  });
+
+  it('reports field validation next to the controlled field', () => {
+    const rendered = mount(
+      <NegotiationBriefForm
+        value={{ goal: '', concerns: '远程办公安排', scenario: '电话沟通' }}
+        disabled={false}
+        errors={{ goal: '请填写本次沟通目标' }}
+        onChange={vi.fn()}
+      />,
+    );
+    expect(rendered.querySelector('[role="alert"]')?.textContent).toBe('请填写本次沟通目标');
+    expect(rendered.querySelector('label[for="negotiation-goal"]')).not.toBeNull();
+  });
+
+  it('reveals raw evidence only after the user expands it', () => {
+    const onToggle = vi.fn();
+    const rendered = mount(<NegotiationProposalCard block={block} selected={false} editedText={block.text} disabled={false} onToggle={onToggle} onEdit={vi.fn()} />);
+    expect(rendered.textContent).toContain('Offer 固定月薪');
+    expect(rendered.textContent).not.toContain('/offer_snapshot/base_monthly');
+    act(() => rendered.querySelector<HTMLButtonElement>('[data-action="toggle-evidence"]')?.click());
+    expect(onToggle).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows real confirmation time but never invents a generation time', () => {
+    const rendered = mount(<NegotiationHistoryList items={[proposal]} selectedId={null} onSelect={vi.fn()} />);
+    expect(rendered.textContent).toContain('记录 #12');
+    expect(rendered.textContent).toContain('已确认');
+    expect(rendered.textContent).toContain('2026');
+    expect(rendered.textContent).not.toContain('生成时间');
+  });
+});
