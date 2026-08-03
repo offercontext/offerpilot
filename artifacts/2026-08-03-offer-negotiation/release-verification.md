@@ -9,11 +9,11 @@
 ## 代码与环境
 
 - 分支：`feat/20260801-offer-negotiation`
-- UI 代码验证基线：`021b7ef`
+- UI 代码验证基线：`9fe0efc`
 - 服务：隔离临时数据目录中的本地 OfferPilot；真实浏览器端口为本次临时服务端口
 - 配置：从现有配置静默复制到隔离目录；未输出或修改密钥
 - 案例：中文候选人“筱哲”；Offer 为“星云数据｜后端工程师”和“远山科技｜平台工程师”
-- 浏览器：亮色模式；`02` 保持此前已复核版本，`10` 已基于 `021b7ef` 重新录制，均为 `1455×1200` 单视口原始截图；未拼接长图、未缩放或补白
+- 浏览器：亮色模式；`02` 保持此前已复核版本，`10` 已基于 `9fe0efc` 重新录制，均为 `1455×1200` 单视口原始截图；未拼接长图、未缩放或补白
 
 ## UI 入口
 
@@ -123,7 +123,7 @@ tests/test_calendar_api.py::test_calendar_includes_applications_and_events
 | [07-pilot-answer-selected-offer.png](./07-pilot-answer-selected-offer.png) | 1455×909 | Pilot：用户选择后展示明确 Offer 上下文，并可更换 Offer |
 | [08-pilot-source-confirmation-frozen.png](./08-pilot-source-confirmation-frozen.png) | 1440×900 | Pilot：来源确认与冻结提示 |
 | [09-pilot-input-confirmation.png](./09-pilot-input-confirmation.png) | 1455×909 | Pilot：确认发送前查看已选 Offer、冻结事实与本次谈薪输入 |
-| [10-pilot-confirmed-history.png](./10-pilot-confirmed-history.png) | 1455×1200 | Pilot：确认保存后的 Brief 入口与冻结事实，窄栏标题已按容器宽度稳定为两行；历史只读已在同一会话回看；SHA-256 `b6280e2acf046b8441d9c7c52328d03b754b183fdc0894bab180b850453dd092` |
+| [10-pilot-confirmed-history.png](./10-pilot-confirmed-history.png) | 1455×1200 | Pilot：确认保存后的 Brief 入口与冻结事实，谈薪工作区以覆盖式 Drawer 展示，窄栏标题与来源卡保持可读；历史只读已在同一会话回看；SHA-256 `33074a77926db090a0ac7fddf4d88be51718533f1409a4a88d8805a840fc6925` |
 | [11-single-offer-coach.png](./11-single-offer-coach.png) | 1455×909 | 既有单 Offer“谈薪教练”入口保持可用 |
 
 ## 剩余风险与下一步
