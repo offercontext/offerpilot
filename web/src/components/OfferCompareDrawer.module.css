@@ -1,0 +1,64 @@
+.workspace {
+  padding: 20px;
+  background: var(--op-surface, #fff);
+  border: 1px solid var(--op-line, #e5e7eb);
+  border-radius: 16px;
+}
+
+.header {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.header h2 {
+  margin: 0;
+  color: var(--op-ink, #111827);
+}
+
+.offerHeader {
+  display: grid;
+  gap: 3px;
+  min-width: 130px;
+}
+
+.offerHeader span {
+  color: var(--op-muted-strong, #4b5563);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.offerHeader b {
+  color: var(--op-ink, #111827);
+  font-variant-numeric: tabular-nums;
+}
+
+.sectionTitle {
+  margin: 0 0 10px;
+  color: var(--op-ink, #111827);
+  font-size: 14px;
+}
+
+.customSection {
+  margin-top: 18px;
+  padding: 14px;
+  border: 1px solid var(--op-line, #e5e7eb);
+  border-radius: 12px;
+}
+
+.muted,
+.missing {
+  color: var(--op-muted-strong, #6b7280);
+}
+
+.missing {
+  font-style: italic;
+}
+
+.workspace :global(.ant-table-cell) {
+  vertical-align: top;
+}
+
+.workspace :global(.ant-btn) {
+  min-height: 40px;
+}

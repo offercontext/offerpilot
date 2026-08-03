@@ -84,3 +84,26 @@ it('renders only factual comparison rows and preserves explicit Offer action IDs
   });
   expect(onNegotiation).toHaveBeenCalledWith(offers[0]);
 });
+
+it('renders structured factual groups and rich Offer headers', async () => {
+  const offers = [offer(2), offer(1)];
+  readComparison.mockResolvedValue({
+    offers,
+    dimensions: [{ id: 1, label: '通勤', values: [{ offer_id: 1, value_text: '地铁 35 分钟' }, { offer_id: 2, value_text: null }] }],
+    missing: [{ offer_id: 2, path: 'offer_snapshot/dimensions/1/value_text', label: '通勤' }],
+  } satisfies OfferComparisonRead);
+  host = document.createElement('div');
+  document.body.appendChild(host);
+  root = createRoot(host);
+  await act(async () => {
+    root?.render(<OfferCompareDrawer open onClose={vi.fn()} offers={offers} dimensionIds={[1]} />);
+  });
+
+  expect(host.querySelector('[data-testid="offer-comparison-header-2"]')?.textContent)
+    .toContain('Company 2');
+  expect(host.querySelector('[data-testid="offer-comparison-header-2"]')?.textContent)
+    .toContain('Engineer');
+  expect(host.querySelector('[data-section="fixed-facts"]')).not.toBeNull();
+  expect(host.querySelector('[data-section="custom-dimensions"]')).not.toBeNull();
+  expect(host.querySelector('[data-missing="true"]')?.textContent).toContain('尚未填写');
+});

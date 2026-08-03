@@ -4,6 +4,7 @@ import { Button, Empty, Table } from 'antd';
 import type { Offer, OfferComparisonRead } from '@/types/offer';
 import { OFFER_STATUS_LABELS } from '@/types/offer';
 import { readOfferComparison } from '@/services/offers';
+import styles from './OfferCompareDrawer.module.css';
 
 interface Props {
   open: boolean;
@@ -17,11 +18,21 @@ interface Props {
 interface Row {
   key: string;
   field: string;
-  [companyKey: string]: string | number;
+  [companyKey: string]: React.ReactNode;
 }
 
 function formatWan(value: number): string {
   return `${(value / 10000).toFixed(1)} 万元`;
+}
+
+function missingValue(): React.ReactElement {
+  return <span className={styles.missing} data-missing="true">尚未填写</span>;
+}
+
+function displayValue(value: string | number | null | undefined): React.ReactNode {
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string' && value.trim()) return value;
+  return missingValue();
 }
 
 export default function OfferCompareDrawer({
@@ -49,52 +60,67 @@ export default function OfferCompareDrawer({
   if (!open) return null;
   const displayedOffers = comparison?.offers ?? offers;
   const columns = [
-    { title: '维度', dataIndex: 'field', key: 'field', fixed: 'left' as const, width: 120 },
+    { title: '比较事实', dataIndex: 'field', key: 'field', fixed: 'left' as const, width: 160 },
     ...displayedOffers.map((offer) => ({
-      title: offer.company_name,
+      title: (
+        <div className={styles.offerHeader} data-testid={`offer-comparison-header-${offer.id}`}>
+          <strong>{offer.company_name}</strong>
+          <span>{offer.position_name}</span>
+          <b>{offer.base_monthly / 1000}K × {offer.months_per_year}</b>
+        </div>
+      ),
       dataIndex: `c${offer.id}`,
       key: `c${offer.id}`,
     })),
   ];
 
-  const fieldRow = (field: string, value: (offer: Offer) => string | number): Row => {
+  const fieldRow = (field: string, value: (offer: Offer) => React.ReactNode): Row => {
     const row: Row = { key: field, field };
     displayedOffers.forEach((offer) => { row[`c${offer.id}`] = value(offer); });
     return row;
   };
 
   const data: Row[] = [
-    fieldRow('职位', (offer) => offer.position_name || '尚未填写'),
+    fieldRow('职位', (offer) => displayValue(offer.position_name)),
     fieldRow('状态', (offer) => OFFER_STATUS_LABELS[offer.status]),
     fieldRow('月薪与月数', (offer) => `${offer.base_monthly / 1000}K × ${offer.months_per_year}`),
-    fieldRow('签字费', (offer) => offer.signing_bonus > 0 ? formatWan(offer.signing_bonus) : '尚未填写'),
+    fieldRow('签字费', (offer) => offer.signing_bonus > 0 ? formatWan(offer.signing_bonus) : missingValue()),
     fieldRow('年总包事实', (offer) => formatWan(offer.total_cash)),
-    fieldRow('期权', (offer) => offer.equity || '尚未填写'),
-    fieldRow('福利', (offer) => offer.perks || '尚未填写'),
-    fieldRow('截止时间', (offer) => offer.deadline || '尚未填写'),
+    fieldRow('期权', (offer) => displayValue(offer.equity)),
+    fieldRow('福利', (offer) => displayValue(offer.perks)),
+    fieldRow('截止时间', (offer) => displayValue(offer.deadline)),
   ];
   if (comparison) {
     for (const dimension of comparison.dimensions) {
       data.push(fieldRow(dimension.label, (offer) => {
         const cell = dimension.values.find((value) => value.offer_id === offer.id);
-        return cell?.value_text || '尚未填写';
+        return displayValue(cell?.value_text);
       }));
     }
   }
 
   return (
-    <section aria-label="Offer 横向对比" data-selected-dimension-ids={dimensionIds.join(',')}>
-      <div style={{ display: 'grid', gap: 8, marginBottom: 18 }}>
-        <Button type="link" icon={<ArrowLeftOutlined />} onClick={onClose} style={{ width: 'fit-content', height: 'auto', padding: 0 }}>
+    <section className={styles.workspace} aria-label="Offer 横向对比" data-selected-dimension-ids={dimensionIds.join(',')}>
+      <div className={styles.header}>
+        <Button type="link" icon={<ArrowLeftOutlined />} onClick={onClose}>
           返回 Offer 中心
         </Button>
-        <h2 style={{ margin: 0 }}>Offer 横向对比</h2>
+        <h2>Offer 横向对比</h2>
       </div>
       {displayedOffers.length === 0 ? (
         <Empty description="请选择至少两个 Offer" />
       ) : (
         <>
-          <Table columns={columns} dataSource={data} pagination={false} scroll={{ x: true }} size="small" bordered />
+          <div data-section="fixed-facts">
+            <h3 className={styles.sectionTitle}>固定薪酬事实</h3>
+            <Table columns={columns} dataSource={data} pagination={false} scroll={{ x: true }} size="small" bordered />
+          </div>
+          {comparison && (
+            <div data-section="custom-dimensions" className={styles.customSection}>
+              <h3 className={styles.sectionTitle}>自定义比较维度</h3>
+              <p className={styles.muted}>仅并排展示用户记录的固定事实与文字维度。</p>
+            </div>
+          )}
           {(onNegotiation || onCoach) && (
             <div style={{ display: 'flex', gap: 8, marginTop: 16, flexWrap: 'wrap' }}>
               {displayedOffers.map((offer) => (
