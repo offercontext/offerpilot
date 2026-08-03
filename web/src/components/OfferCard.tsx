@@ -3,6 +3,7 @@ import { MessageOutlined, EyeOutlined } from '@ant-design/icons';
 import type { Offer } from '@/types/offer';
 import { OFFER_STATUS_LABELS, OFFER_STATUS_COLORS } from '@/types/offer';
 import { createPilotAttachmentDragBinding } from './PilotAttachmentHandle';
+import styles from './OfferCard.module.css';
 
 const { Text } = Typography;
 
@@ -32,21 +33,22 @@ export default function OfferCard({ offer, selected, onToggleSelect, onCoach, on
   return (
     <Card
       size="small"
+      className={styles.card}
       style={{ borderColor: OFFER_STATUS_COLORS[offer.status] }}
       {...offerDragBinding}
       title={
-        <Space>
+        <Space className={styles.heading}>
           <Checkbox checked={selected} onChange={() => onToggleSelect(offer.id)} />
           <Text strong>{offer.company_name}</Text>
         </Space>
       }
       extra={<Tag color={OFFER_STATUS_COLORS[offer.status]}>{OFFER_STATUS_LABELS[offer.status]}</Tag>}
     >
-      <div style={{ color: '#374151' }}>{offer.position_name}</div>
-      <div style={{ fontSize: 20, fontWeight: 700, margin: '4px 0' }}>
+      <div className={styles.position}>{offer.position_name}</div>
+      <div className={styles.salary}>
         {offer.base_monthly / 1000}K×{offer.months_per_year}
       </div>
-      <div style={{ color: '#6b7280', fontSize: 12, lineHeight: 1.6 }}>
+      <div className={styles.facts}>
         签字费 {offer.signing_bonus > 0 ? formatWan(offer.signing_bonus) : '无'}
         {offer.equity ? ` · 期权 ${offer.equity}` : ''}
         <br />
@@ -54,19 +56,19 @@ export default function OfferCard({ offer, selected, onToggleSelect, onCoach, on
         {offer.deadline ? ` · 截止 ${offer.deadline}` : ''}
         {offer.application_id ? ` · 关联投递 #${offer.application_id}` : ' · 无关联投递'}
       </div>
-      <Space style={{ marginTop: 8 }}>
-        <Button type="primary" size="small" icon={<MessageOutlined />} onClick={() => onCoach(offer)}>
-          谈薪教练
-        </Button>
+      <div className={styles.actions}>
         {onNegotiation && (
-          <Button size="small" onClick={() => onNegotiation(offer)}>
+          <Button type="primary" data-action="start-negotiation" onClick={() => onNegotiation(offer)}>
             开始谈薪准备
           </Button>
         )}
-        <Button size="small" icon={<EyeOutlined />} onClick={() => onView(offer)}>
+        <Button data-action="open-negotiation-coach" icon={<MessageOutlined />} onClick={() => onCoach(offer)}>
+          谈薪教练
+        </Button>
+        <Button data-action="view-offer" icon={<EyeOutlined />} onClick={() => onView(offer)}>
           详情
         </Button>
-      </Space>
+      </div>
     </Card>
   );
 }
