@@ -173,6 +173,7 @@ describe('AppShell Offer negotiation draft isolation', () => {
     const overlay = host?.querySelector<HTMLElement>('[data-testid="offer-negotiation-overlay"]');
     expect(overlay).not.toBeNull();
     expect(overlay?.style.position).toBe('fixed');
+    expect(overlay?.getAttribute('aria-label')).toBe(`为 ${offer.company_name} 准备谈薪`);
     expect(overlay?.querySelector('[data-testid="offer-negotiation-drawer-harness"]')).not.toBeNull();
     expect(overlay?.contains(document.activeElement)).toBe(true);
     const focusable = Array.from(overlay?.querySelectorAll<HTMLElement>('button, [href], input, textarea, select, [tabindex]:not([tabindex="-1"])') ?? [])

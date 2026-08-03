@@ -1375,6 +1375,7 @@ function AppShellContent() {
           data-testid="offer-negotiation-overlay"
           role="dialog"
           aria-modal="true"
+          aria-label={`为 ${offerNegotiationOffer.company_name} 准备谈薪`}
           ref={offerNegotiationOverlayRef}
           tabIndex={-1}
           style={{ position: 'fixed', inset: 0, zIndex: 1100 }}
