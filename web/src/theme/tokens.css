@@ -187,6 +187,41 @@ body {
   overflow: hidden;
 }
 
+.op-offer-negotiation-overlay {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  box-sizing: border-box;
+  padding: 16px;
+  overflow: auto;
+  background: rgba(15, 23, 42, 0.22);
+}
+
+.op-offer-negotiation-surface {
+  box-sizing: border-box;
+  width: min(720px, calc(100vw - 32px));
+  min-width: 0;
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  padding: 16px;
+  background: var(--op-surface);
+  border: 1px solid var(--op-border);
+  border-radius: 16px;
+  box-shadow: var(--op-shadow-lg);
+}
+
+@media (max-width: 720px) {
+  .op-offer-negotiation-overlay {
+    padding: 8px;
+  }
+
+  .op-offer-negotiation-surface {
+    width: 100%;
+    max-height: calc(100vh - 16px);
+    padding: 12px;
+  }
+}
+
 /* ============================================================ */
 /* Knowledge 知识库 · 细节精致化                                 */
 /* ============================================================ */

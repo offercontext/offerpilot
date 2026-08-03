@@ -1321,17 +1321,27 @@ function AppShellContent() {
         />
       ) : null}
       {offerNegotiationOffer ? (
-        <OfferNegotiationDrawer
-          key={`${offerNegotiationEntryPoint}-${offerNegotiationOffer.id}`}
-          open
-          offer={offerNegotiationOffer}
-          entrypoint={offerNegotiationEntryPoint}
-          draft={offerNegotiationEntryPoint === 'pilot'
-            ? offerNegotiationPilotDrafts[offerNegotiationOffer.id]
-            : offerNegotiationDrafts[offerNegotiationOffer.id]}
-          onDraftChange={handleOfferNegotiationDrawerDraftChange}
-          onClose={() => setOfferNegotiationOffer(null)}
-        />
+        <div
+          className="op-offer-negotiation-overlay"
+          data-testid="offer-negotiation-overlay"
+          role="dialog"
+          aria-modal="true"
+          style={{ position: 'fixed', inset: 0, zIndex: 1100 }}
+        >
+          <div className="op-offer-negotiation-surface">
+            <OfferNegotiationDrawer
+              key={`${offerNegotiationEntryPoint}-${offerNegotiationOffer.id}`}
+              open
+              offer={offerNegotiationOffer}
+              entrypoint={offerNegotiationEntryPoint}
+              draft={offerNegotiationEntryPoint === 'pilot'
+                ? offerNegotiationPilotDrafts[offerNegotiationOffer.id]
+                : offerNegotiationDrafts[offerNegotiationOffer.id]}
+              onDraftChange={handleOfferNegotiationDrawerDraftChange}
+              onClose={() => setOfferNegotiationOffer(null)}
+            />
+          </div>
+        </div>
       ) : null}
       </Layout>
     </DndContext>

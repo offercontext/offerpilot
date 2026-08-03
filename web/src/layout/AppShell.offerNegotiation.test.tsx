@@ -168,6 +168,10 @@ describe('AppShell Offer negotiation draft isolation', () => {
     act(() => host?.querySelector<HTMLButtonElement>('[data-testid="open-pilot-offer"]')?.click());
     await flush();
     expect(host?.querySelector('[data-testid="pilot-draft-goal"]')?.textContent).toBe('');
+    const overlay = host?.querySelector<HTMLElement>('[data-testid="offer-negotiation-overlay"]');
+    expect(overlay).not.toBeNull();
+    expect(overlay?.style.position).toBe('fixed');
+    expect(overlay?.querySelector('[data-testid="offer-negotiation-drawer-harness"]')).not.toBeNull();
     act(() => host?.querySelector<HTMLButtonElement>('[data-testid="save-pilot-draft"]')?.click());
     await flush();
     expect(host?.querySelector('[data-testid="pilot-draft-goal"]')?.textContent).toBe('Pilot 目标');
