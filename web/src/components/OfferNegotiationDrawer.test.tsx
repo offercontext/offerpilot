@@ -235,6 +235,34 @@ describe('OfferNegotiationDrawer', () => {
     expect(facts).toContain('地铁 35 分钟');
   });
 
+  it('resets selected blocks and edits when switching between history records', async () => {
+    const confirmed = {
+      ...proposal(),
+      id: 1,
+      brief: {
+        selected_blocks: ['goal-1'],
+        edited_content: {
+          blocks: proposal().proposal.communication_goals,
+          edits: { 'goal-1': '上一条记录的编辑内容' },
+          proposal_hash: 'hash',
+        },
+        content_hash: 'brief-hash',
+        confirmed_at: '2026-08-01T00:00:00Z',
+      },
+    };
+    service.list.mockResolvedValue([confirmed, { ...proposal(), id: 2 }]);
+    await act(async () => { root?.render(<OfferNegotiationDrawer open offer={offer} onClose={vi.fn()} />); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    const historyButtons = host?.querySelectorAll('section[aria-label="历史谈薪准备"] button') ?? [];
+    await act(async () => { (historyButtons[0] as HTMLButtonElement).click(); });
+    expect(host?.textContent).toContain('上一条记录的编辑内容');
+    await act(async () => { (historyButtons[1] as HTMLButtonElement).click(); });
+
+    expect(host?.querySelector<HTMLButtonElement>('[data-testid="offer-negotiation-confirm"]')?.disabled).toBe(true);
+    expect(host?.textContent).not.toContain('上一条记录的编辑内容');
+  });
+
   it('generates an editable evidence-backed draft and confirms selected blocks', async () => {
     service.create.mockResolvedValue(proposal());
     service.confirm.mockResolvedValue({

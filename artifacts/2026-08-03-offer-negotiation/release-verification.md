@@ -100,7 +100,7 @@ tests/test_calendar_api.py::test_calendar_includes_applications_and_events
 | `uv run ruff check .` | 通过 |
 | `uv run mypy src` | 通过；64 source files |
 | `git diff --check` | 通过 |
-| `npm.cmd test -- --run src/components/ChatPanel/PilotOfferSelectionCard.test.tsx src/components/OfferCard.test.tsx src/components/OfferCenterView.test.tsx src/components/OfferCompareDrawer.test.tsx src/components/OfferComparisonDimensionPanel.test.tsx src/components/offer-negotiation/OfferNegotiationPresentation.test.tsx src/components/OfferNegotiationDrawer.test.tsx src/components/OfferPilotNegotiation.test.tsx src/layout/AppShell.offerNegotiation.test.tsx --reporter=dot` | 退出码 0；9 文件、43 passed；既有 React `act()` 警告 |
+| `npm.cmd test -- --run src/components/ChatPanel/PilotOfferSelectionCard.test.tsx src/components/OfferCard.test.tsx src/components/OfferCenterView.test.tsx src/components/OfferCompareDrawer.test.tsx src/components/OfferComparisonDimensionPanel.test.tsx src/components/offer-negotiation/OfferNegotiationPresentation.test.tsx src/components/OfferNegotiationDrawer.test.tsx src/components/OfferPilotNegotiation.test.tsx src/layout/AppShell.offerNegotiation.test.tsx --reporter=dot` | 退出码 0；9 文件、44 passed；既有 React `act()` 警告 |
 | `npm.cmd test -- --run --minWorkers=1 --maxWorkers=1 --reporter=json` | 未完成；180 秒工具时限超时，未生成 JSON 汇总，不宣称前端全量通过 |
 | `npm.cmd run build` | 通过 |
 | `uv run oc smoke --static-dir web/dist` | 通过 |
@@ -117,20 +117,20 @@ tests/test_calendar_api.py::test_calendar_includes_applications_and_events
 | [01-ui-offer-center-light.png](./01-ui-offer-center-light.png) | 1440×900 | UI：Offer 中心、比较维度与两张中文 Offer 卡 |
 | [02-ui-offer-comparison.png](./02-ui-offer-comparison.png) | 1440×900 | UI：用户选择后的并排比较，无排名或推荐结论 |
 | [03-ui-source-confirmation-frozen.png](./03-ui-source-confirmation-frozen.png) | 1440×900 | UI：生成前来源确认与冻结提示 |
-| [04-ui-generated-edited-proposal.png](./04-ui-generated-edited-proposal.png) | 1455×909 | UI：确认生成前核对冻结 Offer 事实与用户输入 |
+| [04-ui-input-confirmation.png](./04-ui-input-confirmation.png) | 1455×909 | UI：确认发送前核对冻结 Offer 事实与本次谈薪输入 |
 | [05-ui-confirmed-history.png](./05-ui-confirmed-history.png) | 1455×909 | UI：确认后的 Brief 与历史只读查看 |
 | [06-pilot-question-select-offer.png](./06-pilot-question-select-offer.png) | 1455×909 | Pilot：主动触发后询问选择 Offer |
 | [07-pilot-answer-selected-offer.png](./07-pilot-answer-selected-offer.png) | 1455×909 | Pilot：用户选择后展示明确 Offer 上下文，并可更换 Offer |
 | [08-pilot-source-confirmation-frozen.png](./08-pilot-source-confirmation-frozen.png) | 1440×900 | Pilot：来源确认与冻结提示 |
-| [09-pilot-generated-proposal.png](./09-pilot-generated-proposal.png) | 1455×909 | Pilot：生成 Proposal 后查看证据引用与建议区块 |
+| [09-pilot-input-confirmation.png](./09-pilot-input-confirmation.png) | 1455×909 | Pilot：确认发送前查看已选 Offer、冻结事实与本次谈薪输入 |
 | [10-pilot-confirmed-history.png](./10-pilot-confirmed-history.png) | 1455×909 | Pilot：确认保存后的 Brief 与历史只读查看 |
 | [11-single-offer-coach.png](./11-single-offer-coach.png) | 1455×909 | 既有单 Offer“谈薪教练”入口保持可用 |
 
 ## 剩余风险与下一步
 
 - Provider 输出仍存在偶发未知结果；系统按既有协议保留原尝试，未扩大重试或放宽证据校验。
-- 本次截图重录使用同一隔离中文案例；`04` 展示生成前确认，`05` 展示 UI 已确认历史，`09` 展示 Pilot Proposal 与证据，`10` 展示 Pilot 已确认历史。截图不把新的 Provider 波动表述为稳定通过；此前已确认的 Provider 成功闭环不因本次重录被改写。
+- 本次截图重录使用同一隔离中文案例；`04` 与 `09` 明确展示发送前确认，不冒充已生成 Proposal，`05` 展示 UI 已确认历史，`10` 展示 Pilot 已确认历史。截图不把新的 Provider 波动表述为稳定通过；此前已确认的 Provider 成功闭环不因本次重录被改写。
 - 完整后端门禁被 `test_calendar_includes_applications_and_events` 阻塞；在修复测试数据时序或得到明确上游修复前，不应推送或合并。
-- 当前前端全量串行运行在工具时限内超时；定向受影响集合为 9 文件、43 passed，不能替代全量结果。
+- 当前前端全量串行运行在工具时限内超时；定向受影响集合为 9 文件、44 passed，不能替代全量结果。
 - 全量 real-AI verify 受隔离数据库打开失败阻塞；专用 Offer real-AI API 验收已通过，但不能替代全量 real-AI 或浏览器证据。
 - 当前未推送、未合并；本报告不构成发布批准。

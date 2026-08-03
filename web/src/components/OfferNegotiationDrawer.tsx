@@ -335,6 +335,16 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
     }
   };
 
+  const selectHistory = (item: OfferNegotiationProposal) => {
+    setProposal(item);
+    setSelectedBlocks(item.brief?.selected_blocks ?? []);
+    setEdits(item.brief?.edited_content.edits ?? {});
+    setShowSaveConfirmation(false);
+    setError(null);
+    setResultUnknown(false);
+    setPendingOperation(null);
+  };
+
   const retry = () => {
     setError(null);
     setResultUnknown(false);
@@ -498,7 +508,7 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
       {history.length > 0 && (
         <section aria-label="历史谈薪准备">
           <h3>历史记录</h3>
-          <NegotiationHistoryList items={history} selectedId={proposal?.id ?? null} onSelect={(item) => setProposal(item)} />
+          <NegotiationHistoryList items={history} selectedId={proposal?.id ?? null} onSelect={selectHistory} />
         </section>
       )}
       {blocks.length === 0 && proposal?.proposal_status === 'safe_empty' && <p>未生成可验证内容，未保存任何谈薪准备记录。</p>}
