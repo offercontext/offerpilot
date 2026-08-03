@@ -7,6 +7,7 @@ import OfferSnapshotSummary from './OfferSnapshotSummary';
 import NegotiationBriefForm from './NegotiationBriefForm';
 import NegotiationProposalCard from './NegotiationProposalCard';
 import NegotiationHistoryList from './NegotiationHistoryList';
+import { OFFER_STATUS_LABELS } from '@/types/offer';
 
 const snapshot: OfferNegotiationSnapshot = {
   snapshot_version: 1,
@@ -94,7 +95,14 @@ describe('Offer negotiation presentation components', () => {
   it('keeps a zero signing bonus as a real Offer fact', () => {
     const rendered = mount(<OfferSnapshotSummary offer={{ ...snapshot.offer_snapshot, signing_bonus: 0 }} sourceState="current" />);
     expect(rendered.querySelector('[data-testid="snapshot-signing-bonus"]')?.textContent).toContain('0');
-    expect(rendered.querySelector('[data-testid="snapshot-signing-bonus"]')?.textContent).not.toContain('灏氭湭濉啓');
+    expect(rendered.querySelector('[data-testid="snapshot-signing-bonus"]')?.textContent).not.toContain('尚未填写');
+  });
+
+  it('maps frozen Offer status to the localized status label and separates custom dimensions', () => {
+    const rendered = mount(<OfferSnapshotSummary offer={snapshot.offer_snapshot} sourceState="frozen" />);
+    expect(rendered.textContent).toContain(OFFER_STATUS_LABELS.pending);
+    expect(rendered.querySelector('[data-section="custom-dimensions"]')?.textContent).toContain('通勤');
+    expect(rendered.querySelector('[data-section="fixed-facts"]')).toBeNull();
   });
 
   it('reports field validation next to the controlled field', () => {
@@ -115,8 +123,31 @@ describe('Offer negotiation presentation components', () => {
     const rendered = mount(<NegotiationProposalCard block={block} selected={false} editedText={block.text} disabled={false} onToggle={onToggle} onEdit={vi.fn()} />);
     expect(rendered.textContent).toContain('Offer 固定月薪');
     expect(rendered.textContent).not.toContain('/offer_snapshot/base_monthly');
-    act(() => rendered.querySelector<HTMLButtonElement>('[data-action="toggle-evidence"]')?.click());
+    const evidenceToggle = rendered.querySelector<HTMLButtonElement>('[data-action="toggle-evidence"]');
+    expect(evidenceToggle?.getAttribute('aria-expanded')).toBe('false');
+    act(() => evidenceToggle?.click());
+    expect(evidenceToggle?.getAttribute('aria-expanded')).toBe('true');
     expect(onToggle).not.toHaveBeenCalled();
+  });
+
+  it('localizes a frozen Offer status in evidence excerpts', () => {
+    const rendered = mount(
+      <NegotiationProposalCard
+        block={{ ...block, evidence_refs: [{ source: 'offer_snapshot', path: '/offer_snapshot/status', excerpt: 'pending' }] }}
+        selected={false}
+        editedText={block.text}
+        disabled={false}
+        onToggle={vi.fn()}
+        onEdit={vi.fn()}
+      />,
+    );
+    expect(rendered.textContent).toContain('Offer 状态：待处理');
+    expect(rendered.textContent).not.toContain('pending');
+  });
+
+  it('visually marks a selected proposal card', () => {
+    const rendered = mount(<NegotiationProposalCard block={block} selected editedText={block.text} disabled={false} onToggle={vi.fn()} onEdit={vi.fn()} />);
+    expect(rendered.querySelector('article[data-selected="true"]')).not.toBeNull();
   });
 
   it('shows real confirmation time but never invents a generation time', () => {

@@ -56,12 +56,15 @@ describe('OfferCard', () => {
 
     const prepare = host.querySelector<HTMLButtonElement>('[data-action="start-negotiation"]');
     const coach = host.querySelector<HTMLButtonElement>('[data-action="open-negotiation-coach"]');
+    expect(host.querySelector('input[aria-label]')?.getAttribute('aria-label')).toContain('星云数据');
     expect(prepare?.textContent).toContain('开始谈薪准备');
     expect(prepare?.className).toContain('ant-btn-primary');
     expect(coach?.textContent).toContain('谈薪教练');
     expect(host.textContent).toContain('星云数据');
     expect(host.textContent).toContain('后端工程师');
     expect(host.textContent).toContain('28K');
+    expect(host.textContent).toContain('签字费 0.0万');
+    expect(host.textContent).not.toContain('签字费 无');
     expect(host.textContent).toContain('截止 2026-08-15');
     expect(host.querySelector('[data-action="view-offer"]')).not.toBeNull();
 

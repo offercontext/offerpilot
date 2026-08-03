@@ -1,5 +1,5 @@
 import { Card, Collapse, Descriptions } from 'antd';
-import type { OfferNegotiationSnapshot } from '@/types/offer';
+import { OFFER_STATUS_LABELS, type OfferNegotiationSnapshot } from '@/types/offer';
 import { SourceStateTag, type SourceState } from '../ui/SourceStateTag';
 import styles from './OfferNegotiationPresentation.module.css';
 
@@ -15,21 +15,38 @@ function formatMonthly(offer: OfferNegotiationSnapshot['offer_snapshot']): strin
 }
 
 export default function OfferSnapshotSummary({ offer, brief, sourceState }: Props) {
-  const fullFacts = (
-    <Descriptions column={1} size="small" bordered>
+  const fixedFacts = (
+    <div data-section="fixed-facts">
+      <Descriptions column={1} size="small" bordered>
       <Descriptions.Item label="公司">{offer.company_name}</Descriptions.Item>
       <Descriptions.Item label="职位">{offer.position_name}</Descriptions.Item>
-      <Descriptions.Item label="状态">{offer.status}</Descriptions.Item>
+      <Descriptions.Item label="状态">{OFFER_STATUS_LABELS[offer.status]}</Descriptions.Item>
       <Descriptions.Item label="月薪与月数">{formatMonthly(offer)}</Descriptions.Item>
       <Descriptions.Item label="签字费">{offer.signing_bonus == null ? '尚未填写' : offer.signing_bonus}</Descriptions.Item>
       <Descriptions.Item label="股权">{offer.equity || '尚未填写'}</Descriptions.Item>
       <Descriptions.Item label="福利">{offer.perks || '尚未填写'}</Descriptions.Item>
       <Descriptions.Item label="截止时间">{offer.deadline || '尚未填写'}</Descriptions.Item>
       <Descriptions.Item label="备注">{offer.notes || '尚未填写'}</Descriptions.Item>
+      </Descriptions>
+    </div>
+  );
+
+  const dimensionFacts = offer.dimensions.length > 0 ? (
+    <div data-section="custom-dimensions">
+      <strong>自定义比较维度</strong>
+      <Descriptions column={1} size="small" bordered>
       {offer.dimensions.map((dimension) => (
         <Descriptions.Item key={dimension.path_id} label={dimension.label}>{dimension.value_text || '尚未填写'}</Descriptions.Item>
       ))}
-    </Descriptions>
+      </Descriptions>
+    </div>
+  ) : null;
+
+  const fullFacts = (
+    <>
+      {fixedFacts}
+      {dimensionFacts}
+    </>
   );
 
   return (
@@ -42,10 +59,19 @@ export default function OfferSnapshotSummary({ offer, brief, sourceState }: Prop
         <SourceStateTag state={sourceState} detail={sourceState === 'frozen' ? '本次 AI 输入快照' : undefined} />
       </div>
       <div className={styles.snapshotFacts}>
+        <span>状态：{OFFER_STATUS_LABELS[offer.status]}</span>
         <span>月薪与月数：{formatMonthly(offer)}</span>
         <span data-testid="snapshot-signing-bonus">签字费：{offer.signing_bonus == null ? '尚未填写' : offer.signing_bonus}</span>
         <span>截止时间：{offer.deadline || '尚未填写'}</span>
       </div>
+      {offer.dimensions.length > 0 && (
+        <div className={styles.customDimensionSummary} data-section="custom-dimensions">
+          <strong>自定义比较维度</strong>
+          {offer.dimensions.map((dimension) => (
+            <span key={dimension.path_id}>{dimension.label}：{dimension.value_text || '尚未填写'}</span>
+          ))}
+        </div>
+      )}
       {brief && (
         <div className={styles.briefSummary}>
           <span>本次目标：{brief.goal}</span>

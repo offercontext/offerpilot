@@ -138,6 +138,19 @@ describe('Pilot offer negotiation entry', () => {
     expect(host?.querySelector('[data-testid="pilot-choose-offer-negotiation"]')).not.toBeNull();
   });
 
+  it('offers a way to replace the selected Offer before preparing', () => {
+    const onPrepare = vi.fn();
+    ({ host, root } = render(null, onPrepare));
+
+    act(() => host?.querySelector<HTMLButtonElement>('[data-testid="pilot-choose-offer-negotiation"]')?.click());
+    act(() => host?.querySelector<HTMLInputElement>(`input[value="${offer.id}"]`)?.click());
+    act(() => host?.querySelector<HTMLButtonElement>('[data-action="continue-offer-negotiation"]')?.click());
+    act(() => host?.querySelector<HTMLButtonElement>('[data-action="change-offer-negotiation"]')?.click());
+
+    expect(host?.querySelector('[data-testid="pilot-choose-offer-negotiation"]')).toBeNull();
+    expect(host?.querySelector('[data-action="continue-offer-negotiation"]')).not.toBeNull();
+  });
+
   it('clears a selected Offer when the Pilot context changes', () => {
     const onPrepare = vi.fn();
     const otherOffer = { ...offer, id: 99, company_name: '远山科技' };

@@ -10,7 +10,7 @@ import {
   listOfferComparisonValues,
   OfferNegotiationError,
 } from '@/services/offers';
-import type { Offer, OfferComparisonDimension, OfferNegotiationBlock, OfferNegotiationProposal, OfferNegotiationPending, OfferNegotiationPreview, OfferNegotiationSnapshot } from '@/types/offer';
+import { OFFER_STATUS_LABELS, type Offer, type OfferComparisonDimension, type OfferNegotiationBlock, type OfferNegotiationProposal, type OfferNegotiationPending, type OfferNegotiationPreview, type OfferNegotiationSnapshot } from '@/types/offer';
 import { ConfirmationPanel } from './ui/ConfirmationPanel';
 import NegotiationBriefForm, { type NegotiationBriefValue } from './offer-negotiation/NegotiationBriefForm';
 import NegotiationHistoryList from './offer-negotiation/NegotiationHistoryList';
@@ -98,7 +98,9 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
   const [resultUnknown, setResultUnknown] = useState(draft?.resultUnknown ?? false);
   const [error, setError] = useState<string | null>(null);
   const [pendingOperation, setPendingOperation] = useState<PendingOperation>(draft?.pendingOperation ?? null);
-  const [showGenerateConfirmation, setShowGenerateConfirmation] = useState(false);
+  const [showGenerateConfirmation, setShowGenerateConfirmation] = useState(() => Boolean(
+    draft?.sourceFingerprint && draft.previewSnapshot && draft.previewInputKey,
+  ));
   const [showSaveConfirmation, setShowSaveConfirmation] = useState(false);
   const suppressDraftPersistence = useRef(false);
   const lastPersistedDraft = useRef<string | null>(null);
@@ -351,7 +353,7 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
   return (
     <section aria-label="谈薪准备" data-testid="offer-negotiation-drawer" className={styles.workspace}>
       <header className={styles.header}>
-        <h2>为 {offer.company_name} 准备谈薪</h2>
+        <h2>为 {displayedOffer.company_name} 准备谈薪</h2>
         <p className={styles.boundary}>只整理事实、问题和表达草稿，不替你决定接受或拒绝 Offer。</p>
         <Button type="text" onClick={onClose}>关闭</Button>
       </header>
@@ -367,16 +369,16 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
         <p>{proposal?.input_snapshot || activePreview ? '以下为本次冻结输入' : '当前 Offer 事实，尚未冻结'}</p>
         <OfferSnapshotSummary offer={snapshotOffer} brief={visibleBrief} sourceState={sourceState} />
         <dl>
-          <div><dt>公司</dt><dd>{displayedOffer.company_name}</dd></div>
-          <div><dt>职位</dt><dd>{displayedOffer.position_name}</dd></div>
-          <div><dt>状态</dt><dd>{displayedOffer.status}</dd></div>
-          <div><dt>月薪</dt><dd>{displayedOffer.base_monthly ?? '尚未填写'}</dd></div>
-          <div><dt>计薪月数</dt><dd>{displayedOffer.months_per_year ?? '尚未填写'}</dd></div>
-          <div><dt>签字费</dt><dd>{displayedOffer.signing_bonus ?? '尚未填写'}</dd></div>
-          <div><dt>股权</dt><dd>{displayedOffer.equity || '尚未填写'}</dd></div>
-          <div><dt>福利</dt><dd>{displayedOffer.perks || '尚未填写'}</dd></div>
-          <div><dt>截止时间</dt><dd>{displayedOffer.deadline || '尚未填写'}</dd></div>
-          <div><dt>备注</dt><dd>{displayedOffer.notes || '尚未填写'}</dd></div>
+          <div><dt>公司</dt><dd>{snapshotOffer.company_name}</dd></div>
+          <div><dt>职位</dt><dd>{snapshotOffer.position_name}</dd></div>
+          <div><dt>状态</dt><dd>{OFFER_STATUS_LABELS[snapshotOffer.status]}</dd></div>
+          <div><dt>月薪</dt><dd>{snapshotOffer.base_monthly ?? '尚未填写'}</dd></div>
+          <div><dt>计薪月数</dt><dd>{snapshotOffer.months_per_year ?? '尚未填写'}</dd></div>
+          <div><dt>签字费</dt><dd>{snapshotOffer.signing_bonus ?? '尚未填写'}</dd></div>
+          <div><dt>股权</dt><dd>{snapshotOffer.equity || '尚未填写'}</dd></div>
+          <div><dt>福利</dt><dd>{snapshotOffer.perks || '尚未填写'}</dd></div>
+          <div><dt>截止时间</dt><dd>{snapshotOffer.deadline || '尚未填写'}</dd></div>
+          <div><dt>备注</dt><dd>{snapshotOffer.notes || '尚未填写'}</dd></div>
           {visibleBrief && (
             <>
               <div><dt>本次目标</dt><dd>{visibleBrief.goal}</dd></div>
@@ -468,7 +470,7 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
           ))}
           {proposal.proposal_status !== 'safe_empty' && !hasBrief && !proposal.source_changed && (
             <>
-              <Button type="primary" data-testid="offer-negotiation-confirm" onClick={() => setShowSaveConfirmation(true)} disabled={frozen || selectedBlocks.length === 0}>确认保存谈薪准备</Button>
+              <Button type="primary" data-testid="offer-negotiation-confirm" onClick={() => setShowSaveConfirmation(true)} disabled={frozen || selectedBlocks.length === 0}>确认保存谈薪准备（已选 {selectedBlocks.length} 项）</Button>
               {showSaveConfirmation && (
                 <ConfirmationPanel
                   title="确认保存谈薪准备"

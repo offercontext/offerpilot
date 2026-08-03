@@ -82,28 +82,45 @@ export default function ContextPanel({
             </span>
           </div>
           {onPrepareOfferNegotiation && (
-            <button
-              type="button"
-              className={styles.capItem}
-              data-testid="pilot-prepare-offer-negotiation"
-              onClick={() => onPrepareOfferNegotiation(activeOffer)}
-            >
-              准备谈薪
-            </button>
+            <>
+              <button
+                type="button"
+                className={styles.capItem}
+                data-testid="pilot-prepare-offer-negotiation"
+                onClick={() => onPrepareOfferNegotiation(activeOffer)}
+              >
+                准备谈薪
+              </button>
+              {!offer && selectedOffer && (
+                <button
+                  type="button"
+                  className={styles.capItem}
+                  data-action="change-offer-negotiation"
+                  onClick={() => {
+                    setSelectedOffer(null);
+                    setOfferPickerOpen(true);
+                  }}
+                >
+                  更换 Offer
+                </button>
+              )}
+            </>
           )}
         </div>
       )}
       {!activeOffer && onPrepareOfferNegotiation && offers.length > 0 && (
         <div>
           <div className={styles.panelLabel}>谈薪准备</div>
-          <button
-            type="button"
-            className={styles.capItem}
-            data-testid="pilot-choose-offer-negotiation"
-            onClick={() => setOfferPickerOpen(true)}
-          >
-            选择 Offer 后准备谈薪
-          </button>
+          {!offerPickerOpen && (
+            <button
+              type="button"
+              className={styles.capItem}
+              data-testid="pilot-choose-offer-negotiation"
+              onClick={() => setOfferPickerOpen(true)}
+            >
+              选择 Offer 后准备谈薪
+            </button>
+          )}
           {offerPickerOpen && (
             <PilotOfferSelectionCard
               offers={offers}

@@ -38,7 +38,7 @@ export default function OfferCard({ offer, selected, onToggleSelect, onCoach, on
       {...offerDragBinding}
       title={
         <Space className={styles.heading}>
-          <Checkbox checked={selected} onChange={() => onToggleSelect(offer.id)} />
+          <Checkbox aria-label={`选择 Offer：${offer.company_name}｜${offer.position_name}`} checked={selected} onChange={() => onToggleSelect(offer.id)} />
           <Text strong>{offer.company_name}</Text>
         </Space>
       }
@@ -49,7 +49,7 @@ export default function OfferCard({ offer, selected, onToggleSelect, onCoach, on
         {offer.base_monthly / 1000}K×{offer.months_per_year}
       </div>
       <div className={styles.facts}>
-        签字费 {offer.signing_bonus > 0 ? formatWan(offer.signing_bonus) : '无'}
+        签字费 {offer.signing_bonus == null ? '尚未填写' : formatWan(offer.signing_bonus)}
         {offer.equity ? ` · 期权 ${offer.equity}` : ''}
         <br />
         年总包约 {formatWan(offer.total_cash)}

@@ -106,6 +106,30 @@ describe('OfferNegotiationDrawer', () => {
     expect(renderCount).toBeLessThan(6);
   });
 
+  it('restores a valid preview draft to the source confirmation step', async () => {
+    const restoredDraft: OfferNegotiationDraft = {
+      attemptKey: 'attempt-key',
+      confirmationKey: 'confirmation-key',
+      goal: 'Goal',
+      concerns: 'Concern',
+      scenario: 'Call',
+      resultUnknown: false,
+      pendingOperation: null,
+      proposalId: null,
+      selectedBlocks: [],
+      edits: {},
+      dimensionIds: [],
+      sourceFingerprint: 'fingerprint',
+      previewSnapshot: preview().snapshot,
+      previewInputKey: JSON.stringify({ dimension_ids: [], goal: 'Goal', concerns: 'Concern', scenario: 'Call' }),
+    };
+    await act(async () => {
+      root?.render(<OfferNegotiationDrawer open offer={offer} draft={restoredDraft} onClose={vi.fn()} />);
+    });
+
+    expect(host?.querySelector('[data-action="confirm-generate"]')).not.toBeNull();
+  });
+
   it('requires a non-blank concerns field before generation', async () => {
     await act(async () => { root?.render(<OfferNegotiationDrawer open offer={offer} onClose={vi.fn()} />); });
     const inputs = host?.querySelectorAll('input') ?? [];
@@ -194,12 +218,16 @@ describe('OfferNegotiationDrawer', () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     await act(async () => { host?.querySelector<HTMLButtonElement>('section[aria-label="历史谈薪准备"] button')?.click(); });
     const facts = host?.querySelector('[data-testid="offer-negotiation-input-facts"]')?.textContent ?? '';
+    expect(host?.querySelector('h2')?.textContent).toContain('Company');
+    expect(host?.querySelector('h2')?.textContent).not.toContain('Current company');
     expect(facts).toContain('Company');
     expect(facts).not.toContain('Current company');
     expect(facts).not.toContain('Current equity');
     expect(facts).not.toContain('Current perks');
     expect(facts).not.toContain('Current deadline');
     expect(facts).not.toContain('Current notes');
+    expect(facts).toContain('待处理');
+    expect(facts).not.toContain('pending');
     expect(facts).toContain('Goal');
     expect(facts).toContain('Concern');
     expect(facts).toContain('Call');
@@ -232,6 +260,7 @@ describe('OfferNegotiationDrawer', () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     const checkbox = host?.querySelector('article input[type="checkbox"]') as HTMLInputElement;
     await act(async () => { checkbox.click(); });
+    expect(host?.querySelector<HTMLButtonElement>('[data-testid="offer-negotiation-confirm"]')?.textContent).toContain('1');
     await act(async () => { host?.querySelector<HTMLButtonElement>('[data-testid="offer-negotiation-confirm"]')?.click(); });
     expect(host?.querySelector('[aria-label="确认保存谈薪准备"]')).not.toBeNull();
     await act(async () => { host?.querySelector<HTMLButtonElement>('[data-action="confirm-save"]')?.click(); });
