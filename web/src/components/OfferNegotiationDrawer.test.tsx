@@ -214,11 +214,36 @@ describe('OfferNegotiationDrawer', () => {
     const checkbox = host?.querySelector('article input[type="checkbox"]') as HTMLInputElement;
     await act(async () => { checkbox.click(); });
     await act(async () => { host?.querySelector<HTMLButtonElement>('[data-testid="offer-negotiation-confirm"]')?.click(); });
+    expect(host?.querySelector('[aria-label="确认保存谈薪准备"]')).not.toBeNull();
+    await act(async () => { host?.querySelector<HTMLButtonElement>('[data-action="confirm-save"]')?.click(); });
     expect(service.confirm).toHaveBeenCalledTimes(1);
     expect(service.confirm.mock.calls[0][0]).toBe(3);
     expect(service.confirm.mock.calls[0][1].selected_blocks).toEqual(['goal-1']);
     expect(service.create.mock.calls[0][2]).toBe('ui');
     expect(host?.textContent).toContain('用户最终编辑的表达');
+  });
+
+  it('uses the product confirmation panel without changing request order', async () => {
+    const nativeConfirm = window.confirm;
+    service.create.mockResolvedValue(proposal());
+    await act(async () => { root?.render(<OfferNegotiationDrawer open offer={offer} onClose={vi.fn()} />); });
+    const inputs = host?.querySelectorAll('input') ?? [];
+    const textareas = host?.querySelectorAll('textarea') ?? [];
+    await act(async () => {
+      changeValue(inputs[0] as HTMLInputElement, '确认薪资结构');
+      changeValue(textareas[0] as HTMLTextAreaElement, '远程安排');
+      changeValue(inputs[1] as HTMLInputElement, '电话沟通');
+      host?.querySelector<HTMLButtonElement>('[data-testid="offer-negotiation-generate"]')?.click();
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(service.preview).toHaveBeenCalledTimes(1);
+    expect(service.create).not.toHaveBeenCalled();
+    expect(host?.querySelector('[aria-label="确认本次 AI 输入"]')).not.toBeNull();
+    expect(window.confirm).toBe(nativeConfirm);
+
+    await act(async () => { host?.querySelector<HTMLButtonElement>('[data-action="confirm-generate"]')?.click(); });
+    expect(service.create).toHaveBeenCalledTimes(1);
+    expect(window.confirm).toBe(nativeConfirm);
   });
 
   it('marks Pilot-generated requests without changing the API payload', async () => {

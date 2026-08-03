@@ -1,0 +1,79 @@
+.workspace {
+  display: grid;
+  gap: 16px;
+  padding: 4px;
+  color: var(--op-text);
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--op-border);
+}
+
+.header h2 {
+  margin: 0;
+  font-size: 20px;
+  line-height: 1.35;
+}
+
+.boundary {
+  margin: 6px 0 0;
+  color: var(--op-muted-strong);
+  font-size: 13px;
+}
+
+.factsSection,
+.proposalSection {
+  display: grid;
+  gap: 10px;
+}
+
+.factsSection h3,
+.proposalSection h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.factsSection > dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 16px;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--op-border);
+  border-radius: 12px;
+  background: var(--op-surface-muted);
+}
+
+.factsSection dt {
+  color: var(--op-muted-strong);
+  font-size: 12px;
+}
+
+.factsSection dd {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+
+.factsSection ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 20px;
+}
+
+@media (max-width: 640px) {
+  .header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .factsSection > dl {
+    grid-template-columns: 1fr;
+  }
+}

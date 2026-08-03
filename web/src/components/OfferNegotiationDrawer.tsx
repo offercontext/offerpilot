@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Button } from 'antd';
 import {
   confirmOfferNegotiationProposal,
   createOfferNegotiationProposal,
@@ -10,6 +11,12 @@ import {
   OfferNegotiationError,
 } from '@/services/offers';
 import type { Offer, OfferComparisonDimension, OfferNegotiationBlock, OfferNegotiationProposal, OfferNegotiationPending, OfferNegotiationPreview, OfferNegotiationSnapshot } from '@/types/offer';
+import { ConfirmationPanel } from './ui/ConfirmationPanel';
+import NegotiationBriefForm, { type NegotiationBriefValue } from './offer-negotiation/NegotiationBriefForm';
+import NegotiationHistoryList from './offer-negotiation/NegotiationHistoryList';
+import NegotiationProposalCard from './offer-negotiation/NegotiationProposalCard';
+import OfferSnapshotSummary from './offer-negotiation/OfferSnapshotSummary';
+import styles from './OfferNegotiationDrawer.module.css';
 
 interface Props {
   open: boolean;
@@ -91,6 +98,8 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
   const [resultUnknown, setResultUnknown] = useState(draft?.resultUnknown ?? false);
   const [error, setError] = useState<string | null>(null);
   const [pendingOperation, setPendingOperation] = useState<PendingOperation>(draft?.pendingOperation ?? null);
+  const [showGenerateConfirmation, setShowGenerateConfirmation] = useState(false);
+  const [showSaveConfirmation, setShowSaveConfirmation] = useState(false);
   const suppressDraftPersistence = useRef(false);
   const lastPersistedDraft = useRef<string | null>(null);
 
@@ -184,35 +193,58 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
       };
     });
   const visibleBrief = proposal?.input_snapshot.user_brief ?? activePreview?.snapshot.user_brief;
+  const snapshotOffer: OfferNegotiationSnapshot['offer_snapshot'] = {
+    company_name: displayedOffer.company_name,
+    position_name: displayedOffer.position_name,
+    status: displayedOffer.status,
+    base_monthly: displayedOffer.base_monthly ?? null,
+    months_per_year: displayedOffer.months_per_year ?? null,
+    signing_bonus: displayedOffer.signing_bonus ?? null,
+    equity: displayedOffer.equity || null,
+    perks: displayedOffer.perks || null,
+    deadline: displayedOffer.deadline || null,
+    notes: displayedOffer.notes || null,
+    dimensions: visibleDimensions,
+  };
+  const sourceState = proposal?.source_changed ? 'changed' : (proposal || activePreview ? 'frozen' : 'current');
 
-  const generate = async (fromRetry = false) => {
-    if ((frozen && !fromRetry) || !goal.trim() || !concerns.trim() || !scenario.trim()) return;
+  const briefValue: NegotiationBriefValue = { goal, concerns, scenario };
+  const briefValid = Boolean(goal.trim() && concerns.trim() && scenario.trim());
+
+  const previewGeneration = async () => {
+    if (frozen || !briefValid || !dimensionFactsReady) return;
     setError(null);
+    setBusy(true);
     try {
-      let preview = frozenPreview;
-      if (!fromRetry && (!preview || previewInputKey !== currentInputKey)) {
-        setBusy(true);
-        preview = await previewOfferNegotiation(offer.id, {
-          dimension_ids: [...frozenDimensionIds].sort((a, b) => a - b),
-          goal,
-          concerns,
-          scenario,
-        });
-        setFrozenPreview(preview);
-        setPreviewInputKey(currentInputKey);
-        setError('已读取本次将发送给 AI 的冻结快照，请核对后再次点击生成。');
-        return;
-      }
-      if (!preview) return;
-      if (!window.confirm('本次填写的目标、顾虑和沟通场景将发送给 AI，是否继续？')) return;
-      setBusy(true);
+      const preview = await previewOfferNegotiation(offer.id, {
+        dimension_ids: [...frozenDimensionIds].sort((a, b) => a - b),
+        goal,
+        concerns,
+        scenario,
+      });
+      setFrozenPreview(preview);
+      setPreviewInputKey(currentInputKey);
+      setShowGenerateConfirmation(true);
+    } catch (caught) {
+      setError(safeError(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitGeneration = async (fromRetry = false) => {
+    if (!frozenPreview || (!fromRetry && frozen)) return;
+    setShowGenerateConfirmation(false);
+    setError(null);
+    setBusy(true);
+    try {
       const result = await createOfferNegotiationProposal(offer.id, {
         idempotency_key: attemptKey,
         dimension_ids: [...frozenDimensionIds].sort((a, b) => a - b),
         goal,
         concerns,
         scenario,
-        source_fingerprint: preview.source_fingerprint,
+        source_fingerprint: frozenPreview.source_fingerprint,
       }, entrypoint);
       if (isPending(result)) {
         setResultUnknown(true);
@@ -258,7 +290,7 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
 
   const confirm = async (fromRetry = false) => {
     if (!proposal || (frozen && !fromRetry) || hasBrief || selectedBlocks.length === 0) return;
-    if (!window.confirm('确认保存选中的谈薪准备内容？')) return;
+    setShowSaveConfirmation(false);
     setBusy(true);
     setError(null);
     try {
@@ -293,15 +325,23 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
     setError(null);
     setResultUnknown(false);
     if (pendingOperation === 'confirm') void confirm(true);
-    else void generate(true);
+    else void submitGeneration(true);
+  };
+
+  const clearPreview = () => {
+    if (busy) return;
+    setFrozenPreview(null);
+    setPreviewInputKey(null);
+    setShowGenerateConfirmation(false);
+    setError(null);
   };
 
   return (
-    <section aria-label="谈薪准备" data-testid="offer-negotiation-drawer">
-      <header>
+    <section aria-label="谈薪准备" data-testid="offer-negotiation-drawer" className={styles.workspace}>
+      <header className={styles.header}>
         <h2>为 {offer.company_name} 准备谈薪</h2>
-        <p>只整理事实、问题和表达草稿，不替你决定接受或拒绝 Offer。</p>
-        <button type="button" onClick={onClose}>关闭</button>
+        <p className={styles.boundary}>只整理事实、问题和表达草稿，不替你决定接受或拒绝 Offer。</p>
+        <Button type="text" onClick={onClose}>关闭</Button>
       </header>
       {proposal && (
         <p role="status">{proposal.source_changed ? '来源已变化，以下仅供历史查看。' : '已冻结 Offer 来源，可审阅引用。'}</p>
@@ -310,9 +350,10 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
       {resultUnknown && (
         <button type="button" onClick={retry} disabled={busy}>使用原尝试重试</button>
       )}
-      <section aria-label="AI input facts" data-testid="offer-negotiation-input-facts">
+      <section aria-label="AI input facts" data-testid="offer-negotiation-input-facts" className={styles.factsSection}>
         <h3>本次将使用的 Offer 事实</h3>
         <p>{proposal?.input_snapshot || activePreview ? '以下为本次冻结输入' : '当前 Offer 事实，尚未冻结'}</p>
+        <OfferSnapshotSummary offer={snapshotOffer} brief={visibleBrief} sourceState={sourceState} />
         <dl>
           <div><dt>公司</dt><dd>{displayedOffer.company_name}</dd></div>
           <div><dt>职位</dt><dd>{displayedOffer.position_name}</dd></div>
@@ -341,19 +382,52 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
         )}
       </section>
       {!proposal && (
-        <fieldset disabled={frozen}>
-          <label>本次沟通目标<input value={goal} onChange={(event) => setGoal(event.target.value)} /></label>
-          <label>顾虑<textarea value={concerns} onChange={(event) => setConcerns(event.target.value)} /></label>
-          <label>沟通场景<input value={scenario} onChange={(event) => setScenario(event.target.value)} /></label>
-          <button
-            type="button"
-            data-testid="offer-negotiation-generate"
-            onClick={() => void generate()}
-            disabled={frozen || !dimensionFactsReady || !goal.trim() || !concerns.trim() || !scenario.trim()}
-          >
-            {activePreview ? '确认快照并生成谈薪准备草稿' : '预览本次 AI 输入'}
-          </button>
-        </fieldset>
+        <>
+          <fieldset className={styles.briefFieldset} disabled={frozen || Boolean(showGenerateConfirmation)}>
+            <NegotiationBriefForm
+              value={briefValue}
+              disabled={frozen || Boolean(showGenerateConfirmation)}
+              errors={{
+                goal: goal.trim() ? undefined : '请填写本次沟通目标。',
+                concerns: concerns.trim() ? undefined : '请填写本次顾虑。',
+                scenario: scenario.trim() ? undefined : '请填写沟通场景。',
+              }}
+              onChange={(next) => {
+                setGoal(next.goal);
+                setConcerns(next.concerns);
+                setScenario(next.scenario);
+              }}
+            />
+            {!activePreview && (
+              <Button
+                type="primary"
+                data-testid="offer-negotiation-generate"
+                onClick={() => void previewGeneration()}
+                disabled={frozen || !dimensionFactsReady || !briefValid}
+              >
+                预览本次 AI 输入
+              </Button>
+            )}
+          </fieldset>
+          {activePreview && showGenerateConfirmation && (
+            <ConfirmationPanel
+              title="确认本次 AI 输入"
+              description="核对冻结的 Offer 事实与本次填写内容后，才会发送给 AI。"
+              sources={[{ state: 'frozen', detail: '本次 Offer 与用户输入快照' }]}
+            >
+              <Button onClick={clearPreview} disabled={busy}>返回修改</Button>
+              <Button
+                type="primary"
+                data-testid="offer-negotiation-generate"
+                data-action="confirm-generate"
+                onClick={() => void submitGeneration()}
+                disabled={busy}
+              >
+                确认生成谈薪准备草稿
+              </Button>
+            </ConfirmationPanel>
+          )}
+        </>
       )}
       {dimensionFactsState === 'loading' && <p role="status">正在读取本次谈薪准备所需的 Offer 事实……</p>}
       {dimensionFactsState === 'error' && <p role="alert">Offer 自定义维度暂时无法读取，请稍后重试。</p>}
@@ -362,39 +436,38 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
           {proposal.proposal_status === 'safe_empty' ? (
             <p>目前没有可验证、可给出的谈薪准备建议。</p>
           ) : SECTIONS.map(([field, label]) => (
-            <section key={field}>
+            <section key={field} className={styles.proposalSection}>
               <h3>{label}</h3>
               {proposal.proposal[field].map((block: OfferNegotiationBlock) => {
                 const selected = selectedBlocks.includes(block.id);
                 return (
-                  <article key={block.id}>
-                    <label>
-                      <input
-                        type="checkbox"
-                        disabled={frozen || hasBrief || proposal.source_changed}
-                        checked={selected}
-                        onChange={() => setSelectedBlocks((current) => selected ? current.filter((id) => id !== block.id) : [...current, block.id])}
-                      />
-                      {block.text}
-                    </label>
-                    <p>{block.rationale}</p>
-                    {selected && (
-                      <textarea
-                        disabled={frozen || hasBrief || proposal.source_changed}
-                        value={edits[block.id] ?? block.text}
-                        onChange={(event) => setEdits((current) => ({ ...current, [block.id]: event.target.value }))}
-                      />
-                    )}
-                    <div>
-                      {block.evidence_refs.map((ref) => <code key={`${ref.source}-${ref.path}`}>{ref.path}: {ref.excerpt}</code>)}
-                    </div>
-                  </article>
+                  <NegotiationProposalCard
+                    key={block.id}
+                    block={block}
+                    selected={selected}
+                    editedText={edits[block.id] ?? block.text}
+                    disabled={frozen || hasBrief || proposal.source_changed}
+                    onToggle={() => setSelectedBlocks((current) => selected ? current.filter((id) => id !== block.id) : [...current, block.id])}
+                    onEdit={(text) => setEdits((current) => ({ ...current, [block.id]: text }))}
+                  />
                 );
               })}
             </section>
           ))}
           {proposal.proposal_status !== 'safe_empty' && !hasBrief && !proposal.source_changed && (
-            <button type="button" data-testid="offer-negotiation-confirm" onClick={() => void confirm()} disabled={frozen || selectedBlocks.length === 0}>确认保存谈薪准备</button>
+            <>
+              <Button type="primary" data-testid="offer-negotiation-confirm" onClick={() => setShowSaveConfirmation(true)} disabled={frozen || selectedBlocks.length === 0}>确认保存谈薪准备</Button>
+              {showSaveConfirmation && (
+                <ConfirmationPanel
+                  title="确认保存谈薪准备"
+                  description="仅保存你选中并编辑后的内容；不会修改 Offer 或自动执行其他操作。"
+                  sources={[{ state: 'frozen', detail: '本次谈薪准备 Proposal' }]}
+                >
+                  <Button onClick={() => setShowSaveConfirmation(false)} disabled={busy}>返回修改</Button>
+                  <Button type="primary" data-action="confirm-save" onClick={() => void confirm(true)} disabled={busy}>确认保存</Button>
+                </ConfirmationPanel>
+              )}
+            </>
           )}
           {hasBrief && (
             <section aria-label="saved negotiation brief">
@@ -411,7 +484,7 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
       {history.length > 0 && (
         <section aria-label="历史谈薪准备">
           <h3>历史记录</h3>
-          {history.map((item) => <button type="button" key={item.id} onClick={() => setProposal(item)}>查看 {item.id}</button>)}
+          <NegotiationHistoryList items={history} selectedId={proposal?.id ?? null} onSelect={(item) => setProposal(item)} />
         </section>
       )}
       {blocks.length === 0 && proposal?.proposal_status === 'safe_empty' && <p>未生成可验证内容，未保存任何谈薪准备记录。</p>}
