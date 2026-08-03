@@ -80,8 +80,8 @@ describe('OfferCard', () => {
         <OfferCard offer={offer} selected onToggleSelect={vi.fn()} onCoach={onCoach} onView={vi.fn()} />,
       );
     });
-    expect(host.querySelector('[data-action="start-negotiation"]')).toBeNull();
-    act(() => host.querySelector<HTMLButtonElement>('[data-action="open-negotiation-coach"]')?.click());
+    expect(host!.querySelector('[data-action="start-negotiation"]')).toBeNull();
+    act(() => host!.querySelector<HTMLButtonElement>('[data-action="open-negotiation-coach"]')?.click());
     expect(onCoach).toHaveBeenCalledWith(offer);
   });
 });
