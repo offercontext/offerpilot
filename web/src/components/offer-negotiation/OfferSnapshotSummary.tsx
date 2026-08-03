@@ -58,14 +58,14 @@ export default function OfferSnapshotSummary({ offer, brief, sourceState }: Prop
         </div>
         <SourceStateTag state={sourceState} detail={sourceState === 'frozen' ? '本次 AI 输入快照' : undefined} />
       </div>
-      <div className={styles.snapshotFacts}>
+      <div className={styles.snapshotFacts} data-section="fixed-facts-summary">
         <span>状态：{OFFER_STATUS_LABELS[offer.status]}</span>
         <span>月薪与月数：{formatMonthly(offer)}</span>
         <span data-testid="snapshot-signing-bonus">签字费：{offer.signing_bonus == null ? '尚未填写' : offer.signing_bonus}</span>
         <span>截止时间：{offer.deadline || '尚未填写'}</span>
       </div>
       {offer.dimensions.length > 0 && (
-        <div className={styles.customDimensionSummary} data-section="custom-dimensions">
+        <div className={styles.customDimensionSummary} data-section="custom-dimensions-summary">
           <strong>自定义比较维度</strong>
           {offer.dimensions.map((dimension) => (
             <span key={dimension.path_id}>{dimension.label}：{dimension.value_text || '尚未填写'}</span>

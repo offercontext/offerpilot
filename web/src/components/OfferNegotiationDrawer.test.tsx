@@ -13,6 +13,7 @@ const service = vi.hoisted(() => ({
   values: vi.fn(async () => []),
   confirm: vi.fn(),
   preview: vi.fn(),
+  get: vi.fn(),
 }));
 
 vi.mock('@/services/offers', () => ({
@@ -22,6 +23,7 @@ vi.mock('@/services/offers', () => ({
   listOfferComparisonValues: service.values,
   confirmOfferNegotiationProposal: service.confirm,
   previewOfferNegotiation: service.preview,
+  getOfferNegotiationProposal: service.get,
   OfferNegotiationError: class OfferNegotiationError extends Error {
     constructor(public status: number, public code: string | null) { super(code ?? 'error'); }
   },
@@ -235,7 +237,7 @@ describe('OfferNegotiationDrawer', () => {
     expect(facts).toContain('地铁 35 分钟');
   });
 
-  it('resets selected blocks and edits when switching between history records', async () => {
+  it('keeps history records read-only while switching between them', async () => {
     const confirmed = {
       ...proposal(),
       id: 1,
@@ -259,8 +261,46 @@ describe('OfferNegotiationDrawer', () => {
     expect(host?.textContent).toContain('上一条记录的编辑内容');
     await act(async () => { (historyButtons[1] as HTMLButtonElement).click(); });
 
-    expect(host?.querySelector<HTMLButtonElement>('[data-testid="offer-negotiation-confirm"]')?.disabled).toBe(true);
+    expect(host?.querySelector('[data-testid="offer-negotiation-confirm"]')).toBeNull();
+    expect(host?.querySelector<HTMLInputElement>('article input[type="checkbox"]')?.disabled).toBe(true);
     expect(host?.textContent).not.toContain('上一条记录的编辑内容');
+  });
+
+  it('keeps the active unknown-result draft isolated while viewing history', async () => {
+    service.list.mockResolvedValue([{ ...proposal(), id: 3 }]);
+    const onDraftChange = vi.fn();
+    const activeDraft: OfferNegotiationDraft = {
+      attemptKey: 'active-attempt-key',
+      confirmationKey: 'active-confirmation-key',
+      goal: '当前目标',
+      concerns: '当前顾虑',
+      scenario: '当前场景',
+      resultUnknown: true,
+      pendingOperation: 'generate',
+      proposalId: 99,
+      selectedBlocks: [],
+      edits: {},
+      dimensionIds: [],
+      sourceFingerprint: 'active-fingerprint',
+      previewSnapshot: preview().snapshot,
+      previewInputKey: JSON.stringify({ dimension_ids: [], goal: '当前目标', concerns: '当前顾虑', scenario: '当前场景' }),
+    };
+    await act(async () => {
+      root?.render(<OfferNegotiationDrawer open offer={offer} draft={activeDraft} onClose={vi.fn()} onDraftChange={onDraftChange} />);
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => {
+      host?.querySelector<HTMLButtonElement>('section[aria-label="历史谈薪准备"] button')?.click();
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    const latestCall = onDraftChange.mock.calls[onDraftChange.mock.calls.length - 1];
+    const latestDraft = latestCall?.[0] as OfferNegotiationDraft;
+    expect(Array.from(host?.querySelectorAll('button') ?? []).some((button) => button.textContent?.includes('使用原尝试重试'))).toBe(false);
+    expect(latestDraft.resultUnknown).toBe(true);
+    expect(latestDraft.pendingOperation).toBe('generate');
+    expect(latestDraft.proposalId).toBe(99);
+    expect(latestDraft.attemptKey).toBe('active-attempt-key');
   });
 
   it('generates an editable evidence-backed draft and confirms selected blocks', async () => {
@@ -286,6 +326,7 @@ describe('OfferNegotiationDrawer', () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     await act(async () => { host?.querySelector<HTMLButtonElement>('[data-testid="offer-negotiation-generate"]')?.click(); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(host?.textContent).toContain('请选择至少一项建议后才能保存。');
     const checkbox = host?.querySelector('article input[type="checkbox"]') as HTMLInputElement;
     await act(async () => { checkbox.click(); });
     expect(host?.querySelector<HTMLButtonElement>('[data-testid="offer-negotiation-confirm"]')?.textContent).toContain('1');

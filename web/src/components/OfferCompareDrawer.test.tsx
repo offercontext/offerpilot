@@ -123,3 +123,20 @@ it('renders structured factual groups and rich Offer headers', async () => {
   expect(host.querySelector('[data-section="custom-dimensions"]')).not.toBeNull();
   expect(host.querySelector('[data-missing="true"]')?.textContent).toContain('尚未填写');
 });
+
+it('keeps custom dimension rows out of the fixed salary facts table', async () => {
+  const offers = [offer(2), offer(1)];
+  readComparison.mockResolvedValue({
+    offers,
+    dimensions: [{ id: 1, label: '通勤', values: [{ offer_id: 1, value_text: '地铁 35 分钟' }, { offer_id: 2, value_text: null }] }],
+    missing: [],
+  } satisfies OfferComparisonRead);
+  host = document.createElement('div');
+  document.body.appendChild(host);
+  root = createRoot(host);
+  await act(async () => { root?.render(<OfferCompareDrawer open onClose={vi.fn()} offers={offers} dimensionIds={[1]} />); });
+
+  expect(host.querySelector('[data-section="fixed-facts"]')?.textContent).not.toContain('通勤');
+  expect(host.querySelector('[data-section="custom-dimensions"]')?.textContent).toContain('通勤');
+  expect(host.querySelector('[data-section="custom-dimensions"] table')).not.toBeNull();
+});

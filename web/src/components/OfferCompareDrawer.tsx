@@ -80,7 +80,7 @@ export default function OfferCompareDrawer({
     return row;
   };
 
-  const data: Row[] = [
+  const fixedData: Row[] = [
     fieldRow('职位', (offer) => displayValue(offer.position_name)),
     fieldRow('状态', (offer) => OFFER_STATUS_LABELS[offer.status]),
     fieldRow('月薪与月数', (offer) => `${offer.base_monthly / 1000}K × ${offer.months_per_year}`),
@@ -90,14 +90,10 @@ export default function OfferCompareDrawer({
     fieldRow('福利', (offer) => displayValue(offer.perks)),
     fieldRow('截止时间', (offer) => displayValue(offer.deadline)),
   ];
-  if (comparison) {
-    for (const dimension of comparison.dimensions) {
-      data.push(fieldRow(dimension.label, (offer) => {
-        const cell = dimension.values.find((value) => value.offer_id === offer.id);
-        return displayValue(cell?.value_text);
-      }));
-    }
-  }
+  const customDimensionData: Row[] = comparison?.dimensions.map((dimension) => fieldRow(dimension.label, (offer) => {
+    const cell = dimension.values.find((value) => value.offer_id === offer.id);
+    return displayValue(cell?.value_text);
+  })) ?? [];
 
   return (
     <section className={styles.workspace} aria-label="Offer 横向对比" data-selected-dimension-ids={dimensionIds.join(',')}>
@@ -113,12 +109,13 @@ export default function OfferCompareDrawer({
         <>
           <div data-section="fixed-facts">
             <h3 className={styles.sectionTitle}>固定薪酬事实</h3>
-            <Table columns={columns} dataSource={data} pagination={false} scroll={{ x: true }} size="small" bordered />
+            <Table columns={columns} dataSource={fixedData} pagination={false} scroll={{ x: true }} size="small" bordered />
           </div>
-          {comparison && (
+          {customDimensionData.length > 0 && (
             <div data-section="custom-dimensions" className={styles.customSection}>
               <h3 className={styles.sectionTitle}>自定义比较维度</h3>
               <p className={styles.muted}>仅并排展示用户记录的固定事实与文字维度。</p>
+              <Table columns={columns} dataSource={customDimensionData} pagination={false} scroll={{ x: true }} size="small" bordered />
             </div>
           )}
           {(onNegotiation || onCoach) && (

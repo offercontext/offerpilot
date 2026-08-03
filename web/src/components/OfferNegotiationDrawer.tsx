@@ -82,6 +82,7 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
   const [attemptKey, setAttemptKey] = useState(() => draft?.attemptKey ?? newKey('offer-negotiation'));
   const [confirmationKey, setConfirmationKey] = useState(() => draft?.confirmationKey ?? newKey('offer-negotiation-confirm'));
   const [proposal, setProposal] = useState<OfferNegotiationProposal | null>(null);
+  const [historyProposal, setHistoryProposal] = useState<OfferNegotiationProposal | null>(null);
   const [history, setHistory] = useState<OfferNegotiationProposal[]>([]);
   const [selectedBlocks, setSelectedBlocks] = useState<string[]>(draft?.selectedBlocks ?? []);
   const [edits, setEdits] = useState<Record<string, string>>(draft?.edits ?? {});
@@ -115,6 +116,10 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
       if (restored && 'proposal' in restored && restored.proposal) setProposal(restored);
     }).catch(() => setHistory([]));
   }, [draft?.proposalId, offer.id, open]);
+
+  useEffect(() => {
+    if (!open) setHistoryProposal(null);
+  }, [offer.id, open]);
 
   useEffect(() => {
     if (!open) return;
@@ -162,14 +167,17 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
     onDraftChange(nextDraft);
   }, [attemptKey, confirmationKey, concerns, edits, frozenDimensionIds, frozenPreview, goal, onDraftChange, open, pendingOperation, previewInputKey, proposal, resultUnknown, scenario, selectedBlocks]);
 
+  const displayedProposal = historyProposal ?? proposal;
+  const isHistoryView = Boolean(historyProposal);
   const blocks = useMemo(() => {
-    if (!proposal) return [];
-    return SECTIONS.flatMap(([field]) => proposal.proposal[field]);
-  }, [proposal]);
+    if (!displayedProposal) return [];
+    return SECTIONS.flatMap(([field]) => displayedProposal.proposal[field]);
+  }, [displayedProposal]);
 
   if (!open) return null;
   const frozen = resultUnknown || busy;
-  const hasBrief = Boolean(proposal?.brief);
+  const hasBrief = Boolean(displayedProposal?.brief);
+  const currentHasBrief = Boolean(proposal?.brief);
   const dimensionFactsReady = frozenDimensionIds.length === 0 || (
     dimensionFactsState === 'ready'
     && frozenDimensionIds.every((id) => dimensionFacts.some((dimension) => dimension.id === id))
@@ -182,9 +190,9 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
     scenario,
   });
   const activePreview = frozenPreview && previewInputKey === currentInputKey ? frozenPreview : null;
-  const frozenOffer = proposal?.input_snapshot.offer_snapshot ?? activePreview?.snapshot.offer_snapshot;
+  const frozenOffer = displayedProposal?.input_snapshot.offer_snapshot ?? activePreview?.snapshot.offer_snapshot;
   const displayedOffer = frozenOffer ?? offer;
-  const visibleDimensions = proposal?.input_snapshot.offer_snapshot.dimensions
+  const visibleDimensions = displayedProposal?.input_snapshot.offer_snapshot.dimensions
     ?? activePreview?.snapshot.offer_snapshot.dimensions
     ?? frozenDimensionIds.map((id) => {
       const dimension = dimensionFacts.find((item) => item.id === id);
@@ -194,7 +202,9 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
         value_text: dimension?.value_text ?? null,
       };
     });
-  const visibleBrief = proposal?.input_snapshot.user_brief ?? activePreview?.snapshot.user_brief;
+  const visibleBrief = displayedProposal?.input_snapshot.user_brief ?? activePreview?.snapshot.user_brief;
+  const displayedSelectedBlocks = isHistoryView ? (displayedProposal?.brief?.selected_blocks ?? []) : selectedBlocks;
+  const displayedEdits = isHistoryView ? (displayedProposal?.brief?.edited_content.edits ?? {}) : edits;
   const snapshotOffer: OfferNegotiationSnapshot['offer_snapshot'] = {
     company_name: displayedOffer.company_name,
     position_name: displayedOffer.position_name,
@@ -208,7 +218,7 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
     notes: displayedOffer.notes || null,
     dimensions: visibleDimensions,
   };
-  const sourceState = proposal?.source_changed ? 'changed' : (proposal || activePreview ? 'frozen' : 'current');
+  const sourceState = displayedProposal?.source_changed ? 'changed' : (displayedProposal || activePreview ? 'frozen' : 'current');
 
   const briefValue: NegotiationBriefValue = { goal, concerns, scenario };
   const briefValid = Boolean(goal.trim() && concerns.trim() && scenario.trim());
@@ -303,7 +313,7 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
   };
 
   const confirm = async (fromRetry = false) => {
-    if (!proposal || (frozen && !fromRetry) || hasBrief || selectedBlocks.length === 0) return;
+    if (!proposal || (frozen && !fromRetry) || currentHasBrief || selectedBlocks.length === 0) return;
     setShowSaveConfirmation(false);
     setBusy(true);
     setError(null);
@@ -336,13 +346,7 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
   };
 
   const selectHistory = (item: OfferNegotiationProposal) => {
-    setProposal(item);
-    setSelectedBlocks(item.brief?.selected_blocks ?? []);
-    setEdits(item.brief?.edited_content.edits ?? {});
-    setShowSaveConfirmation(false);
-    setError(null);
-    setResultUnknown(false);
-    setPendingOperation(null);
+    setHistoryProposal(item);
   };
 
   const retry = () => {
@@ -367,16 +371,17 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
         <p className={styles.boundary}>只整理事实、问题和表达草稿，不替你决定接受或拒绝 Offer。</p>
         <Button type="text" onClick={onClose}>关闭</Button>
       </header>
-      {proposal && (
-        <p role="status">{proposal.source_changed ? '来源已变化，以下仅供历史查看。' : '已冻结 Offer 来源，可审阅引用。'}</p>
+      {displayedProposal && (
+        <p role="status">{displayedProposal.source_changed ? '来源已变化，以下仅供历史查看。' : '已冻结 Offer 来源，可审阅引用。'}</p>
       )}
+      {isHistoryView && <Button type="link" onClick={() => setHistoryProposal(null)}>返回当前谈薪准备</Button>}
       {error && <p role="alert">{error}</p>}
-      {resultUnknown && (
+      {resultUnknown && !isHistoryView && (
         <button type="button" onClick={retry} disabled={busy}>使用原尝试重试</button>
       )}
       <section aria-label="AI input facts" data-testid="offer-negotiation-input-facts" className={styles.factsSection}>
         <h3>本次将使用的 Offer 事实</h3>
-        <p>{proposal?.input_snapshot || activePreview ? '以下为本次冻结输入' : '当前 Offer 事实，尚未冻结'}</p>
+        <p>{displayedProposal?.input_snapshot || activePreview ? '以下为本次冻结输入' : '当前 Offer 事实，尚未冻结'}</p>
         <OfferSnapshotSummary offer={snapshotOffer} brief={visibleBrief} sourceState={sourceState} />
         <dl>
           <div><dt>公司</dt><dd>{snapshotOffer.company_name}</dd></div>
@@ -405,7 +410,7 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
           </ul>
         )}
       </section>
-      {!proposal && (
+      {!displayedProposal && (
         <>
           <fieldset className={styles.briefFieldset} disabled={frozen || Boolean(showGenerateConfirmation)}>
             <NegotiationBriefForm
@@ -455,22 +460,22 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
       )}
       {dimensionFactsState === 'loading' && <p role="status">正在读取本次谈薪准备所需的 Offer 事实……</p>}
       {dimensionFactsState === 'error' && <p role="alert">Offer 自定义维度暂时无法读取，请稍后重试。</p>}
-      {proposal && (
+      {displayedProposal && (
         <div aria-label="谈薪准备草稿">
-          {proposal.proposal_status === 'safe_empty' ? (
+          {displayedProposal.proposal_status === 'safe_empty' ? (
             <p>目前没有可验证、可给出的谈薪准备建议。</p>
           ) : SECTIONS.map(([field, label]) => (
             <section key={field} className={styles.proposalSection}>
               <h3>{label}</h3>
-              {proposal.proposal[field].map((block: OfferNegotiationBlock) => {
-                const selected = selectedBlocks.includes(block.id);
+              {displayedProposal.proposal[field].map((block: OfferNegotiationBlock) => {
+                const selected = displayedSelectedBlocks.includes(block.id);
                 return (
                   <NegotiationProposalCard
                     key={block.id}
                     block={block}
                     selected={selected}
-                    editedText={edits[block.id] ?? block.text}
-                    disabled={frozen || hasBrief || proposal.source_changed}
+                    editedText={displayedEdits[block.id] ?? block.text}
+                    disabled={frozen || isHistoryView || hasBrief || displayedProposal.source_changed}
                     onToggle={() => setSelectedBlocks((current) => selected ? current.filter((id) => id !== block.id) : [...current, block.id])}
                     onEdit={(text) => setEdits((current) => ({ ...current, [block.id]: text }))}
                   />
@@ -478,8 +483,9 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
               })}
             </section>
           ))}
-          {proposal.proposal_status !== 'safe_empty' && !hasBrief && !proposal.source_changed && (
+          {displayedProposal.proposal_status !== 'safe_empty' && !isHistoryView && !hasBrief && !displayedProposal.source_changed && (
             <>
+              {selectedBlocks.length === 0 && <p className={styles.selectionHint} role="status">请选择至少一项建议后才能保存。</p>}
               <Button type="primary" data-testid="offer-negotiation-confirm" onClick={() => setShowSaveConfirmation(true)} disabled={frozen || selectedBlocks.length === 0}>确认保存谈薪准备（已选 {selectedBlocks.length} 项）</Button>
               {showSaveConfirmation && (
                 <ConfirmationPanel
@@ -496,10 +502,10 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
           {hasBrief && (
             <section aria-label="saved negotiation brief">
               <p>已确认保存，以下是本次实际保存的内容：</p>
-              {(proposal.brief?.edited_content.blocks ?? [])
-                .filter((block) => proposal.brief?.selected_blocks.includes(block.id))
+              {(displayedProposal.brief?.edited_content.blocks ?? [])
+                .filter((block) => displayedProposal.brief?.selected_blocks.includes(block.id))
                 .map((block) => (
-                  <p key={block.id}>{proposal.brief?.edited_content.edits?.[block.id] ?? block.text}</p>
+                  <p key={block.id}>{displayedProposal.brief?.edited_content.edits?.[block.id] ?? block.text}</p>
                 ))}
             </section>
           )}
@@ -508,10 +514,10 @@ export default function OfferNegotiationDrawer({ open, offer, dimensionIds = [],
       {history.length > 0 && (
         <section aria-label="历史谈薪准备">
           <h3>历史记录</h3>
-          <NegotiationHistoryList items={history} selectedId={proposal?.id ?? null} onSelect={selectHistory} />
+          <NegotiationHistoryList items={history} selectedId={historyProposal?.id ?? proposal?.id ?? null} onSelect={selectHistory} />
         </section>
       )}
-      {blocks.length === 0 && proposal?.proposal_status === 'safe_empty' && <p>未生成可验证内容，未保存任何谈薪准备记录。</p>}
+      {blocks.length === 0 && displayedProposal?.proposal_status === 'safe_empty' && <p>未生成可验证内容，未保存任何谈薪准备记录。</p>}
     </section>
   );
 }

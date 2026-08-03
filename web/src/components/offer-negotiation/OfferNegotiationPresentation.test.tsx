@@ -101,8 +101,8 @@ describe('Offer negotiation presentation components', () => {
   it('maps frozen Offer status to the localized status label and separates custom dimensions', () => {
     const rendered = mount(<OfferSnapshotSummary offer={snapshot.offer_snapshot} sourceState="frozen" />);
     expect(rendered.textContent).toContain(OFFER_STATUS_LABELS.pending);
-    expect(rendered.querySelector('[data-section="custom-dimensions"]')?.textContent).toContain('通勤');
-    expect(rendered.querySelector('[data-section="fixed-facts"]')).toBeNull();
+    expect(rendered.querySelector('[data-section="custom-dimensions-summary"]')?.textContent).toContain('通勤');
+    expect(rendered.querySelector('[data-section="fixed-facts-summary"]')?.textContent).not.toContain('通勤');
   });
 
   it('reports field validation next to the controlled field', () => {
@@ -128,6 +128,11 @@ describe('Offer negotiation presentation components', () => {
     act(() => evidenceToggle?.click());
     expect(evidenceToggle?.getAttribute('aria-expanded')).toBe('true');
     expect(onToggle).not.toHaveBeenCalled();
+  });
+
+  it('does not squeeze the proposal header with a duplicate rationale tag', () => {
+    const rendered = mount(<NegotiationProposalCard block={block} selected={false} editedText={block.text} disabled={false} onToggle={vi.fn()} onEdit={vi.fn()} />);
+    expect(rendered.querySelector('.ant-tag')).toBeNull();
   });
 
   it('localizes a frozen Offer status in evidence excerpts', () => {

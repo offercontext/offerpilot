@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Checkbox, Input, Tag } from 'antd';
+import { Checkbox, Input } from 'antd';
 import { OFFER_STATUS_LABELS, type OfferNegotiationBlock } from '@/types/offer';
 import styles from './OfferNegotiationPresentation.module.css';
 
@@ -35,7 +35,6 @@ export default function NegotiationProposalCard({ block, selected, editedText, d
     <article className={`${styles.proposalCard} ${selected ? styles.proposalCardSelected : ''}`} data-selected={selected}>
       <div className={styles.proposalMain}>
         <Checkbox checked={selected} disabled={disabled} onChange={onToggle}>{block.text}</Checkbox>
-        <Tag>{block.rationale}</Tag>
       </div>
       <p className={styles.rationale}><strong>为什么建议：</strong>{block.rationale}</p>
       {selected && <Input.TextArea aria-label="编辑谈薪建议" value={editedText} disabled={disabled} onChange={(event) => onEdit(event.target.value)} autoSize={{ minRows: 2, maxRows: 5 }} />}

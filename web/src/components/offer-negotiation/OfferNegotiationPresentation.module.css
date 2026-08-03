@@ -37,6 +37,12 @@
   font-size: 12px;
 }
 
+.selectionHint {
+  margin: 10px 0 0;
+  color: var(--op-muted-strong, #4b5563);
+  font-size: 12px;
+}
+
 .customDimensionSummary {
   display: flex;
   flex-wrap: wrap;
@@ -116,7 +122,7 @@
 
 .evidenceToggle {
   justify-self: start;
-  min-height: 36px;
+  min-height: 40px;
   padding: 4px 8px;
   border: 0;
   border-radius: 8px;
