@@ -178,6 +178,9 @@ def test_semantic_evidence_failure_is_not_repaired() -> None:
         "建议选择这份 Offer 的调研方案。",
         "建议选择与这份 Offer 相关的谈薪方案。",
         "建议选择与这份 Offer 相关的电话沟通方案。",
+        "请确认公司政策是否允许远程办公。",
+        "建议询问接受 Offer 前需要完成哪些流程。",
+        "建议不要错过与招聘方沟通的机会。",
         "请确认录用通知中的入职时间。",
         "请说明接受或拒绝该 Offer 前需要确认哪些信息。",
         "请列出接受或拒绝 Offer 前需要询问的问题。",
@@ -233,6 +236,16 @@ def test_legal_negotiation_language_is_not_decision_language(text: str) -> None:
         "建议拒绝目前的工作机会。",
         "请考虑拒绝目前这份 Offer。",
         "建议接受上述 Offer。",
+        "我的建议：由你自行决定接受这份 Offer。",
+        "建议接下这个 Offer。",
+        "建议婉拒这个 Offer。",
+        "这份 Offer 排名第一。",
+        "这份 Offer 比另一份更好。",
+        "Go with this offer.",
+        "This offer is better than the other one.",
+        "公司制度规定所有人必须到岗。",
+        "拿到录用的概率高达 90%。",
+        "The company policy requires everyone onsite.",
     ],
 )
 def test_explicit_decision_recommendation_is_terminal(text: str) -> None:
@@ -269,6 +282,11 @@ def test_question_context_does_not_hide_an_unsupported_fact_assertion() -> None:
         "请确认：公司政策明确规定所有人必须到岗。",
         "市场薪酬通常是 30k。",
         "录用概率约为 90%。",
+        "请确认公司政策是否允许远程办公且公司政策规定所有人必须到岗。",
+        "Please confirm whether the company policy allows remote work and the company policy requires everyone onsite.",
+        "请确认公司政策是否允许远程办公以及公司政策规定所有人必须到岗。",
+        "请确认公司政策是否允许远程办公同时公司制度规定所有人必须到岗。",
+        "Please confirm whether the company policy allows remote work as well as the company policy requires everyone onsite.",
     ],
 )
 def test_unsupported_fact_assertion_is_terminal(text: str) -> None:
@@ -304,6 +322,9 @@ def test_generation_prompt_explains_allowed_and_forbidden_decision_language() ->
     assert "应该拒绝这个岗位" in prompt
     assert "You should accept this Offer." in prompt
     assert "建议选择电话沟通谈薪" in prompt
+    assert "建议接下这个 Offer" in prompt
+    assert "这份 Offer 比另一份更好" in prompt
+    assert "请确认公司政策是否允许远程办公" in prompt
 
 
 def test_safe_empty_has_exact_four_empty_arrays() -> None:
