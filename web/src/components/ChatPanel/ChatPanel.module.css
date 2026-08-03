@@ -11,6 +11,35 @@
   height: 100%;
   min-height: 0;
 }
+
+.pilotOfferSelectionCard {
+  margin-top: 10px;
+  border-color: var(--op-border);
+  background: var(--op-surface-muted);
+}
+
+.pilotOfferOptions {
+  width: 100%;
+  margin-top: 8px;
+}
+
+.pilotOfferAnswer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--op-surface);
+  color: var(--op-muted-strong);
+}
+
+.pilotOfferActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
 .workspaceDocked {
   height: 100%;
 }

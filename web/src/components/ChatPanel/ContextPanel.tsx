@@ -5,6 +5,7 @@ import { OFFER_STATUS_LABELS, OFFER_STATUS_COLORS } from '@/types/offer';
 import type { Capability } from './capabilities';
 import { remainingEvidence, selectEvidence, type EvidenceItem, type EvidenceTarget } from './model';
 import EvidenceList from './EvidenceList';
+import PilotOfferSelectionCard from './PilotOfferSelectionCard';
 import styles from './ChatPanel.module.css';
 
 interface Props {
@@ -98,23 +99,14 @@ export default function ContextPanel({
             选择 Offer 后准备谈薪
           </button>
           {offerPickerOpen && (
-            <select
-              aria-label="选择 Offer"
-              data-testid="pilot-offer-selector"
-              defaultValue=""
-              onChange={(event) => {
-                const selected = offers.find((item) => String(item.id) === event.target.value);
-                if (selected) {
-                  setSelectedOffer(selected);
-                  setOfferPickerOpen(false);
-                }
+            <PilotOfferSelectionCard
+              offers={offers}
+              onCancel={() => setOfferPickerOpen(false)}
+              onContinue={(selected) => {
+                setSelectedOffer(selected);
+                setOfferPickerOpen(false);
               }}
-            >
-              <option value="">请选择 Offer</option>
-              {offers.map((item) => (
-                <option key={item.id} value={item.id}>{item.company_name}｜{item.position_name}</option>
-              ))}
-            </select>
+            />
           )}
         </div>
       )}

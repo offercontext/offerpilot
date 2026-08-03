@@ -77,14 +77,14 @@ describe('Pilot offer negotiation entry', () => {
     const choose = host.querySelector<HTMLButtonElement>('[data-testid="pilot-choose-offer-negotiation"]');
     expect(choose).not.toBeNull();
     act(() => choose?.click());
-    const select = host.querySelector<HTMLSelectElement>('[data-testid="pilot-offer-selector"]');
-    expect(select).not.toBeNull();
-    act(() => {
-      select!.value = String(offer.id);
-      select!.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    const radio = host.querySelector<HTMLInputElement>(`input[value="${offer.id}"]`);
+    expect(radio).not.toBeNull();
+    act(() => radio?.click());
     expect(onPrepare).not.toHaveBeenCalled();
     expect(host.textContent).toContain('已选择 Offer');
+    const continueButton = host.querySelector<HTMLButtonElement>('[data-action="continue-offer-negotiation"]');
+    act(() => continueButton?.click());
+    expect(onPrepare).not.toHaveBeenCalled();
     const prepare = host.querySelector<HTMLButtonElement>('[data-testid="pilot-prepare-offer-negotiation"]');
     act(() => prepare?.click());
     expect(onPrepare).toHaveBeenCalledTimes(1);
