@@ -21,22 +21,15 @@ OFFER_NEGOTIATION_FIELDS = (
     "preparation_checks",
 )
 _ARRAY_FIELDS = OFFER_NEGOTIATION_FIELDS[1:]
-_ITEM_FIELDS = {"id", "intent", "topic", "evidence_refs"}
+_ITEM_FIELDS = {"id", "topic", "evidence_refs"}
 _REF_FIELDS = {"source", "path", "excerpt"}
 _ALLOWED_SOURCES = {"offer_snapshot", "user_brief"}
-_ALLOWED_INTENTS = {
-    "confirm_fact",
-    "prepare_question",
-    "prepare_request",
-    "prepare_response",
-}
 _ALLOWED_TOPICS = {
     "offer_fact",
     "user_goal",
     "user_concern",
     "user_scenario",
     "comparison_dimension",
-    "communication_context",
 }
 _TOPIC_LABELS = {
     "offer_fact": "Offer 固定事实",
@@ -44,19 +37,40 @@ _TOPIC_LABELS = {
     "user_concern": "本次谈薪顾虑",
     "user_scenario": "本次沟通场景",
     "comparison_dimension": "自定义比较维度",
-    "communication_context": "沟通上下文",
+}
+_FIXED_OFFER_EVIDENCE_PATHS = {
+    "/offer_snapshot/company_name",
+    "/offer_snapshot/position_name",
+    "/offer_snapshot/status",
+    "/offer_snapshot/base_monthly",
+    "/offer_snapshot/months_per_year",
+    "/offer_snapshot/signing_bonus",
+    "/offer_snapshot/equity",
+    "/offer_snapshot/perks",
+    "/offer_snapshot/deadline",
+    "/offer_snapshot/notes",
+}
+_TOPIC_ANCHORS = {
+    "offer_fact": _FIXED_OFFER_EVIDENCE_PATHS,
+    "user_goal": {"/user_brief/goal"},
+    "user_concern": {"/user_brief/concerns"},
+    "user_scenario": {"/user_brief/scenario"},
 }
 _SHAPE_CATEGORIES = {
     "invalid_json",
     "duplicate_json_key",
     "unexpected_field",
     "invalid_item_shape",
+    "invalid_evidence_shape",
     "missing_field",
     "invalid_field_type",
     "missing_evidence_ref",
 }
 OfferNegotiationDiagnosticSink = Callable[[dict[str, Any]], None]
 _ID_RE = re.compile(r"^[\x21-\x7e]{1,64}$")
+_DIMENSION_VALUE_PATH_RE = re.compile(
+    r"^/offer_snapshot/dimensions/dimension_[0-9]{3}/value_text$"
+)
 
 OFFER_NEGOTIATION_JSON_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -66,17 +80,16 @@ OFFER_NEGOTIATION_JSON_SCHEMA: dict[str, Any] = {
         "proposal_status": {"enum": ["normal", "safe_empty"]},
         **{
             field: {
-                    "type": "array",
-                    "maxItems": 8,
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "required": ["id", "intent", "topic", "evidence_refs"],
-                        "properties": {
-                            "id": {"type": "string", "minLength": 1, "maxLength": 64},
-                            "intent": {"enum": sorted(_ALLOWED_INTENTS)},
-                            "topic": {"enum": sorted(_ALLOWED_TOPICS)},
-                            "evidence_refs": {
+                "type": "array",
+                "maxItems": 8,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["id", "topic", "evidence_refs"],
+                    "properties": {
+                        "id": {"type": "string", "minLength": 1, "maxLength": 64},
+                        "topic": {"enum": sorted(_ALLOWED_TOPICS)},
+                        "evidence_refs": {
                             "type": "array",
                             "minItems": 1,
                             "maxItems": 4,
@@ -199,7 +212,7 @@ def validate_offer_negotiation(payload: dict[str, Any], snapshot: dict[str, Any]
             raise OfferNegotiationModelError(f"{field} exceeds the limit", "limit_exceeded")
         normalized[field] = []
         for item in items:
-            checked = _validate_item(item, snapshot)
+            checked = _validate_item(item, snapshot, field)
             if checked["id"] in seen_ids:
                 raise OfferNegotiationModelError("item ids must be unique", "duplicate_item_id")
             seen_ids.add(checked["id"])
@@ -326,11 +339,10 @@ def _emit_diagnostic(
     )
 
 
-def _validate_item(item: Any, snapshot: dict[str, Any]) -> dict[str, Any]:
+def _validate_item(item: Any, snapshot: dict[str, Any], field: str) -> dict[str, Any]:
     if not isinstance(item, dict) or set(item) != _ITEM_FIELDS:
         raise OfferNegotiationModelError("item fields are invalid", "invalid_item_shape")
     item_id = item.get("id")
-    intent = item.get("intent")
     topic = item.get("topic")
     refs = item.get("evidence_refs")
     if not isinstance(item_id, str) or not item_id:
@@ -339,14 +351,15 @@ def _validate_item(item: Any, snapshot: dict[str, Any]) -> dict[str, Any]:
         raise OfferNegotiationModelError("item id exceeds the limit", "limit_exceeded")
     if not _ID_RE.fullmatch(item_id):
         raise OfferNegotiationModelError("item id is invalid", "invalid_item_shape")
-    if intent not in _ALLOWED_INTENTS or topic not in _ALLOWED_TOPICS:
-        raise OfferNegotiationModelError("intent or topic is invalid", "invalid_field_type")
+    if not isinstance(topic, str) or topic not in _ALLOWED_TOPICS:
+        raise OfferNegotiationModelError("topic is invalid", "invalid_field_type")
     if not isinstance(refs, list) or not refs:
         raise OfferNegotiationModelError("evidence_refs is invalid", "missing_evidence_ref")
     if len(refs) > 4:
         raise OfferNegotiationModelError("evidence_refs exceeds the limit", "limit_exceeded")
     checked_refs = [_validate_ref(ref, snapshot) for ref in refs]
-    rendered = _render_item(item_id, intent, topic, checked_refs)
+    _validate_topic_anchor(topic, checked_refs)
+    rendered = _render_item(item_id, field, topic, checked_refs)
     return {
         "id": item_id,
         "text": rendered[0],
@@ -357,30 +370,47 @@ def _validate_item(item: Any, snapshot: dict[str, Any]) -> dict[str, Any]:
 
 def _render_item(
     item_id: str,
-    intent: str,
+    field: str,
     topic: str,
     evidence_refs: list[dict[str, str]],
 ) -> tuple[str, str]:
     del item_id, evidence_refs
     label = _TOPIC_LABELS[topic]
     text_templates = {
-        "confirm_fact": f"请确认{label}中的相关信息。",
-        "prepare_question": f"可向对方确认与{label}相关的问题。",
-        "prepare_request": f"可以围绕{label}准备沟通请求。",
-        "prepare_response": f"准备围绕{label}表达你的诉求。",
+        "communication_goals": f"可以围绕{label}准备沟通请求。",
+        "clarification_questions": f"可向对方确认与{label}相关的问题。",
+        "talking_points": f"准备围绕{label}表达你的诉求。",
+        "preparation_checks": f"请在沟通前确认{label}相关信息。",
     }
-    text = text_templates[intent]
+    text = text_templates[field]
     rationale = "该建议由系统依据已提供的冻结来源生成，最终沟通内容由你决定。"
     return text, rationale
 
 
+def _validate_topic_anchor(topic: str, evidence_refs: list[dict[str, str]]) -> None:
+    paths = {ref["path"] for ref in evidence_refs}
+    if topic == "comparison_dimension":
+        matched = any(_DIMENSION_VALUE_PATH_RE.fullmatch(path) for path in paths)
+    else:
+        matched = bool(paths & _TOPIC_ANCHORS[topic])
+    if not matched:
+        raise OfferNegotiationModelError(
+            "topic evidence anchor is missing",
+            "topic_evidence_mismatch",
+        )
+
+
 def _validate_ref(ref: Any, snapshot: dict[str, Any]) -> dict[str, str]:
     if not isinstance(ref, dict) or set(ref) != _REF_FIELDS:
-        raise OfferNegotiationModelError("evidence reference is invalid", "unknown_evidence_ref")
+        raise OfferNegotiationModelError("evidence reference shape is invalid", "invalid_evidence_shape")
     source, path, excerpt = ref.get("source"), ref.get("path"), ref.get("excerpt")
-    if source not in _ALLOWED_SOURCES or not isinstance(path, str) or not isinstance(excerpt, str):
+    if not isinstance(source, str) or not isinstance(path, str) or not isinstance(excerpt, str):
+        raise OfferNegotiationModelError("evidence reference field type is invalid", "invalid_evidence_shape")
+    if source not in _ALLOWED_SOURCES:
         raise OfferNegotiationModelError("evidence reference is unknown", "unknown_evidence_ref")
-    if not excerpt.strip() or len(excerpt) > 400:
+    if len(excerpt) > 400:
+        raise OfferNegotiationModelError("evidence excerpt exceeds the limit", "limit_exceeded")
+    if not excerpt.strip():
         raise OfferNegotiationModelError("evidence excerpt is invalid", "excerpt_mismatch")
     if source == "offer_snapshot":
         value = _resolve_snapshot_path(snapshot, source, path)
@@ -501,11 +531,15 @@ def _provider_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
 
 def _system_prompt(snapshot: dict[str, Any]) -> str:
     return (
-        "只输出严格 JSON，不要 Markdown。Provider 只能返回受限的意图和主题枚举，不能输出自由文本。"
-        "intent 只能是 confirm_fact、prepare_question、prepare_request、prepare_response；"
-        "topic 只能是 offer_fact、user_goal、user_concern、user_scenario、comparison_dimension、communication_context。"
-        "每条记录必须包含 id、intent、topic、evidence_refs；每个 evidence_refs 必须来自输入目录，"
-        "excerpt 必须逐字连续匹配。系统会根据 intent/topic 生成中文 text/rationale，模型不得自行写入决定、排名、"
+        "只输出严格 JSON，不要 Markdown。Provider 只能返回受限的主题枚举，不能输出自由文本或 intent。"
+        "topic 只能是 offer_fact、user_goal、user_concern、user_scenario、comparison_dimension。"
+        "communication_goals、clarification_questions、talking_points、preparation_checks "
+        "分别表示沟通请求、待澄清问题、表达要点和沟通前检查。每条记录必须包含 id、topic、evidence_refs；"
+        "topic 必须至少有一条匹配的证据锚点：user_goal=/user_brief/goal，"
+        "user_concern=/user_brief/concerns，user_scenario=/user_brief/scenario，"
+        "comparison_dimension=/offer_snapshot/dimensions/dimension_NNN/value_text，"
+        "offer_fact 只能引用固定 Offer 字段路径。每个 evidence_refs 必须来自输入目录，"
+        "excerpt 必须逐字连续匹配。系统会根据数组字段/topic 生成中文 text/rationale，模型不得自行写入决定、排名、"
         "优劣、市场薪酬、法律结论、公司政策或录用概率。没有可验证建议时输出 proposal_status=safe_empty 和四个空数组。"
         + json.dumps(OFFER_NEGOTIATION_JSON_SCHEMA, ensure_ascii=False, separators=(",", ":"))
         + "\n只能从以下 evidence_catalog 逐条选择 source/path/excerpt；不得创造目录外引用："
@@ -521,6 +555,6 @@ def _repair_prompt(category: str) -> str:
     return (
         "上次输出未通过机器校验。只修复失败类别：" + category
         + "。请重新输出完整严格 JSON；不要输出解释、原始模型内容或输入快照。"
-        + "只能返回受限 intent/topic/evidence_refs，不得返回 text 或 rationale。"
+        + "只能返回受限 topic/evidence_refs，不得返回 intent、text 或 rationale。"
         + json.dumps(OFFER_NEGOTIATION_JSON_SCHEMA, ensure_ascii=False, separators=(",", ":"))
     )

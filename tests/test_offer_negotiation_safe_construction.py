@@ -43,7 +43,6 @@ def test_provider_intent_is_rendered_by_server_templates() -> None:
         "communication_goals": [
             {
                 "id": "goal-1",
-                "intent": "prepare_request",
                 "topic": "user_goal",
                 "evidence_refs": [
                     {"source": "user_brief", "path": "/user_brief/goal", "excerpt": "争取入职时间"}
