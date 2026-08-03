@@ -165,13 +165,29 @@ describe('AppShell Offer negotiation draft isolation', () => {
 
     act(() => host?.querySelector<HTMLButtonElement>('[data-testid="nav-pilot"]')?.click());
     await flush();
-    act(() => host?.querySelector<HTMLButtonElement>('[data-testid="open-pilot-offer"]')?.click());
+    const pilotOpenButton = host?.querySelector<HTMLButtonElement>('[data-testid="open-pilot-offer"]');
+    pilotOpenButton?.focus();
+    act(() => pilotOpenButton?.click());
     await flush();
     expect(host?.querySelector('[data-testid="pilot-draft-goal"]')?.textContent).toBe('');
     const overlay = host?.querySelector<HTMLElement>('[data-testid="offer-negotiation-overlay"]');
     expect(overlay).not.toBeNull();
     expect(overlay?.style.position).toBe('fixed');
     expect(overlay?.querySelector('[data-testid="offer-negotiation-drawer-harness"]')).not.toBeNull();
+    expect(overlay?.contains(document.activeElement)).toBe(true);
+    const focusable = Array.from(overlay?.querySelectorAll<HTMLElement>('button, [href], input, textarea, select, [tabindex]:not([tabindex="-1"])') ?? [])
+      .filter((element) => !element.hasAttribute('disabled'));
+    expect(focusable.length).toBeGreaterThan(1);
+    focusable[focusable.length - 1]?.focus();
+    act(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true })));
+    expect(document.activeElement).toBe(focusable[0]);
+    act(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    await flush();
+    expect(host?.querySelector('[data-testid="offer-negotiation-overlay"]')).toBeNull();
+    expect(document.activeElement).toBe(pilotOpenButton);
+
+    act(() => pilotOpenButton?.click());
+    await flush();
     act(() => host?.querySelector<HTMLButtonElement>('[data-testid="save-pilot-draft"]')?.click());
     await flush();
     expect(host?.querySelector('[data-testid="pilot-draft-goal"]')?.textContent).toBe('Pilot 目标');

@@ -189,6 +189,8 @@ function AppShellContent() {
   const [offerNegotiationDrafts, setOfferNegotiationDrafts] = useState<Record<number, OfferNegotiationDraft>>({});
   const offerNegotiationPilotDraftsRef = useRef(new Map<number, OfferNegotiationDraft>());
   const [offerNegotiationPilotDrafts, setOfferNegotiationPilotDrafts] = useState<Record<number, OfferNegotiationDraft>>({});
+  const offerNegotiationOverlayRef = useRef<HTMLDivElement | null>(null);
+  const offerNegotiationPreviousFocusRef = useRef<HTMLElement | null>(null);
   const pilotApplicationContextRef = useRef(pilotApplicationContext);
   pilotApplicationContextRef.current = pilotApplicationContext;
   const [aiSettingsOpen, setAISettingsOpen] = useState(false);
@@ -715,6 +717,53 @@ function AppShellContent() {
         });
       }
     }
+  }, [offerNegotiationOffer]);
+
+  useEffect(() => {
+    if (!offerNegotiationOffer) return;
+
+    offerNegotiationPreviousFocusRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    const overlay = offerNegotiationOverlayRef.current;
+    const selector = 'button, [href], input, textarea, select, [tabindex]:not([tabindex="-1"])';
+    const getFocusable = () => Array.from(overlay?.querySelectorAll<HTMLElement>(selector) ?? [])
+      .filter((element) => !element.hasAttribute('disabled') && element.getAttribute('aria-hidden') !== 'true');
+
+    const firstFocusable = getFocusable()[0];
+    (firstFocusable ?? overlay)?.focus();
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setOfferNegotiationOffer(null);
+        return;
+      }
+      if (event.key !== 'Tab') return;
+
+      const focusable = getFocusable();
+      if (focusable.length === 0) {
+        event.preventDefault();
+        overlay?.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      offerNegotiationPreviousFocusRef.current?.focus();
+      offerNegotiationPreviousFocusRef.current = null;
+    };
   }, [offerNegotiationOffer]);
 
   const updateMockInterviewDraft = (patch: Partial<MockInterviewDrawerDraft>) => {
@@ -1326,6 +1375,8 @@ function AppShellContent() {
           data-testid="offer-negotiation-overlay"
           role="dialog"
           aria-modal="true"
+          ref={offerNegotiationOverlayRef}
+          tabIndex={-1}
           style={{ position: 'fixed', inset: 0, zIndex: 1100 }}
         >
           <div className="op-offer-negotiation-surface">
