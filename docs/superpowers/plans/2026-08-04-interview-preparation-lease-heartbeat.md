@@ -355,6 +355,7 @@ $implementationBase = (Get-Content -LiteralPath $baselineFile -Raw).Trim()
 git cat-file -e "$implementationBase^{commit}"
 if ($LASTEXITCODE -ne 0) { throw 'Recorded implementation baseline is invalid' }
 git diff --check "$implementationBase..HEAD"
+if ($LASTEXITCODE -ne 0) { throw 'Implementation diff check failed' }
 ~~~
 
 Expected result: all commands exit 0.
@@ -419,7 +420,6 @@ The frontend check must exit 0 and must not introduce a frontend change for this
 
 ~~~powershell
 git add src/offerpilot/repositories/interview_preparation_proposals.py tests/test_interview_preparation_repository.py tests/test_interview_preparation_api.py tests/test_smoke.py
-git add -f docs/reports/2026-08-01-offer-negotiation-release-verification.md
 git commit -m "chore: AI verify interview preparation lease boundary"
 ~~~
 
@@ -457,7 +457,20 @@ Expected result: exit 0. If the real Provider remains unstable, report the exact
 
 Confirm the temporary database, service, worker thread, heartbeat sessions, proxy, browser resources, and configuration copy are removed. Confirm no source data files changed and no secrets were emitted.
 
-- [ ] Step 5: Perform an independent code review.
+- [ ] Step 5: Update and commit the final release report.
+
+After local verification, the focused interview-preparation real-AI run, complete real-AI verification, and all cleanup have finished, append the actual commands, exit codes, test/group counts, four allowed skips, redacted Provider diagnostics, cleanup result, and remaining risks to docs/reports/2026-08-01-offer-negotiation-release-verification.md. Do not record secrets, JD/resume text, model output, or full request bodies.
+
+Run the report commit separately from the implementation/static-check commit:
+
+~~~powershell
+git add -f docs/reports/2026-08-01-offer-negotiation-release-verification.md
+git commit -m "docs: AI update interview preparation lease verification"
+~~~
+
+The report commit must occur after all acceptance commands, so the final report is part of the final HEAD reviewed below.
+
+- [ ] Step 6: Perform an independent code review.
 
 Review the final diff against the design document. Specifically check that:
 - only confirmed_ownership_lost blocks the final write before CAS;
@@ -468,19 +481,21 @@ Review the final diff against the design document. Specifically check that:
 - all heartbeat sessions and workers are closed;
 - no API, migration, frontend, AI schema, Offer, or cross-domain behavior changed.
 
-- [ ] Step 6: Final working-tree gate.
+- [ ] Step 7: Run the final working-tree gate and remove the baseline only after success.
 
 ~~~powershell
 $baselineFile = Join-Path $env:TEMP 'offerpilot-interview-preparation-lease-baseline.txt'
 $implementationBase = (Get-Content -LiteralPath $baselineFile -Raw).Trim()
 git cat-file -e "$implementationBase^{commit}"
 if ($LASTEXITCODE -ne 0) { throw 'Recorded implementation baseline is invalid' }
-git status --short --branch
+$dirty = @(git status --porcelain)
+if ($dirty.Count -gt 0) { throw "Final worktree is dirty: $($dirty -join ', ')" }
 git diff --check "$implementationBase..HEAD"
+if ($LASTEXITCODE -ne 0) { throw 'Final diff check failed' }
 Remove-Item -LiteralPath $baselineFile -Force
 ~~~
 
-Expected result: clean working tree, zero diff-check errors, and the recorded baseline file is removed only after the final gate completes. Do not push or merge.
+Expected result: clean working tree, zero diff-check errors, and the recorded baseline file is removed only after both checks pass. If either check fails, PowerShell throws before Remove-Item, so the baseline remains available for repair and rerun. Do not push or merge.
 
 ## Commit sequence
 
@@ -492,5 +507,6 @@ Use the following English conventional commit titles, each with the required AI 
 4. test: AI cover interview preparation takeover fencing
 5. test: AI preserve interview preparation failure cleanup
 6. chore: AI verify interview preparation lease boundary
+7. docs: AI update interview preparation lease verification
 
 Only create a commit when that task has an actual diff. Do not amend or rewrite existing commits. Do not push or merge this branch.
