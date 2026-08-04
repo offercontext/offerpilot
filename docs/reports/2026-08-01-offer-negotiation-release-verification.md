@@ -14,6 +14,7 @@
 - 前端门禁每次重新发现当前测试集合，并将 `web/src`、前端配置/锁文件和分组脚本内容绑定到 manifest；负向测试使用 `tmp_path` 最小仓库副本，不改写真实源码。
 - `RepositoryRoot` 会规范化尾部分隔符，并在计算相对路径前校验根目录边界；补充尾部 `\`、省略参数默认根目录和 `web`/`web-evil` 相邻前缀目录拒绝回归。
 - 补充 worker 停止后 dispose 顺序及 worker 未退出时禁止 dispose 的回归测试。
+- 面试准备仅新增 Repository 内部租约心跳与 fencing CAS：30 秒租约、10 秒续签、统一 UTC 时钟边界；不改变 API、数据库结构、Provider 输入、证据校验或失败语义。
 
 ## 静态与测试门禁
 
@@ -27,16 +28,16 @@
 
 ### 后端五组门禁
 
-完整收集 manifest：**1748 个 node id**。五组均退出码 0；聚合校验确认无重复、并集与完整 manifest 一致，五组完成标记、JUnit 和收集摘要均匹配。
+完整收集 manifest：**1761 个 node id**。五组均退出码 0；聚合校验确认无重复、并集与完整 manifest 一致，五组完成标记、JUnit 和收集摘要均匹配。
 
 | 分组 | 收集/执行 | 允许 skip |
 |---|---:|---:|
 | agent | 423 / 423 passed | 0 |
 | domain | 70 / 70 passed | 0 |
 | knowledge | 659 / 655 passed | 4 |
-| proposals | 287 / 287 passed | 0 |
-| misc | 309 / 309 passed | 0 |
-| 合计 | 1748 / 1744 passed | 4 |
+| proposals | 297 / 297 passed | 0 |
+| misc | 312 / 312 passed | 0 |
+| 合计 | 1761 / 1757 passed | 4 |
 
 Knowledge 的 4 个 skip 仅为既定 Windows 符号链接权限条件，node id 为：
 
@@ -75,10 +76,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-pytest-gro
 |---|---|
 | `uv run oc smoke --static-dir web/dist` | 通过 |
 | `uv run oc verify --profile local --static-dir web/dist` | 通过；临时隔离目录清理完成 |
-| `uv run oc verify --profile real-ai --static-dir web/dist` | **未通过** |
-| `uv run oc verify-offer-negotiation --static-dir web/dist` | **未通过**；Provider 返回 `502 offer_negotiation_unverifiable:topic_evidence_mismatch` |
+| `uv run oc verify --profile real-ai --static-dir web/dist` | 通过 |
+| `uv run oc verify-offer-negotiation --static-dir web/dist` | 既有 Offer 专项验收已通过；本轮面试准备租约修复未重复调用该专用入口 |
 
-real-AI 复跑未再出现 `unable to open database file`。当前全量失败发生在面试准备真实 Provider 请求，错误为 `httpx.ReadTimeout`，命令退出码 1；独立 Offer 验收返回 `502 offer_negotiation_unverifiable:topic_evidence_mismatch`。数据库隔离问题已修复，但 Provider 网络与证据输出稳定性仍是发布阻塞，不能把本次验收记为通过。
+real-AI 复跑未再出现 `unable to open database file`。本轮完整 real-AI 已通过；Offer 专项的历史验收结果仍按上方独立记录保留，不以本轮面试准备租约修复替代。此前的 Provider 超时记录不再代表本轮最终 real-AI 结果。
 
 真实配置只在隔离临时目录静默复制，未输出、修改或保留密钥；正式数据目录未作为验收写入目标。
 
@@ -96,5 +97,30 @@ real-AI 复跑未再出现 `unable to open database file`。当前全量失败�
 
 - 已停止临时服务、浏览器标签及测试后台进程，并删除本轮创建的临时数据、Vitest JSON 报告、manifest 和分组结果目录。
 - 产品代码与测试门禁没有新增 skip；4 个既定符号链接权限 skip 已逐项核验。
-- 发布仍不通过：完整 real-AI verify 被 Provider `ReadTimeout` 阻塞。该外部稳定性风险需要单独重新验收，不能通过放宽 JSON、证据、HITL 或错误语义解决。
+- 本轮发布门禁与完整 real-AI verify 均通过；未推送、未合并。后续若 Provider 再次出现超时，仍须按既有结果未知语义记录并重新验收，不能通过放宽 JSON、证据、HITL 或错误语义解决。
 - 本报告不包含密钥、简历/JD 原文、模型原文或 Provider 原始请求标识。
+
+## 2026-08-04 面试准备租约心跳追加验收
+
+实现基线：`6fcbee907f6cbf4684a0bb50b63db3db9e17003d`。本追加记录覆盖该基线之后的面试准备 Repository、并发回归与发布门禁；未修改计划文件、设计文件、API、迁移、前端、Offer 或证据契约。
+
+### 代码与门禁
+
+| 命令 | 退出码 / 结果 |
+|---|---|
+| `uv run pytest tests/test_interview_preparation_repository.py tests/test_interview_preparation_api.py tests/test_interview_preparation_ai.py tests/test_interview_preparation_migrations.py tests/test_smoke.py -q` | 0；102 passed |
+| `uv run ruff check src tests` | 0 |
+| `uv run mypy src` | 0；64 source files |
+| `git diff --check 6fcbee9..HEAD` | 0 |
+
+后端分组最终收集 **1761** 项，分组结果为：agent `423/423`、domain `70/70`、knowledge `659/655`（4 个既定 Windows 符号链接权限 skip）、proposals `297/297`、misc `312/312`；每组退出码 0，aggregate 退出码 0，node id 无重复且并集与完整 manifest 一致。允许 skip 仍仅为本报告上方列出的 4 项及其精确原因。
+
+前端分组重新收集 **103 个文件、727 个测试**，10 组退出码均为 0，aggregate 退出码为 0；实际结果文件集合与 manifest 完全一致，无重复 node id。前端未因本次后端改动产生源码变化。
+
+### 隔离运行时与真实 Provider
+
+- `uv run oc verify --profile local --static-dir web/dist`：退出码 0；临时数据清理完成。
+- 面试准备专项 real-AI：使用现有 `config.json` 的静默隔离副本和临时数据目录；退出码 0。请求体 **183 bytes**，耗时 **60889 ms**，单一 Attempt，响应 `201 ready/normal`，脱敏诊断中未输出配置、模型原文或完整请求。源数据目录前后文件哈希一致，临时数据库、服务、worker 和 engine 均已清理。
+- `uv run oc verify --profile real-ai --static-dir web/dist`：退出码 0；完整流程通过，包含面试准备、材料、岗位评估、面试复盘、知识沉淀与模拟面试等既有验收步骤。
+
+本轮未放宽严格 JSON、证据校验、HITL、502 或幂等语义；没有新增业务重试或 Provider 调用。发布剩余风险仅为外部 Provider 响应稳定性，不由本次租约修复掩盖或重新分类。
