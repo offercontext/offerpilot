@@ -12,7 +12,18 @@
 
 ## 0. Execution boundary and file map
 
-Implementation starts from feature baseline 9b60cb8 in D:\Users\yuqi.chen\offerpilot\.worktrees\feat-20260801-offer-negotiation. Before changing files, verify the branch, clean status, and baseline. Do not touch the repository root or its existing uncommitted work.
+Implementation starts by resolving and recording one immutable baseline from the approved plan file. Run this before any implementation change:
+
+~~~powershell
+$planPath = 'docs/superpowers/plans/2026-08-04-interview-preparation-lease-heartbeat.md'
+$implementationBase = (git log -1 --format=%H -- $planPath).Trim()
+if (-not $implementationBase) { throw 'Cannot resolve approved plan baseline' }
+$status = @(git status --short)
+if ($status.Count -gt 0) { throw 'Worktree must be clean before capturing implementation baseline' }
+$implementationBase | Set-Content -LiteralPath (Join-Path $env:TEMP ("offerpilot-interview-preparation-baseline-" + $PID + '.txt')) -Encoding ascii
+~~~
+
+Use that recorded value for every subsequent diff, allowlist, and diff-check command. Do not recompute it after implementation begins. After capture, do not modify this plan or the design document; any verification report is the only documentation file allowed by the file allowlist. Work only in D:\Users\yuqi.chen\offerpilot\.worktrees\feat-20260801-offer-negotiation and do not touch the repository root or its existing uncommitted work.
 
 The implementation is limited to these files:
 
@@ -59,11 +70,13 @@ Expected result before implementation: the new constructor arguments are rejecte
 
 - [ ] Step 2: Implement only the minimum timing seams.
 
-Add an interview-preparation-only heartbeat interval constant of 10 seconds. Keep LEASE_SECONDS at 30. Make lease duration, heartbeat interval, and now_factory keyword-only constructor options with production defaults. now_factory must default to the existing UTC-aware current-time behavior and must not be exposed through the HTTP API. Route Attempt creation, lease renewal, lease expiry checks, and the takeover CAS expiry predicate through this same injected clock. The takeover UPDATE must compare provider_lease_until with a bound value from now_factory, not database wall-clock SQL. Keep the existing session factory and model call signatures unchanged.
+Add an interview-preparation-only heartbeat interval constant of 10 seconds. Keep LEASE_SECONDS at 30. Make lease duration, heartbeat interval, and now_factory keyword-only constructor options with production defaults. now_factory must return a UTC-aware datetime and must default to the existing UTC-aware current-time behavior; it must not be exposed through the HTTP API. Route Attempt creation, lease renewal, lease expiry checks, and the takeover CAS expiry predicate through this same injected clock. The takeover UPDATE must compare provider_lease_until with a bound value from now_factory, not database wall-clock SQL. Keep the existing session factory and model call signatures unchanged.
 
 Define the private owner object as _InterviewPreparationLeaseHeartbeat with start(), stop_and_join(), heartbeat_count, confirmed_ownership_lost, and heartbeat_uncertain. Its renew_once() operation must be independently callable by tests and must use the same conditional update as the background loop. The repository constructor may accept a waiter callable defaulting to stop_event.wait; no waiter or timing option may be exposed through the HTTP API.
 
 Use an injectable waiting seam or an Event.wait-compatible callable so tests can stop the worker deterministically. The production default must remain a stoppable Event waiter and must not hold a database session while waiting. Tests must advance a ManualClock and release a ControlledWaiter/barrier to drive ticks; they must not use sleep(0.05), sleep(0.01), or wall-clock expiry to advance lease state.
+
+Keep time representations explicit at the SQLite boundary: now_factory and all Python comparisons use UTC-aware datetimes; provider_lease_until written to SQLite and the bound takeover expiry value use naive UTC datetimes; values read from SQLite are converted back to UTC-aware datetimes through the existing _as_aware path before Python comparison. Add a focused assertion that no aware/naive comparison raises and that the stored lease represents the same UTC instant.
 
 - [ ] Step 3: Run the seam test and current repository suite.
 
@@ -291,14 +304,14 @@ git commit -m "test: AI preserve interview preparation failure cleanup"
 
 **Files:**
 - No new product files.
-- Review the complete product diff from feature baseline 9b60cb8.
+- Review the complete product diff from the recorded $implementationBase; do not substitute a later plan/document commit.
 
 - [ ] Step 1: Verify the changed-file boundary.
 
 Run from the worktree root:
 
 ~~~powershell
-$featureBase = '9b60cb8'
+$featureBase = $implementationBase
 $allowed = @(
   'src/offerpilot/repositories/interview_preparation_proposals.py',
   'tests/test_interview_preparation_repository.py',
@@ -321,7 +334,7 @@ The positive allowlist is the only accepted product boundary. The release report
 ~~~powershell
 uv run ruff check src tests
 uv run mypy src
-git diff --check 9b60cb8..HEAD
+git diff --check "$implementationBase..HEAD"
 ~~~
 
 Expected result: all commands exit 0.
@@ -439,7 +452,7 @@ Review the final diff against the design document. Specifically check that:
 
 ~~~powershell
 git status --short --branch
-git diff --check 9b60cb8..HEAD
+git diff --check "$implementationBase..HEAD"
 ~~~
 
 Expected result: clean working tree and zero diff-check errors. Do not push or merge.
