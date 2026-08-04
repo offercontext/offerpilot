@@ -3,6 +3,7 @@ param(
     [string]$Group,
     [Parameter(Mandatory = $true)]
     [string]$ResultDir,
+    [string]$RepositoryRoot,
     [switch]$Collect,
     [switch]$Aggregate
 )
@@ -10,7 +11,11 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
+    Split-Path -Parent $PSScriptRoot
+} else {
+    [System.IO.Path]::GetFullPath($RepositoryRoot)
+}
 $webRoot = Join-Path $repoRoot 'web'
 $resolvedResultDir = [System.IO.Path]::GetFullPath($ResultDir)
 New-Item -ItemType Directory -Force -Path $resolvedResultDir | Out-Null

@@ -4,11 +4,15 @@
 分支：`feat/20260801-offer-negotiation`
 范围：仅发布收口；未新增 Offer、谈薪、Pilot、HITL 或证据门控语义；未推送、未合并。
 
+本文件是当前分支唯一有效的发布验证报告。`artifacts/2026-08-03-offer-negotiation/release-verification.md` 为历史路径，已明确标记废弃。
+
 ## 本轮收口变更
 
 - 日历测试改用测试内创建的投递时间推导月份，消除固定月份导致的日期敏感失败。
 - smoke 隔离数据库销毁前停止 Knowledge runtime 并释放数据库 engine，避免后台 worker 在临时目录删除后继续访问 SQLite。
 - 新增前端稳定分组门禁脚本，逐组持久化 Vitest JSON 报告、文本日志和完成标记，再执行覆盖集合聚合。
+- 前端门禁每次重新发现当前测试集合，并将 `web/src`、前端配置/锁文件和分组脚本内容绑定到 manifest；负向测试使用 `tmp_path` 最小仓库副本，不改写真实源码。
+- 补充 worker 停止后 dispose 顺序及 worker 未退出时禁止 dispose 的回归测试。
 
 ## 静态与测试门禁
 
@@ -22,16 +26,16 @@
 
 ### 后端五组门禁
 
-完整收集 manifest：**1744 个 node id**。五组均退出码 0；聚合校验确认无重复、并集与完整 manifest 一致，五组完成标记、JUnit 和收集摘要均匹配。
+完整收集 manifest：**1748 个 node id**。五组均退出码 0；聚合校验确认无重复、并集与完整 manifest 一致，五组完成标记、JUnit 和收集摘要均匹配。
 
 | 分组 | 收集/执行 | 允许 skip |
 |---|---:|---:|
 | agent | 423 / 423 passed | 0 |
 | domain | 70 / 70 passed | 0 |
 | knowledge | 659 / 655 passed | 4 |
-| proposals | 285 / 285 passed | 0 |
-| misc | 307 / 307 passed | 0 |
-| 合计 | 1744 / 1740 passed | 4 |
+| proposals | 287 / 287 passed | 0 |
+| misc | 309 / 309 passed | 0 |
+| 合计 | 1748 / 1744 passed | 4 |
 
 Knowledge 的 4 个 skip 仅为既定 Windows 符号链接权限条件，node id 为：
 
@@ -69,8 +73,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-pytest-gro
 | `uv run oc smoke --static-dir web/dist` | 通过 |
 | `uv run oc verify --profile local --static-dir web/dist` | 通过；临时隔离目录清理完成 |
 | `uv run oc verify --profile real-ai --static-dir web/dist` | **未通过** |
+| `uv run oc verify-offer-negotiation --static-dir web/dist` | **未通过**；Provider 返回 `502 offer_negotiation_unverifiable:topic_evidence_mismatch` |
 
-real-AI 复跑未再出现 `unable to open database file`。当前失败发生在面试准备真实 Provider 请求，错误为 `httpx.ReadTimeout`，命令退出码 1。因此数据库隔离问题已修复，但 Provider 网络/响应稳定性仍是发布阻塞，不能把本次 real-AI verify 记为通过。
+real-AI 复跑未再出现 `unable to open database file`。当前全量失败发生在面试准备真实 Provider 请求，错误为 `httpx.ReadTimeout`，命令退出码 1；独立 Offer 验收返回 `502 offer_negotiation_unverifiable:topic_evidence_mismatch`。数据库隔离问题已修复，但 Provider 网络与证据输出稳定性仍是发布阻塞，不能把本次验收记为通过。
 
 真实配置只在隔离临时目录静默复制，未输出、修改或保留密钥；正式数据目录未作为验收写入目标。
 
