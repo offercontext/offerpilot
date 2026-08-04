@@ -34,7 +34,7 @@ def _run_gate(
     *arguments: str,
     env: dict[str, str] | None = None,
     script: Path = SCRIPT,
-    repository_root: Path = ROOT,
+    repository_root: Path | str = ROOT,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
@@ -142,6 +142,22 @@ def test_frontend_group_rejects_missing_expected_file(tmp_path: Path) -> None:
     run = _run_gate(result_dir, "-Group", "theme", env=environment, script=script, repository_root=repository_root)
 
     assert run.returncode != 0
+
+
+@pytest.mark.skipif(not _powershell_available(), reason="Windows PowerShell is required")
+def test_frontend_gate_accepts_repository_root_with_trailing_separator(tmp_path: Path) -> None:
+    repository_root, script, _ = _make_gate_fixture(tmp_path)
+    result_dir = tmp_path / "results"
+    collected = _run_gate(
+        result_dir,
+        "-Collect",
+        script=script,
+        repository_root=f"{repository_root}{os.sep}",
+    )
+
+    assert collected.returncode == 0, collected.stdout + collected.stderr
+    manifest = json.loads((result_dir / "frontend-manifest.json").read_text(encoding="utf-8-sig"))
+    assert all(file_path.startswith("src\\") for file_path in manifest["files"])
 
 
 @pytest.mark.skipif(not _powershell_available(), reason="Windows PowerShell is required")

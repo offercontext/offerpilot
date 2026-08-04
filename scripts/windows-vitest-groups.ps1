@@ -16,6 +16,10 @@ $repoRoot = if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
 } else {
     [System.IO.Path]::GetFullPath($RepositoryRoot)
 }
+$repoRootVolume = [System.IO.Path]::GetPathRoot($repoRoot)
+if ($repoRoot.Length -gt $repoRootVolume.Length) {
+    $repoRoot = $repoRoot.TrimEnd('\', '/')
+}
 $webRoot = Join-Path $repoRoot 'web'
 $resolvedResultDir = [System.IO.Path]::GetFullPath($ResultDir)
 New-Item -ItemType Directory -Force -Path $resolvedResultDir | Out-Null
@@ -34,7 +38,7 @@ function Get-TestFiles {
         Get-ChildItem -Path (Join-Path $webRoot 'src') -Recurse -File |
             Where-Object { $_.Name -match '\.(test|spec)\.[cm]?[jt]sx?$' } |
             ForEach-Object {
-                $_.FullName.Substring($webRoot.Length + 1).Replace('/', '\')
+                Get-RelativePathWithinRoot $_.FullName $webRoot
             } |
             Sort-Object
     )
@@ -81,9 +85,25 @@ function Get-TextSha256([string]$Value) {
     }
 }
 
-function Get-RepoRelativePath([string]$Path) {
+function Get-RelativePathWithinRoot([string]$Path, [string]$Root) {
     $fullPath = [System.IO.Path]::GetFullPath($Path)
-    $fullPath.Substring($repoRoot.Length + 1).Replace('/', '\\')
+    $fullRoot = [System.IO.Path]::GetFullPath($Root)
+    $rootVolume = [System.IO.Path]::GetPathRoot($fullRoot)
+    if ($fullRoot.Length -gt $rootVolume.Length) {
+        $fullRoot = $fullRoot.TrimEnd('\', '/')
+    }
+    $rootPrefix = $fullRoot
+    if (-not ($rootPrefix.EndsWith('\') -or $rootPrefix.EndsWith('/'))) {
+        $rootPrefix += '\'
+    }
+    if (-not $fullPath.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Path is outside repository root: $Path"
+    }
+    $fullPath.Substring($rootPrefix.Length).Replace('/', '\\')
+}
+
+function Get-RepoRelativePath([string]$Path) {
+    Get-RelativePathWithinRoot $Path $repoRoot
 }
 
 function Get-FingerprintFiles {
@@ -201,7 +221,7 @@ function Get-Manifest {
 function Get-ReportFiles([object]$Report) {
     @($Report.testResults | ForEach-Object {
         $resultPath = [System.IO.Path]::GetFullPath([string]$_.name)
-        $resultPath.Substring($webRoot.Length + 1).Replace('/', '\')
+        Get-RelativePathWithinRoot $resultPath $webRoot
     })
 }
 
