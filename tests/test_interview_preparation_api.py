@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 
 from fastapi.testclient import TestClient
 
@@ -18,6 +20,21 @@ class FakeModel:
         self.calls += 1
         if self.error is not None:
             raise self.error
+        return Assistant(
+            content=json.dumps(safe_empty_interview_preparation_proposal(), ensure_ascii=False)
+        )
+
+
+class BlockingFakeModel(FakeModel):
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = Event()
+        self.release = Event()
+
+    def complete(self, messages, tools):  # type: ignore[no-untyped-def]
+        self.calls += 1
+        self.entered.set()
+        assert self.release.wait(5)
         return Assistant(
             content=json.dumps(safe_empty_interview_preparation_proposal(), ensure_ascii=False)
         )
@@ -155,6 +172,26 @@ def test_create_returns_201_then_same_key_returns_200_without_provider_resolutio
     replay = client.post(url, json=_payload(resume["id"], event["id"]))
     assert replay.status_code == 200
     assert replay.json()["id"] == first.json()["id"]
+    assert model.calls == 1
+
+
+def test_same_key_during_live_lease_returns_pending_without_second_provider_call(tmp_path) -> None:
+    model = BlockingFakeModel()
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    application, resume, event = _context(client)
+    url = f"/api/applications/{application['id']}/interview-preparation-proposals"
+    payload = _payload(resume["id"], event["id"], "live-lease-key-01")
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        first_future = pool.submit(client.post, url, json=payload)
+        assert model.entered.wait(5)
+        pending = client.post(url, json=payload)
+        model.release.set()
+        first = first_future.result(timeout=5)
+
+    assert pending.status_code == 202
+    assert pending.json()["attempt_status"] == "generating"
+    assert first.status_code == 201
     assert model.calls == 1
 
 

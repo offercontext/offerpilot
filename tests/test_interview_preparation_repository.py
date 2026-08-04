@@ -482,6 +482,65 @@ def test_expired_lease_takeover_atomically_bumps_revision_and_only_one_wins(tmp_
     factory_b.kw["bind"].dispose()
 
 
+def test_late_old_provider_result_cannot_overwrite_new_owner_ready_result(tmp_path) -> None:
+    factory_a, ids = _setup(tmp_path)
+    factory_b = init_database(tmp_path / "data.db")
+    repository_a = InterviewPreparationProposalsRepository(factory_a)
+    repository_b = InterviewPreparationProposalsRepository(factory_b)
+    with pytest.raises(InterviewPreparationProviderError):
+        _generate(repository_a, ids, "late-takeover-key-01", FailingModel())
+
+    with factory_a() as session:
+        row = session.scalar(select(InterviewPreparationProposal))
+        assert row is not None
+        snapshot = json.loads(row.input_snapshot_json)
+        source_fingerprint = row.source_fingerprint
+        row.attempt_status = "generating"
+        row.generation_revision = 1
+        row.provider_call_token = "old-owner-token"
+        row.provider_lease_until = datetime.now(timezone.utc) - timedelta(seconds=1)
+        session.commit()
+
+    old_model = BlockingSafeEmptyModel()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        old_future = pool.submit(
+            repository_a._call_and_store,
+            model=old_model,
+            owner_revision=1,
+            owner_token="old-owner-token",
+            application_id=ids[0],
+            event_id=ids[1],
+            resume_id=ids[2],
+            jd_text=JD_TEXT,
+            knowledge_selections=[],
+            user_assertions=["I led the migration."],
+            idempotency_key="late-takeover-key-01",
+            source_fingerprint=source_fingerprint,
+            snapshot=snapshot,
+            on_diagnostic=None,
+        )
+        assert old_model.entered.wait(5)
+        new_result = _generate(
+            repository_b,
+            ids,
+            "late-takeover-key-01",
+            SafeEmptyModel(),
+        )
+        old_model.release.set()
+        old_result = old_future.result(timeout=5)
+
+    assert new_result.attempt_status == "ready"
+    assert old_result.attempt_status == "ready"
+    with factory_a() as session:
+        row = session.scalar(select(InterviewPreparationProposal))
+        assert row is not None
+        assert row.attempt_status == "ready"
+        assert row.generation_revision == 2
+        assert row.proposal_json == new_result.proposal.proposal_json  # type: ignore[union-attr]
+    factory_a.kw["bind"].dispose()
+    factory_b.kw["bind"].dispose()
+
+
 def test_ready_different_snapshot_returns_409_and_original_ready_remains_stable(tmp_path) -> None:
     factory, ids = _setup(tmp_path)
     repository = InterviewPreparationProposalsRepository(factory)
