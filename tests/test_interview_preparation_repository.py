@@ -374,6 +374,39 @@ def test_heartbeat_lock_failure_is_uncertain_not_confirmed_loss(tmp_path) -> Non
     assert heartbeat.heartbeat_uncertain is True
 
 
+def test_provider_error_stops_heartbeat_worker_in_cleanup(monkeypatch, tmp_path) -> None:
+    instances = []
+
+    class TrackingHeartbeat:
+        confirmed_ownership_lost = False
+        heartbeat_uncertain = False
+
+        def __init__(self, **_kwargs):
+            self.started = False
+            self.stopped = False
+            instances.append(self)
+
+        def start(self) -> None:
+            self.started = True
+
+        def stop_and_join(self) -> None:
+            self.stopped = True
+
+    monkeypatch.setattr(
+        "offerpilot.repositories.interview_preparation_proposals._InterviewPreparationLeaseHeartbeat",
+        TrackingHeartbeat,
+    )
+    factory, ids = _setup(tmp_path)
+    repository = InterviewPreparationProposalsRepository(factory)
+
+    with pytest.raises(InterviewPreparationProviderError):
+        _generate(repository, ids, "heartbeat-cleanup-key", FailingModel())
+
+    assert len(instances) == 1
+    assert instances[0].started is True
+    assert instances[0].stopped is True
+
+
 def test_first_request_without_old_row_creates_lease_before_provider_and_calls_once(tmp_path) -> None:
     factory_a, ids = _setup(tmp_path)
     factory_b = init_database(tmp_path / "data.db")

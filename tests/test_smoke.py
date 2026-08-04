@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+from threading import Event, Thread
 from types import SimpleNamespace
 
 import pytest
@@ -821,6 +822,48 @@ def test_smoke_database_disposal_never_disposes_live_worker():
         )))
 
     assert events == ["stop:10", "stop:None"]
+
+
+def test_smoke_database_disposal_waits_for_blocking_worker_before_dispose():
+    events: list[str] = []
+    release = Event()
+    second_stop_entered = Event()
+
+    class _Runtime:
+        running = True
+
+        def stop(self, timeout=None):
+            events.append(f"stop:{timeout}")
+            if timeout is not None:
+                return False
+            second_stop_entered.set()
+            assert release.wait(5)
+            self.running = False
+            return True
+
+    class _Engine:
+        def dispose(self):
+            events.append("dispose")
+
+    runtime = _Runtime()
+    engine = _Engine()
+    thread = Thread(
+        target=_dispose_smoke_app_database,
+        args=(SimpleNamespace(
+            state=SimpleNamespace(
+                knowledge_runtime=runtime,
+                db_engine=engine,
+            )
+        ),),
+    )
+    thread.start()
+    assert second_stop_entered.wait(5)
+    assert "dispose" not in events
+    release.set()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+
+    assert events == ["stop:10", "stop:None", "dispose"]
 
 
 def test_real_ai_smoke_cleanup_removes_material_records_and_active_resume(tmp_path):
