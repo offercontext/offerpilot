@@ -178,7 +178,7 @@ def test_frontend_gate_rejects_adjacent_prefix_result_root(tmp_path: Path) -> No
     assert collected.returncode == 0, collected.stdout + collected.stderr
     environment = _fake_npm_environment(tmp_path, result_dir / "frontend-manifest.json", web_root)
     environment["FAKE_VITEST_GROUP"] = "theme"
-    environment["FAKE_VITEST_WEB_ROOT"] = str(repository_root.parent / "web-evil")
+    environment["FAKE_VITEST_WEB_ROOT"] = str(web_root.parent / "web-evil")
 
     run = _run_gate(
         result_dir,
