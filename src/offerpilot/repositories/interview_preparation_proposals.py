@@ -544,6 +544,19 @@ class InterviewPreparationProposalsRepository:
             if heartbeat is not None:
                 heartbeat.stop_and_join()
 
+        if heartbeat is not None and heartbeat.confirmed_ownership_lost:
+            with self._session_factory() as session:
+                session.execute(text("BEGIN IMMEDIATE"))
+                current = _find_by_key(session, application_id, event_id, idempotency_key)
+                if current is None:
+                    session.rollback()
+                    raise InterviewPreparationConflictError(
+                        "interview preparation attempt disappeared",
+                        "interview_preparation_idempotency_conflict",
+                    )
+                session.commit()
+                return _result_for_existing(current)
+
         with self._session_factory() as session:
             session.execute(text("BEGIN IMMEDIATE"))
             row = _find_by_key(session, application_id, event_id, idempotency_key)
@@ -619,8 +632,6 @@ class InterviewPreparationProposalsRepository:
                 row.attempt_status != "generating"
                 or row.generation_revision != owner_revision
                 or row.provider_call_token != owner_token
-                or (_as_aware(row.provider_lease_until) or datetime.min.replace(tzinfo=timezone.utc))
-                <= datetime.now(timezone.utc)
             ):
                 session.commit()
                 return _result_for_existing(row)

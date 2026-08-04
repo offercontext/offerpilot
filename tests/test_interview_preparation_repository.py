@@ -266,6 +266,114 @@ def test_slow_provider_renews_expired_lease_and_calls_provider_once(tmp_path) ->
     assert model.calls == 1
 
 
+def test_expired_lease_without_takeover_can_persist_valid_provider_result(tmp_path) -> None:
+    factory, ids = _setup(tmp_path)
+    repository = InterviewPreparationProposalsRepository(factory)
+    with pytest.raises(InterviewPreparationProviderError):
+        _generate(repository, ids, "expired-final-key-01", FailingModel())
+
+    with factory() as session:
+        row = session.scalar(select(InterviewPreparationProposal))
+        assert row is not None
+        snapshot = json.loads(row.input_snapshot_json)
+        source_fingerprint = row.source_fingerprint
+        row.attempt_status = "generating"
+        row.generation_revision = 2
+        row.provider_call_token = "expired-final-owner"
+        row.provider_lease_until = datetime.now(timezone.utc) - timedelta(seconds=1)
+        session.commit()
+
+    result = repository._call_and_store(
+        model=SafeEmptyModel(),
+        owner_revision=2,
+        owner_token="expired-final-owner",
+        application_id=ids[0],
+        event_id=ids[1],
+        resume_id=ids[2],
+        jd_text=JD_TEXT,
+        knowledge_selections=[],
+        user_assertions=["I led the migration."],
+        idempotency_key="expired-final-key-01",
+        source_fingerprint=source_fingerprint,
+        snapshot=snapshot,
+        on_diagnostic=None,
+    )
+
+    assert result.pending is False
+    assert result.attempt_status == "ready"
+
+
+def test_heartbeat_confirms_ownership_loss_after_token_changes(tmp_path) -> None:
+    factory, ids = _setup(tmp_path)
+    clock = ManualClock(datetime(2026, 8, 4, 10, 0, tzinfo=timezone.utc))
+    token = "old-heartbeat-token"
+    with factory() as session:
+        row = InterviewPreparationProposal(
+            application_id=ids[0],
+            application_event_id=ids[1],
+            resume_id=ids[2],
+            idempotency_key="heartbeat-loss-key",
+            attempt_status="generating",
+            generation_revision=1,
+            provider_call_token=token,
+            provider_lease_until=(clock.now() + timedelta(seconds=30)).replace(tzinfo=None),
+            input_snapshot_json="{}",
+            source_fingerprint="source-fingerprint",
+        )
+        session.add(row)
+        session.commit()
+        attempt_id = row.id
+        row.provider_call_token = "new-owner-token"
+        session.commit()
+
+    heartbeat = _InterviewPreparationLeaseHeartbeat(
+        session_factory=factory,
+        attempt_id=attempt_id,
+        owner_revision=1,
+        owner_token=token,
+        lease_seconds=30,
+        now_factory=clock.now,
+    )
+
+    assert heartbeat.renew_once() is False
+    assert heartbeat.confirmed_ownership_lost is True
+    assert heartbeat.heartbeat_uncertain is False
+
+
+class _FailingHeartbeatSession:
+    def __enter__(self):  # type: ignore[no-untyped-def]
+        return self
+
+    def __exit__(self, *_args):  # type: ignore[no-untyped-def]
+        return False
+
+    def execute(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+        from sqlalchemy.exc import OperationalError
+
+        raise OperationalError("locked", {}, RuntimeError("locked"))
+
+
+class _FailingHeartbeatFactory:
+    def __call__(self):  # type: ignore[no-untyped-def]
+        return _FailingHeartbeatSession()
+
+
+def test_heartbeat_lock_failure_is_uncertain_not_confirmed_loss(tmp_path) -> None:
+    _setup(tmp_path)
+    heartbeat = _InterviewPreparationLeaseHeartbeat(
+        session_factory=_FailingHeartbeatFactory(),
+        attempt_id=1,
+        owner_revision=1,
+        owner_token="heartbeat-token",
+        lease_seconds=30,
+        now_factory=lambda: datetime(2026, 8, 4, 10, 0, tzinfo=timezone.utc),
+    )
+
+    assert heartbeat.renew_once() is False
+    assert heartbeat.confirmed_ownership_lost is False
+    assert heartbeat.heartbeat_uncertain is True
+
+
 def test_first_request_without_old_row_creates_lease_before_provider_and_calls_once(tmp_path) -> None:
     factory_a, ids = _setup(tmp_path)
     factory_b = init_database(tmp_path / "data.db")
