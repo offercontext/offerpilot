@@ -16,14 +16,26 @@ Implementation starts by resolving and recording one immutable baseline from the
 
 ~~~powershell
 $planPath = 'docs/superpowers/plans/2026-08-04-interview-preparation-lease-heartbeat.md'
+$baselineFile = Join-Path $env:TEMP 'offerpilot-interview-preparation-lease-baseline.txt'
 $implementationBase = (git log -1 --format=%H -- $planPath).Trim()
 if (-not $implementationBase) { throw 'Cannot resolve approved plan baseline' }
 $status = @(git status --short)
 if ($status.Count -gt 0) { throw 'Worktree must be clean before capturing implementation baseline' }
-$implementationBase | Set-Content -LiteralPath (Join-Path $env:TEMP ("offerpilot-interview-preparation-baseline-" + $PID + '.txt')) -Encoding ascii
+$implementationBase | Set-Content -LiteralPath $baselineFile -Encoding ascii
+git cat-file -e "$implementationBase^{commit}"
+if ($LASTEXITCODE -ne 0) { throw 'Recorded implementation baseline is invalid' }
 ~~~
 
-Use that recorded value for every subsequent diff, allowlist, and diff-check command. Do not recompute it after implementation begins. After capture, do not modify this plan or the design document; any verification report is the only documentation file allowed by the file allowlist. Work only in D:\Users\yuqi.chen\offerpilot\.worktrees\feat-20260801-offer-negotiation and do not touch the repository root or its existing uncommitted work.
+Use the value in this stable baseline file for every subsequent diff, allowlist, and diff-check command. Each later PowerShell process must load and validate it before using it:
+
+~~~powershell
+$baselineFile = Join-Path $env:TEMP 'offerpilot-interview-preparation-lease-baseline.txt'
+$implementationBase = (Get-Content -LiteralPath $baselineFile -Raw).Trim()
+git cat-file -e "$implementationBase^{commit}"
+if ($LASTEXITCODE -ne 0) { throw 'Recorded implementation baseline is invalid' }
+~~~
+
+Do not recompute the baseline with git log after implementation begins. After capture, do not modify this plan or the design document; any verification report is the only documentation file allowed by the file allowlist. Work only in D:\Users\yuqi.chen\offerpilot\.worktrees\feat-20260801-offer-negotiation and do not touch the repository root or its existing uncommitted work.
 
 The implementation is limited to these files:
 
@@ -311,6 +323,10 @@ git commit -m "test: AI preserve interview preparation failure cleanup"
 Run from the worktree root:
 
 ~~~powershell
+$baselineFile = Join-Path $env:TEMP 'offerpilot-interview-preparation-lease-baseline.txt'
+$implementationBase = (Get-Content -LiteralPath $baselineFile -Raw).Trim()
+git cat-file -e "$implementationBase^{commit}"
+if ($LASTEXITCODE -ne 0) { throw 'Recorded implementation baseline is invalid' }
 $featureBase = $implementationBase
 $allowed = @(
   'src/offerpilot/repositories/interview_preparation_proposals.py',
@@ -334,6 +350,10 @@ The positive allowlist is the only accepted product boundary. The release report
 ~~~powershell
 uv run ruff check src tests
 uv run mypy src
+$baselineFile = Join-Path $env:TEMP 'offerpilot-interview-preparation-lease-baseline.txt'
+$implementationBase = (Get-Content -LiteralPath $baselineFile -Raw).Trim()
+git cat-file -e "$implementationBase^{commit}"
+if ($LASTEXITCODE -ne 0) { throw 'Recorded implementation baseline is invalid' }
 git diff --check "$implementationBase..HEAD"
 ~~~
 
@@ -451,11 +471,16 @@ Review the final diff against the design document. Specifically check that:
 - [ ] Step 6: Final working-tree gate.
 
 ~~~powershell
+$baselineFile = Join-Path $env:TEMP 'offerpilot-interview-preparation-lease-baseline.txt'
+$implementationBase = (Get-Content -LiteralPath $baselineFile -Raw).Trim()
+git cat-file -e "$implementationBase^{commit}"
+if ($LASTEXITCODE -ne 0) { throw 'Recorded implementation baseline is invalid' }
 git status --short --branch
 git diff --check "$implementationBase..HEAD"
+Remove-Item -LiteralPath $baselineFile -Force
 ~~~
 
-Expected result: clean working tree and zero diff-check errors. Do not push or merge.
+Expected result: clean working tree, zero diff-check errors, and the recorded baseline file is removed only after the final gate completes. Do not push or merge.
 
 ## Commit sequence
 
