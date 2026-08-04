@@ -15,6 +15,7 @@
 - `RepositoryRoot` 会规范化尾部分隔符，并在计算相对路径前校验根目录边界；补充尾部 `\`、省略参数默认根目录和 `web`/`web-evil` 相邻前缀目录拒绝回归。
 - 补充 worker 停止后 dispose 顺序及 worker 未退出时禁止 dispose 的回归测试。
 - 面试准备仅新增 Repository 内部租约心跳与 fencing CAS：30 秒租约、10 秒续签、统一 UTC 时钟边界；不改变 API、数据库结构、Provider 输入、证据校验或失败语义。
+- 心跳续签结果未知时立即停止后续续签，最终仍由 fencing CAS 判定是否可写；补充了锁失败、迟到结果和资源清理回归。
 
 ## 静态与测试门禁
 
@@ -28,16 +29,16 @@
 
 ### 后端五组门禁
 
-完整收集 manifest：**1761 个 node id**。五组均退出码 0；聚合校验确认无重复、并集与完整 manifest 一致，五组完成标记、JUnit 和收集摘要均匹配。
+完整收集 manifest：**1762 个 node id**。五组均退出码 0；聚合校验确认无重复、并集与完整 manifest 一致，五组完成标记、JUnit 和收集摘要均匹配。
 
 | 分组 | 收集/执行 | 允许 skip |
 |---|---:|---:|
 | agent | 423 / 423 passed | 0 |
 | domain | 70 / 70 passed | 0 |
 | knowledge | 659 / 655 passed | 4 |
-| proposals | 297 / 297 passed | 0 |
+| proposals | 298 / 298 passed | 0 |
 | misc | 312 / 312 passed | 0 |
-| 合计 | 1761 / 1757 passed | 4 |
+| 合计 | 1762 / 1758 passed | 4 |
 
 Knowledge 的 4 个 skip 仅为既定 Windows 符号链接权限条件，node id 为：
 
@@ -108,12 +109,12 @@ real-AI 复跑未再出现 `unable to open database file`。本轮完整 real-AI
 
 | 命令 | 退出码 / 结果 |
 |---|---|
-| `uv run pytest tests/test_interview_preparation_repository.py tests/test_interview_preparation_api.py tests/test_interview_preparation_ai.py tests/test_interview_preparation_migrations.py tests/test_smoke.py -q` | 0；102 passed |
+| `uv run pytest tests/test_interview_preparation_repository.py tests/test_interview_preparation_api.py tests/test_interview_preparation_ai.py tests/test_interview_preparation_migrations.py tests/test_smoke.py -q` | 0；103 passed |
 | `uv run ruff check src tests` | 0 |
 | `uv run mypy src` | 0；64 source files |
 | `git diff --check 6fcbee9..HEAD` | 0 |
 
-后端分组最终收集 **1761** 项，分组结果为：agent `423/423`、domain `70/70`、knowledge `659/655`（4 个既定 Windows 符号链接权限 skip）、proposals `297/297`、misc `312/312`；每组退出码 0，aggregate 退出码 0，node id 无重复且并集与完整 manifest 一致。允许 skip 仍仅为本报告上方列出的 4 项及其精确原因。
+后端分组最终收集 **1762** 项，分组结果为：agent `423/423`、domain `70/70`、knowledge `659/655`（4 个既定 Windows 符号链接权限 skip）、proposals `298/298`、misc `312/312`；每组退出码 0，aggregate 退出码 0，node id 无重复且并集与完整 manifest 一致。允许 skip 仍仅为本报告上方列出的 4 项及其精确原因。
 
 前端分组重新收集 **103 个文件、727 个测试**，10 组退出码均为 0，aggregate 退出码为 0；实际结果文件集合与 manifest 完全一致，无重复 node id。前端未因本次后端改动产生源码变化。
 
