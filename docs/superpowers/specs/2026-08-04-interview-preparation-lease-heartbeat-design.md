@@ -47,7 +47,7 @@
 ### 3.2 不采用的方案
 
 - 单纯把租约改成 120 或 300 秒：不能覆盖更慢的 Provider，并会延长崩溃后的接管等待时间。
-- 删除最终租约检查而不增加心跳与 fencing 约束：无法区分仍归属当前 owner 的慢调用和已经被接管的迟到结果。
+- 只删除最终租约过期检查：现有 generation_revision + provider_call_token 已能隔离被接管后的迟到结果，但没有心跳时租约仍会过期，其他请求仍可能接管并产生第二次 Provider 调用。因此必须同时解决“结果能否安全写入”和“慢调用期间是否会被重复接管”两个问题。
 - 通过业务层再次调用 Provider：会增加调用费用，并掩盖所有权生命周期问题。
 
 ## 4. 不变量与术语
@@ -69,11 +69,14 @@ Provider 使用创建或接管时生成的 snapshot。它的规范 JSON 和 sour
 
 最终写入前仍用独立数据库 session 重建当前来源快照，并要求其指纹等于 owner 持有的 source_fingerprint。Application、Interview Event、Resume、JD、Knowledge Evidence 或用户断言发生来源变化时，继续执行现有来源冲突语义，不把变化误判为租约问题。
 
-### 4.3 所有权丢失
+### 4.3 所有权丢失与续签结果未知
 
-心跳更新返回 0 行、发现状态/revision/token 不匹配，或在有限锁冲突重试后仍无法证明更新成功时，当前 owner 必须设置进程内 ownership_lost 标记并停止心跳。Provider 返回后不得用该 owner 写入结果，也不得把新 owner 的状态改回 provider_unknown 或 invalidated。
+必须区分两个进程内状态，不能把所有心跳异常都解释成丢权：
 
-正常的 Provider 返回路径也会先停止心跳并等待其退出，但“正常停止”不等于所有权丢失：最终 CAS 仍会依据数据库中的 fencing token 判断是否可写。
+- confirmed_ownership_lost：心跳条件更新返回 0 行，或通过读取明确发现 attempt_status、generation_revision 或 provider_call_token 已不再匹配。此时数据库已经证明当前 owner 被取代或状态已改变；停止心跳，Provider 返回后禁止旧 owner 写入，也不得把新 owner 的状态改回 provider_unknown 或 invalidated。
+- heartbeat_uncertain：SQLite 锁冲突、session/连接异常、心跳线程异常退出，或在有限重试后无法确认续签是否成功，但没有证据证明 revision/token/status 已变化。此时只停止心跳并记录结果未知；Provider 返回后仍必须执行最终 fencing CAS，由数据库决定当前 owner 是否仍可写入。
+
+正常的 Provider 返回路径也会先停止心跳并等待其退出，但“正常停止”不等于丢权。无论是正常停止还是 heartbeat_uncertain，最终 CAS 都继续依赖 fencing token；只有 confirmed_ownership_lost 可以在最终 CAS 前阻止旧 owner 写入。
 
 ## 5. 生成生命周期
 
@@ -103,12 +106,12 @@ Provider 使用创建或接管时生成的 snapshot。它的规范 JSON 和 sour
 - 更新目标只包括 provider_lease_until = heartbeat_now + LEASE_SECONDS。
 - 条件必须包括 Attempt ID、attempt_status == generating、owner revision 和 owner token。
 - 不更新 input_snapshot_json、source_fingerprint、proposal_json、proposal_hash、attempt_status、revision 或 token。
-- SQLite 短暂锁冲突只允许在该次心跳的有限短重试中处理；重试仍无法确认 rowcount 为 1 时，设置 ownership_lost，不继续续签。
-- rowcount 为 0 或刷新后发现 owner 条件不匹配时，立即设置 ownership_lost，停止后续续签。
+- SQLite 短暂锁冲突只允许在该次心跳的有限短重试中处理；重试仍无法确认续签结果时，设置 heartbeat_uncertain 并停止后续续签，不把它当作已被接管。
+- rowcount 为 0 或刷新后明确发现 owner 条件不匹配时，设置 confirmed_ownership_lost 并停止后续续签。
 
-心跳任务使用可停止的 waiter/event，而不是阻塞数据库连接。它必须保存可观察的 heartbeat 次数和 ownership-lost 状态，但不保留快照、JD、简历、模型输出或完整请求。
+心跳任务使用可停止的 waiter/event，而不是阻塞数据库连接。它必须保存可观察的 heartbeat 次数、confirmed_ownership_lost 和 heartbeat_uncertain 状态，但不保留快照、JD、简历、模型输出或完整请求。
 
-心跳线程的意外退出也必须设置 ownership_lost；只有由 owner 在 Provider 返回后显式设置 stop event 并成功等待退出，才算正常停止。若心跳线程无法在清理边界内退出，owner 不得释放其余生成状态去覆盖数据库，测试必须暴露该生命周期错误。
+心跳线程的意外退出必须设置 heartbeat_uncertain，除非退出前已经确认数据库条件不匹配。只有由 owner 在 Provider 返回后显式设置 stop event 并成功等待退出，才算正常停止。若心跳线程无法在清理边界内退出，必须记录 heartbeat_uncertain、保证其 session 最终关闭，并仍执行最终 fencing CAS；测试必须暴露线程或 session 泄漏，不能用“异常退出即禁止写入”掩盖未确认的数据库状态。
 
 ### 5.3 Provider 调用与已有校验
 
@@ -125,7 +128,7 @@ Provider 使用创建或接管时生成的 snapshot。它的规范 JSON 和 sour
 Provider 返回后按以下顺序执行：
 
 1. 设置 heartbeat stop event，等待心跳任务结束，并确保其 session 已关闭。
-2. 若本地 ownership_lost 已设置，不进行旧 owner 的结果写入；通过现有状态读取语义返回当前 Attempt 或冲突结果。
+2. 若本地 confirmed_ownership_lost 已设置，不进行旧 owner 的结果写入；通过现有状态读取语义返回当前 Attempt 或冲突结果。heartbeat_uncertain 不走该提前返回路径，必须继续执行最终 fencing CAS。
 3. 使用新的短数据库 session 开启最终事务，读取同一 application/event/key 的 Attempt。
 4. 重建当前来源快照，重新计算 fingerprint；来源找不到或指纹不同，按现有 source_conflict 语义失效当前 owner，不能写入 Proposal。
 5. 仅当以下条件同时满足时写入 proposal_json、proposal_hash、proposal_status 并转为 ready：
@@ -155,6 +158,7 @@ Provider 成功、严格校验失败、Provider 异常、来源冲突、数据�
 | --- | --- | ---: | --- |
 | 新 key 成功领取 | 无记录 → generating，revision=1，新 token，新 lease | 1 | 当前调用继续；同 key 并发请求在 lease 有效时返回 202 generating |
 | 心跳成功 | 保持 generating，只延长 lease | 0 | 同 key 仍由原 owner 处理，不可接管 |
+| 续签结果未知但未确认接管 | 数据库状态未知，不主动改写 Attempt | 0 | Provider 返回后仍执行最终 fencing CAS；CAS 成功则保存结果，失败则返回当前安全状态 |
 | 慢 Provider 合法返回 | generating → ready，写 Proposal/hash，清空 token/lease | 1 | 返回现有成功响应，不再返回 202 generating |
 | Provider/网络未知 | generating → provider_unknown，保留原 key/token/冻结输入 | 1 | 现有 502 provider_error；同 key 在 lease 有效时返回 202，不重复调用 |
 | 心跳停止且 lease 过期 | generating/provider_unknown 可被一个新事务接管，revision+1，新 token | 新 owner 最多 1 | 新 owner 使用同 key、原冻结输入继续；旧结果不能覆盖 |
@@ -192,7 +196,7 @@ Provider 成功、严格校验失败、Provider 异常、来源冲突、数据�
 - Attempt/Proposal ID；
 - generation revision；
 - heartbeat count；
-- ownership_lost 是否发生及安全失败类别；
+- confirmed_ownership_lost / heartbeat_uncertain 是否发生及安全失败类别；
 - Provider 既有诊断中的 model、endpoint 三元组、HTTP status、timeout、耗时和哈希后的 request id（沿用现有脱敏机制）。
 
 禁止记录 JD、简历、Knowledge Evidence、用户断言、模型原文、完整 Provider 请求、响应体、API key 或配置文件内容。测试和报告也只能记录上述类别、计数和退出结果，不保存隐私快照。
@@ -213,7 +217,7 @@ Provider 成功、严格校验失败、Provider 异常、来源冲突、数据�
 6. 心跳停止与最终提交之间触发接管，最终 CAS 只能产生一个可见结果；旧 owner 不得返回伪造的 ready。
 7. 续签只更新 provider_lease_until；快照、fingerprint、Proposal、revision 和 token 不发生非预期变化。
 8. 每次 heartbeat 使用独立短 session；模型调用期间不存在长期持有的数据库 session/事务。
-9. SQLite 锁冲突的有限重试后若无法确认 owner，owner 标记为丢失并拒绝旧结果写入。
+9. SQLite 锁冲突的有限重试后若无法确认续签结果，owner 标记为 heartbeat_uncertain；在没有实际接管的控制测试中，合法 Provider 结果仍能通过最终 fencing CAS 写入 ready。
 
 ### 9.2 既有失败语义与幂等
 
@@ -223,7 +227,7 @@ Provider 成功、严格校验失败、Provider 异常、来源冲突、数据�
 2. 来源漂移、事件删除、Resume 变化和非法输入继续产生既有来源/验证错误，不被心跳转成成功。
 3. 严格 JSON 失败、一次格式修复和安全空 Proposal 的调用次数与状态保持不变。
 4. 同 key 的相同冻结输入在 lease 有效时不增加 Provider 调用；lease 过期后的接管只允许一个新 owner。
-5. 成功、Provider 异常、格式修复、来源冲突、ownership lost 和接管路径均释放 heartbeat task、session 和连接。
+5. 成功、Provider 异常、格式修复、来源冲突、confirmed_ownership_lost、heartbeat_uncertain 和接管路径均释放 heartbeat task、session 和连接。
 
 ### 9.3 API 与隔离验收
 
