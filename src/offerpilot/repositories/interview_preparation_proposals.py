@@ -4,10 +4,12 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from threading import Event, Thread, current_thread
 from typing import Any, Callable, List
 from uuid import uuid4
 
 from sqlalchemy import select, text, update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from offerpilot.ai.agent import ChatModel
@@ -87,6 +89,101 @@ def _result_for_existing(
         "interview preparation attempt has an unsupported state",
         "interview_preparation_idempotency_conflict",
     )
+
+
+class _InterviewPreparationLeaseHeartbeat:
+    def __init__(
+        self,
+        *,
+        session_factory: sessionmaker[Session],
+        attempt_id: int,
+        owner_revision: int,
+        owner_token: str,
+        lease_seconds: int,
+        now_factory: Callable[[], datetime],
+        heartbeat_interval_seconds: int = HEARTBEAT_INTERVAL_SECONDS,
+        waiter: Callable[[float], bool] | None = None,
+    ) -> None:
+        self._session_factory = session_factory
+        self._attempt_id = attempt_id
+        self._owner_revision = owner_revision
+        self._owner_token = owner_token
+        self._lease_seconds = lease_seconds
+        self._now_factory = now_factory
+        self._heartbeat_interval_seconds = heartbeat_interval_seconds
+        self._stop_event = Event()
+        self._waiter = waiter or self._stop_event.wait
+        self._thread: Thread | None = None
+        self.heartbeat_count = 0
+        self.confirmed_ownership_lost = False
+        self.heartbeat_uncertain = False
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._thread = Thread(target=self._run, name="interview-preparation-lease", daemon=True)
+        self._thread.start()
+
+    def stop_and_join(self) -> None:
+        self._stop_event.set()
+        wake = getattr(self._waiter, "wake", None)
+        if callable(wake):
+            wake()
+        if self._thread is not None and self._thread is not current_thread():
+            self._thread.join()
+
+    def renew_once(self) -> bool:
+        try:
+            with self._session_factory() as session:
+                session.execute(text("BEGIN IMMEDIATE"))
+                result = session.execute(
+                    update(InterviewPreparationProposal)
+                    .where(InterviewPreparationProposal.id == self._attempt_id)
+                    .where(InterviewPreparationProposal.attempt_status == "generating")
+                    .where(
+                        InterviewPreparationProposal.generation_revision
+                        == self._owner_revision
+                    )
+                    .where(
+                        InterviewPreparationProposal.provider_call_token == self._owner_token
+                    )
+                    .values(
+                        provider_lease_until=_to_db_naive(
+                            self._now_factory() + timedelta(seconds=self._lease_seconds)
+                        )
+                    )
+                )
+                if getattr(result, "rowcount", 0) == 1:
+                    session.commit()
+                    self.heartbeat_count += 1
+                    return True
+                row = session.get(InterviewPreparationProposal, self._attempt_id)
+                session.rollback()
+                if (
+                    row is None
+                    or row.attempt_status != "generating"
+                    or row.generation_revision != self._owner_revision
+                    or row.provider_call_token != self._owner_token
+                ):
+                    self.confirmed_ownership_lost = True
+                else:
+                    self.heartbeat_uncertain = True
+                return False
+        except SQLAlchemyError:
+            self.heartbeat_uncertain = True
+            return False
+
+    def _run(self) -> None:
+        try:
+            while not self._stop_event.is_set():
+                self._waiter(self._heartbeat_interval_seconds)
+                if self._stop_event.is_set():
+                    return
+                self.renew_once()
+                if self.confirmed_ownership_lost:
+                    return
+        except Exception:
+            self.heartbeat_uncertain = True
 
 
 class InterviewPreparationProposalsRepository:
@@ -176,6 +273,7 @@ class InterviewPreparationProposalsRepository:
 
         return self._call_and_store(
             model=model,
+            attempt_id=row.id,
             owner_revision=owner_revision,
             owner_token=owner_token,
             application_id=application_id,
@@ -371,6 +469,7 @@ class InterviewPreparationProposalsRepository:
         session.commit()
         return self._call_and_store(
             model=model,
+            attempt_id=row.id,
             owner_revision=old_revision + 1,
             owner_token=new_token,
             application_id=application_id,
@@ -395,6 +494,7 @@ class InterviewPreparationProposalsRepository:
         self,
         *,
         model: ChatModel | None,
+        attempt_id: int | None = None,
         owner_revision: int,
         owner_token: str,
         application_id: int,
@@ -410,19 +510,39 @@ class InterviewPreparationProposalsRepository:
     ) -> InterviewPreparationGenerationResult:
         if model is None:
             raise InterviewPreparationProviderError()
+        heartbeat = (
+            _InterviewPreparationLeaseHeartbeat(
+                session_factory=self._session_factory,
+                attempt_id=attempt_id,
+                owner_revision=owner_revision,
+                owner_token=owner_token,
+                lease_seconds=self._lease_seconds,
+                heartbeat_interval_seconds=self._heartbeat_interval_seconds,
+                now_factory=self._now_factory,
+                waiter=self._waiter,
+            )
+            if attempt_id is not None
+            else None
+        )
+        if heartbeat is not None:
+            heartbeat.start()
         try:
-            proposal = generate_interview_preparation_proposal(
-                model,
-                snapshot,
-                on_diagnostic=on_diagnostic,
-            )
-        except InterviewPreparationModelError as exc:
-            if exc.failure_category != "provider_error":
-                raise
-            self._mark_provider_unknown(
-                application_id, event_id, idempotency_key, owner_revision, owner_token
-            )
-            raise InterviewPreparationProviderError() from exc
+            try:
+                proposal = generate_interview_preparation_proposal(
+                    model,
+                    snapshot,
+                    on_diagnostic=on_diagnostic,
+                )
+            except InterviewPreparationModelError as exc:
+                if exc.failure_category != "provider_error":
+                    raise
+                self._mark_provider_unknown(
+                    application_id, event_id, idempotency_key, owner_revision, owner_token
+                )
+                raise InterviewPreparationProviderError() from exc
+        finally:
+            if heartbeat is not None:
+                heartbeat.stop_and_join()
 
         with self._session_factory() as session:
             session.execute(text("BEGIN IMMEDIATE"))

@@ -27,6 +27,7 @@ from offerpilot.repositories.interview_preparation_proposals import (
     InterviewPreparationNotFound,
     InterviewPreparationProviderError,
     InterviewPreparationProposalsRepository,
+    _InterviewPreparationLeaseHeartbeat,
 )
 
 
@@ -42,6 +43,28 @@ class ManualClock:
 
     def advance(self, **delta: float) -> None:
         self.current += timedelta(**delta)
+
+
+class ControlledWaiter:
+    def __init__(self) -> None:
+        self.entered = Event()
+        self._wake = Event()
+
+    def __call__(self, timeout: float) -> bool:
+        self.entered.set()
+        released = self._wake.wait(timeout)
+        self._wake.clear()
+        return released
+
+    def release_tick(self) -> None:
+        self._wake.set()
+
+    def wake(self) -> None:
+        self._wake.set()
+
+
+def _as_aware_for_test(value: datetime | None) -> datetime | None:
+    return value.replace(tzinfo=timezone.utc) if value is not None and value.tzinfo is None else value
 
 
 def _setup(tmp_path):
@@ -159,6 +182,88 @@ def test_repository_uses_injected_utc_clock_and_production_lease_defaults(tmp_pa
     assert repository._lease_seconds == 30
     assert repository._heartbeat_interval_seconds == 10
     assert repository._now_factory() == clock.current
+
+
+def test_heartbeat_renew_once_extends_lease_with_fenced_owner(tmp_path) -> None:
+    factory, ids = _setup(tmp_path)
+    clock = ManualClock(datetime(2026, 8, 4, 10, 0, tzinfo=timezone.utc))
+    token = "heartbeat-owner-token"
+    with factory() as session:
+        row = InterviewPreparationProposal(
+            application_id=ids[0],
+            application_event_id=ids[1],
+            resume_id=ids[2],
+            idempotency_key="heartbeat-key-0001",
+            attempt_status="generating",
+            generation_revision=1,
+            provider_call_token=token,
+            provider_lease_until=(clock.now() + timedelta(seconds=30)).replace(tzinfo=None),
+            input_snapshot_json="{}",
+            source_fingerprint="source-fingerprint",
+        )
+        session.add(row)
+        session.commit()
+        attempt_id = row.id
+
+    heartbeat = _InterviewPreparationLeaseHeartbeat(
+        session_factory=factory,
+        attempt_id=attempt_id,
+        owner_revision=1,
+        owner_token=token,
+        lease_seconds=30,
+        now_factory=clock.now,
+    )
+    clock.advance(seconds=31)
+
+    assert heartbeat.renew_once() is True
+    assert heartbeat.heartbeat_count == 1
+    assert heartbeat.confirmed_ownership_lost is False
+    assert heartbeat.heartbeat_uncertain is False
+    with factory() as session:
+        row = session.get(InterviewPreparationProposal, attempt_id)
+        assert row is not None
+        assert row.provider_lease_until == (clock.now() + timedelta(seconds=30)).replace(
+            tzinfo=None
+            )
+
+
+def test_slow_provider_renews_expired_lease_and_calls_provider_once(tmp_path) -> None:
+    factory, ids = _setup(tmp_path)
+    clock = ManualClock(datetime.now(timezone.utc) - timedelta(seconds=2))
+    waiter = ControlledWaiter()
+    repository = InterviewPreparationProposalsRepository(
+        factory,
+        lease_seconds=1,
+        heartbeat_interval_seconds=10,
+        now_factory=clock.now,
+        waiter=waiter,
+    )
+    model = BlockingSafeEmptyModel()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(_generate, repository, ids, "slow-heartbeat-key", model)
+        assert model.entered.wait(5)
+        assert waiter.entered.wait(5)
+        clock.advance(seconds=30)
+        waiter.release_tick()
+
+        for _ in range(1000):
+            with factory() as session:
+                row = session.scalar(select(InterviewPreparationProposal))
+                lease_until = _as_aware_for_test(row.provider_lease_until) if row else None
+            if lease_until is not None and lease_until > datetime.now(timezone.utc):
+                break
+            Event().wait(0.001)
+        else:
+            pytest.fail("heartbeat did not extend the lease")
+
+        model.release.set()
+        result = future.result(timeout=5)
+
+    assert result.created is True
+    assert result.pending is False
+    assert result.attempt_status == "ready"
+    assert model.calls == 1
 
 
 def test_first_request_without_old_row_creates_lease_before_provider_and_calls_once(tmp_path) -> None:
