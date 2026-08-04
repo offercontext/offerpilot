@@ -2,14 +2,14 @@
 
 ## 结论
 
-本轮控件修复、定向前端测试和隔离浏览器截图复核已完成。截图已重新生成并逐张检查为亮色、中文、单视口宽屏；UI/Pilot 的已确认历史可读和既有单 Offer 谈薪教练入口均已复核。但完整后端分组门禁未通过：`misc` 组有一个与本切片无关的既有日历测试失败；本次前端全量串行运行也在工具时限内未完成。因此本分支当前不能作为已发布版本推送或合并。
+本轮控件修复、定向前端测试和隔离浏览器截图复核已完成。截图已重新生成并逐张检查为亮色、中文、单视口宽屏；UI/Pilot 的已确认历史可读和既有单 Offer 谈薪教练入口均已复核。后端五组分组门禁及聚合、前端十组分组门禁及聚合均已通过；真实 Provider 验收仍有 ReadTimeout 与 `topic_evidence_mismatch`，因此本分支当前仍不能作为已发布版本推送或合并。
 
 本报告只记录脱敏命令、结果和截图路径，不记录密钥、简历/JD 原文或模型原文。
 
 ## 代码与环境
 
 - 分支：`feat/20260801-offer-negotiation`
-- UI 代码验证基线：`9fe0efc`
+- UI 代码验证基线：`8c93815`
 - 服务：隔离临时数据目录中的本地 OfferPilot；真实浏览器端口为本次临时服务端口
 - 配置：从现有配置静默复制到隔离目录；未输出或修改密钥
 - 案例：中文候选人“筱哲”；Offer 为“星云数据｜后端工程师”和“远山科技｜平台工程师”
@@ -73,25 +73,19 @@ UI 与 Pilot 的 Proposal/Brief 和幂等上下文相互隔离，但都复用同
 
 ### 后端分组
 
-完整收集 manifest：`1737` 个 node id，分组覆盖未去重前无重复。
+完整收集 manifest：`1748` 个 node id，分组覆盖未去重前无重复。
 
 | 分组 | 收集 | 测试 | 通过 | 失败 | 允许 skip | 退出码 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | agent | 423 | 423 | 423 | 0 | 0 | 0 |
 | domain | 70 | 70 | 70 | 0 | 0 | 0 |
-| knowledge | 658 | 658 | 654 | 0 | 4 | 0 |
-| proposals | 283 | 283 | 283 | 0 | 0 | 0 |
-| misc | 303 | 303 | 302 | 1 | 0 | 1 |
+| knowledge | 659 | 659 | 655 | 0 | 4 | 0 |
+| proposals | 287 | 287 | 287 | 0 | 0 | 0 |
+| misc | 309 | 309 | 309 | 0 | 0 | 0 |
 
-Knowledge 的 4 个 skip 均为既定 Windows 无符号链接权限条件，并由 JUnit node id 与原因校验。`-Aggregate` 未通过，因为 `misc` 没有成功完成标记；它拒绝聚合是门禁预期行为，不是通过证据。
+Knowledge 的 4 个 skip 均为既定 Windows 无符号链接权限条件，并由 JUnit node id 与原因校验。五组退出码均为 0，`-Aggregate` 通过，且覆盖集合与完整 manifest 完全一致；总计 1744 个通过、4 个允许 skip。每组完成标记绑定收集结果、JUnit 内容和退出状态。
 
-失败项：
-
-```text
-tests/test_calendar_api.py::test_calendar_includes_applications_and_events
-```
-
-该测试使用固定的 2026-07 月份，而创建投递使用运行时当前日期，导致日历月份不包含该投递；本切片没有修改后端代码或该测试。此失败仍是发布阻塞，不能通过新增 skip 或调整门禁掩盖。
+本轮后端分组未发现失败项；日期敏感日历测试在本次完整分组中通过。
 
 ### 其他命令
 
@@ -100,13 +94,13 @@ tests/test_calendar_api.py::test_calendar_includes_applications_and_events
 | `uv run ruff check .` | 通过 |
 | `uv run mypy src` | 通过；64 source files |
 | `git diff --check` | 通过 |
-| `npm.cmd test -- --run src/components/ChatPanel/PilotOfferSelectionCard.test.tsx src/components/OfferCard.test.tsx src/components/OfferCenterView.test.tsx src/components/OfferCompareDrawer.test.tsx src/components/OfferComparisonDimensionPanel.test.tsx src/components/offer-negotiation/OfferNegotiationPresentation.test.tsx src/components/OfferNegotiationDrawer.test.tsx src/components/OfferNegotiationDrawer.responsive.test.ts src/components/OfferPilotNegotiation.test.tsx src/layout/AppShell.offerNegotiation.test.tsx --reporter=dot` | 退出码 0；10 文件、48 passed；既有 React `act()` 警告 |
-| `npm.cmd test -- --run --minWorkers=1 --maxWorkers=1 --reporter=json` | 未完成；180 秒工具时限超时，未生成 JSON 汇总，不宣称前端全量通过 |
+| `scripts/windows-vitest-groups.ps1 -Collect/-Group/-Aggregate` | 退出码 0；10 组、103 文件、727 tests；实际 Vitest JSON 文件集合与 manifest 完全一致，无重复，聚合通过；fingerprint 覆盖 `web/src`、前端配置/锁文件及分组脚本 |
+| `uv run pytest tests/test_frontend_vitest_groups.py tests/test_smoke.py -q` | 退出码 0；61 passed、49 warnings；新增前端门禁负向覆盖与 worker dispose 顺序/未退出保护 |
 | `npm.cmd run build` | 通过 |
 | `uv run oc smoke --static-dir web/dist` | 通过 |
 | `uv run oc verify --profile local --static-dir web/dist` | 通过；隔离目录 |
-| `uv run oc verify-offer-negotiation --static-dir web/dist` | 通过；隔离 Offer API 流程 |
-| `uv run oc verify --profile real-ai --static-dir web/dist` | 失败；知识/面试准备链路出现隔离数据库 `unable to open database file`，不能宣称 real-AI 全量通过 |
+| `uv run oc verify --profile real-ai --static-dir web/dist` | 失败；面试准备 Provider 请求 `httpx.ReadTimeout`，隔离目录清理完成，不能宣称 real-AI 全量通过 |
+| `uv run oc verify-offer-negotiation --static-dir web/dist` | 失败；真实 Provider 返回 `502 offer_negotiation_unverifiable:topic_evidence_mismatch`，保持证据门控，不能宣称 Offer real-AI 通过 |
 
 ## 截图矩阵
 
@@ -130,7 +124,7 @@ tests/test_calendar_api.py::test_calendar_includes_applications_and_events
 
 - Provider 输出仍存在偶发未知结果；系统按既有协议保留原尝试，未扩大重试或放宽证据校验。
 - 本次截图重录使用同一隔离中文案例；`04` 与 `09` 明确展示发送前确认，不冒充已生成 Proposal，`05` 展示 UI 已确认历史，`10` 展示 Pilot 已确认历史入口与冻结事实。截图不把新的 Provider 波动表述为稳定通过；此前已确认的 Provider 成功闭环不因本次重录被改写。
-- 完整后端门禁被 `test_calendar_includes_applications_and_events` 阻塞；在修复测试数据时序或得到明确上游修复前，不应推送或合并。
-- 当前前端全量串行运行在工具时限内超时；定向受影响集合为 10 文件、48 passed，不能替代全量结果。
-- 全量 real-AI verify 受隔离数据库打开失败阻塞；专用 Offer real-AI API 验收已通过，但不能替代全量 real-AI 或浏览器证据。
+- 完整后端五组门禁及聚合已通过；仅允许 4 个既定 Windows 符号链接权限 skip。
+- 前端分组门禁及聚合已通过；不再使用单次全量命令作为结论，且旧结果、漏文件、新测试文件和生产源码变更均有拒绝回归。
+- 全量 real-AI verify 仍受 Provider `ReadTimeout` 阻塞；独立 Offer real-AI 本轮受 `topic_evidence_mismatch` 阻塞，均未放宽契约或重试白名单。
 - 当前未推送、未合并；本报告不构成发布批准。
