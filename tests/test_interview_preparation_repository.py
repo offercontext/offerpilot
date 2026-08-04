@@ -33,6 +33,17 @@ from offerpilot.repositories.interview_preparation_proposals import (
 JD_TEXT = "Build reliable APIs with Python."
 
 
+class ManualClock:
+    def __init__(self, current: datetime) -> None:
+        self.current = current
+
+    def now(self) -> datetime:
+        return self.current
+
+    def advance(self, **delta: float) -> None:
+        self.current += timedelta(**delta)
+
+
 def _setup(tmp_path):
     factory = init_database(tmp_path / "data.db")
     with factory() as session:
@@ -131,6 +142,23 @@ def _generate(repository, ids, key, model, *, jd_text=JD_TEXT):
         idempotency_key=key,
         model=model,
     )
+
+
+def test_repository_uses_injected_utc_clock_and_production_lease_defaults(tmp_path) -> None:
+    factory, _ = _setup(tmp_path)
+    clock = ManualClock(datetime(2026, 8, 4, 10, 0, tzinfo=timezone.utc))
+
+    production_repository = InterviewPreparationProposalsRepository(factory)
+    repository = InterviewPreparationProposalsRepository(
+        factory,
+        now_factory=clock.now,
+    )
+
+    assert production_repository._lease_seconds == 30
+    assert production_repository._heartbeat_interval_seconds == 10
+    assert repository._lease_seconds == 30
+    assert repository._heartbeat_interval_seconds == 10
+    assert repository._now_factory() == clock.current
 
 
 def test_first_request_without_old_row_creates_lease_before_provider_and_calls_once(tmp_path) -> None:

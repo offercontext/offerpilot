@@ -4,7 +4,7 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, List
+from typing import Any, Callable, List
 from uuid import uuid4
 
 from sqlalchemy import select, text, update
@@ -33,6 +33,7 @@ from offerpilot.repositories.json_contract import canonical_json, parse_json_obj
 
 
 LEASE_SECONDS = 30
+HEARTBEAT_INTERVAL_SECONDS = 10
 IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 
 
@@ -89,8 +90,20 @@ def _result_for_existing(
 
 
 class InterviewPreparationProposalsRepository:
-    def __init__(self, session_factory: sessionmaker[Session]):
+    def __init__(
+        self,
+        session_factory: sessionmaker[Session],
+        *,
+        lease_seconds: int = LEASE_SECONDS,
+        heartbeat_interval_seconds: int = HEARTBEAT_INTERVAL_SECONDS,
+        now_factory: Callable[[], datetime] | None = None,
+        waiter: Callable[[float], bool] | None = None,
+    ):
         self._session_factory = session_factory
+        self._lease_seconds = lease_seconds
+        self._heartbeat_interval_seconds = heartbeat_interval_seconds
+        self._now_factory = now_factory or (lambda: datetime.now(timezone.utc))
+        self._waiter = waiter
 
     def create_generated(
         self,
@@ -152,7 +165,7 @@ class InterviewPreparationProposalsRepository:
                 attempt_status="generating",
                 generation_revision=1,
                 provider_call_token=token,
-                provider_lease_until=_lease_until(),
+                provider_lease_until=self._lease_until(),
                 input_snapshot_json=canonical_json(snapshot),
                 source_fingerprint=fingerprint,
             )
@@ -318,7 +331,7 @@ class InterviewPreparationProposalsRepository:
             return InterviewPreparationGenerationResult(row, False, False, "ready")
 
         lease_until = _as_aware(row.provider_lease_until)
-        if lease_until is not None and lease_until > datetime.now(timezone.utc):
+        if lease_until is not None and lease_until > self._now_factory():
             return InterviewPreparationGenerationResult(row, False, True, row.attempt_status)
 
         if model is None:
@@ -334,12 +347,15 @@ class InterviewPreparationProposalsRepository:
             .where(InterviewPreparationProposal.attempt_status.in_(["generating", "provider_unknown"]))
             .where(InterviewPreparationProposal.generation_revision == old_revision)
             .where(InterviewPreparationProposal.provider_call_token == old_token)
-            .where(InterviewPreparationProposal.provider_lease_until <= _db_now())
+            .where(
+                InterviewPreparationProposal.provider_lease_until
+                <= self._db_now()
+            )
             .values(
                 attempt_status="generating",
                 generation_revision=old_revision + 1,
                 provider_call_token=new_token,
-                provider_lease_until=_lease_until(),
+                provider_lease_until=self._lease_until(),
                 invalidation_reason="",
             )
         )
@@ -368,6 +384,12 @@ class InterviewPreparationProposalsRepository:
             snapshot=snapshot,
             on_diagnostic=on_diagnostic,
         )
+
+    def _lease_until(self) -> datetime:
+        return _to_db_naive(self._now_factory() + timedelta(seconds=self._lease_seconds))
+
+    def _db_now(self) -> datetime:
+        return _to_db_naive(self._now_factory())
 
     def _call_and_store(
         self,
@@ -840,6 +862,13 @@ def _lease_until() -> datetime:
 def _db_now() -> datetime:
     """Return the naive UTC value SQLite returns for DateTime columns."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _to_db_naive(value: datetime) -> datetime:
+    aware = _as_aware(value)
+    if aware is None:
+        raise TypeError("datetime value is required")
+    return aware.replace(tzinfo=None)
 
 
 def _as_aware(value: datetime | None) -> datetime | None:
