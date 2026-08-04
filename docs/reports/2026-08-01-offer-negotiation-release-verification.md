@@ -1,62 +1,79 @@
-# Offer 比较与谈薪准备发布验证报告
+# Offer 比较与谈薪发布验证报告
 
-日期：2026-08-02
+日期：2026-08-04
+分支：`feat/20260801-offer-negotiation`
+范围：仅发布收口；未新增 Offer、谈薪、Pilot、HITL 或证据门控语义；未推送、未合并。
 
-## 范围与提交
+## 本轮收口变更
 
-- 工作树：`feat/20260801-offer-negotiation`
-- 功能基线：`14ec28b`
-- 核心修复提交：`e2d6a5b5edd2f654a0f201cb18cac0498305880e`
-- 后续提交仅包含本报告文件，未再修改业务代码。
-- 未推送、未合并。
-- 本轮未记录密钥、Offer 原文、用户输入、证据摘录、模型原文或 Provider 原始请求标识。
+- 日历测试改用测试内创建的投递时间推导月份，消除固定月份导致的日期敏感失败。
+- smoke 隔离数据库销毁前停止 Knowledge runtime 并释放数据库 engine，避免后台 worker 在临时目录删除后继续访问 SQLite。
+- 新增前端稳定分组门禁脚本，逐组持久化收集结果、JUnit 和完成标记，再执行覆盖集合聚合。
 
-## 代码与静态门禁
+## 静态与测试门禁
 
-| 命令 | 结果 |
+| 检查 | 结果 |
 |---|---|
 | `uv run ruff check .` | 通过 |
 | `uv run mypy src` | 通过，64 个源文件 |
 | `npm.cmd run build`（`web`） | 通过 |
-| `git diff --check 14ec28b..HEAD` | 通过 |
-| 前端全量 `npm.cmd test -- --run` | 通过，98 个文件、688 个测试 |
-| Offer 重点前端测试 | 通过，3 个文件、7 个测试 |
+| `uv run pytest tests/test_calendar_api.py -q` | 3 passed |
+| `git diff --check origin/main..HEAD` | 通过 |
 
-测试输出仍有既有 React `act()` 警告，不影响退出码。
+### 后端五组门禁
 
-## 后端分组门禁
+完整收集 manifest：**1738 个 node id**。五组均退出码 0；聚合校验确认无重复、并集与完整 manifest 一致，五组完成标记、JUnit 和收集摘要均匹配。
 
-最终 HEAD 重新收集到 1669 个 node id；分组结果目录为临时目录，按完成标记、JUnit、退出码、重复 node id 和覆盖集合执行聚合。
+| 分组 | 收集/执行 | 允许 skip |
+|---|---:|---:|
+| agent | 423 / 423 passed | 0 |
+| domain | 70 / 70 passed | 0 |
+| knowledge | 658 / 654 passed | 4 |
+| proposals | 284 / 284 passed | 0 |
+| misc | 303 / 303 passed | 0 |
+| 合计 | 1738 / 1734 passed | 4 |
 
-| 分组 | 收集 | 结果 |
-|---|---:|---|
-| agent | 423 | 423 通过，0 skip |
-| domain | 70 | 70 通过，0 skip |
-| proposals | 283 | 283 通过，0 skip |
-| knowledge | 658 | 654 通过，4 个允许的 Windows 符号链接权限 skip |
-| misc | 235 | 234 通过，1 失败 |
+Knowledge 的 4 个 skip 仅为既定 Windows 符号链接权限条件，node id 为：
 
-唯一失败为 `tests/test_calendar_api.py::test_calendar_includes_applications_and_events`。该测试和日历相关服务代码均未出现在 `14ec28b..HEAD` 的功能差异中；失败表现为日期敏感的“2026-07”查询未包含当前创建投递。该失败使 misc 没有成功完成标记，聚合命令按设计拒绝继续；因此后端全量聚合门禁未通过，不能宣称后端发布门禁全绿。
+- `tests/test_knowledge_ingest_integrity.py::test_failed_commit_cleanup_does_not_follow_symlink`
+- `tests/test_knowledge_reset.py::test_cli_rejects_knowledge_root_symlink_with_external_sentinels`
+- `tests/test_knowledge_reset.py::test_cli_rejects_legacy_reset_root_symlink_with_external_sentinels`
+- `tests/test_knowledge_reset.py::test_cli_does_not_follow_nested_escape_symlink`
 
-Knowledge 组的 4 个 skip 均为既定测试 ID，原因均为当前 Windows 无创建符号链接权限；没有新增 skip。
+分组命令：
 
-## 本地运行时验证
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-pytest-groups.ps1 -Group <group> -ResultDir <temp>
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-pytest-groups.ps1 -Aggregate -ResultDir <temp>
+```
+
+前端稳定分组门禁：**103 个文件、727 个测试全部通过**；10 个分组均退出码 0，收集文件无重复且并集完整：components-core、components-chat、components-interview、components-offer、components-support、features、layout、lib、services、theme。
+
+## 隔离运行时验收
 
 | 命令 | 结果 |
 |---|---|
 | `uv run oc smoke --static-dir web/dist` | 通过 |
-| `uv run oc verify --profile local --static-dir web/dist` | 通过，隔离数据清理完成 |
-| `uv run oc verify-offer-negotiation --static-dir web/dist` | 通过，隔离 Offer API 流程完成 |
-| `uv run oc verify --profile real-ai --static-dir web/dist` | 未通过：Provider 网络超时，随后隔离运行时数据库打开失败；未将其记为通过 |
+| `uv run oc verify --profile local --static-dir web/dist` | 通过；临时隔离目录清理完成 |
+| `uv run oc verify --profile real-ai --static-dir web/dist` | **未通过** |
 
-Offer 专项真实 Provider API 验收已通过；本报告不把它扩大解释为完整 real-AI verify 通过。
+real-AI 复跑未再出现 `unable to open database file`。当前失败发生在面试准备真实 Provider 请求，错误为 `httpx.ReadTimeout`，命令退出码 1。因此数据库隔离问题已修复，但 Provider 网络/响应稳定性仍是发布阻塞，不能把本次 real-AI verify 记为通过。
 
-## 浏览器验收
+真实配置只在隔离临时目录静默复制，未输出、修改或保留密钥；正式数据目录未作为验收写入目标。
 
-本轮未完成 Offer 专用 Browser/CDP 闭环：当前环境未提供 `OFFER_NEGOTIATION_CDP_URL`，因此没有声称浏览器请求序列、Provider 出站三元组或真实 UI/Pilot 双入口已通过。已有 API smoke 不能替代浏览器级证据。
+## 本地浏览器键盘验收
 
-## 临时数据与剩余风险
+使用临时隔离服务和中文 Offer“星云数据｜后端工程师”，通过内置浏览器完成 Pilot 主动选择 Offer 后打开覆盖式谈薪工作区：
 
-- 分组测试结果、隔离服务和临时数据已清理；正式数据目录未作为验收写入目标。
-- 发布阻塞：misc 后端分组的日期敏感基线失败、完整 real-AI verify 未通过、Offer 浏览器/CDP 闭环未执行。
-- Provider/网络未知与严格证据失败仍按既定稳定错误码处理；本轮没有放宽 JSON、证据、HITL 或幂等语义。
+- 对话框存在 `role="dialog"`、`aria-modal="true"`，动态可访问名称为“为 星云数据 准备谈薪”。
+- 打开后焦点进入“关闭”按钮，且焦点位于对话框内部。
+- `Shift+Tab` 从首个焦点循环到最后一个可用输入控件；`Tab` 从最后一个可用控件循环回首个控件；焦点未离开对话框。
+- `Escape` 关闭对话框，并将焦点恢复到“准备谈薪”触发按钮。
+- 本次键盘验收仅执行本地 UI 操作，未调用 Provider，未创建谈薪 Proposal 或 Brief。
+
+## 清理与剩余风险
+
+- 已停止临时服务、浏览器标签及测试后台进程，并删除本轮创建的临时数据、JUnit、manifest 和分组结果目录。
+- 产品代码与测试门禁没有新增 skip；4 个既定符号链接权限 skip 已逐项核验。
+- 发布仍不通过：完整 real-AI verify 被 Provider `ReadTimeout` 阻塞。该外部稳定性风险需要单独重新验收，不能通过放宽 JSON、证据、HITL 或错误语义解决。
+- 本报告不包含密钥、简历/JD 原文、模型原文或 Provider 原始请求标识。

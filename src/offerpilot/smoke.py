@@ -2752,6 +2752,9 @@ def _running_server(app: Any) -> Any:
 
 
 def _dispose_smoke_app_database(app: Any) -> None:
+    runtime = getattr(app.state, "knowledge_runtime", None)
+    if runtime is not None:
+        runtime.stop(timeout=10)
     engine = getattr(app.state, "db_engine", None)
     if engine is not None:
         engine.dispose()

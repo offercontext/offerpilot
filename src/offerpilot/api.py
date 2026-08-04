@@ -820,6 +820,7 @@ def create_app(
         knowledge_repository,
     )
     app.state.db_engine = session_factory.kw.get("bind")
+    app.state.knowledge_runtime = knowledge_runtime
 
     @app.on_event("startup")
     def _start_knowledge_worker() -> None:

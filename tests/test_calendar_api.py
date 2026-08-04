@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 from fastapi.testclient import TestClient
 
 from offerpilot.api import create_app
@@ -9,12 +11,18 @@ def test_calendar_includes_applications_and_events(tmp_path):
         "/api/applications",
         json={"company_name": "ByteDance", "position_name": "Backend"},
     ).json()
+    applied_at = datetime.fromisoformat(app["applied_at"].replace("Z", "+00:00"))
+    month_start = applied_at.astimezone(timezone.utc).replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0
+    )
+    next_month_start = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
+    calendar_month = month_start.strftime("%Y-%m")
     client.post(
         "/api/application-events",
         json={
             "application_id": app["id"],
             "event_type": "written_test",
-            "scheduled_at": "2026-07-10T10:00:00Z",
+            "scheduled_at": (month_start + timedelta(days=9, hours=10)).isoformat().replace("+00:00", "Z"),
             "duration_minutes": 60,
             "location": "online",
         },
@@ -24,13 +32,13 @@ def test_calendar_includes_applications_and_events(tmp_path):
         json={
             "application_id": app["id"],
             "event_type": "interview",
-            "scheduled_at": "2026-08-01T10:00:00Z",
+            "scheduled_at": (next_month_start + timedelta(hours=10)).isoformat().replace("+00:00", "Z"),
             "duration_minutes": 45,
             "location": "online",
         },
     )
 
-    response = client.get("/api/calendar", params={"month": "2026-07"})
+    response = client.get("/api/calendar", params={"month": calendar_month})
 
     assert response.status_code == 200
     entries = response.json()
@@ -42,7 +50,8 @@ def test_calendar_includes_applications_and_events(tmp_path):
     assert event_entry["editable"] is True
     assert not any(
         entry.get("event_type") == "interview"
-        and entry.get("scheduled_at") == "2026-08-01T10:00:00Z"
+        and entry.get("scheduled_at")
+        == (next_month_start + timedelta(hours=10)).isoformat().replace("+00:00", "Z")
         for entry in entries
     )
 

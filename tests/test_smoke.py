@@ -38,6 +38,7 @@ from offerpilot.smoke import (
     _capture_real_ai_browser_domain_baseline,
     _cleanup_real_ai_browser_records,
     _cleanup_real_ai_smoke_records,
+    _dispose_smoke_app_database,
     _latest_mock_interview_failure_category,
     _run_real_ai_interview_review_smoke,
     _run_real_ai_interview_knowledge_capture_smoke,
@@ -741,6 +742,21 @@ def test_local_http_smoke_isolates_user_data(monkeypatch, tmp_path):
     assert report.ok is True
     assert marker.read_bytes() == before
     assert not observed["data_dir"].exists()
+
+
+def test_smoke_database_disposal_stops_background_knowledge_runtime(monkeypatch, tmp_path):
+    app = create_app(data_dir=tmp_path / "isolated")
+    calls: list[float | None] = []
+
+    monkeypatch.setattr(
+        app.state.knowledge_runtime,
+        "stop",
+        lambda timeout=None: calls.append(timeout),
+    )
+
+    _dispose_smoke_app_database(app)
+
+    assert calls == [10]
 
 
 def test_real_ai_smoke_cleanup_removes_material_records_and_active_resume(tmp_path):

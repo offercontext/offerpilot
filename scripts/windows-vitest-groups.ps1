@@ -1,0 +1,228 @@
+param(
+    [ValidateSet('components-core', 'components-chat', 'components-interview', 'components-offer', 'components-support', 'features', 'layout', 'lib', 'services', 'theme')]
+    [string]$Group,
+    [Parameter(Mandatory = $true)]
+    [string]$ResultDir,
+    [switch]$Collect,
+    [switch]$Aggregate
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+$repoRoot = Split-Path -Parent $PSScriptRoot
+$webRoot = Join-Path $repoRoot 'web'
+$resolvedResultDir = [System.IO.Path]::GetFullPath($ResultDir)
+New-Item -ItemType Directory -Force -Path $resolvedResultDir | Out-Null
+Set-Location $webRoot
+
+$groupNames = @('components-core', 'components-chat', 'components-interview', 'components-offer', 'components-support', 'features', 'layout', 'lib', 'services', 'theme')
+$manifestPath = Join-Path $resolvedResultDir 'frontend-manifest.json'
+
+function Get-TestFiles {
+    @(
+        Get-ChildItem -Path (Join-Path $webRoot 'src') -Recurse -File |
+            Where-Object { $_.Name -match '\.(test|spec)\.[cm]?[jt]sx?$' } |
+            ForEach-Object {
+                $_.FullName.Substring($webRoot.Length + 1).Replace('/', '\')
+            } |
+            Sort-Object
+    )
+}
+
+function Get-GroupForFile([string]$File) {
+    $parts = $File.Replace('/', '\').Split('\')
+    if ($parts.Count -lt 3 -or $parts[0] -ne 'src') {
+        throw "Frontend test is outside src/<group>: $File"
+    }
+    $normalized = $File.Replace('/', '\').ToLowerInvariant()
+    if ($normalized.StartsWith('src\components\chatpanel\')) {
+        $group = 'components-chat'
+    } elseif ($normalized.StartsWith('src\components\k')) {
+        $group = 'components-support'
+    } elseif ($normalized.StartsWith('src\components\authgate\') -or $normalized.StartsWith('src\components\ui\')) {
+        $group = 'components-support'
+    } elseif ($normalized -match '^src\\components\\.*(offer|negotiation)') {
+        $group = 'components-offer'
+    } elseif ($normalized -match '^src\\components\\.*(interview|mock|reviewform)') {
+        $group = 'components-interview'
+    } elseif ($parts[1] -eq 'components') {
+        $group = 'components-core'
+    } else {
+        $group = $parts[1]
+    }
+    if ($groupNames -notcontains $group) {
+        throw "Frontend test belongs to an unconfigured group: $File"
+    }
+    return $group
+}
+
+function Get-Manifest {
+    if (-not (Test-Path -LiteralPath $manifestPath)) {
+        throw "Frontend manifest is missing: $manifestPath"
+    }
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding utf8 | ConvertFrom-Json
+    if ($manifest.manifest_version -ne 1) {
+        throw 'Unsupported frontend manifest version'
+    }
+    $files = @($manifest.files | ForEach-Object { [string]$_ })
+    $duplicates = @($files | Group-Object | Where-Object Count -gt 1)
+    if ($duplicates.Count -gt 0) {
+        throw "Frontend manifest contains duplicate files: $($duplicates.Name -join ', ')"
+    }
+    return $files
+}
+
+function Write-Manifest {
+    $files = @(Get-TestFiles)
+    if ($files.Count -eq 0) { throw 'No frontend test files were collected' }
+    $duplicates = @($files | Group-Object | Where-Object Count -gt 1)
+    if ($duplicates.Count -gt 0) {
+        throw "Frontend collection contains duplicate files: $($duplicates.Name -join ', ')"
+    }
+    $groups = [ordered]@{}
+    foreach ($name in $groupNames) {
+        $groups[$name] = @($files | Where-Object { (Get-GroupForFile $_) -eq $name })
+        if (@($groups[$name]).Count -eq 0) { throw "Frontend group $name has no test files" }
+    }
+    [ordered]@{
+        manifest_version = 1
+        collected_at_utc = [DateTime]::UtcNow.ToString('o')
+        file_count = $files.Count
+        files = $files
+        groups = $groups
+    } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $manifestPath -Encoding utf8
+    Write-Host "Frontend manifest collected: $($files.Count) test files"
+}
+
+function Get-Sha256([string]$Path) {
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
+}
+
+function Get-TextSha256([string]$Value) {
+    $bytes = [Text.Encoding]::UTF8.GetBytes($Value)
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($algorithm.ComputeHash($bytes)) -replace '-', '').ToLowerInvariant()
+    } finally {
+        $algorithm.Dispose()
+    }
+}
+
+function Get-AssertionRecords([object]$Report, [string[]]$ExpectedFiles) {
+    $expected = @{}
+    foreach ($file in $ExpectedFiles) { $expected[$file] = $true }
+    $records = @()
+    foreach ($result in @($Report.testResults)) {
+        $resultPath = [System.IO.Path]::GetFullPath([string]$result.name)
+        $relative = $resultPath.Substring($webRoot.Length + 1).Replace('/', '\')
+        if (-not $expected.ContainsKey($relative)) {
+            throw "Vitest returned an unexpected test file: $relative"
+        }
+        foreach ($assertion in @($result.assertionResults)) {
+            $fullName = [string]$assertion.fullName
+            if ([string]::IsNullOrWhiteSpace($fullName)) { throw "Vitest returned an unnamed assertion in $relative" }
+            $records += [pscustomobject]@{
+                id = "$relative::$fullName"
+                file = $relative
+                full_name = $fullName
+                status = [string]$assertion.status
+            }
+        }
+    }
+    return $records
+}
+
+function Invoke-FrontendGroup([string]$Name) {
+    $files = @(Get-Manifest | Where-Object { (Get-GroupForFile $_) -eq $Name })
+    if ($files.Count -eq 0) { throw "Frontend group $Name has no files" }
+    $jsonPath = Join-Path $resolvedResultDir "$Name.results.json"
+    $runPath = Join-Path $resolvedResultDir "$Name.run.txt"
+    $markerPath = Join-Path $resolvedResultDir "$Name.complete.json"
+    Remove-Item -LiteralPath $markerPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $jsonPath -Force -ErrorAction SilentlyContinue
+
+    $arguments = @(
+        'test', '--', '--run', '--pool=forks', '--maxWorkers=1', '--minWorkers=1',
+        '--no-file-parallelism', '--reporter=json', "--outputFile=$jsonPath"
+    ) + $files
+    $null = & npm.cmd @arguments 2>&1 | Tee-Object -FilePath $runPath
+    $exitCode = $LASTEXITCODE
+    if (-not (Test-Path -LiteralPath $jsonPath)) { throw "$Name did not produce a Vitest JSON report" }
+    $report = Get-Content -LiteralPath $jsonPath -Raw -Encoding utf8 | ConvertFrom-Json
+    $records = @(Get-AssertionRecords $report $files)
+    $duplicates = @($records | Group-Object -Property id | Where-Object Count -gt 1)
+    if ($duplicates.Count -gt 0) { throw "$Name contains duplicate test ids" }
+    if ($exitCode -ne 0 -or $report.success -ne $true) { throw "$Name Vitest failed with exit code $exitCode" }
+    if ([int]$report.numPendingTests -ne 0 -or [int]$report.numTodoTests -ne 0) {
+        throw "$Name contains skipped or todo tests"
+    }
+    if ($records.Count -ne [int]$report.numTotalTests) {
+        throw "$Name assertion count does not match Vitest report"
+    }
+    $marker = [ordered]@{
+        marker_version = 1
+        status = 'completed'
+        group = $Name
+        exit_code = $exitCode
+        file_count = $files.Count
+        test_count = $records.Count
+        result_sha256 = Get-Sha256 $jsonPath
+    }
+    $marker | ConvertTo-Json | Set-Content -LiteralPath $markerPath -Encoding utf8
+    Write-Host "$Name completed: $($files.Count) files, $($records.Count) tests"
+}
+
+function Invoke-Aggregate {
+    $files = @(Get-Manifest)
+    $allRecords = New-Object System.Collections.Generic.List[object]
+    $seenFiles = @{}
+    foreach ($name in $groupNames) {
+        $jsonPath = Join-Path $resolvedResultDir "$name.results.json"
+        $markerPath = Join-Path $resolvedResultDir "$name.complete.json"
+        if (-not (Test-Path -LiteralPath $jsonPath) -or -not (Test-Path -LiteralPath $markerPath)) {
+            throw "$name completion result is missing"
+        }
+        $marker = Get-Content -LiteralPath $markerPath -Raw -Encoding utf8 | ConvertFrom-Json
+        if ($marker.marker_version -ne 1 -or $marker.status -ne 'completed' -or $marker.group -ne $name -or [int]$marker.exit_code -ne 0) {
+            throw "$name completion marker is not successful"
+        }
+        if ($marker.result_sha256 -ne (Get-Sha256 $jsonPath)) { throw "$name result hash mismatches marker" }
+        $expected = @($files | Where-Object { (Get-GroupForFile $_) -eq $name })
+        $report = Get-Content -LiteralPath $jsonPath -Raw -Encoding utf8 | ConvertFrom-Json
+        $records = @(Get-AssertionRecords $report $expected)
+        if ($records.Count -ne [int]$marker.test_count -or $records.Count -ne [int]$report.numTotalTests) {
+            throw "$name test count mismatches completion marker"
+        }
+        foreach ($file in $expected) {
+            if ($seenFiles.ContainsKey($file)) { $seenFiles[$file] += 1 } else { $seenFiles[$file] = 1 }
+        }
+        foreach ($record in $records) { $allRecords.Add($record) }
+    }
+    $duplicateTests = @($allRecords | Group-Object -Property id | Where-Object Count -gt 1)
+    if ($duplicateTests.Count -gt 0) { throw "Frontend group coverage contains duplicate test ids" }
+    foreach ($file in $files) {
+        if ($seenFiles[$file] -ne 1) { throw "Frontend file coverage is incomplete or duplicated: $file" }
+    }
+    $aggregatePath = Join-Path $resolvedResultDir 'frontend.aggregate.json'
+    [ordered]@{
+        status = 'completed'
+        group_count = $groupNames.Count
+        file_count = $files.Count
+        test_count = $allRecords.Count
+        groups = $groupNames
+        test_ids_sha256 = Get-TextSha256 (($allRecords | ForEach-Object { $_.id }) -join "`n")
+    } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $aggregatePath -Encoding utf8
+    Write-Host "All frontend groups passed: $($allRecords.Count) tests across $($files.Count) files"
+}
+
+if ($Collect) {
+    if ($Aggregate -or $Group) { throw '-Collect cannot be combined with -Group or -Aggregate' }
+    Write-Manifest
+} elseif ($Aggregate) {
+    Invoke-Aggregate
+} elseif ($Group) {
+    Invoke-FrontendGroup $Group
+} else {
+    throw 'Use -Collect, -Group, or -Aggregate'
+}
