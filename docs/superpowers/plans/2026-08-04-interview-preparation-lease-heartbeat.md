@@ -12,7 +12,7 @@
 
 ## 0. Execution boundary and file map
 
-Implementation starts from feature baseline 6c712eb in D:\Users\yuqi.chen\offerpilot\.worktrees\feat-20260801-offer-negotiation. Before changing files, verify the branch, clean status, and baseline. Do not touch the repository root or its existing uncommitted work.
+Implementation starts from feature baseline 9b60cb8 in D:\Users\yuqi.chen\offerpilot\.worktrees\feat-20260801-offer-negotiation. Before changing files, verify the branch, clean status, and baseline. Do not touch the repository root or its existing uncommitted work.
 
 The implementation is limited to these files:
 
@@ -39,17 +39,17 @@ No step may add a new HTTP field, database field, state, business retry, Provide
 
 - [ ] Step 1: Add a failing constructor/timing regression.
 
-Create repository instances with short injected values, for example:
+Create a ManualClock and construct the repository with the production lease values and the fake clock, for example:
 
 ~~~python
+clock = ManualClock(datetime(2026, 8, 4, 10, 0, tzinfo=timezone.utc))
 repository = InterviewPreparationProposalsRepository(
     factory,
-    lease_seconds=0.05,
-    heartbeat_interval_seconds=0.01,
+    now_factory=clock.now,
 )
 ~~~
 
-Assert that the existing 30-second defaults remain the production defaults and that the test instance exposes the short lease values used by the heartbeat. Run:
+ManualClock.advance() must be the only operation that moves time in lease tests. Assert that the existing 30-second lease and 10-second heartbeat defaults remain the production defaults and that the test instance uses the injected clock. Run:
 
 ~~~powershell
 uv run pytest tests/test_interview_preparation_repository.py -q
@@ -59,11 +59,11 @@ Expected result before implementation: the new constructor arguments are rejecte
 
 - [ ] Step 2: Implement only the minimum timing seams.
 
-Add an interview-preparation-only heartbeat interval constant of 10 seconds. Keep LEASE_SECONDS at 30. Make lease duration and heartbeat interval keyword-only constructor options with production defaults. Route all lease deadline calculations in this repository through the repository’s injected values. Keep the existing session factory and model call signatures unchanged.
+Add an interview-preparation-only heartbeat interval constant of 10 seconds. Keep LEASE_SECONDS at 30. Make lease duration, heartbeat interval, and now_factory keyword-only constructor options with production defaults. now_factory must default to the existing UTC-aware current-time behavior and must not be exposed through the HTTP API. Route Attempt creation, lease renewal, lease expiry checks, and the takeover CAS expiry predicate through this same injected clock. The takeover UPDATE must compare provider_lease_until with a bound value from now_factory, not database wall-clock SQL. Keep the existing session factory and model call signatures unchanged.
 
 Define the private owner object as _InterviewPreparationLeaseHeartbeat with start(), stop_and_join(), heartbeat_count, confirmed_ownership_lost, and heartbeat_uncertain. Its renew_once() operation must be independently callable by tests and must use the same conditional update as the background loop. The repository constructor may accept a waiter callable defaulting to stop_event.wait; no waiter or timing option may be exposed through the HTTP API.
 
-Use an injectable waiting seam or an Event.wait-compatible callable so tests can stop the worker deterministically. The production default must remain a stoppable Event waiter and must not hold a database session while waiting.
+Use an injectable waiting seam or an Event.wait-compatible callable so tests can stop the worker deterministically. The production default must remain a stoppable Event waiter and must not hold a database session while waiting. Tests must advance a ManualClock and release a ControlledWaiter/barrier to drive ticks; they must not use sleep(0.05), sleep(0.01), or wall-clock expiry to advance lease state.
 
 - [ ] Step 3: Run the seam test and current repository suite.
 
@@ -90,7 +90,7 @@ git commit -m "test: AI add interview preparation lease timing seams"
 
 - [ ] Step 1: Add the failing slow-provider test.
 
-Use the existing BlockingSafeEmptyModel and its entered/release barriers. Configure a short lease and heartbeat interval, hold the Provider beyond the injected lease, and assert:
+Use the existing BlockingSafeEmptyModel and its entered/release barriers. Use ManualClock and ControlledWaiter; while the Provider is blocked, advance the clock past the original lease, release exactly one heartbeat tick, and assert the lease extension before releasing the Provider. Do not sleep to make the Provider slow and do not depend on wall-clock expiry. Assert:
 
 ~~~python
 assert result.created is True
@@ -111,7 +111,7 @@ Expected result before implementation: the old owner returns a pending result af
 
 - [ ] Step 2: Add the same-key concurrency regression.
 
-While the first model is blocked, call the same key through a second repository backed by a second SQLite connection. Assert the second result is pending/generating, its call path does not invoke a second Provider call, and the first result later becomes ready.
+While the first model is blocked, advance the ManualClock only through explicit test steps and call the same key through a second repository backed by a second SQLite connection. Assert the second result is pending/generating, its call path does not invoke a second Provider call, and the first result becomes ready after the barrier is released.
 
 The test must distinguish Provider calls from heartbeat updates. The model call counter must remain exactly 1.
 
@@ -146,7 +146,7 @@ uv run pytest tests/test_interview_preparation_repository.py -q -k "slow or hear
 
 Expected result: all selected tests pass; the Provider model counter is exactly 1 for the slow successful Attempt.
 
-The same run must include a preflight lifecycle assertion: preflight may return an existing ready/pending row or indicate that an expired row needs provider resolution, but it must never start a heartbeat. Only the subsequent create_generated owner starts one heartbeat, and an unconfigured Provider path leaves no worker or session behind.
+The same run must include a preflight lifecycle assertion: preflight may return an existing ready/pending row or indicate that an expired row needs provider resolution, but it must never start a heartbeat. Only the subsequent create_generated owner starts one heartbeat, and an unconfigured Provider path leaves no worker or session behind. Drive this with the ManualClock and assert heartbeat start count rather than waiting for a real interval.
 
 - [ ] Step 6: Commit the normal heartbeat slice.
 
@@ -163,7 +163,7 @@ git commit -m "feat: AI keep interview preparation lease alive"
 
 - [ ] Step 1: Add a failing expired-lease final-write regression.
 
-Create an Attempt with matching status, revision, token, and source fingerprint, then make provider_lease_until expire before the final persistence transaction while no takeover occurs. Release a successful Provider result and assert the result is still ready. This must fail against the current lease-expiry check.
+Create an Attempt with matching status, revision, token, and source fingerprint, then advance ManualClock beyond provider_lease_until before the final persistence transaction while no takeover occurs. Release a successful Provider result and assert the result is still ready. This must fail against the current lease-expiry check.
 
 - [ ] Step 2: Add confirmed versus uncertain heartbeat tests.
 
@@ -221,7 +221,7 @@ git commit -m "fix: AI fence late interview preparation results"
 
 - [ ] Step 1: Add the dual-connection takeover test.
 
-Use two independent session factories connected to the same SQLite database. Stop the first heartbeat, force its lease to expire, and start two same-key calls concurrently. Assert exactly one transaction changes generation_revision and provider_call_token, exactly one new owner invokes the Provider, and the other caller returns the current pending/ready state without a second owner.
+Use two independent session factories connected to the same SQLite database. Stop the first heartbeat, advance the shared ManualClock beyond its lease, and start two same-key calls concurrently. Assert exactly one transaction changes generation_revision and provider_call_token, exactly one new owner invokes the Provider, and the other caller returns the current pending/ready state without a second owner.
 
 - [ ] Step 2: Add the late-old-provider regression.
 
@@ -291,28 +291,37 @@ git commit -m "test: AI preserve interview preparation failure cleanup"
 
 **Files:**
 - No new product files.
-- Review the complete diff from feature baseline 6c712eb.
+- Review the complete product diff from feature baseline 9b60cb8.
 
 - [ ] Step 1: Verify the changed-file boundary.
 
 Run from the worktree root:
 
 ~~~powershell
-$changed = git diff --name-only 6c712eb..HEAD
-$changed
-if ($changed | Where-Object { $_ -match '^(src/offerpilot/models.py|src/offerpilot/db.py|web/|src/offerpilot/api.py|src/offerpilot/ai/)' }) {
-  throw 'Interview preparation lease heartbeat changed a forbidden API, schema, frontend, or AI contract file.'
+$featureBase = '9b60cb8'
+$allowed = @(
+  'src/offerpilot/repositories/interview_preparation_proposals.py',
+  'tests/test_interview_preparation_repository.py',
+  'tests/test_interview_preparation_api.py',
+  'tests/test_smoke.py',
+  'docs/reports/2026-08-01-offer-negotiation-release-verification.md'
+)
+$changed = @(git diff --name-only "$featureBase..HEAD" | ForEach-Object { $_.Replace('/', '\') })
+$allowed = @($allowed | ForEach-Object { $_.Replace('/', '\') })
+$unexpected = @($changed | Where-Object { $allowed -notcontains $_ })
+if ($unexpected.Count -gt 0) {
+  throw "Unexpected product files changed: $($unexpected -join ', ')"
 }
 ~~~
 
-The allowed product-code changes are limited to the repository implementation and the three named test files. The design and plan documents are documentation-only changes. Do not expand the product scope or add any other product-code file.
+The positive allowlist is the only accepted product boundary. The release report is optional and may be changed only to record this task’s verification. The design and plan documents already exist at the baseline and are not an excuse to modify another product file.
 
 - [ ] Step 2: Run static checks.
 
 ~~~powershell
 uv run ruff check src tests
 uv run mypy src
-git diff --check 6c712eb..HEAD
+git diff --check 9b60cb8..HEAD
 ~~~
 
 Expected result: all commands exit 0.
@@ -325,10 +334,59 @@ uv run pytest tests/test_interview_preparation_repository.py tests/test_intervie
 
 Expected result: exit 0; any Windows symlink skip must remain within the repository’s already defined allowlist and must not be added for this task.
 
-- [ ] Step 4: Commit only if static/repository changes were needed.
+- [ ] Step 4: Run the complete five-group backend gate before any real-AI command.
+
+Create one persisted temporary result directory and collect the full manifest from the same HEAD:
 
 ~~~powershell
-git add src/offerpilot/repositories/interview_preparation_proposals.py tests/test_interview_preparation_repository.py tests/test_interview_preparation_api.py tests/test_interview_preparation_ai.py tests/test_interview_preparation_migrations.py tests/test_smoke.py
+$gateDir = Join-Path $env:TEMP ("offerpilot-interview-preparation-pytest-" + $PID)
+New-Item -ItemType Directory -Force -Path $gateDir | Out-Null
+uv run pytest --collect-only -q --disable-warnings 2>&1 | Tee-Object -FilePath (Join-Path $gateDir 'full-manifest.txt')
+if ($LASTEXITCODE -ne 0) { throw 'full backend collection failed' }
+~~~
+
+Run each existing group as a separate persisted process, checking the exit code after each invocation:
+
+~~~powershell
+foreach ($group in @('agent', 'domain', 'knowledge', 'proposals', 'misc')) {
+  & powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-pytest-groups.ps1 -Group $group -ResultDir $gateDir
+  if ($LASTEXITCODE -ne 0) { throw "backend group failed: $group" }
+}
+& powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-pytest-groups.ps1 -Aggregate -ResultDir $gateDir
+if ($LASTEXITCODE -ne 0) { throw 'backend group aggregate failed' }
+~~~
+
+The persisted results must show that the five collected node-id sets form the full manifest exactly once. The aggregate must reject a missing/non-zero marker, duplicate node id, count/hash mismatch, or any skip except the four existing Windows symlink-permission cases with their exact node ids and reasons. Do not replace this with one long pytest invocation or a larger timeout.
+
+- [ ] Step 5: Validate the unchanged frontend aggregate against the current Web fingerprint.
+
+Use the existing frontend gate result directory recorded by the current release evidence and run its aggregate command with RepositoryRoot set to this worktree. If that aggregate is absent or rejects the current web/src production/test/config/lock/script fingerprint, create a fresh persisted temporary result directory and run all ten groups through scripts/windows-vitest-groups.ps1, then run -Aggregate. A current fingerprint mismatch is a gate failure until the groups are rerun; do not reuse stale JSON.
+
+The fresh rerun command is:
+
+~~~powershell
+$frontendGate = Join-Path $env:TEMP ("offerpilot-interview-preparation-vitest-" + $PID)
+New-Item -ItemType Directory -Force -Path $frontendGate | Out-Null
+$repoRoot = (Get-Location).Path
+& powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-vitest-groups.ps1 -Collect -RepositoryRoot $repoRoot -ResultDir $frontendGate
+if ($LASTEXITCODE -ne 0) { throw 'frontend collection failed' }
+foreach ($group in @('components-core', 'components-chat', 'components-interview', 'components-offer', 'components-support', 'features', 'layout', 'lib', 'services', 'theme')) {
+  & powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-vitest-groups.ps1 -Group $group -RepositoryRoot $repoRoot -ResultDir $frontendGate
+  if ($LASTEXITCODE -ne 0) { throw "frontend group failed: $group" }
+}
+& powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-vitest-groups.ps1 -Aggregate -RepositoryRoot $repoRoot -ResultDir $frontendGate
+if ($LASTEXITCODE -ne 0) { throw 'frontend aggregate failed' }
+~~~
+
+The frontend check must exit 0 and must not introduce a frontend change for this backend task.
+
+- [ ] Step 6: Clean the persisted backend/frontend gate directories after their summaries and checksums are recorded.
+
+- [ ] Step 7: Commit only if static/repository changes were needed.
+
+~~~powershell
+git add src/offerpilot/repositories/interview_preparation_proposals.py tests/test_interview_preparation_repository.py tests/test_interview_preparation_api.py tests/test_smoke.py
+git add -f docs/reports/2026-08-01-offer-negotiation-release-verification.md
 git commit -m "chore: AI verify interview preparation lease boundary"
 ~~~
 
@@ -337,7 +395,7 @@ If no files changed in this step, do not create an empty commit.
 ## Task 7: Isolated local and real-AI acceptance
 
 **Files:**
-- Modify only the release verification record if the repository’s existing release process requires it.
+- Modify only: docs/reports/2026-08-01-offer-negotiation-release-verification.md, appending the actual commands, exit codes, group counts, skip audit, and real-AI result from this task.
 - Do not store secrets, JD text, resume text, model output, or full request bodies.
 
 - [ ] Step 1: Run local isolated verification.
@@ -381,7 +439,7 @@ Review the final diff against the design document. Specifically check that:
 
 ~~~powershell
 git status --short --branch
-git diff --check 6c712eb..HEAD
+git diff --check 9b60cb8..HEAD
 ~~~
 
 Expected result: clean working tree and zero diff-check errors. Do not push or merge.
