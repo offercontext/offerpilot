@@ -2754,7 +2754,14 @@ def _running_server(app: Any) -> Any:
 def _dispose_smoke_app_database(app: Any) -> None:
     runtime = getattr(app.state, "knowledge_runtime", None)
     if runtime is not None:
-        runtime.stop(timeout=10)
+        stopped = runtime.stop(timeout=10)
+        if not stopped:
+            # Do not dispose the engine or remove the isolated directory while a
+            # worker can still touch SQLite. The second call intentionally waits
+            # for the worker's safe exit instead of performing best-effort cleanup.
+            stopped = runtime.stop(timeout=None)
+        if not stopped or runtime.running:
+            raise RuntimeError("Knowledge worker did not stop before database disposal")
     engine = getattr(app.state, "db_engine", None)
     if engine is not None:
         engine.dispose()

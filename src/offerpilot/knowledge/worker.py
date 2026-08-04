@@ -3152,12 +3152,12 @@ class KnowledgeWorkerRuntime:
             for thread in self._threads:
                 thread.start()
 
-    def stop(self, timeout: Optional[float] = 10.0) -> None:
+    def stop(self, timeout: Optional[float] = 10.0) -> bool:
         """请求停止并等待队列线程在安全点退出。"""
 
         with self._state_lock:
             if not self._running:
-                return
+                return True
             self._stop_event.set()
             threads = list(self._threads)
         deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
@@ -3169,6 +3169,7 @@ class KnowledgeWorkerRuntime:
             self._running = bool(self._threads)
             if not self._running:
                 self._threads = []
+            return not self._running
 
     close = stop
 

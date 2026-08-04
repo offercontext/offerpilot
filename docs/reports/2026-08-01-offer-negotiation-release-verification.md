@@ -8,7 +8,7 @@
 
 - 日历测试改用测试内创建的投递时间推导月份，消除固定月份导致的日期敏感失败。
 - smoke 隔离数据库销毁前停止 Knowledge runtime 并释放数据库 engine，避免后台 worker 在临时目录删除后继续访问 SQLite。
-- 新增前端稳定分组门禁脚本，逐组持久化收集结果、JUnit 和完成标记，再执行覆盖集合聚合。
+- 新增前端稳定分组门禁脚本，逐组持久化 Vitest JSON 报告、文本日志和完成标记，再执行覆盖集合聚合。
 
 ## 静态与测试门禁
 
@@ -22,16 +22,16 @@
 
 ### 后端五组门禁
 
-完整收集 manifest：**1738 个 node id**。五组均退出码 0；聚合校验确认无重复、并集与完整 manifest 一致，五组完成标记、JUnit 和收集摘要均匹配。
+完整收集 manifest：**1744 个 node id**。五组均退出码 0；聚合校验确认无重复、并集与完整 manifest 一致，五组完成标记、JUnit 和收集摘要均匹配。
 
 | 分组 | 收集/执行 | 允许 skip |
 |---|---:|---:|
 | agent | 423 / 423 passed | 0 |
 | domain | 70 / 70 passed | 0 |
-| knowledge | 658 / 654 passed | 4 |
-| proposals | 284 / 284 passed | 0 |
-| misc | 303 / 303 passed | 0 |
-| 合计 | 1738 / 1734 passed | 4 |
+| knowledge | 659 / 655 passed | 4 |
+| proposals | 285 / 285 passed | 0 |
+| misc | 307 / 307 passed | 0 |
+| 合计 | 1744 / 1740 passed | 4 |
 
 Knowledge 的 4 个 skip 仅为既定 Windows 符号链接权限条件，node id 为：
 
@@ -47,7 +47,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-pytest-gro
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-pytest-groups.ps1 -Aggregate -ResultDir <temp>
 ```
 
-前端稳定分组门禁：**103 个文件、727 个测试全部通过**；10 个分组均退出码 0，收集文件无重复且并集完整：components-core、components-chat、components-interview、components-offer、components-support、features、layout、lib、services、theme。
+前端稳定分组门禁：**103 个文件、727 个测试全部通过**；10 个分组均退出码 0，实际 Vitest JSON 结果文件集合与 manifest 完全一致，收集文件无重复且并集完整：components-core、components-chat、components-interview、components-offer、components-support、features、layout、lib、services、theme。
+
+| 前端分组 | 文件 / 测试 | 退出码 |
+|---|---:|---:|
+| components-core | 22 / 108 | 0 |
+| components-chat | 11 / 182 | 0 |
+| components-interview | 11 / 45 | 0 |
+| components-offer | 8 / 45 | 0 |
+| components-support | 8 / 32 | 0 |
+| features | 12 / 129 | 0 |
+| layout | 10 / 65 | 0 |
+| lib | 9 / 73 | 0 |
+| services | 11 / 47 | 0 |
+| theme | 1 / 1 | 0 |
 
 ## 隔离运行时验收
 
@@ -73,7 +86,7 @@ real-AI 复跑未再出现 `unable to open database file`。当前失败发生�
 
 ## 清理与剩余风险
 
-- 已停止临时服务、浏览器标签及测试后台进程，并删除本轮创建的临时数据、JUnit、manifest 和分组结果目录。
+- 已停止临时服务、浏览器标签及测试后台进程，并删除本轮创建的临时数据、Vitest JSON 报告、manifest 和分组结果目录。
 - 产品代码与测试门禁没有新增 skip；4 个既定符号链接权限 skip 已逐项核验。
 - 发布仍不通过：完整 real-AI verify 被 Provider `ReadTimeout` 阻塞。该外部稳定性风险需要单独重新验收，不能通过放宽 JSON、证据、HITL 或错误语义解决。
 - 本报告不包含密钥、简历/JD 原文、模型原文或 Provider 原始请求标识。

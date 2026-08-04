@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -49,6 +50,22 @@ class _RuntimeRunner:
         return []
 
 
+class _BlockingRuntimeRunner:
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def tick_extraction(self, **_: Any) -> list[Any]:
+        self.entered.set()
+        self.release.wait(2.0)
+        return []
+
+    def tick_brief(self, **_: Any) -> list[Any]:
+        self.entered.set()
+        self.release.wait(2.0)
+        return []
+
+
 def test_runtime_starts_two_consumers_and_stops_cleanly() -> None:
     repository = _RuntimeRepository()
     runner = _RuntimeRunner()
@@ -70,6 +87,24 @@ def test_runtime_starts_two_consumers_and_stops_cleanly() -> None:
     assert repository.recoveries >= 1
     assert runner.extraction_calls > 0
     assert runner.brief_calls > 0
+    assert runtime.running is False
+
+
+def test_runtime_stop_reports_timeout_and_waits_for_blocking_worker() -> None:
+    repository = _RuntimeRepository()
+    runner = _BlockingRuntimeRunner()
+    runtime = KnowledgeWorkerRuntime(runner, repository)  # type: ignore[arg-type]
+
+    runtime.start()
+    assert runner.entered.wait(1.0)
+
+    stopped = runtime.stop(timeout=0.01)
+
+    assert stopped is False
+    assert runtime.running is True
+
+    runner.release.set()
+    assert runtime.stop(timeout=1.0) is True
     assert runtime.running is False
 
 

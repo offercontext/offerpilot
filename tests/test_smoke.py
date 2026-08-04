@@ -751,12 +751,29 @@ def test_smoke_database_disposal_stops_background_knowledge_runtime(monkeypatch,
     monkeypatch.setattr(
         app.state.knowledge_runtime,
         "stop",
-        lambda timeout=None: calls.append(timeout),
+        lambda timeout=None: (calls.append(timeout), True)[1],
     )
 
     _dispose_smoke_app_database(app)
 
     assert calls == [10]
+
+
+def test_smoke_database_disposal_waits_before_engine_disposal(monkeypatch, tmp_path):
+    app = create_app(data_dir=tmp_path / "isolated")
+    runtime = app.state.knowledge_runtime
+    calls: list[float | None] = []
+    results = iter((False, True))
+
+    monkeypatch.setattr(
+        runtime,
+        "stop",
+        lambda timeout=None: (calls.append(timeout), next(results))[1],
+    )
+
+    _dispose_smoke_app_database(app)
+
+    assert calls == [10, None]
 
 
 def test_real_ai_smoke_cleanup_removes_material_records_and_active_resume(tmp_path):

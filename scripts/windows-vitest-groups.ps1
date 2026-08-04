@@ -18,6 +18,11 @@ Set-Location $webRoot
 
 $groupNames = @('components-core', 'components-chat', 'components-interview', 'components-offer', 'components-support', 'features', 'layout', 'lib', 'services', 'theme')
 $manifestPath = Join-Path $resolvedResultDir 'frontend-manifest.json'
+$aggregatePath = Join-Path $resolvedResultDir 'frontend.aggregate.json'
+
+if (Test-Path -LiteralPath $aggregatePath) {
+    Remove-Item -LiteralPath $aggregatePath -Force
+}
 
 function Get-TestFiles {
     @(
@@ -57,20 +62,26 @@ function Get-GroupForFile([string]$File) {
     return $group
 }
 
-function Get-Manifest {
-    if (-not (Test-Path -LiteralPath $manifestPath)) {
-        throw "Frontend manifest is missing: $manifestPath"
+function Get-Sha256([string]$Path) {
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
+}
+
+function Get-TextSha256([string]$Value) {
+    $bytes = [Text.Encoding]::UTF8.GetBytes($Value)
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($algorithm.ComputeHash($bytes)) -replace '-', '').ToLowerInvariant()
+    } finally {
+        $algorithm.Dispose()
     }
-    $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding utf8 | ConvertFrom-Json
-    if ($manifest.manifest_version -ne 1) {
-        throw 'Unsupported frontend manifest version'
-    }
-    $files = @($manifest.files | ForEach-Object { [string]$_ })
-    $duplicates = @($files | Group-Object | Where-Object Count -gt 1)
-    if ($duplicates.Count -gt 0) {
-        throw "Frontend manifest contains duplicate files: $($duplicates.Name -join ', ')"
-    }
-    return $files
+}
+
+function Get-SourceHash([string[]]$Files) {
+    $lines = @($Files | Sort-Object | ForEach-Object {
+        $path = Join-Path $webRoot $_
+        "$_|$(Get-Sha256 $path)"
+    })
+    Get-TextSha256 ($lines -join "`n")
 }
 
 function Write-Manifest {
@@ -89,29 +100,62 @@ function Write-Manifest {
         manifest_version = 1
         collected_at_utc = [DateTime]::UtcNow.ToString('o')
         file_count = $files.Count
+        source_hash = Get-SourceHash $files
         files = $files
         groups = $groups
     } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $manifestPath -Encoding utf8
     Write-Host "Frontend manifest collected: $($files.Count) test files"
 }
 
-function Get-Sha256([string]$Path) {
-    (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
+function Get-Manifest {
+    if (-not (Test-Path -LiteralPath $manifestPath)) {
+        throw "Frontend manifest is missing: $manifestPath"
+    }
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding utf8 | ConvertFrom-Json
+    if ($manifest.manifest_version -ne 1) {
+        throw 'Unsupported frontend manifest version'
+    }
+    $files = @($manifest.files | ForEach-Object { [string]$_ })
+    $duplicates = @($files | Group-Object | Where-Object Count -gt 1)
+    if ($duplicates.Count -gt 0) {
+        throw "Frontend manifest contains duplicate files: $($duplicates.Name -join ', ')"
+    }
+    if ([int]$manifest.file_count -ne $files.Count) {
+        throw 'Frontend manifest file_count does not match files'
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$manifest.source_hash)) {
+        throw 'Frontend manifest source_hash is missing'
+    }
+    if ([string]$manifest.source_hash -ne (Get-SourceHash $files)) {
+        throw 'Frontend manifest source_hash does not match test sources'
+    }
+    [pscustomobject]@{
+        file_count = [int]$manifest.file_count
+        source_hash = [string]$manifest.source_hash
+        files = $files
+    }
 }
 
-function Get-TextSha256([string]$Value) {
-    $bytes = [Text.Encoding]::UTF8.GetBytes($Value)
-    $algorithm = [Security.Cryptography.SHA256]::Create()
-    try {
-        return ([BitConverter]::ToString($algorithm.ComputeHash($bytes)) -replace '-', '').ToLowerInvariant()
-    } finally {
-        $algorithm.Dispose()
-    }
+function Get-ReportFiles([object]$Report) {
+    @($Report.testResults | ForEach-Object {
+        $resultPath = [System.IO.Path]::GetFullPath([string]$_.name)
+        $resultPath.Substring($webRoot.Length + 1).Replace('/', '\')
+    })
 }
 
 function Get-AssertionRecords([object]$Report, [string[]]$ExpectedFiles) {
     $expected = @{}
     foreach ($file in $ExpectedFiles) { $expected[$file] = $true }
+    $actualFiles = @(Get-ReportFiles $Report)
+    $actualDuplicates = @($actualFiles | Group-Object | Where-Object Count -gt 1)
+    if ($actualDuplicates.Count -gt 0) {
+        throw "Vitest returned duplicate test files: $($actualDuplicates.Name -join ', ')"
+    }
+    $fileDifferences = @(Compare-Object -ReferenceObject @($ExpectedFiles | Sort-Object) -DifferenceObject @($actualFiles | Sort-Object))
+    if ($fileDifferences.Count -gt 0) {
+        $differenceNames = @($fileDifferences | ForEach-Object { [string]$_.InputObject })
+        throw "Vitest file set does not match expected files: $($differenceNames -join ', ')"
+    }
     $records = @()
     foreach ($result in @($Report.testResults)) {
         $resultPath = [System.IO.Path]::GetFullPath([string]$result.name)
@@ -134,7 +178,8 @@ function Get-AssertionRecords([object]$Report, [string[]]$ExpectedFiles) {
 }
 
 function Invoke-FrontendGroup([string]$Name) {
-    $files = @(Get-Manifest | Where-Object { (Get-GroupForFile $_) -eq $Name })
+    $manifest = Get-Manifest
+    $files = @($manifest.files | Where-Object { (Get-GroupForFile $_) -eq $Name })
     if ($files.Count -eq 0) { throw "Frontend group $Name has no files" }
     $jsonPath = Join-Path $resolvedResultDir "$Name.results.json"
     $runPath = Join-Path $resolvedResultDir "$Name.run.txt"
@@ -160,21 +205,23 @@ function Invoke-FrontendGroup([string]$Name) {
     if ($records.Count -ne [int]$report.numTotalTests) {
         throw "$Name assertion count does not match Vitest report"
     }
-    $marker = [ordered]@{
+    [ordered]@{
         marker_version = 1
         status = 'completed'
         group = $Name
         exit_code = $exitCode
         file_count = $files.Count
         test_count = $records.Count
+        manifest_sha256 = Get-Sha256 $manifestPath
+        source_sha256 = $manifest.source_hash
         result_sha256 = Get-Sha256 $jsonPath
-    }
-    $marker | ConvertTo-Json | Set-Content -LiteralPath $markerPath -Encoding utf8
+    } | ConvertTo-Json | Set-Content -LiteralPath $markerPath -Encoding utf8
     Write-Host "$Name completed: $($files.Count) files, $($records.Count) tests"
 }
 
 function Invoke-Aggregate {
-    $files = @(Get-Manifest)
+    $manifest = Get-Manifest
+    $files = @($manifest.files)
     $allRecords = New-Object System.Collections.Generic.List[object]
     $seenFiles = @{}
     foreach ($name in $groupNames) {
@@ -187,24 +234,27 @@ function Invoke-Aggregate {
         if ($marker.marker_version -ne 1 -or $marker.status -ne 'completed' -or $marker.group -ne $name -or [int]$marker.exit_code -ne 0) {
             throw "$name completion marker is not successful"
         }
+        if ($marker.manifest_sha256 -ne (Get-Sha256 $manifestPath) -or $marker.source_sha256 -ne $manifest.source_hash) {
+            throw "$name completion marker is from a different manifest or source set"
+        }
         if ($marker.result_sha256 -ne (Get-Sha256 $jsonPath)) { throw "$name result hash mismatches marker" }
         $expected = @($files | Where-Object { (Get-GroupForFile $_) -eq $name })
+        if ([int]$marker.file_count -ne $expected.Count) { throw "$name completion marker file_count mismatches manifest" }
         $report = Get-Content -LiteralPath $jsonPath -Raw -Encoding utf8 | ConvertFrom-Json
         $records = @(Get-AssertionRecords $report $expected)
         if ($records.Count -ne [int]$marker.test_count -or $records.Count -ne [int]$report.numTotalTests) {
             throw "$name test count mismatches completion marker"
         }
-        foreach ($file in $expected) {
+        foreach ($file in @(Get-ReportFiles $report)) {
             if ($seenFiles.ContainsKey($file)) { $seenFiles[$file] += 1 } else { $seenFiles[$file] = 1 }
         }
         foreach ($record in $records) { $allRecords.Add($record) }
     }
     $duplicateTests = @($allRecords | Group-Object -Property id | Where-Object Count -gt 1)
-    if ($duplicateTests.Count -gt 0) { throw "Frontend group coverage contains duplicate test ids" }
+    if ($duplicateTests.Count -gt 0) { throw 'Frontend group coverage contains duplicate test ids' }
     foreach ($file in $files) {
         if ($seenFiles[$file] -ne 1) { throw "Frontend file coverage is incomplete or duplicated: $file" }
     }
-    $aggregatePath = Join-Path $resolvedResultDir 'frontend.aggregate.json'
     [ordered]@{
         status = 'completed'
         group_count = $groupNames.Count
