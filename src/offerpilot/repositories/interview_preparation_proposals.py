@@ -180,7 +180,7 @@ class _InterviewPreparationLeaseHeartbeat:
                 if self._stop_event.is_set():
                     return
                 self.renew_once()
-                if self.confirmed_ownership_lost:
+                if self.confirmed_ownership_lost or self.heartbeat_uncertain:
                     return
         except Exception:
             self.heartbeat_uncertain = True

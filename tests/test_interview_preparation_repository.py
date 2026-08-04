@@ -7,6 +7,7 @@ from threading import Event, Lock
 
 import pytest
 from sqlalchemy import select, text
+from sqlalchemy.exc import SQLAlchemyError
 
 from offerpilot.ai.interview_preparation_proposals import safe_empty_interview_preparation_proposal
 from offerpilot.ai.types import Assistant
@@ -61,6 +62,53 @@ class ControlledWaiter:
 
     def wake(self) -> None:
         self._wake.set()
+
+
+class CountingWaiter(ControlledWaiter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.call_count = 0
+        self.second_call = Event()
+
+    def __call__(self, timeout: float) -> bool:
+        self.call_count += 1
+        if self.call_count == 2:
+            self.second_call.set()
+        return super().__call__(timeout)
+
+
+class FailingHeartbeatSessionFactory:
+    def __init__(self, factory) -> None:  # type: ignore[no-untyped-def]
+        self.factory = factory
+        self.calls = 0
+        self.failed = Event()
+
+    def __call__(self):  # type: ignore[no-untyped-def]
+        self.calls += 1
+        if self.calls == 1:
+            self.failed.set()
+            raise SQLAlchemyError("injected heartbeat lock failure")
+        return self.factory()
+
+
+class CommitObservingSessionFactory:
+    def __init__(self, factory) -> None:  # type: ignore[no-untyped-def]
+        self.factory = factory
+        self.enabled = False
+        self.committed = Event()
+
+    def __call__(self):  # type: ignore[no-untyped-def]
+        session = self.factory()
+        original_commit = session.commit
+
+        def commit(*args, **kwargs):  # type: ignore[no-untyped-def]
+            result = original_commit(*args, **kwargs)
+            if self.enabled:
+                self.committed.set()
+            return result
+
+        session.commit = commit  # type: ignore[method-assign]
+        return session
 
 
 def _as_aware_for_test(value: datetime | None) -> datetime | None:
@@ -227,12 +275,59 @@ def test_heartbeat_renew_once_extends_lease_with_fenced_owner(tmp_path) -> None:
             )
 
 
+def test_heartbeat_uncertain_stops_future_renewals_but_allows_final_fencing_cas(
+    tmp_path,
+) -> None:
+    factory, ids = _setup(tmp_path)
+    clock = ManualClock(datetime(2026, 8, 4, 10, 0, tzinfo=timezone.utc))
+    failing_factory = FailingHeartbeatSessionFactory(factory)
+    waiter = CountingWaiter()
+    with factory() as session:
+        row = InterviewPreparationProposal(
+            application_id=ids[0],
+            application_event_id=ids[1],
+            resume_id=ids[2],
+            idempotency_key="heartbeat-uncertain-key",
+            attempt_status="generating",
+            generation_revision=1,
+            provider_call_token="heartbeat-uncertain-token",
+            provider_lease_until=(clock.now() + timedelta(seconds=30)).replace(
+                tzinfo=None
+            ),
+            input_snapshot_json="{}",
+            source_fingerprint="source-fingerprint",
+        )
+        session.add(row)
+        session.commit()
+
+    heartbeat = _InterviewPreparationLeaseHeartbeat(
+        session_factory=failing_factory,
+        attempt_id=row.id,
+        owner_revision=1,
+        owner_token="heartbeat-uncertain-token",
+        lease_seconds=30,
+        now_factory=clock.now,
+        waiter=waiter,
+    )
+    heartbeat.start()
+    assert waiter.entered.wait(1)
+    waiter.release_tick()
+    assert failing_factory.failed.wait(1)
+    assert heartbeat.heartbeat_uncertain is True
+
+    waiter.release_tick()
+    assert waiter.second_call.wait(0.1) is False
+    heartbeat.stop_and_join()
+    assert failing_factory.calls == 1
+
+
 def test_slow_provider_renews_expired_lease_and_calls_provider_once(tmp_path) -> None:
     factory, ids = _setup(tmp_path)
-    clock = ManualClock(datetime.now(timezone.utc) - timedelta(seconds=2))
+    clock = ManualClock(datetime(2026, 8, 4, 10, 0, tzinfo=timezone.utc))
     waiter = ControlledWaiter()
+    observed_factory = CommitObservingSessionFactory(factory)
     repository = InterviewPreparationProposalsRepository(
-        factory,
+        observed_factory,
         lease_seconds=1,
         heartbeat_interval_seconds=10,
         now_factory=clock.now,
@@ -244,18 +339,16 @@ def test_slow_provider_renews_expired_lease_and_calls_provider_once(tmp_path) ->
         future = pool.submit(_generate, repository, ids, "slow-heartbeat-key", model)
         assert model.entered.wait(5)
         assert waiter.entered.wait(5)
+        observed_factory.enabled = True
+        observed_factory.committed.clear()
         clock.advance(seconds=30)
         waiter.release_tick()
+        assert observed_factory.committed.wait(1)
 
-        for _ in range(1000):
-            with factory() as session:
-                row = session.scalar(select(InterviewPreparationProposal))
-                lease_until = _as_aware_for_test(row.provider_lease_until) if row else None
-            if lease_until is not None and lease_until > datetime.now(timezone.utc):
-                break
-            Event().wait(0.001)
-        else:
-            pytest.fail("heartbeat did not extend the lease")
+        with factory() as session:
+            row = session.scalar(select(InterviewPreparationProposal))
+            lease_until = _as_aware_for_test(row.provider_lease_until) if row else None
+        assert lease_until is not None and lease_until > clock.now()
 
         model.release.set()
         result = future.result(timeout=5)
@@ -268,7 +361,8 @@ def test_slow_provider_renews_expired_lease_and_calls_provider_once(tmp_path) ->
 
 def test_expired_lease_without_takeover_can_persist_valid_provider_result(tmp_path) -> None:
     factory, ids = _setup(tmp_path)
-    repository = InterviewPreparationProposalsRepository(factory)
+    clock = ManualClock(datetime(2026, 8, 4, 10, 0, tzinfo=timezone.utc))
+    repository = InterviewPreparationProposalsRepository(factory, now_factory=clock.now)
     with pytest.raises(InterviewPreparationProviderError):
         _generate(repository, ids, "expired-final-key-01", FailingModel())
 
@@ -280,7 +374,7 @@ def test_expired_lease_without_takeover_can_persist_valid_provider_result(tmp_pa
         row.attempt_status = "generating"
         row.generation_revision = 2
         row.provider_call_token = "expired-final-owner"
-        row.provider_lease_until = datetime.now(timezone.utc) - timedelta(seconds=1)
+        row.provider_lease_until = (clock.now() - timedelta(seconds=1)).replace(tzinfo=None)
         session.commit()
 
     result = repository._call_and_store(
@@ -439,7 +533,8 @@ def test_first_request_without_old_row_creates_lease_before_provider_and_calls_o
 
 def test_provider_unknown_cas_preserves_token_and_unexpired_lease(tmp_path) -> None:
     factory, ids = _setup(tmp_path)
-    repository = InterviewPreparationProposalsRepository(factory)
+    clock = ManualClock(datetime(2026, 8, 4, 10, 0, tzinfo=timezone.utc))
+    repository = InterviewPreparationProposalsRepository(factory, now_factory=clock.now)
     model = FailingModel()
 
     with pytest.raises(InterviewPreparationProviderError):
@@ -451,7 +546,7 @@ def test_provider_unknown_cas_preserves_token_and_unexpired_lease(tmp_path) -> N
         assert row.attempt_status == "provider_unknown"
         assert row.provider_call_token
         assert row.provider_lease_until is not None
-        assert row.provider_lease_until.replace(tzinfo=timezone.utc) > datetime.now(timezone.utc)
+        assert row.provider_lease_until.replace(tzinfo=timezone.utc) > clock.now()
         original_token = row.provider_call_token
 
     retry = _generate(repository, ids, "unknown-key-0000001", SafeEmptyModel())
@@ -482,15 +577,16 @@ def test_source_deletion_during_provider_call_invalidates_attempt_without_ready_
 def test_expired_lease_takeover_atomically_bumps_revision_and_only_one_wins(tmp_path) -> None:
     factory_a, ids = _setup(tmp_path)
     factory_b = init_database(tmp_path / "data.db")
-    repository_a = InterviewPreparationProposalsRepository(factory_a)
-    repository_b = InterviewPreparationProposalsRepository(factory_b)
+    clock = ManualClock(datetime(2026, 8, 4, 10, 0, tzinfo=timezone.utc))
+    repository_a = InterviewPreparationProposalsRepository(factory_a, now_factory=clock.now)
+    repository_b = InterviewPreparationProposalsRepository(factory_b, now_factory=clock.now)
     with pytest.raises(InterviewPreparationProviderError):
         _generate(repository_a, ids, "expired-key-0000001", FailingModel())
     with factory_a() as session:
         row = session.scalar(select(InterviewPreparationProposal))
         assert row is not None
         old_token = row.provider_call_token
-        row.provider_lease_until = datetime.now(timezone.utc) - timedelta(seconds=1)
+        row.provider_lease_until = (clock.now() - timedelta(seconds=1)).replace(tzinfo=None)
         session.commit()
 
     model = BlockingSafeEmptyModel()
@@ -518,8 +614,9 @@ def test_expired_lease_takeover_atomically_bumps_revision_and_only_one_wins(tmp_
 def test_late_old_provider_result_cannot_overwrite_new_owner_ready_result(tmp_path) -> None:
     factory_a, ids = _setup(tmp_path)
     factory_b = init_database(tmp_path / "data.db")
-    repository_a = InterviewPreparationProposalsRepository(factory_a)
-    repository_b = InterviewPreparationProposalsRepository(factory_b)
+    clock = ManualClock(datetime(2026, 8, 4, 10, 0, tzinfo=timezone.utc))
+    repository_a = InterviewPreparationProposalsRepository(factory_a, now_factory=clock.now)
+    repository_b = InterviewPreparationProposalsRepository(factory_b, now_factory=clock.now)
     with pytest.raises(InterviewPreparationProviderError):
         _generate(repository_a, ids, "late-takeover-key-01", FailingModel())
 
@@ -531,7 +628,7 @@ def test_late_old_provider_result_cannot_overwrite_new_owner_ready_result(tmp_pa
         row.attempt_status = "generating"
         row.generation_revision = 1
         row.provider_call_token = "old-owner-token"
-        row.provider_lease_until = datetime.now(timezone.utc) - timedelta(seconds=1)
+        row.provider_lease_until = (clock.now() - timedelta(seconds=1)).replace(tzinfo=None)
         session.commit()
 
     old_model = BlockingSafeEmptyModel()
