@@ -12,7 +12,7 @@
 - smoke 隔离数据库销毁前停止 Knowledge runtime 并释放数据库 engine，避免后台 worker 在临时目录删除后继续访问 SQLite。
 - 新增前端稳定分组门禁脚本，逐组持久化 Vitest JSON 报告、文本日志和完成标记，再执行覆盖集合聚合。
 - 前端门禁每次重新发现当前测试集合，并将 `web/src`、前端配置/锁文件和分组脚本内容绑定到 manifest；负向测试使用 `tmp_path` 最小仓库副本，不改写真实源码。
-- `RepositoryRoot` 会规范化尾部分隔符，并在计算相对路径前校验根目录边界；补充尾部 `\` 回归。
+- `RepositoryRoot` 会规范化尾部分隔符，并在计算相对路径前校验根目录边界；补充尾部 `\`、省略参数默认根目录和 `web`/`web-evil` 相邻前缀目录拒绝回归。
 - 补充 worker 停止后 dispose 顺序及 worker 未退出时禁止 dispose 的回归测试。
 
 ## 静态与测试门禁
@@ -54,7 +54,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-pytest-gro
 
 前端稳定分组门禁：**103 个文件、727 个测试全部通过**；10 个分组均退出码 0，实际 Vitest JSON 结果文件集合与 manifest 完全一致，收集文件无重复且并集完整：components-core、components-chat、components-interview、components-offer、components-support、features、layout、lib、services、theme。
 
-前端门禁与 smoke 收口专项：`uv run pytest tests/test_frontend_vitest_groups.py tests/test_smoke.py -q` 为 **62 passed**；包含默认根目录、尾部分隔根目录和最小 fixture 三类路径回归。
+前端门禁与 smoke 收口专项：`uv run pytest tests/test_frontend_vitest_groups.py tests/test_smoke.py -q` 为 **64 passed**；包含省略 `RepositoryRoot` 的默认根目录、尾部分隔根目录、相邻前缀目录拒绝和最小 fixture 四类路径回归。
 
 | 前端分组 | 文件 / 测试 | 退出码 |
 |---|---:|---:|

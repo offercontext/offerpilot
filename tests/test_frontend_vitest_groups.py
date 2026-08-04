@@ -34,23 +34,24 @@ def _run_gate(
     *arguments: str,
     env: dict[str, str] | None = None,
     script: Path = SCRIPT,
-    repository_root: Path | str = ROOT,
+    repository_root: Path | str | None = ROOT,
 ) -> subprocess.CompletedProcess[str]:
+    command = [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script),
+        *arguments,
+        "-ResultDir",
+        str(result_dir),
+    ]
+    if repository_root is not None:
+        command.extend(("-RepositoryRoot", str(repository_root)))
     return subprocess.run(
-        [
-            "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(script),
-            *arguments,
-            "-ResultDir",
-            str(result_dir),
-            "-RepositoryRoot",
-            str(repository_root),
-        ],
-        cwd=repository_root,
+        command,
+        cwd=repository_root if repository_root is not None else ROOT,
         env=env,
         capture_output=True,
         text=True,
@@ -158,6 +159,38 @@ def test_frontend_gate_accepts_repository_root_with_trailing_separator(tmp_path:
     assert collected.returncode == 0, collected.stdout + collected.stderr
     manifest = json.loads((result_dir / "frontend-manifest.json").read_text(encoding="utf-8-sig"))
     assert all(file_path.startswith("src\\") for file_path in manifest["files"])
+
+
+@pytest.mark.skipif(not _powershell_available(), reason="Windows PowerShell is required")
+def test_frontend_gate_defaults_repository_root_from_script_location(tmp_path: Path) -> None:
+    repository_root, script, _ = _make_gate_fixture(tmp_path)
+    result_dir = tmp_path / "results"
+    collected = _run_gate(result_dir, "-Collect", script=script, repository_root=None)
+
+    assert collected.returncode == 0, collected.stdout + collected.stderr
+
+
+@pytest.mark.skipif(not _powershell_available(), reason="Windows PowerShell is required")
+def test_frontend_gate_rejects_adjacent_prefix_result_root(tmp_path: Path) -> None:
+    repository_root, script, web_root = _make_gate_fixture(tmp_path)
+    result_dir = tmp_path / "results"
+    collected = _run_gate(result_dir, "-Collect", script=script, repository_root=repository_root)
+    assert collected.returncode == 0, collected.stdout + collected.stderr
+    environment = _fake_npm_environment(tmp_path, result_dir / "frontend-manifest.json", web_root)
+    environment["FAKE_VITEST_GROUP"] = "theme"
+    environment["FAKE_VITEST_WEB_ROOT"] = str(repository_root.parent / "web-evil")
+
+    run = _run_gate(
+        result_dir,
+        "-Group",
+        "theme",
+        env=environment,
+        script=script,
+        repository_root=repository_root,
+    )
+
+    assert run.returncode != 0
+    assert "outside repository root" in (run.stdout + run.stderr)
 
 
 @pytest.mark.skipif(not _powershell_available(), reason="Windows PowerShell is required")
