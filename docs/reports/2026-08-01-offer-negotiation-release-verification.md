@@ -112,7 +112,7 @@ real-AI 复跑未再出现 `unable to open database file`。本轮完整 real-AI
 | `uv run pytest tests/test_interview_preparation_repository.py tests/test_interview_preparation_api.py tests/test_interview_preparation_ai.py tests/test_interview_preparation_migrations.py tests/test_smoke.py -q` | 0；103 passed |
 | `uv run ruff check src tests` | 0 |
 | `uv run mypy src` | 0；64 source files |
-| `git diff --check 6fcbee9..HEAD` | 0 |
+| `git diff --check 6fcbee907f6cbf4684a0bb50b63db3db9e17003d..HEAD` | 0 |
 
 后端分组最终收集 **1762** 项，分组结果为：agent `423/423`、domain `70/70`、knowledge `659/655`（4 个既定 Windows 符号链接权限 skip）、proposals `298/298`、misc `312/312`；每组退出码 0，aggregate 退出码 0，node id 无重复且并集与完整 manifest 一致。允许 skip 仍仅为本报告上方列出的 4 项及其精确原因。
 
