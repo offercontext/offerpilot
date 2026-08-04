@@ -76,9 +76,41 @@ function Get-TextSha256([string]$Value) {
     }
 }
 
+function Get-RepoRelativePath([string]$Path) {
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $fullPath.Substring($repoRoot.Length + 1).Replace('/', '\\')
+}
+
+function Get-FingerprintFiles {
+    $files = @(
+        Get-ChildItem -Path (Join-Path $webRoot 'src') -Recurse -File |
+            ForEach-Object { Get-RepoRelativePath $_.FullName }
+    )
+    $webMetadataNames = @(
+        'package.json',
+        'package-lock.json',
+        'pnpm-lock.yaml',
+        'yarn.lock',
+        'bun.lockb',
+        'tsconfig.json',
+        'tsconfig.node.json'
+    )
+    $files += @(
+        Get-ChildItem -Path $webRoot -File -Force |
+            Where-Object {
+                $webMetadataNames -contains $_.Name -or
+                $_.Name -match '(^|\.)(config|lock)(\.|$)' -or
+                $_.Name -like 'tsconfig*.json'
+            } |
+            ForEach-Object { Get-RepoRelativePath $_.FullName }
+    )
+    $files += Get-RepoRelativePath $PSCommandPath
+    @($files | Sort-Object -Unique)
+}
+
 function Get-SourceHash([string[]]$Files) {
     $lines = @($Files | Sort-Object | ForEach-Object {
-        $path = Join-Path $webRoot $_
+        $path = Join-Path $repoRoot $_
         "$_|$(Get-Sha256 $path)"
     })
     Get-TextSha256 ($lines -join "`n")
@@ -96,11 +128,15 @@ function Write-Manifest {
         $groups[$name] = @($files | Where-Object { (Get-GroupForFile $_) -eq $name })
         if (@($groups[$name]).Count -eq 0) { throw "Frontend group $name has no test files" }
     }
+    $fingerprintFiles = @(Get-FingerprintFiles)
+    if ($fingerprintFiles.Count -eq 0) { throw 'No frontend fingerprint files were found' }
     [ordered]@{
         manifest_version = 1
         collected_at_utc = [DateTime]::UtcNow.ToString('o')
         file_count = $files.Count
-        source_hash = Get-SourceHash $files
+        fingerprint_file_count = $fingerprintFiles.Count
+        fingerprint_files = $fingerprintFiles
+        source_hash = Get-SourceHash $fingerprintFiles
         files = $files
         groups = $groups
     } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $manifestPath -Encoding utf8
@@ -123,14 +159,35 @@ function Get-Manifest {
     if ([int]$manifest.file_count -ne $files.Count) {
         throw 'Frontend manifest file_count does not match files'
     }
+    $currentFiles = @(Get-TestFiles)
+    $testFileDifferences = @(Compare-Object -ReferenceObject @($files | Sort-Object) -DifferenceObject @($currentFiles | Sort-Object))
+    if ($testFileDifferences.Count -gt 0) {
+        $differenceNames = @($testFileDifferences | ForEach-Object { [string]$_.InputObject })
+        throw "Frontend test file set changed since collection: $($differenceNames -join ', ')"
+    }
+    $fingerprintFiles = @($manifest.fingerprint_files | ForEach-Object { [string]$_ })
+    if ([int]$manifest.fingerprint_file_count -ne $fingerprintFiles.Count) {
+        throw 'Frontend manifest fingerprint_file_count does not match fingerprint_files'
+    }
+    $fingerprintDuplicates = @($fingerprintFiles | Group-Object | Where-Object Count -gt 1)
+    if ($fingerprintDuplicates.Count -gt 0) {
+        throw "Frontend manifest contains duplicate fingerprint files: $($fingerprintDuplicates.Name -join ', ')"
+    }
+    $currentFingerprintFiles = @(Get-FingerprintFiles)
+    $fingerprintDifferences = @(Compare-Object -ReferenceObject @($fingerprintFiles | Sort-Object) -DifferenceObject @($currentFingerprintFiles | Sort-Object))
+    if ($fingerprintDifferences.Count -gt 0) {
+        $differenceNames = @($fingerprintDifferences | ForEach-Object { [string]$_.InputObject })
+        throw "Frontend fingerprint file set changed since collection: $($differenceNames -join ', ')"
+    }
     if ([string]::IsNullOrWhiteSpace([string]$manifest.source_hash)) {
         throw 'Frontend manifest source_hash is missing'
     }
-    if ([string]$manifest.source_hash -ne (Get-SourceHash $files)) {
-        throw 'Frontend manifest source_hash does not match test sources'
+    if ([string]$manifest.source_hash -ne (Get-SourceHash $currentFingerprintFiles)) {
+        throw 'Frontend manifest source_hash does not match frontend sources or gate configuration'
     }
     [pscustomobject]@{
         file_count = [int]$manifest.file_count
+        fingerprint_file_count = [int]$manifest.fingerprint_file_count
         source_hash = [string]$manifest.source_hash
         files = $files
     }

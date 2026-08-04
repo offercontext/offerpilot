@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -774,6 +775,52 @@ def test_smoke_database_disposal_waits_before_engine_disposal(monkeypatch, tmp_p
     _dispose_smoke_app_database(app)
 
     assert calls == [10, None]
+
+
+def test_smoke_database_disposal_orders_engine_after_worker_stop():
+    events: list[str] = []
+
+    class _Runtime:
+        running = True
+
+        def stop(self, timeout=None):
+            events.append(f"stop:{timeout}")
+            self.running = False
+            return True
+
+    class _Engine:
+        def dispose(self):
+            events.append("dispose")
+
+    _dispose_smoke_app_database(SimpleNamespace(state=SimpleNamespace(
+        knowledge_runtime=_Runtime(),
+        db_engine=_Engine(),
+    )))
+
+    assert events == ["stop:10", "dispose"]
+
+
+def test_smoke_database_disposal_never_disposes_live_worker():
+    events: list[str] = []
+
+    class _Runtime:
+        running = True
+
+        def stop(self, timeout=None):
+            events.append(f"stop:{timeout}")
+            return False
+
+    class _Engine:
+        def dispose(self):
+            events.append("dispose")
+
+    with pytest.raises(RuntimeError, match="Knowledge worker did not stop"):
+        _dispose_smoke_app_database(SimpleNamespace(state=SimpleNamespace(
+            knowledge_runtime=_Runtime(),
+            db_engine=_Engine(),
+        )))
+
+    assert events == ["stop:10", "stop:None"]
 
 
 def test_real_ai_smoke_cleanup_removes_material_records_and_active_resume(tmp_path):
