@@ -634,7 +634,7 @@ def _validate_interview_preparation_proposal_response(
     expected_states = {
         "event": "current",
         "resume": "current",
-        "jd": "not_checked",
+        "jd": "current",
         "knowledge": "current",
     }
     if body["source_states"] != expected_states:

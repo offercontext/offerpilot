@@ -382,7 +382,7 @@ def _smoke_terminal_proposal_payload(
         "proposal_status": proposal_status,
         "source_fingerprint": source_fingerprint or sha256_text(canonical_json(snapshot)),
         "source_status": "not_checked",
-        "source_states": {"event": "current", "resume": "current", "jd": "not_checked", "knowledge": "current"},
+        "source_states": {"event": "current", "resume": "current", "jd": "current", "knowledge": "current"},
         "proposal": actual_proposal,
         "proposal_hash": proposal_hash or sha256_text(canonical_json(actual_proposal)),
         "created_at": "2026-07-24T10:00:00+00:00",
@@ -481,7 +481,7 @@ def test_real_ai_interview_preparation_smoke_rejects_invalid_terminal_metadata_a
         {**_smoke_terminal_proposal_payload(proposal=valid_proposal), "source_status": {"state": "current"}},
         {
             **_smoke_terminal_proposal_payload(proposal=valid_proposal),
-            "source_states": {"event": "unknown", "resume": "current", "jd": "not_checked", "knowledge": "current"},
+            "source_states": {"event": "unknown", "resume": "current", "jd": "current", "knowledge": "current"},
         },
         {**_smoke_terminal_proposal_payload(proposal=valid_proposal), "source_status": "source_changed"},
         {**_smoke_terminal_proposal_payload(proposal=valid_proposal), "created_at": "not-a-date"},
