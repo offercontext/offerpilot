@@ -31,6 +31,7 @@ from offerpilot.repositories.questions import QuestionsRepository
 from offerpilot.repositories.resumes import ResumeCreate, ResumesRepository
 from offerpilot.repositories.wakeups import WakeupCreate, WakeupsRepository
 from offerpilot.smoke import (
+    run_application_jd_smoke,
     run_core_smoke,
     run_http_smoke,
     run_mock_interview_real_ai_smoke,
@@ -270,6 +271,21 @@ def verify_offer_negotiation(
     for step in report.steps:
         typer.echo(f"ok {step.name}: {step.detail}")
     typer.echo("Isolated Offer negotiation API acceptance passed")
+
+
+@app.command("verify-application-jd")
+def verify_application_jd(
+    profile: str = typer.Option("local", "--profile", help="isolated Application JD contract acceptance"),
+    static_dir: Optional[Path] = typer.Option(None, "--static-dir", help="built frontend dist directory"),
+) -> None:
+    if profile not in {"local", "real-ai"}:
+        raise typer.BadParameter("--profile must be local or real-ai")
+    report = run_application_jd_smoke(
+        resolve_data_dir(), static_dir=static_dir, real_ai=profile == "real-ai"
+    )
+    for step in report.steps:
+        typer.echo(f"ok {step.name}: {step.detail}")
+    typer.echo("Isolated Application JD acceptance passed")
 
 
 @knowledge_app.command("reset")

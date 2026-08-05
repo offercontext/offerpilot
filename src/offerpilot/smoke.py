@@ -33,6 +33,7 @@ from offerpilot.api import create_app
 from offerpilot.db import session_factory_for_data_dir
 from offerpilot.models import (
     Application,
+    ApplicationJDVersion,
     ApplicationEvidenceBundle,
     ApplicationEvent,
     ApplicationMaterialKit,
@@ -1540,6 +1541,106 @@ def run_offer_negotiation_real_ai_smoke(
                     steps.append(SmokeStep("http_offer_negotiation", "isolated Offer negotiation API flow passed"))
         finally:
             _dispose_smoke_app_database(app)
+        return SmokeReport(ok=True, steps=steps)
+
+
+def run_application_jd_smoke(
+    source_data_dir: Path,
+    static_dir: Path | None = None,
+    *,
+    real_ai: bool = False,
+) -> SmokeReport:
+    """Verify the isolated Application-bound JD version contract.
+
+    This smoke deliberately keeps the JD save path independent from Provider calls.  The
+    optional real_ai flag only controls which configuration is copied into the isolated
+    directory; downstream consumer runs belong to the browser harness and are reported
+    separately so a Provider failure cannot make a database-only contract pass.
+    """
+    from fastapi.testclient import TestClient
+
+    steps: list[SmokeStep] = []
+    prefix = "offerpilot-application-jd-real-ai-" if real_ai else "offerpilot-application-jd-local-"
+    with tempfile.TemporaryDirectory(prefix=prefix) as temp_dir:
+        isolated_data_dir = Path(temp_dir)
+        if real_ai:
+            _copy_real_ai_config(source_data_dir, isolated_data_dir)
+        app = create_app(data_dir=isolated_data_dir, static_dir=static_dir)
+        client = TestClient(app).__enter__()
+        application = client.post(
+            "/api/applications",
+            json={"company_name": "筱哲案例公司", "position_name": "后端工程师", "status": "applied"},
+        )
+        _assert_status(application.status_code, 201, "application_jd_application")
+        application_id = int(application.json()["id"])
+        first = client.post(
+            f"/api/applications/{application_id}/job-description/versions",
+            json={
+                "jd_text": "负责 API 设计与服务稳定性建设。",
+                "source_url": "https://example.invalid/jd/1",
+                "expected_current_version_id": None,
+                "idempotency_key": "application-jd-smoke-0001",
+            },
+        )
+        _assert_status(first.status_code, 201, "application_jd_first_save")
+        first_id = int(first.json()["id"])
+        second = client.post(
+            f"/api/applications/{application_id}/job-description/versions",
+            json={
+                "jd_text": "负责 API 设计、服务稳定性建设与团队协作。",
+                "source_url": "https://example.invalid/jd/2",
+                "expected_current_version_id": first_id,
+                "idempotency_key": "application-jd-smoke-0002",
+            },
+        )
+        _assert_status(second.status_code, 201, "application_jd_second_save")
+        second_id = int(second.json()["id"])
+        current = client.get(f"/api/applications/{application_id}/job-description")
+        _assert_status(current.status_code, 200, "application_jd_current")
+        if current.json().get("current", {}).get("id") != second_id:
+            raise RuntimeError("application JD current version did not advance")
+        history = client.get(f"/api/applications/{application_id}/job-description/versions")
+        _assert_status(history.status_code, 200, "application_jd_history")
+        if any("jd_text" in item for item in history.json()):
+            raise RuntimeError("application JD history leaked full text")
+        steps.extend([
+            SmokeStep("application_jd_v1", "created UI-owned JD version 1"),
+            SmokeStep("application_jd_v2", "created UI-owned JD version 2 with current-version CAS"),
+            SmokeStep("application_jd_history", "history returned metadata and preview without full text"),
+        ])
+        verification_factory = session_factory_for_data_dir(isolated_data_dir)
+        try:
+            with verification_factory() as session:
+                if len(list(session.scalars(select(ApplicationJDVersion)))) != 2:
+                    raise RuntimeError("isolated smoke did not retain exactly two JD versions")
+        finally:
+            verification_engine = verification_factory.kw.get("bind")
+            if verification_engine is not None:
+                verification_engine.dispose()
+        deleted = client.delete(f"/api/applications/{application_id}")
+        _assert_status(deleted.status_code, 200, "application_jd_cleanup")
+        client.__exit__(None, None, None)
+        cleanup_factory = session_factory_for_data_dir(isolated_data_dir)
+        try:
+            with cleanup_factory() as session:
+                # Application deletion is a soft delete in the existing API, so the
+                # version rows need explicit smoke cleanup.  Do this before disposing
+                # the app engine; otherwise a second, undisposed engine can keep the
+                # temporary SQLite file locked on Windows.
+                session.execute(
+                    delete(ApplicationJDVersion).where(
+                        ApplicationJDVersion.application_id == application_id
+                    )
+                )
+                session.commit()
+                if list(session.scalars(select(ApplicationJDVersion))):
+                    raise RuntimeError("application JD cleanup left version rows")
+        finally:
+            cleanup_engine = cleanup_factory.kw.get("bind")
+            if cleanup_engine is not None:
+                cleanup_engine.dispose()
+        _dispose_smoke_app_database(app)
+        steps.append(SmokeStep("application_jd_cleanup", "temporary Application and JD versions were removed"))
     return SmokeReport(ok=True, steps=steps)
 
 
