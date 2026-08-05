@@ -29,16 +29,16 @@
 
 ### 后端五组门禁
 
-完整收集 manifest：**1762 个 node id**。五组均退出码 0；聚合校验确认无重复、并集与完整 manifest 一致，五组完成标记、JUnit 和收集摘要均匹配。
+完整收集 manifest：**1766 个 node id**。五组均退出码 0；聚合校验确认无重复、并集与完整 manifest 一致，五组完成标记、JUnit 和收集摘要均匹配。
 
 | 分组 | 收集/执行 | 允许 skip |
 |---|---:|---:|
 | agent | 423 / 423 passed | 0 |
 | domain | 70 / 70 passed | 0 |
 | knowledge | 659 / 655 passed | 4 |
-| proposals | 298 / 298 passed | 0 |
+| proposals | 302 / 302 passed | 0 |
 | misc | 312 / 312 passed | 0 |
-| 合计 | 1762 / 1758 passed | 4 |
+| 合计 | 1766 / 1762 passed | 4 |
 
 Knowledge 的 4 个 skip 仅为既定 Windows 符号链接权限条件，node id 为：
 
@@ -114,7 +114,7 @@ real-AI 复跑未再出现 `unable to open database file`。本轮完整 real-AI
 | `uv run mypy src` | 0；64 source files |
 | `git diff --check 6fcbee907f6cbf4684a0bb50b63db3db9e17003d..HEAD` | 0 |
 
-后端分组最终收集 **1762** 项，分组结果为：agent `423/423`、domain `70/70`、knowledge `659/655`（4 个既定 Windows 符号链接权限 skip）、proposals `298/298`、misc `312/312`；每组退出码 0，aggregate 退出码 0，node id 无重复且并集与完整 manifest 一致。允许 skip 仍仅为本报告上方列出的 4 项及其精确原因。
+后端分组最终收集 **1766** 项，分组结果为：agent `423/423`、domain `70/70`、knowledge `659/655`（4 个既定 Windows 符号链接权限 skip）、proposals `302/302`、misc `312/312`；每组退出码 0，aggregate 退出码 0，node id 无重复且并集与完整 manifest 一致。允许 skip 仍仅为本报告上方列出的 4 项及其精确原因。
 
 前端分组重新收集 **103 个文件、727 个测试**，10 组退出码均为 0，aggregate 退出码为 0；实际结果文件集合与 manifest 完全一致，无重复 node id。前端未因本次后端改动产生源码变化。
 
@@ -125,3 +125,26 @@ real-AI 复跑未再出现 `unable to open database file`。本轮完整 real-AI
 - `uv run oc verify --profile real-ai --static-dir web/dist`：退出码 0；完整流程通过，包含面试准备、材料、岗位评估、面试复盘、知识沉淀与模拟面试等既有验收步骤。
 
 本轮未放宽严格 JSON、证据校验、HITL、502 或幂等语义；没有新增业务重试或 Provider 调用。发布剩余风险仅为外部 Provider 响应稳定性，不由本次租约修复掩盖或重新分类。
+
+## 2026-08-05 面试准备租约复审修订
+
+本轮代码提交：`ebf9fa7`（租约心跳有界重试、接管后关闭数据库 session）与 `7af5a01`（Provider 调用链及 fencing 回归）。当前代码验收基线为 `7af5a01`；未修改 API、数据库迁移、前端、Offer、证据契约或错误语义。
+
+### 最新验证
+
+| 命令 | 退出码 / 结果 |
+|---|---|
+| `uv run pytest tests/test_interview_preparation_repository.py tests/test_interview_preparation_api.py tests/test_interview_preparation_ai.py tests/test_interview_preparation_migrations.py -q` | 0；51 passed |
+| `uv run pytest tests/test_smoke.py -q` | 0；56 passed |
+| `uv run ruff check .` | 0 |
+| `uv run mypy src` | 0；64 source files |
+| `npm.cmd run build`（`web`） | 0 |
+| `uv run oc smoke --static-dir web/dist` | 0；Smoke passed |
+| `uv run oc verify --profile local --static-dir web/dist` | 0；local verify passed |
+| `uv run oc verify --profile real-ai --static-dir web/dist` | 0；完整 real-AI verify passed |
+
+后端五组最终以同一完整 manifest 聚合通过：**1766 collected，1762 passed，4 个既定 Windows 符号链接权限 skip**；agent `423/423`、domain `70/70`、knowledge `659/655`、proposals `302/302`、misc `312/312`，无重复 node id，aggregate 退出码 0。前端十组以当前 `web/src` manifest 聚合通过：**103 个文件、727 tests**，无重复且结果集合与 manifest 一致。
+
+real-AI 首次复跑在面试准备请求出现一次 `ReadTimeout`；未修改配置、契约或重试语义，随后以同一真实配置的静默隔离副本重跑完整流程并通过。该次波动仍记录为外部 Provider 稳定性风险；没有输出密钥、配置、用户原文、模型原文或完整 Provider 请求。
+
+临时结果目录、临时数据库、服务、worker、engine、前端测试进程与浏览器相关临时资源均已清理；工作区干净，未推送、未合并。
