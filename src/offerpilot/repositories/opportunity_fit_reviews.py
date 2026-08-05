@@ -22,6 +22,7 @@ from offerpilot.ai.opportunity_fit_reviews import (
 )
 from offerpilot.models import (
     Application,
+    ApplicationJDVersion,
     OpportunityFitReview,
     OpportunityFitReviewSession,
     OpportunityFitReviewStage,
@@ -44,6 +45,10 @@ class OpportunityFitReviewValidationError(ValueError):
 
 
 class OpportunityFitReviewConflictError(ValueError):
+    pass
+
+
+class OpportunityFitReviewSourceConflictError(OpportunityFitReviewConflictError):
     pass
 
 
@@ -251,6 +256,18 @@ class OpportunityFitReviewsRepository:
                 return winner, stage, False, _confirmation_token_for_stage(
                     stage, confirmation_secret
                 )
+            current_version_id = session.scalar(
+                select(ApplicationJDVersion.id)
+                .where(ApplicationJDVersion.application_id == application_id)
+                .order_by(ApplicationJDVersion.version_number.desc())
+                .limit(1)
+            )
+            if stage.jd_version_id is not None and current_version_id != stage.jd_version_id:
+                stage.status = "source_conflict"
+                stage.provider_call_token = ""
+                stage.lease_expires_at = None
+                session.commit()
+                raise OpportunityFitReviewSourceConflictError("opportunity fit source changed")
             stage.status = "ready"
             stage.proposal_json = proposal_json
             stage.proposal_sha256 = sha256_text(proposal_json)
@@ -282,6 +299,14 @@ class OpportunityFitReviewsRepository:
             )
             if stage is None:
                 raise OpportunityFitReviewNotFound()
+            current_version_id = session.scalar(
+                select(ApplicationJDVersion.id)
+                .where(ApplicationJDVersion.application_id == application_id)
+                .order_by(ApplicationJDVersion.version_number.desc())
+                .limit(1)
+            )
+            if stage.jd_version_id is not None and current_version_id != stage.jd_version_id:
+                raise OpportunityFitReviewSourceConflictError("opportunity fit source changed")
             if stage.status == "confirmed":
                 raise OpportunityFitReviewConfirmationConsumed()
             expires_at = _as_utc(stage.confirmation_expires_at)

@@ -21,6 +21,7 @@ from offerpilot.knowledge.interview_capture import note_fingerprint
 from offerpilot.models import (
     Application,
     ApplicationEvent,
+    ApplicationJDVersion,
     InterviewPreparationProposal,
     KnowledgeEvidence,
     KnowledgeCapturedSourceMetadata,
@@ -631,6 +632,35 @@ class InterviewPreparationProposalsRepository:
                     )
                 session.commit()
                 return _result_for_existing(row)
+            if jd_version_id is not None:
+                current_version_id = session.scalar(
+                    select(ApplicationJDVersion.id)
+                    .where(ApplicationJDVersion.application_id == application_id)
+                    .order_by(ApplicationJDVersion.version_number.desc())
+                    .limit(1)
+                )
+                if current_version_id != jd_version_id:
+                    invalidated = session.execute(
+                        update(InterviewPreparationProposal)
+                        .where(InterviewPreparationProposal.id == row.id)
+                        .where(InterviewPreparationProposal.attempt_status == "generating")
+                        .where(InterviewPreparationProposal.generation_revision == owner_revision)
+                        .where(InterviewPreparationProposal.provider_call_token == owner_token)
+                        .values(
+                            attempt_status="invalidated",
+                            invalidation_reason="source_conflict",
+                            provider_call_token="",
+                            provider_lease_until=None,
+                        )
+                    )
+                    if getattr(invalidated, "rowcount", 0) == 1:
+                        session.commit()
+                        raise InterviewPreparationConflictError(
+                            "interview preparation source changed",
+                            "interview_preparation_source_conflict",
+                        )
+                    session.commit()
+                    return _result_for_existing(row)
             current_fingerprint = sha256_text(canonical_json(current_snapshot))
             if current_fingerprint != source_fingerprint:
                 invalidated = session.execute(

@@ -116,6 +116,7 @@ from offerpilot.repositories.opportunity_fit_reviews import (
     OpportunityFitReviewConfirmationExpired,
     OpportunityFitReviewConflictError,
     OpportunityFitReviewNotFound,
+    OpportunityFitReviewSourceConflictError,
     OpportunityFitReviewsRepository,
 )
 from offerpilot.repositories.interview_review_proposals import (
@@ -1799,6 +1800,14 @@ def create_app(
             )
         except RuntimeError as exc:
             return error_response(502, str(exc))
+        try:
+            application_jd_versions.require_current_version(app_id, frozen_jd.id)
+        except JDVersionError:
+            return error_response(
+                409,
+                "岗位资料已变化，请重新加载后再生成",
+                code="application_jd_source_conflict",
+            )
         data = MaterialKitCreate(
             application_id=app_id,
             resume_id=resume_id,
@@ -2041,6 +2050,8 @@ def create_app(
                 )
             except OpportunityFitReviewNotFound:
                 return error_response(404, "Application or resume not found")
+            except OpportunityFitReviewSourceConflictError as exc:
+                return error_response(409, str(exc), code="application_jd_source_conflict")
             except OpportunityFitReviewConflictError as exc:
                 return error_response(409, str(exc), code="opportunity_fit_idempotency_conflict")
             except OpportunityFitReviewConfirmationExpired:
@@ -2135,6 +2146,8 @@ def create_app(
                 "Triage has already been confirmed.",
                 code="opportunity_fit_triage_confirmation_consumed",
             )
+        except OpportunityFitReviewSourceConflictError as exc:
+            return error_response(409, str(exc), code="application_jd_source_conflict")
         except OpportunityFitReviewConflictError as exc:
             return error_response(409, str(exc), code="opportunity_fit_confirmation_conflict")
         return JSONResponse(_opportunity_fit_v2_stage_json(None, stage))
