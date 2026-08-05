@@ -10,7 +10,14 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from offerpilot.ai.types import Assistant
 from offerpilot.db import init_database
-from offerpilot.models import Application, ApplicationEvent, ApplicationMaterialKit, MaterialRevisionProposal, Resume
+from offerpilot.models import (
+    Application,
+    ApplicationEvent,
+    ApplicationJDVersion,
+    ApplicationMaterialKit,
+    MaterialRevisionProposal,
+    Resume,
+)
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
 from offerpilot.repositories.material_kits import MaterialKitCreate, MaterialKitsRepository
 from offerpilot.repositories import material_revision_proposals as material_revision_proposals_module
@@ -97,6 +104,19 @@ def _ready(tmp_path):
     resumes = ResumesRepository(session_factory)
     kits = MaterialKitsRepository(session_factory)
     app = applications.create(ApplicationCreate(company_name="Acme", position_name="Backend"))
+    with session_factory() as session:
+        jd_version = ApplicationJDVersion(
+            application_id=app.id,
+            version_number=1,
+            jd_text="FastAPI backend",
+            content_sha256="material-revision-jd",
+            source_kind="ui",
+            idempotency_key="material-revision-jd-01",
+            request_fingerprint_sha256="material-revision-request",
+        )
+        session.add(jd_version)
+        session.commit()
+        jd_version_id = jd_version.id
     resume = resumes.create(
         ResumeCreate(
             title="Backend Resume",
@@ -112,6 +132,7 @@ def _ready(tmp_path):
             application_id=app.id,
             resume_id=resume.id,
             jd_snapshot="FastAPI backend",
+            jd_version_id=jd_version_id,
             content_json=json.dumps({"requirements": ["FastAPI"]}),
         )
     )

@@ -134,7 +134,7 @@ def test_current_version_and_freeze_are_explicit_and_preview_is_stable(tmp_path)
     assert frozen.jd_text == text
     assert service.list_versions(application_id, 0, 50)[0].preview == text[:240] + "…"
 
-    with pytest.raises(JDVersionConflictError):
+    with pytest.raises(JDVersionValidationError):
         service.require_current_version(application_id, 0)
     with pytest.raises(JDVersionConflictError):
         service.require_current_version(application_id, current.id + 1)

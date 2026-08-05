@@ -425,7 +425,7 @@ class InterviewPreparationProposalsRepository:
         user_assertions: List[str],
         idempotency_key: str,
         on_diagnostic: Any | None,
-        jd_version_id: int | None,
+        jd_version_id: int | None = None,
     ) -> InterviewPreparationGenerationResult | _InterviewPreparationOwnedGeneration | None:
         if row.attempt_status == "invalidated":
             raise _attempt_invalidated()
@@ -531,7 +531,7 @@ class InterviewPreparationProposalsRepository:
         source_fingerprint: str,
         snapshot: dict[str, Any],
         on_diagnostic: Any | None,
-        jd_version_id: int | None,
+        jd_version_id: int | None = None,
     ) -> InterviewPreparationGenerationResult:
         if model is None:
             raise InterviewPreparationProviderError()
