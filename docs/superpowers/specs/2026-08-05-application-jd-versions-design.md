@@ -45,6 +45,7 @@ AI 可以在各自 Proposal 中基于冻结 JD 生成带证据的建议，但不
 6. JD 更新后，旧 Proposal、Brief、Review、历史知识和模拟面试记录保持原样，并在可比较当前来源时标记 `source_changed`。
 7. AI 不得把摘要、标签或推断写回 JD 事实表。
 8. URL 只被保存和展示为来源；服务端、浏览器和 AI 流程不抓取、访问或回退访问该 URL。
+9. 保存请求必须携带打开编辑器时看到的 `expected_current_version_id`；服务端在同一事务内先处理幂等重放，再执行当前版本 CAS。过期编辑不得静默成为新的当前版本。
 
 ### 2.3 明确不做
 
@@ -71,8 +72,9 @@ AI 可以在各自 Proposal 中基于冻结 JD 生成带证据的建议，但不
 | `jd_text` | 用户确认保存的原始字符串，不 trim 后落库 |
 | `content_sha256` | 原始 `jd_text` UTF-8 字节的 SHA-256 |
 | `source_url` | 可空来源 URL，仅作 provenance |
-| `source_kind` | `ui` 或 `pilot` |
+| `source_kind` | 由服务端入口固定为 `ui` 或 `pilot`，不接受客户端填写 |
 | `idempotency_key` | 本次保存请求的 ASCII 幂等键 |
+| `request_fingerprint_sha256` | 保存请求规范输入的 SHA-256 |
 | `created_at` | 创建时间 |
 
 约束和索引：
@@ -85,15 +87,28 @@ INDEX(application_id, version_number DESC)
 
 `application_id` 使用外键并支持 Application 物理删除级联。Application 软删除后，版本对普通 API 不可见；历史 Proposal 中已经冻结的 JD 仍按各自历史保留规则只读展示，不能借此恢复已删除投递。
 
+为新建的 Application-bound 产物增加可空 `jd_version_id` 身份列，并在同一迁移中加入：
+
+- `jd_analyses.jd_version_id`；
+- `resume_matches.jd_version_id`；
+- `application_material_kits.jd_version_id`；
+- `material_revision_proposals.jd_version_id`；
+- `opportunity_fit_review_sessions.jd_version_id` 与 `opportunity_fit_review_stages.jd_version_id`；
+- `interview_preparation_proposals.jd_version_id`；
+- `mock_interview_attempts.jd_version_id`。
+
+这些列对历史旧行保持 `NULL`，不回填、不猜测归属；新行必须写入真实当前版本。每个相关的 `input_snapshot_json`、`source_snapshot_json` 或 `jd_snapshot` 同时保存 `jd_version_id`、`version_number`、`content_sha256` 和原文，列身份与快照身份必须在写入和读取时一致。列用于归属和查询，快照用于不可变审计，二者不允许静默漂移。
+
 ### 3.2 原文与输入校验
 
 - 使用 `jd_text.strip()` 判断空白，但保存和哈希必须保留用户输入的原始字符；禁止 trim 后落库。
 - 使用现有 60KB UTF-8 上限；超限返回 `422`。
 - 保留 Unicode、CJK、emoji、换行和原始空格；不得做 Unicode 规范化。
-- `source_url` 可为空，非空时最多 2048 个字符；只保存字符串，不发起网络请求。
-- `source_kind` 只允许 `ui | pilot`。
+- `source_url` 缺失、`null`、空字符串或纯空白统一规范为 `null`；其他值必须是字符串，保存和指纹使用 `source_url.strip()` 后的值，最多 2048 个字符。只保存字符串，不发起网络请求。
 - 版本号由服务端在 SQLite `BEGIN IMMEDIATE` 事务中分配，不能由客户端传入。
-- 保存请求的完整幂等输入指纹由原始 `jd_text`、`source_url`、`source_kind` 规范化组成；同一 Application、同一幂等键与相同输入返回原版本，不重复创建；同一幂等键与不同输入返回 `409 application_jd_idempotency_conflict`。
+- `request_fingerprint_sha256` 的算法固定为：先取原始 `jd_text.encode("utf-8")`，用 Base64 表示为 `jd_text_utf8_b64`；再构造 `{"jd_text_utf8_b64": ..., "source_url": <规范 URL 或 null>, "source_kind": <服务端入口值>}`，按 UTF-8、`sort_keys=true`、紧凑分隔符序列化后 SHA-256。`expected_current_version_id` 不进入指纹，因为它是并发 CAS 前提而不是保存内容。
+- 同一 Application、同一幂等键与相同指纹返回原版本，不重复创建；同一幂等键与不同指纹返回 `409 application_jd_idempotency_conflict`；不得修改原版本或其 CAS 状态。
+- 幂等重放之后才检查 `expected_current_version_id`：有当前版本时必须精确匹配其 ID；无当前版本时只能传 `null`。不匹配返回 `409 application_jd_stale_current_version`，不创建版本。两个窗口从同一旧版本提交时，最多一个请求成功，另一个稳定失败。
 - 不同幂等键即使原文相同，也允许创建新版本；前端在内容没有变化时禁用保存，以避免用户无意生成无意义版本。
 
 ### 3.3 不回填历史临时 JD
@@ -136,7 +151,7 @@ GET /api/applications/{application_id}/job-description/versions?offset=0&limit=5
 GET /api/applications/{application_id}/job-description/versions/{version_id}
 ```
 
-列表按 `version_number DESC` 排序，默认 `limit=50`，最大 `200`；详情只能读取属于路径 Application 的版本。历史响应保留完整原文、版本号、哈希、来源和创建时间，并明确只读。
+列表按 `version_number DESC` 排序，默认 `limit=50`，最大 `200`，只返回元数据、UTF-8 字节数、哈希、来源、创建时间和固定长度的安全预览，不返回完整 `jd_text`。详情接口才返回属于路径 Application 的版本完整原文；所有响应明确只读。
 
 ### 4.3 创建新版本
 
@@ -150,43 +165,53 @@ POST /api/applications/{application_id}/job-description/versions
 {
   "jd_text": "用户确认的 JD 原文",
   "source_url": "https://example.invalid/job",
-  "source_kind": "ui",
+  "expected_current_version_id": 122,
   "idempotency_key": "ascii-key-at-least-16"
 }
 ```
 
 语义：
 
+- UI HTTP 入口固定写入 `source_kind=ui`；请求体不得携带 `source_kind`。Pilot 确认处理器固定写入 `source_kind=pilot`，二者都调用同一个 `ApplicationJDService` 和 Repository，客户端不能伪造来源入口；
 - 新建版本：`201`；
 - 同 key 同输入重放：`200`，返回原版本；
 - Application 不存在、不可见或已软删除：`404`；
-- 空白、超限、非法 source 字段或非法幂等键：`422`，不创建版本；
+- 空白、超限、非法 source URL 或非法幂等键：`422`，不创建版本；
 - 同 key 不同输入：`409 application_jd_idempotency_conflict`，不修改原版本；
+- `expected_current_version_id` 过期：`409 application_jd_stale_current_version`，不创建版本；首次保存无当前版本时必须传 `null`；
 - 版本号分配和行插入在同一 `BEGIN IMMEDIATE` 事务中完成，并发请求不得产生重复版本号。
 
-本任务不新增版本 PATCH、DELETE 或 URL 抓取接口。
+保存是同步数据库事务，不定义 `202` 或服务端 generating 状态。本任务不新增版本 PATCH、DELETE 或 URL 抓取接口。断网、响应丢失和无稳定错误码的裸 `5xx` 都是客户端结果未知：保留原幂等键、原文和 `expected_current_version_id`，只允许使用原尝试重放；不得据此新建第二个 key。
+
+### 4.4 Application.job_url 与版本来源
+
+`Application.job_url` 继续表示投递记录上的岗位链接，属于投递事实；`application_jd_versions.source_url` 表示某个 JD 原文版本的用户声明来源，属于该版本的冻结 provenance。二者可以不同，也可以只有其一，不能自动同步、互相回填或用 `job_url` 冒充 JD 版本来源。
+
+两个字段只以纯文本展示或提供复制按钮，不渲染为可点击链接；任何服务端、浏览器或 AI 流程都不得访问它们指向的 URL。
 
 ## 5. Application-bound 流程交接
 
-### 5.1 输入交接
+### 5.1 逐领域版本交接矩阵
 
-以下新建流程不再接受自由的临时 `jd_text` 作为 Application-bound 来源：
+所有新建的 Application-bound 入口都通过同一个 JD 读取/冻结服务，不接受自由的临时 `jd_text`。请求中的 `jd_version_id` 只用于服务端归属校验，Provider 只接收领域契约需要的冻结 JD 原文，不接收任何内部 ID、版本号或来源 URL。
 
-- Opportunity Fit v2 Triage / Deep Review；
-- Material Kit 与 Material Proposal；
-- Interview Preparation；
-- Mock Interview；
-- 其他使用 Application-bound JD 的正式入口。
+| 领域 | 开始时的版本来源 | 继承关系与持久化 | JD 更新后的行为 |
+| --- | --- | --- | --- |
+| Opportunity Fit v2 Triage | 必须是 Application 当前版本 | 在 `opportunity_fit_review_sessions`、Triage `opportunity_fit_review_stages` 的 `jd_version_id` 和 `source_snapshot_json` 中冻结 | Provider 前后版本漂移返回既有 `409` 来源冲突，不写入 ready |
+| Opportunity Fit v2 Deep Review | 不接受客户端 `jd_version_id`；只能接收已确认的父 Triage stage | 继承父 Triage 的 `jd_version_id` 与冻结快照，写入 Deep stage；父子版本必须相同 | 父 Triage 已非当前版本时不启动 Deep；生成期间漂移按既有来源冲突处理 |
+| Material Kit | 必须是 Application 当前版本 | `application_material_kits.jd_version_id` 与 `jd_snapshot` 原子冻结；旧 Kit 更新只能生成新的冻结内容，不改历史 Proposal | 过期 Kit 不得生成 Material Proposal；用户需回到当前版本重新生成/确认 |
+| Material Proposal | 不接受客户端版本；只能继承关联 Kit | `material_revision_proposals.material_kit_id` 与 `jd_version_id` 同时保存，快照含版本号/哈希/原文 | Kit 或 JD 版本已过期时拒绝生成或确认，返回既有来源冲突 |
+| Interview Preparation | 必须是 Application 当前版本 | `interview_preparation_proposals.jd_version_id`、`input_snapshot_json` 同时冻结 | Provider 前后漂移返回既有 `409`，不覆盖历史 |
+| Mock Interview | 必须是 Application 当前版本；可选准备建议必须属于同一 Application 且使用同一 JD 版本 | `mock_interview_attempts.jd_version_id` 与 Attempt 输入快照冻结；所选准备条目只复制用户选择的文本/证据 | Attempt 已开始后继续使用自己的冻结版本完成多轮，不混入新 JD；历史标记 `source_changed`，新 Attempt 才使用新当前版本 |
 
-请求改为携带 `jd_version_id`。服务端必须在同一业务边界内：
+每个矩阵行的新记录都必须同时写显式 `jd_version_id` 和快照中的版本号、哈希、原文；列与快照不一致视为数据库/契约错误，不能通过“当前版本”重新解释。已有旧记录的 `NULL` 只表示历史独立快照。
 
-1. 验证版本属于路径中的 Application 且 Application 可见；
-2. 验证该版本仍是当前最大版本；
-3. 读取原始 `jd_text`、`version_number` 和 `content_sha256`；
-4. 冻结 Proposal/Attempt 所需的最小 JD 快照；
-5. Provider 只接收领域契约要求的 JD 原文，不接收 `application_id`、`jd_version_id`、数据库 ID 或版本号。
+开始阶段统一执行：
 
-版本在 Provider 调用前后发生变化时，回写阶段重新验证当前版本。发生漂移返回该领域既有的 `409` 来源冲突语义，不自动重试、不覆盖旧历史、不偷偷改用新版本。
+1. 验证版本属于路径中的 Application、Application 可见且是当前最大版本；
+2. 读取原始 `jd_text`、`version_number` 和 `content_sha256`；
+3. 在事务边界内生成最小冻结快照，再提交后调用 Provider；
+4. 对正在创建的 Triage、Material Kit、Interview Preparation 等调用，Provider 返回前后重新检查来源；漂移返回该领域既有 `409` 来源冲突，不自动重试、不覆盖旧历史、不偷偷改用新版本。Mock Interview 是例外：Attempt 创建成功后已经拥有不可变输入，后续多轮只使用该 Attempt 的冻结版本；当前 JD 更新只产生历史 `source_changed`，不替换进行中的输入。
 
 ### 5.2 历史兼容
 
@@ -197,6 +222,13 @@ POST /api/applications/{application_id}/job-description/versions
 - 没有版本 ID 的旧历史：显示“历史独立快照”，只读，不允许由该快照直接发起新生成。
 
 旧接口若仍需要保留读取兼容，应将旧历史和新版本响应使用明确的 schema discriminator 分流，不能把旧快照伪装成当前 JD 版本。
+
+### 5.3 现有 `jd_text` 入口的收紧
+
+- `POST /api/jd/analyze` 保留为独立分析入口：不带 `application_id` 时仍可接收 `jd_text`，结果是无 Application 归属的独立分析；带 `application_id` 时必须改为携带当前 `jd_version_id`，禁止同时传 `jd_text`，分析记录写入 `jd_analyses.jd_version_id`。
+- `POST /api/resumes/{resume_id}/match` 保留无 Application 的独立匹配模式；带 `application_id` 时必须携带当前 `jd_version_id`，服务端从版本表读取原文，禁止客户端携带替代 `jd_text`，结果写入 `resume_matches.jd_version_id`。
+- Application-bound Material Kit、Opportunity Fit、Interview Preparation、Mock Interview 的旧 `jd_text` 请求体一律返回稳定 `422 application_jd_version_required`，不调用 Provider、不创建 Attempt/Proposal；它们只能使用矩阵中的当前版本或父资源继承版本。
+- CLI 对无 Application 的分析/匹配继续允许 stdin `jd_text`；任何指定 Application 的调用必须先解析当前 JD 版本，不提供旁路文本参数。
 
 ## 6. 投递详情 UI
 
@@ -217,9 +249,9 @@ POST /api/applications/{application_id}/job-description/versions
 - 原文只读预览；
 - “更新 JD”和“查看版本历史”入口。
 
-编辑器包含原文文本框、可选 URL、字符/UTF-8 大小提示和“确认保存为新版本”按钮。保存前不自动调用 AI；内容无变化时禁用保存。保存后刷新当前版本和历史列表，不覆盖旧内容。
+编辑器打开时记录当前版本 ID；编辑器包含原文文本框、可选 URL、字符/UTF-8 大小提示和“确认保存为新版本”按钮。保存前不自动调用 AI；内容无变化时禁用保存。提交时携带冻结的 `expected_current_version_id`，保存后刷新当前版本和历史列表，不覆盖旧内容。来源 URL 只显示为不可点击的文本或复制按钮。
 
-任何确定性 `404/409/422` 都显示中文安全文案；`202`、网络异常、响应丢失等结果未知时保留原幂等键和原编辑内容，只允许使用原尝试重试。不得透传 Axios、Provider、快照或用户输入原文到错误提示。
+任何确定性 `404/409/422` 都显示中文安全文案；网络异常、响应丢失和无稳定错误码的裸 `5xx` 等结果未知时保留原幂等键、原编辑内容和 expected version，只允许使用原尝试重试。不得透传 Axios、Provider、快照或用户输入原文到错误提示。
 
 ## 7. Pilot 入口
 
@@ -236,11 +268,11 @@ Pilot 只在用户主动表达岗位资料意图时进入该流程，例如：
 
 1. Pilot 询问并接收用户提供的 JD 原文；
 2. 可选询问来源 URL；
-3. 展示待确认写入卡，包含公司、职位、拟创建版本号、原文预览、字符数、来源入口、URL 和“不访问该链接”的说明；
+3. 展示待确认写入卡，冻结 `expected_current_version_id`，包含公司、职位、拟创建版本号、原文预览、字符数、来源入口、URL 和“不访问该链接”的说明；
 4. 用户明确确认后，调用与 UI 相同的版本 Repository/API；
 5. 成功后显示新版本和后续只读入口，不自动触发岗位评估、材料、面试或其他 AI 流程。
 
-Pilot 复用既有 pending confirmation 与审计机制，不新建第二套审批系统。关联投递的对话继续使用 `context_type=application` 与 `context_ref=<application_id>`；未关联投递使用 workspace 上下文。不得新增或持久化 `jd_version_id`、`application_id` 之外的旧式聊天上下文字段，不得把 JD 原文写入 Chat 之外的领域表，除非用户确认的是 JD 版本写入卡。
+Pilot 复用既有 pending confirmation 与审计机制，不新建第二套审批系统。确认处理器在服务端固定 `source_kind=pilot`，不信任客户端传入的 source 字段；与 UI 共同调用同一个版本 Service/Repository。关联投递的对话继续使用 `context_type=application` 与 `context_ref=<application_id>`；未关联投递使用 workspace 上下文。不得新增或持久化 `jd_version_id`、`application_id` 之外的旧式聊天上下文字段，除非用户确认的是 JD 版本写入卡。
 
 ## 8. 来源变化、并发与安全
 
@@ -252,6 +284,7 @@ Pilot 复用既有 pending confirmation 与审计机制，不新建第二套审�
 - 同一幂等键的相同输入并发重放；
 - 同一幂等键的不同输入冲突；
 - 保存响应丢失后使用原 key 重试；
+- 两个编辑器都以 v1 为 `expected_current_version_id`，先成功者创建 v2，后提交者返回 `409 application_jd_stale_current_version`；
 - 旧版本 ID 发起新生成；
 - Application 软删除或物理删除与版本读取/保存同时发生。
 
@@ -260,6 +293,8 @@ Pilot 复用既有 pending confirmation 与审计机制，不新建第二套审�
 - 同一版本号最多有一条记录；
 - 同 key 只有一条版本记录；
 - 只有一个请求取得下一个版本号；
+- 同一 key 的重放先于 CAS，已成功保存的请求即使当前版本后来变化也只返回原版本；
+- 同一旧版本的不同 key 不会静默创建两个连续“当前”版本，过期后写入者稳定收到 CAS 冲突；
 - 旧版本不能启动新 Application-bound AI 流程；
 - Provider 期间发生版本变化时不写入 ready；
 - 已写入历史不被覆盖，不产生隐式第二次 Provider 调用；
@@ -273,10 +308,15 @@ Pilot 复用既有 pending confirmation 与审计机制，不新建第二套审�
 - 从上一版本真实 DDL 升级，验证旧表、既有数据、哈希和迁移记录；
 - Application 软删除后版本不可见；物理删除级联清理版本；
 - 版本号和联合唯一约束；双 SQLite 连接并发创建只得到一个下一个版本号；
-- 同 key 同输入返回原版本，同 key 不同输入稳定返回 `409`；
+- 同 key 同输入返回原版本，同 key 不同输入稳定返回 `409`，且不改变原 Attempt/版本；
+- 同一旧版本的双窗口 CAS：一个 `201`、一个 `409 application_jd_stale_current_version`；首次保存 `expected_current_version_id=null` 回归；
+- 原始 JD UTF-8 字节、`null`/空/空白 URL 规范化、URL 外层空格、指纹稳定性和 `request_fingerprint_sha256` 正反向回归；
 - 空白、60KB 边界、超限、Unicode/CJK/emoji、原始空格和换行保留；
-- `source_url` 只保存，不发出任何 HTTP 请求；空 URL、超长 URL、非法类型回归；
+- 历史列表不含完整原文，详情接口按需返回；
+- `source_url` 只保存，不发出任何 HTTP 请求；超长 URL、非法类型回归；
 - 读取越权、不存在版本、非当前版本生成均稳定失败；
+- 旧 `/api/jd/analyze` 与 Resume Match 的独立模式仍可用，Application-bound 模式拒绝自由 `jd_text` 并要求当前版本；
+- 各领域矩阵逐项验证显式 `jd_version_id`、快照一致性、父资源继承、旧行 `NULL` 兼容和 JD 更新后的进行中 Mock Attempt 行为；
 - 版本变化、Provider barrier、响应丢失、结果未知、来源冲突和历史只读；
 - Provider payload 只含冻结 JD 原文和领域允许字段，不含内部 ID、版本号或 URL 抓取结果。
 
@@ -284,7 +324,7 @@ Pilot 复用既有 pending confirmation 与审计机制，不新建第二套审�
 
 - ApplicationDetail 空状态、当前版本、更新新版本和历史只读；
 - 内容无变化禁用保存；保存确认后才发出一次写请求；
-- 版本创建 `201`、幂等 `200`、`404/409/422` 和结果未知中文文案；
+- 版本创建 `201`、幂等 `200`、`404/409/422` 和网络/响应丢失结果未知中文文案；不测试或实现 `202`；
 - 当前版本更新后旧 Proposal 显示来源变化，旧原文仍可读；
 - UI 和 Pilot 使用同一保存 API/Repository，不产生第二套版本逻辑；
 - Pilot 未主动表达意图时不显示 JD 写入卡、不发 Chat 写入、不调用 Provider；
