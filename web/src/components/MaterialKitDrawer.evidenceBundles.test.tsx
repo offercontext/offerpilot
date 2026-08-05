@@ -190,6 +190,7 @@ function materialKit(status: MaterialKitViewModel['status'] = 'ready'): Material
     id: 5,
     application_id: 7,
     resume_id: 11,
+    jd_version_id: 1,
     jd_snapshot: 'Build services',
     status,
     created_at: '2026-07-14T09:00:00.000Z',
@@ -209,12 +210,28 @@ function render(nextApplication: Application = application) {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
-  act(() => root?.render(<MaterialKitDrawer application={nextApplication} open onClose={vi.fn()} />));
+  act(() => root?.render(
+    <MaterialKitDrawer
+      application={nextApplication}
+      open
+      onClose={vi.fn()}
+      initialJdSnapshot="Build services"
+      initialJdVersionID={1}
+    />,
+  ));
   return container;
 }
 
 function rerender(nextApplication: Application) {
-  act(() => root?.render(<MaterialKitDrawer application={nextApplication} open onClose={vi.fn()} />));
+  act(() => root?.render(
+    <MaterialKitDrawer
+      application={nextApplication}
+      open
+      onClose={vi.fn()}
+      initialJdSnapshot="Build services"
+      initialJdVersionID={1}
+    />,
+  ));
 }
 
 async function flush() {

@@ -45,6 +45,7 @@ const { default: MockInterviewDrawer } = await import('./MockInterviewDrawer');
 
 const baseDraft: MockInterviewDrawerDraft = {
   jdText: 'JD',
+  jdVersionId: 1,
   attemptKey: null,
   questionKey: null,
   feedbackKey: null,

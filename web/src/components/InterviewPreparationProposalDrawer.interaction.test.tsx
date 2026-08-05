@@ -24,6 +24,7 @@ const context = {
   eventId: 11,
   resumeId: 13,
   jdText: 'Build reliable services.',
+  jdVersionId: 1,
   knowledgeSelections: [],
   userAssertions: ['I led a migration.'],
 };
@@ -81,6 +82,7 @@ describe('InterviewPreparationProposalDrawer interaction', () => {
       application_id: 7,
       event_id: 11,
       resume_id: 13,
+      jd_version_id: 1,
       user_assertions: ['I led a migration.'],
       idempotency_key: '00000000-0000-0000-0000-000000000001',
     }));
@@ -148,6 +150,7 @@ describe('InterviewPreparationProposalDrawer interaction', () => {
       attemptState: unknownAttempt!,
       resumeId: 13,
       jdText: context.jdText,
+      jdVersionId: context.jdVersionId,
       assertionsText: context.userAssertions.join('\n'),
       knowledgeSelections: [],
     };
@@ -187,6 +190,7 @@ describe('InterviewPreparationProposalDrawer interaction', () => {
         attemptState,
         resumeId: 13,
         jdText: context.jdText,
+        jdVersionId: context.jdVersionId,
         assertionsText: context.userAssertions.join('\n'),
         knowledgeSelections: [],
       },

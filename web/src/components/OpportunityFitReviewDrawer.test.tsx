@@ -18,6 +18,7 @@ vi.mock('@/services/resumes', () => ({
 }));
 vi.mock('@/services/opportunityFitReviews', () => ({
   createOpportunityFitReview: state.create,
+  createOpportunityFitV2Triage: state.create,
   createOpportunityFitDeepReview: state.deep,
   getOpportunityFitReview: state.get,
   listOpportunityFitReviews: state.list,
@@ -94,7 +95,15 @@ async function render(onPrepareMaterials?: (review: unknown, jdText: string) => 
   document.body.appendChild(container);
   root = createRoot(container);
   await act(async () => {
-    root?.render(<OpportunityFitReviewDrawer application={application} open onClose={vi.fn()} onPrepareMaterials={onPrepareMaterials} />);
+    root?.render(
+      <OpportunityFitReviewDrawer
+        application={application}
+        open
+        jdVersionId={1}
+        onClose={vi.fn()}
+        onPrepareMaterials={onPrepareMaterials}
+      />,
+    );
   });
   return container;
 }
@@ -244,7 +253,7 @@ describe('OpportunityFitReviewDrawer', () => {
     await click(getByRole(view, 'button', '开始 Triage'));
     await waitFor(() => expect(state.create).toHaveBeenCalledWith(7, expect.objectContaining({
       resume_id: 11,
-      jd_text: 'JD text',
+      jd_version_id: 1,
       candidate_assertions: ['fact one', 'fact two'],
     })));
   });
