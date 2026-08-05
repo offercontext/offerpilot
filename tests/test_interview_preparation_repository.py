@@ -499,6 +499,42 @@ def test_heartbeat_uncertain_still_completes_final_fencing_cas(tmp_path) -> None
         assert row.proposal_json == canonical_json(safe_empty_interview_preparation_proposal())
 
 
+def test_slow_provider_retries_transient_heartbeat_lock_and_calls_provider_once(tmp_path) -> None:
+    factory, ids = _setup(tmp_path)
+    clock = ManualClock(datetime(2026, 8, 4, 10, 0, tzinfo=timezone.utc))
+    heartbeat_factory = DeferredFailingHeartbeatSessionFactory(factory, fail_calls=1)
+    waiter = ControlledWaiter()
+    repository = InterviewPreparationProposalsRepository(
+        heartbeat_factory,
+        lease_seconds=1,
+        heartbeat_interval_seconds=10,
+        now_factory=clock.now,
+        waiter=waiter,
+    )
+    model = BlockingSafeEmptyModel()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(_generate, repository, ids, "heartbeat-e2e-key-0001", model)
+        assert model.entered.wait(5)
+        assert waiter.entered.wait(5)
+        heartbeat_factory.enabled = True
+        waiter.release_tick()
+        assert heartbeat_factory.failed.wait(1)
+        model.release.set()
+        result = future.result(timeout=5)
+
+    assert result.attempt_status == "ready"
+    assert result.pending is False
+    assert model.calls == 1
+    assert heartbeat_factory.calls == 3
+    with factory() as session:
+        row = session.scalar(select(InterviewPreparationProposal))
+        assert row is not None
+        assert row.attempt_status == "ready"
+        assert row.proposal_status == "safe_empty"
+    factory.kw["bind"].dispose()
+
+
 def test_slow_provider_renews_expired_lease_and_calls_provider_once(tmp_path) -> None:
     factory, ids = _setup(tmp_path)
     clock = ManualClock(datetime(2026, 8, 4, 10, 0, tzinfo=timezone.utc))
