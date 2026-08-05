@@ -10,6 +10,9 @@ const state = vi.hoisted(() => ({
   materialProps: vi.fn(),
   analyzeJD: vi.fn(),
   events: [] as unknown[],
+  jdCurrent: null as unknown,
+  jdHistory: [] as unknown[],
+  jdDetail: null as unknown,
 }));
 
 vi.mock('@/services/ai', () => ({ analyzeJD: state.analyzeJD }));
@@ -20,10 +23,24 @@ vi.mock('@/services/notes', () => ({
   updateNote: vi.fn(),
 }));
 vi.mock('@/services/events', () => ({ listEvents: vi.fn().mockResolvedValue([]) }));
+vi.mock('@/services/applicationJdVersions', () => ({
+  getCurrentApplicationJd: vi.fn(),
+  getApplicationJdVersion: vi.fn(),
+  listApplicationJdVersions: vi.fn(),
+  saveApplicationJdVersion: vi.fn(),
+}));
 vi.mock('@tanstack/react-query', () => ({
   useQueryClient: () => ({ invalidateQueries: vi.fn() }),
   useQuery: (options: { queryKey?: unknown[] }) => ({
-    data: options.queryKey?.[0] === 'events' ? state.events : [],
+    data: options.queryKey?.[0] === 'events'
+      ? state.events
+      : options.queryKey?.[0] === 'application-jd-current'
+        ? state.jdCurrent
+        : options.queryKey?.[0] === 'application-jd-history'
+          ? state.jdHistory
+          : options.queryKey?.[0] === 'application-jd-detail'
+            ? state.jdDetail
+            : [],
     isLoading: false,
   }),
   useMutation: () => ({ mutate: vi.fn(), isPending: false }),
@@ -118,6 +135,9 @@ beforeEach(() => {
   state.materialProps.mockReset();
   state.analyzeJD.mockReset();
   state.events = [];
+  state.jdCurrent = null;
+  state.jdHistory = [];
+  state.jdDetail = null;
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -134,6 +154,30 @@ describe('ApplicationDetail opportunity fit handoff', () => {
 
     expect(container?.textContent).toContain('当前使用来源');
     expect(container?.textContent).toContain('当前投递');
+    expect(state.analyzeJD).not.toHaveBeenCalled();
+  });
+
+  it('mounts the known JD as read-only context without turning the source URL into a link', () => {
+    state.jdCurrent = {
+      current: {
+        id: 41,
+        application_id: 7,
+        version_number: 1,
+        jd_text: '筱哲案例公司的后端岗位描述',
+        source_url: 'https://example.invalid/jd/41',
+        source_kind: 'ui',
+        content_sha256: 'a'.repeat(64),
+        utf8_byte_length: 30,
+        preview: '筱哲案例公司的后端岗位描述',
+        created_at: '2026-08-05T00:00:00Z',
+      },
+    };
+
+    act(() => root?.render(<ApplicationDetail application={application} open onClose={vi.fn()} />));
+
+    expect(container?.textContent).toContain('筱哲案例公司的后端岗位描述');
+    expect(container?.textContent).toContain('https://example.invalid/jd/41');
+    expect(container?.querySelector('a')).toBeNull();
     expect(state.analyzeJD).not.toHaveBeenCalled();
   });
 

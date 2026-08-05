@@ -163,8 +163,15 @@ class BrowserAudit:
                             sort_keys=True,
                         ).encode("utf-8")
                     ).hexdigest()
-                    if isinstance(payload.get("resume_id"), int):
-                        request_context["resume_id"] = payload["resume_id"]
+                    for key in (
+                        "application_id",
+                        "resume_id",
+                        "event_id",
+                        "jd_version_id",
+                        "expected_current_version_id",
+                    ):
+                        if isinstance(payload.get(key), int):
+                            request_context[key] = payload[key]
                     if isinstance(payload.get("jd_text"), str):
                         request_context["jd_text_sha256"] = hashlib.sha256(
                             payload["jd_text"].encode("utf-8")
@@ -235,6 +242,11 @@ class BrowserAudit:
                     record["response_retry_after_ms"] = payload["retry_after_ms"]
                 if isinstance(payload.get("id"), int):
                     record["response_proposal_id"] = payload["id"]
+                    if isinstance(payload.get("version_number"), int):
+                        record["response_jd_version_id"] = payload["id"]
+                current = payload.get("current")
+                if isinstance(current, dict) and isinstance(current.get("id"), int):
+                    record["response_jd_version_id"] = current["id"]
                 brief = payload.get("brief")
                 if isinstance(brief, dict) and isinstance(brief.get("proposal_id"), int):
                     record["response_confirmed_proposal_id"] = brief["proposal_id"]
@@ -267,6 +279,7 @@ class BrowserAudit:
                 "response_proposal_id",
                 "response_proposal_ids",
                 "response_confirmed_proposal_id",
+                "response_jd_version_id",
             ):
                 if key in record:
                     response_record[key] = record[key]

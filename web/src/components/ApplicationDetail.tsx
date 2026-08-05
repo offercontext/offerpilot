@@ -588,9 +588,22 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
             </Space>
           </div>
           {applicationJdQuery.isLoading ? <Spin size="small" /> : applicationJdQuery.data?.current ? (
+            <>
             <Paragraph ellipsis={{ rows: 3 }} style={{ margin: '10px 0 0', whiteSpace: 'pre-wrap' }}>
               {applicationJdQuery.data.current.jd_text}
             </Paragraph>
+            <Space size={8} style={{ marginTop: 8 }}>
+              <Text type="secondary">{'\u6765\u6e90\uff1a'}{applicationJdQuery.data.current.source_url}</Text>
+              <Button
+                size="small"
+                onClick={() => {
+                  void navigator.clipboard?.writeText(applicationJdQuery.data!.current!.source_url!);
+                }}
+              >
+                {'\u590d\u5236\u6765\u6e90'}
+              </Button>
+            </Space>
+            </>
           ) : <Text type="secondary">{'\u5c1a\u672a\u786e\u8ba4\u5c97\u4f4d\u63cf\u8ff0'}</Text>}
         </div>
 

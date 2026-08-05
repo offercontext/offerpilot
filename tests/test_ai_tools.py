@@ -2,6 +2,7 @@ import json
 from datetime import datetime, timezone
 
 import pytest
+from sqlalchemy import select
 
 from offerpilot.ai.tools import (
     EVENT_TYPES,
@@ -14,6 +15,7 @@ from offerpilot.application_status import APPLICATION_STATUS_IDS
 from offerpilot.db import init_database
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
 from offerpilot.repositories.application_events import ApplicationEventCreate, ApplicationEventsRepository
+from offerpilot.repositories.application_jd_versions import ApplicationJDService
 from offerpilot.repositories.jd import JDAnalysesRepository, JDAnalysisCreate
 from offerpilot.repositories.notes import NoteCreate, NotesRepository
 from offerpilot.repositories.offers import OfferCreate, OffersRepository
@@ -858,3 +860,43 @@ def test_ai_tool_read_results_include_record_type_and_specific_ids(tmp_path):
     assert offer_result["record_type"] == "offer"
     assert offer_result["offer_id"] == offer.id
     assert offer_result["application_id"] == app.id
+
+
+def test_pilot_jd_write_is_confirmable_server_owned_and_idempotent(tmp_path):
+    session_factory = init_database(tmp_path / "data.db")
+    applications = ApplicationsRepository(session_factory)
+    app = applications.create(ApplicationCreate(company_name="筱哲案例公司", position_name="后端工程师"))
+    registry = offerpilot_tool_registry(
+        applications,
+        ApplicationEventsRepository(session_factory),
+        NotesRepository(session_factory),
+        OffersRepository(session_factory),
+        application_jd_versions=ApplicationJDService(session_factory),
+    )
+    tool = registry["save_application_jd_version"]
+    assert tool["write"] is True
+    assert tool["always_confirm"] is True
+    assert "source_kind" not in tool["schema"]["properties"]
+
+    arguments = json.dumps(
+        {
+            "application_id": app.id,
+            "jd_text": "负责服务稳定性建设。",
+            "source_url": "https://example.invalid/jd",
+            "expected_current_version_id": None,
+            "idempotency_key": "pilot-jd-key-0001",
+        },
+        ensure_ascii=False,
+    )
+    assert tool["validate"](arguments) == ""
+    first = json.loads(tool["handler"](arguments))
+    replay = json.loads(tool["handler"](arguments))
+
+    assert first["source_kind"] == "pilot"
+    assert first["id"] == replay["id"]
+    with session_factory() as session:
+        from offerpilot.models import ApplicationJDVersion
+
+        versions = list(session.scalars(select(ApplicationJDVersion)))
+    assert len(versions) == 1
+    assert versions[0].source_kind == "pilot"
