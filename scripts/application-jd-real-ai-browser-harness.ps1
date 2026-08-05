@@ -101,7 +101,7 @@ for name in tables:
     out[name] = {"count": len(rows), "sha256": hashlib.sha256(data.encode("utf-8")).hexdigest()}
 print(json.dumps(out, separators=(",", ":")))
 '@
-  $json = & uv run python -c $code
+  $json = $code | & uv run python -
   Assert-ExitCode 'database snapshot'
   return (($json -join '').Trim() | ConvertFrom-Json)
 }
@@ -126,7 +126,7 @@ db = sqlite3.connect(os.environ["APPLICATION_JD_HARNESS_DB"])
 app = int(os.environ["APPLICATION_JD_HARNESS_APP"])
 consumer = os.environ["APPLICATION_JD_HARNESS_CONSUMER"]
 if consumer == "triage":
-    db.execute("delete from opportunity_fit_review_stages where session_id in (select id from opportunity_fit_review_sessions where application_id = ?)", (app,))
+    db.execute("delete from opportunity_fit_review_stages where review_id in (select id from opportunity_fit_review_sessions where application_id = ?)", (app,))
     db.execute("delete from opportunity_fit_review_sessions where application_id = ?", (app,))
 elif consumer == "material-kit":
     db.execute("delete from application_material_kits where application_id = ?", (app,))
@@ -137,7 +137,7 @@ else:
 db.commit()
 '@
   $env:APPLICATION_JD_HARNESS_CONSUMER = $consumer
-  & uv run python -c $code
+  $code | & uv run python -
   Assert-ExitCode "cleanup $consumer"
 }
 
@@ -153,7 +153,7 @@ app = int(os.environ["APPLICATION_JD_HARNESS_APP"])
 resume = int(os.environ["APPLICATION_JD_HARNESS_RESUME"])
 event = int(os.environ["APPLICATION_JD_HARNESS_EVENT"])
 for sql in (
-    "delete from opportunity_fit_review_stages where session_id in (select id from opportunity_fit_review_sessions where application_id = ?)",
+    "delete from opportunity_fit_review_stages where review_id in (select id from opportunity_fit_review_sessions where application_id = ?)",
     "delete from opportunity_fit_review_sessions where application_id = ?",
     "delete from application_material_kits where application_id = ?",
     "delete from material_revision_proposals where application_id = ?",
@@ -173,7 +173,7 @@ remaining = db.execute("select count(*) from applications where id = ?", (app,))
 if remaining:
     raise SystemExit("synthetic Application cleanup left a row")
 '@
-  & uv run python -c $code
+  $code | & uv run python -
   Assert-ExitCode 'synthetic cleanup'
 }
 
@@ -267,7 +267,16 @@ try {
   Assert-StageUnchanged $beforeA $afterA @('application_jd_versions', 'conversations', 'chat_messages')
   $env:APPLICATION_JD_HARNESS_DB = Join-Path $tempData 'data.db'
   $env:APPLICATION_JD_HARNESS_APP = [string]$applicationId
-  $jdVersionId = [int](& uv run python -c 'import os,sqlite3; db=sqlite3.connect(os.environ["APPLICATION_JD_HARNESS_DB"]); print(db.execute("select id from application_jd_versions where application_id = ? order by version_number desc limit 1", (int(os.environ["APPLICATION_JD_HARNESS_APP"]),)).fetchone()[0])' )
+  $jdVersionCode = @'
+import os, sqlite3
+db = sqlite3.connect(os.environ["APPLICATION_JD_HARNESS_DB"])
+print(db.execute(
+    "select id from application_jd_versions where application_id = ? "
+    "order by version_number desc limit 1",
+    (int(os.environ["APPLICATION_JD_HARNESS_APP"]),),
+).fetchone()[0])
+'@
+  $jdVersionId = [int](($jdVersionCode | & uv run python -).Trim())
   Assert-ExitCode 'JD version readback'
 
   if ($Stage -eq 'jd-only') {
