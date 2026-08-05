@@ -461,6 +461,84 @@ def test_v2_source_cas_rejects_jd_change_after_provider_claim(tmp_path, monkeypa
     assert history_body[0]["latest_stage"]["stage_status"] == "source_conflict"
 
 
+def test_v2_deep_source_cas_rejects_jd_change_after_provider_claim(tmp_path) -> None:
+    entered = Event()
+    release = Event()
+
+    class DeepBarrierModel(V2ReviewModel):
+        def complete(self, messages, tools):  # type: ignore[no-untyped-def]
+            self.calls += 1
+            if self.calls == 2:
+                entered.set()
+                assert release.wait(5)
+            return Assistant(
+                content=json.dumps(
+                    _v2_payload("triage" if self.calls == 1 else "deep_review"),
+                    ensure_ascii=False,
+                )
+            )
+
+    client, application, resume = _ready(tmp_path, DeepBarrierModel())
+    path = f"/api/applications/{application['id']}/opportunity-fit-reviews"
+    triage = client.post(
+        path,
+        json={
+            "schema_version": 2,
+            "resume_id": resume["id"],
+            "jd_version_id": application["jd_version_id"],
+            "jd_source_label": "copy",
+            "candidate_assertions": [],
+            "idempotency_key": "7be2f7d9-9b87-4c0c-a7a5-000000000001",
+        },
+    )
+    assert triage.status_code == 201, triage.text
+    triage_body = triage.json()
+    confirmed = client.post(
+        f"{path}/{triage_body['review_id']}/triage/{triage_body['stage_id']}/confirm",
+        json={"confirmation_token": triage_body["confirmation_token"]},
+    )
+    assert confirmed.status_code == 200
+
+    deep_payload = {
+        "schema_version": 2,
+        "parent_triage_stage_id": triage_body["stage_id"],
+        "resume_id": resume["id"],
+        "idempotency_key": "7be2f7d9-9b87-4c0c-a7a5-000000000002",
+    }
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            client.post,
+            f"{path}/{triage_body['review_id']}/deep-review",
+            json=deep_payload,
+        )
+        if not entered.wait(5):
+            early = future.result(timeout=5)
+            raise AssertionError(f"deep provider barrier was not reached: {early.status_code} {early.text}")
+        changed = client.post(
+            f"/api/applications/{application['id']}/job-description/versions",
+            json={
+                "jd_text": "Rust backend JD",
+                "source_url": None,
+                "expected_current_version_id": application["jd_version_id"],
+                "idempotency_key": "deep-cas-jd-000000000001",
+            },
+        )
+        assert changed.status_code == 201, changed.text
+        release.set()
+        result = future.result(timeout=5)
+
+    assert result.status_code == 409
+    assert result.json()["error_code"] == "opportunity_fit_source_conflict"
+    history = client.get(
+        f"{path}/{triage_body['review_id']}",
+        params={"schema_version": 2},
+    )
+    assert history.status_code == 200
+    stages = history.json()["stages"]
+    assert stages[-1]["stage"] == "deep_review"
+    assert stages[-1]["stage_status"] == "source_conflict"
+
+
 def test_v2_confirmation_token_survives_settings_save_and_app_restart(tmp_path) -> None:
     client, application, resume = _ready(tmp_path, V2ReviewModel())
     path = f"/api/applications/{application['id']}/opportunity-fit-reviews"

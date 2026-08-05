@@ -293,13 +293,13 @@ try {
   }
   if (-not $healthy) { throw 'Isolated service did not become healthy.' }
 
+  $beforeCleanup = Get-DbSnapshot
   $application = Invoke-RestMethod -Method Post -Uri "$baseUrl/api/applications" -ContentType 'application/json' -Body '{"company_name":"\u7b71\u54f2\u6848\u4f8b\u516c\u53f8","position_name":"\u540e\u7aef\u5de5\u7a0b\u5e08","status":"applied"}'
   $applicationId = [int]$application.id
   $resume = Invoke-RestMethod -Method Post -Uri "$baseUrl/api/resumes" -ContentType 'application/json' -Body '{"title":"\u7b71\u54f2\u540e\u7aef\u7b80\u5386","text":"Python FastAPI SQLAlchemy"}'
   $resumeId = [int]$resume.id
   $event = Invoke-RestMethod -Method Post -Uri "$baseUrl/api/application-events" -ContentType 'application/json' -Body (ConvertTo-Json @{ application_id = $applicationId; event_type = 'interview'; subtype = 'technical'; scheduled_at = '2026-12-01T10:00:00Z'; duration_minutes = 60; status = 'todo' })
   $eventId = [int]$event.id
-  $beforeCleanup = Get-DbSnapshot
   $beforeA = Get-DbSnapshot
 
   $auditor = Start-Process powershell -WindowStyle Hidden -PassThru -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', "Set-Location '$repo'; uv run python scripts/browser-network-audit.py --debugging-url '$CdpUrl' --expected-url '$baseUrl' --audit '$browserAudit' --stop-file '$browserStop' --ready-file '$browserReady'")

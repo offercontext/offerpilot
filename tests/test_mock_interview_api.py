@@ -122,6 +122,25 @@ def test_start_and_same_key_replay_are_idempotent(tmp_path):
     assert "请介绍一次" not in first.json()["turn"]["question"]
 
 
+def test_existing_attempt_rejects_boolean_jd_version_id_before_replay(tmp_path):
+    client, app_id, event_id, resume_id = _client(tmp_path)
+    path = f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts"
+    payload = {
+        "resume_id": resume_id,
+        "jd_version_id": 1,
+        "attempt_idempotency_key": "attempt-bool-version",
+        "initial_question_idempotency_key": "question-bool-version",
+    }
+
+    first = client.post(path, json=payload)
+    assert first.status_code == 201
+
+    replay_with_bool = client.post(path, json={**payload, "jd_version_id": True})
+
+    assert replay_with_bool.status_code == 422
+    assert replay_with_bool.json()["error_code"] == "application_jd_version_required"
+
+
 def test_replay_of_frozen_attempt_survives_jd_update(tmp_path):
     client, app_id, event_id, resume_id = _client(tmp_path)
     path = f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts"

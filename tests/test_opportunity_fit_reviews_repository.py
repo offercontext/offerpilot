@@ -14,6 +14,7 @@ from offerpilot.db import init_database
 from offerpilot.models import OpportunityFitReview
 from offerpilot.models import OpportunityFitReviewSession, OpportunityFitReviewStage
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
+from offerpilot.repositories.application_jd_versions import ApplicationJDService
 from offerpilot.repositories.opportunity_fit_reviews import (
     OpportunityFitReviewConflictError,
     OpportunityFitReviewNotFound,
@@ -191,6 +192,17 @@ def _ready(tmp_path):
     return factory, application, resume
 
 
+def _add_jd_version(factory, application_id: int) -> int:
+    return ApplicationJDService(factory).create_version(
+        application_id,
+        jd_text="Kubernetes preferred",
+        source_url=None,
+        source_kind="ui",
+        expected_current_version_id=None,
+        idempotency_key="repository-jd-version-01",
+    ).version.id
+
+
 def test_create_triage_persists_minimal_immutable_snapshot_and_is_idempotent(tmp_path) -> None:
     factory, application, resume = _ready(tmp_path)
     repository = OpportunityFitReviewsRepository(factory)
@@ -314,11 +326,19 @@ def test_v2_triage_creates_one_root_and_stage_and_replays_same_key(tmp_path) -> 
 
 def test_v2_confirmation_token_is_single_use_and_deep_requires_confirmation(tmp_path) -> None:
     factory, application, resume = _ready(tmp_path)
+    jd_version_id = _add_jd_version(factory, application.id)
     repository = OpportunityFitReviewsRepository(factory, confirmation_secret="test-secret")
     model = V2ReviewModel()
     key = "be4b3e55-37c6-4870-9875-6b6f2f7f04d4"
     session, triage, created, token = repository.create_triage_v2(
-        application.id, resume.id, "Kubernetes preferred", "copy", [], key, model
+        application.id,
+        resume.id,
+        "Kubernetes preferred",
+        "copy",
+        [],
+        key,
+        model,
+        jd_version_id=jd_version_id,
     )
 
     with pytest.raises(OpportunityFitReviewConflictError):
@@ -352,6 +372,34 @@ def test_v2_confirmation_token_is_single_use_and_deep_requires_confirmation(tmp_
     )
     assert deep_created is True
     assert deep.stage == "deep_review"
+
+
+def test_v2_deep_rejects_confirmed_parent_without_jd_version(tmp_path) -> None:
+    factory, application, resume = _ready(tmp_path)
+    repository = OpportunityFitReviewsRepository(factory, confirmation_secret="test-secret")
+    root, triage, _created, token = repository.create_triage_v2(
+        application.id,
+        resume.id,
+        "Kubernetes preferred",
+        "copy",
+        [],
+        "legacy-triage-without-jd-version",
+        V2ReviewModel(),
+    )
+    repository.confirm_triage_v2(application.id, root.id, triage.id, token)
+
+    with pytest.raises(OpportunityFitReviewConflictError, match="source version"):
+        repository.create_deep_review_v2(
+            application.id,
+            root.id,
+            triage.id,
+            resume.id,
+            "Kubernetes preferred",
+            "copy",
+            [],
+            "deep-from-legacy-triage",
+            V2ReviewModel(),
+        )
 
 
 def test_v2_expired_provider_lease_is_taken_over_before_the_next_provider_call(tmp_path) -> None:
@@ -453,6 +501,7 @@ def test_v2_expired_lease_two_connections_only_one_owner_calls_provider(tmp_path
 
 def test_v2_deep_same_key_across_roots_returns_idempotency_conflict(tmp_path) -> None:
     factory, application, resume = _ready(tmp_path)
+    jd_version_id = _add_jd_version(factory, application.id)
     repository = OpportunityFitReviewsRepository(factory, confirmation_secret="test-secret")
 
     first_root, first_triage, _created, first_token = repository.create_triage_v2(
@@ -463,6 +512,7 @@ def test_v2_deep_same_key_across_roots_returns_idempotency_conflict(tmp_path) ->
         [],
         "triage-root-one",
         V2ReviewModel(),
+        jd_version_id=jd_version_id,
     )
     repository.confirm_triage_v2(application.id, first_root.id, first_triage.id, first_token)
     repository.create_deep_review_v2(
@@ -485,6 +535,7 @@ def test_v2_deep_same_key_across_roots_returns_idempotency_conflict(tmp_path) ->
         [],
         "triage-root-two",
         V2ReviewModel(),
+        jd_version_id=jd_version_id,
     )
     repository.confirm_triage_v2(application.id, second_root.id, second_triage.id, second_token)
 

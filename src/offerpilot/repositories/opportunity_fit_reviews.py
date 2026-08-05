@@ -414,13 +414,15 @@ class OpportunityFitReviewsRepository:
                 raise OpportunityFitReviewConflictError("opportunity fit parent stage is invalid")
             if parent.stage != "triage" or parent.status != "confirmed":
                 raise OpportunityFitReviewConflictError("triage must be confirmed before deep review")
+            if parent.jd_version_id is None:
+                raise OpportunityFitReviewSourceConflictError("opportunity fit source version is missing")
             current_version_id = session.scalar(
                 select(ApplicationJDVersion.id)
                 .where(ApplicationJDVersion.application_id == application_id)
                 .order_by(ApplicationJDVersion.version_number.desc())
                 .limit(1)
             )
-            if parent.jd_version_id is not None and current_version_id != parent.jd_version_id:
+            if current_version_id != parent.jd_version_id:
                 raise OpportunityFitReviewSourceConflictError("opportunity fit source changed")
             snapshot = _build_snapshot(
                 session, application, resume_id, jd_text, jd_source_label, candidate_assertions
@@ -499,6 +501,18 @@ class OpportunityFitReviewsRepository:
                 raise OpportunityFitReviewNotFound()
             if current_stage.status != "generating" or current_stage.provider_call_token != provider_token:
                 return current_stage, False
+            current_version_id = session.scalar(
+                select(ApplicationJDVersion.id)
+                .where(ApplicationJDVersion.application_id == application_id)
+                .order_by(ApplicationJDVersion.version_number.desc())
+                .limit(1)
+            )
+            if current_version_id != current_stage.jd_version_id:
+                current_stage.status = "source_conflict"
+                current_stage.provider_call_token = ""
+                current_stage.lease_expires_at = None
+                session.commit()
+                raise OpportunityFitReviewSourceConflictError("opportunity fit source changed")
             current_stage.status = "ready"
             current_stage.proposal_json = proposal_json
             current_stage.proposal_sha256 = sha256_text(proposal_json)

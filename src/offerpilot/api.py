@@ -4673,6 +4673,8 @@ def create_app(
             attempt_key = str(payload["attempt_idempotency_key"])
             question_key = str(payload["initial_question_idempotency_key"])
             requested_jd_version_id = payload["jd_version_id"]
+            if type(requested_jd_version_id) is not int or requested_jd_version_id <= 0:
+                return error_response(422, "invalid jd_version_id", code="application_jd_version_required")
             existing_attempt = mock_interviews.get_attempt_by_key(
                 application_id, event_id, attempt_key
             )
