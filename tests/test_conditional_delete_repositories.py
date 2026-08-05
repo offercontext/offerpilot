@@ -7,6 +7,7 @@ from offerpilot.models import (
     APPLICATION_FOREIGN_KEY_MODELS,
     ApplicationEvent,
     ApplicationEvidenceBundle,
+    ApplicationJDVersion,
     ApplicationMaterialKit,
     MaterialRevisionProposal,
     OpportunityFitReview,
@@ -29,6 +30,16 @@ from offerpilot.repositories.notes import NoteCreate, NotesRepository
 
 
 def _application_dependency(model, application_id):
+    if model is ApplicationJDVersion:
+        return model(
+            application_id=application_id,
+            version_number=1,
+            jd_text="JD",
+            content_sha256="0" * 64,
+            source_kind="ui",
+            idempotency_key="application-jd-version-dependency",
+            request_fingerprint_sha256="1" * 64,
+        )
     if model is ApplicationEvent:
         return model(application_id=application_id, event_type="interview")
     if model is InterviewNote:

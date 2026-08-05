@@ -927,6 +927,7 @@ class MockInterviewReviewDraft(Base):
 # deletion iterates this explicit inventory; a metadata-backed test keeps it exhaustive.
 APPLICATION_FOREIGN_KEY_MODELS = (
     ApplicationEvent,
+    ApplicationJDVersion,
     InterviewNote,
     Offer,
     ResumeMatch,

@@ -32,11 +32,20 @@ def _setup(tmp_path):
         },
     ).json()
     resume = client.post("/api/resumes", json={"title": "Resume", "text": "Python"}).json()
+    jd_version = client.post(
+        f"/api/applications/{application['id']}/job-description/versions",
+        json={
+            "jd_text": "需要 Python",
+            "source_url": None,
+            "expected_current_version_id": None,
+            "idempotency_key": "mock-review-jd-1",
+        },
+    ).json()
     started = client.post(
         f"/api/applications/{application['id']}/events/{event['id']}/mock-interview/attempts",
         json={
             "resume_id": resume["id"],
-            "jd_text": "需要 Python",
+            "jd_version_id": jd_version["id"],
             "attempt_idempotency_key": "attempt-1",
             "initial_question_idempotency_key": "question-1",
         },
