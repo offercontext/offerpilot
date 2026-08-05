@@ -58,6 +58,30 @@ class Application(Base):
     )
 
 
+class ApplicationJDVersion(Base):
+    __tablename__ = "application_jd_versions"
+    __table_args__ = (
+        UniqueConstraint("application_id", "version_number"),
+        UniqueConstraint("application_id", "idempotency_key"),
+        Index("idx_application_jd_versions_app_version", "application_id", "version_number"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    application_id: Mapped[int] = mapped_column(
+        ForeignKey("applications.id", ondelete="CASCADE"), nullable=False
+    )
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    jd_text: Mapped[str] = mapped_column(Text, nullable=False)
+    content_sha256: Mapped[str] = mapped_column(String, nullable=False)
+    source_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_kind: Mapped[str] = mapped_column(String, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
+    request_fingerprint_sha256: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
+
+
 class ApplicationEvent(Base):
     __tablename__ = "application_events"
     __table_args__ = (
@@ -297,6 +321,7 @@ class ResumeMatch(Base):
     )
     jd_text: Mapped[str] = mapped_column(String, nullable=False)
     result: Mapped[str] = mapped_column(String, nullable=False)
+    jd_version_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -316,6 +341,7 @@ class JDAnalysis(Base):
     jd_source: Mapped[str] = mapped_column(String, default="text", server_default="text")
     jd_text: Mapped[str] = mapped_column(String, nullable=False)
     result: Mapped[str] = mapped_column(String, nullable=False)
+    jd_version_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -345,6 +371,7 @@ class ApplicationMaterialKit(Base):
         nullable=True,
     )
     jd_snapshot: Mapped[str] = mapped_column(String, default="", server_default="")
+    jd_version_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String, default="draft", server_default="draft")
     content_json: Mapped[str] = mapped_column(String, default="{}", server_default="{}")
     created_at: Mapped[datetime] = mapped_column(
@@ -411,6 +438,7 @@ class MaterialRevisionProposal(Base):
     )
     source_fingerprint_sha256: Mapped[str] = mapped_column(String, nullable=False)
     source_snapshot_json: Mapped[str] = mapped_column(String, nullable=False)
+    jd_version_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     proposal_json: Mapped[str] = mapped_column(String, nullable=False)
     proposal_sha256: Mapped[str] = mapped_column(String, nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False, default="draft", server_default="draft")
@@ -479,6 +507,7 @@ class OpportunityFitReviewSession(Base):
         Integer, nullable=False, default=2, server_default="2"
     )
     status: Mapped[str] = mapped_column(String, nullable=False, default="active", server_default="active")
+    jd_version_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
     )
@@ -518,6 +547,7 @@ class OpportunityFitReviewStage(Base):
     source_snapshot_json: Mapped[str] = mapped_column(String, nullable=False)
     source_fingerprint_sha256: Mapped[str] = mapped_column(String, nullable=False)
     proposal_json: Mapped[str] = mapped_column(String, nullable=False)
+    jd_version_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     proposal_sha256: Mapped[str] = mapped_column(String, nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False, default="ready", server_default="ready")
     stage_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
@@ -587,6 +617,7 @@ class InterviewPreparationProposal(Base):
     application_id: Mapped[int] = mapped_column(Integer, nullable=False)
     application_event_id: Mapped[int] = mapped_column(Integer, nullable=False)
     resume_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    jd_version_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
     attempt_status: Mapped[str] = mapped_column(
         String, default="generating", server_default="generating", nullable=False
@@ -814,6 +845,7 @@ class MockInterviewAttempt(Base):
     application_id: Mapped[int] = mapped_column(Integer, nullable=False)
     event_id: Mapped[int] = mapped_column(Integer, nullable=False)
     resume_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    jd_version_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
     input_snapshot_json: Mapped[str] = mapped_column(Text, nullable=False)
     source_fingerprint: Mapped[str] = mapped_column(String, nullable=False)

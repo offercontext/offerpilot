@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from offerpilot.db import init_database
+from offerpilot.models import ApplicationJDVersion
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
 
 
@@ -78,6 +79,12 @@ def test_update_full_replaces_application_fields(tmp_path):
     assert updated.status == "offer"
     assert updated.notes == "second"
     assert updated.source == "web"
+
+
+def test_application_jd_version_model_is_registered(tmp_path):
+    init_database(tmp_path / "data.db")
+
+    assert ApplicationJDVersion.__tablename__ == "application_jd_versions"
 
 
 def test_update_full_records_first_status_timestamp_only_once(tmp_path):

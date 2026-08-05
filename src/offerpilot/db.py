@@ -70,6 +70,7 @@ def init_database(db_path: Path) -> SessionFactory:
             "0016_event_bound_mock_interview",
             "Replace legacy MockSession with event-bound text mock interview tables",
         )
+    _ensure_application_jd_versions_schema(engine)
     _ensure_offer_negotiation_schema(engine)
     interview_review_history_rebuilt = _ensure_interview_review_history_schema(engine)
     interview_knowledge_event_added = _ensure_column(
@@ -1179,6 +1180,60 @@ def _ensure_offer_negotiation_schema(engine) -> None:  # type: ignore[no-untyped
                 "'Add Offer comparison dimensions, values, negotiation proposals and briefs')"
             )
         )
+
+
+def _ensure_application_jd_versions_schema(engine) -> None:  # type: ignore[no-untyped-def]
+    """Create immutable Application JD versions and additive identity columns."""
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS application_jd_versions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    application_id INTEGER NOT NULL
+                        REFERENCES applications(id) ON DELETE CASCADE,
+                    version_number INTEGER NOT NULL,
+                    jd_text TEXT NOT NULL,
+                    content_sha256 VARCHAR NOT NULL,
+                    source_url VARCHAR,
+                    source_kind VARCHAR NOT NULL,
+                    idempotency_key VARCHAR NOT NULL,
+                    request_fingerprint_sha256 VARCHAR NOT NULL,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT uq_application_jd_versions_application_version
+                        UNIQUE (application_id, version_number),
+                    CONSTRAINT uq_application_jd_versions_application_key
+                        UNIQUE (application_id, idempotency_key)
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_application_jd_versions_app_version "
+                "ON application_jd_versions(application_id, version_number)"
+            )
+        )
+
+    for table in (
+        "jd_analyses",
+        "resume_matches",
+        "application_material_kits",
+        "material_revision_proposals",
+        "opportunity_fit_reviews",
+        "opportunity_fit_review_sessions",
+        "opportunity_fit_review_stages",
+        "interview_preparation_proposals",
+        "mock_interview_attempts",
+    ):
+        _ensure_column(engine, table, "jd_version_id", "INTEGER")
+
+    _record_migration(
+        engine,
+        "0018_application_jd_versions",
+        "Add immutable Application JD version history and identity columns",
+    )
 
 
 def _ensure_column(engine, table: str, column: str, definition: str) -> bool:  # type: ignore[no-untyped-def]
