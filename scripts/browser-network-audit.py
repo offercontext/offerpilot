@@ -157,8 +157,12 @@ class BrowserAudit:
                 if isinstance(payload, dict):
                     request_context: dict[str, object] = {}
                     route_match = re.search(r"/api/applications/(\d+)(?:/|$)", url)
-                    if route_match:
-                        request_context["application_id"] = int(route_match.group(1))
+                    route_application_id = int(route_match.group(1)) if route_match else None
+                    if route_application_id is not None:
+                        # The application identity in a bound URL is authoritative.
+                        # Keep a payload copy separately so the harness can reject
+                        # a request that tries to cross-bind another application.
+                        request_context["application_id"] = route_application_id
                     request_context["payload_sha256"] = hashlib.sha256(
                         json.dumps(
                             payload,
@@ -175,7 +179,13 @@ class BrowserAudit:
                         "expected_current_version_id",
                     ):
                         if isinstance(payload.get(key), int):
-                            request_context[key] = payload[key]
+                            if key == "application_id":
+                                if route_application_id is None:
+                                    request_context[key] = payload[key]
+                                else:
+                                    request_context["payload_application_id"] = payload[key]
+                            else:
+                                request_context[key] = payload[key]
                     if isinstance(payload.get("jd_text"), str):
                         request_context["jd_text_sha256"] = hashlib.sha256(
                             payload["jd_text"].encode("utf-8")

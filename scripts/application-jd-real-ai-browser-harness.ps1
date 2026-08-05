@@ -21,6 +21,7 @@ $applicationId = $null
 $resumeId = $null
 $eventId = $null
 $jdVersionId = $null
+$beforeCleanup = $null
 $previousData = $env:OFFERPILOT_DATA
 $previousHttpAudit = $env:OFFERPILOT_HTTP_AUDIT_FILE
 $previousHttpsProxy = $env:HTTPS_PROXY
@@ -99,6 +100,7 @@ tables = [
   "knowledge_note_evidence", "knowledge_captured_source_metadata", "knowledge_evidence",
   "knowledge_source_assets", "knowledge_jobs", "knowledge_logs", "knowledge_source_briefs",
   "knowledge_brief_attempts", "knowledge_brief_attempt_steps", "knowledge_retrieval_traces",
+  "knowledge_evidence_fts",
   "interview_knowledge_capture_attempts", "application_evidence_bundles",
 ]
 available = {row[0] for row in db.execute("select name from sqlite_master where type='table'")}
@@ -200,12 +202,21 @@ function Assert-LocalBrowser($records) {
     if ($uri.Scheme -ne $origin.Scheme -or $uri.Host -ne $origin.Host -or $uri.Port -ne $origin.Port) {
       throw 'Browser accessed a non-local URL.'
     }
+    $routeMatch = [regex]::Match($record.url, '/api/applications/(\d+)(?:/|$)')
+    $context = $record.request_context
+    if ($routeMatch.Success -and $null -ne $context -and $null -ne $context.payload_application_id) {
+      if ([int]$context.payload_application_id -ne [int]$routeMatch.Groups[1].Value) {
+        throw 'Browser request payload application_id does not match its bound URL.'
+      }
+    }
   }
 }
 
 function Assert-ProviderEgress($allowedEndpoints) {
   if (-not (Test-Path -LiteralPath $providerAudit)) { throw 'Provider audit output is missing.' }
   $entries = @(Get-Content -LiteralPath $providerAudit | ForEach-Object { $_ | ConvertFrom-Json })
+  $rejected = @($entries | Where-Object status -eq 'rejected')
+  if ($rejected.Count -gt 0) { throw 'Provider egress proxy rejected an outbound connection.' }
   $connected = @($entries | Where-Object status -eq 'connected')
   if ($connected.Count -lt 1) { throw 'No real Provider connection was observed.' }
   foreach ($entry in $connected) {
@@ -288,6 +299,7 @@ try {
   $resumeId = [int]$resume.id
   $event = Invoke-RestMethod -Method Post -Uri "$baseUrl/api/application-events" -ContentType 'application/json' -Body (ConvertTo-Json @{ application_id = $applicationId; event_type = 'interview'; subtype = 'technical'; scheduled_at = '2026-12-01T10:00:00Z'; duration_minutes = 60; status = 'todo' })
   $eventId = [int]$event.id
+  $beforeCleanup = Get-DbSnapshot
   $beforeA = Get-DbSnapshot
 
   $auditor = Start-Process powershell -WindowStyle Hidden -PassThru -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', "Set-Location '$repo'; uv run python scripts/browser-network-audit.py --debugging-url '$CdpUrl' --expected-url '$baseUrl' --audit '$browserAudit' --stop-file '$browserStop' --ready-file '$browserReady'")
@@ -303,6 +315,7 @@ try {
   $records = Get-BrowserRecords
   Assert-LocalBrowser $records
   Assert-StageA $records
+  Assert-ProviderEgress $providers
   $afterA = Get-DbSnapshot
   Assert-StageUnchanged $beforeA $afterA @('application_jd_versions', 'conversations', 'chat_messages')
   $env:APPLICATION_JD_HARNESS_DB = Join-Path $tempData 'data.db'
@@ -352,6 +365,7 @@ print(db.execute(
   Stop-Tree $proxy
   if ($applicationId -and $resumeId -and $eventId -and (Test-Path -LiteralPath (Join-Path $tempData 'data.db'))) {
     Clear-SyntheticData
+    if ($beforeCleanup) { Assert-StageUnchanged $beforeCleanup (Get-DbSnapshot) @() }
   }
   if ($previousData) { $env:OFFERPILOT_DATA = $previousData } else { Remove-Item Env:OFFERPILOT_DATA -ErrorAction SilentlyContinue }
   if ($previousHttpAudit) { $env:OFFERPILOT_HTTP_AUDIT_FILE = $previousHttpAudit } else { Remove-Item Env:OFFERPILOT_HTTP_AUDIT_FILE -ErrorAction SilentlyContinue }

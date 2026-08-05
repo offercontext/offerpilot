@@ -152,6 +152,38 @@ def test_jd_update_marks_source_changed_without_interrupting_frozen_attempt(tmp_
     assert updated.id == result.attempt.id
 
 
+def test_legacy_attempt_without_jd_version_is_not_marked_current(tmp_path):
+    factory = init_database(tmp_path / "data.db")
+    app_id, event_id, _, resume_id, _ = _seed(factory)
+    repo = MockInterviewRepository(factory)
+    result = _start_ready(
+        repo,
+        app_id,
+        event_id,
+        resume_id,
+        "Legacy JD",
+        None,
+        "attempt-legacy",
+        "question-legacy",
+    )
+
+    with factory() as session:
+        session.add(
+            ApplicationJDVersion(
+                application_id=app_id,
+                version_number=1,
+                jd_text="Current JD",
+                content_sha256="current-version",
+                source_kind="ui",
+                idempotency_key="jd-current-version",
+                request_fingerprint_sha256="request-current-version",
+            )
+        )
+        session.commit()
+
+    assert repo.source_status(result.attempt.id) == "source_changed"
+
+
 def test_same_attempt_key_same_input_replays_existing_attempt(tmp_path):
     factory = init_database(tmp_path / "data.db")
     app_id, event_id, _, resume_id, _ = _seed(factory)
