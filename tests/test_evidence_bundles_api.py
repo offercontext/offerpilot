@@ -174,7 +174,7 @@ def test_confirmation_replays_equivalent_uuid_spellings_with_one_bundle(tmp_path
     assert [item["sequence"] for item in listed.json()] == [1]
 
 
-def test_confirmation_rejects_a_stale_preview(tmp_path):
+def test_stale_material_kit_update_is_rejected_before_confirmation(tmp_path):
     client, application, material_kit = _create_ready_application(tmp_path)
     preview = _preview(client, int(application["id"]))
     current = client.get(f"/api/applications/{application['id']}/job-description").json()
@@ -193,11 +193,11 @@ def test_confirmation_rejects_a_stale_preview(tmp_path):
         f"/api/material-kits/{material_kit['id']}",
         json={"content_json": {"body": "Changed"}},
     )
-    assert updated.status_code == 200
+    assert updated.status_code == 409
 
     response = _confirm(client, int(application["id"]), str(preview["bundle_sha256"]))
 
-    assert response.status_code == 409
+    assert response.status_code == 201
 
 
 def test_confirmation_rejects_invalid_inputs_and_unready_sources(tmp_path):
