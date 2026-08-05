@@ -89,12 +89,17 @@ tables = [
   "applications", "application_events", "resumes", "application_jd_versions",
   "conversations", "chat_messages", "jd_analyses", "resume_matches",
   "application_material_kits", "material_revision_proposals",
-  "opportunity_fit_review_sessions", "opportunity_fit_review_stages",
+  "opportunity_fit_reviews", "opportunity_fit_review_sessions", "opportunity_fit_review_stages",
   "interview_preparation_proposals", "mock_interview_attempts",
   "mock_interview_turns", "mock_interview_feedback_proposals", "mock_interview_review_drafts",
-  "interview_notes", "interview_review_proposals", "offers", "questions", "wakeups",
-  "knowledge_sources", "knowledge_notes", "knowledge_note_versions", "knowledge_evidence",
-  "application_evidence_bundles", "memories",
+  "interview_notes", "interview_review_proposals", "offers", "offer_comparison_dimensions",
+  "offer_comparison_values", "offer_negotiation_proposals", "offer_negotiation_briefs",
+  "questions", "question_reviews", "wakeups", "knowledge_sources", "knowledge_source_origins",
+  "knowledge_extraction_snapshots", "knowledge_notes", "knowledge_note_versions",
+  "knowledge_note_evidence", "knowledge_captured_source_metadata", "knowledge_evidence",
+  "knowledge_source_assets", "knowledge_jobs", "knowledge_logs", "knowledge_source_briefs",
+  "knowledge_brief_attempts", "knowledge_brief_attempt_steps", "knowledge_retrieval_traces",
+  "interview_knowledge_capture_attempts", "application_evidence_bundles",
 ]
 available = {row[0] for row in db.execute("select name from sqlite_master where type='table'")}
 out = {}
@@ -194,6 +199,19 @@ function Assert-LocalBrowser($records) {
     $uri = [Uri]$record.url
     if ($uri.Scheme -ne $origin.Scheme -or $uri.Host -ne $origin.Host -or $uri.Port -ne $origin.Port) {
       throw 'Browser accessed a non-local URL.'
+    }
+  }
+}
+
+function Assert-ProviderEgress($allowedEndpoints) {
+  if (-not (Test-Path -LiteralPath $providerAudit)) { throw 'Provider audit output is missing.' }
+  $entries = @(Get-Content -LiteralPath $providerAudit | ForEach-Object { $_ | ConvertFrom-Json })
+  $connected = @($entries | Where-Object status -eq 'connected')
+  if ($connected.Count -lt 1) { throw 'No real Provider connection was observed.' }
+  foreach ($entry in $connected) {
+    $tuple = "$($entry.scheme)://$($entry.host):$($entry.port)"
+    if (-not (@($allowedEndpoints | Where-Object tuple -eq $tuple).Count)) {
+      throw "Provider egress endpoint is outside the configured allowlist: $tuple"
     }
   }
 }
@@ -321,6 +339,7 @@ print(db.execute(
       Clear-Consumer $consumer
       Assert-StageUnchanged $consumerBefore (Get-DbSnapshot) @()
     }
+    Assert-ProviderEgress $providers
     Write-Host 'Application JD browser acceptance passed.'
   }
 } catch {

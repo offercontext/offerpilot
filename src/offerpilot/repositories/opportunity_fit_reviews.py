@@ -162,6 +162,15 @@ class OpportunityFitReviewsRepository:
             session.execute(text("BEGIN IMMEDIATE"))
             if _visible_application(session, application_id) is None:
                 raise OpportunityFitReviewNotFound()
+            if jd_version_id is not None:
+                current_version_id = session.scalar(
+                    select(ApplicationJDVersion.id)
+                    .where(ApplicationJDVersion.application_id == application_id)
+                    .order_by(ApplicationJDVersion.version_number.desc())
+                    .limit(1)
+                )
+                if current_version_id != jd_version_id:
+                    raise OpportunityFitReviewSourceConflictError("opportunity fit source changed")
             existing = _find_v2_session(session, application_id, idempotency_key)
             if existing is not None:
                 stage = _find_v2_stage(session, existing.id, "triage", idempotency_key)

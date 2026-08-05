@@ -1864,7 +1864,14 @@ def create_app(
             status=str(payload.get("status") or existing.status),
             content_json=content_json,
         )
-        kit = material_kits.update(kit_id, data)
+        try:
+            kit = material_kits.update(kit_id, data)
+        except MaterialKitSourceConflict:
+            return error_response(
+                409,
+                "岗位资料已变化，请重新加载后再保存。",
+                code="application_jd_source_conflict",
+            )
         if kit is None:
             return error_response(404, "Material kit not found")
         return JSONResponse(_material_kit_json(kit))
@@ -2183,6 +2190,8 @@ def create_app(
             )
             if parent_stage is None or parent_stage.stage != "triage":
                 return error_response(409, "Triage parent is required", code="opportunity_fit_source_conflict")
+            if parent_stage.jd_version_id is None:
+                return error_response(409, "Triage source version is unavailable", code="opportunity_fit_source_conflict")
             parent_snapshot_raw = json.loads(parent_stage.source_snapshot_json)
             parent_snapshot: dict[str, Any] = parent_snapshot_raw if isinstance(parent_snapshot_raw, dict) else {}
             parent_jd_raw = parent_snapshot.get("jd")

@@ -67,6 +67,16 @@ class MaterialRevisionProposalsRepository:
             session.execute(text("BEGIN IMMEDIATE"))
             if _visible_application(session, application_id) is None:
                 raise MaterialProposalNotFound()
+            try:
+                _current_snapshot, current_fingerprint = build_source_snapshot(
+                    session, application_id, user_assertions
+                )
+            except MaterialProposalConflictError:
+                raise
+            except MaterialProposalValidationError as exc:
+                raise MaterialProposalConflictError("source material has changed, please generate a new proposal") from exc
+            if current_fingerprint != fingerprint:
+                raise MaterialProposalConflictError("source material has changed, please generate a new proposal")
             proposal = MaterialRevisionProposal(
                 application_id=application_id,
                 material_kit_id=int(snapshot["material_kit"]["id"]),

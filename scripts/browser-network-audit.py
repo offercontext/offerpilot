@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import re
 import time
 from pathlib import Path
 from typing import TextIO
@@ -155,6 +156,9 @@ class BrowserAudit:
                     payload = None
                 if isinstance(payload, dict):
                     request_context: dict[str, object] = {}
+                    route_match = re.search(r"/api/applications/(\d+)(?:/|$)", url)
+                    if route_match:
+                        request_context["application_id"] = int(route_match.group(1))
                     request_context["payload_sha256"] = hashlib.sha256(
                         json.dumps(
                             payload,
@@ -249,6 +253,8 @@ class BrowserAudit:
                 current = payload.get("current")
                 if isinstance(current, dict) and isinstance(current.get("id"), int):
                     record["response_jd_version_id"] = current["id"]
+                    if current.get("source_kind") in {"ui", "pilot"}:
+                        record["response_source_kind"] = current["source_kind"]
                 brief = payload.get("brief")
                 if isinstance(brief, dict) and isinstance(brief.get("proposal_id"), int):
                     record["response_confirmed_proposal_id"] = brief["proposal_id"]

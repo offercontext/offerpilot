@@ -243,6 +243,18 @@ class InterviewPreparationProposalsRepository:
         owner_token: str
         with self._session_factory() as session:
             session.execute(text("BEGIN IMMEDIATE"))
+            if jd_version_id is not None:
+                current_version_id = session.scalar(
+                    select(ApplicationJDVersion.id)
+                    .where(ApplicationJDVersion.application_id == application_id)
+                    .order_by(ApplicationJDVersion.version_number.desc())
+                    .limit(1)
+                )
+                if current_version_id != jd_version_id:
+                    raise InterviewPreparationConflictError(
+                        "interview preparation source changed",
+                        "interview_preparation_source_conflict",
+                    )
             snapshot = _build_snapshot(
                 session,
                 application_id=application_id,
@@ -996,6 +1008,8 @@ def _set_source_status(session: Session, row: InterviewPreparationProposal) -> N
             states["jd"] = (
                 "current" if current_jd_version_id == recorded_jd_version_id else "source_changed"
             )
+        elif current_jd_version_id is not None:
+            states["jd"] = "source_changed"
         knowledge_changed = False
         for evidence in snapshot.get("knowledge_evidence", []):
             evidence_id = evidence.get("id") if isinstance(evidence, dict) else None
