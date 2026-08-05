@@ -1,4 +1,6 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 
 from fastapi.testclient import TestClient
 
@@ -96,3 +98,58 @@ def test_generate_update_and_conflict_material_kit(tmp_path):
     updated = updated_response.json()
     assert updated["status"] == "ready"
     assert json.loads(updated["content_json"]) == {"checklist": [{"id": "x", "done": True}]}
+
+
+def test_material_kit_source_cas_rejects_jd_change_after_provider_claim(tmp_path):
+    class BlockingModel(JSONModel):
+        def __init__(self) -> None:
+            self.entered = Event()
+            self.release = Event()
+            self.calls = 0
+
+        def complete(self, messages, tools):  # type: ignore[no-untyped-def]
+            self.calls += 1
+            self.entered.set()
+            assert self.release.wait(5)
+            return super().complete(messages, tools)
+
+    model = BlockingModel()
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    app = client.post(
+        "/api/applications", json={"company_name": "Acme", "position_name": "Backend"}
+    ).json()
+    jd = client.post(
+        f"/api/applications/{app['id']}/job-description/versions",
+        json={
+            "jd_text": "Go backend JD",
+            "source_url": None,
+            "expected_current_version_id": None,
+            "idempotency_key": "material-barrier-jd-0001",
+        },
+    ).json()
+    resume = client.post(
+        "/api/resumes", json={"name": "Backend", "text": "Built Go APIs"}
+    ).json()
+    path = f"/api/applications/{app['id']}/material-kit/generate"
+    payload = {"resume_id": resume["id"], "jd_version_id": jd["id"]}
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(client.post, path, json=payload)
+        assert model.entered.wait(5)
+        changed = client.post(
+            f"/api/applications/{app['id']}/job-description/versions",
+            json={
+                "jd_text": "Rust backend JD",
+                "source_url": None,
+                "expected_current_version_id": jd["id"],
+                "idempotency_key": "material-barrier-jd-0002",
+            },
+        )
+        assert changed.status_code == 201
+        model.release.set()
+        result = future.result(timeout=5)
+
+    assert result.status_code == 409
+    assert result.json()["error_code"] == "application_jd_source_conflict"
+    assert client.get(f"/api/applications/{app['id']}/material-kit").status_code == 404
+    assert model.calls == 1

@@ -205,6 +205,34 @@ def test_same_key_during_live_lease_returns_pending_without_second_provider_call
     assert model.calls == 1
 
 
+def test_source_cas_rejects_jd_change_after_provider_claim(tmp_path) -> None:
+    model = BlockingFakeModel()
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    application, resume, event = _context(client)
+    url = f"/api/applications/{application['id']}/interview-preparation-proposals"
+    payload = _payload(resume["id"], event["id"], "source-barrier-key-01", application["jd_version_id"])
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(client.post, url, json=payload)
+        assert model.entered.wait(5)
+        changed = client.post(
+            f"/api/applications/{application['id']}/job-description/versions",
+            json={
+                "jd_text": "Build reliable services with Rust.",
+                "source_url": None,
+                "expected_current_version_id": application["jd_version_id"],
+                "idempotency_key": "interview-barrier-jd-0002",
+            },
+        )
+        assert changed.status_code == 201
+        model.release.set()
+        result = future.result(timeout=5)
+
+    assert result.status_code == 409
+    assert result.json()["error_code"] == "interview_preparation_source_conflict"
+    assert model.calls == 1
+
+
 def test_same_key_provider_unknown_returns_202_without_second_provider_call(tmp_path) -> None:
     model = FakeModel(error=TimeoutError("provider secret"))
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
