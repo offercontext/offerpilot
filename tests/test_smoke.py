@@ -332,6 +332,7 @@ def test_real_ai_interview_preparation_smoke_retries_pending_results_with_same_r
             return Response(
                 200 if self.calls == 3 else 201,
                 _smoke_terminal_proposal_payload(
+                    jd_version_id=int(json["jd_version_id"]),
                     proposal=proposal,
                     source_fingerprint=_smoke_request_source_fingerprint(json),
                 ),
@@ -351,6 +352,7 @@ def _smoke_terminal_proposal_payload(
     application_id: int = 7,
     event_id: int = 51,
     resume_id: int = 41,
+    jd_version_id: int = 13,
     proposal: dict[str, object] | None = None,
     proposal_status: str = "normal",
     source_fingerprint: str | None = None,
@@ -365,6 +367,7 @@ def _smoke_terminal_proposal_payload(
     }
     snapshot = _smoke_evidence_snapshot()
     snapshot["event"] = _smoke_event_snapshot()
+    snapshot["jd_version_id"] = jd_version_id
     snapshot["resume"] = {
         "id": resume_id,
         "content_json": snapshot["resume"]["content_json"],  # type: ignore[index]
@@ -374,6 +377,7 @@ def _smoke_terminal_proposal_payload(
         "application_id": application_id,
         "event_id": event_id,
         "resume_id": resume_id,
+        "jd_version_id": jd_version_id,
         "attempt_status": "ready",
         "proposal_status": proposal_status,
         "source_fingerprint": source_fingerprint or sha256_text(canonical_json(snapshot)),
@@ -402,6 +406,7 @@ def _smoke_evidence_snapshot() -> dict[str, object]:
     return {
         "event": _smoke_event_snapshot(),
         "jd": {"text": "Build reliable Python services."},
+        "jd_version_id": 13,
         "resume": {
             "id": 41,
             "content_json": {

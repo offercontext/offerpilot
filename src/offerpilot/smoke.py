@@ -590,6 +590,7 @@ def _validate_interview_preparation_proposal_response(
         "application_id",
         "event_id",
         "resume_id",
+        "jd_version_id",
         "attempt_status",
         "proposal_status",
         "source_fingerprint",
@@ -608,10 +609,11 @@ def _validate_interview_preparation_proposal_response(
     if any(
         type(body[field]) is not int or body[field] != expected
         for field, expected in (
-            ("application_id", application_id),
-            ("event_id", event_id),
-            ("resume_id", resume_id),
-        )
+        ("application_id", application_id),
+        ("event_id", event_id),
+        ("resume_id", resume_id),
+        ("jd_version_id", snapshot.get("jd_version_id")),
+    )
     ):
         raise RuntimeError("interview preparation smoke proposal response ownership was invalid")
     if type(body["id"]) is not int or body["id"] <= 0:
