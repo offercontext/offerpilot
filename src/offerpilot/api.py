@@ -85,6 +85,10 @@ from offerpilot.knowledge.worker import (
     KnowledgeWorkerRuntime,
 )
 from offerpilot.repositories.applications import ApplicationCreate, ApplicationsRepository
+from offerpilot.repositories.application_jd_versions import (
+    ApplicationJDService,
+    JDVersionError,
+)
 from offerpilot.repositories.chat import ChatRepository
 from offerpilot.repositories.application_events import (
     ApplicationEventCreate,
@@ -770,6 +774,7 @@ def create_app(
     session_factory = session_factory_for_data_dir(resolved_data_dir)
     app_config = load_config(resolved_data_dir)
     applications = ApplicationsRepository(session_factory)
+    application_jd_versions = ApplicationJDService(session_factory)
     chat = ChatRepository(session_factory)
     events = ApplicationEventsRepository(session_factory)
     notes = NotesRepository(session_factory)
@@ -1618,6 +1623,63 @@ def create_app(
         return JSONResponse(
             ApplicationOut.model_validate(app_model).model_dump(mode="json"), status_code=201
         )
+
+    @app.get("/api/applications/{app_id}/job-description")
+    def get_current_application_jd(app_id: int) -> JSONResponse:
+        if applications.get(app_id) is None:
+            return error_response(404, "投递不存在", code="application_jd_not_found")
+        current = application_jd_versions.get_current(app_id)
+        return JSONResponse(
+            {"current": _application_jd_detail_json(current) if current is not None else None}
+        )
+
+    @app.get("/api/applications/{app_id}/job-description/versions")
+    def list_application_jd_versions(
+        app_id: int,
+        offset: int = Query(default=0),
+        limit: int = Query(default=50),
+    ) -> JSONResponse:
+        if applications.get(app_id) is None:
+            return error_response(404, "投递不存在", code="application_jd_not_found")
+        try:
+            versions = application_jd_versions.list_versions(app_id, offset, limit)
+        except JDVersionError as exc:
+            return error_response(exc.status_code, "岗位资料请求无效", code=exc.code)
+        return JSONResponse([_application_jd_summary_json(version) for version in versions])
+
+    @app.get("/api/applications/{app_id}/job-description/versions/{version_id}")
+    def get_application_jd_version(app_id: int, version_id: int) -> JSONResponse:
+        if applications.get(app_id) is None:
+            return error_response(404, "投递不存在", code="application_jd_not_found")
+        version = application_jd_versions.get_version(app_id, version_id)
+        if version is None:
+            return error_response(404, "岗位资料版本不存在", code="application_jd_not_found")
+        return JSONResponse(_application_jd_detail_json(version))
+
+    @app.post("/api/applications/{app_id}/job-description/versions")
+    def create_application_jd_version(
+        app_id: int, payload: dict[str, Any] = Body(...)
+    ) -> JSONResponse:
+        if "source_kind" in payload:
+            return error_response(422, "来源入口由服务端确定", code="application_jd_invalid_request")
+        try:
+            result = application_jd_versions.create_version(
+                app_id,
+                jd_text=payload.get("jd_text"),
+                source_url=payload.get("source_url"),
+                source_kind="ui",
+                expected_current_version_id=payload.get("expected_current_version_id"),
+                idempotency_key=payload.get("idempotency_key"),
+            )
+        except JDVersionError as exc:
+            message = {
+                "application_jd_stale_current_version": "岗位资料已变化，请重新加载后再保存",
+                "application_jd_idempotency_conflict": "本次保存标识已用于其他内容",
+                "application_jd_not_found": "投递不存在",
+            }.get(exc.code, "岗位资料保存失败，请检查输入")
+            return error_response(exc.status_code, message, code=exc.code)
+        status_code = 200 if result.replayed else 201
+        return JSONResponse(_application_jd_detail_json(result.version), status_code=status_code)
 
     @app.get("/api/applications/{app_id}")
     def get_application(app_id: int) -> JSONResponse:
@@ -5194,6 +5256,30 @@ def error_response(
     if details:
         payload.update(details)
     return JSONResponse(payload, status_code=status_code)
+
+
+def _application_jd_summary_json(version: Any) -> dict[str, Any]:
+    return {
+        "id": version.id,
+        "application_id": version.application_id,
+        "version_number": version.version_number,
+        "content_sha256": version.content_sha256,
+        "source_url": version.source_url,
+        "source_kind": version.source_kind,
+        "utf8_byte_length": version.utf8_byte_length
+        if hasattr(version, "utf8_byte_length")
+        else len(version.jd_text.encode("utf-8")),
+        "preview": version.preview
+        if hasattr(version, "preview")
+        else (version.jd_text if len(version.jd_text) <= 240 else version.jd_text[:240] + "…"),
+        "created_at": version.created_at.isoformat() if version.created_at is not None else None,
+    }
+
+
+def _application_jd_detail_json(version: Any) -> dict[str, Any]:
+    if version is None:
+        return {}
+    return {**_application_jd_summary_json(version), "jd_text": version.jd_text}
 
 
 def _captured_interview_source_error(source: Any) -> JSONResponse | None:
