@@ -500,10 +500,16 @@ def _run_real_ai_interview_preparation_smoke(
     ]
     verified_non_empty = 0
     for index, jd_text in enumerate(cases, start=1):
+        jd_version_id = _save_application_jd_version(
+            client,
+            application_id,
+            jd_text,
+            f"smoke-interview-prep-jd-{index:04d}",
+        )
         request_payload = {
             "event_id": event_id,
             "resume_id": resume_id,
-            "jd_text": jd_text,
+            "jd_version_id": jd_version_id,
             "knowledge_selections": [],
             "user_assertions": [f"I led preparation case {index}."],
             "idempotency_key": f"interview-preparation-smoke-{index}",
@@ -511,6 +517,7 @@ def _run_real_ai_interview_preparation_smoke(
         snapshot = {
             "event": event_snapshot,
             "jd": {"text": jd_text},
+            "jd_version_id": jd_version_id,
             "resume": {"id": resume_id, "content_json": resume_content_json},
             "knowledge_evidence": [],
             "user_assertions": request_payload["user_assertions"],
@@ -717,6 +724,29 @@ def _validate_interview_preparation_pending_response(
             raise RuntimeError("interview preparation smoke pending timing fields were invalid")
 
 
+def _save_application_jd_version(
+    client: Any,
+    application_id: int,
+    jd_text: str,
+    idempotency_key: str,
+) -> int:
+    response = client.post(
+        f"/api/applications/{application_id}/job-description/versions",
+        json={
+            "jd_text": jd_text,
+            "source_url": None,
+            "expected_current_version_id": None,
+            "idempotency_key": idempotency_key,
+        },
+    )
+    _assert_status(response.status_code, 201, "application_jd_source_version")
+    body = response.json()
+    version_id = body.get("id") if isinstance(body, dict) else None
+    if type(version_id) is not int or version_id <= 0:
+        raise RuntimeError("application JD version response was invalid")
+    return version_id
+
+
 def _run_real_ai_material_proposal_smoke(
     client: httpx.Client,
     steps: list[SmokeStep],
@@ -756,11 +786,18 @@ def _run_real_ai_material_proposal_smoke(
         if resume_ids is not None:
             resume_ids.append(resume_id)
 
+        jd_version_id = _save_application_jd_version(
+            client,
+            application_id,
+            "Evidence QA Engineer: build reliable API quality workflows.",
+            "smoke-material-jd-0001",
+        )
+
         kit = client.post(
             f"/api/applications/{application_id}/material-kit/generate",
             json={
                 "resume_id": resume_id,
-                "jd_text": "Evidence QA Engineer: build reliable API quality workflows.",
+                "jd_version_id": jd_version_id,
             },
         )
         _assert_status(kit.status_code, 201, "http_material_proposal_kit")
@@ -825,6 +862,12 @@ def _run_real_ai_opportunity_fit_smoke(
         resume_payload = created_resume.json()
         if not isinstance(application, dict) or not isinstance(resume_payload, dict):
             raise RuntimeError("opportunity fit smoke source response was invalid")
+        jd_version_id = _save_application_jd_version(
+            client,
+            application_id,
+            "Build reliable API quality workflows.",
+            "smoke-opportunity-jd-0001",
+        )
         snapshot = build_source_snapshot(
             application_id=application_id,
             company_name=str(application.get("company_name") or ""),
@@ -842,7 +885,7 @@ def _run_real_ai_opportunity_fit_smoke(
         triage_payload = {
             "schema_version": 2,
             "resume_id": resume_id,
-            "jd_text": "Build reliable API quality workflows.",
+            "jd_version_id": jd_version_id,
             "jd_source_label": "Smoke pasted JD",
             "candidate_assertions": ["I led the migration."],
             "idempotency_key": "f36f6d0b-1d1e-4e9a-aec1-9fef6b2f3b90",
@@ -882,7 +925,10 @@ def _run_real_ai_opportunity_fit_smoke(
         deep_review = client.post(
             f"/api/applications/{application_id}/opportunity-fit-reviews/{review_id}/deep-review",
             json={
-                **triage_payload,
+                "schema_version": 2,
+                "resume_id": resume_id,
+                "jd_source_label": "Smoke pasted JD",
+                "candidate_assertions": ["I led the migration."],
                 "idempotency_key": "4f9b6b33-4f1f-4cb6-87f4-ef5a9c5c9d8b",
                 "parent_triage_stage_id": stage_id,
             },
@@ -1217,6 +1263,12 @@ def _run_real_ai_mock_interview_smoke(
     )
     _assert_status(event.status_code, 201, "http_mock_interview_event")
     event_id = int(event.json()["id"])
+    jd_version_id = _save_application_jd_version(
+        client,
+        application_id,
+        "需要能够维护 Python 服务并说明可靠性取舍。",
+        "smoke-mock-interview-jd-0001",
+    )
     baseline = _capture_real_ai_browser_domain_baseline(
         data_dir, application_id, [event_id], [resume_id]
     )
@@ -1265,7 +1317,7 @@ def _run_real_ai_mock_interview_smoke(
             base,
             json={
                 "resume_id": resume_id,
-                "jd_text": "需要能够维护 Python 服务并说明可靠性取舍。",
+                "jd_version_id": jd_version_id,
                 "attempt_idempotency_key": f"real-ai-mock-attempt-{index}",
                 "initial_question_idempotency_key": f"real-ai-mock-question-{index}",
             },
@@ -2568,6 +2620,12 @@ def _run_local_proposal_terminal_smoke(
     _assert_status(resume_response.status_code, 201, "http_proposal_terminal_resume")
     resume_id = int(resume_response.json()["id"])
     resume_ids.append(resume_id)
+    jd_version_id = _save_application_jd_version(
+        client,
+        application_id,
+        "Build reliable local smoke services.",
+        "smoke-terminal-jd-0001",
+    )
 
     session_factory = session_factory_for_data_dir(data_dir)
     try:
@@ -2577,6 +2635,7 @@ def _run_local_proposal_terminal_smoke(
                     application_id=application_id,
                     resume_id=resume_id,
                     jd_snapshot="Build reliable local smoke services.",
+                    jd_version_id=jd_version_id,
                     content_json=canonical_json({"summary": "local smoke kit"}),
                 )
             )
@@ -2599,8 +2658,9 @@ def _run_local_proposal_terminal_smoke(
     opportunity_response = client.post(
         f"/api/applications/{application_id}/opportunity-fit-reviews",
         json={
+            "schema_version": 2,
             "resume_id": resume_id,
-            "jd_text": "Build reliable local smoke services.",
+            "jd_version_id": jd_version_id,
             "jd_source_label": "local smoke",
             "candidate_assertions": [],
             "idempotency_key": "f3a1bd2e-6f1f-4dd4-bc5f-1a0c9be4f001",
@@ -2695,7 +2755,7 @@ def _run_local_proposal_terminal_smoke(
         json={
             "event_id": event_id,
             "resume_id": resume_id,
-            "jd_text": "Build reliable local smoke services.",
+            "jd_version_id": jd_version_id,
             "knowledge_selections": [],
             "user_assertions": [],
             "idempotency_key": "local-proposal-matrix-prep-01",

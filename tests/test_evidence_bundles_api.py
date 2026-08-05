@@ -42,9 +42,19 @@ def _create_ready_application(tmp_path) -> tuple[TestClient, dict[str, object], 
         "/api/resumes",
         json={"name": "Backend Resume", "text": "Built Go services"},
     ).json()
+    jd_version = client.post(
+        f"/api/applications/{application['id']}/job-description/versions",
+        json={
+            "jd_text": "Build Go services",
+            "source_url": None,
+            "expected_current_version_id": None,
+            "idempotency_key": "evidence-bundle-jd-0001",
+        },
+    )
+    assert jd_version.status_code == 201
     material_kit = client.post(
         f"/api/applications/{application['id']}/material-kit/generate",
-        json={"resume_id": resume["id"], "jd_text": "Build Go services"},
+        json={"resume_id": resume["id"], "jd_version_id": jd_version.json()["id"]},
     )
     assert material_kit.status_code == 201
     return client, application, material_kit.json()
@@ -103,7 +113,7 @@ def test_preview_confirm_and_detail_preserve_an_immutable_snapshot(tmp_path):
 
     updated = client.put(
         f"/api/material-kits/{material_kit['id']}",
-        json={"jd_snapshot": "Build Rust services", "content_json": {"body": "Changed"}},
+        json={"content_json": {"body": "Changed"}},
     )
     assert updated.status_code == 200
 
@@ -167,9 +177,21 @@ def test_confirmation_replays_equivalent_uuid_spellings_with_one_bundle(tmp_path
 def test_confirmation_rejects_a_stale_preview(tmp_path):
     client, application, material_kit = _create_ready_application(tmp_path)
     preview = _preview(client, int(application["id"]))
+    current = client.get(f"/api/applications/{application['id']}/job-description").json()
+    current_id = current["current"]["id"]
+    updated_jd = client.post(
+        f"/api/applications/{application['id']}/job-description/versions",
+        json={
+            "jd_text": "Build Rust services",
+            "source_url": None,
+            "expected_current_version_id": current_id,
+            "idempotency_key": "evidence-bundle-jd-0002",
+        },
+    )
+    assert updated_jd.status_code == 201
     updated = client.put(
         f"/api/material-kits/{material_kit['id']}",
-        json={"jd_snapshot": "Build Rust services"},
+        json={"content_json": {"body": "Changed"}},
     )
     assert updated.status_code == 200
 

@@ -207,7 +207,7 @@ def test_real_ai_mock_interview_smoke_restarts_unverifiable_attempts_and_confirm
         assert event_posts == ["/api/application-events"]
         assert len(start_posts) == 3
         assert len({payload["resume_id"] for payload in start_posts}) == 1
-        assert len({payload["jd_text"] for payload in start_posts}) == 1
+        assert len({payload["jd_version_id"] for payload in start_posts}) == 1
         assert len({payload["attempt_idempotency_key"] for payload in start_posts}) == 3
         assert len({payload["initial_question_idempotency_key"] for payload in start_posts}) == 3
         round_keys = [
@@ -286,8 +286,12 @@ def test_real_ai_interview_preparation_smoke_retries_pending_results_with_same_r
         def __init__(self) -> None:
             self.calls = 0
             self.proposal_requests: list[dict[str, object]] = []
+            self.jd_calls = 0
 
         def post(self, path: str, json: dict[str, object]) -> Response:
+            if path.endswith("/job-description/versions"):
+                self.jd_calls += 1
+                return Response(201, {"id": 12 + self.jd_calls})
             if path == "/api/resumes":
                 return Response(201, {"id": 41})
             if path == "/api/application-events":
@@ -413,7 +417,14 @@ def _smoke_evidence_snapshot() -> dict[str, object]:
 def _smoke_request_source_fingerprint(request: dict[str, object]) -> str:
     snapshot = _smoke_evidence_snapshot()
     snapshot["event"] = _smoke_event_snapshot()
-    snapshot["jd"] = {"text": request["jd_text"]}
+    jd_text_by_version = {
+        13: "Build reliable Python services and explain operational tradeoffs.",
+        14: "Design an API migration with safe rollback and observability.",
+        15: "Review distributed systems failure handling and testing practices.",
+    }
+    version_id = request.get("jd_version_id")
+    snapshot["jd"] = {"text": jd_text_by_version.get(version_id, "")}
+    snapshot["jd_version_id"] = version_id
     snapshot["user_assertions"] = request["user_assertions"]
     snapshot["resume"] = {"id": 41, "content_json": snapshot["resume"]["content_json"]}  # type: ignore[index]
     return sha256_text(canonical_json(snapshot))
@@ -493,6 +504,8 @@ def test_real_ai_interview_preparation_smoke_rejects_terminal_ownership_mismatch
             self.calls = 0
 
         def post(self, path: str, json: dict[str, object]) -> Response:
+            if path.endswith("/job-description/versions"):
+                return Response(201, {"id": 13})
             if path == "/api/resumes":
                 return Response(201, {"id": 41})
             if path == "/api/application-events":
@@ -530,6 +543,8 @@ def test_real_ai_interview_preparation_smoke_rejects_nested_snapshot_fields():
 
     class Client:
         def post(self, path: str, json: dict[str, object]) -> Response:
+            if path.endswith("/job-description/versions"):
+                return Response(201, {"id": 13})
             if path == "/api/resumes":
                 return Response(201, {"id": 41})
             if path == "/api/application-events":
@@ -573,6 +588,8 @@ def test_real_ai_interview_preparation_smoke_rejects_unknown_success_fields():
 
     class Client:
         def post(self, path: str, json: dict[str, object]) -> Response:
+            if path.endswith("/job-description/versions"):
+                return Response(201, {"id": 13})
             if path == "/api/resumes":
                 return Response(201, {"id": 41})
             if path == "/api/application-events":
@@ -611,6 +628,8 @@ def test_real_ai_interview_preparation_smoke_rejects_pending_snapshot_leak():
 
     class Client:
         def post(self, path: str, json: dict[str, object]) -> Response:
+            if path.endswith("/job-description/versions"):
+                return Response(201, {"id": 13})
             if path == "/api/resumes":
                 return Response(201, {"id": 41})
             if path == "/api/application-events":
@@ -647,6 +666,8 @@ def test_real_ai_material_proposal_smoke_allows_empty_changes_and_hides_snapshot
             self.deleted_resume_ids: list[int] = []
 
         def post(self, path: str, json: dict[str, object]) -> Response:
+            if path.endswith("/job-description/versions"):
+                return Response(201, {"id": 13})
             if path == "/api/resumes":
                 resume_id = 41 if not self.created_resume_ids else 42
                 self.created_resume_ids.append(resume_id)
@@ -1401,6 +1422,8 @@ def test_real_ai_material_proposal_smoke_rejects_renamed_snapshot_leak():
 
     class Client:
         def post(self, path: str, json: dict[str, object]) -> Response:
+            if path.endswith("/job-description/versions"):
+                return Response()
             if path == "/api/resumes":
                 return Response()
             if path.endswith("/material-kit/generate"):
@@ -1507,6 +1530,8 @@ def test_real_ai_opportunity_fit_smoke_requires_verified_triage_without_snapshot
             }
 
         def post(self, path: str, json: dict[str, object] | None = None) -> Response:
+            if path.endswith("/job-description/versions"):
+                return Response({"id": 13}, status_code=201)
             if path == "/api/resumes":
                 return Response({"id": 41})
             if path.endswith("opportunity-fit-reviews"):
