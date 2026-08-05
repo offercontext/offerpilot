@@ -69,6 +69,7 @@ class MaterialRevisionProposalsRepository:
             proposal = MaterialRevisionProposal(
                 application_id=application_id,
                 material_kit_id=int(snapshot["material_kit"]["id"]),
+                jd_version_id=int(snapshot["material_kit"]["jd_version_id"]),
                 source_resume_id=int(snapshot["resume"]["id"]),
                 source_fingerprint_sha256=fingerprint,
                 source_snapshot_json=canonical_json(snapshot),
@@ -257,6 +258,8 @@ def build_source_snapshot(
     kit = kits[0]
     if not kit.jd_snapshot.strip():
         raise MaterialProposalValidationError("material kit JD is required")
+    if kit.jd_version_id is None:
+        raise MaterialProposalValidationError("material kit JD version is required")
     if kit.resume_id is None:
         raise MaterialProposalValidationError("material kit must have a linked resume")
     resume = session.scalar(
@@ -290,6 +293,7 @@ def build_source_snapshot(
         },
         "material_kit": {
             "id": kit.id,
+            "jd_version_id": kit.jd_version_id,
             "jd_snapshot": kit.jd_snapshot,
             "content_json": kit_content,
         },

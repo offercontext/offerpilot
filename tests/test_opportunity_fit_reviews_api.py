@@ -171,6 +171,16 @@ def _ready(tmp_path, model=None):
             "content_json": {"raw_text": "Built APIs", "skills": ["Python"]},
         },
     ).json()
+    jd = client.post(
+        f"/api/applications/{application['id']}/job-description/versions",
+        json={
+            "jd_text": "Kubernetes preferred",
+            "source_url": None,
+            "expected_current_version_id": None,
+            "idempotency_key": "opportunity-fit-jd-01",
+        },
+    ).json()
+    application["jd_version_id"] = jd["id"]
     return client, application, resume
 
 
@@ -186,37 +196,8 @@ def test_api_creates_lists_and_deep_reviews_without_snapshot_leak(tmp_path) -> N
     }
 
     created = client.post(path, json=payload)
-    assert created.status_code == 201
-    body = created.json()
-    assert body["triage"]["recommendation"] == "hold"
-    assert body["summary"]["text"].startswith("Evidence-backed review recommendation:")
-    assert body["summary"]["evidence_refs"]
-    assert "source_snapshot_json" not in body
-    assert body["source"]["candidate_assertions"][0]["text"] == "I can work in Shanghai."
-
-    replay = client.post(path, json=payload)
-    assert replay.status_code == 200
-    assert replay.json()["id"] == body["id"]
-
-    listed = client.get(path)
-    assert listed.status_code == 200
-    assert listed.json()[0]["id"] == body["id"]
-    assert listed.json()[0]["schema_version"] == 1
-    assert listed.json()[0]["summary"]["evidence_refs"]
-
-    detail = client.get(f"{path}/{body['id']}")
-    assert detail.status_code == 200
-    assert detail.json()["schema_version"] == 1
-    assert detail.json()["source"]["resume"]["title"] == "Backend Resume"
-    assert detail.json()["source"]["jd"]["text"] == "Kubernetes preferred"
-
-    deep = client.post(f"{path}/{body['id']}/deep-review")
-    assert deep.status_code == 201
-    assert deep.json()["deep_review"]["recommended_path"] == "clarify_first"
-
-    deep_replay = client.post(f"{path}/{body['id']}/deep-review")
-    assert deep_replay.status_code == 200
-    assert deep_replay.json()["id"] == body["id"]
+    assert created.status_code == 410
+    assert created.json()["error_code"] == "opportunity_fit_v1_write_disabled"
 
 
 def test_api_validates_jd_resume_and_assertion_limits(tmp_path) -> None:
@@ -229,10 +210,10 @@ def test_api_validates_jd_resume_and_assertion_limits(tmp_path) -> None:
         "idempotency_key": "f6f71c9f-6e8d-4c9f-9d5f-1cc3d9687382",
     }
 
-    assert client.post(path, json={**base, "jd_text": " "}).status_code == 422
-    assert client.post(path, json={**base, "jd_text": "JD", "candidate_assertions": ["x"] * 11}).status_code == 422
-    assert client.post(path, json={**base, "jd_text": "JD", "candidate_assertions": ["x" * 501]}).status_code == 422
-    assert client.post(path, json={**base, "jd_text": "JD", "resume_id": 999}).status_code == 404
+    assert client.post(path, json={**base, "jd_text": " "}).status_code == 410
+    assert client.post(path, json={**base, "jd_text": "JD", "candidate_assertions": ["x"] * 11}).status_code == 410
+    assert client.post(path, json={**base, "jd_text": "JD", "candidate_assertions": ["x" * 501]}).status_code == 410
+    assert client.post(path, json={**base, "jd_text": "JD", "resume_id": 999}).status_code == 410
 
 
 def test_api_returns_stable_502_without_record_for_unverifiable_model(tmp_path) -> None:
@@ -251,11 +232,8 @@ def test_api_returns_stable_502_without_record_for_unverifiable_model(tmp_path) 
             "idempotency_key": "26b4dd35-75e6-4d3f-8806-3cb7bc9f3e2e",
         },
     )
-    assert response.status_code == 502
-    assert response.json() == {
-        "error_code": "opportunity_fit_unverifiable",
-        "error": "AI output could not be verified. Please retry.",
-    }
+    assert response.status_code == 410
+    assert response.json()["error_code"] == "opportunity_fit_v1_write_disabled"
     with session_factory_for_data_dir(tmp_path)() as session:
         assert list(session.scalars(select(OpportunityFitReview))) == []
 
@@ -273,25 +251,8 @@ def test_api_rederives_legacy_summary_without_frontend_crash(tmp_path) -> None:
             "idempotency_key": "26b4dd35-75e6-4d3f-8806-3cb7bc9f3e2e",
         },
     )
-    assert created.status_code == 201
-    review_id = created.json()["id"]
-    with session_factory_for_data_dir(tmp_path)() as session:
-        review = session.get(OpportunityFitReview, review_id)
-        assert review is not None
-        triage = json.loads(review.triage_json)
-        triage["summary"] = {
-            "text": "Unsupported candidate guarantee",
-            "evidence_refs": [
-                {"source": "resume", "path": "/invented", "excerpt": "forged"}
-            ],
-        }
-        review.triage_json = json.dumps(triage)
-        session.commit()
-
-    detail = client.get(f"{path}/{review_id}")
-    assert detail.status_code == 200
-    assert detail.json()["summary"]["text"] != "Unsupported candidate guarantee"
-    assert detail.json()["triage"]["summary"]["evidence_refs"]
+    assert created.status_code == 410
+    assert created.json()["error_code"] == "opportunity_fit_v1_write_disabled"
 
 
 def test_api_does_not_retry_provider_failure(tmp_path) -> None:
@@ -314,8 +275,8 @@ def test_api_does_not_retry_provider_failure(tmp_path) -> None:
             "idempotency_key": "26b4dd35-75e6-4d3f-8806-3cb7bc9f3e2e",
         },
     )
-    assert response.status_code == 502
-    assert model.calls == 1
+    assert response.status_code == 410
+    assert model.calls == 0
 
 
 def test_api_v2_requires_confirmation_before_deep_and_preserves_v1_contract(tmp_path) -> None:
@@ -324,7 +285,7 @@ def test_api_v2_requires_confirmation_before_deep_and_preserves_v1_contract(tmp_
     payload = {
         "schema_version": 2,
         "resume_id": resume["id"],
-        "jd_text": "Kubernetes preferred",
+        "jd_version_id": application["jd_version_id"],
         "jd_source_label": "copy",
         "candidate_assertions": [],
         "idempotency_key": "c6e6f3a0-75c7-477c-a560-8fdc67ec6bf6",
@@ -346,6 +307,7 @@ def test_api_v2_requires_confirmation_before_deep_and_preserves_v1_contract(tmp_
         "parent_triage_stage_id": body["stage_id"],
         "idempotency_key": "f9b4a7cc-6e4c-4a87-9f64-3e22d3491e5b",
     }
+    deep_payload.pop("jd_version_id")
     deep = client.post(f"{path}/{body['review_id']}/deep-review", json=deep_payload)
     assert deep.status_code == 409
 
@@ -373,7 +335,7 @@ def test_v2_confirmation_checks_application_before_consuming_token(tmp_path) -> 
         json={
             "schema_version": 2,
             "resume_id": resume["id"],
-            "jd_text": "Kubernetes preferred",
+            "jd_version_id": application["jd_version_id"],
             "jd_source_label": "copy",
             "candidate_assertions": [],
             "idempotency_key": "3b0d4a20-2d22-4aab-9d3f-2fdb1b8b93f7",
@@ -405,7 +367,7 @@ def test_v2_confirmation_token_survives_settings_save_and_app_restart(tmp_path) 
         json={
             "schema_version": 2,
             "resume_id": resume["id"],
-            "jd_text": "Kubernetes preferred",
+            "jd_version_id": application["jd_version_id"],
             "jd_source_label": "copy",
             "candidate_assertions": [],
             "idempotency_key": "c3a1df1f-68be-4d6a-9a58-cc5f3f0b4f4f",
@@ -433,7 +395,7 @@ def test_v2_expired_confirmation_returns_stable_error_and_allows_new_key(tmp_pat
     payload = {
         "schema_version": 2,
         "resume_id": resume["id"],
-        "jd_text": "Kubernetes preferred",
+        "jd_version_id": application["jd_version_id"],
         "jd_source_label": "copy",
         "candidate_assertions": [],
         "idempotency_key": "7b8f2df6-03c6-4a2b-a8f9-cf4bca93a9ef",
@@ -458,7 +420,7 @@ def test_v2_confirmation_expiry_between_peek_and_write_returns_410(tmp_path, mon
     payload = {
         "schema_version": 2,
         "resume_id": resume["id"],
-        "jd_text": "Kubernetes preferred",
+        "jd_version_id": application["jd_version_id"],
         "jd_source_label": "copy",
         "candidate_assertions": [],
         "idempotency_key": "d6fb6bd6-41cc-4f3f-b7b2-936ec5d8e8c5",
@@ -490,7 +452,7 @@ def test_api_v2_contract_failure_does_not_leave_history_stage(tmp_path) -> None:
         json={
             "schema_version": 2,
             "resume_id": resume["id"],
-            "jd_text": "JD",
+            "jd_version_id": application["jd_version_id"],
             "jd_source_label": "copy",
             "candidate_assertions": [],
             "idempotency_key": "f4fbcae0-98fa-4cba-93d2-f7b7d4ccbbcb",
@@ -521,7 +483,7 @@ def test_api_hides_soft_deleted_application(tmp_path) -> None:
             "candidate_assertions": [],
             "idempotency_key": "1b9f9d39-dfbd-464e-8bb0-4a50b09b5e5c",
         },
-    ).status_code == 404
+    ).status_code == 410
 
 
 def test_api_rejects_non_human_application_source(tmp_path) -> None:
@@ -541,4 +503,4 @@ def test_api_rejects_non_human_application_source(tmp_path) -> None:
             "idempotency_key": "1b9f9d39-dfbd-464e-8bb0-4a50b09b5e5c",
         },
     )
-    assert response.status_code == 404
+    assert response.status_code == 410

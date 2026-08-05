@@ -38,6 +38,19 @@ class ProposalModel:
             )
         )
 
+def _create_jd(client: TestClient, application_id: int, key: str) -> int:
+    response = client.post(
+        f"/api/applications/{application_id}/job-description/versions",
+        json={
+            "jd_text": "FastAPI backend",
+            "source_url": None,
+            "expected_current_version_id": None,
+            "idempotency_key": key,
+        },
+    )
+    assert response.status_code == 201
+    return int(response.json()["id"])
+
 
 def _ready_client(tmp_path) -> tuple[TestClient, dict[str, object], dict[str, object]]:
     client = TestClient(create_app(data_dir=tmp_path, chat_model=ProposalModel()))
@@ -52,9 +65,18 @@ def _ready_client(tmp_path) -> tuple[TestClient, dict[str, object], dict[str, ob
             "content_json": {"experience": [{"highlights": ["Built APIs"]}]},
         },
     ).json()
+    jd = client.post(
+        f"/api/applications/{app['id']}/job-description/versions",
+        json={
+            "jd_text": "FastAPI backend",
+            "source_url": None,
+            "expected_current_version_id": None,
+            "idempotency_key": "material-revision-jd-01",
+        },
+    ).json()
     kit = client.post(
         f"/api/applications/{app['id']}/material-kit/generate",
-        json={"resume_id": resume["id"], "jd_text": "FastAPI backend"},
+        json={"resume_id": resume["id"], "jd_version_id": jd["id"]},
     )
     assert kit.status_code == 201
     return client, app, resume
@@ -96,9 +118,10 @@ def test_api_rejects_invalid_model_without_writing_and_hides_deleted_application
     resume = client.post(
         "/api/resumes", json={"title": "Backend", "text": "Built APIs", "content_json": {"raw_text": "Built APIs"}}
     ).json()
+    jd_version_id = _create_jd(client, int(app["id"]), "material-revision-jd-02")
     kit = client.post(
         f"/api/applications/{app['id']}/material-kit/generate",
-        json={"resume_id": resume["id"], "jd_text": "FastAPI backend"},
+        json={"resume_id": resume["id"], "jd_version_id": jd_version_id},
     )
     assert kit.status_code == 201
 
@@ -160,9 +183,10 @@ def test_api_rejects_non_finite_strict_model_output_without_creating_draft(tmp_p
         "/api/resumes",
         json={"title": "Backend", "text": "Built APIs", "content_json": {"raw_text": "Built APIs"}},
     ).json()
+    jd_version_id = _create_jd(client, int(app["id"]), "material-revision-jd-03")
     kit = client.post(
         f"/api/applications/{app['id']}/material-kit/generate",
-        json={"resume_id": resume["id"], "jd_text": "FastAPI backend"},
+        json={"resume_id": resume["id"], "jd_version_id": jd_version_id},
     )
     assert kit.status_code == 201
     model.non_finite = True
@@ -197,9 +221,10 @@ def test_api_returns_404_when_application_is_deleted_during_generation(tmp_path)
         "/api/resumes",
         json={"title": "Backend", "text": "Built APIs", "content_json": {"raw_text": "Built APIs"}},
     ).json()
+    jd_version_id = _create_jd(client, int(app["id"]), "material-revision-jd-04")
     kit = client.post(
         f"/api/applications/{app['id']}/material-kit/generate",
-        json={"resume_id": resume["id"], "jd_text": "FastAPI backend"},
+        json={"resume_id": resume["id"], "jd_version_id": jd_version_id},
     )
     assert kit.status_code == 201
 

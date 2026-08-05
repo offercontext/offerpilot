@@ -158,7 +158,7 @@ class ApplicationJDService:
         requested_jd_version_id: int,
     ) -> ApplicationJDVersion:
         if type(requested_jd_version_id) is not int or requested_jd_version_id <= 0:
-            raise JDVersionConflictError("requested JD version is not current")
+            raise JDVersionValidationError("requested JD version must be a positive integer")
         with self._session_factory() as session:
             version = session.scalar(
                 select(ApplicationJDVersion).where(

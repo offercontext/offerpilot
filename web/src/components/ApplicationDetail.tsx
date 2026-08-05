@@ -53,6 +53,13 @@ import type { OpportunityFitReview } from '@/types/opportunityFitReview';
 import { SourceStateTag } from './ui/SourceStateTag';
 import { createPilotAttachmentDragBinding } from './PilotAttachmentHandle';
 import { consumeMaterialKitHandoff } from '@/features/pilot/materialKitHandoff';
+import {
+  getCurrentApplicationJd,
+  getApplicationJdVersion,
+  listApplicationJdVersions,
+  saveApplicationJdVersion,
+} from '@/services/applicationJdVersions';
+import type { ApplicationJdDraft } from '@/types/applicationJdVersion';
 import NextStepSuggestions from './NextStepSuggestions';
 import type {
   NextStepDestination,
@@ -105,9 +112,11 @@ interface ApplicationDetailProps {
   isNavigationAvailable?: (destination: NextStepDestination | ReadonlyDestination) => boolean;
   onNextStepReadonlyNavigate?: (destination: ReadonlyDestination) => void;
   isReadonlyNavigationAvailable?: (destination: ReadonlyDestination) => boolean;
+  applicationJdDraft?: ApplicationJdDraft;
+  onApplicationJdDraftChange?: (applicationId: number, patch: Partial<ApplicationJdDraft> | null) => void;
 }
 
-export default function ApplicationDetail({ application, open, onClose, onMockInterview, onAskPilot, onOpenPilotOpportunityFit, pilotInterviewReviewApplicationId, onPilotInterviewReviewFocusConsumed, pilotInterviewPreparationApplicationId, pilotInterviewPreparationEventId, onPilotInterviewPreparationFocusConsumed, onAttachToPilot, interviewReviewProposalAttempts, onInterviewReviewProposalAttemptChange, onInterviewNoteChanged, interviewKnowledgeCaptureDrafts, onInterviewKnowledgeCaptureDraftChange, onInterviewKnowledgeCaptureNoteChanged, resumes = [], interviewPreparationAttempts, onInterviewPreparationAttemptChange, interviewPreparationDrafts, onInterviewPreparationDraftChange, interviewPreparationKnowledgeOptions = [], nextStepSuggestions, nextStepSessionState = null, onSetDisposition, onNextStepNavigate, isNavigationAvailable, onNextStepReadonlyNavigate, isReadonlyNavigationAvailable }: ApplicationDetailProps) {
+export default function ApplicationDetail({ application, open, onClose, onMockInterview, onAskPilot, onOpenPilotOpportunityFit, pilotInterviewReviewApplicationId, onPilotInterviewReviewFocusConsumed, pilotInterviewPreparationApplicationId, pilotInterviewPreparationEventId, onPilotInterviewPreparationFocusConsumed, onAttachToPilot, interviewReviewProposalAttempts, onInterviewReviewProposalAttemptChange, onInterviewNoteChanged, interviewKnowledgeCaptureDrafts, onInterviewKnowledgeCaptureDraftChange, onInterviewKnowledgeCaptureNoteChanged, resumes = [], interviewPreparationAttempts, onInterviewPreparationAttemptChange, interviewPreparationDrafts, onInterviewPreparationDraftChange, interviewPreparationKnowledgeOptions = [], nextStepSuggestions, nextStepSessionState = null, onSetDisposition, onNextStepNavigate, isNavigationAvailable, onNextStepReadonlyNavigate, isReadonlyNavigationAvailable, applicationJdDraft, onApplicationJdDraftChange }: ApplicationDetailProps) {
   const queryClient = useQueryClient();
   const [form] = Form.useForm();
   const [eventFormOpen, setEventFormOpen] = useState(false);
@@ -116,6 +125,7 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
   const [materialKitPrefill, setMaterialKitPrefill] = useState<{
     resumeID?: number;
     jdSnapshot?: string;
+    jdVersionID?: number;
   }>({});
   const [materialKitApplicationId, setMaterialKitApplicationId] = useState<number | null>(null);
   const [editingNote, setEditingNote] = useState<InterviewNote | null>(null);
@@ -126,6 +136,76 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
   const [preparationOpen, setPreparationOpen] = useState(false);
   const [preparationEventID, setPreparationEventID] = useState<number | null>(null);
   const [pilotPreparationChoices, setPilotPreparationChoices] = useState<ScheduleEvent[]>([]);
+  const [jdEditorOpen, setJdEditorOpen] = useState(false);
+  const [jdHistoryOpen, setJdHistoryOpen] = useState(false);
+  const [selectedJdVersion, setSelectedJdVersion] = useState<number | null>(null);
+
+  const applicationJdQuery = useQuery({
+    queryKey: ['application-jd-current', application?.id],
+    queryFn: () => getCurrentApplicationJd(application!.id),
+    enabled: Boolean(application) && open,
+  });
+  const jdHistoryQuery = useQuery({
+    queryKey: ['application-jd-history', application?.id],
+    queryFn: () => listApplicationJdVersions(application!.id),
+    enabled: Boolean(application) && open && jdHistoryOpen,
+  });
+  const jdDetailQuery = useQuery({
+    queryKey: ['application-jd-detail', application?.id, selectedJdVersion],
+    queryFn: () => getApplicationJdVersion(application!.id, selectedJdVersion!),
+    enabled: Boolean(application) && open && selectedJdVersion !== null,
+  });
+  const jdSave = useMutation({
+    mutationFn: (draft: ApplicationJdDraft) => saveApplicationJdVersion(application!.id, {
+      jd_text: draft.jdText,
+      source_url: draft.sourceUrl.trim() || null,
+      expected_current_version_id: draft.expectedCurrentVersionId,
+      idempotency_key: draft.idempotencyKey!,
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['application-jd-current', application?.id] });
+      queryClient.invalidateQueries({ queryKey: ['application-jd-history', application?.id] });
+      onApplicationJdDraftChange?.(application!.id, null);
+      setJdEditorOpen(false);
+      message.success('\u5c97\u4f4d\u8d44\u6599\u5df2\u4fdd\u5b58');
+    },
+    onError: (error: Error & { status?: number; code?: string }) => {
+      if (error.code === 'application_jd_stale_current_version') {
+        onApplicationJdDraftChange?.(application!.id, { idempotencyKey: null, pendingOperation: null, resultUnknown: false });
+        message.error('\u5c97\u4f4d\u8d44\u6599\u5df2\u66f4\u65b0\uff0c\u8bf7\u91cd\u65b0\u52a0\u8f7d\u540e\u518d\u4fdd\u5b58');
+        return;
+      }
+      if (!error.status || error.status >= 500) {
+        onApplicationJdDraftChange?.(application!.id, { resultUnknown: true, pendingOperation: 'save' });
+        message.error('\u4fdd\u5b58\u7ed3\u679c\u5f85\u786e\u8ba4\uff0c\u53ef\u4f7f\u7528\u539f\u5c1d\u8bd5\u91cd\u8bd5');
+        return;
+      }
+      onApplicationJdDraftChange?.(application!.id, { idempotencyKey: null, pendingOperation: null, resultUnknown: false });
+      message.error('\u5c97\u4f4d\u8d44\u6599\u4e0d\u80fd\u4fdd\u5b58');
+    },
+  });
+
+  const startJdEditor = () => {
+    const current = applicationJdQuery.data?.current;
+    const draft = applicationJdDraft;
+    onApplicationJdDraftChange?.(application!.id, {
+      jdText: draft?.jdText ?? current?.jd_text ?? '',
+      sourceUrl: draft?.sourceUrl ?? current?.source_url ?? '',
+      expectedCurrentVersionId: draft?.expectedCurrentVersionId ?? current?.id ?? null,
+      idempotencyKey: draft?.idempotencyKey ?? null,
+      resultUnknown: draft?.resultUnknown ?? false,
+      pendingOperation: draft?.pendingOperation ?? null,
+    });
+    setJdEditorOpen(true);
+  };
+
+  const submitJd = () => {
+    if (!application || !applicationJdDraft || applicationJdDraft.resultUnknown) return;
+    const key = applicationJdDraft.idempotencyKey ?? crypto.randomUUID().replace(/[^A-Za-z0-9_-]/g, '').slice(0, 32);
+    const draft = { ...applicationJdDraft, idempotencyKey: key, pendingOperation: 'save' as const };
+    onApplicationJdDraftChange?.(application.id, draft);
+    jdSave.mutate(draft);
+  };
 
   useEffect(() => {
     setMaterialKitPrefill({});
@@ -134,10 +214,14 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
     if (!application || !open) return;
     const handoff = consumeMaterialKitHandoff(application.id);
     if (!handoff) return;
-    setMaterialKitPrefill({ resumeID: handoff.resumeId, jdSnapshot: handoff.jdText });
+    setMaterialKitPrefill({
+      resumeID: handoff.resumeId,
+      jdSnapshot: applicationJdQuery.data?.current?.jd_text ?? handoff.jdText,
+      jdVersionID: applicationJdQuery.data?.current?.id,
+    });
     setMaterialKitApplicationId(application.id);
     setMaterialKitOpen(true);
-  }, [application?.id, open]);
+  }, [application?.id, applicationJdQuery.data?.current?.id, applicationJdQuery.data?.current?.jd_text, open]);
 
   useEffect(() => {
     if (!application || !open || pilotInterviewReviewApplicationId !== application.id) return;
@@ -306,6 +390,7 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
         }}
         initialResumeID={materialKitPrefill.resumeID}
         initialJdSnapshot={materialKitPrefill.jdSnapshot}
+        initialJdVersionID={materialKitPrefill.jdVersionID ?? applicationJdQuery.data?.current?.id}
       />
     );
   }
@@ -336,7 +421,8 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
           applicationId: application.id,
           eventId: preparationEventID,
           resumeId: 0,
-          jdText: '',
+          jdText: applicationJdQuery.data?.current?.jd_text ?? '',
+          jdVersionId: applicationJdQuery.data?.current?.id ?? null,
           knowledgeSelections: [],
           userAssertions: [],
         }}
@@ -374,6 +460,7 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
       <OpportunityFitReviewDrawer
         application={application}
         open={opportunityFitOpen}
+        jdVersionId={applicationJdQuery.data?.current?.id ?? null}
         onClose={() => setOpportunityFitOpen(false)}
         onPrepareMaterials={(review: OpportunityFitReview, jdText: string) => {
           setMaterialKitPrefill({ resumeID: review.source.resume.id, jdSnapshot: jdText });
@@ -417,6 +504,54 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
           ))}
         </Space>
       </Modal>
+      <Modal
+        open={jdEditorOpen}
+        title="\u6295\u9012\u5c97\u4f4d\u8d44\u6599"
+        okText={applicationJdDraft?.resultUnknown ? '\u4f7f\u7528\u539f\u5c1d\u8bd5\u91cd\u8bd5' : '\u4fdd\u5b58\u5c97\u4f4d\u8d44\u6599'}
+        cancelText="\u53d6\u6d88"
+        confirmLoading={jdSave.isPending}
+        onOk={submitJd}
+        onCancel={() => setJdEditorOpen(false)}
+      >
+        <Input.TextArea
+          rows={10}
+          value={applicationJdDraft?.jdText ?? applicationJdQuery.data?.current?.jd_text ?? ''}
+          disabled={Boolean(applicationJdDraft?.resultUnknown)}
+          onChange={(event) => onApplicationJdDraftChange?.(application!.id, { jdText: event.target.value })}
+          placeholder="\u7c98\u8d34\u5c97\u4f4d\u63cf\u8ff0"
+        />
+        <Input
+          style={{ marginTop: 12 }}
+          value={applicationJdDraft?.sourceUrl ?? applicationJdQuery.data?.current?.source_url ?? ''}
+          disabled={Boolean(applicationJdDraft?.resultUnknown)}
+          onChange={(event) => onApplicationJdDraftChange?.(application!.id, { sourceUrl: event.target.value })}
+          placeholder="\u6765\u6e90 URL\uff08\u4ec5\u5c55\u793a\uff0c\u4e0d\u4f1a\u8bbf\u95ee\uff09"
+        />
+        {applicationJdDraft?.resultUnknown && (
+          <Paragraph type="warning" style={{ marginTop: 12, marginBottom: 0 }}>
+            \u4fdd\u5b58\u7ed3\u679c\u5f85\u786e\u8ba4\uff0c\u8bf7\u4f7f\u7528\u539f\u5c1d\u8bd5\u91cd\u8bd5。
+          </Paragraph>
+        )}
+      </Modal>
+      <Modal
+        open={jdHistoryOpen}
+        title="\u5c97\u4f4d\u8d44\u6599\u5386\u53f2"
+        footer={null}
+        onCancel={() => { setJdHistoryOpen(false); setSelectedJdVersion(null); }}
+      >
+        <Space direction="vertical" style={{ width: '100%' }}>
+          {jdHistoryQuery.isLoading ? <Spin /> : (jdHistoryQuery.data ?? []).map((version) => (
+            <Button key={version.id} block type={selectedJdVersion === version.id ? 'primary' : 'default'} onClick={() => setSelectedJdVersion(version.id)}>
+              v{version.version_number} · {version.source_kind} · {version.preview.slice(0, 80)}
+            </Button>
+          ))}
+          {selectedJdVersion !== null && jdDetailQuery.data && (
+            <div style={{ whiteSpace: 'pre-wrap', maxHeight: 320, overflow: 'auto', border: '1px solid #e2e8f0', padding: 12, borderRadius: 8 }}>
+              {jdDetailQuery.data.jd_text}
+            </div>
+          )}
+        </Space>
+      </Modal>
       <section className={styles.detailWorkspace} {...applicationDragBinding}>
         <div className={styles.header}>
           <Button type="link" className={styles.backButton} icon={<ArrowLeftOutlined />} onClick={closeDetail}>
@@ -443,6 +578,21 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
             isReadonlyNavigationAvailable={isReadonlyNavigationAvailable}
           />
         )}
+
+        <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 14, marginBottom: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+            <Text strong>{'\u6295\u9012\u5c97\u4f4d\u8d44\u6599'}</Text>
+            <Space>
+              <Button size="small" onClick={() => { setJdHistoryOpen(true); setSelectedJdVersion(null); }}>{'\u67e5\u770b\u5386\u53f2'}</Button>
+              <Button size="small" type="primary" onClick={startJdEditor}>{applicationJdQuery.data?.current ? '\u66f4\u65b0 JD' : '\u6dfb\u52a0 JD'}</Button>
+            </Space>
+          </div>
+          {applicationJdQuery.isLoading ? <Spin size="small" /> : applicationJdQuery.data?.current ? (
+            <Paragraph ellipsis={{ rows: 3 }} style={{ margin: '10px 0 0', whiteSpace: 'pre-wrap' }}>
+              {applicationJdQuery.data.current.jd_text}
+            </Paragraph>
+          ) : <Text type="secondary">{'\u5c1a\u672a\u786e\u8ba4\u5c97\u4f4d\u63cf\u8ff0'}</Text>}
+        </div>
 
         <div className={styles.actionRow}>
           {onAskPilot && (

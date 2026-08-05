@@ -61,14 +61,24 @@ def _context(client: TestClient) -> tuple[dict, dict, dict]:
             "duration_minutes": 45,
         },
     ).json()
+    jd = client.post(
+        f"/api/applications/{application['id']}/job-description/versions",
+        json={
+            "jd_text": "Build reliable services with Python.",
+            "source_url": None,
+            "expected_current_version_id": None,
+            "idempotency_key": "interview-jd-key-0001",
+        },
+    ).json()
+    application["jd_version_id"] = jd["id"]
     return application, resume, event
 
 
-def _payload(resume_id: int, event_id: int, key: str = "attempt-00000001") -> dict:
+def _payload(resume_id: int, event_id: int, key: str = "attempt-00000001", jd_version_id: int = 1) -> dict:
     return {
         "event_id": event_id,
         "resume_id": resume_id,
-        "jd_text": "Build reliable services with Python.",
+        "jd_version_id": jd_version_id,
         "knowledge_selections": [],
         "user_assertions": ["I led a migration."],
         "idempotency_key": key,
@@ -81,14 +91,14 @@ def test_missing_required_input_returns_422_without_provider_call(tmp_path) -> N
     application, resume, event = _context(client)
 
     missing_jd = _payload(resume["id"], event["id"])
-    missing_jd["jd_text"] = ""
+    missing_jd.pop("jd_version_id")
     response = client.post(
         f"/api/applications/{application['id']}/interview-preparation-proposals",
         json=missing_jd,
     )
 
     assert response.status_code == 422
-    assert response.json()["error_code"] == "interview_preparation_jd_required"
+    assert response.json()["error_code"] == "application_jd_version_required"
     assert model.calls == 0
 
 

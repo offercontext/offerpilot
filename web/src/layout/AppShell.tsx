@@ -50,6 +50,8 @@ import {
   type PipelineInsight,
 } from '@/lib/pipelineInsights';
 import { getPracticeStats } from '@/services/questions';
+import { getCurrentApplicationJd } from '@/services/applicationJdVersions';
+import type { ApplicationJdDraft } from '@/types/applicationJdVersion';
 import { fetchConfirmedInterviewKnowledgeNotes } from '@/services/knowledge';
 import { buildPilotPageContext } from '@/lib/pilotPageContext';
 import {
@@ -90,6 +92,7 @@ function createPilotOpportunityFitV2Draft(applicationId: number): PilotOpportuni
     applicationId,
     resumeId: undefined,
     jdText: '',
+    jdVersionId: undefined,
     assertionsText: '',
     triageKey: null,
     deepKey: null,
@@ -104,6 +107,7 @@ function createPilotOpportunityFitV2Draft(applicationId: number): PilotOpportuni
 function createMockInterviewDraft(): MockInterviewDrawerDraft {
   return {
     jdText: '',
+    jdVersionId: undefined,
     attemptKey: null,
     questionKey: null,
     feedbackKey: null,
@@ -198,6 +202,8 @@ function AppShellContent() {
   const [pilotOnboardingFocusToken, setPilotOnboardingFocusToken] = useState(0);
   const nextPilotOnboardingFocusToken = useRef(0);
   const [selected, setSelected] = useState<Application | null>(null);
+  const applicationJdDraftsRef = useRef(new Map<number, ApplicationJdDraft>());
+  const [applicationJdDrafts, setApplicationJdDrafts] = useState<Record<number, ApplicationJdDraft>>({});
   const [interviewReviewProposalAttempts, setInterviewReviewProposalAttempts] = useState<Record<number, InterviewReviewProposalAttemptState>>({});
   const [interviewKnowledgeCaptureDrafts, setInterviewKnowledgeCaptureDrafts] = useState<Record<number, InterviewKnowledgeCaptureDraft>>({});
   const [interviewPreparationAttempts, setInterviewPreparationAttempts] = useState<Record<string, InterviewPreparationAttemptState>>({});
@@ -297,6 +303,24 @@ function AppShellContent() {
     enabled: Boolean(pilotApplicationContext),
     retry: false,
   });
+  const pilotApplicationJdQuery = useQuery({
+    queryKey: ['application-jd-current', pilotApplicationContext?.applicationId],
+    queryFn: () => getCurrentApplicationJd(pilotApplicationContext!.applicationId),
+    enabled: Boolean(pilotApplicationContext),
+    retry: false,
+  });
+  useEffect(() => {
+    if (!pilotApplicationContext || !pilotApplicationJdQuery.data?.current) return;
+    const current = pilotV2DraftsRef.current.get(pilotApplicationContext.applicationId);
+    if (!current || current.jdVersionId === pilotApplicationJdQuery.data.current.id) return;
+    const next = {
+      ...current,
+      jdVersionId: pilotApplicationJdQuery.data.current.id,
+      jdText: pilotApplicationJdQuery.data.current.jd_text,
+    };
+    pilotV2DraftsRef.current.set(next.applicationId, next);
+    setPilotV2Draft(next);
+  }, [pilotApplicationContext, pilotApplicationJdQuery.data?.current?.id, pilotApplicationJdQuery.data?.current?.jd_text]);
   const handlePilotNotFound = () => {
     const current = pilotApplicationContextRef.current;
     if (current) discardMaterialKitHandoff(current.applicationId);
@@ -366,6 +390,29 @@ function AppShellContent() {
       return next;
     });
   };
+
+  const updateApplicationJdDraft = useCallback((applicationId: number, patch: Partial<ApplicationJdDraft> | null) => {
+    const current = applicationJdDraftsRef.current.get(applicationId) ?? {
+      jdText: '',
+      sourceUrl: '',
+      expectedCurrentVersionId: null,
+      idempotencyKey: null,
+      resultUnknown: false,
+      pendingOperation: null,
+    };
+    if (patch === null) {
+      applicationJdDraftsRef.current.delete(applicationId);
+      setApplicationJdDrafts((state) => {
+        const next = { ...state };
+        delete next[applicationId];
+        return next;
+      });
+      return;
+    }
+    const next = { ...current, ...patch };
+    applicationJdDraftsRef.current.set(applicationId, next);
+    setApplicationJdDrafts((state) => ({ ...state, [applicationId]: next }));
+  }, []);
 
   const qc = useQueryClient();
   const refreshWorkspaceData = () => {
@@ -907,7 +954,7 @@ function AppShellContent() {
         {
           schema_version: 2,
           resume_id: pilotV2Draft.resumeId ?? 0,
-          jd_text: pilotV2Draft.jdText,
+          jd_version_id: pilotV2Draft.jdVersionId ?? 0,
           jd_source_label: '用户粘贴 JD',
           candidate_assertions: pilotV2Draft.assertionsText.split(/\r?\n/).map((item) => item.trim()).filter(Boolean),
           idempotency_key: key,
@@ -1084,6 +1131,8 @@ function AppShellContent() {
         setPilotInterviewPreparationEventId(null);
       }}
       onAttachToPilot={attachToPilot}
+      applicationJdDraft={selectedApp ? applicationJdDrafts[selectedApp.id] : undefined}
+      onApplicationJdDraftChange={updateApplicationJdDraft}
       interviewReviewProposalAttempts={interviewReviewProposalAttempts}
       onInterviewReviewProposalAttemptChange={updateInterviewReviewProposalAttempt}
       onInterviewNoteChanged={clearInterviewReviewProposalAttempt}

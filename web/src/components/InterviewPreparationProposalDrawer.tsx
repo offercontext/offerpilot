@@ -17,6 +17,7 @@ export interface InterviewPreparationDrawerContext {
   eventId: number;
   resumeId: number;
   jdText: string;
+  jdVersionId?: number | null;
   knowledgeSelections: Array<Record<string, unknown>>;
   userAssertions: string[];
 }
@@ -37,6 +38,7 @@ export interface InterviewPreparationDraft {
   attemptState: InterviewPreparationAttemptState;
   resumeId: number;
   jdText: string;
+  jdVersionId?: number | null;
   assertionsText: string;
   knowledgeSelections: Array<Record<string, unknown>>;
 }
@@ -121,6 +123,7 @@ export default function InterviewPreparationProposalDrawer({
   const [attemptKey, setAttemptKey] = useState(() => draft?.attemptState.key ?? attemptState?.key ?? newAttemptKey());
   const [resumeId, setResumeId] = useState(draft?.resumeId ?? context.resumeId);
   const [jdText, setJdText] = useState(draft?.jdText ?? context.jdText);
+  const [jdVersionId] = useState<number | null>(draft?.jdVersionId ?? context.jdVersionId ?? null);
   const [assertionsText, setAssertionsText] = useState(draft?.assertionsText ?? context.userAssertions.join('\n'));
   const [history, setHistory] = useState<InterviewPreparationProposal[]>([]);
   const [selectedEvidenceIds, setSelectedEvidenceIds] = useState<string[]>(() =>
@@ -131,14 +134,14 @@ export default function InterviewPreparationProposalDrawer({
     ),
   );
   const suppressDraftPersistence = useRef(false);
-  const hasInput = Boolean(resumeId && jdText.trim());
+  const hasInput = Boolean(resumeId && jdVersionId);
   const resultUnknown = attemptState?.result_unknown ?? draft?.attemptState.result_unknown ?? false;
   const isSafeEmpty = proposal?.proposal_status === 'safe_empty';
   const input = useMemo<CreateInterviewPreparationProposalInput>(() => ({
     application_id: context.applicationId,
     event_id: context.eventId,
     resume_id: resumeId,
-    jd_text: jdText,
+    jd_version_id: jdVersionId ?? 0,
     knowledge_selections: knowledgeOptions.length > 0
       ? knowledgeOptions
         .filter((option) => selectedEvidenceIds.includes(option.evidence_id))
@@ -151,7 +154,7 @@ export default function InterviewPreparationProposalDrawer({
       : context.knowledgeSelections,
     user_assertions: assertionsText.split('\n').map((value) => value.trim()).filter(Boolean),
     idempotency_key: attemptKey,
-  }), [assertionsText, attemptKey, context, jdText, knowledgeOptions, resumeId, selectedEvidenceIds]);
+  }), [assertionsText, attemptKey, context, jdVersionId, knowledgeOptions, resumeId, selectedEvidenceIds]);
 
   useEffect(() => {
     if (!open) return;
@@ -169,10 +172,11 @@ export default function InterviewPreparationProposalDrawer({
       attemptState: { key: attemptKey, result_unknown: attemptState?.result_unknown ?? false },
       resumeId,
       jdText,
+      jdVersionId,
       assertionsText,
       knowledgeSelections: input.knowledge_selections,
     });
-  }, [assertionsText, attemptKey, attemptState?.result_unknown, input.knowledge_selections, jdText, onDraftChange, open, resumeId]);
+  }, [assertionsText, attemptKey, attemptState?.result_unknown, input.knowledge_selections, jdText, jdVersionId, onDraftChange, open, resumeId]);
 
   if (!open) return null;
 

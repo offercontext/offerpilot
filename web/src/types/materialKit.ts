@@ -34,6 +34,7 @@ export interface ApplicationMaterialKit {
   application_id: number;
   resume_id?: number;
   jd_analysis_id?: number;
+  jd_version_id?: number;
   jd_snapshot: string;
   status: MaterialKitStatus;
   content_json: string;
@@ -47,7 +48,7 @@ export interface MaterialKitViewModel extends Omit<ApplicationMaterialKit, 'cont
 
 export interface GenerateMaterialKitInput {
   resume_id: number;
-  jd_text: string;
+  jd_version_id: number;
   jd_analysis_id?: number;
   overwrite?: boolean;
 }
@@ -56,6 +57,7 @@ export interface UpdateMaterialKitInput {
   resume_id?: number;
   jd_analysis_id?: number;
   jd_snapshot: string;
+  jd_version_id?: number;
   status?: EditableMaterialKitStatus;
   content_json: MaterialKitContent;
 }

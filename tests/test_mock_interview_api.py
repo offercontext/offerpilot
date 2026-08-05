@@ -79,6 +79,15 @@ def _client(tmp_path, model=None):
         "/api/resumes",
         json={"title": "Resume", "text": "Python engineer"},
     ).json()
+    client.post(
+        f"/api/applications/{application['id']}/job-description/versions",
+        json={
+            "jd_text": "需要 Python",
+            "source_url": None,
+            "expected_current_version_id": None,
+            "idempotency_key": "mock-interview-jd-01",
+        },
+    )
     return client, application["id"], event["id"], resume["id"]
 
 
@@ -86,8 +95,8 @@ def test_start_requires_selected_resume_and_nonempty_jd(tmp_path):
     client, app_id, event_id, resume_id = _client(tmp_path)
     path = f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts"
 
-    missing_resume = client.post(path, json={"jd_text": "JD", "attempt_idempotency_key": "a", "initial_question_idempotency_key": "q"})
-    empty_jd = client.post(path, json={"resume_id": resume_id, "jd_text": " ", "attempt_idempotency_key": "b", "initial_question_idempotency_key": "q"})
+    missing_resume = client.post(path, json={"jd_version_id": 1, "attempt_idempotency_key": "a", "initial_question_idempotency_key": "q"})
+    empty_jd = client.post(path, json={"resume_id": resume_id, "jd_version_id": None, "attempt_idempotency_key": "b", "initial_question_idempotency_key": "q"})
 
     assert missing_resume.status_code == 422
     assert empty_jd.status_code == 422
@@ -98,7 +107,7 @@ def test_start_and_same_key_replay_are_idempotent(tmp_path):
     path = f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts"
     payload = {
         "resume_id": resume_id,
-        "jd_text": "需要 Python",
+        "jd_version_id": 1,
         "attempt_idempotency_key": "attempt-1",
         "initial_question_idempotency_key": "question-1",
     }
@@ -121,7 +130,7 @@ def test_contract_failure_logs_only_safe_category(tmp_path):
         path,
         json={
             "resume_id": resume_id,
-            "jd_text": "Reliability engineering interview JD",
+            "jd_version_id": 1,
             "attempt_idempotency_key": "diagnostic-attempt",
             "initial_question_idempotency_key": "diagnostic-question",
         },
@@ -148,7 +157,7 @@ def test_structural_question_failure_is_repaired_once(tmp_path):
         f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts",
         json={
             "resume_id": resume_id,
-            "jd_text": "JD Python",
+            "jd_version_id": 1,
             "attempt_idempotency_key": "repair-success",
             "initial_question_idempotency_key": "repair-question",
         },
@@ -164,7 +173,7 @@ def test_repair_provider_failure_preserves_original_key(tmp_path):
     path = f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts"
     payload = {
         "resume_id": resume_id,
-        "jd_text": "JD Python",
+        "jd_version_id": 1,
         "attempt_idempotency_key": "repair-provider-unknown",
         "initial_question_idempotency_key": "repair-provider-question",
     }
@@ -192,7 +201,7 @@ def test_repeated_structural_failure_is_terminal_and_replay_skips_provider(tmp_p
     path = f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts"
     payload = {
         "resume_id": resume_id,
-        "jd_text": "JD Python",
+        "jd_version_id": 1,
         "attempt_idempotency_key": "repair-terminal",
         "initial_question_idempotency_key": "repair-terminal-question",
     }
@@ -216,7 +225,7 @@ def test_over_limit_failure_is_terminal_without_retry_or_replay_provider_call(tm
     path = f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts"
     payload = {
         "resume_id": resume_id,
-        "jd_text": "JD Python",
+        "jd_version_id": 1,
         "attempt_idempotency_key": "over-limit-terminal",
         "initial_question_idempotency_key": "over-limit-question",
     }
@@ -244,13 +253,13 @@ def test_start_rejects_cross_application_event(tmp_path):
         path,
         json={
             "resume_id": resume_id,
-            "jd_text": "JD",
+            "jd_version_id": 1,
             "attempt_idempotency_key": "attempt-1",
             "initial_question_idempotency_key": "question-1",
         },
     )
 
-    assert response.status_code == 422
+    assert response.status_code == 409
 
 
 def test_submit_answer_and_finish_persist_safe_empty_feedback(tmp_path):
@@ -260,7 +269,7 @@ def test_submit_answer_and_finish_persist_safe_empty_feedback(tmp_path):
         base,
         json={
             "resume_id": resume_id,
-            "jd_text": "需要 Python",
+            "jd_version_id": 1,
             "attempt_idempotency_key": "attempt-1",
             "initial_question_idempotency_key": "question-1",
         },
@@ -287,7 +296,7 @@ def test_contract_failure_is_terminal_for_same_attempt_key(tmp_path):
     path = f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts"
     payload = {
         "resume_id": resume_id,
-        "jd_text": "JD Python",
+        "jd_version_id": 1,
         "attempt_idempotency_key": "attempt-contract",
         "initial_question_idempotency_key": "question-contract",
     }
@@ -310,7 +319,7 @@ def test_delete_unconfirmed_attempt_is_idempotent(tmp_path):
     base = f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts"
     started = client.post(base, json={
         "resume_id": resume_id,
-        "jd_text": "JD Python",
+        "jd_version_id": 1,
         "attempt_idempotency_key": "attempt-delete",
         "initial_question_idempotency_key": "question-delete",
     })
@@ -328,7 +337,7 @@ def test_delete_feedback_proposal_without_confirmed_draft_removes_attempt(tmp_pa
     base = f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts"
     started = client.post(base, json={
         "resume_id": resume_id,
-        "jd_text": "JD Python",
+        "jd_version_id": 1,
         "attempt_idempotency_key": "attempt-proposal-delete",
         "initial_question_idempotency_key": "question-proposal-delete",
     }).json()
@@ -356,7 +365,7 @@ def test_ready_question_replay_with_different_key_is_conflict(tmp_path):
     base = f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts"
     started = client.post(base, json={
         "resume_id": resume_id,
-        "jd_text": "JD Python",
+        "jd_version_id": 1,
         "attempt_idempotency_key": "attempt-question-replay",
         "initial_question_idempotency_key": "question-original",
     }).json()

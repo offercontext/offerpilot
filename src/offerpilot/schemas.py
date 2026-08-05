@@ -185,6 +185,7 @@ class ResumeMatchOut(BaseModel):
     id: int
     resume_id: int
     application_id: int | None = None
+    jd_version_id: int | None = None
     jd_text: str
     result: str
     created_at: datetime
@@ -195,6 +196,7 @@ class JDAnalysisOut(BaseModel):
 
     id: int
     application_id: int | None = None
+    jd_version_id: int | None = None
     jd_source: str
     jd_text: str
     result: str
@@ -238,6 +240,7 @@ class MaterialKitOut(BaseModel):
     application_id: int
     resume_id: int | None = None
     jd_analysis_id: int | None = None
+    jd_version_id: int | None = None
     jd_snapshot: str
     status: str
     content_json: str
@@ -266,6 +269,7 @@ class MaterialRevisionProposalSummaryOut(BaseModel):
     id: int
     application_id: int
     material_kit_id: int
+    jd_version_id: int | None = None
     source_resume_id: int | None
     status: Literal["draft", "accepted", "rejected"]
     summary: str

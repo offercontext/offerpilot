@@ -123,10 +123,19 @@ def test_jd_analyze_persists_result_and_list_filters_by_application(tmp_path):
         "/api/applications",
         json={"company_name": "ByteDance", "position_name": "Backend"},
     ).json()
+    jd = client.post(
+        f"/api/applications/{app['id']}/job-description/versions",
+        json={
+            "jd_text": "Python FastAPI Backend",
+            "source_url": None,
+            "expected_current_version_id": None,
+            "idempotency_key": "jd-analysis-test-01",
+        },
+    ).json()
 
     created_response = client.post(
         "/api/jd/analyze",
-        json={"application_id": app["id"], "jd_text": "Python FastAPI Backend"},
+        json={"application_id": app["id"], "jd_version_id": jd["id"]},
     )
 
     assert created_response.status_code == 201

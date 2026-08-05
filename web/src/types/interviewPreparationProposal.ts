@@ -52,7 +52,7 @@ export interface CreateInterviewPreparationProposalInput {
   application_id: number;
   event_id: number;
   resume_id: number;
-  jd_text: string;
+  jd_version_id: number;
   knowledge_selections: Array<Record<string, unknown>>;
   user_assertions: string[];
   idempotency_key: string;

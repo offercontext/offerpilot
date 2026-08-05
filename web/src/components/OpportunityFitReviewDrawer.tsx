@@ -17,7 +17,7 @@ import {
 import { listResumes } from '@/services/resumes';
 import {
   createOpportunityFitDeepReview,
-  createOpportunityFitReview,
+  createOpportunityFitV2Triage,
   getOpportunityFitReview,
   listOpportunityFitReviews,
 } from '@/services/opportunityFitReviews';
@@ -42,6 +42,7 @@ import { SourceStateTag } from './ui/SourceStateTag';
 interface Props {
   application: Application | null;
   open: boolean;
+  jdVersionId?: number | null;
   onClose: () => void;
   onPrepareMaterials?: (review: OpportunityFitReview, jdText: string) => void;
 }
@@ -79,6 +80,7 @@ function ReviewItem({
 export default function OpportunityFitReviewDrawer({
   application,
   open,
+  jdVersionId,
   onClose,
   onPrepareMaterials,
 }: Props) {
@@ -122,15 +124,16 @@ export default function OpportunityFitReviewDrawer({
       : null;
 
   const createMutation = useMutation({
-    mutationFn: () => createOpportunityFitReview(application!.id, {
+    mutationFn: () => createOpportunityFitV2Triage(application!.id, {
+      schema_version: 2,
       resume_id: resumeID!,
-      jd_text: jdText.trim(),
+      jd_version_id: jdVersionId ?? 0,
       jd_source_label: OPPORTUNITY_FIT_COPY.drawer.jdSourceLabel,
       candidate_assertions: assertions,
       idempotency_key: crypto.randomUUID(),
     }),
     onSuccess: (nextReview) => {
-      setReview(nextReview);
+      setReview(nextReview as unknown as OpportunityFitReview);
       setStage('review');
       setActionError(null);
     },
@@ -149,13 +152,13 @@ export default function OpportunityFitReviewDrawer({
   const canSubmit = Boolean(
     application
       && resumeID
-      && jdText.trim()
+      && jdVersionId
       && !assertionError
       && !createMutation.isPending,
   );
 
   const submit = () => {
-    if (!canSubmit || !resumeID || !jdText.trim() || assertionError) return;
+    if (!canSubmit || !resumeID || !jdVersionId || assertionError) return;
     createMutation.mutate();
   };
 

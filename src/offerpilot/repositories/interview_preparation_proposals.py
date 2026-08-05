@@ -230,6 +230,7 @@ class InterviewPreparationProposalsRepository:
         idempotency_key: str,
         model: ChatModel | None,
         on_diagnostic: Any | None = None,
+        jd_version_id: int | None = None,
     ) -> InterviewPreparationGenerationResult:
         if not isinstance(idempotency_key, str) or not IDEMPOTENCY_KEY_RE.fullmatch(idempotency_key):
             raise InterviewPreparationValidationError(
@@ -249,6 +250,7 @@ class InterviewPreparationProposalsRepository:
                 jd_text=jd_text,
                 knowledge_selections=knowledge_selections,
                 user_assertions=user_assertions,
+                jd_version_id=jd_version_id,
             )
             fingerprint = sha256_text(canonical_json(snapshot))
             existing = _find_by_key(session, application_id, event_id, idempotency_key)
@@ -265,6 +267,7 @@ class InterviewPreparationProposalsRepository:
                     jd_text=jd_text,
                     knowledge_selections=knowledge_selections,
                     user_assertions=user_assertions,
+                    jd_version_id=jd_version_id,
                     idempotency_key=idempotency_key,
                     on_diagnostic=on_diagnostic,
                 )
@@ -281,6 +284,7 @@ class InterviewPreparationProposalsRepository:
                     application_id=application_id,
                     application_event_id=event_id,
                     resume_id=resume_id,
+                    jd_version_id=jd_version_id,
                     idempotency_key=idempotency_key,
                     attempt_status="generating",
                     generation_revision=1,
@@ -304,6 +308,7 @@ class InterviewPreparationProposalsRepository:
             event_id=event_id,
             resume_id=resume_id,
             jd_text=jd_text,
+            jd_version_id=jd_version_id,
             knowledge_selections=knowledge_selections,
             user_assertions=user_assertions,
             idempotency_key=idempotency_key,
@@ -322,6 +327,7 @@ class InterviewPreparationProposalsRepository:
         knowledge_selections: List[dict[str, Any]],
         user_assertions: List[str],
         idempotency_key: str,
+        jd_version_id: int | None = None,
     ) -> InterviewPreparationGenerationResult | None:
         """Return a replayable attempt without resolving the AI provider.
 
@@ -345,6 +351,7 @@ class InterviewPreparationProposalsRepository:
                 jd_text=jd_text,
                 knowledge_selections=knowledge_selections,
                 user_assertions=user_assertions,
+                jd_version_id=jd_version_id,
             )
             fingerprint = sha256_text(canonical_json(snapshot))
             existing = _find_by_key(session, application_id, event_id, idempotency_key)
@@ -363,6 +370,7 @@ class InterviewPreparationProposalsRepository:
                 jd_text=jd_text,
                 knowledge_selections=knowledge_selections,
                 user_assertions=user_assertions,
+                jd_version_id=jd_version_id,
                 idempotency_key=idempotency_key,
                 on_diagnostic=None,
             )
@@ -417,6 +425,7 @@ class InterviewPreparationProposalsRepository:
         user_assertions: List[str],
         idempotency_key: str,
         on_diagnostic: Any | None,
+        jd_version_id: int | None,
     ) -> InterviewPreparationGenerationResult | _InterviewPreparationOwnedGeneration | None:
         if row.attempt_status == "invalidated":
             raise _attempt_invalidated()
@@ -522,6 +531,7 @@ class InterviewPreparationProposalsRepository:
         source_fingerprint: str,
         snapshot: dict[str, Any],
         on_diagnostic: Any | None,
+        jd_version_id: int | None,
     ) -> InterviewPreparationGenerationResult:
         if model is None:
             raise InterviewPreparationProviderError()
@@ -588,6 +598,7 @@ class InterviewPreparationProposalsRepository:
                     event_id=event_id,
                     resume_id=resume_id,
                     jd_text=jd_text,
+                    jd_version_id=jd_version_id,
                     knowledge_selections=knowledge_selections,
                     user_assertions=user_assertions,
                 )
@@ -694,11 +705,12 @@ def _build_snapshot(
     session: Session,
     *,
     application_id: int,
-    event_id: int,
-    resume_id: int,
-    jd_text: str,
-    knowledge_selections: list[dict[str, Any]],
-    user_assertions: list[str],
+        event_id: int,
+        resume_id: int,
+        jd_text: str,
+        knowledge_selections: list[dict[str, Any]],
+        user_assertions: list[str],
+    jd_version_id: int | None = None,
 ) -> dict[str, Any]:
     _require_visible_application(session, application_id)
     event = session.scalar(
@@ -745,7 +757,7 @@ def _build_snapshot(
             "Resume content is too large", "interview_preparation_input_too_large"
         )
     canonical_knowledge = _validate_knowledge_selections(session, knowledge_selections)
-    return {
+    snapshot = {
         "event": {
             "id": event.id,
             "application_id": event.application_id,
@@ -761,6 +773,9 @@ def _build_snapshot(
         "knowledge_evidence": canonical_knowledge,
         "user_assertions": normalized_assertions,
     }
+    if jd_version_id is not None:
+        snapshot["jd_version_id"] = jd_version_id
+    return snapshot
 
 
 def _validate_knowledge_selections(

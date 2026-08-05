@@ -15,6 +15,7 @@ class MaterialKitCreate:
     resume_id: Optional[int] = None
     jd_analysis_id: Optional[int] = None
     jd_snapshot: str = ""
+    jd_version_id: Optional[int] = None
     status: str = "draft"
     content_json: str = "{}"
 
@@ -29,6 +30,7 @@ class MaterialKitsRepository:
             resume_id=data.resume_id,
             jd_analysis_id=data.jd_analysis_id,
             jd_snapshot=data.jd_snapshot,
+            jd_version_id=data.jd_version_id,
             status=data.status or "draft",
             content_json=data.content_json or "{}",
         )
@@ -57,6 +59,7 @@ class MaterialKitsRepository:
             kit.resume_id = data.resume_id
             kit.jd_analysis_id = data.jd_analysis_id
             kit.jd_snapshot = data.jd_snapshot
+            kit.jd_version_id = data.jd_version_id
             kit.status = data.status or "draft"
             kit.content_json = data.content_json or "{}"
             session.commit()

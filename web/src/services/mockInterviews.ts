@@ -24,7 +24,7 @@ export async function startMockInterview(input: {
   applicationId: number;
   eventId: number;
   resumeId: number;
-  jdText: string;
+  jdVersionId: number;
   attemptKey: string;
   questionKey: string;
   preparationProposalId?: number;
@@ -32,7 +32,7 @@ export async function startMockInterview(input: {
 }): Promise<MockInterviewAttemptResponse | MockInterviewPendingResponse> {
   const { data } = await http.post<MockInterviewAttemptResponse | MockInterviewPendingResponse>(base(input.applicationId, input.eventId), {
     resume_id: input.resumeId,
-    jd_text: input.jdText,
+    jd_version_id: input.jdVersionId,
     attempt_idempotency_key: input.attemptKey,
     initial_question_idempotency_key: input.questionKey,
     preparation_proposal_id: input.preparationProposalId,

@@ -88,6 +88,7 @@ from offerpilot.repositories.applications import ApplicationCreate, Applications
 from offerpilot.repositories.application_jd_versions import (
     ApplicationJDService,
     JDVersionError,
+    JDVersionValidationError,
 )
 from offerpilot.repositories.chat import ChatRepository
 from offerpilot.repositories.application_events import (
@@ -115,7 +116,6 @@ from offerpilot.repositories.opportunity_fit_reviews import (
     OpportunityFitReviewConfirmationExpired,
     OpportunityFitReviewConflictError,
     OpportunityFitReviewNotFound,
-    OpportunityFitReviewValidationError,
     OpportunityFitReviewsRepository,
 )
 from offerpilot.repositories.interview_review_proposals import (
@@ -1662,14 +1662,18 @@ def create_app(
     ) -> JSONResponse:
         if "source_kind" in payload:
             return error_response(422, "来源入口由服务端确定", code="application_jd_invalid_request")
+        raw_jd_text = payload.get("jd_text")
+        raw_idempotency_key = payload.get("idempotency_key")
+        if not isinstance(raw_jd_text, str) or not isinstance(raw_idempotency_key, str):
+            return error_response(422, "岗位资料或请求标识不正确", code="application_jd_invalid_request")
         try:
             result = application_jd_versions.create_version(
                 app_id,
-                jd_text=payload.get("jd_text"),
+                jd_text=raw_jd_text,
                 source_url=payload.get("source_url"),
                 source_kind="ui",
                 expected_current_version_id=payload.get("expected_current_version_id"),
-                idempotency_key=payload.get("idempotency_key"),
+                idempotency_key=raw_idempotency_key,
             )
         except JDVersionError as exc:
             message = {
@@ -1749,9 +1753,18 @@ def create_app(
         resume_id = int(payload.get("resume_id") or 0)
         if resume_id <= 0:
             return error_response(400, "resume_id is required")
-        jd_text = str(payload.get("jd_text") or "")
-        if not jd_text.strip():
-            return error_response(400, "jd_text is required")
+        if "jd_text" in payload or "jd_version_id" not in payload:
+            return error_response(422, "请使用当前岗位资料版本", code="application_jd_version_required")
+        requested_version = payload.get("jd_version_id")
+        if type(requested_version) is not int or requested_version <= 0:
+            return error_response(422, "岗位资料版本无效", code="application_jd_version_required")
+        try:
+            frozen_jd = application_jd_versions.require_current_version(app_id, requested_version)
+        except JDVersionValidationError:
+            return error_response(422, "岗位资料版本无效", code="application_jd_version_required")
+        except JDVersionError as exc:
+            return error_response(exc.status_code, "岗位资料已变化，请重新加载", code="application_jd_source_conflict")
+        jd_text = frozen_jd.jd_text
 
         existing = material_kits.get_by_application(app_id)
         if existing is not None and not bool(payload.get("overwrite")):
@@ -1791,6 +1804,7 @@ def create_app(
             resume_id=resume_id,
             jd_analysis_id=jd_analysis_id,
             jd_snapshot=jd_text,
+            jd_version_id=frozen_jd.id,
             status="draft",
             content_json=json.dumps(result, ensure_ascii=False, separators=(",", ":")),
         )
@@ -1826,6 +1840,7 @@ def create_app(
             jd_snapshot=str(payload["jd_snapshot"])
             if payload.get("jd_snapshot") is not None
             else existing.jd_snapshot,
+            jd_version_id=existing.jd_version_id,
             status=str(payload.get("status") or existing.status),
             content_json=content_json,
         )
@@ -1982,6 +1997,15 @@ def create_app(
             parsed_v2 = _opportunity_fit_v2_create_payload(payload)
             if isinstance(parsed_v2, JSONResponse):
                 return parsed_v2
+            try:
+                frozen_jd = application_jd_versions.require_current_version(
+                    app_id, parsed_v2["jd_version_id"]
+                )
+            except JDVersionValidationError:
+                return error_response(422, "岗位资料版本无效", code="application_jd_version_required")
+            except JDVersionError:
+                return error_response(409, "岗位资料已变化，请重新加载", code="application_jd_source_conflict")
+            parsed_v2["jd_text"] = frozen_jd.jd_text
             app_model = applications.get(app_id)
             if app_model is None or app_model.source not in HUMAN_APPLICATION_SOURCES:
                 return error_response(404, "Application not found")
@@ -2041,62 +2065,10 @@ def create_app(
             response = _opportunity_fit_v2_stage_json(root, stage, confirmation_token=token)
             status_code = 202 if stage.status in {"generating", "provider_unknown"} else (201 if created else 200)
             return JSONResponse(response, status_code=status_code)
-        parsed = _opportunity_fit_create_payload(payload)
-        if isinstance(parsed, JSONResponse):
-            return parsed
-        app_model = applications.get(app_id)
-        if app_model is None or app_model.source not in HUMAN_APPLICATION_SOURCES:
-            return error_response(404, "Application not found")
-        model = _chat_model(chat_model, resolved_data_dir)
-        if isinstance(model, JSONResponse):
-            append_log_entry(
-                resolved_data_dir,
-                "WARNING",
-                _interview_review_diagnostic_message(
-                    {
-                        "failure_category": "provider_error",
-                        "repair_attempted": False,
-                        "retry_count": 0,
-                        "duration_ms": 0,
-                        "provider_request_id": "",
-                    }
-                ),
-            )
-            return error_response(
-                502,
-                "AI provider request failed. Please retry.",
-                code="opportunity_fit_provider_error",
-            )
-        try:
-            review, created = opportunity_fit_reviews.create_triage(
-                app_id,
-                parsed["resume_id"],
-                parsed["jd_text"],
-                parsed["jd_source_label"],
-                parsed["candidate_assertions"],
-                parsed["idempotency_key"],
-                model,
-            )
-        except OpportunityFitReviewNotFound:
-            return error_response(404, "Application or resume not found")
-        except OpportunityFitReviewValidationError as exc:
-            return error_response(422, str(exc))
-        except OpportunityFitModelError as exc:
-            append_log_entry(resolved_data_dir, "WARNING", f"opportunity_fit_{exc.failure_category}")
-            if exc.failure_category == "provider_error":
-                return error_response(
-                    502,
-                    "AI provider request failed. Please retry.",
-                    code="opportunity_fit_provider_error",
-                )
-            return error_response(
-                502,
-                "AI output could not be verified. Please retry.",
-                code="opportunity_fit_unverifiable",
-            )
-        return JSONResponse(
-            _opportunity_fit_review_detail_json(review),
-            status_code=201 if created else 200,
+        return error_response(
+            410,
+            "旧版岗位匹配新建接口已停用，请使用 v2",
+            code="opportunity_fit_v1_write_disabled",
         )
 
     @app.get("/api/applications/{app_id}/opportunity-fit-reviews")
@@ -2175,6 +2147,26 @@ def create_app(
             parsed_v2 = _opportunity_fit_v2_deep_payload(payload)
             if isinstance(parsed_v2, JSONResponse):
                 return parsed_v2
+            parent_context = opportunity_fit_reviews.get_v2(app_id, review_id)
+            if parent_context is None:
+                return error_response(404, "Opportunity fit review not found")
+            _, parent_stages = parent_context
+            parent_stage = next(
+                (item for item in parent_stages if item.id == parsed_v2["parent_triage_stage_id"]),
+                None,
+            )
+            if parent_stage is None or parent_stage.stage != "triage":
+                return error_response(409, "Triage parent is required", code="opportunity_fit_source_conflict")
+            parent_snapshot_raw = json.loads(parent_stage.source_snapshot_json)
+            parent_snapshot: dict[str, Any] = parent_snapshot_raw if isinstance(parent_snapshot_raw, dict) else {}
+            parent_jd_raw = parent_snapshot.get("jd")
+            parent_jd: dict[str, Any] = parent_jd_raw if isinstance(parent_jd_raw, dict) else {}
+            parsed_v2["jd_text"] = str(parent_jd.get("text") or "")
+            parsed_v2["jd_source_label"] = str(parent_jd.get("source_label") or "")
+            parsed_v2["candidate_assertions"] = parent_snapshot.get("candidate_assertions") or []
+            if parent_stage.resume_id is None:
+                return error_response(409, "Triage 缺少已冻结简历", code="opportunity_fit_source_conflict")
+            parsed_v2["resume_id"] = int(parent_stage.resume_id)
             app_model = applications.get(app_id)
             if app_model is None or app_model.source not in HUMAN_APPLICATION_SOURCES:
                 return error_response(404, "Application not found")
@@ -2289,6 +2281,15 @@ def create_app(
                 "该投递已不可见。",
                 code="interview_preparation_application_not_found",
             )
+        try:
+            frozen_jd = application_jd_versions.require_current_version(
+                app_id, parsed["jd_version_id"]
+            )
+        except JDVersionValidationError:
+            return error_response(422, "岗位资料版本无效", code="application_jd_version_required")
+        except JDVersionError:
+            return error_response(409, "岗位资料已变化，请重新加载", code="application_jd_source_conflict")
+        parsed["jd_text"] = frozen_jd.jd_text
         try:
             replay = interview_preparation_proposals.preflight(
                 application_id=app_id,
@@ -3043,7 +3044,25 @@ def create_app(
 
     @app.post("/api/jd/analyze", status_code=201)
     def analyze_jd(payload: dict[str, Any] = Body(...)) -> JSONResponse:
-        jd_text = str(payload.get("jd_text") or "")
+        application_id = (
+            int(payload["application_id"]) if payload.get("application_id") is not None else None
+        )
+        jd_version_id: int | None = None
+        if application_id is not None:
+            if "jd_text" in payload or type(payload.get("jd_version_id")) is not int:
+                return error_response(422, "请使用当前岗位资料版本", code="application_jd_version_required")
+            try:
+                frozen_jd = application_jd_versions.require_current_version(
+                    application_id, payload["jd_version_id"]
+                )
+            except JDVersionValidationError:
+                return error_response(422, "岗位资料版本无效", code="application_jd_version_required")
+            except JDVersionError:
+                return error_response(409, "岗位资料已变化，请重新加载", code="application_jd_source_conflict")
+            jd_text = frozen_jd.jd_text
+            jd_version_id = frozen_jd.id
+        else:
+            jd_text = str(payload.get("jd_text") or "")
         if payload.get("jd_url"):
             if not jd_text.strip():
                 return error_response(422, "jd_text is required", code="jd_text_required")
@@ -3063,15 +3082,13 @@ def create_app(
         except RuntimeError as exc:
             return error_response(502, str(exc))
         result_json = json.dumps(result, ensure_ascii=False)
-        application_id = (
-            int(payload["application_id"]) if payload.get("application_id") is not None else None
-        )
         analysis = jd_analyses.create(
             JDAnalysisCreate(
                 application_id=application_id,
                 jd_source=jd_source,
                 jd_text=jd_text,
                 result=result_json,
+                jd_version_id=jd_version_id,
             )
         )
         return JSONResponse(
@@ -3357,7 +3374,25 @@ def create_app(
         if not resume.parsed_data:
             return error_response(400, "Resume has no text content")
 
-        jd_text = str(payload.get("jd_text") or "")
+        application_id = (
+            int(payload["application_id"]) if payload.get("application_id") is not None else None
+        )
+        jd_version_id: int | None = None
+        if application_id is not None:
+            if "jd_text" in payload or type(payload.get("jd_version_id")) is not int:
+                return error_response(422, "请使用当前岗位资料版本", code="application_jd_version_required")
+            try:
+                frozen_jd = application_jd_versions.require_current_version(
+                    application_id, payload["jd_version_id"]
+                )
+            except JDVersionValidationError:
+                return error_response(422, "岗位资料版本无效", code="application_jd_version_required")
+            except JDVersionError:
+                return error_response(409, "岗位资料已变化，请重新加载", code="application_jd_source_conflict")
+            jd_text = frozen_jd.jd_text
+            jd_version_id = frozen_jd.id
+        else:
+            jd_text = str(payload.get("jd_text") or "")
         if payload.get("jd_url"):
             if not jd_text.strip():
                 return error_response(422, "jd_text is required", code="jd_text_required")
@@ -3376,9 +3411,6 @@ def create_app(
             )
         except RuntimeError as exc:
             return error_response(502, str(exc))
-        application_id = (
-            int(payload["application_id"]) if payload.get("application_id") is not None else None
-        )
         result_json = json.dumps(result, ensure_ascii=False)
         match = resumes.create_match(
             ResumeMatchCreate(
@@ -3386,6 +3418,7 @@ def create_app(
                 application_id=application_id,
                 jd_text=jd_text,
                 result=result_json,
+                jd_version_id=jd_version_id,
             )
         )
         return JSONResponse(
@@ -3566,6 +3599,7 @@ def create_app(
             offers,
             resumes=resumes,
             jd_analyses=jd_analyses,
+            application_jd_versions=application_jd_versions,
         )
         try:
             added, reply, pending = _run_chat_agent_with_timeout(
@@ -3712,6 +3746,7 @@ def create_app(
             offers,
             resumes=resumes,
             jd_analyses=jd_analyses,
+            application_jd_versions=application_jd_versions,
         )
         run = SseRun(
             run_id=str(uuid4()),
@@ -3885,6 +3920,7 @@ def create_app(
             offers,
             resumes=resumes,
             jd_analyses=jd_analyses,
+            application_jd_versions=application_jd_versions,
         )
         try:
             effective_pending = (
@@ -4170,6 +4206,7 @@ def create_app(
             offers,
             resumes=resumes,
             jd_analyses=jd_analyses,
+            application_jd_versions=application_jd_versions,
         )
         try:
             effective_pending = (
@@ -4596,7 +4633,12 @@ def create_app(
     ) -> JSONResponse:
         try:
             resume_id = int(payload["resume_id"])
-            jd_text = payload["jd_text"]
+            if "jd_text" in payload or "jd_version_id" not in payload:
+                return error_response(422, "请使用当前岗位资料版本", code="application_jd_version_required")
+            frozen_jd = application_jd_versions.require_current_version(
+                application_id, payload["jd_version_id"]
+            )
+            jd_text = frozen_jd.jd_text
             attempt_key = str(payload["attempt_idempotency_key"])
             question_key = str(payload["initial_question_idempotency_key"])
             if not isinstance(jd_text, str):
@@ -4615,6 +4657,7 @@ def create_app(
                 attempt_key,
                 question_key,
                 preparation_selection,
+                frozen_jd.id,
             )
         except KeyError as exc:
             return error_response(422, f"missing field: {exc.args[0]}")
@@ -4631,6 +4674,10 @@ def create_app(
                 "mock_interview_unverifiable",
                 details={"attempt_id": exc.attempt_id} if exc.attempt_id is not None else None,
             )
+        except JDVersionValidationError:
+            return error_response(422, "岗位资料版本无效", code="application_jd_version_required")
+        except JDVersionError:
+            return error_response(409, "岗位资料已变化，请重新加载", code="mock_interview_source_conflict")
         except LookupError:
             return error_response(404, "mock_interview_application_not_found")
         except ValueError as exc:
@@ -7462,12 +7509,16 @@ def _interview_preparation_request_payload(payload: Any) -> dict[str, Any] | JSO
     allowed = {
         "event_id",
         "resume_id",
-        "jd_text",
+        "jd_version_id",
         "knowledge_selections",
         "user_assertions",
         "idempotency_key",
     }
-    if not isinstance(payload, dict) or set(payload) != allowed:
+    if not isinstance(payload, dict):
+        return error_response(422, "Interview preparation request fields are invalid.", code="interview_preparation_invalid_request")
+    if "jd_version_id" not in payload and "jd_text" not in payload:
+        return error_response(422, "Application JD version is required.", code="application_jd_version_required")
+    if set(payload) != allowed:
         return error_response(
             422,
             "面试准备请求字段无效。",
@@ -7477,8 +7528,8 @@ def _interview_preparation_request_payload(payload: Any) -> dict[str, Any] | JSO
         return error_response(422, "面试事件不能为空。", code="interview_preparation_event_required")
     if not isinstance(payload["resume_id"], int) or isinstance(payload["resume_id"], bool):
         return error_response(422, "简历不能为空。", code="interview_preparation_resume_required")
-    if not isinstance(payload["jd_text"], str) or not payload["jd_text"].strip():
-        return error_response(422, "JD 不能为空。", code="interview_preparation_jd_required")
+    if type(payload["jd_version_id"]) is not int or payload["jd_version_id"] <= 0:
+        return error_response(422, "岗位资料版本不能为空。", code="application_jd_version_required")
     if not isinstance(payload["idempotency_key"], str) or not payload["idempotency_key"].strip():
         return error_response(422, "请求尝试标识不能为空。", code="interview_preparation_invalid_request")
     if not isinstance(payload["knowledge_selections"], list) or any(
@@ -7492,7 +7543,7 @@ def _interview_preparation_request_payload(payload: Any) -> dict[str, Any] | JSO
     return {
         "event_id": payload["event_id"],
         "resume_id": payload["resume_id"],
-        "jd_text": payload["jd_text"],
+        "jd_version_id": payload["jd_version_id"],
         "knowledge_selections": payload["knowledge_selections"],
         "user_assertions": payload["user_assertions"],
         "idempotency_key": payload["idempotency_key"],
@@ -7541,6 +7592,7 @@ def _interview_preparation_proposal_json(proposal: Any) -> dict[str, Any]:
         "application_id": proposal.application_id,
         "event_id": proposal.application_event_id,
         "resume_id": proposal.resume_id,
+        "jd_version_id": getattr(proposal, "jd_version_id", None),
         "attempt_status": proposal.attempt_status,
         "proposal_status": proposal.proposal_status,
         "source_fingerprint": proposal.source_fingerprint,
@@ -7773,6 +7825,7 @@ def _material_revision_proposal_summary_json(proposal: Any) -> dict[str, Any]:
         id=proposal.id,
         application_id=proposal.application_id,
         material_kit_id=proposal.material_kit_id,
+        jd_version_id=proposal.jd_version_id,
         source_resume_id=proposal.source_resume_id,
         status=proposal.status,
         summary=str(proposal_data.get("summary") or ""),
@@ -7800,6 +7853,7 @@ def _material_revision_proposal_detail_json(proposal: Any) -> dict[str, Any]:
         "application": snapshot.get("application", {}),
         "material_kit": {
             "id": snapshot.get("material_kit", {}).get("id"),
+            "jd_version_id": snapshot.get("material_kit", {}).get("jd_version_id"),
             "jd_excerpt": str(snapshot.get("material_kit", {}).get("jd_snapshot") or "")[:500],
         },
         "resume": {
@@ -7874,16 +7928,24 @@ def _opportunity_fit_create_payload(
 def _opportunity_fit_v2_create_payload(
     payload: dict[str, Any],
 ) -> dict[str, Any] | JSONResponse:
-    base = _opportunity_fit_create_payload(payload)
+    if "jd_text" in payload:
+        return error_response(422, "请使用当前岗位资料版本", code="application_jd_version_required")
+    raw_version = payload.get("jd_version_id")
+    if type(raw_version) is not int or raw_version <= 0:
+        return error_response(422, "jd_version_id must be a positive integer", code="application_jd_version_required")
+    base_payload = {**payload, "jd_text": "岗位资料版本"}
+    base = _opportunity_fit_create_payload(base_payload)
     if isinstance(base, JSONResponse):
         return base
-    return base
+    return {**base, "jd_version_id": raw_version}
 
 
 def _opportunity_fit_v2_deep_payload(
     payload: dict[str, Any],
 ) -> dict[str, Any] | JSONResponse:
-    base = _opportunity_fit_create_payload(payload)
+    if "jd_text" in payload or "jd_version_id" in payload:
+        return error_response(422, "Deep Review 必须继承已确认的 Triage", code="opportunity_fit_source_conflict")
+    base = _opportunity_fit_create_payload({**payload, "jd_text": "继承 Triage 的岗位资料"})
     if isinstance(base, JSONResponse):
         return base
     parent = payload.get("parent_triage_stage_id")
@@ -7910,6 +7972,7 @@ def _opportunity_fit_v2_stage_json(
         "stage_id": stage.id,
         "application_id": stage.application_id,
         "resume_id": stage.resume_id,
+        "jd_version_id": stage.jd_version_id,
         "stage": stage.stage,
         "schema_version": stage.proposal_schema_version,
         "stage_status": stage.status,

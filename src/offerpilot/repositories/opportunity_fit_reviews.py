@@ -76,6 +76,7 @@ class OpportunityFitReviewsRepository:
         jd_source_label: str,
         candidate_assertions: list[str],
         idempotency_key: str,
+        jd_version_id: int | None = None,
     ) -> tuple[OpportunityFitReviewSession, OpportunityFitReviewStage, str] | None:
         """Return a stable, non-expired attempt before resolving an AI provider.
 
@@ -98,6 +99,8 @@ class OpportunityFitReviewsRepository:
             stage = _find_v2_stage(session, existing.id, "triage", idempotency_key)
             if stage is None:
                 raise OpportunityFitReviewConflictError("v2 triage stage is missing")
+            if jd_version_id is not None and stage.jd_version_id != jd_version_id:
+                raise OpportunityFitReviewConflictError("opportunity fit source changed")
             if stage.source_fingerprint_sha256 != fingerprint:
                 raise OpportunityFitReviewConflictError("opportunity fit idempotency conflict")
             if _v2_confirmation_expired(stage):
@@ -115,6 +118,7 @@ class OpportunityFitReviewsRepository:
         candidate_assertions: list[str],
         idempotency_key: str,
         model: ChatModel,
+        jd_version_id: int | None = None,
     ) -> tuple[OpportunityFitReviewSession, OpportunityFitReviewStage, bool, str]:
         confirmation_secret = self._require_confirmation_secret()
         provider_token = ""
@@ -133,6 +137,8 @@ class OpportunityFitReviewsRepository:
                 stage = _find_v2_stage(session, existing.id, "triage", idempotency_key)
                 if stage is None:
                     raise OpportunityFitReviewConflictError("v2 triage stage is missing")
+                if jd_version_id is not None and stage.jd_version_id != jd_version_id:
+                    raise OpportunityFitReviewConflictError("opportunity fit source changed")
                 if stage.source_fingerprint_sha256 != fingerprint:
                     raise OpportunityFitReviewConflictError("opportunity fit idempotency conflict")
                 if _v2_confirmation_expired(stage):
@@ -175,6 +181,7 @@ class OpportunityFitReviewsRepository:
                     application_id=application_id,
                     triage_idempotency_key=idempotency_key,
                     proposal_schema_version=2,
+                    jd_version_id=jd_version_id,
                 )
                 session.add(root)
                 session.flush()
@@ -192,6 +199,7 @@ class OpportunityFitReviewsRepository:
                     status="generating",
                     provider_call_token=provider_token,
                     lease_expires_at=lease,
+                    jd_version_id=jd_version_id,
                 )
                 session.add(stage)
                 should_call_provider = True
@@ -408,6 +416,7 @@ class OpportunityFitReviewsRepository:
                     status="generating",
                     provider_call_token=provider_token,
                     lease_expires_at=lease,
+                    jd_version_id=parent.jd_version_id,
                 )
                 session.add(stage)
             try:

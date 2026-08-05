@@ -13,6 +13,10 @@ from offerpilot.repositories.application_events import (
     duration_minutes,
 )
 from offerpilot.repositories.jd import JDAnalysesRepository
+from offerpilot.repositories.application_jd_versions import (
+    ApplicationJDService,
+    JDVersionError,
+)
 from offerpilot.repositories.notes import NoteCreate, NoteUpdate, NotesRepository
 from offerpilot.repositories.offers import OfferCreate, OffersRepository
 from offerpilot.repositories.resumes import ResumesRepository
@@ -151,6 +155,7 @@ def offerpilot_tool_registry(
     *,
     resumes: ResumesRepository | None = None,
     jd_analyses: JDAnalysesRepository | None = None,
+    application_jd_versions: ApplicationJDService | None = None,
 ) -> dict[str, dict[str, Any]]:
     registry: dict[str, dict[str, Any]] = {}
     registry.update(application_tool_registry(applications))
@@ -161,7 +166,44 @@ def offerpilot_tool_registry(
         registry.update(resume_tool_registry(resumes))
     if jd_analyses is not None:
         registry.update(jd_tool_registry(jd_analyses))
+    if application_jd_versions is not None:
+        registry.update(application_jd_version_tool_registry(application_jd_versions))
     return registry
+
+
+def application_jd_version_tool_registry(
+    service: ApplicationJDService,
+) -> dict[str, dict[str, Any]]:
+    return {
+        "save_application_jd_version": {
+            "write": True,
+            "always_confirm": True,
+            "description": (
+                "Save the user's job description to the selected application after explicit confirmation. "
+                "Never fetch the source URL and never create downstream records."
+            ),
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "application_id": {"type": "integer"},
+                    "jd_text": {"type": "string"},
+                    "source_url": {"type": ["string", "null"]},
+                    "expected_current_version_id": {"type": ["integer", "null"]},
+                    "idempotency_key": {"type": "string"},
+                },
+                "required": [
+                    "application_id",
+                    "jd_text",
+                    "expected_current_version_id",
+                    "idempotency_key",
+                ],
+                "additionalProperties": False,
+            },
+            "describe": lambda args: _describe_save_application_jd(args),
+            "validate": lambda args: _validate_save_application_jd(args),
+            "handler": lambda args: _save_application_jd_version(service, args),
+        }
+    }
 
 
 def application_tool_registry(repo: ApplicationsRepository) -> dict[str, dict[str, Any]]:
@@ -787,6 +829,62 @@ def _get_jd_analysis(repo: JDAnalysesRepository, args: str) -> str:
     if analysis is None:
         raise ValueError("jd analysis not found")
     return _json(_jd_analysis_json(analysis))
+
+
+def _validate_save_application_jd(args: str) -> str:
+    try:
+        payload = json.loads(args)
+    except json.JSONDecodeError:
+        return "save_application_jd_version requires a JSON object"
+    if not isinstance(payload, dict):
+        return "save_application_jd_version requires a JSON object"
+    try:
+        application_id = payload.get("application_id")
+        if type(application_id) is not int or application_id <= 0:
+            return "application_id must be a positive integer"
+        if not isinstance(payload.get("jd_text"), str) or not payload["jd_text"].strip():
+            return "jd_text is required"
+        expected = payload.get("expected_current_version_id")
+        if expected is not None and (type(expected) is not int or expected <= 0):
+            return "expected_current_version_id must be a positive integer or null"
+        key = payload.get("idempotency_key")
+        if not isinstance(key, str) or not key.strip():
+            return "idempotency_key is required"
+    except (KeyError, TypeError):
+        return "invalid application JD payload"
+    return ""
+
+
+def _describe_save_application_jd(args: str) -> str:
+    try:
+        payload = json.loads(args)
+    except json.JSONDecodeError:
+        return "Save the supplied job description after confirmation."
+    app_id = payload.get("application_id") if isinstance(payload, dict) else None
+    return f"Confirm saving the job description to application {app_id}. The source URL will not be opened."
+
+
+def _save_application_jd_version(service: ApplicationJDService, args: str) -> str:
+    payload = json.loads(args)
+    try:
+        result = service.create_version(
+            int(payload["application_id"]),
+            jd_text=payload["jd_text"],
+            source_url=payload.get("source_url"),
+            source_kind="pilot",
+            expected_current_version_id=payload.get("expected_current_version_id"),
+            idempotency_key=payload["idempotency_key"],
+        )
+    except JDVersionError as exc:
+        raise ValueError(exc.code) from exc
+    return _json({
+        "record_type": "application_jd_version",
+        "id": result.version.id,
+        "application_id": result.version.application_id,
+        "version_number": result.version.version_number,
+        "source_kind": result.version.source_kind,
+        "replayed": result.replayed,
+    })
 
 
 def _describe_create_application(args: str) -> str:

@@ -105,6 +105,7 @@ class MockInterviewRepository:
         attempt_idempotency_key: str,
         initial_question_idempotency_key: str,
         preparation_selection: dict[str, Any] | None = None,
+        jd_version_id: int | None = None,
     ) -> MockInterviewStartResult:
         if not jd_text.strip():
             raise ValueError("jd_text must not be blank")
@@ -121,6 +122,7 @@ class MockInterviewRepository:
                 jd_text,
                 preparation_proposal_id,
                 preparation_selection,
+                jd_version_id,
             )
             fingerprint = sha256_text(canonical_json(snapshot))
             existing = session.scalar(
@@ -168,6 +170,7 @@ class MockInterviewRepository:
                 application_id=application_id,
                 event_id=event_id,
                 resume_id=resume_id,
+                jd_version_id=jd_version_id,
                 idempotency_key=attempt_idempotency_key,
                 input_snapshot_json=canonical_json(snapshot),
                 source_fingerprint=fingerprint,
@@ -814,6 +817,7 @@ class MockInterviewRepository:
         jd_text: str,
         preparation_proposal_id: int | None,
         preparation_selection: dict[str, Any] | None = None,
+        jd_version_id: int | None = None,
     ) -> dict[str, Any]:
         application = session.get(Application, application_id)
         event = session.get(ApplicationEvent, event_id)
@@ -829,7 +833,7 @@ class MockInterviewRepository:
             raise ValueError("event is not a scheduled interview")
         if resume is None or resume.deleted_at is not None:
             raise LookupError("resume not found")
-        return {
+        snapshot: dict[str, Any] = {
             "schema_version": "mock-interview-input-v1",
             "application": {
                 "company_name": application.company_name,
@@ -853,6 +857,9 @@ class MockInterviewRepository:
             ),
             "turns": [],
         }
+        if jd_version_id is not None:
+            snapshot["jd_version_id"] = jd_version_id
+        return snapshot
 
 
 def _json_object(value: str) -> dict[str, Any]:

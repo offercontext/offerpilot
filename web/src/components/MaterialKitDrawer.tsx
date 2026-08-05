@@ -68,12 +68,13 @@ interface Props {
   onClose: () => void;
   initialResumeID?: number;
   initialJdSnapshot?: string;
+  initialJdVersionID?: number;
 }
 
 interface GenerateVariables {
   applicationID: number;
   resumeID: number;
-  jdText: string;
+  jdVersionID: number;
   overwrite: boolean;
 }
 
@@ -200,7 +201,7 @@ function validateProposalAssertions(raw: string): ProposalAssertionsValidation {
   return { values, error: null };
 }
 
-export default function MaterialKitDrawer({ application, open, onClose, initialResumeID, initialJdSnapshot }: Props) {
+export default function MaterialKitDrawer({ application, open, onClose, initialResumeID, initialJdSnapshot, initialJdVersionID }: Props) {
   const { message } = AntApp.useApp();
   const queryClient = useQueryClient();
   const applicationID = application?.id;
@@ -212,6 +213,7 @@ export default function MaterialKitDrawer({ application, open, onClose, initialR
   const [existingKit, setExistingKit] = useState<MaterialKitViewModel | null>(null);
   const [resumeID, setResumeID] = useState<number | undefined>();
   const [jdSnapshot, setJdSnapshot] = useState('');
+  const [jdVersionID, setJdVersionID] = useState<number | undefined>(initialJdVersionID);
   const [status, setStatus] = useState<EditableMaterialKitStatus>('draft');
   const [content, setContent] = useState<MaterialKitContent>(() => createDefaultContent());
   const [actionError, setActionError] = useState<string | null>(null);
@@ -240,6 +242,7 @@ export default function MaterialKitDrawer({ application, open, onClose, initialR
     setExistingKit(null);
     setResumeID(initialResumeID);
     setJdSnapshot((initialJdSnapshot ?? nextApplication?.notes) || '');
+    setJdVersionID(initialJdVersionID);
     setStatus('draft');
     setContent(createDefaultContent());
     setActionError(null);
@@ -264,6 +267,7 @@ export default function MaterialKitDrawer({ application, open, onClose, initialR
     setExistingKit(kit);
     setResumeID(kit.resume_id);
     setJdSnapshot(kit.jd_snapshot);
+    setJdVersionID(kit.jd_version_id);
     setStatus(kit.status === 'submitted' ? 'draft' : kit.status);
     setContent(cloneContent(kit.content));
     setActionError(null);
@@ -295,7 +299,7 @@ export default function MaterialKitDrawer({ application, open, onClose, initialR
 
   useEffect(() => {
     resetEditor(open ? application : null);
-  }, [applicationID, application?.notes, initialJdSnapshot, initialResumeID, open]);
+  }, [applicationID, application?.notes, initialJdSnapshot, initialJdVersionID, initialResumeID, open]);
 
   useEffect(() => {
     if (evidencePreviewQuery.isError) {
@@ -351,6 +355,7 @@ export default function MaterialKitDrawer({ application, open, onClose, initialR
     setExistingKit(null);
     setResumeID(undefined);
     setJdSnapshot(application?.notes || '');
+    setJdVersionID(undefined);
     setStatus('draft');
     setContent(createDefaultContent());
     setActionError(getErrorMessage(kitQuery.error));
@@ -364,10 +369,10 @@ export default function MaterialKitDrawer({ application, open, onClose, initialR
   }, [content.checklist]);
 
   const generateMutation = useMutation({
-    mutationFn: ({ applicationID: requestedApplicationID, resumeID: requestedResumeID, jdText, overwrite }: GenerateVariables) =>
+    mutationFn: ({ applicationID: requestedApplicationID, resumeID: requestedResumeID, jdVersionID: requestedJdVersionID, overwrite }: GenerateVariables) =>
       generateApplicationMaterialKit(requestedApplicationID, {
         resume_id: requestedResumeID,
-        jd_text: jdText,
+        jd_version_id: requestedJdVersionID,
         overwrite,
       }),
     onSuccess: (kit, variables) => {
@@ -495,17 +500,17 @@ export default function MaterialKitDrawer({ application, open, onClose, initialR
   const legacySubmitted = existingKit?.status === 'submitted';
   const canConfirm = Boolean(canSave);
   const displayedStatus: MaterialKitStatus = legacySubmitted ? 'submitted' : status;
-  const generateDisabled = !applicationID || !resumeID || !jdSnapshot.trim();
-  const proposalDisabled = !applicationID || !existingKit || existingKit.application_id !== applicationID || !resumeID || !jdSnapshot.trim();
+  const generateDisabled = !applicationID || !resumeID || !jdVersionID || !jdSnapshot.trim();
+  const proposalDisabled = !applicationID || !existingKit || existingKit.application_id !== applicationID || !resumeID || !jdVersionID || !jdSnapshot.trim();
   const busy = kitQuery.isFetching || generateMutation.isPending || saveMutation.isPending || proposalMutation.isPending || confirmMutation.isPending || confirmationRefreshing;
 
   const handleGenerate = () => {
-    if (!applicationID || !resumeID || !jdSnapshot.trim()) return;
+    if (!applicationID || !resumeID || !jdVersionID || !jdSnapshot.trim()) return;
 
     generateMutation.mutate({
       applicationID,
       resumeID,
-      jdText: jdSnapshot.trim(),
+      jdVersionID,
       overwrite: Boolean(existingKit && existingKit.application_id === applicationID),
     });
   };

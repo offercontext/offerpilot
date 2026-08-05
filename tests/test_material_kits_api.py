@@ -38,7 +38,6 @@ def test_get_application_material_kit_missing(tmp_path):
         "/api/applications",
         json={"company_name": "Acme", "position_name": "Backend"},
     ).json()
-
     response = client.get(f"/api/applications/{app['id']}/material-kit")
 
     assert response.status_code == 404
@@ -51,6 +50,15 @@ def test_generate_update_and_conflict_material_kit(tmp_path):
         "/api/applications",
         json={"company_name": "Acme", "position_name": "Backend"},
     ).json()
+    jd = client.post(
+        f"/api/applications/{app['id']}/job-description/versions",
+        json={
+            "jd_text": "Go backend JD",
+            "source_url": None,
+            "expected_current_version_id": None,
+            "idempotency_key": "material-jd-key-0001",
+        },
+    ).json()
     resume = client.post(
         "/api/resumes",
         json={"name": "Backend", "text": "Built Go APIs"},
@@ -58,14 +66,14 @@ def test_generate_update_and_conflict_material_kit(tmp_path):
 
     missing_resume = client.post(
         f"/api/applications/{app['id']}/material-kit/generate",
-        json={"jd_text": "Go backend JD"},
+        json={"jd_version_id": jd["id"]},
     )
     assert missing_resume.status_code == 400
     assert missing_resume.json() == {"error": "resume_id is required"}
 
     created_response = client.post(
         f"/api/applications/{app['id']}/material-kit/generate",
-        json={"resume_id": resume["id"], "jd_text": "Go backend JD"},
+        json={"resume_id": resume["id"], "jd_version_id": jd["id"]},
     )
     assert created_response.status_code == 201
     created = created_response.json()
@@ -75,7 +83,7 @@ def test_generate_update_and_conflict_material_kit(tmp_path):
 
     conflict = client.post(
         f"/api/applications/{app['id']}/material-kit/generate",
-        json={"resume_id": resume["id"], "jd_text": "Go backend JD"},
+        json={"resume_id": resume["id"], "jd_version_id": jd["id"]},
     )
     assert conflict.status_code == 409
     assert conflict.json() == {"error": "Material kit already exists"}

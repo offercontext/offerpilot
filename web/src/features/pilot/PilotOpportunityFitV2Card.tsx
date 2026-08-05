@@ -14,6 +14,7 @@ export interface PilotOpportunityFitV2Draft {
   applicationId: number;
   resumeId?: number;
   jdText: string;
+  jdVersionId?: number;
   assertionsText: string;
   triageKey: string | null;
   deepKey: string | null;
@@ -142,7 +143,7 @@ export default function PilotOpportunityFitV2Card({
     () => draft.assertionsText.split(/\r?\n/).map((item) => item.trim()).filter(Boolean),
     [draft.assertionsText],
   );
-  const inputIsValid = Boolean(draft.resumeId && draft.jdText.trim())
+  const inputIsValid = Boolean(draft.resumeId && draft.jdVersionId)
     && assertions.length <= 10
     && assertions.every((item) => item.length <= 500);
   const triageReady = draft.triage?.stage_status === 'ready';
@@ -154,7 +155,7 @@ export default function PilotOpportunityFitV2Card({
   const input: CreateOpportunityFitV2Input = {
     schema_version: 2,
     resume_id: draft.resumeId ?? 0,
-    jd_text: draft.jdText,
+    jd_version_id: draft.jdVersionId ?? 0,
     jd_source_label: '用户粘贴 JD',
     candidate_assertions: assertions,
     idempotency_key: draft.triageKey ?? newKey(),
@@ -226,7 +227,7 @@ export default function PilotOpportunityFitV2Card({
             粘贴 JD
             <textarea
               value={draft.jdText}
-              onChange={(event) => onChange({ jdText: event.target.value })}
+              readOnly
               disabled={Boolean(draft.triageKey) || triageLoading || deepLoading}
               placeholder="只粘贴岗位要求文本，不抓取链接"
             />

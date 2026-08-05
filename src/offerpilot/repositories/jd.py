@@ -15,6 +15,7 @@ class JDAnalysisCreate:
     jd_text: str
     result: str
     application_id: Optional[int] = None
+    jd_version_id: Optional[int] = None
 
 
 class JDAnalysesRepository:
@@ -27,6 +28,7 @@ class JDAnalysesRepository:
             jd_source=data.jd_source,
             jd_text=data.jd_text,
             result=data.result,
+            jd_version_id=data.jd_version_id,
         )
         with self._session_factory() as session:
             session.add(analysis)

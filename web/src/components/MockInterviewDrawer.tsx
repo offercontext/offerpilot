@@ -24,6 +24,7 @@ import { SourceStateTag } from './ui/SourceStateTag';
 export interface MockInterviewDrawerDraft {
   resumeId?: number;
   jdText: string;
+  jdVersionId?: number;
   attemptKey: string | null;
   questionKey: string | null;
   feedbackKey: string | null;
@@ -213,14 +214,14 @@ export default function MockInterviewDrawer({
   }
 
   const start = async () => {
-    if (!draft.resumeId || !draft.jdText.trim()) return;
+    if (!draft.resumeId || !draft.jdVersionId) return;
     const attemptKey = draft.attemptKey ?? key();
     const questionKey = draft.questionKey ?? key();
     onDraftChange({ attemptKey, questionKey, error: null });
     setWorking(true);
     try {
       const result = await startMockInterview({
-        applicationId, eventId, resumeId: draft.resumeId, jdText: draft.jdText,
+        applicationId, eventId, resumeId: draft.resumeId, jdVersionId: draft.jdVersionId,
         attemptKey,
         questionKey,
         preparationProposalId: draft.preparationProposalId,
@@ -357,7 +358,7 @@ export default function MockInterviewDrawer({
     <Drawer open={open} width={560} title="文本模拟面试" onClose={onClose}>
       <Space direction="vertical" size="middle" style={{ width: '100%' }}>
         <span style={{ color: 'var(--op-muted)' }}>仅用于练习表达。AI 不提供录用判断、通过率或岗位匹配分。</span>
-        {draft.resumeId && draft.jdText.trim() ? (
+        {draft.resumeId && draft.jdVersionId ? (
           <SourceStateTag state="current" detail="当前面试事件与本次输入" />
         ) : null}
         {draft.error ? <Alert type="warning" showIcon message={draft.error} /> : null}
@@ -421,7 +422,7 @@ export default function MockInterviewDrawer({
               />
             ) : null}
             <span style={{ color: 'var(--op-muted)' }}>本次输入将发送给当前配置的 AI 服务。请勿粘贴无关敏感信息。</span>
-            <Button type="primary" onClick={() => void start()} disabled={!draft.resumeId || !draft.jdText.trim() || working}>
+            <Button type="primary" onClick={() => void start()} disabled={!draft.resumeId || !draft.jdVersionId || working}>
               开始文本模拟面试
             </Button>
           </>

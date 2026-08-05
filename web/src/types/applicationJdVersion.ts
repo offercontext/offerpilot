@@ -24,3 +24,12 @@ export type ApplicationJdVersionSaveInput = {
   expected_current_version_id: number | null;
   idempotency_key: string;
 };
+
+export type ApplicationJdDraft = {
+  jdText: string;
+  sourceUrl: string;
+  expectedCurrentVersionId: number | null;
+  idempotencyKey: string | null;
+  resultUnknown: boolean;
+  pendingOperation: 'save' | null;
+};

@@ -23,6 +23,7 @@ export interface MockInterviewAttemptResponse {
   attempt_id: number;
   attempt_status: string;
   generation_revision: number;
+  jd_version_id?: number | null;
   turn: MockInterviewTurn;
 }
 

@@ -102,6 +102,7 @@ export interface OpportunityFitV2StageResponse {
   review_id: number;
   stage_id: number;
   application_id: number;
+  jd_version_id?: number | null;
   resume_id: number | null;
   stage: 'triage' | 'deep_review';
   schema_version: 2;
@@ -141,7 +142,7 @@ export interface OpportunityFitV2SessionResponse {
 export interface CreateOpportunityFitV2Input {
   schema_version: 2;
   resume_id: number;
-  jd_text: string;
+  jd_version_id: number;
   jd_source_label: string;
   candidate_assertions: string[];
   idempotency_key: string;
