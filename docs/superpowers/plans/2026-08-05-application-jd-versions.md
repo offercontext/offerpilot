@@ -45,7 +45,9 @@ if ($LASTEXITCODE -ne 0) { throw 'Recorded implementation baseline is invalid' }
 
 Only these product files may change in the implementation slice:
 
-~~~text
+~~~powershell
+$allowlistFile = Join-Path $env:TEMP 'offerpilot-application-jd-versions-allowlist.txt'
+@'
 src/offerpilot/db.py
 src/offerpilot/models.py
 src/offerpilot/repositories/application_jd_versions.py
@@ -59,6 +61,7 @@ src/offerpilot/api.py
 src/offerpilot/cli.py
 src/offerpilot/ai/tools.py
 src/offerpilot/ai/agent.py
+src/offerpilot/smoke.py
 tests/test_applications_repository.py
 tests/test_api_contract.py
 tests/test_ai_tools.py
@@ -92,7 +95,9 @@ web/src/services/materialRevisionProposals.test.ts
 web/src/services/opportunityFitReviews.ts
 web/src/services/opportunityFitReviews.test.ts
 web/src/services/interviewPreparationProposals.ts
+web/src/services/interviewPreparationProposals.test.ts
 web/src/services/mockInterviews.ts
+web/src/services/mockInterviews.test.ts
 web/src/types/materialKit.ts
 web/src/types/materialRevisionProposal.ts
 web/src/types/opportunityFitReview.ts
@@ -127,9 +132,10 @@ web/src/features/pilot/materialKitHandoff.test.ts
 scripts/application-jd-real-ai-browser-harness.ps1
 scripts/browser-network-audit.py
 docs/reports/2026-08-05-application-jd-versions-release-verification.md
+'@ | Set-Content -LiteralPath $allowlistFile -Encoding ascii
 ~~~
 
-Any other changed path fails the implementation gate. Do not touch the root worktree's existing uncommitted tests/test_smoke.py; all work stays in this worktree. The approved plan is already the review artifact; execution must not create another plan commit. After Step 1 captures the baseline, the design and plan are read-only until the final report is committed.
+Any other changed path fails the implementation gate. Do not touch the root worktree's existing uncommitted tests/test_smoke.py; all work stays in this worktree. The approved plan is already the review artifact; execution must not create another plan commit. After Step 1 captures the baseline, the design and plan are read-only until the final report is committed. The here-string above is the single allowlist source; every later PowerShell process loads `$allowlistFile` and must not redeclare a second path list.
 
 ## 1. Migration and model contract
 
@@ -422,7 +428,27 @@ Create v1 and v2 JD records for one Application and verify:
 
 Use two SQLite connections and Provider barriers for Triage, Material Kit, and Interview Preparation. For each barrier, the short claim transaction must commit and close before the blocked call; update the Application JD while blocked; final source CAS must return `application_jd_source_conflict` and must not create a ready result. For Mock, the post-claim barrier instead asserts the intentional exception: a JD update does not invalidate the Attempt, the remaining turns use its frozen JD, and history reports `source_changed`.
 
-- [ ] **Step 2: Add failing legacy endpoint tests.**
+- [ ] **Step 2: Add failing frontend handoff tests.**
+
+Before changing any downstream UI, add mounted Vitest tests at the existing component/service boundaries. Mock only HTTP responses and Provider calls; do not satisfy these tests with source-string scans. Assert all of the following:
+
+- `MaterialKitDrawer`: with a confirmed current JD, the create request carries `application_id` and `jd_version_id` and does not carry free `jd_text`; with no current version, the generation control is disabled; `source_url` is displayed as copy-only text and no browser navigation or URL fetch occurs.
+- `OpportunityFitReviewDrawer` and the Pilot v2 card: Triage sends `schema_version=2` plus the selected current `jd_version_id` and no legacy `jd_text`; Deep Review receives its version only from the confirmed Triage parent; a stale/changed source is rendered as a Chinese source-change state and cannot silently submit a new version.
+- `InterviewPreparationProposalDrawer`: the preparation request uses the current `jd_version_id`, disables generation when no current version is loaded, and preserves the frozen version/source state when the current JD changes while the request is blocked.
+- `MockInterviewDrawer`: the initial claim uses the current version, later turns use the claimed frozen version, a selected preparation proposal inherits its version, and an updated Application JD is shown as `source_changed` without replacing the Attempt context.
+- Pilot handoff helpers: `PilotOpportunityFitV2Card`, `pilotOpportunityFitLifecycle`, and `materialKitHandoff` preserve the same version context and perform no source URL request or cross-domain write before confirmation.
+
+Run the failing tests first:
+
+~~~powershell
+cd web
+npm.cmd test -- --run src/components/MaterialKitDrawer.evidenceBundles.test.tsx src/components/OpportunityFitReviewDrawer.test.tsx src/components/InterviewPreparationProposalDrawer.test.tsx src/components/InterviewPreparationProposalDrawer.interaction.test.tsx src/components/MockInterviewDrawer.safety.test.ts src/components/MockInterviewDrawer.cleanup.interaction.test.tsx src/features/pilot/PilotOpportunityFitV2Card.test.tsx src/features/pilot/pilotOpportunityFitLifecycle.test.ts src/features/pilot/materialKitHandoff.test.ts src/services/materialKits.test.ts src/services/materialRevisionProposals.test.ts src/services/opportunityFitReviews.test.ts src/services/interviewPreparationProposals.test.ts src/services/mockInterviews.test.ts
+cd ..
+~~~
+
+Expected result before implementation: these tests fail because the downstream payloads still accept temporary `jd_text`, do not carry the version identity, or do not expose the required source-change/disabled states.
+
+- [ ] **Step 3: Add failing legacy endpoint tests.**
 
 Assert:
 
@@ -436,7 +462,7 @@ Application-bound material/fit/preparation/mock old jd_text -> 422, zero Provide
 
 For Opportunity Fit, any new POST not carrying exact schema_version=2 returns 410 opportunity_fit_v1_write_disabled, including a body that carries jd_version_id; the v1 GET list/detail schema remains read-only.
 
-- [ ] **Step 3: Implement one shared handoff helper and each domain adapter.**
+- [ ] **Step 4: Implement one shared handoff helper, domain adapters, and the tested frontend handoffs.**
 
 The helper must provide these operations without exposing internal IDs to Provider payloads:
 
@@ -455,15 +481,18 @@ Every Provider-backed adapter uses this explicit lifecycle: a short transaction 
 
 Update `src/offerpilot/cli.py` only for the explicitly specified standalone-versus-Application-bound behavior and cover that behavior in `tests/test_cli.py`; do not add a CLI JD write path. Remove application-bound use of free jd_text while preserving standalone JD analysis and Resume Match.
 
-- [ ] **Step 4: Run the handoff and legacy suites.**
+- [ ] **Step 5: Run the handoff, legacy, and frontend suites.**
 
 ~~~powershell
 uv run pytest tests/test_jd_resume_ai_api.py tests/test_material_kits_api.py tests/test_material_revision_proposals_api.py tests/test_opportunity_fit_reviews_api.py tests/test_interview_preparation_api.py tests/test_mock_interview_api.py tests/test_opportunity_fit_reviews_repository.py tests/test_material_revision_proposals_repository.py tests/test_interview_preparation_repository.py tests/test_mock_interview_repository.py tests/test_cli.py -q
+cd web
+npm.cmd test -- --run src/components/MaterialKitDrawer.evidenceBundles.test.tsx src/components/OpportunityFitReviewDrawer.test.tsx src/components/InterviewPreparationProposalDrawer.test.tsx src/components/InterviewPreparationProposalDrawer.interaction.test.tsx src/components/MockInterviewDrawer.safety.test.ts src/components/MockInterviewDrawer.cleanup.interaction.test.tsx src/features/pilot/PilotOpportunityFitV2Card.test.tsx src/features/pilot/pilotOpportunityFitLifecycle.test.ts src/features/pilot/materialKitHandoff.test.ts src/services/materialKits.test.ts src/services/materialRevisionProposals.test.ts src/services/opportunityFitReviews.test.ts src/services/interviewPreparationProposals.test.ts src/services/mockInterviews.test.ts
+cd ..
 ~~~
 
 Expected result: new handoff tests pass, all old v1 write tests are updated to the stable disabled error, and no Provider is called on rejected requests.
 
-- [ ] **Step 5: Commit the domain handoff slice.**
+- [ ] **Step 6: Commit the domain handoff slice.**
 
 ~~~powershell
 git add src/offerpilot/api.py src/offerpilot/cli.py src/offerpilot/repositories/jd.py src/offerpilot/repositories/opportunity_fit_reviews.py src/offerpilot/repositories/material_kits.py src/offerpilot/repositories/material_revision_proposals.py src/offerpilot/repositories/interview_preparation_proposals.py src/offerpilot/repositories/mock_interviews.py tests/test_cli.py tests/test_jd_resume_ai_api.py tests/test_material_kits_api.py tests/test_material_revision_proposals_api.py tests/test_opportunity_fit_reviews_api.py tests/test_interview_preparation_api.py tests/test_mock_interview_api.py tests/test_opportunity_fit_reviews_repository.py tests/test_material_revision_proposals_repository.py tests/test_interview_preparation_repository.py tests/test_mock_interview_repository.py web/src/components/MaterialKitDrawer.tsx web/src/components/MaterialKitDrawer.module.css web/src/components/MaterialKitDrawer.evidenceBundles.test.tsx web/src/components/OpportunityFitReviewDrawer.tsx web/src/components/OpportunityFitReviewDrawer.test.tsx web/src/components/InterviewPreparationProposalDrawer.tsx web/src/components/InterviewPreparationProposalDrawer.test.tsx web/src/components/InterviewPreparationProposalDrawer.interaction.test.tsx web/src/components/MockInterviewDrawer.tsx web/src/components/MockInterviewDrawer.safety.test.ts web/src/components/MockInterviewDrawer.cleanup.interaction.test.tsx web/src/services/materialKits.ts web/src/services/materialKits.test.ts web/src/services/materialRevisionProposals.ts web/src/services/materialRevisionProposals.test.ts web/src/services/opportunityFitReviews.ts web/src/services/opportunityFitReviews.test.ts web/src/services/interviewPreparationProposals.ts web/src/services/interviewPreparationProposals.test.ts web/src/services/mockInterviews.ts web/src/services/mockInterviews.test.ts web/src/types/materialKit.ts web/src/types/materialRevisionProposal.ts web/src/types/opportunityFitReview.ts web/src/types/interviewPreparationProposal.ts web/src/types/mockInterview.ts web/src/features/pilot/PilotOpportunityFitV2Card.tsx web/src/features/pilot/pilotOpportunityFitLifecycle.ts web/src/features/pilot/materialKitHandoff.ts web/src/features/pilot/PilotOpportunityFitV2Card.test.tsx web/src/features/pilot/pilotOpportunityFitLifecycle.test.ts web/src/features/pilot/materialKitHandoff.test.ts
@@ -597,13 +626,15 @@ The harness must run two separately reported stages for one synthetic Applicatio
 ~~~text
 UI: POST JD v1 -> GET current -> GET history/detail
 UI: POST JD v2 with expected_current_version_id=v1
-Pilot: explicit JD intent -> confirmation -> POST v3 with source_kind=pilot in response
-Pilot: history reads v3 and no downstream write occurs automatically
+Pilot: POST /api/chat with explicit JD intent -> POST /api/chat/confirm -> confirmation response contains created JD v3 with source_kind=pilot
+Pilot: history reads v3; the browser does not call the UI JD-save endpoint and no downstream write occurs automatically
 ~~~
 
 The JD-only stage takes a database baseline after synthetic Application setup and permits only the expected `application_jd_versions` rows plus the Chat conversation/message rows caused by the explicit Pilot dialogue. It must assert zero writes to `jd_analyses`, Resume Match, Material, Fit, Interview, Mock, Knowledge, Offer, Reminder, Question, Memory, and Application status. Browser network auditing allows only local page/API URLs; server egress allows only configured Provider endpoints and rejects `source_url`, recruiting domains, and unapproved targets.
 
-After Stage A succeeds, take a new baseline and run Stage B as a separate explicit downstream-consumer stage. The operator must explicitly choose one existing consumer (Triage, Material Kit, or Interview Preparation), and the harness must assert that only that consumer's documented tables change and that the request payload uses the confirmed v3 JD version. Run the same stage separately for each consumer covered by the matrix when publishing evidence; never combine an expected downstream write with the JD-only zero-write assertion. Each stage records its own baseline, allowed-write set, observed deltas, request sequence, and cleanup result. This split also applies to any explicit Mock or Deep/Material child-flow evidence.
+After Stage A succeeds, take a new baseline and run Stage B automatically for all three consumers in this fixed order: `triage`, `material-kit`, `interview-preparation`. The harness accepts `-Stage jd-only` or `-Stage consumer -Consumer <triage|material-kit|interview-preparation>`; the publication run uses the three explicit consumer commands below and fails if any one is omitted. Never combine an expected downstream write with the JD-only zero-write assertion.
+
+For `triage`, the request sequence is `POST /api/applications/{id}/opportunity-fit-reviews` with `schema_version=2` and `jd_version_id=v3`, then `POST /api/applications/{id}/opportunity-fit-reviews/{review_id}/triage/{stage_id}/confirm`; the only permitted domain deltas are `opportunity_fit_review_sessions` and `opportunity_fit_review_stages`, and both rows must carry v3. For `material-kit`, the sequence is `POST /api/applications/{id}/material-kit/generate` with `jd_version_id=v3`, followed by readback; the only permitted domain delta is `application_material_kits`, and the created Kit must carry v3. For `interview-preparation`, the sequence is `POST /api/applications/{id}/interview-preparation-proposals` with `jd_version_id=v3`, followed by readback; the only permitted domain delta is `interview_preparation_proposals`, and the created proposal must carry v3. After each consumer readback, cleanup deletes only that run's generated consumer rows in dependency order, then asserts the consumer table and all unrelated tables match the post-Stage-A baseline except for the retained JD v1/v2/v3 history. A consumer run fails on any unrelated write, source URL egress, missing v3 identity, or cleanup residue. Each Stage A/B run records its own baseline, allowed-write set, observed deltas, request sequence, and cleanup result. Any explicit Mock or Deep/Material child-flow evidence uses the same per-consumer baseline discipline.
 
 - [ ] **Step 2: Implement isolated API smoke and cleanup.**
 
@@ -611,7 +642,7 @@ Run local and real-AI smoke in a temporary data directory. Copy the existing con
 
 - [ ] **Step 3: Implement the browser harness.**
 
-Use the established browser-level CDP target binding and network audit. The harness must not treat API smoke as browser proof, must bind the same target used for all UI/Pilot actions, and must report only stage, HTTP status, stable error code, and hashed Provider request ID. It must not log JD text, resume content, configuration, secret, or model output.
+Use the established browser-level CDP target binding and network audit. Add strict parameters `-Stage jd-only` and `-Stage consumer -Consumer <triage|material-kit|interview-preparation>`; reject a missing or invalid Consumer for the consumer stage. The harness must not treat API smoke as browser proof, must bind the same target used for all UI/Pilot actions, and must report only stage, consumer, HTTP status, stable error code, and hashed Provider request ID. For Pilot, audit `/api/chat` and `/api/chat/confirm`; the created JD v3 is asserted from the confirmation response and database/readback, not from a client call to the UI JD-save endpoint. It must not log JD text, resume content, configuration, secret, or model output.
 
 - [ ] **Step 4: Run isolated tests and smoke.**
 
@@ -625,7 +656,10 @@ Expected result: local smoke passes with zero external URL access and zero cross
 
 ~~~powershell
 uv run oc verify --profile real-ai --static-dir web/dist
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\application-jd-real-ai-browser-harness.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\application-jd-real-ai-browser-harness.ps1 -Stage jd-only
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\application-jd-real-ai-browser-harness.ps1 -Stage consumer -Consumer triage
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\application-jd-real-ai-browser-harness.ps1 -Stage consumer -Consumer material-kit
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\application-jd-real-ai-browser-harness.ps1 -Stage consumer -Consumer interview-preparation
 ~~~
 
 A Provider failure is reported as a failure category; it is never converted into a pass by weakening the JD contract.
@@ -698,36 +732,8 @@ git cat-file -e "$implementationBase^{commit}"
 if ($LASTEXITCODE -ne 0) { throw 'Recorded implementation baseline is invalid' }
 git add -f docs/reports/2026-08-05-application-jd-versions-release-verification.md
 
-$allowedExact = @(
-  'src/offerpilot/db.py', 'src/offerpilot/models.py',
-  'src/offerpilot/repositories/application_jd_versions.py', 'src/offerpilot/repositories/jd.py',
-  'src/offerpilot/repositories/opportunity_fit_reviews.py', 'src/offerpilot/repositories/material_kits.py',
-  'src/offerpilot/repositories/material_revision_proposals.py', 'src/offerpilot/repositories/interview_preparation_proposals.py',
-  'src/offerpilot/repositories/mock_interviews.py', 'src/offerpilot/api.py', 'src/offerpilot/cli.py',
-  'src/offerpilot/ai/tools.py', 'src/offerpilot/ai/agent.py',
-  'tests/test_applications_repository.py', 'tests/test_api_contract.py', 'tests/test_ai_tools.py', 'tests/test_chat_api.py', 'tests/test_cli.py',
-  'tests/test_application_jd_versions_migrations.py', 'tests/test_application_jd_versions_repository.py', 'tests/test_application_jd_versions_api.py',
-  'tests/test_application_jd_smoke.py', 'tests/test_application_jd_browser_harness.py', 'tests/test_jd_resume_ai_api.py',
-  'tests/test_material_kits_api.py', 'tests/test_material_revision_proposals_api.py', 'tests/test_opportunity_fit_reviews_api.py',
-  'tests/test_interview_preparation_api.py', 'tests/test_mock_interview_api.py', 'tests/test_opportunity_fit_reviews_repository.py',
-  'tests/test_material_revision_proposals_repository.py', 'tests/test_interview_preparation_repository.py', 'tests/test_mock_interview_repository.py',
-  'web/src/components/ApplicationDetail.tsx', 'web/src/components/ApplicationDetail.module.css',
-  'web/src/components/ApplicationDetail.jdVersions.test.tsx', 'web/src/components/ApplicationDetail.jdVersions.integration.test.tsx',
-  'web/src/layout/AppShell.tsx', 'web/src/layout/AppShell.applicationJdVersions.test.tsx',
-  'web/src/components/MaterialKitDrawer.tsx', 'web/src/components/MaterialKitDrawer.module.css', 'web/src/components/MaterialKitDrawer.evidenceBundles.test.tsx',
-  'web/src/components/OpportunityFitReviewDrawer.tsx', 'web/src/components/OpportunityFitReviewDrawer.test.tsx',
-  'web/src/components/InterviewPreparationProposalDrawer.tsx', 'web/src/components/InterviewPreparationProposalDrawer.test.tsx', 'web/src/components/InterviewPreparationProposalDrawer.interaction.test.tsx',
-  'web/src/components/MockInterviewDrawer.tsx', 'web/src/components/MockInterviewDrawer.safety.test.ts', 'web/src/components/MockInterviewDrawer.cleanup.interaction.test.tsx',
-  'web/src/services/applicationJdVersions.ts', 'web/src/services/applicationJdVersions.test.ts', 'web/src/types/applicationJdVersion.ts',
-  'web/src/services/materialKits.ts', 'web/src/services/materialKits.test.ts', 'web/src/services/materialRevisionProposals.ts', 'web/src/services/materialRevisionProposals.test.ts',
-  'web/src/services/opportunityFitReviews.ts', 'web/src/services/opportunityFitReviews.test.ts', 'web/src/services/interviewPreparationProposals.ts', 'web/src/services/interviewPreparationProposals.test.ts', 'web/src/services/mockInterviews.ts', 'web/src/services/mockInterviews.test.ts',
-  'web/src/types/materialKit.ts', 'web/src/types/materialRevisionProposal.ts', 'web/src/types/opportunityFitReview.ts', 'web/src/types/interviewPreparationProposal.ts', 'web/src/types/mockInterview.ts',
-  'web/src/components/ChatPanel/PilotTaskCard.tsx', 'web/src/components/ChatPanel/MessageBubble.tsx', 'web/src/components/ChatPanel/model.ts', 'web/src/components/ChatPanel/PilotApplicationJdCard.test.tsx',
-  'web/src/features/pilot/applicationJdVersion.ts', 'web/src/features/pilot/applicationJdVersion.test.ts', 'web/src/features/pilot/PilotOpportunityFitV2Card.tsx', 'web/src/features/pilot/PilotOpportunityFitV2Card.test.tsx',
-  'web/src/features/pilot/pilotOpportunityFitLifecycle.ts', 'web/src/features/pilot/pilotOpportunityFitLifecycle.test.ts', 'web/src/features/pilot/materialKitHandoff.ts', 'web/src/features/pilot/materialKitHandoff.test.ts',
-  'scripts/application-jd-real-ai-browser-harness.ps1', 'scripts/browser-network-audit.py',
-  'src/offerpilot/smoke.py', 'docs/reports/2026-08-05-application-jd-versions-release-verification.md'
-)
+$allowlistFile = Join-Path $env:TEMP 'offerpilot-application-jd-versions-allowlist.txt'
+$allowedExact = @(Get-Content -LiteralPath $allowlistFile | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 $changed = @(
   (git diff --name-only "$implementationBase..HEAD")
   (git diff --cached --name-only)
@@ -735,9 +741,6 @@ $changed = @(
 ) | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Sort-Object -Unique
 $unexpected = @($changed | Where-Object { $allowedExact -notcontains $_ })
 if ($unexpected.Count -gt 0) { throw "Unexpected changed paths: $($unexpected -join ', ')" }
-
-$allowlistFile = Join-Path $env:TEMP 'offerpilot-application-jd-versions-allowlist.txt'
-$allowedExact | Set-Content -LiteralPath $allowlistFile -Encoding ascii
 
 git diff --check "$implementationBase..HEAD"
 $diffCheckExit = $LASTEXITCODE
