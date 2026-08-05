@@ -516,7 +516,7 @@ Mount the real ApplicationDetail with the existing router/query providers and mo
 - no current version: neutral empty state and “添加 JD”;
 - current v1: read-only text, version/source metadata, update/history buttons;
 - history list: metadata/240-code-point preview only, opening one version fetches full text, historical content stays unchanged after v2;
-- stale CAS: v1 editor opened in two mounted instances, first save succeeds, second shows Chinese “岗位资料已更新，请重新加载后再保存” and keeps its text/key;
+- stale CAS: v1 editor opened in two mounted instances, first save succeeds, second shows Chinese “岗位资料已更新，请重新加载后再保存”, keeps its unsaved text, clears the stale save key, and only creates a new key after the user reloads the current version;
 - unknown response: editor stays frozen with original key and input; no second key is generated;
 - source URL is plain text/copy-only and no window.open, navigation, AI, Provider, or mutation service is called.
 
@@ -537,7 +537,17 @@ type ApplicationJdDraft = {
 };
 ~~~
 
-`ApplicationDetail` receives the controlled draft and an `onDraftChange(applicationId, patch)` callback; it must not own the retry key. The callback merges from the current `AppShell` ref entry, not a stale render closure. Generate one ASCII key matching `^[A-Za-z0-9_-]{16,128}$` when a save attempt begins; preserve it across unmount/remount and retry; clear it only after 201, idempotent 200, or a confirmed deterministic failure that did not create a version. Add a real unmount/remount test that keeps the same `applicationId`, verifies the original JD text, expected version, key, frozen/unknown state, and that retry calls the same endpoint with the same key. Disable all downstream Application-bound generation controls when no current JD exists.
+`ApplicationDetail` receives the controlled draft and an `onDraftChange(applicationId, patch)` callback; it must not own the retry key. The callback merges from the current `AppShell` ref entry, not a stale render closure. Generate one ASCII key matching `^[A-Za-z0-9_-]{16,128}$` when a save attempt begins. Use this fixed save-result table:
+
+| Result | Draft/key behavior | Next action |
+|---|---|---|
+| `200` idempotent replay or `201` created | Clear key, `resultUnknown=false`, update current version | None |
+| network/timeout/response loss or bare `5xx` | Keep original text, expected ID, key and `pendingOperation='save'`; freeze editing and set `resultUnknown=true` | Retry the same endpoint with the same key/input |
+| `409 application_jd_stale_current_version` | Keep unsaved text but clear the stale key and unfreeze after showing the source-change message | User reloads current JD; AppShell updates expected ID; the next submit creates a new key |
+| `409 application_jd_idempotency_conflict` | Clear the conflicting key, preserve text for review, and do not replay it | User edits or explicitly starts a new save with a new key |
+| `404` application/version not found or `422` validation | No version was created by this request; clear key and pending state, preserve only editable text where the form remains valid | Fix/reload and submit a fresh key |
+
+Only the network/unknown row preserves a key for retry. A stale 409 is deterministic and never retries with its old key. Add a real unmount/remount test that keeps the same `applicationId`, verifies the original JD text, expected version, key, frozen/unknown state, and that retry calls the same endpoint with the same key only for the network/unknown row. Disable all downstream Application-bound generation controls when no current JD exists.
 
 Render source_url as non-link text with copy action, render list preview using the shared 240-code-point helper, and never claim a version is current unless the API response contains that version.
 
@@ -630,19 +640,19 @@ Pilot: POST /api/chat with explicit JD intent -> POST /api/chat/confirm -> confi
 Pilot: history reads v3; the browser does not call the UI JD-save endpoint and no downstream write occurs automatically
 ~~~
 
-The JD-only stage takes a database baseline after synthetic Application setup and permits only the expected `application_jd_versions` rows plus the Chat conversation/message rows caused by the explicit Pilot dialogue. It must assert zero writes to `jd_analyses`, Resume Match, Material, Fit, Interview, Mock, Knowledge, Offer, Reminder, Question, Memory, and Application status. Browser network auditing allows only local page/API URLs; server egress allows only configured Provider endpoints and rejects `source_url`, recruiting domains, and unapproved targets.
+The `all` harness first creates one synthetic Application, one Resume, and one valid interview Event in the isolated database; those setup rows are included in the pre-Stage-A baseline and are never counted as Stage-A writes. The JD-only stage permits only the expected `application_jd_versions` rows plus the Chat conversation/message rows caused by the explicit Pilot dialogue. It must assert zero writes to `jd_analyses`, Resume Match, Material, Fit, Interview, Mock, Knowledge, Offer, Reminder, Question, Memory, and Application status. Browser network auditing allows only local page/API URLs; server egress allows only configured Provider endpoints and rejects `source_url`, recruiting domains, and unapproved targets.
 
-After Stage A succeeds, take a new baseline and run Stage B automatically for all three consumers in this fixed order: `triage`, `material-kit`, `interview-preparation`. The harness accepts `-Stage jd-only` or `-Stage consumer -Consumer <triage|material-kit|interview-preparation>`; the publication run uses the three explicit consumer commands below and fails if any one is omitted. Never combine an expected downstream write with the JD-only zero-write assertion.
+After Stage A succeeds, take a new baseline and run Stage B automatically for all three consumers in this fixed order: `triage`, `material-kit`, `interview-preparation`. The publication harness runs this entire sequence in one `-Stage all` process, so the same in-memory isolation context carries `application_id`, `resume_id`, `event_id`, and v3 between stages; there is no cross-process ID handoff. A test-only `-Stage jd-only` mode may stop after Stage A, but publication never invokes separate consumer processes. Never combine an expected downstream write with the JD-only zero-write assertion.
 
 For `triage`, the request sequence is `POST /api/applications/{id}/opportunity-fit-reviews` with `schema_version=2` and `jd_version_id=v3`, then `POST /api/applications/{id}/opportunity-fit-reviews/{review_id}/triage/{stage_id}/confirm`; the only permitted domain deltas are `opportunity_fit_review_sessions` and `opportunity_fit_review_stages`, and both rows must carry v3. For `material-kit`, the sequence is `POST /api/applications/{id}/material-kit/generate` with `jd_version_id=v3`, followed by readback; the only permitted domain delta is `application_material_kits`, and the created Kit must carry v3. For `interview-preparation`, the sequence is `POST /api/applications/{id}/interview-preparation-proposals` with `jd_version_id=v3`, followed by readback; the only permitted domain delta is `interview_preparation_proposals`, and the created proposal must carry v3. After each consumer readback, cleanup deletes only that run's generated consumer rows in dependency order, then asserts the consumer table and all unrelated tables match the post-Stage-A baseline except for the retained JD v1/v2/v3 history. A consumer run fails on any unrelated write, source URL egress, missing v3 identity, or cleanup residue. Each Stage A/B run records its own baseline, allowed-write set, observed deltas, request sequence, and cleanup result. Any explicit Mock or Deep/Material child-flow evidence uses the same per-consumer baseline discipline.
 
 - [ ] **Step 2: Implement isolated API smoke and cleanup.**
 
-Run local and real-AI smoke in a temporary data directory. Copy the existing config.json silently; never print or persist the secret in logs/reports. Use Chinese synthetic values and a non-routable example URL. Assert the URL produces zero network events. On every failure, clean the synthetic Application and JD rows in dependency order and verify no background process remains.
+Run local and real-AI smoke in a temporary data directory. Copy the existing config.json silently; never print or persist the secret in logs/reports. Use Chinese synthetic values and a non-routable example URL. Assert the URL produces zero network events. The single `-Stage all` harness owns one temporary service, browser target, Provider proxy, Application, Resume, Event, and in-memory ID context. Its `finally` path must stop the service/proxy/auditor, close the browser target, delete consumer rows then the synthetic Event/Resume/Application/JD rows in dependency order, remove the temporary data/config directory, and assert the process list and database have no residue. The same cleanup assertions run after every failure and after successful completion.
 
 - [ ] **Step 3: Implement the browser harness.**
 
-Use the established browser-level CDP target binding and network audit. Add strict parameters `-Stage jd-only` and `-Stage consumer -Consumer <triage|material-kit|interview-preparation>`; reject a missing or invalid Consumer for the consumer stage. The harness must not treat API smoke as browser proof, must bind the same target used for all UI/Pilot actions, and must report only stage, consumer, HTTP status, stable error code, and hashed Provider request ID. For Pilot, audit `/api/chat` and `/api/chat/confirm`; the created JD v3 is asserted from the confirmation response and database/readback, not from a client call to the UI JD-save endpoint. It must not log JD text, resume content, configuration, secret, or model output.
+Use the established browser-level CDP target binding and network audit. Add strict parameters `-Stage all` and test-only `-Stage jd-only`; the `all` path must create one temporary Application, one synthetic Resume, and one valid Interview Event before Stage A, retain their IDs in an in-memory isolation context, and execute Stage A followed by all three Stage B consumers before its single `finally` cleanup. The harness must not treat API smoke as browser proof, must bind the same target used for all UI/Pilot actions, and must report only stage, consumer, HTTP status, stable error code, and hashed Provider request ID. For Pilot, audit `/api/chat` and `/api/chat/confirm`; the created JD v3 is asserted from the confirmation response and database/readback, not from a client call to the UI JD-save endpoint. It must not log JD text, resume content, configuration, secret, or model output.
 
 - [ ] **Step 4: Run isolated tests and smoke.**
 
@@ -656,10 +666,7 @@ Expected result: local smoke passes with zero external URL access and zero cross
 
 ~~~powershell
 uv run oc verify --profile real-ai --static-dir web/dist
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\application-jd-real-ai-browser-harness.ps1 -Stage jd-only
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\application-jd-real-ai-browser-harness.ps1 -Stage consumer -Consumer triage
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\application-jd-real-ai-browser-harness.ps1 -Stage consumer -Consumer material-kit
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\application-jd-real-ai-browser-harness.ps1 -Stage consumer -Consumer interview-preparation
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\application-jd-real-ai-browser-harness.ps1 -Stage all
 ~~~
 
 A Provider failure is reported as a failure category; it is never converted into a pass by weakening the JD contract.
