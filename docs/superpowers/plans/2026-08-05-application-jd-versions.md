@@ -59,8 +59,45 @@ src/offerpilot/api.py
 src/offerpilot/cli.py
 src/offerpilot/ai/tools.py
 src/offerpilot/ai/agent.py
+tests/test_applications_repository.py
+tests/test_api_contract.py
+tests/test_ai_tools.py
+tests/test_chat_api.py
+tests/test_cli.py
+tests/test_opportunity_fit_reviews_repository.py
+tests/test_material_revision_proposals_repository.py
+tests/test_interview_preparation_repository.py
+tests/test_mock_interview_repository.py
+tests/test_application_jd_smoke.py
+tests/test_application_jd_browser_harness.py
 web/src/components/ApplicationDetail.tsx
 web/src/components/ApplicationDetail.module.css
+web/src/layout/AppShell.tsx
+web/src/layout/AppShell.applicationJdVersions.test.tsx
+web/src/components/MaterialKitDrawer.tsx
+web/src/components/MaterialKitDrawer.module.css
+web/src/components/MaterialKitDrawer.evidenceBundles.test.tsx
+web/src/components/OpportunityFitReviewDrawer.tsx
+web/src/components/OpportunityFitReviewDrawer.test.tsx
+web/src/components/InterviewPreparationProposalDrawer.tsx
+web/src/components/InterviewPreparationProposalDrawer.test.tsx
+web/src/components/InterviewPreparationProposalDrawer.interaction.test.tsx
+web/src/components/MockInterviewDrawer.tsx
+web/src/components/MockInterviewDrawer.safety.test.ts
+web/src/components/MockInterviewDrawer.cleanup.interaction.test.tsx
+web/src/services/materialKits.ts
+web/src/services/materialKits.test.ts
+web/src/services/materialRevisionProposals.ts
+web/src/services/materialRevisionProposals.test.ts
+web/src/services/opportunityFitReviews.ts
+web/src/services/opportunityFitReviews.test.ts
+web/src/services/interviewPreparationProposals.ts
+web/src/services/mockInterviews.ts
+web/src/types/materialKit.ts
+web/src/types/materialRevisionProposal.ts
+web/src/types/opportunityFitReview.ts
+web/src/types/interviewPreparationProposal.ts
+web/src/types/mockInterview.ts
 web/src/services/applicationJdVersions.ts
 web/src/services/applicationJdVersions.test.ts
 web/src/types/applicationJdVersion.ts
@@ -73,7 +110,6 @@ tests/test_material_revision_proposals_api.py
 tests/test_opportunity_fit_reviews_api.py
 tests/test_interview_preparation_api.py
 tests/test_mock_interview_api.py
-tests/test_smoke.py
 web/src/components/ApplicationDetail.jdVersions.test.tsx
 web/src/components/ApplicationDetail.jdVersions.integration.test.tsx
 web/src/components/ChatPanel/PilotTaskCard.tsx
@@ -82,21 +118,18 @@ web/src/components/ChatPanel/model.ts
 web/src/components/ChatPanel/PilotApplicationJdCard.test.tsx
 web/src/features/pilot/applicationJdVersion.ts
 web/src/features/pilot/applicationJdVersion.test.ts
+web/src/features/pilot/PilotOpportunityFitV2Card.tsx
+web/src/features/pilot/PilotOpportunityFitV2Card.test.tsx
+web/src/features/pilot/pilotOpportunityFitLifecycle.ts
+web/src/features/pilot/pilotOpportunityFitLifecycle.test.ts
+web/src/features/pilot/materialKitHandoff.ts
+web/src/features/pilot/materialKitHandoff.test.ts
 scripts/application-jd-real-ai-browser-harness.ps1
 scripts/browser-network-audit.py
 docs/reports/2026-08-05-application-jd-versions-release-verification.md
 ~~~
 
-Any other changed path fails the implementation gate. Do not touch the root worktree's existing uncommitted tests/test_smoke.py; all work stays in this worktree.
-
-- [ ] **Step 3: Commit the approved plan.**
-
-~~~powershell
-git add -f docs/superpowers/plans/2026-08-05-application-jd-versions.md
-git commit -m "docs: AI plan application JD versions"
-~~~
-
-Expected result: one plan-only commit, a clean worktree, and no implementation tests run yet.
+Any other changed path fails the implementation gate. Do not touch the root worktree's existing uncommitted tests/test_smoke.py; all work stays in this worktree. The approved plan is already the review artifact; execution must not create another plan commit. After Step 1 captures the baseline, the design and plan are read-only until the final report is committed.
 
 ## 1. Migration and model contract
 
@@ -179,7 +212,10 @@ The new module must expose ApplicationJDService; its public operations must be n
 
 ~~~python
 get_current(application_id: int) -> ApplicationJDVersion | None
-require_current(application_id: int) -> ApplicationJDVersion
+require_current_version(
+    application_id: int,
+    requested_jd_version_id: int,
+) -> ApplicationJDVersion
 list_versions(application_id: int, offset: int, limit: int) -> list[ApplicationJDVersionSummary]
 get_version(application_id: int, version_id: int) -> ApplicationJDVersion | None
 freeze(version: ApplicationJDVersion) -> FrozenApplicationJD
@@ -215,6 +251,8 @@ with pytest.raises(JDVersionValidationError):
 ~~~
 
 Add a fingerprint table test for raw CJK/emoji/newline/leading-space bytes, None/empty/whitespace URL normalization, and source_kind differences. Assert the stored content_sha256 hashes the exact original UTF-8 bytes and request_fingerprint_sha256 follows the approved Base64-plus-canonical-JSON algorithm.
+
+The service must never silently replace a caller-supplied version with the current one. `require_current_version(application_id, requested_jd_version_id)` rejects a non-positive/non-integer ID, a version belonging to another Application, and an older version from the same Application unless that ID is exactly current. These cases map to the stable 409 `application_jd_source_conflict` response at API boundaries. The first-save path remains `create_version(... expected_current_version_id=None)`; this helper is for Application-bound consumers that already have a requested version.
 
 - [ ] **Step 2: Add failing CAS and idempotency tests.**
 
@@ -264,7 +302,7 @@ git commit -m "feat: AI enforce application JD version CAS"
 **Files:**
 - Create: tests/test_application_jd_versions_api.py
 - Modify: src/offerpilot/api.py
-- Modify: web/src/types/applicationJdVersion.ts
+- Create: web/src/types/applicationJdVersion.ts
 - Create: web/src/services/applicationJdVersions.ts
 - Create: web/src/services/applicationJdVersions.test.ts
 
@@ -341,6 +379,36 @@ git commit -m "feat: AI expose application JD version API"
 - Modify: tests/test_opportunity_fit_reviews_api.py
 - Modify: tests/test_interview_preparation_api.py
 - Modify: tests/test_mock_interview_api.py
+- Modify: tests/test_opportunity_fit_reviews_repository.py
+- Modify: tests/test_material_revision_proposals_repository.py
+- Modify: tests/test_interview_preparation_repository.py
+- Modify: tests/test_mock_interview_repository.py
+- Modify: tests/test_cli.py
+- Modify: src/offerpilot/cli.py
+- Modify: web/src/components/MaterialKitDrawer.tsx
+- Modify: web/src/components/MaterialKitDrawer.module.css
+- Modify: web/src/components/MaterialKitDrawer.evidenceBundles.test.tsx
+- Modify: web/src/components/OpportunityFitReviewDrawer.tsx
+- Modify: web/src/components/InterviewPreparationProposalDrawer.tsx
+- Modify: web/src/components/MockInterviewDrawer.tsx
+- Modify: web/src/services/materialKits.ts
+- Modify: web/src/services/materialRevisionProposals.ts
+- Modify: web/src/services/opportunityFitReviews.ts
+- Modify: web/src/services/interviewPreparationProposals.ts
+- Create: web/src/services/interviewPreparationProposals.test.ts
+- Modify: web/src/services/mockInterviews.ts
+- Create: web/src/services/mockInterviews.test.ts
+- Modify: web/src/types/materialKit.ts
+- Modify: web/src/types/materialRevisionProposal.ts
+- Modify: web/src/types/opportunityFitReview.ts
+- Modify: web/src/types/interviewPreparationProposal.ts
+- Modify: web/src/types/mockInterview.ts
+- Modify: web/src/features/pilot/PilotOpportunityFitV2Card.tsx
+- Modify: web/src/features/pilot/pilotOpportunityFitLifecycle.ts
+- Modify: web/src/features/pilot/materialKitHandoff.ts
+- Modify: web/src/features/pilot/PilotOpportunityFitV2Card.test.tsx
+- Modify: web/src/features/pilot/pilotOpportunityFitLifecycle.test.ts
+- Modify: web/src/features/pilot/materialKitHandoff.test.ts
 
 - [ ] **Step 1: Add failing integration tests for the version matrix.**
 
@@ -352,7 +420,7 @@ Create v1 and v2 JD records for one Application and verify:
 - Interview Preparation accepts current version only and persists the version in its explicit column and input snapshot.
 - Mock Interview claim stores the current version atomically; preparing from a proposal with a different version returns 409; after claim, changing the current JD does not invalidate the Attempt, and its next question/feedback still use the frozen JD.
 
-Use two SQLite connections and a Provider barrier for the Mock case. The assertion must distinguish current JD changed from Attempt source changed: the Attempt remains usable and history reports source_changed.
+Use two SQLite connections and Provider barriers for Triage, Material Kit, and Interview Preparation. For each barrier, the short claim transaction must commit and close before the blocked call; update the Application JD while blocked; final source CAS must return `application_jd_source_conflict` and must not create a ready result. For Mock, the post-claim barrier instead asserts the intentional exception: a JD update does not invalidate the Attempt, the remaining turns use its frozen JD, and history reports `source_changed`.
 
 - [ ] **Step 2: Add failing legacy endpoint tests.**
 
@@ -373,17 +441,24 @@ For Opportunity Fit, any new POST not carrying exact schema_version=2 returns 41
 The helper must provide these operations without exposing internal IDs to Provider payloads:
 
 ~~~python
-current = jd_versions.require_current(application_id)
+current = jd_versions.require_current_version(
+    application_id,
+    requested_jd_version_id,
+)
 frozen = jd_versions.freeze(current)
-assert frozen.jd_version_id == current.id
+assert frozen.jd_version_id == requested_jd_version_id
 ~~~
 
-Each adapter writes the explicit jd_version_id and its existing snapshot in one transaction. Deep Review takes the parent Triage row only; Material Proposal takes the Kit only; Mock Interview takes the Attempt snapshot after claim. Remove application-bound use of free jd_text while preserving standalone JD analysis and Resume Match.
+The first-claim adapters (Opportunity Fit Triage, Material Kit, Interview Preparation, and the initial Mock Interview claim) must call this exact helper. Deep Review takes only its confirmed Triage row; Material Proposal takes only its Kit parent; neither accepts a client JD version. Mock starts with the selected current version and, once claim commits, keeps that frozen context for every question and feedback step even if the Application receives a newer JD version.
+
+Every Provider-backed adapter uses this explicit lifecycle: a short transaction validates the requested current version and persists the immutable frozen snapshot; it commits and closes its Session before any Provider call; the final write opens a new short transaction and performs a source/revision CAS against the frozen identity. Add Provider barrier tests for Triage, Material Kit, and Interview Preparation: update the Application JD while the Provider is blocked, then assert the final source CAS returns the stable conflict and no ready result is written. The Mock exception is intentional: after a successful Attempt claim, a later JD update marks history `source_changed` but does not invalidate the Attempt or prevent its remaining frozen-context turns.
+
+Update `src/offerpilot/cli.py` only for the explicitly specified standalone-versus-Application-bound behavior and cover that behavior in `tests/test_cli.py`; do not add a CLI JD write path. Remove application-bound use of free jd_text while preserving standalone JD analysis and Resume Match.
 
 - [ ] **Step 4: Run the handoff and legacy suites.**
 
 ~~~powershell
-uv run pytest tests/test_jd_resume_ai_api.py tests/test_material_kits_api.py tests/test_material_revision_proposals_api.py tests/test_opportunity_fit_reviews_api.py tests/test_interview_preparation_api.py tests/test_mock_interview_api.py -q
+uv run pytest tests/test_jd_resume_ai_api.py tests/test_material_kits_api.py tests/test_material_revision_proposals_api.py tests/test_opportunity_fit_reviews_api.py tests/test_interview_preparation_api.py tests/test_mock_interview_api.py tests/test_opportunity_fit_reviews_repository.py tests/test_material_revision_proposals_repository.py tests/test_interview_preparation_repository.py tests/test_mock_interview_repository.py tests/test_cli.py -q
 ~~~
 
 Expected result: new handoff tests pass, all old v1 write tests are updated to the stable disabled error, and no Provider is called on rejected requests.
@@ -391,13 +466,15 @@ Expected result: new handoff tests pass, all old v1 write tests are updated to t
 - [ ] **Step 5: Commit the domain handoff slice.**
 
 ~~~powershell
-git add src/offerpilot/api.py src/offerpilot/repositories/opportunity_fit_reviews.py src/offerpilot/repositories/material_kits.py src/offerpilot/repositories/material_revision_proposals.py src/offerpilot/repositories/interview_preparation_proposals.py src/offerpilot/repositories/mock_interviews.py tests/test_jd_resume_ai_api.py tests/test_material_kits_api.py tests/test_material_revision_proposals_api.py tests/test_opportunity_fit_reviews_api.py tests/test_interview_preparation_api.py tests/test_mock_interview_api.py
+git add src/offerpilot/api.py src/offerpilot/cli.py src/offerpilot/repositories/jd.py src/offerpilot/repositories/opportunity_fit_reviews.py src/offerpilot/repositories/material_kits.py src/offerpilot/repositories/material_revision_proposals.py src/offerpilot/repositories/interview_preparation_proposals.py src/offerpilot/repositories/mock_interviews.py tests/test_cli.py tests/test_jd_resume_ai_api.py tests/test_material_kits_api.py tests/test_material_revision_proposals_api.py tests/test_opportunity_fit_reviews_api.py tests/test_interview_preparation_api.py tests/test_mock_interview_api.py tests/test_opportunity_fit_reviews_repository.py tests/test_material_revision_proposals_repository.py tests/test_interview_preparation_repository.py tests/test_mock_interview_repository.py web/src/components/MaterialKitDrawer.tsx web/src/components/MaterialKitDrawer.module.css web/src/components/MaterialKitDrawer.evidenceBundles.test.tsx web/src/components/OpportunityFitReviewDrawer.tsx web/src/components/OpportunityFitReviewDrawer.test.tsx web/src/components/InterviewPreparationProposalDrawer.tsx web/src/components/InterviewPreparationProposalDrawer.test.tsx web/src/components/InterviewPreparationProposalDrawer.interaction.test.tsx web/src/components/MockInterviewDrawer.tsx web/src/components/MockInterviewDrawer.safety.test.ts web/src/components/MockInterviewDrawer.cleanup.interaction.test.tsx web/src/services/materialKits.ts web/src/services/materialKits.test.ts web/src/services/materialRevisionProposals.ts web/src/services/materialRevisionProposals.test.ts web/src/services/opportunityFitReviews.ts web/src/services/opportunityFitReviews.test.ts web/src/services/interviewPreparationProposals.ts web/src/services/interviewPreparationProposals.test.ts web/src/services/mockInterviews.ts web/src/services/mockInterviews.test.ts web/src/types/materialKit.ts web/src/types/materialRevisionProposal.ts web/src/types/opportunityFitReview.ts web/src/types/interviewPreparationProposal.ts web/src/types/mockInterview.ts web/src/features/pilot/PilotOpportunityFitV2Card.tsx web/src/features/pilot/pilotOpportunityFitLifecycle.ts web/src/features/pilot/materialKitHandoff.ts web/src/features/pilot/PilotOpportunityFitV2Card.test.tsx web/src/features/pilot/pilotOpportunityFitLifecycle.test.ts web/src/features/pilot/materialKitHandoff.test.ts
 git commit -m "feat: AI hand off current JD to application workflows"
 ~~~
 
 ## 5. ApplicationDetail UI, history, CAS recovery, and zero-write behavior
 
 **Files:**
+- Modify: web/src/layout/AppShell.tsx
+- Create: web/src/layout/AppShell.applicationJdVersions.test.tsx
 - Modify: web/src/components/ApplicationDetail.tsx
 - Modify: web/src/components/ApplicationDetail.module.css
 - Create: web/src/components/ApplicationDetail.jdVersions.test.tsx
@@ -418,7 +495,20 @@ Use actual button clicks and request spies; do not satisfy these tests with JSX/
 
 - [ ] **Step 2: Implement the controlled JD module.**
 
-Store the editor draft as { jdText, sourceUrl, expectedCurrentVersionId, idempotencyKey, resultUnknown }. Generate one ASCII key matching ^[A-Za-z0-9_-]{16,128}$ when a save attempt begins; preserve it across remount/retry; clear it only after 201, idempotent 200, or a confirmed deterministic failure that did not create a version. Disable all downstream Application-bound generation controls when no current JD exists.
+`AppShell` is the owner of remount-safe drafts. Keep a keyed state/ref map by `applicationId`, with this complete shape:
+
+~~~typescript
+type ApplicationJdDraft = {
+  jdText: string;
+  sourceUrl: string;
+  expectedCurrentVersionId: number | null;
+  idempotencyKey: string | null;
+  resultUnknown: boolean;
+  pendingOperation: 'save' | null;
+};
+~~~
+
+`ApplicationDetail` receives the controlled draft and an `onDraftChange(applicationId, patch)` callback; it must not own the retry key. The callback merges from the current `AppShell` ref entry, not a stale render closure. Generate one ASCII key matching `^[A-Za-z0-9_-]{16,128}$` when a save attempt begins; preserve it across unmount/remount and retry; clear it only after 201, idempotent 200, or a confirmed deterministic failure that did not create a version. Add a real unmount/remount test that keeps the same `applicationId`, verifies the original JD text, expected version, key, frozen/unknown state, and that retry calls the same endpoint with the same key. Disable all downstream Application-bound generation controls when no current JD exists.
 
 Render source_url as non-link text with copy action, render list preview using the shared 240-code-point helper, and never claim a version is current unless the API response contains that version.
 
@@ -435,7 +525,7 @@ Expected result: mounted tests pass, write-service spies remain at zero for read
 - [ ] **Step 4: Commit the ApplicationDetail slice.**
 
 ~~~powershell
-git add web/src/components/ApplicationDetail.tsx web/src/components/ApplicationDetail.module.css web/src/components/ApplicationDetail.jdVersions.test.tsx web/src/components/ApplicationDetail.jdVersions.integration.test.tsx
+git add web/src/layout/AppShell.tsx web/src/layout/AppShell.applicationJdVersions.test.tsx web/src/components/ApplicationDetail.tsx web/src/components/ApplicationDetail.module.css web/src/components/ApplicationDetail.jdVersions.test.tsx web/src/components/ApplicationDetail.jdVersions.integration.test.tsx
 git commit -m "feat: AI add application JD history UI"
 ~~~
 
@@ -452,10 +542,12 @@ git commit -m "feat: AI add application JD history UI"
 - Create: web/src/features/pilot/applicationJdVersion.test.ts
 - Create: web/src/components/ChatPanel/PilotApplicationJdCard.test.tsx
 - Modify: tests/test_api_contract.py
+- Modify: tests/test_ai_tools.py
+- Modify: tests/test_chat_api.py
 
 - [ ] **Step 1: Add failing Pilot contract tests.**
 
-Assert that ordinary Pilot messages do not create a JD pending card, Chat message, Provider call, or JD row. Only explicit intents such as “给这个投递补充 JD” or “查看 JD 历史” may enter the flow. When context_type=application does not identify one Application, the Pilot asks the user to choose and does not guess or enumerate-and-write.
+Use three separate contract cases. (a) Opening Pilot without sending a message must create zero Chat rows, make zero Provider calls, and create zero JD rows. (b) A non-JD user message keeps the existing Chat message and Provider behavior, but creates zero JD-domain rows and no downstream-domain rows. (c) An explicit JD intent such as “给这个投递补充 JD” or “查看 JD 历史” may enter the flow; before confirmation it creates no JD version, and one confirmation creates exactly one version. Replaying the same confirmation key creates no second version. When context_type=application does not identify one Application, the Pilot asks the user to choose and does not guess or enumerate-and-write.
 
 The confirmation payload must contain only application_id, raw JD input, normalized source URL, frozen expected_current_version_id, and the original idempotency key. The client cannot send source_kind; the server-side Pilot handler passes source_kind='pilot' to the shared service. Confirmation after a new version appears returns application_jd_stale_current_version and does not write a new version.
 
@@ -474,7 +566,7 @@ Do not add a Chat jd_version_id field or a second persistence state machine. Do 
 - [ ] **Step 3: Run Pilot and API contract tests.**
 
 ~~~powershell
-uv run pytest tests/test_api_contract.py -q
+uv run pytest tests/test_api_contract.py tests/test_ai_tools.py tests/test_chat_api.py -q
 cd web
 npm.cmd test -- --run src/features/pilot/applicationJdVersion.test.ts src/components/ChatPanel/PilotApplicationJdCard.test.tsx
 cd ..
@@ -485,7 +577,7 @@ Expected result: UI and Pilot use the same save service contract, only explicit 
 - [ ] **Step 4: Commit the Pilot slice.**
 
 ~~~powershell
-git add src/offerpilot/ai/tools.py src/offerpilot/ai/agent.py src/offerpilot/api.py web/src/components/ChatPanel/PilotTaskCard.tsx web/src/components/ChatPanel/MessageBubble.tsx web/src/components/ChatPanel/model.ts web/src/features/pilot/applicationJdVersion.ts web/src/features/pilot/applicationJdVersion.test.ts web/src/components/ChatPanel/PilotApplicationJdCard.test.tsx tests/test_api_contract.py
+git add src/offerpilot/ai/tools.py src/offerpilot/ai/agent.py src/offerpilot/api.py web/src/components/ChatPanel/PilotTaskCard.tsx web/src/components/ChatPanel/MessageBubble.tsx web/src/components/ChatPanel/model.ts web/src/features/pilot/applicationJdVersion.ts web/src/features/pilot/applicationJdVersion.test.ts web/src/components/ChatPanel/PilotApplicationJdCard.test.tsx tests/test_api_contract.py tests/test_ai_tools.py tests/test_chat_api.py
 git commit -m "feat: AI add Pilot JD confirmation"
 ~~~
 
@@ -500,17 +592,18 @@ git commit -m "feat: AI add Pilot JD confirmation"
 
 - [ ] **Step 1: Add fake-audit tests before harness implementation.**
 
-The harness must fail unless it observes, for one synthetic Application, these exact requests and response facts:
+The harness must run two separately reported stages for one synthetic Application. It must fail unless the JD-only stage observes these exact requests and response facts:
 
 ~~~text
 UI: POST JD v1 -> GET current -> GET history/detail
-UI: create Application-bound flow using v1
 UI: POST JD v2 with expected_current_version_id=v1
 Pilot: explicit JD intent -> confirmation -> POST v3 with source_kind=pilot in response
 Pilot: history reads v3 and no downstream write occurs automatically
 ~~~
 
-The audit must allow only local page/API URLs in the browser and configured Provider endpoints on server egress; it must reject any request to source_url, recruiting domains, or an unapproved target. Database snapshots must include JD versions, jd_analyses, Resume Match, Material, Fit, Interview, Mock, Knowledge, Offer, Reminder, Chat, and Application status tables. The JD-only path may change only its expected JD version/Application rows; all unrelated counts and hashes must remain unchanged.
+The JD-only stage takes a database baseline after synthetic Application setup and permits only the expected `application_jd_versions` rows plus the Chat conversation/message rows caused by the explicit Pilot dialogue. It must assert zero writes to `jd_analyses`, Resume Match, Material, Fit, Interview, Mock, Knowledge, Offer, Reminder, Question, Memory, and Application status. Browser network auditing allows only local page/API URLs; server egress allows only configured Provider endpoints and rejects `source_url`, recruiting domains, and unapproved targets.
+
+After Stage A succeeds, take a new baseline and run Stage B as a separate explicit downstream-consumer stage. The operator must explicitly choose one existing consumer (Triage, Material Kit, or Interview Preparation), and the harness must assert that only that consumer's documented tables change and that the request payload uses the confirmed v3 JD version. Run the same stage separately for each consumer covered by the matrix when publishing evidence; never combine an expected downstream write with the JD-only zero-write assertion. Each stage records its own baseline, allowed-write set, observed deltas, request sequence, and cleanup result. This split also applies to any explicit Mock or Deep/Material child-flow evidence.
 
 - [ ] **Step 2: Implement isolated API smoke and cleanup.**
 
@@ -554,6 +647,7 @@ git commit -m "test: AI verify application JD isolation"
 
 ~~~powershell
 uv run pytest tests/test_application_jd_versions_migrations.py tests/test_application_jd_versions_repository.py tests/test_application_jd_versions_api.py tests/test_jd_resume_ai_api.py tests/test_material_kits_api.py tests/test_material_revision_proposals_api.py tests/test_opportunity_fit_reviews_api.py tests/test_interview_preparation_api.py tests/test_mock_interview_api.py -q
+uv run pytest tests/test_applications_repository.py tests/test_api_contract.py tests/test_ai_tools.py tests/test_chat_api.py tests/test_cli.py tests/test_opportunity_fit_reviews_repository.py tests/test_material_revision_proposals_repository.py tests/test_interview_preparation_repository.py tests/test_mock_interview_repository.py -q
 uv run ruff check .
 uv run mypy src
 ~~~
@@ -589,31 +683,91 @@ uv run oc verify --profile real-ai --static-dir web/dist
 
 Do not claim real-AI success for a timeout, 4xx/5xx, contract failure, or missing audit evidence. All temporary data, Provider proxy, service processes, CDP targets, and copied configuration must be removed in finally blocks; source data must match its pre-run snapshot byte-for-byte.
 
-- [ ] **Step 5: Perform independent code review and release-report commit.**
+- [ ] **Step 5: Perform independent code review.**
 
-Review the final diff against the recorded baseline and verify the implementation allowlist:
+Use the repository's `requesting-code-review` workflow to start an independent subagent review after implementation and before the release-report commit. Give the reviewer the final diff, the recorded baseline, the exact allowlist below, and all gate outputs. Do not mark review complete until the subagent returns; resolve every P0/P1 and either fix or explicitly record any accepted P2.
+
+- [ ] **Step 6: Machine-check the final diff and commit the release report.**
+
+Update the report only after all tests, both browser stages, and the independent review finish. The report must include commands, exit codes, test counts, migration result, CAS/idempotency evidence, per-stage browser request sequence, allowed-write deltas, zero-network result, cleanup result, and remaining Provider risk. It must not include secrets, JD/resume text, model output, or raw request IDs. Because docs/* is ignored, stage it explicitly. Before staging, run this from the repository root; it must compare the actual changed set, not just print it:
 
 ~~~powershell
 $baselineFile = Join-Path $env:TEMP 'offerpilot-application-jd-versions-baseline.txt'
 $implementationBase = (Get-Content -LiteralPath $baselineFile -Raw).Trim()
-git diff --name-only "$implementationBase..HEAD"
-git diff --check "$implementationBase..HEAD"
-git status --short
-~~~
-
-Update the report only after all gates and browser evidence finish. The report must include commands, exit codes, test counts, migration result, CAS/idempotency evidence, browser request sequence, zero-network/zero-cross-domain-write result, cleanup result, and remaining Provider risk. It must not include secrets, JD/resume text, model output, or raw request IDs. Because docs/* is ignored, stage it explicitly:
-
-~~~powershell
+git cat-file -e "$implementationBase^{commit}"
+if ($LASTEXITCODE -ne 0) { throw 'Recorded implementation baseline is invalid' }
 git add -f docs/reports/2026-08-05-application-jd-versions-release-verification.md
+
+$allowedExact = @(
+  'src/offerpilot/db.py', 'src/offerpilot/models.py',
+  'src/offerpilot/repositories/application_jd_versions.py', 'src/offerpilot/repositories/jd.py',
+  'src/offerpilot/repositories/opportunity_fit_reviews.py', 'src/offerpilot/repositories/material_kits.py',
+  'src/offerpilot/repositories/material_revision_proposals.py', 'src/offerpilot/repositories/interview_preparation_proposals.py',
+  'src/offerpilot/repositories/mock_interviews.py', 'src/offerpilot/api.py', 'src/offerpilot/cli.py',
+  'src/offerpilot/ai/tools.py', 'src/offerpilot/ai/agent.py',
+  'tests/test_applications_repository.py', 'tests/test_api_contract.py', 'tests/test_ai_tools.py', 'tests/test_chat_api.py', 'tests/test_cli.py',
+  'tests/test_application_jd_versions_migrations.py', 'tests/test_application_jd_versions_repository.py', 'tests/test_application_jd_versions_api.py',
+  'tests/test_application_jd_smoke.py', 'tests/test_application_jd_browser_harness.py', 'tests/test_jd_resume_ai_api.py',
+  'tests/test_material_kits_api.py', 'tests/test_material_revision_proposals_api.py', 'tests/test_opportunity_fit_reviews_api.py',
+  'tests/test_interview_preparation_api.py', 'tests/test_mock_interview_api.py', 'tests/test_opportunity_fit_reviews_repository.py',
+  'tests/test_material_revision_proposals_repository.py', 'tests/test_interview_preparation_repository.py', 'tests/test_mock_interview_repository.py',
+  'web/src/components/ApplicationDetail.tsx', 'web/src/components/ApplicationDetail.module.css',
+  'web/src/components/ApplicationDetail.jdVersions.test.tsx', 'web/src/components/ApplicationDetail.jdVersions.integration.test.tsx',
+  'web/src/layout/AppShell.tsx', 'web/src/layout/AppShell.applicationJdVersions.test.tsx',
+  'web/src/components/MaterialKitDrawer.tsx', 'web/src/components/MaterialKitDrawer.module.css', 'web/src/components/MaterialKitDrawer.evidenceBundles.test.tsx',
+  'web/src/components/OpportunityFitReviewDrawer.tsx', 'web/src/components/OpportunityFitReviewDrawer.test.tsx',
+  'web/src/components/InterviewPreparationProposalDrawer.tsx', 'web/src/components/InterviewPreparationProposalDrawer.test.tsx', 'web/src/components/InterviewPreparationProposalDrawer.interaction.test.tsx',
+  'web/src/components/MockInterviewDrawer.tsx', 'web/src/components/MockInterviewDrawer.safety.test.ts', 'web/src/components/MockInterviewDrawer.cleanup.interaction.test.tsx',
+  'web/src/services/applicationJdVersions.ts', 'web/src/services/applicationJdVersions.test.ts', 'web/src/types/applicationJdVersion.ts',
+  'web/src/services/materialKits.ts', 'web/src/services/materialKits.test.ts', 'web/src/services/materialRevisionProposals.ts', 'web/src/services/materialRevisionProposals.test.ts',
+  'web/src/services/opportunityFitReviews.ts', 'web/src/services/opportunityFitReviews.test.ts', 'web/src/services/interviewPreparationProposals.ts', 'web/src/services/interviewPreparationProposals.test.ts', 'web/src/services/mockInterviews.ts', 'web/src/services/mockInterviews.test.ts',
+  'web/src/types/materialKit.ts', 'web/src/types/materialRevisionProposal.ts', 'web/src/types/opportunityFitReview.ts', 'web/src/types/interviewPreparationProposal.ts', 'web/src/types/mockInterview.ts',
+  'web/src/components/ChatPanel/PilotTaskCard.tsx', 'web/src/components/ChatPanel/MessageBubble.tsx', 'web/src/components/ChatPanel/model.ts', 'web/src/components/ChatPanel/PilotApplicationJdCard.test.tsx',
+  'web/src/features/pilot/applicationJdVersion.ts', 'web/src/features/pilot/applicationJdVersion.test.ts', 'web/src/features/pilot/PilotOpportunityFitV2Card.tsx', 'web/src/features/pilot/PilotOpportunityFitV2Card.test.tsx',
+  'web/src/features/pilot/pilotOpportunityFitLifecycle.ts', 'web/src/features/pilot/pilotOpportunityFitLifecycle.test.ts', 'web/src/features/pilot/materialKitHandoff.ts', 'web/src/features/pilot/materialKitHandoff.test.ts',
+  'scripts/application-jd-real-ai-browser-harness.ps1', 'scripts/browser-network-audit.py',
+  'src/offerpilot/smoke.py', 'docs/reports/2026-08-05-application-jd-versions-release-verification.md'
+)
+$changed = @(
+  (git diff --name-only "$implementationBase..HEAD")
+  (git diff --cached --name-only)
+  (git diff --name-only)
+) | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Sort-Object -Unique
+$unexpected = @($changed | Where-Object { $allowedExact -notcontains $_ })
+if ($unexpected.Count -gt 0) { throw "Unexpected changed paths: $($unexpected -join ', ')" }
+
+$allowlistFile = Join-Path $env:TEMP 'offerpilot-application-jd-versions-allowlist.txt'
+$allowedExact | Set-Content -LiteralPath $allowlistFile -Encoding ascii
+
+git diff --check "$implementationBase..HEAD"
+$diffCheckExit = $LASTEXITCODE
+if ($diffCheckExit -ne 0) { throw 'Final diff check failed' }
+git diff --check --cached
+$stagedDiffCheckExit = $LASTEXITCODE
+if ($stagedDiffCheckExit -ne 0) { throw 'Release report diff check failed' }
 git commit -m "docs: AI record application JD release verification"
+if ($LASTEXITCODE -ne 0) { throw 'Release report commit failed' }
 ~~~
 
-Only after the report commit, a final clean status, successful git diff --check, and completed independent review may the baseline file be deleted:
+After the report commit, repeat the same allowlist comparison and save the diff-check exit code before any status command. Delete the baseline only if that final comparison, `git diff --check`, and clean status all succeed; otherwise retain it for repair and rerun:
 
 ~~~powershell
-if (@(git status --short).Count -ne 0) { throw 'Final worktree is dirty' }
-if ($LASTEXITCODE -ne 0) { throw 'Final diff check failed' }
-Remove-Item -LiteralPath (Join-Path $env:TEMP 'offerpilot-application-jd-versions-baseline.txt') -Force
+$baselineFile = Join-Path $env:TEMP 'offerpilot-application-jd-versions-baseline.txt'
+$allowlistFile = Join-Path $env:TEMP 'offerpilot-application-jd-versions-allowlist.txt'
+$implementationBase = (Get-Content -LiteralPath $baselineFile -Raw).Trim()
+git cat-file -e "$implementationBase^{commit}"
+if ($LASTEXITCODE -ne 0) { throw 'Recorded implementation baseline is invalid' }
+$allowedExact = @(Get-Content -LiteralPath $allowlistFile | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+$changed = @(git diff --name-only "$implementationBase..HEAD" | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Sort-Object -Unique)
+$unexpected = @($changed | Where-Object { $allowedExact -notcontains $_ })
+if ($unexpected.Count -gt 0) { throw "Unexpected changed paths after report commit: $($unexpected -join ', ')" }
+git diff --check "$implementationBase..HEAD"
+$diffCheckExit = $LASTEXITCODE
+$status = @(git status --short)
+if ($diffCheckExit -ne 0) { throw 'Final diff check failed' }
+if ($status.Count -ne 0) { throw 'Final worktree is dirty' }
+Remove-Item -LiteralPath $baselineFile -Force
+Remove-Item -LiteralPath $allowlistFile -Force
 ~~~
 
 No push or merge is part of this plan.
@@ -622,7 +776,7 @@ No push or merge is part of this plan.
 
 - [ ] Migration task covers 0018_application_jd_versions, all explicit jd_version_id columns, ordinary-integer deletion semantics, and real prior-DDL upgrade.
 - [ ] Repository/API tasks cover ^[A-Za-z0-9_-]{16,128}$, strict positive integer/null CAS input, replay-before-CAS ordering, normalized fingerprint, URL validation, 240-code-point preview, and no 202 save state.
-- [ ] Domain task covers Triage/Deep inheritance, Material Kit/Proposal inheritance, Interview Preparation, Mock claim freezing, v1 write closure, and standalone jd_text compatibility.
-- [ ] UI/Pilot tasks cover confirmed writes only, server-owned source_kind, stale/unknown recovery, no link navigation, and no cross-domain writes.
-- [ ] Browser/gate tasks cover isolated config, zero URL egress, complete request sequence, cleanup, grouped backend/frontend gates, independent review, and report commit.
+- [ ] Domain task covers strict requested-version validation, short-session freeze/close/CAS lifecycle, Triage/Deep inheritance, Material Kit/Proposal inheritance, Interview Preparation, Mock claim freezing, v1 write closure, CLI/standalone compatibility, and Provider barriers.
+- [ ] UI/Pilot tasks cover AppShell-owned remount-safe drafts, confirmed writes only, server-owned source_kind, stale/unknown recovery, no link navigation, and the three distinct Pilot write-boundary cases.
+- [ ] Browser/gate tasks cover separate JD-only and explicit-consumer stages, isolated config, zero URL egress, complete request sequence, cleanup, grouped backend/frontend gates, machine allowlist comparison, independent review, and report commit.
 - [ ] No unresolved placeholder or unspecified implementation step remains in this plan.
