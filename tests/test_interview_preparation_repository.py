@@ -84,13 +84,23 @@ class FailingHeartbeatSessionFactory:
         self.fail_calls = fail_calls
         self.calls = 0
         self.failed = Event()
+        self.succeeded = Event()
 
     def __call__(self):  # type: ignore[no-untyped-def]
         self.calls += 1
         if self.calls <= self.fail_calls:
             self.failed.set()
             raise SQLAlchemyError("injected heartbeat lock failure")
-        return self.factory()
+        session = self.factory()
+        original_commit = session.commit
+
+        def commit(*args, **kwargs):  # type: ignore[no-untyped-def]
+            result = original_commit(*args, **kwargs)
+            self.succeeded.set()
+            return result
+
+        session.commit = commit  # type: ignore[method-assign]
+        return session
 
 
 class DeferredFailingHeartbeatSessionFactory:
@@ -106,6 +116,10 @@ class DeferredFailingHeartbeatSessionFactory:
     @property
     def failed(self) -> Event:
         return self._failing.failed
+
+    @property
+    def succeeded(self) -> Event:
+        return self._failing.succeeded
 
     def __call__(self):  # type: ignore[no-untyped-def]
         if not self.enabled:
@@ -533,6 +547,71 @@ def test_slow_provider_retries_transient_heartbeat_lock_and_calls_provider_once(
         assert row.attempt_status == "ready"
         assert row.proposal_status == "safe_empty"
     factory.kw["bind"].dispose()
+
+
+def test_renewed_lease_blocks_same_key_replay_without_second_provider_call(tmp_path) -> None:
+    factory_a, ids = _setup(tmp_path)
+    factory_b = init_database(tmp_path / "data.db")
+    clock = ManualClock(datetime(2026, 8, 4, 10, 0, tzinfo=timezone.utc))
+    heartbeat_factory = DeferredFailingHeartbeatSessionFactory(factory_a, fail_calls=1)
+    waiter = ControlledWaiter()
+    repository_a = InterviewPreparationProposalsRepository(
+        heartbeat_factory,
+        lease_seconds=1,
+        heartbeat_interval_seconds=10,
+        now_factory=clock.now,
+        waiter=waiter,
+    )
+    repository_b = InterviewPreparationProposalsRepository(
+        factory_b,
+        lease_seconds=1,
+        now_factory=clock.now,
+    )
+    first_model = BlockingSafeEmptyModel()
+    replay_model = SafeEmptyModel()
+    key = "heartbeat-replay-key-01"
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        first_future = pool.submit(_generate, repository_a, ids, key, first_model)
+        assert first_model.entered.wait(5)
+        assert waiter.entered.wait(5)
+
+        heartbeat_factory.enabled = True
+        clock.advance(seconds=2)
+        waiter.release_tick()
+        assert heartbeat_factory.failed.wait(1)
+        assert heartbeat_factory.succeeded.wait(1)
+
+        with factory_a() as session:
+            row = session.scalar(select(InterviewPreparationProposal))
+            assert row is not None
+            renewed_lease = _as_aware_for_test(row.provider_lease_until)
+            assert renewed_lease is not None
+            assert renewed_lease > clock.now()
+            assert row.attempt_status == "generating"
+            assert row.provider_call_token
+
+        replay = _generate(repository_b, ids, key, replay_model)
+        assert replay.pending is True
+        assert replay.attempt_status == "generating"
+        assert replay_model.calls == 0
+
+        first_model.release.set()
+        first = first_future.result(timeout=5)
+
+    assert first.pending is False
+    assert first.attempt_status == "ready"
+    assert first_model.calls == 1
+    assert heartbeat_factory.calls == 3
+    with factory_a() as session:
+        row = session.scalar(select(InterviewPreparationProposal))
+        assert row is not None
+        assert row.attempt_status == "ready"
+        assert row.generation_revision == 1
+        assert row.provider_call_token == ""
+        assert row.provider_lease_until is None
+    factory_a.kw["bind"].dispose()
+    factory_b.kw["bind"].dispose()
 
 
 def test_slow_provider_renews_expired_lease_and_calls_provider_once(tmp_path) -> None:
