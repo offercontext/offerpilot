@@ -29,7 +29,7 @@
 
 ### 后端五组门禁
 
-完整收集 manifest：**1766 个 node id**。五组均退出码 0；聚合校验确认无重复、并集与完整 manifest 一致，五组完成标记、JUnit 和收集摘要均匹配。
+完整收集 manifest：**1767 个 node id**。五组均退出码 0；聚合校验确认无重复、并集与完整 manifest 一致，五组完成标记、JUnit 和收集摘要均匹配。
 
 | 分组 | 收集/执行 | 允许 skip |
 |---|---:|---:|
@@ -38,7 +38,7 @@
 | knowledge | 659 / 655 passed | 4 |
 | proposals | 302 / 302 passed | 0 |
 | misc | 312 / 312 passed | 0 |
-| 合计 | 1766 / 1762 passed | 4 |
+| 合计 | 1767 / 1763 passed | 4 |
 
 Knowledge 的 4 个 skip 仅为既定 Windows 符号链接权限条件，node id 为：
 
@@ -148,3 +148,17 @@ real-AI 复跑未再出现 `unable to open database file`。本轮完整 real-AI
 real-AI 首次复跑在面试准备请求出现一次 `ReadTimeout`；未修改配置、契约或重试语义，随后以同一真实配置的静默隔离副本重跑完整流程并通过。该次波动仍记录为外部 Provider 稳定性风险；没有输出密钥、配置、用户原文、模型原文或完整 Provider 请求。
 
 临时数据库、服务、worker、engine、前端测试进程与浏览器相关临时资源均已清理；本次门禁结果目录仍保留在系统 Temp 供复核（当前执行环境拒绝删除命令），不在工作树且不含配置或密钥。工作区干净，未推送、未合并。
+
+## 2026-08-05 当前 HEAD 后端五组门禁重跑
+
+本次重跑起始 commit：`f6b633c4ac247131f3d92ca882a2489981426a1c`。新增的 lease replay 回归测试已纳入同一份完整 manifest；结果目录保留于系统 Temp：`D:\Users\yuqi.chen\AppData\Local\Temp\offerpilot-offer-negotiation-backend-20260805-113702`。
+
+执行命令：
+
+```powershell
+uv run pytest --collect-only -q --disable-warnings
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-pytest-groups.ps1 -Group <group> -ResultDir <temp>
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-pytest-groups.ps1 -Aggregate -ResultDir <temp>
+```
+
+结果：完整 manifest **1767 collected**；五组均退出码 0，aggregate 退出码 0，无重复 node id，实际并集与 manifest 完全一致。agent `423/423 passed`、domain `70/70 passed`、knowledge `659 collected / 655 passed / 4 allowed skips`、proposals `303/303 passed`、misc `312/312 passed`，合计 **1767 collected / 1763 passed / 4 allowed skips**。4 个 skip 仍仅为既定 Windows 符号链接权限条件，node id 与原因逐项匹配。
