@@ -99,6 +99,23 @@ def test_generate_update_and_conflict_material_kit(tmp_path):
     assert updated["status"] == "ready"
     assert json.loads(updated["content_json"]) == {"checklist": [{"id": "x", "done": True}]}
 
+    next_jd = client.post(
+        f"/api/applications/{app['id']}/job-description/versions",
+        json={
+            "jd_text": "Updated Go backend JD",
+            "source_url": None,
+            "expected_current_version_id": jd["id"],
+            "idempotency_key": "material-jd-key-0002",
+        },
+    )
+    assert next_jd.status_code == 201
+    stale_update = client.put(
+        f"/api/material-kits/{created['id']}",
+        json={"status": "draft"},
+    )
+    assert stale_update.status_code == 409
+    assert stale_update.json()["error_code"] == "application_jd_source_conflict"
+
 
 def test_material_kit_source_cas_rejects_jd_change_after_provider_claim(tmp_path):
     class BlockingModel(JSONModel):
