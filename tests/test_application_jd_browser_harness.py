@@ -60,7 +60,7 @@ def test_application_jd_harness_fails_closed_without_browser_cdp() -> None:
     assert result.returncode != 0
     output = result.stdout + result.stderr
     assert "APPLICATION_JD_CDP_URL" in output
-    assert output.isascii()
+    assert "Application JD browser acceptance failed." in output
 
 
 def test_browser_audit_keeps_url_application_id_authoritative() -> None:
