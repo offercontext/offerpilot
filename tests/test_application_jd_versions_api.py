@@ -76,6 +76,23 @@ def test_job_description_save_is_sync_and_replay_or_conflict_is_stable(app_clien
     assert stale.status_code != 202
 
 
+def test_job_description_preview_uses_unicode_code_points_and_preserves_whitespace(app_client):
+    application_id = _application(app_client)
+    jd_text = ("\n\u7b71\u54f2\U0001f642 " * 60)[:300]
+    created = _save(
+        app_client,
+        application_id,
+        jd_text=jd_text,
+        idempotency_key="jd-api-key-000002",
+    )
+    assert created.status_code == 201
+
+    history = app_client.get(f"/api/applications/{application_id}/job-description/versions")
+    assert history.status_code == 200
+    assert history.json()[0]["preview"] == jd_text[:240] + "\u2026"
+    assert len(history.json()[0]["preview"]) == 241
+
+
 def test_job_description_post_does_not_trust_source_kind_and_validates_cas_types(app_client):
     application_id = _application(app_client)
     with_source = _save(app_client, application_id, source_kind="pilot")
