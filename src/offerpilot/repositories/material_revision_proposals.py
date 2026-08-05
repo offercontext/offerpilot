@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any, List
 
-from sqlalchemy import select, text, update
+from sqlalchemy import desc, select, text, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from offerpilot.ai.agent import ChatModel
@@ -16,6 +16,7 @@ from offerpilot.models import (
     Application,
     ApplicationEvidenceBundle,
     ApplicationEvent,
+    ApplicationJDVersion,
     ApplicationMaterialKit,
     MaterialRevisionProposal,
     Resume,
@@ -260,6 +261,14 @@ def build_source_snapshot(
         raise MaterialProposalValidationError("material kit JD is required")
     if kit.jd_version_id is None:
         raise MaterialProposalValidationError("material kit JD version is required")
+    current_jd_version_id = session.scalar(
+        select(ApplicationJDVersion.id)
+        .where(ApplicationJDVersion.application_id == application_id)
+        .order_by(desc(ApplicationJDVersion.version_number))
+        .limit(1)
+    )
+    if current_jd_version_id != kit.jd_version_id:
+        raise MaterialProposalConflictError("material kit JD source is no longer current")
     if kit.resume_id is None:
         raise MaterialProposalValidationError("material kit must have a linked resume")
     resume = session.scalar(

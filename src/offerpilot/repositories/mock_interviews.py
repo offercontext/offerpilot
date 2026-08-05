@@ -96,6 +96,21 @@ class MockInterviewRepository:
     def __init__(self, session_factory: sessionmaker[Session]):
         self._session_factory = session_factory
 
+    def get_attempt_by_key(
+        self, application_id: int, event_id: int, idempotency_key: str
+    ) -> MockInterviewAttempt | None:
+        with self._session_factory() as session:
+            attempt = session.scalar(
+                select(MockInterviewAttempt).where(
+                    MockInterviewAttempt.application_id == application_id,
+                    MockInterviewAttempt.event_id == event_id,
+                    MockInterviewAttempt.idempotency_key == idempotency_key,
+                )
+            )
+            if attempt is not None:
+                session.expunge(attempt)
+            return attempt
+
     def create_or_replay_start(
         self,
         application_id: int,
@@ -115,17 +130,6 @@ class MockInterviewRepository:
 
         with self._session_factory() as session:
             self._begin_immediate(session)
-            snapshot = self._build_input_snapshot(
-                session,
-                application_id,
-                event_id,
-                resume_id,
-                jd_text,
-                preparation_proposal_id,
-                preparation_selection,
-                jd_version_id,
-            )
-            fingerprint = sha256_text(canonical_json(snapshot))
             existing = session.scalar(
                 select(MockInterviewAttempt).where(
                     MockInterviewAttempt.application_id == application_id,
@@ -134,6 +138,17 @@ class MockInterviewRepository:
                 )
             )
             if existing is not None:
+                if existing.jd_version_id != jd_version_id or existing.resume_id != resume_id:
+                    raise MockInterviewIdempotencyConflict("mock interview input changed")
+                try:
+                    snapshot = json.loads(existing.input_snapshot_json)
+                except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                    raise MockInterviewIdempotencyConflict("mock interview input changed") from exc
+                if not isinstance(snapshot, dict) or not _preparation_selection_matches(
+                    snapshot, preparation_proposal_id, preparation_selection
+                ):
+                    raise MockInterviewIdempotencyConflict("mock interview input changed")
+                fingerprint = existing.source_fingerprint
                 if existing.attempt_status == "contract_failed":
                     raise MockInterviewContractFailed("mock_interview_unverifiable", existing.id)
                 turn = session.scalar(
@@ -166,6 +181,30 @@ class MockInterviewRepository:
                         ),
                     )
                 return MockInterviewStartResult(existing, turn, False)
+
+            current_version_id = session.scalar(
+                select(ApplicationJDVersion.id)
+                .where(ApplicationJDVersion.application_id == application_id)
+                .order_by(ApplicationJDVersion.version_number.desc())
+                .limit(1)
+            )
+            if jd_version_id is not None and current_version_id != jd_version_id:
+                raise MockInterviewSourceChanged("mock interview source changed")
+            version = session.get(ApplicationJDVersion, jd_version_id) if jd_version_id is not None else None
+            if jd_version_id is not None and version is None:
+                raise MockInterviewSourceChanged("mock interview source changed")
+            frozen_jd_text = version.jd_text if version is not None else jd_text
+            snapshot = self._build_input_snapshot(
+                session,
+                application_id,
+                event_id,
+                resume_id,
+                frozen_jd_text,
+                preparation_proposal_id,
+                preparation_selection,
+                jd_version_id,
+            )
+            fingerprint = sha256_text(canonical_json(snapshot))
 
             attempt = MockInterviewAttempt(
                 application_id=application_id,
@@ -1014,6 +1053,26 @@ def _selected_preparation_snapshot(
             "evidence": evidence,
         }
     ]
+
+
+def _preparation_selection_matches(
+    snapshot: dict[str, Any], proposal_id: int | None, selection: dict[str, Any] | None
+) -> bool:
+    selected = snapshot.get("selected_preparation", [])
+    if proposal_id is None:
+        return selection is None and selected == []
+    if not isinstance(selection, dict) or not isinstance(selected, list) or len(selected) != 1:
+        return False
+    item = selected[0]
+    if not isinstance(item, dict) or item.get("proposal_id") != proposal_id:
+        return False
+    expected_ids = selection.get("item_ids")
+    actual_ids = [
+        item_id.get("id")
+        for item_id in item.get("items", [])
+        if isinstance(item_id, dict) and isinstance(item_id.get("id"), str)
+    ]
+    return isinstance(expected_ids, list) and expected_ids == actual_ids
 
 
 def _preparation_sources_current(

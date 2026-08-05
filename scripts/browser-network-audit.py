@@ -238,6 +238,8 @@ class BrowserAudit:
                     record["response_error_code"] = payload["error_code"]
                 if isinstance(payload.get("attempt_status"), str):
                     record["response_attempt_status"] = payload["attempt_status"]
+                if payload.get("source_kind") in {"ui", "pilot"}:
+                    record["response_source_kind"] = payload["source_kind"]
                 if isinstance(payload.get("retry_after_ms"), int):
                     record["response_retry_after_ms"] = payload["retry_after_ms"]
                 if isinstance(payload.get("id"), int):
@@ -276,6 +278,7 @@ class BrowserAudit:
             for key in (
                 "response_error_code",
                 "response_attempt_status",
+                "response_source_kind",
                 "response_proposal_id",
                 "response_proposal_ids",
                 "response_confirmed_proposal_id",

@@ -394,6 +394,8 @@ class OpportunityFitReviewsRepository:
         model: ChatModel,
     ) -> tuple[OpportunityFitReviewStage, bool]:
         with self._session_factory() as session:
+            # Serialize the parent/source decision with the deep-review claim.
+            session.execute(text("BEGIN IMMEDIATE"))
             application = _visible_application(session, application_id)
             root = session.get(OpportunityFitReviewSession, review_id)
             parent = session.get(OpportunityFitReviewStage, parent_triage_stage_id)
@@ -403,6 +405,14 @@ class OpportunityFitReviewsRepository:
                 raise OpportunityFitReviewConflictError("opportunity fit parent stage is invalid")
             if parent.stage != "triage" or parent.status != "confirmed":
                 raise OpportunityFitReviewConflictError("triage must be confirmed before deep review")
+            current_version_id = session.scalar(
+                select(ApplicationJDVersion.id)
+                .where(ApplicationJDVersion.application_id == application_id)
+                .order_by(ApplicationJDVersion.version_number.desc())
+                .limit(1)
+            )
+            if parent.jd_version_id is not None and current_version_id != parent.jd_version_id:
+                raise OpportunityFitReviewSourceConflictError("opportunity fit source changed")
             snapshot = _build_snapshot(
                 session, application, resume_id, jd_text, jd_source_label, candidate_assertions
             )

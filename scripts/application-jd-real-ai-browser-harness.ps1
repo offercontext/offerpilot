@@ -91,7 +91,10 @@ tables = [
   "application_material_kits", "material_revision_proposals",
   "opportunity_fit_review_sessions", "opportunity_fit_review_stages",
   "interview_preparation_proposals", "mock_interview_attempts",
-  "questions", "wakeups", "knowledge_sources", "knowledge_notes",
+  "mock_interview_turns", "mock_interview_feedback_proposals", "mock_interview_review_drafts",
+  "interview_notes", "interview_review_proposals", "offers", "questions", "wakeups",
+  "knowledge_sources", "knowledge_notes", "knowledge_note_versions", "knowledge_evidence",
+  "application_evidence_bundles", "memories",
 ]
 available = {row[0] for row in db.execute("select name from sqlite_master where type='table'")}
 out = {}
@@ -158,6 +161,9 @@ for sql in (
     "delete from application_material_kits where application_id = ?",
     "delete from material_revision_proposals where application_id = ?",
     "delete from interview_preparation_proposals where application_id = ?",
+    "delete from mock_interview_review_drafts where proposal_id in (select id from mock_interview_feedback_proposals where attempt_id in (select id from mock_interview_attempts where application_id = ?))",
+    "delete from mock_interview_feedback_proposals where attempt_id in (select id from mock_interview_attempts where application_id = ?)",
+    "delete from mock_interview_turns where attempt_id in (select id from mock_interview_attempts where application_id = ?)",
     "delete from mock_interview_attempts where application_id = ?",
     "delete from application_jd_versions where application_id = ?",
     "delete from chat_messages where conversation_id in (select id from conversations where context_type = 'application' and context_ref = ?)",
@@ -195,6 +201,15 @@ function Assert-LocalBrowser($records) {
 function Assert-StageA($records) {
   $jdPosts = @($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'POST' -and $_.url -match '/api/applications/[0-9]+/job-description/versions$' })
   if ($jdPosts.Count -lt 2) { throw 'Stage A did not create UI JD versions.' }
+  if (@($jdPosts | Where-Object { $_.request_context.application_id -ne [int]$applicationId }).Count -ne 0) { throw 'Stage A mixed applications.' }
+  $jdResponses = @($records | Where-Object {
+    $_.kind -eq 'browser_response' -and $_.method -eq 'POST' -and
+    $_.url -match '/api/applications/[0-9]+/job-description/versions$' -and
+    $_.response_status -in @(200, 201) -and $null -ne $_.response_jd_version_id
+  })
+  if ($jdResponses.Count -lt 2) { throw 'Stage A did not record successful JD version responses.' }
+  $sourceKinds = @($jdResponses | ForEach-Object { [string]$_.response_source_kind } | Sort-Object -Unique)
+  if ('ui' -notin $sourceKinds -or 'pilot' -notin $sourceKinds) { throw 'Stage A did not prove both UI and Pilot JD sources.' }
   if (-not ($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'GET' -and $_.url -match '/job-description/versions$' })) { throw 'Stage A did not read JD history.' }
   if (-not ($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'GET' -and $_.url -match '/job-description/versions/[0-9]+$' })) { throw 'Stage A did not read JD detail.' }
   if (-not ($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'POST' -and $_.url -match '/api/chat$' })) { throw 'Stage A did not record Pilot chat.' }
@@ -213,6 +228,13 @@ function Assert-ConsumerRequest($records, [string]$consumer) {
     $_.request_context.jd_version_id -eq [int]$jdVersionId
   })
   if ($matches.Count -lt 1) { throw "Stage B did not submit $consumer with the frozen JD version." }
+  $successful = @($records | Where-Object {
+    $_.kind -eq 'browser_response' -and $_.method -eq 'POST' -and $_.url -match $pattern -and
+    $_.request_context.application_id -eq [int]$applicationId -and
+    $_.request_context.jd_version_id -eq [int]$jdVersionId -and
+    $_.response_status -in @(200, 201) -and $_.response_jd_version_id -eq [int]$jdVersionId
+  })
+  if ($successful.Count -lt 1) { throw "Stage B did not record a successful $consumer response for the frozen JD version." }
 }
 
 try {
@@ -283,12 +305,21 @@ print(db.execute(
     Write-Host 'Application JD browser acceptance passed.'
   } else {
     foreach ($consumer in @('triage', 'material-kit', 'interview-preparation')) {
+      $consumerBefore = Get-DbSnapshot
       Write-Host "Complete $consumer in the dedicated browser target."
       [void](Read-Host 'Press Enter after this consumer is complete')
       $records = Get-BrowserRecords
       Assert-LocalBrowser $records
       Assert-ConsumerRequest $records $consumer
+      $consumerAfter = Get-DbSnapshot
+      $allowed = switch ($consumer) {
+        'triage' { @('opportunity_fit_review_sessions', 'opportunity_fit_review_stages') }
+        'material-kit' { @('application_material_kits') }
+        'interview-preparation' { @('interview_preparation_proposals') }
+      }
+      Assert-StageUnchanged $consumerBefore $consumerAfter $allowed
       Clear-Consumer $consumer
+      Assert-StageUnchanged $consumerBefore (Get-DbSnapshot) @()
     }
     Write-Host 'Application JD browser acceptance passed.'
   }
@@ -301,7 +332,7 @@ print(db.execute(
   Stop-Tree $server
   Stop-Tree $proxy
   if ($applicationId -and $resumeId -and $eventId -and (Test-Path -LiteralPath (Join-Path $tempData 'data.db'))) {
-    try { Clear-SyntheticData } catch { Write-Host 'Synthetic cleanup failed.' }
+    Clear-SyntheticData
   }
   if ($previousData) { $env:OFFERPILOT_DATA = $previousData } else { Remove-Item Env:OFFERPILOT_DATA -ErrorAction SilentlyContinue }
   if ($previousHttpAudit) { $env:OFFERPILOT_HTTP_AUDIT_FILE = $previousHttpAudit } else { Remove-Item Env:OFFERPILOT_HTTP_AUDIT_FILE -ErrorAction SilentlyContinue }

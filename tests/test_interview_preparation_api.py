@@ -176,7 +176,7 @@ def test_create_returns_201_then_same_key_returns_200_without_provider_resolutio
 
     first = client.post(url, json=_payload(resume["id"], event["id"]))
     assert first.status_code == 201
-    assert first.json()["source_states"]["jd"] == "not_checked"
+    assert first.json()["source_states"]["jd"] == "current"
     assert first.json()["proposal_status"] == "safe_empty"
 
     replay = client.post(url, json=_payload(resume["id"], event["id"]))

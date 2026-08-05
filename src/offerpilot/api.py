@@ -103,7 +103,11 @@ from offerpilot.repositories.evidence_bundles import (
     EvidenceBundlesRepository,
 )
 from offerpilot.repositories.jd import JDAnalysesRepository, JDAnalysisCreate
-from offerpilot.repositories.material_kits import MaterialKitCreate, MaterialKitsRepository
+from offerpilot.repositories.material_kits import (
+    MaterialKitCreate,
+    MaterialKitSourceConflict,
+    MaterialKitsRepository,
+)
 from offerpilot.repositories.material_revision_proposals import (
     MaterialProposalConflictError,
     MaterialProposalNotFound,
@@ -1817,10 +1821,17 @@ def create_app(
             status="draft",
             content_json=json.dumps(result, ensure_ascii=False, separators=(",", ":")),
         )
-        if existing is None:
-            kit = material_kits.create(data)
-            return JSONResponse(_material_kit_json(kit), status_code=201)
-        updated_kit = material_kits.update(existing.id, data)
+        try:
+            if existing is None:
+                kit = material_kits.create(data)
+                return JSONResponse(_material_kit_json(kit), status_code=201)
+            updated_kit = material_kits.update(existing.id, data)
+        except MaterialKitSourceConflict:
+            return error_response(
+                409,
+                "岗位资料已变化，请重新加载后再生成。",
+                code="application_jd_source_conflict",
+            )
         if updated_kit is None:
             return error_response(404, "Material kit not found")
         return JSONResponse(_material_kit_json(updated_kit), status_code=200)
@@ -1927,6 +1938,8 @@ def create_app(
             )
         except MaterialProposalNotFound:
             return error_response(404, "Application not found")
+        except MaterialProposalConflictError as exc:
+            return error_response(409, str(exc), code="application_jd_source_conflict")
         except MaterialProposalValidationError as exc:
             return error_response(422, str(exc))
         except MaterialProposalModelError as exc:
@@ -4648,12 +4661,25 @@ def create_app(
             resume_id = int(payload["resume_id"])
             if "jd_text" in payload or "jd_version_id" not in payload:
                 return error_response(422, "请使用当前岗位资料版本", code="application_jd_version_required")
-            frozen_jd = application_jd_versions.require_current_version(
-                application_id, payload["jd_version_id"]
-            )
-            jd_text = frozen_jd.jd_text
             attempt_key = str(payload["attempt_idempotency_key"])
             question_key = str(payload["initial_question_idempotency_key"])
+            requested_jd_version_id = payload["jd_version_id"]
+            existing_attempt = mock_interviews.get_attempt_by_key(
+                application_id, event_id, attempt_key
+            )
+            if existing_attempt is not None:
+                if existing_attempt.jd_version_id != requested_jd_version_id:
+                    raise MockInterviewIdempotencyConflict("mock interview input changed")
+                stored_snapshot = json.loads(existing_attempt.input_snapshot_json)
+                stored_jd = stored_snapshot.get("jd", {}) if isinstance(stored_snapshot, dict) else {}
+                jd_text = stored_jd.get("text", "") if isinstance(stored_jd, dict) else ""
+                frozen_jd_id = existing_attempt.jd_version_id
+            else:
+                frozen_jd = application_jd_versions.require_current_version(
+                    application_id, requested_jd_version_id
+                )
+                jd_text = frozen_jd.jd_text
+                frozen_jd_id = frozen_jd.id
             if not isinstance(jd_text, str):
                 raise ValueError("jd_text must be a string")
             preparation_selection = payload.get("preparation_selection")
@@ -4670,7 +4696,7 @@ def create_app(
                 attempt_key,
                 question_key,
                 preparation_selection,
-                frozen_jd.id,
+                frozen_jd_id,
             )
         except KeyError as exc:
             return error_response(422, f"missing field: {exc.args[0]}")

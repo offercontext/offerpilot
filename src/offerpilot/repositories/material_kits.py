@@ -3,10 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import desc, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from offerpilot.models import ApplicationMaterialKit
+from offerpilot.models import ApplicationJDVersion, ApplicationMaterialKit
 
 
 @dataclass
@@ -18,6 +18,10 @@ class MaterialKitCreate:
     jd_version_id: Optional[int] = None
     status: str = "draft"
     content_json: str = "{}"
+
+
+class MaterialKitSourceConflict(ValueError):
+    """The kit write lost the current JD source race."""
 
 
 class MaterialKitsRepository:
@@ -35,6 +39,8 @@ class MaterialKitsRepository:
             content_json=data.content_json or "{}",
         )
         with self._session_factory() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            _require_current_jd(session, data.application_id, data.jd_version_id)
             session.add(kit)
             session.commit()
             session.refresh(kit)
@@ -53,9 +59,11 @@ class MaterialKitsRepository:
 
     def update(self, kit_id: int, data: MaterialKitCreate) -> Optional[ApplicationMaterialKit]:
         with self._session_factory() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
             kit = session.get(ApplicationMaterialKit, kit_id)
             if kit is None:
                 return None
+            _require_current_jd(session, data.application_id, data.jd_version_id)
             kit.resume_id = data.resume_id
             kit.jd_analysis_id = data.jd_analysis_id
             kit.jd_snapshot = data.jd_snapshot
@@ -65,3 +73,16 @@ class MaterialKitsRepository:
             session.commit()
             session.refresh(kit)
             return kit
+
+
+def _require_current_jd(session: Session, application_id: int, jd_version_id: int | None) -> None:
+    if jd_version_id is None:
+        return
+    current_id = session.scalar(
+        select(ApplicationJDVersion.id)
+        .where(ApplicationJDVersion.application_id == application_id)
+        .order_by(desc(ApplicationJDVersion.version_number))
+        .limit(1)
+    )
+    if current_id != jd_version_id:
+        raise MaterialKitSourceConflict("application JD source changed")

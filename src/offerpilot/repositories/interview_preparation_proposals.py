@@ -985,6 +985,17 @@ def _set_source_status(session: Session, row: InterviewPreparationProposal) -> N
                     states["resume"] = "current"
             except Exception:
                 pass
+        recorded_jd_version_id = snapshot.get("jd_version_id")
+        current_jd_version_id = session.scalar(
+            select(ApplicationJDVersion.id)
+            .where(ApplicationJDVersion.application_id == row.application_id)
+            .order_by(ApplicationJDVersion.version_number.desc())
+            .limit(1)
+        )
+        if type(recorded_jd_version_id) is int and recorded_jd_version_id > 0:
+            states["jd"] = (
+                "current" if current_jd_version_id == recorded_jd_version_id else "source_changed"
+            )
         knowledge_changed = False
         for evidence in snapshot.get("knowledge_evidence", []):
             evidence_id = evidence.get("id") if isinstance(evidence, dict) else None

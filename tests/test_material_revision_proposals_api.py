@@ -106,6 +106,27 @@ def test_api_generates_reviews_and_accepts_selected_change(tmp_path) -> None:
     assert accepted.json()["result_resume"]["is_master"] is False
 
 
+def test_api_rejects_material_proposal_when_kit_jd_is_expired(tmp_path) -> None:
+    client, app, _resume = _ready_client(tmp_path)
+    updated = client.post(
+        f"/api/applications/{app['id']}/job-description/versions",
+        json={
+            "jd_text": "Updated FastAPI backend",
+            "source_url": None,
+            "expected_current_version_id": 1,
+            "idempotency_key": "material-stale-kit-jd-01",
+        },
+    )
+    assert updated.status_code == 201
+    response = client.post(
+        f"/api/applications/{app['id']}/material-revision-proposals",
+        json={"instructions": "Highlight API experience", "user_assertions": []},
+    )
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "application_jd_source_conflict"
+    assert client.get(f"/api/applications/{app['id']}/material-revision-proposals").json() == []
+
+
 def test_api_rejects_invalid_model_without_writing_and_hides_deleted_application(tmp_path) -> None:
     class InvalidModel:
         def complete(self, messages, tools):  # type: ignore[no-untyped-def]

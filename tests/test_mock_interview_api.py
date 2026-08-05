@@ -122,6 +122,32 @@ def test_start_and_same_key_replay_are_idempotent(tmp_path):
     assert "请介绍一次" not in first.json()["turn"]["question"]
 
 
+def test_replay_of_frozen_attempt_survives_jd_update(tmp_path):
+    client, app_id, event_id, resume_id = _client(tmp_path)
+    path = f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts"
+    payload = {
+        "resume_id": resume_id,
+        "jd_version_id": 1,
+        "attempt_idempotency_key": "frozen-attempt-replay-01",
+        "initial_question_idempotency_key": "frozen-question-replay-01",
+    }
+    first = client.post(path, json=payload)
+    assert first.status_code in {200, 201, 202}
+    updated = client.post(
+        f"/api/applications/{app_id}/job-description/versions",
+        json={
+            "jd_text": "Updated Python interview JD",
+            "source_url": None,
+            "expected_current_version_id": 1,
+            "idempotency_key": "frozen-attempt-replay-jd-01",
+        },
+    )
+    assert updated.status_code == 201
+    replay = client.post(path, json=payload)
+    assert replay.status_code in {200, 202}
+    assert replay.json()["attempt_id"] == first.json()["attempt_id"]
+
+
 def test_contract_failure_logs_only_safe_category(tmp_path):
     client, app_id, event_id, resume_id = _client(tmp_path, _InvalidQuestionModel())
     path = f"/api/applications/{app_id}/events/{event_id}/mock-interview/attempts"

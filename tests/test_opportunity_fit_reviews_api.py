@@ -362,6 +362,52 @@ def test_v2_confirmation_checks_application_before_consuming_token(tmp_path) -> 
     assert correct.json()["stage_status"] == "confirmed"
 
 
+def test_v2_deep_rejects_expired_confirmed_triage_parent(tmp_path) -> None:
+    client, application, resume = _ready(tmp_path, V2ReviewModel())
+    path = f"/api/applications/{application['id']}/opportunity-fit-reviews"
+    triage = client.post(
+        path,
+        json={
+            "schema_version": 2,
+            "resume_id": resume["id"],
+            "jd_version_id": application["jd_version_id"],
+            "jd_source_label": "copy",
+            "candidate_assertions": [],
+            "idempotency_key": "c6e6f3a0-75c7-477c-a560-8fdc67ec6bf6",
+        },
+    )
+    assert triage.status_code == 201, triage.text
+    triage_body = triage.json()
+    confirmed = client.post(
+        f"{path}/{triage_body['review_id']}/triage/{triage_body['stage_id']}/confirm",
+        json={"confirmation_token": triage_body["confirmation_token"]},
+    )
+    assert confirmed.status_code == 200
+    updated = client.post(
+        f"/api/applications/{application['id']}/job-description/versions",
+        json={
+            "jd_text": "Updated backend JD",
+            "source_url": None,
+            "expected_current_version_id": application["jd_version_id"],
+            "idempotency_key": "deep-stale-parent-jd-01",
+        },
+    )
+    assert updated.status_code == 201
+    deep = client.post(
+        f"{path}/{triage_body['review_id']}/deep-review",
+        json={
+            "schema_version": 2,
+            "parent_triage_stage_id": triage_body["stage_id"],
+            "resume_id": resume["id"],
+            "jd_source_label": "copy",
+            "candidate_assertions": [],
+            "idempotency_key": "f9b4a7cc-6e4c-4a87-9f64-3e22d3491e5b",
+        },
+    )
+    assert deep.status_code == 409
+    assert deep.json()["error_code"] == "opportunity_fit_source_conflict"
+
+
 def test_v2_source_cas_rejects_jd_change_after_provider_claim(tmp_path, monkeypatch) -> None:
     entered = Event()
     release = Event()
