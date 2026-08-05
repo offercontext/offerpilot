@@ -732,12 +732,26 @@ def _save_application_jd_version(
     jd_text: str,
     idempotency_key: str,
 ) -> int:
+    expected_current_version_id: int | None = None
+    get_current = getattr(client, "get", None)
+    if callable(get_current):
+        current_response = get_current(f"/api/applications/{application_id}/job-description")
+        if current_response.status_code == 200:
+            current_body = current_response.json()
+            current = current_body.get("current") if isinstance(current_body, dict) else None
+            current_id = current.get("id") if isinstance(current, dict) else None
+            if current_id is not None:
+                if type(current_id) is not int or current_id <= 0:
+                    raise RuntimeError("current application JD version response was invalid")
+                expected_current_version_id = current_id
+        elif current_response.status_code != 404:
+            _assert_status(current_response.status_code, 200, "application_jd_current")
     response = client.post(
         f"/api/applications/{application_id}/job-description/versions",
         json={
             "jd_text": jd_text,
             "source_url": None,
-            "expected_current_version_id": None,
+            "expected_current_version_id": expected_current_version_id,
             "idempotency_key": idempotency_key,
         },
     )

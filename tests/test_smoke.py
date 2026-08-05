@@ -48,6 +48,7 @@ from offerpilot.smoke import (
     _run_real_ai_mock_interview_smoke,
     _run_real_ai_material_proposal_smoke,
     _run_real_ai_opportunity_fit_smoke,
+    _save_application_jd_version,
     _validate_interview_preparation_proposal_response,
     run_core_smoke,
     run_http_smoke,
@@ -720,6 +721,37 @@ def test_real_ai_material_proposal_smoke_allows_empty_changes_and_hides_snapshot
     assert [step.name for step in steps] == ["http_material_proposal"]
     assert client.created_resume_ids == [41, 42]
     assert resume_ids == [41, 42]
+
+
+def test_save_application_jd_version_uses_current_version_cas():
+    class Response:
+        status_code = 200
+
+        def __init__(self, payload: dict[str, object]) -> None:
+            self._payload = payload
+
+        def json(self) -> dict[str, object]:
+            return self._payload
+
+    class Client:
+        def __init__(self) -> None:
+            self.payload: dict[str, object] | None = None
+
+        def get(self, path: str) -> Response:
+            assert path == "/api/applications/7/job-description"
+            return Response({"current": {"id": 13}})
+
+        def post(self, path: str, json: dict[str, object]) -> Response:
+            assert path == "/api/applications/7/job-description/versions"
+            self.payload = json
+            response = Response({"id": 14})
+            response.status_code = 201
+            return response
+
+    client = Client()
+    assert _save_application_jd_version(client, 7, "Updated JD", "smoke-jd-cas-01") == 14
+    assert client.payload is not None
+    assert client.payload["expected_current_version_id"] == 13
 
 
 def test_real_ai_http_smoke_isolates_config_and_removes_temporary_data(monkeypatch, tmp_path):
@@ -1554,6 +1586,8 @@ def test_real_ai_opportunity_fit_smoke_requires_verified_triage_without_snapshot
         def get(self, path: str) -> Response:
             if path == "/api/applications/7":
                 return Response({"company_name": "Smoke Company", "position_name": "Smoke Position"}, status_code=200)
+            if path == "/api/applications/7/job-description":
+                return Response({"current": None}, status_code=200)
             if "schema_version=2" in path:
                 return Response(
                     {"schema_version": 2, "stages": [{"stage": "triage"}, {"stage": "deep_review"}]},
