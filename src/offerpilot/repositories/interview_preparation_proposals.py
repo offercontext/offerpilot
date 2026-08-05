@@ -36,6 +36,7 @@ from offerpilot.repositories.json_contract import canonical_json, parse_json_obj
 
 LEASE_SECONDS = 30
 HEARTBEAT_INTERVAL_SECONDS = 10
+HEARTBEAT_RETRY_ATTEMPTS = 2
 IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 
 
@@ -67,6 +68,13 @@ class InterviewPreparationGenerationResult:
     created: bool
     pending: bool
     attempt_status: str
+
+
+@dataclass
+class _InterviewPreparationOwnedGeneration:
+    attempt_id: int
+    owner_revision: int
+    owner_token: str
 
 
 def _attempt_invalidated() -> InterviewPreparationConflictError:
@@ -133,44 +141,52 @@ class _InterviewPreparationLeaseHeartbeat:
             self._thread.join()
 
     def renew_once(self) -> bool:
-        try:
-            with self._session_factory() as session:
-                session.execute(text("BEGIN IMMEDIATE"))
-                result = session.execute(
-                    update(InterviewPreparationProposal)
-                    .where(InterviewPreparationProposal.id == self._attempt_id)
-                    .where(InterviewPreparationProposal.attempt_status == "generating")
-                    .where(
-                        InterviewPreparationProposal.generation_revision
-                        == self._owner_revision
-                    )
-                    .where(
-                        InterviewPreparationProposal.provider_call_token == self._owner_token
-                    )
-                    .values(
-                        provider_lease_until=_to_db_naive(
-                            self._now_factory() + timedelta(seconds=self._lease_seconds)
-                        )
+        for attempt in range(HEARTBEAT_RETRY_ATTEMPTS):
+            try:
+                return self._renew_once()
+            except SQLAlchemyError:
+                if attempt + 1 == HEARTBEAT_RETRY_ATTEMPTS:
+                    self.heartbeat_uncertain = True
+                    return False
+
+        self.heartbeat_uncertain = True
+        return False
+
+    def _renew_once(self) -> bool:
+        with self._session_factory() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            result = session.execute(
+                update(InterviewPreparationProposal)
+                .where(InterviewPreparationProposal.id == self._attempt_id)
+                .where(InterviewPreparationProposal.attempt_status == "generating")
+                .where(
+                    InterviewPreparationProposal.generation_revision
+                    == self._owner_revision
+                )
+                .where(
+                    InterviewPreparationProposal.provider_call_token == self._owner_token
+                )
+                .values(
+                    provider_lease_until=_to_db_naive(
+                        self._now_factory() + timedelta(seconds=self._lease_seconds)
                     )
                 )
-                if getattr(result, "rowcount", 0) == 1:
-                    session.commit()
-                    self.heartbeat_count += 1
-                    return True
-                row = session.get(InterviewPreparationProposal, self._attempt_id)
-                session.rollback()
-                if (
-                    row is None
-                    or row.attempt_status != "generating"
-                    or row.generation_revision != self._owner_revision
-                    or row.provider_call_token != self._owner_token
-                ):
-                    self.confirmed_ownership_lost = True
-                else:
-                    self.heartbeat_uncertain = True
-                return False
-        except SQLAlchemyError:
-            self.heartbeat_uncertain = True
+            )
+            if getattr(result, "rowcount", 0) == 1:
+                session.commit()
+                self.heartbeat_count += 1
+                return True
+            row = session.get(InterviewPreparationProposal, self._attempt_id)
+            session.rollback()
+            if (
+                row is None
+                or row.attempt_status != "generating"
+                or row.generation_revision != self._owner_revision
+                or row.provider_call_token != self._owner_token
+            ):
+                self.confirmed_ownership_lost = True
+            else:
+                self.heartbeat_uncertain = True
             return False
 
     def _run(self) -> None:
@@ -220,6 +236,9 @@ class InterviewPreparationProposalsRepository:
                 "idempotency_key must be 16-128 ASCII characters",
                 "interview_preparation_invalid_request",
             )
+        owner_attempt_id: int
+        owner_revision: int
+        owner_token: str
         with self._session_factory() as session:
             session.execute(text("BEGIN IMMEDIATE"))
             snapshot = _build_snapshot(
@@ -251,29 +270,34 @@ class InterviewPreparationProposalsRepository:
                 )
                 if result is None:
                     raise InterviewPreparationProviderError()
-                return result
-
-            token = uuid4().hex
-            row = InterviewPreparationProposal(
-                application_id=application_id,
-                application_event_id=event_id,
-                resume_id=resume_id,
-                idempotency_key=idempotency_key,
-                attempt_status="generating",
-                generation_revision=1,
-                provider_call_token=token,
-                provider_lease_until=self._lease_until(),
-                input_snapshot_json=canonical_json(snapshot),
-                source_fingerprint=fingerprint,
-            )
-            session.add(row)
-            session.commit()
-            owner_revision = 1
-            owner_token = token
+                if isinstance(result, InterviewPreparationGenerationResult):
+                    return result
+                owner_attempt_id = result.attempt_id
+                owner_revision = result.owner_revision
+                owner_token = result.owner_token
+            else:
+                token = uuid4().hex
+                row = InterviewPreparationProposal(
+                    application_id=application_id,
+                    application_event_id=event_id,
+                    resume_id=resume_id,
+                    idempotency_key=idempotency_key,
+                    attempt_status="generating",
+                    generation_revision=1,
+                    provider_call_token=token,
+                    provider_lease_until=self._lease_until(),
+                    input_snapshot_json=canonical_json(snapshot),
+                    source_fingerprint=fingerprint,
+                )
+                session.add(row)
+                session.commit()
+                owner_attempt_id = row.id
+                owner_revision = 1
+                owner_token = token
 
         return self._call_and_store(
             model=model,
-            attempt_id=row.id,
+            attempt_id=owner_attempt_id,
             owner_revision=owner_revision,
             owner_token=owner_token,
             application_id=application_id,
@@ -342,6 +366,8 @@ class InterviewPreparationProposalsRepository:
                 idempotency_key=idempotency_key,
                 on_diagnostic=None,
             )
+            if isinstance(result, _InterviewPreparationOwnedGeneration):
+                raise AssertionError("preflight cannot claim an expired attempt")
             return result
 
     def list(self, application_id: int) -> list[InterviewPreparationProposal]:
@@ -391,7 +417,7 @@ class InterviewPreparationProposalsRepository:
         user_assertions: List[str],
         idempotency_key: str,
         on_diagnostic: Any | None,
-    ) -> InterviewPreparationGenerationResult | None:
+    ) -> InterviewPreparationGenerationResult | _InterviewPreparationOwnedGeneration | None:
         if row.attempt_status == "invalidated":
             raise _attempt_invalidated()
         if row.source_fingerprint != fingerprint:
@@ -467,21 +493,10 @@ class InterviewPreparationProposalsRepository:
                 )
             return _result_for_existing(refreshed)
         session.commit()
-        return self._call_and_store(
-            model=model,
+        return _InterviewPreparationOwnedGeneration(
             attempt_id=row.id,
             owner_revision=old_revision + 1,
             owner_token=new_token,
-            application_id=application_id,
-            event_id=event_id,
-            resume_id=resume_id,
-            jd_text=jd_text,
-            knowledge_selections=knowledge_selections,
-            user_assertions=user_assertions,
-            idempotency_key=idempotency_key,
-            source_fingerprint=fingerprint,
-            snapshot=snapshot,
-            on_diagnostic=on_diagnostic,
         )
 
     def _lease_until(self) -> datetime:

@@ -23,6 +23,7 @@ from offerpilot.models import (
     Resume,
 )
 from offerpilot.repositories.interview_knowledge_capture import InterviewKnowledgeCaptureRepository
+from offerpilot.repositories.json_contract import canonical_json
 from offerpilot.repositories.interview_preparation_proposals import (
     InterviewPreparationConflictError,
     InterviewPreparationNotFound,
@@ -78,17 +79,38 @@ class CountingWaiter(ControlledWaiter):
 
 
 class FailingHeartbeatSessionFactory:
-    def __init__(self, factory) -> None:  # type: ignore[no-untyped-def]
+    def __init__(self, factory, *, fail_calls: int = 1) -> None:  # type: ignore[no-untyped-def]
         self.factory = factory
+        self.fail_calls = fail_calls
         self.calls = 0
         self.failed = Event()
 
     def __call__(self):  # type: ignore[no-untyped-def]
         self.calls += 1
-        if self.calls == 1:
+        if self.calls <= self.fail_calls:
             self.failed.set()
             raise SQLAlchemyError("injected heartbeat lock failure")
         return self.factory()
+
+
+class DeferredFailingHeartbeatSessionFactory:
+    def __init__(self, factory, *, fail_calls: int) -> None:  # type: ignore[no-untyped-def]
+        self._factory = factory
+        self._failing = FailingHeartbeatSessionFactory(factory, fail_calls=fail_calls)
+        self.enabled = False
+
+    @property
+    def calls(self) -> int:
+        return self._failing.calls
+
+    @property
+    def failed(self) -> Event:
+        return self._failing.failed
+
+    def __call__(self):  # type: ignore[no-untyped-def]
+        if not self.enabled:
+            return self._factory()
+        return self._failing()
 
 
 class CommitObservingSessionFactory:
@@ -109,6 +131,35 @@ class CommitObservingSessionFactory:
 
         session.commit = commit  # type: ignore[method-assign]
         return session
+
+
+class TrackingSession:
+    def __init__(self, session, factory) -> None:  # type: ignore[no-untyped-def]
+        self._session = session
+        self._factory = factory
+
+    def __enter__(self):  # type: ignore[no-untyped-def]
+        self._session.__enter__()
+        self._factory.active += 1
+        return self
+
+    def __exit__(self, *args):  # type: ignore[no-untyped-def]
+        try:
+            return self._session.__exit__(*args)
+        finally:
+            self._factory.active -= 1
+
+    def __getattr__(self, name):  # type: ignore[no-untyped-def]
+        return getattr(self._session, name)
+
+
+class TrackingSessionFactory:
+    def __init__(self, factory) -> None:  # type: ignore[no-untyped-def]
+        self.factory = factory
+        self.active = 0
+
+    def __call__(self):  # type: ignore[no-untyped-def]
+        return TrackingSession(self.factory(), self)
 
 
 def _as_aware_for_test(value: datetime | None) -> datetime | None:
@@ -158,6 +209,45 @@ class SafeEmptyModel:
         )
 
 
+class DistinctPreparationModel(SafeEmptyModel):
+    def __init__(self, label: str) -> None:
+        super().__init__()
+        self.label = label
+
+    def complete(self, messages, tools):  # type: ignore[no-untyped-def]
+        self.calls += 1
+        payload = {
+            "preparation_directions": [
+                {
+                    "id": f"direction-{self.label}",
+                    "text": f"Prepare the {self.label} direction.",
+                    "evidence_refs": [
+                        {
+                            "source": "jd",
+                            "path": "/jd/text",
+                            "excerpt": "Build reliable APIs with Python.",
+                        }
+                    ],
+                }
+            ],
+            "story_prompts": [],
+            "review_points": [],
+            "interviewer_questions": [],
+            "items_to_clarify": [],
+        }
+        return Assistant(content=json.dumps(payload, ensure_ascii=False))
+
+
+class SessionClosedModel(SafeEmptyModel):
+    def __init__(self, session_factory) -> None:  # type: ignore[no-untyped-def]
+        super().__init__()
+        self.session_factory = session_factory
+
+    def complete(self, messages, tools):  # type: ignore[no-untyped-def]
+        assert self.session_factory.active == 0
+        return super().complete(messages, tools)
+
+
 class FailingModel:
     supports_json_schema = False
 
@@ -184,6 +274,18 @@ class BlockingSafeEmptyModel(SafeEmptyModel):
         return Assistant(
             content=json.dumps(safe_empty_interview_preparation_proposal(), ensure_ascii=False)
         )
+
+
+class BlockingDistinctPreparationModel(DistinctPreparationModel):
+    def __init__(self, label: str) -> None:
+        super().__init__(label)
+        self.entered = Event()
+        self.release = Event()
+
+    def complete(self, messages, tools):  # type: ignore[no-untyped-def]
+        self.entered.set()
+        assert self.release.wait(5)
+        return super().complete(messages, tools)
 
 
 class EventDeletingModel(SafeEmptyModel):
@@ -275,12 +377,51 @@ def test_heartbeat_renew_once_extends_lease_with_fenced_owner(tmp_path) -> None:
             )
 
 
-def test_heartbeat_uncertain_stops_future_renewals_but_allows_final_fencing_cas(
+def test_heartbeat_retries_one_transient_lock_and_renews_once(tmp_path) -> None:
+    factory, ids = _setup(tmp_path)
+    clock = ManualClock(datetime(2026, 8, 4, 10, 0, tzinfo=timezone.utc))
+    failing_factory = FailingHeartbeatSessionFactory(factory, fail_calls=1)
+    token = "heartbeat-retry-token"
+    with factory() as session:
+        row = InterviewPreparationProposal(
+            application_id=ids[0],
+            application_event_id=ids[1],
+            resume_id=ids[2],
+            idempotency_key="heartbeat-retry-key",
+            attempt_status="generating",
+            generation_revision=1,
+            provider_call_token=token,
+            provider_lease_until=(clock.now() + timedelta(seconds=30)).replace(
+                tzinfo=None
+            ),
+            input_snapshot_json="{}",
+            source_fingerprint="source-fingerprint",
+        )
+        session.add(row)
+        session.commit()
+
+    heartbeat = _InterviewPreparationLeaseHeartbeat(
+        session_factory=failing_factory,
+        attempt_id=row.id,
+        owner_revision=1,
+        owner_token=token,
+        lease_seconds=30,
+        now_factory=clock.now,
+    )
+
+    assert heartbeat.renew_once() is True
+    assert failing_factory.calls == 2
+    assert heartbeat.heartbeat_count == 1
+    assert heartbeat.heartbeat_uncertain is False
+    assert heartbeat.confirmed_ownership_lost is False
+
+
+def test_heartbeat_uncertain_stops_future_renewals(
     tmp_path,
 ) -> None:
     factory, ids = _setup(tmp_path)
     clock = ManualClock(datetime(2026, 8, 4, 10, 0, tzinfo=timezone.utc))
-    failing_factory = FailingHeartbeatSessionFactory(factory)
+    failing_factory = FailingHeartbeatSessionFactory(factory, fail_calls=2)
     waiter = CountingWaiter()
     with factory() as session:
         row = InterviewPreparationProposal(
@@ -318,7 +459,44 @@ def test_heartbeat_uncertain_stops_future_renewals_but_allows_final_fencing_cas(
     waiter.release_tick()
     assert waiter.second_call.wait(0.1) is False
     heartbeat.stop_and_join()
-    assert failing_factory.calls == 1
+    assert failing_factory.calls == 2
+
+
+def test_heartbeat_uncertain_still_completes_final_fencing_cas(tmp_path) -> None:
+    factory, ids = _setup(tmp_path)
+    clock = ManualClock(datetime(2026, 8, 4, 10, 0, tzinfo=timezone.utc))
+    heartbeat_factory = DeferredFailingHeartbeatSessionFactory(factory, fail_calls=2)
+    waiter = ControlledWaiter()
+    repository = InterviewPreparationProposalsRepository(
+        heartbeat_factory,
+        lease_seconds=1,
+        heartbeat_interval_seconds=10,
+        now_factory=clock.now,
+        waiter=waiter,
+    )
+    model = BlockingSafeEmptyModel()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(_generate, repository, ids, "uncertain-final-cas-key", model)
+        assert model.entered.wait(5)
+        assert waiter.entered.wait(5)
+        heartbeat_factory.enabled = True
+        waiter.release_tick()
+        assert heartbeat_factory.failed.wait(1)
+        model.release.set()
+        result = future.result(timeout=5)
+
+    assert result.created is True
+    assert result.pending is False
+    assert result.attempt_status == "ready"
+    assert model.calls == 1
+    assert heartbeat_factory.calls == 3
+    with factory() as session:
+        row = session.scalar(select(InterviewPreparationProposal))
+        assert row is not None
+        assert row.attempt_status == "ready"
+        assert row.proposal_status == "safe_empty"
+        assert row.proposal_json == canonical_json(safe_empty_interview_preparation_proposal())
 
 
 def test_slow_provider_renews_expired_lease_and_calls_provider_once(tmp_path) -> None:
@@ -611,6 +789,32 @@ def test_expired_lease_takeover_atomically_bumps_revision_and_only_one_wins(tmp_
     factory_b.kw["bind"].dispose()
 
 
+def test_takeover_closes_database_session_before_provider_call(tmp_path) -> None:
+    factory, ids = _setup(tmp_path)
+    clock = ManualClock(datetime(2026, 8, 4, 10, 0, tzinfo=timezone.utc))
+    seed_repository = InterviewPreparationProposalsRepository(factory, now_factory=clock.now)
+    with pytest.raises(InterviewPreparationProviderError):
+        _generate(seed_repository, ids, "session-close-key-0001", FailingModel())
+
+    with factory() as session:
+        row = session.scalar(select(InterviewPreparationProposal))
+        assert row is not None
+        row.provider_lease_until = (clock.now() - timedelta(seconds=1)).replace(tzinfo=None)
+        session.commit()
+
+    tracking_factory = TrackingSessionFactory(factory)
+    repository = InterviewPreparationProposalsRepository(
+        tracking_factory,
+        now_factory=clock.now,
+    )
+    result = _generate(repository, ids, "session-close-key-0001", SessionClosedModel(tracking_factory))
+
+    assert result.attempt_status == "ready"
+    assert result.pending is False
+    assert tracking_factory.active == 0
+    factory.kw["bind"].dispose()
+
+
 def test_late_old_provider_result_cannot_overwrite_new_owner_ready_result(tmp_path) -> None:
     factory_a, ids = _setup(tmp_path)
     factory_b = init_database(tmp_path / "data.db")
@@ -631,7 +835,7 @@ def test_late_old_provider_result_cannot_overwrite_new_owner_ready_result(tmp_pa
         row.provider_lease_until = (clock.now() - timedelta(seconds=1)).replace(tzinfo=None)
         session.commit()
 
-    old_model = BlockingSafeEmptyModel()
+    old_model = BlockingDistinctPreparationModel("old")
     with ThreadPoolExecutor(max_workers=2) as pool:
         old_future = pool.submit(
             repository_a._call_and_store,
@@ -654,7 +858,7 @@ def test_late_old_provider_result_cannot_overwrite_new_owner_ready_result(tmp_pa
             repository_b,
             ids,
             "late-takeover-key-01",
-            SafeEmptyModel(),
+            DistinctPreparationModel("new"),
         )
         old_model.release.set()
         old_result = old_future.result(timeout=5)
@@ -666,7 +870,12 @@ def test_late_old_provider_result_cannot_overwrite_new_owner_ready_result(tmp_pa
         assert row is not None
         assert row.attempt_status == "ready"
         assert row.generation_revision == 2
+        assert row.proposal_hash == new_result.proposal.proposal_hash  # type: ignore[union-attr]
         assert row.proposal_json == new_result.proposal.proposal_json  # type: ignore[union-attr]
+        assert '"direction-new"' in row.proposal_json
+        assert '"direction-old"' not in row.proposal_json
+        assert row.provider_call_token == ""
+        assert row.provider_lease_until is None
     factory_a.kw["bind"].dispose()
     factory_b.kw["bind"].dispose()
 
