@@ -11,7 +11,7 @@ HARNESS = ROOT / "scripts" / "application-jd-real-ai-browser-harness.ps1"
 def test_application_jd_harness_parses_and_uses_explicit_stage_contract() -> None:
     command = (
         "$errors = $null; "
-        "[System.Management.Automation.Language.Parser]::ParseFile(" 
+        "[System.Management.Automation.Language.Parser]::ParseFile("
         f"'{HARNESS}', [ref]$null, [ref]$errors) | Out-Null; "
         "if ($errors.Count) { exit 1 }; Write-Output 'parse-ok'"
     )
