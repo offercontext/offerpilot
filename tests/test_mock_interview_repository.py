@@ -9,6 +9,7 @@ from offerpilot.db import init_database
 from offerpilot.models import (
     Application,
     ApplicationEvent,
+    ApplicationJDVersion,
     InterviewPreparationProposal,
     MockInterviewAttempt,
     MockInterviewTurn,
@@ -102,6 +103,53 @@ def test_answer_updates_transcript_not_source_fingerprint(tmp_path):
     assert updated.transcript_fingerprint != attempt.transcript_fingerprint
     assert updated.current_turn_no == 1
     assert turn.question_idempotency_key == "question-1"
+
+
+def test_jd_update_marks_source_changed_without_interrupting_frozen_attempt(tmp_path):
+    factory = init_database(tmp_path / "data.db")
+    app_id, event_id, _, resume_id, _ = _seed(factory)
+    with factory() as session:
+        version = ApplicationJDVersion(
+            application_id=app_id,
+            version_number=1,
+            jd_text="JD v1",
+            content_sha256="version-one",
+            source_kind="ui",
+            idempotency_key="jd-version-one",
+            request_fingerprint_sha256="request-one",
+        )
+        session.add(version)
+        session.commit()
+        version_id = version.id
+    repo = MockInterviewRepository(factory)
+    result = _start_ready(
+        repo,
+        app_id,
+        event_id,
+        resume_id,
+        "JD v1",
+        None,
+        "attempt-1",
+        "question-1",
+        jd_version_id=version_id,
+    )
+    with factory() as session:
+        session.add(
+            ApplicationJDVersion(
+                application_id=app_id,
+                version_number=2,
+                jd_text="JD v2",
+                content_sha256="version-two",
+                source_kind="ui",
+                idempotency_key="jd-version-two",
+                request_fingerprint_sha256="request-two",
+            )
+        )
+        session.commit()
+
+    assert repo.source_status(result.attempt.id) == "source_changed"
+    updated = repo.submit_answer(result.attempt.id, 1, "继续使用冻结的 JD 回答。", "answer-1")
+    assert updated.id == result.attempt.id
 
 
 def test_same_attempt_key_same_input_replays_existing_attempt(tmp_path):

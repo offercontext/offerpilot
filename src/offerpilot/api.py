@@ -1821,6 +1821,8 @@ def create_app(
         existing = material_kits.get(kit_id)
         if existing is None:
             return error_response(404, "Material kit not found")
+        if "jd_snapshot" in payload and payload["jd_snapshot"] != existing.jd_snapshot:
+            return error_response(409, "Material kit JD source is immutable", code="application_jd_source_conflict")
         try:
             content_json = (
                 _compact_json_value(payload["content_json"])
@@ -1837,9 +1839,7 @@ def create_app(
             jd_analysis_id=int(payload["jd_analysis_id"])
             if payload.get("jd_analysis_id") is not None
             else existing.jd_analysis_id,
-            jd_snapshot=str(payload["jd_snapshot"])
-            if payload.get("jd_snapshot") is not None
-            else existing.jd_snapshot,
+            jd_snapshot=existing.jd_snapshot,
             jd_version_id=existing.jd_version_id,
             status=str(payload.get("status") or existing.status),
             content_json=content_json,

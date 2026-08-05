@@ -14,6 +14,7 @@ from offerpilot.models import (
     ApplicationEvent,
     MockInterviewFeedbackProposal,
     MockInterviewAttempt,
+    ApplicationJDVersion,
     MockInterviewReviewDraft,
     MockInterviewTurn,
     Resume,
@@ -802,6 +803,16 @@ class MockInterviewRepository:
                 self._assert_attempt_sources(session, attempt)
             except MockInterviewSourceChanged:
                 return "source_changed"
+            snapshot = json.loads(attempt.input_snapshot_json)
+            recorded_version_id = snapshot.get("jd_version_id")
+            if isinstance(recorded_version_id, int):
+                latest_version = session.scalar(
+                    select(ApplicationJDVersion)
+                    .where(ApplicationJDVersion.application_id == attempt.application_id)
+                    .order_by(ApplicationJDVersion.version_number.desc())
+                )
+                if latest_version is None or latest_version.id != recorded_version_id:
+                    return "source_changed"
             return "current"
 
     @staticmethod
