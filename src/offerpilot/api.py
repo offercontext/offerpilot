@@ -2322,7 +2322,9 @@ def create_app(
                 resolved_data_dir,
                 "WARNING",
                 "interview_preparation_generation category=provider_error "
-                "repair_attempted=false retry_count=0 duration_ms=0 provider_request_id=",
+                'failure_categories=["provider_error"] '
+                "repair_attempted=false retry_count=0 duration_ms=0 "
+                "provider_request_id_hash=",
             )
             return error_response(
                 502,
@@ -7639,7 +7641,8 @@ def _interview_preparation_proposal_json(proposal: Any) -> dict[str, Any]:
 
 
 def _interview_preparation_diagnostic_message(diagnostic: dict[str, Any]) -> str:
-    category = str(diagnostic.get("failure_category") or "unknown")
+    raw_category = diagnostic.get("failure_category")
+    category = raw_category[:64] if isinstance(raw_category, str) and raw_category else "none"
     repair_attempted = "true" if diagnostic.get("repair_attempted") is True else "false"
     try:
         retry_count = max(0, min(int(diagnostic.get("retry_count") or 0), 1))
@@ -7649,12 +7652,23 @@ def _interview_preparation_diagnostic_message(diagnostic: dict[str, Any]) -> str
         duration_ms = max(0, int(diagnostic.get("duration_ms") or 0))
     except (TypeError, ValueError):
         duration_ms = 0
-    request_id = str(diagnostic.get("provider_request_id") or "")[:128]
+    raw_categories = diagnostic.get("failure_categories")
+    failure_categories = (
+        [item[:64] for item in raw_categories if isinstance(item, str)][:2]
+        if isinstance(raw_categories, list)
+        else []
+    )
+    categories_json = json.dumps(
+        failure_categories,
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+    request_id_hash = str(diagnostic.get("provider_request_id_hash") or "")[:64]
     return (
         "interview_preparation_generation "
-        f"category={category} repair_attempted={repair_attempted} "
-        f"retry_count={retry_count} duration_ms={duration_ms} "
-        f"provider_request_id={request_id}"
+        f"category={category} failure_categories={categories_json} "
+        f"repair_attempted={repair_attempted} retry_count={retry_count} "
+        f"duration_ms={duration_ms} provider_request_id_hash={request_id_hash}"
     )
 
 

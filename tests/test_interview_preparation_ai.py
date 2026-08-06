@@ -252,6 +252,90 @@ def test_two_invalid_outputs_return_validated_safe_empty_without_model_text() ->
     assert "candidate secret" not in json.dumps(result, ensure_ascii=False)
 
 
+def test_diagnostic_distinguishes_direct_safe_empty_from_contract_failure() -> None:
+    diagnostics: list[dict[str, object]] = []
+    model = FakeModel([safe_empty_interview_preparation_proposal()])
+
+    result = generate_interview_preparation_proposal(
+        model, _snapshot(), on_diagnostic=diagnostics.append
+    )
+
+    assert result == safe_empty_interview_preparation_proposal()
+    assert diagnostics == [
+        {
+            "failure_category": None,
+            "failure_categories": [],
+            "repair_attempted": False,
+            "retry_count": 0,
+            "duration_ms": diagnostics[0]["duration_ms"],
+            "provider_request_id_hash": "",
+        }
+    ]
+    assert isinstance(diagnostics[0]["duration_ms"], int)
+
+
+def test_diagnostic_records_repair_categories_and_provider_request_id_hash() -> None:
+    class ProviderIdModel:
+        supports_json_schema = False
+
+        def __init__(self) -> None:
+            self.responses = [{"unexpected": "raw model output"}, _proposal()]
+            self.calls = 0
+
+        def complete(self, messages, tools, response_format=None):  # type: ignore[no-untyped-def]
+            self.calls += 1
+            return Assistant(
+                content=json.dumps(self.responses.pop(0), ensure_ascii=False),
+                provider_blocks={"request_id": "provider-request-id"},
+            )
+
+    diagnostics: list[dict[str, object]] = []
+    result = generate_interview_preparation_proposal(
+        ProviderIdModel(), _snapshot(), on_diagnostic=diagnostics.append
+    )
+
+    assert result == _proposal()
+    assert diagnostics[0]["failure_category"] == "unexpected_field"
+    assert diagnostics[0]["failure_categories"] == ["unexpected_field"]
+    assert diagnostics[0]["repair_attempted"] is True
+    assert diagnostics[0]["retry_count"] == 1
+    assert diagnostics[0]["provider_request_id_hash"] == __import__("hashlib").sha256(
+        b"provider-request-id"
+    ).hexdigest()[:12]
+
+
+def test_diagnostic_preserves_both_contract_failure_categories_without_raw_output() -> None:
+    diagnostics: list[dict[str, object]] = []
+    model = FakeModel(
+        [
+            {
+                "preparation_directions": [{"text": "candidate secret"}],
+                "story_prompts": [],
+                "review_points": [],
+                "interviewer_questions": [],
+                "items_to_clarify": [],
+            },
+            {"unexpected": "raw model output"},
+        ]
+    )
+
+    result = generate_interview_preparation_proposal(
+        model, _snapshot(), on_diagnostic=diagnostics.append
+    )
+
+    encoded = json.dumps(diagnostics, ensure_ascii=False)
+    assert result == safe_empty_interview_preparation_proposal()
+    assert diagnostics[0]["failure_category"] == "unexpected_field"
+    assert diagnostics[0]["failure_categories"] == [
+        "invalid_item_shape",
+        "unexpected_field",
+    ]
+    assert diagnostics[0]["repair_attempted"] is True
+    assert diagnostics[0]["retry_count"] == 1
+    assert "candidate secret" not in encoded
+    assert "raw model output" not in encoded
+
+
 def test_user_assertions_are_saved_in_snapshot_but_absent_from_provider_payload() -> None:
     model = FakeModel([_proposal()])
 

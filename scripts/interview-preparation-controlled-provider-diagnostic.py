@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import tempfile
 import threading
 import time
@@ -12,9 +13,13 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from sqlalchemy import select
 
 from offerpilot.api import create_app
 from offerpilot.config import load_config, resolve_data_dir, save_config
+from offerpilot.db import session_factory_for_data_dir
+from offerpilot.diagnostics import read_recent_log_entries
+from offerpilot.models import InterviewPreparationProposal
 from offerpilot.smoke import _run_real_ai_interview_preparation_smoke, _running_server
 
 
@@ -78,6 +83,103 @@ class _ControlledProviderHandler(BaseHTTPRequestHandler):
         return
 
 
+_GENERATION_DIAGNOSTIC_PATTERN = re.compile(
+    r"^interview_preparation_generation "
+    r"category=(?P<category>\S+) "
+    r"failure_categories=(?P<categories>\[[^ ]*\]) "
+    r"repair_attempted=(?P<repair>true|false) "
+    r"retry_count=(?P<retry>\d+) "
+    r"duration_ms=(?P<duration>\d+) "
+    r"provider_request_id_hash=(?P<request_id_hash>\S*)$"
+)
+
+
+def _read_redacted_generation_diagnostics(data_dir: Path) -> list[dict[str, Any]]:
+    diagnostics: list[dict[str, Any]] = []
+    for entry in read_recent_log_entries(data_dir, limit=500):
+        message = entry.get("message")
+        if not isinstance(message, str):
+            continue
+        match = _GENERATION_DIAGNOSTIC_PATTERN.fullmatch(message)
+        if match is None:
+            continue
+        try:
+            categories = json.loads(match.group("categories"))
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(categories, list) or any(
+            not isinstance(category, str) or len(category) > 64 for category in categories
+        ):
+            continue
+        category = match.group("category")
+        diagnostics.append(
+            {
+                "failure_category": None if category == "none" else category[:64],
+                "failure_categories": categories[:2],
+                "repair_attempted": match.group("repair") == "true",
+                "retry_count": min(int(match.group("retry")), 1),
+                "duration_ms": int(match.group("duration")),
+                "provider_request_id_hash": match.group("request_id_hash")[:64],
+            }
+        )
+    return diagnostics
+
+
+def _count_resume_string_leaves(value: object, *, budget: list[int]) -> int:
+    if budget[0] <= 0:
+        return 0
+    budget[0] -= 1
+    if isinstance(value, str):
+        return 1 if value.strip() else 0
+    if isinstance(value, dict):
+        return sum(_count_resume_string_leaves(item, budget=budget) for item in value.values())
+    if isinstance(value, list):
+        return sum(_count_resume_string_leaves(item, budget=budget) for item in value)
+    return 0
+
+
+def _redacted_evidence_catalog_counts(data_dir: Path) -> dict[str, int]:
+    session_factory = session_factory_for_data_dir(data_dir)
+    try:
+        with session_factory() as session:
+            rows = list(
+                session.scalars(
+                    select(InterviewPreparationProposal).order_by(InterviewPreparationProposal.id)
+                )
+            )
+    finally:
+        engine = session_factory.kw.get("bind")
+        if engine is not None:
+            engine.dispose()
+
+    counts = {
+        "snapshots": 0,
+        "jd_sources": 0,
+        "resume_facts": 0,
+        "knowledge_evidence": 0,
+    }
+    for row in rows:
+        try:
+            snapshot = json.loads(row.input_snapshot_json)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(snapshot, dict):
+            continue
+        counts["snapshots"] += 1
+        jd = snapshot.get("jd")
+        if isinstance(jd, dict) and isinstance(jd.get("text"), str) and jd["text"].strip():
+            counts["jd_sources"] += 1
+        resume = snapshot.get("resume")
+        if isinstance(resume, dict):
+            counts["resume_facts"] += _count_resume_string_leaves(
+                resume.get("content_json"), budget=[10000]
+            )
+        evidence = snapshot.get("knowledge_evidence")
+        if isinstance(evidence, list):
+            counts["knowledge_evidence"] += sum(isinstance(item, dict) for item in evidence)
+    return counts
+
+
 def _controlled_config(source_data: Path, provider_url: str):
     config = load_config(source_data).model_copy(deep=True)
     active = config.active_provider()
@@ -130,6 +232,8 @@ def run_diagnostic(source_data: Path, static_dir: Path | None) -> dict[str, Any]
                     _run_real_ai_interview_preparation_smoke(
                         client, [], application_id, resume_ids
                     )
+                    diagnostics = _read_redacted_generation_diagnostics(data_dir)
+                    evidence_catalog_counts = _redacted_evidence_catalog_counts(data_dir)
                     client.delete(f"/api/applications/{application_id}")
                     for resume_id in resume_ids:
                         client.delete(f"/api/resumes/{resume_id}")
@@ -149,6 +253,8 @@ def run_diagnostic(source_data: Path, static_dir: Path | None) -> dict[str, Any]
         "model": "controlled-interview-preparation",
         "provider_calls": len(_ControlledProviderHandler.calls),
         "responses": _ControlledProviderHandler.calls,
+        "diagnostics": diagnostics,
+        "evidence_catalog_counts": evidence_catalog_counts,
         "elapsed_ms": max(0, int((time.perf_counter() - started) * 1000)),
     }
 

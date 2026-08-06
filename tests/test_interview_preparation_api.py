@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from offerpilot.ai.interview_preparation_proposals import safe_empty_interview_preparation_proposal
 from offerpilot.ai.types import Assistant
-from offerpilot.api import create_app
+from offerpilot.api import _interview_preparation_diagnostic_message, create_app
 
 
 class FakeModel:
@@ -83,6 +83,37 @@ def _payload(resume_id: int, event_id: int, key: str = "attempt-00000001", jd_ve
         "user_assertions": ["I led a migration."],
         "idempotency_key": key,
     }
+
+
+def test_preparation_diagnostic_log_is_redacted_and_keeps_failure_categories() -> None:
+    message = _interview_preparation_diagnostic_message(
+        {
+            "failure_category": "invalid_item_shape",
+            "failure_categories": ["invalid_item_shape", "unexpected_field", "secret"],
+            "repair_attempted": True,
+            "retry_count": 1,
+            "duration_ms": 3210,
+            "provider_request_id_hash": "abc123",
+            "provider_request_id": "provider-request-secret",
+        }
+    )
+
+    assert "failure_categories=[\"invalid_item_shape\",\"unexpected_field\"]" in message
+    assert "provider_request_id_hash=abc123" in message
+    assert "provider_request_secret" not in message
+    assert "provider_request_id=provider-request-secret" not in message
+
+    direct_empty = _interview_preparation_diagnostic_message(
+        {
+            "failure_category": None,
+            "failure_categories": [],
+            "repair_attempted": False,
+            "retry_count": 0,
+            "duration_ms": 12,
+            "provider_request_id_hash": "",
+        }
+    )
+    assert "category=none failure_categories=[]" in direct_empty
 
 
 def test_missing_required_input_returns_422_without_provider_call(tmp_path) -> None:

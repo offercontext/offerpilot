@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from time import perf_counter
 from typing import Any, Callable
@@ -101,14 +102,14 @@ class InterviewPreparationModelError(ValueError):
         validation_category: str | None = None,
         retry_count: int = 0,
         duration_ms: int = 0,
-        provider_request_id: str = "",
+        provider_request_id_hash: str = "",
     ) -> None:
         super().__init__(message)
         self.failure_category = failure_category
         self.validation_category = validation_category or failure_category
         self.retry_count = retry_count
         self.duration_ms = duration_ms
-        self.provider_request_id = provider_request_id
+        self.provider_request_id_hash = provider_request_id_hash
 
 
 InterviewPreparationDiagnosticSink = Callable[[dict[str, Any]], None]
@@ -155,13 +156,13 @@ def generate_interview_preparation_proposal(
         else None
     )
     started_at = perf_counter()
-    last_category = "invalid_json"
-    provider_request_id = ""
+    failure_categories: list[str] = []
+    provider_request_id_hash = ""
     for attempt in range(2):
         user_prompt = (
             initial_prompt
             if attempt == 0
-            else _repair_prompt(last_category)
+            else _repair_prompt(failure_categories[-1])
         )
         try:
             if response_format is None:
@@ -175,16 +176,20 @@ def generate_interview_preparation_proposal(
                     [],
                     response_format=response_format,
                 )
-            provider_request_id = str(assistant.provider_blocks.get("request_id") or "")
+            provider_request_id_hash = _hash_provider_request_id(
+                assistant.provider_blocks.get("request_id")
+            )
         except Exception as exc:
             duration_ms = _elapsed_ms(started_at)
+            failure_categories.append("provider_error")
             _emit_diagnostic(
                 on_diagnostic,
                 failure_category="provider_error",
+                failure_categories=failure_categories,
                 repair_attempted=attempt > 0,
                 retry_count=attempt,
                 duration_ms=duration_ms,
-                provider_request_id=provider_request_id,
+                provider_request_id_hash=provider_request_id_hash,
             )
             raise InterviewPreparationModelError(
                 "model provider request failed",
@@ -192,7 +197,7 @@ def generate_interview_preparation_proposal(
                 validation_category="provider_error",
                 retry_count=attempt,
                 duration_ms=duration_ms,
-                provider_request_id=provider_request_id,
+                provider_request_id_hash=provider_request_id_hash,
             ) from exc
         try:
             payload = parse_json_reply(
@@ -201,23 +206,34 @@ def generate_interview_preparation_proposal(
                 reject_non_finite=True,
                 reject_duplicate_keys=True,
             )
-            return validate_interview_preparation(payload, snapshot)
+            validated = validate_interview_preparation(payload, snapshot)
+            _emit_diagnostic(
+                on_diagnostic,
+                failure_category=failure_categories[-1] if failure_categories else None,
+                failure_categories=failure_categories,
+                repair_attempted=attempt > 0,
+                retry_count=attempt,
+                duration_ms=_elapsed_ms(started_at),
+                provider_request_id_hash=provider_request_id_hash,
+            )
+            return validated
         except InterviewPreparationModelError as exc:
-            last_category = exc.validation_category
+            failure_categories.append(exc.validation_category)
         except (TypeError, ValueError, RuntimeError) as exc:
-            last_category = _parse_failure_category(exc)
-        if last_category not in _REPAIR_CATEGORIES:
-            last_category = "invalid_json"
+            failure_categories.append(_parse_failure_category(exc))
+        if failure_categories[-1] not in _REPAIR_CATEGORIES:
+            failure_categories[-1] = "invalid_json"
 
     safe_empty = safe_empty_interview_preparation_proposal()
     validated_empty = validate_interview_preparation(safe_empty, snapshot)
     _emit_diagnostic(
         on_diagnostic,
-        failure_category=last_category,
+        failure_category=failure_categories[-1] if failure_categories else None,
+        failure_categories=failure_categories,
         repair_attempted=True,
         retry_count=1,
         duration_ms=_elapsed_ms(started_at),
-        provider_request_id=provider_request_id,
+        provider_request_id_hash=provider_request_id_hash,
     )
     return validated_empty
 
@@ -399,23 +415,31 @@ def _assert_finite_json(value: Any) -> None:
 def _emit_diagnostic(
     sink: InterviewPreparationDiagnosticSink | None,
     *,
-    failure_category: str,
+    failure_category: str | None,
+    failure_categories: list[str],
     repair_attempted: bool,
     retry_count: int,
     duration_ms: int,
-    provider_request_id: str,
+    provider_request_id_hash: str,
 ) -> None:
     if sink is None:
         return
     sink(
         {
             "failure_category": failure_category,
+            "failure_categories": [str(item) for item in failure_categories[:2]],
             "repair_attempted": repair_attempted,
             "retry_count": retry_count,
             "duration_ms": duration_ms,
-            "provider_request_id": provider_request_id,
+            "provider_request_id_hash": provider_request_id_hash,
         }
     )
+
+
+def _hash_provider_request_id(value: object) -> str:
+    if not isinstance(value, str) or not value:
+        return ""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
 
 
 def _elapsed_ms(started_at: float) -> int:
