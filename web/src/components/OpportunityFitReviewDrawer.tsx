@@ -19,6 +19,7 @@ import {
   createOpportunityFitV2Triage,
   confirmOpportunityFitV2Triage,
   createOpportunityFitV2DeepReview,
+  findOpportunityFitV2SourceConflictStage,
   getOpportunityFitReview,
   getOpportunityFitV2Review,
   listOpportunityFitReviews,
@@ -251,6 +252,26 @@ export default function OpportunityFitReviewDrawer({
     errorCode(error) === 'opportunity_fit_triage_confirmation_consumed'
   );
 
+  const isSourceConflict = (error: unknown): boolean => {
+    const code = errorCode(error);
+    return code === 'application_jd_source_conflict' || code === 'opportunity_fit_source_conflict';
+  };
+
+  const sourceConflictCopy = '岗位资料版本已变化，当前评估仅供只读查看。';
+
+  const recoverSourceConflict = async (
+    stage: 'triage' | 'deep_review',
+    idempotencyKey: string,
+    reviewID?: number,
+  ): Promise<OpportunityFitV2StageResponse | null> => {
+    if (!application) return null;
+    try {
+      return await findOpportunityFitV2SourceConflictStage(application.id, stage, idempotencyKey, reviewID);
+    } catch {
+      return null;
+    }
+  };
+
   const createMutation = useMutation({
     mutationFn: (input: Parameters<typeof createOpportunityFitV2Triage>[1]) => (
       createOpportunityFitV2Triage(application!.id, input)
@@ -268,7 +289,22 @@ export default function OpportunityFitReviewDrawer({
         error: ['generating', 'provider_unknown'].includes(nextReview.stage_status) ? unknownResultCopy : null,
       });
     },
-    onError: (error, input) => {
+    onError: async (error, input) => {
+      if (isSourceConflict(error)) {
+        const conflict = await recoverSourceConflict('triage', input.idempotency_key);
+        if (conflict) {
+          setV2Triage(conflict);
+          setStage('review');
+          setActionError(sourceConflictCopy);
+          onDraftChange?.({
+            triage: conflict,
+            triageKey: null,
+            resultUnknown: false,
+            error: sourceConflictCopy,
+          });
+          return;
+        }
+      }
       const unknown = isProviderUnknown(error);
       setActionError(unknown ? unknownResultCopy : getOpportunityFitErrorMessage(error));
       onDraftChange?.({
@@ -302,7 +338,12 @@ export default function OpportunityFitReviewDrawer({
         onDraftChange?.({ resultUnknown: true, error: unknownResultCopy });
         return;
       }
-      setActionError(getOpportunityFitErrorMessage(error));
+      const message = getOpportunityFitErrorMessage(error);
+      if (draft?.resultUnknown) {
+        resetV2Review(message);
+        return;
+      }
+      setActionError(message);
     },
   });
 
@@ -325,7 +366,25 @@ export default function OpportunityFitReviewDrawer({
         error: ['generating', 'provider_unknown'].includes(nextReview.stage_status) ? unknownResultCopy : null,
       });
     },
-    onError: (error, input) => {
+    onError: async (error, input) => {
+      if (isSourceConflict(error)) {
+        const conflict = await recoverSourceConflict(
+          'deep_review',
+          input.idempotency_key,
+          v2Triage?.review_id,
+        );
+        if (conflict) {
+          setV2Deep(conflict);
+          setActionError(sourceConflictCopy);
+          onDraftChange?.({
+            deep: conflict,
+            deepKey: null,
+            resultUnknown: false,
+            error: sourceConflictCopy,
+          });
+          return;
+        }
+      }
       const unknown = isProviderUnknown(error);
       setActionError(unknown ? unknownResultCopy : getOpportunityFitErrorMessage(error));
       onDraftChange?.({
@@ -437,7 +496,7 @@ export default function OpportunityFitReviewDrawer({
     }
   };
 
-  const resetV2Review = () => {
+  const resetV2Review = (message?: string) => {
     onDraftChange?.(null);
     setStage('input');
     setResumeID(undefined);
@@ -447,7 +506,7 @@ export default function OpportunityFitReviewDrawer({
     setV2Triage(null);
     setV2Deep(null);
     setV2Historical(false);
-    setActionError(null);
+    setActionError(message ?? null);
   };
 
   const canStartNewV2Review = Boolean(
@@ -636,7 +695,7 @@ export default function OpportunityFitReviewDrawer({
             </>
           ) : null}
           {canStartNewV2Review && !draft?.resultUnknown ? (
-            <Button onClick={resetV2Review}>重新开始岗位评估</Button>
+            <Button onClick={() => resetV2Review()}>重新开始岗位评估</Button>
           ) : null}
         </div>
       ) : review ? (

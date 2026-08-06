@@ -13,6 +13,7 @@ const state = vi.hoisted(() => ({
   get: vi.fn(),
   list: vi.fn(),
   getV2: vi.fn(),
+  sourceConflict: vi.fn(),
   listV2: vi.fn(),
   history: [] as Array<{ id: number; recommendation: string; created_at: string }>,
 }));
@@ -29,6 +30,7 @@ vi.mock('@/services/opportunityFitReviews', () => ({
   getOpportunityFitReview: state.get,
   listOpportunityFitReviews: state.list,
   getOpportunityFitV2Review: state.getV2,
+  findOpportunityFitV2SourceConflictStage: state.sourceConflict,
   listOpportunityFitV2Reviews: state.listV2,
 }));
 vi.mock('@/services/applicationJdVersions', () => ({
@@ -135,6 +137,7 @@ beforeEach(() => {
   state.get.mockReset();
   state.list.mockReset();
   state.getV2.mockReset();
+  state.sourceConflict.mockReset();
   state.listV2.mockReset();
   state.history = [];
   state.list.mockResolvedValue([]);
@@ -366,6 +369,159 @@ describe('OpportunityFitReviewDrawer', () => {
     await waitFor(() => expect(state.deepV2).toHaveBeenCalledTimes(2));
     expect(state.deepV2.mock.calls[0][2].idempotency_key).toBe(key);
     expect(state.deepV2.mock.calls[1][2].idempotency_key).toBe(key);
+  });
+
+  it('clears an unknown confirmation attempt after a deterministic expiry', async () => {
+    state.confirm.mockRejectedValue({
+      response: { status: 410, data: { error_code: 'opportunity_fit_triage_confirmation_expired' } },
+    });
+    let cleared = false;
+    const draft = {
+      applicationId: 7,
+      resumeId: 11,
+      jdText: 'JD text',
+      jdVersionId: 1,
+      assertionsText: '',
+      triageKey: 'triage-key-00000001',
+      deepKey: null,
+      triage: {
+        review_id: 21,
+        stage_id: 22,
+        stage: 'triage',
+        stage_status: 'ready',
+        confirmation_token: 'confirm-token',
+        resume_id: 11,
+        jd_version_id: 1,
+        idempotency_key: 'triage-key-00000001',
+        proposal: {
+          schema_version: 2,
+          stage: 'triage',
+          source: { kind: 'opportunity_fit', contract_version: 'opportunity_fit.v2', snapshot_version: '1' },
+          summary: { text: 'summary', rationale: 'evidence', evidence_refs: [] },
+          conditions: [],
+          risks: [],
+          questions: [],
+          next_steps: [],
+        },
+      },
+      deep: null,
+      historical: false,
+      resultUnknown: true,
+      error: '操作结果待确认，请使用原尝试重试。',
+    };
+    const onDraftChange = vi.fn((patch: Record<string, unknown> | null) => {
+      if (patch === null) cleared = true;
+    });
+    const view = await render(undefined, 'JD text', draft, onDraftChange as never);
+    await click(getByRole(view, 'button'));
+    await waitFor(() => expect(state.confirm).toHaveBeenCalledTimes(1));
+    expect(cleared).toBe(true);
+    expect(view.querySelector('select')).not.toBeNull();
+  });
+
+  it('restores a persisted Triage source conflict instead of dropping the stage', async () => {
+    state.create.mockRejectedValue({
+      response: { status: 409, data: { error_code: 'application_jd_source_conflict' } },
+    });
+    state.listV2.mockResolvedValue([{ review_id: 21, triage_idempotency_key: 'd4b4b5e8-0a3a-4a3e-8e4d-6bc7a04d36b0' }]);
+    state.getV2.mockResolvedValue({
+      stages: [{
+        review_id: 21,
+        stage_id: 22,
+        stage: 'triage',
+        stage_status: 'source_conflict',
+        resume_id: 11,
+        jd_version_id: 1,
+        idempotency_key: 'd4b4b5e8-0a3a-4a3e-8e4d-6bc7a04d36b0',
+        proposal: undefined,
+      }],
+    });
+    state.sourceConflict.mockResolvedValue({
+      review_id: 21,
+      stage_id: 22,
+      stage: 'triage',
+      stage_status: 'source_conflict',
+      resume_id: 11,
+      jd_version_id: 1,
+      idempotency_key: 'd4b4b5e8-0a3a-4a3e-8e4d-6bc7a04d36b0',
+      proposal: undefined,
+    });
+    const draft = {
+      applicationId: 7,
+      resumeId: 11,
+      jdText: 'JD text',
+      jdVersionId: 1,
+      assertionsText: '',
+      triageKey: null,
+      deepKey: null,
+      triage: null,
+      deep: null,
+      historical: false,
+      resultUnknown: false,
+      error: null,
+    };
+    const onDraftChange = vi.fn();
+    const view = await render(undefined, 'JD text', draft, onDraftChange as never);
+    await waitFor(() => expect(getByRole(view, 'button')).toHaveProperty('disabled', false));
+    await click(getByRole(view, 'button', 'Triage'));
+    await waitFor(() => expect(state.create).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(view.textContent).toContain('岗位资料版本已变化'));
+    expect(onDraftChange).toHaveBeenCalledWith(expect.objectContaining({
+      triage: expect.objectContaining({ stage_status: 'source_conflict' }),
+      triageKey: null,
+      resultUnknown: false,
+    }));
+  });
+
+  it('restores a persisted Deep Review source conflict instead of dropping the stage', async () => {
+    state.deepV2.mockRejectedValue({
+      response: { status: 409, data: { error_code: 'application_jd_source_conflict' } },
+    });
+    state.sourceConflict.mockResolvedValue({
+      review_id: 21,
+      stage_id: 23,
+      stage: 'deep_review',
+      stage_status: 'source_conflict',
+      resume_id: 11,
+      jd_version_id: 1,
+      idempotency_key: 'deep-key-00000001',
+      proposal: undefined,
+    });
+    const draft = {
+      applicationId: 7,
+      resumeId: 11,
+      jdText: 'JD text',
+      jdVersionId: 1,
+      assertionsText: '',
+      triageKey: 'triage-key-00000001',
+      deepKey: null,
+      triage: {
+        review_id: 21,
+        stage_id: 22,
+        stage: 'triage',
+        stage_status: 'confirmed',
+        confirmation_token: null,
+        resume_id: 11,
+        jd_version_id: 1,
+        idempotency_key: 'triage-key-00000001',
+        proposal: undefined,
+      },
+      deep: null,
+      historical: false,
+      resultUnknown: false,
+      error: null,
+    };
+    const onDraftChange = vi.fn();
+    const view = await render(undefined, 'JD text', draft, onDraftChange as never);
+    await click(getByRole(view, 'button', 'Deep Review'));
+    await waitFor(() => expect(state.deepV2).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(state.sourceConflict).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(view.textContent).toContain('岗位资料版本已变化'));
+    expect(onDraftChange).toHaveBeenCalledWith(expect.objectContaining({
+      deep: expect.objectContaining({ stage_status: 'source_conflict' }),
+      deepKey: null,
+      resultUnknown: false,
+    }));
   });
 
   it('hands off the exact frozen JD and disables handoff after the current version changes', async () => {

@@ -15,6 +15,7 @@ import {
   confirmOpportunityFitV2Triage,
   createOpportunityFitV2DeepReview,
   getOpportunityFitV2Review,
+  findOpportunityFitV2SourceConflictStage,
   listOpportunityFitV2Reviews,
 } from '@/services/opportunityFitReviews';
 import { type PilotOpportunityFitMaterialHandoff } from '@/features/pilot/PilotOpportunityFitCard';
@@ -919,6 +920,32 @@ function AppShellContent() {
 
   const v2ErrorMessage = (error: unknown): string => getOpportunityFitErrorMessage(error);
 
+  const v2ErrorCode = (error: unknown): string | undefined => {
+    if (typeof error !== 'object' || error === null) return undefined;
+    const response = (error as { response?: { data?: { error_code?: unknown } } }).response;
+    return typeof response?.data?.error_code === 'string' ? response.data.error_code : undefined;
+  };
+
+  const v2SourceConflictCopy = '岗位资料版本已变化，当前评估仅供只读查看。';
+
+  const recoverPilotV2SourceConflict = async (
+    stage: 'triage' | 'deep_review',
+    idempotencyKey: string,
+    reviewID?: number,
+  ): Promise<PilotOpportunityFitV2Draft['triage']> => {
+    if (!pilotV2Draft) return null;
+    try {
+      return await findOpportunityFitV2SourceConflictStage(
+        pilotV2Draft.applicationId,
+        stage,
+        idempotencyKey,
+        reviewID,
+      );
+    } catch {
+      return null;
+    }
+  };
+
   const v2FailureDisposition = (error: unknown): 'unknown' | 'definite' => {
     if (typeof error !== 'object' || error === null) return 'unknown';
     const response = (error as { response?: unknown }).response;
@@ -940,6 +967,19 @@ function AppShellContent() {
       const result = await createOpportunityFitV2Triage(pilotV2Draft.applicationId, { ...input, idempotency_key: key });
       updatePilotV2Draft({ triage: result, triageKey: key, resultUnknown: false, error: null });
     } catch (error) {
+      const errorCode = v2ErrorCode(error);
+      if (errorCode === 'application_jd_source_conflict' || errorCode === 'opportunity_fit_source_conflict') {
+        const conflict = await recoverPilotV2SourceConflict('triage', key);
+        if (conflict) {
+          updatePilotV2Draft({
+            triage: conflict,
+            triageKey: null,
+            resultUnknown: false,
+            error: v2SourceConflictCopy,
+          });
+          return;
+        }
+      }
       if (
         typeof error === 'object'
         && error !== null
@@ -989,9 +1029,7 @@ function AppShellContent() {
       );
       updatePilotV2Draft({ triage: result, resultUnknown: false, error: null });
     } catch (error) {
-      const errorCode = typeof error === 'object' && error !== null
-        ? (error as { response?: { data?: { error_code?: unknown } } }).response?.data?.error_code
-        : undefined;
+      const errorCode = v2ErrorCode(error);
       if (errorCode === 'opportunity_fit_triage_confirmation_expired') {
         startNewPilotV2Review();
         return;
@@ -1001,7 +1039,15 @@ function AppShellContent() {
         || v2FailureDisposition(error) === 'unknown'
       ) {
         if (await recoverPilotV2TriageConfirmation()) return;
+        if (pilotV2Draft.resultUnknown && errorCode !== 'opportunity_fit_triage_confirmation_consumed') {
+          startNewPilotV2Review();
+          return;
+        }
         updatePilotV2Draft({ resultUnknown: true, error: '操作结果待确认，请使用原尝试重试。' });
+        return;
+      }
+      if (pilotV2Draft.resultUnknown && v2FailureDisposition(error) === 'definite') {
+        startNewPilotV2Review();
         return;
       }
       updatePilotV2Draft({ error: v2ErrorMessage(error) });
@@ -1028,6 +1074,23 @@ function AppShellContent() {
       );
       updatePilotV2Draft({ deep: result, deepKey: key, resultUnknown: false, error: null });
     } catch (error) {
+      const errorCode = v2ErrorCode(error);
+      if (errorCode === 'application_jd_source_conflict' || errorCode === 'opportunity_fit_source_conflict') {
+        const conflict = await recoverPilotV2SourceConflict(
+          'deep_review',
+          key,
+          pilotV2Draft.triage.review_id,
+        );
+        if (conflict) {
+          updatePilotV2Draft({
+            deep: conflict,
+            deepKey: null,
+            resultUnknown: false,
+            error: v2SourceConflictCopy,
+          });
+          return;
+        }
+      }
       const disposition = v2FailureDisposition(error);
       updatePilotV2Draft({
         deepKey: disposition === 'unknown' ? key : null,
@@ -1065,6 +1128,11 @@ function AppShellContent() {
   const startNewPilotV2Review = () => {
     if (!pilotV2Draft) return;
     const next = createPilotOpportunityFitV2Draft(pilotV2Draft.applicationId);
+    const currentJd = pilotApplicationJdQuery.data?.current;
+    if (currentJd) {
+      next.jdVersionId = currentJd.id;
+      next.jdText = currentJd.jd_text;
+    }
     pilotV2DraftsRef.current.set(next.applicationId, next);
     setPilotV2Draft(next);
     setPilotLegacyReview(null);

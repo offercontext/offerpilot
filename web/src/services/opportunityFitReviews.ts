@@ -116,3 +116,31 @@ export async function getOpportunityFitV2Review(
   );
   return data;
 }
+
+export async function findOpportunityFitV2SourceConflictStage(
+  applicationID: number,
+  stage: 'triage' | 'deep_review',
+  idempotencyKey: string,
+  reviewID?: number,
+): Promise<OpportunityFitV2StageResponse | null> {
+  const summaries = reviewID === undefined ? await listOpportunityFitV2Reviews(applicationID) : [];
+  const reviewIDs = reviewID === undefined
+    ? summaries
+      .filter((summary) => (
+        summary.triage_idempotency_key === idempotencyKey
+        || summary.latest_stage?.idempotency_key === idempotencyKey
+      ))
+      .map((summary) => summary.review_id)
+    : [reviewID];
+
+  for (const currentReviewID of reviewIDs) {
+    const session = await getOpportunityFitV2Review(applicationID, currentReviewID);
+    const conflict = session.stages.find((item) => (
+      item.stage === stage
+      && item.idempotency_key === idempotencyKey
+      && item.stage_status === 'source_conflict'
+    ));
+    if (conflict) return conflict;
+  }
+  return null;
+}

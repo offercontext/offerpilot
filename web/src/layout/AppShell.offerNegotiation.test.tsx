@@ -26,7 +26,10 @@ const offer = {
 const opportunityFitState = vi.hoisted(() => ({
   createTriage: vi.fn(),
   confirmTriage: vi.fn(),
+  createDeep: vi.fn(),
   getReview: vi.fn(),
+  listReviews: vi.fn(),
+  sourceConflict: vi.fn(),
 }));
 
 const baseDraft = (goal: string) => ({
@@ -42,7 +45,8 @@ vi.mock('@tanstack/react-query', () => ({
     const key = String(options.queryKey?.[0] ?? '');
     const data: Record<string, unknown> = {
       applications: [{ id: 7, company_name: '星云数据', position_name: '后端工程师', applied_at: '2026-08-01T00:00:00Z' }],
-      events: [], offers: [offer], resumes: [], knowledge: [], questions: undefined,
+      events: [], offers: [offer], resumes: [{ id: 11, title: '简历' }], knowledge: [], questions: undefined,
+      'application-jd-current': { current: { id: 1, application_id: 7, jd_text: 'JD text' } },
     };
     return { data: data[key], isError: false, isLoading: false, isFetching: false, error: null };
   },
@@ -52,13 +56,14 @@ vi.mock('@tanstack/react-query', () => ({
 vi.mock('@/services/opportunityFitReviews', () => ({
   createOpportunityFitV2Triage: opportunityFitState.createTriage,
   confirmOpportunityFitV2Triage: opportunityFitState.confirmTriage,
+  createOpportunityFitV2DeepReview: opportunityFitState.createDeep,
   getOpportunityFitV2Review: opportunityFitState.getReview,
-  listOpportunityFitV2Reviews: vi.fn().mockResolvedValue([]),
+  findOpportunityFitV2SourceConflictStage: opportunityFitState.sourceConflict,
+  listOpportunityFitV2Reviews: opportunityFitState.listReviews,
   listOpportunityFitReviews: vi.fn().mockResolvedValue([]),
   getOpportunityFitReview: vi.fn(),
   createOpportunityFitReview: vi.fn(),
   createOpportunityFitDeepReview: vi.fn(),
-  createOpportunityFitV2DeepReview: vi.fn(),
 }));
 
 vi.mock('@dnd-kit/core', () => ({
@@ -131,29 +136,6 @@ vi.mock('@/features/pilot/PilotAttachmentContext', () => ({
 }));
 vi.mock('@/features/pilot/attachmentHandoff', () => ({ retainPilotAttachmentKey: (_current: unknown, next: unknown) => next }));
 vi.mock('@/features/pilot/PilotOpportunityFitCard', () => ({ default: () => <div /> }));
-vi.mock('@/features/pilot/PilotOpportunityFitV2Card', () => ({
-  default: (props: any) => (
-    <section data-testid="pilot-fit-harness" data-stage={props.draft.triage?.stage_status ?? 'input'}>
-      <button
-        type="button"
-        data-testid="start-pilot-triage"
-        onClick={() => props.onStartTriage?.({
-          schema_version: 2,
-          resume_id: 11,
-          jd_version_id: 1,
-          jd_source_label: '用户粘贴 JD',
-          candidate_assertions: [],
-          idempotency_key: 'pilot-triage-key',
-        })}
-      >
-        开始 Triage
-      </button>
-      <button type="button" data-testid="confirm-pilot-triage" onClick={() => props.onConfirmTriage?.()}>
-        确认 Triage
-      </button>
-    </section>
-  ),
-}));
 
 vi.mock('@/components/OfferCenterView', () => ({
   default: (props: any) => (
@@ -200,7 +182,9 @@ describe('AppShell mounted Opportunity Fit confirmation recovery', () => {
   beforeEach(() => {
     opportunityFitState.createTriage.mockReset();
     opportunityFitState.confirmTriage.mockReset();
+    opportunityFitState.createDeep.mockReset();
     opportunityFitState.getReview.mockReset();
+    opportunityFitState.listReviews.mockReset();
     opportunityFitState.createTriage.mockResolvedValue({
       stage_id: 101,
       review_id: 201,
@@ -213,7 +197,16 @@ describe('AppShell mounted Opportunity Fit confirmation recovery', () => {
       idempotency_key: 'pilot-triage-key',
       source_fingerprint_sha256: 'frozen-source',
       confirmation_token: 'triage-confirmation-token',
-      proposal: null,
+      proposal: {
+        schema_version: 2,
+        stage: 'triage',
+        source: { kind: 'opportunity_fit', contract_version: 'opportunity_fit.v2', snapshot_version: '1' },
+        summary: { text: 'Triage summary', rationale: 'evidence', evidence_refs: [] },
+        conditions: [],
+        risks: [],
+        questions: [],
+        next_steps: [],
+      },
     });
     opportunityFitState.confirmTriage.mockRejectedValue({
       response: { data: { error_code: 'opportunity_fit_triage_confirmation_consumed' } },
@@ -231,9 +224,19 @@ describe('AppShell mounted Opportunity Fit confirmation recovery', () => {
         idempotency_key: 'pilot-triage-key',
         source_fingerprint_sha256: 'frozen-source',
         confirmation_token: 'triage-confirmation-token',
-        proposal: null,
+        proposal: {
+          schema_version: 2,
+          stage: 'triage',
+          source: { kind: 'opportunity_fit', contract_version: 'opportunity_fit.v2', snapshot_version: '1' },
+          summary: { text: 'Confirmed summary', rationale: 'evidence', evidence_refs: [] },
+          conditions: [],
+          risks: [],
+          questions: [],
+          next_steps: [],
+        },
       }],
     });
+    opportunityFitState.listReviews.mockResolvedValue([]);
     window.matchMedia = () => ({ matches: false, addEventListener: () => undefined, removeEventListener: () => undefined }) as unknown as MediaQueryList;
     window.scrollTo = vi.fn();
     host = document.createElement('div');
@@ -256,15 +259,86 @@ describe('AppShell mounted Opportunity Fit confirmation recovery', () => {
     await flush();
     act(() => host?.querySelector<HTMLButtonElement>('[data-testid="open-opportunity-fit"]')?.click());
     await flush();
-    act(() => host?.querySelector<HTMLButtonElement>('[data-testid="start-pilot-triage"]')?.click());
+    const resumeSelect = host?.querySelector<HTMLSelectElement>('select');
+    if (!resumeSelect) throw new Error('Pilot resume selector was not mounted');
+    resumeSelect.value = '11';
+    act(() => resumeSelect.dispatchEvent(new Event('change', { bubbles: true })));
     await flush();
-    expect(host?.querySelector('[data-testid="pilot-fit-harness"]')?.getAttribute('data-stage')).toBe('ready');
-    act(() => host?.querySelector<HTMLButtonElement>('[data-testid="confirm-pilot-triage"]')?.click());
+    const startButton = Array.from(host?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+      .find((button) => button.textContent?.includes('Triage'));
+    if (!startButton) throw new Error('Pilot Triage start button was not mounted');
+    act(() => startButton.click());
+    await flush();
+    const confirmation = host?.querySelector<HTMLElement>('[role="dialog"]');
+    const confirmButton = confirmation?.querySelectorAll<HTMLButtonElement>('button')[1];
+    if (!confirmButton) throw new Error('Pilot Triage confirmation button was not mounted');
+    act(() => confirmButton.click());
+    await flush();
+    expect(opportunityFitState.createTriage).toHaveBeenCalledTimes(1);
+    const triageButton = Array.from(host?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+      .find((button) => button.textContent?.includes('Triage'));
+    if (!triageButton) throw new Error('Pilot Triage confirmation button was not mounted');
+    act(() => triageButton.click());
     await flush();
     await flush();
     expect(opportunityFitState.confirmTriage).toHaveBeenCalledTimes(1);
     expect(opportunityFitState.getReview).toHaveBeenCalledWith(7, 201);
-    expect(host?.querySelector('[data-testid="pilot-fit-harness"]')?.getAttribute('data-stage')).toBe('confirmed');
+    const restartButton = host?.querySelector<HTMLButtonElement>('[aria-label="重新开始岗位评估"]');
+    if (!restartButton) throw new Error('Pilot restart button was not mounted');
+    act(() => restartButton.click());
+    await flush();
+    expect(host?.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('JD text');
+    expect(host?.querySelector<HTMLSelectElement>('select')?.value).toBe('');
+  });
+
+  it('restores a persisted Pilot Triage source conflict after a JD race', async () => {
+    opportunityFitState.createTriage.mockRejectedValue({
+      response: { status: 409, data: { error_code: 'application_jd_source_conflict' } },
+    });
+    opportunityFitState.sourceConflict.mockResolvedValue({
+      stage_id: 101,
+      review_id: 201,
+      resume_id: 11,
+      jd_version_id: 1,
+      stage: 'triage',
+      schema_version: 2,
+      stage_status: 'source_conflict',
+      parent_triage_stage_id: null,
+      idempotency_key: 'pilot-triage-key',
+      source_fingerprint_sha256: 'frozen-source',
+      confirmation_token: null,
+      proposal: null,
+    });
+
+    await act(async () => root?.render(<AppShell />));
+    await flush();
+    act(() => host?.querySelector<HTMLButtonElement>('[data-testid="open-application-detail"]')?.click());
+    await flush();
+    act(() => host?.querySelector<HTMLButtonElement>('[data-testid="open-opportunity-fit"]')?.click());
+    await flush();
+    const resumeSelect = host?.querySelector<HTMLSelectElement>('select');
+    if (!resumeSelect) throw new Error('Pilot resume selector was not mounted');
+    resumeSelect.value = '11';
+    act(() => resumeSelect.dispatchEvent(new Event('change', { bubbles: true })));
+    await flush();
+    const startButton = Array.from(host?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+      .find((button) => button.textContent?.includes('Triage'));
+    if (!startButton) throw new Error('Pilot Triage start button was not mounted');
+    act(() => startButton.click());
+    await flush();
+    const confirmation = host?.querySelector<HTMLElement>('[role="dialog"]');
+    const confirmButton = confirmation?.querySelectorAll<HTMLButtonElement>('button')[1];
+    if (!confirmButton) throw new Error('Pilot Triage confirmation button was not mounted');
+    act(() => confirmButton.click());
+    await flush();
+    await flush();
+
+    expect(opportunityFitState.sourceConflict).toHaveBeenCalledWith(7, 'triage', expect.any(String), undefined);
+    expect(opportunityFitState.sourceConflict.mock.calls[0][2]).toBe(
+      opportunityFitState.createTriage.mock.calls[0][1].idempotency_key,
+    );
+    expect(host?.textContent).toContain('岗位资料版本已变化');
+    expect(host?.querySelector('[aria-label="重新开始岗位评估"]')).not.toBeNull();
   });
 });
 
