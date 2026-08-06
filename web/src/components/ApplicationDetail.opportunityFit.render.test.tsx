@@ -11,6 +11,7 @@ const state = vi.hoisted(() => ({
   analyzeJD: vi.fn(),
   events: [] as unknown[],
   jdCurrent: null as unknown,
+  jdLoading: false,
   jdHistory: [] as unknown[],
   jdDetail: null as unknown,
 }));
@@ -41,7 +42,7 @@ vi.mock('@tanstack/react-query', () => ({
           : options.queryKey?.[0] === 'application-jd-detail'
             ? state.jdDetail
             : [],
-    isLoading: false,
+    isLoading: options.queryKey?.[0] === 'application-jd-current' && state.jdLoading,
   }),
   useMutation: () => ({ mutate: vi.fn(), isPending: false }),
 }));
@@ -136,6 +137,7 @@ beforeEach(() => {
   state.analyzeJD.mockReset();
   state.events = [];
   state.jdCurrent = null;
+  state.jdLoading = false;
   state.jdHistory = [];
   state.jdDetail = null;
   container = document.createElement('div');
@@ -213,6 +215,39 @@ describe('ApplicationDetail opportunity fit handoff', () => {
     });
 
     expect(container?.querySelector('[data-testid="material-kit"]')?.getAttribute('data-resume-id')).toBe('12');
+    expect(container?.querySelector('[data-testid="material-kit"]')?.getAttribute('data-jd')).toBe('Frozen Pilot JD');
+  });
+
+  it('keeps a consumed handoff open when the current JD query transitions from loading to loaded', async () => {
+    writeMaterialKitHandoff({
+      applicationId: 7,
+      resumeId: 12,
+      jdText: 'Frozen Pilot JD',
+      jdVersionId: 2,
+    });
+    state.jdCurrent = null;
+    state.jdLoading = true;
+
+    act(() => root?.render(<ApplicationDetail application={application} open onClose={vi.fn()} />));
+    await act(async () => { await Promise.resolve(); });
+    expect(container?.querySelector('[data-testid="material-kit"]')?.getAttribute('data-jd')).toBe('Frozen Pilot JD');
+
+    state.jdLoading = false;
+    state.jdCurrent = {
+      current: {
+        id: 3,
+        application_id: 7,
+        version_number: 2,
+        jd_text: 'New current JD',
+        source_url: null,
+        source_kind: 'ui',
+        content_sha256: 'b'.repeat(64),
+        utf8_byte_length: 16,
+        preview: 'New current JD',
+        created_at: '2026-08-06T00:00:00Z',
+      },
+    };
+    act(() => root?.render(<ApplicationDetail application={application} open onClose={vi.fn()} />));
     expect(container?.querySelector('[data-testid="material-kit"]')?.getAttribute('data-jd')).toBe('Frozen Pilot JD');
   });
 

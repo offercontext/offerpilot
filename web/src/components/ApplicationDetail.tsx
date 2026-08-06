@@ -224,6 +224,9 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
     setMaterialKitPrefill({});
     setMaterialKitOpen(false);
     setMaterialKitApplicationId(null);
+  }, [application?.id, open]);
+
+  useEffect(() => {
     if (!application || !open) return;
     const handoff = consumeMaterialKitHandoff(application.id);
     if (!handoff || !handoff.jdVersionId) return;
@@ -234,7 +237,7 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
     });
     setMaterialKitApplicationId(application.id);
     setMaterialKitOpen(true);
-  }, [application?.id, applicationJdQuery.data?.current?.id, applicationJdQuery.data?.current?.jd_text, open]);
+  }, [application?.id, open]);
 
   useEffect(() => {
     if (!application || !open || pilotInterviewReviewApplicationId !== application.id) return;

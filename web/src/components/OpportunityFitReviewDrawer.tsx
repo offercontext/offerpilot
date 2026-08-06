@@ -55,7 +55,7 @@ interface Props {
   onClose: () => void;
   onPrepareMaterials?: (reviewOrResumeId: OpportunityFitReview | number, jdText: string, jdVersionId?: number) => void;
   draft?: OpportunityFitV2Draft;
-  onDraftChange?: (patch: Partial<OpportunityFitV2Draft>) => void;
+  onDraftChange?: (patch: Partial<OpportunityFitV2Draft> | null) => void;
 }
 
 function EvidenceRefs({ refs }: { refs: OpportunityFitEvidenceRef[] }) {
@@ -229,6 +229,28 @@ export default function OpportunityFitReviewDrawer({
 
   const unknownResultCopy = '操作结果待确认，请使用原尝试重试。';
 
+  const recoverConfirmedTriage = async (): Promise<boolean> => {
+    if (!application || !v2Triage) return false;
+    try {
+      const session = await getOpportunityFitV2Review(application.id, v2Triage.review_id);
+      const current = session.stages.find((item) => (
+        item.stage === 'triage' && item.stage_id === v2Triage.stage_id
+      )) ?? session.stages.find((item) => item.stage === 'triage');
+      if (current?.stage_status !== 'confirmed') return false;
+      setV2Triage(current);
+      setStage('review');
+      setActionError(null);
+      onDraftChange?.({ triage: current, resultUnknown: false, error: null });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const isConfirmationConsumed = (error: unknown): boolean => (
+    errorCode(error) === 'opportunity_fit_triage_confirmation_consumed'
+  );
+
   const createMutation = useMutation({
     mutationFn: (input: Parameters<typeof createOpportunityFitV2Triage>[1]) => (
       createOpportunityFitV2Triage(application!.id, input)
@@ -273,7 +295,15 @@ export default function OpportunityFitReviewDrawer({
       setV2Triage(nextReview);
       onDraftChange?.({ triage: nextReview, resultUnknown: false, error: null });
     },
-    onError: (error) => setActionError(getOpportunityFitErrorMessage(error)),
+    onError: async (error) => {
+      if (isConfirmationConsumed(error) || isProviderUnknown(error)) {
+        if (await recoverConfirmedTriage()) return;
+        setActionError(unknownResultCopy);
+        onDraftChange?.({ resultUnknown: true, error: unknownResultCopy });
+        return;
+      }
+      setActionError(getOpportunityFitErrorMessage(error));
+    },
   });
 
   const deepReviewMutation = useMutation<
@@ -407,6 +437,27 @@ export default function OpportunityFitReviewDrawer({
     }
   };
 
+  const resetV2Review = () => {
+    onDraftChange?.(null);
+    setStage('input');
+    setResumeID(undefined);
+    setJdText(currentJdText);
+    setAssertionsText('');
+    setReview(null);
+    setV2Triage(null);
+    setV2Deep(null);
+    setV2Historical(false);
+    setActionError(null);
+  };
+
+  const canStartNewV2Review = Boolean(
+    v2Historical
+      || ['ready', 'confirmed', 'source_conflict'].includes(v2Triage?.stage_status ?? '')
+      || ['ready', 'confirmed', 'source_conflict'].includes(v2Deep?.stage_status ?? ''),
+  );
+  const v2HasSourceConflict = v2Triage?.stage_status === 'source_conflict'
+    || v2Deep?.stage_status === 'source_conflict';
+
   if (!open) return null;
 
   return (
@@ -516,11 +567,16 @@ export default function OpportunityFitReviewDrawer({
         <div>
           <Space wrap>
             <Tag color="blue">v2 岗位评估</Tag>
-            <SourceStateTag state="frozen" detail={OPPORTUNITY_FIT_COPY.drawer.sourceFrozen} />
+            <SourceStateTag
+              state={v2HasSourceConflict ? 'changed' : 'frozen'}
+              detail={v2HasSourceConflict ? '岗位资料版本已变化' : OPPORTUNITY_FIT_COPY.drawer.sourceFrozen}
+            />
             <Tag>{OPPORTUNITY_FIT_COPY.drawer.humanConfirmation}</Tag>
           </Space>
           <Typography.Title level={4}>Triage</Typography.Title>
-          {v2Triage.proposal ? <V2ProposalView proposal={v2Triage.proposal} /> : <Spin />}
+          {v2Triage.stage_status === 'source_conflict' ? (
+            <Alert type="warning" showIcon message="岗位资料版本已变化，当前评估仅供只读查看。" />
+          ) : v2Triage.proposal ? <V2ProposalView proposal={v2Triage.proposal} /> : <Spin />}
           {['generating', 'provider_unknown'].includes(v2Triage.stage_status) ? (
             <Button type="primary" onClick={submit} loading={createMutation.isPending} disabled={!canSubmit}>
               使用原尝试重试
@@ -532,7 +588,7 @@ export default function OpportunityFitReviewDrawer({
               onClick={() => confirmV2Mutation.mutate()}
               loading={confirmV2Mutation.isPending}
             >
-              确认 Triage
+              {draft?.resultUnknown ? '使用原尝试重试' : '确认 Triage'}
             </Button>
           ) : null}
           {!v2Historical && v2Triage.stage_status === 'confirmed' && !v2Deep ? (
@@ -548,7 +604,9 @@ export default function OpportunityFitReviewDrawer({
             <>
               <Divider />
               <Typography.Title level={4}>Deep Review</Typography.Title>
-              {v2Deep.proposal ? <V2ProposalView proposal={v2Deep.proposal} /> : <Spin />}
+              {v2Deep.stage_status === 'source_conflict' ? (
+                <Alert type="warning" showIcon message="岗位资料版本已变化，当前评估仅供只读查看。" />
+              ) : v2Deep.proposal ? <V2ProposalView proposal={v2Deep.proposal} /> : <Spin />}
               {['generating', 'provider_unknown'].includes(v2Deep.stage_status) ? (
                 <Button type="primary" onClick={submitDeepReview} loading={deepReviewMutation.isPending}>
                   使用原尝试重试
@@ -576,6 +634,9 @@ export default function OpportunityFitReviewDrawer({
                 {OPPORTUNITY_FIT_COPY.drawer.prepareMaterials}
               </Button>
             </>
+          ) : null}
+          {canStartNewV2Review && !draft?.resultUnknown ? (
+            <Button onClick={resetV2Review}>重新开始岗位评估</Button>
           ) : null}
         </div>
       ) : review ? (

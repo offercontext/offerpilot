@@ -666,4 +666,155 @@ describe('OpportunityFitReviewDrawer', () => {
     expect(renderedText).toContain('建议准备材料');
     expect(renderedText).not.toMatch(/\b(advance|hold|decline|met|unmet|unknown|required|preferred|prepare_materials|clarify_first|do_not_pursue)\b/);
   });
+
+  it('recovers a consumed Triage confirmation from the current server stage', async () => {
+    const confirmed = {
+      review_id: 21,
+      stage_id: 22,
+      stage: 'triage' as const,
+      stage_status: 'confirmed' as const,
+      confirmation_token: null,
+      resume_id: 11,
+      jd_version_id: 1,
+      idempotency_key: 'triage-key-00000001',
+      proposal: {
+        summary: { text: 'Confirmed triage', evidence_refs: [] },
+        conditions: [],
+        risks: [],
+        next_steps: [],
+        questions: [],
+      },
+    };
+    state.confirm.mockRejectedValue({
+      response: { status: 409, data: { error_code: 'opportunity_fit_triage_confirmation_consumed' } },
+    });
+    state.getV2.mockResolvedValue({ stages: [confirmed] });
+    const onDraftChange = vi.fn();
+    const view = await render(undefined, 'JD text', {
+      applicationId: 7,
+      resumeId: 11,
+      jdText: 'JD text',
+      jdVersionId: 1,
+      assertionsText: '',
+      triageKey: 'triage-key-00000001',
+      deepKey: null,
+      triage: {
+        ...confirmed,
+        stage_status: 'ready',
+        confirmation_token: 'confirm-token',
+      },
+      deep: null,
+      historical: false,
+      resultUnknown: false,
+      error: null,
+    }, onDraftChange);
+
+    await click(getByRole(view, 'button', 'Triage'));
+    await waitFor(() => expect(state.getV2).toHaveBeenCalledWith(7, 21));
+    expect(onDraftChange).toHaveBeenCalledWith(expect.objectContaining({ triage: confirmed, resultUnknown: false }));
+    expect(view.textContent).toContain('Confirmed triage');
+  });
+
+  it('preserves the Triage confirmation attempt when the response and status lookup are unknown', async () => {
+    state.confirm.mockRejectedValue({ response: { status: 503, data: { error_code: 'provider_timeout' } } });
+    state.getV2.mockRejectedValue(new Error('status lookup unavailable'));
+    const onDraftChange = vi.fn();
+    const view = await render(undefined, 'JD text', {
+      applicationId: 7,
+      resumeId: 11,
+      jdText: 'JD text',
+      jdVersionId: 1,
+      assertionsText: '',
+      triageKey: 'triage-key-00000001',
+      deepKey: null,
+      triage: {
+        review_id: 21,
+        stage_id: 22,
+        stage: 'triage',
+        stage_status: 'ready',
+        confirmation_token: 'confirm-token',
+        resume_id: 11,
+        jd_version_id: 1,
+        idempotency_key: 'triage-key-00000001',
+        proposal: { summary: { text: 'Ready triage', evidence_refs: [] }, conditions: [], risks: [], next_steps: [], questions: [] },
+      },
+      deep: null,
+      historical: false,
+      resultUnknown: false,
+      error: null,
+    }, onDraftChange);
+
+    await click(getByRole(view, 'button', 'Triage'));
+    await waitFor(() => expect(onDraftChange).toHaveBeenCalledWith(expect.objectContaining({ resultUnknown: true })));
+    expect(view.textContent).toContain('操作结果待确认');
+  });
+
+  it('allows a completed v2 review to be explicitly reset into a new input attempt', async () => {
+    const onDraftChange = vi.fn();
+    const view = await render(undefined, 'JD text', {
+      applicationId: 7,
+      resumeId: 11,
+      jdText: 'JD text',
+      jdVersionId: 1,
+      assertionsText: '',
+      triageKey: 'triage-key-00000001',
+      deepKey: null,
+      triage: {
+        review_id: 21,
+        stage_id: 22,
+        stage: 'triage',
+        stage_status: 'confirmed',
+        confirmation_token: null,
+        resume_id: 11,
+        jd_version_id: 1,
+        idempotency_key: 'triage-key-00000001',
+        proposal: {
+          summary: { text: 'Old result', evidence_refs: [] },
+          conditions: [],
+          risks: [],
+          next_steps: [],
+          questions: [],
+        },
+      },
+      deep: null,
+      historical: false,
+      resultUnknown: false,
+      error: null,
+    }, onDraftChange);
+
+    await click(getByRole(view, 'button', '重新开始岗位评估'));
+    expect(onDraftChange).toHaveBeenCalledWith(null);
+    expect(view.textContent).not.toContain('Old result');
+    expect(view.querySelector('select')).not.toBeNull();
+  });
+
+  it('renders a source conflict as a Chinese read-only state instead of an endless spinner', async () => {
+    const view = await render(undefined, 'JD text', {
+      applicationId: 7,
+      resumeId: 11,
+      jdText: 'JD text',
+      jdVersionId: 1,
+      assertionsText: '',
+      triageKey: 'triage-key-00000001',
+      deepKey: null,
+      triage: {
+        review_id: 21,
+        stage_id: 22,
+        stage: 'triage',
+        stage_status: 'source_conflict',
+        confirmation_token: null,
+        resume_id: 11,
+        jd_version_id: 1,
+        idempotency_key: 'triage-key-00000001',
+        proposal: undefined,
+      },
+      deep: null,
+      historical: false,
+      resultUnknown: false,
+      error: null,
+    });
+
+    expect(view.textContent).toContain('岗位资料版本已变化');
+    expect(view.textContent).not.toContain('loading');
+  });
 });

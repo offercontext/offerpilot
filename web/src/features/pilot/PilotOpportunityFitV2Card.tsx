@@ -135,7 +135,9 @@ export default function PilotOpportunityFitV2Card({
     && assertions.every((item) => item.length <= 500);
   const triageReady = draft.triage?.stage_status === 'ready';
   const triageConfirmed = draft.triage?.stage_status === 'confirmed';
+  const triageSourceConflict = draft.triage?.stage_status === 'source_conflict';
   const deepReady = draft.deep?.stage_status === 'ready';
+  const deepSourceConflict = draft.deep?.stage_status === 'source_conflict';
   const triagePending = Boolean(draft.triage && ['generating', 'provider_unknown'].includes(draft.triage.stage_status));
   const deepPending = Boolean(draft.deep && ['generating', 'provider_unknown'].includes(draft.deep.stage_status));
   const isHistorical = draft.historical || Boolean(legacyReview);
@@ -195,6 +197,9 @@ export default function PilotOpportunityFitV2Card({
       ) : null}
 
       {draft.error ? <p role="alert">{draft.error}</p> : null}
+      {triageSourceConflict || deepSourceConflict ? (
+        <p role="status">岗位资料版本已变化，当前评估仅供只读查看。</p>
+      ) : null}
       {isHistorical ? (
         <button type="button" onClick={onStartNew}>开始新的岗位评估</button>
       ) : (
@@ -251,7 +256,11 @@ export default function PilotOpportunityFitV2Card({
         <section>
           <h3>Triage（证据化结果）</h3>
           <ProposalView proposal={draft.triage.proposal} />
-          {triageReady ? <button type="button" onClick={onConfirmTriage}>确认 Triage</button> : null}
+          {triageReady ? (
+            <button type="button" onClick={onConfirmTriage}>
+              {draft.resultUnknown ? '使用原尝试重试 Triage' : '确认 Triage'}
+            </button>
+          ) : null}
         </section>
       ) : null}
       {triageConfirmed && !draft.deep ? (
@@ -277,7 +286,12 @@ export default function PilotOpportunityFitV2Card({
         </section>
       ) : null}
 
-      {!isHistorical && (draft.triage?.stage_status === 'confirmed' || draft.deep?.stage_status === 'ready') ? (
+      {!isHistorical && (
+        draft.triage?.stage_status === 'confirmed'
+        || draft.deep?.stage_status === 'ready'
+        || triageSourceConflict
+        || deepSourceConflict
+      ) ? (
         <button type="button" onClick={onStartNew}>开始新的岗位评估</button>
       ) : null}
 

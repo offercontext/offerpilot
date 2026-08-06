@@ -97,6 +97,16 @@ describe('AppShell source contract', () => {
     expect(source.slice(triageStart, triageEnd)).toContain('isOpportunityFitNotFoundError(error)');
   });
 
+  it('recovers Pilot Triage confirmation uncertainty from the server stage', () => {
+    const confirmStart = source.indexOf('const recoverPilotV2TriageConfirmation =');
+    const confirmEnd = source.indexOf('const startPilotV2DeepReview =', confirmStart);
+    const confirmSource = source.slice(confirmStart, confirmEnd);
+    expect(confirmSource).toContain('getOpportunityFitV2Review');
+    expect(confirmSource).toContain("current?.stage_status !== 'confirmed'");
+    expect(confirmSource).toContain('opportunity_fit_triage_confirmation_consumed');
+    expect(confirmSource).toContain('resultUnknown: true');
+  });
+
   it('routes a missing Deep Review application through the shared Pilot cleanup', () => {
     const deepReviewStart = source.indexOf('const startPilotV2DeepReview =');
     const deepReviewEnd = source.indexOf('const viewPilotV2History =', deepReviewStart);

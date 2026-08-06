@@ -126,4 +126,12 @@ describe('PilotOpportunityFitV2Card', () => {
     expect(container.textContent).not.toContain('去准备材料');
     expect(prepare).not.toHaveBeenCalled();
   });
+
+  it('renders source conflict as a Chinese read-only state with a fresh-start action', () => {
+    const props = renderCard(draft({ triage: stage('source_conflict') }));
+    expect(container.textContent).toContain('岗位资料版本已变化');
+    const restart = [...container.querySelectorAll('button')].find((button) => !button.textContent?.includes('鍙栨秷娴佺▼'));
+    act(() => restart?.click());
+    expect(props.onStartNew).toHaveBeenCalledTimes(1);
+  });
 });

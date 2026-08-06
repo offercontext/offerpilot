@@ -960,6 +960,24 @@ function AppShellContent() {
     }
   };
 
+  const recoverPilotV2TriageConfirmation = async (): Promise<boolean> => {
+    if (!pilotV2Draft?.triage) return false;
+    try {
+      const session = await getOpportunityFitV2Review(
+        pilotV2Draft.applicationId,
+        pilotV2Draft.triage.review_id,
+      );
+      const current = session.stages.find((stage) => (
+        stage.stage === 'triage' && stage.stage_id === pilotV2Draft.triage?.stage_id
+      )) ?? session.stages.find((stage) => stage.stage === 'triage');
+      if (current?.stage_status !== 'confirmed') return false;
+      updatePilotV2Draft({ triage: current, resultUnknown: false, error: null });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   const confirmPilotV2Triage = async () => {
     if (!pilotV2Draft?.triage?.confirmation_token) return;
     try {
@@ -971,14 +989,19 @@ function AppShellContent() {
       );
       updatePilotV2Draft({ triage: result, resultUnknown: false, error: null });
     } catch (error) {
-      if (
-        typeof error === 'object'
-        && error !== null
-        && typeof (error as { response?: { data?: { error_code?: unknown } } }).response?.data?.error_code === 'string'
-        && (error as { response: { data: { error_code: string } } }).response.data.error_code
-          === 'opportunity_fit_triage_confirmation_expired'
-      ) {
+      const errorCode = typeof error === 'object' && error !== null
+        ? (error as { response?: { data?: { error_code?: unknown } } }).response?.data?.error_code
+        : undefined;
+      if (errorCode === 'opportunity_fit_triage_confirmation_expired') {
         startNewPilotV2Review();
+        return;
+      }
+      if (
+        errorCode === 'opportunity_fit_triage_confirmation_consumed'
+        || v2FailureDisposition(error) === 'unknown'
+      ) {
+        if (await recoverPilotV2TriageConfirmation()) return;
+        updatePilotV2Draft({ resultUnknown: true, error: '操作结果待确认，请使用原尝试重试。' });
         return;
       }
       updatePilotV2Draft({ error: v2ErrorMessage(error) });

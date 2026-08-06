@@ -106,7 +106,7 @@ export interface OpportunityFitV2StageResponse {
   resume_id: number | null;
   stage: 'triage' | 'deep_review';
   schema_version: 2;
-  stage_status: 'generating' | 'provider_unknown' | 'ready' | 'confirmed';
+  stage_status: 'generating' | 'provider_unknown' | 'ready' | 'confirmed' | 'source_conflict';
   parent_triage_stage_id: number | null;
   idempotency_key: string;
   source_fingerprint_sha256: string;
