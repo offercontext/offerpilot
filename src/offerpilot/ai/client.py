@@ -201,6 +201,7 @@ class ConfiguredAIClient:
             payload["tool_choice"] = "auto"
 
         _try_audit_provider_endpoint(provider.base_url)
+        _try_audit_provider_request(provider, payload)
         content_parts: list[str] = []
         tool_calls: dict[int, dict[str, Any]] = {}
         provider_blocks: dict[str, Any] = {}

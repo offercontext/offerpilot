@@ -9,6 +9,7 @@ _SCRIPT = run_path(
         / "interview-preparation-controlled-provider-diagnostic.py"
     )
 )
+_validate_controlled_responses = _SCRIPT["_validate_controlled_responses"]
 _validate_redacted_request_metadata = _SCRIPT["_validate_redacted_request_metadata"]
 
 
@@ -57,3 +58,21 @@ def test_controlled_diagnostic_rejects_zero_calls():
             expected_provider_type="openai_compatible",
             expected_model="controlled",
         )
+
+
+def test_controlled_diagnostic_rejects_missing_provider_responses():
+    with pytest.raises(RuntimeError, match="Provider responses"):
+        _validate_controlled_responses([], expected_calls=3)
+
+
+def test_controlled_diagnostic_accepts_provider_responses():
+    _validate_controlled_responses(
+        [
+            {
+                "request_body_bytes": 10,
+                "response_status": 200,
+                "request_id_hash": "a" * 12,
+            }
+        ],
+        expected_calls=1,
+    )

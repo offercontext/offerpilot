@@ -217,6 +217,33 @@ def test_streaming_provider_request_audit_failure_does_not_block_provider_call(
     assert calls == 1
 
 
+def test_streaming_provider_request_metadata_audit_records_request(monkeypatch, tmp_path):
+    audit_path = tmp_path / "provider-request-audit.jsonl"
+    monkeypatch.setenv("OFFERPILOT_PROVIDER_REQUEST_AUDIT_FILE", str(audit_path))
+
+    def fake_completion(**kwargs: Any) -> Any:
+        return [SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="ok"))])]
+
+    monkeypatch.setattr(ai_client, "completion", fake_completion)
+    client = ConfiguredAIClient(
+        Config(api_key="sk-secret", base_url="https://provider.example/v1", model="model")
+    )
+
+    client.stream_complete([Message(role="user", content="private prompt")], [], lambda _: None)
+
+    records = [
+        json.loads(line)
+        for line in audit_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    metadata = next(item for item in records if item["kind"] == "provider_request_metadata")
+    assert metadata["response_mode"] == "text_json"
+    assert len(metadata["input_fingerprint_sha256"]) == 64
+    audit_text = audit_path.read_text(encoding="utf-8")
+    assert "private prompt" not in audit_text
+    assert "sk-secret" not in audit_text
+
+
 def test_client_streams_tool_calls_through_litellm(monkeypatch):
     def fake_completion(**kwargs: Any) -> Any:
         return [

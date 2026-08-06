@@ -211,8 +211,24 @@ def _validate_redacted_request_metadata(
             value = record.get(field)
             if not isinstance(value, str) or not _SHA256_PATTERN.fullmatch(value):
                 raise RuntimeError("provider request metadata fingerprint was invalid")
-        if record.get("response_mode") not in {"text_json", "json_schema"}:
+        if record.get("response_mode") != "text_json":
             raise RuntimeError("provider request metadata response mode was invalid")
+
+
+def _validate_controlled_responses(
+    responses: list[dict[str, object]], *, expected_calls: int
+) -> None:
+    if len(responses) != expected_calls or expected_calls <= 0:
+        raise RuntimeError("Provider responses did not match expected calls")
+    for response in responses:
+        if response.get("response_status") != 200:
+            raise RuntimeError("Provider responses did not all succeed")
+        body_bytes = response.get("request_body_bytes")
+        if type(body_bytes) is not int or body_bytes <= 0:
+            raise RuntimeError("Provider response request body metadata was invalid")
+        request_id_hash = response.get("request_id_hash")
+        if not isinstance(request_id_hash, str) or not re.fullmatch(r"[0-9a-f]{12}", request_id_hash):
+            raise RuntimeError("Provider response request id metadata was invalid")
 
 
 def _count_resume_string_leaves(value: object, *, budget: list[int]) -> int:
@@ -327,6 +343,10 @@ def run_diagnostic(source_data: Path, static_dir: Path | None) -> dict[str, Any]
                         client, [], application_id, resume_ids
                     )
                     diagnostics = _read_redacted_generation_diagnostics(data_dir)
+                    _validate_controlled_responses(
+                        _ControlledProviderHandler.calls,
+                        expected_calls=_CONTROLLED_PROVIDER_CALLS,
+                    )
                     request_metadata = _read_redacted_request_metadata(request_audit_path)
                     _validate_redacted_request_metadata(
                         request_metadata,
