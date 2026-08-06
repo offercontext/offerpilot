@@ -8,6 +8,8 @@
 
 **Tech Stack:** TypeScript, React 18, Ant Design, CSS Modules, Vitest, jsdom, React Query test provider, Codex in-app browser for final UI acceptance.
 
+**Baseline SHA:** `b4363b0`. This SHA is persisted in this committed plan and every baseline/parallel-branch check below must use it literally; do not substitute `origin/main` or a moving remote ref.
+
 ---
 
 ## Scope and allowlist
@@ -29,12 +31,12 @@ docs/reports/*resume-evidence-audit*
 
 Do not modify src/offerpilot/**, tests/**, web/src/services/**, web/src/types/**, web/src/layout/AppShell.tsx, web/src/components/ApplicationDetail.tsx, material/Opportunity Fit/interview/mock-interview files, or JD-version files. If a type or service change appears necessary, stop and return to design review.
 
-Use origin/main@b4363b0 as the fixed allowlist baseline. Compare the final file list with git diff --name-only origin/main...HEAD. Compare also with feat/20260805-application-jd-versions; their non-design-document file intersection must remain empty.
+Use the persisted `b4363b0` as the fixed allowlist baseline. Compare the target branch file set and the JD-version branch file set separately against this same SHA, then intersect those two sets. Do not use a direct `git diff JD-branch...HEAD` comparison: that compares the branches' tips and can include unrelated changes from either side.
 
 ## Implementation contract fixed for this plan
 
 - Export ResumeAuditStatus, ResumeAuditCategory, ResumeAuditFinding, ResumeAuditResult, and auditResume(resume: Resume): ResumeAuditResult from the pure module.
-- Use a fixed finding order: invalid-content guard, six core fields in contact/education/experience/projects/skills/career_intent order, experience bullet findings, quantification finding, and format-boundary finding.
+- Use a fixed finding order: invalid-content guard when needed; six core fields in contact/education/experience/projects/skills/career_intent order; then experience-empty-bullet, experience-duplicate-bullet, experience-long-bullet, experience-bullets-unknown when applicable; then facts-quantification; then format-visual-unknown. The complete valid-content order is asserted in a test.
 - Use relative evidence paths such as /experience/0/highlights/0, matching existing resume evidence conventions.
 - A missing core field is review; an explicitly empty recognized container is review; a non-empty recognized value is present; an invalid present shape is unknown. A non-object content_json produces an unknown finding and never throws.
 - Experience extraction recognizes string entries and string arrays under highlights, bullets, and achievements. Keep valid strings, ignore invalid elements for rule evaluation, and emit a related unknown finding when malformed elements prevent a complete conclusion. Never use raw_text as structured bullets.
@@ -42,6 +44,24 @@ Use origin/main@b4363b0 as the fixed allowlist baseline. Compare the final file 
 - Check digits only in recognized experience bullets. No digit yields a neutral review prompt containing “如有真实数据，可以补充”; a digit yields a present finding that says presence does not prove truth or sufficiency. Generate no numbers, ranges, estimates, or external facts.
 - Always add one unknown format-boundary finding covering fonts, tables, images, headers/footers, pagination, and ATS parsing. Never say “ATS 已通过”.
 - The panel uses native details/summary, closed by default. Opening and closing are local UI state with no request callback.
+
+### Runtime-shape truth table
+
+The pure-module tests must encode this table for each of the six core fields; the implementation must not infer presence from array length or object-key count alone.
+
+| Runtime value for a field | `contact` / `career_intent` | `education` / `experience` / `projects` | `skills` |
+| --- | --- | --- | --- |
+| `undefined` / missing | `review` | `review` | `review` |
+| `null` | `unknown` | `unknown` | `unknown` |
+| empty object `{}` | `review` | `unknown` (wrong top-level shape) | `review` |
+| empty array `[]` | `unknown` (wrong top-level shape) | `review` | `review` |
+| pure whitespace string | `unknown` (wrong top-level shape) | `unknown` (wrong top-level shape) | `review` |
+| non-empty string | `unknown` (wrong top-level shape) | `unknown` (wrong top-level shape) | `present` |
+| valid nested string/number/boolean leaf with no malformed sibling | `present` | `present` | `present` |
+| valid visible element mixed with `null`, primitive/object of an unrecognized shape, or malformed nested leaf | `unknown` | `unknown` | `unknown` |
+| recognized container with only blank strings or empty records | `review` | `review` | `review` |
+
+For `experience`, a non-empty string array entry is a valid bullet item; object entries may expose string arrays under `highlights`, `bullets`, or `achievements`. The three keys have identical status semantics and each path must be preserved. A valid nested string leaf means a recursively nested string such as `{ profile: { label: '后端工程师' } }`; an empty nested object contributes no visible value. `NaN`, `Infinity`, functions, symbols, and cyclic/non-JSON values are malformed and yield `unknown` rather than `present`.
 
 ## Task 1: Pure audit module, test first
 
@@ -51,7 +71,7 @@ Use origin/main@b4363b0 as the fixed allowlist baseline. Compare the final file 
 
 - [ ] **Step 1: Write red tests before production code.**
 
-Create a complete Resume fixture helper and tests for the public contract. Include these focused cases:
+Create a complete Resume fixture helper and tests for the public contract. The parameterized core-field cases below must cover every row of the runtime-shape truth table, including null, empty object/array, pure whitespace, nested string leaves, mixed valid/invalid elements, direct experience strings, and all three bullet keys. Include these focused cases:
 
 ~~~ts
 it('returns stable counts and the fixed format boundary finding', () => {
@@ -87,6 +107,73 @@ it('marks core fields present, review, or unknown without requiring optional sec
     expect.objectContaining({ id: 'structure-skills', status: 'present' }),
     expect.objectContaining({ id: 'structure-career-intent', status: 'unknown' }),
   ]));
+});
+
+it.each([
+  ['contact', undefined, 'review'],
+  ['contact', null, 'unknown'],
+  ['contact', {}, 'review'],
+  ['contact', '   ', 'unknown'],
+  ['contact', { profile: { label: '后端工程师' } }, 'present'],
+  ['contact', { name: 'Ada', phone: null }, 'unknown'],
+  ['education', undefined, 'review'],
+  ['education', null, 'unknown'],
+  ['education', [], 'review'],
+  ['education', '   ', 'unknown'],
+  ['education', ['   '], 'review'],
+  ['education', [{ school: '示例大学' }], 'present'],
+  ['education', [{ school: '示例大学' }, null], 'unknown'],
+  ['experience', undefined, 'review'],
+  ['experience', null, 'unknown'],
+  ['experience', [], 'review'],
+  ['experience', '   ', 'unknown'],
+  ['experience', ['   '], 'review'],
+  ['experience', ['负责订单服务'], 'present'],
+  ['experience', [{ highlights: ['负责订单服务'] }], 'present'],
+  ['experience', [{ bullets: ['负责订单服务'] }], 'present'],
+  ['experience', [{ achievements: ['负责订单服务'] }], 'present'],
+  ['experience', [{ highlights: ['有效内容', null] }], 'unknown'],
+  ['projects', undefined, 'review'],
+  ['projects', null, 'unknown'],
+  ['projects', [], 'review'],
+  ['projects', '   ', 'unknown'],
+  ['projects', ['   '], 'review'],
+  ['projects', [{ name: '示例项目' }], 'present'],
+  ['projects', [{ name: '示例项目' }, {}], 'unknown'],
+  ['skills', undefined, 'review'],
+  ['skills', null, 'unknown'],
+  ['skills', {}, 'review'],
+  ['skills', [], 'review'],
+  ['skills', '   ', 'review'],
+  ['skills', 'TypeScript', 'present'],
+  ['skills', [{ label: 'TypeScript' }], 'present'],
+  ['skills', [{ label: 'TypeScript' }, null], 'unknown'],
+  ['career_intent', undefined, 'review'],
+  ['career_intent', null, 'unknown'],
+  ['career_intent', {}, 'review'],
+  ['career_intent', '   ', 'unknown'],
+  ['career_intent', { target_roles: ['前端工程师'] }, 'present'],
+  ['career_intent', { target_roles: ['前端工程师'], target_locations: [null] }, 'unknown'],
+] as const)('classifies %s=%j as %s', (field, value, status) => {
+  const result = auditResume(makeResume({ [field]: value } as never));
+  expect(result.findings.find((item) => item.id === `structure-${field}`)?.status).toBe(status);
+});
+
+it('uses all three experience bullet keys and preserves a direct string entry path', () => {
+  const result = auditResume(makeResume({
+    experience: [
+      '直接经历要点',
+      { highlights: ['highlight 要点'] },
+      { bullets: ['bullet 要点'] },
+      { achievements: ['achievement 要点'] },
+    ],
+  }));
+
+  expect(result.findings.find((item) => item.id === 'facts-quantification')?.source).toMatchObject({
+    path: '/experience/0',
+    excerpt: '直接经历要点',
+  });
+  expect(result.findings.filter((item) => item.id === 'experience-bullets-unknown')).toHaveLength(0);
 });
 
 it('detects blank, duplicate, and overlong bullets with stable evidence paths', () => {
@@ -143,11 +230,70 @@ it('does not treat raw_text as structured experience and reports malformed shape
   expect(result.findings.find((item) => item.id === 'facts-quantification')).toBeUndefined();
 });
 
-it('preserves CJK, emoji, combining marks, and newlines in excerpts', () => {
+it('uses exact 240/241 code-point boundaries and truncates excerpts at 160 code points', () => {
+  const bullet240 = '界'.repeat(240);
+  const bullet241 = '界'.repeat(241);
+  const atLimit = auditResume(makeResume({ experience: [{ highlights: [bullet240] }] }));
+  const overLimit = auditResume(makeResume({ experience: [{ highlights: [bullet241] }] }));
+
+  expect(atLimit.findings.find((item) => item.id === 'experience-long-bullet')).toBeUndefined();
+  const longFinding = overLimit.findings.find((item) => item.id === 'experience-long-bullet');
+  expect(longFinding).toMatchObject({ status: 'review' });
+  expect(longFinding?.source?.excerpt).toBe(`${'界'.repeat(160)}…`);
+  expect(Array.from(longFinding?.source?.excerpt ?? '')).toHaveLength(161);
+});
+
+it('does not split emoji surrogate pairs or normalize combining characters', () => {
+  const emojiBullet = '🚀'.repeat(161);
+  const combiningBullet = `${'e\u0301'.repeat(80)}尾`;
+  const result = auditResume(makeResume({
+    experience: [{ highlights: [emojiBullet, combiningBullet] }],
+  }));
+  const longFindings = result.findings.filter((item) => item.id === 'experience-long-bullet');
+
+  expect(longFindings[0]?.source?.excerpt).toBe(`${'🚀'.repeat(160)}…`);
+  expect(Array.from(longFindings[0]?.source?.excerpt ?? '')).toHaveLength(161);
+  expect(longFindings[1]?.source?.excerpt).toBe(`${'e\u0301'.repeat(80)}…`);
+  expect(longFindings[1]?.source?.excerpt).not.toContain('é');
+});
+
+it('preserves CJK, emoji, combining marks, and newlines in excerpts below the limit', () => {
   const excerpt = '中文 🚀 e\u0301\n保留原文';
   const result = auditResume(makeResume({ experience: [{ highlights: [excerpt] }] }));
 
   expect(result.findings.find((item) => item.id === 'facts-quantification')?.source?.excerpt).toBe(excerpt);
+});
+
+it('keeps the complete finding ID order stable when every rule is triggered', () => {
+  const result = auditResume(makeResume({
+    contact: {},
+    education: [],
+    experience: [
+      '  ',
+      '重复要点',
+      '重复要点',
+      '界'.repeat(241),
+      null,
+    ],
+    projects: [],
+    skills: [],
+    career_intent: {},
+  } as never));
+
+  expect(result.findings.map((item) => item.id)).toEqual([
+    'structure-contact',
+    'structure-education',
+    'structure-experience',
+    'structure-projects',
+    'structure-skills',
+    'structure-career-intent',
+    'experience-empty-bullet',
+    'experience-duplicate-bullet',
+    'experience-long-bullet',
+    'experience-bullets-unknown',
+    'facts-quantification',
+    'format-visual-unknown',
+  ]);
 });
 
 it('does not mutate input and is deterministic for the same input', () => {
@@ -207,7 +353,7 @@ export function auditResume(resume: Resume): ResumeAuditResult {
 }
 ~~~
 
-Use fixed field-shape metadata to distinguish missing, empty, valid, and invalid values. Extract only valid string bullets and preserve each original path/text. Emit one deterministic offending source per rule, in input traversal order. Use Array.from for code-point length and excerpt truncation. Count statuses without sorting. Any malformed runtime value must return unknown or be skipped safely, never throw.
+Use fixed field-shape metadata to implement the truth table above; do not use array.length or Object.keys() as a presence test. Extract direct experience strings plus highlights/bullets/achievements strings and preserve each original path/text. Emit one deterministic offending source per rule, in input traversal order, and construct IDs in the exact order specified above. Use Array.from for code-point length and excerpt truncation. Count statuses without sorting. Any malformed runtime value must return unknown or be skipped safely, never throw.
 
 - [ ] **Step 4: Verify green and refactor only while green.**
 
@@ -231,7 +377,11 @@ Use renderToStaticMarkup and a Resume fixture. Assert user-visible semantics:
 
 ~~~tsx
 it('renders Chinese explanation, counts, categories, and no ATS conclusion', () => {
-  const markup = renderToStaticMarkup(<ResumeEvidenceAuditPanel resume={makeResume(...)} />);
+  const markup = renderToStaticMarkup(
+    <ResumeEvidenceAuditPanel
+      resume={makeResume({ contact: { name: '林晓' }, experience: [{ highlights: ['负责订单服务'] }] })}
+    />,
+  );
 
   expect(markup).toContain('简历事实体检');
   expect(markup).toContain('已具备');
@@ -354,7 +504,7 @@ Use the existing jsdom pattern with createRoot, act, QueryClientProvider (retry 
 The test must use the actual open/close path:
 
 ~~~tsx
-it('opens and closes the audit without write, AI, or HTTP calls', async () => {
+it('opens, expands, collapses, and closes the audit without write, AI, HTTP, or navigation calls', async () => {
   renderEditor();
 
   expect(container?.textContent).not.toContain('只检查当前简历中可观察的信息');
@@ -362,16 +512,27 @@ it('opens and closes the audit without write, AI, or HTTP calls', async () => {
   expect(container?.textContent).toContain('只检查当前简历中可观察的信息');
   expect(container?.textContent).toContain('无法判断');
 
+  const details = container?.querySelector('details') as HTMLDetailsElement;
+  const summary = details?.querySelector('summary') as HTMLElement;
+  expect(details?.open).toBe(false);
+  await click(summary);
+  expect(details?.open).toBe(true);
+  await click(summary);
+  expect(details?.open).toBe(false);
   await click(findButton('关闭简历事实体检'));
   expect(container?.textContent).not.toContain('只检查当前简历中可观察的信息');
   expect(updateResume).not.toHaveBeenCalled();
   expect(fetchSpy).not.toHaveBeenCalled();
   expect(xhrOpenSpy).not.toHaveBeenCalled();
   expect(aiServiceSpy).not.toHaveBeenCalled();
+  expect(onClose).not.toHaveBeenCalled();
+  expect(onSaved).not.toHaveBeenCalled();
+  expect(pushStateSpy).not.toHaveBeenCalled();
+  expect(replaceStateSpy).not.toHaveBeenCalled();
 });
 ~~~
 
-If the implementation uses one toggle button, assert aria-expanded changes to false instead of requiring a separate close label. Do not click Save or Cancel.
+If the implementation uses one toggle button, assert aria-expanded changes false after the second click instead of requiring a separate close label. The details/summary click must still be real DOM interaction. Do not click Save or Cancel; the audit open/expand/collapse/close path alone must prove zero side effects.
 
 - [ ] **Step 2: Verify the mount test fails for the missing entry.**
 
@@ -405,7 +566,7 @@ Run from web:
 npm test -- src/components/ResumeEditorDrawer.mount.test.tsx src/components/ResumeLibraryView.test.ts src/components/ResumeCard.test.tsx src/layout/workspaceDrilldown.test.ts
 ~~~
 
-Expected: all selected tests pass and zero-request spies remain at zero after opening and closing.
+Expected: all selected tests pass and zero-request/navigation spies remain at zero after opening, expanding, collapsing, and closing.
 
 ## Task 5: Release gate and Chinese browser acceptance
 
@@ -458,7 +619,9 @@ $allowed = @(
   'docs/superpowers/plans/2026-08-06-resume-evidence-audit.md',
   'docs/reports/2026-08-06-resume-evidence-audit-browser-acceptance.md'
 )
-$changed = @(git diff --name-only origin/main...HEAD)
+$baseline = 'b4363b0'
+git rev-parse --verify "$baseline^{commit}" | Out-Null
+$changed = @(git diff --name-only "$baseline..HEAD")
 $unexpected = @($changed | Where-Object { $_ -notin $allowed })
 if ($unexpected.Count -gt 0) { $unexpected; exit 1 }
 if ($changed.Count -eq 0) { throw 'No implementation diff found' }
@@ -466,15 +629,25 @@ if ($changed.Count -eq 0) { throw 'No implementation diff found' }
 
 Expected: git diff --check exits 0 and no unexpected file is printed.
 
-- [ ] **Step 4: Check the JD-version branch intersection.**
+- [ ] **Step 4: Check the JD-version branch intersection from the same persisted baseline.**
 
 Run:
 
 ~~~
-git diff --name-only feat/20260805-application-jd-versions...HEAD
+$baseline = 'b4363b0'
+git rev-parse --verify "$baseline^{commit}" | Out-Null
+git rev-parse --verify 'feat/20260805-application-jd-versions^{commit}' | Out-Null
+$targetFiles = @(git diff --name-only "$baseline..HEAD")
+$jdFiles = @(git diff --name-only "$baseline..feat/20260805-application-jd-versions")
+$intersection = @($targetFiles | Where-Object { $_ -in $jdFiles })
+$unexpectedIntersection = @($intersection | Where-Object {
+  $_ -notmatch '^docs/superpowers/specs/'
+})
+if ($unexpectedIntersection.Count -gt 0) { $unexpectedIntersection; exit 1 }
+$intersection
 ~~~
 
-Expected: no intersection with web/src/**, src/**, or tests/**, except explicitly allowlisted design/plan/report paths. If the ref is unavailable, report the comparison as unable to run; do not claim it passed.
+Expected: the printed intersection is empty, or contains only files under docs/superpowers/specs/. This is a set intersection of two file lists relative to exactly b4363b0, not a direct tip-to-tip diff. Plan/report files are not exempt. If either ref is unavailable, report the comparison as unable to run; do not claim it passed.
 
 - [ ] **Step 5: Perform in-app browser acceptance in bright mode.**
 
@@ -498,8 +671,8 @@ Run:
 
 ~~~
 git status --short --branch
-git diff --stat origin/main...HEAD
-git diff --name-only origin/main...HEAD
+git diff --stat b4363b0..HEAD
+git diff --name-only b4363b0..HEAD
 ~~~
 
 After fresh verification, stage and commit in separate commands:
