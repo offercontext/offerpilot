@@ -35,6 +35,7 @@ _REPAIR_CATEGORIES = {
     "unknown_evidence_ref",
     "excerpt_mismatch",
 }
+_SAFE_FAILURE_CATEGORIES = _REPAIR_CATEGORIES | {"provider_error"}
 
 _EVIDENCE_REFERENCE_PROMPT = (
     "每个具体建议必须包含非空 evidence_refs；evidence_refs 是对象数组，且每个对象的键必须恰好为 "
@@ -424,10 +425,16 @@ def _emit_diagnostic(
 ) -> None:
     if sink is None:
         return
+    safe_categories = [
+        item for item in failure_categories[:2] if item in _SAFE_FAILURE_CATEGORIES
+    ]
+    safe_category = (
+        failure_category if failure_category in _SAFE_FAILURE_CATEGORIES else None
+    )
     sink(
         {
-            "failure_category": failure_category,
-            "failure_categories": [str(item) for item in failure_categories[:2]],
+            "failure_category": safe_category,
+            "failure_categories": safe_categories,
             "repair_attempted": repair_attempted,
             "retry_count": retry_count,
             "duration_ms": duration_ms,

@@ -7663,7 +7663,12 @@ def _interview_preparation_diagnostic_message(diagnostic: dict[str, Any]) -> str
         ensure_ascii=True,
         separators=(",", ":"),
     )
-    request_id_hash = str(diagnostic.get("provider_request_id_hash") or "")[:64]
+    request_id_hash_candidate = str(diagnostic.get("provider_request_id_hash") or "")
+    request_id_hash = (
+        request_id_hash_candidate[:64]
+        if re.fullmatch(r"[0-9a-f]{12,64}", request_id_hash_candidate)
+        else ""
+    )
     return (
         "interview_preparation_generation "
         f"category={category} failure_categories={categories_json} "
