@@ -341,6 +341,7 @@ function inspectValue(
   if (typeof value === 'number') return Number.isFinite(value) ? 'present' : 'unknown';
   if (value === null || typeof value === 'undefined') return 'unknown';
   if (typeof value !== 'object') return 'unknown';
+  if (position === 'array-item' && Array.isArray(value)) return 'unknown';
 
   const objectValue = value as object;
   if (seen.has(objectValue)) return 'unknown';

@@ -59,9 +59,9 @@ The pure-module tests must encode this table for each of the six core fields; th
 | non-empty string | `unknown` (wrong top-level shape) | `unknown` (wrong top-level shape) | `present` |
 | valid nested string/number/boolean leaf with no malformed sibling | `present` | `present` | `present` |
 | valid visible element mixed with `null`, primitive/object of an unrecognized shape, or malformed nested leaf | `unknown` | `unknown` | `unknown` |
-| recognized container with only blank strings or empty records | `review` | `review` | `review` |
+| recognized top-level container or object property with only blank strings or empty records | `review` | `review` | `review` |
 
-For `experience`, a non-empty string array entry is a valid bullet item; object entries may expose string arrays under `highlights`, `bullets`, or `achievements`. The three keys have identical status semantics and each path must be preserved. A valid nested string leaf means a recursively nested string such as `{ profile: { label: '后端工程师' } }`; an empty nested object contributes no visible value. `NaN`, `Infinity`, functions, symbols, and cyclic/non-JSON values are malformed and yield `unknown` rather than `present`.
+The table describes the field value at the top level. Empty strings and empty records used as object properties are empty children: a visible sibling keeps the field `present`, while a container with no visible value is `review`. For `education`, `experience`, `projects`, and array-shaped `skills`, any nested array used as an array item is an unrecognized item and yields `unknown`, whether that nested array is empty or non-empty; an empty object used as an array item is also `unknown`. This distinguishes legal empty fields from misplaced containers. For `experience`, a non-empty string array entry is a valid bullet item; object entries may expose string arrays under `highlights`, `bullets`, or `achievements`. The three keys have identical status semantics and each path must be preserved. A valid nested string leaf means a recursively nested string such as `{ profile: { label: '后端工程师' } }`; an empty nested object contributes no visible value when used as an object property. `NaN`, `Infinity`, functions, symbols, and cyclic/non-JSON values are malformed and yield `unknown` rather than `present`.
 
 ## Task 1: Pure audit module, test first
 
@@ -123,6 +123,8 @@ it.each([
   ['education', ['   '], 'review'],
   ['education', [{ school: '示例大学' }], 'present'],
   ['education', [{ school: '示例大学' }, null], 'unknown'],
+  ['education', [{ school: '示例大学' }, []], 'unknown'],
+  ['education', [[{ school: '示例大学' }]], 'unknown'],
   ['experience', undefined, 'review'],
   ['experience', null, 'unknown'],
   ['experience', [], 'review'],
@@ -140,6 +142,7 @@ it.each([
   ['projects', ['   '], 'review'],
   ['projects', [{ name: '示例项目' }], 'present'],
   ['projects', [{ name: '示例项目' }, {}], 'unknown'],
+  ['projects', [[{ name: '示例项目' }]], 'unknown'],
   ['skills', undefined, 'review'],
   ['skills', null, 'unknown'],
   ['skills', {}, 'review'],
