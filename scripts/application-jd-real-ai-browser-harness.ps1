@@ -240,12 +240,20 @@ print(json.dumps(out, separators=(",", ":")))
 }
 
 function Assert-StageUnchanged($before, $after, [string[]]$allowedTables) {
-  foreach ($property in $before.PSObject.Properties) {
-    if ($property.Name -in $allowedTables) { continue }
-    $old = $before.$($property.Name)
-    $new = $after.$($property.Name)
-    if ([int]$old.count -ne [int]$new.count -or [string]$old.sha256 -ne [string]$new.sha256) {
-      throw "Unexpected write in $($property.Name)."
+  $names = @($before.PSObject.Properties.Name) + @($after.PSObject.Properties.Name) |
+    Sort-Object -Unique
+  foreach ($name in $names) {
+    if ($name -in $allowedTables) { continue }
+    $oldProperty = $before.PSObject.Properties[$name]
+    $newProperty = $after.PSObject.Properties[$name]
+    $old = if ($null -ne $oldProperty) { $oldProperty.Value } else { $null }
+    $new = if ($null -ne $newProperty) { $newProperty.Value } else { $null }
+    $oldCount = if ($null -ne $old) { [int]$old.count } else { 0 }
+    $newCount = if ($null -ne $new) { [int]$new.count } else { 0 }
+    $oldHash = if ($null -ne $old) { [string]$old.sha256 } else { '' }
+    $newHash = if ($null -ne $new) { [string]$new.sha256 } else { '' }
+    if ($oldCount -ne $newCount -or $oldHash -ne $newHash) {
+      throw "Unexpected write in $name."
     }
   }
 }
@@ -502,6 +510,7 @@ print(db.execute(
 } finally {
   $cleanupErrors = [System.Collections.Generic.List[string]]::new()
   $serviceStopped = $true
+  $allProcessesStopped = $true
   try {
     if ($browserStop -and $null -ne $auditor -and -not $auditor.HasExited) {
       New-Item -ItemType File -Force -Path $browserStop | Out-Null
@@ -520,6 +529,7 @@ print(db.execute(
       Stop-Tree $entry.Process $entry.Label
     } catch {
       [void]$cleanupErrors.Add("$($entry.Label): $($_.Exception.Message)")
+      $allProcessesStopped = $false
       if ($entry.Label -eq 'isolated service') { $serviceStopped = $false }
     }
   }
@@ -543,12 +553,16 @@ print(db.execute(
   } catch {
     [void]$cleanupErrors.Add("environment restore: $($_.Exception.Message)")
   }
-  try {
-    if (Test-Path -LiteralPath $tempData) {
-      Remove-Item -LiteralPath $tempData -Recurse -Force -ErrorAction Stop
+  if ($allProcessesStopped) {
+    try {
+      if (Test-Path -LiteralPath $tempData) {
+        Remove-Item -LiteralPath $tempData -Recurse -Force -ErrorAction Stop
+      }
+    } catch {
+      [void]$cleanupErrors.Add("temporary directory cleanup: $($_.Exception.Message)")
     }
-  } catch {
-    [void]$cleanupErrors.Add("temporary directory cleanup: $($_.Exception.Message)")
+  } else {
+    [void]$cleanupErrors.Add("temporary directory retained because a child process did not exit: $tempData")
   }
   if ($cleanupErrors.Count -gt 0) { throw ($cleanupErrors -join '; ') }
 }

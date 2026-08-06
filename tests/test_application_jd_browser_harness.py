@@ -115,6 +115,21 @@ def test_application_jd_harness_fails_closed_on_auditor_disconnect() -> None:
     assert "successful Pilot confirmation response" in script
 
 
+def test_application_jd_harness_retains_temp_data_when_a_process_survives() -> None:
+    script = HARNESS.read_text(encoding="utf-8")
+    assert "$allProcessesStopped = $true" in script
+    assert "$allProcessesStopped = $false" in script
+    assert "if ($allProcessesStopped)" in script
+    assert "temporary directory retained because a child process did not exit" in script
+
+
+def test_application_jd_harness_detects_new_database_snapshot_tables() -> None:
+    script = HARNESS.read_text(encoding="utf-8")
+    assert "$before.PSObject.Properties.Name" in script
+    assert "$after.PSObject.Properties.Name" in script
+    assert "Sort-Object -Unique" in script
+
+
 def test_application_jd_implementation_scope_is_machine_checked() -> None:
     baseline_file = os.environ.get("OFFERPILOT_APPLICATION_JD_BASELINE_FILE")
     if not baseline_file:

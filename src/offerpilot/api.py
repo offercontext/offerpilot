@@ -2323,6 +2323,7 @@ def create_app(
                 "WARNING",
                 "interview_preparation_generation category=provider_error "
                 'failure_categories=["provider_error"] '
+                "structure_summaries=[] "
                 "repair_attempted=false retry_count=0 duration_ms=0 "
                 "provider_request_id_hash=",
             )
@@ -7663,6 +7664,11 @@ def _interview_preparation_diagnostic_message(diagnostic: dict[str, Any]) -> str
         ensure_ascii=True,
         separators=(",", ":"),
     )
+    structure_summaries_json = json.dumps(
+        _safe_interview_preparation_structure_summaries(diagnostic.get("structure_summaries")),
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
     request_id_hash_candidate = str(diagnostic.get("provider_request_id_hash") or "")
     request_id_hash = (
         request_id_hash_candidate[:64]
@@ -7672,9 +7678,75 @@ def _interview_preparation_diagnostic_message(diagnostic: dict[str, Any]) -> str
     return (
         "interview_preparation_generation "
         f"category={category} failure_categories={categories_json} "
+        f"structure_summaries={structure_summaries_json} "
         f"repair_attempted={repair_attempted} retry_count={retry_count} "
         f"duration_ms={duration_ms} provider_request_id_hash={request_id_hash}"
     )
+
+
+def _safe_interview_preparation_structure_summaries(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    allowed_types = {"unavailable", "null", "boolean", "number", "string", "array", "object"}
+    summaries: list[dict[str, Any]] = []
+    for raw_summary in value[:2]:
+        if not isinstance(raw_summary, dict):
+            continue
+        payload_type = raw_summary.get("payload_type")
+        safe_summary: dict[str, Any] = {
+            "payload_type": payload_type if payload_type in allowed_types else "unavailable",
+            "top_level_keys": _safe_structure_keys(raw_summary.get("top_level_keys")),
+            "fields": {},
+        }
+        raw_fields = raw_summary.get("fields")
+        if not isinstance(raw_fields, dict):
+            summaries.append(safe_summary)
+            continue
+        safe_fields: dict[str, Any] = {}
+        for raw_key, raw_shape in list(raw_fields.items())[:32]:
+            if not isinstance(raw_key, str) or not isinstance(raw_shape, dict):
+                continue
+            key = _safe_structure_key(raw_key)
+            shape_type = raw_shape.get("type")
+            shape: dict[str, Any] = {
+                "type": shape_type if shape_type in allowed_types else "unavailable"
+            }
+            length = raw_shape.get("length")
+            if type(length) is int and 0 <= length <= 100_000:
+                shape["length"] = length
+            item_types = raw_shape.get("item_types")
+            if isinstance(item_types, list):
+                shape["item_types"] = [
+                    item_type if item_type in allowed_types else "unavailable"
+                    for item_type in item_types[:8]
+                ]
+            item_key_sets = raw_shape.get("item_key_sets")
+            if isinstance(item_key_sets, list):
+                shape["item_key_sets"] = [
+                    None if item_keys is None else _safe_structure_keys(item_keys)
+                    for item_keys in item_key_sets[:8]
+                    if item_keys is None or isinstance(item_keys, list)
+                ]
+            safe_fields[key] = shape
+        safe_summary["fields"] = safe_fields
+        summaries.append(safe_summary)
+    return summaries
+
+
+def _safe_structure_keys(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [
+        _safe_structure_key(item)
+        for item in value[:32]
+        if isinstance(item, str)
+    ]
+
+
+def _safe_structure_key(value: str) -> str:
+    if re.fullmatch(r"[A-Za-z0-9_./-]{1,64}", value):
+        return value
+    return "<unsafe-key>"
 
 
 def _offer_create_from_payload(

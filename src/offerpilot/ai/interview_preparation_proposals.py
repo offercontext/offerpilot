@@ -37,6 +37,18 @@ _REPAIR_CATEGORIES = {
 }
 _SAFE_FAILURE_CATEGORIES = _REPAIR_CATEGORIES | {"provider_error"}
 
+_SHAPE_CONTRACT_PROMPT = (
+    "The top-level JSON object must have exactly these five keys: "
+    "preparation_directions, story_prompts, review_points, interviewer_questions, items_to_clarify. "
+    "Each of those five values must be an array, including when empty. "
+    "Each array item must have exactly these keys: id, text, evidence_refs. "
+    "Each evidence_refs item must have exactly these keys: source, path, excerpt. "
+    "Use a literal contiguous excerpt from the cited input. "
+    "Valid item example: {\"id\":\"direction-1\",\"text\":\"Prepare the cited experience.\","
+    "\"evidence_refs\":[{\"source\":\"resume\",\"path\":\"/raw_text\","
+    "\"excerpt\":\"exact contiguous excerpt\"}]} ."
+)
+
 _EVIDENCE_REFERENCE_PROMPT = (
     "每个具体建议必须包含非空 evidence_refs；evidence_refs 是对象数组，且每个对象的键必须恰好为 "
     '["source","path","excerpt"]。'
@@ -158,6 +170,7 @@ def generate_interview_preparation_proposal(
     )
     started_at = perf_counter()
     failure_categories: list[str] = []
+    structure_summaries: list[dict[str, Any]] = []
     provider_request_id_hash = ""
     for attempt in range(2):
         user_prompt = (
@@ -187,6 +200,7 @@ def generate_interview_preparation_proposal(
                 on_diagnostic,
                 failure_category="provider_error",
                 failure_categories=failure_categories,
+                structure_summaries=structure_summaries,
                 repair_attempted=attempt > 0,
                 retry_count=attempt,
                 duration_ms=duration_ms,
@@ -200,6 +214,7 @@ def generate_interview_preparation_proposal(
                 duration_ms=duration_ms,
                 provider_request_id_hash=provider_request_id_hash,
             ) from exc
+        parsed_payload = False
         try:
             payload = parse_json_reply(
                 assistant.content,
@@ -207,11 +222,14 @@ def generate_interview_preparation_proposal(
                 reject_non_finite=True,
                 reject_duplicate_keys=True,
             )
+            parsed_payload = True
+            structure_summaries.append(_structure_summary(payload))
             validated = validate_interview_preparation(payload, snapshot)
             _emit_diagnostic(
                 on_diagnostic,
                 failure_category=failure_categories[-1] if failure_categories else None,
                 failure_categories=failure_categories,
+                structure_summaries=structure_summaries,
                 repair_attempted=attempt > 0,
                 retry_count=attempt,
                 duration_ms=_elapsed_ms(started_at),
@@ -222,6 +240,8 @@ def generate_interview_preparation_proposal(
             failure_categories.append(exc.validation_category)
         except (TypeError, ValueError, RuntimeError) as exc:
             failure_categories.append(_parse_failure_category(exc))
+        if not parsed_payload:
+            structure_summaries.append(_unavailable_structure_summary())
         if failure_categories[-1] not in _REPAIR_CATEGORIES:
             failure_categories[-1] = "invalid_json"
 
@@ -231,6 +251,7 @@ def generate_interview_preparation_proposal(
         on_diagnostic,
         failure_category=failure_categories[-1] if failure_categories else None,
         failure_categories=failure_categories,
+        structure_summaries=structure_summaries,
         repair_attempted=True,
         retry_count=1,
         duration_ms=_elapsed_ms(started_at),
@@ -339,6 +360,8 @@ def _resolve_resume_pointer(content: dict[str, Any], path: str) -> Any:
 
 def _system_prompt() -> str:
     return (
+        _SHAPE_CONTRACT_PROMPT
+        + " "
         "只根据用户确认的 JD、所选 Resume 和已确认 Knowledge Evidence 生成面试准备建议。"
         "只输出原始 JSON；顶层只能有 preparation_directions、story_prompts、review_points、"
         "interviewer_questions、items_to_clarify 五个数组。每个条目只能有 id、text、evidence_refs，"
@@ -369,6 +392,8 @@ def _initial_prompt(snapshot: dict[str, Any]) -> str:
         "knowledge_evidence": knowledge_evidence,
     }
     return (
+        _SHAPE_CONTRACT_PROMPT
+        + " "
         "请基于以下冻结输入生成严格 JSON。所有具体文本必须逐项引用冻结输入中的 JD、Resume 或已确认 "
         "Knowledge Evidence；不要使用用户断言作为事实或证据。冻结输入："
         + json.dumps(provider_input, ensure_ascii=False, separators=(",", ":"))
@@ -381,6 +406,7 @@ def _repair_prompt(category: str) -> str:
         + category
         + "。只返回符合既定契约的 raw JSON；不要解释、不要返回 Markdown、不要加入额外字段。"
         + _EVIDENCE_REFERENCE_PROMPT
+        + _SHAPE_CONTRACT_PROMPT
         + "没有可验证建议时返回五个空数组，"
     )
 
@@ -418,6 +444,7 @@ def _emit_diagnostic(
     *,
     failure_category: str | None,
     failure_categories: list[str],
+    structure_summaries: list[dict[str, Any]],
     repair_attempted: bool,
     retry_count: int,
     duration_ms: int,
@@ -435,12 +462,74 @@ def _emit_diagnostic(
         {
             "failure_category": safe_category,
             "failure_categories": safe_categories,
+            "structure_summaries": structure_summaries[:2],
             "repair_attempted": repair_attempted,
             "retry_count": retry_count,
             "duration_ms": duration_ms,
             "provider_request_id_hash": provider_request_id_hash,
         }
     )
+
+
+def _structure_summary(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {
+            "payload_type": _structure_value_type(payload),
+            "top_level_keys": [],
+            "fields": {},
+        }
+    raw_keys = [key for key in payload if isinstance(key, str)]
+    fields: dict[str, Any] = {}
+    for raw_key in sorted(raw_keys):
+        key = _safe_structure_key(raw_key)
+        value = payload[raw_key]
+        shape: dict[str, Any] = {"type": _structure_value_type(value)}
+        if isinstance(value, list):
+            shape["length"] = len(value)
+            shape["item_types"] = [_structure_value_type(item) for item in value[:8]]
+            shape["item_key_sets"] = [
+                _structure_item_key_set(item) for item in value[:8]
+            ]
+        fields[key] = shape
+    return {
+        "payload_type": "object",
+        "top_level_keys": sorted(_safe_structure_key(key) for key in raw_keys),
+        "fields": fields,
+    }
+
+
+def _unavailable_structure_summary() -> dict[str, Any]:
+    return {"payload_type": "unavailable", "top_level_keys": [], "fields": {}}
+
+
+def _structure_item_key_set(value: Any) -> list[str] | None:
+    if not isinstance(value, dict):
+        return None
+    return sorted(
+        _safe_structure_key(key) for key in value if isinstance(key, str)
+    )
+
+
+def _structure_value_type(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    return "unsupported"
+
+
+def _safe_structure_key(value: str) -> str:
+    if re.fullmatch(r"[A-Za-z0-9_./-]{1,64}", value):
+        return value
+    return "<unsafe-key>"
 
 
 def _hash_provider_request_id(value: object) -> str:

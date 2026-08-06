@@ -261,17 +261,14 @@ def test_diagnostic_distinguishes_direct_safe_empty_from_contract_failure() -> N
     )
 
     assert result == safe_empty_interview_preparation_proposal()
-    assert diagnostics == [
-        {
-            "failure_category": None,
-            "failure_categories": [],
-            "repair_attempted": False,
-            "retry_count": 0,
-            "duration_ms": diagnostics[0]["duration_ms"],
-            "provider_request_id_hash": "",
-        }
-    ]
-    assert isinstance(diagnostics[0]["duration_ms"], int)
+    diagnostic = diagnostics[0]
+    assert diagnostic["failure_category"] is None
+    assert diagnostic["failure_categories"] == []
+    assert diagnostic["repair_attempted"] is False
+    assert diagnostic["retry_count"] == 0
+    assert diagnostic["provider_request_id_hash"] == ""
+    assert isinstance(diagnostic["duration_ms"], int)
+    assert diagnostic["structure_summaries"][0]["payload_type"] == "object"
 
 
 def test_diagnostic_records_repair_categories_and_provider_request_id_hash() -> None:
@@ -334,6 +331,61 @@ def test_diagnostic_preserves_both_contract_failure_categories_without_raw_outpu
     assert diagnostics[0]["retry_count"] == 1
     assert "candidate secret" not in encoded
     assert "raw model output" not in encoded
+
+
+def test_invalid_item_shape_diagnostic_keeps_only_redacted_structure_summary() -> None:
+    diagnostics: list[dict[str, object]] = []
+    invalid = {
+        "preparation_directions": [{"text": "candidate secret"}],
+        "story_prompts": [],
+        "review_points": [],
+        "interviewer_questions": [],
+        "items_to_clarify": [],
+    }
+
+    result = generate_interview_preparation_proposal(
+        FakeModel([invalid, _proposal()]), _snapshot(), on_diagnostic=diagnostics.append
+    )
+
+    assert result == _proposal()
+    summaries = diagnostics[0]["structure_summaries"]
+    assert isinstance(summaries, list)
+    assert summaries[0]["payload_type"] == "object"
+    assert summaries[0]["top_level_keys"] == [
+        "interviewer_questions",
+        "items_to_clarify",
+        "preparation_directions",
+        "review_points",
+        "story_prompts",
+    ]
+    direction_shape = summaries[0]["fields"]["preparation_directions"]
+    assert direction_shape["type"] == "array"
+    assert direction_shape["length"] == 1
+    assert direction_shape["item_key_sets"] == [["text"]]
+    assert "candidate secret" not in json.dumps(diagnostics, ensure_ascii=False)
+
+
+def test_invalid_item_shape_prompt_repeats_fixed_json_contract() -> None:
+    invalid = {
+        "preparation_directions": [{"text": "candidate secret"}],
+        "story_prompts": [],
+        "review_points": [],
+        "interviewer_questions": [],
+        "items_to_clarify": [],
+    }
+    model = FakeModel([invalid, _proposal()])
+
+    generate_interview_preparation_proposal(model, _snapshot())
+
+    initial_system = model.messages[0][0].content
+    initial_user = model.messages[0][1].content
+    repair_user = model.messages[1][1].content
+    for prompt in (initial_system, initial_user, repair_user):
+        assert "The top-level JSON object must have exactly these five keys" in prompt
+        assert "preparation_directions, story_prompts, review_points, interviewer_questions, items_to_clarify" in prompt
+        assert "Each array item must have exactly these keys: id, text, evidence_refs" in prompt
+        assert "Each evidence_refs item must have exactly these keys: source, path, excerpt" in prompt
+        assert '"source":"resume"' in prompt
 
 
 def test_user_assertions_are_saved_in_snapshot_but_absent_from_provider_payload() -> None:

@@ -94,11 +94,26 @@ def test_preparation_diagnostic_log_is_redacted_and_keeps_failure_categories() -
             "retry_count": 1,
             "duration_ms": 3210,
             "provider_request_id_hash": "abc123abc123",
+            "structure_summaries": [
+                {
+                    "payload_type": "object",
+                    "top_level_keys": ["preparation_directions"],
+                    "fields": {
+                        "preparation_directions": {
+                            "type": "array",
+                            "length": 1,
+                            "item_key_sets": [["text"]],
+                        }
+                    },
+                }
+            ],
             "provider_request_id": "provider-request-secret",
         }
     )
 
     assert "failure_categories=[\"invalid_item_shape\",\"unexpected_field\"]" in message
+    assert "structure_summaries=" in message
+    assert '"candidate secret"' not in message
     assert "provider_request_id_hash=abc123abc123" in message
     assert "provider_request_secret" not in message
     assert "provider_request_id=provider-request-secret" not in message
