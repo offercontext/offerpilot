@@ -34,6 +34,7 @@ interface Bullet {
 interface ExperienceScan {
   bullets: Bullet[];
   hasItems: boolean;
+  missingBulletPath?: string;
   unknownPath?: string;
 }
 
@@ -149,6 +150,7 @@ function scanExperience(value: unknown): ExperienceScan {
   if (typeof value === 'undefined') return { bullets: [], hasItems: false };
 
   const bullets: Bullet[] = [];
+  let missingBulletPath: string | undefined;
   let unknownPath: string | undefined;
 
   try {
@@ -169,11 +171,14 @@ function scanExperience(value: unknown): ExperienceScan {
         continue;
       }
 
+      let itemHasBullet = false;
+      let itemHasUnknown = false;
       for (const key of BULLET_KEYS) {
         const read = readOwnProperty(item, key);
         if (!read.exists) continue;
         if (!Array.isArray(read.value)) {
           unknownPath ??= `${itemPath}/${key}`;
+          itemHasUnknown = true;
           continue;
         }
         const bulletValues = read.value;
@@ -182,15 +187,24 @@ function scanExperience(value: unknown): ExperienceScan {
           const bulletPath = `${itemPath}/${key}/${bulletIndex}`;
           if (typeof bullet === 'string') {
             bullets.push({ path: bulletPath, text: bullet });
+            itemHasBullet = true;
           } else {
             unknownPath ??= bulletPath;
+            itemHasUnknown = true;
           }
         }
       }
+
+      if (!itemHasBullet && !itemHasUnknown) missingBulletPath ??= itemPath;
     }
-    return { bullets, hasItems: experienceLength > 0, unknownPath };
+    return { bullets, hasItems: experienceLength > 0, missingBulletPath, unknownPath };
   } catch {
-    return { bullets, hasItems: true, unknownPath: unknownPath ?? '/experience' };
+    return {
+      bullets,
+      hasItems: true,
+      missingBulletPath,
+      unknownPath: unknownPath ?? '/experience',
+    };
   }
 }
 
@@ -245,14 +259,14 @@ function auditExperienceFindings(value: unknown, scan: ExperienceScan): ResumeAu
       }
     : null);
 
-  if (scan.bullets.length === 0 && !scan.unknownPath) {
+  if (scan.missingBulletPath) {
     findings.push({
       id: 'experience-bullets-missing',
       category: 'experience',
       status: 'review',
       title: '缺少可识别经历要点',
       explanation: '经历项存在，但当前没有可识别的 bullet、achievement 或 highlight 字符串集合。',
-      source: { path: '/experience' },
+      source: { path: scan.missingBulletPath },
     });
   } else {
     findings.push(null);
@@ -287,13 +301,14 @@ function auditQuantificationFinding(scan: ExperienceScan): ResumeAuditFinding[] 
     }];
   }
 
+  const evidenceBullet = scan.bullets.find((bullet) => bullet.text.trim().length > 0);
   return [{
     id: 'facts-quantification',
     category: 'facts',
     status: 'review',
     title: '可补充真实事实',
     explanation: '当前可识别经历要点中没有出现阿拉伯数字；如有真实数据，可以补充数量、规模、频率、时间或结果。',
-    source: sourceFor(scan.bullets[0]),
+    ...(evidenceBullet ? { source: sourceFor(evidenceBullet) } : {}),
   }];
 }
 
@@ -347,14 +362,11 @@ function inspectValue(value: unknown, seen: WeakSet<object>): Inspection {
 function inspectChildren(values: unknown[], seen: WeakSet<object>): Inspection {
   if (values.length === 0) return 'empty';
   let hasPresent = false;
-  let hasEmpty = false;
   for (const value of values) {
     const child = inspectValue(value, seen);
     if (child === 'unknown') return 'unknown';
     if (child === 'present') hasPresent = true;
-    if (child === 'empty') hasEmpty = true;
   }
-  if (hasPresent && hasEmpty) return 'unknown';
   return hasPresent ? 'present' : 'empty';
 }
 

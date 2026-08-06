@@ -67,6 +67,7 @@ describe('auditResume', () => {
     ['contact', {}, 'review'],
     ['contact', '   ', 'unknown'],
     ['contact', { profile: { label: '后端工程师' } }, 'present'],
+    ['contact', { name: '筱哲', email: '' }, 'present'],
     ['contact', { name: 'Ada', phone: null }, 'unknown'],
     ['education', undefined, 'review'],
     ['education', null, 'unknown'],
@@ -91,7 +92,7 @@ describe('auditResume', () => {
     ['projects', '   ', 'unknown'],
     ['projects', ['   '], 'review'],
     ['projects', [{ name: '示例项目' }], 'present'],
-    ['projects', [{ name: '示例项目' }, {}], 'unknown'],
+    ['projects', [{ name: '示例项目' }, {}], 'present'],
     ['skills', undefined, 'review'],
     ['skills', null, 'unknown'],
     ['skills', {}, 'review'],
@@ -154,13 +155,14 @@ describe('auditResume', () => {
   });
 
   it('only offers a truthful-data prompt when recognized bullets contain no Arabic digits', () => {
-    const review = auditResume(makeResume({ experience: [{ highlights: ['Improved reliability'] }] }));
+    const review = auditResume(makeResume({ experience: [{ highlights: ['  ', 'Improved reliability'] }] }));
     const present = auditResume(makeResume({ experience: [{ highlights: ['Improved reliability by 20%'] }] }));
 
     expect(review.findings).toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: 'facts-quantification',
         status: 'review',
+        source: { path: '/experience/0/highlights/1', excerpt: 'Improved reliability' },
         explanation: expect.stringContaining('如有真实数据，可以补充'),
       }),
     ]));
@@ -190,9 +192,23 @@ describe('auditResume', () => {
         id: 'experience-bullets-missing',
         category: 'experience',
         status: 'review',
-        source: { path: '/experience' },
+        source: { path: '/experience/0' },
       }),
     ]));
+  });
+
+  it('reports the first experience item without recognized bullets', () => {
+    const result = auditResume(makeResume({
+      experience: [
+        { highlights: ['Built APIs'] },
+        { company: 'Example Co', title: 'Engineer' },
+        { achievements: ['Reduced latency'] },
+      ],
+    }));
+
+    expect(result.findings.filter((item) => item.id === 'experience-bullets-missing')).toEqual([
+      expect.objectContaining({ source: { path: '/experience/1' } }),
+    ]);
   });
 
   it('uses exact 240/241 code-point boundaries and truncates excerpts at 160 code points', () => {
