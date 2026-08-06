@@ -318,6 +318,7 @@ try {
   if (-not (Test-Path -LiteralPath $configPath)) { throw 'Provider config is missing.' }
   New-Item -ItemType Directory -Force -Path $tempData | Out-Null
   if ([string]::IsNullOrWhiteSpace($CdpUrl)) { $CdpUrl = Start-TemporaryBrowser 'about:blank' }
+  Write-Host "CDP_URL=$CdpUrl"
   Copy-Item -LiteralPath $configPath -Destination (Join-Path $tempData 'config.json')
   $providers = @(Get-ProviderEndpoints (Join-Path $tempData 'config.json'))
   if ($providers.Count -eq 0) { throw 'No enabled Provider endpoint is configured.' }
