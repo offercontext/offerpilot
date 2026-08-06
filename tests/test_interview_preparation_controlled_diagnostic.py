@@ -39,8 +39,8 @@ def test_controlled_diagnostic_accepts_complete_request_metadata():
                 "input_fingerprint_sha256": "a" * 64,
                 "schema_fingerprint_sha256": "b" * 64,
                 "response_mode": "text_json",
-                "max_tokens": None,
-                "timeout_seconds": None,
+                "explicit_max_tokens": None,
+                "explicit_timeout_seconds": None,
             }
         ],
         expected_calls=1,

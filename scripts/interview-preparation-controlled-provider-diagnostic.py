@@ -204,6 +204,9 @@ def _validate_redacted_request_metadata(
             raise RuntimeError("provider request metadata endpoint port was invalid")
         if record.get("request_body_scope") != "serialized_provider_payload_without_auth_or_endpoint":
             raise RuntimeError("provider request metadata body scope was invalid")
+        for field in ("explicit_max_tokens", "explicit_timeout_seconds"):
+            if field not in record:
+                raise RuntimeError(f"provider request metadata {field} was missing")
         for field in ("input_fingerprint_sha256", "schema_fingerprint_sha256"):
             value = record.get(field)
             if not isinstance(value, str) or not _SHA256_PATTERN.fullmatch(value):
