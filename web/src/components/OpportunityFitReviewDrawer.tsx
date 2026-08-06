@@ -156,6 +156,7 @@ export default function OpportunityFitReviewDrawer({
   const [actionError, setActionError] = useState<string | null>(draft?.error ?? null);
   const [historyReadPending, setHistoryReadPending] = useState(false);
   const reviewGenerationRef = useRef(0);
+  const historyRequestGenerationRef = useRef(0);
   const triageRequestGenerationRef = useRef(0);
   const confirmRequestGenerationRef = useRef(0);
   const deepRequestGenerationRef = useRef(0);
@@ -321,6 +322,10 @@ export default function OpportunityFitReviewDrawer({
           });
           return;
         }
+        if (conflict.status === 'missing') {
+          resetV2Review('当前投递或岗位评估已不存在，请重新打开。');
+          return;
+        }
       }
       const unknown = isProviderUnknown(error);
       setActionError(unknown ? unknownResultCopy : getOpportunityFitErrorMessage(error));
@@ -416,6 +421,10 @@ export default function OpportunityFitReviewDrawer({
           });
           return;
         }
+        if (conflict.status === 'missing') {
+          resetV2Review('当前投递或岗位评估已不存在，请重新打开。');
+          return;
+        }
       }
       const unknown = isProviderUnknown(error);
       setActionError(unknown ? unknownResultCopy : getOpportunityFitErrorMessage(error));
@@ -498,11 +507,12 @@ export default function OpportunityFitReviewDrawer({
   const openHistoricalReview = async (reviewID: number) => {
     if (!application) return;
     const generation = reviewGenerationRef.current;
+    const requestGeneration = ++historyRequestGenerationRef.current;
     setHistoryReadPending(true);
     try {
       setActionError(null);
       const historicalReview = await getOpportunityFitReview(application.id, reviewID);
-      if (generation !== reviewGenerationRef.current) return;
+      if (generation !== reviewGenerationRef.current || requestGeneration !== historyRequestGenerationRef.current) return;
       setResumeID(historicalReview.source.resume.id);
       setJdText(historicalReview.source.jd.text);
       setAssertionsText(historicalReview.source.candidate_assertions.map((item) => item.text).join('\n'));
@@ -512,20 +522,23 @@ export default function OpportunityFitReviewDrawer({
       setV2Historical(false);
       setStage('review');
     } catch (error) {
-      if (generation !== reviewGenerationRef.current) return;
+      if (generation !== reviewGenerationRef.current || requestGeneration !== historyRequestGenerationRef.current) return;
       setActionError(getOpportunityFitErrorMessage(error));
     } finally {
-      if (generation === reviewGenerationRef.current) setHistoryReadPending(false);
+      if (generation === reviewGenerationRef.current && requestGeneration === historyRequestGenerationRef.current) {
+        setHistoryReadPending(false);
+      }
     }
   };
 
   const openHistoricalV2Review = async (reviewID: number) => {
     if (!application) return;
     const generation = reviewGenerationRef.current;
+    const requestGeneration = ++historyRequestGenerationRef.current;
     setHistoryReadPending(true);
     try {
       const historical = await getOpportunityFitV2Review(application.id, reviewID);
-      if (generation !== reviewGenerationRef.current) return;
+      if (generation !== reviewGenerationRef.current || requestGeneration !== historyRequestGenerationRef.current) return;
       const triage = historical.stages.find((item) => item.stage === 'triage') ?? null;
       const deep = historical.stages.find((item) => item.stage === 'deep_review') ?? null;
       setReview(null);
@@ -535,15 +548,18 @@ export default function OpportunityFitReviewDrawer({
       setStage('review');
       setActionError(null);
     } catch (error) {
-      if (generation !== reviewGenerationRef.current) return;
+      if (generation !== reviewGenerationRef.current || requestGeneration !== historyRequestGenerationRef.current) return;
       setActionError(getOpportunityFitErrorMessage(error));
     } finally {
-      if (generation === reviewGenerationRef.current) setHistoryReadPending(false);
+      if (generation === reviewGenerationRef.current && requestGeneration === historyRequestGenerationRef.current) {
+        setHistoryReadPending(false);
+      }
     }
   };
 
   const resetV2Review = (message?: string) => {
     reviewGenerationRef.current += 1;
+    historyRequestGenerationRef.current += 1;
     setHistoryReadPending(false);
     onDraftChange?.(null);
     setStage('input');

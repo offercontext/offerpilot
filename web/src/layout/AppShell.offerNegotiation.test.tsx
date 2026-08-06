@@ -50,7 +50,10 @@ vi.mock('@tanstack/react-query', () => ({
       ],
       events: [], offers: [offer], resumes: [{ id: 11, title: '简历' }], knowledge: [], questions: undefined,
       'application-jd-current': { current: { id: 1, application_id: 7, jd_text: 'JD text' } },
-      'opportunity-fit-v2-reviews': [{ review_id: 202, stage_count: 1 }],
+      'opportunity-fit-v2-reviews': [
+        { review_id: 201, stage_count: 1 },
+        { review_id: 202, stage_count: 1 },
+      ],
     };
     return { data: data[key], isError: false, isLoading: false, isFetching: false, error: null };
   },
@@ -588,6 +591,74 @@ describe('AppShell mounted Opportunity Fit confirmation recovery', () => {
     expect(host?.querySelector('select')).not.toBeNull();
   });
 
+  it('keeps the latest Pilot history selection when an earlier response arrives late', async () => {
+    const resolveHistory = new Map<number, (value: unknown) => void>();
+    opportunityFitState.listReviews.mockResolvedValue([
+      { review_id: 201, stage_count: 1 },
+      { review_id: 202, stage_count: 1 },
+    ]);
+    opportunityFitState.getReview.mockImplementation((_applicationId: number, reviewId: number) => (
+      new Promise((resolve) => { resolveHistory.set(reviewId, resolve); })
+    ));
+
+    await act(async () => root?.render(<AppShell />));
+    await flush();
+    act(() => host?.querySelector<HTMLButtonElement>('[data-testid="open-application-detail"]')?.click());
+    await flush();
+    act(() => host?.querySelector<HTMLButtonElement>('[data-testid="open-opportunity-fit"]')?.click());
+    await flush();
+
+    const historyButtons = Array.from(host?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+      .filter((button) => button.textContent === '查看');
+    expect(historyButtons).toHaveLength(2);
+    await act(async () => {
+      historyButtons[0].click();
+      historyButtons[1].click();
+      await Promise.resolve();
+    });
+    expect(opportunityFitState.getReview).toHaveBeenCalledTimes(2);
+
+    resolveHistory.get(202)?.({
+      stages: [{
+        stage_id: 2021,
+        review_id: 202,
+        resume_id: 11,
+        jd_version_id: 1,
+        stage: 'triage',
+        schema_version: 2,
+        stage_status: 'ready',
+        parent_triage_stage_id: null,
+        idempotency_key: 'history-b-key',
+        source_fingerprint_sha256: 'history-b-source',
+        confirmation_token: null,
+        proposal: { summary: { text: 'History B', rationale: 'evidence', evidence_refs: [] }, conditions: [], risks: [], questions: [], next_steps: [] },
+      }],
+    });
+    await flush();
+    expect(host?.textContent).toContain('History B');
+
+    resolveHistory.get(201)?.({
+      stages: [{
+        stage_id: 2011,
+        review_id: 201,
+        resume_id: 11,
+        jd_version_id: 1,
+        stage: 'triage',
+        schema_version: 2,
+        stage_status: 'ready',
+        parent_triage_stage_id: null,
+        idempotency_key: 'history-a-key',
+        source_fingerprint_sha256: 'history-a-source',
+        confirmation_token: null,
+        proposal: { summary: { text: 'History A late', rationale: 'evidence', evidence_refs: [] }, conditions: [], risks: [], questions: [], next_steps: [] },
+      }],
+    });
+    await flush();
+
+    expect(host?.textContent).toContain('History B');
+    expect(host?.textContent).not.toContain('History A late');
+  });
+
   it('restores a persisted Pilot Triage source conflict after a JD race', async () => {
     opportunityFitState.createTriage.mockRejectedValue({
       response: { status: 409, data: { error_code: 'application_jd_source_conflict' } },
@@ -636,6 +707,39 @@ describe('AppShell mounted Opportunity Fit confirmation recovery', () => {
     );
     expect(host?.textContent).toContain('岗位资料版本已变化');
     expect(host?.querySelector('[aria-label="重新开始岗位评估"]')).not.toBeNull();
+  });
+
+  it('cleans up the Pilot context when source-conflict recovery reports a missing review', async () => {
+    opportunityFitState.createTriage.mockRejectedValue({
+      response: { status: 409, data: { error_code: 'application_jd_source_conflict' } },
+    });
+    opportunityFitState.sourceConflict.mockResolvedValue({ status: 'missing' });
+
+    await act(async () => root?.render(<AppShell />));
+    await flush();
+    act(() => host?.querySelector<HTMLButtonElement>('[data-testid="open-application-detail"]')?.click());
+    await flush();
+    act(() => host?.querySelector<HTMLButtonElement>('[data-testid="open-opportunity-fit"]')?.click());
+    await flush();
+    const resumeSelect = host?.querySelector<HTMLSelectElement>('select');
+    if (!resumeSelect) throw new Error('Pilot resume selector was not mounted');
+    resumeSelect.value = '11';
+    act(() => resumeSelect.dispatchEvent(new Event('change', { bubbles: true })));
+    await flush();
+    const startButton = Array.from(host?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+      .find((button) => button.textContent?.includes('Triage'));
+    if (!startButton) throw new Error('Pilot Triage start button was not mounted');
+    act(() => startButton.click());
+    await flush();
+    const confirmation = host?.querySelector<HTMLElement>('[role="dialog"]');
+    const confirmButton = confirmation?.querySelectorAll<HTMLButtonElement>('button')[1];
+    if (!confirmButton) throw new Error('Pilot Triage confirmation button was not mounted');
+    act(() => confirmButton.click());
+    await flush();
+    await flush();
+
+    expect(host?.querySelector('[data-testid="dashboard-harness"]')).not.toBeNull();
+    expect(host?.querySelector('[data-testid="application-detail-harness"]')).toBeNull();
   });
 });
 

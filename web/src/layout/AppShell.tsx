@@ -171,6 +171,7 @@ function AppShellContent() {
   const pilotV2DraftsRef = useRef(new Map<number, PilotOpportunityFitV2Draft>());
   const [pilotV2Draft, setPilotV2Draft] = useState<PilotOpportunityFitV2Draft | null>(null);
   const pilotV2GenerationRef = useRef(0);
+  const pilotV2HistoryRequestRef = useRef(0);
   const [pilotV2OperationPending, setPilotV2OperationPending] = useState(false);
   const [pilotV2HistoryPending, setPilotV2HistoryPending] = useState(false);
   const [pilotLegacyReview, setPilotLegacyReview] = useState<OpportunityFitReview | null>(null);
@@ -218,6 +219,7 @@ function AppShellContent() {
   );
   const exitPilotContext = ({ preserveUnknownAttempt = true }: { preserveUnknownAttempt?: boolean } = {}) => {
     pilotV2GenerationRef.current += 1;
+    pilotV2HistoryRequestRef.current += 1;
     setPilotV2OperationPending(false);
     setPilotV2HistoryPending(false);
     const current = pilotApplicationContextRef.current;
@@ -997,6 +999,10 @@ function AppShellContent() {
           updatePilotV2Draft({ triageKey: key, resultUnknown: true, error: pilotV2RecoveryUnknownCopy });
           return;
         }
+        if (conflict.status === 'missing') {
+          handlePilotNotFound();
+          return;
+        }
       }
       if (
         typeof error === 'object'
@@ -1132,6 +1138,10 @@ function AppShellContent() {
           updatePilotV2Draft({ deepKey: key, resultUnknown: true, error: pilotV2RecoveryUnknownCopy });
           return;
         }
+        if (conflict.status === 'missing') {
+          handlePilotNotFound();
+          return;
+        }
       }
       const disposition = v2FailureDisposition(error);
       updatePilotV2Draft({
@@ -1149,18 +1159,21 @@ function AppShellContent() {
     if (!pilotV2Draft) return;
     const requestDraft = pilotV2Draft;
     const generation = pilotV2GenerationRef.current;
+    const requestGeneration = ++pilotV2HistoryRequestRef.current;
     setPilotV2HistoryPending(true);
     try {
       const result = await getOpportunityFitV2Review(requestDraft.applicationId, reviewId);
-      if (generation !== pilotV2GenerationRef.current) return;
+      if (generation !== pilotV2GenerationRef.current || requestGeneration !== pilotV2HistoryRequestRef.current) return;
       const triage = result.stages.find((stage) => stage.stage === 'triage') ?? null;
       const deep = [...result.stages].reverse().find((stage) => stage.stage === 'deep_review') ?? null;
       updatePilotV2Draft({ triage, deep, historical: true, error: null });
     } catch (error) {
-      if (generation !== pilotV2GenerationRef.current) return;
+      if (generation !== pilotV2GenerationRef.current || requestGeneration !== pilotV2HistoryRequestRef.current) return;
       updatePilotV2Draft({ error: v2ErrorMessage(error) });
     } finally {
-      if (generation === pilotV2GenerationRef.current) setPilotV2HistoryPending(false);
+      if (generation === pilotV2GenerationRef.current && requestGeneration === pilotV2HistoryRequestRef.current) {
+        setPilotV2HistoryPending(false);
+      }
     }
   };
 
@@ -1168,24 +1181,28 @@ function AppShellContent() {
     if (!pilotV2Draft) return;
     const requestDraft = pilotV2Draft;
     const generation = pilotV2GenerationRef.current;
+    const requestGeneration = ++pilotV2HistoryRequestRef.current;
     setPilotV2HistoryPending(true);
     try {
       const result = await getOpportunityFitReview(requestDraft.applicationId, reviewId);
-      if (generation !== pilotV2GenerationRef.current) return;
+      if (generation !== pilotV2GenerationRef.current || requestGeneration !== pilotV2HistoryRequestRef.current) return;
       updatePilotV2Draft({ triage: null, deep: null, historical: true, error: null });
       setPilotLegacyReview(result);
     } catch (error) {
-      if (generation !== pilotV2GenerationRef.current) return;
+      if (generation !== pilotV2GenerationRef.current || requestGeneration !== pilotV2HistoryRequestRef.current) return;
       if (isOpportunityFitNotFoundError(error)) handlePilotNotFound();
       else message.error(getOpportunityFitErrorMessage(error));
     } finally {
-      if (generation === pilotV2GenerationRef.current) setPilotV2HistoryPending(false);
+      if (generation === pilotV2GenerationRef.current && requestGeneration === pilotV2HistoryRequestRef.current) {
+        setPilotV2HistoryPending(false);
+      }
     }
   };
 
   const startNewPilotV2Review = () => {
     if (!pilotV2Draft) return;
     pilotV2GenerationRef.current += 1;
+    pilotV2HistoryRequestRef.current += 1;
     setPilotV2OperationPending(false);
     setPilotV2HistoryPending(false);
     const next = createPilotOpportunityFitV2Draft(pilotV2Draft.applicationId);

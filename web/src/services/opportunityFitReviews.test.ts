@@ -57,15 +57,15 @@ describe('opportunity fit source-conflict recovery', () => {
     ).resolves.toEqual({ status: 'not_found' });
   });
 
-  it('classifies a deleted application list as not_found', async () => {
+  it('classifies a deleted application list as missing', async () => {
     getMock.mockRejectedValueOnce({ response: { status: 404 } });
 
     await expect(
       findOpportunityFitV2SourceConflictStage(9, 'triage', 'triage-key-00000001'),
-    ).resolves.toEqual({ status: 'not_found' });
+    ).resolves.toEqual({ status: 'missing' });
   });
 
-  it('classifies a deleted review detail as not_found', async () => {
+  it('classifies a deleted review detail as missing', async () => {
     getMock
       .mockResolvedValueOnce({
         data: [{
@@ -79,6 +79,6 @@ describe('opportunity fit source-conflict recovery', () => {
 
     await expect(
       findOpportunityFitV2SourceConflictStage(9, 'triage', 'triage-key-00000001'),
-    ).resolves.toEqual({ status: 'not_found' });
+    ).resolves.toEqual({ status: 'missing' });
   });
 });

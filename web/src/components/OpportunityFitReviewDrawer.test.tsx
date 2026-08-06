@@ -473,6 +473,98 @@ describe('OpportunityFitReviewDrawer', () => {
     }));
   });
 
+  it('clears the Drawer draft when source-conflict recovery reports a missing review', async () => {
+    state.create.mockRejectedValue({
+      response: { status: 409, data: { error_code: 'application_jd_source_conflict' } },
+    });
+    state.sourceConflict.mockResolvedValue({ status: 'missing' });
+    let cleared = false;
+    const onDraftChange = vi.fn((patch: Record<string, unknown> | null) => {
+      if (patch === null) cleared = true;
+    });
+    const draft = {
+      applicationId: 7,
+      resumeId: 11,
+      jdText: 'JD text',
+      jdVersionId: 1,
+      assertionsText: '',
+      triageKey: null,
+      deepKey: null,
+      triage: null,
+      deep: null,
+      historical: false,
+      resultUnknown: false,
+      error: null,
+    };
+    const view = await render(undefined, 'JD text', draft, onDraftChange);
+    await waitFor(() => expect(getByRole(view, 'button')).toHaveProperty('disabled', false));
+    await click(getByRole(view, 'button', 'Triage'));
+    await waitFor(() => expect(cleared).toBe(true));
+    expect(view.querySelector('select')).not.toBeNull();
+    expect(view.textContent).toContain('当前投递或岗位评估已不存在');
+  });
+
+  it('keeps the latest Drawer history selection when an earlier response arrives late', async () => {
+    state.listV2.mockResolvedValue([
+      { review_id: 21, stage_count: 1 },
+      { review_id: 22, stage_count: 1 },
+    ]);
+    const resolveHistory = new Map<number, (value: unknown) => void>();
+    state.getV2.mockImplementation((_applicationId: number, reviewId: number) => (
+      new Promise((resolve) => { resolveHistory.set(reviewId, resolve); })
+    ));
+    const view = await render();
+    await waitFor(() => {
+      expect([...view.querySelectorAll<HTMLButtonElement>('button')].filter((button) => button.textContent === '查看')).toHaveLength(2);
+    });
+    const historyButtons = [...view.querySelectorAll<HTMLButtonElement>('button')]
+      .filter((button) => button.textContent === '查看');
+    await act(async () => {
+      historyButtons[0].click();
+      historyButtons[1].click();
+      await Promise.resolve();
+    });
+    expect(state.getV2).toHaveBeenCalledTimes(2);
+
+    resolveHistory.get(22)?.({
+      stages: [{
+        review_id: 22,
+        stage_id: 220,
+        stage: 'triage',
+        stage_status: 'ready',
+        resume_id: 11,
+        jd_version_id: 1,
+        idempotency_key: 'history-b-key',
+        proposal: {
+          summary: { text: 'Drawer history B', evidence_refs: [] },
+          conditions: [], risks: [], questions: [], next_steps: [],
+        },
+      }],
+    });
+    await flush();
+    expect(view.textContent).toContain('Drawer history B');
+
+    resolveHistory.get(21)?.({
+      stages: [{
+        review_id: 21,
+        stage_id: 210,
+        stage: 'triage',
+        stage_status: 'ready',
+        resume_id: 11,
+        jd_version_id: 1,
+        idempotency_key: 'history-a-key',
+        proposal: {
+          summary: { text: 'Drawer history A late', evidence_refs: [] },
+          conditions: [], risks: [], questions: [], next_steps: [],
+        },
+      }],
+    });
+    await flush();
+
+    expect(view.textContent).toContain('Drawer history B');
+    expect(view.textContent).not.toContain('Drawer history A late');
+  });
+
   it('preserves the original Triage key when source-conflict recovery is temporarily unavailable', async () => {
     state.create.mockRejectedValue({
       response: { status: 409, data: { error_code: 'application_jd_source_conflict' } },
