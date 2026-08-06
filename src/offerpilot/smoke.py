@@ -749,6 +749,7 @@ def _run_real_ai_interview_preparation_smoke(
     steps: list[SmokeStep],
     application_id: int,
     resume_ids: list[int] | None = None,
+    cases: list[str] | None = None,
 ) -> None:
     resume_raw_text = "Built reliable API services; input_snapshot is a literal term here."
     resume_content_json = {
@@ -798,7 +799,7 @@ def _run_real_ai_interview_preparation_smoke(
         "duration_minutes": event_body.get("duration_minutes", 45),
         "status": event_body.get("status", "todo"),
     }
-    cases = [
+    cases = cases or [
         "Build reliable Python services and explain operational tradeoffs.",
         "Design an API migration with safe rollback and observability.",
         "Review distributed systems failure handling and testing practices.",
