@@ -56,4 +56,29 @@ describe('opportunity fit source-conflict recovery', () => {
       findOpportunityFitV2SourceConflictStage(9, 'triage', 'triage-key-00000001'),
     ).resolves.toEqual({ status: 'not_found' });
   });
+
+  it('classifies a deleted application list as not_found', async () => {
+    getMock.mockRejectedValueOnce({ response: { status: 404 } });
+
+    await expect(
+      findOpportunityFitV2SourceConflictStage(9, 'triage', 'triage-key-00000001'),
+    ).resolves.toEqual({ status: 'not_found' });
+  });
+
+  it('classifies a deleted review detail as not_found', async () => {
+    getMock
+      .mockResolvedValueOnce({
+        data: [{
+          review_id: 2,
+          schema_version: 2,
+          stage_count: 1,
+          triage_idempotency_key: 'triage-key-00000001',
+        }],
+      })
+      .mockRejectedValueOnce({ response: { status: 404 } });
+
+    await expect(
+      findOpportunityFitV2SourceConflictStage(9, 'triage', 'triage-key-00000001'),
+    ).resolves.toEqual({ status: 'not_found' });
+  });
 });

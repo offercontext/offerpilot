@@ -44,9 +44,13 @@ vi.mock('@tanstack/react-query', () => ({
   useQuery: (options: { queryKey?: unknown[] }) => {
     const key = String(options.queryKey?.[0] ?? '');
     const data: Record<string, unknown> = {
-      applications: [{ id: 7, company_name: '星云数据', position_name: '后端工程师', applied_at: '2026-08-01T00:00:00Z' }],
+      applications: [
+        { id: 7, company_name: '星云数据', position_name: '后端工程师', applied_at: '2026-08-01T00:00:00Z' },
+        { id: 8, company_name: '另一家公司', position_name: '平台工程师', applied_at: '2026-08-02T00:00:00Z' },
+      ],
       events: [], offers: [offer], resumes: [{ id: 11, title: '简历' }], knowledge: [], questions: undefined,
       'application-jd-current': { current: { id: 1, application_id: 7, jd_text: 'JD text' } },
+      'opportunity-fit-v2-reviews': [{ review_id: 202, stage_count: 1 }],
     };
     return { data: data[key], isError: false, isLoading: false, isFetching: false, error: null };
   },
@@ -102,11 +106,7 @@ vi.mock('@/components/AISettingsDrawer', () => ({ default: () => <div /> }));
 vi.mock('@/components/ApplicationDetail', () => ({
   default: (props: any) => (
     <section data-testid="application-detail-harness">
-      <button type="button" data-testid="open-opportunity-fit" onClick={() => props.onOpenPilotOpportunityFit?.({
-        id: 7,
-        company_name: '星云数据',
-        position_name: '后端工程师',
-      })}>
+      <button type="button" data-testid="open-opportunity-fit" onClick={() => props.onOpenPilotOpportunityFit?.(props.application)}>
         打开岗位评估
       </button>
     </section>
@@ -126,6 +126,9 @@ vi.mock('@/features/dashboard/DashboardView', () => ({
     <section data-testid="dashboard-harness">
       <button type="button" data-testid="open-application-detail" onClick={() => props.onOpenDetailById?.(7)}>
         查看投递
+      </button>
+      <button type="button" data-testid="open-application-detail-b" onClick={() => props.onOpenDetailById?.(8)}>
+        查看另一份投递
       </button>
     </section>
   ),
@@ -414,6 +417,175 @@ describe('AppShell mounted Opportunity Fit confirmation recovery', () => {
       proposal: null,
     });
     await flush();
+  });
+
+  it('drops a late request from application A after switching to application B', async () => {
+    let resolveDeep: ((value: unknown) => void) | undefined;
+    opportunityFitState.confirmTriage.mockResolvedValue({
+      stage_id: 101,
+      review_id: 201,
+      resume_id: 11,
+      jd_version_id: 1,
+      stage: 'triage',
+      schema_version: 2,
+      stage_status: 'confirmed',
+      parent_triage_stage_id: null,
+      idempotency_key: 'pilot-triage-key',
+      source_fingerprint_sha256: 'frozen-source',
+      confirmation_token: null,
+      proposal: { summary: { text: 'Confirmed summary', rationale: 'evidence', evidence_refs: [] }, conditions: [], risks: [], questions: [], next_steps: [] },
+    });
+    opportunityFitState.createDeep.mockImplementation(() => new Promise((resolve) => {
+      resolveDeep = resolve;
+    }));
+
+    await act(async () => root?.render(<AppShell />));
+    await flush();
+    act(() => host?.querySelector<HTMLButtonElement>('[data-testid="open-application-detail"]')?.click());
+    await flush();
+    act(() => host?.querySelector<HTMLButtonElement>('[data-testid="open-opportunity-fit"]')?.click());
+    await flush();
+    const resumeSelect = host?.querySelector<HTMLSelectElement>('select');
+    if (!resumeSelect) throw new Error('Pilot resume selector was not mounted');
+    resumeSelect.value = '11';
+    act(() => resumeSelect.dispatchEvent(new Event('change', { bubbles: true })));
+    await flush();
+    const startButton = Array.from(host?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+      .find((button) => button.textContent?.includes('Triage'));
+    if (!startButton) throw new Error('Pilot Triage start button was not mounted');
+    act(() => startButton.click());
+    await flush();
+    const triageConfirmation = host?.querySelector<HTMLElement>('[role="dialog"]');
+    const triageConfirmButton = triageConfirmation?.querySelectorAll<HTMLButtonElement>('button')[1];
+    if (!triageConfirmButton) throw new Error('Pilot Triage confirmation button was not mounted');
+    act(() => triageConfirmButton.click());
+    await flush();
+    const triageCommitButton = Array.from(host?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+      .find((button) => button.textContent?.includes('确认 Triage'));
+    if (!triageCommitButton) throw new Error('Pilot Triage confirm button was not mounted');
+    act(() => triageCommitButton.click());
+    await flush();
+
+    const deepButton = Array.from(host?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+      .find((button) => button.textContent?.includes('Deep Review'));
+    if (!deepButton) throw new Error('Pilot Deep Review button was not mounted');
+    act(() => deepButton.click());
+    await flush();
+    const deepConfirmation = host?.querySelector<HTMLElement>('[role="dialog"]');
+    const deepConfirmButton = deepConfirmation?.querySelectorAll<HTMLButtonElement>('button')[1];
+    if (!deepConfirmButton) throw new Error('Pilot Deep Review confirmation button was not mounted');
+    act(() => deepConfirmButton.click());
+    await flush();
+    expect(opportunityFitState.createDeep).toHaveBeenCalledTimes(1);
+
+    const cancelButton = Array.from(host?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+      .find((button) => button.textContent?.includes('取消流程'));
+    if (!cancelButton) throw new Error('Pilot cancel button was not mounted');
+    act(() => cancelButton.click());
+    await flush();
+    act(() => host?.querySelector<HTMLButtonElement>('[data-testid="open-application-detail-b"]')?.click());
+    await flush();
+    act(() => host?.querySelector<HTMLButtonElement>('[data-testid="open-opportunity-fit"]')?.click());
+    await flush();
+
+    resolveDeep?.({
+      stage_id: 102,
+      review_id: 201,
+      resume_id: 11,
+      jd_version_id: 1,
+      stage: 'deep_review',
+      schema_version: 2,
+      stage_status: 'ready',
+      parent_triage_stage_id: 101,
+      idempotency_key: 'pilot-deep-key',
+      source_fingerprint_sha256: 'frozen-source',
+      confirmation_token: null,
+      proposal: { summary: { text: 'A late deep result', rationale: 'evidence', evidence_refs: [] }, conditions: [], risks: [], questions: [], next_steps: [] },
+    });
+    await flush();
+
+    expect(host?.textContent).not.toContain('A late deep result');
+    expect(host?.querySelector('select')).not.toBeNull();
+  });
+
+  it('drops a late Pilot history response after starting a new review', async () => {
+    let resolveHistory: ((value: unknown) => void) | undefined;
+    opportunityFitState.confirmTriage.mockResolvedValue({
+      stage_id: 101,
+      review_id: 201,
+      resume_id: 11,
+      jd_version_id: 1,
+      stage: 'triage',
+      schema_version: 2,
+      stage_status: 'confirmed',
+      parent_triage_stage_id: null,
+      idempotency_key: 'pilot-triage-key',
+      source_fingerprint_sha256: 'frozen-source',
+      confirmation_token: null,
+      proposal: { summary: { text: 'Current triage', rationale: 'evidence', evidence_refs: [] }, conditions: [], risks: [], questions: [], next_steps: [] },
+    });
+    opportunityFitState.listReviews.mockResolvedValue([{ review_id: 202, stage_count: 1 }]);
+    opportunityFitState.getReview.mockImplementation(() => new Promise((resolve) => {
+      resolveHistory = resolve;
+    }));
+
+    await act(async () => root?.render(<AppShell />));
+    await flush();
+    act(() => host?.querySelector<HTMLButtonElement>('[data-testid="open-application-detail"]')?.click());
+    await flush();
+    act(() => host?.querySelector<HTMLButtonElement>('[data-testid="open-opportunity-fit"]')?.click());
+    await flush();
+    const resumeSelect = host?.querySelector<HTMLSelectElement>('select');
+    if (!resumeSelect) throw new Error('Pilot resume selector was not mounted');
+    resumeSelect.value = '11';
+    act(() => resumeSelect.dispatchEvent(new Event('change', { bubbles: true })));
+    await flush();
+    const startButton = Array.from(host?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+      .find((button) => button.textContent?.includes('Triage'));
+    if (!startButton) throw new Error('Pilot Triage start button was not mounted');
+    act(() => startButton.click());
+    await flush();
+    const triageConfirmation = host?.querySelector<HTMLElement>('[role="dialog"]');
+    const triageConfirmButton = triageConfirmation?.querySelectorAll<HTMLButtonElement>('button')[1];
+    if (!triageConfirmButton) throw new Error('Pilot Triage confirmation button was not mounted');
+    act(() => triageConfirmButton.click());
+    await flush();
+    const triageCommitButton = Array.from(host?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+      .find((button) => button.textContent?.includes('确认 Triage'));
+    if (!triageCommitButton) throw new Error('Pilot Triage confirm button was not mounted');
+    act(() => triageCommitButton.click());
+    await flush();
+
+    const historyButton = Array.from(host?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+      .find((button) => button.textContent === '查看');
+    if (!historyButton) throw new Error('Pilot history button was not mounted');
+    act(() => historyButton.click());
+    await flush();
+    const restartButton = host?.querySelector<HTMLButtonElement>('[aria-label="重新开始岗位评估"]');
+    if (!restartButton) throw new Error('Pilot restart button was not mounted');
+    act(() => restartButton.click());
+    await flush();
+
+    resolveHistory?.({
+      stages: [{
+        stage_id: 2021,
+        review_id: 202,
+        resume_id: 11,
+        jd_version_id: 1,
+        stage: 'triage',
+        schema_version: 2,
+        stage_status: 'ready',
+        parent_triage_stage_id: null,
+        idempotency_key: 'history-key',
+        source_fingerprint_sha256: 'history-frozen-source',
+        confirmation_token: null,
+        proposal: { summary: { text: 'Late historical result', rationale: 'evidence', evidence_refs: [] }, conditions: [], risks: [], questions: [], next_steps: [] },
+      }],
+    });
+    await flush();
+
+    expect(host?.textContent).not.toContain('Late historical result');
+    expect(host?.querySelector('select')).not.toBeNull();
   });
 
   it('restores a persisted Pilot Triage source conflict after a JD race', async () => {

@@ -172,6 +172,7 @@ function AppShellContent() {
   const [pilotV2Draft, setPilotV2Draft] = useState<PilotOpportunityFitV2Draft | null>(null);
   const pilotV2GenerationRef = useRef(0);
   const [pilotV2OperationPending, setPilotV2OperationPending] = useState(false);
+  const [pilotV2HistoryPending, setPilotV2HistoryPending] = useState(false);
   const [pilotLegacyReview, setPilotLegacyReview] = useState<OpportunityFitReview | null>(null);
   const [pilotInterviewReviewApplicationId, setPilotInterviewReviewApplicationId] = useState<number | null>(null);
   const [pilotInterviewPreparationApplicationId, setPilotInterviewPreparationApplicationId] = useState<number | null>(null);
@@ -216,6 +217,9 @@ function AppShellContent() {
     typeof window === 'undefined' ? false : window.matchMedia('(min-width: 1180px)').matches
   );
   const exitPilotContext = ({ preserveUnknownAttempt = true }: { preserveUnknownAttempt?: boolean } = {}) => {
+    pilotV2GenerationRef.current += 1;
+    setPilotV2OperationPending(false);
+    setPilotV2HistoryPending(false);
     const current = pilotApplicationContextRef.current;
     if (!current) return;
     const draft = pilotV2DraftsRef.current.get(current.applicationId);
@@ -1143,25 +1147,39 @@ function AppShellContent() {
 
   const viewPilotV2History = async (reviewId: number) => {
     if (!pilotV2Draft) return;
+    const requestDraft = pilotV2Draft;
+    const generation = pilotV2GenerationRef.current;
+    setPilotV2HistoryPending(true);
     try {
-      const result = await getOpportunityFitV2Review(pilotV2Draft.applicationId, reviewId);
+      const result = await getOpportunityFitV2Review(requestDraft.applicationId, reviewId);
+      if (generation !== pilotV2GenerationRef.current) return;
       const triage = result.stages.find((stage) => stage.stage === 'triage') ?? null;
       const deep = [...result.stages].reverse().find((stage) => stage.stage === 'deep_review') ?? null;
       updatePilotV2Draft({ triage, deep, historical: true, error: null });
     } catch (error) {
+      if (generation !== pilotV2GenerationRef.current) return;
       updatePilotV2Draft({ error: v2ErrorMessage(error) });
+    } finally {
+      if (generation === pilotV2GenerationRef.current) setPilotV2HistoryPending(false);
     }
   };
 
   const viewPilotLegacyHistory = async (reviewId: number) => {
     if (!pilotV2Draft) return;
+    const requestDraft = pilotV2Draft;
+    const generation = pilotV2GenerationRef.current;
+    setPilotV2HistoryPending(true);
     try {
-      const result = await getOpportunityFitReview(pilotV2Draft.applicationId, reviewId);
+      const result = await getOpportunityFitReview(requestDraft.applicationId, reviewId);
+      if (generation !== pilotV2GenerationRef.current) return;
       updatePilotV2Draft({ triage: null, deep: null, historical: true, error: null });
       setPilotLegacyReview(result);
     } catch (error) {
+      if (generation !== pilotV2GenerationRef.current) return;
       if (isOpportunityFitNotFoundError(error)) handlePilotNotFound();
       else message.error(getOpportunityFitErrorMessage(error));
+    } finally {
+      if (generation === pilotV2GenerationRef.current) setPilotV2HistoryPending(false);
     }
   };
 
@@ -1169,6 +1187,7 @@ function AppShellContent() {
     if (!pilotV2Draft) return;
     pilotV2GenerationRef.current += 1;
     setPilotV2OperationPending(false);
+    setPilotV2HistoryPending(false);
     const next = createPilotOpportunityFitV2Draft(pilotV2Draft.applicationId);
     const currentJd = pilotApplicationJdQuery.data?.current;
     if (currentJd) {
@@ -1439,7 +1458,7 @@ function AppShellContent() {
                   history={pilotV2HistoryQuery.data ?? []}
                   legacyHistory={pilotLegacyHistoryQuery.data ?? []}
                   legacyReview={pilotLegacyReview}
-                  historyLoading={pilotV2HistoryQuery.isLoading || pilotV2HistoryQuery.isFetching}
+                  historyLoading={pilotV2HistoryPending || pilotV2HistoryQuery.isLoading || pilotV2HistoryQuery.isFetching}
                   legacyHistoryLoading={pilotLegacyHistoryQuery.isLoading || pilotLegacyHistoryQuery.isFetching}
                   triageLoading={Boolean(pilotV2Draft?.triageKey && !pilotV2Draft?.triage && !pilotV2Draft?.error)}
                   deepLoading={Boolean(pilotV2Draft?.deepKey && !pilotV2Draft?.deep && !pilotV2Draft?.error)}

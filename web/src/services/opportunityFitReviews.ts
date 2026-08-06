@@ -117,6 +117,12 @@ export async function getOpportunityFitV2Review(
   return data;
 }
 
+function isNotFoundError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const status = (error as { response?: { status?: unknown } }).response?.status;
+  return status === 404;
+}
+
 export async function findOpportunityFitV2SourceConflictStage(
   applicationID: number,
   stage: 'triage' | 'deep_review',
@@ -126,8 +132,8 @@ export async function findOpportunityFitV2SourceConflictStage(
   let summaries: OpportunityFitV2SessionSummary[] = [];
   try {
     summaries = reviewID === undefined ? await listOpportunityFitV2Reviews(applicationID) : [];
-  } catch {
-    return { status: 'unknown' };
+  } catch (error) {
+    return isNotFoundError(error) ? { status: 'not_found' } : { status: 'unknown' };
   }
   const reviewIDs = reviewID === undefined
     ? summaries
@@ -142,8 +148,8 @@ export async function findOpportunityFitV2SourceConflictStage(
     let session: OpportunityFitV2SessionResponse;
     try {
       session = await getOpportunityFitV2Review(applicationID, currentReviewID);
-    } catch {
-      return { status: 'unknown' };
+    } catch (error) {
+      return isNotFoundError(error) ? { status: 'not_found' } : { status: 'unknown' };
     }
     const conflict = session.stages.find((item) => (
       item.stage === stage

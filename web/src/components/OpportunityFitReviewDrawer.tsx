@@ -154,6 +154,7 @@ export default function OpportunityFitReviewDrawer({
   const [v2Deep, setV2Deep] = useState<OpportunityFitV2StageResponse | null>(draft?.deep ?? null);
   const [v2Historical, setV2Historical] = useState(false);
   const [actionError, setActionError] = useState<string | null>(draft?.error ?? null);
+  const [historyReadPending, setHistoryReadPending] = useState(false);
   const reviewGenerationRef = useRef(0);
   const triageRequestGenerationRef = useRef(0);
   const confirmRequestGenerationRef = useRef(0);
@@ -496,9 +497,12 @@ export default function OpportunityFitReviewDrawer({
 
   const openHistoricalReview = async (reviewID: number) => {
     if (!application) return;
+    const generation = reviewGenerationRef.current;
+    setHistoryReadPending(true);
     try {
       setActionError(null);
       const historicalReview = await getOpportunityFitReview(application.id, reviewID);
+      if (generation !== reviewGenerationRef.current) return;
       setResumeID(historicalReview.source.resume.id);
       setJdText(historicalReview.source.jd.text);
       setAssertionsText(historicalReview.source.candidate_assertions.map((item) => item.text).join('\n'));
@@ -508,14 +512,20 @@ export default function OpportunityFitReviewDrawer({
       setV2Historical(false);
       setStage('review');
     } catch (error) {
+      if (generation !== reviewGenerationRef.current) return;
       setActionError(getOpportunityFitErrorMessage(error));
+    } finally {
+      if (generation === reviewGenerationRef.current) setHistoryReadPending(false);
     }
   };
 
   const openHistoricalV2Review = async (reviewID: number) => {
     if (!application) return;
+    const generation = reviewGenerationRef.current;
+    setHistoryReadPending(true);
     try {
       const historical = await getOpportunityFitV2Review(application.id, reviewID);
+      if (generation !== reviewGenerationRef.current) return;
       const triage = historical.stages.find((item) => item.stage === 'triage') ?? null;
       const deep = historical.stages.find((item) => item.stage === 'deep_review') ?? null;
       setReview(null);
@@ -525,12 +535,16 @@ export default function OpportunityFitReviewDrawer({
       setStage('review');
       setActionError(null);
     } catch (error) {
+      if (generation !== reviewGenerationRef.current) return;
       setActionError(getOpportunityFitErrorMessage(error));
+    } finally {
+      if (generation === reviewGenerationRef.current) setHistoryReadPending(false);
     }
   };
 
   const resetV2Review = (message?: string) => {
     reviewGenerationRef.current += 1;
+    setHistoryReadPending(false);
     onDraftChange?.(null);
     setStage('input');
     setResumeID(undefined);
@@ -733,7 +747,7 @@ export default function OpportunityFitReviewDrawer({
           ) : null}
           {canStartNewV2Review && !draft?.resultUnknown ? (
             <Button
-              disabled={createMutation.isPending || confirmV2Mutation.isPending || deepReviewMutation.isPending}
+              disabled={historyReadPending || createMutation.isPending || confirmV2Mutation.isPending || deepReviewMutation.isPending}
               onClick={() => resetV2Review()}
             >重新开始岗位评估</Button>
           ) : null}
