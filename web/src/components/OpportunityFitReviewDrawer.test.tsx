@@ -620,6 +620,63 @@ describe('OpportunityFitReviewDrawer', () => {
     await flush();
   });
 
+  it('keeps Drawer history disabled after remounting an unknown attempt', async () => {
+    state.list.mockResolvedValue([{ id: 8, recommendation: 'advance', created_at: '2026-07-21T00:00:00Z' }]);
+    state.listV2.mockResolvedValue([{ review_id: 21, stage_count: 1 }]);
+    const view = await render(undefined, 'JD text', {
+      applicationId: 7,
+      resumeId: 11,
+      jdText: 'JD text',
+      jdVersionId: 1,
+      assertionsText: '',
+      triageKey: 'triage-key-00000001',
+      deepKey: null,
+      triage: null,
+      deep: null,
+      historical: false,
+      resultUnknown: true,
+      error: 'result unknown',
+    });
+
+    await waitFor(() => {
+      const historyButtons = [...view.querySelectorAll<HTMLButtonElement>('button')]
+        .filter((button) => button.textContent?.includes('\u67e5\u770b'));
+      expect(historyButtons).toHaveLength(2);
+      historyButtons.forEach((button) => {
+        expect(button.disabled).toBe(true);
+        act(() => button.click());
+      });
+    });
+    expect(state.get).not.toHaveBeenCalled();
+    expect(state.getV2).not.toHaveBeenCalled();
+  });
+
+  it('keeps Drawer history disabled while a persisted Deep attempt is unresolved', async () => {
+    state.list.mockResolvedValue([{ id: 8, recommendation: 'advance', created_at: '2026-07-21T00:00:00Z' }]);
+    state.listV2.mockResolvedValue([{ review_id: 21, stage_count: 1 }]);
+    const view = await render(undefined, 'JD text', {
+      applicationId: 7,
+      resumeId: 11,
+      jdText: 'JD text',
+      jdVersionId: 1,
+      assertionsText: '',
+      triageKey: null,
+      deepKey: 'deep-key-00000001',
+      triage: null,
+      deep: null,
+      historical: false,
+      resultUnknown: false,
+      error: null,
+    });
+
+    await waitFor(() => {
+      const historyButtons = [...view.querySelectorAll<HTMLButtonElement>('button')]
+        .filter((button) => button.textContent?.includes('\u67e5\u770b'));
+      expect(historyButtons).toHaveLength(2);
+      historyButtons.forEach((button) => expect(button.disabled).toBe(true));
+    });
+  });
+
   it('drops a late Drawer history response when a new Triage starts', async () => {
     let resolveHistory: ((value: unknown) => void) | undefined;
     state.listV2.mockResolvedValue([{ review_id: 21, stage_count: 1 }]);

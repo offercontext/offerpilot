@@ -152,7 +152,15 @@ export async function findOpportunityFitV2SourceConflictStage(
     try {
       session = await getOpportunityFitV2Review(applicationID, currentReviewID);
     } catch (error) {
-      return isNotFoundError(error) ? { status: 'review_missing' } : { status: 'unknown' };
+      if (!isNotFoundError(error)) return { status: 'unknown' };
+      try {
+        await listOpportunityFitV2Reviews(applicationID);
+        return { status: 'review_missing' };
+      } catch (visibilityError) {
+        return isNotFoundError(visibilityError)
+          ? { status: 'application_missing' }
+          : { status: 'unknown' };
+      }
     }
     const conflict = session.stages.find((item) => (
       item.stage === stage

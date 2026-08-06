@@ -144,7 +144,12 @@ export default function PilotOpportunityFitV2Card({
   const deepSourceConflict = draft.deep?.stage_status === 'source_conflict';
   const triagePending = Boolean(draft.triage && ['generating', 'provider_unknown'].includes(draft.triage.stage_status));
   const deepPending = Boolean(draft.deep && ['generating', 'provider_unknown'].includes(draft.deep.stage_status));
-  const historyEntryDisabled = historyDisabled || triageLoading || deepLoading;
+  const historyEntryDisabled = historyDisabled
+    || triageLoading
+    || deepLoading
+    || draft.resultUnknown
+    || triagePending
+    || deepPending;
   const isHistorical = draft.historical || Boolean(legacyReview);
   const input: CreateOpportunityFitV2Input = {
     schema_version: 2,

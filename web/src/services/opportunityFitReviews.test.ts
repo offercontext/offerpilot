@@ -75,7 +75,8 @@ describe('opportunity fit source-conflict recovery', () => {
           triage_idempotency_key: 'triage-key-00000001',
         }],
       })
-      .mockRejectedValueOnce({ response: { status: 404 } });
+      .mockRejectedValueOnce({ response: { status: 404 } })
+      .mockResolvedValueOnce({ data: [] });
 
     await expect(
       findOpportunityFitV2SourceConflictStage(9, 'triage', 'triage-key-00000001'),
@@ -96,10 +97,33 @@ describe('opportunity fit source-conflict recovery', () => {
     getMock
       .mockResolvedValueOnce({ data: [] })
       .mockRejectedValueOnce({ response: { status: 404 } });
+    getMock.mockResolvedValueOnce({ data: [] });
 
     await expect(
       findOpportunityFitV2SourceConflictStage(9, 'deep_review', 'deep-key-00000001', 42),
     ).resolves.toEqual({ status: 'review_missing' });
-    expect(getMock).toHaveBeenCalledTimes(2);
+    expect(getMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('classifies a review detail 404 as application missing when the recheck also returns 404', async () => {
+    getMock
+      .mockResolvedValueOnce({ data: [] })
+      .mockRejectedValueOnce({ response: { status: 404 } })
+      .mockRejectedValueOnce({ response: { status: 404 } });
+
+    await expect(
+      findOpportunityFitV2SourceConflictStage(9, 'deep_review', 'deep-key-00000001', 42),
+    ).resolves.toEqual({ status: 'application_missing' });
+  });
+
+  it('keeps the recovery unknown when the application recheck is unavailable', async () => {
+    getMock
+      .mockResolvedValueOnce({ data: [] })
+      .mockRejectedValueOnce({ response: { status: 404 } })
+      .mockRejectedValueOnce(new Error('temporary visibility failure'));
+
+    await expect(
+      findOpportunityFitV2SourceConflictStage(9, 'deep_review', 'deep-key-00000001', 42),
+    ).resolves.toEqual({ status: 'unknown' });
   });
 });

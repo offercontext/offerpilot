@@ -462,7 +462,17 @@ export default function OpportunityFitReviewDrawer({
       && !createMutation.isPending,
   );
 
-  const historyButtonsDisabled = createMutation.isPending || confirmV2Mutation.isPending || deepReviewMutation.isPending;
+  const persistedStagePending = [draft?.triage?.stage_status, draft?.deep?.stage_status]
+    .some((status) => status === 'generating' || status === 'provider_unknown');
+  const persistedAttemptPending = Boolean(
+    (draft?.triageKey && !v2Triage) || (draft?.deepKey && !v2Deep),
+  );
+  const historyButtonsDisabled = createMutation.isPending
+    || confirmV2Mutation.isPending
+    || deepReviewMutation.isPending
+    || Boolean(draft?.resultUnknown)
+    || persistedStagePending
+    || persistedAttemptPending;
 
   const buildTriageInput = () => {
     const frozen = Boolean(draft?.triageKey);
