@@ -370,7 +370,11 @@ class BrowserAudit:
             if isinstance(exc, websockets.exceptions.ConnectionClosed):
                 self.close_code = exc.code
                 self._set_failure("cdp_connection_closed", exc)
-            elif not isinstance(exc, (RuntimeError, json.JSONDecodeError, TypeError)):
+            elif isinstance(exc, (RuntimeError, json.JSONDecodeError, TypeError)):
+                url = record.get("url")
+                if isinstance(url, str) and "/api/" in url:
+                    self._set_failure("response_body_unavailable", exc)
+            else:
                 self._set_failure("response_audit_error", exc)
         if self.handle is not None:
             response_record = {

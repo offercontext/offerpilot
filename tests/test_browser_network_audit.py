@@ -20,12 +20,14 @@ class _FakeCdp:
         no_attach: bool = False,
         drop_after_navigation: bool = False,
         emit_unowned_request: bool = False,
+        response_body_error: bool = False,
     ) -> None:
         self.reject_network = reject_network
         self.wrong_target = wrong_target
         self.no_attach = no_attach
         self.drop_after_navigation = drop_after_navigation
         self.emit_unowned_request = emit_unowned_request
+        self.response_body_error = response_body_error
         self.methods: list[str] = []
         self.expected_url = "http://127.0.0.1:18766/"
         self.ready = threading.Event()
@@ -79,14 +81,36 @@ class _FakeCdp:
                 await websocket.send(json.dumps({"id": command_id, "result": {"targetId": "main-target"}}))
             elif method == "Network.enable" and self.reject_network:
                 await websocket.send(json.dumps({"id": command_id, "error": {"code": -1}}))
+            elif method == "Network.getResponseBody" and self.response_body_error:
+                await websocket.send(json.dumps({"id": command_id, "error": {"code": -32000}}))
             else:
                 await websocket.send(json.dumps({"id": command_id, "result": {}}))
                 if method == "Page.navigate":
                     await websocket.send(json.dumps({
                         "method": "Network.requestWillBeSent",
                         "sessionId": session_id,
-                        "params": {"request": {"method": "GET", "url": self.expected_url}},
+                        "params": {
+                            "requestId": "api-request" if self.response_body_error else "page-request",
+                            "request": {
+                                "method": "GET",
+                                "url": self.expected_url + ("api/health" if self.response_body_error else ""),
+                            },
+                        },
                     }))
+                    if self.response_body_error:
+                        await websocket.send(json.dumps({
+                            "method": "Network.responseReceived",
+                            "sessionId": session_id,
+                            "params": {
+                                "requestId": "api-request",
+                                "response": {"status": 200},
+                            },
+                        }))
+                        await websocket.send(json.dumps({
+                            "method": "Network.loadingFinished",
+                            "sessionId": session_id,
+                            "params": {"requestId": "api-request"},
+                        }))
                     if self.emit_unowned_request:
                         unowned_flow = (
                             ("POST", "/api/applications/1/events/2/mock-interview/attempts"),
@@ -222,6 +246,17 @@ def test_browser_network_audit_records_clean_stop_diagnostic(tmp_path):
         assert diagnostic["ready"] is True
         assert diagnostic["stop_requested"] is True
         assert "Browser.getVersion" in fake.methods
+    finally:
+        fake.close()
+
+
+def test_browser_network_audit_fails_closed_when_api_response_body_is_unavailable(tmp_path):
+    fake = _FakeCdp(response_body_error=True)
+    try:
+        result = _run_auditor(tmp_path / "body-error", fake)
+        assert result.returncode != 0
+        diagnostic = json.loads((tmp_path / "body-error" / "diagnostic.json").read_text(encoding="utf-8"))
+        assert diagnostic["failure_category"] == "response_body_unavailable"
     finally:
         fake.close()
 
