@@ -153,8 +153,8 @@ def _read_redacted_request_metadata(path: Path) -> list[dict[str, Any]]:
         "input_fingerprint_sha256",
         "schema_fingerprint_sha256",
         "response_mode",
-        "max_tokens",
-        "timeout_seconds",
+        "explicit_max_tokens",
+        "explicit_timeout_seconds",
     }
     for line in path.read_text(encoding="utf-8").splitlines():
         try:

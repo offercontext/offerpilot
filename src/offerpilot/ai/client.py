@@ -318,10 +318,10 @@ def _audit_provider_request(provider: AIProviderProfile, payload: dict[str, Any]
         "input_fingerprint_sha256": _sha256_json(canonical_input),
         "schema_fingerprint_sha256": _sha256_json(response_format or ""),
         "response_mode": "json_schema" if response_format is not None else "text_json",
-        "max_tokens": payload.get("max_tokens")
+        "explicit_max_tokens": payload.get("max_tokens")
         if payload.get("max_tokens") is not None
         else payload.get("max_completion_tokens"),
-        "timeout_seconds": payload.get("timeout"),
+        "explicit_timeout_seconds": payload.get("timeout"),
     }
     with open(path, "a", encoding="utf-8") as audit:
         audit.write(json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n")

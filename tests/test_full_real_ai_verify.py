@@ -66,8 +66,8 @@ def test_build_summary_keeps_only_redacted_provider_and_failure_metadata(tmp_pat
                 "message_count": 3,
                 "message_bytes": 456,
                 "response_mode": "text_json",
-                "max_tokens": None,
-                "timeout_seconds": None,
+                "explicit_max_tokens": None,
+                "explicit_timeout_seconds": None,
                 "private_prompt": "must not appear",
             }
         )

@@ -120,8 +120,8 @@ def _read_request_audit(report_dir: Path) -> list[dict[str, Any]]:
         "message_count",
         "message_bytes",
         "response_mode",
-        "max_tokens",
-        "timeout_seconds",
+        "explicit_max_tokens",
+        "explicit_timeout_seconds",
     }
     records: list[dict[str, Any]] = []
     for line in path.read_text(encoding="utf-8").splitlines():
