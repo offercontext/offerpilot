@@ -4,8 +4,10 @@ from contextlib import contextmanager
 from datetime import datetime
 import gc
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
+import re
 import shutil
 import socket
 import tempfile
@@ -344,10 +346,201 @@ def run_http_smoke(
         isolated_data_dir = Path(temp_dir)
         if real_ai:
             _copy_real_ai_config(data_dir, isolated_data_dir)
-        report = _run_http_smoke(isolated_data_dir, static_dir=static_dir, real_ai=real_ai)
-        if real_ai:
-            _assert_real_ai_smoke_data_clean(isolated_data_dir)
-        return report
+        completed = False
+        try:
+            report = _run_http_smoke(isolated_data_dir, static_dir=static_dir, real_ai=real_ai)
+            if real_ai:
+                _assert_real_ai_smoke_data_clean(isolated_data_dir)
+            completed = True
+            return report
+        except BaseException as exc:
+            if real_ai:
+                _persist_full_verify_inner_diagnostic(
+                    isolated_data_dir,
+                    status="failed",
+                    error=exc,
+                )
+            raise
+        finally:
+            if real_ai and completed:
+                _persist_full_verify_inner_diagnostic(isolated_data_dir, status="passed")
+
+
+def _full_verify_report_dir() -> Path | None:
+    raw = os.environ.get("OFFERPILOT_FULL_VERIFY_REPORT_DIR", "").strip()
+    return Path(raw) if raw else None
+
+
+def _safe_smoke_config_summary(data_dir: Path) -> dict[str, Any]:
+    path = data_dir / "config.json"
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {
+            "config_path": str(path),
+            "offerpilot_data": str(data_dir),
+            "provider": "",
+            "model": "",
+        }
+    if not isinstance(raw, dict):
+        return {
+            "config_path": str(path),
+            "offerpilot_data": str(data_dir),
+            "provider": "",
+            "model": "",
+        }
+    providers = raw.get("providers")
+    active_id = raw.get("active_provider_id")
+    profile = None
+    if isinstance(providers, list):
+        profile = next(
+            (
+                item
+                for item in providers
+                if isinstance(item, dict) and item.get("id") == active_id
+            ),
+            None,
+        )
+        if profile is None:
+            profile = next((item for item in providers if isinstance(item, dict)), None)
+    if not isinstance(profile, dict):
+        profile = raw
+    return {
+        "config_path": str(path),
+        "offerpilot_data": str(data_dir),
+        "active_provider_id": str(active_id or profile.get("id") or "default"),
+        "provider": str(profile.get("provider") or ""),
+        "model": str(profile.get("model") or raw.get("model") or ""),
+        "supports_json_schema": bool(profile.get("supports_json_schema", False)),
+    }
+
+
+def _safe_inner_log_diagnostics(data_dir: Path) -> list[dict[str, Any]]:
+    path = data_dir / "logs" / "offerpilot.log"
+    if not path.is_file():
+        return []
+    diagnostics: list[dict[str, Any]] = []
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            entry = json.loads(raw_line)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if not isinstance(entry, dict) or not isinstance(entry.get("message"), str):
+            continue
+        message = entry["message"]
+        if message.startswith("interview_preparation_generation "):
+            category_match = re.search(r"(?:^| )category=([A-Za-z0-9_.-]+)", message)
+            categories_match = re.search(r"(?:^| )failure_categories=(\[[^ ]*\])", message)
+            summaries_match = re.search(r"(?:^| )structure_summaries=(\[[^ ]*\])", message)
+            repair_match = re.search(r"(?:^| )repair_attempted=(true|false)", message)
+            retry_match = re.search(r"(?:^| )retry_count=(\d+)", message)
+            duration_match = re.search(r"(?:^| )duration_ms=(\d+)", message)
+            request_id_match = re.search(
+                r"(?:^| )provider_request_id_hash=([0-9a-f]{12,64})", message
+            )
+            diagnostic: dict[str, Any] = {
+                "kind": "interview_preparation",
+                "failure_category": category_match.group(1) if category_match else None,
+                "failure_categories": [],
+                "structure_summaries": [],
+                "repair_attempted": repair_match.group(1) == "true" if repair_match else False,
+                "retry_count": int(retry_match.group(1)) if retry_match else 0,
+                "duration_ms": int(duration_match.group(1)) if duration_match else 0,
+                "provider_request_id_hash": request_id_match.group(1) if request_id_match else "",
+            }
+            if categories_match:
+                try:
+                    categories = json.loads(categories_match.group(1))
+                    if isinstance(categories, list):
+                        diagnostic["failure_categories"] = [
+                            value
+                            for value in categories[:4]
+                            if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", value)
+                        ]
+                except json.JSONDecodeError:
+                    pass
+            if summaries_match:
+                try:
+                    summaries = json.loads(summaries_match.group(1))
+                    if isinstance(summaries, list):
+                        diagnostic["structure_summaries"] = summaries[:2]
+                except json.JSONDecodeError:
+                    pass
+            diagnostics.append(diagnostic)
+        elif message.startswith("ai_provider_failure "):
+            try:
+                payload = json.loads(message.removeprefix("ai_provider_failure "))
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                diagnostics.append(
+                    {
+                        "kind": "provider",
+                        "failure_category": payload.get("failure_category"),
+                        "http_status": payload.get("http_status"),
+                        "timeout": payload.get("timeout"),
+                        "elapsed_ms": payload.get("elapsed_ms"),
+                        "provider_request_id_hash": payload.get("provider_request_id", ""),
+                    }
+                )
+    return diagnostics[-16:]
+
+
+def _smoke_exception_category(error: BaseException | None) -> str | None:
+    if error is None:
+        return None
+    name = type(error).__name__.lower()
+    text = str(error).lower()
+    if "timeout" in name or "timeout" in text:
+        return "network_timeout"
+    if "provider" in name or "provider" in text:
+        return "provider_error"
+    if "evidence" in text or "proposal" in text or "contract" in text:
+        return "contract_or_quality"
+    return "process_error"
+
+
+def _persist_full_verify_inner_diagnostic(
+    data_dir: Path,
+    *,
+    status: str,
+    error: BaseException | None = None,
+) -> None:
+    report_dir = _full_verify_report_dir()
+    if report_dir is None:
+        return
+    try:
+        diagnostics = _safe_inner_log_diagnostics(data_dir)
+        failure_categories = [
+            category
+            for diagnostic in diagnostics
+            for category in [diagnostic.get("failure_category")]
+            if isinstance(category, str) and category
+        ]
+        failure_category = failure_categories[-1] if failure_categories else None
+        last = diagnostics[-1] if diagnostics else {}
+        payload = {
+            "status": status,
+            "stage": "real_ai_http_verify",
+            "exception_category": _smoke_exception_category(error),
+            "failure_category": failure_category,
+            "failure_categories": list(dict.fromkeys(failure_categories))[:4],
+            "structure_summaries": last.get("structure_summaries", []),
+            "repair_attempted": last.get("repair_attempted", False),
+            "retry_count": last.get("retry_count", 0),
+            "duration_ms": last.get("duration_ms", 0),
+            "provider_request_id_hash": last.get("provider_request_id_hash", ""),
+            "diagnostics": diagnostics,
+            "config": _safe_smoke_config_summary(data_dir),
+        }
+        report_dir.mkdir(parents=True, exist_ok=True)
+        (report_dir / "full-verify-inner-diagnostic.json").write_text(
+            json.dumps(payload, ensure_ascii=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+    except Exception:
+        # Never mask the real verify result with diagnostic persistence failure.
+        return
 
 
 def _run_http_smoke(

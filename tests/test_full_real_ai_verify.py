@@ -1,0 +1,224 @@
+import json
+from pathlib import Path
+
+from scripts.full_real_ai_verify import (
+    _build_summary,
+    _prepare_temp_config,
+    _safe_config_summary,
+    run_full_verify,
+)
+from offerpilot.smoke import run_http_smoke
+
+
+def test_prepare_temp_config_overrides_only_isolated_active_model(tmp_path: Path) -> None:
+    source_data = tmp_path / "source"
+    source_data.mkdir()
+    (source_data / "config.json").write_text(
+        json.dumps(
+            {
+                "active_provider_id": "primary",
+                "api_key": "secret-key",
+                "model": "legacy-model",
+                "providers": [
+                    {
+                        "id": "primary",
+                        "provider": "openai_compatible",
+                        "api_key": "secret-key",
+                        "base_url": "https://provider.example/v1",
+                        "model": "formal-model",
+                        "enabled": True,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    isolated = tmp_path / "isolated"
+
+    _prepare_temp_config(source_data, isolated, "deepseek-v4-pro")
+
+    isolated_config = json.loads((isolated / "config.json").read_text(encoding="utf-8"))
+    source_config = json.loads((source_data / "config.json").read_text(encoding="utf-8"))
+    assert isolated_config["providers"][0]["model"] == "deepseek-v4-pro"
+    assert isolated_config["model"] == source_config["model"]
+    assert source_config["providers"][0]["model"] == "formal-model"
+    safe = _safe_config_summary(isolated / "config.json", isolated)
+    assert safe["model"] == "deepseek-v4-pro"
+    assert "secret-key" not in json.dumps(safe)
+
+
+def test_build_summary_keeps_only_redacted_provider_and_failure_metadata(tmp_path: Path) -> None:
+    report_dir = tmp_path / "report"
+    report_dir.mkdir()
+    (report_dir / "provider-request-audit.jsonl").write_text(
+        json.dumps(
+            {
+                "kind": "provider_request_metadata",
+                "provider_id": "primary",
+                "provider_type": "openai_compatible",
+                "model": "deepseek-v4-pro",
+                "input_fingerprint_sha256": "a" * 64,
+                "request_body_bytes": 1234,
+                "message_count": 3,
+                "message_bytes": 456,
+                "response_mode": "text_json",
+                "max_tokens": None,
+                "timeout_seconds": None,
+                "private_prompt": "must not appear",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    inner = {
+        "status": "failed",
+        "failure_category": "invalid_item_shape",
+        "failure_categories": ["invalid_item_shape"],
+        "structure_summaries": [{"payload_type": "object", "top_level_keys": []}],
+        "provider_request_id_hash": "b" * 12,
+    }
+
+    summary = _build_summary(
+        config_summary={
+            "provider_id": "primary",
+            "provider_type": "openai_compatible",
+            "model": "deepseek-v4-pro",
+        },
+        child_data_dir=tmp_path / "child-data",
+        report_dir=report_dir,
+        exit_code=1,
+        stdout="ok http_health: ready\nprivate prompt text\n",
+        stderr="RuntimeError: provider response failed\nsecret-key\n",
+        elapsed_ms=123456,
+        inner_diagnostic=inner,
+    )
+
+    encoded = json.dumps(summary, ensure_ascii=True)
+    assert summary["status"] == "failed"
+    assert summary["exit_code"] == 1
+    assert summary["last_completed_step"] == "http_health"
+    assert summary["provider"] == "openai_compatible"
+    assert summary["model"] == "deepseek-v4-pro"
+    assert summary["input_fingerprints"] == ["a" * 64]
+    assert summary["provider_request_id_hash"] == "b" * 12
+    assert summary["failure_category"] == "invalid_item_shape"
+    assert summary["elapsed_ms"] == 123456
+    assert "private prompt text" not in encoded
+    assert "secret-key" not in encoded
+
+
+def test_real_ai_smoke_persists_inner_failure_before_isolation_cleanup(monkeypatch, tmp_path: Path) -> None:
+    source_data = tmp_path / "source"
+    source_data.mkdir()
+    (source_data / "config.json").write_text(
+        json.dumps(
+            {
+                "active_provider_id": "primary",
+                "providers": [
+                    {
+                        "id": "primary",
+                        "provider": "openai_compatible",
+                        "api_key": "secret-key",
+                        "base_url": "https://provider.example/v1",
+                        "model": "deepseek-v4-pro",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_dir = tmp_path / "report"
+    monkeypatch.setenv("OFFERPILOT_FULL_VERIFY_REPORT_DIR", str(report_dir))
+
+    observed: dict[str, Path] = {}
+
+    def fail_http_smoke(data_dir: Path, static_dir: Path | None, *, real_ai: bool):
+        observed["data_dir"] = data_dir
+        raise RuntimeError("provider response failed after private prompt")
+
+    monkeypatch.setattr("offerpilot.smoke._run_http_smoke", fail_http_smoke)
+
+    try:
+        run_http_smoke(source_data, real_ai=True)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("expected isolated full verify failure")
+
+    diagnostic_path = report_dir / "full-verify-inner-diagnostic.json"
+    assert diagnostic_path.is_file()
+    diagnostic = json.loads(diagnostic_path.read_text(encoding="utf-8"))
+    encoded = diagnostic_path.read_text(encoding="utf-8")
+    assert diagnostic["status"] == "failed"
+    assert diagnostic["exception_category"] == "provider_error"
+    assert diagnostic["config"]["model"] == "deepseek-v4-pro"
+    assert "private prompt" not in encoded
+    assert "secret-key" not in encoded
+    assert not observed["data_dir"].exists()
+
+
+def test_run_full_verify_records_actual_child_environment_and_exit(monkeypatch, tmp_path: Path) -> None:
+    source_data = tmp_path / "source"
+    source_data.mkdir()
+    formal_config = {
+        "active_provider_id": "primary",
+        "providers": [
+            {
+                "id": "primary",
+                "provider": "openai_compatible",
+                "api_key": "secret-key",
+                "base_url": "https://provider.example/v1",
+                "model": "formal-model",
+            }
+        ],
+    }
+    config_path = source_data / "config.json"
+    config_path.write_text(json.dumps(formal_config), encoding="utf-8")
+    report_dir = tmp_path / "report"
+
+    class FakeProcess:
+        pid = 12345
+        returncode = 1
+
+        def poll(self):
+            return self.returncode
+
+        def communicate(self, timeout=None):
+            return ("ok http_health: ready\n", "provider response failed")
+
+    def fake_popen(args, **kwargs):
+        env = kwargs["env"]
+        assert env["OFFERPILOT_DATA"] != str(source_data)
+        assert env["OFFERPILOT_FULL_VERIFY_REPORT_DIR"] == str(report_dir)
+        assert env["OFFERPILOT_PROVIDER_REQUEST_AUDIT_FILE"].startswith(str(report_dir))
+        Path(env["OFFERPILOT_PROVIDER_REQUEST_AUDIT_FILE"]).write_text(
+            json.dumps(
+                {
+                    "kind": "provider_request_metadata",
+                    "provider_id": "primary",
+                    "provider_type": "openai_compatible",
+                    "model": "deepseek-v4-pro",
+                    "input_fingerprint_sha256": "c" * 64,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return FakeProcess()
+
+    monkeypatch.setattr("scripts.full_real_ai_verify.subprocess.Popen", fake_popen)
+    formal_before = config_path.read_bytes()
+
+    summary = run_full_verify(
+        source_data=source_data,
+        static_dir=tmp_path / "dist",
+        report_dir=report_dir,
+        timeout_seconds=1,
+    )
+
+    assert summary["status"] == "failed"
+    assert summary["exit_code"] == 1
+    assert summary["model"] == "deepseek-v4-pro"
+    assert summary["input_fingerprints"] == ["c" * 64]
+    assert summary["formal_config_unchanged"] is True
+    assert config_path.read_bytes() == formal_before
