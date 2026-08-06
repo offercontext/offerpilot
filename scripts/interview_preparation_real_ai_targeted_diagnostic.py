@@ -98,7 +98,7 @@ def run_targeted_diagnostic(
 
         app = create_app(data_dir=isolated_data)
         with _running_server(app) as base_url:
-            with _full_verify_client(base_url) as client:
+            with _full_verify_client(base_url, timeout_seconds=180.0) as client:
                 created = client.post(
                     "/api/applications",
                     json={

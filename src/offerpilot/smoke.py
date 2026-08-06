@@ -160,8 +160,8 @@ def _append_full_verify_operation(record: dict[str, Any]) -> None:
 
 
 @contextmanager
-def _full_verify_client(base_url: str) -> Any:
-    with httpx.Client(base_url=base_url, timeout=60.0) as client:
+def _full_verify_client(base_url: str, *, timeout_seconds: float = 60.0) -> Any:
+    with httpx.Client(base_url=base_url, timeout=timeout_seconds) as client:
         yield _FullVerifyHttpClient(client)
 
 
@@ -662,7 +662,10 @@ def _run_http_smoke(
     local_model = None if real_ai else _MutableSmokeChatModel()
     app = create_app(data_dir=data_dir, static_dir=static_dir, chat_model=local_model)
     with _running_server(app) as base_url:
-        with _full_verify_client(base_url) as client:
+        with _full_verify_client(
+            base_url,
+            timeout_seconds=180.0 if real_ai else 60.0,
+        ) as client:
             health = client.get("/api/health")
             _assert_status(health.status_code, 200, "http_health")
             steps.append(SmokeStep("http_health", "GET /api/health returned ok"))

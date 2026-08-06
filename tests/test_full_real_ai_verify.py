@@ -12,6 +12,7 @@ from offerpilot.ai.client import ConfiguredAIClient
 from offerpilot.ai.types import Message
 from offerpilot.config import AIProviderProfile, Config
 from offerpilot.smoke import run_http_smoke
+from offerpilot.smoke import _full_verify_client
 
 
 def test_prepare_temp_config_overrides_only_isolated_active_model(tmp_path: Path) -> None:
@@ -328,3 +329,24 @@ def test_provider_result_audit_records_operation_duration_and_request_hash(monke
     assert len(result["provider_request_id_hash"]) == 12
     assert "private prompt" not in audit_path.read_text(encoding="utf-8")
     assert "secret-key" not in audit_path.read_text(encoding="utf-8")
+
+
+def test_full_verify_client_accepts_an_explicit_real_ai_timeout(monkeypatch) -> None:
+    observed: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            observed.update(kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    monkeypatch.setattr("offerpilot.smoke.httpx.Client", FakeClient)
+
+    with _full_verify_client("http://127.0.0.1:12345", timeout_seconds=180):
+        pass
+
+    assert observed["timeout"] == 180.0
