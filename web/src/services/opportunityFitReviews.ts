@@ -133,7 +133,7 @@ export async function findOpportunityFitV2SourceConflictStage(
   try {
     summaries = reviewID === undefined ? await listOpportunityFitV2Reviews(applicationID) : [];
   } catch (error) {
-    return isNotFoundError(error) ? { status: 'missing' } : { status: 'unknown' };
+    return isNotFoundError(error) ? { status: 'application_missing' } : { status: 'unknown' };
   }
   const reviewIDs = reviewID === undefined
     ? summaries
@@ -149,7 +149,7 @@ export async function findOpportunityFitV2SourceConflictStage(
     try {
       session = await getOpportunityFitV2Review(applicationID, currentReviewID);
     } catch (error) {
-      return isNotFoundError(error) ? { status: 'missing' } : { status: 'unknown' };
+      return isNotFoundError(error) ? { status: 'review_missing' } : { status: 'unknown' };
     }
     const conflict = session.stages.find((item) => (
       item.stage === stage
@@ -164,5 +164,6 @@ export async function findOpportunityFitV2SourceConflictStage(
 export type OpportunityFitV2SourceConflictLookup =
   | { status: 'found'; stage: OpportunityFitV2StageResponse }
   | { status: 'not_found' }
-  | { status: 'missing' }
+  | { status: 'application_missing' }
+  | { status: 'review_missing' }
   | { status: 'unknown' };

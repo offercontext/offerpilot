@@ -28,7 +28,9 @@ const opportunityFitState = vi.hoisted(() => ({
   confirmTriage: vi.fn(),
   createDeep: vi.fn(),
   getReview: vi.fn(),
+  getLegacyReview: vi.fn(),
   listReviews: vi.fn(),
+  legacyHistory: [] as Array<{ id: number }>,
   sourceConflict: vi.fn(),
 }));
 
@@ -50,6 +52,7 @@ vi.mock('@tanstack/react-query', () => ({
       ],
       events: [], offers: [offer], resumes: [{ id: 11, title: '简历' }], knowledge: [], questions: undefined,
       'application-jd-current': { current: { id: 1, application_id: 7, jd_text: 'JD text' } },
+      'opportunity-fit-v1-reviews': opportunityFitState.legacyHistory,
       'opportunity-fit-v2-reviews': [
         { review_id: 201, stage_count: 1 },
         { review_id: 202, stage_count: 1 },
@@ -68,7 +71,7 @@ vi.mock('@/services/opportunityFitReviews', () => ({
   findOpportunityFitV2SourceConflictStage: opportunityFitState.sourceConflict,
   listOpportunityFitV2Reviews: opportunityFitState.listReviews,
   listOpportunityFitReviews: vi.fn().mockResolvedValue([]),
-  getOpportunityFitReview: vi.fn(),
+  getOpportunityFitReview: opportunityFitState.getLegacyReview,
   createOpportunityFitReview: vi.fn(),
   createOpportunityFitDeepReview: vi.fn(),
 }));
@@ -190,7 +193,9 @@ describe('AppShell mounted Opportunity Fit confirmation recovery', () => {
     opportunityFitState.confirmTriage.mockReset();
     opportunityFitState.createDeep.mockReset();
     opportunityFitState.getReview.mockReset();
+    opportunityFitState.getLegacyReview.mockReset();
     opportunityFitState.listReviews.mockReset();
+    opportunityFitState.legacyHistory = [];
     opportunityFitState.createTriage.mockResolvedValue({
       stage_id: 101,
       review_id: 201,
@@ -659,6 +664,51 @@ describe('AppShell mounted Opportunity Fit confirmation recovery', () => {
     expect(host?.textContent).not.toContain('History A late');
   });
 
+  it('clears the legacy detail when a v2 history selection succeeds', async () => {
+    opportunityFitState.legacyHistory = [{ id: 91 }];
+    opportunityFitState.getLegacyReview.mockResolvedValue({
+      summary: { text: 'Legacy history detail' },
+      recommendation: 'advance',
+    });
+    opportunityFitState.getReview.mockResolvedValue({
+      stages: [{
+        stage_id: 201,
+        review_id: 201,
+        resume_id: 11,
+        jd_version_id: 1,
+        stage: 'triage',
+        schema_version: 2,
+        stage_status: 'ready',
+        parent_triage_stage_id: null,
+        idempotency_key: 'v2-history-key',
+        source_fingerprint_sha256: 'v2-history-source',
+        confirmation_token: null,
+        proposal: { summary: { text: 'V2 history detail', rationale: 'evidence', evidence_refs: [] }, conditions: [], risks: [], questions: [], next_steps: [] },
+      }],
+    });
+
+    await act(async () => root?.render(<AppShell />));
+    await flush();
+    act(() => host?.querySelector<HTMLButtonElement>('[data-testid="open-application-detail"]')?.click());
+    await flush();
+    act(() => host?.querySelector<HTMLButtonElement>('[data-testid="open-opportunity-fit"]')?.click());
+    await flush();
+
+    const historyButtons = Array.from(host?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+      .filter((button) => button.textContent === '\u67e5\u770b');
+    expect(historyButtons.length).toBeGreaterThanOrEqual(3);
+    act(() => historyButtons[0].click());
+    await flush();
+    expect(host?.textContent).toContain('Legacy history detail');
+
+    const refreshedHistoryButtons = Array.from(host?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+      .filter((button) => button.textContent === '\u67e5\u770b');
+    act(() => refreshedHistoryButtons[1].click());
+    await flush();
+    expect(host?.textContent).toContain('V2 history detail');
+    expect(host?.textContent).not.toContain('Legacy history detail');
+  });
+
   it('restores a persisted Pilot Triage source conflict after a JD race', async () => {
     opportunityFitState.createTriage.mockRejectedValue({
       response: { status: 409, data: { error_code: 'application_jd_source_conflict' } },
@@ -713,7 +763,7 @@ describe('AppShell mounted Opportunity Fit confirmation recovery', () => {
     opportunityFitState.createTriage.mockRejectedValue({
       response: { status: 409, data: { error_code: 'application_jd_source_conflict' } },
     });
-    opportunityFitState.sourceConflict.mockResolvedValue({ status: 'missing' });
+    opportunityFitState.sourceConflict.mockResolvedValue({ status: 'application_missing' });
 
     await act(async () => root?.render(<AppShell />));
     await flush();
@@ -740,6 +790,74 @@ describe('AppShell mounted Opportunity Fit confirmation recovery', () => {
 
     expect(host?.querySelector('[data-testid="dashboard-harness"]')).not.toBeNull();
     expect(host?.querySelector('[data-testid="application-detail-harness"]')).toBeNull();
+  });
+
+  it('drops a late Pilot history response when a new Triage starts', async () => {
+    let resolveHistory: ((value: unknown) => void) | undefined;
+    opportunityFitState.getReview.mockImplementationOnce(() => new Promise((resolve) => { resolveHistory = resolve; }));
+    opportunityFitState.createTriage.mockResolvedValue({
+      stage_id: 301,
+      review_id: 301,
+      resume_id: 11,
+      jd_version_id: 1,
+      stage: 'triage',
+      schema_version: 2,
+      stage_status: 'ready',
+      parent_triage_stage_id: null,
+      idempotency_key: 'current-triage-key',
+      source_fingerprint_sha256: 'current-source',
+      confirmation_token: null,
+      proposal: { summary: { text: 'Current Triage', rationale: 'evidence', evidence_refs: [] }, conditions: [], risks: [], questions: [], next_steps: [] },
+    });
+
+    await act(async () => root?.render(<AppShell />));
+    await flush();
+    act(() => host?.querySelector<HTMLButtonElement>('[data-testid="open-application-detail"]')?.click());
+    await flush();
+    act(() => host?.querySelector<HTMLButtonElement>('[data-testid="open-opportunity-fit"]')?.click());
+    await flush();
+    const historyButton = Array.from(host?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+      .find((button) => button.textContent === '查看');
+    if (!historyButton) throw new Error('Pilot history button was not mounted');
+    act(() => historyButton.click());
+    await flush();
+    const resumeSelect = host?.querySelector<HTMLSelectElement>('select');
+    if (!resumeSelect) throw new Error('Pilot resume selector was not mounted');
+    resumeSelect.value = '11';
+    act(() => resumeSelect.dispatchEvent(new Event('change', { bubbles: true })));
+    await flush();
+    const triageButton = Array.from(host?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+      .find((button) => button.textContent?.includes('Triage') && !button.textContent?.includes('确认'));
+    if (!triageButton) throw new Error('Pilot Triage button was not mounted');
+    act(() => triageButton.click());
+    await flush();
+    const confirmation = host?.querySelector<HTMLElement>('[role="dialog"]');
+    const confirmButton = confirmation?.querySelectorAll<HTMLButtonElement>('button')[1];
+    if (!confirmButton) throw new Error('Pilot Triage confirmation button was not mounted');
+    act(() => confirmButton.click());
+    await flush();
+    await flush();
+
+    resolveHistory?.({
+      stages: [{
+        stage_id: 901,
+        review_id: 202,
+        resume_id: 11,
+        jd_version_id: 1,
+        stage: 'triage',
+        schema_version: 2,
+        stage_status: 'ready',
+        parent_triage_stage_id: null,
+        idempotency_key: 'stale-history-key',
+        source_fingerprint_sha256: 'stale-history-source',
+        confirmation_token: null,
+        proposal: { summary: { text: 'Stale history after Triage', rationale: 'evidence', evidence_refs: [] }, conditions: [], risks: [], questions: [], next_steps: [] },
+      }],
+    });
+    await flush();
+
+    expect(host?.textContent).toContain('Current Triage');
+    expect(host?.textContent).not.toContain('Stale history after Triage');
   });
 });
 

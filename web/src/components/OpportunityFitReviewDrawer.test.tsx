@@ -477,7 +477,7 @@ describe('OpportunityFitReviewDrawer', () => {
     state.create.mockRejectedValue({
       response: { status: 409, data: { error_code: 'application_jd_source_conflict' } },
     });
-    state.sourceConflict.mockResolvedValue({ status: 'missing' });
+    state.sourceConflict.mockResolvedValue({ status: 'review_missing' });
     let cleared = false;
     const onDraftChange = vi.fn((patch: Record<string, unknown> | null) => {
       if (patch === null) cleared = true;
@@ -563,6 +563,51 @@ describe('OpportunityFitReviewDrawer', () => {
 
     expect(view.textContent).toContain('Drawer history B');
     expect(view.textContent).not.toContain('Drawer history A late');
+  });
+
+  it('drops a late Drawer history response when a new Triage starts', async () => {
+    let resolveHistory: ((value: unknown) => void) | undefined;
+    state.listV2.mockResolvedValue([{ review_id: 21, stage_count: 1 }]);
+    state.getV2.mockImplementationOnce(() => new Promise((resolve) => { resolveHistory = resolve; }));
+    state.create.mockResolvedValue({
+      review_id: 31,
+      stage_id: 310,
+      stage: 'triage',
+      stage_status: 'ready',
+      confirmation_token: 'confirm-token',
+      resume_id: 11,
+      jd_version_id: 1,
+      idempotency_key: 'current-triage-key',
+      proposal: { summary: { text: 'Current Drawer Triage', evidence_refs: [] }, conditions: [], risks: [], questions: [], next_steps: [] },
+    });
+    const view = await render(undefined, 'JD text');
+    await waitFor(() => expect([...view.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === '查看')).toBeTruthy());
+    const historyButton = [...view.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === '查看');
+    if (!historyButton) throw new Error('Drawer history button was not mounted');
+    await click(historyButton);
+    const select = getByLabelText(view, '用于审阅的简历') as HTMLSelectElement;
+    await act(async () => setValue(select, '11'));
+    await waitFor(() => expect(getByRole(view, 'button', '开始 Triage')).toHaveProperty('disabled', false));
+    await click(getByRole(view, 'button', '开始 Triage'));
+    await waitFor(() => expect(state.create).toHaveBeenCalledTimes(1));
+
+    resolveHistory?.({
+      stages: [{
+        review_id: 21,
+        stage_id: 210,
+        stage: 'triage',
+        stage_status: 'ready',
+        resume_id: 11,
+        jd_version_id: 1,
+        idempotency_key: 'stale-history-key',
+        proposal: { summary: { text: 'Stale Drawer history after Triage', evidence_refs: [] }, conditions: [], risks: [], questions: [], next_steps: [] },
+      }],
+    });
+    await flush();
+
+    expect(view.textContent).toContain('Current Drawer Triage');
+    expect(view.textContent).not.toContain('Stale Drawer history after Triage');
   });
 
   it('preserves the original Triage key when source-conflict recovery is temporarily unavailable', async () => {

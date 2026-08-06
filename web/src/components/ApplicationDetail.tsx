@@ -482,6 +482,7 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
         jdVersionId={applicationJdQuery.data?.current?.id ?? null}
         draft={opportunityFitDraft ?? createOpportunityFitV2Draft(application.id)}
         onDraftChange={(patch) => onOpportunityFitDraftChange?.(application.id, patch)}
+        onApplicationMissing={onClose}
         onClose={() => setOpportunityFitOpen(false)}
         onPrepareMaterials={(reviewOrResumeId: OpportunityFitReview | number, jdText: string, jdVersionId?: number) => {
           if (!jdVersionId) return;

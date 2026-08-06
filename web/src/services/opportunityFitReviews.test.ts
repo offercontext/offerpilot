@@ -62,7 +62,7 @@ describe('opportunity fit source-conflict recovery', () => {
 
     await expect(
       findOpportunityFitV2SourceConflictStage(9, 'triage', 'triage-key-00000001'),
-    ).resolves.toEqual({ status: 'missing' });
+    ).resolves.toEqual({ status: 'application_missing' });
   });
 
   it('classifies a deleted review detail as missing', async () => {
@@ -79,6 +79,6 @@ describe('opportunity fit source-conflict recovery', () => {
 
     await expect(
       findOpportunityFitV2SourceConflictStage(9, 'triage', 'triage-key-00000001'),
-    ).resolves.toEqual({ status: 'missing' });
+    ).resolves.toEqual({ status: 'review_missing' });
   });
 });

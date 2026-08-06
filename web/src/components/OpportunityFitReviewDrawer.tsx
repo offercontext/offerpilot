@@ -57,6 +57,7 @@ interface Props {
   onPrepareMaterials?: (reviewOrResumeId: OpportunityFitReview | number, jdText: string, jdVersionId?: number) => void;
   draft?: OpportunityFitV2Draft;
   onDraftChange?: (patch: Partial<OpportunityFitV2Draft> | null) => void;
+  onApplicationMissing?: () => void;
 }
 
 function EvidenceRefs({ refs }: { refs: OpportunityFitEvidenceRef[] }) {
@@ -144,6 +145,7 @@ export default function OpportunityFitReviewDrawer({
   onPrepareMaterials,
   draft,
   onDraftChange,
+  onApplicationMissing,
 }: Props) {
   const [stage, setStage] = useState<'input' | 'review'>('input');
   const [resumeID, setResumeID] = useState<number | undefined>(draft?.resumeId);
@@ -160,6 +162,11 @@ export default function OpportunityFitReviewDrawer({
   const triageRequestGenerationRef = useRef(0);
   const confirmRequestGenerationRef = useRef(0);
   const deepRequestGenerationRef = useRef(0);
+
+  const invalidateHistoryRead = () => {
+    historyRequestGenerationRef.current += 1;
+    setHistoryReadPending(false);
+  };
 
   const reviewHistoryQuery = useQuery({
     queryKey: ['opportunity-fit-reviews', application?.id],
@@ -322,7 +329,13 @@ export default function OpportunityFitReviewDrawer({
           });
           return;
         }
-        if (conflict.status === 'missing') {
+        if (conflict.status === 'application_missing') {
+          onDraftChange?.(null);
+          onApplicationMissing?.();
+          onClose();
+          return;
+        }
+        if (conflict.status === 'review_missing') {
           resetV2Review('当前投递或岗位评估已不存在，请重新打开。');
           return;
         }
@@ -421,7 +434,13 @@ export default function OpportunityFitReviewDrawer({
           });
           return;
         }
-        if (conflict.status === 'missing') {
+        if (conflict.status === 'application_missing') {
+          onDraftChange?.(null);
+          onApplicationMissing?.();
+          onClose();
+          return;
+        }
+        if (conflict.status === 'review_missing') {
           resetV2Review('当前投递或岗位评估已不存在，请重新打开。');
           return;
         }
@@ -464,6 +483,7 @@ export default function OpportunityFitReviewDrawer({
     if (!canSubmit || assertionError) return;
     const input = buildTriageInput();
     if (!input) return;
+    invalidateHistoryRead();
     onDraftChange?.({
       resumeId: input.resume_id,
       jdText,
@@ -479,6 +499,7 @@ export default function OpportunityFitReviewDrawer({
 
   const submitDeepReview = () => {
     if (!v2Triage || v2Triage.stage_status !== 'confirmed' || !v2Triage.jd_version_id || !resumeID) return;
+    invalidateHistoryRead();
     const input = {
       schema_version: 2 as const,
       resume_id: draft?.deepKey ? (draft.resumeId ?? v2Triage.resume_id ?? resumeID) : (v2Triage.resume_id ?? resumeID),
@@ -709,6 +730,7 @@ export default function OpportunityFitReviewDrawer({
             <Button
               type="primary"
               onClick={() => {
+                invalidateHistoryRead();
                 confirmRequestGenerationRef.current = reviewGenerationRef.current;
                 confirmV2Mutation.mutate();
               }}

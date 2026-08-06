@@ -191,6 +191,10 @@ function AppShellContent() {
   const offerNegotiationPreviousFocusRef = useRef<HTMLElement | null>(null);
   const pilotApplicationContextRef = useRef(pilotApplicationContext);
   pilotApplicationContextRef.current = pilotApplicationContext;
+  const invalidatePilotV2History = () => {
+    pilotV2HistoryRequestRef.current += 1;
+    setPilotV2HistoryPending(false);
+  };
   const [aiSettingsOpen, setAISettingsOpen] = useState(false);
   const [resumeOnboardingFocusToken, setResumeOnboardingFocusToken] = useState(0);
   const [pilotOnboardingFocusToken, setPilotOnboardingFocusToken] = useState(0);
@@ -219,7 +223,7 @@ function AppShellContent() {
   );
   const exitPilotContext = ({ preserveUnknownAttempt = true }: { preserveUnknownAttempt?: boolean } = {}) => {
     pilotV2GenerationRef.current += 1;
-    pilotV2HistoryRequestRef.current += 1;
+    invalidatePilotV2History();
     setPilotV2OperationPending(false);
     setPilotV2HistoryPending(false);
     const current = pilotApplicationContextRef.current;
@@ -971,6 +975,7 @@ function AppShellContent() {
 
   const startPilotV2Triage = async (input: Parameters<typeof createOpportunityFitV2Triage>[1]) => {
     if (!pilotV2Draft) return;
+    invalidatePilotV2History();
     const requestDraft = pilotV2Draft;
     const generation = pilotV2GenerationRef.current;
     const key = requestDraft.triageKey ?? input.idempotency_key;
@@ -999,8 +1004,12 @@ function AppShellContent() {
           updatePilotV2Draft({ triageKey: key, resultUnknown: true, error: pilotV2RecoveryUnknownCopy });
           return;
         }
-        if (conflict.status === 'missing') {
+        if (conflict.status === 'application_missing') {
           handlePilotNotFound();
+          return;
+        }
+        if (conflict.status === 'review_missing') {
+          startNewPilotV2Review();
           return;
         }
       }
@@ -1046,6 +1055,7 @@ function AppShellContent() {
 
   const confirmPilotV2Triage = async () => {
     if (!pilotV2Draft?.triage?.confirmation_token) return;
+    invalidatePilotV2History();
     const requestDraft = pilotV2Draft;
     const requestTriage = requestDraft.triage;
     if (!requestTriage?.confirmation_token) return;
@@ -1092,6 +1102,7 @@ function AppShellContent() {
 
   const startPilotV2DeepReview = async () => {
     if (!pilotV2Draft?.triage || pilotV2Draft.triage.stage_status !== 'confirmed') return;
+    invalidatePilotV2History();
     const requestDraft = pilotV2Draft;
     const requestTriage = requestDraft.triage;
     if (!requestTriage) return;
@@ -1138,8 +1149,12 @@ function AppShellContent() {
           updatePilotV2Draft({ deepKey: key, resultUnknown: true, error: pilotV2RecoveryUnknownCopy });
           return;
         }
-        if (conflict.status === 'missing') {
+        if (conflict.status === 'application_missing') {
           handlePilotNotFound();
+          return;
+        }
+        if (conflict.status === 'review_missing') {
+          startNewPilotV2Review();
           return;
         }
       }
@@ -1166,6 +1181,7 @@ function AppShellContent() {
       if (generation !== pilotV2GenerationRef.current || requestGeneration !== pilotV2HistoryRequestRef.current) return;
       const triage = result.stages.find((stage) => stage.stage === 'triage') ?? null;
       const deep = [...result.stages].reverse().find((stage) => stage.stage === 'deep_review') ?? null;
+      setPilotLegacyReview(null);
       updatePilotV2Draft({ triage, deep, historical: true, error: null });
     } catch (error) {
       if (generation !== pilotV2GenerationRef.current || requestGeneration !== pilotV2HistoryRequestRef.current) return;
@@ -1202,7 +1218,7 @@ function AppShellContent() {
   const startNewPilotV2Review = () => {
     if (!pilotV2Draft) return;
     pilotV2GenerationRef.current += 1;
-    pilotV2HistoryRequestRef.current += 1;
+    invalidatePilotV2History();
     setPilotV2OperationPending(false);
     setPilotV2HistoryPending(false);
     const next = createPilotOpportunityFitV2Draft(pilotV2Draft.applicationId);
