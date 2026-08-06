@@ -3,7 +3,7 @@
 - Verification date: 2026-08-06
 - Branch: `feat/20260805-application-jd-versions`
 - Feature baseline: `455e081`
-- Evidence execution HEAD: `50446f4` (report-only commit follows)
+- Evidence execution HEAD: `899111e` (report-only commit follows)
 - Status: local and grouped release gates passed; real-AI and browser release gates remain blocked.
 
 ## Scope
@@ -34,6 +34,7 @@ The grouped release gates below were completed before the later diagnostic-only 
 | Command | Result |
 | --- | --- |
 | `uv run pytest -q tests/test_interview_preparation_ai.py tests/test_interview_preparation_api.py` | 31 passed; existing framework deprecation warnings only |
+| `uv run pytest -q tests/test_litellm_client.py tests/test_interview_preparation_controlled_diagnostic.py tests/test_full_real_ai_verify.py tests/test_interview_preparation_ai.py tests/test_interview_preparation_api.py` | 62 passed; existing framework deprecation warnings only |
 | `uv run ruff check src/offerpilot/api.py tests/test_interview_preparation_api.py scripts/interview-preparation-controlled-provider-diagnostic.py src/offerpilot/ai/interview_preparation_proposals.py` | passed |
 | `uv run mypy src` | passed, 65 files |
 | PowerShell parser check for `scripts/application-jd-real-ai-browser-harness.ps1` | passed |
@@ -67,9 +68,31 @@ uv run ruff check scripts/interview-preparation-controlled-provider-diagnostic.p
 uv run python scripts/interview-preparation-controlled-provider-diagnostic.py --static-dir web/dist
 ```
 
-It exited 0 with `status=passed`, `provider_calls=3`, and elapsed time 4,068 ms. The controlled endpoint was an ephemeral loopback OpenAI-compatible server and the model was `controlled-interview-preparation`. The three HTTP responses were all 200; request body sizes were 3,362, 3,358, and 3,363 bytes; redacted Provider request-id hashes were `e44e2eeada3d`, `2755f83a7e3e`, and `1c99ad93a902`. Safe diagnostics recorded three successful responses with no repair attempt, no failure category, durations of 1,219 ms, 14 ms, and 20 ms, and the same redacted request-id hashes. The frozen evidence catalog contained 3 snapshots, 3 JD entries, 9 resume facts, and 0 knowledge entries. No secret, JD text, resume content, or model output was written to the report. This proves the complete response path and strict local validation, but does not prove the external Provider is stable.
+It exited 0 with `status=passed`, `provider_calls=3`, and elapsed time 4,102 ms. The controlled endpoint was an ephemeral loopback OpenAI-compatible server and the model was `controlled-interview-preparation`. The three HTTP responses were all 200; the local server observed request body sizes of 3,362, 3,358, and 3,363 bytes; redacted Provider request-id hashes were `e44e2eeada3d`, `2755f83a7e3e`, and `1c99ad93a902`. Safe diagnostics recorded three successful responses with no repair attempt, no failure category, durations of 1,285 ms, 32 ms, and 10 ms, and the same redacted request-id hashes. The frozen evidence catalog contained 3 snapshots, 3 JD entries, 9 resume facts, and 0 knowledge entries. No secret, JD text, resume content, or model output was written to the report. This proves the complete response path and strict local validation, but does not prove the external Provider is stable.
 
-The full real-AI verification was then rerun against the same product behavior. It exited 1 after 80,262 ms at the first interview-preparation Provider request with `ReadTimeout` through the configured proxy; no Provider response was accepted. The later `2b14677` change is type-only in the controlled diagnostic script and does not alter the interview-preparation API or evidence contract. The tool-only diagnostic and harness changes in `7d3bb82`, `078b8e4`, `8a59407`, `ededffb`, `acd219a`, `b1908f8`, and `2b14677` do not alter the interview-preparation API or evidence contract, so this remains an external Provider/transport blocker rather than a reason to change product semantics.
+The full real-AI verification was then rerun once with the request metadata audit enabled. It exited 1 after 78,131 ms at the first interview-preparation Provider request with `ReadTimeout` through the configured proxy; no Provider response was accepted. No business retry was added.
+
+### Full versus controlled Provider metadata
+
+The comparison used the same `_run_real_ai_interview_preparation_smoke` path and the same current product code. The full run used the silently read existing configuration file `D:\Users\yuqi.chen\.offerpilot\config.json`: active provider `default`, type `openai_compatible`, model `deepseek-v4-flash`, endpoint `https://api.deepseek.com:443`, `supports_json_schema=false`, and no configured fallback. The controlled run silently copied that configuration shape into an isolated temporary directory, replacing only the active endpoint with an ephemeral loopback server and the model with `controlled-interview-preparation`.
+
+| Redacted request metadata | Full real-AI | Controlled local | Comparison |
+| --- | --- | --- | --- |
+| Provider type | `openai_compatible` | `openai_compatible` | same |
+| Model | `deepseek-v4-flash` | `controlled-interview-preparation` | intentionally different |
+| Endpoint | `https://api.deepseek.com:443` | loopback `http://127.0.0.1:<ephemeral>` | intentionally different |
+| Response mode | `text_json` | `text_json` | same |
+| Explicit LiteLLM `max_tokens` / `max_completion_tokens` | `null` | `null` | same; diagnostic records explicit payload only |
+| Explicit LiteLLM timeout | `null` | `null` | same; diagnostic records explicit payload only |
+| App smoke HTTP timeout | `60.0s` | `60.0s` | same |
+| First input fingerprint | `64ba822e...4d6f1e7c` | `64ba822e...4d6f1e7c` | exact match |
+| First schema fingerprint | `12ae32cb...3d82e126` | `12ae32cb...3d82e126` | exact match |
+| First message count / bytes | `2 / 3306` | `2 / 3306` | exact match |
+| First serialized Provider-payload bytes | `3354` | `3369` | model/transport payload differs; input projection matches |
+
+The controlled run completed three successful Provider calls in 4,102 ms with no repair and no failure category. Its metadata serialized Provider-payload sizes were 3,369, 3,365, and 3,370 bytes; the local server observed 3,362, 3,358, and 3,363 bytes on the wire. The audit field is explicitly scoped to the serialized Provider payload without authentication or endpoint fields; it is not a TLS wire capture. The full run emitted one request metadata record before the remote timeout. Its first input and schema fingerprints, message count/bytes, response mode, explicit token settings, and explicit timeout setting exactly matched the controlled first request. The diagnostic intentionally does not claim to observe effective LiteLLM/proxy defaults when the explicit fields are null. Therefore the captured difference is the configured remote Provider/model route, not a prompt, schema, frozen JD/Resume, or explicit client timeout mismatch. This identifies the remaining blocker as external Provider/transport behavior; it does not justify changing evidence validation or adding business retries.
+
+The tool-only diagnostic and harness changes in `7d3bb82`, `078b8e4`, `8a59407`, `ededffb`, `acd219a`, `b1908f8`, and `2b14677` do not alter the interview-preparation API or evidence contract. The request metadata audit is diagnostic-only and fail-open: a local audit-file or serialization error cannot prevent the Provider call. It records hashes, tuple metadata, counts, scoped serialized-payload bytes, mode, and explicit runtime parameters; it does not record prompts, snapshots, model output, API keys, or full URLs.
 
 The browser harness was invoked as:
 
