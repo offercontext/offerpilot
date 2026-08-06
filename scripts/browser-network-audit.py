@@ -133,8 +133,12 @@ class BrowserAudit:
             message["params"] = params
         if session_id:
             message["sessionId"] = session_id
-        await self.websocket.send(json.dumps(message))
-        response = await future
+        try:
+            await self.websocket.send(json.dumps(message))
+            response = await future
+        except BaseException:
+            self.pending.pop(command_id, None)
+            raise
         if "error" in response:
             raise RuntimeError(f"CDP command failed: {method}")
         return response
@@ -146,7 +150,9 @@ class BrowserAudit:
                 self.last_event = str(message.get("method") or "command_response")
                 command_id = message.get("id")
                 if isinstance(command_id, int) and command_id in self.pending:
-                    self.pending.pop(command_id).set_result(message)
+                    future = self.pending.pop(command_id)
+                    if not future.done():
+                        future.set_result(message)
                     continue
                 if message.get("method") == "Target.attachedToTarget":
                     await self.attached(message["params"])
@@ -249,7 +255,7 @@ class BrowserAudit:
         """Keep the browser-level CDP session active during manual acceptance."""
         try:
             while not self.stop_file.exists():
-                await self.send("Browser.getVersion")
+                await asyncio.wait_for(self.send("Browser.getVersion"), timeout=10.0)
                 await asyncio.sleep(5)
         except asyncio.CancelledError:
             raise
@@ -382,7 +388,10 @@ class BrowserAudit:
                 body_ready = False
             if not body_ready:
                 raise RuntimeError("response body did not finish before audit timeout")
-            body_result = await self.send("Network.getResponseBody", {"requestId": request_id}, session_id)
+            body_result = await asyncio.wait_for(
+                self.send("Network.getResponseBody", {"requestId": request_id}, session_id),
+                timeout=10.0,
+            )
             body = body_result.get("result")
             body_text = body.get("body") if isinstance(body, dict) else None
             payload = json.loads(body_text) if isinstance(body_text, str) else None
@@ -402,7 +411,7 @@ class BrowserAudit:
             if isinstance(exc, websockets.exceptions.ConnectionClosed):
                 self.close_code = exc.code
                 self._set_failure("cdp_connection_closed", exc)
-            elif isinstance(exc, (RuntimeError, json.JSONDecodeError, TypeError)):
+            elif isinstance(exc, (RuntimeError, asyncio.TimeoutError, json.JSONDecodeError, TypeError)):
                 url = record.get("url")
                 if isinstance(url, str) and "/api/" in url:
                     self._set_failure("response_body_unavailable", exc)

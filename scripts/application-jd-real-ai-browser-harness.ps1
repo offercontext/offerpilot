@@ -500,22 +500,38 @@ print(db.execute(
   Write-Host 'Application JD browser acceptance failed.'
   throw
 } finally {
-  $cleanupError = $null
+  $cleanupErrors = [System.Collections.Generic.List[string]]::new()
+  $serviceStopped = $true
   try {
     if ($browserStop -and $null -ne $auditor -and -not $auditor.HasExited) {
       New-Item -ItemType File -Force -Path $browserStop | Out-Null
       Wait-AuditorExit -AllowFailure
     }
-    Stop-Tree $auditor 'browser auditor'
-    Stop-Tree $server 'isolated service'
-    Stop-Tree $proxy 'Provider proxy'
-    Stop-Tree $browser 'temporary browser'
-    if ($applicationId -and $resumeId -and $eventId -and (Test-Path -LiteralPath (Join-Path $tempData 'data.db'))) {
+  } catch {
+    [void]$cleanupErrors.Add("auditor stop request: $($_.Exception.Message)")
+  }
+  foreach ($entry in @(
+    [pscustomobject]@{ Process = $auditor; Label = 'browser auditor' },
+    [pscustomobject]@{ Process = $server; Label = 'isolated service' },
+    [pscustomobject]@{ Process = $proxy; Label = 'Provider proxy' },
+    [pscustomobject]@{ Process = $browser; Label = 'temporary browser' }
+  )) {
+    try {
+      Stop-Tree $entry.Process $entry.Label
+    } catch {
+      [void]$cleanupErrors.Add("$($entry.Label): $($_.Exception.Message)")
+      if ($entry.Label -eq 'isolated service') { $serviceStopped = $false }
+    }
+  }
+  if ($serviceStopped -and $applicationId -and $resumeId -and $eventId -and (Test-Path -LiteralPath (Join-Path $tempData 'data.db'))) {
+    try {
       Clear-SyntheticData
       if ($beforeCleanup) { Assert-StageUnchanged $beforeCleanup (Get-DbSnapshot) @() }
+    } catch {
+      [void]$cleanupErrors.Add("synthetic data cleanup: $($_.Exception.Message)")
     }
-  } catch {
-    $cleanupError = $_.Exception
+  } elseif (-not $serviceStopped) {
+    [void]$cleanupErrors.Add('synthetic data cleanup skipped because the isolated service did not exit')
   }
   try {
     if ($previousData) { $env:OFFERPILOT_DATA = $previousData } else { Remove-Item Env:OFFERPILOT_DATA -ErrorAction SilentlyContinue }
@@ -525,12 +541,14 @@ print(db.execute(
     if ($previousNoProxy) { $env:NO_PROXY = $previousNoProxy } else { Remove-Item Env:NO_PROXY -ErrorAction SilentlyContinue }
     Remove-Item Env:APPLICATION_JD_HARNESS_DB, Env:APPLICATION_JD_HARNESS_APP, Env:APPLICATION_JD_HARNESS_RESUME, Env:APPLICATION_JD_HARNESS_EVENT, Env:APPLICATION_JD_HARNESS_CONSUMER -ErrorAction SilentlyContinue
   } catch {
-    if ($null -eq $cleanupError) { $cleanupError = $_.Exception }
+    [void]$cleanupErrors.Add("environment restore: $($_.Exception.Message)")
   }
   try {
-    if (Test-Path -LiteralPath $tempData) { Remove-Item -LiteralPath $tempData -Recurse -Force -ErrorAction Stop }
+    if (Test-Path -LiteralPath $tempData) {
+      Remove-Item -LiteralPath $tempData -Recurse -Force -ErrorAction Stop
+    }
   } catch {
-    if ($null -eq $cleanupError) { $cleanupError = $_.Exception }
+    [void]$cleanupErrors.Add("temporary directory cleanup: $($_.Exception.Message)")
   }
-  if ($null -ne $cleanupError) { throw $cleanupError }
+  if ($cleanupErrors.Count -gt 0) { throw ($cleanupErrors -join '; ') }
 }
