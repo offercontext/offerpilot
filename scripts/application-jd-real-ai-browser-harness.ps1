@@ -16,7 +16,10 @@ $browserReady = Join-Path $tempData 'browser-network.ready'
 $server = $null
 $proxy = $null
 $auditor = $null
+$browser = $null
 $baseUrl = $null
+$browserProfile = $null
+$browserCdpPort = $null
 $applicationId = $null
 $resumeId = $null
 $eventId = $null
@@ -32,6 +35,50 @@ function Get-FreePort {
   $probe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
   try { $probe.Start(); return ([Net.IPEndPoint]$probe.LocalEndpoint).Port }
   finally { $probe.Stop() }
+}
+
+function Get-BrowserExecutable {
+  $candidates = @(
+    $env:OFFERPILOT_BROWSER_PATH,
+    (Join-Path $env:ProgramFiles 'Google\Chrome\Application\chrome.exe'),
+    (Join-Path ${env:ProgramFiles(x86)} 'Google\Chrome\Application\chrome.exe'),
+    (Join-Path $env:LOCALAPPDATA 'Google\Chrome\Application\chrome.exe'),
+    (Join-Path $env:ProgramFiles 'Microsoft\Edge\Application\msedge.exe'),
+    (Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe'),
+    (Join-Path $env:LOCALAPPDATA 'Microsoft\Edge\Application\msedge.exe')
+  )
+  foreach ($candidate in $candidates) {
+    if ($candidate -and (Test-Path -LiteralPath $candidate)) { return (Resolve-Path -LiteralPath $candidate).Path }
+  }
+  throw 'No Chrome or Edge executable was found for the temporary browser.'
+}
+
+function Start-TemporaryBrowser([string]$url) {
+  $browserCdpPort = Get-FreePort
+  $browserProfile = Join-Path $tempData 'browser-profile'
+  $executable = Get-BrowserExecutable
+  $browser = Start-Process -FilePath $executable -WindowStyle Hidden -PassThru -ArgumentList @(
+    "--remote-debugging-port=$browserCdpPort",
+    "--user-data-dir=$browserProfile",
+    '--headless=new',
+    '--disable-gpu',
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--disable-background-networking',
+    '--disable-component-update',
+    '--disable-features=Translate,OptimizationHints',
+    '--window-size=1440,1200',
+    $url
+  )
+  $endpoint = "http://127.0.0.1:$browserCdpPort"
+  for ($i = 0; $i -lt 60; $i++) {
+    if ($browser.HasExited) { throw 'Temporary browser exited before CDP readiness.' }
+    try {
+      $version = Invoke-RestMethod -Uri "$endpoint/json/version" -TimeoutSec 2
+      if ($version.webSocketDebuggerUrl) { return $endpoint }
+    } catch { Start-Sleep -Milliseconds 500 }
+  }
+  throw 'Temporary browser CDP endpoint did not become ready.'
 }
 
 function Stop-Tree([object]$process) {
@@ -267,10 +314,10 @@ function Assert-ConsumerRequest($records, [string]$consumer) {
 }
 
 try {
-  if ([string]::IsNullOrWhiteSpace($CdpUrl)) { throw 'Set APPLICATION_JD_CDP_URL before running this harness.' }
   $configPath = Join-Path $sourceData 'config.json'
   if (-not (Test-Path -LiteralPath $configPath)) { throw 'Provider config is missing.' }
   New-Item -ItemType Directory -Force -Path $tempData | Out-Null
+  if ([string]::IsNullOrWhiteSpace($CdpUrl)) { $CdpUrl = Start-TemporaryBrowser 'about:blank' }
   Copy-Item -LiteralPath $configPath -Destination (Join-Path $tempData 'config.json')
   $providers = @(Get-ProviderEndpoints (Join-Path $tempData 'config.json'))
   if ($providers.Count -eq 0) { throw 'No enabled Provider endpoint is configured.' }
@@ -363,6 +410,7 @@ print(db.execute(
   Stop-Tree $auditor
   Stop-Tree $server
   Stop-Tree $proxy
+  Stop-Tree $browser
   if ($applicationId -and $resumeId -and $eventId -and (Test-Path -LiteralPath (Join-Path $tempData 'data.db'))) {
     Clear-SyntheticData
     if ($beforeCleanup) { Assert-StageUnchanged $beforeCleanup (Get-DbSnapshot) @() }

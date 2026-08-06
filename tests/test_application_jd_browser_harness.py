@@ -95,27 +95,13 @@ def test_application_jd_harness_parses_and_uses_explicit_stage_contract() -> Non
     assert result.stdout.isascii()
 
 
-def test_application_jd_harness_fails_closed_without_browser_cdp() -> None:
-    result = subprocess.run(
-        [
-            "powershell",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(HARNESS),
-            "-Stage",
-            "jd-only",
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode != 0
-    output = result.stdout + result.stderr
-    assert "APPLICATION_JD_CDP_URL" in output
-    assert "Application JD browser acceptance failed." in output
+def test_application_jd_harness_self_starts_and_cleans_temporary_browser() -> None:
+    script = HARNESS.read_text(encoding="utf-8")
+    assert "Start-TemporaryBrowser 'about:blank'" in script
+    assert "--remote-debugging-port=$browserCdpPort" in script
+    assert "--user-data-dir=$browserProfile" in script
+    assert "Stop-Tree $browser" in script
+    assert "APPLICATION_JD_CDP_URL" in script
 
 
 def test_application_jd_implementation_scope_is_machine_checked() -> None:
