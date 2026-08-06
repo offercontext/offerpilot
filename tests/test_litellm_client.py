@@ -199,6 +199,7 @@ def test_streaming_provider_request_audit_failure_does_not_block_provider_call(
 ):
     audit_path = tmp_path / "missing" / "provider-request-audit.jsonl"
     monkeypatch.setenv("OFFERPILOT_PROVIDER_AUDIT_FILE", str(audit_path))
+    monkeypatch.setenv("OFFERPILOT_PROVIDER_REQUEST_AUDIT_FILE", str(audit_path))
     calls = 0
 
     def fake_completion(**kwargs: Any) -> Any:

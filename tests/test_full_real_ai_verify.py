@@ -63,6 +63,7 @@ def test_build_summary_keeps_only_redacted_provider_and_failure_metadata(tmp_pat
                 "provider_type": "openai_compatible",
                 "model": "deepseek-v4-pro",
                 "input_fingerprint_sha256": "a" * 64,
+                "schema_fingerprint_sha256": "b" * 64,
                 "request_body_bytes": 1234,
                 "message_count": 3,
                 "message_bytes": 456,
@@ -105,6 +106,7 @@ def test_build_summary_keeps_only_redacted_provider_and_failure_metadata(tmp_pat
     assert summary["provider"] == "openai_compatible"
     assert summary["model"] == "deepseek-v4-pro"
     assert summary["input_fingerprints"] == ["a" * 64]
+    assert summary["schema_fingerprints"] == ["b" * 64]
     assert summary["provider_request_id_hash"] == "b" * 12
     assert summary["failure_category"] == "invalid_item_shape"
     assert summary["elapsed_ms"] == 123456

@@ -115,8 +115,12 @@ def _read_request_audit(report_dir: Path) -> list[dict[str, Any]]:
         "provider_id",
         "provider_type",
         "model",
+        "litellm_model",
+        "endpoint",
         "input_fingerprint_sha256",
+        "schema_fingerprint_sha256",
         "request_body_bytes",
+        "request_body_scope",
         "message_count",
         "message_bytes",
         "response_mode",
@@ -135,6 +139,9 @@ def _read_request_audit(report_dir: Path) -> list[dict[str, Any]]:
         fingerprint = record.get("input_fingerprint_sha256")
         if not isinstance(fingerprint, str) or not _SAFE_HASH.fullmatch(fingerprint):
             record.pop("input_fingerprint_sha256", None)
+        schema_fingerprint = record.get("schema_fingerprint_sha256")
+        if not isinstance(schema_fingerprint, str) or not _SAFE_HASH.fullmatch(schema_fingerprint):
+            record.pop("schema_fingerprint_sha256", None)
         records.append(record)
     return records[-64:]
 
@@ -361,6 +368,13 @@ def _build_summary(
                 record["input_fingerprint_sha256"]
                 for record in request_records
                 if isinstance(record.get("input_fingerprint_sha256"), str)
+            )
+        ),
+        "schema_fingerprints": list(
+            dict.fromkeys(
+                record["schema_fingerprint_sha256"]
+                for record in request_records
+                if isinstance(record.get("schema_fingerprint_sha256"), str)
             )
         ),
         "provider_request_id_hash": request_id_hash,
