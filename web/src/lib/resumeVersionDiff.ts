@@ -65,9 +65,21 @@ type SafeNode =
   | { kind: 'array'; entries: SafeNode[] }
   | { kind: 'unsupported' };
 
+type TraversalBudget = {
+  remaining: number;
+  exhausted: boolean;
+};
+
+type SafeBuildResult = {
+  node: SafeNode;
+  budgetExceeded: boolean;
+};
+
 const UNSUPPORTED_TEXT = '（无法安全展示）';
 const UNSUPPORTED_MARKER = '__offerpilot_unsupported__';
 const MAX_PREVIEW_CODE_POINTS = 160;
+const MAX_DIFF_DEPTH = 256;
+const MAX_DIFF_NODES = 10000;
 const MODULE_ORDER: DiffModule[] = [
   'contact',
   'education',
@@ -83,9 +95,25 @@ export function diffResumeContent(
   baselineContent: unknown,
   targetContent: unknown,
 ): ResumeVersionDiffResult {
-  const items: ResumeDiffItem[] = [];
-  compareValues(baselineContent, targetContent, '', items, new Set<object>(), new Set<object>());
+  try {
+    const items: ResumeDiffItem[] = [];
+    compareValues(
+      baselineContent,
+      targetContent,
+      '',
+      items,
+      new Set<object>(),
+      new Set<object>(),
+      0,
+      { remaining: MAX_DIFF_NODES, exhausted: false },
+    );
+    return finalizeResult(items);
+  } catch {
+    return fallbackResult(baselineContent, targetContent);
+  }
+}
 
+function finalizeResult(items: ResumeDiffItem[]): ResumeVersionDiffResult {
   items.sort((left, right) => {
     const moduleDifference = MODULE_ORDER.indexOf(left.module) - MODULE_ORDER.indexOf(right.module);
     if (moduleDifference !== 0) return moduleDifference;
@@ -109,6 +137,24 @@ export function diffResumeContent(
   };
 }
 
+function fallbackResult(left: unknown, right: unknown): ResumeVersionDiffResult {
+  if (Object.is(left, right)) return finalizeResult([]);
+  return finalizeResult([{
+    kind: 'changed',
+    module: 'other',
+    path: '',
+    before: unsupportedDiffValue(),
+    after: unsupportedDiffValue(),
+  }]);
+}
+
+function unsupportedDiffValue(): DiffValue {
+  return {
+    valueType: 'unsupported',
+    text: makeDiffText(UNSUPPORTED_TEXT),
+  };
+}
+
 function compareValues(
   left: unknown,
   right: unknown,
@@ -116,8 +162,15 @@ function compareValues(
   items: ResumeDiffItem[],
   leftAncestors: Set<object>,
   rightAncestors: Set<object>,
+  depth: number,
+  budget: TraversalBudget,
 ) {
   if (Object.is(left, right)) return;
+
+  if (depth >= MAX_DIFF_DEPTH || !consumeTraversalBudget(budget)) {
+    addChanged(items, path, left, right, true, true);
+    return;
+  }
 
   const leftInspection = inspectValue(left);
   const rightInspection = inspectValue(right);
@@ -125,7 +178,7 @@ function compareValues(
   const rightCycle = isCycleAtCurrent(right, rightAncestors);
 
   if (leftCycle || rightCycle) {
-    addChanged(items, path, left, right, true);
+    addChanged(items, path, left, right, leftCycle, rightCycle);
     return;
   }
 
@@ -173,7 +226,10 @@ function compareValues(
       items,
       leftAncestors,
       rightAncestors,
+      depth + 1,
+      budget,
     );
+    if (budget.exhausted) break;
   }
 
   if (isObjectLike(left)) leftAncestors.delete(left);
@@ -203,14 +259,15 @@ function addChanged(
   path: string,
   left: unknown,
   right: unknown,
-  forceUnsupported = false,
+  forceBeforeUnsupported = false,
+  forceAfterUnsupported = false,
 ) {
   items.push({
     kind: 'changed',
     module: moduleForPath(path),
     path,
-    before: createDiffValue(left, forceUnsupported),
-    after: createDiffValue(right, forceUnsupported),
+    before: createDiffValue(left, forceBeforeUnsupported),
+    after: createDiffValue(right, forceAfterUnsupported),
   });
 }
 
@@ -239,43 +296,111 @@ function createDiffValue(value: unknown, forceUnsupported = false): DiffValue {
     return { valueType: 'unsupported', text: makeDiffText(UNSUPPORTED_TEXT) };
   }
 
-  const safeNode = buildSafeNode(value, new Set<object>());
-  const full = canonicalSerialize(safeNode);
+  const safeResult = buildSafeNode(value, new Set<object>(), { remaining: MAX_DIFF_NODES }, 0);
+  if (safeResult.budgetExceeded) {
+    return {
+      valueType: 'unsupported',
+      text: makeDiffText(UNSUPPORTED_TEXT),
+    };
+  }
+  const full = canonicalSerialize(safeResult.node);
   return {
     valueType: inspection.kind,
     text: makeDiffText(full),
   };
 }
 
-function buildSafeNode(value: unknown, ancestors: Set<object>): SafeNode {
+function buildSafeNode(
+  value: unknown,
+  ancestors: Set<object>,
+  budget: { remaining: number },
+  depth: number,
+): SafeBuildResult {
   const inspection = inspectValue(value);
-  if (inspection.kind === 'string') return { kind: 'string', value: value as string };
-  if (inspection.kind === 'number') return { kind: 'number', value: value as number };
-  if (inspection.kind === 'boolean') return { kind: 'boolean', value: value as boolean };
-  if (inspection.kind === 'null') return { kind: 'null' };
-  if (inspection.kind === 'unsupported' || !inspection.container || !isObjectLike(value)) {
-    return { kind: 'unsupported' };
+  if (inspection.kind === 'string') {
+    return consumeSafeBudget(budget)
+      ? { node: { kind: 'string', value: value as string }, budgetExceeded: false }
+      : { node: { kind: 'unsupported' }, budgetExceeded: true };
   }
-  if (ancestors.has(value)) return { kind: 'unsupported' };
+  if (inspection.kind === 'number') {
+    return consumeSafeBudget(budget)
+      ? { node: { kind: 'number', value: value as number }, budgetExceeded: false }
+      : { node: { kind: 'unsupported' }, budgetExceeded: true };
+  }
+  if (inspection.kind === 'boolean') {
+    return consumeSafeBudget(budget)
+      ? { node: { kind: 'boolean', value: value as boolean }, budgetExceeded: false }
+      : { node: { kind: 'unsupported' }, budgetExceeded: true };
+  }
+  if (inspection.kind === 'null') {
+    return consumeSafeBudget(budget)
+      ? { node: { kind: 'null' }, budgetExceeded: false }
+      : { node: { kind: 'unsupported' }, budgetExceeded: true };
+  }
+  if (inspection.kind === 'unsupported' || !inspection.container || !isObjectLike(value)) {
+    return { node: { kind: 'unsupported' }, budgetExceeded: false };
+  }
+  if (depth >= MAX_DIFF_DEPTH || !consumeSafeBudget(budget)) {
+    return { node: { kind: 'unsupported' }, budgetExceeded: true };
+  }
+  if (ancestors.has(value)) return { node: { kind: 'unsupported' }, budgetExceeded: false };
 
   ancestors.add(value);
-  const node = inspection.container.kind === 'array'
-    ? {
-        kind: 'array' as const,
-        entries: inspection.container.entries.map((entry) => buildSafeNode(entry.value, ancestors)),
+  try {
+    let budgetExceeded = false;
+    if (inspection.container.kind === 'array') {
+      const entries: SafeNode[] = [];
+      for (const entry of inspection.container.entries) {
+        const child = buildSafeNode(entry.value, ancestors, budget, depth + 1);
+        entries.push(child.node);
+        if (child.budgetExceeded) {
+          budgetExceeded = true;
+          break;
+        }
       }
-    : {
-        kind: 'object' as const,
-        entries: inspection.container.entries
-          .slice()
-          .sort((left, right) => compareKeys(left.key, right.key))
-          .map((entry) => [entry.key, buildSafeNode(entry.value, ancestors)] as [string, SafeNode]),
-      };
-  ancestors.delete(value);
-  return node;
+      return { node: { kind: 'array', entries }, budgetExceeded };
+    }
+
+    const entries: Array<[string, SafeNode]> = [];
+    for (const entry of inspection.container.entries.slice().sort((left, right) => compareKeys(left.key, right.key))) {
+      const child = buildSafeNode(entry.value, ancestors, budget, depth + 1);
+      entries.push([entry.key, child.node]);
+      if (child.budgetExceeded) {
+        budgetExceeded = true;
+        break;
+      }
+    }
+    return { node: { kind: 'object', entries }, budgetExceeded };
+  } finally {
+    ancestors.delete(value);
+  }
 }
 
-function canonicalSerialize(node: SafeNode): string {
+function consumeTraversalBudget(budget: TraversalBudget) {
+  if (budget.remaining <= 0) {
+    budget.exhausted = true;
+    return false;
+  }
+  budget.remaining -= 1;
+  return true;
+}
+
+function consumeSafeBudget(budget: { remaining: number }) {
+  if (budget.remaining <= 0) return false;
+  budget.remaining -= 1;
+  return true;
+}
+
+function canonicalSerialize(
+  node: SafeNode,
+  depth = 0,
+  budget = { remaining: MAX_DIFF_NODES },
+): string {
+  if (depth >= MAX_DIFF_DEPTH || budget.remaining <= 0) {
+    return `{"${UNSUPPORTED_MARKER}":${JSON.stringify(UNSUPPORTED_TEXT)}}`;
+  }
+  budget.remaining -= 1;
+
   switch (node.kind) {
     case 'string':
       return JSON.stringify(node.value);
@@ -288,10 +413,10 @@ function canonicalSerialize(node: SafeNode): string {
     case 'unsupported':
       return `{"${UNSUPPORTED_MARKER}":${JSON.stringify(UNSUPPORTED_TEXT)}}`;
     case 'array':
-      return `[${node.entries.map(canonicalSerialize).join(',')}]`;
+      return `[${node.entries.map((entry) => canonicalSerialize(entry, depth + 1, budget)).join(',')}]`;
     case 'object':
       return `{${node.entries
-        .map(([key, value]) => `${JSON.stringify(key)}:${canonicalSerialize(value)}`)
+        .map(([key, value]) => `${JSON.stringify(key)}:${canonicalSerialize(value, depth + 1, budget)}`)
         .join(',')}}`;
   }
 }

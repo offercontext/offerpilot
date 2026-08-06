@@ -151,6 +151,38 @@ describe('diffResumeContent', () => {
     expect(getTrapCalls).toBe(0);
   });
 
+  it('bounds deep content and never throws', () => {
+    let left: Record<string, unknown> = { leaf: 'left' };
+    let right: Record<string, unknown> = { leaf: 'right' };
+    for (let depth = 0; depth < 3000; depth += 1) {
+      left = { next: left };
+      right = { next: right };
+    }
+
+    expect(() => diffResumeContent(left, right)).not.toThrow();
+    const result = diffResumeContent(left, right);
+    expect(result.identical).toBe(false);
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0].before?.valueType).toBe('unsupported');
+    expect(result.items[0].after?.valueType).toBe('unsupported');
+
+    const added = diffResumeContent({}, right);
+    expect(added.items).toHaveLength(1);
+    expect(added.items[0].after?.valueType).toBe('unsupported');
+  });
+
+  it('preserves a normal value beside a cyclic value', () => {
+    const left: Record<string, unknown> = {};
+    left.value = left;
+    const right = { value: { name: 'normal' } };
+
+    const result = diffResumeContent(left, right);
+    const item = itemAt(result, '/value');
+    expect(item.before?.valueType).toBe('unsupported');
+    expect(item.after?.valueType).toBe('object');
+    expect(item.after?.text.full).toContain('"name":"normal"');
+  });
+
   it('rejects non-JSON container shapes at the container path', () => {
     const symbolKey = Symbol('hidden');
     const withSymbol = { name: 'x', [symbolKey]: 'hidden' };

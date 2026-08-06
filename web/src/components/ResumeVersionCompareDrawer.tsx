@@ -230,8 +230,12 @@ function DiffItemView({
         <code>{item.path || '(根路径)'}</code>
       </div>
       <div className={styles.compareValues}>
-        <ValueView label="修改前" value={item.before} keyPrefix={`${item.path}:before`} resetKey={resetKey} expandedKeys={expandedKeys} onToggle={onToggle} />
-        <ValueView label="修改后" value={item.after} keyPrefix={`${item.path}:after`} resetKey={resetKey} expandedKeys={expandedKeys} onToggle={onToggle} />
+        {item.kind !== 'added' && (
+          <ValueView label="修改前" value={item.before} keyPrefix={`${item.path}:before`} resetKey={resetKey} expandedKeys={expandedKeys} onToggle={onToggle} />
+        )}
+        {item.kind !== 'removed' && (
+          <ValueView label="修改后" value={item.after} keyPrefix={`${item.path}:after`} resetKey={resetKey} expandedKeys={expandedKeys} onToggle={onToggle} />
+        )}
       </div>
     </article>
   );
@@ -261,10 +265,13 @@ function ValueView({
     <div className={styles.compareValue}>
       <span className={styles.compareValueLabel}>{label} · {value.valueType}</span>
       {text.truncated ? (
-        <details key={`${resetKey}:${keyPrefix}`} open={isExpanded} onToggle={(event) => onToggle(keyPrefix, event.currentTarget.open)}>
-          <summary>展开完整内容</summary>
-          <pre>{isExpanded ? text.full : text.preview}</pre>
-        </details>
+        <>
+          {!isExpanded && <pre>{text.preview}</pre>}
+          <details key={`${resetKey}:${keyPrefix}`} open={isExpanded} onToggle={(event) => onToggle(keyPrefix, event.currentTarget.open)}>
+            <summary>展开完整内容</summary>
+            {isExpanded && <pre>{text.full}</pre>}
+          </details>
+        </>
       ) : (
         <pre>{text.preview}</pre>
       )}

@@ -203,9 +203,13 @@ describe('ResumeVersionCompareDrawer', () => {
     const details = drawerRoot().querySelector('details');
     const summary = details?.querySelector('summary');
     expect(details?.open).toBe(false);
+    expect(details?.querySelector('pre')).toBeNull();
+    expect(details?.parentElement?.querySelector('pre')?.textContent).toContain('长文本');
     expect(summary?.textContent).toContain('展开完整内容');
     await act(async () => summary?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    await act(async () => details?.dispatchEvent(new Event('toggle', { bubbles: true })));
     expect(drawerRoot().querySelector('details')?.open).toBe(true);
+    expect(details?.querySelector('pre')?.textContent).toContain('长文本');
 
     const nextTarget = makeResume(4, {
       parent_resume_id: 1,
@@ -222,6 +226,27 @@ describe('ResumeVersionCompareDrawer', () => {
       );
     });
     expect(drawerRoot().querySelector('details')?.open).toBe(false);
+  });
+
+  it('renders only the existing side for added and removed items', () => {
+    const base = makeResume(1, {
+      content_json: { removed: 'gone' },
+    });
+    const target = makeResume(2, {
+      parent_resume_id: 1,
+      content_json: { added: 'new' },
+    });
+
+    renderDrawer(target, [target, base]);
+
+    const added = drawerRoot().querySelector<HTMLElement>('[data-diff-path="/added"]');
+    const removed = drawerRoot().querySelector<HTMLElement>('[data-diff-path="/removed"]');
+    expect(added?.querySelectorAll('pre')).toHaveLength(1);
+    expect(added?.textContent).toContain('new');
+    expect(added?.textContent).not.toContain('不存在');
+    expect(removed?.querySelectorAll('pre')).toHaveLength(1);
+    expect(removed?.textContent).toContain('gone');
+    expect(removed?.textContent).not.toContain('不存在');
   });
 
   it('renders the Chinese empty state and calls only the close callback', () => {
