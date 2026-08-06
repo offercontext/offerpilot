@@ -21,6 +21,7 @@ import { ONBOARDING_QUERY_KEY } from '@/services/onboarding';
 import ResumeCard from './ResumeCard';
 import ResumeUploadModal from './ResumeUploadModal';
 import ResumeEditorDrawer from './ResumeEditorDrawer';
+import ResumeVersionCompareDrawer from './ResumeVersionCompareDrawer';
 import type { Resume, ResumeContent } from '@/types/resume';
 import { findEvidenceFocusRecord } from '@/lib/pilotEvidenceFocus';
 import styles from './ResumeLibraryView.module.css';
@@ -51,6 +52,7 @@ export default function ResumeLibraryView({
   const qc = useQueryClient();
   const [uploadOpen, setUploadOpen] = useState(false);
   const [editing, setEditing] = useState<Resume | null>(null);
+  const [compareTargetId, setCompareTargetId] = useState<number | null>(null);
   const [keyword, setKeyword] = useState('');
   const [dragActive, setDragActive] = useState(false);
   const dragCounter = useRef(0);
@@ -150,6 +152,15 @@ export default function ResumeLibraryView({
   };
 
   const resumes = resumesQuery.data ?? [];
+  const compareTarget = compareTargetId === null
+    ? undefined
+    : resumes.find((resume) => resume.id === compareTargetId);
+
+  useEffect(() => {
+    if (compareTargetId !== null && !resumes.some((resume) => resume.id === compareTargetId)) {
+      setCompareTargetId(null);
+    }
+  }, [compareTargetId, resumes]);
 
   useEffect(() => {
     if (
@@ -315,6 +326,7 @@ export default function ResumeLibraryView({
                 onSetMaster={() => setMasterMut.mutate(r.id)}
                 onCopy={() => copyMut.mutate(r.id)}
                 onDelete={() => deleteMut.mutate(r.id)}
+                onCompare={resumes.length > 1 ? () => setCompareTargetId(r.id) : undefined}
                 onAttachToPilot={onAttachToPilot}
               />
             </div>
@@ -337,6 +349,15 @@ export default function ResumeLibraryView({
         onSubmit={uploadFile}
         onClose={() => setUploadOpen(false)}
       />
+
+      {compareTarget && (
+        <ResumeVersionCompareDrawer
+          open
+          target={compareTarget}
+          candidates={resumes}
+          onClose={() => setCompareTargetId(null)}
+        />
+      )}
     </div>
   );
 }

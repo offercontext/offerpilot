@@ -1,5 +1,5 @@
 import { Card, Progress, Tag, Tooltip } from 'antd';
-import { CopyOutlined, DeleteOutlined, EditOutlined, StarOutlined } from '@ant-design/icons';
+import { CopyOutlined, DeleteOutlined, EditOutlined, FileTextOutlined, StarOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import type { ReactNode } from 'react';
 import type { Resume } from '@/types/resume';
@@ -11,6 +11,7 @@ interface Props {
   onSetMaster: (id: number) => void;
   onCopy: (id: number) => void;
   onDelete: (id: number) => void;
+  onCompare?: (id: number) => void;
   onAttachToPilot?: (attachment: import('@/types/chat').PilotContextAttachment) => void;
 }
 
@@ -31,7 +32,7 @@ const SECTION_LABELS: Record<string, string> = {
   skills: '技能清单',
 };
 
-export default function ResumeCard({ resume, onEdit, onSetMaster, onCopy, onDelete, onAttachToPilot }: Props) {
+export default function ResumeCard({ resume, onEdit, onSetMaster, onCopy, onDelete, onCompare, onAttachToPilot }: Props) {
   const title = resume.title || resume.name || `简历 #${resume.id}`;
   const sourceLabel = SOURCE_LABELS[resume.source] ?? resume.source;
   const completion = Math.max(0, Math.min(100, resume.completion_percent ?? 0));
@@ -87,6 +88,12 @@ export default function ResumeCard({ resume, onEdit, onSetMaster, onCopy, onDele
         )}
         <VDivider />
         <CardAction label="复制" icon={<CopyOutlined />} onClick={() => onCopy(resume.id)} />
+        {onCompare && (
+          <>
+            <VDivider />
+            <CardAction label="对比版本" icon={<FileTextOutlined />} onClick={() => onCompare(resume.id)} />
+          </>
+        )}
         <VDivider />
         <CardAction
           label="删除"
