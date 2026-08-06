@@ -102,7 +102,7 @@ describe('AppShell source contract', () => {
     const confirmEnd = source.indexOf('const startPilotV2DeepReview =', confirmStart);
     const confirmSource = source.slice(confirmStart, confirmEnd);
     expect(confirmSource).toContain('getOpportunityFitV2Review');
-    expect(confirmSource).toContain("current?.stage_status !== 'confirmed'");
+    expect(confirmSource).toContain("current?.stage_status === 'confirmed'");
     expect(confirmSource).toContain('opportunity_fit_triage_confirmation_consumed');
     expect(confirmSource).toContain('resultUnknown: true');
   });
