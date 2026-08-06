@@ -16,7 +16,7 @@ import httpx
 from sqlalchemy import select
 
 from offerpilot.api import create_app
-from offerpilot.config import load_config, resolve_data_dir, save_config
+from offerpilot.config import Config, load_config, resolve_data_dir, save_config
 from offerpilot.db import session_factory_for_data_dir
 from offerpilot.diagnostics import read_recent_log_entries
 from offerpilot.models import InterviewPreparationProposal
@@ -48,7 +48,7 @@ class _ControlledProviderHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     calls: list[dict[str, object]] = []
 
-    def do_POST(self) -> None:  # type: ignore[no-untyped-def]
+    def do_POST(self) -> None:
         content_length = int(self.headers.get("Content-Length", "0"))
         self.rfile.read(content_length)
         request_id = f"controlled-interview-preparation-{len(self.calls) + 1}"
@@ -180,7 +180,7 @@ def _redacted_evidence_catalog_counts(data_dir: Path) -> dict[str, int]:
     return counts
 
 
-def _controlled_config(source_data: Path, provider_url: str):
+def _controlled_config(source_data: Path, provider_url: str) -> Config:
     config = load_config(source_data).model_copy(deep=True)
     active = config.active_provider()
     controlled = active.model_copy(
