@@ -718,7 +718,9 @@ class MockInterviewRepository:
     @staticmethod
     def _assert_attempt_sources(session: Session, attempt: MockInterviewAttempt) -> None:
         snapshot = json.loads(attempt.input_snapshot_json)
-        jd_text = str(snapshot.get("jd", {}).get("text", ""))
+        jd_snapshot = snapshot.get("jd") if isinstance(snapshot.get("jd"), dict) else {}
+        jd_text = str(jd_snapshot.get("text", ""))
+        recorded_version_id = snapshot.get("jd_version_id")
         try:
             current = MockInterviewRepository._build_input_snapshot(
                 session,
@@ -727,6 +729,7 @@ class MockInterviewRepository:
                 attempt.resume_id,
                 jd_text,
                 None,
+                jd_version_id=recorded_version_id if isinstance(recorded_version_id, int) else None,
             )
         except (LookupError, ValueError) as exc:
             raise MockInterviewSourceChanged("mock_interview_source_conflict") from exc
@@ -734,6 +737,7 @@ class MockInterviewRepository:
             current.get("application") != snapshot.get("application")
             or current.get("event") != snapshot.get("event")
             or current.get("resume") != snapshot.get("resume")
+            or current.get("jd") != snapshot.get("jd")
         ):
             raise MockInterviewSourceChanged("mock_interview_source_conflict")
         _assert_preparation_snapshot(
@@ -885,6 +889,18 @@ class MockInterviewRepository:
             raise ValueError("event is not a scheduled interview")
         if resume is None or resume.deleted_at is not None:
             raise LookupError("resume not found")
+        jd_snapshot: dict[str, Any] = {"text": jd_text}
+        if jd_version_id is not None:
+            version = session.get(ApplicationJDVersion, jd_version_id)
+            if version is None or version.application_id != application_id:
+                raise ValueError("JD version is unavailable")
+            jd_snapshot.update(
+                {
+                    "version_id": version.id,
+                    "version_number": version.version_number,
+                    "content_sha256": version.content_sha256,
+                }
+            )
         snapshot: dict[str, Any] = {
             "schema_version": "mock-interview-input-v1",
             "application": {
@@ -903,7 +919,7 @@ class MockInterviewRepository:
                 "title": resume.title,
                 "content_json": _json_object(resume.content_json),
             },
-            "jd": {"text": jd_text},
+            "jd": jd_snapshot,
             "selected_preparation": _selected_preparation_snapshot(
                 session, application_id, event_id, preparation_proposal_id, preparation_selection
             ),

@@ -122,7 +122,7 @@ export default function InterviewPreparationProposalDrawer({
   const [proposal, setProposal] = useState<InterviewPreparationProposal | null>(initialProposal);
   const [attemptKey, setAttemptKey] = useState(() => draft?.attemptState.key ?? attemptState?.key ?? newAttemptKey());
   const [resumeId, setResumeId] = useState(draft?.resumeId ?? context.resumeId);
-  const [jdText, setJdText] = useState(draft?.jdText ?? context.jdText);
+  const [jdText, setJdTextState] = useState(draft?.jdText ?? context.jdText);
   const [jdVersionId] = useState<number | null>(draft?.jdVersionId ?? context.jdVersionId ?? null);
   const [assertionsText, setAssertionsText] = useState(draft?.assertionsText ?? context.userAssertions.join('\n'));
   const [history, setHistory] = useState<InterviewPreparationProposal[]>([]);
@@ -137,6 +137,9 @@ export default function InterviewPreparationProposalDrawer({
   const hasInput = Boolean(resumeId && jdVersionId);
   const resultUnknown = attemptState?.result_unknown ?? draft?.attemptState.result_unknown ?? false;
   const isSafeEmpty = proposal?.proposal_status === 'safe_empty';
+  const setJdText = (value: string) => {
+    if (!jdVersionId) setJdTextState(value);
+  };
   const input = useMemo<CreateInterviewPreparationProposalInput>(() => ({
     application_id: context.applicationId,
     event_id: context.eventId,
@@ -223,7 +226,7 @@ export default function InterviewPreparationProposalDrawer({
       <h2>面试准备建议</h2>
       <p>围绕当前面试事件，生成可审阅、可引用的准备建议。</p>
       <p>仅 JD、所选简历和已确认 Knowledge Evidence 会发送给 AI；用户断言仅保存于本次快照，不会发送给 AI。</p>
-      {(jdText.trim() || resumeId > 0) && (
+      {jdText.trim() && jdVersionId && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
           {jdText.trim() ? <SourceStateTag state="current" detail="本次输入的岗位描述" /> : null}
           {resumeId > 0 ? <SourceStateTag state="current" detail="本次选定的简历" /> : null}
@@ -266,7 +269,14 @@ export default function InterviewPreparationProposalDrawer({
       </label>
       <label>
         粘贴 JD
-        <textarea disabled={resultUnknown} value={jdText} onChange={(event) => setJdText(event.target.value)} placeholder="仅粘贴岗位描述文本，不会抓取链接。" />
+        <textarea
+          disabled={resultUnknown}
+          readOnly
+          aria-readonly="true"
+          value={jdText}
+          onChange={(event) => setJdText(event.target.value)}
+          placeholder="仅粘贴岗位描述文本，不会抓取链接。"
+        />
       </label>
       <label>
         可选用户断言（不会发送给 AI）

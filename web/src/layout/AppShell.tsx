@@ -313,6 +313,14 @@ function AppShellContent() {
     if (!pilotApplicationContext || !pilotApplicationJdQuery.data?.current) return;
     const current = pilotV2DraftsRef.current.get(pilotApplicationContext.applicationId);
     if (!current || current.jdVersionId === pilotApplicationJdQuery.data.current.id) return;
+    const hasFrozenAttempt = Boolean(
+      current.triageKey
+      || current.deepKey
+      || current.triage
+      || current.deep
+      || current.resultUnknown,
+    );
+    if (hasFrozenAttempt) return;
     const next = {
       ...current,
       jdVersionId: pilotApplicationJdQuery.data.current.id,
@@ -719,9 +727,36 @@ function AppShellContent() {
     setSelected(app);
   };
 
-  const openMockInterview = (applicationId: number, eventId: number) => {
+  const openMockInterview = async (applicationId: number, eventId: number) => {
     const draftKey = `${applicationId}:${eventId}`;
-    const draft = mockInterviewDraftsRef.current.get(draftKey) ?? createMockInterviewDraft();
+    let draft = mockInterviewDraftsRef.current.get(draftKey) ?? createMockInterviewDraft();
+    const hasFrozenAttempt = Boolean(
+      draft.attemptKey
+      || draft.questionKey
+      || draft.turnKey
+      || draft.nextQuestionKey
+      || draft.feedbackKey
+      || draft.confirmationKey
+      || draft.attemptId
+      || draft.proposalId
+      || draft.resultUnknown,
+    );
+    if (!hasFrozenAttempt) {
+      try {
+        const currentJd = await getCurrentApplicationJd(applicationId);
+        if (currentJd.current) {
+          draft = {
+            ...draft,
+            jdVersionId: currentJd.current.id,
+            jdText: currentJd.current.jd_text,
+          };
+        } else {
+          draft = { ...draft, jdVersionId: undefined, jdText: '' };
+        }
+      } catch {
+        draft = { ...draft, jdVersionId: undefined, jdText: '', error: '岗位资料暂时无法加载，请稍后重试' };
+      }
+    }
     mockInterviewDraftsRef.current.set(draftKey, draft);
     setMockInterviewDraft(draft);
     setMockInterviewContext({ applicationId, eventId });
@@ -1267,7 +1302,12 @@ function AppShellContent() {
                   onViewHistory={(reviewId) => void viewPilotV2History(reviewId)}
                   onViewLegacyHistory={(reviewId) => void viewPilotLegacyHistory(reviewId)}
                   onStartNew={startNewPilotV2Review}
-                  onPrepareMaterials={(resumeId, jdText) => preparePilotMaterials({ applicationId: pilotApplicationContext.applicationId, resumeId, jdText })}
+                  onPrepareMaterials={(resumeId, jdText) => preparePilotMaterials({
+                    applicationId: pilotApplicationContext.applicationId,
+                    resumeId,
+                    jdText,
+                    jdVersionId: pilotV2Draft?.deep?.jd_version_id ?? pilotV2Draft?.triage?.jd_version_id ?? undefined,
+                  })}
                   onOpenInterviewReview={openPilotInterviewReview}
                   onOpenInterviewPreparation={openPilotInterviewPreparation}
                   interviewEvents={evs.filter((event) => event.application_id === pilotApplicationContext.applicationId && event.event_type === 'interview' && Boolean(event.scheduled_at))}

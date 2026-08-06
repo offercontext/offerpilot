@@ -212,8 +212,11 @@ export default function MaterialKitDrawer({ application, open, onClose, initialR
 
   const [existingKit, setExistingKit] = useState<MaterialKitViewModel | null>(null);
   const [resumeID, setResumeID] = useState<number | undefined>();
-  const [jdSnapshot, setJdSnapshot] = useState('');
+  const [jdSnapshot, setJdSnapshotState] = useState('');
   const [jdVersionID, setJdVersionID] = useState<number | undefined>(initialJdVersionID);
+  const setJdSnapshot = (value: string) => {
+    if (!jdVersionID) setJdSnapshotState(value);
+  };
   const [status, setStatus] = useState<EditableMaterialKitStatus>('draft');
   const [content, setContent] = useState<MaterialKitContent>(() => createDefaultContent());
   const [actionError, setActionError] = useState<string | null>(null);
@@ -241,7 +244,7 @@ export default function MaterialKitDrawer({ application, open, onClose, initialR
   const resetEditor = (nextApplication: Application | null) => {
     setExistingKit(null);
     setResumeID(initialResumeID);
-    setJdSnapshot((initialJdSnapshot ?? nextApplication?.notes) || '');
+    setJdSnapshotState((initialJdSnapshot ?? nextApplication?.notes) || '');
     setJdVersionID(initialJdVersionID);
     setStatus('draft');
     setContent(createDefaultContent());
@@ -266,7 +269,7 @@ export default function MaterialKitDrawer({ application, open, onClose, initialR
   const applyKitToEditor = (kit: MaterialKitViewModel) => {
     setExistingKit(kit);
     setResumeID(kit.resume_id);
-    setJdSnapshot(kit.jd_snapshot);
+    setJdSnapshotState(kit.jd_snapshot);
     setJdVersionID(kit.jd_version_id);
     setStatus(kit.status === 'submitted' ? 'draft' : kit.status);
     setContent(cloneContent(kit.content));
@@ -354,7 +357,7 @@ export default function MaterialKitDrawer({ application, open, onClose, initialR
 
     setExistingKit(null);
     setResumeID(undefined);
-    setJdSnapshot(application?.notes || '');
+    setJdSnapshotState(application?.notes || '');
     setJdVersionID(undefined);
     setStatus('draft');
     setContent(createDefaultContent());
@@ -724,6 +727,8 @@ export default function MaterialKitDrawer({ application, open, onClose, initialR
               <Form.Item label="JD 摘要 / 岗位要求" required>
                 <Input.TextArea
                   value={jdSnapshot}
+                  readOnly
+                  aria-readonly="true"
                   onChange={(event) => setJdSnapshot(event.target.value)}
                   placeholder="粘贴岗位 JD，或使用投递备注作为默认内容"
                   rows={8}

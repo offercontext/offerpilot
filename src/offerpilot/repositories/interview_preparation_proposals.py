@@ -799,7 +799,22 @@ def _build_snapshot(
             "Resume content is too large", "interview_preparation_input_too_large"
         )
     canonical_knowledge = _validate_knowledge_selections(session, knowledge_selections)
-    snapshot = {
+    jd_snapshot: dict[str, Any] = {"text": jd_text}
+    if jd_version_id is not None:
+        version = session.get(ApplicationJDVersion, jd_version_id)
+        if version is None or version.application_id != application_id:
+            raise InterviewPreparationConflictError(
+                "interview preparation JD version is unavailable",
+                "interview_preparation_source_conflict",
+            )
+        jd_snapshot.update(
+            {
+                "version_id": version.id,
+                "version_number": version.version_number,
+                "content_sha256": version.content_sha256,
+            }
+        )
+    snapshot: dict[str, Any] = {
         "event": {
             "id": event.id,
             "application_id": event.application_id,
@@ -810,7 +825,7 @@ def _build_snapshot(
             "duration_minutes": event.duration_minutes,
             "status": event.status,
         },
-        "jd": {"text": jd_text},
+        "jd": jd_snapshot,
         "resume": {"id": resume.id, "content_json": content_json},
         "knowledge_evidence": canonical_knowledge,
         "user_assertions": normalized_assertions,
@@ -998,17 +1013,23 @@ def _set_source_status(session: Session, row: InterviewPreparationProposal) -> N
             except Exception:
                 pass
         recorded_jd_version_id = snapshot.get("jd_version_id")
-        current_jd_version_id = session.scalar(
-            select(ApplicationJDVersion.id)
+        current_jd_version = session.scalar(
+            select(ApplicationJDVersion)
             .where(ApplicationJDVersion.application_id == row.application_id)
             .order_by(ApplicationJDVersion.version_number.desc())
             .limit(1)
         )
+        recorded_jd = snapshot.get("jd") if isinstance(snapshot.get("jd"), dict) else {}
         if type(recorded_jd_version_id) is int and recorded_jd_version_id > 0:
             states["jd"] = (
-                "current" if current_jd_version_id == recorded_jd_version_id else "source_changed"
+                "current"
+                if current_jd_version is not None
+                and current_jd_version.id == recorded_jd_version_id
+                and current_jd_version.version_number == recorded_jd.get("version_number")
+                and current_jd_version.content_sha256 == recorded_jd.get("content_sha256")
+                else "source_changed"
             )
-        elif current_jd_version_id is not None:
+        elif current_jd_version is not None:
             states["jd"] = "source_changed"
         knowledge_changed = False
         for evidence in snapshot.get("knowledge_evidence", []):

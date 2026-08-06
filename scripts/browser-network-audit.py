@@ -13,6 +13,42 @@ from urllib.request import urlopen
 import websockets
 
 
+def record_response_payload_metadata(record: dict[str, object], payload: object) -> None:
+    """Copy only safe identifiers and statuses from a JSON response into a record."""
+    if not isinstance(payload, dict):
+        return
+    if isinstance(payload.get("error_code"), str):
+        record["response_error_code"] = payload["error_code"]
+    if isinstance(payload.get("attempt_status"), str):
+        record["response_attempt_status"] = payload["attempt_status"]
+    if payload.get("source_kind") in {"ui", "pilot"}:
+        record["response_source_kind"] = payload["source_kind"]
+    if isinstance(payload.get("retry_after_ms"), int):
+        record["response_retry_after_ms"] = payload["retry_after_ms"]
+    if isinstance(payload.get("jd_version_id"), int):
+        record["response_jd_version_id"] = payload["jd_version_id"]
+    if isinstance(payload.get("id"), int):
+        record["response_proposal_id"] = payload["id"]
+        if isinstance(payload.get("version_number"), int):
+            record["response_jd_version_id"] = payload["id"]
+    current = payload.get("current")
+    if isinstance(current, dict) and isinstance(current.get("id"), int):
+        record["response_jd_version_id"] = current["id"]
+        if current.get("source_kind") in {"ui", "pilot"}:
+            record["response_source_kind"] = current["source_kind"]
+    brief = payload.get("brief")
+    if isinstance(brief, dict) and isinstance(brief.get("proposal_id"), int):
+        record["response_confirmed_proposal_id"] = brief["proposal_id"]
+    if isinstance(payload.get("proposal_id"), int):
+        record["response_confirmed_proposal_id"] = payload["proposal_id"]
+    stages = payload.get("stages")
+    if isinstance(stages, list):
+        for stage in stages:
+            if isinstance(stage, dict) and isinstance(stage.get("jd_version_id"), int):
+                record["response_jd_version_id"] = stage["jd_version_id"]
+                break
+
+
 class BrowserAudit:
     def __init__(self, websocket: websockets.ClientConnection, output: Path, stop_file: Path) -> None:
         self.websocket = websocket
@@ -248,28 +284,7 @@ class BrowserAudit:
             body_text = body.get("body") if isinstance(body, dict) else None
             payload = json.loads(body_text) if isinstance(body_text, str) else None
             if isinstance(payload, dict):
-                if isinstance(payload.get("error_code"), str):
-                    record["response_error_code"] = payload["error_code"]
-                if isinstance(payload.get("attempt_status"), str):
-                    record["response_attempt_status"] = payload["attempt_status"]
-                if payload.get("source_kind") in {"ui", "pilot"}:
-                    record["response_source_kind"] = payload["source_kind"]
-                if isinstance(payload.get("retry_after_ms"), int):
-                    record["response_retry_after_ms"] = payload["retry_after_ms"]
-                if isinstance(payload.get("id"), int):
-                    record["response_proposal_id"] = payload["id"]
-                    if isinstance(payload.get("version_number"), int):
-                        record["response_jd_version_id"] = payload["id"]
-                current = payload.get("current")
-                if isinstance(current, dict) and isinstance(current.get("id"), int):
-                    record["response_jd_version_id"] = current["id"]
-                    if current.get("source_kind") in {"ui", "pilot"}:
-                        record["response_source_kind"] = current["source_kind"]
-                brief = payload.get("brief")
-                if isinstance(brief, dict) and isinstance(brief.get("proposal_id"), int):
-                    record["response_confirmed_proposal_id"] = brief["proposal_id"]
-                if isinstance(payload.get("proposal_id"), int):
-                    record["response_confirmed_proposal_id"] = payload["proposal_id"]
+                record_response_payload_metadata(record, payload)
             elif isinstance(payload, list):
                 proposal_ids = [
                     item["id"]

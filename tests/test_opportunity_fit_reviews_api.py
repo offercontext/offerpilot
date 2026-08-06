@@ -326,6 +326,33 @@ def test_api_v2_requires_confirmation_before_deep_and_preserves_v1_contract(tmp_
     assert deep.json()["stage"] == "deep_review"
 
 
+def test_opportunity_fit_deep_review_v1_post_is_disabled_without_provider_call(tmp_path) -> None:
+    class CountingModel(V2ReviewModel):
+        calls = 0
+
+        def complete(self, messages, tools):  # type: ignore[no-untyped-def]
+            self.calls += 1
+            return super().complete(messages, tools)
+
+    model = CountingModel()
+    client, application, _ = _ready(tmp_path, model)
+    response = client.post(
+        f"/api/applications/{application['id']}/opportunity-fit-reviews/999/deep-review",
+        json={"parent_triage_stage_id": 1, "idempotency_key": "v1-deep-disabled-01"},
+    )
+
+    assert response.status_code == 410
+    assert response.json()["error_code"] == "opportunity_fit_v1_write_disabled"
+    assert model.calls == 0
+
+    no_payload = client.post(
+        f"/api/applications/{application['id']}/opportunity-fit-reviews/999/deep-review",
+    )
+    assert no_payload.status_code == 410
+    assert no_payload.json()["error_code"] == "opportunity_fit_v1_write_disabled"
+    assert model.calls == 0
+
+
 def test_v2_confirmation_checks_application_before_consuming_token(tmp_path) -> None:
     client, application, resume = _ready(tmp_path, V2ReviewModel())
     other = client.post(

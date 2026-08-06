@@ -30,6 +30,7 @@ export interface PilotOpportunityFitMaterialHandoff {
   applicationId: number;
   resumeId: number;
   jdText: string;
+  jdVersionId?: number;
 }
 
 interface Props {

@@ -42,7 +42,7 @@ interface Props {
   onViewHistory: (reviewId: number) => void;
   onViewLegacyHistory?: (reviewId: number) => void;
   onStartNew: () => void;
-  onPrepareMaterials?: (resumeId: number, jdText: string) => void;
+  onPrepareMaterials?: (resumeId: number, jdText: string, jdVersionId?: number) => void;
   onOpenInterviewReview?: (applicationId: number) => void;
   onOpenInterviewPreparation?: (applicationId: number) => void;
   interviewEvents?: ScheduleEvent[];

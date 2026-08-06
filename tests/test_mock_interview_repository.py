@@ -251,6 +251,45 @@ def test_initial_question_key_is_persisted_on_first_turn(tmp_path):
     assert turn.question_idempotency_key == "initial-question-1"
 
 
+def test_mock_interview_snapshot_keeps_frozen_jd_identity(tmp_path):
+    factory = init_database(tmp_path / "data.db")
+    app_id, event_id, _, resume_id, _ = _seed(factory)
+    with factory() as session:
+        version = ApplicationJDVersion(
+            application_id=app_id,
+            version_number=4,
+            jd_text="JD text",
+            content_sha256="mock-jd-content-sha256",
+            source_kind="ui",
+            idempotency_key="mock-jd-version-0001",
+            request_fingerprint_sha256="mock-jd-request-sha256",
+        )
+        session.add(version)
+        session.commit()
+        version_id = version.id
+
+    result = _start_ready(
+        MockInterviewRepository(factory),
+        app_id,
+        event_id,
+        resume_id,
+        "JD text",
+        None,
+        "mock-snapshot-key-01",
+        "mock-question-key-01",
+        jd_version_id=version_id,
+    )
+
+    snapshot = json.loads(result.attempt.input_snapshot_json)
+    assert snapshot["jd"] == {
+        "text": "JD text",
+        "version_id": version_id,
+        "version_number": 4,
+        "content_sha256": "mock-jd-content-sha256",
+    }
+    assert snapshot["jd_version_id"] == version_id
+
+
 def test_question_source_snapshot_keeps_only_minimal_question_evidence(tmp_path):
     factory = init_database(tmp_path / "data.db")
     app_id, event_id, _, resume_id, _ = _seed(factory)

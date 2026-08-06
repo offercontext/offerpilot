@@ -171,8 +171,15 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
     },
     onError: (error: Error & { status?: number; code?: string }) => {
       if (error.code === 'application_jd_stale_current_version') {
-        onApplicationJdDraftChange?.(application!.id, { idempotencyKey: null, pendingOperation: null, resultUnknown: false });
-        message.error('\u5c97\u4f4d\u8d44\u6599\u5df2\u66f4\u65b0\uff0c\u8bf7\u91cd\u65b0\u52a0\u8f7d\u540e\u518d\u4fdd\u5b58');
+        void applicationJdQuery.refetch().then(({ data }) => {
+          onApplicationJdDraftChange?.(application!.id, {
+            expectedCurrentVersionId: data?.current?.id ?? null,
+            idempotencyKey: null,
+            pendingOperation: null,
+            resultUnknown: false,
+          });
+        });
+        message.error('\u5c97\u4f4d\u8d44\u6599\u5df2\u66f4\u65b0\uff0c\u5df2\u5237\u65b0\u5f53\u524d\u7248\u672c\uff0c\u8bf7\u786e\u8ba4\u540e\u518d\u4fdd\u5b58');
         return;
       }
       if (!error.status || error.status >= 500) {
@@ -200,7 +207,7 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
   };
 
   const submitJd = () => {
-    if (!application || !applicationJdDraft || applicationJdDraft.resultUnknown) return;
+    if (!application || !applicationJdDraft) return;
     const key = applicationJdDraft.idempotencyKey ?? crypto.randomUUID().replace(/[^A-Za-z0-9_-]/g, '').slice(0, 32);
     const draft = { ...applicationJdDraft, idempotencyKey: key, pendingOperation: 'save' as const };
     onApplicationJdDraftChange?.(application.id, draft);
@@ -216,8 +223,8 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
     if (!handoff) return;
     setMaterialKitPrefill({
       resumeID: handoff.resumeId,
-      jdSnapshot: applicationJdQuery.data?.current?.jd_text ?? handoff.jdText,
-      jdVersionID: applicationJdQuery.data?.current?.id,
+      jdSnapshot: handoff.jdText || applicationJdQuery.data?.current?.jd_text,
+      jdVersionID: handoff.jdVersionId ?? applicationJdQuery.data?.current?.id,
     });
     setMaterialKitApplicationId(application.id);
     setMaterialKitOpen(true);
@@ -460,10 +467,14 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
       <OpportunityFitReviewDrawer
         application={application}
         open={opportunityFitOpen}
+        currentJdText={applicationJdQuery.data?.current?.jd_text ?? ''}
         jdVersionId={applicationJdQuery.data?.current?.id ?? null}
         onClose={() => setOpportunityFitOpen(false)}
-        onPrepareMaterials={(review: OpportunityFitReview, jdText: string) => {
-          setMaterialKitPrefill({ resumeID: review.source.resume.id, jdSnapshot: jdText });
+        onPrepareMaterials={(reviewOrResumeId: OpportunityFitReview | number, jdText: string, jdVersionId?: number) => {
+          const resumeID = typeof reviewOrResumeId === 'number'
+            ? reviewOrResumeId
+            : reviewOrResumeId.source.resume.id;
+          setMaterialKitPrefill({ resumeID, jdSnapshot: jdText, jdVersionID: jdVersionId ?? applicationJdQuery.data?.current?.id });
           setMaterialKitApplicationId(application.id);
           setOpportunityFitOpen(false);
           setMaterialKitOpen(true);

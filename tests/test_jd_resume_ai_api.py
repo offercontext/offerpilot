@@ -1,4 +1,6 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 
 from fastapi.testclient import TestClient
 
@@ -249,3 +251,80 @@ def test_resume_match_rejects_url_even_when_text_is_present(tmp_path, monkeypatc
         "error": "jd_url is record-only",
         "error_code": "jd_url_not_supported",
     }
+
+
+def test_jd_analyze_rechecks_jd_version_after_provider_returns(tmp_path):
+    class BlockingModel(JSONModel):
+        def __init__(self) -> None:
+            super().__init__([{"summary": "ok"}])
+            self.entered = Event()
+            self.release = Event()
+
+        def complete(self, messages, tools):  # type: ignore[no-untyped-def]
+            self.entered.set()
+            assert self.release.wait(5)
+            return super().complete(messages, tools)
+
+    model = BlockingModel()
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    app = client.post("/api/applications", json={"company_name": "Acme", "position_name": "Backend"}).json()
+    jd = client.post(
+        f"/api/applications/{app['id']}/job-description/versions",
+        json={"jd_text": "v1", "expected_current_version_id": None, "idempotency_key": "jd-analyze-cas-0001"},
+    ).json()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            client.post,
+            "/api/jd/analyze",
+            json={"application_id": app["id"], "jd_version_id": jd["id"]},
+        )
+        assert model.entered.wait(5)
+        changed = client.post(
+            f"/api/applications/{app['id']}/job-description/versions",
+            json={"jd_text": "v2", "expected_current_version_id": jd["id"], "idempotency_key": "jd-analyze-cas-0002"},
+        )
+        assert changed.status_code == 201
+        model.release.set()
+        result = future.result(timeout=5)
+    assert result.status_code == 409
+    assert result.json()["error_code"] == "application_jd_source_conflict"
+    assert client.get(f"/api/jd/analyses?application_id={app['id']}").json() == []
+
+
+def test_resume_match_rechecks_jd_version_after_provider_returns(tmp_path):
+    class BlockingModel(JSONModel):
+        def __init__(self) -> None:
+            super().__init__([{"match_score": 80}])
+            self.entered = Event()
+            self.release = Event()
+
+        def complete(self, messages, tools):  # type: ignore[no-untyped-def]
+            self.entered.set()
+            assert self.release.wait(5)
+            return super().complete(messages, tools)
+
+    model = BlockingModel()
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    app = client.post("/api/applications", json={"company_name": "Acme", "position_name": "Backend"}).json()
+    jd = client.post(
+        f"/api/applications/{app['id']}/job-description/versions",
+        json={"jd_text": "v1", "expected_current_version_id": None, "idempotency_key": "resume-match-cas-0001"},
+    ).json()
+    resume = client.post("/api/resumes", json={"name": "Resume", "text": "Python"}).json()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            client.post,
+            f"/api/resumes/{resume['id']}/match",
+            json={"application_id": app["id"], "jd_version_id": jd["id"]},
+        )
+        assert model.entered.wait(5)
+        changed = client.post(
+            f"/api/applications/{app['id']}/job-description/versions",
+            json={"jd_text": "v2", "expected_current_version_id": jd["id"], "idempotency_key": "resume-match-cas-0002"},
+        )
+        assert changed.status_code == 201
+        model.release.set()
+        result = future.result(timeout=5)
+    assert result.status_code == 409
+    assert result.json()["error_code"] == "application_jd_source_conflict"
+    assert client.get(f"/api/resumes/{resume['id']}/matches").json() == []

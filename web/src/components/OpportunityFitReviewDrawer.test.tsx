@@ -8,8 +8,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const state = vi.hoisted(() => ({
   create: vi.fn(),
   deep: vi.fn(),
+  confirm: vi.fn(),
+  deepV2: vi.fn(),
   get: vi.fn(),
   list: vi.fn(),
+  getV2: vi.fn(),
+  listV2: vi.fn(),
   history: [] as Array<{ id: number; recommendation: string; created_at: string }>,
 }));
 
@@ -19,9 +23,13 @@ vi.mock('@/services/resumes', () => ({
 vi.mock('@/services/opportunityFitReviews', () => ({
   createOpportunityFitReview: state.create,
   createOpportunityFitV2Triage: state.create,
+  confirmOpportunityFitV2Triage: state.confirm,
   createOpportunityFitDeepReview: state.deep,
+  createOpportunityFitV2DeepReview: state.deepV2,
   getOpportunityFitReview: state.get,
   listOpportunityFitReviews: state.list,
+  getOpportunityFitV2Review: state.getV2,
+  listOpportunityFitV2Reviews: state.listV2,
 }));
 vi.mock('@tanstack/react-query', () => ({
   useQuery: (options: { enabled?: boolean; queryKey?: unknown[]; queryFn: () => unknown }) => {
@@ -90,7 +98,10 @@ const application = { id: 7, company_name: 'Example Co.', position_name: 'Backen
 let root: Root | undefined;
 let container: HTMLDivElement | undefined;
 
-async function render(onPrepareMaterials?: (review: unknown, jdText: string) => void) {
+async function render(
+  onPrepareMaterials?: (review: unknown, jdText: string) => void,
+  currentJdText = '',
+) {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -99,6 +110,7 @@ async function render(onPrepareMaterials?: (review: unknown, jdText: string) => 
       <OpportunityFitReviewDrawer
         application={application}
         open
+        currentJdText={currentJdText}
         jdVersionId={1}
         onClose={vi.fn()}
         onPrepareMaterials={onPrepareMaterials}
@@ -111,10 +123,15 @@ async function render(onPrepareMaterials?: (review: unknown, jdText: string) => 
 beforeEach(() => {
   state.create.mockReset();
   state.deep.mockReset();
+  state.confirm.mockReset();
+  state.deepV2.mockReset();
   state.get.mockReset();
   state.list.mockReset();
+  state.getV2.mockReset();
+  state.listV2.mockReset();
   state.history = [];
   state.list.mockResolvedValue([]);
+  state.listV2.mockResolvedValue([]);
   state.create.mockResolvedValue({
     id: 8,
     recommendation: 'hold',
@@ -256,6 +273,49 @@ describe('OpportunityFitReviewDrawer', () => {
       jd_version_id: 1,
       candidate_assertions: ['fact one', 'fact two'],
     })));
+  });
+
+  it('keeps an active v2 review when the current JD query refreshes', async () => {
+    state.create.mockResolvedValue({
+      review_id: 21,
+      stage_id: 22,
+      stage: 'triage',
+      stage_status: 'ready',
+      confirmation_token: 'confirm-token',
+      resume_id: 11,
+      jd_version_id: 1,
+      proposal: {
+        summary: { text: 'Frozen triage result', evidence_refs: [] },
+        conditions: [],
+        risks: [],
+        next_steps: [],
+        questions: [],
+      },
+    });
+    const view = await render(undefined, 'JD version one');
+    const select = view.querySelector('select');
+    if (!(select instanceof HTMLSelectElement)) throw new Error('Expected resume selector');
+    await waitFor(() => expect(select.querySelector('option[value="11"]')).toBeTruthy());
+    await act(async () => setValue(select, '11'));
+    await waitFor(() => expect(getByRole(view, 'button', 'Triage')).toHaveProperty('disabled', false));
+    await click(getByRole(view, 'button', 'Triage'));
+    await waitFor(() => expect(view.textContent).toContain('Frozen triage result'));
+
+    await act(async () => {
+      root?.render(
+        <OpportunityFitReviewDrawer
+          application={application}
+          open
+          currentJdText="JD version two"
+          jdVersionId={2}
+          onClose={vi.fn()}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(view.textContent).toContain('Frozen triage result');
+    expect(view.textContent).not.toContain('当前投递尚未确认岗位资料');
   });
 
   it('hands historical review frozen JD and resume to material preparation', async () => {

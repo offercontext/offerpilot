@@ -2240,36 +2240,10 @@ def create_app(
                 )
             status_code = 202 if stage.status in {"generating", "provider_unknown"} else (201 if created else 200)
             return JSONResponse(_opportunity_fit_v2_stage_json(None, stage), status_code=status_code)
-        app_model = applications.get(app_id)
-        if app_model is None or app_model.source not in HUMAN_APPLICATION_SOURCES:
-            return error_response(404, "Application not found")
-        model = _chat_model(chat_model, resolved_data_dir)
-        if isinstance(model, JSONResponse):
-            return error_response(
-                502,
-                "AI provider request failed. Please retry.",
-                code="opportunity_fit_provider_error",
-            )
-        try:
-            review, created = opportunity_fit_reviews.create_deep_review(app_id, review_id, model)
-        except OpportunityFitReviewNotFound:
-            return error_response(404, "Opportunity fit review not found")
-        except OpportunityFitModelError as exc:
-            append_log_entry(resolved_data_dir, "WARNING", f"opportunity_fit_{exc.failure_category}")
-            if exc.failure_category == "provider_error":
-                return error_response(
-                    502,
-                    "AI provider request failed. Please retry.",
-                    code="opportunity_fit_provider_error",
-                )
-            return error_response(
-                502,
-                "AI output could not be verified. Please retry.",
-                code="opportunity_fit_unverifiable",
-            )
-        return JSONResponse(
-            _opportunity_fit_review_detail_json(review),
-            status_code=201 if created else 200,
+        return error_response(
+            410,
+            "Opportunity Fit v1 writes are no longer supported.",
+            code="opportunity_fit_v1_write_disabled",
         )
 
     @app.get("/api/applications/{app_id}/interview-preparation-proposals")
@@ -3116,6 +3090,21 @@ def create_app(
             )
         except RuntimeError as exc:
             return error_response(502, str(exc))
+        if application_id is not None and jd_version_id is not None:
+            try:
+                application_jd_versions.require_current_version(application_id, jd_version_id)
+            except JDVersionValidationError:
+                return error_response(
+                    422,
+                    "JD version is invalid.",
+                    code="application_jd_version_required",
+                )
+            except JDVersionError:
+                return error_response(
+                    409,
+                    "JD source changed while the provider was running.",
+                    code="application_jd_source_conflict",
+                )
         result_json = json.dumps(result, ensure_ascii=False)
         analysis = jd_analyses.create(
             JDAnalysisCreate(
@@ -3446,6 +3435,21 @@ def create_app(
             )
         except RuntimeError as exc:
             return error_response(502, str(exc))
+        if application_id is not None and jd_version_id is not None:
+            try:
+                application_jd_versions.require_current_version(application_id, jd_version_id)
+            except JDVersionValidationError:
+                return error_response(
+                    422,
+                    "JD version is invalid.",
+                    code="application_jd_version_required",
+                )
+            except JDVersionError:
+                return error_response(
+                    409,
+                    "JD source changed while the provider was running.",
+                    code="application_jd_source_conflict",
+                )
         result_json = json.dumps(result, ensure_ascii=False)
         match = resumes.create_match(
             ResumeMatchCreate(

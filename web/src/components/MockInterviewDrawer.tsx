@@ -389,11 +389,15 @@ export default function MockInterviewDrawer({
             />
             <Input.TextArea
               aria-label="岗位 JD"
-              placeholder="粘贴本次面试的 JD，不抓取链接"
+              placeholder="当前投递尚未确认岗位资料"
               value={draft.jdText}
-              onChange={(event) => onDraftChange({ jdText: event.target.value })}
+              readOnly
+              aria-readonly="true"
               autoSize={{ minRows: 5, maxRows: 12 }}
             />
+            <span style={{ color: 'var(--op-muted)' }}>
+              {draft.jdVersionId ? '使用投递当前已确认的岗位资料；如需修改，请先返回 JD 版本入口。' : '请先在投递详情确认岗位资料版本。'}
+            </span>
             {preparations.length > 0 ? (
               <Select
                 allowClear

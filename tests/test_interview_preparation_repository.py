@@ -15,6 +15,7 @@ from offerpilot.db import init_database
 from offerpilot.models import (
     Application,
     ApplicationEvent,
+    ApplicationJDVersion,
     InterviewNote,
     InterviewPreparationProposal,
     KnowledgeEvidence,
@@ -317,7 +318,7 @@ class EventDeletingModel(SafeEmptyModel):
         )
 
 
-def _generate(repository, ids, key, model, *, jd_text=JD_TEXT):
+def _generate(repository, ids, key, model, *, jd_text=JD_TEXT, jd_version_id=None):
     application_id, event_id, resume_id = ids
     return repository.create_generated(
         application_id=application_id,
@@ -328,7 +329,42 @@ def _generate(repository, ids, key, model, *, jd_text=JD_TEXT):
         user_assertions=["I led the migration."],
         idempotency_key=key,
         model=model,
+        jd_version_id=jd_version_id,
     )
+
+
+def test_interview_preparation_snapshot_keeps_frozen_jd_identity(tmp_path) -> None:
+    factory, ids = _setup(tmp_path)
+    with factory() as session:
+        version = ApplicationJDVersion(
+            application_id=ids[0],
+            version_number=3,
+            jd_text=JD_TEXT,
+            content_sha256="jd-content-sha256",
+            source_kind="ui",
+            idempotency_key="jd-version-test-0001",
+            request_fingerprint_sha256="jd-request-sha256",
+        )
+        session.add(version)
+        session.commit()
+        version_id = version.id
+
+    result = _generate(
+        InterviewPreparationProposalsRepository(factory),
+        ids,
+        "snapshot-identity-01",
+        SafeEmptyModel(),
+        jd_version_id=version_id,
+    )
+
+    snapshot = json.loads(result.proposal.input_snapshot_json)
+    assert snapshot["jd"] == {
+        "text": JD_TEXT,
+        "version_id": version_id,
+        "version_number": 3,
+        "content_sha256": "jd-content-sha256",
+    }
+    assert snapshot["jd_version_id"] == version_id
 
 
 def test_repository_uses_injected_utc_clock_and_production_lease_defaults(tmp_path) -> None:

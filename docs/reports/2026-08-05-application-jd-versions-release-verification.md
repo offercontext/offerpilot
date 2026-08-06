@@ -64,7 +64,7 @@ uv run oc verify --profile real-ai --static-dir web/dist
 执行：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\application-jd-real-ai-browser-harness.ps1 -Stage jd-only
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\application-jd-real-ai-browser-harness.ps1 -Stage all
 ```
 
 退出码：1。Harness 在启动前 fail-closed：未设置 `APPLICATION_JD_CDP_URL`，当前环境没有可用的 browser-level CDP endpoint，因此没有声称浏览器闭环通过，也没有生成浏览器业务数据或截图证据。

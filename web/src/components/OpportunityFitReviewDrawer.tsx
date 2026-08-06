@@ -16,16 +16,22 @@ import {
 } from 'antd';
 import { listResumes } from '@/services/resumes';
 import {
-  createOpportunityFitDeepReview,
   createOpportunityFitV2Triage,
+  confirmOpportunityFitV2Triage,
+  createOpportunityFitV2DeepReview,
   getOpportunityFitReview,
+  getOpportunityFitV2Review,
   listOpportunityFitReviews,
+  listOpportunityFitV2Reviews,
 } from '@/services/opportunityFitReviews';
 import type { Application } from '@/types/application';
 import type { Resume } from '@/types/resume';
 import type {
   OpportunityFitEvidenceRef,
   OpportunityFitReview,
+  OpportunityFitV2EvidenceRef,
+  OpportunityFitV2Proposal,
+  OpportunityFitV2StageResponse,
 } from '@/types/opportunityFitReview';
 import {
   getOpportunityFitErrorMessage,
@@ -42,9 +48,10 @@ import { SourceStateTag } from './ui/SourceStateTag';
 interface Props {
   application: Application | null;
   open: boolean;
+  currentJdText?: string;
   jdVersionId?: number | null;
   onClose: () => void;
-  onPrepareMaterials?: (review: OpportunityFitReview, jdText: string) => void;
+  onPrepareMaterials?: (reviewOrResumeId: OpportunityFitReview | number, jdText: string, jdVersionId?: number) => void;
 }
 
 function EvidenceRefs({ refs }: { refs: OpportunityFitEvidenceRef[] }) {
@@ -77,9 +84,56 @@ function ReviewItem({
   );
 }
 
+function V2EvidenceRefs({ refs }: { refs: OpportunityFitV2EvidenceRef[] }) {
+  return refs.length > 0 ? (
+    <Space direction="vertical" size={2} style={{ width: '100%' }}>
+      {refs.map((ref, index) => (
+        <Typography.Text key={`${ref.source}:${ref.path}:${index}`} type="secondary">
+          {ref.source} · {ref.path} · “{ref.excerpt}”
+        </Typography.Text>
+      ))}
+    </Space>
+  ) : <Typography.Text type="secondary">暂无可验证证据引用</Typography.Text>;
+}
+
+function V2ProposalView({ proposal }: { proposal: OpportunityFitV2Proposal }) {
+  const sections = [
+    ['条件', proposal.conditions],
+    ['风险', proposal.risks],
+    ['下一步', proposal.next_steps],
+  ] as const;
+  return (
+    <div>
+      <Typography.Paragraph>{proposal.summary.text}</Typography.Paragraph>
+      <V2EvidenceRefs refs={proposal.summary.evidence_refs} />
+      {sections.map(([title, items]) => (
+        <section key={title}>
+          <Typography.Title level={5}>{title}</Typography.Title>
+          {items.length === 0 ? <Typography.Text type="secondary">暂无可验证内容</Typography.Text> : null}
+          {items.map((item) => (
+            <Card size="small" key={item.id} style={{ marginBottom: 8 }}>
+              <Typography.Paragraph>{item.text}</Typography.Paragraph>
+              <Typography.Paragraph type="secondary">{item.rationale}</Typography.Paragraph>
+              <V2EvidenceRefs refs={item.evidence_refs} />
+            </Card>
+          ))}
+        </section>
+      ))}
+      <Typography.Title level={5}>待确认问题</Typography.Title>
+      {proposal.questions.map((item) => (
+        <Card size="small" key={item.question_id} style={{ marginBottom: 8 }}>
+          <Typography.Paragraph>{item.text}</Typography.Paragraph>
+          <V2EvidenceRefs refs={item.evidence_refs} />
+        </Card>
+      ))}
+    </div>
+  );
+}
+
 export default function OpportunityFitReviewDrawer({
   application,
   open,
+  currentJdText = '',
   jdVersionId,
   onClose,
   onPrepareMaterials,
@@ -89,6 +143,9 @@ export default function OpportunityFitReviewDrawer({
   const [jdText, setJdText] = useState('');
   const [assertionsText, setAssertionsText] = useState('');
   const [review, setReview] = useState<OpportunityFitReview | null>(null);
+  const [v2Triage, setV2Triage] = useState<OpportunityFitV2StageResponse | null>(null);
+  const [v2Deep, setV2Deep] = useState<OpportunityFitV2StageResponse | null>(null);
+  const [v2Historical, setV2Historical] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
   const reviewHistoryQuery = useQuery({
@@ -110,8 +167,16 @@ export default function OpportunityFitReviewDrawer({
     setJdText('');
     setAssertionsText('');
     setReview(null);
+    setV2Triage(null);
+    setV2Deep(null);
+    setV2Historical(false);
     setActionError(null);
   }, [application?.id, open]);
+
+  useEffect(() => {
+    if (!open || stage !== 'input' || v2Triage || v2Deep || v2Historical) return;
+    setJdText(currentJdText);
+  }, [currentJdText, open, stage, v2Deep, v2Historical, v2Triage]);
 
   const assertions = useMemo(
     () => assertionsText.split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
@@ -133,17 +198,45 @@ export default function OpportunityFitReviewDrawer({
       idempotency_key: crypto.randomUUID(),
     }),
     onSuccess: (nextReview) => {
-      setReview(nextReview as unknown as OpportunityFitReview);
+      setV2Triage(nextReview);
+      setV2Deep(null);
       setStage('review');
       setActionError(null);
     },
     onError: (error) => setActionError(getOpportunityFitErrorMessage(error)),
   });
+  const v2HistoryQuery = useQuery({
+    queryKey: ['opportunity-fit-v2-reviews', application?.id],
+    queryFn: () => listOpportunityFitV2Reviews(application!.id),
+    enabled: open && Boolean(application),
+  });
 
-  const deepReviewMutation = useMutation({
-    mutationFn: () => createOpportunityFitDeepReview(application!.id, review!.id),
+  const confirmV2Mutation = useMutation({
+    mutationFn: () => confirmOpportunityFitV2Triage(
+      application!.id,
+      v2Triage!.review_id,
+      v2Triage!.stage_id,
+      v2Triage!.confirmation_token!,
+    ),
+    onSuccess: setV2Triage,
+    onError: (error) => setActionError(getOpportunityFitErrorMessage(error)),
+  });
+
+  const deepReviewMutation = useMutation<OpportunityFitV2StageResponse, unknown>({
+    mutationFn: () => {
+      if (!v2Triage) throw new Error('Triage is required');
+      return createOpportunityFitV2DeepReview(application!.id, v2Triage.review_id, {
+        schema_version: 2,
+        resume_id: v2Triage.resume_id ?? resumeID!,
+        jd_version_id: v2Triage.jd_version_id!,
+        jd_source_label: OPPORTUNITY_FIT_COPY.drawer.jdSourceLabel,
+        candidate_assertions: assertions,
+        idempotency_key: crypto.randomUUID(),
+        parent_triage_stage_id: v2Triage.stage_id,
+      });
+    },
     onSuccess: (nextReview) => {
-      setReview(nextReview);
+      setV2Deep(nextReview);
       setActionError(null);
     },
     onError: (error) => setActionError(getOpportunityFitErrorMessage(error)),
@@ -171,7 +264,27 @@ export default function OpportunityFitReviewDrawer({
       setJdText(historicalReview.source.jd.text);
       setAssertionsText(historicalReview.source.candidate_assertions.map((item) => item.text).join('\n'));
       setReview(historicalReview);
+      setV2Triage(null);
+      setV2Deep(null);
+      setV2Historical(false);
       setStage('review');
+    } catch (error) {
+      setActionError(getOpportunityFitErrorMessage(error));
+    }
+  };
+
+  const openHistoricalV2Review = async (reviewID: number) => {
+    if (!application) return;
+    try {
+      const historical = await getOpportunityFitV2Review(application.id, reviewID);
+      const triage = historical.stages.find((item) => item.stage === 'triage') ?? null;
+      const deep = historical.stages.find((item) => item.stage === 'deep_review') ?? null;
+      setReview(null);
+      setV2Triage(triage);
+      setV2Deep(deep);
+      setV2Historical(true);
+      setStage('review');
+      setActionError(null);
     } catch (error) {
       setActionError(getOpportunityFitErrorMessage(error));
     }
@@ -215,6 +328,18 @@ export default function OpportunityFitReviewDrawer({
           </Space>
         </Card>
       ) : null}
+      {stage === 'input' && v2HistoryQuery.data && v2HistoryQuery.data.length > 0 ? (
+        <Card size="small" title="岗位评估历史（v2，只读）" style={{ marginBottom: 16 }}>
+          <Space direction="vertical" style={{ width: '100%' }}>
+            {v2HistoryQuery.data.map((item) => (
+              <Space key={`v2-${item.review_id}`} style={{ justifyContent: 'space-between', width: '100%' }}>
+                <Typography.Text>评估 #{item.review_id} · {item.stage_count} 个阶段</Typography.Text>
+                <Button size="small" onClick={() => void openHistoricalV2Review(item.review_id)}>查看</Button>
+              </Space>
+            ))}
+          </Space>
+        </Card>
+      ) : null}
 
       {stage === 'input' ? (
         <Form layout="vertical">
@@ -233,10 +358,14 @@ export default function OpportunityFitReviewDrawer({
           <Form.Item label={OPPORTUNITY_FIT_COPY.drawer.jdLabel} required>
             <Input.TextArea
               value={jdText}
-              onChange={(event) => setJdText(event.target.value)}
               rows={9}
+              readOnly
+              aria-readonly="true"
               placeholder={OPPORTUNITY_FIT_COPY.drawer.jdPlaceholder}
             />
+            <Typography.Text type="secondary">
+              {currentJdText ? '使用投递当前已确认的岗位资料；如需修改，请先返回 JD 版本入口。' : '当前投递尚未确认岗位资料，请先保存 JD 版本。'}
+            </Typography.Text>
           </Form.Item>
           <Form.Item label={OPPORTUNITY_FIT_COPY.drawer.assertionsLabel}>
             <Input.TextArea
@@ -258,6 +387,52 @@ export default function OpportunityFitReviewDrawer({
             {OPPORTUNITY_FIT_COPY.drawer.startTriage}
           </Button>
         </Form>
+      ) : v2Triage ? (
+        <div>
+          <Space wrap>
+            <Tag color="blue">v2 岗位评估</Tag>
+            <SourceStateTag state="frozen" detail={OPPORTUNITY_FIT_COPY.drawer.sourceFrozen} />
+            <Tag>{OPPORTUNITY_FIT_COPY.drawer.humanConfirmation}</Tag>
+          </Space>
+          <Typography.Title level={4}>Triage</Typography.Title>
+          {v2Triage.proposal ? <V2ProposalView proposal={v2Triage.proposal} /> : <Spin />}
+          {v2Triage.stage_status === 'ready' && v2Triage.confirmation_token ? (
+            <Button
+              type="primary"
+              onClick={() => confirmV2Mutation.mutate()}
+              loading={confirmV2Mutation.isPending}
+            >
+              确认 Triage
+            </Button>
+          ) : null}
+          {!v2Historical && v2Triage.stage_status === 'confirmed' && !v2Deep ? (
+            <Button
+              type="primary"
+              onClick={() => deepReviewMutation.mutate()}
+              loading={deepReviewMutation.isPending}
+            >
+              开始 Deep Review
+            </Button>
+          ) : null}
+          {v2Deep ? (
+            <>
+              <Divider />
+              <Typography.Title level={4}>Deep Review</Typography.Title>
+              {v2Deep.proposal ? <V2ProposalView proposal={v2Deep.proposal} /> : <Spin />}
+              <Button
+                type="primary"
+                onClick={() => onPrepareMaterials?.(
+                  v2Deep.resume_id ?? resumeID!,
+                  currentJdText || jdText,
+                  v2Deep.jd_version_id ?? undefined,
+                )}
+                disabled={!onPrepareMaterials || !v2Deep.resume_id || !v2Deep.jd_version_id || v2Historical}
+              >
+                {OPPORTUNITY_FIT_COPY.drawer.prepareMaterials}
+              </Button>
+            </>
+          ) : null}
+        </div>
       ) : review ? (
         <div>
           <Space wrap>
@@ -347,15 +522,7 @@ export default function OpportunityFitReviewDrawer({
                 {OPPORTUNITY_FIT_COPY.drawer.prepareMaterials}
               </Button>
             </>
-          ) : (
-            <Button
-              type="primary"
-              onClick={() => deepReviewMutation.mutate()}
-              loading={deepReviewMutation.isPending}
-            >
-              {OPPORTUNITY_FIT_COPY.drawer.startDeepReview}
-            </Button>
-          )}
+          ) : null}
         </div>
       ) : (
         <Spin />
