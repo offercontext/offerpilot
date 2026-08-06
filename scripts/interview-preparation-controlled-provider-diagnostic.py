@@ -87,6 +87,7 @@ _GENERATION_DIAGNOSTIC_PATTERN = re.compile(
     r"^interview_preparation_generation "
     r"category=(?P<category>\S+) "
     r"failure_categories=(?P<categories>\[[^ ]*\]) "
+    r"structure_summaries=(?P<summaries>\[[^ ]*\]) "
     r"repair_attempted=(?P<repair>true|false) "
     r"retry_count=(?P<retry>\d+) "
     r"duration_ms=(?P<duration>\d+) "
@@ -105,17 +106,21 @@ def _read_redacted_generation_diagnostics(data_dir: Path) -> list[dict[str, Any]
             continue
         try:
             categories = json.loads(match.group("categories"))
+            structure_summaries = json.loads(match.group("summaries"))
         except json.JSONDecodeError:
             continue
         if not isinstance(categories, list) or any(
             not isinstance(category, str) or len(category) > 64 for category in categories
         ):
             continue
+        if not isinstance(structure_summaries, list):
+            continue
         category = match.group("category")
         diagnostics.append(
             {
                 "failure_category": None if category == "none" else category[:64],
                 "failure_categories": categories[:2],
+                "structure_summaries": structure_summaries[:2],
                 "repair_attempted": match.group("repair") == "true",
                 "retry_count": min(int(match.group("retry")), 1),
                 "duration_ms": int(match.group("duration")),

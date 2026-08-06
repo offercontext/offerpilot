@@ -3,7 +3,7 @@
 - Verification date: 2026-08-06
 - Branch: `feat/20260805-application-jd-versions`
 - Feature baseline: `455e081`
-- Evidence execution HEAD: `2b14677` (report-only commit follows)
+- Evidence execution HEAD: `50446f4` (report-only commit follows)
 - Status: local and grouped release gates passed; real-AI and browser release gates remain blocked.
 
 ## Scope
@@ -33,12 +33,12 @@ The grouped release gates below were completed before the later diagnostic-only 
 
 | Command | Result |
 | --- | --- |
-| `uv run pytest -q tests/test_interview_preparation_ai.py tests/test_interview_preparation_api.py` | 29 passed; existing framework deprecation warnings only |
+| `uv run pytest -q tests/test_interview_preparation_ai.py tests/test_interview_preparation_api.py` | 31 passed; existing framework deprecation warnings only |
 | `uv run ruff check src/offerpilot/api.py tests/test_interview_preparation_api.py scripts/interview-preparation-controlled-provider-diagnostic.py src/offerpilot/ai/interview_preparation_proposals.py` | passed |
 | `uv run mypy src` | passed, 65 files |
 | PowerShell parser check for `scripts/application-jd-real-ai-browser-harness.ps1` | passed |
 | `git diff --check` | passed |
-| `uv run pytest -q tests/test_application_jd_browser_harness.py tests/test_browser_network_audit.py` | 15 passed; one existing Starlette deprecation warning |
+| `uv run pytest -q tests/test_application_jd_browser_harness.py tests/test_browser_network_audit.py` | 17 passed; one existing Starlette deprecation warning |
 
 The browser harness scope check is fail-closed: it requires the recorded implementation baseline and an externally supplied ASCII allowlist. It checks tracked, staged, and untracked paths; the allowlist is not declared by the test module itself.
 
@@ -81,7 +81,7 @@ The harness now self-starts a temporary headless Chrome/CDP endpoint when `APPLI
 
 No Provider secret, JD text, resume content, model output, or full request body is recorded here.
 
-The harness was tightened after that run. `browser-network-audit.py` now keeps a browser-level CDP heartbeat during the manual window, waits for `loadingFinished` before reading response bodies, writes an ASCII diagnostic with `failure_category`, target/session IDs, readiness, response counts, and close state, and fails closed on an unexpected disconnect or unavailable API response body. The PowerShell harness redirects auditor output, checks auditor/browser liveness before every stage, requires a successful `/api/chat/confirm` response (not only a request), verifies each of Triage, Material Kit, and Interview Preparation against the same frozen JD version, asserts per-stage cleanup and final database cleanup, and waits for a normal auditor exit. These changes are covered by the 15 targeted tests above; a post-fix human browser run has not yet completed the confirmation and all three downstream stages.
+The harness was tightened after that run. `browser-network-audit.py` now keeps a browser-level CDP heartbeat during the manual window, waits for `loadingFinished` before reading response bodies, writes an ASCII diagnostic with `failure_category`, target/session IDs, readiness, response counts, and close state, and fails closed on an unexpected disconnect or unavailable API response body. The PowerShell harness redirects auditor output, checks auditor/browser liveness before every stage, requires a successful `/api/chat/confirm` response (not only a request), verifies each of Triage, Material Kit, and Interview Preparation against the same frozen JD version, detects newly appearing database tables in snapshot comparisons, asserts per-stage cleanup and final database cleanup, retains the temporary directory if any child process does not exit, and waits for a normal auditor exit. These changes are covered by the 17 targeted tests above; a post-fix human browser run has not yet completed the confirmation and all three downstream stages.
 
 ## Cleanup and remaining risk
 
