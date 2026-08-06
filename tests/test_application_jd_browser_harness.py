@@ -100,7 +100,7 @@ def test_application_jd_harness_self_starts_and_cleans_temporary_browser() -> No
     assert "Start-TemporaryBrowser 'about:blank'" in script
     assert "--remote-debugging-port=$browserCdpPort" in script
     assert "--user-data-dir=$browserProfile" in script
-    assert "Stop-Tree $browser" in script
+    assert "Label = 'temporary browser'" in script
     assert "APPLICATION_JD_CDP_URL" in script
     assert "browser-diagnostic.json" in script
     assert "RedirectStandardError" in script
