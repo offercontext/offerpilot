@@ -16,6 +16,8 @@ $browserStdout = Join-Path $tempData 'browser-auditor.stdout.log'
 $browserStderr = Join-Path $tempData 'browser-auditor.stderr.log'
 $browserStop = Join-Path $tempData 'browser-network.stop'
 $browserReady = Join-Path $tempData 'browser-network.ready'
+$browserFlush = Join-Path $tempData 'browser-network.flush'
+$browserFlushed = Join-Path $tempData 'browser-network.flushed'
 $server = $null
 $proxy = $null
 $auditor = $null
@@ -84,17 +86,30 @@ function Start-TemporaryBrowser([string]$url) {
   throw 'Temporary browser CDP endpoint did not become ready.'
 }
 
-function Stop-Tree([object]$process) {
+function Stop-Tree([object]$process, [string]$label = 'process') {
   if ($null -eq $process) { return }
-  try {
-    $ids = @($process.Id)
-    foreach ($child in @(Get-CimInstance Win32_Process | Where-Object ParentProcessId -eq $process.Id)) {
-      $ids += [int]$child.ProcessId
+  $ids = [System.Collections.Generic.HashSet[int]]::new()
+  $pending = [System.Collections.Generic.Queue[int]]::new()
+  [void]$ids.Add([int]$process.Id)
+  $pending.Enqueue([int]$process.Id)
+  while ($pending.Count -gt 0) {
+    $parentId = $pending.Dequeue()
+    foreach ($child in @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$parentId" -ErrorAction SilentlyContinue)) {
+      $childId = [int]$child.ProcessId
+      if ($ids.Add($childId)) { $pending.Enqueue($childId) }
     }
-    foreach ($id in @($ids | Sort-Object -Unique)) {
-      Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
-    }
-  } catch { }
+  }
+  foreach ($id in @($ids)) {
+    Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
+  }
+  $deadline = [DateTime]::UtcNow.AddSeconds(10)
+  while ([DateTime]::UtcNow -lt $deadline) {
+    $remaining = @($ids | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
+    if ($remaining.Count -eq 0) { return }
+    Start-Sleep -Milliseconds 100
+  }
+  $remaining = @($ids | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
+  if ($remaining.Count -gt 0) { throw "$label did not exit cleanly." }
 }
 
 function Get-BrowserDiagnostic {
@@ -131,8 +146,21 @@ function Wait-AuditorExit([int]$TimeoutSeconds = 20, [switch]$AllowFailure) {
   }
 }
 
+function Flush-BrowserAudit {
+  if ($null -eq $auditor) { throw 'Browser auditor was not started.' }
+  Remove-Item -LiteralPath $browserFlushed -Force -ErrorAction SilentlyContinue
+  New-Item -ItemType File -Force -Path $browserFlush | Out-Null
+  $deadline = [DateTime]::UtcNow.AddSeconds(20)
+  while (-not (Test-Path -LiteralPath $browserFlushed) -and [DateTime]::UtcNow -lt $deadline) {
+    Assert-BrowserAuditorHealthy
+    Start-Sleep -Milliseconds 200
+  }
+  if (-not (Test-Path -LiteralPath $browserFlushed)) { throw 'Browser auditor did not flush pending responses.' }
+}
+
 function Complete-BrowserAudit {
   if ($null -eq $auditor) { throw 'Browser auditor was not started.' }
+  Flush-BrowserAudit
   New-Item -ItemType File -Force -Path $browserStop | Out-Null
   Wait-AuditorExit
   $diagnostic = Get-BrowserDiagnostic
@@ -409,7 +437,7 @@ try {
 
   $auditor = Start-Process powershell -WindowStyle Hidden -PassThru `
     -RedirectStandardOutput $browserStdout -RedirectStandardError $browserStderr `
-    -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', "Set-Location '$repo'; uv run python scripts/browser-network-audit.py --debugging-url '$CdpUrl' --expected-url '$baseUrl' --audit '$browserAudit' --stop-file '$browserStop' --ready-file '$browserReady' --diagnostic-file '$browserDiagnostic'")
+    -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', "Set-Location '$repo'; uv run python scripts/browser-network-audit.py --debugging-url '$CdpUrl' --expected-url '$baseUrl' --audit '$browserAudit' --stop-file '$browserStop' --ready-file '$browserReady' --diagnostic-file '$browserDiagnostic' --flush-file '$browserFlush' --flushed-file '$browserFlushed'")
   for ($i = 0; $i -lt 120; $i++) {
     if ($auditor.HasExited) { throw 'Browser auditor exited before readiness.' }
     if (Test-Path -LiteralPath $browserReady) { break }
@@ -421,6 +449,7 @@ try {
   Write-Host 'Then complete triage, material kit, and interview preparation in that same target.'
   [void](Read-Host 'Press Enter after the requested browser stages are complete')
   Assert-BrowserAuditorHealthy
+  Flush-BrowserAudit
   $records = Get-BrowserRecords
   Assert-LocalBrowser $records
   Assert-StageA $records
@@ -449,6 +478,7 @@ print(db.execute(
       Write-Host "Complete $consumer in the dedicated browser target."
       [void](Read-Host 'Press Enter after this consumer is complete')
       Assert-BrowserAuditorHealthy
+      Flush-BrowserAudit
       $records = Get-BrowserRecords
       Assert-LocalBrowser $records
       Assert-ConsumerRequest $records $consumer
@@ -470,23 +500,37 @@ print(db.execute(
   Write-Host 'Application JD browser acceptance failed.'
   throw
 } finally {
-  if ($browserStop -and $null -ne $auditor -and -not $auditor.HasExited) {
-    New-Item -ItemType File -Force -Path $browserStop | Out-Null
-    Wait-AuditorExit -AllowFailure
+  $cleanupError = $null
+  try {
+    if ($browserStop -and $null -ne $auditor -and -not $auditor.HasExited) {
+      New-Item -ItemType File -Force -Path $browserStop | Out-Null
+      Wait-AuditorExit -AllowFailure
+    }
+    Stop-Tree $auditor 'browser auditor'
+    Stop-Tree $server 'isolated service'
+    Stop-Tree $proxy 'Provider proxy'
+    Stop-Tree $browser 'temporary browser'
+    if ($applicationId -and $resumeId -and $eventId -and (Test-Path -LiteralPath (Join-Path $tempData 'data.db'))) {
+      Clear-SyntheticData
+      if ($beforeCleanup) { Assert-StageUnchanged $beforeCleanup (Get-DbSnapshot) @() }
+    }
+  } catch {
+    $cleanupError = $_.Exception
   }
-  Stop-Tree $auditor
-  Stop-Tree $server
-  Stop-Tree $proxy
-  Stop-Tree $browser
-  if ($applicationId -and $resumeId -and $eventId -and (Test-Path -LiteralPath (Join-Path $tempData 'data.db'))) {
-    Clear-SyntheticData
-    if ($beforeCleanup) { Assert-StageUnchanged $beforeCleanup (Get-DbSnapshot) @() }
+  try {
+    if ($previousData) { $env:OFFERPILOT_DATA = $previousData } else { Remove-Item Env:OFFERPILOT_DATA -ErrorAction SilentlyContinue }
+    if ($previousHttpAudit) { $env:OFFERPILOT_HTTP_AUDIT_FILE = $previousHttpAudit } else { Remove-Item Env:OFFERPILOT_HTTP_AUDIT_FILE -ErrorAction SilentlyContinue }
+    if ($previousHttpsProxy) { $env:HTTPS_PROXY = $previousHttpsProxy } else { Remove-Item Env:HTTPS_PROXY -ErrorAction SilentlyContinue }
+    if ($previousHttpProxy) { $env:HTTP_PROXY = $previousHttpProxy } else { Remove-Item Env:HTTP_PROXY -ErrorAction SilentlyContinue }
+    if ($previousNoProxy) { $env:NO_PROXY = $previousNoProxy } else { Remove-Item Env:NO_PROXY -ErrorAction SilentlyContinue }
+    Remove-Item Env:APPLICATION_JD_HARNESS_DB, Env:APPLICATION_JD_HARNESS_APP, Env:APPLICATION_JD_HARNESS_RESUME, Env:APPLICATION_JD_HARNESS_EVENT, Env:APPLICATION_JD_HARNESS_CONSUMER -ErrorAction SilentlyContinue
+  } catch {
+    if ($null -eq $cleanupError) { $cleanupError = $_.Exception }
   }
-  if ($previousData) { $env:OFFERPILOT_DATA = $previousData } else { Remove-Item Env:OFFERPILOT_DATA -ErrorAction SilentlyContinue }
-  if ($previousHttpAudit) { $env:OFFERPILOT_HTTP_AUDIT_FILE = $previousHttpAudit } else { Remove-Item Env:OFFERPILOT_HTTP_AUDIT_FILE -ErrorAction SilentlyContinue }
-  if ($previousHttpsProxy) { $env:HTTPS_PROXY = $previousHttpsProxy } else { Remove-Item Env:HTTPS_PROXY -ErrorAction SilentlyContinue }
-  if ($previousHttpProxy) { $env:HTTP_PROXY = $previousHttpProxy } else { Remove-Item Env:HTTP_PROXY -ErrorAction SilentlyContinue }
-  if ($previousNoProxy) { $env:NO_PROXY = $previousNoProxy } else { Remove-Item Env:NO_PROXY -ErrorAction SilentlyContinue }
-  Remove-Item Env:APPLICATION_JD_HARNESS_DB, Env:APPLICATION_JD_HARNESS_APP, Env:APPLICATION_JD_HARNESS_RESUME, Env:APPLICATION_JD_HARNESS_EVENT, Env:APPLICATION_JD_HARNESS_CONSUMER -ErrorAction SilentlyContinue
-  if (Test-Path -LiteralPath $tempData) { Remove-Item -LiteralPath $tempData -Recurse -Force -ErrorAction SilentlyContinue }
+  try {
+    if (Test-Path -LiteralPath $tempData) { Remove-Item -LiteralPath $tempData -Recurse -Force -ErrorAction Stop }
+  } catch {
+    if ($null -eq $cleanupError) { $cleanupError = $_.Exception }
+  }
+  if ($null -ne $cleanupError) { throw $cleanupError }
 }

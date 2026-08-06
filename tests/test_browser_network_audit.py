@@ -21,6 +21,7 @@ class _FakeCdp:
         drop_after_navigation: bool = False,
         emit_unowned_request: bool = False,
         response_body_error: bool = False,
+        destroy_target_after_navigation: bool = False,
     ) -> None:
         self.reject_network = reject_network
         self.wrong_target = wrong_target
@@ -28,6 +29,7 @@ class _FakeCdp:
         self.drop_after_navigation = drop_after_navigation
         self.emit_unowned_request = emit_unowned_request
         self.response_body_error = response_body_error
+        self.destroy_target_after_navigation = destroy_target_after_navigation
         self.methods: list[str] = []
         self.expected_url = "http://127.0.0.1:18766/"
         self.ready = threading.Event()
@@ -111,6 +113,11 @@ class _FakeCdp:
                             "sessionId": session_id,
                             "params": {"requestId": "api-request"},
                         }))
+                    if self.destroy_target_after_navigation:
+                        await websocket.send(json.dumps({
+                            "method": "Target.targetDestroyed",
+                            "params": {"targetId": "main-target"},
+                        }))
                     if self.emit_unowned_request:
                         unowned_flow = (
                             ("POST", "/api/applications/1/events/2/mock-interview/attempts"),
@@ -163,6 +170,8 @@ def _run_auditor(
     stop = tmp_path / "stop"
     ready = tmp_path / "ready"
     diagnostic = tmp_path / "diagnostic.json"
+    flush = tmp_path / "flush"
+    flushed = tmp_path / "flushed"
     process = subprocess.Popen(
         [
             sys.executable,
@@ -173,6 +182,8 @@ def _run_auditor(
             "--stop-file", str(stop),
             "--ready-file", str(ready),
             "--diagnostic-file", str(diagnostic),
+            "--flush-file", str(flush),
+            "--flushed-file", str(flushed),
             "--ready-timeout-seconds", timeout,
         ],
         text=True,
@@ -185,6 +196,10 @@ def _run_auditor(
     if ready.exists():
         if stop_delay_seconds:
             time.sleep(stop_delay_seconds)
+        flush.touch()
+        flush_deadline = time.monotonic() + 5
+        while time.monotonic() < flush_deadline and not flushed.exists() and process.poll() is None:
+            time.sleep(0.05)
         stop.touch()
     returncode = process.wait(timeout=10)
     return subprocess.CompletedProcess(process.args, returncode, process.stdout.read(), process.stderr.read())
@@ -257,6 +272,17 @@ def test_browser_network_audit_fails_closed_when_api_response_body_is_unavailabl
         assert result.returncode != 0
         diagnostic = json.loads((tmp_path / "body-error" / "diagnostic.json").read_text(encoding="utf-8"))
         assert diagnostic["failure_category"] == "response_body_unavailable"
+    finally:
+        fake.close()
+
+
+def test_browser_network_audit_fails_closed_when_main_target_is_destroyed(tmp_path):
+    fake = _FakeCdp(destroy_target_after_navigation=True)
+    try:
+        result = _run_auditor(tmp_path / "destroyed", fake)
+        assert result.returncode != 0
+        diagnostic = json.loads((tmp_path / "destroyed" / "diagnostic.json").read_text(encoding="utf-8"))
+        assert diagnostic["failure_category"] == "dedicated_target_destroyed"
     finally:
         fake.close()
 

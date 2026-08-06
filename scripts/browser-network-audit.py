@@ -56,11 +56,15 @@ class BrowserAudit:
         output: Path,
         stop_file: Path,
         diagnostic: Path | None = None,
+        flush_file: Path | None = None,
+        flushed_file: Path | None = None,
     ) -> None:
         self.websocket = websocket
         self.output = output
         self.stop_file = stop_file
         self.diagnostic = diagnostic
+        self.flush_file = flush_file
+        self.flushed_file = flushed_file
         self.next_id = 1
         self.pending: dict[int, asyncio.Future[dict[str, object]]] = {}
         self.target_sessions: dict[str, str] = {}
@@ -146,6 +150,26 @@ class BrowserAudit:
                     continue
                 if message.get("method") == "Target.attachedToTarget":
                     await self.attached(message["params"])
+                elif message.get("method") == "Target.detachedFromTarget":
+                    params = message.get("params")
+                    target_id = params.get("targetId") if isinstance(params, dict) else None
+                    session_id = params.get("sessionId") if isinstance(params, dict) else None
+                    if (
+                        not self.stop_file.exists()
+                        and (target_id == self.main_target_id or session_id == self.main_session_id)
+                    ):
+                        self._set_failure(
+                            "dedicated_target_detached",
+                            RuntimeError("dedicated browser target detached before audit stop"),
+                        )
+                elif message.get("method") == "Target.targetDestroyed":
+                    params = message.get("params")
+                    target_id = params.get("targetId") if isinstance(params, dict) else None
+                    if not self.stop_file.exists() and target_id == self.main_target_id:
+                        self._set_failure(
+                            "dedicated_target_destroyed",
+                            RuntimeError("dedicated browser target destroyed before audit stop"),
+                        )
                 elif message.get("method") == "Network.requestWillBeSent":
                     await self.record_request(message)
                 elif message.get("method") == "Network.responseReceived":
@@ -232,6 +256,14 @@ class BrowserAudit:
         except BaseException as exc:
             category = "cdp_connection_closed" if isinstance(exc, websockets.exceptions.ConnectionClosed) else "cdp_keepalive_error"
             self._set_failure(category, exc)
+
+    async def flush_response_tasks(self) -> None:
+        while self.response_tasks:
+            await asyncio.gather(*tuple(self.response_tasks), return_exceptions=True)
+            await asyncio.sleep(0)
+        if self.flushed_file is not None:
+            self.flushed_file.parent.mkdir(parents=True, exist_ok=True)
+            self.flushed_file.touch()
 
     async def record_request(self, message: dict[str, object]) -> None:
         self.last_event = "Network.requestWillBeSent"
@@ -449,15 +481,23 @@ class BrowserAudit:
                 while not self.stop_file.exists():
                     if self.reader_error is not None:
                         raise self.reader_error
+                    if self.flush_file is not None and self.flush_file.exists():
+                        self.flush_file.unlink()
+                        await self.flush_response_tasks()
                     await asyncio.sleep(0.1)
                 if self.reader_error is not None:
                     raise self.reader_error
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:
+            if self.failure_category is None:
+                self._set_failure("cdp_runtime_error", exc)
+            raise
         finally:
             if keepalive_task is not None:
                 keepalive_task.cancel()
                 await asyncio.gather(keepalive_task, return_exceptions=True)
-            if self.response_tasks:
-                await asyncio.gather(*self.response_tasks, return_exceptions=True)
+            await self.flush_response_tasks()
             reader_task.cancel()
             await asyncio.gather(reader_task, return_exceptions=True)
             self._write_diagnostic()
@@ -483,7 +523,14 @@ async def main_async(args: argparse.Namespace) -> None:
     args.ready_file.parent.mkdir(parents=True, exist_ok=True)
     websocket_url = browser_websocket_url(args.debugging_url)
     async with websockets.connect(websocket_url, open_timeout=5) as websocket:
-        audit = BrowserAudit(websocket, args.audit, args.stop_file, args.diagnostic_file)
+        audit = BrowserAudit(
+            websocket,
+            args.audit,
+            args.stop_file,
+            args.diagnostic_file,
+            args.flush_file,
+            args.flushed_file,
+        )
         await audit.run(args.expected_url, args.ready_file, args.ready_timeout_seconds)
 
 
@@ -495,6 +542,8 @@ def main() -> None:
     parser.add_argument("--stop-file", type=Path, required=True)
     parser.add_argument("--ready-file", type=Path, required=True)
     parser.add_argument("--diagnostic-file", type=Path, default=None)
+    parser.add_argument("--flush-file", type=Path, default=None)
+    parser.add_argument("--flushed-file", type=Path, default=None)
     parser.add_argument("--ready-timeout-seconds", type=float, default=30)
     args = parser.parse_args()
     asyncio.run(main_async(args))
