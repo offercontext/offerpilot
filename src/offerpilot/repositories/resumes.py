@@ -5,10 +5,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, List, Optional
 
-from sqlalchemy import select
+from sqlalchemy import desc, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from offerpilot.models import Resume, ResumeMatch
+from offerpilot.models import ApplicationJDVersion, Resume, ResumeMatch
+from offerpilot.repositories.application_jd_versions import JDVersionConflictError
 
 
 @dataclass
@@ -193,6 +194,31 @@ class ResumesRepository:
             jd_version_id=data.jd_version_id,
         )
         with self._session_factory() as session:
+            session.add(match)
+            session.commit()
+            session.refresh(match)
+            return match
+
+    def create_match_for_current(self, data: ResumeMatchCreate) -> ResumeMatch:
+        if data.application_id is None or data.jd_version_id is None:
+            return self.create_match(data)
+        with self._session_factory() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            current = session.scalar(
+                select(ApplicationJDVersion)
+                .where(ApplicationJDVersion.application_id == data.application_id)
+                .order_by(desc(ApplicationJDVersion.version_number))
+                .limit(1)
+            )
+            if current is None or current.id != data.jd_version_id:
+                raise JDVersionConflictError("requested JD version is not current")
+            match = ResumeMatch(
+                resume_id=data.resume_id,
+                application_id=data.application_id,
+                jd_text=data.jd_text,
+                result=data.result,
+                jd_version_id=data.jd_version_id,
+            )
             session.add(match)
             session.commit()
             session.refresh(match)

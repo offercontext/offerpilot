@@ -2,7 +2,7 @@ export interface MaterialKitHandoff {
   readonly applicationId: number;
   readonly resumeId: number;
   readonly jdText: string;
-  readonly jdVersionId?: number;
+  readonly jdVersionId: number;
 }
 
 function cloneAndFreeze<T>(value: T): T {
@@ -20,7 +20,7 @@ function freezeHandoff(value: MaterialKitHandoff): MaterialKitHandoff {
     applicationId: value.applicationId,
     resumeId: value.resumeId,
     jdText: value.jdText,
-    ...(value.jdVersionId === undefined ? {} : { jdVersionId: value.jdVersionId }),
+    jdVersionId: value.jdVersionId,
   };
   return cloneAndFreeze(copy);
 }

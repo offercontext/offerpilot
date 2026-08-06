@@ -5,6 +5,7 @@ const handoff = {
   applicationId: 7,
   resumeId: 11,
   jdText: 'Frozen JD',
+  jdVersionId: 3,
 };
 
 describe('materialKitHandoffStore', () => {
@@ -14,7 +15,7 @@ describe('materialKitHandoffStore', () => {
 
     const first = store.consumeMaterialKitHandoff(7);
     expect(first).toEqual(handoff);
-    expect(Object.keys(first ?? {}).sort()).toEqual(['applicationId', 'jdText', 'resumeId']);
+    expect(Object.keys(first ?? {}).sort()).toEqual(['applicationId', 'jdText', 'jdVersionId', 'resumeId']);
     expect(first).not.toBe(handoff);
     expect(Object.isFrozen(first)).toBe(true);
     expect(first).not.toHaveProperty('resumeEvidenceProof');

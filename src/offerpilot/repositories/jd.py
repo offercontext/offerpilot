@@ -3,10 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import desc, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from offerpilot.models import JDAnalysis
+from offerpilot.models import ApplicationJDVersion, JDAnalysis
+from offerpilot.repositories.application_jd_versions import JDVersionConflictError
 
 
 @dataclass
@@ -31,6 +32,31 @@ class JDAnalysesRepository:
             jd_version_id=data.jd_version_id,
         )
         with self._session_factory() as session:
+            session.add(analysis)
+            session.commit()
+            session.refresh(analysis)
+            return analysis
+
+    def create_for_current(self, data: JDAnalysisCreate) -> JDAnalysis:
+        if data.application_id is None or data.jd_version_id is None:
+            return self.create(data)
+        with self._session_factory() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            current = session.scalar(
+                select(ApplicationJDVersion)
+                .where(ApplicationJDVersion.application_id == data.application_id)
+                .order_by(desc(ApplicationJDVersion.version_number))
+                .limit(1)
+            )
+            if current is None or current.id != data.jd_version_id:
+                raise JDVersionConflictError("requested JD version is not current")
+            analysis = JDAnalysis(
+                application_id=data.application_id,
+                jd_source=data.jd_source,
+                jd_text=data.jd_text,
+                result=data.result,
+                jd_version_id=data.jd_version_id,
+            )
             session.add(analysis)
             session.commit()
             session.refresh(analysis)

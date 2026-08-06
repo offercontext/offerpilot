@@ -44,6 +44,7 @@ describe('AppShell source contract', () => {
       applicationId: 7,
       resumeId: 3,
       jdText: 'JD',
+      jdVersionId: 1,
     });
     expect(consumeMaterialKitHandoff(7)?.jdText).toBe('JD');
     expect(consumeMaterialKitHandoff(7)).toBeNull();

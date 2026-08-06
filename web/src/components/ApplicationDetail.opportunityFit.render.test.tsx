@@ -60,8 +60,8 @@ vi.mock('./MaterialKitDrawer', () => ({
   },
 }));
 vi.mock('./OpportunityFitReviewDrawer', () => ({
-  default: (props: { onPrepareMaterials: (review: unknown, jdText: string) => void }) => (
-    <button onClick={() => props.onPrepareMaterials({ source: { resume: { id: 11 } } }, 'Frozen JD text')}>
+  default: (props: { onPrepareMaterials: (review: unknown, jdText: string, jdVersionId?: number) => void }) => (
+    <button onClick={() => props.onPrepareMaterials({ source: { resume: { id: 11 } } }, 'Frozen JD text', 1)}>
       prepare
     </button>
   ),
@@ -204,6 +204,7 @@ describe('ApplicationDetail opportunity fit handoff', () => {
       applicationId: 7,
       resumeId: 12,
       jdText: 'Frozen Pilot JD',
+      jdVersionId: 2,
     });
 
     act(() => root?.render(<ApplicationDetail application={application} open onClose={vi.fn()} />));
@@ -215,11 +216,25 @@ describe('ApplicationDetail opportunity fit handoff', () => {
     expect(container?.querySelector('[data-testid="material-kit"]')?.getAttribute('data-jd')).toBe('Frozen Pilot JD');
   });
 
+  it('does not open Material Kit for a legacy handoff without a JD version', async () => {
+    writeMaterialKitHandoff({
+      applicationId: 7,
+      resumeId: 12,
+      jdText: 'Legacy JD',
+    } as never);
+
+    act(() => root?.render(<ApplicationDetail application={application} open onClose={vi.fn()} />));
+    await act(async () => { await Promise.resolve(); });
+
+    expect(container?.querySelector('[data-testid="material-kit"]')).toBeNull();
+  });
+
   it('clears consumed material prefill when switching to another Application', async () => {
     writeMaterialKitHandoff({
       applicationId: 7,
       resumeId: 12,
       jdText: 'Frozen Pilot JD',
+      jdVersionId: 2,
     });
     const otherApplication = Object.assign({}, application, { id: 8 }) as typeof application;
 
@@ -237,6 +252,7 @@ describe('ApplicationDetail opportunity fit handoff', () => {
       applicationId: 7,
       resumeId: 12,
       jdText: 'Frozen Pilot JD',
+      jdVersionId: 2,
     });
 
     act(() => root?.render(<ApplicationDetail application={application} open onClose={vi.fn()} />));

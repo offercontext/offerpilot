@@ -106,7 +106,7 @@ export interface OpportunityFitV2StageResponse {
   resume_id: number | null;
   stage: 'triage' | 'deep_review';
   schema_version: 2;
-  stage_status: 'generating' | 'ready' | 'confirmed';
+  stage_status: 'generating' | 'provider_unknown' | 'ready' | 'confirmed';
   parent_triage_stage_id: number | null;
   idempotency_key: string;
   source_fingerprint_sha256: string;
@@ -137,6 +137,38 @@ export interface OpportunityFitV2SessionResponse {
   triage_idempotency_key: string;
   stages: OpportunityFitV2StageResponse[];
   created_at: string;
+}
+
+export interface OpportunityFitV2Draft {
+  applicationId: number;
+  resumeId?: number;
+  jdText: string;
+  jdVersionId?: number;
+  assertionsText: string;
+  triageKey: string | null;
+  deepKey: string | null;
+  triage: OpportunityFitV2StageResponse | null;
+  deep: OpportunityFitV2StageResponse | null;
+  historical: boolean;
+  resultUnknown: boolean;
+  error: string | null;
+}
+
+export function createOpportunityFitV2Draft(applicationId: number): OpportunityFitV2Draft {
+  return {
+    applicationId,
+    resumeId: undefined,
+    jdText: '',
+    jdVersionId: undefined,
+    assertionsText: '',
+    triageKey: null,
+    deepKey: null,
+    triage: null,
+    deep: null,
+    historical: false,
+    resultUnknown: false,
+    error: null,
+  };
 }
 
 export interface CreateOpportunityFitV2Input {

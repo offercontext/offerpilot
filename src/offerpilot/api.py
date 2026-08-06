@@ -3090,31 +3090,21 @@ def create_app(
             )
         except RuntimeError as exc:
             return error_response(502, str(exc))
-        if application_id is not None and jd_version_id is not None:
-            try:
-                application_jd_versions.require_current_version(application_id, jd_version_id)
-            except JDVersionValidationError:
-                return error_response(
-                    422,
-                    "JD version is invalid.",
-                    code="application_jd_version_required",
-                )
-            except JDVersionError:
-                return error_response(
-                    409,
-                    "JD source changed while the provider was running.",
-                    code="application_jd_source_conflict",
-                )
         result_json = json.dumps(result, ensure_ascii=False)
-        analysis = jd_analyses.create(
-            JDAnalysisCreate(
-                application_id=application_id,
-                jd_source=jd_source,
-                jd_text=jd_text,
-                result=result_json,
-                jd_version_id=jd_version_id,
+        try:
+            analysis = jd_analyses.create_for_current(
+                JDAnalysisCreate(
+                    application_id=application_id,
+                    jd_source=jd_source,
+                    jd_text=jd_text,
+                    result=result_json,
+                    jd_version_id=jd_version_id,
+                )
             )
-        )
+        except JDVersionValidationError:
+            return error_response(422, "JD version is invalid.", code="application_jd_version_required")
+        except JDVersionError:
+            return error_response(409, "JD source changed while the provider was running.", code="application_jd_source_conflict")
         return JSONResponse(
             {
                 "id": analysis.id,
@@ -3435,31 +3425,21 @@ def create_app(
             )
         except RuntimeError as exc:
             return error_response(502, str(exc))
-        if application_id is not None and jd_version_id is not None:
-            try:
-                application_jd_versions.require_current_version(application_id, jd_version_id)
-            except JDVersionValidationError:
-                return error_response(
-                    422,
-                    "JD version is invalid.",
-                    code="application_jd_version_required",
-                )
-            except JDVersionError:
-                return error_response(
-                    409,
-                    "JD source changed while the provider was running.",
-                    code="application_jd_source_conflict",
-                )
         result_json = json.dumps(result, ensure_ascii=False)
-        match = resumes.create_match(
-            ResumeMatchCreate(
-                resume_id=resume_id,
-                application_id=application_id,
-                jd_text=jd_text,
-                result=result_json,
-                jd_version_id=jd_version_id,
+        try:
+            match = resumes.create_match_for_current(
+                ResumeMatchCreate(
+                    resume_id=resume_id,
+                    application_id=application_id,
+                    jd_text=jd_text,
+                    result=result_json,
+                    jd_version_id=jd_version_id,
+                )
             )
-        )
+        except JDVersionValidationError:
+            return error_response(422, "JD version is invalid.", code="application_jd_version_required")
+        except JDVersionError:
+            return error_response(409, "JD source changed while the provider was running.", code="application_jd_source_conflict")
         return JSONResponse(
             {
                 "id": match.id,

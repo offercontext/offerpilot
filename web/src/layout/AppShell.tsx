@@ -25,7 +25,11 @@ import {
 import { discardMaterialKitHandoff, writeMaterialKitHandoff } from '@/features/pilot/materialKitHandoff';
 import type { Application } from '@/types/application';
 import type { Offer } from '@/types/offer';
-import type { OpportunityFitReview } from '@/types/opportunityFitReview';
+import {
+  createOpportunityFitV2Draft,
+  type OpportunityFitReview,
+  type OpportunityFitV2Draft,
+} from '@/types/opportunityFitReview';
 import { getOpportunityFitErrorMessage } from '@/components/opportunityFitCopy';
 import type { ChatStartRequest, PilotContextAttachment } from '@/types/chat';
 import Sidebar from './Sidebar';
@@ -87,22 +91,7 @@ const InterviewV01View = lazy(() => import('@/components/InterviewV01View'));
 const ResumeLibraryView = lazy(() => import('@/components/ResumeLibraryView'));
 const SettingsView = lazy(() => import('@/components/SettingsView'));
 
-function createPilotOpportunityFitV2Draft(applicationId: number): PilotOpportunityFitV2Draft {
-  return {
-    applicationId,
-    resumeId: undefined,
-    jdText: '',
-    jdVersionId: undefined,
-    assertionsText: '',
-    triageKey: null,
-    deepKey: null,
-    triage: null,
-    deep: null,
-    historical: false,
-    resultUnknown: false,
-    error: null,
-  };
-}
+const createPilotOpportunityFitV2Draft = createOpportunityFitV2Draft;
 
 function createMockInterviewDraft(): MockInterviewDrawerDraft {
   return {
@@ -202,6 +191,8 @@ function AppShellContent() {
   const [pilotOnboardingFocusToken, setPilotOnboardingFocusToken] = useState(0);
   const nextPilotOnboardingFocusToken = useRef(0);
   const [selected, setSelected] = useState<Application | null>(null);
+  const opportunityFitDraftsRef = useRef(new Map<number, OpportunityFitV2Draft>());
+  const [opportunityFitDrafts, setOpportunityFitDrafts] = useState<Record<number, OpportunityFitV2Draft>>({});
   const applicationJdDraftsRef = useRef(new Map<number, ApplicationJdDraft>());
   const [applicationJdDrafts, setApplicationJdDrafts] = useState<Record<number, ApplicationJdDraft>>({});
   const [interviewReviewProposalAttempts, setInterviewReviewProposalAttempts] = useState<Record<number, InterviewReviewProposalAttemptState>>({});
@@ -420,6 +411,22 @@ function AppShellContent() {
     const next = { ...current, ...patch };
     applicationJdDraftsRef.current.set(applicationId, next);
     setApplicationJdDrafts((state) => ({ ...state, [applicationId]: next }));
+  }, []);
+
+  const updateOpportunityFitDraft = useCallback((applicationId: number, patch: Partial<OpportunityFitV2Draft> | null) => {
+    const current = opportunityFitDraftsRef.current.get(applicationId) ?? createOpportunityFitV2Draft(applicationId);
+    if (patch === null) {
+      opportunityFitDraftsRef.current.delete(applicationId);
+      setOpportunityFitDrafts((state) => {
+        const next = { ...state };
+        delete next[applicationId];
+        return next;
+      });
+      return;
+    }
+    const next = { ...current, ...patch };
+    opportunityFitDraftsRef.current.set(applicationId, next);
+    setOpportunityFitDrafts((state) => ({ ...state, [applicationId]: next }));
   }, []);
 
   const qc = useQueryClient();
@@ -1041,7 +1048,13 @@ function AppShellContent() {
   };
 
   const preparePilotMaterials = (handoff: PilotOpportunityFitMaterialHandoff) => {
-    writeMaterialKitHandoff(handoff);
+    if (!handoff.jdVersionId) return;
+    writeMaterialKitHandoff({
+      applicationId: handoff.applicationId,
+      resumeId: handoff.resumeId,
+      jdText: handoff.jdText,
+      jdVersionId: handoff.jdVersionId,
+    });
     const app = apps.find((item) => item.id === handoff.applicationId);
     exitPilotContext();
     setView('board');
@@ -1168,6 +1181,8 @@ function AppShellContent() {
       onAttachToPilot={attachToPilot}
       applicationJdDraft={selectedApp ? applicationJdDrafts[selectedApp.id] : undefined}
       onApplicationJdDraftChange={updateApplicationJdDraft}
+      opportunityFitDraft={selectedApp ? opportunityFitDrafts[selectedApp.id] : undefined}
+      onOpportunityFitDraftChange={updateOpportunityFitDraft}
       interviewReviewProposalAttempts={interviewReviewProposalAttempts}
       onInterviewReviewProposalAttemptChange={updateInterviewReviewProposalAttempt}
       onInterviewNoteChanged={clearInterviewReviewProposalAttempt}
@@ -1302,11 +1317,11 @@ function AppShellContent() {
                   onViewHistory={(reviewId) => void viewPilotV2History(reviewId)}
                   onViewLegacyHistory={(reviewId) => void viewPilotLegacyHistory(reviewId)}
                   onStartNew={startNewPilotV2Review}
-                  onPrepareMaterials={(resumeId, jdText) => preparePilotMaterials({
+                  onPrepareMaterials={(resumeId, jdText, jdVersionId) => preparePilotMaterials({
                     applicationId: pilotApplicationContext.applicationId,
                     resumeId,
                     jdText,
-                    jdVersionId: pilotV2Draft?.deep?.jd_version_id ?? pilotV2Draft?.triage?.jd_version_id ?? undefined,
+                    jdVersionId,
                   })}
                   onOpenInterviewReview={openPilotInterviewReview}
                   onOpenInterviewPreparation={openPilotInterviewPreparation}

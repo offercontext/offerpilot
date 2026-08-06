@@ -4,26 +4,13 @@ import type {
   OpportunityFitV2EvidenceRef,
   OpportunityFitV2Proposal,
   OpportunityFitV2SessionSummary,
-  OpportunityFitV2StageResponse,
   OpportunityFitReview,
   OpportunityFitReviewSummary,
+  OpportunityFitV2Draft,
 } from '@/types/opportunityFitReview';
 import type { ScheduleEvent } from '@/types/event';
 
-export interface PilotOpportunityFitV2Draft {
-  applicationId: number;
-  resumeId?: number;
-  jdText: string;
-  jdVersionId?: number;
-  assertionsText: string;
-  triageKey: string | null;
-  deepKey: string | null;
-  triage: OpportunityFitV2StageResponse | null;
-  deep: OpportunityFitV2StageResponse | null;
-  historical: boolean;
-  resultUnknown: boolean;
-  error: string | null;
-}
+export type PilotOpportunityFitV2Draft = OpportunityFitV2Draft;
 
 interface Props {
   draft: PilotOpportunityFitV2Draft;
@@ -42,7 +29,7 @@ interface Props {
   onViewHistory: (reviewId: number) => void;
   onViewLegacyHistory?: (reviewId: number) => void;
   onStartNew: () => void;
-  onPrepareMaterials?: (resumeId: number, jdText: string, jdVersionId?: number) => void;
+  onPrepareMaterials?: (resumeId: number, jdText: string, jdVersionId: number) => void;
   onOpenInterviewReview?: (applicationId: number) => void;
   onOpenInterviewPreparation?: (applicationId: number) => void;
   interviewEvents?: ScheduleEvent[];
@@ -284,8 +271,8 @@ export default function PilotOpportunityFitV2Card({
         <section>
           <h3>Deep Review（证据化结果）</h3>
           <ProposalView proposal={draft.deep.proposal} />
-          {onPrepareMaterials && draft.resumeId && !isHistorical ? (
-            <button type="button" onClick={() => onPrepareMaterials(draft.resumeId!, draft.jdText)}>去准备材料</button>
+          {onPrepareMaterials && draft.resumeId && draft.jdVersionId && !isHistorical ? (
+            <button type="button" onClick={() => onPrepareMaterials(draft.resumeId!, draft.jdText, draft.jdVersionId!)}>去准备材料</button>
           ) : null}
         </section>
       ) : null}

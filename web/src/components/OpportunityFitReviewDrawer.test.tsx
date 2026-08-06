@@ -31,6 +31,9 @@ vi.mock('@/services/opportunityFitReviews', () => ({
   getOpportunityFitV2Review: state.getV2,
   listOpportunityFitV2Reviews: state.listV2,
 }));
+vi.mock('@/services/applicationJdVersions', () => ({
+  getApplicationJdVersion: vi.fn().mockResolvedValue({ id: 1, application_id: 7, jd_text: 'Frozen JD text' }),
+}));
 vi.mock('@tanstack/react-query', () => ({
   useQuery: (options: { enabled?: boolean; queryKey?: unknown[]; queryFn: () => unknown }) => {
     const [queryState, setQueryState] = useState<{ data?: unknown; error?: unknown }>({});
@@ -50,9 +53,9 @@ vi.mock('@tanstack/react-query', () => ({
       isFetching: queryState.data === undefined && queryState.error === undefined,
     };
   },
-  useMutation: (options: { mutationFn: () => unknown; onSuccess?: (data: unknown) => void; onError?: (error: unknown) => void }) => ({
+  useMutation: (options: { mutationFn: (variables?: unknown) => unknown; onSuccess?: (data: unknown) => void; onError?: (error: unknown, variables?: any) => void }) => ({
     isPending: false,
-    mutate: () => void Promise.resolve(options.mutationFn()).then(options.onSuccess).catch(options.onError),
+    mutate: (variables?: unknown) => void Promise.resolve(options.mutationFn(variables)).then(options.onSuccess).catch((error) => options.onError?.(error, variables)),
   }),
 }));
 vi.mock('antd', () => {
@@ -79,8 +82,8 @@ vi.mock('antd', () => {
     Drawer: (props: { open: boolean; title: ReactNode; children: ReactNode }) => props.open ? <div role="dialog"><h1>{props.title}</h1>{props.children}</div> : null,
     Form,
     Input,
-    Select: (props: { value?: unknown; onChange?: (value: unknown) => void; options?: Array<{ value: unknown; label: string }> }) => (
-      <select value={String(props.value ?? '')} onChange={(event) => props.onChange?.(Number(event.target.value))}>
+    Select: (props: { value?: unknown; disabled?: boolean; onChange?: (value: unknown) => void; options?: Array<{ value: unknown; label: string }> }) => (
+      <select disabled={props.disabled} value={String(props.value ?? '')} onChange={(event) => props.onChange?.(Number(event.target.value))}>
         <option value="">select</option>
         {(props.options || []).map((option) => <option key={String(option.value)} value={String(option.value)}>{option.label}</option>)}
       </select>
@@ -101,6 +104,8 @@ let container: HTMLDivElement | undefined;
 async function render(
   onPrepareMaterials?: (review: unknown, jdText: string) => void,
   currentJdText = '',
+  draft?: Record<string, unknown>,
+  onDraftChange?: (patch: Record<string, unknown>) => void,
 ) {
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -112,6 +117,8 @@ async function render(
         open
         currentJdText={currentJdText}
         jdVersionId={1}
+        draft={draft as never}
+        onDraftChange={onDraftChange as never}
         onClose={vi.fn()}
         onPrepareMaterials={onPrepareMaterials}
       />,
@@ -242,6 +249,182 @@ async function click(element: HTMLElement) {
 }
 
 describe('OpportunityFitReviewDrawer', () => {
+  it('reuses the AppShell-owned triage key after a generating response and remount', async () => {
+    state.create.mockResolvedValue({
+      review_id: 21,
+      stage_id: 22,
+      stage: 'triage',
+      stage_status: 'generating',
+      confirmation_token: null,
+      resume_id: 11,
+      jd_version_id: 1,
+      idempotency_key: 'd4b4b5e8-0a3a-4a3e-8e4d-6bc7a04d36b0',
+      proposal: undefined,
+    });
+    let draft: Record<string, unknown> = {
+      applicationId: 7,
+      resumeId: 11,
+      jdText: 'JD text',
+      jdVersionId: 1,
+      assertionsText: '',
+      triageKey: null,
+      deepKey: null,
+      triage: null,
+      deep: null,
+      historical: false,
+      resultUnknown: false,
+      error: null,
+    };
+    const onDraftChange = vi.fn((patch: Record<string, unknown>) => {
+      draft = { ...draft, ...patch };
+    });
+    const view = await render(undefined, 'JD text', draft, onDraftChange);
+    await waitFor(() => expect(getByRole(view, 'button')).toHaveProperty('disabled', false));
+    await click(getByRole(view, 'button'));
+    await waitFor(() => expect(draft.triageKey).toBe('d4b4b5e8-0a3a-4a3e-8e4d-6bc7a04d36b0'));
+    expect(state.create).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      root?.render(null);
+      await Promise.resolve();
+      root?.render(
+        <OpportunityFitReviewDrawer
+          application={application}
+          open
+          currentJdText="JD text"
+          jdVersionId={1}
+          draft={draft as never}
+          onDraftChange={onDraftChange as never}
+          onClose={vi.fn()}
+        />,
+      );
+    });
+    expect(view.textContent).toContain('使用原尝试重试');
+    expect(state.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the Deep Review key after a provider-unknown response and remount', async () => {
+    let rejectDeep: ((error: unknown) => void) | undefined;
+    state.deepV2.mockImplementation(() => new Promise((_resolve, reject) => {
+      rejectDeep = reject;
+    }));
+    const providerError = {
+      response: { status: 502, data: { error_code: 'opportunity_fit_provider_error' } },
+    };
+    let draft: Record<string, unknown> = {
+      applicationId: 7,
+      resumeId: 11,
+      jdText: 'JD text',
+      jdVersionId: 1,
+      assertionsText: '',
+      triageKey: 'triage-key-00000001',
+      deepKey: null,
+      triage: {
+        review_id: 21,
+        stage_id: 22,
+        stage: 'triage',
+        stage_status: 'confirmed',
+        confirmation_token: null,
+        resume_id: 11,
+        jd_version_id: 1,
+        idempotency_key: 'triage-key-00000001',
+        proposal: undefined,
+      },
+      deep: null,
+      historical: false,
+      resultUnknown: false,
+      error: null,
+    };
+    const onDraftChange = vi.fn((patch: Record<string, unknown>) => {
+      draft = { ...draft, ...patch };
+    });
+    const view = await render(undefined, 'JD text', draft, onDraftChange);
+    await waitFor(() => expect(getByRole(view, 'button')).toHaveProperty('disabled', false));
+    await click(getByRole(view, 'button'));
+    await waitFor(() => expect(draft.deepKey).toBeTruthy());
+    const key = draft.deepKey;
+    expect(state.deepV2).toHaveBeenCalledTimes(1);
+    rejectDeep?.(providerError);
+    await waitFor(() => expect(draft.resultUnknown).toBe(true));
+
+    await act(async () => {
+      root?.render(null);
+      await Promise.resolve();
+      root?.render(
+        <OpportunityFitReviewDrawer
+          application={application}
+          open
+          currentJdText="JD text"
+          jdVersionId={1}
+          draft={draft as never}
+          onDraftChange={onDraftChange as never}
+          onClose={vi.fn()}
+        />,
+      );
+    });
+    await click(getByRole(view, 'button'));
+    await waitFor(() => expect(state.deepV2).toHaveBeenCalledTimes(2));
+    expect(state.deepV2.mock.calls[0][2].idempotency_key).toBe(key);
+    expect(state.deepV2.mock.calls[1][2].idempotency_key).toBe(key);
+  });
+
+  it('hands off the exact frozen JD and disables handoff after the current version changes', async () => {
+    const onPrepareMaterials = vi.fn();
+    const draft = {
+      applicationId: 7,
+      resumeId: 11,
+      jdText: 'Frozen JD text',
+      jdVersionId: 1,
+      assertionsText: '',
+      triageKey: 'triage-key-00000001',
+      deepKey: 'deep-key-00000001',
+      triage: {
+        review_id: 21,
+        stage_id: 22,
+        stage: 'triage',
+        stage_status: 'confirmed',
+        confirmation_token: null,
+        resume_id: 11,
+        jd_version_id: 1,
+        idempotency_key: 'triage-key-00000001',
+        proposal: undefined,
+      },
+      deep: {
+        review_id: 21,
+        stage_id: 23,
+        stage: 'deep_review',
+        stage_status: 'ready',
+        confirmation_token: null,
+        resume_id: 11,
+        jd_version_id: 1,
+        idempotency_key: 'deep-key-00000001',
+        proposal: undefined,
+      },
+      historical: false,
+      resultUnknown: false,
+      error: null,
+    };
+    const view = await render(onPrepareMaterials, 'Current JD text', draft);
+    await waitFor(() => expect(getByRole(view, 'button')).toHaveProperty('disabled', false));
+    await click(getByRole(view, 'button'));
+    expect(onPrepareMaterials).toHaveBeenCalledWith(11, 'Frozen JD text', 1);
+
+    await act(async () => {
+      root?.render(
+        <OpportunityFitReviewDrawer
+          application={application}
+          open
+          currentJdText="New current JD text"
+          jdVersionId={2}
+          draft={draft as never}
+          onDraftChange={vi.fn()}
+          onClose={vi.fn()}
+          onPrepareMaterials={onPrepareMaterials}
+        />,
+      );
+    });
+    expect(getByRole(view, 'button')).toHaveProperty('disabled', true);
+  });
   it('blocks more than ten assertions before submit', async () => {
     const view = await render();
     await waitFor(() => expect(getByLabelText(view, '本次补充断言（每行一条）')).toBeTruthy());
@@ -318,6 +501,54 @@ describe('OpportunityFitReviewDrawer', () => {
     expect(view.textContent).not.toContain('当前投递尚未确认岗位资料');
   });
 
+  it('reuses the triage key after a provider-unknown 502 and remount', async () => {
+    state.create.mockRejectedValue({
+      response: { status: 502, data: { error_code: 'opportunity_fit_provider_error' } },
+    });
+    let draft: Record<string, unknown> = {
+      applicationId: 7,
+      resumeId: 11,
+      jdText: 'JD text',
+      jdVersionId: 1,
+      assertionsText: '',
+      triageKey: null,
+      deepKey: null,
+      triage: null,
+      deep: null,
+      historical: false,
+      resultUnknown: false,
+      error: null,
+    };
+    const onDraftChange = vi.fn((patch: Record<string, unknown>) => {
+      draft = { ...draft, ...patch };
+    });
+    const view = await render(undefined, 'JD text', draft, onDraftChange);
+    await waitFor(() => expect(getByRole(view, 'button')).toHaveProperty('disabled', false));
+    await click(getByRole(view, 'button'));
+    await waitFor(() => expect(draft.triageKey).toBeTruthy());
+    const key = draft.triageKey;
+    await act(async () => {
+      root?.render(null);
+      await Promise.resolve();
+      root?.render(
+        <OpportunityFitReviewDrawer
+          application={application}
+          open
+          currentJdText="JD text"
+          jdVersionId={1}
+          draft={draft as never}
+          onDraftChange={onDraftChange as never}
+          onClose={vi.fn()}
+        />,
+      );
+    });
+    expect(view.querySelector('select')).toHaveProperty('disabled', true);
+    await click(getByRole(view, 'button'));
+    await waitFor(() => expect(state.create).toHaveBeenCalledTimes(2));
+    expect(state.create.mock.calls[0][1].idempotency_key).toBe(key);
+    expect(state.create.mock.calls[1][1].idempotency_key).toBe(key);
+  });
+
   it('hands historical review frozen JD and resume to material preparation', async () => {
     state.history = [{ id: 8, recommendation: 'advance', created_at: '2026-07-21T00:00:00Z' }];
     state.list.mockResolvedValue(state.history);
@@ -327,10 +558,8 @@ describe('OpportunityFitReviewDrawer', () => {
     await waitFor(() => expect(getByRole(view, 'button', '查看')).toBeTruthy());
     await click(getByRole(view, 'button', '查看'));
     await waitFor(() => expect(state.get).toHaveBeenCalledWith(7, 8));
-    await waitFor(() => expect(getByRole(view, 'button', '去准备材料')).toBeTruthy());
-    await click(getByRole(view, 'button', '去准备材料'));
-
-    expect(onPrepareMaterials).toHaveBeenCalledWith(expect.objectContaining({ id: 8 }), 'Frozen JD text');
+    expect(view.textContent).toContain('Frozen JD text');
+    expect(onPrepareMaterials).not.toHaveBeenCalled();
   });
 
   it.each([

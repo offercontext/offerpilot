@@ -49,7 +49,11 @@ import InterviewPreparationProposalDrawer, {
 import type { Resume } from '@/types/resume';
 import MaterialKitDrawer from './MaterialKitDrawer';
 import OpportunityFitReviewDrawer from './OpportunityFitReviewDrawer';
-import type { OpportunityFitReview } from '@/types/opportunityFitReview';
+import {
+  createOpportunityFitV2Draft,
+  type OpportunityFitReview,
+  type OpportunityFitV2Draft,
+} from '@/types/opportunityFitReview';
 import { SourceStateTag } from './ui/SourceStateTag';
 import { createPilotAttachmentDragBinding } from './PilotAttachmentHandle';
 import { consumeMaterialKitHandoff } from '@/features/pilot/materialKitHandoff';
@@ -114,9 +118,11 @@ interface ApplicationDetailProps {
   isReadonlyNavigationAvailable?: (destination: ReadonlyDestination) => boolean;
   applicationJdDraft?: ApplicationJdDraft;
   onApplicationJdDraftChange?: (applicationId: number, patch: Partial<ApplicationJdDraft> | null) => void;
+  opportunityFitDraft?: OpportunityFitV2Draft;
+  onOpportunityFitDraftChange?: (applicationId: number, patch: Partial<OpportunityFitV2Draft> | null) => void;
 }
 
-export default function ApplicationDetail({ application, open, onClose, onMockInterview, onAskPilot, onOpenPilotOpportunityFit, pilotInterviewReviewApplicationId, onPilotInterviewReviewFocusConsumed, pilotInterviewPreparationApplicationId, pilotInterviewPreparationEventId, onPilotInterviewPreparationFocusConsumed, onAttachToPilot, interviewReviewProposalAttempts, onInterviewReviewProposalAttemptChange, onInterviewNoteChanged, interviewKnowledgeCaptureDrafts, onInterviewKnowledgeCaptureDraftChange, onInterviewKnowledgeCaptureNoteChanged, resumes = [], interviewPreparationAttempts, onInterviewPreparationAttemptChange, interviewPreparationDrafts, onInterviewPreparationDraftChange, interviewPreparationKnowledgeOptions = [], nextStepSuggestions, nextStepSessionState = null, onSetDisposition, onNextStepNavigate, isNavigationAvailable, onNextStepReadonlyNavigate, isReadonlyNavigationAvailable, applicationJdDraft, onApplicationJdDraftChange }: ApplicationDetailProps) {
+export default function ApplicationDetail({ application, open, onClose, onMockInterview, onAskPilot, onOpenPilotOpportunityFit, pilotInterviewReviewApplicationId, onPilotInterviewReviewFocusConsumed, pilotInterviewPreparationApplicationId, pilotInterviewPreparationEventId, onPilotInterviewPreparationFocusConsumed, onAttachToPilot, interviewReviewProposalAttempts, onInterviewReviewProposalAttemptChange, onInterviewNoteChanged, interviewKnowledgeCaptureDrafts, onInterviewKnowledgeCaptureDraftChange, onInterviewKnowledgeCaptureNoteChanged, resumes = [], interviewPreparationAttempts, onInterviewPreparationAttemptChange, interviewPreparationDrafts, onInterviewPreparationDraftChange, interviewPreparationKnowledgeOptions = [], nextStepSuggestions, nextStepSessionState = null, onSetDisposition, onNextStepNavigate, isNavigationAvailable, onNextStepReadonlyNavigate, isReadonlyNavigationAvailable, applicationJdDraft, onApplicationJdDraftChange, opportunityFitDraft, onOpportunityFitDraftChange }: ApplicationDetailProps) {
   const queryClient = useQueryClient();
   const [form] = Form.useForm();
   const [eventFormOpen, setEventFormOpen] = useState(false);
@@ -220,11 +226,11 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
     setMaterialKitApplicationId(null);
     if (!application || !open) return;
     const handoff = consumeMaterialKitHandoff(application.id);
-    if (!handoff) return;
+    if (!handoff || !handoff.jdVersionId) return;
     setMaterialKitPrefill({
       resumeID: handoff.resumeId,
-      jdSnapshot: handoff.jdText || applicationJdQuery.data?.current?.jd_text,
-      jdVersionID: handoff.jdVersionId ?? applicationJdQuery.data?.current?.id,
+      jdSnapshot: handoff.jdText,
+      jdVersionID: handoff.jdVersionId,
     });
     setMaterialKitApplicationId(application.id);
     setMaterialKitOpen(true);
@@ -397,7 +403,9 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
         }}
         initialResumeID={materialKitPrefill.resumeID}
         initialJdSnapshot={materialKitPrefill.jdSnapshot}
-        initialJdVersionID={materialKitPrefill.jdVersionID ?? applicationJdQuery.data?.current?.id}
+        initialJdVersionID={materialKitPrefill.jdSnapshot && !materialKitPrefill.jdVersionID
+          ? undefined
+          : materialKitPrefill.jdVersionID ?? applicationJdQuery.data?.current?.id}
       />
     );
   }
@@ -469,12 +477,15 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
         open={opportunityFitOpen}
         currentJdText={applicationJdQuery.data?.current?.jd_text ?? ''}
         jdVersionId={applicationJdQuery.data?.current?.id ?? null}
+        draft={opportunityFitDraft ?? createOpportunityFitV2Draft(application.id)}
+        onDraftChange={(patch) => onOpportunityFitDraftChange?.(application.id, patch)}
         onClose={() => setOpportunityFitOpen(false)}
         onPrepareMaterials={(reviewOrResumeId: OpportunityFitReview | number, jdText: string, jdVersionId?: number) => {
+          if (!jdVersionId) return;
           const resumeID = typeof reviewOrResumeId === 'number'
             ? reviewOrResumeId
             : reviewOrResumeId.source.resume.id;
-          setMaterialKitPrefill({ resumeID, jdSnapshot: jdText, jdVersionID: jdVersionId ?? applicationJdQuery.data?.current?.id });
+          setMaterialKitPrefill({ resumeID, jdSnapshot: jdText, jdVersionID: jdVersionId });
           setMaterialKitApplicationId(application.id);
           setOpportunityFitOpen(false);
           setMaterialKitOpen(true);

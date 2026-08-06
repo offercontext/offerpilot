@@ -24,6 +24,7 @@ import {
   listOpportunityFitReviews,
   listOpportunityFitV2Reviews,
 } from '@/services/opportunityFitReviews';
+import { getApplicationJdVersion } from '@/services/applicationJdVersions';
 import type { Application } from '@/types/application';
 import type { Resume } from '@/types/resume';
 import type {
@@ -32,6 +33,7 @@ import type {
   OpportunityFitV2EvidenceRef,
   OpportunityFitV2Proposal,
   OpportunityFitV2StageResponse,
+  OpportunityFitV2Draft,
 } from '@/types/opportunityFitReview';
 import {
   getOpportunityFitErrorMessage,
@@ -52,6 +54,8 @@ interface Props {
   jdVersionId?: number | null;
   onClose: () => void;
   onPrepareMaterials?: (reviewOrResumeId: OpportunityFitReview | number, jdText: string, jdVersionId?: number) => void;
+  draft?: OpportunityFitV2Draft;
+  onDraftChange?: (patch: Partial<OpportunityFitV2Draft>) => void;
 }
 
 function EvidenceRefs({ refs }: { refs: OpportunityFitEvidenceRef[] }) {
@@ -137,16 +141,18 @@ export default function OpportunityFitReviewDrawer({
   jdVersionId,
   onClose,
   onPrepareMaterials,
+  draft,
+  onDraftChange,
 }: Props) {
   const [stage, setStage] = useState<'input' | 'review'>('input');
-  const [resumeID, setResumeID] = useState<number>();
-  const [jdText, setJdText] = useState('');
-  const [assertionsText, setAssertionsText] = useState('');
+  const [resumeID, setResumeID] = useState<number | undefined>(draft?.resumeId);
+  const [jdText, setJdText] = useState(draft?.jdText || currentJdText);
+  const [assertionsText, setAssertionsText] = useState(draft?.assertionsText ?? '');
   const [review, setReview] = useState<OpportunityFitReview | null>(null);
-  const [v2Triage, setV2Triage] = useState<OpportunityFitV2StageResponse | null>(null);
-  const [v2Deep, setV2Deep] = useState<OpportunityFitV2StageResponse | null>(null);
+  const [v2Triage, setV2Triage] = useState<OpportunityFitV2StageResponse | null>(draft?.triage ?? null);
+  const [v2Deep, setV2Deep] = useState<OpportunityFitV2StageResponse | null>(draft?.deep ?? null);
   const [v2Historical, setV2Historical] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(draft?.error ?? null);
 
   const reviewHistoryQuery = useQuery({
     queryKey: ['opportunity-fit-reviews', application?.id],
@@ -160,23 +166,36 @@ export default function OpportunityFitReviewDrawer({
     enabled: open,
   });
 
+  const frozenJdQuery = useQuery({
+    queryKey: ['application-jd-version', application?.id, v2Deep?.jd_version_id],
+    queryFn: () => getApplicationJdVersion(application!.id, v2Deep!.jd_version_id!),
+    enabled: open && Boolean(application && v2Deep?.jd_version_id),
+  });
+
   useEffect(() => {
     if (!open) return;
-    setStage('input');
-    setResumeID(undefined);
-    setJdText('');
-    setAssertionsText('');
+    setStage(draft?.triage || draft?.deep ? 'review' : 'input');
+    setResumeID(draft?.resumeId);
+    setJdText(draft?.jdText || currentJdText);
+    setAssertionsText(draft?.assertionsText ?? '');
     setReview(null);
-    setV2Triage(null);
-    setV2Deep(null);
-    setV2Historical(false);
-    setActionError(null);
+    setV2Triage(draft?.triage ?? null);
+    setV2Deep(draft?.deep ?? null);
+    setV2Historical(Boolean(draft?.historical));
+    setActionError(draft?.error ?? null);
+  // The AppShell draft is the source of truth across unmount/remount. Do not
+  // reset it on ordinary parent renders or current-JD query refreshes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [application?.id, open]);
 
   useEffect(() => {
     if (!open || stage !== 'input' || v2Triage || v2Deep || v2Historical) return;
-    setJdText(currentJdText);
-  }, [currentJdText, open, stage, v2Deep, v2Historical, v2Triage]);
+    const hasActiveAttempt = Boolean(draft?.triageKey || draft?.deepKey);
+    if (!hasActiveAttempt && currentJdText && draft?.jdVersionId !== jdVersionId) {
+      setJdText(currentJdText);
+      onDraftChange?.({ jdText: currentJdText, jdVersionId: jdVersionId ?? undefined });
+    }
+  }, [currentJdText, draft?.deepKey, draft?.jdVersionId, draft?.triageKey, jdVersionId, onDraftChange, open, stage, v2Deep, v2Historical, v2Triage]);
 
   const assertions = useMemo(
     () => assertionsText.split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
@@ -188,22 +207,54 @@ export default function OpportunityFitReviewDrawer({
       ? OPPORTUNITY_FIT_COPY.drawer.assertionsTooLong
       : null;
 
+  const errorCode = (error: unknown): string | undefined => {
+    if (!error || typeof error !== 'object') return undefined;
+    const candidate = error as { response?: { data?: { error_code?: unknown } }; code?: unknown };
+    const responseCode = candidate.response?.data?.error_code;
+    return typeof responseCode === 'string'
+      ? responseCode
+      : typeof candidate.code === 'string' ? candidate.code : undefined;
+  };
+
+  const isProviderUnknown = (error: unknown): boolean => {
+    const code = errorCode(error);
+    if (code === 'opportunity_fit_unverifiable') return false;
+    if (code === 'opportunity_fit_provider_error') return true;
+    if (!error || typeof error !== 'object') return true;
+    const response = (error as { response?: unknown }).response;
+    if (!response || typeof response !== 'object') return true;
+    const status = (response as { status?: unknown }).status;
+    return typeof status === 'number' && status >= 500;
+  };
+
+  const unknownResultCopy = '操作结果待确认，请使用原尝试重试。';
+
   const createMutation = useMutation({
-    mutationFn: () => createOpportunityFitV2Triage(application!.id, {
-      schema_version: 2,
-      resume_id: resumeID!,
-      jd_version_id: jdVersionId ?? 0,
-      jd_source_label: OPPORTUNITY_FIT_COPY.drawer.jdSourceLabel,
-      candidate_assertions: assertions,
-      idempotency_key: crypto.randomUUID(),
-    }),
+    mutationFn: (input: Parameters<typeof createOpportunityFitV2Triage>[1]) => (
+      createOpportunityFitV2Triage(application!.id, input)
+    ),
     onSuccess: (nextReview) => {
       setV2Triage(nextReview);
       setV2Deep(null);
       setStage('review');
       setActionError(null);
+      onDraftChange?.({
+        triage: nextReview,
+        deep: null,
+        triageKey: nextReview.idempotency_key,
+        resultUnknown: ['generating', 'provider_unknown'].includes(nextReview.stage_status),
+        error: ['generating', 'provider_unknown'].includes(nextReview.stage_status) ? unknownResultCopy : null,
+      });
     },
-    onError: (error) => setActionError(getOpportunityFitErrorMessage(error)),
+    onError: (error, input) => {
+      const unknown = isProviderUnknown(error);
+      setActionError(unknown ? unknownResultCopy : getOpportunityFitErrorMessage(error));
+      onDraftChange?.({
+        resultUnknown: unknown,
+        error: unknown ? unknownResultCopy : getOpportunityFitErrorMessage(error),
+        triageKey: unknown ? input.idempotency_key : null,
+      });
+    },
   });
   const v2HistoryQuery = useQuery({
     queryKey: ['opportunity-fit-v2-reviews', application?.id],
@@ -218,41 +269,107 @@ export default function OpportunityFitReviewDrawer({
       v2Triage!.stage_id,
       v2Triage!.confirmation_token!,
     ),
-    onSuccess: setV2Triage,
+    onSuccess: (nextReview) => {
+      setV2Triage(nextReview);
+      onDraftChange?.({ triage: nextReview, resultUnknown: false, error: null });
+    },
     onError: (error) => setActionError(getOpportunityFitErrorMessage(error)),
   });
 
-  const deepReviewMutation = useMutation<OpportunityFitV2StageResponse, unknown>({
-    mutationFn: () => {
+  const deepReviewMutation = useMutation<
+    OpportunityFitV2StageResponse,
+    unknown,
+    Parameters<typeof createOpportunityFitV2DeepReview>[2]
+  >({
+    mutationFn: (input: Parameters<typeof createOpportunityFitV2DeepReview>[2]) => {
       if (!v2Triage) throw new Error('Triage is required');
-      return createOpportunityFitV2DeepReview(application!.id, v2Triage.review_id, {
-        schema_version: 2,
-        resume_id: v2Triage.resume_id ?? resumeID!,
-        jd_version_id: v2Triage.jd_version_id!,
-        jd_source_label: OPPORTUNITY_FIT_COPY.drawer.jdSourceLabel,
-        candidate_assertions: assertions,
-        idempotency_key: crypto.randomUUID(),
-        parent_triage_stage_id: v2Triage.stage_id,
-      });
+      return createOpportunityFitV2DeepReview(application!.id, v2Triage.review_id, input);
     },
     onSuccess: (nextReview) => {
       setV2Deep(nextReview);
       setActionError(null);
+      onDraftChange?.({
+        deep: nextReview,
+        deepKey: nextReview.idempotency_key,
+        resultUnknown: ['generating', 'provider_unknown'].includes(nextReview.stage_status),
+        error: ['generating', 'provider_unknown'].includes(nextReview.stage_status) ? unknownResultCopy : null,
+      });
     },
-    onError: (error) => setActionError(getOpportunityFitErrorMessage(error)),
+    onError: (error, input) => {
+      const unknown = isProviderUnknown(error);
+      setActionError(unknown ? unknownResultCopy : getOpportunityFitErrorMessage(error));
+      onDraftChange?.({
+        resultUnknown: unknown,
+        error: unknown ? unknownResultCopy : getOpportunityFitErrorMessage(error),
+        deepKey: unknown ? input.idempotency_key : null,
+      });
+    },
   });
 
   const canSubmit = Boolean(
     application
-      && resumeID
-      && jdVersionId
+      && (draft?.triageKey ? draft.resumeId && draft.jdVersionId : resumeID && jdVersionId)
       && !assertionError
       && !createMutation.isPending,
   );
 
+  const buildTriageInput = () => {
+    const frozen = Boolean(draft?.triageKey);
+    const selectedResumeID = frozen ? draft?.resumeId : resumeID;
+    const selectedJdVersionId = frozen ? draft?.jdVersionId : jdVersionId;
+    if (!selectedResumeID || !selectedJdVersionId) return null;
+    return {
+      schema_version: 2 as const,
+      resume_id: selectedResumeID,
+      jd_version_id: selectedJdVersionId,
+      jd_source_label: OPPORTUNITY_FIT_COPY.drawer.jdSourceLabel,
+      candidate_assertions: frozen
+        ? (draft?.assertionsText ?? '').split(/\r?\n/).map((value) => value.trim()).filter(Boolean)
+        : assertions,
+      idempotency_key: draft?.triageKey ?? crypto.randomUUID(),
+    };
+  };
+
   const submit = () => {
-    if (!canSubmit || !resumeID || !jdVersionId || assertionError) return;
-    createMutation.mutate();
+    if (!canSubmit || assertionError) return;
+    const input = buildTriageInput();
+    if (!input) return;
+    onDraftChange?.({
+      resumeId: input.resume_id,
+      jdText,
+      jdVersionId: input.jd_version_id,
+      assertionsText,
+      triageKey: input.idempotency_key,
+      resultUnknown: false,
+      error: null,
+    });
+    createMutation.mutate(input);
+  };
+
+  const submitDeepReview = () => {
+    if (!v2Triage || v2Triage.stage_status !== 'confirmed' || !v2Triage.jd_version_id || !resumeID) return;
+    const input = {
+      schema_version: 2 as const,
+      resume_id: draft?.deepKey ? (draft.resumeId ?? v2Triage.resume_id ?? resumeID) : (v2Triage.resume_id ?? resumeID),
+      jd_version_id: v2Triage.jd_version_id,
+      jd_source_label: OPPORTUNITY_FIT_COPY.drawer.jdSourceLabel,
+      candidate_assertions: draft?.deepKey
+        ? (draft.assertionsText ?? '').split(/\r?\n/).map((value) => value.trim()).filter(Boolean)
+        : assertions,
+      idempotency_key: draft?.deepKey ?? crypto.randomUUID(),
+      parent_triage_stage_id: v2Triage.stage_id,
+    };
+    // Persist the key before the request leaves the page. If the response is
+    // lost during unmount, AppShell can still replay this exact attempt.
+    onDraftChange?.({
+      resumeId: input.resume_id,
+      jdVersionId: input.jd_version_id,
+      assertionsText,
+      deepKey: input.idempotency_key,
+      resultUnknown: false,
+      error: null,
+    });
+    deepReviewMutation.mutate(input);
   };
 
   const openHistoricalReview = async (reviewID: number) => {
@@ -346,7 +463,11 @@ export default function OpportunityFitReviewDrawer({
           <Form.Item label={OPPORTUNITY_FIT_COPY.drawer.resumeLabel} required>
             <Select
               value={resumeID}
-              onChange={setResumeID}
+              disabled={Boolean(draft?.resultUnknown)}
+              onChange={(value) => {
+                setResumeID(value as number);
+                onDraftChange?.({ resumeId: value as number });
+              }}
               loading={resumesQuery.isFetching}
               placeholder={OPPORTUNITY_FIT_COPY.drawer.resumePlaceholder}
               options={(resumesQuery.data || []).map((resume: Resume) => ({
@@ -370,7 +491,11 @@ export default function OpportunityFitReviewDrawer({
           <Form.Item label={OPPORTUNITY_FIT_COPY.drawer.assertionsLabel}>
             <Input.TextArea
               value={assertionsText}
-              onChange={(event) => setAssertionsText(event.target.value)}
+              disabled={Boolean(draft?.resultUnknown)}
+              onChange={(event) => {
+                setAssertionsText(event.target.value);
+                onDraftChange?.({ assertionsText: event.target.value });
+              }}
               rows={5}
               placeholder={OPPORTUNITY_FIT_COPY.drawer.assertionsPlaceholder}
             />
@@ -384,7 +509,7 @@ export default function OpportunityFitReviewDrawer({
             description={OPPORTUNITY_FIT_COPY.drawer.humanConfirmationDescription}
           />
           <Button type="primary" onClick={submit} loading={createMutation.isPending} disabled={!canSubmit}>
-            {OPPORTUNITY_FIT_COPY.drawer.startTriage}
+            {draft?.triageKey ? '使用原尝试重试' : OPPORTUNITY_FIT_COPY.drawer.startTriage}
           </Button>
         </Form>
       ) : v2Triage ? (
@@ -396,6 +521,11 @@ export default function OpportunityFitReviewDrawer({
           </Space>
           <Typography.Title level={4}>Triage</Typography.Title>
           {v2Triage.proposal ? <V2ProposalView proposal={v2Triage.proposal} /> : <Spin />}
+          {['generating', 'provider_unknown'].includes(v2Triage.stage_status) ? (
+            <Button type="primary" onClick={submit} loading={createMutation.isPending} disabled={!canSubmit}>
+              使用原尝试重试
+            </Button>
+          ) : null}
           {v2Triage.stage_status === 'ready' && v2Triage.confirmation_token ? (
             <Button
               type="primary"
@@ -408,10 +538,10 @@ export default function OpportunityFitReviewDrawer({
           {!v2Historical && v2Triage.stage_status === 'confirmed' && !v2Deep ? (
             <Button
               type="primary"
-              onClick={() => deepReviewMutation.mutate()}
+              onClick={submitDeepReview}
               loading={deepReviewMutation.isPending}
             >
-              开始 Deep Review
+              {draft?.deepKey ? '使用原尝试重试' : '开始 Deep Review'}
             </Button>
           ) : null}
           {v2Deep ? (
@@ -419,14 +549,29 @@ export default function OpportunityFitReviewDrawer({
               <Divider />
               <Typography.Title level={4}>Deep Review</Typography.Title>
               {v2Deep.proposal ? <V2ProposalView proposal={v2Deep.proposal} /> : <Spin />}
+              {['generating', 'provider_unknown'].includes(v2Deep.stage_status) ? (
+                <Button type="primary" onClick={submitDeepReview} loading={deepReviewMutation.isPending}>
+                  使用原尝试重试
+                </Button>
+              ) : null}
+              {v2Deep.jd_version_id !== jdVersionId ? (
+                <Alert type="warning" showIcon message="岗位资料版本已变化，当前结果仅供只读查看。请重新开始评估。" />
+              ) : null}
               <Button
                 type="primary"
                 onClick={() => onPrepareMaterials?.(
                   v2Deep.resume_id ?? resumeID!,
-                  currentJdText || jdText,
+                  (frozenJdQuery.data as { jd_text?: string } | undefined)?.jd_text ?? '',
                   v2Deep.jd_version_id ?? undefined,
                 )}
-                disabled={!onPrepareMaterials || !v2Deep.resume_id || !v2Deep.jd_version_id || v2Historical}
+                disabled={
+                  !onPrepareMaterials
+                  || !v2Deep.resume_id
+                  || !v2Deep.jd_version_id
+                  || v2Historical
+                  || !frozenJdQuery.data
+                  || v2Deep.jd_version_id !== jdVersionId
+                }
               >
                 {OPPORTUNITY_FIT_COPY.drawer.prepareMaterials}
               </Button>
@@ -514,13 +659,6 @@ export default function OpportunityFitReviewDrawer({
                   <Typography.Text>{action.label}</Typography.Text>
                 </Card>
               ))}
-              <Button
-                type="primary"
-                onClick={() => onPrepareMaterials?.(review, review.source.jd.text)}
-                disabled={!onPrepareMaterials || !review.source.jd.text}
-              >
-                {OPPORTUNITY_FIT_COPY.drawer.prepareMaterials}
-              </Button>
             </>
           ) : null}
         </div>
