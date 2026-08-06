@@ -51,11 +51,27 @@ class ConfiguredAIClient:
                 assistant = self._complete_with_provider(
                     provider, messages, tools, response_format
                 )
+                provider_blocks = assistant.provider_blocks if isinstance(assistant.provider_blocks, dict) else {}
+                _try_audit_provider_result(
+                    provider,
+                    status="success",
+                    elapsed_ms=int((time.perf_counter() - started) * 1000),
+                    http_status=None,
+                    provider_request_id_hash=_hash_request_id(provider_blocks.get("request_id")),
+                )
                 if index > 0:
                     self._emit("INFO", f"AI fallback provider {provider.id} succeeded")
                 return assistant
             except Exception as exc:
                 last_error = exc
+                _try_audit_provider_result(
+                    provider,
+                    status="error",
+                    elapsed_ms=int((time.perf_counter() - started) * 1000),
+                    http_status=_provider_status_code(exc),
+                    provider_request_id_hash=_provider_request_id(exc),
+                    failure_category=_classify_provider_failure(exc),
+                )
                 if index + 1 < len(providers):
                     self._emit(
                         "WARNING",
@@ -184,7 +200,7 @@ class ConfiguredAIClient:
             payload["tools"] = [_openai_tool(tool) for tool in tools]
             payload["tool_choice"] = "auto"
 
-        _audit_provider_endpoint(provider.base_url)
+        _try_audit_provider_endpoint(provider.base_url)
         content_parts: list[str] = []
         tool_calls: dict[int, dict[str, Any]] = {}
         provider_blocks: dict[str, Any] = {}
@@ -285,6 +301,7 @@ def _audit_provider_request(provider: AIProviderProfile, payload: dict[str, Any]
     }
     record = {
         "kind": "provider_request_metadata",
+        "operation": os.getenv("OFFERPILOT_FULL_VERIFY_OPERATION") or "unclassified",
         "provider_id": provider.id,
         "provider_type": provider.provider,
         "endpoint": {
@@ -315,6 +332,62 @@ def _try_audit_provider_request(provider: AIProviderProfile, payload: dict[str, 
         _audit_provider_request(provider, payload)
     except Exception:
         return
+
+
+def _audit_provider_result(
+    provider: AIProviderProfile,
+    *,
+    status: str,
+    elapsed_ms: int,
+    http_status: int | None,
+    provider_request_id_hash: str,
+    failure_category: str | None = None,
+) -> None:
+    path = os.getenv("OFFERPILOT_FULL_VERIFY_OPERATION_AUDIT_FILE")
+    if not path:
+        return
+    record = {
+        "kind": "provider_request_result",
+        "operation": os.getenv("OFFERPILOT_FULL_VERIFY_OPERATION") or "unclassified",
+        "provider_id": provider.id,
+        "provider_type": provider.provider,
+        "model": provider.model,
+        "status": status,
+        "elapsed_ms": max(0, int(elapsed_ms)),
+        "http_status": http_status,
+        "provider_request_id_hash": provider_request_id_hash,
+        "failure_category": failure_category,
+    }
+    with open(path, "a", encoding="utf-8") as audit:
+        audit.write(json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n")
+
+
+def _try_audit_provider_result(
+    provider: AIProviderProfile,
+    *,
+    status: str,
+    elapsed_ms: int,
+    http_status: int | None,
+    provider_request_id_hash: str,
+    failure_category: str | None = None,
+) -> None:
+    try:
+        _audit_provider_result(
+            provider,
+            status=status,
+            elapsed_ms=elapsed_ms,
+            http_status=http_status,
+            provider_request_id_hash=provider_request_id_hash,
+            failure_category=failure_category,
+        )
+    except Exception:
+        return
+
+
+def _hash_request_id(value: Any) -> str:
+    if not value:
+        return ""
+    return hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:12]
 
 
 def _sha256_json(value: Any) -> str:

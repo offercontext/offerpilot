@@ -194,6 +194,29 @@ def test_client_streams_content_deltas_through_litellm(monkeypatch):
     assert assistant.tool_calls == []
 
 
+def test_streaming_provider_request_audit_failure_does_not_block_provider_call(
+    monkeypatch, tmp_path
+):
+    audit_path = tmp_path / "missing" / "provider-request-audit.jsonl"
+    monkeypatch.setenv("OFFERPILOT_PROVIDER_AUDIT_FILE", str(audit_path))
+    calls = 0
+
+    def fake_completion(**kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        return [SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="ok"))])]
+
+    monkeypatch.setattr(ai_client, "completion", fake_completion)
+    client = ConfiguredAIClient(
+        Config(api_key="sk-test", base_url="https://provider.example/v1", model="model")
+    )
+
+    result = client.stream_complete([Message(role="user", content="prompt")], [], lambda _: None)
+
+    assert result.content == "ok"
+    assert calls == 1
+
+
 def test_client_streams_tool_calls_through_litellm(monkeypatch):
     def fake_completion(**kwargs: Any) -> Any:
         return [

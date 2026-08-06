@@ -43,6 +43,8 @@ CONTROLLED_PROPOSAL = {
     "items_to_clarify": [],
 }
 
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+
 
 class _ControlledProviderHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -162,6 +164,28 @@ def _read_redacted_request_metadata(path: Path) -> list[dict[str, Any]]:
     return metadata
 
 
+def _validate_redacted_request_metadata(
+    metadata: list[dict[str, Any]], *, expected_calls: int
+) -> None:
+    if len(metadata) != expected_calls:
+        raise RuntimeError(
+            f"provider request metadata count {len(metadata)} does not match calls {expected_calls}"
+        )
+    for record in metadata:
+        if record.get("kind") != "provider_request_metadata":
+            raise RuntimeError("provider request metadata kind was invalid")
+        if not isinstance(record.get("provider_id"), str) or not record["provider_id"]:
+            raise RuntimeError("provider request metadata provider id was invalid")
+        if not isinstance(record.get("endpoint"), dict):
+            raise RuntimeError("provider request metadata endpoint was invalid")
+        for field in ("input_fingerprint_sha256", "schema_fingerprint_sha256"):
+            value = record.get(field)
+            if not isinstance(value, str) or not _SHA256_PATTERN.fullmatch(value):
+                raise RuntimeError("provider request metadata fingerprint was invalid")
+        if record.get("response_mode") not in {"text_json", "json_schema"}:
+            raise RuntimeError("provider request metadata response mode was invalid")
+
+
 def _count_resume_string_leaves(value: object, *, budget: list[int]) -> int:
     if budget[0] <= 0:
         return 0
@@ -275,6 +299,9 @@ def run_diagnostic(source_data: Path, static_dir: Path | None) -> dict[str, Any]
                     )
                     diagnostics = _read_redacted_generation_diagnostics(data_dir)
                     request_metadata = _read_redacted_request_metadata(request_audit_path)
+                    _validate_redacted_request_metadata(
+                        request_metadata, expected_calls=len(_ControlledProviderHandler.calls)
+                    )
                     evidence_catalog_counts = _redacted_evidence_catalog_counts(data_dir)
                     client.delete(f"/api/applications/{application_id}")
                     for resume_id in resume_ids:
