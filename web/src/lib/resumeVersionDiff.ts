@@ -384,12 +384,12 @@ function isCycleAtCurrent(value: unknown, ancestors: Set<object>) {
 }
 
 function appendPointer(path: string, key: string) {
-  return `${path}/${key.replaceAll('~', '~0').replaceAll('/', '~1')}`;
+  return `${path}/${key.replace(/~/g, '~0').replace(/\//g, '~1')}`;
 }
 
 function moduleForPath(path: string): DiffModule {
   if (path === '') return 'other';
-  const firstSegment = path.slice(1).split('/')[0].replaceAll('~1', '/').replaceAll('~0', '~');
+  const firstSegment = path.slice(1).split('/')[0].replace(/~1/g, '/').replace(/~0/g, '~');
   return MODULE_ORDER.includes(firstSegment as DiffModule) ? firstSegment as DiffModule : 'other';
 }
 

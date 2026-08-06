@@ -90,12 +90,20 @@ function renderLibrary() {
       </QueryClientProvider>,
     );
   });
+  return queryClient;
 }
 
 function findButton(label: string) {
   const button = Array.from(host?.querySelectorAll('button') ?? [])
     .find((item) => item.textContent?.includes(label) || item.getAttribute('aria-label') === label);
   if (!(button instanceof HTMLButtonElement)) throw new Error(`button not found: ${label}`);
+  return button;
+}
+
+function findCompareButton() {
+  const button = Array.from(host?.querySelectorAll('button') ?? [])
+    .find((item) => item.textContent?.trim().length === 4);
+  if (!(button instanceof HTMLButtonElement)) throw new Error('compare button not found');
   return button;
 }
 
@@ -170,5 +178,32 @@ describe('ResumeLibraryView version compare mounted audit', () => {
     expect(xhrOpenSpy).not.toHaveBeenCalled();
     expect(pushStateSpy).not.toHaveBeenCalled();
     expect(replaceStateSpy).not.toHaveBeenCalled();
+  });
+
+  it('recomputes a saved target refresh and closes when the target is removed', async () => {
+    const queryClient = renderLibrary();
+    await flush();
+    await act(async () => findCompareButton().click());
+
+    act(() => {
+      queryClient.setQueryData(['resumes'], [
+        makeResume(2, {
+          parent_resume_id: 1,
+          content_json: {
+            contact: { name: 'refreshed target' },
+            experience: [{ highlights: ['refreshed evidence'] }],
+          },
+        }),
+        makeResume(1),
+      ]);
+    });
+    await flush();
+    expect(host?.textContent).toContain('refreshed target');
+
+    act(() => {
+      queryClient.setQueryData(['resumes'], [makeResume(1)]);
+    });
+    await flush();
+    expect(host?.querySelector('[role="dialog"]')).toBeNull();
   });
 });

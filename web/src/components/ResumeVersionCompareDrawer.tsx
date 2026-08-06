@@ -36,6 +36,12 @@ export default function ResumeVersionCompareDrawer({
   const [expandedKeys, setExpandedKeys] = useState<Set<string>>(() => new Set());
   const previousOpen = useRef(false);
   const previousTargetId = useRef<number | null>(null);
+  const dialogRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   const sortedCandidates = useMemo(() => sortCandidates(target, candidates), [target, candidates]);
   const baseline = baselineId === null
@@ -64,13 +70,61 @@ export default function ResumeVersionCompareDrawer({
     }
   }, [baselineId, candidates, target.id]);
 
+  useEffect(() => {
+    if (!open) return undefined;
+
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const dialog = dialogRef.current;
+    dialog?.focus();
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+
+      const activeDialog = dialogRef.current;
+      const focusable = getFocusableElements(activeDialog);
+      if (!activeDialog || focusable.length === 0) {
+        event.preventDefault();
+        activeDialog?.focus();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+      if (active === activeDialog) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && active === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      } else if (!activeDialog.contains(active)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      if (opener?.isConnected) opener.focus();
+    };
+  }, [open]);
+
   if (!open) return null;
 
   const groupedItems = groupItems(diff?.items ?? []);
 
   return (
     <div className={styles.compareBackdrop} data-resume-version-compare>
-      <aside className={styles.compareDrawer} role="dialog" aria-modal="true" aria-label="简历版本对比">
+      <aside ref={dialogRef} tabIndex={-1} className={styles.compareDrawer} role="dialog" aria-modal="true" aria-label="简历版本对比">
         <div className={styles.compareHeader}>
           <div>
             <div className={styles.compareEyebrow}>已保存内容审阅</div>
@@ -246,4 +300,11 @@ function groupItems(items: ResumeDiffItem[]) {
     (groups[item.module] ??= []).push(item);
     return groups;
   }, {});
+}
+
+function getFocusableElements(dialog: HTMLElement | null) {
+  if (!dialog) return [];
+  return Array.from(dialog.querySelectorAll<HTMLElement>(
+    'button:not([disabled]), select:not([disabled]), textarea:not([disabled]), input:not([disabled]), a[href], summary, [tabindex]:not([tabindex="-1"])',
+  )).filter((element) => !element.hidden && element.getAttribute('aria-hidden') !== 'true');
 }

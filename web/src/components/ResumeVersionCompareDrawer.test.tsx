@@ -236,4 +236,42 @@ describe('ResumeVersionCompareDrawer', () => {
     act(() => close?.click());
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+
+  it('focuses the dialog, traps keyboard focus, closes on Escape, and restores the opener', () => {
+    const opener = document.createElement('button');
+    opener.textContent = 'open compare';
+    document.body.appendChild(opener);
+    opener.focus();
+
+    const onClose = renderDrawer(
+      makeResume(2, { parent_resume_id: 1 }),
+      [makeResume(2, { parent_resume_id: 1 }), makeResume(1)],
+      vi.fn(),
+    );
+    const dialog = drawerRoot().querySelector<HTMLElement>('[role="dialog"]');
+    const select = compareSelect();
+    expect(dialog).not.toBeNull();
+    expect(document.activeElement).toBe(dialog);
+
+    const close = drawerRoot().querySelector<HTMLButtonElement>('button');
+    expect(close).not.toBeNull();
+    close?.focus();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true }));
+    expect(document.activeElement).toBe(select);
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    act(() => {
+      root?.render(
+        <ResumeVersionCompareDrawer
+          open={false}
+          target={makeResume(2, { parent_resume_id: 1 })}
+          candidates={[makeResume(2, { parent_resume_id: 1 }), makeResume(1)]}
+          onClose={onClose}
+        />,
+      );
+    });
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
 });

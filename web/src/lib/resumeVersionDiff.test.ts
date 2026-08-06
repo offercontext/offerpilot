@@ -121,7 +121,7 @@ describe('diffResumeContent', () => {
     expect(item.after?.text.full).toBe('（无法安全展示）');
   });
 
-  it('never executes accessors or Proxy traps while producing safe output', () => {
+  it('never executes accessors and safely normalizes throwing Proxy traps', () => {
     let getterCalls = 0;
     const withGetter = Object.defineProperty({}, 'name', {
       enumerable: true,
@@ -139,6 +139,16 @@ describe('diffResumeContent', () => {
     expect(() => diffResumeContent({ value: withGetter }, { value: throwingProxy })).not.toThrow();
     expect(getterCalls).toBe(0);
     expect(diffResumeContent({ value: withGetter }, { value: throwingProxy }).items[0].after?.valueType).toBe('unsupported');
+
+    let getTrapCalls = 0;
+    const proxyWithGetTrap = new Proxy({ name: 'x' }, {
+      get() {
+        getTrapCalls += 1;
+        throw new Error('Proxy get trap must not run');
+      },
+    });
+    expect(() => diffResumeContent({ value: proxyWithGetTrap }, { value: { name: 'y' } })).not.toThrow();
+    expect(getTrapCalls).toBe(0);
   });
 
   it('rejects non-JSON container shapes at the container path', () => {
