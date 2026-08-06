@@ -130,6 +130,37 @@ def _read_redacted_generation_diagnostics(data_dir: Path) -> list[dict[str, Any]
     return diagnostics
 
 
+def _read_redacted_request_metadata(path: Path) -> list[dict[str, Any]]:
+    metadata: list[dict[str, Any]] = []
+    if not path.is_file():
+        return metadata
+    allowed_fields = {
+        "kind",
+        "provider_id",
+        "provider_type",
+        "endpoint",
+        "model",
+        "litellm_model",
+        "message_count",
+        "message_bytes",
+        "request_body_bytes",
+        "input_fingerprint_sha256",
+        "schema_fingerprint_sha256",
+        "response_mode",
+        "max_tokens",
+        "timeout_seconds",
+    }
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(record, dict) or record.get("kind") != "provider_request_metadata":
+            continue
+        metadata.append({key: value for key, value in record.items() if key in allowed_fields})
+    return metadata
+
+
 def _count_resume_string_leaves(value: object, *, budget: list[int]) -> int:
     if budget[0] <= 0:
         return 0
@@ -214,10 +245,14 @@ def run_diagnostic(source_data: Path, static_dir: Path | None) -> dict[str, Any]
     thread.start()
     started = time.perf_counter()
     previous_no_proxy = os.environ.get("NO_PROXY")
+    previous_request_audit = os.environ.get("OFFERPILOT_PROVIDER_REQUEST_AUDIT_FILE")
     os.environ["NO_PROXY"] = "127.0.0.1,localhost"
+    request_metadata: list[dict[str, Any]] = []
     try:
         with tempfile.TemporaryDirectory(prefix="offerpilot-interview-preparation-controlled-") as temp_dir:
             data_dir = Path(temp_dir)
+            request_audit_path = data_dir / "provider-request-audit.jsonl"
+            os.environ["OFFERPILOT_PROVIDER_REQUEST_AUDIT_FILE"] = str(request_audit_path)
             provider_url = f"http://127.0.0.1:{provider.server_port}/v1"
             save_config(data_dir, _controlled_config(source_data, provider_url))
             app = create_app(data_dir=data_dir, static_dir=static_dir)
@@ -238,6 +273,7 @@ def run_diagnostic(source_data: Path, static_dir: Path | None) -> dict[str, Any]
                         client, [], application_id, resume_ids
                     )
                     diagnostics = _read_redacted_generation_diagnostics(data_dir)
+                    request_metadata = _read_redacted_request_metadata(request_audit_path)
                     evidence_catalog_counts = _redacted_evidence_catalog_counts(data_dir)
                     client.delete(f"/api/applications/{application_id}")
                     for resume_id in resume_ids:
@@ -247,6 +283,10 @@ def run_diagnostic(source_data: Path, static_dir: Path | None) -> dict[str, Any]
             os.environ.pop("NO_PROXY", None)
         else:
             os.environ["NO_PROXY"] = previous_no_proxy
+        if previous_request_audit is None:
+            os.environ.pop("OFFERPILOT_PROVIDER_REQUEST_AUDIT_FILE", None)
+        else:
+            os.environ["OFFERPILOT_PROVIDER_REQUEST_AUDIT_FILE"] = previous_request_audit
         provider.shutdown()
         provider.server_close()
         thread.join(timeout=5)
@@ -259,6 +299,7 @@ def run_diagnostic(source_data: Path, static_dir: Path | None) -> dict[str, Any]
         "provider_calls": len(_ControlledProviderHandler.calls),
         "responses": _ControlledProviderHandler.calls,
         "diagnostics": diagnostics,
+        "request_metadata": request_metadata,
         "evidence_catalog_counts": evidence_catalog_counts,
         "elapsed_ms": max(0, int((time.perf_counter() - started) * 1000)),
     }

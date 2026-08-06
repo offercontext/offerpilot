@@ -10,6 +10,59 @@ from offerpilot.ai.types import Message
 from offerpilot.config import AIProviderProfile, Config
 
 
+def test_client_audits_request_metadata_without_prompt_or_secret(monkeypatch, tmp_path):
+    audit_path = tmp_path / "provider-request-audit.jsonl"
+    monkeypatch.setenv("OFFERPILOT_PROVIDER_REQUEST_AUDIT_FILE", str(audit_path))
+
+    def fake_completion(**kwargs: Any) -> Any:
+        return {"choices": [{"message": {"content": "ok"}}]}
+
+    monkeypatch.setattr(ai_client, "completion", fake_completion)
+    client = ConfiguredAIClient(
+        Config(
+            providers=[
+                AIProviderProfile(
+                    id="diagnostic",
+                    provider="openai_compatible",
+                    api_key="sk-secret",
+                    base_url="https://provider.example/v1",
+                    model="model-secret",
+                    supports_json_schema=True,
+                )
+            ],
+            active_provider_id="diagnostic",
+        )
+    )
+
+    client.complete(
+        [Message(role="user", content="private prompt")],
+        [],
+        response_format={"type": "json_schema", "json_schema": {"name": "contract"}},
+    )
+
+    records = [
+        json.loads(line)
+        for line in audit_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    record = next(item for item in records if item["kind"] == "provider_request_metadata")
+    assert record["kind"] == "provider_request_metadata"
+    assert record["provider_id"] == "diagnostic"
+    assert record["provider_type"] == "openai_compatible"
+    assert record["endpoint"] == {"scheme": "https", "host": "provider.example", "port": 443}
+    assert record["model"] == "model-secret"
+    assert record["litellm_model"] == "openai/model-secret"
+    assert record["response_mode"] == "json_schema"
+    assert record["max_tokens"] is None
+    assert record["timeout_seconds"] is None
+    assert record["request_body_bytes"] > 0
+    assert len(record["input_fingerprint_sha256"]) == 64
+    assert len(record["schema_fingerprint_sha256"]) == 64
+    audit_text = audit_path.read_text(encoding="utf-8")
+    assert "private prompt" not in audit_text
+    assert "sk-secret" not in audit_text
+
+
 def test_client_routes_openai_compatible_calls_through_litellm(monkeypatch):
     captured: dict[str, Any] = {}
 

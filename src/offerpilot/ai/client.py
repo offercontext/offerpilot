@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import os
 import time
 import uuid
@@ -141,6 +141,7 @@ class ConfiguredAIClient:
             payload["response_format"] = response_format
 
         _audit_provider_endpoint(provider.base_url)
+        _audit_provider_request(provider, payload)
         response = completion(**payload)
         message = _first_choice_message(response)
         calls = []
@@ -257,6 +258,55 @@ def _audit_provider_endpoint(base_url: str) -> None:
             )
             + "\n"
         )
+
+
+def _audit_provider_request(provider: AIProviderProfile, payload: dict[str, Any]) -> None:
+    path = os.getenv("OFFERPILOT_PROVIDER_REQUEST_AUDIT_FILE")
+    if not path:
+        return
+    parsed = urlparse(provider.base_url)
+    messages = payload.get("messages", [])
+    tools = payload.get("tools", [])
+    response_format = payload.get("response_format")
+    provider_payload = {
+        key: value for key, value in payload.items() if key not in {"api_key", "api_base"}
+    }
+    canonical_input = {
+        "messages": messages,
+        "tools": tools,
+        "response_format": response_format,
+    }
+    record = {
+        "kind": "provider_request_metadata",
+        "provider_id": provider.id,
+        "provider_type": provider.provider,
+        "endpoint": {
+            "scheme": parsed.scheme,
+            "host": parsed.hostname,
+            "port": parsed.port or (443 if parsed.scheme == "https" else 80),
+        },
+        "model": provider.model,
+        "litellm_model": payload.get("model"),
+        "message_count": len(messages) if isinstance(messages, list) else 0,
+        "message_bytes": _json_bytes(messages),
+        "request_body_bytes": _json_bytes(provider_payload),
+        "input_fingerprint_sha256": _sha256_json(canonical_input),
+        "schema_fingerprint_sha256": _sha256_json(response_format or ""),
+        "response_mode": "json_schema" if response_format is not None else "text_json",
+        "max_tokens": payload.get("max_tokens", payload.get("max_completion_tokens")),
+        "timeout_seconds": payload.get("timeout"),
+    }
+    with open(path, "a", encoding="utf-8") as audit:
+        audit.write(json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n")
+
+
+def _sha256_json(value: Any) -> str:
+    canonical = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _json_bytes(value: Any) -> int:
+    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
 
 
 def _provider_failure_diagnostic(
