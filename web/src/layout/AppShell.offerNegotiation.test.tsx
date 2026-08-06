@@ -427,6 +427,63 @@ describe('AppShell mounted Opportunity Fit confirmation recovery', () => {
     await flush();
   });
 
+  it('disables Pilot history entries while a Triage request is in flight', async () => {
+    let resolveTriage: ((value: unknown) => void) | undefined;
+    opportunityFitState.createTriage.mockImplementation(() => new Promise((resolve) => {
+      resolveTriage = resolve;
+    }));
+
+    await act(async () => root?.render(<AppShell />));
+    await flush();
+    act(() => host?.querySelector<HTMLButtonElement>('[data-testid="open-application-detail"]')?.click());
+    await flush();
+    act(() => host?.querySelector<HTMLButtonElement>('[data-testid="open-opportunity-fit"]')?.click());
+    await flush();
+
+    const resumeSelect = host?.querySelector<HTMLSelectElement>('select');
+    if (!resumeSelect) throw new Error('Pilot resume selector was not mounted');
+    resumeSelect.value = '11';
+    act(() => resumeSelect.dispatchEvent(new Event('change', { bubbles: true })));
+    await flush();
+
+    const startButton = Array.from(host?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+      .find((button) => button.textContent?.includes('Triage'));
+    if (!startButton) throw new Error('Pilot Triage start button was not mounted');
+    act(() => startButton.click());
+    await flush();
+    const confirmation = host?.querySelector<HTMLElement>('[role="dialog"]');
+    const confirmButton = confirmation?.querySelectorAll<HTMLButtonElement>('button')[1];
+    if (!confirmButton) throw new Error('Pilot Triage confirmation button was not mounted');
+    act(() => confirmButton.click());
+    await flush();
+    expect(opportunityFitState.createTriage).toHaveBeenCalledTimes(1);
+
+    const historyButtons = Array.from(host?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+      .filter((button) => button.textContent?.includes('\u67e5\u770b'));
+    expect(historyButtons.length).toBeGreaterThanOrEqual(2);
+    historyButtons.forEach((button) => {
+      expect(button.disabled).toBe(true);
+      act(() => button.click());
+    });
+    expect(opportunityFitState.getReview).not.toHaveBeenCalled();
+
+    resolveTriage?.({
+      stage_id: 301,
+      review_id: 201,
+      resume_id: 11,
+      jd_version_id: 1,
+      stage: 'triage',
+      schema_version: 2,
+      stage_status: 'ready',
+      parent_triage_stage_id: null,
+      idempotency_key: 'pilot-triage-key',
+      source_fingerprint_sha256: 'frozen-source',
+      confirmation_token: 'triage-confirmation-token',
+      proposal: { summary: { text: 'Triage summary', rationale: 'evidence', evidence_refs: [] }, conditions: [], risks: [], questions: [], next_steps: [] },
+    });
+    await flush();
+  });
+
   it('drops a late request from application A after switching to application B', async () => {
     let resolveDeep: ((value: unknown) => void) | undefined;
     opportunityFitState.confirmTriage.mockResolvedValue({

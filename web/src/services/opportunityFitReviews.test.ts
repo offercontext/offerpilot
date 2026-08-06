@@ -81,4 +81,25 @@ describe('opportunity fit source-conflict recovery', () => {
       findOpportunityFitV2SourceConflictStage(9, 'triage', 'triage-key-00000001'),
     ).resolves.toEqual({ status: 'review_missing' });
   });
+
+  it('checks application visibility before recovering a review by id', async () => {
+    getMock.mockRejectedValueOnce({ response: { status: 404 } });
+
+    await expect(
+      findOpportunityFitV2SourceConflictStage(9, 'deep_review', 'deep-key-00000001', 42),
+    ).resolves.toEqual({ status: 'application_missing' });
+    expect(getMock).toHaveBeenCalledTimes(1);
+    expect(getMock).not.toHaveBeenCalledWith('/applications/9/opportunity-fit-reviews/42');
+  });
+
+  it('classifies an explicit review detail 404 as review missing after application visibility succeeds', async () => {
+    getMock
+      .mockResolvedValueOnce({ data: [] })
+      .mockRejectedValueOnce({ response: { status: 404 } });
+
+    await expect(
+      findOpportunityFitV2SourceConflictStage(9, 'deep_review', 'deep-key-00000001', 42),
+    ).resolves.toEqual({ status: 'review_missing' });
+    expect(getMock).toHaveBeenCalledTimes(2);
+  });
 });

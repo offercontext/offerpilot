@@ -30,6 +30,7 @@ interface Props {
   onViewLegacyHistory?: (reviewId: number) => void;
   onStartNew: () => void;
   restartDisabled?: boolean;
+  historyDisabled?: boolean;
   onPrepareMaterials?: (resumeId: number, jdText: string, jdVersionId: number) => void;
   onOpenInterviewReview?: (applicationId: number) => void;
   onOpenInterviewPreparation?: (applicationId: number) => void;
@@ -120,6 +121,7 @@ export default function PilotOpportunityFitV2Card({
   onViewLegacyHistory,
   onStartNew,
   restartDisabled = false,
+  historyDisabled = false,
   onPrepareMaterials,
   onOpenInterviewReview,
   onOpenInterviewPreparation,
@@ -142,6 +144,7 @@ export default function PilotOpportunityFitV2Card({
   const deepSourceConflict = draft.deep?.stage_status === 'source_conflict';
   const triagePending = Boolean(draft.triage && ['generating', 'provider_unknown'].includes(draft.triage.stage_status));
   const deepPending = Boolean(draft.deep && ['generating', 'provider_unknown'].includes(draft.deep.stage_status));
+  const historyEntryDisabled = historyDisabled || triageLoading || deepLoading;
   const isHistorical = draft.historical || Boolean(legacyReview);
   const input: CreateOpportunityFitV2Input = {
     schema_version: 2,
@@ -174,18 +177,20 @@ export default function PilotOpportunityFitV2Card({
       <aside aria-label="历史岗位评估">
         <h3>历史评估（只读）</h3>
         {historyLoading || legacyHistoryLoading ? <p role="status">正在加载历史评估</p> : null}
+        <fieldset disabled={historyEntryDisabled} style={{ border: 0, padding: 0, margin: 0 }}>
         {legacyHistory.map((item) => (
           <div key={`legacy-${item.id}`}>
             <span>旧版评估 #{item.id} · 只读</span>
-            {onViewLegacyHistory ? <button type="button" onClick={() => onViewLegacyHistory(item.id)}>查看</button> : null}
+            {onViewLegacyHistory ? <button type="button" disabled={historyEntryDisabled} onClick={() => onViewLegacyHistory(item.id)}>查看</button> : null}
           </div>
         ))}
         {history.map((item) => (
           <div key={item.review_id}>
             <span>评估 #{item.review_id} · {item.stage_count} 个阶段</span>
-            <button type="button" onClick={() => onViewHistory(item.review_id)}>查看</button>
+            <button type="button" disabled={historyEntryDisabled} onClick={() => onViewHistory(item.review_id)}>查看</button>
           </div>
         ))}
+        </fieldset>
       </aside>
 
       {legacyReview ? (

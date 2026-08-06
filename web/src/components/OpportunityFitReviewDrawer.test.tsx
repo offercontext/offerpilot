@@ -55,10 +55,25 @@ vi.mock('@tanstack/react-query', () => ({
       isFetching: queryState.data === undefined && queryState.error === undefined,
     };
   },
-  useMutation: (options: { mutationFn: (variables?: unknown) => unknown; onSuccess?: (data: unknown) => void; onError?: (error: unknown, variables?: any) => void }) => ({
-    isPending: false,
-    mutate: (variables?: unknown) => void Promise.resolve(options.mutationFn(variables)).then(options.onSuccess).catch((error) => options.onError?.(error, variables)),
-  }),
+  useMutation: (options: { mutationFn: (variables?: unknown) => unknown; onSuccess?: (data: unknown) => void; onError?: (error: unknown, variables?: any) => void }) => {
+    const [isPending, setIsPending] = useState(false);
+    return {
+      isPending,
+      mutate: (variables?: unknown) => {
+        setIsPending(true);
+        void Promise.resolve(options.mutationFn(variables)).then(
+          (data) => {
+            setIsPending(false);
+            options.onSuccess?.(data);
+          },
+          (error) => {
+            setIsPending(false);
+            options.onError?.(error, variables);
+          },
+        );
+      },
+    };
+  },
 }));
 vi.mock('antd', () => {
   const Form = Object.assign(
@@ -563,6 +578,46 @@ describe('OpportunityFitReviewDrawer', () => {
 
     expect(view.textContent).toContain('Drawer history B');
     expect(view.textContent).not.toContain('Drawer history A late');
+  });
+
+  it('disables Drawer history while Triage is in flight', async () => {
+    let resolveCreate: ((value: unknown) => void) | undefined;
+    state.list.mockResolvedValue([{ id: 8, recommendation: 'advance', created_at: '2026-07-21T00:00:00Z' }]);
+    state.listV2.mockResolvedValue([{ review_id: 21, stage_count: 1 }]);
+    state.create.mockImplementation(() => new Promise((resolve) => { resolveCreate = resolve; }));
+    const view = await render(undefined, 'JD text');
+    const select = view.querySelector('select');
+    if (!(select instanceof HTMLSelectElement)) throw new Error('Expected resume selector');
+    await waitFor(() => expect(select.querySelector('option[value="11"]')).toBeTruthy());
+    await act(async () => setValue(select, '11'));
+    await waitFor(() => expect(getByRole(view, 'button', 'Triage')).toHaveProperty('disabled', false));
+    await click(getByRole(view, 'button', 'Triage'));
+    await waitFor(() => expect(state.create).toHaveBeenCalledTimes(1));
+
+    await waitFor(() => {
+      const historyButtons = [...view.querySelectorAll<HTMLButtonElement>('button')]
+        .filter((button) => button.textContent?.includes('\u67e5\u770b'));
+      expect(historyButtons).toHaveLength(2);
+      historyButtons.forEach((button) => {
+        expect(button.disabled).toBe(true);
+        act(() => button.click());
+      });
+    });
+    expect(state.get).not.toHaveBeenCalled();
+    expect(state.getV2).not.toHaveBeenCalled();
+
+    resolveCreate?.({
+      review_id: 31,
+      stage_id: 310,
+      stage: 'triage',
+      stage_status: 'ready',
+      confirmation_token: 'confirm-token',
+      resume_id: 11,
+      jd_version_id: 1,
+      idempotency_key: 'current-triage-key',
+      proposal: { summary: { text: 'Current Triage', evidence_refs: [] }, conditions: [], risks: [], questions: [], next_steps: [] },
+    });
+    await flush();
   });
 
   it('drops a late Drawer history response when a new Triage starts', async () => {

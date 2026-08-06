@@ -134,4 +134,35 @@ describe('PilotOpportunityFitV2Card', () => {
     act(() => restart?.click());
     expect(props.onStartNew).toHaveBeenCalledTimes(1);
   });
+
+  it('disables every history entry while a live operation is pending', () => {
+    const onViewHistory = vi.fn();
+    const onViewLegacyHistory = vi.fn();
+    root = createRoot(container);
+    act(() => root?.render(createElement(PilotOpportunityFitV2Card, {
+      draft: draft(),
+      resumes: [{ id: 4, title: 'test-resume' }],
+      history: [{ review_id: 2, stage_count: 1 } as never],
+      legacyHistory: [{ id: 9 } as never],
+      onChange: vi.fn(),
+      onStartTriage: vi.fn(),
+      onConfirmTriage: vi.fn(),
+      onStartDeepReview: vi.fn(),
+      onViewHistory,
+      onViewLegacyHistory,
+      onStartNew: vi.fn(),
+      onCancel: vi.fn(),
+      historyDisabled: true,
+    })));
+
+    const historyButtons = [...container.querySelectorAll<HTMLButtonElement>('button')]
+      .filter((button) => button.textContent === '\u67e5\u770b');
+    expect(historyButtons).toHaveLength(2);
+    historyButtons.forEach((button) => {
+      expect(button.disabled).toBe(true);
+      act(() => button.click());
+    });
+    expect(onViewHistory).not.toHaveBeenCalled();
+    expect(onViewLegacyHistory).not.toHaveBeenCalled();
+  });
 });

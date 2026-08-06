@@ -131,7 +131,10 @@ export async function findOpportunityFitV2SourceConflictStage(
 ): Promise<OpportunityFitV2SourceConflictLookup> {
   let summaries: OpportunityFitV2SessionSummary[] = [];
   try {
-    summaries = reviewID === undefined ? await listOpportunityFitV2Reviews(applicationID) : [];
+    // Even an explicit review id must first prove that the parent Application
+    // is still visible. The detail endpoint alone cannot distinguish a
+    // deleted Application from a deleted Review.
+    summaries = await listOpportunityFitV2Reviews(applicationID);
   } catch (error) {
     return isNotFoundError(error) ? { status: 'application_missing' } : { status: 'unknown' };
   }

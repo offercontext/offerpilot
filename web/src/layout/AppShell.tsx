@@ -1503,6 +1503,7 @@ function AppShellContent() {
                   onViewLegacyHistory={(reviewId) => void viewPilotLegacyHistory(reviewId)}
                   onStartNew={startNewPilotV2Review}
                   restartDisabled={pilotV2OperationPending}
+                  historyDisabled={pilotV2OperationPending}
                   onPrepareMaterials={(resumeId, jdText, jdVersionId) => preparePilotMaterials({
                     applicationId: pilotApplicationContext.applicationId,
                     resumeId,

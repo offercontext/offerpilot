@@ -462,6 +462,8 @@ export default function OpportunityFitReviewDrawer({
       && !createMutation.isPending,
   );
 
+  const historyButtonsDisabled = createMutation.isPending || confirmV2Mutation.isPending || deepReviewMutation.isPending;
+
   const buildTriageInput = () => {
     const frozen = Boolean(draft?.triageKey);
     const selectedResumeID = frozen ? draft?.resumeId : resumeID;
@@ -626,30 +628,34 @@ export default function OpportunityFitReviewDrawer({
 
       {stage === 'input' && reviewHistoryQuery.data && reviewHistoryQuery.data.length > 0 ? (
         <Card size="small" title={OPPORTUNITY_FIT_COPY.drawer.history} style={{ marginBottom: 16 }}>
+          <fieldset disabled={historyButtonsDisabled} style={{ border: 0, padding: 0, margin: 0 }}>
           <Space direction="vertical" style={{ width: '100%' }}>
             {reviewHistoryQuery.data.map((item) => (
               <Space key={item.id} style={{ justifyContent: 'space-between', width: '100%' }}>
                 <Typography.Text>
                   {opportunityFitRecommendationLabel(item.recommendation)} · {new Date(item.created_at).toLocaleString()}
                 </Typography.Text>
-                <Button size="small" onClick={() => void openHistoricalReview(item.id)}>
+                <Button size="small" disabled={historyButtonsDisabled} onClick={() => void openHistoricalReview(item.id)}>
                   {OPPORTUNITY_FIT_COPY.drawer.view}
                 </Button>
               </Space>
             ))}
           </Space>
+          </fieldset>
         </Card>
       ) : null}
       {stage === 'input' && v2HistoryQuery.data && v2HistoryQuery.data.length > 0 ? (
         <Card size="small" title="岗位评估历史（v2，只读）" style={{ marginBottom: 16 }}>
+          <fieldset disabled={historyButtonsDisabled} style={{ border: 0, padding: 0, margin: 0 }}>
           <Space direction="vertical" style={{ width: '100%' }}>
             {v2HistoryQuery.data.map((item) => (
               <Space key={`v2-${item.review_id}`} style={{ justifyContent: 'space-between', width: '100%' }}>
                 <Typography.Text>评估 #{item.review_id} · {item.stage_count} 个阶段</Typography.Text>
-                <Button size="small" onClick={() => void openHistoricalV2Review(item.review_id)}>查看</Button>
+                <Button size="small" disabled={historyButtonsDisabled} onClick={() => void openHistoricalV2Review(item.review_id)}>查看</Button>
               </Space>
             ))}
           </Space>
+          </fieldset>
         </Card>
       ) : null}
 
