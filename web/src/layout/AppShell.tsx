@@ -170,6 +170,8 @@ function AppShellContent() {
   const [pilotApplicationContext, setPilotApplicationContext] = useState<{ applicationId: number; pilotDraftKey: string } | null>(null);
   const pilotV2DraftsRef = useRef(new Map<number, PilotOpportunityFitV2Draft>());
   const [pilotV2Draft, setPilotV2Draft] = useState<PilotOpportunityFitV2Draft | null>(null);
+  const pilotV2GenerationRef = useRef(0);
+  const [pilotV2OperationPending, setPilotV2OperationPending] = useState(false);
   const [pilotLegacyReview, setPilotLegacyReview] = useState<OpportunityFitReview | null>(null);
   const [pilotInterviewReviewApplicationId, setPilotInterviewReviewApplicationId] = useState<number | null>(null);
   const [pilotInterviewPreparationApplicationId, setPilotInterviewPreparationApplicationId] = useState<number | null>(null);
@@ -932,8 +934,8 @@ function AppShellContent() {
     stage: 'triage' | 'deep_review',
     idempotencyKey: string,
     reviewID?: number,
-  ): Promise<PilotOpportunityFitV2Draft['triage']> => {
-    if (!pilotV2Draft) return null;
+  ): Promise<Awaited<ReturnType<typeof findOpportunityFitV2SourceConflictStage>>> => {
+    if (!pilotV2Draft) return { status: 'not_found' };
     try {
       return await findOpportunityFitV2SourceConflictStage(
         pilotV2Draft.applicationId,
@@ -942,9 +944,11 @@ function AppShellContent() {
         reviewID,
       );
     } catch {
-      return null;
+      return { status: 'unknown' };
     }
   };
+
+  const pilotV2RecoveryUnknownCopy = '操作结果待确认，请使用原尝试重试。';
 
   const v2FailureDisposition = (error: unknown): 'unknown' | 'definite' => {
     if (typeof error !== 'object' || error === null) return 'unknown';
@@ -961,22 +965,32 @@ function AppShellContent() {
 
   const startPilotV2Triage = async (input: Parameters<typeof createOpportunityFitV2Triage>[1]) => {
     if (!pilotV2Draft) return;
-    const key = pilotV2Draft.triageKey ?? input.idempotency_key;
+    const requestDraft = pilotV2Draft;
+    const generation = pilotV2GenerationRef.current;
+    const key = requestDraft.triageKey ?? input.idempotency_key;
+    setPilotV2OperationPending(true);
     updatePilotV2Draft({ triageKey: key, error: null });
     try {
-      const result = await createOpportunityFitV2Triage(pilotV2Draft.applicationId, { ...input, idempotency_key: key });
+      const result = await createOpportunityFitV2Triage(requestDraft.applicationId, { ...input, idempotency_key: key });
+      if (generation !== pilotV2GenerationRef.current) return;
       updatePilotV2Draft({ triage: result, triageKey: key, resultUnknown: false, error: null });
     } catch (error) {
+      if (generation !== pilotV2GenerationRef.current) return;
       const errorCode = v2ErrorCode(error);
       if (errorCode === 'application_jd_source_conflict' || errorCode === 'opportunity_fit_source_conflict') {
         const conflict = await recoverPilotV2SourceConflict('triage', key);
-        if (conflict) {
+        if (generation !== pilotV2GenerationRef.current) return;
+        if (conflict.status === 'found') {
           updatePilotV2Draft({
-            triage: conflict,
+            triage: conflict.stage,
             triageKey: null,
             resultUnknown: false,
             error: v2SourceConflictCopy,
           });
+          return;
+        }
+        if (conflict.status === 'unknown') {
+          updatePilotV2Draft({ triageKey: key, resultUnknown: true, error: pilotV2RecoveryUnknownCopy });
           return;
         }
       }
@@ -997,38 +1011,47 @@ function AppShellContent() {
         error: v2ErrorMessage(error),
       });
       if (isOpportunityFitNotFoundError(error)) handlePilotNotFound();
+    } finally {
+      if (generation === pilotV2GenerationRef.current) setPilotV2OperationPending(false);
     }
   };
 
-  const recoverPilotV2TriageConfirmation = async (): Promise<boolean> => {
-    if (!pilotV2Draft?.triage) return false;
+  const recoverPilotV2TriageConfirmation = async (
+    requestDraft: PilotOpportunityFitV2Draft,
+  ): Promise<NonNullable<PilotOpportunityFitV2Draft['triage']> | null> => {
+    if (!requestDraft.triage) return null;
     try {
       const session = await getOpportunityFitV2Review(
-        pilotV2Draft.applicationId,
-        pilotV2Draft.triage.review_id,
+        requestDraft.applicationId,
+        requestDraft.triage.review_id,
       );
       const current = session.stages.find((stage) => (
-        stage.stage === 'triage' && stage.stage_id === pilotV2Draft.triage?.stage_id
+        stage.stage === 'triage' && stage.stage_id === requestDraft.triage?.stage_id
       )) ?? session.stages.find((stage) => stage.stage === 'triage');
-      if (current?.stage_status !== 'confirmed') return false;
-      updatePilotV2Draft({ triage: current, resultUnknown: false, error: null });
-      return true;
+      return current?.stage_status === 'confirmed' ? current : null;
     } catch {
-      return false;
+      return null;
     }
   };
 
   const confirmPilotV2Triage = async () => {
     if (!pilotV2Draft?.triage?.confirmation_token) return;
+    const requestDraft = pilotV2Draft;
+    const requestTriage = requestDraft.triage;
+    if (!requestTriage?.confirmation_token) return;
+    const generation = pilotV2GenerationRef.current;
+    setPilotV2OperationPending(true);
     try {
       const result = await confirmOpportunityFitV2Triage(
-        pilotV2Draft.applicationId,
-        pilotV2Draft.triage.review_id,
-        pilotV2Draft.triage.stage_id,
-        pilotV2Draft.triage.confirmation_token,
+        requestDraft.applicationId,
+        requestTriage.review_id,
+        requestTriage.stage_id,
+        requestTriage.confirmation_token,
       );
+      if (generation !== pilotV2GenerationRef.current) return;
       updatePilotV2Draft({ triage: result, resultUnknown: false, error: null });
     } catch (error) {
+      if (generation !== pilotV2GenerationRef.current) return;
       const errorCode = v2ErrorCode(error);
       if (errorCode === 'opportunity_fit_triage_confirmation_expired') {
         startNewPilotV2Review();
@@ -1038,12 +1061,13 @@ function AppShellContent() {
         errorCode === 'opportunity_fit_triage_confirmation_consumed'
         || v2FailureDisposition(error) === 'unknown'
       ) {
-        if (await recoverPilotV2TriageConfirmation()) return;
-        if (pilotV2Draft.resultUnknown && errorCode !== 'opportunity_fit_triage_confirmation_consumed') {
-          startNewPilotV2Review();
+        const current = await recoverPilotV2TriageConfirmation(requestDraft);
+        if (generation !== pilotV2GenerationRef.current) return;
+        if (current) {
+          updatePilotV2Draft({ triage: current, resultUnknown: false, error: null });
           return;
         }
-        updatePilotV2Draft({ resultUnknown: true, error: '操作结果待确认，请使用原尝试重试。' });
+        updatePilotV2Draft({ resultUnknown: true, error: pilotV2RecoveryUnknownCopy });
         return;
       }
       if (pilotV2Draft.resultUnknown && v2FailureDisposition(error) === 'definite') {
@@ -1051,43 +1075,57 @@ function AppShellContent() {
         return;
       }
       updatePilotV2Draft({ error: v2ErrorMessage(error) });
+    } finally {
+      if (generation === pilotV2GenerationRef.current) setPilotV2OperationPending(false);
     }
   };
 
   const startPilotV2DeepReview = async () => {
     if (!pilotV2Draft?.triage || pilotV2Draft.triage.stage_status !== 'confirmed') return;
-    const key = pilotV2Draft.deepKey ?? crypto.randomUUID();
+    const requestDraft = pilotV2Draft;
+    const requestTriage = requestDraft.triage;
+    if (!requestTriage) return;
+    const generation = pilotV2GenerationRef.current;
+    const key = requestDraft.deepKey ?? crypto.randomUUID();
+    setPilotV2OperationPending(true);
     updatePilotV2Draft({ deepKey: key, error: null });
     try {
       const result = await createOpportunityFitV2DeepReview(
-        pilotV2Draft.applicationId,
-        pilotV2Draft.triage.review_id,
+        requestDraft.applicationId,
+        requestTriage.review_id,
         {
           schema_version: 2,
-          resume_id: pilotV2Draft.resumeId ?? 0,
-          jd_version_id: pilotV2Draft.jdVersionId ?? 0,
+          resume_id: requestDraft.resumeId ?? 0,
+          jd_version_id: requestDraft.jdVersionId ?? 0,
           jd_source_label: '用户粘贴 JD',
-          candidate_assertions: pilotV2Draft.assertionsText.split(/\r?\n/).map((item) => item.trim()).filter(Boolean),
+          candidate_assertions: requestDraft.assertionsText.split(/\r?\n/).map((item) => item.trim()).filter(Boolean),
           idempotency_key: key,
-          parent_triage_stage_id: pilotV2Draft.triage.stage_id,
+          parent_triage_stage_id: requestTriage.stage_id,
         },
       );
+      if (generation !== pilotV2GenerationRef.current) return;
       updatePilotV2Draft({ deep: result, deepKey: key, resultUnknown: false, error: null });
     } catch (error) {
+      if (generation !== pilotV2GenerationRef.current) return;
       const errorCode = v2ErrorCode(error);
       if (errorCode === 'application_jd_source_conflict' || errorCode === 'opportunity_fit_source_conflict') {
         const conflict = await recoverPilotV2SourceConflict(
           'deep_review',
           key,
-          pilotV2Draft.triage.review_id,
+          requestTriage.review_id,
         );
-        if (conflict) {
+        if (generation !== pilotV2GenerationRef.current) return;
+        if (conflict.status === 'found') {
           updatePilotV2Draft({
-            deep: conflict,
+            deep: conflict.stage,
             deepKey: null,
             resultUnknown: false,
             error: v2SourceConflictCopy,
           });
+          return;
+        }
+        if (conflict.status === 'unknown') {
+          updatePilotV2Draft({ deepKey: key, resultUnknown: true, error: pilotV2RecoveryUnknownCopy });
           return;
         }
       }
@@ -1098,6 +1136,8 @@ function AppShellContent() {
         error: v2ErrorMessage(error),
       });
       if (isOpportunityFitNotFoundError(error)) handlePilotNotFound();
+    } finally {
+      if (generation === pilotV2GenerationRef.current) setPilotV2OperationPending(false);
     }
   };
 
@@ -1127,6 +1167,8 @@ function AppShellContent() {
 
   const startNewPilotV2Review = () => {
     if (!pilotV2Draft) return;
+    pilotV2GenerationRef.current += 1;
+    setPilotV2OperationPending(false);
     const next = createPilotOpportunityFitV2Draft(pilotV2Draft.applicationId);
     const currentJd = pilotApplicationJdQuery.data?.current;
     if (currentJd) {
@@ -1408,6 +1450,7 @@ function AppShellContent() {
                   onViewHistory={(reviewId) => void viewPilotV2History(reviewId)}
                   onViewLegacyHistory={(reviewId) => void viewPilotLegacyHistory(reviewId)}
                   onStartNew={startNewPilotV2Review}
+                  restartDisabled={pilotV2OperationPending}
                   onPrepareMaterials={(resumeId, jdText, jdVersionId) => preparePilotMaterials({
                     applicationId: pilotApplicationContext.applicationId,
                     resumeId,

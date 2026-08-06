@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import {
   Alert,
@@ -154,6 +154,10 @@ export default function OpportunityFitReviewDrawer({
   const [v2Deep, setV2Deep] = useState<OpportunityFitV2StageResponse | null>(draft?.deep ?? null);
   const [v2Historical, setV2Historical] = useState(false);
   const [actionError, setActionError] = useState<string | null>(draft?.error ?? null);
+  const reviewGenerationRef = useRef(0);
+  const triageRequestGenerationRef = useRef(0);
+  const confirmRequestGenerationRef = useRef(0);
+  const deepRequestGenerationRef = useRef(0);
 
   const reviewHistoryQuery = useQuery({
     queryKey: ['opportunity-fit-reviews', application?.id],
@@ -263,12 +267,12 @@ export default function OpportunityFitReviewDrawer({
     stage: 'triage' | 'deep_review',
     idempotencyKey: string,
     reviewID?: number,
-  ): Promise<OpportunityFitV2StageResponse | null> => {
-    if (!application) return null;
+  ): Promise<Awaited<ReturnType<typeof findOpportunityFitV2SourceConflictStage>>> => {
+    if (!application) return { status: 'not_found' };
     try {
       return await findOpportunityFitV2SourceConflictStage(application.id, stage, idempotencyKey, reviewID);
     } catch {
-      return null;
+      return { status: 'unknown' };
     }
   };
 
@@ -277,6 +281,7 @@ export default function OpportunityFitReviewDrawer({
       createOpportunityFitV2Triage(application!.id, input)
     ),
     onSuccess: (nextReview) => {
+      if (triageRequestGenerationRef.current !== reviewGenerationRef.current) return;
       setV2Triage(nextReview);
       setV2Deep(null);
       setStage('review');
@@ -290,17 +295,28 @@ export default function OpportunityFitReviewDrawer({
       });
     },
     onError: async (error, input) => {
+      if (triageRequestGenerationRef.current !== reviewGenerationRef.current) return;
       if (isSourceConflict(error)) {
         const conflict = await recoverSourceConflict('triage', input.idempotency_key);
-        if (conflict) {
-          setV2Triage(conflict);
+        if (triageRequestGenerationRef.current !== reviewGenerationRef.current) return;
+        if (conflict.status === 'found') {
+          setV2Triage(conflict.stage);
           setStage('review');
           setActionError(sourceConflictCopy);
           onDraftChange?.({
-            triage: conflict,
+            triage: conflict.stage,
             triageKey: null,
             resultUnknown: false,
             error: sourceConflictCopy,
+          });
+          return;
+        }
+        if (conflict.status === 'unknown') {
+          setActionError(unknownResultCopy);
+          onDraftChange?.({
+            resultUnknown: true,
+            error: unknownResultCopy,
+            triageKey: input.idempotency_key,
           });
           return;
         }
@@ -328,12 +344,15 @@ export default function OpportunityFitReviewDrawer({
       v2Triage!.confirmation_token!,
     ),
     onSuccess: (nextReview) => {
+      if (confirmRequestGenerationRef.current !== reviewGenerationRef.current) return;
       setV2Triage(nextReview);
       onDraftChange?.({ triage: nextReview, resultUnknown: false, error: null });
     },
     onError: async (error) => {
+      if (confirmRequestGenerationRef.current !== reviewGenerationRef.current) return;
       if (isConfirmationConsumed(error) || isProviderUnknown(error)) {
         if (await recoverConfirmedTriage()) return;
+        if (confirmRequestGenerationRef.current !== reviewGenerationRef.current) return;
         setActionError(unknownResultCopy);
         onDraftChange?.({ resultUnknown: true, error: unknownResultCopy });
         return;
@@ -357,6 +376,7 @@ export default function OpportunityFitReviewDrawer({
       return createOpportunityFitV2DeepReview(application!.id, v2Triage.review_id, input);
     },
     onSuccess: (nextReview) => {
+      if (deepRequestGenerationRef.current !== reviewGenerationRef.current) return;
       setV2Deep(nextReview);
       setActionError(null);
       onDraftChange?.({
@@ -367,20 +387,31 @@ export default function OpportunityFitReviewDrawer({
       });
     },
     onError: async (error, input) => {
+      if (deepRequestGenerationRef.current !== reviewGenerationRef.current) return;
       if (isSourceConflict(error)) {
         const conflict = await recoverSourceConflict(
           'deep_review',
           input.idempotency_key,
           v2Triage?.review_id,
         );
-        if (conflict) {
-          setV2Deep(conflict);
+        if (deepRequestGenerationRef.current !== reviewGenerationRef.current) return;
+        if (conflict.status === 'found') {
+          setV2Deep(conflict.stage);
           setActionError(sourceConflictCopy);
           onDraftChange?.({
-            deep: conflict,
+            deep: conflict.stage,
             deepKey: null,
             resultUnknown: false,
             error: sourceConflictCopy,
+          });
+          return;
+        }
+        if (conflict.status === 'unknown') {
+          setActionError(unknownResultCopy);
+          onDraftChange?.({
+            resultUnknown: true,
+            error: unknownResultCopy,
+            deepKey: input.idempotency_key,
           });
           return;
         }
@@ -432,6 +463,7 @@ export default function OpportunityFitReviewDrawer({
       resultUnknown: false,
       error: null,
     });
+    triageRequestGenerationRef.current = reviewGenerationRef.current;
     createMutation.mutate(input);
   };
 
@@ -458,6 +490,7 @@ export default function OpportunityFitReviewDrawer({
       resultUnknown: false,
       error: null,
     });
+    deepRequestGenerationRef.current = reviewGenerationRef.current;
     deepReviewMutation.mutate(input);
   };
 
@@ -497,6 +530,7 @@ export default function OpportunityFitReviewDrawer({
   };
 
   const resetV2Review = (message?: string) => {
+    reviewGenerationRef.current += 1;
     onDraftChange?.(null);
     setStage('input');
     setResumeID(undefined);
@@ -644,7 +678,10 @@ export default function OpportunityFitReviewDrawer({
           {v2Triage.stage_status === 'ready' && v2Triage.confirmation_token ? (
             <Button
               type="primary"
-              onClick={() => confirmV2Mutation.mutate()}
+              onClick={() => {
+                confirmRequestGenerationRef.current = reviewGenerationRef.current;
+                confirmV2Mutation.mutate();
+              }}
               loading={confirmV2Mutation.isPending}
             >
               {draft?.resultUnknown ? '使用原尝试重试' : '确认 Triage'}
@@ -695,7 +732,10 @@ export default function OpportunityFitReviewDrawer({
             </>
           ) : null}
           {canStartNewV2Review && !draft?.resultUnknown ? (
-            <Button onClick={() => resetV2Review()}>重新开始岗位评估</Button>
+            <Button
+              disabled={createMutation.isPending || confirmV2Mutation.isPending || deepReviewMutation.isPending}
+              onClick={() => resetV2Review()}
+            >重新开始岗位评估</Button>
           ) : null}
         </div>
       ) : review ? (

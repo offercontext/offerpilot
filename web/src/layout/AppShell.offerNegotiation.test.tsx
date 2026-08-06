@@ -291,11 +291,136 @@ describe('AppShell mounted Opportunity Fit confirmation recovery', () => {
     expect(host?.querySelector<HTMLSelectElement>('select')?.value).toBe('');
   });
 
+  it('keeps the original confirmation attempt after repeated unknown retries', async () => {
+    opportunityFitState.confirmTriage.mockRejectedValue({
+      response: { status: 503, data: { error_code: 'opportunity_fit_provider_error' } },
+    });
+    opportunityFitState.getReview.mockRejectedValue(new Error('temporary status read failure'));
+
+    await act(async () => root?.render(<AppShell />));
+    await flush();
+    act(() => host?.querySelector<HTMLButtonElement>('[data-testid="open-application-detail"]')?.click());
+    await flush();
+    act(() => host?.querySelector<HTMLButtonElement>('[data-testid="open-opportunity-fit"]')?.click());
+    await flush();
+    const resumeSelect = host?.querySelector<HTMLSelectElement>('select');
+    if (!resumeSelect) throw new Error('Pilot resume selector was not mounted');
+    resumeSelect.value = '11';
+    act(() => resumeSelect.dispatchEvent(new Event('change', { bubbles: true })));
+    await flush();
+
+    const startButton = Array.from(host?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+      .find((button) => button.textContent?.includes('Triage'));
+    if (!startButton) throw new Error('Pilot Triage start button was not mounted');
+    act(() => startButton.click());
+    await flush();
+    const confirmation = host?.querySelector<HTMLElement>('[role="dialog"]');
+    const confirmButton = confirmation?.querySelectorAll<HTMLButtonElement>('button')[1];
+    if (!confirmButton) throw new Error('Pilot Triage confirmation button was not mounted');
+    act(() => confirmButton.click());
+    await flush();
+
+    const firstRetry = Array.from(host?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+      .find((button) => button.textContent?.includes('Triage'));
+    if (!firstRetry) throw new Error('First Triage retry button was not mounted');
+    act(() => firstRetry.click());
+    await flush();
+    const secondRetry = Array.from(host?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+      .find((button) => button.textContent?.includes('Triage'));
+    if (!secondRetry) throw new Error('Second Triage retry button was not mounted');
+    act(() => secondRetry.click());
+    await flush();
+
+    expect(opportunityFitState.confirmTriage).toHaveBeenCalledTimes(2);
+    expect(opportunityFitState.confirmTriage.mock.calls[0]).toEqual(opportunityFitState.confirmTriage.mock.calls[1]);
+    expect(host?.textContent).toContain('Triage summary');
+    expect(host?.querySelector<HTMLSelectElement>('select')?.disabled).toBe(true);
+  });
+
+  it('disables restarting while a Deep Review request is in flight', async () => {
+    let resolveDeep: ((value: unknown) => void) | undefined;
+    opportunityFitState.confirmTriage.mockResolvedValue({
+      stage_id: 101,
+      review_id: 201,
+      resume_id: 11,
+      jd_version_id: 1,
+      stage: 'triage',
+      schema_version: 2,
+      stage_status: 'confirmed',
+      parent_triage_stage_id: null,
+      idempotency_key: 'pilot-triage-key',
+      source_fingerprint_sha256: 'frozen-source',
+      confirmation_token: null,
+      proposal: { summary: { text: 'Confirmed summary', rationale: 'evidence', evidence_refs: [] }, conditions: [], risks: [], questions: [], next_steps: [] },
+    });
+    opportunityFitState.createDeep.mockImplementation(() => new Promise((resolve) => {
+      resolveDeep = resolve;
+    }));
+
+    await act(async () => root?.render(<AppShell />));
+    await flush();
+    act(() => host?.querySelector<HTMLButtonElement>('[data-testid="open-application-detail"]')?.click());
+    await flush();
+    act(() => host?.querySelector<HTMLButtonElement>('[data-testid="open-opportunity-fit"]')?.click());
+    await flush();
+    const resumeSelect = host?.querySelector<HTMLSelectElement>('select');
+    if (!resumeSelect) throw new Error('Pilot resume selector was not mounted');
+    resumeSelect.value = '11';
+    act(() => resumeSelect.dispatchEvent(new Event('change', { bubbles: true })));
+    await flush();
+
+    const startButton = Array.from(host?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+      .find((button) => button.textContent?.includes('Triage'));
+    if (!startButton) throw new Error('Pilot Triage start button was not mounted');
+    act(() => startButton.click());
+    await flush();
+    const triageConfirmation = host?.querySelector<HTMLElement>('[role="dialog"]');
+    const triageConfirmButton = triageConfirmation?.querySelectorAll<HTMLButtonElement>('button')[1];
+    if (!triageConfirmButton) throw new Error('Pilot Triage confirmation button was not mounted');
+    act(() => triageConfirmButton.click());
+    await flush();
+    const confirmButton = Array.from(host?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+      .find((button) => button.textContent?.includes('确认 Triage'));
+    if (!confirmButton) throw new Error('Pilot Triage confirm button was not mounted');
+    act(() => confirmButton.click());
+    await flush();
+
+    const deepButton = Array.from(host?.querySelectorAll<HTMLButtonElement>('button') ?? [])
+      .find((button) => button.textContent?.includes('Deep Review'));
+    if (!deepButton) throw new Error('Pilot Deep Review button was not mounted');
+    act(() => deepButton.click());
+    await flush();
+    const deepConfirmation = host?.querySelector<HTMLElement>('[role="dialog"]');
+    const deepConfirmButton = deepConfirmation?.querySelectorAll<HTMLButtonElement>('button')[1];
+    if (!deepConfirmButton) throw new Error('Pilot Deep Review confirmation button was not mounted');
+    act(() => deepConfirmButton.click());
+    await flush();
+
+    const restartButton = host?.querySelector<HTMLButtonElement>('[aria-label="重新开始岗位评估"]');
+    if (!restartButton) throw new Error('Pilot restart button was not mounted');
+    expect(restartButton.disabled).toBe(true);
+    resolveDeep?.({
+      stage_id: 102,
+      review_id: 201,
+      resume_id: 11,
+      jd_version_id: 1,
+      stage: 'deep_review',
+      schema_version: 2,
+      stage_status: 'ready',
+      parent_triage_stage_id: 101,
+      idempotency_key: 'pilot-deep-key',
+      source_fingerprint_sha256: 'frozen-source',
+      confirmation_token: null,
+      proposal: null,
+    });
+    await flush();
+  });
+
   it('restores a persisted Pilot Triage source conflict after a JD race', async () => {
     opportunityFitState.createTriage.mockRejectedValue({
       response: { status: 409, data: { error_code: 'application_jd_source_conflict' } },
     });
-    opportunityFitState.sourceConflict.mockResolvedValue({
+    opportunityFitState.sourceConflict.mockResolvedValue({ status: 'found', stage: {
       stage_id: 101,
       review_id: 201,
       resume_id: 11,
@@ -308,7 +433,7 @@ describe('AppShell mounted Opportunity Fit confirmation recovery', () => {
       source_fingerprint_sha256: 'frozen-source',
       confirmation_token: null,
       proposal: null,
-    });
+    }});
 
     await act(async () => root?.render(<AppShell />));
     await flush();

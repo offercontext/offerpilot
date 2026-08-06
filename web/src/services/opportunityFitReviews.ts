@@ -122,8 +122,13 @@ export async function findOpportunityFitV2SourceConflictStage(
   stage: 'triage' | 'deep_review',
   idempotencyKey: string,
   reviewID?: number,
-): Promise<OpportunityFitV2StageResponse | null> {
-  const summaries = reviewID === undefined ? await listOpportunityFitV2Reviews(applicationID) : [];
+): Promise<OpportunityFitV2SourceConflictLookup> {
+  let summaries: OpportunityFitV2SessionSummary[] = [];
+  try {
+    summaries = reviewID === undefined ? await listOpportunityFitV2Reviews(applicationID) : [];
+  } catch {
+    return { status: 'unknown' };
+  }
   const reviewIDs = reviewID === undefined
     ? summaries
       .filter((summary) => (
@@ -134,13 +139,23 @@ export async function findOpportunityFitV2SourceConflictStage(
     : [reviewID];
 
   for (const currentReviewID of reviewIDs) {
-    const session = await getOpportunityFitV2Review(applicationID, currentReviewID);
+    let session: OpportunityFitV2SessionResponse;
+    try {
+      session = await getOpportunityFitV2Review(applicationID, currentReviewID);
+    } catch {
+      return { status: 'unknown' };
+    }
     const conflict = session.stages.find((item) => (
       item.stage === stage
       && item.idempotency_key === idempotencyKey
       && item.stage_status === 'source_conflict'
     ));
-    if (conflict) return conflict;
+    if (conflict) return { status: 'found', stage: conflict };
   }
-  return null;
+  return { status: 'not_found' };
 }
+
+export type OpportunityFitV2SourceConflictLookup =
+  | { status: 'found'; stage: OpportunityFitV2StageResponse }
+  | { status: 'not_found' }
+  | { status: 'unknown' };

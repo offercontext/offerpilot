@@ -436,7 +436,7 @@ describe('OpportunityFitReviewDrawer', () => {
         proposal: undefined,
       }],
     });
-    state.sourceConflict.mockResolvedValue({
+    state.sourceConflict.mockResolvedValue({ status: 'found', stage: {
       review_id: 21,
       stage_id: 22,
       stage: 'triage',
@@ -445,7 +445,7 @@ describe('OpportunityFitReviewDrawer', () => {
       jd_version_id: 1,
       idempotency_key: 'd4b4b5e8-0a3a-4a3e-8e4d-6bc7a04d36b0',
       proposal: undefined,
-    });
+    }});
     const draft = {
       applicationId: 7,
       resumeId: 11,
@@ -473,11 +473,43 @@ describe('OpportunityFitReviewDrawer', () => {
     }));
   });
 
+  it('preserves the original Triage key when source-conflict recovery is temporarily unavailable', async () => {
+    state.create.mockRejectedValue({
+      response: { status: 409, data: { error_code: 'application_jd_source_conflict' } },
+    });
+    state.sourceConflict.mockRejectedValue(new Error('temporary source-conflict read failure'));
+    let draft: Record<string, unknown> = {
+      applicationId: 7,
+      resumeId: 11,
+      jdText: 'JD text',
+      jdVersionId: 1,
+      assertionsText: '',
+      triageKey: null,
+      deepKey: null,
+      triage: null,
+      deep: null,
+      historical: false,
+      resultUnknown: false,
+      error: null,
+    };
+    const onDraftChange = vi.fn((patch: Record<string, unknown> | null) => {
+      if (patch) draft = { ...draft, ...patch };
+    });
+    const view = await render(undefined, 'JD text', draft, onDraftChange);
+    await waitFor(() => expect(getByRole(view, 'button')).toHaveProperty('disabled', false));
+    await click(getByRole(view, 'button'));
+    await waitFor(() => expect(draft.triageKey).toBeTruthy());
+
+    expect(draft.resultUnknown).toBe(true);
+    expect(draft.triageKey).toEqual(expect.any(String));
+    expect(draft.error).toEqual(expect.any(String));
+  });
+
   it('restores a persisted Deep Review source conflict instead of dropping the stage', async () => {
     state.deepV2.mockRejectedValue({
       response: { status: 409, data: { error_code: 'application_jd_source_conflict' } },
     });
-    state.sourceConflict.mockResolvedValue({
+    state.sourceConflict.mockResolvedValue({ status: 'found', stage: {
       review_id: 21,
       stage_id: 23,
       stage: 'deep_review',
@@ -486,7 +518,7 @@ describe('OpportunityFitReviewDrawer', () => {
       jd_version_id: 1,
       idempotency_key: 'deep-key-00000001',
       proposal: undefined,
-    });
+    }});
     const draft = {
       applicationId: 7,
       resumeId: 11,

@@ -29,6 +29,7 @@ interface Props {
   onViewHistory: (reviewId: number) => void;
   onViewLegacyHistory?: (reviewId: number) => void;
   onStartNew: () => void;
+  restartDisabled?: boolean;
   onPrepareMaterials?: (resumeId: number, jdText: string, jdVersionId: number) => void;
   onOpenInterviewReview?: (applicationId: number) => void;
   onOpenInterviewPreparation?: (applicationId: number) => void;
@@ -118,6 +119,7 @@ export default function PilotOpportunityFitV2Card({
   onViewHistory,
   onViewLegacyHistory,
   onStartNew,
+  restartDisabled = false,
   onPrepareMaterials,
   onOpenInterviewReview,
   onOpenInterviewPreparation,
@@ -192,7 +194,7 @@ export default function PilotOpportunityFitV2Card({
           <p>{legacyReview.summary.text}</p>
           <p>旧版结论：{legacyReview.recommendation}</p>
           <p>该记录保留原始快照与哈希，不支持继续生成或写入。</p>
-          <button type="button" aria-label="重新开始岗位评估" onClick={onStartNew}>开始新的岗位评估</button>
+          <button type="button" aria-label="重新开始岗位评估" onClick={onStartNew} disabled={restartDisabled}>开始新的岗位评估</button>
         </section>
       ) : null}
 
@@ -201,7 +203,7 @@ export default function PilotOpportunityFitV2Card({
         <p role="status">岗位资料版本已变化，当前评估仅供只读查看。</p>
       ) : null}
       {isHistorical ? (
-        <button type="button" aria-label="重新开始岗位评估" onClick={onStartNew}>开始新的岗位评估</button>
+        <button type="button" aria-label="重新开始岗位评估" onClick={onStartNew} disabled={restartDisabled}>开始新的岗位评估</button>
       ) : (
         <>
           <label>
@@ -292,7 +294,7 @@ export default function PilotOpportunityFitV2Card({
         || triageSourceConflict
         || deepSourceConflict
       ) ? (
-        <button type="button" aria-label="重新开始岗位评估" onClick={onStartNew}>开始新的岗位评估</button>
+        <button type="button" aria-label="重新开始岗位评估" onClick={onStartNew} disabled={restartDisabled}>开始新的岗位评估</button>
       ) : null}
 
       {onOpenInterviewReview ? (
