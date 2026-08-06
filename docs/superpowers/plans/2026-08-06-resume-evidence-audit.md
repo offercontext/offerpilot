@@ -243,18 +243,24 @@ it('uses exact 240/241 code-point boundaries and truncates excerpts at 160 code 
   expect(Array.from(longFinding?.source?.excerpt ?? '')).toHaveLength(161);
 });
 
-it('does not split emoji surrogate pairs or normalize combining characters', () => {
-  const emojiBullet = '🚀'.repeat(161);
-  const combiningBullet = `${'e\u0301'.repeat(80)}尾`;
-  const result = auditResume(makeResume({
-    experience: [{ highlights: [emojiBullet, combiningBullet] }],
-  }));
-  const longFindings = result.findings.filter((item) => item.id === 'experience-long-bullet');
+it('truncates 241 emoji code points without splitting surrogate pairs', () => {
+  const bullet = '🚀'.repeat(241);
+  const result = auditResume(makeResume({ experience: [{ highlights: [bullet] }] }));
+  const longFinding = result.findings.find((item) => item.id === 'experience-long-bullet');
 
-  expect(longFindings[0]?.source?.excerpt).toBe(`${'🚀'.repeat(160)}…`);
-  expect(Array.from(longFindings[0]?.source?.excerpt ?? '')).toHaveLength(161);
-  expect(longFindings[1]?.source?.excerpt).toBe(`${'e\u0301'.repeat(80)}…`);
-  expect(longFindings[1]?.source?.excerpt).not.toContain('é');
+  expect(result.findings.filter((item) => item.id === 'experience-long-bullet')).toHaveLength(1);
+  expect(longFinding?.source?.excerpt).toBe(`${'🚀'.repeat(160)}…`);
+  expect(Array.from(longFinding?.source?.excerpt ?? '')).toHaveLength(161);
+});
+
+it('truncates 242 combining-mark code points without Unicode normalization', () => {
+  const bullet = 'e\u0301'.repeat(121);
+  const result = auditResume(makeResume({ experience: [{ highlights: [bullet] }] }));
+  const longFinding = result.findings.find((item) => item.id === 'experience-long-bullet');
+
+  expect(result.findings.filter((item) => item.id === 'experience-long-bullet')).toHaveLength(1);
+  expect(longFinding?.source?.excerpt).toBe(`${'e\u0301'.repeat(80)}…`);
+  expect(longFinding?.source?.excerpt).not.toContain('é');
 });
 
 it('preserves CJK, emoji, combining marks, and newlines in excerpts below the limit', () => {
@@ -316,6 +322,30 @@ it('returns an unknown content finding instead of throwing for invalid content',
     expect.objectContaining({ id: 'structure-content-json', status: 'unknown' }),
   ]));
 });
+
+it.each([
+  ['contact', { score: Number.NaN }],
+  ['education', [{ score: Number.POSITIVE_INFINITY }]],
+  ['experience', [{ highlights: [() => 'not a bullet'] }]],
+  ['projects', [{ token: Symbol('invalid') }]],
+  ['skills', [Number.NaN]],
+  ['career_intent', { target_roles: [Number.NEGATIVE_INFINITY] }],
+] as const)('does not treat %s special runtime values as present', (field, value) => {
+  expect(() => auditResume(makeResume({ [field]: value } as never))).not.toThrow();
+  const result = auditResume(makeResume({ [field]: value } as never));
+
+  expect(result.findings.find((item) => item.id === `structure-${field}`)?.status).toBe('unknown');
+});
+
+it('returns unknown instead of throwing for a cyclic core field object', () => {
+  const cyclic: Record<string, unknown> = {};
+  cyclic.self = cyclic;
+
+  expect(() => auditResume(makeResume({ contact: cyclic } as never))).not.toThrow();
+  const result = auditResume(makeResume({ contact: cyclic } as never));
+
+  expect(result.findings.find((item) => item.id === 'structure-contact')?.status).toBe('unknown');
+});
 ~~~
 
 - [ ] **Step 2: Verify the red failure.**
@@ -353,7 +383,7 @@ export function auditResume(resume: Resume): ResumeAuditResult {
 }
 ~~~
 
-Use fixed field-shape metadata to implement the truth table above; do not use array.length or Object.keys() as a presence test. Extract direct experience strings plus highlights/bullets/achievements strings and preserve each original path/text. Emit one deterministic offending source per rule, in input traversal order, and construct IDs in the exact order specified above. Use Array.from for code-point length and excerpt truncation. Count statuses without sorting. Any malformed runtime value must return unknown or be skipped safely, never throw.
+Use fixed field-shape metadata to implement the truth table above; do not use array.length or Object.keys() as a presence test. Extract direct experience strings plus highlights/bullets/achievements strings and preserve each original path/text. The recursive visible-leaf walker must track visited objects with WeakSet; encountering a cycle, NaN, Infinity, function, or Symbol marks the field unknown without throwing. Emit one deterministic offending source per rule, in input traversal order, and construct IDs in the exact order specified above. Use Array.from for code-point length and excerpt truncation. Count statuses without sorting. Any malformed runtime value must return unknown or be skipped safely, never throw.
 
 - [ ] **Step 4: Verify green and refactor only while green.**
 
@@ -604,7 +634,7 @@ From the worktree root run:
 git diff --check
 ~~~
 
-Then run this read-only PowerShell check:
+Then run this read-only PowerShell check. It combines committed changes from the fixed baseline, unstaged tracked changes, staged changes, and untracked files; an untracked out-of-scope file must fail the gate.
 
 ~~~powershell
 $allowed = @(
@@ -621,13 +651,18 @@ $allowed = @(
 )
 $baseline = 'b4363b0'
 git rev-parse --verify "$baseline^{commit}" | Out-Null
-$changed = @(git diff --name-only "$baseline..HEAD")
+$changed = @(
+  @(git diff --name-only "$baseline..HEAD")
+  @(git diff --name-only)
+  @(git diff --cached --name-only)
+  @(git ls-files --others --exclude-standard)
+) | Sort-Object -Unique
 $unexpected = @($changed | Where-Object { $_ -notin $allowed })
 if ($unexpected.Count -gt 0) { $unexpected; exit 1 }
 if ($changed.Count -eq 0) { throw 'No implementation diff found' }
 ~~~
 
-Expected: git diff --check exits 0 and no unexpected file is printed.
+Expected: git diff --check exits 0 and no unexpected tracked, staged, unstaged, or untracked file is printed.
 
 - [ ] **Step 4: Check the JD-version branch intersection from the same persisted baseline.**
 
@@ -637,7 +672,12 @@ Run:
 $baseline = 'b4363b0'
 git rev-parse --verify "$baseline^{commit}" | Out-Null
 git rev-parse --verify 'feat/20260805-application-jd-versions^{commit}' | Out-Null
-$targetFiles = @(git diff --name-only "$baseline..HEAD")
+$targetFiles = @(
+  @(git diff --name-only "$baseline..HEAD")
+  @(git diff --name-only)
+  @(git diff --cached --name-only)
+  @(git ls-files --others --exclude-standard)
+) | Sort-Object -Unique
 $jdFiles = @(git diff --name-only "$baseline..feat/20260805-application-jd-versions")
 $intersection = @($targetFiles | Where-Object { $_ -in $jdFiles })
 $unexpectedIntersection = @($intersection | Where-Object {
@@ -690,6 +730,6 @@ If the browser report is not required, omit that path from git add. Do not stage
 - [ ] Panel coverage includes all statuses, Chinese copy, category grouping, collapsed source details, parse failure, no-result boundary, and prohibited ATS/write wording.
 - [ ] Real mounted editor coverage proves zero resume writes, AI calls, generic HTTP calls, and navigation side effects on open/expand/collapse/close.
 - [ ] Input Resume is unchanged; findings are deterministic, ordered, and source paths/excerpts are stable.
-- [ ] Invalid and mixed runtime shapes return unknown or are skipped safely; no exception becomes “全部通过”.
-- [ ] Full frontend tests, tsc -b, production build, git diff --check, allowlist, JD-branch comparison, and browser acceptance have fresh evidence.
+- [ ] Invalid and mixed runtime shapes, NaN/Infinity, functions, Symbols, and cyclic objects return unknown or are skipped safely; no exception becomes “全部通过”.
+- [ ] The allowlist covers baseline-relative committed changes plus staged, unstaged, and untracked files; full frontend tests, tsc -b, production build, git diff --check, JD-branch comparison, and browser acceptance have fresh evidence.
 - [ ] Final handoff reports changes, no breaking change, residual risks, and exact verification results. Do not claim Docker smoke or provider validation because this feature does not require them.
