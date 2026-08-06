@@ -23,6 +23,12 @@ const offer = {
   updated_at: '2026-08-01T00:00:00Z',
 } as const;
 
+const opportunityFitState = vi.hoisted(() => ({
+  createTriage: vi.fn(),
+  confirmTriage: vi.fn(),
+  getReview: vi.fn(),
+}));
+
 const baseDraft = (goal: string) => ({
   attemptKey: `${goal}-attempt`, confirmationKey: `${goal}-confirm`, goal,
   concerns: `${goal}-顾虑`, scenario: `${goal}-场景`, resultUnknown: false,
@@ -41,6 +47,18 @@ vi.mock('@tanstack/react-query', () => ({
     return { data: data[key], isError: false, isLoading: false, isFetching: false, error: null };
   },
   useQueryClient: () => ({ invalidateQueries: vi.fn() }),
+}));
+
+vi.mock('@/services/opportunityFitReviews', () => ({
+  createOpportunityFitV2Triage: opportunityFitState.createTriage,
+  confirmOpportunityFitV2Triage: opportunityFitState.confirmTriage,
+  getOpportunityFitV2Review: opportunityFitState.getReview,
+  listOpportunityFitV2Reviews: vi.fn().mockResolvedValue([]),
+  listOpportunityFitReviews: vi.fn().mockResolvedValue([]),
+  getOpportunityFitReview: vi.fn(),
+  createOpportunityFitReview: vi.fn(),
+  createOpportunityFitDeepReview: vi.fn(),
+  createOpportunityFitV2DeepReview: vi.fn(),
 }));
 
 vi.mock('@dnd-kit/core', () => ({
@@ -76,7 +94,19 @@ vi.mock('./CommandPalette', () => ({ default: () => <div /> }));
 vi.mock('@/components/AddApplicationForm', () => ({ default: () => <div /> }));
 vi.mock('@/components/ResumeUploadModal', () => ({ default: () => <div /> }));
 vi.mock('@/components/AISettingsDrawer', () => ({ default: () => <div /> }));
-vi.mock('@/components/ApplicationDetail', () => ({ default: () => <div /> }));
+vi.mock('@/components/ApplicationDetail', () => ({
+  default: (props: any) => (
+    <section data-testid="application-detail-harness">
+      <button type="button" data-testid="open-opportunity-fit" onClick={() => props.onOpenPilotOpportunityFit?.({
+        id: 7,
+        company_name: '星云数据',
+        position_name: '后端工程师',
+      })}>
+        打开岗位评估
+      </button>
+    </section>
+  ),
+}));
 vi.mock('@/components/KanbanBoard', () => ({ default: () => <div /> }));
 vi.mock('@/components/ApplicationListView', () => ({ default: () => <div /> }));
 vi.mock('@/components/CalendarView', () => ({ default: () => <div /> }));
@@ -86,14 +116,44 @@ vi.mock('@/components/InterviewV01View', () => ({ default: () => <div /> }));
 vi.mock('@/components/ResumeLibraryView', () => ({ default: () => <div /> }));
 vi.mock('@/features/reminders/RemindersView', () => ({ default: () => <div /> }));
 vi.mock('@/components/SettingsView', () => ({ default: () => <div /> }));
-vi.mock('@/features/dashboard/DashboardView', () => ({ default: () => <div /> }));
+vi.mock('@/features/dashboard/DashboardView', () => ({
+  default: (props: any) => (
+    <section data-testid="dashboard-harness">
+      <button type="button" data-testid="open-application-detail" onClick={() => props.onOpenDetailById?.(7)}>
+        查看投递
+      </button>
+    </section>
+  ),
+}));
 vi.mock('@/features/pilot/PilotAttachmentContext', () => ({
   PilotAttachmentProvider: (props: any) => <>{props.children}</>,
   usePilotAttachmentStore: () => ({ addAttachment: vi.fn(), createNewDraftWithAttachment: vi.fn() }),
 }));
 vi.mock('@/features/pilot/attachmentHandoff', () => ({ retainPilotAttachmentKey: (_current: unknown, next: unknown) => next }));
 vi.mock('@/features/pilot/PilotOpportunityFitCard', () => ({ default: () => <div /> }));
-vi.mock('@/features/pilot/PilotOpportunityFitV2Card', () => ({ default: () => <div /> }));
+vi.mock('@/features/pilot/PilotOpportunityFitV2Card', () => ({
+  default: (props: any) => (
+    <section data-testid="pilot-fit-harness" data-stage={props.draft.triage?.stage_status ?? 'input'}>
+      <button
+        type="button"
+        data-testid="start-pilot-triage"
+        onClick={() => props.onStartTriage?.({
+          schema_version: 2,
+          resume_id: 11,
+          jd_version_id: 1,
+          jd_source_label: '用户粘贴 JD',
+          candidate_assertions: [],
+          idempotency_key: 'pilot-triage-key',
+        })}
+      >
+        开始 Triage
+      </button>
+      <button type="button" data-testid="confirm-pilot-triage" onClick={() => props.onConfirmTriage?.()}>
+        确认 Triage
+      </button>
+    </section>
+  ),
+}));
 
 vi.mock('@/components/OfferCenterView', () => ({
   default: (props: any) => (
@@ -135,6 +195,78 @@ async function flush() {
     await Promise.resolve();
   });
 }
+
+describe('AppShell mounted Opportunity Fit confirmation recovery', () => {
+  beforeEach(() => {
+    opportunityFitState.createTriage.mockReset();
+    opportunityFitState.confirmTriage.mockReset();
+    opportunityFitState.getReview.mockReset();
+    opportunityFitState.createTriage.mockResolvedValue({
+      stage_id: 101,
+      review_id: 201,
+      resume_id: 11,
+      jd_version_id: 1,
+      stage: 'triage',
+      schema_version: 2,
+      stage_status: 'ready',
+      parent_triage_stage_id: null,
+      idempotency_key: 'pilot-triage-key',
+      source_fingerprint_sha256: 'frozen-source',
+      confirmation_token: 'triage-confirmation-token',
+      proposal: null,
+    });
+    opportunityFitState.confirmTriage.mockRejectedValue({
+      response: { data: { error_code: 'opportunity_fit_triage_confirmation_consumed' } },
+    });
+    opportunityFitState.getReview.mockResolvedValue({
+      stages: [{
+        stage_id: 101,
+        review_id: 201,
+        resume_id: 11,
+        jd_version_id: 1,
+        stage: 'triage',
+        schema_version: 2,
+        stage_status: 'confirmed',
+        parent_triage_stage_id: null,
+        idempotency_key: 'pilot-triage-key',
+        source_fingerprint_sha256: 'frozen-source',
+        confirmation_token: 'triage-confirmation-token',
+        proposal: null,
+      }],
+    });
+    window.matchMedia = () => ({ matches: false, addEventListener: () => undefined, removeEventListener: () => undefined }) as unknown as MediaQueryList;
+    window.scrollTo = vi.fn();
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    root = createRoot(host);
+  });
+
+  afterEach(() => {
+    act(() => root?.unmount());
+    host?.remove();
+    root = null;
+    host = null;
+    vi.clearAllMocks();
+  });
+
+  it('recovers a consumed Pilot Triage confirmation from the mounted AppShell', async () => {
+    await act(async () => root?.render(<AppShell />));
+    await flush();
+    act(() => host?.querySelector<HTMLButtonElement>('[data-testid="open-application-detail"]')?.click());
+    await flush();
+    act(() => host?.querySelector<HTMLButtonElement>('[data-testid="open-opportunity-fit"]')?.click());
+    await flush();
+    act(() => host?.querySelector<HTMLButtonElement>('[data-testid="start-pilot-triage"]')?.click());
+    await flush();
+    expect(host?.querySelector('[data-testid="pilot-fit-harness"]')?.getAttribute('data-stage')).toBe('ready');
+    act(() => host?.querySelector<HTMLButtonElement>('[data-testid="confirm-pilot-triage"]')?.click());
+    await flush();
+    await flush();
+    expect(opportunityFitState.confirmTriage).toHaveBeenCalledTimes(1);
+    expect(opportunityFitState.getReview).toHaveBeenCalledWith(7, 201);
+    expect(host?.querySelector('[data-testid="pilot-fit-harness"]')?.getAttribute('data-stage')).toBe('confirmed');
+  });
+});
 
 describe('AppShell Offer negotiation draft isolation', () => {
   beforeEach(() => {
