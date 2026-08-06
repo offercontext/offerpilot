@@ -76,6 +76,7 @@ describe('auditResume', () => {
     ['education', ['   '], 'review'],
     ['education', [{ school: '示例大学' }], 'present'],
     ['education', [{ school: '示例大学' }, null], 'unknown'],
+    ['education', [{ school: '示例大学' }, []], 'unknown'],
     ['experience', undefined, 'review'],
     ['experience', null, 'unknown'],
     ['experience', [], 'review'],
@@ -92,7 +93,7 @@ describe('auditResume', () => {
     ['projects', '   ', 'unknown'],
     ['projects', ['   '], 'review'],
     ['projects', [{ name: '示例项目' }], 'present'],
-    ['projects', [{ name: '示例项目' }, {}], 'present'],
+    ['projects', [{ name: '示例项目' }, {}], 'unknown'],
     ['skills', undefined, 'review'],
     ['skills', null, 'unknown'],
     ['skills', {}, 'review'],
@@ -170,6 +171,12 @@ describe('auditResume', () => {
     expect(presentFinding).toMatchObject({ id: 'facts-quantification', status: 'present' });
     expect(presentFinding?.explanation).toContain('不代表真实或充分');
     expect(presentFinding?.explanation).not.toMatch(/估算|范围|必须量化/);
+  });
+
+  it('omits the truthful-data prompt when every recognized bullet is blank', () => {
+    const result = auditResume(makeResume({ experience: [{ highlights: ['  ', String.fromCharCode(9)] }] }));
+
+    expect(result.findings.find((item) => item.id === 'facts-quantification')).toBeUndefined();
   });
 
   it('does not treat raw_text as structured experience and reports malformed shapes as unknown', () => {

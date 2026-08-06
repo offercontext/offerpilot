@@ -25,6 +25,7 @@ export interface ResumeAuditResult {
 
 type CoreField = 'contact' | 'education' | 'experience' | 'projects' | 'skills' | 'career_intent';
 type Inspection = 'empty' | 'present' | 'unknown';
+type InspectionPosition = 'field' | 'property' | 'array-item';
 
 interface Bullet {
   path: string;
@@ -289,6 +290,9 @@ function auditExperienceFindings(value: unknown, scan: ExperienceScan): ResumeAu
 function auditQuantificationFinding(scan: ExperienceScan): ResumeAuditFinding[] {
   if (scan.bullets.length === 0) return [];
 
+  const evidenceBullet = scan.bullets.find((bullet) => bullet.text.trim().length > 0);
+  if (!evidenceBullet) return [];
+
   const quantifiedBullet = scan.bullets.find((bullet) => /[0-9]/.test(bullet.text));
   if (quantifiedBullet) {
     return [{
@@ -301,7 +305,6 @@ function auditQuantificationFinding(scan: ExperienceScan): ResumeAuditFinding[] 
     }];
   }
 
-  const evidenceBullet = scan.bullets.find((bullet) => bullet.text.trim().length > 0);
   return [{
     id: 'facts-quantification',
     category: 'facts',
@@ -328,7 +331,11 @@ function buildResult(findings: ResumeAuditFinding[]): ResumeAuditResult {
   return { findings, counts };
 }
 
-function inspectValue(value: unknown, seen: WeakSet<object>): Inspection {
+function inspectValue(
+  value: unknown,
+  seen: WeakSet<object>,
+  position: InspectionPosition = 'field',
+): Inspection {
   if (typeof value === 'string') return value.trim().length > 0 ? 'present' : 'empty';
   if (typeof value === 'boolean') return 'present';
   if (typeof value === 'number') return Number.isFinite(value) ? 'present' : 'unknown';
@@ -342,14 +349,16 @@ function inspectValue(value: unknown, seen: WeakSet<object>): Inspection {
   let result: Inspection;
   try {
     if (Array.isArray(value)) {
-      result = inspectChildren(value, seen);
+      result = value.length === 0
+        ? emptyContainerInspection(position)
+        : inspectChildren(value, seen, 'array-item');
     } else if (!isPlainRecord(value)) {
       result = 'unknown';
     } else {
       const keys = Object.keys(value);
       result = keys.length === 0
-        ? 'empty'
-        : inspectChildren(keys.map((key) => readProperty(value, key)), seen);
+        ? emptyContainerInspection(position)
+        : inspectChildren(keys.map((key) => readProperty(value, key)), seen, 'property');
     }
   } catch {
     result = 'unknown';
@@ -359,15 +368,23 @@ function inspectValue(value: unknown, seen: WeakSet<object>): Inspection {
   return result;
 }
 
-function inspectChildren(values: unknown[], seen: WeakSet<object>): Inspection {
+function inspectChildren(
+  values: unknown[],
+  seen: WeakSet<object>,
+  childPosition: InspectionPosition,
+): Inspection {
   if (values.length === 0) return 'empty';
   let hasPresent = false;
   for (const value of values) {
-    const child = inspectValue(value, seen);
+    const child = inspectValue(value, seen, childPosition);
     if (child === 'unknown') return 'unknown';
     if (child === 'present') hasPresent = true;
   }
   return hasPresent ? 'present' : 'empty';
+}
+
+function emptyContainerInspection(position: InspectionPosition): Inspection {
+  return position === 'array-item' ? 'unknown' : 'empty';
 }
 
 function readProperty(value: Record<string, unknown>, key: string): unknown {
