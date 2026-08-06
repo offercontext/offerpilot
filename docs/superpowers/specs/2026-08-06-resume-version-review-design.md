@@ -1,6 +1,6 @@
 # 简历版本差异审阅设计
 
-**状态：** 已复审通过
+**状态：** 待复审
 
 **日期：** 2026-08-06
 
@@ -112,8 +112,9 @@ function diffResumeContent(
 - 合法对象和数组使用键排序后的 canonical JSON；数组保持原索引顺序。
 - `undefined`、BigInt、Symbol、函数、循环结构、异常 getter、抛错 Proxy、稀疏数组和异常容器只输出固定中文占位，不调用不可信的 `toString()`，不把原始值放入公开结果。
 - 所有对象属性使用 own-property 判断，区分字段不存在与字段存在但值为 `undefined`。
-- 合法对象仅按可安全读取的 own 字符串键递归；键排序不修改输入对象。
-- 任何 `Reflect.ownKeys`、原型检查、属性描述符读取或安全序列化异常，都将该对象或数组视为当前路径的 `unsupported` 结构，不继续遍历。
+- 合法对象仅限原型为 `Object.prototype` 或 `null` 的普通对象，并且只能包含 own、可枚举、字符串键、数据属性；Symbol key、非枚举 own 属性、accessor、其他原型或自定义类都使当前对象成为 `unsupported` 容器。
+- 合法数组仅限原型为 `Array.prototype` 的普通稠密数组；除内建 `length` 外不得有额外 own 属性，所有索引必须存在且为数据属性。稀疏数组、数组额外属性、数组 accessor 或其他原型都使当前数组成为 `unsupported` 容器。
+- 检查 `Reflect.ownKeys`、原型、属性描述符或安全序列化时若发生异常，都将该对象或数组视为当前路径的 `unsupported` 结构；读取数据属性使用 descriptor.value，绝不执行 getter。
 - 稀疏数组和异常容器按该数组或对象路径产生一条不支持结构差异，不逐项遍历。
 
 JSON Pointer 规则：
@@ -172,7 +173,7 @@ web/src/components/ResumeCard.tsx
 web/src/components/ResumeCard.test.tsx
 web/src/components/ResumeLibraryView.tsx
 web/src/components/ResumeLibraryView.module.css
-相关 ResumeLibraryView 挂载测试
+web/src/components/ResumeLibraryView.versionCompare.mount.test.tsx
 docs/superpowers/specs/2026-08-06-resume-version-review-design.md
 docs/superpowers/plans/2026-08-06-resume-version-review.md
 docs/reports/2026-08-06-resume-version-review-browser-acceptance.md
@@ -221,7 +222,7 @@ tests/**
 - 只有真实截断内容显示 `<details>`；切换目标或基准后展开状态清除。
 - 宽屏/窄屏布局只改变排版。
 
-增加真实 `ResumeLibraryView` 挂载测试：初始 `listResumes` 只读查询可以发生；点击“对比版本”、选择基准、查看差异、展开/折叠和关闭期间，Resume 写入、AI、导航和 history 调用必须均为 0。测试使用已加载的合成 Resume，不触发复制、编辑或保存。
+增加具体文件 `web/src/components/ResumeLibraryView.versionCompare.mount.test.tsx` 的真实 `ResumeLibraryView` 挂载测试：初始 `listResumes` 只读查询可以发生；点击“对比版本”、选择基准、查看差异、展开/折叠和关闭期间，Resume 写入、AI、导航和 history 调用必须均为 0。测试使用已加载的合成 Resume，不触发复制、编辑或保存。
 
 ### 7.3 浏览器验收
 
@@ -250,11 +251,12 @@ git diff --check
 
 同时机器化证明：
 
-- 相对固定 baseline `db9fad6` 的已提交、暂存、未暂存和未跟踪文件集合均在 allowlist 内。
-- 与 `feat/20260805-application-jd-versions` 相对同一 baseline 的文件集合求交集。
-- 交集非零时立即停止实施并重新划分文件边界。
-- allowlist 检查覆盖前后所有文件状态，不能只使用 `git diff --name-only`。
-- 通过文件集合检查证明没有后端、API、数据库、service 或共享类型改动。
+- 当前版本分支的固定 fork point 是 `db9fad6`，必须验证它是 `feat/20260806-resume-version-review` 的祖先；当前版本自有文件集合从 `db9fad6..feat/20260806-resume-version-review` 计算，并合并当前工作区的暂存、未暂存和未跟踪文件。
+- JD 分支的真实 fork point 不假定为 `db9fad6`，而是运行 `git merge-base feat/20260805-application-jd-versions db9fad6` 计算；当前基线应得到 `b4363b0`，并从该 fork point 到 JD 分支头计算 JD 分支自有文件集合。
+- 只有在分别按上述两个真实 fork point 得到两组“分支自有文件”后，才求文件集合交集；不能用一个共同的 `db9fad6` 直接比较两个分支。
+- 任何祖先校验失败、JD fork point 变化或交集非零，都立即停止实施并重新划分文件边界。
+- allowlist 检查覆盖已提交、暂存、未暂存和未跟踪文件，不能只使用 `git diff --name-only`。
+- 通过 allowlist 和禁止路径检查机器化证明没有后端、API、数据库、service 或共享类型改动。
 
 ## 8. 破坏性变化与风险
 
