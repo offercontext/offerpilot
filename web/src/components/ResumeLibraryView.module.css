@@ -257,6 +257,175 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   font-size: 12px;
 }
+.auditPanel {
+  margin-bottom: 14px;
+  padding: 16px;
+  border: 1px solid var(--op-border);
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--op-surface), color-mix(in srgb, var(--op-layout-bg) 68%, var(--op-surface)));
+  box-shadow: var(--op-shadow-sm);
+}
+.auditHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+.auditTitle {
+  color: var(--op-ink);
+  font-size: 16px;
+  font-weight: 750;
+  letter-spacing: -0.01em;
+}
+.auditIntro {
+  margin: 5px 0 0;
+  color: var(--op-muted-strong);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.auditParseNotice {
+  margin: 14px 0 0;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--op-warning) 28%, var(--op-border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--op-warning) 8%, var(--op-surface));
+  color: var(--op-warning-strong);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.auditSummary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 16px;
+}
+.auditSummaryItem {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 11px;
+  border: 1px solid var(--op-border);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--op-surface) 86%, transparent);
+}
+.auditSummaryItem strong {
+  color: var(--op-ink);
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+}
+.auditStatus {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+.auditStatusPresent {
+  background: color-mix(in srgb, var(--op-success) 12%, var(--op-surface));
+  color: var(--op-success);
+}
+.auditStatusReview {
+  background: color-mix(in srgb, var(--op-warning) 13%, var(--op-surface));
+  color: var(--op-warning-strong);
+}
+.auditStatusUnknown {
+  background: color-mix(in srgb, var(--op-info) 12%, var(--op-surface));
+  color: var(--op-info);
+}
+.auditCategories {
+  display: grid;
+  gap: 14px;
+  margin-top: 16px;
+}
+.auditCategory {
+  min-width: 0;
+}
+.auditCategoryTitle {
+  margin: 0 0 7px;
+  color: var(--op-ink);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+.auditFindings {
+  display: grid;
+  gap: 7px;
+}
+.auditFinding {
+  min-width: 0;
+  border: 1px solid var(--op-border);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--op-surface) 92%, transparent);
+}
+.auditFinding[open] {
+  border-color: color-mix(in srgb, var(--op-primary) 34%, var(--op-border));
+}
+.auditFindingSummary {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 11px;
+  color: var(--op-ink);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 650;
+  list-style-position: inside;
+}
+.auditFindingSummary::marker {
+  color: var(--op-muted);
+}
+.auditFindingBody {
+  padding: 0 11px 11px 30px;
+  color: var(--op-muted-strong);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.auditFindingBody p {
+  margin: 0 0 10px;
+}
+.auditSource {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.auditSourceLabel {
+  color: var(--op-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+.auditSourcePath {
+  display: block;
+  min-width: 0;
+  color: var(--op-primary-strong);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.auditExcerpt {
+  margin: 0;
+  padding: 8px 10px;
+  border-left: 3px solid color-mix(in srgb, var(--op-primary) 35%, var(--op-border));
+  background: var(--op-layout-bg);
+  color: var(--op-ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.auditEmptyState {
+  margin-top: 16px;
+  padding: 18px;
+  border: 1px dashed var(--op-border);
+  border-radius: 9px;
+  color: var(--op-muted);
+  font-size: 13px;
+  text-align: center;
+}
 @media (max-width: 1100px) {
   .grid { grid-template-columns: repeat(2, 1fr); }
 }
@@ -283,6 +452,12 @@
   }
   .sectionNav button {
     white-space: nowrap;
+  }
+  .auditHeader {
+    flex-direction: column;
+  }
+  .auditSummary {
+    grid-template-columns: 1fr;
   }
 }
 @media (max-width: 768px) {

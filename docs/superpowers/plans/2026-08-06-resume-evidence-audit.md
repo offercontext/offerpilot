@@ -36,7 +36,7 @@ Use the persisted `b4363b0` as the fixed allowlist baseline. Compare the target 
 ## Implementation contract fixed for this plan
 
 - Export ResumeAuditStatus, ResumeAuditCategory, ResumeAuditFinding, ResumeAuditResult, and auditResume(resume: Resume): ResumeAuditResult from the pure module.
-- Use a fixed finding order: invalid-content guard when needed; six core fields in contact/education/experience/projects/skills/career_intent order; then experience-empty-bullet, experience-duplicate-bullet, experience-long-bullet, experience-bullets-unknown when applicable; then facts-quantification; then format-visual-unknown. The complete valid-content order is asserted in a test.
+- Use a fixed finding order: invalid-content guard when needed; six core fields in contact/education/experience/projects/skills/career_intent order; then experience-empty-bullet, experience-duplicate-bullet, experience-long-bullet, experience-bullets-missing, experience-bullets-unknown when applicable; then facts-quantification; then format-visual-unknown. The complete valid-content order is asserted in a test.
 - Use relative evidence paths such as /experience/0/highlights/0, matching existing resume evidence conventions.
 - A missing core field is review; an explicitly empty recognized container is review; a non-empty recognized value is present; an invalid present shape is unknown. A non-object content_json produces an unknown finding and never throws.
 - Experience extraction recognizes string entries and string arrays under highlights, bullets, and achievements. Keep valid strings, ignore invalid elements for rule evaluation, and emit a related unknown finding when malformed elements prevent a complete conclusion. Never use raw_text as structured bullets.
@@ -383,7 +383,7 @@ export function auditResume(resume: Resume): ResumeAuditResult {
 }
 ~~~
 
-Use fixed field-shape metadata to implement the truth table above; do not use array.length or Object.keys() as a presence test. Extract direct experience strings plus highlights/bullets/achievements strings and preserve each original path/text. The recursive visible-leaf walker must track visited objects with WeakSet; encountering a cycle, NaN, Infinity, function, or Symbol marks the field unknown without throwing. Emit one deterministic offending source per rule, in input traversal order, and construct IDs in the exact order specified above. Use Array.from for code-point length and excerpt truncation. Count statuses without sorting. Any malformed runtime value must return unknown or be skipped safely, never throw.
+Use fixed field-shape metadata to implement the truth table above; do not use array.length or Object.keys() as a presence test. Extract direct experience strings plus highlights/bullets/achievements strings and preserve each original path/text. When experience items exist without a recognizable bullet collection, emit experience-bullets-missing with review; if malformed elements prevent a complete conclusion, emit experience-bullets-unknown instead. The recursive visible-leaf walker must track visited objects with WeakSet; encountering a cycle, NaN, Infinity, function, or Symbol marks the field unknown without throwing. Emit one deterministic offending source per rule, in input traversal order, and construct IDs in the exact order specified above. Use Array.from for code-point length and excerpt truncation. Count statuses without sorting. Any malformed runtime value must return unknown or be skipped safely, never throw.
 
 - [ ] **Step 4: Verify green and refactor only while green.**
 
