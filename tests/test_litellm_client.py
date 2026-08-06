@@ -63,6 +63,27 @@ def test_client_audits_request_metadata_without_prompt_or_secret(monkeypatch, tm
     assert "sk-secret" not in audit_text
 
 
+def test_provider_request_audit_failure_does_not_block_provider_call(monkeypatch, tmp_path):
+    audit_path = tmp_path / "missing" / "provider-request-audit.jsonl"
+    monkeypatch.setenv("OFFERPILOT_PROVIDER_REQUEST_AUDIT_FILE", str(audit_path))
+    calls = 0
+
+    def fake_completion(**kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        return {"choices": [{"message": {"content": "ok"}}]}
+
+    monkeypatch.setattr(ai_client, "completion", fake_completion)
+    client = ConfiguredAIClient(
+        Config(api_key="sk-test", base_url="https://provider.example/v1", model="model")
+    )
+
+    result = client.complete([Message(role="user", content="prompt")], [])
+
+    assert result.content == "ok"
+    assert calls == 1
+
+
 def test_client_routes_openai_compatible_calls_through_litellm(monkeypatch):
     captured: dict[str, Any] = {}
 

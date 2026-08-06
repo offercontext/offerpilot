@@ -144,6 +144,7 @@ def _read_redacted_request_metadata(path: Path) -> list[dict[str, Any]]:
         "message_count",
         "message_bytes",
         "request_body_bytes",
+        "request_body_scope",
         "input_fingerprint_sha256",
         "schema_fingerprint_sha256",
         "response_mode",

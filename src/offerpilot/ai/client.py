@@ -140,8 +140,8 @@ class ConfiguredAIClient:
         if response_format is not None and provider.supports_json_schema:
             payload["response_format"] = response_format
 
-        _audit_provider_endpoint(provider.base_url)
-        _audit_provider_request(provider, payload)
+        _try_audit_provider_endpoint(provider.base_url)
+        _try_audit_provider_request(provider, payload)
         response = completion(**payload)
         message = _first_choice_message(response)
         calls = []
@@ -260,6 +260,13 @@ def _audit_provider_endpoint(base_url: str) -> None:
         )
 
 
+def _try_audit_provider_endpoint(base_url: str) -> None:
+    try:
+        _audit_provider_endpoint(base_url)
+    except Exception:
+        return
+
+
 def _audit_provider_request(provider: AIProviderProfile, payload: dict[str, Any]) -> None:
     path = os.getenv("OFFERPILOT_PROVIDER_REQUEST_AUDIT_FILE")
     if not path:
@@ -290,14 +297,24 @@ def _audit_provider_request(provider: AIProviderProfile, payload: dict[str, Any]
         "message_count": len(messages) if isinstance(messages, list) else 0,
         "message_bytes": _json_bytes(messages),
         "request_body_bytes": _json_bytes(provider_payload),
+        "request_body_scope": "serialized_provider_payload_without_auth_or_endpoint",
         "input_fingerprint_sha256": _sha256_json(canonical_input),
         "schema_fingerprint_sha256": _sha256_json(response_format or ""),
         "response_mode": "json_schema" if response_format is not None else "text_json",
-        "max_tokens": payload.get("max_tokens", payload.get("max_completion_tokens")),
+        "max_tokens": payload.get("max_tokens")
+        if payload.get("max_tokens") is not None
+        else payload.get("max_completion_tokens"),
         "timeout_seconds": payload.get("timeout"),
     }
     with open(path, "a", encoding="utf-8") as audit:
         audit.write(json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n")
+
+
+def _try_audit_provider_request(provider: AIProviderProfile, payload: dict[str, Any]) -> None:
+    try:
+        _audit_provider_request(provider, payload)
+    except Exception:
+        return
 
 
 def _sha256_json(value: Any) -> str:
