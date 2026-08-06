@@ -3,7 +3,7 @@
 - Verification date: 2026-08-06
 - Branch: `feat/20260805-application-jd-versions`
 - Feature baseline: `455e081`
-- Verification code HEAD: `845f559`
+- Evidence execution HEAD: `845f559` (report-only commits follow)
 - Status: local and grouped release gates passed; real-AI and browser release gates remain blocked.
 
 ## Scope
