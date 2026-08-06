@@ -699,7 +699,7 @@ def test_real_ai_material_proposal_smoke_allows_empty_changes_and_hides_snapshot
                         "rejected_at": None,
                         "source": {
                             "application": {"id": 7, "company_name": "Smoke", "position_name": "QA"},
-                            "material_kit": {"id": 7, "jd_excerpt": "QA"},
+                            "material_kit": {"id": 7, "jd_version_id": 13, "jd_excerpt": "QA"},
                             "resume": {"id": 42, "title": "Smoke Resume"},
                             "latest_evidence_bundle": None,
                             "user_assertions": [],

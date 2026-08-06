@@ -2494,9 +2494,12 @@ def _validate_material_proposal_smoke_response(body: object) -> None:
         raise RuntimeError("material proposal response leaked frozen source data")
     if not isinstance(source.get("material_kit"), dict) or set(source["material_kit"]) != {
         "id",
+        "jd_version_id",
         "jd_excerpt",
     }:
         raise RuntimeError("material proposal response leaked frozen source data")
+    if type(source["material_kit"].get("jd_version_id")) is not int or source["material_kit"]["jd_version_id"] <= 0:
+        raise RuntimeError("material proposal response had invalid JD version")
     if not isinstance(source.get("resume"), dict) or set(source["resume"]) != {"id", "title"}:
         raise RuntimeError("material proposal response leaked frozen source data")
     bundle = source.get("latest_evidence_bundle")
