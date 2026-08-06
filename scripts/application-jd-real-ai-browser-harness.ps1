@@ -11,6 +11,9 @@ $tempData = Join-Path ([IO.Path]::GetTempPath()) ('offerpilot-application-jd-' +
 $httpAudit = Join-Path $tempData 'http-audit.jsonl'
 $providerAudit = Join-Path $tempData 'provider-audit.jsonl'
 $browserAudit = Join-Path $tempData 'browser-network.jsonl'
+$browserDiagnostic = Join-Path $tempData 'browser-diagnostic.json'
+$browserStdout = Join-Path $tempData 'browser-auditor.stdout.log'
+$browserStderr = Join-Path $tempData 'browser-auditor.stderr.log'
 $browserStop = Join-Path $tempData 'browser-network.stop'
 $browserReady = Join-Path $tempData 'browser-network.ready'
 $server = $null
@@ -92,6 +95,51 @@ function Stop-Tree([object]$process) {
       Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
     }
   } catch { }
+}
+
+function Get-BrowserDiagnostic {
+  if (-not (Test-Path -LiteralPath $browserDiagnostic)) { throw 'Browser diagnostic output is missing.' }
+  return (Get-Content -LiteralPath $browserDiagnostic -Raw | ConvertFrom-Json)
+}
+
+function Assert-BrowserAuditorHealthy {
+  if ($null -ne $browser -and $browser.HasExited) {
+    throw 'Temporary browser exited before the requested browser stages completed.'
+  }
+  if ($null -ne $auditor -and $auditor.HasExited) {
+    $diagnostic = if (Test-Path -LiteralPath $browserDiagnostic) { Get-BrowserDiagnostic } else { $null }
+    $category = if ($diagnostic -and $diagnostic.failure_category) { [string]$diagnostic.failure_category } else { 'unknown' }
+    throw "Browser auditor exited before the requested browser stages completed ($category)."
+  }
+}
+
+function Wait-AuditorExit([int]$TimeoutSeconds = 20, [switch]$AllowFailure) {
+  if ($null -eq $auditor) { return }
+  $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+  while (-not $auditor.HasExited -and [DateTime]::UtcNow -lt $deadline) {
+    Start-Sleep -Milliseconds 200
+    $auditor.Refresh()
+  }
+  if (-not $auditor.HasExited) {
+    if ($AllowFailure) { return }
+    throw 'Browser auditor did not exit cleanly.'
+  }
+  if (-not $AllowFailure -and $auditor.ExitCode -ne 0) {
+    $diagnostic = if (Test-Path -LiteralPath $browserDiagnostic) { Get-BrowserDiagnostic } else { $null }
+    $category = if ($diagnostic -and $diagnostic.failure_category) { [string]$diagnostic.failure_category } else { 'unknown' }
+    throw "Browser auditor exited with code $($auditor.ExitCode) ($category)."
+  }
+}
+
+function Complete-BrowserAudit {
+  if ($null -eq $auditor) { throw 'Browser auditor was not started.' }
+  New-Item -ItemType File -Force -Path $browserStop | Out-Null
+  Wait-AuditorExit
+  $diagnostic = Get-BrowserDiagnostic
+  if ([string]$diagnostic.status -ne 'passed' -or $diagnostic.failure_category) {
+    $category = if ($diagnostic.failure_category) { [string]$diagnostic.failure_category } else { 'unknown' }
+    throw "Browser audit did not complete successfully ($category)."
+  }
 }
 
 function Assert-ExitCode([string]$label) {
@@ -290,6 +338,11 @@ function Assert-StageA($records) {
   if (-not ($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'GET' -and $_.url -match '/job-description/versions/[0-9]+$' })) { throw 'Stage A did not read JD detail.' }
   if (-not ($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'POST' -and $_.url -match '/api/chat$' })) { throw 'Stage A did not record Pilot chat.' }
   if (-not ($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'POST' -and $_.url -match '/api/chat/confirm$' })) { throw 'Stage A did not record Pilot confirmation.' }
+  $confirmationResponses = @($records | Where-Object {
+    $_.kind -eq 'browser_response' -and $_.method -eq 'POST' -and
+    $_.url -match '/api/chat/confirm$' -and $_.response_status -in @(200, 201)
+  })
+  if ($confirmationResponses.Count -lt 1) { throw 'Stage A did not record a successful Pilot confirmation response.' }
 }
 
 function Assert-ConsumerRequest($records, [string]$consumer) {
@@ -354,16 +407,20 @@ try {
   Write-Host "EVENT_ID=$eventId"
   $beforeA = Get-DbSnapshot
 
-  $auditor = Start-Process powershell -WindowStyle Hidden -PassThru -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', "Set-Location '$repo'; uv run python scripts/browser-network-audit.py --debugging-url '$CdpUrl' --expected-url '$baseUrl' --audit '$browserAudit' --stop-file '$browserStop' --ready-file '$browserReady'")
+  $auditor = Start-Process powershell -WindowStyle Hidden -PassThru `
+    -RedirectStandardOutput $browserStdout -RedirectStandardError $browserStderr `
+    -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', "Set-Location '$repo'; uv run python scripts/browser-network-audit.py --debugging-url '$CdpUrl' --expected-url '$baseUrl' --audit '$browserAudit' --stop-file '$browserStop' --ready-file '$browserReady' --diagnostic-file '$browserDiagnostic'")
   for ($i = 0; $i -lt 120; $i++) {
     if ($auditor.HasExited) { throw 'Browser auditor exited before readiness.' }
     if (Test-Path -LiteralPath $browserReady) { break }
     Start-Sleep -Milliseconds 500
   }
   if (-not (Test-Path -LiteralPath $browserReady)) { throw 'Browser auditor did not become ready.' }
+  Assert-BrowserAuditorHealthy
   Write-Host 'Dedicated browser target is ready. Complete JD UI and Pilot confirmation in that target.'
   Write-Host 'Then complete triage, material kit, and interview preparation in that same target.'
   [void](Read-Host 'Press Enter after the requested browser stages are complete')
+  Assert-BrowserAuditorHealthy
   $records = Get-BrowserRecords
   Assert-LocalBrowser $records
   Assert-StageA $records
@@ -391,6 +448,7 @@ print(db.execute(
       $consumerBefore = Get-DbSnapshot
       Write-Host "Complete $consumer in the dedicated browser target."
       [void](Read-Host 'Press Enter after this consumer is complete')
+      Assert-BrowserAuditorHealthy
       $records = Get-BrowserRecords
       Assert-LocalBrowser $records
       Assert-ConsumerRequest $records $consumer
@@ -405,13 +463,17 @@ print(db.execute(
       Assert-StageUnchanged $consumerBefore (Get-DbSnapshot) @()
     }
     Assert-ProviderEgress $providers
-    Write-Host 'Application JD browser acceptance passed.'
   }
+  Complete-BrowserAudit
+  Write-Host 'Application JD browser acceptance passed.'
 } catch {
   Write-Host 'Application JD browser acceptance failed.'
   throw
 } finally {
-  if ($browserStop) { New-Item -ItemType File -Force -Path $browserStop | Out-Null }
+  if ($browserStop -and $null -ne $auditor -and -not $auditor.HasExited) {
+    New-Item -ItemType File -Force -Path $browserStop | Out-Null
+    Wait-AuditorExit -AllowFailure
+  }
   Stop-Tree $auditor
   Stop-Tree $server
   Stop-Tree $proxy

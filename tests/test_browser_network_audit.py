@@ -26,6 +26,7 @@ class _FakeCdp:
         self.no_attach = no_attach
         self.drop_after_navigation = drop_after_navigation
         self.emit_unowned_request = emit_unowned_request
+        self.methods: list[str] = []
         self.expected_url = "http://127.0.0.1:18766/"
         self.ready = threading.Event()
         self.loop: asyncio.AbstractEventLoop | None = None
@@ -63,6 +64,7 @@ class _FakeCdp:
             message = json.loads(raw)
             command_id = message["id"]
             method = message["method"]
+            self.methods.append(method)
             session_id = message.get("sessionId")
             if method == "Target.createTarget":
                 if not self.no_attach:
@@ -136,6 +138,7 @@ def _run_auditor(
     audit = tmp_path / "browser.jsonl"
     stop = tmp_path / "stop"
     ready = tmp_path / "ready"
+    diagnostic = tmp_path / "diagnostic.json"
     process = subprocess.Popen(
         [
             sys.executable,
@@ -145,6 +148,7 @@ def _run_auditor(
             "--audit", str(audit),
             "--stop-file", str(stop),
             "--ready-file", str(ready),
+            "--diagnostic-file", str(diagnostic),
             "--ready-timeout-seconds", timeout,
         ],
         text=True,
@@ -197,6 +201,27 @@ def test_browser_network_audit_propagates_post_ready_disconnect(tmp_path):
     try:
         result = _run_auditor(tmp_path / "disconnect", fake, stop_delay_seconds=0.5)
         assert result.returncode != 0
+        diagnostic = json.loads((tmp_path / "disconnect" / "diagnostic.json").read_text(encoding="utf-8"))
+        assert diagnostic["failure_category"] == "cdp_connection_closed"
+        assert diagnostic["ready"] is True
+        assert diagnostic["stop_requested"] is False
+        assert diagnostic["main_target_id"] == "main-target"
+        assert diagnostic["main_session_id"] == "main-session"
+    finally:
+        fake.close()
+
+
+def test_browser_network_audit_records_clean_stop_diagnostic(tmp_path):
+    fake = _FakeCdp()
+    try:
+        result = _run_auditor(tmp_path / "clean", fake, stop_delay_seconds=0.2)
+        assert result.returncode == 0, result.stderr
+        diagnostic = json.loads((tmp_path / "clean" / "diagnostic.json").read_text(encoding="utf-8"))
+        assert diagnostic["status"] == "passed"
+        assert diagnostic["failure_category"] is None
+        assert diagnostic["ready"] is True
+        assert diagnostic["stop_requested"] is True
+        assert "Browser.getVersion" in fake.methods
     finally:
         fake.close()
 

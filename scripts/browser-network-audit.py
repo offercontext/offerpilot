@@ -50,10 +50,17 @@ def record_response_payload_metadata(record: dict[str, object], payload: object)
 
 
 class BrowserAudit:
-    def __init__(self, websocket: websockets.ClientConnection, output: Path, stop_file: Path) -> None:
+    def __init__(
+        self,
+        websocket: websockets.ClientConnection,
+        output: Path,
+        stop_file: Path,
+        diagnostic: Path | None = None,
+    ) -> None:
         self.websocket = websocket
         self.output = output
         self.stop_file = stop_file
+        self.diagnostic = diagnostic
         self.next_id = 1
         self.pending: dict[int, asyncio.Future[dict[str, object]]] = {}
         self.target_sessions: dict[str, str] = {}
@@ -68,6 +75,44 @@ class BrowserAudit:
         self.request_records: dict[tuple[str, str], dict[str, object]] = {}
         self.response_tasks: set[asyncio.Task[None]] = set()
         self.response_finished: dict[tuple[str, str], asyncio.Event] = {}
+        self.failure_category: str | None = None
+        self.close_code: int | None = None
+        self.last_event = "startup"
+        self.started_at = time.monotonic()
+
+    def _set_failure(self, category: str, error: BaseException | None = None) -> None:
+        if self.failure_category is None:
+            self.failure_category = category
+        if error is not None and self.reader_error is None:
+            self.reader_error = error
+
+    def _write_diagnostic(self) -> None:
+        if self.diagnostic is None:
+            return
+        self.diagnostic.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "status": "passed" if self.failure_category is None else "failed",
+            "failure_category": self.failure_category,
+            "stop_requested": self.stop_file.exists(),
+            "ready": self.main_network_ready.is_set(),
+            "main_target_id": self.main_target_id,
+            "main_session_id": self.main_session_id,
+            "network_ready_target_count": len(self.network_ready_targets),
+            "request_count": len(self.request_records),
+            "response_count": sum(
+                1
+                for record in self.request_records.values()
+                if "response_status" in record
+            ),
+            "last_event": self.last_event,
+            "elapsed_ms": max(0, int((time.monotonic() - self.started_at) * 1000)),
+        }
+        if self.close_code is not None:
+            payload["close_code"] = self.close_code
+        self.diagnostic.write_text(
+            json.dumps(payload, ensure_ascii=True, separators=(",", ":")) + "\n",
+            encoding="ascii",
+        )
 
     async def send(
         self,
@@ -94,6 +139,7 @@ class BrowserAudit:
         try:
             async for raw in self.websocket:
                 message = json.loads(raw)
+                self.last_event = str(message.get("method") or "command_response")
                 command_id = message.get("id")
                 if isinstance(command_id, int) and command_id in self.pending:
                     self.pending.pop(command_id).set_result(message)
@@ -119,16 +165,24 @@ class BrowserAudit:
                         finished = self.response_finished.setdefault((session_id, request_id), asyncio.Event())
                         finished.set()
             if not self.stop_file.exists():
-                self.reader_error = RuntimeError("CDP connection closed before audit stop")
+                self._set_failure(
+                    "cdp_connection_closed",
+                    RuntimeError("CDP connection closed before audit stop"),
+                )
         except asyncio.CancelledError:
             raise
         except BaseException as exc:
-            self.reader_error = exc
+            if isinstance(exc, websockets.exceptions.ConnectionClosed):
+                self.close_code = exc.code
+                self._set_failure("cdp_connection_closed", exc)
+            else:
+                self._set_failure("cdp_reader_error", exc)
             for future in self.pending.values():
                 if not future.done():
                     future.set_exception(exc)
 
     async def attached(self, params: object) -> None:
+        self.last_event = "Target.attachedToTarget"
         if not isinstance(params, dict):
             return
         session_id = params.get("sessionId")
@@ -161,10 +215,26 @@ class BrowserAudit:
             self.network_ready_targets.add(target_id)
             if target_id == self.main_target_id:
                 self.main_network_ready.set()
-        except RuntimeError as exc:
-            self.reader_error = exc
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:
+            category = "network_enable_rejected" if "Network.enable" in str(exc) else "target_enable_error"
+            self._set_failure(category, exc)
+
+    async def keep_browser_session(self) -> None:
+        """Keep the browser-level CDP session active during manual acceptance."""
+        try:
+            while not self.stop_file.exists():
+                await self.send("Browser.getVersion")
+                await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:
+            category = "cdp_connection_closed" if isinstance(exc, websockets.exceptions.ConnectionClosed) else "cdp_keepalive_error"
+            self._set_failure(category, exc)
 
     async def record_request(self, message: dict[str, object]) -> None:
+        self.last_event = "Network.requestWillBeSent"
         session_id = message.get("sessionId")
         if not isinstance(session_id, str) or session_id not in self.target_sessions.values():
             return
@@ -256,6 +326,7 @@ class BrowserAudit:
                 self.request_records[(session_id, request_id)] = record
 
     async def record_response(self, message: dict[str, object]) -> None:
+        self.last_event = "Network.responseReceived"
         session_id = message.get("sessionId")
         params = message.get("params")
         if not isinstance(session_id, str) or not isinstance(params, dict):
@@ -293,8 +364,14 @@ class BrowserAudit:
                 ]
                 if proposal_ids:
                     record["response_proposal_ids"] = proposal_ids
-        except (RuntimeError, json.JSONDecodeError, TypeError):
-            pass
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:
+            if isinstance(exc, websockets.exceptions.ConnectionClosed):
+                self.close_code = exc.code
+                self._set_failure("cdp_connection_closed", exc)
+            elif not isinstance(exc, (RuntimeError, json.JSONDecodeError, TypeError)):
+                self._set_failure("response_audit_error", exc)
         if self.handle is not None:
             response_record = {
                 "kind": "browser_response",
@@ -324,6 +401,7 @@ class BrowserAudit:
 
     async def run(self, base_url: str, ready_file: Path, ready_timeout_seconds: float) -> None:
         reader_task = asyncio.create_task(self.reader())
+        keepalive_task: asyncio.Task[None] | None = None
         try:
             await self.send("Target.setDiscoverTargets", {"discover": True})
             await self.send("Target.setAutoAttach", {
@@ -355,11 +433,15 @@ class BrowserAudit:
                     raise self.reader_error
                 await asyncio.sleep(0.05)
             if not self.main_network_ready.is_set() or self.main_session_id is None:
+                if self.failure_category is None:
+                    self._set_failure("ready_timeout")
                 raise RuntimeError("dedicated browser target did not complete Network.enable")
             with self.output.open("w", encoding="utf-8") as handle:
                 self.handle = handle
                 await self.send("Page.navigate", {"url": base_url}, self.main_session_id)
                 ready_file.touch()
+                self.last_event = "browser_ready"
+                keepalive_task = asyncio.create_task(self.keep_browser_session())
                 while not self.stop_file.exists():
                     if self.reader_error is not None:
                         raise self.reader_error
@@ -367,10 +449,14 @@ class BrowserAudit:
                 if self.reader_error is not None:
                     raise self.reader_error
         finally:
+            if keepalive_task is not None:
+                keepalive_task.cancel()
+                await asyncio.gather(keepalive_task, return_exceptions=True)
             if self.response_tasks:
                 await asyncio.gather(*self.response_tasks, return_exceptions=True)
             reader_task.cancel()
             await asyncio.gather(reader_task, return_exceptions=True)
+            self._write_diagnostic()
 
 
 def browser_websocket_url(debugging_url: str) -> str:
@@ -393,7 +479,7 @@ async def main_async(args: argparse.Namespace) -> None:
     args.ready_file.parent.mkdir(parents=True, exist_ok=True)
     websocket_url = browser_websocket_url(args.debugging_url)
     async with websockets.connect(websocket_url, open_timeout=5) as websocket:
-        audit = BrowserAudit(websocket, args.audit, args.stop_file)
+        audit = BrowserAudit(websocket, args.audit, args.stop_file, args.diagnostic_file)
         await audit.run(args.expected_url, args.ready_file, args.ready_timeout_seconds)
 
 
@@ -404,6 +490,7 @@ def main() -> None:
     parser.add_argument("--audit", type=Path, required=True)
     parser.add_argument("--stop-file", type=Path, required=True)
     parser.add_argument("--ready-file", type=Path, required=True)
+    parser.add_argument("--diagnostic-file", type=Path, default=None)
     parser.add_argument("--ready-timeout-seconds", type=float, default=30)
     args = parser.parse_args()
     asyncio.run(main_async(args))

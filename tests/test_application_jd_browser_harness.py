@@ -102,6 +102,17 @@ def test_application_jd_harness_self_starts_and_cleans_temporary_browser() -> No
     assert "--user-data-dir=$browserProfile" in script
     assert "Stop-Tree $browser" in script
     assert "APPLICATION_JD_CDP_URL" in script
+    assert "browser-diagnostic.json" in script
+    assert "RedirectStandardError" in script
+    assert "Wait-AuditorExit" in script
+
+
+def test_application_jd_harness_fails_closed_on_auditor_disconnect() -> None:
+    script = HARNESS.read_text(encoding="utf-8")
+    assert "Assert-BrowserAuditorHealthy" in script
+    assert "failure_category" in script
+    assert "Browser auditor did not exit cleanly" in script
+    assert "successful Pilot confirmation response" in script
 
 
 def test_application_jd_implementation_scope_is_machine_checked() -> None:
