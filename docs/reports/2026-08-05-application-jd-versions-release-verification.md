@@ -3,7 +3,7 @@
 - Verification date: 2026-08-06
 - Branch: `feat/20260805-application-jd-versions`
 - Feature baseline: `455e081`
-- Evidence execution HEAD: `271d46e` (report-only commits follow)
+- Evidence execution HEAD: `2b14677` (report-only commit follows)
 - Status: local and grouped release gates passed; real-AI and browser release gates remain blocked.
 
 ## Scope
@@ -12,7 +12,9 @@ This revision closes the consumer-path gaps for Application JD versions: Opportu
 
 The legacy Opportunity Fit v1 POST write path is disabled. Historical v1 reads remain available. No new URL fetch, recruiting-site access, cross-domain write, or evidence-gate relaxation was added.
 
-## Verification completed on this HEAD
+## Previously completed release gates
+
+The grouped release gates below were completed before the later diagnostic-only changes. They remain the prior gate evidence; the current-HEAD checks are listed separately below.
 
 | Command | Result |
 | --- | --- |
@@ -24,6 +26,17 @@ The legacy Opportunity Fit v1 POST write path is disabled. Historical v1 reads r
 | `npm.cmd run build` (TypeScript plus Vite) | passed, 3747 modules transformed |
 | `uv run oc smoke --static-dir web/dist` | passed |
 | `uv run oc verify --profile local --static-dir web/dist` | passed |
+| `git diff --check` | passed |
+| `uv run pytest -q tests/test_application_jd_browser_harness.py tests/test_browser_network_audit.py` | 15 passed; one existing Starlette deprecation warning |
+
+## Current-HEAD targeted verification
+
+| Command | Result |
+| --- | --- |
+| `uv run pytest -q tests/test_interview_preparation_ai.py tests/test_interview_preparation_api.py` | 29 passed; existing framework deprecation warnings only |
+| `uv run ruff check src/offerpilot/api.py tests/test_interview_preparation_api.py scripts/interview-preparation-controlled-provider-diagnostic.py src/offerpilot/ai/interview_preparation_proposals.py` | passed |
+| `uv run mypy src` | passed, 65 files |
+| PowerShell parser check for `scripts/application-jd-real-ai-browser-harness.ps1` | passed |
 | `git diff --check` | passed |
 | `uv run pytest -q tests/test_application_jd_browser_harness.py tests/test_browser_network_audit.py` | 15 passed; one existing Starlette deprecation warning |
 
@@ -54,9 +67,9 @@ uv run ruff check scripts/interview-preparation-controlled-provider-diagnostic.p
 uv run python scripts/interview-preparation-controlled-provider-diagnostic.py --static-dir web/dist
 ```
 
-It exited 0 with `status=passed`, `provider_calls=3`, and elapsed time 4,904 ms. The controlled endpoint was an ephemeral loopback OpenAI-compatible server and the model was `controlled-interview-preparation`. The three HTTP responses were all 200; request body sizes were 2,116, 2,112, and 2,117 bytes; redacted Provider request-id hashes were `e44e2eeada3d`, `2755f83a7e3e`, and `1c99ad93a902`. No secret, JD text, resume content, or model output was written to the report. This proves the complete response path and strict local validation, but does not prove the external Provider is stable.
+It exited 0 with `status=passed`, `provider_calls=3`, and elapsed time 5,446 ms. The controlled endpoint was an ephemeral loopback OpenAI-compatible server and the model was `controlled-interview-preparation`. The three HTTP responses were all 200; request body sizes were 2,116, 2,112, and 2,117 bytes; redacted Provider request-id hashes were `e44e2eeada3d`, `2755f83a7e3e`, and `1c99ad93a902`. Safe diagnostics recorded three successful responses with no repair attempt, no failure category, durations of 2,117 ms, 17 ms, and 13 ms, and the same redacted request-id hashes. The frozen evidence catalog contained 3 snapshots, 3 JD entries, 9 resume facts, and 0 knowledge entries. No secret, JD text, resume content, or model output was written to the report. This proves the complete response path and strict local validation, but does not prove the external Provider is stable.
 
-The full real-AI verification was then rerun against the same product behavior. It exited 1 after 80,141 ms at the first interview-preparation Provider request with `ReadTimeout` through the configured proxy; no Provider response was accepted. The tool-only diagnostic and harness changes in `7d3bb82`, `078b8e4`, `8a59407`, and `271d46e` do not alter the interview-preparation API or evidence contract, so this remains an external Provider/transport blocker rather than a reason to change product semantics.
+The full real-AI verification was then rerun against the same product behavior. It exited 1 after 80,262 ms at the first interview-preparation Provider request with `ReadTimeout` through the configured proxy; no Provider response was accepted. The later `2b14677` change is type-only in the controlled diagnostic script and does not alter the interview-preparation API or evidence contract. The tool-only diagnostic and harness changes in `7d3bb82`, `078b8e4`, `8a59407`, `ededffb`, `acd219a`, `b1908f8`, and `2b14677` do not alter the interview-preparation API or evidence contract, so this remains an external Provider/transport blocker rather than a reason to change product semantics.
 
 The browser harness was invoked as:
 
@@ -75,4 +88,4 @@ The harness was tightened after that run. `browser-network-audit.py` now keeps a
 - No push or merge was performed.
 - All gate subprocesses exited; no Provider proxy or browser process was retained. Isolated real-AI data directories were cleaned by the verifier.
 - The recorded implementation baseline remains at `D:\Users\yuqi.chen\AppData\Local\Temp\offerpilot-application-jd-versions-baseline.txt` because release gates are incomplete.
-- Remaining release blockers: Provider `ReadTimeout` in full real-AI verification and incomplete post-fix browser/CDP confirmation/consumer evidence. The browser harness no longer depends on a user-supplied `APPLICATION_JD_CDP_URL`; it must still complete the same-target Pilot confirmation and Triage → Material Kit → Interview Preparation sequence before release can be claimed.
+- Remaining release blockers: Provider `ReadTimeout` in full real-AI verification and incomplete post-fix browser/CDP confirmation/consumer evidence. The browser harness no longer depends on a user-supplied `APPLICATION_JD_CDP_URL`; it must still complete the same-target Pilot confirmation and Triage -> Material Kit -> Interview Preparation sequence before release can be claimed.
