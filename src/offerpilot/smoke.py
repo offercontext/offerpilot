@@ -671,6 +671,14 @@ def _persist_full_verify_inner_diagnostic(
         material_response_diagnostic = _read_material_proposal_smoke_diagnostic(report_dir)
         if material_response_diagnostic:
             diagnostics.append(material_response_diagnostic)
+        generation_diagnostic = next(
+            (
+                diagnostic
+                for diagnostic in reversed(diagnostics)
+                if diagnostic.get("kind") == "material_proposal"
+            ),
+            {},
+        )
         failure_categories = [
             category
             for diagnostic in diagnostics
@@ -690,8 +698,9 @@ def _persist_full_verify_inner_diagnostic(
             "evidence_counts": last.get("evidence_counts", {}),
             "repair_attempted": last.get("repair_attempted", False),
             "retry_count": last.get("retry_count", 0),
-            "duration_ms": last.get("duration_ms", 0),
-            "provider_request_id_hash": last.get("provider_request_id_hash", ""),
+            "duration_ms": last.get("duration_ms") or generation_diagnostic.get("duration_ms", 0),
+            "provider_request_id_hash": last.get("provider_request_id_hash")
+            or generation_diagnostic.get("provider_request_id_hash", ""),
             "diagnostics": diagnostics,
             "config": _safe_smoke_config_summary(data_dir),
         }
@@ -2960,6 +2969,7 @@ def _validate_material_proposal_smoke_response(body: object) -> None:
         "id",
         "application_id",
         "material_kit_id",
+        "jd_version_id",
         "source_resume_id",
         "status",
         "summary",
