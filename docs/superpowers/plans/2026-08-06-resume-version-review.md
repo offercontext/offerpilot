@@ -181,6 +181,20 @@ it('uses Object.is before recursive or unsupported handling', () => {
   expect(different.items[0].after?.valueType).toBe('unsupported');
 });
 
+it.each([
+  ['undefined', undefined],
+  ['NaN', Number.NaN],
+  ['Infinity', Number.POSITIVE_INFINITY],
+  ['function', () => 'unsupported'],
+  ['Symbol', Symbol('unsupported')],
+  ['BigInt', BigInt(1)],
+] as const)('renders %s as a safe unsupported value', (_label, value) => {
+  expect(() => diffResumeContent({}, { value })).not.toThrow();
+  const item = itemAt(diffResumeContent({}, { value }), '/value');
+  expect(item.after?.valueType).toBe('unsupported');
+  expect(item.after?.text.full).toBe('（无法安全展示）');
+});
+
 it('never executes accessors or Proxy traps while producing safe output', () => {
   let getterCalls = 0;
   const withGetter = Object.defineProperty({}, 'name', {
@@ -219,6 +233,45 @@ it('rejects non-JSON container shapes at the container path', () => {
     expect(result.items[0].path).toBe('/value');
     expect(result.items[0].after?.valueType).toBe('unsupported');
   }
+});
+
+it('builds a safe canonical tree for nested unsupported values in a container', () => {
+  let getterCalls = 0;
+  const nestedGetter = Object.defineProperty({ value: undefined }, 'getter', {
+    enumerable: true,
+    get() {
+      getterCalls += 1;
+      throw new Error('nested getter must not run');
+    },
+  });
+  const cycle: Record<string, unknown> = {};
+  cycle.self = cycle;
+  const added = {
+    nested: {
+      missingValue: undefined,
+      functionValue: () => 'no raw function text',
+      symbolValue: Symbol('no raw symbol text'),
+      bigintValue: BigInt(1),
+      cycle,
+      nestedGetter,
+    },
+  };
+
+  const result = diffResumeContent({}, { projects: [added] });
+  expect(() => result.items[0].after?.text.full).not.toThrow();
+  expect(result.items).toHaveLength(1);
+  expect(result.items[0].path).toBe('/projects');
+  expect(result.items[0].after?.valueType).toBe('array');
+  expect(result.items[0].after?.text.full).toContain('__offerpilot_unsupported__');
+  expect(result.items[0].after?.text.full).not.toContain('no raw function text');
+  expect(result.items[0].after?.text.full).not.toContain('no raw symbol text');
+  expect(getterCalls).toBe(0);
+
+  const removedResult = diffResumeContent({ projects: [added] }, {});
+  expect(removedResult.items).toHaveLength(1);
+  expect(removedResult.items[0].path).toBe('/projects');
+  expect(removedResult.items[0].before?.text.full).toContain('__offerpilot_unsupported__');
+  expect(removedResult.items[0].before?.text.full).not.toContain('no raw function text');
 });
 ```
 
@@ -282,7 +335,7 @@ if (Object.is(left, right)) return;
 
 - [ ] **Step 5: 实现安全值和 canonical JSON**
 
-使用固定占位文本 `（无法安全展示）`。字符串使用原文；有限数字、布尔、`null` 使用固定字面量；普通对象使用排序键后的 canonical JSON；数组保持索引顺序。所有文本通过 `Array.from(text)` 按 code point 截断到 160，超出时追加 `…`，不调用不可信 `toString()`，不规范化 Unicode。
+使用固定占位文本 `（无法安全展示）` 和固定嵌套节点 `{"__offerpilot_unsupported__":"（无法安全展示）"}`。字符串使用原文；有限数字、布尔、`null` 使用固定字面量；`NaN`、`Infinity` 和其他不支持标量映射为该固定节点。普通对象和数组必须先由递归 safe-tree 构造器处理每个嵌套值，再对 safe tree 做排序键后的 canonical JSON；绝不对原始容器调用 `JSON.stringify`。循环、函数、Symbol、BigInt、`undefined`、异常 getter、抛错 Proxy 和异常子容器只进入固定节点，不调用不可信 `toString()`。所有最终文本通过 `Array.from(text)` 按 code point 截断到 160，超出时追加 `…`，不规范化 Unicode。
 
 - [ ] **Step 6: 实现计数和 identical**
 
@@ -480,31 +533,40 @@ git commit -m "feat: AI connect resume version comparison"
 
 - Create: `docs/reports/2026-08-06-resume-version-review-browser-acceptance.md`
 
-- [ ] **Step 1: 构建前端并创建临时数据目录**
+- [ ] **Step 1: 构建前端并准备一次性验收 harness**
 
-使用唯一临时目录和动态回环端口，不读取用户默认 `~/.offerpilot`：
+先在临时数据目录之外完成生产构建；服务启动、合成数据准备、浏览器操作、网络审计和清理必须全部位于同一个 `try/finally` 中。`try` 之前只计算路径、端口并保存旧环境变量，不启动进程、不写数据库：
 
 ```powershell
+cd web
+npm.cmd run build
+cd ..
+
 $tempData = Join-Path ([IO.Path]::GetTempPath()) ('offerpilot-resume-version-review-' + [Guid]::NewGuid().ToString('N'))
 $probe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
 $probe.Start()
 $port = ([Net.IPEndPoint]$probe.LocalEndpoint).Port
 $probe.Stop()
-New-Item -ItemType Directory -Force -Path $tempData | Out-Null
-cd web
-npm.cmd run build
-cd ..
+$previousData = $env:OFFERPILOT_DATA
+$server = $null
+
+function Get-ProcessTreeIds([int]$rootId) {
+  $rootId
+  Get-CimInstance Win32_Process | Where-Object ParentProcessId -eq $rootId |
+    ForEach-Object { Get-ProcessTreeIds ([int]$_.ProcessId) }
+}
 ```
 
-使用以下固定流程启动仅绑定回环地址的本地服务并准备中文合成主简历：
+以下单一 harness 从启动服务开始包住合成数据准备、浏览器验收和网络审计；`finally` 无论中途哪一步失败都负责递归清理：
 
 ```powershell
-$previousData = $env:OFFERPILOT_DATA
-$env:OFFERPILOT_DATA = $tempData
-$server = Start-Process powershell -WindowStyle Hidden -PassThru -ArgumentList @(
+try {
+  New-Item -ItemType Directory -Force -Path $tempData | Out-Null
+  $env:OFFERPILOT_DATA = $tempData
+  $server = Start-Process powershell -WindowStyle Hidden -PassThru -ArgumentList @(
   '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command',
   "Set-Location '$((Get-Location).Path)'; `$env:OFFERPILOT_DATA = '$tempData'; uv run oc start --port $port"
-)
+  )
 $healthUri = "http://127.0.0.1:$port/api/health"
 $ready = $false
 for ($attempt = 0; $attempt -lt 40; $attempt++) {
@@ -530,42 +592,78 @@ $resumeBody = @{
 } | ConvertTo-Json -Depth 12
 $resume = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$port/api/resumes" -ContentType 'application/json' -Body $resumeBody
 if (-not $resume.id) { throw 'synthetic Chinese resume was not created' }
+
+$secondaryBody = @{
+  title = '中文备用版本'
+  source = 'manual'
+  content_json = @{
+    contact = @{ name = '林晓'; email = 'lin.xiao@example.com' }
+    education = @(@{ school = '示例大学'; degree = '软件工程' })
+    experience = @(@{ company = '备用科技'; title = '平台工程师'; highlights = @('维护数据平台') })
+    projects = @(@{ name = '监控项目'; highlights = @('完善告警流程') })
+    skills = @('Python', 'PostgreSQL')
+    career_intent = @{ target_roles = @('平台工程师'); target_locations = @('杭州') }
+    raw_text = '中文备用简历，仅用于切换基准验收。'
+  }
+} | ConvertTo-Json -Depth 12
+$secondary = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$port/api/resumes" -ContentType 'application/json' -Body $secondaryBody
+if (-not $secondary.id) { throw 'secondary synthetic Chinese resume was not created' }
+
+  Write-Host "Open http://127.0.0.1:$port in the in-app browser."
+  Write-Host 'Complete the Chinese resume copy/edit/compare flow and browser network audit now.'
+  [void](Read-Host 'Press Enter only after browser acceptance and network audit finish')
+}
+finally {
+  try {
+    if ($server) {
+      $processIds = @(Get-ProcessTreeIds ([int]$server.Id) | Sort-Object -Descending)
+      foreach ($processId in $processIds) {
+        Stop-Process -Id ([int]$processId) -Force -ErrorAction SilentlyContinue
+      }
+    }
+
+    $portReleased = $false
+    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+      $listeners = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
+      if ($listeners.Count -eq 0) { $portReleased = $true; break }
+      Start-Sleep -Milliseconds 250
+    }
+    if (-not $portReleased) { throw "harness port was not released: $port" }
+
+    $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+    $tempFull = [IO.Path]::GetFullPath($tempData)
+    $tempLeaf = [IO.Path]::GetFileName($tempFull)
+    $tempParent = [IO.Path]::GetDirectoryName($tempFull)
+    if (-not $tempFull.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase) -or
+        $tempParent.TrimEnd('\', '/') -ne $tempRoot.TrimEnd('\', '/') -or
+        -not $tempLeaf.StartsWith('offerpilot-resume-version-review-', [StringComparison]::OrdinalIgnoreCase)) {
+      throw "refusing to remove non-temporary path: $tempFull"
+    }
+    if (Test-Path -LiteralPath $tempFull) { Remove-Item -LiteralPath $tempFull -Recurse -Force }
+    if (Test-Path -LiteralPath $tempFull) { throw "temporary data cleanup failed: $tempFull" }
+  }
+  finally {
+    if ($null -eq $previousData) { Remove-Item Env:OFFERPILOT_DATA -ErrorAction SilentlyContinue }
+    else { $env:OFFERPILOT_DATA = $previousData }
+  }
+}
 ```
 
-该准备请求只针对 `$tempData` 的本地 `/api`，不使用真实用户数据；从浏览器点击“对比版本”开始才进入本功能的零写请求审计区间。
+该准备请求只针对 `$tempData` 的本地 `/api`，不使用真实用户数据；浏览器随后从主简历复制出目标岗位版本，因此目标版本的父简历是 `$resume.id`，候选基准至少包含父简历和 `$secondary.id`。从浏览器点击“对比版本”开始才进入本功能的零写请求审计区间。
 
 - [ ] **Step 2: 使用内置浏览器完成中文流程**
 
-在亮色模式中执行：主简历 → 复制为岗位版本 → 编辑并保存联系方式、工作要点和技能几处内容 → 打开“对比版本” → 确认父简历默认选中 → 查看新增、删除、修改摘要 → 切换基准 → 展开并折叠长文本。
+在亮色模式中执行：主简历 → 复制为岗位版本 → 编辑并保存联系方式、工作要点和技能几处内容 → 打开“对比版本” → 确认父简历默认选中 → 查看新增、删除、修改摘要 → 手动切换到“中文备用版本”基准并确认差异重新计算 → 展开并折叠长文本。
 
 复制和编辑只用于准备演示数据；版本对比打开后不得点击任何保存、复制、删除或其他写入动作。
 
 - [ ] **Step 3: 进行浏览器网络审计**
 
-记录对比流程期间的所有网络请求：允许本地静态资源与本地 `/api`；不得出现 AI Provider、招聘平台或其他外部 URL；不得出现 Resume 写入、AI 请求或导航副作用。
+从点击“对比版本”开始记录请求，直到完成基准切换、展开/折叠和关闭：允许本地静态资源与本地 `/api`；不得出现 AI Provider、招聘平台或其他外部 URL；Resume 写入、AI 请求和导航调用必须为 0。网络审计失败必须抛错并仍进入同一个 `finally`。
 
-- [ ] **Step 4: 清理临时数据和服务**
+- [ ] **Step 4: 写入验收报告**
 
-使用以下顺序清理，先停服务再删数据，并验证删除目标位于系统临时目录：
-
-```powershell
-if ($server -and -not $server.HasExited) { Stop-Process -Id $server.Id -Force }
-$tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
-$tempFull = [IO.Path]::GetFullPath($tempData)
-if (-not $tempFull.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase)) {
-  throw "refusing to remove non-temporary path: $tempFull"
-}
-if (Test-Path -LiteralPath $tempFull) { Remove-Item -LiteralPath $tempFull -Recurse -Force }
-if ($null -eq $previousData) { Remove-Item Env:OFFERPILOT_DATA -ErrorAction SilentlyContinue }
-else { $env:OFFERPILOT_DATA = $previousData }
-if (Test-Path -LiteralPath $tempFull) { throw "temporary data cleanup failed: $tempFull" }
-```
-
-报告中记录清理成功，不保留合成简历。
-
-- [ ] **Step 5: 写入验收报告**
-
-报告必须包含：分支和 commit、浏览器模式、合成数据说明、基准默认选择、手动选择、摘要和展开结果、网络审计结论、清理路径和结果、未发现真实数据访问的证明。
+报告必须包含：分支和 commit、浏览器模式、合成数据说明、父简历默认选择、手动切换到第二基准、摘要和展开结果、网络审计结论、清理路径和结果、端口已释放的证明、未发现真实数据访问的证明。报告不得保留合成简历内容或真实用户数据。
 
 ## Task 8: 全量验证、隔离门禁和最终提交
 
@@ -602,6 +700,7 @@ cd ..
 ```powershell
 $featureBranch = 'feat/20260806-resume-version-review'
 $jdBranch = 'feat/20260805-application-jd-versions'
+$featurePath = (Get-Location).Path
 $featureBase = (git merge-base $featureBranch db9fad6).Trim()
 $jdBase = (git merge-base $jdBranch db9fad6).Trim()
 if (-not $featureBase.StartsWith('db9fad6')) { throw "unexpected feature fork point: $featureBase" }
@@ -610,6 +709,23 @@ git merge-base --is-ancestor db9fad6 $featureBranch
 if ($LASTEXITCODE -ne 0) { throw 'feature fork point is not an ancestor' }
 git merge-base --is-ancestor $jdBase $jdBranch
 if ($LASTEXITCODE -ne 0) { throw 'JD fork point is not an ancestor' }
+
+$jdPath = $null
+$worktreeRecords = @(git worktree list --porcelain)
+if ($LASTEXITCODE -ne 0) { throw 'unable to enumerate git worktrees' }
+$currentWorktreePath = $null
+foreach ($record in $worktreeRecords) {
+  if ($record.StartsWith('worktree ')) { $currentWorktreePath = $record.Substring(9) }
+  if ($record -eq "branch refs/heads/$jdBranch") { $jdPath = $currentWorktreePath }
+}
+if ([string]::IsNullOrWhiteSpace($jdPath) -or -not (Test-Path -LiteralPath $jdPath)) {
+  throw "unable to locate JD worktree for $jdBranch"
+}
+function Get-GitNameOnly([string]$repo, [string[]]$gitArgs) {
+  $result = @(& git -C $repo @gitArgs)
+  if ($LASTEXITCODE -ne 0) { throw "git file-state query failed in $repo: $($gitArgs -join ' ')" }
+  return $result
+}
 
 $allowlist = @(
   'web/src/lib/resumeVersionDiff.ts',
@@ -626,12 +742,17 @@ $allowlist = @(
   'docs/reports/2026-08-06-resume-version-review-browser-acceptance.md'
 )
 $featureFiles = @(
-  git diff --name-only "$featureBase..$featureBranch"
-  git diff --name-only
-  git diff --cached --name-only
-  git ls-files --others --exclude-standard
+  Get-GitNameOnly $featurePath @('diff', '--name-only', "$featureBase..$featureBranch")
+  Get-GitNameOnly $featurePath @('diff', '--name-only')
+  Get-GitNameOnly $featurePath @('diff', '--cached', '--name-only')
+  Get-GitNameOnly $featurePath @('ls-files', '--others', '--exclude-standard')
 ) | Where-Object { $_ } | Sort-Object -Unique
-$jdFiles = @(git diff --name-only "$jdBase..$jdBranch") | Where-Object { $_ } | Sort-Object -Unique
+$jdFiles = @(
+  Get-GitNameOnly $jdPath @('diff', '--name-only', "$jdBase..$jdBranch")
+  Get-GitNameOnly $jdPath @('diff', '--name-only')
+  Get-GitNameOnly $jdPath @('diff', '--cached', '--name-only')
+  Get-GitNameOnly $jdPath @('ls-files', '--others', '--exclude-standard')
+) | Where-Object { $_ } | Sort-Object -Unique
 $unexpected = @($featureFiles | Where-Object { $_ -notin $allowlist })
 $intersection = @($featureFiles | Where-Object { $_ -in $jdFiles }) | Sort-Object -Unique
 $bannedPrefixes = @('src/offerpilot/', 'web/src/services/', 'web/src/types/', 'tests/')

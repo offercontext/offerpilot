@@ -110,7 +110,7 @@ function diffResumeContent(
 - 字符串保留原文。
 - 有限数字、布尔值和 `null` 使用固定字面量。
 - 合法对象和数组使用键排序后的 canonical JSON；数组保持原索引顺序。
-- `undefined`、BigInt、Symbol、函数、循环结构、异常 getter、抛错 Proxy、稀疏数组和异常容器只输出固定中文占位，不调用不可信的 `toString()`，不把原始值放入公开结果。
+- `undefined`、BigInt、Symbol、函数、循环结构、异常 getter、抛错 Proxy、稀疏数组和异常容器只输出固定中文占位 `（无法安全展示）`；嵌套在合法容器中时统一编码为 `{"__offerpilot_unsupported__":"（无法安全展示）"}`，不调用不可信的 `toString()`，不把原始值放入公开结果。
 - 所有对象属性使用 own-property 判断，区分字段不存在与字段存在但值为 `undefined`。
 - 合法对象仅限原型为 `Object.prototype` 或 `null` 的普通对象，并且只能包含 own、可枚举、字符串键、数据属性；Symbol key、非枚举 own 属性、accessor、其他原型或自定义类都使当前对象成为 `unsupported` 容器。
 - 合法数组仅限原型为 `Array.prototype` 的普通稠密数组；除内建 `length` 外不得有额外 own 属性，所有索引必须存在且为数据属性。稀疏数组、数组额外属性、数组 accessor 或其他原型都使当前数组成为 `unsupported` 容器。
@@ -138,6 +138,7 @@ JSON Pointer 规则：
 文本规则：
 
 - `full` 保存安全格式化后的完整文本。
+- 容器的完整文本不得直接对原始值调用 `JSON.stringify`：先递归构造只包含合法 JSON 标量、数组、普通对象和固定不支持节点的 safe tree，再对该 safe tree 做键排序后的 canonical serialize。
 - `preview` 最多保留 160 个 Unicode code point；超出时追加 `…`。
 - 不进行 Unicode 规范化，不拆分 emoji 代理对，不改变组合字符原文。
 - `truncated` 仅在确实发生截断时为 `true`。
