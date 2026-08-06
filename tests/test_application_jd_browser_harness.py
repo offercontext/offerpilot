@@ -98,8 +98,8 @@ def test_application_jd_harness_parses_and_uses_explicit_stage_contract() -> Non
 def test_application_jd_harness_self_starts_and_cleans_temporary_browser() -> None:
     script = HARNESS.read_text(encoding="utf-8")
     assert "Start-TemporaryBrowser 'about:blank'" in script
-    assert "--remote-debugging-port=$browserCdpPort" in script
-    assert "--user-data-dir=$browserProfile" in script
+    assert "--remote-debugging-port=$($script:browserCdpPort)" in script
+    assert "--user-data-dir=$($script:browserProfile)" in script
     assert "Label = 'temporary browser'" in script
     assert "APPLICATION_JD_CDP_URL" in script
     assert "browser-diagnostic.json" in script

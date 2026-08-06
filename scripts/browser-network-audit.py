@@ -483,7 +483,10 @@ class BrowserAudit:
                 raise RuntimeError("dedicated browser target did not complete Network.enable")
             with self.output.open("w", encoding="utf-8") as handle:
                 self.handle = handle
-                await self.send("Page.navigate", {"url": base_url}, self.main_session_id)
+                await asyncio.wait_for(
+                    self.send("Page.navigate", {"url": base_url}, self.main_session_id),
+                    timeout=10.0,
+                )
                 ready_file.touch()
                 self.last_event = "browser_ready"
                 keepalive_task = asyncio.create_task(self.keep_browser_session())
@@ -527,20 +530,58 @@ def browser_websocket_url(debugging_url: str) -> str:
     raise RuntimeError("browser-level CDP endpoint did not become available")
 
 
+def write_startup_diagnostic(path: Path | None, category: str) -> None:
+    if path is None or path.exists():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "status": "failed",
+                "failure_category": category,
+                "stop_requested": False,
+                "ready": False,
+                "main_target_id": None,
+                "main_session_id": None,
+                "network_ready_target_count": 0,
+                "request_count": 0,
+                "response_count": 0,
+                "last_event": "startup",
+            },
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="ascii",
+    )
+
+
 async def main_async(args: argparse.Namespace) -> None:
     args.audit.parent.mkdir(parents=True, exist_ok=True)
     args.ready_file.parent.mkdir(parents=True, exist_ok=True)
-    websocket_url = browser_websocket_url(args.debugging_url)
-    async with websockets.connect(websocket_url, open_timeout=5) as websocket:
-        audit = BrowserAudit(
-            websocket,
-            args.audit,
-            args.stop_file,
-            args.diagnostic_file,
-            args.flush_file,
-            args.flushed_file,
-        )
-        await audit.run(args.expected_url, args.ready_file, args.ready_timeout_seconds)
+    try:
+        websocket_url = browser_websocket_url(args.debugging_url)
+        async with websockets.connect(websocket_url, open_timeout=5) as websocket:
+            audit = BrowserAudit(
+                websocket,
+                args.audit,
+                args.stop_file,
+                args.diagnostic_file,
+                args.flush_file,
+                args.flushed_file,
+            )
+            await audit.run(args.expected_url, args.ready_file, args.ready_timeout_seconds)
+    except asyncio.CancelledError:
+        raise
+    except BaseException as exc:
+        if isinstance(exc, websockets.exceptions.ConnectionClosed):
+            category = "cdp_connection_closed"
+        elif isinstance(exc, asyncio.TimeoutError):
+            category = "cdp_command_timeout"
+        else:
+            category = "cdp_startup_error"
+        write_startup_diagnostic(args.diagnostic_file, category)
+        raise
 
 
 def main() -> None:

@@ -59,12 +59,12 @@ function Get-BrowserExecutable {
 }
 
 function Start-TemporaryBrowser([string]$url) {
-  $browserCdpPort = Get-FreePort
-  $browserProfile = Join-Path $tempData 'browser-profile'
+  $script:browserCdpPort = Get-FreePort
+  $script:browserProfile = Join-Path $tempData 'browser-profile'
   $executable = Get-BrowserExecutable
-  $browser = Start-Process -FilePath $executable -WindowStyle Hidden -PassThru -ArgumentList @(
-    "--remote-debugging-port=$browserCdpPort",
-    "--user-data-dir=$browserProfile",
+  $script:browser = Start-Process -FilePath $executable -WindowStyle Hidden -PassThru -ArgumentList @(
+    "--remote-debugging-port=$($script:browserCdpPort)",
+    "--user-data-dir=$($script:browserProfile)",
     '--headless=new',
     '--disable-gpu',
     '--no-first-run',
@@ -75,7 +75,7 @@ function Start-TemporaryBrowser([string]$url) {
     '--window-size=1440,1200',
     $url
   )
-  $endpoint = "http://127.0.0.1:$browserCdpPort"
+  $endpoint = "http://127.0.0.1:$($script:browserCdpPort)"
   for ($i = 0; $i -lt 60; $i++) {
     if ($browser.HasExited) { throw 'Temporary browser exited before CDP readiness.' }
     try {
