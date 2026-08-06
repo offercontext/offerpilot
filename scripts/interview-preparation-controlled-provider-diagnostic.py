@@ -44,6 +44,9 @@ CONTROLLED_PROPOSAL = {
 }
 
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_CONTROLLED_PROVIDER_CALLS = 3
+_CONTROLLED_PROVIDER_TYPE = "openai_compatible"
+_CONTROLLED_MODEL = "controlled-interview-preparation"
 
 
 class _ControlledProviderHandler(BaseHTTPRequestHandler):
@@ -165,19 +168,42 @@ def _read_redacted_request_metadata(path: Path) -> list[dict[str, Any]]:
 
 
 def _validate_redacted_request_metadata(
-    metadata: list[dict[str, Any]], *, expected_calls: int
+    metadata: list[dict[str, Any]],
+    *,
+    expected_calls: int,
+    expected_provider_type: str,
+    expected_model: str,
 ) -> None:
+    if expected_calls <= 0:
+        raise RuntimeError("expected calls must be positive")
     if len(metadata) != expected_calls:
         raise RuntimeError(
-            f"provider request metadata count {len(metadata)} does not match calls {expected_calls}"
+            f"provider request metadata count {len(metadata)} does not match expected calls {expected_calls}"
         )
     for record in metadata:
         if record.get("kind") != "provider_request_metadata":
             raise RuntimeError("provider request metadata kind was invalid")
         if not isinstance(record.get("provider_id"), str) or not record["provider_id"]:
             raise RuntimeError("provider request metadata provider id was invalid")
-        if not isinstance(record.get("endpoint"), dict):
+        if record.get("provider_type") != expected_provider_type:
+            raise RuntimeError("provider request metadata provider type was invalid")
+        if record.get("model") != expected_model:
+            raise RuntimeError("provider request metadata model was invalid")
+        if record.get("litellm_model") != f"openai/{expected_model}":
+            raise RuntimeError("provider request metadata LiteLLM model was invalid")
+        endpoint = record.get("endpoint")
+        if not isinstance(endpoint, dict):
             raise RuntimeError("provider request metadata endpoint was invalid")
+        if endpoint.get("scheme") != "http" or endpoint.get("host") not in {
+            "127.0.0.1",
+            "localhost",
+        }:
+            raise RuntimeError("provider request metadata endpoint was not loopback")
+        port = endpoint.get("port")
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise RuntimeError("provider request metadata endpoint port was invalid")
+        if record.get("request_body_scope") != "serialized_provider_payload_without_auth_or_endpoint":
+            raise RuntimeError("provider request metadata body scope was invalid")
         for field in ("input_fingerprint_sha256", "schema_fingerprint_sha256"):
             value = record.get(field)
             if not isinstance(value, str) or not _SHA256_PATTERN.fullmatch(value):
@@ -300,7 +326,10 @@ def run_diagnostic(source_data: Path, static_dir: Path | None) -> dict[str, Any]
                     diagnostics = _read_redacted_generation_diagnostics(data_dir)
                     request_metadata = _read_redacted_request_metadata(request_audit_path)
                     _validate_redacted_request_metadata(
-                        request_metadata, expected_calls=len(_ControlledProviderHandler.calls)
+                        request_metadata,
+                        expected_calls=_CONTROLLED_PROVIDER_CALLS,
+                        expected_provider_type=_CONTROLLED_PROVIDER_TYPE,
+                        expected_model=_CONTROLLED_MODEL,
                     )
                     evidence_catalog_counts = _redacted_evidence_catalog_counts(data_dir)
                     client.delete(f"/api/applications/{application_id}")

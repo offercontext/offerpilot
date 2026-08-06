@@ -14,7 +14,12 @@ _validate_redacted_request_metadata = _SCRIPT["_validate_redacted_request_metada
 
 def test_controlled_diagnostic_rejects_missing_request_metadata():
     with pytest.raises(RuntimeError, match="request metadata"):
-        _validate_redacted_request_metadata([], expected_calls=1)
+        _validate_redacted_request_metadata(
+            [],
+            expected_calls=3,
+            expected_provider_type="openai_compatible",
+            expected_model="controlled",
+        )
 
 
 def test_controlled_diagnostic_accepts_complete_request_metadata():
@@ -30,6 +35,7 @@ def test_controlled_diagnostic_accepts_complete_request_metadata():
                 "message_count": 2,
                 "message_bytes": 10,
                 "request_body_bytes": 20,
+                "request_body_scope": "serialized_provider_payload_without_auth_or_endpoint",
                 "input_fingerprint_sha256": "a" * 64,
                 "schema_fingerprint_sha256": "b" * 64,
                 "response_mode": "text_json",
@@ -38,4 +44,16 @@ def test_controlled_diagnostic_accepts_complete_request_metadata():
             }
         ],
         expected_calls=1,
+        expected_provider_type="openai_compatible",
+        expected_model="controlled",
     )
+
+
+def test_controlled_diagnostic_rejects_zero_calls():
+    with pytest.raises(RuntimeError, match="expected calls"):
+        _validate_redacted_request_metadata(
+            [],
+            expected_calls=3,
+            expected_provider_type="openai_compatible",
+            expected_model="controlled",
+        )
