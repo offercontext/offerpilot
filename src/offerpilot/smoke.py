@@ -506,6 +506,30 @@ def _run_real_ai_interview_preparation_smoke(
             jd_text,
             f"smoke-interview-prep-jd-{index:04d}",
         )
+        jd_snapshot_metadata: dict[str, object] = {}
+        get_jd_version = getattr(client, "get", None)
+        if callable(get_jd_version):
+            jd_version_response = get_jd_version(
+                f"/api/applications/{application_id}/job-description/versions/{jd_version_id}"
+            )
+            _assert_status(jd_version_response.status_code, 200, "http_interview_preparation_jd_version")
+            jd_version_body = jd_version_response.json()
+            if not isinstance(jd_version_body, dict):
+                raise RuntimeError("interview preparation smoke JD version response was invalid")
+            version_number = jd_version_body.get("version_number")
+            content_sha256 = jd_version_body.get("content_sha256")
+            if (
+                type(version_number) is not int
+                or version_number <= 0
+                or not isinstance(content_sha256, str)
+                or not content_sha256
+            ):
+                raise RuntimeError("interview preparation smoke JD version metadata was invalid")
+            jd_snapshot_metadata = {
+                "version_id": jd_version_id,
+                "version_number": version_number,
+                "content_sha256": content_sha256,
+            }
         request_payload = {
             "event_id": event_id,
             "resume_id": resume_id,
@@ -516,7 +540,7 @@ def _run_real_ai_interview_preparation_smoke(
         }
         snapshot = {
             "event": event_snapshot,
-            "jd": {"text": jd_text},
+            "jd": {"text": jd_text, **jd_snapshot_metadata},
             "jd_version_id": jd_version_id,
             "resume": {"id": resume_id, "content_json": resume_content_json},
             "knowledge_evidence": [],
