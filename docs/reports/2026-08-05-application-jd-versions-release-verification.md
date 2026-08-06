@@ -19,7 +19,7 @@ The legacy Opportunity Fit v1 POST write path is disabled. Historical v1 reads r
 | `uv run pytest tests/test_mock_interview_api.py tests/test_jd_resume_ai_api.py tests/test_opportunity_fit_reviews_api.py -q` | 43 passed |
 | Repository/API/JD-version targeted suites | 59 + 14 passed |
 | `uv run pytest tests/test_application_jd_browser_harness.py -q` with recorded baseline and external allowlist | 6 passed |
-| Frontend full suite: `npm.cmd test -- --run` | 104 files, 730 passed |
+| Frontend full suite: `npm.cmd test -- --run` | 104 files, 731 passed |
 | Opportunity Fit rerender regression | 9 passed |
 | `uv run ruff check src tests scripts/browser-network-audit.py` | passed |
 | `uv run mypy src` | passed, 65 files |
