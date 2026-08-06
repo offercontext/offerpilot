@@ -3,8 +3,8 @@
 - Verification date: 2026-08-06
 - Branch: `feat/20260805-application-jd-versions`
 - Feature baseline: `455e081`
-- Verification code HEAD: `f0df1ae`
-- Status: implementation fixes verified; real-AI and browser release gates remain incomplete.
+- Verification code HEAD: `a4d92da`
+- Status: local and grouped release gates passed; real-AI and browser release gates remain blocked.
 
 ## Scope
 
@@ -16,33 +16,39 @@ The legacy Opportunity Fit v1 POST write path is disabled. Historical v1 reads r
 
 | Command | Result |
 | --- | --- |
-| `uv run pytest tests/test_mock_interview_api.py tests/test_jd_resume_ai_api.py tests/test_opportunity_fit_reviews_api.py -q` | 43 passed |
-| Repository/API/JD-version targeted suites | 59 + 14 passed |
-| `uv run pytest tests/test_application_jd_browser_harness.py -q` with recorded baseline and external allowlist | 6 passed |
-| Frontend full suite: `npm.cmd test -- --run` | 104 files, 731 passed |
-| Opportunity Fit rerender regression | 9 passed |
-| `uv run ruff check src tests scripts/browser-network-audit.py` | passed |
+| `windows-vitest-groups.ps1` (10 groups, fresh manifest) | 104 files, 778 passed; aggregate passed |
+| `windows-pytest-groups.ps1` (agent/domain/knowledge/proposals/misc) | 1,808 collected; 1,804 passed, 4 allowed symlink-permission skips; aggregate passed |
+| `uv run pytest tests/test_smoke.py -k interview_preparation` | 9 passed |
+| `uv run ruff check .` | passed |
 | `uv run mypy src` | passed, 65 files |
-| `npm.cmd exec tsc -- --noEmit` | passed |
-| `npm.cmd run build` | passed, 3746 modules transformed |
+| `npm.cmd run build` (TypeScript plus Vite) | passed, 3747 modules transformed |
+| `uv run oc smoke --static-dir web/dist` | passed |
+| `uv run oc verify --profile local --static-dir web/dist` | passed |
 | `git diff --check` | passed |
 
 The browser harness scope check is fail-closed: it requires the recorded implementation baseline and an externally supplied ASCII allowlist. It checks tracked, staged, and untracked paths; the allowlist is not declared by the test module itself.
 
 ## Real-AI and browser gates
 
-The following gates were not rerun for `f0df1ae` in this revision:
+The full real-AI gate was run twice against the final worktree content:
 
 ```powershell
 uv run oc verify --profile real-ai --static-dir web/dist
+```
+
+Both runs failed with the external Provider `ReadTimeout`. The earlier smoke metadata mismatch was corrected by including the frozen JD version metadata in the expected fingerprint; the focused interview-preparation smoke then passed, so the remaining failure is the Provider timeout rather than a local fingerprint assertion. No retry or evidence-gate relaxation was added.
+
+The browser harness was invoked as:
+
+```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\application-jd-real-ai-browser-harness.ps1 -Stage all
 ```
 
-The prior isolated real-AI verification remains blocked by Provider `ReadTimeout`; browser acceptance remains fail-closed when `APPLICATION_JD_CDP_URL` is unavailable. API/local tests must not be reported as browser proof. No Provider secret, JD text, resume content, model output, or full request body is recorded here.
+It failed closed because `APPLICATION_JD_CDP_URL` was not configured; no browser-level acceptance evidence was claimed. A CDP endpoint is still required to prove the real UI flow and local-only browser network boundary. API/local tests must not be reported as browser proof. No Provider secret, JD text, resume content, model output, or full request body is recorded here.
 
 ## Cleanup and remaining risk
 
 - No push or merge was performed.
-- The isolated browser/Provider process was not started in this revision.
+- All gate subprocesses exited; no Provider proxy or browser process was retained. Isolated real-AI data directories were cleaned by the verifier.
 - The recorded implementation baseline remains at `D:\Users\yuqi.chen\AppData\Local\Temp\offerpilot-application-jd-versions-baseline.txt` because release gates are incomplete.
-- Remaining release blockers: full five-group backend gate on the final HEAD, real-AI verification, and browser-level CDP acceptance.
+- Remaining release blockers: Provider `ReadTimeout` in full real-AI verification and unavailable `APPLICATION_JD_CDP_URL` for browser-level CDP acceptance.
