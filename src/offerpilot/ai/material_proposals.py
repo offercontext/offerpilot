@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
+import re
 from dataclasses import dataclass
-from typing import Any
+from time import perf_counter
+from typing import Any, Callable
 
 from offerpilot.ai.agent import ChatModel
 from offerpilot.ai.types import Message
@@ -23,9 +26,16 @@ EVIDENCE_REF_FIELDS = {"source", "path", "excerpt"}
 
 
 class MaterialProposalModelError(ValueError):
-    def __init__(self, message: str, *, failure_category: str = "invalid_change_shape") -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        failure_category: str = "invalid_change_shape",
+        diagnostic: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.failure_category = failure_category
+        self.diagnostic = diagnostic or {}
 
 
 class _MaterialProposalProviderError(Exception):
@@ -42,6 +52,9 @@ class _MaterialProposalFormatError(Exception):
 class ValidatedProposal:
     proposal: dict[str, Any]
     content: dict[str, Any]
+
+
+MaterialProposalDiagnosticSink = Callable[[dict[str, Any]], None]
 
 
 def validate_material_proposal(
@@ -122,46 +135,100 @@ def generate_material_proposal(
     model: ChatModel,
     source_snapshot: dict[str, Any],
     instructions: str,
+    *,
+    on_diagnostic: MaterialProposalDiagnosticSink | None = None,
 ) -> ValidatedProposal:
     system = _material_proposal_system()
     prompt = _material_proposal_prompt(source_snapshot, instructions)
     repair_category = ""
+    started_at = perf_counter()
+    failure_categories: list[str] = []
+    structure_summaries: list[dict[str, Any]] = []
+    provider_request_id_hash = ""
     for attempt in range(2):
+        payload_for_diagnostic: Any = None
         user = prompt if attempt == 0 else _material_proposal_repair_prompt(
             source_snapshot,
             instructions,
             repair_category,
         )
         try:
-            result = _complete_material_json(model, system, user)
-            return validate_material_proposal(result, source_snapshot)
+            try:
+                assistant = model.complete(
+                    [Message(role="system", content=system), Message(role="user", content=user)],
+                    [],
+                )
+            except Exception as exc:
+                raise _MaterialProposalProviderError() from exc
+            provider_request_id_hash = _hash_provider_request_id(
+                assistant.provider_blocks.get("request_id")
+            )
+            result = _parse_material_json(assistant.content)
+            payload_for_diagnostic = result
+            structure_summaries.append(_structure_summary(result))
+            validated = validate_material_proposal(result, source_snapshot)
+            diagnostic = _material_diagnostic(
+                source_snapshot,
+                payload=result,
+                structure_summaries=structure_summaries,
+                failure_categories=failure_categories,
+                repair_attempted=attempt > 0,
+                retry_count=attempt,
+                duration_ms=_elapsed_ms(started_at),
+                provider_request_id_hash=provider_request_id_hash,
+            )
+            _emit_diagnostic(on_diagnostic, diagnostic)
+            return validated
         except _MaterialProposalProviderError as exc:
+            failure_categories.append("provider_error")
+            diagnostic = _material_diagnostic(
+                source_snapshot,
+                payload=None,
+                structure_summaries=structure_summaries,
+                failure_categories=failure_categories,
+                repair_attempted=attempt > 0,
+                retry_count=attempt,
+                duration_ms=_elapsed_ms(started_at),
+                provider_request_id_hash=provider_request_id_hash,
+            )
+            _emit_diagnostic(on_diagnostic, diagnostic)
             raise MaterialProposalModelError(
                 "model provider request failed",
                 failure_category="provider_error",
+                diagnostic=diagnostic,
             ) from exc
         except _MaterialProposalFormatError as exc:
             repair_category = exc.failure_category
+            failure_categories.append(repair_category)
         except MaterialProposalModelError as exc:
             repair_category = _model_failure_category(str(exc))
+            failure_categories.append(repair_category)
 
+        if len(failure_categories) > 2:
+            failure_categories = failure_categories[:2]
+
+    diagnostic = _material_diagnostic(
+        source_snapshot,
+        payload=payload_for_diagnostic,
+        structure_summaries=structure_summaries,
+        failure_categories=failure_categories,
+        repair_attempted=True,
+        retry_count=1,
+        duration_ms=_elapsed_ms(started_at),
+        provider_request_id_hash=provider_request_id_hash,
+    )
+    _emit_diagnostic(on_diagnostic, diagnostic)
     raise MaterialProposalModelError(
         "model output could not be verified",
-        failure_category=repair_category or "invalid_change_shape",
+        failure_category=failure_categories[-1] if failure_categories else "invalid_change_shape",
+        diagnostic=diagnostic,
     )
 
 
-def _complete_material_json(model: ChatModel, system: str, user: str) -> dict[str, Any]:
-    try:
-        assistant = model.complete(
-            [Message(role="system", content=system), Message(role="user", content=user)],
-            [],
-        )
-    except Exception as exc:
-        raise _MaterialProposalProviderError() from exc
+def _parse_material_json(content: str) -> Any:
     try:
         return parse_json_reply(
-            assistant.content,
+            content,
             allow_fenced=False,
             reject_non_finite=True,
         )
@@ -170,9 +237,181 @@ def _complete_material_json(model: ChatModel, system: str, user: str) -> dict[st
 
 
 def _model_failure_category(message: str) -> str:
-    if "evidence" in message or "excerpt" in message:
+    lowered = message.lower()
+    if "evidence" in lowered or "excerpt" in lowered:
         return "invalid_evidence_reference"
+    if "limit" in lowered or "maximum" in lowered:
+        return "field_limit"
+    if "source" in lowered or "before" in lowered or "does not exist" in lowered:
+        return "source_validation"
+    if "top-level" in lowered:
+        return "invalid_top_level_shape"
     return "invalid_change_shape"
+
+
+def _material_diagnostic(
+    source_snapshot: dict[str, Any],
+    *,
+    payload: Any,
+    structure_summaries: list[dict[str, Any]],
+    failure_categories: list[str],
+    repair_attempted: bool,
+    retry_count: int,
+    duration_ms: int,
+    provider_request_id_hash: str,
+) -> dict[str, Any]:
+    safe_categories = [
+        item
+        for item in failure_categories[:2]
+        if item in {
+            "provider_error",
+            "invalid_json",
+            "invalid_top_level_shape",
+            "invalid_change_shape",
+            "invalid_evidence_reference",
+            "source_validation",
+            "field_limit",
+        }
+    ]
+    return {
+        "failure_category": safe_categories[-1] if safe_categories else None,
+        "failure_categories": safe_categories,
+        "structure_summaries": structure_summaries[:2],
+        "evidence_counts": _evidence_counts(source_snapshot, payload),
+        "repair_attempted": repair_attempted,
+        "retry_count": max(0, min(retry_count, 1)),
+        "duration_ms": max(0, duration_ms),
+        "provider_request_id_hash": provider_request_id_hash,
+    }
+
+
+def _emit_diagnostic(
+    sink: MaterialProposalDiagnosticSink | None,
+    diagnostic: dict[str, Any],
+) -> None:
+    if sink is None:
+        return
+    try:
+        sink(diagnostic)
+    except Exception:
+        return
+
+
+def _structure_summary(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {
+            "payload_type": _structure_value_type(payload),
+            "top_level_keys": [],
+            "fields": {},
+        }
+    raw_keys = [key for key in payload if isinstance(key, str)]
+    fields: dict[str, Any] = {}
+    for raw_key in sorted(raw_keys)[:32]:
+        key = _safe_structure_key(raw_key)
+        value = payload[raw_key]
+        shape: dict[str, Any] = {"type": _structure_value_type(value)}
+        if isinstance(value, list):
+            shape["length"] = len(value)
+            shape["item_types"] = [_structure_value_type(item) for item in value[:8]]
+            shape["item_key_sets"] = [_structure_item_key_set(item) for item in value[:8]]
+        elif isinstance(value, dict):
+            shape["keys"] = sorted(
+                _safe_structure_key(item) for item in value if isinstance(item, str)
+            )[:32]
+        fields[key] = shape
+    return {
+        "payload_type": "object",
+        "top_level_keys": sorted(_safe_structure_key(key) for key in raw_keys)[:32],
+        "fields": fields,
+    }
+
+
+def _structure_item_key_set(value: Any) -> list[str] | None:
+    if not isinstance(value, dict):
+        return None
+    return sorted(
+        _safe_structure_key(key) for key in value if isinstance(key, str)
+    )[:32]
+
+
+def _structure_value_type(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    return "unsupported"
+
+
+def _safe_structure_key(value: str) -> str:
+    if re.fullmatch(r"[A-Za-z0-9_./-]{1,64}", value):
+        return value
+    return "<unsafe-key>"
+
+
+def _evidence_counts(source_snapshot: dict[str, Any], payload: Any) -> dict[str, Any]:
+    bundle = source_snapshot.get("latest_evidence_bundle")
+    assertions = source_snapshot.get("user_assertions")
+    changes = payload.get("changes") if isinstance(payload, dict) else None
+    change_count = len(changes) if isinstance(changes, list) else 0
+    evidence_ref_count = 0
+    changes_with_refs = 0
+    if isinstance(changes, list):
+        for change in changes:
+            if not isinstance(change, dict):
+                continue
+            refs = change.get("evidence_refs")
+            if isinstance(refs, list):
+                evidence_ref_count += len(refs)
+                if refs:
+                    changes_with_refs += 1
+    return {
+        "available": {
+            "resume_string_leaves": _count_string_leaves(
+                source_snapshot.get("resume", {}).get("content_json")
+                if isinstance(source_snapshot.get("resume"), dict)
+                else None
+            ),
+            "evidence_bundle_present": isinstance(bundle, dict),
+            "user_assertions": len(assertions) if isinstance(assertions, list) else 0,
+        },
+        "proposal": {
+            "changes": change_count,
+            "changes_with_evidence_refs": changes_with_refs,
+            "evidence_refs": evidence_ref_count,
+        },
+    }
+
+
+def _count_string_leaves(value: Any) -> int:
+    count = 0
+    pending = [value]
+    while pending and count < 10000:
+        current = pending.pop()
+        if isinstance(current, str):
+            count += 1
+        elif isinstance(current, dict):
+            pending.extend(current.values())
+        elif isinstance(current, list):
+            pending.extend(current)
+    return count
+
+
+def _hash_provider_request_id(value: object) -> str:
+    if not isinstance(value, str) or not value:
+        return ""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return max(0, int((perf_counter() - started_at) * 1000))
 
 
 def _parse_allowed_pointer(path: str) -> tuple[str, ...]:

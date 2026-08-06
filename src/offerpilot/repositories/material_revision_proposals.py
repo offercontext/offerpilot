@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import Any, List
+from typing import Any, Callable, List
 
 from sqlalchemy import desc, select, text, update
 from sqlalchemy.orm import Session, sessionmaker
@@ -51,6 +51,7 @@ class MaterialRevisionProposalsRepository:
         instructions: str,
         user_assertions: list[str],
         model: ChatModel,
+        on_diagnostic: Callable[[dict[str, Any]], None] | None = None,
     ) -> MaterialRevisionProposal:
         with self._session_factory() as session:
             snapshot, fingerprint = build_source_snapshot(session, application_id, user_assertions)
@@ -58,7 +59,12 @@ class MaterialRevisionProposalsRepository:
         # Do not keep a database connection checked out while waiting for the AI
         # provider. Acceptance rechecks the fingerprint and returns 409 if this
         # frozen source changed during generation.
-        validated = generate_material_proposal(model, snapshot, instructions)
+        validated = generate_material_proposal(
+            model,
+            snapshot,
+            instructions,
+            on_diagnostic=on_diagnostic,
+        )
         proposal_json = canonical_json(validated.proposal)
         with self._session_factory() as session:
             # Serialize the visibility check and draft insert against concurrent

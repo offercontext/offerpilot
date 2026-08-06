@@ -277,6 +277,7 @@ def _safe_inner_diagnostic(value: Any) -> dict[str, Any]:
         "failure_category",
         "failure_categories",
         "structure_summaries",
+        "evidence_counts",
         "repair_attempted",
         "retry_count",
         "duration_ms",
@@ -306,6 +307,8 @@ def _safe_inner_diagnostic(value: Any) -> dict[str, Any]:
         result.pop("provider_request_id_hash", None)
     if not isinstance(result.get("structure_summaries"), list):
         result.pop("structure_summaries", None)
+    if not isinstance(result.get("evidence_counts"), dict):
+        result.pop("evidence_counts", None)
     if not isinstance(result.get("repair_attempted"), bool):
         result.pop("repair_attempted", None)
     for key in ("retry_count", "duration_ms"):
@@ -422,6 +425,7 @@ def _build_summary(
         "repair_attempted": inner.get("repair_attempted", False),
         "retry_count": inner.get("retry_count", 0),
         "structure_summaries": inner.get("structure_summaries", []),
+        "evidence_counts": inner.get("evidence_counts", {}),
         "child_env": {
             "OFFERPILOT_DATA": str(child_data_dir),
             "OFFERPILOT_FULL_VERIFY_REPORT_DIR": str(report_dir),
@@ -485,6 +489,7 @@ def run_full_verify(
         "full-real-ai-start.json",
         "full-real-ai-summary.json",
         "full-verify-inner-diagnostic.json",
+        "material-proposal-diagnostic.json",
         "provider-request-audit.jsonl",
         "full-verify-operation-audit.jsonl",
     ):

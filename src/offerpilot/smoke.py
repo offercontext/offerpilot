@@ -79,6 +79,12 @@ class SmokeReport:
     steps: list[SmokeStep]
 
 
+class _MaterialProposalSmokeContractError(RuntimeError):
+    def __init__(self, message: str, diagnostic: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.diagnostic = diagnostic
+
+
 class _FullVerifyHttpClient:
     def __init__(self, client: httpx.Client):
         self._client = client
@@ -569,6 +575,55 @@ def _safe_inner_log_diagnostics(data_dir: Path) -> list[dict[str, Any]]:
                 except json.JSONDecodeError:
                     pass
             diagnostics.append(diagnostic)
+        elif message.startswith("material_proposal_generation "):
+            category_match = re.search(r"(?:^| )category=([A-Za-z0-9_.-]+)", message)
+            categories_match = re.search(r"(?:^| )failure_categories=(\[[^ ]*\])", message)
+            summaries_match = re.search(r"(?:^| )structure_summaries=(\[[^ ]*\])", message)
+            evidence_match = re.search(r"(?:^| )evidence_counts=(\{[^ ]*\})", message)
+            repair_match = re.search(r"(?:^| )repair_attempted=(true|false)", message)
+            retry_match = re.search(r"(?:^| )retry_count=(\d+)", message)
+            duration_match = re.search(r"(?:^| )duration_ms=(\d+)", message)
+            request_id_match = re.search(
+                r"(?:^| )provider_request_id_hash=([0-9a-f]{12,64})", message
+            )
+            diagnostic = {
+                "kind": "material_proposal",
+                "failure_category": category_match.group(1) if category_match else None,
+                "failure_categories": [],
+                "structure_summaries": [],
+                "evidence_counts": {},
+                "repair_attempted": repair_match.group(1) == "true" if repair_match else False,
+                "retry_count": int(retry_match.group(1)) if retry_match else 0,
+                "duration_ms": int(duration_match.group(1)) if duration_match else 0,
+                "provider_request_id_hash": request_id_match.group(1) if request_id_match else "",
+            }
+            if categories_match:
+                try:
+                    categories = json.loads(categories_match.group(1))
+                    if isinstance(categories, list):
+                        diagnostic["failure_categories"] = [
+                            value
+                            for value in categories[:4]
+                            if isinstance(value, str)
+                            and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", value)
+                        ]
+                except json.JSONDecodeError:
+                    pass
+            if summaries_match:
+                try:
+                    summaries = json.loads(summaries_match.group(1))
+                    if isinstance(summaries, list):
+                        diagnostic["structure_summaries"] = summaries[:2]
+                except json.JSONDecodeError:
+                    pass
+            if evidence_match:
+                try:
+                    evidence_counts = json.loads(evidence_match.group(1))
+                    if isinstance(evidence_counts, dict):
+                        diagnostic["evidence_counts"] = evidence_counts
+                except json.JSONDecodeError:
+                    pass
+            diagnostics.append(diagnostic)
         elif message.startswith("ai_provider_failure "):
             try:
                 payload = json.loads(message.removeprefix("ai_provider_failure "))
@@ -613,6 +668,9 @@ def _persist_full_verify_inner_diagnostic(
         return
     try:
         diagnostics = _safe_inner_log_diagnostics(data_dir)
+        material_response_diagnostic = _read_material_proposal_smoke_diagnostic(report_dir)
+        if material_response_diagnostic:
+            diagnostics.append(material_response_diagnostic)
         failure_categories = [
             category
             for diagnostic in diagnostics
@@ -629,6 +687,7 @@ def _persist_full_verify_inner_diagnostic(
             "failure_category": failure_category,
             "failure_categories": list(dict.fromkeys(failure_categories))[:4],
             "structure_summaries": last.get("structure_summaries", []),
+            "evidence_counts": last.get("evidence_counts", {}),
             "repair_attempted": last.get("repair_attempted", False),
             "retry_count": last.get("retry_count", 0),
             "duration_ms": last.get("duration_ms", 0),
@@ -636,6 +695,8 @@ def _persist_full_verify_inner_diagnostic(
             "diagnostics": diagnostics,
             "config": _safe_smoke_config_summary(data_dir),
         }
+        if material_response_diagnostic:
+            payload["material_proposal_diagnostic"] = material_response_diagnostic
         report_dir.mkdir(parents=True, exist_ok=True)
         (report_dir / "full-verify-inner-diagnostic.json").write_text(
             json.dumps(payload, ensure_ascii=True, separators=(",", ":")) + "\n",
@@ -644,6 +705,17 @@ def _persist_full_verify_inner_diagnostic(
     except Exception:
         # Never mask the real verify result with diagnostic persistence failure.
         return
+
+
+def _read_material_proposal_smoke_diagnostic(report_dir: Path) -> dict[str, Any]:
+    path = report_dir / "material-proposal-diagnostic.json"
+    if not path.is_file():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def _run_http_smoke(
@@ -2769,9 +2841,121 @@ def _assert_real_ai_smoke_data_clean(data_dir: Path) -> None:
         raise RuntimeError("real-ai smoke left confirmed interview knowledge")
 
 
+def _material_proposal_smoke_failure(
+    body: object,
+    *,
+    failure_category: str,
+    message: str,
+) -> _MaterialProposalSmokeContractError:
+    diagnostic = {
+        "kind": "material_proposal_response",
+        "failure_category": failure_category,
+        "failure_categories": [failure_category],
+        "structure_summaries": [_material_response_structure_summary(body)],
+        "evidence_counts": _material_response_evidence_counts(body),
+        "repair_attempted": False,
+        "retry_count": 0,
+    }
+    _persist_material_proposal_smoke_diagnostic(diagnostic)
+    return _MaterialProposalSmokeContractError(message, diagnostic)
+
+
+def _material_response_structure_summary(body: object) -> dict[str, Any]:
+    if not isinstance(body, dict):
+        return {"payload_type": _material_response_value_type(body), "top_level_keys": [], "fields": {}}
+    fields: dict[str, Any] = {}
+    for key in sorted(item for item in body if isinstance(item, str))[:32]:
+        value = body[key]
+        shape: dict[str, Any] = {"type": _material_response_value_type(value)}
+        if isinstance(value, list):
+            shape["length"] = len(value)
+            shape["item_types"] = [_material_response_value_type(item) for item in value[:8]]
+            shape["item_key_sets"] = [
+                sorted(item_key for item_key in item if isinstance(item_key, str))[:32]
+                if isinstance(item, dict)
+                else None
+                for item in value[:8]
+            ]
+        elif isinstance(value, dict):
+            shape["keys"] = sorted(item for item in value if isinstance(item, str))[:32]
+        fields[key] = shape
+    return {
+        "payload_type": "object",
+        "top_level_keys": sorted(item for item in body if isinstance(item, str))[:32],
+        "fields": fields,
+    }
+
+
+def _material_response_value_type(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    return "unsupported"
+
+
+def _material_response_evidence_counts(body: object) -> dict[str, Any]:
+    if not isinstance(body, dict):
+        return {}
+    changes = body.get("changes")
+    change_count = len(changes) if isinstance(changes, list) else 0
+    evidence_ref_count = 0
+    changes_with_refs = 0
+    if isinstance(changes, list):
+        for change in changes:
+            if not isinstance(change, dict):
+                continue
+            refs = change.get("evidence_refs")
+            if isinstance(refs, list):
+                evidence_ref_count += len(refs)
+                if refs:
+                    changes_with_refs += 1
+    source = body.get("source")
+    assertions = source.get("user_assertions") if isinstance(source, dict) else None
+    return {
+        "proposal": {
+            "changes": change_count,
+            "changes_with_evidence_refs": changes_with_refs,
+            "evidence_refs": evidence_ref_count,
+        },
+        "available": {
+            "user_assertions": len(assertions) if isinstance(assertions, list) else 0,
+            "evidence_bundle_present": bool(
+                isinstance(source, dict) and source.get("latest_evidence_bundle") is not None
+            ),
+        },
+    }
+
+
+def _persist_material_proposal_smoke_diagnostic(diagnostic: dict[str, Any]) -> None:
+    report_dir = _full_verify_report_dir()
+    if report_dir is None:
+        return
+    try:
+        report_dir.mkdir(parents=True, exist_ok=True)
+        (report_dir / "material-proposal-diagnostic.json").write_text(
+            json.dumps(diagnostic, ensure_ascii=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+    except Exception:
+        return
+
+
 def _validate_material_proposal_smoke_response(body: object) -> None:
     if not isinstance(body, dict):
-        raise RuntimeError("material proposal response was not an object")
+        raise _material_proposal_smoke_failure(
+            body,
+            failure_category="response_root_shape",
+            message="material proposal response was not an object",
+        )
     expected_root = {
         "id",
         "application_id",
@@ -2789,10 +2973,18 @@ def _validate_material_proposal_smoke_response(body: object) -> None:
         "rejected_at",
     }
     if set(body) != expected_root:
-        raise RuntimeError("material proposal response leaked frozen source data")
+        raise _material_proposal_smoke_failure(
+            body,
+            failure_category="response_root_shape",
+            message="material proposal response leaked frozen source data",
+        )
     changes = body.get("changes")
     if not isinstance(changes, list):
-        raise RuntimeError("material proposal response did not contain changes")
+        raise _material_proposal_smoke_failure(
+            body,
+            failure_category="response_change_shape",
+            message="material proposal response did not contain changes",
+        )
     for change in changes:
         if not isinstance(change, dict) or set(change) != {
             "id",
@@ -2802,13 +2994,25 @@ def _validate_material_proposal_smoke_response(body: object) -> None:
             "rationale",
             "evidence_refs",
         }:
-            raise RuntimeError("material proposal response leaked frozen source data")
+            raise _material_proposal_smoke_failure(
+                body,
+                failure_category="response_change_shape",
+                message="material proposal response leaked frozen source data",
+            )
         refs = change.get("evidence_refs")
         if not isinstance(refs, list):
-            raise RuntimeError("material proposal response leaked frozen source data")
+            raise _material_proposal_smoke_failure(
+                body,
+                failure_category="response_evidence_reference_shape",
+                message="material proposal response leaked frozen source data",
+            )
         for ref in refs:
             if not isinstance(ref, dict) or set(ref) != {"source", "path", "excerpt"}:
-                raise RuntimeError("material proposal response leaked frozen source data")
+                raise _material_proposal_smoke_failure(
+                    body,
+                    failure_category="response_evidence_reference_shape",
+                    message="material proposal response leaked frozen source data",
+                )
 
     source = body.get("source")
     if not isinstance(source, dict) or set(source) != {
@@ -2818,31 +3022,59 @@ def _validate_material_proposal_smoke_response(body: object) -> None:
         "latest_evidence_bundle",
         "user_assertions",
     }:
-        raise RuntimeError("material proposal response leaked frozen source data")
+        raise _material_proposal_smoke_failure(
+            body,
+            failure_category="response_source_shape",
+            message="material proposal response leaked frozen source data",
+        )
     if not isinstance(source.get("application"), dict) or set(source["application"]) != {
         "id",
         "company_name",
         "position_name",
     }:
-        raise RuntimeError("material proposal response leaked frozen source data")
+        raise _material_proposal_smoke_failure(
+            body,
+            failure_category="response_source_shape",
+            message="material proposal response leaked frozen source data",
+        )
     if not isinstance(source.get("material_kit"), dict) or set(source["material_kit"]) != {
         "id",
         "jd_version_id",
         "jd_excerpt",
     }:
-        raise RuntimeError("material proposal response leaked frozen source data")
+        raise _material_proposal_smoke_failure(
+            body,
+            failure_category="response_source_shape",
+            message="material proposal response leaked frozen source data",
+        )
     if type(source["material_kit"].get("jd_version_id")) is not int or source["material_kit"]["jd_version_id"] <= 0:
-        raise RuntimeError("material proposal response had invalid JD version")
+        raise _material_proposal_smoke_failure(
+            body,
+            failure_category="response_source_validation",
+            message="material proposal response had invalid JD version",
+        )
     if not isinstance(source.get("resume"), dict) or set(source["resume"]) != {"id", "title"}:
-        raise RuntimeError("material proposal response leaked frozen source data")
+        raise _material_proposal_smoke_failure(
+            body,
+            failure_category="response_source_shape",
+            message="material proposal response leaked frozen source data",
+        )
     bundle = source.get("latest_evidence_bundle")
     if bundle is not None and (not isinstance(bundle, dict) or set(bundle) != {"id", "bundle_sha256"}):
-        raise RuntimeError("material proposal response leaked frozen source data")
+        raise _material_proposal_smoke_failure(
+            body,
+            failure_category="response_source_shape",
+            message="material proposal response leaked frozen source source data",
+        )
     assertions = source.get("user_assertions")
     if not isinstance(assertions, list) or any(
         not isinstance(item, dict) or set(item) != {"id", "text"} for item in assertions
     ):
-        raise RuntimeError("material proposal response leaked frozen source data")
+        raise _material_proposal_smoke_failure(
+            body,
+            failure_category="response_source_shape",
+            message="material proposal response leaked frozen source data",
+        )
 
 
 def _run_unconfigured_chat_smoke(static_dir: Path | None, steps: list[SmokeStep]) -> None:

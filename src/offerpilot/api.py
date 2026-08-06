@@ -1942,6 +1942,11 @@ def create_app(
                 instructions,
                 user_assertions,
                 model,
+                on_diagnostic=lambda diagnostic: append_log_entry(
+                    resolved_data_dir,
+                    "WARNING" if diagnostic.get("failure_category") else "INFO",
+                    _material_proposal_diagnostic_message(diagnostic),
+                ),
             )
         except MaterialProposalNotFound:
             return error_response(404, "Application not found")
@@ -7682,6 +7687,119 @@ def _interview_preparation_diagnostic_message(diagnostic: dict[str, Any]) -> str
         f"repair_attempted={repair_attempted} retry_count={retry_count} "
         f"duration_ms={duration_ms} provider_request_id_hash={request_id_hash}"
     )
+
+
+def _material_proposal_diagnostic_message(diagnostic: dict[str, Any]) -> str:
+    raw_category = diagnostic.get("failure_category")
+    category = (
+        raw_category[:64]
+        if isinstance(raw_category, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", raw_category)
+        else "none"
+    )
+    raw_categories = diagnostic.get("failure_categories")
+    categories = (
+        [
+            item[:64]
+            for item in raw_categories
+            if isinstance(item, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", item)
+        ][:2]
+        if isinstance(raw_categories, list)
+        else []
+    )
+    try:
+        retry_count = max(0, min(int(diagnostic.get("retry_count") or 0), 1))
+    except (TypeError, ValueError):
+        retry_count = 0
+    try:
+        duration_ms = max(0, int(diagnostic.get("duration_ms") or 0))
+    except (TypeError, ValueError):
+        duration_ms = 0
+    request_id_hash = str(diagnostic.get("provider_request_id_hash") or "")
+    if not re.fullmatch(r"[0-9a-f]{12,64}", request_id_hash):
+        request_id_hash = ""
+    return (
+        "material_proposal_generation "
+        f"category={category} failure_categories={json.dumps(categories, ensure_ascii=True, separators=(',', ':'))} "
+        f"structure_summaries={json.dumps(_safe_material_structure_summaries(diagnostic.get('structure_summaries')), ensure_ascii=True, separators=(',', ':'))} "
+        f"evidence_counts={json.dumps(_safe_material_evidence_counts(diagnostic.get('evidence_counts')), ensure_ascii=True, separators=(',', ':'))} "
+        f"repair_attempted={'true' if diagnostic.get('repair_attempted') is True else 'false'} "
+        f"retry_count={retry_count} duration_ms={duration_ms} provider_request_id_hash={request_id_hash}"
+    )
+
+
+def _safe_material_structure_summaries(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    allowed_types = {"unavailable", "null", "boolean", "number", "string", "array", "object", "unsupported"}
+    summaries: list[dict[str, Any]] = []
+    for raw_summary in value[:2]:
+        if not isinstance(raw_summary, dict):
+            continue
+        payload_type = raw_summary.get("payload_type")
+        safe_summary: dict[str, Any] = {
+            "payload_type": payload_type if payload_type in allowed_types else "unavailable",
+            "top_level_keys": _safe_structure_keys(raw_summary.get("top_level_keys")),
+            "fields": {},
+        }
+        raw_fields = raw_summary.get("fields")
+        if not isinstance(raw_fields, dict):
+            summaries.append(safe_summary)
+            continue
+        safe_fields: dict[str, Any] = {}
+        for raw_key, raw_shape in list(raw_fields.items())[:32]:
+            if not isinstance(raw_key, str) or not isinstance(raw_shape, dict):
+                continue
+            shape_type = raw_shape.get("type")
+            shape: dict[str, Any] = {
+                "type": shape_type if shape_type in allowed_types else "unavailable"
+            }
+            length = raw_shape.get("length")
+            if type(length) is int and 0 <= length <= 100_000:
+                shape["length"] = length
+            keys = raw_shape.get("keys")
+            if isinstance(keys, list):
+                shape["keys"] = _safe_structure_keys(keys)
+            item_types = raw_shape.get("item_types")
+            if isinstance(item_types, list):
+                shape["item_types"] = [
+                    item if item in allowed_types else "unavailable" for item in item_types[:8]
+                ]
+            item_key_sets = raw_shape.get("item_key_sets")
+            if isinstance(item_key_sets, list):
+                shape["item_key_sets"] = [
+                    None if item is None else _safe_structure_keys(item)
+                    for item in item_key_sets[:8]
+                    if item is None or isinstance(item, list)
+                ]
+            safe_fields[_safe_structure_key(raw_key)] = shape
+        safe_summary["fields"] = safe_fields
+        summaries.append(safe_summary)
+    return summaries
+
+
+def _safe_material_evidence_counts(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, Any] = {}
+    for section in ("available", "proposal"):
+        raw_section = value.get(section)
+        if not isinstance(raw_section, dict):
+            continue
+        safe_section: dict[str, Any] = {}
+        for key in (
+            "resume_string_leaves",
+            "user_assertions",
+            "changes",
+            "changes_with_evidence_refs",
+            "evidence_refs",
+        ):
+            item = raw_section.get(key)
+            if type(item) is int and 0 <= item <= 100_000:
+                safe_section[key] = item
+        if section == "available" and type(raw_section.get("evidence_bundle_present")) is bool:
+            safe_section["evidence_bundle_present"] = raw_section["evidence_bundle_present"]
+        result[section] = safe_section
+    return result
 
 
 def _safe_interview_preparation_structure_summaries(value: Any) -> list[dict[str, Any]]:

@@ -50,6 +50,7 @@ from offerpilot.smoke import (
     _run_real_ai_opportunity_fit_smoke,
     _save_application_jd_version,
     _validate_interview_preparation_proposal_response,
+    _validate_material_proposal_smoke_response,
     run_core_smoke,
     run_http_smoke,
 )
@@ -721,6 +722,52 @@ def test_real_ai_material_proposal_smoke_allows_empty_changes_and_hides_snapshot
     assert [step.name for step in steps] == ["http_material_proposal"]
     assert client.created_resume_ids == [41, 42]
     assert resume_ids == [41, 42]
+
+
+def test_material_proposal_smoke_persists_redacted_response_diagnostic(tmp_path, monkeypatch):
+    monkeypatch.setenv("OFFERPILOT_FULL_VERIFY_REPORT_DIR", str(tmp_path))
+    body = {
+        "id": 8,
+        "application_id": 7,
+        "material_kit_id": 7,
+        "jd_version_id": 13,
+        "source_resume_id": 42,
+        "status": "draft",
+        "summary": "No safe changes.",
+        "proposal_sha256": "sha",
+        "result_resume_id": None,
+        "created_at": "2026-07-15T00:00:00Z",
+        "changes": [
+            {
+                "id": "change-1",
+                "path": "/raw_text",
+                "before": "old",
+                "after": "new",
+                "rationale": "Use the source fact.",
+                "evidence_refs": [{"source": "resume", "path": "/raw_text", "excerpt": "old"}],
+            }
+        ],
+        "accepted_change_ids": [],
+        "accepted_at": None,
+        "rejected_at": None,
+        "source": {
+            "application": {"id": 7, "company_name": "Secret Co", "position_name": "QA"},
+            "material_kit": {"id": 7, "jd_version_id": 13, "jd_excerpt": "QA"},
+            "resume": {"id": 42, "title": "Resume"},
+            "latest_evidence_bundle": None,
+            "user_assertions": [],
+        },
+    }
+
+    with pytest.raises(RuntimeError, match="leaked frozen source data"):
+        _validate_material_proposal_smoke_response(body)
+
+    diagnostic = json.loads((tmp_path / "material-proposal-diagnostic.json").read_text())
+    assert diagnostic["failure_category"] == "response_root_shape"
+    assert diagnostic["structure_summaries"][0]["fields"]["changes"]["length"] == 1
+    assert diagnostic["evidence_counts"]["proposal"]["evidence_refs"] == 1
+    assert diagnostic["repair_attempted"] is False
+    assert "Secret Co" not in json.dumps(diagnostic, ensure_ascii=False)
 
 
 def test_save_application_jd_version_uses_current_version_cas():

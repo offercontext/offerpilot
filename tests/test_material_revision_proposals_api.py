@@ -8,6 +8,7 @@ from sqlalchemy import select
 from offerpilot.ai.types import Assistant
 from offerpilot.api import create_app
 from offerpilot.db import session_factory_for_data_dir
+from offerpilot.diagnostics import read_recent_log_entries
 from offerpilot.models import MaterialRevisionProposal
 from offerpilot.repositories.applications import ApplicationsRepository
 
@@ -155,6 +156,13 @@ def test_api_rejects_invalid_model_without_writing_and_hides_deleted_application
         "error_code": "material_proposal_unverifiable",
         "error": "AI returned a proposal that could not be verified. Please retry.",
     }
+    messages = [entry["message"] for entry in read_recent_log_entries(tmp_path)]
+    diagnostic = next(message for message in messages if message.startswith("material_proposal_generation "))
+    assert "category=invalid_change_shape" in diagnostic
+    assert "repair_attempted=true" in diagnostic
+    assert "retry_count=1" in diagnostic
+    assert '"evidence_refs":0' in diagnostic
+    assert "bad" not in diagnostic
     assert client.get(f"/api/applications/{app['id']}/material-revision-proposals").json() == []
 
     deleted = client.delete(f"/api/applications/{app['id']}")

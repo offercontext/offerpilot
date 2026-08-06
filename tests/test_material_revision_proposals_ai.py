@@ -239,6 +239,95 @@ def test_generate_material_proposal_does_not_retry_provider_errors() -> None:
     assert model.calls == 1
 
 
+def test_generate_material_proposal_emits_redacted_failure_diagnostic() -> None:
+    first = {"summary": "bad", "changes": [{"id": "first-secret", "before": 7}]}
+    second = {
+        "summary": "still bad",
+        "changes": [
+            {
+                "id": "second-secret",
+                "path": "/experience/0/highlights/0",
+                "before": "Built APIs",
+                "after": "Built safer APIs",
+                "rationale": "Use the source fact.",
+                "evidence_refs": [
+                    {
+                        "source": "resume",
+                        "path": "/experience/0/highlights/0",
+                        "excerpt": "not the source",
+                    }
+                ],
+            }
+        ],
+    }
+
+    class InvalidModel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, messages, tools):  # type: ignore[no-untyped-def]
+            self.calls += 1
+            return Assistant(
+                content=json.dumps(first if self.calls == 1 else second),
+                provider_blocks={"request_id": "provider-secret"},
+            )
+
+    diagnostics: list[dict[str, object]] = []
+    with pytest.raises(MaterialProposalModelError) as raised:
+        generate_material_proposal(
+            InvalidModel(), _snapshot(), "Use only verified source facts.",
+            on_diagnostic=diagnostics.append,
+        )
+
+    assert len(diagnostics) == 1
+    diagnostic = diagnostics[0]
+    assert diagnostic["failure_category"] == "invalid_evidence_reference"
+    assert diagnostic["failure_categories"] == [
+        "invalid_change_shape",
+        "invalid_evidence_reference",
+    ]
+    assert diagnostic["repair_attempted"] is True
+    assert diagnostic["retry_count"] == 1
+    assert diagnostic["structure_summaries"][0]["top_level_keys"] == ["changes", "summary"]  # type: ignore[index]
+    assert diagnostic["evidence_counts"]["proposal"]["changes"] == 1  # type: ignore[index]
+    assert diagnostic["evidence_counts"]["proposal"]["evidence_refs"] == 1  # type: ignore[index]
+    assert diagnostic["provider_request_id_hash"] == __import__("hashlib").sha256(
+        b"provider-secret"
+    ).hexdigest()[:12]
+    assert raised.value.diagnostic == diagnostic
+    encoded = json.dumps(diagnostic, ensure_ascii=False)
+    assert "first-secret" not in encoded
+    assert "second-secret" not in encoded
+    assert "not the source" not in encoded
+    assert "provider-secret" not in encoded
+
+
+def test_generate_material_proposal_emits_safe_success_evidence_counts() -> None:
+    diagnostics: list[dict[str, object]] = []
+
+    class ValidModel:
+        def complete(self, messages, tools):  # type: ignore[no-untyped-def]
+            return Assistant(
+                content=json.dumps(_payload()),
+                provider_blocks={"request_id": "provider-success"},
+            )
+
+    generate_material_proposal(
+        ValidModel(), _snapshot(), "Highlight API experience",
+        on_diagnostic=diagnostics.append,
+    )
+
+    assert len(diagnostics) == 1
+    diagnostic = diagnostics[0]
+    assert diagnostic["failure_category"] is None
+    assert diagnostic["failure_categories"] == []
+    assert diagnostic["repair_attempted"] is False
+    assert diagnostic["retry_count"] == 0
+    assert diagnostic["evidence_counts"]["proposal"]["changes"] == 1  # type: ignore[index]
+    assert diagnostic["evidence_counts"]["proposal"]["evidence_refs"] == 2  # type: ignore[index]
+    assert "Built APIs" not in json.dumps(diagnostic, ensure_ascii=False)
+
+
 def test_material_proposal_prompt_lists_contract_and_editable_before_values() -> None:
     from offerpilot.ai.material_proposals import _material_proposal_prompt, _material_proposal_system
 
