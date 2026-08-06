@@ -62,9 +62,12 @@ def test_build_summary_keeps_only_redacted_provider_and_failure_metadata(tmp_pat
                 "provider_id": "primary",
                 "provider_type": "openai_compatible",
                 "model": "deepseek-v4-pro",
+                "litellm_model": "openai/deepseek-v4-pro",
+                "endpoint": {"scheme": "https", "host": "provider.example", "port": 443},
                 "input_fingerprint_sha256": "a" * 64,
                 "schema_fingerprint_sha256": "b" * 64,
                 "request_body_bytes": 1234,
+                "request_body_scope": "serialized_provider_payload_without_auth_or_endpoint",
                 "message_count": 3,
                 "message_bytes": 456,
                 "response_mode": "text_json",
@@ -107,11 +110,50 @@ def test_build_summary_keeps_only_redacted_provider_and_failure_metadata(tmp_pat
     assert summary["model"] == "deepseek-v4-pro"
     assert summary["input_fingerprints"] == ["a" * 64]
     assert summary["schema_fingerprints"] == ["b" * 64]
+    assert summary["request_metadata_complete"] is True
     assert summary["provider_request_id_hash"] == "b" * 12
     assert summary["failure_category"] == "invalid_item_shape"
     assert summary["elapsed_ms"] == 123456
     assert "private prompt text" not in encoded
     assert "secret-key" not in encoded
+
+
+def test_build_summary_marks_missing_provider_schema_metadata_incomplete(tmp_path: Path) -> None:
+    report_dir = tmp_path / "report"
+    report_dir.mkdir()
+    (report_dir / "provider-request-audit.jsonl").write_text(
+        json.dumps(
+            {
+                "kind": "provider_request_metadata",
+                "provider_id": "primary",
+                "provider_type": "openai_compatible",
+                "model": "model",
+                "input_fingerprint_sha256": "a" * 64,
+                "request_body_bytes": 1,
+                "message_count": 1,
+                "message_bytes": 1,
+                "response_mode": "text_json",
+                "explicit_max_tokens": None,
+                "explicit_timeout_seconds": None,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    summary = _build_summary(
+        config_summary={"provider": "openai_compatible", "model": "model"},
+        child_data_dir=tmp_path / "child-data",
+        report_dir=report_dir,
+        exit_code=0,
+        stdout="ok interview_preparation: ready\n",
+        stderr="",
+        elapsed_ms=10,
+    )
+
+    assert summary["status"] == "incomplete"
+    assert summary["request_metadata_complete"] is False
+    assert summary["verification_error"] == "provider_request_metadata_incomplete"
 
 
 def test_real_ai_smoke_persists_inner_failure_before_isolation_cleanup(monkeypatch, tmp_path: Path) -> None:

@@ -207,6 +207,10 @@ def _validate_redacted_request_metadata(
         for field in ("explicit_max_tokens", "explicit_timeout_seconds"):
             if field not in record:
                 raise RuntimeError(f"provider request metadata {field} was missing")
+        for field in ("message_count", "message_bytes", "request_body_bytes"):
+            value = record.get(field)
+            if type(value) is not int or value < 0:
+                raise RuntimeError(f"provider request metadata {field} was invalid")
         for field in ("input_fingerprint_sha256", "schema_fingerprint_sha256"):
             value = record.get(field)
             if not isinstance(value, str) or not _SHA256_PATTERN.fullmatch(value):

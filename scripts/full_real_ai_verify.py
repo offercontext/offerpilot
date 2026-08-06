@@ -146,6 +146,38 @@ def _read_request_audit(report_dir: Path) -> list[dict[str, Any]]:
     return records[-64:]
 
 
+def _request_audit_is_complete(records: list[dict[str, Any]]) -> bool:
+    required = {
+        "kind",
+        "provider_id",
+        "provider_type",
+        "model",
+        "litellm_model",
+        "endpoint",
+        "input_fingerprint_sha256",
+        "schema_fingerprint_sha256",
+        "request_body_bytes",
+        "request_body_scope",
+        "message_count",
+        "message_bytes",
+        "response_mode",
+        "explicit_max_tokens",
+        "explicit_timeout_seconds",
+    }
+    if not records:
+        return False
+    for record in records:
+        if not required.issubset(record):
+            return False
+        if record["response_mode"] not in {"text_json", "json_schema"}:
+            return False
+        for field in ("message_count", "message_bytes", "request_body_bytes"):
+            value = record[field]
+            if type(value) is not int or value < 0:
+                return False
+    return True
+
+
 def _read_operation_audit(report_dir: Path) -> list[dict[str, Any]]:
     path = report_dir / "full-verify-operation-audit.jsonl"
     if not path.is_file():
@@ -313,6 +345,7 @@ def _build_summary(
     formal_config_unchanged: bool | None = None,
 ) -> dict[str, Any]:
     request_records = _read_request_audit(report_dir)
+    request_metadata_complete = _request_audit_is_complete(request_records)
     operation_records = _read_operation_audit(report_dir)
     actual_request = request_records[-1] if request_records else {}
     inner = _safe_inner_diagnostic(inner_diagnostic)
@@ -382,6 +415,7 @@ def _build_summary(
         "failure_categories": categories[:4],
         "elapsed_ms": max(0, int(elapsed_ms)),
         "provider_request_count": len(request_records),
+        "request_metadata_complete": request_metadata_complete,
         "operation_count": len(operation_records),
         "operations": operation_records,
         "first_failed_operation": first_failed_operation,
@@ -400,6 +434,9 @@ def _build_summary(
         },
         "config": config_summary,
     }
+    if exit_code == 0 and not request_metadata_complete:
+        summary["status"] = "incomplete"
+        summary["verification_error"] = "provider_request_metadata_incomplete"
     if formal_config_unchanged is not None:
         summary["formal_config_unchanged"] = formal_config_unchanged
     return summary
