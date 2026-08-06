@@ -13,7 +13,7 @@ import socket
 import tempfile
 import threading
 import time
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import uvicorn
@@ -77,6 +77,92 @@ class SmokeStep:
 class SmokeReport:
     ok: bool
     steps: list[SmokeStep]
+
+
+class _FullVerifyHttpClient:
+    def __init__(self, client: httpx.Client):
+        self._client = client
+
+    def get(self, *args: Any, **kwargs: Any) -> httpx.Response:
+        return self._call("get", *args, **kwargs)
+
+    def post(self, *args: Any, **kwargs: Any) -> httpx.Response:
+        return self._call("post", *args, **kwargs)
+
+    def put(self, *args: Any, **kwargs: Any) -> httpx.Response:
+        return self._call("put", *args, **kwargs)
+
+    def patch(self, *args: Any, **kwargs: Any) -> httpx.Response:
+        return self._call("patch", *args, **kwargs)
+
+    def delete(self, *args: Any, **kwargs: Any) -> httpx.Response:
+        return self._call("delete", *args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._client, name)
+
+    def _call(self, method: str, *args: Any, **kwargs: Any) -> httpx.Response:
+        started = time.perf_counter()
+        path = str(args[0] if args else kwargs.get("url", "")).split("?", 1)[0]
+        try:
+            response = cast(httpx.Response, getattr(self._client, method)(*args, **kwargs))
+        except Exception as exc:
+            _append_full_verify_operation(
+                {
+                    "kind": "api_request",
+                    "operation": os.environ.get("OFFERPILOT_FULL_VERIFY_OPERATION")
+                    or "unclassified",
+                    "method": method.upper(),
+                    "path": path,
+                    "http_status": None,
+                    "duration_ms": max(0, int((time.perf_counter() - started) * 1000)),
+                    "response_attempt_status": None,
+                    "error_category": _smoke_exception_category(exc),
+                }
+            )
+            raise
+        attempt_status = None
+        if response.status_code in {200, 201, 202}:
+            try:
+                body = response.json()
+                candidate = body.get("attempt_status") if isinstance(body, dict) else None
+                if candidate in {"generating", "provider_unknown", "ready"}:
+                    attempt_status = candidate
+            except (ValueError, TypeError):
+                pass
+        _append_full_verify_operation(
+            {
+                "kind": "api_request",
+                "operation": os.environ.get("OFFERPILOT_FULL_VERIFY_OPERATION")
+                or "unclassified",
+                "method": method.upper(),
+                "path": path,
+                "http_status": response.status_code,
+                "duration_ms": max(0, int((time.perf_counter() - started) * 1000)),
+                "response_attempt_status": attempt_status,
+                "error_category": None,
+            }
+        )
+        return response
+
+
+def _append_full_verify_operation(record: dict[str, Any]) -> None:
+    path = os.environ.get("OFFERPILOT_FULL_VERIFY_OPERATION_AUDIT_FILE", "").strip()
+    if not path:
+        return
+    try:
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n")
+    except Exception:
+        return
+
+
+@contextmanager
+def _full_verify_client(base_url: str) -> Any:
+    with httpx.Client(base_url=base_url, timeout=60.0) as client:
+        yield _FullVerifyHttpClient(client)
 
 
 class _SmokeChatModel(ChatModel):
@@ -342,6 +428,8 @@ def run_http_smoke(
     real_ai: bool = False,
 ) -> SmokeReport:
     prefix = "offerpilot-real-ai-verify-" if real_ai else "offerpilot-local-verify-"
+    previous_operation = os.environ.get("OFFERPILOT_FULL_VERIFY_OPERATION")
+    previous_stage = os.environ.get("OFFERPILOT_FULL_VERIFY_ACTIVE_STAGE")
     with tempfile.TemporaryDirectory(prefix=prefix) as temp_dir:
         isolated_data_dir = Path(temp_dir)
         if real_ai:
@@ -364,11 +452,25 @@ def run_http_smoke(
         finally:
             if real_ai and completed:
                 _persist_full_verify_inner_diagnostic(isolated_data_dir, status="passed")
+            if previous_operation is None:
+                os.environ.pop("OFFERPILOT_FULL_VERIFY_OPERATION", None)
+            else:
+                os.environ["OFFERPILOT_FULL_VERIFY_OPERATION"] = previous_operation
+            if previous_stage is None:
+                os.environ.pop("OFFERPILOT_FULL_VERIFY_ACTIVE_STAGE", None)
+            else:
+                os.environ["OFFERPILOT_FULL_VERIFY_ACTIVE_STAGE"] = previous_stage
 
 
 def _full_verify_report_dir() -> Path | None:
     raw = os.environ.get("OFFERPILOT_FULL_VERIFY_REPORT_DIR", "").strip()
     return Path(raw) if raw else None
+
+
+def _set_full_verify_operation(operation: str) -> None:
+    os.environ["OFFERPILOT_FULL_VERIFY_OPERATION"] = operation
+    if operation != "cleanup":
+        os.environ["OFFERPILOT_FULL_VERIFY_ACTIVE_STAGE"] = operation
 
 
 def _safe_smoke_config_summary(data_dir: Path) -> dict[str, Any]:
@@ -521,7 +623,8 @@ def _persist_full_verify_inner_diagnostic(
         last = diagnostics[-1] if diagnostics else {}
         payload = {
             "status": status,
-            "stage": "real_ai_http_verify",
+            "stage": os.environ.get("OFFERPILOT_FULL_VERIFY_ACTIVE_STAGE")
+            or "real_ai_http_verify",
             "exception_category": _smoke_exception_category(error),
             "failure_category": failure_category,
             "failure_categories": list(dict.fromkeys(failure_categories))[:4],
@@ -552,13 +655,14 @@ def _run_http_smoke(
     steps: list[SmokeStep] = []
     smoke_resume_ids: list[int] = []
     data_dir.mkdir(parents=True, exist_ok=True)
+    _set_full_verify_operation("bootstrap")
 
     _run_unconfigured_chat_smoke(static_dir, steps)
 
     local_model = None if real_ai else _MutableSmokeChatModel()
     app = create_app(data_dir=data_dir, static_dir=static_dir, chat_model=local_model)
     with _running_server(app) as base_url:
-        with httpx.Client(base_url=base_url, timeout=60.0) as client:
+        with _full_verify_client(base_url) as client:
             health = client.get("/api/health")
             _assert_status(health.status_code, 200, "http_health")
             steps.append(SmokeStep("http_health", "GET /api/health returned ok"))
@@ -605,14 +709,21 @@ def _run_http_smoke(
                 _run_application_event_http_smoke(client, steps, application_id)
 
                 if real_ai:
+                    _set_full_verify_operation("interview_preparation")
                     _run_real_ai_interview_preparation_smoke(client, steps, application_id, smoke_resume_ids)
+                    _set_full_verify_operation("material_proposal")
                     _run_real_ai_material_proposal_smoke(client, steps, application_id, smoke_resume_ids)
+                    _set_full_verify_operation("opportunity_fit")
                     _run_real_ai_opportunity_fit_smoke(client, steps, application_id, smoke_resume_ids)
+                    _set_full_verify_operation("interview_review")
                     _run_real_ai_interview_review_smoke(client, steps, application_id)
+                    _set_full_verify_operation("interview_knowledge_capture")
                     _run_real_ai_interview_knowledge_capture_smoke(client, steps, application_id)
+                    _set_full_verify_operation("mock_interview")
                     _run_real_ai_mock_interview_smoke(
                         client, steps, application_id, smoke_resume_ids, data_dir
                     )
+                    _set_full_verify_operation("write_smoke")
                     _run_real_ai_write_smoke(client, steps, company, application_id)
                 else:
                     _run_local_proposal_terminal_smoke(
@@ -621,6 +732,7 @@ def _run_http_smoke(
                     _run_deterministic_chat_smoke(client, steps, application_id)
                     _run_chat_card_regression_smoke(client, steps, application_id, step_prefix="http_")
             finally:
+                _set_full_verify_operation("cleanup")
                 cleanup = client.delete(f"/api/applications/{application_id}")
                 _assert_status(cleanup.status_code, 200, "http_cleanup")
                 deleted_application = client.get(f"/api/applications/{application_id}")

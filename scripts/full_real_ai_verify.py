@@ -111,6 +111,7 @@ def _read_request_audit(report_dir: Path) -> list[dict[str, Any]]:
         return []
     allowed = {
         "kind",
+        "operation",
         "provider_id",
         "provider_type",
         "model",
@@ -138,6 +139,95 @@ def _read_request_audit(report_dir: Path) -> list[dict[str, Any]]:
     return records[-64:]
 
 
+def _read_operation_audit(report_dir: Path) -> list[dict[str, Any]]:
+    path = report_dir / "full-verify-operation-audit.jsonl"
+    if not path.is_file():
+        return []
+    records: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(value, dict):
+            continue
+        kind = value.get("kind")
+        if kind == "api_request":
+            record = {
+                key: value.get(key)
+                for key in (
+                    "kind",
+                    "operation",
+                    "method",
+                    "path",
+                    "http_status",
+                    "duration_ms",
+                    "response_attempt_status",
+                    "error_category",
+                )
+            }
+            if not isinstance(record["operation"], str) or not _SAFE_CATEGORY.fullmatch(
+                record["operation"]
+            ):
+                continue
+            if not isinstance(record["method"], str) or not re.fullmatch(
+                r"[A-Z]{3,7}", record["method"]
+            ):
+                continue
+            if not isinstance(record["path"], str) or not record["path"].startswith("/"):
+                continue
+            if type(record["duration_ms"]) is not int or record["duration_ms"] < 0:
+                continue
+            if record["http_status"] is not None and (
+                type(record["http_status"]) is not int or record["http_status"] < 100
+            ):
+                continue
+            if record["error_category"] is not None and (
+                not isinstance(record["error_category"], str)
+                or not _SAFE_CATEGORY.fullmatch(record["error_category"])
+            ):
+                record["error_category"] = None
+            records.append(record)
+        elif kind == "provider_request_result":
+            record = {
+                key: value.get(key)
+                for key in (
+                    "kind",
+                    "operation",
+                    "provider_id",
+                    "provider_type",
+                    "model",
+                    "status",
+                    "elapsed_ms",
+                    "http_status",
+                    "provider_request_id_hash",
+                    "failure_category",
+                )
+            }
+            if record["provider_id"] is None:
+                record.pop("provider_id")
+            if not isinstance(record["operation"], str) or not _SAFE_CATEGORY.fullmatch(
+                record["operation"]
+            ):
+                continue
+            if record["status"] not in {"success", "error"}:
+                continue
+            if type(record["elapsed_ms"]) is not int or record["elapsed_ms"] < 0:
+                continue
+            request_id_hash = record["provider_request_id_hash"]
+            if not isinstance(request_id_hash, str) or (
+                request_id_hash and not _SAFE_REQUEST_ID_HASH.fullmatch(request_id_hash)
+            ):
+                record["provider_request_id_hash"] = ""
+            category = record["failure_category"]
+            if category is not None and (
+                not isinstance(category, str) or not _SAFE_CATEGORY.fullmatch(category)
+            ):
+                record["failure_category"] = None
+            records.append(record)
+    return records[-128:]
+
+
 def _safe_inner_diagnostic(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
@@ -157,12 +247,18 @@ def _safe_inner_diagnostic(value: Any) -> dict[str, Any]:
         if key in value:
             result[key] = value[key]
     category = result.get("failure_category")
-    if not isinstance(category, str) or not _SAFE_CATEGORY.fullmatch(category):
+    if (
+        not isinstance(category, str)
+        or category == "none"
+        or not _SAFE_CATEGORY.fullmatch(category)
+    ):
         result.pop("failure_category", None)
     categories = result.get("failure_categories")
     if isinstance(categories, list):
         result["failure_categories"] = [
-            item for item in categories if isinstance(item, str) and _SAFE_CATEGORY.fullmatch(item)
+            item
+            for item in categories
+            if isinstance(item, str) and item != "none" and _SAFE_CATEGORY.fullmatch(item)
         ][:4]
     else:
         result.pop("failure_categories", None)
@@ -210,11 +306,17 @@ def _build_summary(
     formal_config_unchanged: bool | None = None,
 ) -> dict[str, Any]:
     request_records = _read_request_audit(report_dir)
+    operation_records = _read_operation_audit(report_dir)
     actual_request = request_records[-1] if request_records else {}
     inner = _safe_inner_diagnostic(inner_diagnostic)
     failure_category = inner.get("failure_category")
     if not isinstance(failure_category, str) or not failure_category:
-        failure_category = _exception_category(stdout, stderr) if exit_code else None
+        inner_exception_category = inner.get("exception_category")
+        failure_category = (
+            inner_exception_category
+            if isinstance(inner_exception_category, str) and inner_exception_category
+            else (_exception_category(stdout, stderr) if exit_code else None)
+        )
     categories = inner.get("failure_categories")
     if not isinstance(categories, list):
         categories = []
@@ -223,10 +325,33 @@ def _build_summary(
     request_id_hash = inner.get("provider_request_id_hash")
     if not isinstance(request_id_hash, str):
         request_id_hash = ""
+    first_failed_operation = next(
+        (
+            record
+            for record in operation_records
+            if (
+                record.get("kind") == "provider_request_result"
+                and record.get("status") == "error"
+            )
+            or (
+                record.get("kind") == "api_request"
+                and (
+                    record.get("error_category")
+                    or (
+                        isinstance(record.get("http_status"), int)
+                        and record["http_status"] >= 500
+                    )
+                )
+            )
+        ),
+        None,
+    )
+    if not request_id_hash and isinstance(first_failed_operation, dict):
+        request_id_hash = str(first_failed_operation.get("provider_request_id_hash") or "")
     summary = {
         "status": "passed" if exit_code == 0 else "failed",
         "exit_code": exit_code,
-        "stage": "real_ai_http_verify",
+        "stage": inner.get("stage") or "real_ai_http_verify",
         "last_completed_step": _last_completed_step(stdout),
         "provider": actual_request.get("provider_type") or config_summary.get("provider"),
         "provider_id": actual_request.get("provider_id") or config_summary.get("active_provider_id"),
@@ -243,6 +368,9 @@ def _build_summary(
         "failure_categories": categories[:4],
         "elapsed_ms": max(0, int(elapsed_ms)),
         "provider_request_count": len(request_records),
+        "operation_count": len(operation_records),
+        "operations": operation_records,
+        "first_failed_operation": first_failed_operation,
         "repair_attempted": inner.get("repair_attempted", False),
         "retry_count": inner.get("retry_count", 0),
         "structure_summaries": inner.get("structure_summaries", []),
@@ -251,6 +379,9 @@ def _build_summary(
             "OFFERPILOT_FULL_VERIFY_REPORT_DIR": str(report_dir),
             "OFFERPILOT_PROVIDER_REQUEST_AUDIT_FILE": str(
                 report_dir / "provider-request-audit.jsonl"
+            ),
+            "OFFERPILOT_FULL_VERIFY_OPERATION_AUDIT_FILE": str(
+                report_dir / "full-verify-operation-audit.jsonl"
             ),
         },
         "config": config_summary,
@@ -304,6 +435,7 @@ def run_full_verify(
         "full-real-ai-summary.json",
         "full-verify-inner-diagnostic.json",
         "provider-request-audit.jsonl",
+        "full-verify-operation-audit.jsonl",
     ):
         (report_dir / artifact).unlink(missing_ok=True)
     source_config = source_data / "config.json"
@@ -329,6 +461,9 @@ def run_full_verify(
                     "OFFERPILOT_PROVIDER_REQUEST_AUDIT_FILE": str(
                         report_dir / "provider-request-audit.jsonl"
                     ),
+                    "OFFERPILOT_FULL_VERIFY_OPERATION_AUDIT_FILE": str(
+                        report_dir / "full-verify-operation-audit.jsonl"
+                    ),
                 },
             },
         )
@@ -337,6 +472,9 @@ def run_full_verify(
         child_env["OFFERPILOT_FULL_VERIFY_REPORT_DIR"] = str(report_dir)
         child_env["OFFERPILOT_PROVIDER_REQUEST_AUDIT_FILE"] = str(
             report_dir / "provider-request-audit.jsonl"
+        )
+        child_env["OFFERPILOT_FULL_VERIFY_OPERATION_AUDIT_FILE"] = str(
+            report_dir / "full-verify-operation-audit.jsonl"
         )
         process = subprocess.Popen(
             ["uv", "run", "oc", "verify", "--profile", "real-ai", "--static-dir", str(static_dir)],

@@ -7,6 +7,10 @@ from scripts.full_real_ai_verify import (
     _safe_config_summary,
     run_full_verify,
 )
+from offerpilot.ai import client as ai_client
+from offerpilot.ai.client import ConfiguredAIClient
+from offerpilot.ai.types import Message
+from offerpilot.config import AIProviderProfile, Config
 from offerpilot.smoke import run_http_smoke
 
 
@@ -222,3 +226,105 @@ def test_run_full_verify_records_actual_child_environment_and_exit(monkeypatch, 
     assert summary["input_fingerprints"] == ["c" * 64]
     assert summary["formal_config_unchanged"] is True
     assert config_path.read_bytes() == formal_before
+
+
+def test_build_summary_identifies_the_first_failed_operation(tmp_path: Path) -> None:
+    report_dir = tmp_path / "report"
+    report_dir.mkdir()
+    (report_dir / "full-verify-operation-audit.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "kind": "provider_request_result",
+                        "operation": "interview_preparation",
+                        "provider_type": "openai_compatible",
+                        "model": "deepseek-v4-pro",
+                        "status": "error",
+                        "elapsed_ms": 90000,
+                        "http_status": None,
+                        "provider_request_id_hash": "d" * 12,
+                        "failure_category": "network_timeout",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "api_request",
+                        "operation": "interview_preparation",
+                        "method": "POST",
+                        "path": "/api/applications/1/interview-preparation-proposals",
+                        "http_status": 502,
+                        "duration_ms": 90010,
+                        "response_attempt_status": None,
+                        "error_category": None,
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    summary = _build_summary(
+        config_summary={"provider": "openai_compatible", "model": "deepseek-v4-pro"},
+        child_data_dir=tmp_path / "child-data",
+        report_dir=report_dir,
+        exit_code=1,
+        stdout="",
+        stderr="",
+        elapsed_ms=90020,
+        inner_diagnostic={"exception_category": "network_timeout"},
+    )
+
+    assert summary["first_failed_operation"] == {
+        "kind": "provider_request_result",
+        "operation": "interview_preparation",
+        "provider_type": "openai_compatible",
+        "model": "deepseek-v4-pro",
+        "status": "error",
+        "elapsed_ms": 90000,
+        "http_status": None,
+        "provider_request_id_hash": "d" * 12,
+        "failure_category": "network_timeout",
+    }
+
+
+def test_provider_result_audit_records_operation_duration_and_request_hash(monkeypatch, tmp_path: Path) -> None:
+    audit_path = tmp_path / "operations.jsonl"
+    monkeypatch.setenv("OFFERPILOT_FULL_VERIFY_OPERATION_AUDIT_FILE", str(audit_path))
+    monkeypatch.setenv("OFFERPILOT_FULL_VERIFY_OPERATION", "interview_preparation")
+
+    def fake_completion(**kwargs):
+        return {"id": "provider-request-123", "choices": [{"message": {"content": "ok"}}]}
+
+    monkeypatch.setattr(ai_client, "completion", fake_completion)
+    client = ConfiguredAIClient(
+        Config(
+            providers=[
+                AIProviderProfile(
+                    id="primary",
+                    provider="openai_compatible",
+                    api_key="secret-key",
+                    base_url="https://provider.example/v1",
+                    model="deepseek-v4-pro",
+                )
+            ],
+            active_provider_id="primary",
+        )
+    )
+
+    client.complete([Message(role="user", content="private prompt")], [])
+
+    records = [
+        json.loads(line)
+        for line in audit_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    result = next(record for record in records if record["kind"] == "provider_request_result")
+    assert result["operation"] == "interview_preparation"
+    assert result["status"] == "success"
+    assert result["model"] == "deepseek-v4-pro"
+    assert result["elapsed_ms"] >= 0
+    assert len(result["provider_request_id_hash"]) == 12
+    assert "private prompt" not in audit_path.read_text(encoding="utf-8")
+    assert "secret-key" not in audit_path.read_text(encoding="utf-8")
