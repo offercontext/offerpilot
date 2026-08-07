@@ -15,6 +15,31 @@ import websockets
 
 def record_response_payload_metadata(record: dict[str, object], payload: object) -> None:
     """Copy only safe identifiers and statuses from a JSON response into a record."""
+    if isinstance(payload, list):
+        proposal_ids = [
+            item["id"]
+            for item in payload
+            if isinstance(item, dict) and isinstance(item.get("id"), int)
+        ]
+        version_ids = [
+            item["id"]
+            for item in payload
+            if isinstance(item, dict) and isinstance(item.get("id"), int)
+        ]
+        source_kinds = sorted(
+            {
+                item["source_kind"]
+                for item in payload
+                if isinstance(item, dict) and item.get("source_kind") in {"ui", "pilot"}
+            }
+        )
+        if proposal_ids:
+            record["response_proposal_ids"] = proposal_ids
+        if version_ids:
+            record["response_jd_version_ids"] = version_ids
+        if source_kinds:
+            record["response_source_kinds"] = source_kinds
+        return
     if not isinstance(payload, dict):
         return
     if isinstance(payload.get("error_code"), str):
@@ -397,14 +422,6 @@ class BrowserAudit:
             payload = json.loads(body_text) if isinstance(body_text, str) else None
             if isinstance(payload, dict):
                 record_response_payload_metadata(record, payload)
-            elif isinstance(payload, list):
-                proposal_ids = [
-                    item["id"]
-                    for item in payload
-                    if isinstance(item, dict) and isinstance(item.get("id"), int)
-                ]
-                if proposal_ids:
-                    record["response_proposal_ids"] = proposal_ids
         except asyncio.CancelledError:
             raise
         except BaseException as exc:
@@ -432,10 +449,12 @@ class BrowserAudit:
                 "response_error_code",
                 "response_attempt_status",
                 "response_source_kind",
+                "response_source_kinds",
                 "response_proposal_id",
                 "response_proposal_ids",
                 "response_confirmed_proposal_id",
                 "response_jd_version_id",
+                "response_jd_version_ids",
             ):
                 if key in record:
                     response_record[key] = record[key]

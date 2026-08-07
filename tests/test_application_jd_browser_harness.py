@@ -113,6 +113,8 @@ def test_application_jd_harness_fails_closed_on_auditor_disconnect() -> None:
     assert "failure_category" in script
     assert "Browser auditor did not exit cleanly" in script
     assert "successful Pilot confirmation response" in script
+    assert "response_source_kinds" in script
+    assert "JD history after Pilot confirmation" in script
 
 
 def test_application_jd_harness_retains_temp_data_when_a_process_survives() -> None:
@@ -184,3 +186,19 @@ def test_browser_audit_extracts_consumer_jd_version_from_direct_response_payload
     )
 
     assert record["response_jd_version_id"] == 23
+
+
+def test_browser_audit_extracts_jd_sources_from_history_payload() -> None:
+    module = _load_browser_audit()
+    record: dict[str, object] = {}
+
+    module.record_response_payload_metadata(
+        record,
+        [
+            {"id": 24, "source_kind": "pilot"},
+            {"id": 23, "source_kind": "ui"},
+        ],
+    )
+
+    assert record["response_jd_version_ids"] == [24, 23]
+    assert record["response_source_kinds"] == ["pilot", "ui"]

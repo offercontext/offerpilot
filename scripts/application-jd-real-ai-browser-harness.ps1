@@ -360,18 +360,35 @@ function Assert-ProviderEgress($allowedEndpoints) {
 
 function Assert-StageA($records) {
   $jdPosts = @($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'POST' -and $_.url -match '/api/applications/[0-9]+/job-description/versions$' })
-  if ($jdPosts.Count -lt 2) { throw 'Stage A did not create UI JD versions.' }
+  if ($jdPosts.Count -lt 1) { throw 'Stage A did not create a UI JD version.' }
   if (@($jdPosts | Where-Object { $_.request_context.application_id -ne [int]$applicationId }).Count -ne 0) { throw 'Stage A mixed applications.' }
   $jdResponses = @($records | Where-Object {
     $_.kind -eq 'browser_response' -and $_.method -eq 'POST' -and
     $_.url -match '/api/applications/[0-9]+/job-description/versions$' -and
     $_.response_status -in @(200, 201) -and $null -ne $_.response_jd_version_id
   })
-  if ($jdResponses.Count -lt 2) { throw 'Stage A did not record successful JD version responses.' }
-  $sourceKinds = @($jdResponses | ForEach-Object { [string]$_.response_source_kind } | Sort-Object -Unique)
-  if ('ui' -notin $sourceKinds -or 'pilot' -notin $sourceKinds) { throw 'Stage A did not prove both UI and Pilot JD sources.' }
-  if (-not ($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'GET' -and $_.url -match '/job-description/versions$' })) { throw 'Stage A did not read JD history.' }
-  if (-not ($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'GET' -and $_.url -match '/job-description/versions/[0-9]+$' })) { throw 'Stage A did not read JD detail.' }
+  if ($jdResponses.Count -lt 1) { throw 'Stage A did not record a successful UI JD version response.' }
+  $historyResponses = @($records | Where-Object {
+    $_.kind -eq 'browser_response' -and $_.method -eq 'GET' -and
+    $_.url -match '/job-description/versions$' -and
+    $_.response_status -eq 200 -and $null -ne $_.response_source_kinds
+  })
+  if ($historyResponses.Count -lt 1) { throw 'Stage A did not read JD history after Pilot confirmation.' }
+  $sourceKinds = @(
+    $jdResponses | ForEach-Object { [string]$_.response_source_kind }
+    $historyResponses | ForEach-Object { @($_.response_source_kinds) | ForEach-Object { [string]$_ } }
+  ) | Where-Object { $_ } | Sort-Object -Unique
+  if ('ui' -notin $sourceKinds -or 'pilot' -notin $sourceKinds) { throw 'Stage A did not prove both UI and Pilot JD sources from saved/read-back version data.' }
+  $historyVersionIds = @(
+    $historyResponses | ForEach-Object { @($_.response_jd_version_ids) | ForEach-Object { [int]$_ } }
+  ) | Sort-Object -Unique
+  if ($historyVersionIds.Count -lt 2) { throw 'Stage A did not read both saved JD versions.' }
+  $detailResponses = @($records | Where-Object {
+    $_.kind -eq 'browser_response' -and $_.method -eq 'GET' -and
+    $_.url -match '/job-description/versions/[0-9]+$' -and
+    $_.response_status -eq 200
+  })
+  if ($detailResponses.Count -lt 1) { throw 'Stage A did not read JD detail.' }
   if (-not ($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'POST' -and $_.url -match '/api/chat$' })) { throw 'Stage A did not record Pilot chat.' }
   if (-not ($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'POST' -and $_.url -match '/api/chat/confirm$' })) { throw 'Stage A did not record Pilot confirmation.' }
   $confirmationResponses = @($records | Where-Object {
