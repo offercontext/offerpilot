@@ -1420,6 +1420,7 @@ def _validate_opportunity_fit_v2_stage_response(
         "stage_id",
         "application_id",
         "resume_id",
+        "jd_version_id",
         "stage",
         "schema_version",
         "stage_status",

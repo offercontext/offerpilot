@@ -1603,6 +1603,7 @@ def test_real_ai_opportunity_fit_smoke_requires_verified_triage_without_snapshot
                 "stage_id": stage_id,
                 "application_id": 7,
                 "resume_id": 41,
+                "jd_version_id": 13,
                 "stage": stage,
                 "schema_version": 2,
                 "stage_status": status,
