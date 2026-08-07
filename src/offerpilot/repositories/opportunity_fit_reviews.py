@@ -7,7 +7,7 @@ import json
 import secrets
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -33,6 +33,11 @@ from offerpilot.repositories.json_contract import (
     canonical_json,
     parse_json_object,
     sha256_text,
+)
+from offerpilot.repositories.lease_heartbeat import (
+    DEFAULT_OPPORTUNITY_FIT_HEARTBEAT_INTERVAL_SECONDS,
+    DEFAULT_OPPORTUNITY_FIT_LEASE_SECONDS,
+    LeaseHeartbeat,
 )
 
 
@@ -64,9 +69,22 @@ HUMAN_APPLICATION_SOURCES = frozenset({"cli", "manual", "web"})
 
 
 class OpportunityFitReviewsRepository:
-    def __init__(self, session_factory: sessionmaker[Session], confirmation_secret: str = ""):
+    def __init__(
+        self,
+        session_factory: sessionmaker[Session],
+        confirmation_secret: str = "",
+        *,
+        lease_seconds: float = DEFAULT_OPPORTUNITY_FIT_LEASE_SECONDS,
+        heartbeat_interval_seconds: float = DEFAULT_OPPORTUNITY_FIT_HEARTBEAT_INTERVAL_SECONDS,
+    ):
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive")
+        if heartbeat_interval_seconds <= 0 or heartbeat_interval_seconds >= lease_seconds:
+            raise ValueError("heartbeat_interval_seconds must be positive and shorter than lease_seconds")
         self._session_factory = session_factory
         self._confirmation_secret = confirmation_secret
+        self._lease_seconds = lease_seconds
+        self._heartbeat_interval_seconds = heartbeat_interval_seconds
 
     def _require_confirmation_secret(self) -> str:
         if not self._confirmation_secret:
@@ -156,7 +174,7 @@ class OpportunityFitReviewsRepository:
         # The first write claims the root and stage before calling the provider.  A
         # unique application/key constraint makes concurrent first requests converge.
         provider_token = secrets.token_urlsafe(24)
-        lease = datetime.now(timezone.utc) + timedelta(minutes=2)
+        lease = datetime.now(timezone.utc) + timedelta(seconds=self._lease_seconds)
         snapshot_json = canonical_json(snapshot)
         with self._session_factory() as session:
             session.execute(text("BEGIN IMMEDIATE"))
@@ -242,15 +260,29 @@ class OpportunityFitReviewsRepository:
             )
 
         try:
-            triage = generate_triage_v2(model, snapshot)
+            with LeaseHeartbeat(
+                self._session_factory,
+                stage_id=stage.id,
+                stage_generation=stage.stage_generation,
+                provider_call_token=provider_token,
+                lease_seconds=self._lease_seconds,
+                interval_seconds=self._heartbeat_interval_seconds,
+            ):
+                triage = generate_triage_v2(model, snapshot)
         except OpportunityFitModelError as exc:
             if exc.failure_category == "provider_error":
-                _mark_v2_provider_unknown(self._session_factory, stage.id, provider_token)
+                _mark_v2_provider_unknown(
+                    self._session_factory, stage.id, stage.stage_generation, provider_token
+                )
             else:
-                _delete_v2_unconfirmed_stage(self._session_factory, stage.id, provider_token)
+                _delete_v2_unconfirmed_stage(
+                    self._session_factory, stage.id, stage.stage_generation, provider_token
+                )
             raise
         except Exception:
-            _mark_v2_provider_unknown(self._session_factory, stage.id, provider_token)
+            _mark_v2_provider_unknown(
+                self._session_factory, stage.id, stage.stage_generation, provider_token
+            )
             raise
         proposal_json = canonical_json(triage.payload)
         with self._session_factory() as session:
@@ -271,21 +303,58 @@ class OpportunityFitReviewsRepository:
                 .order_by(ApplicationJDVersion.version_number.desc())
                 .limit(1)
             )
+            lease_now = datetime.now(timezone.utc)
             if stage.jd_version_id is not None and current_version_id != stage.jd_version_id:
-                stage.status = "source_conflict"
-                stage.provider_call_token = ""
-                stage.lease_expires_at = None
+                result = session.execute(
+                    update(OpportunityFitReviewStage)
+                    .where(*_v2_live_owner_conditions(stage, provider_token, lease_now))
+                    .values(
+                        status="source_conflict",
+                        provider_call_token="",
+                        lease_expires_at=None,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+                if getattr(result, "rowcount", 0) != 1:
+                    session.rollback()
+                    current_stage = session.get(OpportunityFitReviewStage, stage.id)
+                    if current_stage is None:
+                        raise OpportunityFitReviewNotFound()
+                    root_after = session.get(OpportunityFitReviewSession, current_stage.review_id)
+                    if root_after is None:
+                        raise OpportunityFitReviewNotFound()
+                    return root_after, current_stage, False, _confirmation_token_for_stage(
+                        current_stage, confirmation_secret
+                    )
                 session.commit()
                 raise OpportunityFitReviewSourceConflictError("opportunity fit source changed")
-            stage.status = "ready"
-            stage.proposal_json = proposal_json
-            stage.proposal_sha256 = sha256_text(proposal_json)
-            stage.provider_call_token = ""
-            stage.lease_expires_at = None
-            expires_at = datetime.now(timezone.utc) + timedelta(minutes=30)
-            stage.confirmation_expires_at = expires_at
+            expires_at = lease_now + timedelta(minutes=30)
             token = _confirmation_token(stage, confirmation_secret, expires_at=expires_at)
-            stage.confirmation_token_hash = _hash_token(token)
+            result = session.execute(
+                update(OpportunityFitReviewStage)
+                .where(*_v2_live_owner_conditions(stage, provider_token, lease_now))
+                .values(
+                    status="ready",
+                    proposal_json=proposal_json,
+                    proposal_sha256=sha256_text(proposal_json),
+                    provider_call_token="",
+                    lease_expires_at=None,
+                    confirmation_expires_at=expires_at,
+                    confirmation_token_hash=_hash_token(token),
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if getattr(result, "rowcount", 0) != 1:
+                session.rollback()
+                current_stage = session.get(OpportunityFitReviewStage, stage.id)
+                if current_stage is None:
+                    raise OpportunityFitReviewNotFound()
+                root_after = session.get(OpportunityFitReviewSession, current_stage.review_id)
+                if root_after is None:
+                    raise OpportunityFitReviewNotFound()
+                return root_after, current_stage, False, _confirmation_token_for_stage(
+                    current_stage, confirmation_secret
+                )
             session.commit()
             root_after = session.get(OpportunityFitReviewSession, stage.review_id)
             if root_after is None:
@@ -443,7 +512,7 @@ class OpportunityFitReviewsRepository:
                 if not _v2_lease_expired(existing):
                     return existing, False
                 provider_token = secrets.token_urlsafe(24)
-                lease = datetime.now(timezone.utc) + timedelta(minutes=2)
+                lease = datetime.now(timezone.utc) + timedelta(seconds=self._lease_seconds)
                 existing.stage_generation += 1
                 existing.status = "generating"
                 existing.provider_call_token = provider_token
@@ -451,7 +520,7 @@ class OpportunityFitReviewsRepository:
                 stage = existing
             else:
                 provider_token = secrets.token_urlsafe(24)
-                lease = datetime.now(timezone.utc) + timedelta(minutes=2)
+                lease = datetime.now(timezone.utc) + timedelta(seconds=self._lease_seconds)
                 stage = OpportunityFitReviewStage(
                     review_id=review_id,
                     application_id=application_id,
@@ -488,15 +557,29 @@ class OpportunityFitReviewsRepository:
             session.refresh(stage)
 
         try:
-            deep = generate_deep_review_v2(model, snapshot, json.loads(parent.proposal_json))
+            with LeaseHeartbeat(
+                self._session_factory,
+                stage_id=stage.id,
+                stage_generation=stage.stage_generation,
+                provider_call_token=provider_token,
+                lease_seconds=self._lease_seconds,
+                interval_seconds=self._heartbeat_interval_seconds,
+            ):
+                deep = generate_deep_review_v2(model, snapshot, json.loads(parent.proposal_json))
         except OpportunityFitModelError as exc:
             if exc.failure_category == "provider_error":
-                _mark_v2_provider_unknown(self._session_factory, stage.id, provider_token)
+                _mark_v2_provider_unknown(
+                    self._session_factory, stage.id, stage.stage_generation, provider_token
+                )
             else:
-                _delete_v2_unconfirmed_stage(self._session_factory, stage.id, provider_token)
+                _delete_v2_unconfirmed_stage(
+                    self._session_factory, stage.id, stage.stage_generation, provider_token
+                )
             raise
         except Exception:
-            _mark_v2_provider_unknown(self._session_factory, stage.id, provider_token)
+            _mark_v2_provider_unknown(
+                self._session_factory, stage.id, stage.stage_generation, provider_token
+            )
             raise
         proposal_json = canonical_json(deep.payload)
         with self._session_factory() as session:
@@ -512,17 +595,44 @@ class OpportunityFitReviewsRepository:
                 .order_by(ApplicationJDVersion.version_number.desc())
                 .limit(1)
             )
+            lease_now = datetime.now(timezone.utc)
             if current_version_id != current_stage.jd_version_id:
-                current_stage.status = "source_conflict"
-                current_stage.provider_call_token = ""
-                current_stage.lease_expires_at = None
+                result = session.execute(
+                    update(OpportunityFitReviewStage)
+                    .where(*_v2_live_owner_conditions(current_stage, provider_token, lease_now))
+                    .values(
+                        status="source_conflict",
+                        provider_call_token="",
+                        lease_expires_at=None,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+                if getattr(result, "rowcount", 0) != 1:
+                    session.rollback()
+                    current_stage = session.get(OpportunityFitReviewStage, current_stage.id)
+                    if current_stage is None:
+                        raise OpportunityFitReviewNotFound()
+                    return current_stage, False
                 session.commit()
                 raise OpportunityFitReviewSourceConflictError("opportunity fit source changed")
-            current_stage.status = "ready"
-            current_stage.proposal_json = proposal_json
-            current_stage.proposal_sha256 = sha256_text(proposal_json)
-            current_stage.provider_call_token = ""
-            current_stage.lease_expires_at = None
+            result = session.execute(
+                update(OpportunityFitReviewStage)
+                .where(*_v2_live_owner_conditions(current_stage, provider_token, lease_now))
+                .values(
+                    status="ready",
+                    proposal_json=proposal_json,
+                    proposal_sha256=sha256_text(proposal_json),
+                    provider_call_token="",
+                    lease_expires_at=None,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if getattr(result, "rowcount", 0) != 1:
+                session.rollback()
+                current_stage = session.get(OpportunityFitReviewStage, current_stage.id)
+                if current_stage is None:
+                    raise OpportunityFitReviewNotFound()
+                return current_stage, False
             session.commit()
             session.refresh(current_stage)
             return current_stage, True
@@ -738,6 +848,19 @@ def _find_v2_stage_by_application_key(
     )
 
 
+def _v2_live_owner_conditions(
+    stage: OpportunityFitReviewStage, provider_token: str, now: datetime
+) -> tuple[Any, ...]:
+    return (
+        OpportunityFitReviewStage.id == stage.id,
+        OpportunityFitReviewStage.stage_generation == stage.stage_generation,
+        OpportunityFitReviewStage.provider_call_token == provider_token,
+        OpportunityFitReviewStage.status == "generating",
+        OpportunityFitReviewStage.lease_expires_at.is_not(None),
+        OpportunityFitReviewStage.lease_expires_at > now,
+    )
+
+
 def _v2_lease_expired(stage: OpportunityFitReviewStage) -> bool:
     if stage.status not in {"generating", "provider_unknown"}:
         return False
@@ -753,27 +876,50 @@ def _v2_confirmation_expired(stage: OpportunityFitReviewStage) -> bool:
 
 
 def _mark_v2_provider_unknown(
-    session_factory: sessionmaker[Session], stage_id: int, provider_token: str
+    session_factory: sessionmaker[Session],
+    stage_id: int,
+    stage_generation: int,
+    provider_token: str,
 ) -> None:
     with session_factory() as session:
         session.execute(text("BEGIN IMMEDIATE"))
         stage = session.get(OpportunityFitReviewStage, stage_id)
-        if stage is not None and stage.status == "generating" and stage.provider_call_token == provider_token:
-            stage.status = "provider_unknown"
+        if stage is None:
+            return
+        now = datetime.now(timezone.utc)
+        result = session.execute(
+            update(OpportunityFitReviewStage)
+            .where(*_v2_live_owner_conditions(stage, provider_token, now))
+            .where(OpportunityFitReviewStage.stage_generation == stage_generation)
+            .values(status="provider_unknown")
+            .execution_options(synchronize_session=False)
+        )
+        if getattr(result, "rowcount", 0) == 1:
             session.commit()
 
 
 def _delete_v2_unconfirmed_stage(
-    session_factory: sessionmaker[Session], stage_id: int, provider_token: str
+    session_factory: sessionmaker[Session],
+    stage_id: int,
+    stage_generation: int,
+    provider_token: str,
 ) -> None:
     with session_factory() as session:
         session.execute(text("BEGIN IMMEDIATE"))
         stage = session.get(OpportunityFitReviewStage, stage_id)
-        if stage is None or stage.status != "generating" or stage.provider_call_token != provider_token:
+        if stage is None:
+            return
+        now = datetime.now(timezone.utc)
+        result = session.execute(
+            delete(OpportunityFitReviewStage)
+            .where(*_v2_live_owner_conditions(stage, provider_token, now))
+            .where(OpportunityFitReviewStage.stage_generation == stage_generation)
+            .execution_options(synchronize_session=False)
+        )
+        if getattr(result, "rowcount", 0) != 1:
+            session.rollback()
             return
         review_id = stage.review_id
-        session.delete(stage)
-        session.flush()
         remaining = session.scalar(
             select(OpportunityFitReviewStage.id)
             .where(OpportunityFitReviewStage.review_id == review_id)

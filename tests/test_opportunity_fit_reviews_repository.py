@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event, Lock
+import time
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -173,6 +174,91 @@ class FailOnceV2ReviewModel(V2ReviewModel):
         if self.calls == 1:
             raise TimeoutError("provider timeout")
         return Assistant(content=json.dumps(_v2_triage(), ensure_ascii=False))
+
+
+class BlockingV2ReviewModel(V2ReviewModel):
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = Event()
+        self.release = Event()
+
+    def complete(self, messages, tools):  # type: ignore[no-untyped-def]
+        self.calls += 1
+        self.entered.set()
+        if not self.release.wait(timeout=10):
+            raise TimeoutError("test provider was not released")
+        return Assistant(content=json.dumps(_v2_triage(), ensure_ascii=False))
+
+
+class BlockingDeepV2ReviewModel(V2ReviewModel):
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = Event()
+        self.release = Event()
+
+    def complete(self, messages, tools):  # type: ignore[no-untyped-def]
+        self.calls += 1
+        self.entered.set()
+        if not self.release.wait(timeout=10):
+            raise TimeoutError("test provider was not released")
+        return Assistant(content=json.dumps(_v2_deep(), ensure_ascii=False))
+
+
+class BlockingErrorV2ReviewModel(V2ReviewModel):
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = Event()
+        self.release = Event()
+
+    def complete(self, messages, tools):  # type: ignore[no-untyped-def]
+        self.calls += 1
+        self.entered.set()
+        if not self.release.wait(timeout=10):
+            raise TimeoutError("test provider was not released")
+        raise TimeoutError("test provider failed")
+
+
+class BlockingInvalidV2ReviewModel(V2ReviewModel):
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = Event()
+        self.release = Event()
+
+    def complete(self, messages, tools):  # type: ignore[no-untyped-def]
+        self.calls += 1
+        self.entered.set()
+        if not self.release.wait(timeout=10):
+            raise TimeoutError("test provider was not released")
+        return Assistant(content=json.dumps({"schema_version": 2}, ensure_ascii=False))
+
+
+class DistinctBlockingV2ReviewModel(V2ReviewModel):
+    def __init__(self) -> None:
+        super().__init__()
+        self.first_entered = Event()
+        self.second_entered = Event()
+        self.release = Event()
+
+    def complete(self, messages, tools):  # type: ignore[no-untyped-def]
+        self.calls += 1
+        if self.calls == 1:
+            self.first_entered.set()
+        elif self.calls == 2:
+            self.second_entered.set()
+        if not self.release.wait(timeout=10):
+            raise TimeoutError("test provider was not released")
+        payload = _v2_triage()
+        payload["next_steps"] = [
+            {
+                "id": f"call-{self.calls}",
+                "text": "Keep the API example ready for review.",
+                "rationale": "The frozen resume contains an API example.",
+                "evidence_refs": [
+                    {"source": "resume", "path": "/raw_text", "excerpt": "Built APIs"}
+                ],
+            }
+        ]
+        return Assistant(content=json.dumps(payload, ensure_ascii=False))
 
 
 def _ready(tmp_path):
@@ -433,6 +519,439 @@ def test_v2_expired_provider_lease_is_taken_over_before_the_next_provider_call(t
     assert stage.proposal_sha256
     assert model.calls == 2
     assert old_token
+
+
+def test_v2_live_lease_heartbeat_keeps_same_key_replay_pending(tmp_path) -> None:
+    factory, application, resume = _ready(tmp_path)
+    repository = OpportunityFitReviewsRepository(
+        factory,
+        confirmation_secret="test-secret",
+        lease_seconds=0.8,
+        heartbeat_interval_seconds=0.1,
+    )
+    model = BlockingV2ReviewModel()
+    key = "heartbeat-live-key-00000000000000000000000000000001"
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        first_future = pool.submit(
+            repository.create_triage_v2,
+            application.id,
+            resume.id,
+            "Kubernetes preferred",
+            "copy",
+            [],
+            key,
+            model,
+        )
+        assert model.entered.wait(timeout=5)
+        time.sleep(1.2)
+
+        replay = repository.create_triage_v2(
+            application.id,
+            resume.id,
+            "Kubernetes preferred",
+            "copy",
+            [],
+            key,
+            model,
+        )
+        assert replay[1].status == "generating"
+        assert replay[2] is False
+        assert model.calls == 1
+        with factory() as session:
+            persisted = session.scalar(select(OpportunityFitReviewStage))
+            assert persisted is not None
+            assert persisted.stage_generation == 1
+            assert persisted.provider_call_token
+            assert persisted.lease_expires_at is not None
+
+        model.release.set()
+        first = first_future.result(timeout=10)
+
+    assert first[1].status == "ready"
+    assert model.calls == 1
+
+
+def test_v2_deep_review_uses_live_lease_heartbeat(tmp_path) -> None:
+    factory, application, resume = _ready(tmp_path)
+    jd_version_id = _add_jd_version(factory, application.id)
+    repository = OpportunityFitReviewsRepository(
+        factory,
+        confirmation_secret="test-secret",
+        lease_seconds=0.8,
+        heartbeat_interval_seconds=0.1,
+    )
+    triage_model = V2ReviewModel()
+    root, triage, _created, token = repository.create_triage_v2(
+        application.id,
+        resume.id,
+        "Kubernetes preferred",
+        "copy",
+        [],
+        "deep-heartbeat-triage-key-00000000000000000001",
+        triage_model,
+        jd_version_id=jd_version_id,
+    )
+    repository.confirm_triage_v2(application.id, root.id, triage.id, token)
+    model = BlockingDeepV2ReviewModel()
+    key = "deep-heartbeat-key-00000000000000000000000000000001"
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        first_future = pool.submit(
+            repository.create_deep_review_v2,
+            application.id,
+            root.id,
+            triage.id,
+            resume.id,
+            "Kubernetes preferred",
+            "copy",
+            [],
+            key,
+            model,
+        )
+        assert model.entered.wait(timeout=5)
+        time.sleep(1.2)
+
+        replay = repository.create_deep_review_v2(
+            application.id,
+            root.id,
+            triage.id,
+            resume.id,
+            "Kubernetes preferred",
+            "copy",
+            [],
+            key,
+            model,
+        )
+        assert replay[0].status == "generating"
+        assert replay[1] is False
+        assert model.calls == 1
+
+        model.release.set()
+        first = first_future.result(timeout=10)
+
+    assert first[0].status == "ready"
+    assert model.calls == 1
+
+
+def test_v2_expired_triage_owner_cannot_finalize_ready(tmp_path, monkeypatch) -> None:
+    factory, application, resume = _ready(tmp_path)
+    repository = OpportunityFitReviewsRepository(
+        factory,
+        confirmation_secret="test-secret",
+        lease_seconds=0.8,
+        heartbeat_interval_seconds=0.1,
+    )
+    model = BlockingV2ReviewModel()
+    key = "heartbeat-expired-finalize-key-00000000000000001"
+
+    class StoppedHeartbeat:
+        def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, _exc_type, _exc_value, _traceback) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "offerpilot.repositories.opportunity_fit_reviews.LeaseHeartbeat",
+        StoppedHeartbeat,
+    )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            repository.create_triage_v2,
+            application.id,
+            resume.id,
+            "Kubernetes preferred",
+            "copy",
+            [],
+            key,
+            model,
+        )
+        assert model.entered.wait(timeout=5)
+        time.sleep(1.2)
+        model.release.set()
+        result = future.result(timeout=10)
+
+    assert result[1].status == "generating"
+    with factory() as session:
+        stage = session.scalar(select(OpportunityFitReviewStage))
+        assert stage is not None
+        assert stage.status == "generating"
+        assert stage.provider_call_token
+        assert stage.lease_expires_at is not None
+
+
+def test_v2_expired_deep_owner_cannot_finalize_ready(tmp_path, monkeypatch) -> None:
+    factory, application, resume = _ready(tmp_path)
+    jd_version_id = _add_jd_version(factory, application.id)
+    repository = OpportunityFitReviewsRepository(
+        factory,
+        confirmation_secret="test-secret",
+        lease_seconds=0.8,
+        heartbeat_interval_seconds=0.1,
+    )
+    triage_model = V2ReviewModel()
+    root, triage, _created, token = repository.create_triage_v2(
+        application.id,
+        resume.id,
+        "Kubernetes preferred",
+        "copy",
+        [],
+        "deep-expired-parent-key-000000000000000001",
+        triage_model,
+        jd_version_id=jd_version_id,
+    )
+    repository.confirm_triage_v2(application.id, root.id, triage.id, token)
+    model = BlockingDeepV2ReviewModel()
+
+    class StoppedHeartbeat:
+        def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, _exc_type, _exc_value, _traceback) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "offerpilot.repositories.opportunity_fit_reviews.LeaseHeartbeat",
+        StoppedHeartbeat,
+    )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            repository.create_deep_review_v2,
+            application.id,
+            root.id,
+            triage.id,
+            resume.id,
+            "Kubernetes preferred",
+            "copy",
+            [],
+            "deep-expired-finalize-key-00000000000000001",
+            model,
+        )
+        assert model.entered.wait(timeout=5)
+        time.sleep(1.2)
+        model.release.set()
+        result = future.result(timeout=10)
+
+    assert result[0].status == "generating"
+    with factory() as session:
+        stage = session.scalar(
+            select(OpportunityFitReviewStage).where(
+                OpportunityFitReviewStage.stage == "deep_review"
+            )
+        )
+        assert stage is not None
+        assert stage.status == "generating"
+        assert stage.provider_call_token
+
+
+def test_v2_expired_provider_error_does_not_mark_stale_stage_unknown(tmp_path, monkeypatch) -> None:
+    factory, application, resume = _ready(tmp_path)
+    repository = OpportunityFitReviewsRepository(
+        factory,
+        confirmation_secret="test-secret",
+        lease_seconds=0.8,
+        heartbeat_interval_seconds=0.1,
+    )
+    model = BlockingErrorV2ReviewModel()
+    key = "heartbeat-expired-error-key-00000000000000001"
+
+    class StoppedHeartbeat:
+        def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, _exc_type, _exc_value, _traceback) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "offerpilot.repositories.opportunity_fit_reviews.LeaseHeartbeat",
+        StoppedHeartbeat,
+    )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            repository.create_triage_v2,
+            application.id,
+            resume.id,
+            "Kubernetes preferred",
+            "copy",
+            [],
+            key,
+            model,
+        )
+        assert model.entered.wait(timeout=5)
+        time.sleep(1.2)
+        model.release.set()
+        with pytest.raises(OpportunityFitModelError, match="model provider request failed"):
+            future.result(timeout=10)
+
+    with factory() as session:
+        stage = session.scalar(select(OpportunityFitReviewStage))
+        assert stage is not None
+        assert stage.status == "generating"
+        assert stage.provider_call_token
+
+
+def test_v2_expired_contract_error_does_not_delete_stale_stage(tmp_path, monkeypatch) -> None:
+    factory, application, resume = _ready(tmp_path)
+    repository = OpportunityFitReviewsRepository(
+        factory,
+        confirmation_secret="test-secret",
+        lease_seconds=0.8,
+        heartbeat_interval_seconds=0.1,
+    )
+    model = BlockingInvalidV2ReviewModel()
+    key = "heartbeat-expired-contract-key-0000000000000001"
+
+    class StoppedHeartbeat:
+        def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, _exc_type, _exc_value, _traceback) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "offerpilot.repositories.opportunity_fit_reviews.LeaseHeartbeat",
+        StoppedHeartbeat,
+    )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            repository.create_triage_v2,
+            application.id,
+            resume.id,
+            "Kubernetes preferred",
+            "copy",
+            [],
+            key,
+            model,
+        )
+        assert model.entered.wait(timeout=5)
+        time.sleep(1.2)
+        model.release.set()
+        with pytest.raises(OpportunityFitModelError):
+            future.result(timeout=10)
+
+    with factory() as session:
+        stage = session.scalar(select(OpportunityFitReviewStage))
+        assert stage is not None
+        assert stage.status == "generating"
+        assert stage.provider_call_token
+
+
+def test_v2_provider_error_stops_heartbeat_and_allows_takeover_after_lease(tmp_path) -> None:
+    factory, application, resume = _ready(tmp_path)
+    repository = OpportunityFitReviewsRepository(
+        factory,
+        confirmation_secret="test-secret",
+        lease_seconds=0.8,
+        heartbeat_interval_seconds=0.1,
+    )
+    model = FailOnceV2ReviewModel()
+    key = "heartbeat-error-key-00000000000000000000000000000001"
+
+    with pytest.raises(OpportunityFitModelError):
+        repository.create_triage_v2(
+            application.id,
+            resume.id,
+            "Kubernetes preferred",
+            "copy",
+            [],
+            key,
+            model,
+        )
+
+    time.sleep(1.2)
+    replay = repository.create_triage_v2(
+        application.id,
+        resume.id,
+        "Kubernetes preferred",
+        "copy",
+        [],
+        key,
+        model,
+    )
+
+    assert replay[1].status == "ready"
+    assert model.calls == 2
+
+
+def test_v2_stopped_heartbeat_allows_takeover_but_fences_late_result(tmp_path, monkeypatch) -> None:
+    factory, application, resume = _ready(tmp_path)
+    repository = OpportunityFitReviewsRepository(
+        factory,
+        confirmation_secret="test-secret",
+        lease_seconds=0.8,
+        heartbeat_interval_seconds=0.1,
+    )
+    model = DistinctBlockingV2ReviewModel()
+    key = "heartbeat-takeover-key-00000000000000000000000000001"
+
+    class StoppedHeartbeat:
+        def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, _exc_type, _exc_value, _traceback) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "offerpilot.repositories.opportunity_fit_reviews.LeaseHeartbeat",
+        StoppedHeartbeat,
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first_future = pool.submit(
+            repository.create_triage_v2,
+            application.id,
+            resume.id,
+            "Kubernetes preferred",
+            "copy",
+            [],
+            key,
+            model,
+        )
+        assert model.first_entered.wait(timeout=5)
+        time.sleep(1.2)
+        second_future = pool.submit(
+            repository.create_triage_v2,
+            application.id,
+            resume.id,
+            "Kubernetes preferred",
+            "copy",
+            [],
+            key,
+            model,
+        )
+        assert model.second_entered.wait(timeout=5)
+        model.release.set()
+        first_future.result(timeout=10)
+        second = second_future.result(timeout=10)
+
+    assert model.calls == 2
+    assert second[1].status == "ready"
+    with factory() as session:
+        stage = session.scalar(select(OpportunityFitReviewStage))
+        assert stage is not None
+        assert stage.stage_generation == 2
+        assert '"call-2"' in stage.proposal_json
+        assert '"call-1"' not in stage.proposal_json
 
 
 def test_v2_expired_lease_two_connections_only_one_owner_calls_provider(tmp_path) -> None:
