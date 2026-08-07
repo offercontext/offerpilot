@@ -10,6 +10,8 @@ $sourceData = if ($env:OFFERPILOT_DATA) { $env:OFFERPILOT_DATA } else { Join-Pat
 $tempData = Join-Path ([IO.Path]::GetTempPath()) ('offerpilot-application-jd-' + [Guid]::NewGuid().ToString('N'))
 $httpAudit = Join-Path $tempData 'http-audit.jsonl'
 $providerAudit = Join-Path $tempData 'provider-audit.jsonl'
+$providerRequestAudit = Join-Path $tempData 'provider-request-audit.jsonl'
+$operationAudit = Join-Path $tempData 'full-verify-operation-audit.jsonl'
 $browserAudit = Join-Path $tempData 'browser-network.jsonl'
 $browserDiagnostic = Join-Path $tempData 'browser-diagnostic.json'
 $browserStdout = Join-Path $tempData 'browser-auditor.stdout.log'
@@ -30,8 +32,22 @@ $resumeId = $null
 $eventId = $null
 $jdVersionId = $null
 $beforeCleanup = $null
+$stageDiagnosticRoot = if ($env:OFFERPILOT_APPLICATION_JD_DIAGNOSTIC_DIR) {
+  $env:OFFERPILOT_APPLICATION_JD_DIAGNOSTIC_DIR
+} else {
+  Join-Path ([IO.Path]::GetTempPath()) 'offerpilot-application-jd-stage-diagnostics'
+}
+$stageDiagnosticReport = Join-Path $stageDiagnosticRoot (
+  'stage-all-' + (Get-Date -Format 'yyyyMMdd-HHmmssfff') + '-' + [Guid]::NewGuid().ToString('N') + '.jsonl'
+)
+$providerAuditOffset = 0
+$operationAuditOffset = 0
 $previousData = $env:OFFERPILOT_DATA
 $previousHttpAudit = $env:OFFERPILOT_HTTP_AUDIT_FILE
+$previousProviderRequestAudit = $env:OFFERPILOT_PROVIDER_REQUEST_AUDIT_FILE
+$previousOperationAudit = $env:OFFERPILOT_FULL_VERIFY_OPERATION_AUDIT_FILE
+$previousFullVerifyOperation = $env:OFFERPILOT_FULL_VERIFY_OPERATION
+$previousFullVerifyStage = $env:OFFERPILOT_FULL_VERIFY_ACTIVE_STAGE
 $previousHttpsProxy = $env:HTTPS_PROXY
 $previousHttpProxy = $env:HTTP_PROXY
 $previousNoProxy = $env:NO_PROXY
@@ -326,6 +342,33 @@ function Get-BrowserRecords {
   return @(Get-Content -LiteralPath $browserAudit | ForEach-Object { $_ | ConvertFrom-Json })
 }
 
+function Save-StageDiagnostic([string]$stageName) {
+  if (-not $applicationId) { throw 'Cannot write a stage diagnostic before Application setup.' }
+  New-Item -ItemType Directory -Force -Path $stageDiagnosticRoot | Out-Null
+  $args = @(
+    '--stage', $stageName,
+    '--db', (Join-Path $tempData 'data.db'),
+    '--application-id', ([string]$applicationId),
+    '--provider-audit', $providerRequestAudit,
+    '--operation-audit', $operationAudit,
+    '--provider-start-index', ([string]$script:providerAuditOffset),
+    '--operation-start-index', ([string]$script:operationAuditOffset),
+    '--output', $stageDiagnosticReport
+  )
+  if ($null -ne $jdVersionId) {
+    $args += @('--jd-version-id', ([string]$jdVersionId))
+  }
+  $json = & uv run python (Join-Path $repo 'scripts\application_jd_stage_diagnostic.py') @args
+  Assert-ExitCode "stage diagnostic $stageName"
+  $record = ($json -join '').Trim() | ConvertFrom-Json
+  if ($null -eq $record.audit_offsets) {
+    throw "stage diagnostic $stageName did not return audit offsets."
+  }
+  $script:providerAuditOffset = [int]$record.audit_offsets.provider_end_index
+  $script:operationAuditOffset = [int]$record.audit_offsets.operation_end_index
+  Write-Host "STAGE_DIAGNOSTIC=$stageDiagnosticReport"
+}
+
 function Assert-LocalBrowser($records) {
   $origin = [Uri]$baseUrl
   foreach ($record in @($records | Where-Object kind -eq 'browser_request')) {
@@ -435,6 +478,10 @@ try {
   $baseUrl = "http://127.0.0.1:$port"
   $env:OFFERPILOT_DATA = $tempData
   $env:OFFERPILOT_HTTP_AUDIT_FILE = $httpAudit
+  $env:OFFERPILOT_PROVIDER_REQUEST_AUDIT_FILE = $providerRequestAudit
+  $env:OFFERPILOT_FULL_VERIFY_OPERATION_AUDIT_FILE = $operationAudit
+  $env:OFFERPILOT_FULL_VERIFY_OPERATION = 'application_jd_browser'
+  $env:OFFERPILOT_FULL_VERIFY_ACTIVE_STAGE = 'application_jd_browser'
   $env:HTTPS_PROXY = "http://127.0.0.1:$proxyPort"
   $env:HTTP_PROXY = "http://127.0.0.1:$proxyPort"
   $env:NO_PROXY = '127.0.0.1,localhost'
@@ -479,6 +526,7 @@ try {
   Assert-LocalBrowser $records
   Assert-StageA $records
   Assert-ProviderEgress $providers
+  Save-StageDiagnostic 'jd_pilot'
   $afterA = Get-DbSnapshot
   Assert-StageUnchanged $beforeA $afterA @('application_jd_versions', 'conversations', 'chat_messages')
   $env:APPLICATION_JD_HARNESS_DB = Join-Path $tempData 'data.db'
@@ -507,6 +555,11 @@ print(db.execute(
       $records = Get-BrowserRecords
       Assert-LocalBrowser $records
       Assert-ConsumerRequest $records $consumer
+      switch ($consumer) {
+        'triage' { Save-StageDiagnostic 'triage' }
+        'material-kit' { Save-StageDiagnostic 'material_kit' }
+        'interview-preparation' { Save-StageDiagnostic 'interview_preparation' }
+      }
       $consumerAfter = Get-DbSnapshot
       $allowed = switch ($consumer) {
         'triage' { @('opportunity_fit_review_sessions', 'opportunity_fit_review_stages') }
@@ -563,6 +616,10 @@ print(db.execute(
   try {
     if ($previousData) { $env:OFFERPILOT_DATA = $previousData } else { Remove-Item Env:OFFERPILOT_DATA -ErrorAction SilentlyContinue }
     if ($previousHttpAudit) { $env:OFFERPILOT_HTTP_AUDIT_FILE = $previousHttpAudit } else { Remove-Item Env:OFFERPILOT_HTTP_AUDIT_FILE -ErrorAction SilentlyContinue }
+    if ($previousProviderRequestAudit) { $env:OFFERPILOT_PROVIDER_REQUEST_AUDIT_FILE = $previousProviderRequestAudit } else { Remove-Item Env:OFFERPILOT_PROVIDER_REQUEST_AUDIT_FILE -ErrorAction SilentlyContinue }
+    if ($previousOperationAudit) { $env:OFFERPILOT_FULL_VERIFY_OPERATION_AUDIT_FILE = $previousOperationAudit } else { Remove-Item Env:OFFERPILOT_FULL_VERIFY_OPERATION_AUDIT_FILE -ErrorAction SilentlyContinue }
+    if ($previousFullVerifyOperation) { $env:OFFERPILOT_FULL_VERIFY_OPERATION = $previousFullVerifyOperation } else { Remove-Item Env:OFFERPILOT_FULL_VERIFY_OPERATION -ErrorAction SilentlyContinue }
+    if ($previousFullVerifyStage) { $env:OFFERPILOT_FULL_VERIFY_ACTIVE_STAGE = $previousFullVerifyStage } else { Remove-Item Env:OFFERPILOT_FULL_VERIFY_ACTIVE_STAGE -ErrorAction SilentlyContinue }
     if ($previousHttpsProxy) { $env:HTTPS_PROXY = $previousHttpsProxy } else { Remove-Item Env:HTTPS_PROXY -ErrorAction SilentlyContinue }
     if ($previousHttpProxy) { $env:HTTP_PROXY = $previousHttpProxy } else { Remove-Item Env:HTTP_PROXY -ErrorAction SilentlyContinue }
     if ($previousNoProxy) { $env:NO_PROXY = $previousNoProxy } else { Remove-Item Env:NO_PROXY -ErrorAction SilentlyContinue }

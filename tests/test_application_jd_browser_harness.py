@@ -132,6 +132,26 @@ def test_application_jd_harness_detects_new_database_snapshot_tables() -> None:
     assert "Sort-Object -Unique" in script
 
 
+def test_application_jd_harness_persists_redacted_stage_input_diagnostics() -> None:
+    script = HARNESS.read_text(encoding="utf-8")
+    assert "OFFERPILOT_PROVIDER_REQUEST_AUDIT_FILE" in script
+    assert "OFFERPILOT_FULL_VERIFY_OPERATION_AUDIT_FILE" in script
+    assert "application_jd_stage_diagnostic.py" in script
+    assert "--provider-start-index" in script
+    assert "--operation-start-index" in script
+    assert "audit_offsets" in script
+    assert "Save-StageDiagnostic 'triage'" in script
+    assert "Save-StageDiagnostic 'material_kit'" in script
+    assert "Save-StageDiagnostic 'interview_preparation'" in script
+
+
+def test_application_jd_harness_diagnostic_report_is_outside_cleaned_fixture() -> None:
+    script = HARNESS.read_text(encoding="utf-8")
+    assert "application-jd-stage-diagnostics" in script
+    assert "stageDiagnosticReport" in script
+    assert "Remove-Item -LiteralPath $stageDiagnosticReport" not in script
+
+
 def test_application_jd_implementation_scope_is_machine_checked() -> None:
     baseline_file = os.environ.get("OFFERPILOT_APPLICATION_JD_BASELINE_FILE")
     if not baseline_file:
