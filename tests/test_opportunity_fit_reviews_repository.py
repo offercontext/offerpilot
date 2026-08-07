@@ -335,7 +335,7 @@ def test_v2_confirmation_token_is_single_use_and_deep_requires_confirmation(tmp_
         resume.id,
         "Kubernetes preferred",
         "copy",
-        [],
+        ["I can work in Shanghai."],
         key,
         model,
         jd_version_id=jd_version_id,
@@ -372,6 +372,7 @@ def test_v2_confirmation_token_is_single_use_and_deep_requires_confirmation(tmp_
     )
     assert deep_created is True
     assert deep.stage == "deep_review"
+    assert model.calls == 2
 
 
 def test_v2_deep_rejects_confirmed_parent_without_jd_version(tmp_path) -> None:

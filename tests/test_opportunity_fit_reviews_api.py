@@ -283,14 +283,15 @@ def test_api_does_not_retry_provider_failure(tmp_path) -> None:
 
 
 def test_api_v2_requires_confirmation_before_deep_and_preserves_v1_contract(tmp_path) -> None:
-    client, application, resume = _ready(tmp_path, V2ReviewModel())
+    model = V2ReviewModel()
+    client, application, resume = _ready(tmp_path, model)
     path = f"/api/applications/{application['id']}/opportunity-fit-reviews"
     payload = {
         "schema_version": 2,
         "resume_id": resume["id"],
         "jd_version_id": application["jd_version_id"],
         "jd_source_label": "copy",
-        "candidate_assertions": [],
+        "candidate_assertions": ["I can work in Shanghai."],
         "idempotency_key": "c6e6f3a0-75c7-477c-a560-8fdc67ec6bf6",
     }
     created = client.post(path, json=payload)
@@ -324,6 +325,7 @@ def test_api_v2_requires_confirmation_before_deep_and_preserves_v1_contract(tmp_
     deep = client.post(f"{path}/{body['review_id']}/deep-review", json=deep_payload)
     assert deep.status_code == 201
     assert deep.json()["stage"] == "deep_review"
+    assert model.calls == 2
 
 
 def test_opportunity_fit_deep_review_v1_post_is_disabled_without_provider_call(tmp_path) -> None:

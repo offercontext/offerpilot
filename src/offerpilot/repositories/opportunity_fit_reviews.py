@@ -424,13 +424,18 @@ class OpportunityFitReviewsRepository:
             )
             if current_version_id != parent.jd_version_id:
                 raise OpportunityFitReviewSourceConflictError("opportunity fit source changed")
-            snapshot = _build_snapshot(
-                session, application, resume_id, jd_text, jd_source_label, candidate_assertions
-            )
-            snapshot_json = canonical_json(snapshot)
-            fingerprint = sha256_text(snapshot_json)
-            if fingerprint != parent.source_fingerprint_sha256:
-                raise OpportunityFitReviewConflictError("opportunity fit source changed")
+            try:
+                snapshot = json.loads(parent.source_snapshot_json)
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise OpportunityFitReviewConflictError(
+                    "opportunity fit source snapshot is invalid"
+                ) from exc
+            if not isinstance(snapshot, dict):
+                raise OpportunityFitReviewConflictError("opportunity fit source snapshot is invalid")
+            snapshot_json = parent.source_snapshot_json
+            fingerprint = parent.source_fingerprint_sha256
+            if sha256_text(snapshot_json) != fingerprint:
+                raise OpportunityFitReviewConflictError("opportunity fit source snapshot is invalid")
             existing = _find_v2_stage(session, review_id, "deep_review", idempotency_key)
             if existing is not None:
                 if existing.source_fingerprint_sha256 != fingerprint:
@@ -450,7 +455,7 @@ class OpportunityFitReviewsRepository:
                 stage = OpportunityFitReviewStage(
                     review_id=review_id,
                     application_id=application_id,
-                    resume_id=resume_id,
+                    resume_id=parent.resume_id,
                     parent_triage_stage_id=parent_triage_stage_id,
                     stage="deep_review",
                     proposal_schema_version=2,

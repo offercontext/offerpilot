@@ -2197,13 +2197,6 @@ def create_app(
                 return error_response(409, "Triage parent is required", code="opportunity_fit_source_conflict")
             if parent_stage.jd_version_id is None:
                 return error_response(409, "Triage source version is unavailable", code="opportunity_fit_source_conflict")
-            parent_snapshot_raw = json.loads(parent_stage.source_snapshot_json)
-            parent_snapshot: dict[str, Any] = parent_snapshot_raw if isinstance(parent_snapshot_raw, dict) else {}
-            parent_jd_raw = parent_snapshot.get("jd")
-            parent_jd: dict[str, Any] = parent_jd_raw if isinstance(parent_jd_raw, dict) else {}
-            parsed_v2["jd_text"] = str(parent_jd.get("text") or "")
-            parsed_v2["jd_source_label"] = str(parent_jd.get("source_label") or "")
-            parsed_v2["candidate_assertions"] = parent_snapshot.get("candidate_assertions") or []
             if parent_stage.resume_id is None:
                 return error_response(409, "Triage 缺少已冻结简历", code="opportunity_fit_source_conflict")
             parsed_v2["resume_id"] = int(parent_stage.resume_id)
