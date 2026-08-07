@@ -877,6 +877,10 @@ def test_pilot_jd_write_is_confirmable_server_owned_and_idempotent(tmp_path):
     assert tool["write"] is True
     assert tool["always_confirm"] is True
     assert "source_kind" not in tool["schema"]["properties"]
+    idempotency_schema = tool["schema"]["properties"]["idempotency_key"]
+    assert idempotency_schema["minLength"] == 16
+    assert idempotency_schema["maxLength"] == 128
+    assert idempotency_schema["pattern"] == r"^[A-Za-z0-9_-]{16,128}$"
 
     arguments = json.dumps(
         {
@@ -900,3 +904,35 @@ def test_pilot_jd_write_is_confirmable_server_owned_and_idempotent(tmp_path):
         versions = list(session.scalars(select(ApplicationJDVersion)))
     assert len(versions) == 1
     assert versions[0].source_kind == "pilot"
+
+
+@pytest.mark.parametrize("invalid_key", ["too-short", "pilot key with spaces", "x" * 129])
+def test_pilot_jd_write_rejects_invalid_idempotency_key_before_write(tmp_path, invalid_key):
+    session_factory = init_database(tmp_path / "data.db")
+    applications = ApplicationsRepository(session_factory)
+    app = applications.create(ApplicationCreate(company_name="筱哲公司", position_name="后端工程师"))
+    registry = offerpilot_tool_registry(
+        applications,
+        ApplicationEventsRepository(session_factory),
+        NotesRepository(session_factory),
+        OffersRepository(session_factory),
+        application_jd_versions=ApplicationJDService(session_factory),
+    )
+    arguments = json.dumps(
+        {
+            "application_id": app.id,
+            "jd_text": "负责服务稳定性建设。",
+            "source_url": None,
+            "expected_current_version_id": None,
+            "idempotency_key": invalid_key,
+        },
+        ensure_ascii=False,
+    )
+
+    tool_error = registry["save_application_jd_version"]["validate"](arguments)
+    assert tool_error
+    assert "idempotency_key" in tool_error
+    with session_factory() as session:
+        from offerpilot.models import ApplicationJDVersion
+
+        assert list(session.scalars(select(ApplicationJDVersion))) == []

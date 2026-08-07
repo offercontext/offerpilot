@@ -14,6 +14,7 @@ from offerpilot.repositories.application_events import (
 )
 from offerpilot.repositories.jd import JDAnalysesRepository
 from offerpilot.repositories.application_jd_versions import (
+    IDEMPOTENCY_KEY_RE,
     ApplicationJDService,
     JDVersionError,
 )
@@ -188,8 +189,17 @@ def application_jd_version_tool_registry(
                     "application_id": {"type": "integer"},
                     "jd_text": {"type": "string"},
                     "source_url": {"type": ["string", "null"]},
-                    "expected_current_version_id": {"type": ["integer", "null"]},
-                    "idempotency_key": {"type": "string"},
+                    "expected_current_version_id": {
+                        "type": ["integer", "null"],
+                        "description": "The currently saved JD version id for this application, or null when none exists.",
+                    },
+                    "idempotency_key": {
+                        "type": "string",
+                        "minLength": 16,
+                        "maxLength": 128,
+                        "pattern": r"^[A-Za-z0-9_-]{16,128}$",
+                        "description": "A new unique idempotency key, 16-128 ASCII letters, digits, underscores, or hyphens.",
+                    },
                 },
                 "required": [
                     "application_id",
@@ -848,8 +858,8 @@ def _validate_save_application_jd(args: str) -> str:
         if expected is not None and (type(expected) is not int or expected <= 0):
             return "expected_current_version_id must be a positive integer or null"
         key = payload.get("idempotency_key")
-        if not isinstance(key, str) or not key.strip():
-            return "idempotency_key is required"
+        if not isinstance(key, str) or IDEMPOTENCY_KEY_RE.fullmatch(key) is None:
+            return "idempotency_key is invalid"
     except (KeyError, TypeError):
         return "invalid application JD payload"
     return ""

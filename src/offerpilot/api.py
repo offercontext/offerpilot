@@ -3600,7 +3600,12 @@ def create_app(
                 message,
                 resolved_data_dir,
             )
-        context_message = _chat_context_message(conversation, applications)
+        context_message = _chat_context_message(
+            conversation,
+            applications,
+            application_jd_versions,
+            jd_analyses,
+        )
         page_context_messages = _chat_page_context_messages(page_context)
         attachment_messages = _chat_attachment_messages(attachments, applications, offers, resumes)
         clarification_message = _chat_clarification_message(clarification, message)
@@ -3747,7 +3752,12 @@ def create_app(
                 message,
                 resolved_data_dir,
             )
-        context_message = _chat_context_message(conversation, applications)
+        context_message = _chat_context_message(
+            conversation,
+            applications,
+            application_jd_versions,
+            jd_analyses,
+        )
         page_context_messages = _chat_page_context_messages(page_context)
         attachment_messages = _chat_attachment_messages(attachments, applications, offers, resumes)
         clarification_message = _chat_clarification_message(clarification, message)
@@ -3948,7 +3958,12 @@ def create_app(
             )
         except ValueError as exc:
             return error_response(422, f"invalid confirmation edits: {exc}")
-        context_message = _chat_context_message(conversation, applications)
+        context_message = _chat_context_message(
+            conversation,
+            applications,
+            application_jd_versions,
+            jd_analyses,
+        )
         undo_seed = _undo_seed_for_pending(effective_pending, applications) if approved else {}
         (
             confirmed_outcome,
@@ -4235,7 +4250,12 @@ def create_app(
         except ValueError as exc:
             return error_response(422, f"invalid confirmation edits: {exc}")
 
-        context_message = _chat_context_message(conversation, applications)
+        context_message = _chat_context_message(
+            conversation,
+            applications,
+            application_jd_versions,
+            jd_analyses,
+        )
         undo_seed = _undo_seed_for_pending(effective_pending, applications) if approved else {}
         (
             confirmed_outcome,
@@ -5884,7 +5904,10 @@ def _confirmation_fallback_response(
 
 
 def _chat_context_message(
-    conversation: Any, applications: ApplicationsRepository
+    conversation: Any,
+    applications: ApplicationsRepository,
+    application_jd_versions: ApplicationJDService,
+    jd_analyses: JDAnalysesRepository,
 ) -> Message | None:
     if conversation.context_type != "application" or not conversation.context_ref:
         return None
@@ -5901,6 +5924,33 @@ def _chat_context_message(
         f"position={application.position_name}",
         f"status={application.status}",
     ]
+    current_jd = application_jd_versions.get_current(application.id)
+    if current_jd is None:
+        fields.extend(
+            [
+                "jd_version_id=none",
+                "jd_source_kind=none",
+                "jd_analysis_id=none",
+                "jd_analysis_link_status=no_current_version",
+            ]
+        )
+    else:
+        linked_analysis = next(
+            (
+                analysis
+                for analysis in jd_analyses.list(application.id)
+                if analysis.jd_version_id == current_jd.id
+            ),
+            None,
+        )
+        fields.extend(
+            [
+                f"jd_version_id={current_jd.id}",
+                f"jd_source_kind={current_jd.source_kind}",
+                f"jd_analysis_id={linked_analysis.id if linked_analysis is not None else 'none'}",
+                f"jd_analysis_link_status={'linked' if linked_analysis is not None else 'missing'}",
+            ]
+        )
     if application.notes:
         fields.append(f"notes={application.notes}")
     return Message(

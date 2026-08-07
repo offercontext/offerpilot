@@ -286,6 +286,236 @@ def test_chat_page_context_is_sanitized_and_ordered_after_durable_context(tmp_pa
     assert [message["role"] for message in stored] == ["user", "assistant"]
 
 
+def test_application_chat_context_exposes_current_jd_version_and_analysis_link_state(tmp_path):
+    app_client = TestClient(create_app(data_dir=tmp_path))
+    application = app_client.post(
+        "/api/applications",
+        json={"company_name": "筱哲公司", "position_name": "后端工程师", "status": "applied"},
+    ).json()
+    version = app_client.post(
+        f"/api/applications/{application['id']}/job-description/versions",
+        json={
+            "jd_text": "负责服务稳定性建设。",
+            "source_url": None,
+            "expected_current_version_id": None,
+            "idempotency_key": "context-jd-version-01",
+        },
+    ).json()
+    model = CapturingScriptedModel([Assistant(content="收到")])
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "message": "请查看当前岗位资料。",
+            "conversation_id": 0,
+            "context_type": "application",
+            "context_ref": str(application["id"]),
+        },
+    )
+
+    assert response.status_code == 200
+    context = next(message for message in model.calls[0] if message.role == "system" and "Current conversation context" in message.content)
+    assert f"jd_version_id={version['id']}" in context.content
+    assert "jd_source_kind=ui" in context.content
+    assert "jd_analysis_id=none" in context.content
+    assert "jd_analysis_link_status=missing" in context.content
+
+
+def test_application_chat_context_marks_current_jd_analysis_as_linked(tmp_path):
+    app_client = TestClient(create_app(data_dir=tmp_path))
+    application = app_client.post(
+        "/api/applications",
+        json={"company_name": "筱哲公司", "position_name": "后端工程师", "status": "applied"},
+    ).json()
+    version = app_client.post(
+        f"/api/applications/{application['id']}/job-description/versions",
+        json={
+            "jd_text": "负责服务稳定性建设。",
+            "source_url": None,
+            "expected_current_version_id": None,
+            "idempotency_key": "context-jd-linked-01",
+        },
+    ).json()
+    with session_factory_for_data_dir(tmp_path)() as session:
+        session.add(
+            JDAnalysis(
+                application_id=application["id"],
+                jd_source="application_jd",
+                jd_text="负责服务稳定性建设。",
+                result='{"summary":"稳定性"}',
+                jd_version_id=version["id"],
+            )
+        )
+        session.commit()
+
+    model = CapturingScriptedModel([Assistant(content="收到")])
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    response = client.post(
+        "/api/chat",
+        json={
+            "message": "请查看当前岗位资料。",
+            "conversation_id": 0,
+            "context_type": "application",
+            "context_ref": str(application["id"]),
+        },
+    )
+
+    assert response.status_code == 200
+    context = next(message for message in model.calls[0] if message.role == "system" and "Current conversation context" in message.content)
+    assert f"jd_version_id={version['id']}" in context.content
+    assert "jd_source_kind=ui" in context.content
+    assert "jd_analysis_id=1" in context.content
+    assert "jd_analysis_link_status=linked" in context.content
+
+
+def test_application_chat_context_ignores_analysis_linked_to_old_jd_version(tmp_path):
+    app_client = TestClient(create_app(data_dir=tmp_path))
+    application = app_client.post(
+        "/api/applications",
+        json={"company_name": "筱哲公司", "position_name": "后端工程师", "status": "applied"},
+    ).json()
+    old_version = app_client.post(
+        f"/api/applications/{application['id']}/job-description/versions",
+        json={
+            "jd_text": "旧岗位要求。",
+            "source_url": None,
+            "expected_current_version_id": None,
+            "idempotency_key": "context-jd-old-01",
+        },
+    ).json()
+    current_version = app_client.post(
+        f"/api/applications/{application['id']}/job-description/versions",
+        json={
+            "jd_text": "当前岗位要求。",
+            "source_url": None,
+            "expected_current_version_id": old_version["id"],
+            "idempotency_key": "context-jd-new-01",
+        },
+    ).json()
+    with session_factory_for_data_dir(tmp_path)() as session:
+        session.add(
+            JDAnalysis(
+                application_id=application["id"],
+                jd_source="application_jd",
+                jd_text="旧岗位要求。",
+                result='{"summary":"旧岗位"}',
+                jd_version_id=old_version["id"],
+            )
+        )
+        session.commit()
+
+    model = CapturingScriptedModel([Assistant(content="收到")])
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    response = client.post(
+        "/api/chat",
+        json={
+            "message": "请查看当前岗位资料。",
+            "conversation_id": 0,
+            "context_type": "application",
+            "context_ref": str(application["id"]),
+        },
+    )
+
+    assert response.status_code == 200
+    context = next(message for message in model.calls[0] if message.role == "system" and "Current conversation context" in message.content)
+    assert f"jd_version_id={current_version['id']}" in context.content
+    assert "jd_source_kind=ui" in context.content
+    assert "jd_analysis_id=none" in context.content
+    assert "jd_analysis_link_status=missing" in context.content
+
+
+@pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
+def test_pilot_jd_confirmation_uses_current_version_without_jd_analysis(tmp_path, endpoint):
+    app_client = TestClient(create_app(data_dir=tmp_path))
+    application = app_client.post(
+        "/api/applications",
+        json={"company_name": "筱哲公司", "position_name": "后端工程师", "status": "applied"},
+    ).json()
+    version = app_client.post(
+        f"/api/applications/{application['id']}/job-description/versions",
+        json={
+            "jd_text": "负责服务稳定性建设。",
+            "source_url": None,
+            "expected_current_version_id": None,
+            "idempotency_key": "pilot-context-jd-v1-01",
+        },
+    ).json()
+    model = ScriptedModel(
+        [
+            Assistant(
+                tool_calls=[
+                    ToolCall(
+                        id="pilot-jd-write",
+                        name="save_application_jd_version",
+                        args=json.dumps(
+                            {
+                                "application_id": application["id"],
+                                "jd_text": "负责服务稳定性与可观测性建设。",
+                                "source_url": None,
+                                "expected_current_version_id": version["id"],
+                                "idempotency_key": "pilot-context-jd-v2-01",
+                            }
+                        ),
+                    )
+                ]
+            ),
+            Assistant(content="岗位资料已保存。"),
+        ]
+    )
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model))
+    pending = client.post(
+        "/api/chat",
+        json={
+            "message": "保存新的岗位描述",
+            "conversation_id": 0,
+            "context_type": "application",
+            "context_ref": str(application["id"]),
+        },
+    ).json()
+
+    assert pending["type"] == "confirmation_required"
+    response = client.post(
+        endpoint,
+        json={
+            "conversation_id": pending["conversation_id"],
+            "approved": True,
+            "confirmation_token": pending["pending_action"]["confirmation_token"],
+        },
+    )
+
+    assert response.status_code == 200
+    if endpoint.endswith("/stream"):
+        assert _parse_sse_events(response.text)[-1]["event"] == "completed"
+    else:
+        assert response.json()["message"] == "岗位资料已保存。"
+    versions = client.get(f"/api/applications/{application['id']}/job-description/versions").json()
+    assert [item["source_kind"] for item in versions] == ["pilot", "ui"]
+    assert versions[0]["id"] != version["id"]
+
+    context_model = CapturingScriptedModel([Assistant(content="收到")])
+    context_client = TestClient(create_app(data_dir=tmp_path, chat_model=context_model))
+    context_response = context_client.post(
+        "/api/chat",
+        json={
+            "message": "请查看当前岗位资料。",
+            "conversation_id": 0,
+            "context_type": "application",
+            "context_ref": str(application["id"]),
+        },
+    )
+    assert context_response.status_code == 200
+    current_context = next(
+        message
+        for message in context_model.calls[0]
+        if message.role == "system" and "Current conversation context" in message.content
+    )
+    assert f"jd_version_id={versions[0]['id']}" in current_context.content
+    assert "jd_source_kind=pilot" in current_context.content
+    assert "jd_analysis_id=none" in current_context.content
+    assert "jd_analysis_link_status=missing" in current_context.content
+
+
 def test_chat_stream_page_context_follows_clarification_and_durable_context_without_rewrite(
     tmp_path,
 ):
