@@ -54,6 +54,7 @@ $previousFullVerifyStage = $env:OFFERPILOT_FULL_VERIFY_ACTIVE_STAGE
 $previousHttpsProxy = $env:HTTPS_PROXY
 $previousHttpProxy = $env:HTTP_PROXY
 $previousNoProxy = $env:NO_PROXY
+$previousLiteLlmLocalCostMap = $env:LITELLM_LOCAL_MODEL_COST_MAP
 
 function Get-FreePort {
   $probe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
@@ -722,6 +723,7 @@ try {
   $env:HTTPS_PROXY = "http://127.0.0.1:$proxyPort"
   $env:HTTP_PROXY = "http://127.0.0.1:$proxyPort"
   $env:NO_PROXY = '127.0.0.1,localhost'
+  $env:LITELLM_LOCAL_MODEL_COST_MAP = 'True'
   $proxy = Start-Process powershell -WindowStyle Hidden -PassThru -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', "Set-Location '$repo'; uv run python scripts/provider-egress-proxy.py --port $proxyPort --audit '$providerAudit' --expected-endpoints-file '$allowlist'")
   $server = Start-Process powershell -WindowStyle Hidden -PassThru -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', "Set-Location '$repo'; uv run oc start --port $port")
   $healthy = $false
@@ -872,6 +874,7 @@ print(db.execute(
     if ($previousHttpsProxy) { $env:HTTPS_PROXY = $previousHttpsProxy } else { Remove-Item Env:HTTPS_PROXY -ErrorAction SilentlyContinue }
     if ($previousHttpProxy) { $env:HTTP_PROXY = $previousHttpProxy } else { Remove-Item Env:HTTP_PROXY -ErrorAction SilentlyContinue }
     if ($previousNoProxy) { $env:NO_PROXY = $previousNoProxy } else { Remove-Item Env:NO_PROXY -ErrorAction SilentlyContinue }
+    if ($previousLiteLlmLocalCostMap) { $env:LITELLM_LOCAL_MODEL_COST_MAP = $previousLiteLlmLocalCostMap } else { Remove-Item Env:LITELLM_LOCAL_MODEL_COST_MAP -ErrorAction SilentlyContinue }
     Remove-Item Env:APPLICATION_JD_HARNESS_DB, Env:APPLICATION_JD_HARNESS_APP, Env:APPLICATION_JD_HARNESS_RESUME, Env:APPLICATION_JD_HARNESS_EVENT, Env:APPLICATION_JD_HARNESS_CONSUMER -ErrorAction SilentlyContinue
   } catch {
     [void]$cleanupErrors.Add("environment restore: $($_.Exception.Message)")
