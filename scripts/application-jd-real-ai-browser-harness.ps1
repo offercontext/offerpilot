@@ -604,7 +604,7 @@ function Assert-StageA($records) {
   if ($jdResponses.Count -lt 1) { throw 'Stage A did not record a successful UI JD version response.' }
   $historyResponses = @($records | Where-Object {
     $_.kind -eq 'browser_response' -and $_.method -eq 'GET' -and
-    $_.url -match '/job-description/versions$' -and
+    $_.url -match '/job-description/versions(?:\?.*)?$' -and
     $_.response_status -eq 200 -and $null -ne $_.response_source_kinds
   })
   if ($historyResponses.Count -lt 1) { throw 'Stage A did not read JD history after Pilot confirmation.' }
@@ -624,10 +624,10 @@ function Assert-StageA($records) {
   })
   if ($detailResponses.Count -lt 1) { throw 'Stage A did not read JD detail.' }
   if (-not ($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'POST' -and $_.url -match '/api/chat$' })) { throw 'Stage A did not record Pilot chat.' }
-  if (-not ($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'POST' -and $_.url -match '/api/chat/confirm$' })) { throw 'Stage A did not record Pilot confirmation.' }
+  if (-not ($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'POST' -and $_.url -match '/api/chat/confirm$|/api/chat/confirm/stream$' })) { throw 'Stage A did not record Pilot confirmation.' }
   $confirmationResponses = @($records | Where-Object {
     $_.kind -eq 'browser_response' -and $_.method -eq 'POST' -and
-    $_.url -match '/api/chat/confirm$' -and $_.response_status -in @(200, 201)
+    $_.url -match '/api/chat/confirm$|/api/chat/confirm/stream$' -and $_.response_status -in @(200, 201)
   })
   if ($confirmationResponses.Count -lt 1) { throw 'Stage A did not record a successful Pilot confirmation response.' }
 }
