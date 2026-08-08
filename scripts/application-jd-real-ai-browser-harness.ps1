@@ -635,7 +635,7 @@ function Assert-StageA($records) {
     $_.response_status -eq 200
   })
   if ($detailResponses.Count -lt 1) { throw 'Stage A did not read JD detail.' }
-  if (-not ($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'POST' -and $_.url -match '/api/chat$' })) { throw 'Stage A did not record Pilot chat.' }
+  if (-not ($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'POST' -and $_.url -match '/api/chat(?:/stream)?$' })) { throw 'Stage A did not record Pilot chat.' }
   if (-not ($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'POST' -and $_.url -match '/api/chat/confirm$|/api/chat/confirm/stream$' })) { throw 'Stage A did not record Pilot confirmation.' }
   $confirmationResponses = @($records | Where-Object {
     $_.kind -eq 'browser_response' -and $_.method -eq 'POST' -and

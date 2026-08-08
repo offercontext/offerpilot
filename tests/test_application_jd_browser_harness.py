@@ -113,6 +113,7 @@ def test_application_jd_harness_fails_closed_on_auditor_disconnect() -> None:
     assert "failure_category" in script
     assert "Browser auditor did not exit cleanly" in script
     assert "successful Pilot confirmation response" in script
+    assert "/api/chat(?:/stream)?$" in script
     assert "/api/chat/confirm/stream$" in script
     assert "/job-description/versions(?:\\?.*)?$" in script
     assert "response_source_kinds" in script
