@@ -465,7 +465,7 @@ class BrowserAudit:
                 body = body_result.get("result")
                 body_text = body.get("body") if isinstance(body, dict) else None
                 payload = json.loads(body_text) if isinstance(body_text, str) else None
-                if isinstance(payload, dict):
+                if isinstance(payload, (dict, list)):
                     record_response_payload_metadata(record, payload)
         except asyncio.CancelledError:
             raise
