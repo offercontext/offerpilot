@@ -219,6 +219,17 @@ def test_application_jd_harness_replay_uses_isolated_flash_model_without_changin
     assert "Remove-Item -LiteralPath $triageReplayContextPath" in script
 
 
+def test_application_jd_harness_supports_ephemeral_provider_override() -> None:
+    script = HARNESS.read_text(encoding="utf-8")
+
+    assert "APPLICATION_JD_PROVIDER_BASE_URL" in script
+    assert "APPLICATION_JD_PROVIDER_MODEL" in script
+    assert "APPLICATION_JD_PROVIDER_API_KEY" in script
+    assert "$providerOverrideBaseUrl" in script
+    assert "$providerOverrideModel" in script
+    assert "$providerOverrideApiKey" in script
+
+
 def test_application_jd_harness_diagnostic_report_is_outside_cleaned_fixture() -> None:
     script = HARNESS.read_text(encoding="utf-8")
     assert "application-jd-stage-diagnostics" in script

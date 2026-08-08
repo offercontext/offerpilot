@@ -759,10 +759,25 @@ try {
   $temporaryConfigPath = Join-Path $tempData 'config.json'
   Copy-Item -LiteralPath $configPath -Destination $temporaryConfigPath
   $temporaryConfig = Get-Content -LiteralPath $temporaryConfigPath -Raw | ConvertFrom-Json
-  $temporaryConfig.model = 'deepseek-v4-flash'
+  $providerOverrideBaseUrl = [string]$env:APPLICATION_JD_PROVIDER_BASE_URL
+  $providerOverrideModel = [string]$env:APPLICATION_JD_PROVIDER_MODEL
+  $providerOverrideApiKey = [string]$env:APPLICATION_JD_PROVIDER_API_KEY
+  if ($providerOverrideBaseUrl) { $temporaryConfig.base_url = $providerOverrideBaseUrl }
+  if ($providerOverrideApiKey) { $temporaryConfig.api_key = $providerOverrideApiKey }
+  if ($providerOverrideModel) {
+    $temporaryConfig.model = $providerOverrideModel
+  } else {
+    $temporaryConfig.model = 'deepseek-v4-flash'
+  }
   foreach ($provider in @($temporaryConfig.providers)) {
     if ([string]$provider.id -eq [string]$temporaryConfig.active_provider_id) {
-      $provider.model = 'deepseek-v4-flash'
+      if ($providerOverrideBaseUrl) { $provider.base_url = $providerOverrideBaseUrl }
+      if ($providerOverrideApiKey) { $provider.api_key = $providerOverrideApiKey }
+      if ($providerOverrideModel) {
+        $provider.model = $providerOverrideModel
+      } else {
+        $provider.model = 'deepseek-v4-flash'
+      }
     }
   }
   [IO.File]::WriteAllText(
