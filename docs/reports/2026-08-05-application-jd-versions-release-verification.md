@@ -1,9 +1,9 @@
 # Application JD version release verification
 
-- Verification date: 2026-08-06
+- Verification date: 2026-08-08
 - Branch: `feat/20260805-application-jd-versions`
 - Feature baseline: `455e081`
-- Evidence execution HEAD: `899111e` (report-only commit follows)
+- Evidence execution HEAD: `7d31960`
 - Status: local and grouped release gates passed; real-AI and browser release gates remain blocked.
 
 ## Scope
@@ -103,6 +103,28 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\application-jd-rea
 The harness now self-starts a temporary headless Chrome/CDP endpoint when `APPLICATION_JD_CDP_URL` is absent. The endpoint started successfully and the dedicated browser target reached the page. The real browser run completed the UI JD saves and history action, then triggered the Pilot JD input submission; the page-target CDP session closed while waiting for the Pilot confirmation response. Consequently the Pilot network response, Stage A confirmation, and all three consumer stages were not proven; no browser-level success is claimed. This is an incomplete browser/CDP acceptance result, not a reason to relax the Provider or JD contracts.
 
 No Provider secret, JD text, resume content, model output, or full request body is recorded here.
+
+### Latest Pilot stream boundary (2026-08-08)
+
+After the lease/replay boundary tests passed, one final isolated `Stage all` attempt was made and then stopped. The attempt used a temporary data directory and the existing DeepSeek configuration; no further real-Provider retry was performed.
+
+The persisted browser audit proves the following boundary:
+
+- UI JD save: one `POST /api/applications/1/job-description/versions` returned `201`, with `source_kind=ui` and `jd_version_id=1`.
+- UI JD read-back returned `200` for version 1.
+- No Pilot JD-version POST or `source_kind=pilot` response was recorded.
+- No `POST /api/chat/confirm` or `/api/chat/confirm/stream` request was recorded, so the confirmation token was not consumed through the confirmation endpoint and Pilot JD v2 was not written in this attempt.
+- No duplicate JD-version POST or duplicate Pilot submission was observed.
+- Pilot generation failed before a confirmation card with `MidStreamFallbackError` / incomplete chunked read. Triage, Material Kit, and Interview Preparation therefore did not run.
+
+The temporary application data was removed by the harness; the token-row state cannot be queried after cleanup. The network audit is therefore the retained fail-closed evidence for the unconsumed-token/no-v2-write classification:
+
+- Browser audit: `D:\Users\yuqi.chen\AppData\Local\Temp\offerpilot-application-jd-stage-diagnostics\failed-browser-audit-20260808223208.jsonl`
+- Provider egress audit: `D:\Users\yuqi.chen\AppData\Local\Temp\offerpilot-application-jd-stage-diagnostics\failed-provider-egress-20260808223208.jsonl`
+
+The controlled lease/fencing tests were rerun with `4 passed`, covering live-lease same-key replay, expired-lease takeover, provider-error heartbeat cleanup, and two-connection single-owner behavior. No lease, CAS, idempotency, evidence-contract, or JD-version code change was made for this boundary.
+
+The release remains blocked. The only next release condition is a successful DeepSeek Pilot response that produces the confirmation card, followed by one complete `Stage all`; historical 409 investigation and unbounded retries remain out of scope.
 
 The harness was tightened after that run. `browser-network-audit.py` now keeps a browser-level CDP heartbeat during the manual window, waits for `loadingFinished` before reading response bodies, writes an ASCII diagnostic with `failure_category`, target/session IDs, readiness, response counts, and close state, and fails closed on an unexpected disconnect or unavailable API response body. The PowerShell harness redirects auditor output, checks auditor/browser liveness before every stage, requires a successful `/api/chat/confirm` response (not only a request), verifies each of Triage, Material Kit, and Interview Preparation against the same frozen JD version, detects newly appearing database tables in snapshot comparisons, asserts per-stage cleanup and final database cleanup, retains the temporary directory if any child process does not exit, and waits for a normal auditor exit. These changes are covered by the 17 targeted tests above; a post-fix human browser run has not yet completed the confirmation and all three downstream stages.
 
