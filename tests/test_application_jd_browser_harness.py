@@ -171,6 +171,23 @@ def test_application_jd_harness_keeps_private_triage_context_for_one_exact_repla
     assert script.index("Save-StageDiagnostic 'triage'") < script.rindex("Invoke-TriageReplayOnce")
 
 
+def test_application_jd_harness_replay_reads_private_context_without_powershell_json_redecode() -> None:
+    script = HARNESS.read_text(encoding="utf-8")
+
+    assert "Get-TriageReplayPayload" in script
+    assert "APPLICATION_JD_HARNESS_TRIAGE_CONTEXT" in script
+    assert "json.dumps(private.get(\"payload\"), ensure_ascii=False" in script
+    assert 'Get-Content -LiteralPath $triageReplayContextPath -Raw | ConvertFrom-Json' not in script
+
+
+def test_application_jd_harness_records_only_redacted_replay_error_code() -> None:
+    script = HARNESS.read_text(encoding="utf-8")
+
+    assert "Get-TriageReplayErrorCode" in script
+    assert "response_error_code" in script
+    assert "response_body" not in script
+
+
 def test_application_jd_harness_replay_uses_isolated_flash_model_without_changing_formal_config() -> None:
     script = HARNESS.read_text(encoding="utf-8")
 

@@ -525,6 +525,48 @@ function Write-TriageReplayMetadata($metadata) {
   Add-Content -LiteralPath $stageDiagnosticReport -Value (($metadata | ConvertTo-Json -Compress -Depth 10)) -Encoding utf8
 }
 
+function Get-TriageReplayPayload {
+  $env:APPLICATION_JD_HARNESS_TRIAGE_CONTEXT = $triageReplayContextPath
+  $code = @'
+import json, os
+
+context_path = os.environ["APPLICATION_JD_HARNESS_TRIAGE_CONTEXT"]
+with open(context_path, encoding="utf-8") as handle:
+    private = json.load(handle)
+payload = private.get("payload") if isinstance(private, dict) else None
+if not isinstance(payload, dict) or payload.get("schema_version") != 2:
+    raise SystemExit("private triage context has an invalid payload")
+print(json.dumps(private.get("payload"), ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+'@
+  $json = $code | & uv run python -
+  Assert-ExitCode 'triage replay payload serialization'
+  return (($json -join '').Trim())
+}
+
+function Get-TriageReplayErrorCode($response) {
+  if ($null -eq $response) { return '' }
+  $stream = $null
+  $reader = $null
+  try {
+    $stream = $response.GetResponseStream()
+    if ($null -eq $stream) { return '' }
+    $reader = [System.IO.StreamReader]::new(
+      $stream,
+      [System.Text.UTF8Encoding]::new($false),
+      $true
+    )
+    $text = $reader.ReadToEnd()
+    $match = [regex]::Match($text, '"error_code"\s*:\s*"(?<code>[A-Za-z0-9_.-]+)"')
+    if ($match.Success) { return $match.Groups['code'].Value }
+    return ''
+  } catch {
+    return ''
+  } finally {
+    if ($null -ne $reader) { $reader.Dispose() }
+    elseif ($null -ne $stream) { $stream.Dispose() }
+  }
+}
+
 # Replay uses the same idempotency key and is allowed at most one replay.
 function Invoke-TriageReplayOnce([int]$providerStartIndex, [int]$operationStartIndex) {
   if (-not (Test-StageProviderHttp500 $operationStartIndex)) { return }
@@ -537,17 +579,19 @@ function Invoke-TriageReplayOnce([int]$providerStartIndex, [int]$operationStartI
     if ([DateTimeOffset]::UtcNow -gt $deadline) { throw 'Triage replay lease did not expire within the harness bound.' }
     Start-Sleep -Milliseconds 500
   }
-  $private = Get-Content -LiteralPath $triageReplayContextPath -Raw | ConvertFrom-Json
-  $body = $private.payload | ConvertTo-Json -Compress -Depth 20
+  $body = Get-TriageReplayPayload
   $status = 0
+  $responseErrorCode = ''
   try {
     $response = Invoke-WebRequest -UseBasicParsing -Method Post `
       -Uri "$baseUrl/api/applications/$applicationId/opportunity-fit-reviews" `
       -ContentType 'application/json' -Body $body -TimeoutSec 300
     $status = [int]$response.StatusCode
+    if ($status -ge 400) { $responseErrorCode = Get-TriageReplayErrorCode $response.BaseResponse }
   } catch {
     if ($null -ne $_.Exception.Response) {
       $status = [int]$_.Exception.Response.StatusCode.value__
+      $responseErrorCode = Get-TriageReplayErrorCode $_.Exception.Response
     }
   }
   $script:triageReplayCount = 1
@@ -571,6 +615,7 @@ function Invoke-TriageReplayOnce([int]$providerStartIndex, [int]$operationStartI
     provider_input_fingerprint_sha256 = [string]$firstProvider.input_fingerprint_sha256
     replay_provider_input_fingerprint_sha256 = [string]$replayProvider.input_fingerprint_sha256
     response_status = $status
+    response_error_code = [string]$responseErrorCode
     provider_request_count = $replayProviders.Count
     provider_model = [string]$firstProvider.model
     replay_provider_model = [string]$replayProvider.model
