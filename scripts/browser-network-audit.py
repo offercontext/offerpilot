@@ -13,6 +13,9 @@ from urllib.request import urlopen
 import websockets
 
 
+_CDP_MAX_MESSAGE_BYTES = 8 * 1024 * 1024
+
+
 def record_response_payload_metadata(record: dict[str, object], payload: object) -> None:
     """Copy only safe identifiers and statuses from a JSON response into a record."""
     if isinstance(payload, list):
@@ -613,7 +616,11 @@ async def main_async(args: argparse.Namespace) -> None:
     args.ready_file.parent.mkdir(parents=True, exist_ok=True)
     try:
         websocket_url = browser_websocket_url(args.debugging_url)
-        async with websockets.connect(websocket_url, open_timeout=5) as websocket:
+        async with websockets.connect(
+            websocket_url,
+            open_timeout=5,
+            max_size=_CDP_MAX_MESSAGE_BYTES,
+        ) as websocket:
             audit = BrowserAudit(
                 websocket,
                 args.audit,

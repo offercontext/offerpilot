@@ -354,3 +354,9 @@ def test_browser_audit_preserves_private_triage_context_before_provider_call(tmp
     stored = json.loads(private_context.read_text(encoding="utf-8"))
     assert stored["payload"]["idempotency_key"] == "same-key"
     assert "我负责过迁移" not in audit.handle.getvalue()
+
+
+def test_browser_audit_allows_application_cdp_frames_larger_than_one_megabyte():
+    script = AUDIT.read_text(encoding="utf-8")
+    assert "max_size=_CDP_MAX_MESSAGE_BYTES" in script
+    assert "_CDP_MAX_MESSAGE_BYTES = 8 * 1024 * 1024" in script
