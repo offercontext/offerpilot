@@ -20,6 +20,7 @@ $browserStop = Join-Path $tempData 'browser-network.stop'
 $browserReady = Join-Path $tempData 'browser-network.ready'
 $browserFlush = Join-Path $tempData 'browser-network.flush'
 $browserFlushed = Join-Path $tempData 'browser-network.flushed'
+$triageReplayContextPath = Join-Path $tempData 'triage-replay-context.json'
 $server = $null
 $proxy = $null
 $auditor = $null
@@ -42,6 +43,7 @@ $stageDiagnosticReport = Join-Path $stageDiagnosticRoot (
 )
 $providerAuditOffset = 0
 $operationAuditOffset = 0
+$triageReplayCount = 0
 $previousData = $env:OFFERPILOT_DATA
 $previousHttpAudit = $env:OFFERPILOT_HTTP_AUDIT_FILE
 $previousProviderRequestAudit = $env:OFFERPILOT_PROVIDER_REQUEST_AUDIT_FILE
@@ -369,6 +371,175 @@ function Save-StageDiagnostic([string]$stageName) {
   Write-Host "STAGE_DIAGNOSTIC=$stageDiagnosticReport"
 }
 
+function Test-StageProviderHttp500([int]$operationStartIndex) {
+  if (-not (Test-Path -LiteralPath $operationAudit)) { return $false }
+  $records = @(Get-Content -LiteralPath $operationAudit | ForEach-Object {
+    try { $_ | ConvertFrom-Json } catch { $null }
+  })
+  $window = @($records | Select-Object -Skip ([Math]::Max(0, $operationStartIndex)))
+  return @($window | Where-Object {
+    $_.kind -eq 'provider_request_result' -and
+    $_.status -eq 'error' -and
+    [int]$_.http_status -eq 500 -and
+    $_.failure_category -eq 'provider_http_5xx'
+  }).Count -gt 0
+}
+
+function Get-TriageReplayContext {
+  if (-not (Test-Path -LiteralPath $triageReplayContextPath)) {
+    throw 'Triage replay context was not captured before the Provider call.'
+  }
+  $env:APPLICATION_JD_HARNESS_DB = Join-Path $tempData 'data.db'
+  $env:APPLICATION_JD_HARNESS_APP = [string]$applicationId
+  $env:APPLICATION_JD_HARNESS_TRIAGE_CONTEXT = $triageReplayContextPath
+  $code = @'
+import hashlib, json, os, sqlite3
+from uuid import UUID
+
+def canonical(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+def digest(value):
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+context_path = os.environ["APPLICATION_JD_HARNESS_TRIAGE_CONTEXT"]
+with open(context_path, encoding="utf-8") as handle:
+    context = json.load(handle)
+payload = context.get("payload")
+if not isinstance(payload, dict) or payload.get("schema_version") != 2:
+    raise SystemExit("private triage context has an invalid payload")
+application_id = int(os.environ["APPLICATION_JD_HARNESS_APP"])
+try:
+    normalized_key = str(UUID(str(payload.get("idempotency_key", "")).strip()))
+except (ValueError, AttributeError):
+    raise SystemExit("captured idempotency key is invalid")
+with sqlite3.connect(os.environ["APPLICATION_JD_HARNESS_DB"]) as db:
+    row = db.execute(
+        "SELECT id, stage_generation, status, idempotency_key, source_snapshot_json, "
+        "source_fingerprint_sha256, jd_version_id, lease_expires_at "
+        "FROM opportunity_fit_review_stages "
+        "WHERE application_id = ? AND stage = 'triage' AND idempotency_key = ? "
+        "ORDER BY id DESC LIMIT 1",
+        (application_id, normalized_key),
+    ).fetchone()
+if row is None:
+    raise SystemExit("triage stage for the captured idempotency key is missing")
+stage_id, generation, status, key, snapshot_json, source_fingerprint, jd_version_id, lease_expires_at = row
+if status != "provider_unknown":
+    raise SystemExit(f"triage stage is not a replayable Provider failure: {status}")
+if normalized_key != str(key):
+    raise SystemExit("captured idempotency key does not match the frozen stage")
+try:
+    snapshot = json.loads(snapshot_json)
+except (TypeError, ValueError) as exc:
+    raise SystemExit(f"frozen source snapshot is invalid: {exc}")
+if not isinstance(snapshot, dict):
+    raise SystemExit("frozen source snapshot is not an object")
+if snapshot.get("application", {}).get("id") != application_id:
+    raise SystemExit("frozen snapshot application does not match the request")
+resume = snapshot.get("resume")
+if not isinstance(resume, dict) or resume.get("id") != payload.get("resume_id"):
+    raise SystemExit("captured resume does not match the frozen snapshot")
+if jd_version_id != payload.get("jd_version_id"):
+    raise SystemExit("captured JD version does not match the frozen stage")
+jd = snapshot.get("jd")
+if not isinstance(jd, dict) or jd.get("source_label") != payload.get("jd_source_label"):
+    raise SystemExit("captured JD source label does not match the frozen snapshot")
+snapshot_assertions = snapshot.get("candidate_assertions")
+payload_assertions = payload.get("candidate_assertions")
+if not isinstance(snapshot_assertions, list) or not isinstance(payload_assertions, list):
+    raise SystemExit("captured candidate assertions are not arrays")
+expected_assertions = [
+    item.get("text") for item in snapshot_assertions
+    if isinstance(item, dict) and isinstance(item.get("text"), str)
+]
+actual_assertions = [
+    item.strip() for item in payload_assertions
+    if isinstance(item, str) and item.strip()
+]
+if expected_assertions != actual_assertions:
+    raise SystemExit("captured candidate assertions do not match the frozen snapshot")
+print(json.dumps({
+    "stage_id": int(stage_id),
+    "stage_generation": int(generation),
+    "status": str(status),
+    "idempotency_key_sha256": digest(normalized_key),
+    "payload_fingerprint_sha256": digest(canonical(payload)),
+    "source_fingerprint_sha256": str(source_fingerprint),
+    "lease_expires_at": str(lease_expires_at or ""),
+    "same_input_verified": True,
+}, separators=(",", ":")))
+'@
+  $json = $code | & uv run python -
+  Assert-ExitCode 'triage replay context verification'
+  return (($json -join '').Trim() | ConvertFrom-Json)
+}
+
+function Write-TriageReplayMetadata($metadata) {
+  New-Item -ItemType Directory -Force -Path $stageDiagnosticRoot | Out-Null
+  Add-Content -LiteralPath $stageDiagnosticReport -Value (($metadata | ConvertTo-Json -Compress -Depth 10)) -Encoding utf8
+}
+
+# Replay uses the same idempotency key and is allowed at most one replay.
+function Invoke-TriageReplayOnce([int]$providerStartIndex, [int]$operationStartIndex) {
+  if (-not (Test-StageProviderHttp500 $operationStartIndex)) { return }
+  if ($script:triageReplayCount -ge 1) { throw 'Triage replay exceeded the at-most-one harness limit.' }
+  $context = Get-TriageReplayContext
+  if (-not $context.same_input_verified) { throw 'Triage replay input could not be verified.' }
+  $expiry = [DateTimeOffset]::Parse([string]$context.lease_expires_at)
+  $deadline = [DateTimeOffset]::UtcNow.AddSeconds(180)
+  while ($expiry -gt [DateTimeOffset]::UtcNow) {
+    if ([DateTimeOffset]::UtcNow -gt $deadline) { throw 'Triage replay lease did not expire within the harness bound.' }
+    Start-Sleep -Milliseconds 500
+  }
+  $private = Get-Content -LiteralPath $triageReplayContextPath -Raw | ConvertFrom-Json
+  $body = $private.payload | ConvertTo-Json -Compress -Depth 20
+  $status = 0
+  try {
+    $response = Invoke-WebRequest -UseBasicParsing -Method Post `
+      -Uri "$baseUrl/api/applications/$applicationId/opportunity-fit-reviews" `
+      -ContentType 'application/json' -Body $body -TimeoutSec 300
+    $status = [int]$response.StatusCode
+  } catch {
+    if ($null -ne $_.Exception.Response) {
+      $status = [int]$_.Exception.Response.StatusCode.value__
+    }
+  }
+  $script:triageReplayCount = 1
+  $providerRecords = @(Get-Content -LiteralPath $providerRequestAudit | ForEach-Object { $_ | ConvertFrom-Json })
+  $providerWindow = @($providerRecords | Select-Object -Skip ([Math]::Max(0, $providerStartIndex)))
+  $firstProvider = @($providerWindow | Where-Object kind -eq 'provider_request_metadata' | Select-Object -First 1)
+  $replayProviders = @($providerWindow | Where-Object kind -eq 'provider_request_metadata' | Select-Object -Skip 1)
+  $sameProviderInput = @($replayProviders | Where-Object {
+    $_.input_fingerprint_sha256 -eq $firstProvider.input_fingerprint_sha256
+  }).Count -gt 0
+  $replayProvider = if ($replayProviders.Count -eq 1) { $replayProviders[0] } else { $null }
+  $metadata = [ordered]@{
+    kind = 'triage_replay'
+    stage = 'triage'
+    replay_attempted = $true
+    replay_count = 1
+    same_input_verified = [bool]$context.same_input_verified
+    provider_input_fingerprint_match = [bool]$sameProviderInput
+    source_fingerprint_sha256 = [string]$context.source_fingerprint_sha256
+    payload_fingerprint_sha256 = [string]$context.payload_fingerprint_sha256
+    provider_input_fingerprint_sha256 = [string]$firstProvider.input_fingerprint_sha256
+    replay_provider_input_fingerprint_sha256 = [string]$replayProvider.input_fingerprint_sha256
+    response_status = $status
+    provider_request_count = $replayProviders.Count
+    provider_model = [string]$firstProvider.model
+    replay_provider_model = [string]$replayProvider.model
+  }
+  Write-TriageReplayMetadata $metadata
+  Save-StageDiagnostic 'triage'
+  if ($replayProviders.Count -ne 1 -or -not $sameProviderInput) {
+    throw 'Triage replay did not produce exactly one Provider call with the same input fingerprint.'
+  }
+  if ($status -notin @(200, 201)) {
+    throw "Triage same-input Provider replay returned HTTP $status."
+  }
+}
+
 function Assert-LocalBrowser($records) {
   $origin = [Uri]$baseUrl
   foreach ($record in @($records | Where-Object kind -eq 'browser_request')) {
@@ -441,7 +612,7 @@ function Assert-StageA($records) {
   if ($confirmationResponses.Count -lt 1) { throw 'Stage A did not record a successful Pilot confirmation response.' }
 }
 
-function Assert-ConsumerRequest($records, [string]$consumer) {
+function Assert-ConsumerRequest($records, [string]$consumer, [switch]$AllowProvider500) {
   $pattern = switch ($consumer) {
     'triage' { '/opportunity-fit-reviews$' }
     'material-kit' { '/material-kit/generate$' }
@@ -459,6 +630,12 @@ function Assert-ConsumerRequest($records, [string]$consumer) {
     $_.request_context.jd_version_id -eq [int]$jdVersionId -and
     $_.response_status -in @(200, 201) -and $_.response_jd_version_id -eq [int]$jdVersionId
   })
+  if ($AllowProvider500 -and @($records | Where-Object {
+    $_.kind -eq 'browser_response' -and $_.method -eq 'POST' -and $_.url -match $pattern -and
+    $_.response_status -eq 502 -and $_.response_error_code -match 'provider'
+  }).Count -gt 0) {
+    return
+  }
   if ($successful.Count -lt 1) { throw "Stage B did not record a successful $consumer response for the frozen JD version." }
 }
 
@@ -468,8 +645,21 @@ try {
   New-Item -ItemType Directory -Force -Path $tempData | Out-Null
   if ([string]::IsNullOrWhiteSpace($CdpUrl)) { $CdpUrl = Start-TemporaryBrowser 'about:blank' }
   Write-Host "CDP_URL=$CdpUrl"
-  Copy-Item -LiteralPath $configPath -Destination (Join-Path $tempData 'config.json')
-  $providers = @(Get-ProviderEndpoints (Join-Path $tempData 'config.json'))
+  $temporaryConfigPath = Join-Path $tempData 'config.json'
+  Copy-Item -LiteralPath $configPath -Destination $temporaryConfigPath
+  $temporaryConfig = Get-Content -LiteralPath $temporaryConfigPath -Raw | ConvertFrom-Json
+  $temporaryConfig.model = 'deepseek-v4-flash'
+  foreach ($provider in @($temporaryConfig.providers)) {
+    if ([string]$provider.id -eq [string]$temporaryConfig.active_provider_id) {
+      $provider.model = 'deepseek-v4-flash'
+    }
+  }
+  [IO.File]::WriteAllText(
+    $temporaryConfigPath,
+    ($temporaryConfig | ConvertTo-Json -Depth 30),
+    [Text.UTF8Encoding]::new($false)
+  )
+  $providers = @(Get-ProviderEndpoints $temporaryConfigPath)
   if ($providers.Count -eq 0) { throw 'No enabled Provider endpoint is configured.' }
   $allowlist = Join-Path $tempData 'provider-allowlist.json'
   $providers | ConvertTo-Json -Compress | Set-Content -LiteralPath $allowlist -Encoding utf8
@@ -509,7 +699,7 @@ try {
 
   $auditor = Start-Process powershell -WindowStyle Hidden -PassThru `
     -RedirectStandardOutput $browserStdout -RedirectStandardError $browserStderr `
-    -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', "Set-Location '$repo'; uv run python scripts/browser-network-audit.py --debugging-url '$CdpUrl' --expected-url '$baseUrl' --audit '$browserAudit' --stop-file '$browserStop' --ready-file '$browserReady' --diagnostic-file '$browserDiagnostic' --flush-file '$browserFlush' --flushed-file '$browserFlushed'")
+    -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', "Set-Location '$repo'; uv run python scripts/browser-network-audit.py --debugging-url '$CdpUrl' --expected-url '$baseUrl' --audit '$browserAudit' --stop-file '$browserStop' --ready-file '$browserReady' --diagnostic-file '$browserDiagnostic' --flush-file '$browserFlush' --flushed-file '$browserFlushed' --private-context-file '$triageReplayContextPath'")
   for ($i = 0; $i -lt 120; $i++) {
     if ($auditor.HasExited) { throw 'Browser auditor exited before readiness.' }
     if (Test-Path -LiteralPath $browserReady) { break }
@@ -548,15 +738,25 @@ print(db.execute(
   } else {
     foreach ($consumer in @('triage', 'material-kit', 'interview-preparation')) {
       $consumerBefore = Get-DbSnapshot
+      $consumerProviderStart = $script:providerAuditOffset
+      $consumerOperationStart = $script:operationAuditOffset
       Write-Host "Complete $consumer in the dedicated browser target."
       [void](Read-Host 'Press Enter after this consumer is complete')
       Assert-BrowserAuditorHealthy
       Flush-BrowserAudit
       $records = Get-BrowserRecords
       Assert-LocalBrowser $records
-      Assert-ConsumerRequest $records $consumer
+      $triageProvider500 = $consumer -eq 'triage' -and (Test-StageProviderHttp500 $consumerOperationStart)
+      if ($triageProvider500) {
+        Assert-ConsumerRequest $records $consumer -AllowProvider500
+      } else {
+        Assert-ConsumerRequest $records $consumer
+      }
       switch ($consumer) {
-        'triage' { Save-StageDiagnostic 'triage' }
+        'triage' {
+          Save-StageDiagnostic 'triage'
+          Invoke-TriageReplayOnce $consumerProviderStart $consumerOperationStart
+        }
         'material-kit' { Save-StageDiagnostic 'material_kit' }
         'interview-preparation' { Save-StageDiagnostic 'interview_preparation' }
       }
@@ -626,6 +826,13 @@ print(db.execute(
     Remove-Item Env:APPLICATION_JD_HARNESS_DB, Env:APPLICATION_JD_HARNESS_APP, Env:APPLICATION_JD_HARNESS_RESUME, Env:APPLICATION_JD_HARNESS_EVENT, Env:APPLICATION_JD_HARNESS_CONSUMER -ErrorAction SilentlyContinue
   } catch {
     [void]$cleanupErrors.Add("environment restore: $($_.Exception.Message)")
+  }
+  try {
+    if (Test-Path -LiteralPath $triageReplayContextPath) {
+      Remove-Item -LiteralPath $triageReplayContextPath -Force -ErrorAction Stop
+    }
+  } catch {
+    [void]$cleanupErrors.Add("private triage replay context cleanup: $($_.Exception.Message)")
   }
   if ($allProcessesStopped) {
     try {

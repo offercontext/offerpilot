@@ -83,6 +83,7 @@ class BrowserAudit:
         diagnostic: Path | None = None,
         flush_file: Path | None = None,
         flushed_file: Path | None = None,
+        private_context_file: Path | None = None,
     ) -> None:
         self.websocket = websocket
         self.output = output
@@ -90,6 +91,7 @@ class BrowserAudit:
         self.diagnostic = diagnostic
         self.flush_file = flush_file
         self.flushed_file = flushed_file
+        self.private_context_file = private_context_file
         self.next_id = 1
         self.pending: dict[int, asyncio.Future[dict[str, object]]] = {}
         self.target_sessions: dict[str, str] = {}
@@ -114,6 +116,30 @@ class BrowserAudit:
             self.failure_category = category
         if error is not None and self.reader_error is None:
             self.reader_error = error
+
+    def _retain_private_triage_context(self, payload: dict[str, object], post_data: str) -> None:
+        if self.private_context_file is None or self.private_context_file.exists():
+            return
+        try:
+            self.private_context_file.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.private_context_file.with_suffix(
+                self.private_context_file.suffix + ".tmp"
+            )
+            temporary.write_text(
+                json.dumps(
+                    {
+                        "kind": "triage_request_context",
+                        "payload": payload,
+                        "raw_post_data": post_data,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+                encoding="utf-8",
+            )
+            temporary.replace(self.private_context_file)
+        except BaseException as exc:
+            self._set_failure("private_context_write_error", exc)
 
     def _write_diagnostic(self) -> None:
         if self.diagnostic is None:
@@ -324,6 +350,12 @@ class BrowserAudit:
                 except json.JSONDecodeError:
                     payload = None
                 if isinstance(payload, dict):
+                    if (
+                        method == "POST"
+                        and re.search(r"/api/applications/\d+/opportunity-fit-reviews$", url)
+                        and payload.get("schema_version") == 2
+                    ):
+                        self._retain_private_triage_context(payload, post_data)
                     request_context: dict[str, object] = {}
                     route_match = re.search(r"/api/applications/(\d+)(?:/|$)", url)
                     route_application_id = int(route_match.group(1)) if route_match else None
@@ -384,7 +416,8 @@ class BrowserAudit:
                         record["request_context"] = request_context
             self.handle.write(json.dumps(record, ensure_ascii=False) + "\n")
             self.handle.flush()
-            request_id = message.get("params", {}).get("requestId") if isinstance(message.get("params"), dict) else None
+            request_params = message.get("params")
+            request_id = request_params.get("requestId") if isinstance(request_params, dict) else None
             if isinstance(request_id, str):
                 self.request_records[(session_id, request_id)] = record
 
@@ -588,6 +621,7 @@ async def main_async(args: argparse.Namespace) -> None:
                 args.diagnostic_file,
                 args.flush_file,
                 args.flushed_file,
+                args.private_context_file,
             )
             await audit.run(args.expected_url, args.ready_file, args.ready_timeout_seconds)
     except asyncio.CancelledError:
@@ -613,6 +647,7 @@ def main() -> None:
     parser.add_argument("--diagnostic-file", type=Path, default=None)
     parser.add_argument("--flush-file", type=Path, default=None)
     parser.add_argument("--flushed-file", type=Path, default=None)
+    parser.add_argument("--private-context-file", type=Path, default=None)
     parser.add_argument("--ready-timeout-seconds", type=float, default=30)
     args = parser.parse_args()
     asyncio.run(main_async(args))

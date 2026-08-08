@@ -145,6 +145,30 @@ def test_application_jd_harness_persists_redacted_stage_input_diagnostics() -> N
     assert "Save-StageDiagnostic 'interview_preparation'" in script
 
 
+def test_application_jd_harness_keeps_private_triage_context_for_one_exact_replay() -> None:
+    script = HARNESS.read_text(encoding="utf-8")
+
+    assert "Get-TriageReplayContext" in script
+    assert "triage-replay-context.json" in script
+    assert "source_snapshot_json" in script
+    assert "candidate_assertions" in script
+    assert "same_input_verified" in script
+    assert "replay_count" in script
+    assert "provider_http_5xx" in script
+    assert "Invoke-TriageReplayOnce" in script
+    assert script.index("Save-StageDiagnostic 'triage'") < script.rindex("Invoke-TriageReplayOnce")
+
+
+def test_application_jd_harness_replay_uses_isolated_flash_model_without_changing_formal_config() -> None:
+    script = HARNESS.read_text(encoding="utf-8")
+
+    assert "deepseek-v4-flash" in script
+    assert "provider.model = 'deepseek-v4-flash'" in script
+    assert "same idempotency key" in script
+    assert "at most one" in script
+    assert "Remove-Item -LiteralPath $triageReplayContextPath" in script
+
+
 def test_application_jd_harness_diagnostic_report_is_outside_cleaned_fixture() -> None:
     script = HARNESS.read_text(encoding="utf-8")
     assert "application-jd-stage-diagnostics" in script

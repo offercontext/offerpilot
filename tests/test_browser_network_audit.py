@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+import io
 import json
 import subprocess
 import sys
@@ -9,6 +11,18 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import websockets
+
+
+ROOT = Path(__file__).parents[1]
+AUDIT = ROOT / "scripts" / "browser-network-audit.py"
+
+
+def _load_browser_audit():
+    spec = importlib.util.spec_from_file_location("browser_network_audit", AUDIT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class _FakeCdp:
@@ -300,3 +314,43 @@ def test_browser_network_audit_ignores_requests_from_another_target(tmp_path):
         assert all("mock-interview" not in record["url"] for record in records)
     finally:
         fake.close()
+
+
+def test_browser_audit_preserves_private_triage_context_before_provider_call(tmp_path):
+    module = _load_browser_audit()
+    private_context = tmp_path / "triage-replay-context.json"
+    audit = module.BrowserAudit(
+        None,
+        tmp_path / "audit.jsonl",
+        tmp_path / "stop",
+        private_context_file=private_context,
+    )
+    audit.target_sessions["target"] = "session"
+    audit.handle = io.StringIO()
+    message = {
+        "sessionId": "session",
+        "params": {
+            "requestId": "triage-request",
+            "request": {
+                "method": "POST",
+                "url": "http://127.0.0.1:8000/api/applications/10/opportunity-fit-reviews",
+                "postData": json.dumps(
+                    {
+                        "schema_version": 2,
+                        "resume_id": 7,
+                        "jd_version_id": 9,
+                        "jd_source_label": "UI JD",
+                        "candidate_assertions": ["我负责过迁移"],
+                        "idempotency_key": "same-key",
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        },
+    }
+
+    asyncio.run(audit.record_request(message))
+
+    stored = json.loads(private_context.read_text(encoding="utf-8"))
+    assert stored["payload"]["idempotency_key"] == "same-key"
+    assert "我负责过迁移" not in audit.handle.getvalue()
