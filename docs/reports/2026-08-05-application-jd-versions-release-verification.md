@@ -3,7 +3,7 @@
 - Verification date: 2026-08-08
 - Branch: `feat/20260805-application-jd-versions`
 - Feature baseline: `455e081`
-- Evidence execution HEAD: `7d31960`
+- Evidence execution HEAD: `c89639b`
 - Status: local and grouped release gates passed; real-AI and browser release gates remain blocked.
 
 ## Scope
@@ -125,6 +125,23 @@ The temporary application data was removed by the harness; the token-row state c
 The controlled lease/fencing tests were rerun with `4 passed`, covering live-lease same-key replay, expired-lease takeover, provider-error heartbeat cleanup, and two-connection single-owner behavior. No lease, CAS, idempotency, evidence-contract, or JD-version code change was made for this boundary.
 
 The release remains blocked. The only next release condition is a successful DeepSeek Pilot response that produces the confirmation card, followed by one complete `Stage all`; historical 409 investigation and unbounded retries remain out of scope.
+
+### Isolated Ark Provider attempt (2026-08-08)
+
+At the user's request, the harness was run once with an isolated Provider override using the Ark endpoint and `doubao-seed-2.1-turbo`. The formal OfferPilot configuration was not changed, and the API key was read only from a local secret file; it was not written to source, reports, or audit output.
+
+- UI JD v1 save returned `201`.
+- The Pilot `/api/chat/stream` request reached `ark.cn-beijing.volces.com:443` and the application received `litellm.NotFoundError` / HTTP `404` before a confirmation card was produced.
+- No Pilot confirmation request was sent, no token was consumed, and no Pilot JD v2 was written.
+- No duplicate JD-version or Pilot submission was observed.
+- The harness stopped at Stage A and cleaned the service, browser, temporary data, and ports. Triage, Material Kit, Interview Preparation, and complete `Stage all` remain unproven.
+
+Retained diagnostics:
+
+- Browser audit: `D:\Users\yuqi.chen\AppData\Local\Temp\offerpilot-application-jd-stage-diagnostics\failed-browser-audit-20260808231829.jsonl`
+- Provider egress audit: `D:\Users\yuqi.chen\AppData\Local\Temp\offerpilot-application-jd-stage-diagnostics\failed-provider-egress-20260808231829.jsonl`
+
+This result is an Ark endpoint/model compatibility failure, not evidence of a JD-version, token-consistency, CAS, lease, or evidence-contract defect. No further Provider retry was made.
 
 The harness was tightened after that run. `browser-network-audit.py` now keeps a browser-level CDP heartbeat during the manual window, waits for `loadingFinished` before reading response bodies, writes an ASCII diagnostic with `failure_category`, target/session IDs, readiness, response counts, and close state, and fails closed on an unexpected disconnect or unavailable API response body. The PowerShell harness redirects auditor output, checks auditor/browser liveness before every stage, requires a successful `/api/chat/confirm` response (not only a request), verifies each of Triage, Material Kit, and Interview Preparation against the same frozen JD version, detects newly appearing database tables in snapshot comparisons, asserts per-stage cleanup and final database cleanup, retains the temporary directory if any child process does not exit, and waits for a normal auditor exit. These changes are covered by the 17 targeted tests above; a post-fix human browser run has not yet completed the confirmation and all three downstream stages.
 
