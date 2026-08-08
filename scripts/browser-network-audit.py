@@ -449,15 +449,24 @@ class BrowserAudit:
                 body_ready = False
             if not body_ready:
                 raise RuntimeError("response body did not finish before audit timeout")
-            body_result = await asyncio.wait_for(
-                self.send("Network.getResponseBody", {"requestId": request_id}, session_id),
-                timeout=10.0,
-            )
-            body = body_result.get("result")
-            body_text = body.get("body") if isinstance(body, dict) else None
-            payload = json.loads(body_text) if isinstance(body_text, str) else None
-            if isinstance(payload, dict):
-                record_response_payload_metadata(record, payload)
+            headers = response.get("headers")
+            content_type = ""
+            if isinstance(headers, dict):
+                raw_content_type = headers.get("content-type", headers.get("Content-Type"))
+                if isinstance(raw_content_type, str):
+                    content_type = raw_content_type.split(";", 1)[0].strip().lower()
+            mime_type = response.get("mimeType")
+            is_event_stream = content_type == "text/event-stream" or mime_type == "text/event-stream"
+            if not is_event_stream:
+                body_result = await asyncio.wait_for(
+                    self.send("Network.getResponseBody", {"requestId": request_id}, session_id),
+                    timeout=10.0,
+                )
+                body = body_result.get("result")
+                body_text = body.get("body") if isinstance(body, dict) else None
+                payload = json.loads(body_text) if isinstance(body_text, str) else None
+                if isinstance(payload, dict):
+                    record_response_payload_metadata(record, payload)
         except asyncio.CancelledError:
             raise
         except BaseException as exc:

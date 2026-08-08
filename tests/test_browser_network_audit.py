@@ -35,6 +35,7 @@ class _FakeCdp:
         drop_after_navigation: bool = False,
         emit_unowned_request: bool = False,
         response_body_error: bool = False,
+        streaming_response: bool = False,
         destroy_target_after_navigation: bool = False,
     ) -> None:
         self.reject_network = reject_network
@@ -43,6 +44,7 @@ class _FakeCdp:
         self.drop_after_navigation = drop_after_navigation
         self.emit_unowned_request = emit_unowned_request
         self.response_body_error = response_body_error
+        self.streaming_response = streaming_response
         self.destroy_target_after_navigation = destroy_target_after_navigation
         self.methods: list[str] = []
         self.expected_url = "http://127.0.0.1:18766/"
@@ -119,7 +121,10 @@ class _FakeCdp:
                             "sessionId": session_id,
                             "params": {
                                 "requestId": "api-request",
-                                "response": {"status": 200},
+                                "response": {
+                                    "status": 200,
+                                    **({"mimeType": "text/event-stream"} if self.streaming_response else {}),
+                                },
                             },
                         }))
                         await websocket.send(json.dumps({
@@ -312,6 +317,18 @@ def test_browser_network_audit_ignores_requests_from_another_target(tmp_path):
         assert records[0]["session_id"] == "main-session"
         assert records[0]["method"] == "GET"
         assert all("mock-interview" not in record["url"] for record in records)
+    finally:
+        fake.close()
+
+
+def test_browser_network_audit_accepts_completed_sse_without_response_body(tmp_path):
+    fake = _FakeCdp(response_body_error=True, streaming_response=True)
+    try:
+        result = _run_auditor(tmp_path / "sse-body-error", fake, stop_delay_seconds=0.2)
+        assert result.returncode == 0, result.stderr
+        diagnostic = json.loads((tmp_path / "sse-body-error" / "diagnostic.json").read_text(encoding="utf-8"))
+        assert diagnostic["status"] == "passed"
+        assert diagnostic["failure_category"] is None
     finally:
         fake.close()
 
