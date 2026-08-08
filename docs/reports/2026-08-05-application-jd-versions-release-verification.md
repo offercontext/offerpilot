@@ -143,6 +143,25 @@ Retained diagnostics:
 
 This result is an Ark endpoint/model compatibility failure, not evidence of a JD-version, token-consistency, CAS, lease, or evidence-contract defect. No further Provider retry was made.
 
+### Corrected Ark `/v1` endpoint attempt (2026-08-08)
+
+The Ark base URL was corrected to include `/api/coding/v1`; the client then appended the chat-completions route. A single isolated `Stage all` run was continued with this configuration and the formal configuration remained unchanged.
+
+- Pilot generated a non-empty JD proposal and a real confirmation card.
+- One confirmation click produced `POST /api/chat/confirm/stream` with `200`.
+- JD history list/detail reads returned `200`; version 2 was read back with `source_kind=pilot`.
+- Triage then returned `provider_unknown` after 91,576 ms with `failure_category=provider_http_5xx`; the frozen JD, resume, and user-assertion evidence counts were each 1.
+- The harness preserved the original key and attempted its single exact replay. The replay returned `409` before another Provider request and failed the same-input replay guard because no replay Provider fingerprint was produced. This is the previously known historical 409 boundary; it is not being retried or investigated further.
+- Material Kit and Interview Preparation did not run. The harness cleaned the service, browser, temporary data, and ports.
+
+Retained diagnostics:
+
+- Stage diagnostics: `D:\Users\yuqi.chen\AppData\Local\Temp\offerpilot-application-jd-stage-diagnostics\stage-all-20260808-233439898-75f3322024f64c14b94fcd022264041b.jsonl`
+- Browser audit: `D:\Users\yuqi.chen\AppData\Local\Temp\offerpilot-application-jd-stage-diagnostics\failed-browser-audit-20260808234417.jsonl`
+- Provider egress audit: `D:\Users\yuqi.chen\AppData\Local\Temp\offerpilot-application-jd-stage-diagnostics\failed-provider-egress-20260808234417.jsonl`
+
+This run proves that the corrected Ark endpoint can complete Pilot JD proposal/confirmation and create the Pilot JD version, but it does not satisfy complete `Stage all` release evidence.
+
 The harness was tightened after that run. `browser-network-audit.py` now keeps a browser-level CDP heartbeat during the manual window, waits for `loadingFinished` before reading response bodies, writes an ASCII diagnostic with `failure_category`, target/session IDs, readiness, response counts, and close state, and fails closed on an unexpected disconnect or unavailable API response body. The PowerShell harness redirects auditor output, checks auditor/browser liveness before every stage, requires a successful `/api/chat/confirm` response (not only a request), verifies each of Triage, Material Kit, and Interview Preparation against the same frozen JD version, detects newly appearing database tables in snapshot comparisons, asserts per-stage cleanup and final database cleanup, retains the temporary directory if any child process does not exit, and waits for a normal auditor exit. These changes are covered by the 17 targeted tests above; a post-fix human browser run has not yet completed the confirmation and all three downstream stages.
 
 ## Cleanup and remaining risk
