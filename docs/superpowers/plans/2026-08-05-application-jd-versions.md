@@ -131,6 +131,9 @@ web/src/features/pilot/materialKitHandoff.ts
 web/src/features/pilot/materialKitHandoff.test.ts
 scripts/application-jd-real-ai-browser-harness.ps1
 scripts/browser-network-audit.py
+scripts/application_jd_stage_diagnostic.py
+tests/test_application_jd_stage_diagnostic.py
+docs/superpowers/plans/2026-08-05-application-jd-versions.md
 docs/reports/2026-08-05-application-jd-versions-release-verification.md
 '@ | Set-Content -LiteralPath $allowlistFile -Encoding ascii
 ~~~
