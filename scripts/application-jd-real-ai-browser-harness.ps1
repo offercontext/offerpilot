@@ -403,6 +403,18 @@ function Save-FailedBrowserAudit {
   }
 }
 
+function Save-FailedProviderAudit {
+  if (-not (Test-Path -LiteralPath $providerAudit)) { return }
+  try {
+    New-Item -ItemType Directory -Force -Path $stageDiagnosticRoot | Out-Null
+    $name = 'failed-provider-egress-' + (Get-Date -Format 'yyyyMMddHHmmss') + '.jsonl'
+    Copy-Item -LiteralPath $providerAudit -Destination (Join-Path $stageDiagnosticRoot $name) -Force
+    Write-Host "FAILED_PROVIDER_AUDIT=$([IO.Path]::Combine($stageDiagnosticRoot, $name))"
+  } catch {
+    Write-Host "FAILED_PROVIDER_AUDIT_COPY_ERROR=$($_.Exception.Message)"
+  }
+}
+
 function Test-StageProviderHttp500([int]$operationStartIndex) {
   if (-not (Test-Path -LiteralPath $operationAudit)) { return $false }
   $records = @(Get-Content -LiteralPath $operationAudit | ForEach-Object {
@@ -593,7 +605,10 @@ function Assert-ProviderEgress($allowedEndpoints) {
   if (-not (Test-Path -LiteralPath $providerAudit)) { throw 'Provider audit output is missing.' }
   $entries = @(Get-Content -LiteralPath $providerAudit | ForEach-Object { $_ | ConvertFrom-Json })
   $rejected = @($entries | Where-Object status -eq 'rejected')
-  if ($rejected.Count -gt 0) { throw 'Provider egress proxy rejected an outbound connection.' }
+  if ($rejected.Count -gt 0) {
+    $tuples = @($rejected | ForEach-Object { "$($_.host):$($_.port)" } | Sort-Object -Unique) -join ', '
+    throw "Provider egress proxy rejected an outbound connection ($tuples)."
+  }
   $connected = @($entries | Where-Object status -eq 'connected')
   if ($connected.Count -lt 1) { throw 'No real Provider connection was observed.' }
   foreach ($entry in $connected) {
@@ -809,6 +824,7 @@ print(db.execute(
 } catch {
   Write-Host 'Application JD browser acceptance failed.'
   Save-FailedBrowserAudit
+  Save-FailedProviderAudit
   throw
 } finally {
   $cleanupErrors = [System.Collections.Generic.List[string]]::new()

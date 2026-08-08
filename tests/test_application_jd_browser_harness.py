@@ -115,6 +115,8 @@ def test_application_jd_harness_fails_closed_on_auditor_disconnect() -> None:
     assert "successful Pilot confirmation response" in script
     assert "/api/chat(?:/stream)?$" in script
     assert "/api/chat/confirm/stream$" in script
+    assert "Save-FailedProviderAudit" in script
+    assert "FAILED_PROVIDER_AUDIT=" in script
     assert "/job-description/versions(?:\\?.*)?$" in script
     assert "response_source_kinds" in script
     assert "JD history after Pilot confirmation" in script
