@@ -37,6 +37,7 @@ class _FakeCdp:
         response_body_error: bool = False,
         streaming_response: bool = False,
         list_response: bool = False,
+        hold_streaming_response: bool = False,
         destroy_target_after_navigation: bool = False,
     ) -> None:
         self.reject_network = reject_network
@@ -47,6 +48,7 @@ class _FakeCdp:
         self.response_body_error = response_body_error
         self.streaming_response = streaming_response
         self.list_response = list_response
+        self.hold_streaming_response = hold_streaming_response
         self.destroy_target_after_navigation = destroy_target_after_navigation
         self.methods: list[str] = []
         self.expected_url = "http://127.0.0.1:18766/"
@@ -139,11 +141,12 @@ class _FakeCdp:
                                 },
                             },
                         }))
-                        await websocket.send(json.dumps({
-                            "method": "Network.loadingFinished",
-                            "sessionId": session_id,
-                            "params": {"requestId": "api-request"},
-                        }))
+                        if not (self.streaming_response and self.hold_streaming_response):
+                            await websocket.send(json.dumps({
+                                "method": "Network.loadingFinished",
+                                "sessionId": session_id,
+                                "params": {"requestId": "api-request"},
+                            }))
                     if self.list_response:
                         await websocket.send(json.dumps({
                             "method": "Network.requestWillBeSent",
@@ -389,6 +392,18 @@ def test_browser_network_audit_records_list_response_metadata(tmp_path):
         )
         assert history["response_jd_version_ids"] == [2, 1]
         assert history["response_source_kinds"] == ["pilot", "ui"]
+    finally:
+        fake.close()
+
+
+def test_browser_network_audit_does_not_timeout_on_active_sse(tmp_path):
+    fake = _FakeCdp(response_body_error=True, streaming_response=True, hold_streaming_response=True)
+    try:
+        result = _run_auditor(tmp_path / "active-sse", fake, stop_delay_seconds=0.2)
+        assert result.returncode == 0, result.stderr
+        diagnostic = json.loads((tmp_path / "active-sse" / "diagnostic.json").read_text(encoding="utf-8"))
+        assert diagnostic["status"] == "passed"
+        assert diagnostic["failure_category"] is None
     finally:
         fake.close()
 

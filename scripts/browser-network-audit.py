@@ -441,14 +441,6 @@ class BrowserAudit:
         if isinstance(status, (int, float)):
             record["response_status"] = int(status)
         try:
-            finished = self.response_finished.setdefault((session_id, request_id), asyncio.Event())
-            body_ready = True
-            try:
-                await asyncio.wait_for(finished.wait(), timeout=10.0)
-            except asyncio.TimeoutError:
-                body_ready = False
-            if not body_ready:
-                raise RuntimeError("response body did not finish before audit timeout")
             headers = response.get("headers")
             content_type = ""
             if isinstance(headers, dict):
@@ -458,6 +450,11 @@ class BrowserAudit:
             mime_type = response.get("mimeType")
             is_event_stream = content_type == "text/event-stream" or mime_type == "text/event-stream"
             if not is_event_stream:
+                finished = self.response_finished.setdefault((session_id, request_id), asyncio.Event())
+                try:
+                    await asyncio.wait_for(finished.wait(), timeout=10.0)
+                except asyncio.TimeoutError as exc:
+                    raise RuntimeError("response body did not finish before audit timeout") from exc
                 body_result = await asyncio.wait_for(
                     self.send("Network.getResponseBody", {"requestId": request_id}, session_id),
                     timeout=10.0,
