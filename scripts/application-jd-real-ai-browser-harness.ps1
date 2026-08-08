@@ -1,7 +1,8 @@
 param(
   [ValidateSet('all', 'jd-only')]
   [string]$Stage = 'all',
-  [string]$CdpUrl = $env:APPLICATION_JD_CDP_URL
+  [string]$CdpUrl = $env:APPLICATION_JD_CDP_URL,
+  [string]$CompletionDirectory = $env:APPLICATION_JD_COMPLETION_DIR
 )
 $ErrorActionPreference = 'Stop'
 
@@ -342,6 +343,25 @@ if remaining:
 function Get-BrowserRecords {
   if (-not (Test-Path -LiteralPath $browserAudit)) { throw 'Browser audit output is missing.' }
   return @(Get-Content -LiteralPath $browserAudit | ForEach-Object { $_ | ConvertFrom-Json })
+}
+
+function Wait-StageCompletion([string]$stageName) {
+  if ([string]::IsNullOrWhiteSpace($CompletionDirectory)) {
+    [void](Read-Host "Press Enter after $stageName is complete")
+    return
+  }
+  New-Item -ItemType Directory -Force -Path $CompletionDirectory | Out-Null
+  $marker = Join-Path $CompletionDirectory ($stageName + '.complete')
+  Write-Host "WAITING_FOR_COMPLETION=$marker"
+  for ($i = 0; $i -lt 3600; $i++) {
+    Assert-BrowserAuditorHealthy
+    if (Test-Path -LiteralPath $marker) {
+      Remove-Item -LiteralPath $marker -Force -ErrorAction Stop
+      return
+    }
+    Start-Sleep -Milliseconds 500
+  }
+  throw "Timed out waiting for $stageName completion marker."
 }
 
 function Save-StageDiagnostic([string]$stageName) {
@@ -709,7 +729,7 @@ try {
   Assert-BrowserAuditorHealthy
   Write-Host 'Dedicated browser target is ready. Complete JD UI and Pilot confirmation in that target.'
   Write-Host 'Then complete triage, material kit, and interview preparation in that same target.'
-  [void](Read-Host 'Press Enter after the requested browser stages are complete')
+  Wait-StageCompletion 'jd_pilot'
   Assert-BrowserAuditorHealthy
   Flush-BrowserAudit
   $records = Get-BrowserRecords
@@ -741,7 +761,7 @@ print(db.execute(
       $consumerProviderStart = $script:providerAuditOffset
       $consumerOperationStart = $script:operationAuditOffset
       Write-Host "Complete $consumer in the dedicated browser target."
-      [void](Read-Host 'Press Enter after this consumer is complete')
+      Wait-StageCompletion $consumer
       Assert-BrowserAuditorHealthy
       Flush-BrowserAudit
       $records = Get-BrowserRecords
