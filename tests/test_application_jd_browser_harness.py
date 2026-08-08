@@ -185,7 +185,28 @@ def test_application_jd_harness_records_only_redacted_replay_error_code() -> Non
 
     assert "Get-TriageReplayErrorCode" in script
     assert "response_error_code" in script
+    assert "stage_generation" in script
+    assert "lease_valid_before_replay" in script
+    assert "provider_call_token_present" in script
     assert "response_body" not in script
+
+
+def test_application_jd_harness_supports_targeted_triage_replay_mode() -> None:
+    script = HARNESS.read_text(encoding="utf-8")
+
+    assert "[ValidateSet('all', 'jd-only', 'triage-only')]" in script
+    assert "if ($Stage -eq 'triage-only' -and $consumer -eq 'triage')" in script
+
+
+def test_application_jd_harness_only_replays_a_triage_provider_500() -> None:
+    script = HARNESS.read_text(encoding="utf-8")
+
+    assert (
+        "'triage' {\n"
+        "          Save-StageDiagnostic 'triage'\n"
+        "          if ($triageProvider500) {\n"
+        "            Invoke-TriageReplayOnce"
+    ) in script
 
 
 def test_application_jd_harness_replay_uses_isolated_flash_model_without_changing_formal_config() -> None:

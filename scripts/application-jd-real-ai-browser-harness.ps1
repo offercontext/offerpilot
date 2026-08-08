@@ -1,5 +1,5 @@
 param(
-  [ValidateSet('all', 'jd-only')]
+  [ValidateSet('all', 'jd-only', 'triage-only')]
   [string]$Stage = 'all',
   [string]$CdpUrl = $env:APPLICATION_JD_CDP_URL,
   [string]$CompletionDirectory = $env:APPLICATION_JD_COMPLETION_DIR
@@ -439,6 +439,7 @@ function Get-TriageReplayContext {
   $env:APPLICATION_JD_HARNESS_TRIAGE_CONTEXT = $triageReplayContextPath
   $code = @'
 import hashlib, json, os, sqlite3
+from datetime import datetime, timezone
 from uuid import UUID
 
 def canonical(value):
@@ -461,7 +462,7 @@ except (ValueError, AttributeError):
 with sqlite3.connect(os.environ["APPLICATION_JD_HARNESS_DB"]) as db:
     row = db.execute(
         "SELECT id, stage_generation, status, idempotency_key, source_snapshot_json, "
-        "source_fingerprint_sha256, jd_version_id, lease_expires_at "
+        "source_fingerprint_sha256, jd_version_id, lease_expires_at, provider_call_token "
         "FROM opportunity_fit_review_stages "
         "WHERE application_id = ? AND stage = 'triage' AND idempotency_key = ? "
         "ORDER BY id DESC LIMIT 1",
@@ -469,7 +470,7 @@ with sqlite3.connect(os.environ["APPLICATION_JD_HARNESS_DB"]) as db:
     ).fetchone()
 if row is None:
     raise SystemExit("triage stage for the captured idempotency key is missing")
-stage_id, generation, status, key, snapshot_json, source_fingerprint, jd_version_id, lease_expires_at = row
+stage_id, generation, status, key, snapshot_json, source_fingerprint, jd_version_id, lease_expires_at, provider_call_token = row
 if status != "provider_unknown":
     raise SystemExit(f"triage stage is not a replayable Provider failure: {status}")
 if normalized_key != str(key):
@@ -504,10 +505,19 @@ actual_assertions = [
 ]
 if expected_assertions != actual_assertions:
     raise SystemExit("captured candidate assertions do not match the frozen snapshot")
+try:
+    parsed_lease_expires_at = datetime.fromisoformat(str(lease_expires_at))
+    if parsed_lease_expires_at.tzinfo is None or parsed_lease_expires_at.utcoffset() is None:
+        parsed_lease_expires_at = parsed_lease_expires_at.replace(tzinfo=timezone.utc)
+    lease_valid_at_capture = parsed_lease_expires_at.astimezone(timezone.utc) > datetime.now(timezone.utc)
+except (TypeError, ValueError):
+    lease_valid_at_capture = False
 print(json.dumps({
     "stage_id": int(stage_id),
     "stage_generation": int(generation),
     "status": str(status),
+    "provider_call_token_present": bool(provider_call_token),
+    "lease_valid_at_capture": bool(lease_valid_at_capture),
     "idempotency_key_sha256": digest(normalized_key),
     "payload_fingerprint_sha256": digest(canonical(payload)),
     "source_fingerprint_sha256": str(source_fingerprint),
@@ -579,6 +589,7 @@ function Invoke-TriageReplayOnce([int]$providerStartIndex, [int]$operationStartI
     if ([DateTimeOffset]::UtcNow -gt $deadline) { throw 'Triage replay lease did not expire within the harness bound.' }
     Start-Sleep -Milliseconds 500
   }
+  $leaseValidBeforeReplay = $expiry -gt [DateTimeOffset]::UtcNow
   $body = Get-TriageReplayPayload
   $status = 0
   $responseErrorCode = ''
@@ -612,6 +623,13 @@ function Invoke-TriageReplayOnce([int]$providerStartIndex, [int]$operationStartI
     provider_input_fingerprint_match = [bool]$sameProviderInput
     source_fingerprint_sha256 = [string]$context.source_fingerprint_sha256
     payload_fingerprint_sha256 = [string]$context.payload_fingerprint_sha256
+    stage_id = [int]$context.stage_id
+    stage_generation = [int]$context.stage_generation
+    stage_status = [string]$context.status
+    lease_valid_at_capture = [bool]$context.lease_valid_at_capture
+    lease_valid_before_replay = [bool]$leaseValidBeforeReplay
+    provider_call_token_present = [bool]$context.provider_call_token_present
+    idempotency_key_sha256 = [string]$context.idempotency_key_sha256
     provider_input_fingerprint_sha256 = [string]$firstProvider.input_fingerprint_sha256
     replay_provider_input_fingerprint_sha256 = [string]$replayProvider.input_fingerprint_sha256
     response_status = $status
@@ -849,7 +867,9 @@ print(db.execute(
       switch ($consumer) {
         'triage' {
           Save-StageDiagnostic 'triage'
-          Invoke-TriageReplayOnce $consumerProviderStart $consumerOperationStart
+          if ($triageProvider500) {
+            Invoke-TriageReplayOnce $consumerProviderStart $consumerOperationStart
+          }
         }
         'material-kit' { Save-StageDiagnostic 'material_kit' }
         'interview-preparation' { Save-StageDiagnostic 'interview_preparation' }
@@ -863,6 +883,12 @@ print(db.execute(
       Assert-StageUnchanged $consumerBefore $consumerAfter $allowed
       Clear-Consumer $consumer
       Assert-StageUnchanged $consumerBefore (Get-DbSnapshot) @()
+      if ($Stage -eq 'triage-only' -and $consumer -eq 'triage') {
+        Assert-ProviderEgress $providers
+        Complete-BrowserAudit
+        Write-Host 'Application JD targeted Triage replay acceptance passed.'
+        return
+      }
     }
     Assert-ProviderEgress $providers
   }
