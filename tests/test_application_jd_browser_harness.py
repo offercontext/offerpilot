@@ -147,6 +147,12 @@ def test_application_jd_harness_persists_redacted_stage_input_diagnostics() -> N
     assert "Save-StageDiagnostic 'interview_preparation'" in script
 
 
+def test_application_jd_harness_preserves_redacted_browser_audit_on_failure() -> None:
+    script = HARNESS.read_text(encoding="utf-8")
+    assert "Save-FailedBrowserAudit" in script
+    assert "failed-browser-audit-" in script
+
+
 def test_application_jd_harness_keeps_private_triage_context_for_one_exact_replay() -> None:
     script = HARNESS.read_text(encoding="utf-8")
 

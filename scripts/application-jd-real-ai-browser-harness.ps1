@@ -391,6 +391,18 @@ function Save-StageDiagnostic([string]$stageName) {
   Write-Host "STAGE_DIAGNOSTIC=$stageDiagnosticReport"
 }
 
+function Save-FailedBrowserAudit {
+  if (-not (Test-Path -LiteralPath $browserAudit)) { return }
+  try {
+    New-Item -ItemType Directory -Force -Path $stageDiagnosticRoot | Out-Null
+    $name = 'failed-browser-audit-' + (Get-Date -Format 'yyyyMMddHHmmss') + '.jsonl'
+    Copy-Item -LiteralPath $browserAudit -Destination (Join-Path $stageDiagnosticRoot $name) -Force
+    Write-Host "FAILED_BROWSER_AUDIT=$([IO.Path]::Combine($stageDiagnosticRoot, $name))"
+  } catch {
+    Write-Host "FAILED_BROWSER_AUDIT_COPY_ERROR=$($_.Exception.Message)"
+  }
+}
+
 function Test-StageProviderHttp500([int]$operationStartIndex) {
   if (-not (Test-Path -LiteralPath $operationAudit)) { return $false }
   $records = @(Get-Content -LiteralPath $operationAudit | ForEach-Object {
@@ -796,6 +808,7 @@ print(db.execute(
   Write-Host 'Application JD browser acceptance passed.'
 } catch {
   Write-Host 'Application JD browser acceptance failed.'
+  Save-FailedBrowserAudit
   throw
 } finally {
   $cleanupErrors = [System.Collections.Generic.List[string]]::new()
