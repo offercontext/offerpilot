@@ -249,7 +249,7 @@ The harness removed the isolated service, browser profile, temporary data, Provi
 
 ### Ark Doubao-Seed-2.0-lite Pilot tool-call diagnostic (2026-08-09)
 
-One isolated API-boundary diagnostic was run against the Ark Lite endpoint using the same application-context system prompt and the full OfferPilot tool registry. It did not call the confirmation endpoint, execute a tool handler, create a Pilot JD version, or run any downstream stage. The formal Provider configuration remained unchanged.
+The first instrumentation attempt made one Provider request but failed after the response during local bookkeeping; its output was discarded and is not evidence. After correcting that local harness error, one valid API-boundary diagnostic was run against the Ark Lite endpoint using the same application-context system prompt and the full OfferPilot tool registry. Neither attempt called the confirmation endpoint, executed a tool handler, created a Pilot JD version, or ran any downstream stage. The formal Provider configuration remained unchanged.
 
 - Tool Schema was sent: `true`; 26 function schemas were included, including `save_application_jd_version`.
 - The streamed Provider response had `tool_calls=0` and `finish_reason=stop`.
