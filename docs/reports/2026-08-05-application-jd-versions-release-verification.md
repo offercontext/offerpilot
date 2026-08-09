@@ -3,7 +3,7 @@
 - Verification date: 2026-08-09
 - Branch: `feat/20260805-application-jd-versions`
 - Feature baseline: `455e081`
-- Latest evidence execution HEAD: `7956cca`
+- Latest evidence execution HEAD: `186d114`
 - Status: local and grouped release gates passed; real-AI and browser release gates remain blocked.
 
 ## Scope
@@ -195,6 +195,18 @@ Retained diagnostics:
 - Provider egress audit: `D:\Users\yuqi.chen\AppData\Local\Temp\offerpilot-application-jd-stage-diagnostics\failed-provider-egress-20260809151916.jsonl`
 
 This is an external Ark Triage stability failure, not evidence of a JD-version, CAS, lease, or evidence-contract defect. The isolated service, browser, Provider proxy, and data directory were cleaned. No further Ark retry was made; the branch remains blocked and must not be merged or pushed.
+
+### Controlled local Triage boundary diagnostic (2026-08-09)
+
+To distinguish a shared local 90-second boundary from an external Provider or network boundary, one isolated API-only Triage run used a loopback OpenAI-compatible Provider. The local server delayed its valid, strict `safe_empty` Triage response by exactly 100 seconds; no Ark or DeepSeek request was made.
+
+- The first Triage request returned `201 ready` after `100,996 ms`.
+- The controlled Provider received exactly one request and completed it after `100,000 ms`; the Provider result audit was `success`, with no failure category. The only egress host was `127.0.0.1`.
+- The redacted Provider input fingerprint was `9b0201da...27edb5` (full hash retained only in the temporary diagnostic); the canonical request-payload fingerprint was `7fad211c...7fd90aa7`.
+- An exact same-key replay returned `200 ready` in `7 ms` and the Provider call count remained `1`.
+- A deliberately changed same-key payload returned `409` in `6 ms` with the precise `error_code=opportunity_fit_idempotency_conflict`; its canonical payload fingerprint differed (`25a137ca...346580b`). It made no Provider call.
+
+This controlled result does not reproduce a local 90-second timeout: the local OfferPilot/LiteLLM path accepted a valid response beyond 100 seconds. The exact same-input replay also did not reproduce the historical 409; the captured 409 is the deterministic source/idempotency-conflict path. Therefore the historical Ark/DeepSeek failures near 91–92 seconds remain attributable to an external Provider, VPN/proxy, or upstream gateway boundary until new evidence distinguishes those layers. No timeout, retry, lease, CAS, or evidence contract was changed. The temporary controlled service, database, and audit files were cleaned.
 
 ## Cleanup and remaining risk
 
