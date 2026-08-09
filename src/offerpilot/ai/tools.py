@@ -37,6 +37,10 @@ EVENT_TYPES = ("written_test", "interview", "offer_step", "deadline", "custom")
 OFFER_STATUSES = ("pending", "negotiating", "accepted", "declined", "expired")
 
 _EDITABLE_FIELDS_BY_TOOL: dict[str, list[dict[str, Any]]] = {
+    "save_application_jd_version": [
+        {"field": "jd_text", "type": "long_text"},
+        {"field": "source_url", "type": "string", "clearable": True, "clear_value": None},
+    ],
     "create_application": [
         {"field": "company_name", "type": "string"},
         {"field": "position_name", "type": "string"},

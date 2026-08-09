@@ -31,6 +31,11 @@ from offerpilot.ai.agent import (
     resume_after_confirm,
     run_turn,
 )
+from offerpilot.ai.deterministic_actions import (
+    build_pilot_pending_action,
+    decide_pilot_action,
+    parse_pilot_action,
+)
 from offerpilot.ai.material_proposals import MaterialProposalModelError
 from offerpilot.ai.interview_review_proposals import InterviewReviewModelError
 from offerpilot.ai.interview_knowledge_capture import (
@@ -839,6 +844,370 @@ def create_app(
     @app.on_event("shutdown")
     def _stop_knowledge_worker() -> None:
         knowledge_runtime.stop(timeout=5)
+
+    def _deterministic_pilot_pending_messages(pending: PendingAction) -> list[dict[str, str]]:
+        return [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": json.dumps(
+                    [
+                        {
+                            "id": pending.tool_call_id,
+                            "name": pending.tool_name,
+                            "args": _safe_tool_args(pending.args),
+                        }
+                    ],
+                    ensure_ascii=False,
+                ),
+            }
+        ]
+
+    def _deterministic_pilot_application(conversation: Any) -> Any | JSONResponse:
+        if conversation.context_type != "application":
+            return error_response(422, "application context is required for saving a JD")
+        try:
+            application_id = int(conversation.context_ref)
+        except (TypeError, ValueError):
+            return error_response(422, "application context is invalid")
+        application = applications.get(application_id)
+        if application is None:
+            return error_response(404, "application not found")
+        return application
+
+    def _deterministic_pilot_chat(
+        payload: dict[str, Any],
+        message: str,
+        conversation_id: int,
+        conversation: Any,
+    ) -> JSONResponse | dict[str, Any] | None:
+        explicit_action = "pilot_action" in payload
+        action = None
+        if explicit_action:
+            try:
+                action = parse_pilot_action(payload["pilot_action"])
+            except ValueError as exc:
+                return error_response(422, str(exc))
+
+        clarification = chat.get_pending_clarification(conversation_id)
+        jd_clarification = (
+            clarification
+            if clarification is not None
+            and clarification[0].tool_name == "save_application_jd_version"
+            else None
+        )
+        current_jd = None
+        application = _deterministic_pilot_application(conversation)
+        if isinstance(application, JSONResponse):
+            if explicit_action or jd_clarification is not None:
+                return application
+            return None
+        current_jd = application_jd_versions.get_current(application.id)
+
+        if explicit_action:
+            if action is not None and action.jd_text is None:
+                decision_kind = "collecting_jd"
+                decision_question = "请粘贴完整岗位描述"
+                decision_text = None
+            else:
+                decision_kind = "pending_confirmation"
+                decision_question = ""
+                decision_text = action.jd_text if action is not None else None
+        else:
+            decision = decide_pilot_action(
+                message,
+                has_current_jd=current_jd is not None,
+                collecting_jd=jd_clarification is not None,
+            )
+            decision_kind = decision.kind
+            decision_question = decision.question
+            decision_text = decision.jd_text
+
+        if decision_kind == "normal_agent":
+            return None
+
+        existing_pending = chat.get_pending_action(conversation_id)
+        if existing_pending is not None:
+            if existing_pending.tool_name != "save_application_jd_version":
+                return error_response(409, "请先处理当前待确认操作")
+            return {
+                "type": "confirmation_required",
+                "conversation_id": conversation_id,
+                "pending_action": _pending_action_json(existing_pending, applications),
+            }
+
+        if decision_kind == "cancelled":
+            chat.append_message(conversation_id, "user", content=message)
+            chat.clear_pending_clarification(conversation_id)
+            chat.append_message(conversation_id, "assistant", content="已取消保存岗位资料。")
+            return {
+                "type": "message",
+                "conversation_id": conversation_id,
+                "message": "已取消保存岗位资料。",
+            }
+
+        if decision_kind == "collecting_jd":
+            source_url = action.source_url if action is not None else None
+            pending = build_pilot_pending_action(
+                application_id=application.id,
+                current_version_id=current_jd.id if current_jd is not None else None,
+                jd_text="",
+                source_url=source_url,
+                id_factory=lambda: uuid4().hex,
+                key_factory=lambda: uuid4().hex,
+            )
+            chat.append_message(conversation_id, "user", content=message)
+            chat.clear_pending_action(conversation_id)
+            chat.set_pending_clarification(conversation_id, pending, decision_question)
+            chat.append_message(conversation_id, "assistant", content=decision_question)
+            return {
+                "type": "message",
+                "conversation_id": conversation_id,
+                "message": decision_question,
+            }
+
+        if not isinstance(decision_text, str) or not decision_text.strip():
+            return error_response(422, "jd_text is required")
+        source_url = action.source_url if action is not None else None
+
+        def new_id() -> str:
+            return uuid4().hex
+
+        def new_key() -> str:
+            return uuid4().hex
+
+        id_factory: Callable[[], str] = new_id
+        key_factory: Callable[[], str] = new_key
+        if jd_clarification is not None:
+            previous_pending = jd_clarification[0]
+            previous_args = _safe_tool_args(previous_pending.args)
+            previous_key = previous_args.get("idempotency_key")
+            if isinstance(previous_key, str):
+                def previous_id() -> str:
+                    return previous_pending.tool_call_id
+
+                def previous_key_factory() -> str:
+                    return previous_key
+
+                id_factory = previous_id
+                key_factory = previous_key_factory
+            if source_url is None:
+                previous_url = previous_args.get("source_url")
+                source_url = previous_url if isinstance(previous_url, str) else None
+
+        pending = build_pilot_pending_action(
+            application_id=application.id,
+            current_version_id=current_jd.id if current_jd is not None else None,
+            jd_text=decision_text,
+            source_url=source_url,
+            id_factory=id_factory,
+            key_factory=key_factory,
+        )
+        chat.append_message(conversation_id, "user", content=message)
+        if not chat.persist_pending_action(
+            conversation_id,
+            pending,
+            _deterministic_pilot_pending_messages(pending),
+        ):
+            return error_response(409, "conversation is archived")
+        return {
+            "type": "confirmation_required",
+            "conversation_id": conversation_id,
+            "pending_action": _pending_action_json(pending, applications),
+        }
+
+    def _deterministic_pilot_stream_response(
+        conversation: Any,
+        response: dict[str, Any],
+    ) -> StreamingResponse:
+        run = SseRun(
+            run_id=str(uuid4()),
+            conversation_id=int(response["conversation_id"]),
+            context_type=str(conversation.context_type or "workspace"),
+            context_ref=str(conversation.context_ref or ""),
+            mode=str(conversation.mode or "general"),
+        )
+
+        def emit(event: str, data: dict[str, Any] | None = None) -> str:
+            envelope = run.envelope(event, data)
+            return format_sse(event, f"{run.run_id}:{envelope['seq']}", envelope)
+
+        def stream() -> Any:
+            yield emit(
+                "meta",
+                {
+                    "stream_version": STREAM_VERSION,
+                    "supports_delta": False,
+                    "supports_tool_events": False,
+                    "supports_confirmation": True,
+                },
+            )
+            yield emit("user_message_saved", {"role": "user"})
+            if response["type"] == "confirmation_required":
+                yield emit("status", {"phase": "waiting_confirmation", "label": "需要确认"})
+                yield emit(
+                    "confirmation_required",
+                    {"pending_action": response["pending_action"]},
+                )
+            else:
+                yield emit("status", {"phase": "collecting_jd", "label": "等待岗位描述"})
+                yield emit("assistant_message", {"message": response["message"]})
+            yield emit("completed", {"response": response, "persisted": True})
+
+        return StreamingResponse(
+            stream(), media_type="text/event-stream; charset=utf-8", headers=sse_headers()
+        )
+
+    def _deterministic_pilot_confirmation(
+        conversation_id: int,
+        pending: PendingAction,
+        *,
+        approved: bool,
+        edited_args: dict[str, Any] | None,
+        rejection_feedback: str,
+    ) -> JSONResponse | dict[str, Any]:
+        registry = offerpilot_tool_registry(
+            applications,
+            events,
+            notes,
+            offers,
+            resumes=resumes,
+            jd_analyses=jd_analyses,
+            application_jd_versions=application_jd_versions,
+        )
+        tool = registry.get(pending.tool_name)
+        if tool is None:
+            return error_response(409, "pending action is no longer available")
+        try:
+            effective_pending = (
+                prepare_pending_action(pending, registry, edited_args) if approved else pending
+            )
+        except ValueError as exc:
+            return error_response(422, f"invalid confirmation edits: {exc}")
+
+        if approved:
+            validator = tool.get("validate")
+            validation_error = str(validator(effective_pending.args) or "") if callable(validator) else ""
+            if validation_error:
+                return error_response(422, validation_error)
+            try:
+                result = str(tool["handler"](effective_pending.args))
+            except Exception as exc:
+                result = f"错误：{exc}"
+            succeeded = not result.startswith("错误：")
+            tool_message = Message(
+                role="tool",
+                content=result,
+                tool_call_id=effective_pending.tool_call_id,
+            )
+            if not succeeded:
+                failure_code = result.removeprefix("错误：").strip()
+                if failure_code in {
+                    "application_jd_stale_current_version",
+                    "application_jd_idempotency_conflict",
+                }:
+                    args = _safe_tool_args(effective_pending.args)
+                    application_id = args.get("application_id")
+                    jd_text = args.get("jd_text")
+                    if type(application_id) is not int or not isinstance(jd_text, str):
+                        return error_response(409, "岗位资料已发生冲突，请刷新后重试。", code=failure_code)
+                    current = application_jd_versions.get_current(application_id)
+                    source_url = args.get("source_url")
+                    try:
+                        replacement = build_pilot_pending_action(
+                            application_id=application_id,
+                            current_version_id=current.id if current is not None else None,
+                            jd_text=jd_text,
+                            source_url=source_url if isinstance(source_url, str) else None,
+                            id_factory=lambda: uuid4().hex,
+                            key_factory=lambda: uuid4().hex,
+                        )
+                    except ValueError:
+                        return error_response(409, "岗位资料已发生冲突，请刷新后重试。", code=failure_code)
+                    replaced = chat.replace_pending_confirmation(
+                        conversation_id,
+                        pending,
+                        replacement,
+                        tool_message,
+                        {},
+                        terminal_assistant_content="当前岗位资料已变化，请重新确认保存。",
+                    )
+                    if replaced is None:
+                        return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
+                    return error_response(
+                        409,
+                        "当前岗位资料已变化，请重新确认保存。",
+                        code=failure_code,
+                        details={"pending_action": _pending_action_json(replacement, applications)},
+                    )
+                if failure_code == "application_jd_invalid_request":
+                    return error_response(422, "岗位资料参数无效，请修改后重试。", code=failure_code)
+                return error_response(502, "岗位资料保存结果未知，请保留当前确认卡后重试。", code=failure_code)
+            undo_update: dict[str, Any] | None = {}
+            response_message = "岗位资料已保存。" if succeeded else "岗位资料保存失败，请检查后重试。"
+            write_status = "success" if succeeded else "failed"
+        else:
+            result = _CANCELLED_TOOL_RESULT
+            tool_message = Message(
+                role="tool",
+                content=result,
+                tool_call_id=pending.tool_call_id,
+            )
+            undo_update = None
+            response_message = "已取消保存岗位资料。"
+            write_status = "cancelled"
+
+        generation = chat.resolve_pending_confirmation(
+            conversation_id,
+            pending,
+            tool_message,
+            undo_update,
+            terminal_assistant_content=response_message,
+        )
+        if generation is None:
+            return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
+        response: dict[str, Any] = {
+            "type": "message",
+            "conversation_id": conversation_id,
+            "message": response_message,
+            "write_status": write_status,
+        }
+        return response
+
+    def _deterministic_pilot_confirmation_stream_response(
+        conversation: Any,
+        response: dict[str, Any],
+    ) -> StreamingResponse:
+        run = SseRun(
+            run_id=str(uuid4()),
+            conversation_id=int(response["conversation_id"]),
+            context_type=str(conversation.context_type or "workspace"),
+            context_ref=str(conversation.context_ref or ""),
+            mode=str(conversation.mode or "general"),
+        )
+
+        def emit(event: str, data: dict[str, Any] | None = None) -> str:
+            envelope = run.envelope(event, data)
+            return format_sse(event, f"{run.run_id}:{envelope['seq']}", envelope)
+
+        def stream() -> Any:
+            yield emit(
+                "meta",
+                {
+                    "stream_version": STREAM_VERSION,
+                    "supports_delta": False,
+                    "supports_tool_events": False,
+                    "supports_confirmation": True,
+                },
+            )
+            yield emit("user_message_saved", {"role": "user"})
+            yield emit("status", {"phase": "completed", "label": "已完成"})
+            yield emit("assistant_message", {"message": response["message"]})
+            yield emit("completed", {"response": response, "persisted": True})
+
+        return StreamingResponse(
+            stream(), media_type="text/event-stream; charset=utf-8", headers=sse_headers()
+        )
     @app.middleware("http")
     async def cors_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
         audit_path = os.getenv("OFFERPILOT_HTTP_AUDIT_FILE")
@@ -3562,9 +3931,6 @@ def create_app(
             )
         except ValueError as exc:
             return error_response(422, str(exc))
-        model = _chat_model(chat_model, resolved_data_dir)
-        if isinstance(model, JSONResponse):
-            return model
         message = str(payload.get("message") or "")
         if not message:
             return error_response(400, "message is required")
@@ -3588,6 +3954,21 @@ def create_app(
             conversation = chat.get_conversation(conversation_id)
             if conversation is None:
                 return error_response(404, "conversation not found")
+
+        deterministic_response = _deterministic_pilot_chat(
+            payload,
+            message,
+            conversation_id,
+            conversation,
+        )
+        if isinstance(deterministic_response, JSONResponse):
+            return deterministic_response
+        if deterministic_response is not None:
+            return JSONResponse(deterministic_response)
+
+        model = _chat_model(chat_model, resolved_data_dir)
+        if isinstance(model, JSONResponse):
+            return model
 
         clarification = chat.get_pending_clarification(conversation_id)
         chat.append_message(conversation_id, "user", content=message)
@@ -3714,9 +4095,6 @@ def create_app(
             )
         except ValueError as exc:
             return error_response(422, str(exc))
-        model = _chat_model(chat_model, resolved_data_dir)
-        if isinstance(model, JSONResponse):
-            return model
         message = str(payload.get("message") or "")
         if not message:
             return error_response(400, "message is required")
@@ -3740,6 +4118,21 @@ def create_app(
             conversation = chat.get_conversation(conversation_id)
             if conversation is None:
                 return error_response(404, "conversation not found")
+
+        deterministic_response = _deterministic_pilot_chat(
+            payload,
+            message,
+            conversation_id,
+            conversation,
+        )
+        if isinstance(deterministic_response, JSONResponse):
+            return deterministic_response
+        if deterministic_response is not None:
+            return _deterministic_pilot_stream_response(conversation, deterministic_response)
+
+        model = _chat_model(chat_model, resolved_data_dir)
+        if isinstance(model, JSONResponse):
+            return model
 
         clarification = chat.get_pending_clarification(conversation_id)
         chat.append_message(conversation_id, "user", content=message)
@@ -3925,9 +4318,6 @@ def create_app(
         conversation_id = _confirmation_conversation_id(payload)
         if isinstance(conversation_id, JSONResponse):
             return conversation_id
-        model = _chat_model(chat_model, resolved_data_dir)
-        if isinstance(model, JSONResponse):
-            return model
         conversation = chat.get_conversation(conversation_id)
         if conversation is None:
             return error_response(404, "conversation not found")
@@ -3941,6 +4331,22 @@ def create_app(
             if edited_args is not None or rejection_feedback:
                 return error_response(422, "confirmation_token is required when changing confirmation details")
             confirmation_token = _confirmation_token(pending)
+        if pending.tool_name == "save_application_jd_version":
+            if not compare_digest(confirmation_token, _confirmation_token(pending)):
+                return error_response(409, "stale pending action")
+            deterministic_response = _deterministic_pilot_confirmation(
+                conversation_id,
+                pending,
+                approved=approved,
+                edited_args=edited_args,
+                rejection_feedback=rejection_feedback,
+            )
+            if isinstance(deterministic_response, JSONResponse):
+                return deterministic_response
+            return JSONResponse(deterministic_response)
+        model = _chat_model(chat_model, resolved_data_dir)
+        if isinstance(model, JSONResponse):
+            return model
         if not compare_digest(confirmation_token, _confirmation_token(pending)):
             return error_response(409, "待确认操作已被更新，请刷新对话后重试。")
         registry = offerpilot_tool_registry(
@@ -4187,9 +4593,6 @@ def create_app(
         conversation_id = _confirmation_conversation_id(payload)
         if isinstance(conversation_id, JSONResponse):
             return conversation_id
-        model = _chat_model(chat_model, resolved_data_dir)
-        if isinstance(model, JSONResponse):
-            return model
         conversation = chat.get_conversation(conversation_id)
         if conversation is None:
             return error_response(404, "conversation not found")
@@ -4231,6 +4634,25 @@ def create_app(
             if edited_args is not None or rejection_feedback:
                 return error_response(422, "confirmation_token is required when changing confirmation details")
             confirmation_token = _confirmation_token(pending)
+        if pending.tool_name == "save_application_jd_version":
+            if not compare_digest(confirmation_token, _confirmation_token(pending)):
+                return stale_response()
+            deterministic_response = _deterministic_pilot_confirmation(
+                conversation_id,
+                pending,
+                approved=approved,
+                edited_args=edited_args,
+                rejection_feedback=rejection_feedback,
+            )
+            if isinstance(deterministic_response, JSONResponse):
+                return deterministic_response
+            return _deterministic_pilot_confirmation_stream_response(
+                conversation,
+                deterministic_response,
+            )
+        model = _chat_model(chat_model, resolved_data_dir)
+        if isinstance(model, JSONResponse):
+            return model
         if not compare_digest(confirmation_token, _confirmation_token(pending)):
             return stale_response()
 

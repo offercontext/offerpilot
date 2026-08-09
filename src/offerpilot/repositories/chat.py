@@ -299,6 +299,64 @@ class ChatRepository:
             session.commit()
             return now
 
+    def replace_pending_confirmation(
+        self,
+        conversation_id: int,
+        expected: PendingAction,
+        replacement: PendingAction,
+        tool_message: Message,
+        undo: dict[str, Any] | None,
+        *,
+        terminal_assistant_content: str = "",
+    ) -> datetime | None:
+        """Atomically replace a stale pending card only when the original still owns it."""
+        values: dict[str, Any] = {
+            "pending_tool_call_id": replacement.tool_call_id,
+            "pending_tool_name": replacement.tool_name,
+            "pending_args": replacement.args,
+            "pending_human": replacement.human,
+            "clarification_tool_call_id": "",
+            "clarification_tool_name": "",
+            "clarification_args": "",
+            "clarification_human": "",
+            "clarification_question": "",
+        }
+        if undo is not None:
+            values["last_write_undo_json"] = json.dumps(undo, ensure_ascii=False) if undo else ""
+        with self._session_factory() as session:
+            now = _next_conversation_timestamp(session, conversation_id)
+            values["updated_at"] = now
+            result = session.execute(
+                update(Conversation)
+                .where(Conversation.id == conversation_id)
+                .where(Conversation.archived_at.is_(None))
+                .where(Conversation.pending_tool_call_id == expected.tool_call_id)
+                .where(Conversation.pending_tool_name == expected.tool_name)
+                .where(Conversation.pending_args == expected.args)
+                .values(**values)
+            )
+            if getattr(result, "rowcount", 0) != 1:
+                session.rollback()
+                return None
+            session.add(
+                ChatMessage(
+                    conversation_id=conversation_id,
+                    role=tool_message.role,
+                    content=tool_message.content,
+                    tool_call_id=tool_message.tool_call_id,
+                )
+            )
+            if terminal_assistant_content:
+                session.add(
+                    ChatMessage(
+                        conversation_id=conversation_id,
+                        role="assistant",
+                        content=terminal_assistant_content,
+                    )
+                )
+            session.commit()
+            return now
+
     def persist_confirmation_continuation(
         self,
         conversation_id: int,

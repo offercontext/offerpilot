@@ -36,7 +36,6 @@ def test_parse_public_action_preserves_jd_text_and_does_not_fetch_url():
         {},
         {"type": "other"},
         {"type": "application_jd_save", "jdText": 3},
-        {"type": "application_jd_save", "jdText": ""},
         {"type": "application_jd_save", "jdText": "JD", "application_id": 7},
         {"type": "application_jd_save", "jdText": "JD", "sourceUrl": 3},
         "not-an-object",
@@ -71,6 +70,14 @@ def test_parse_public_action_uses_utf8_byte_limit(size, accepted, unit):
     else:
         with pytest.raises(ValueError, match="too large"):
             parse_pilot_action(payload)
+
+
+@pytest.mark.parametrize("payload", [{"type": "application_jd_save"}, {"type": "application_jd_save", "jdText": "  "}])
+def test_parse_public_action_without_jd_is_valid_for_clarification(payload):
+    action = parse_pilot_action(payload)
+
+    assert action.jd_text is None
+    assert action.source_url is None
 
 
 @pytest.mark.parametrize(

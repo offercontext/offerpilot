@@ -156,6 +156,55 @@ def test_resolve_pending_confirmation_cas_does_not_clear_newer_pending(tmp_path)
     assert repo.list_messages(conversation.id) == []
 
 
+def test_replace_pending_confirmation_cas_keeps_new_card_and_result_atomic(tmp_path):
+    repo = ChatRepository(init_database(tmp_path / "data.db"))
+    conversation = repo.create_conversation("confirm")
+    expected = PendingAction("write-1", "save_application_jd_version", '{"jd_text":"old"}', "old")
+    replacement = PendingAction(
+        "write-2", "save_application_jd_version", '{"jd_text":"old","retry":true}', "retry"
+    )
+    repo.set_pending_action(conversation.id, expected)
+    repo.set_last_write_undo(conversation.id, {"kind": "old"})
+
+    replaced = repo.replace_pending_confirmation(
+        conversation.id,
+        expected,
+        replacement,
+        Message(role="tool", content="错误：application_jd_stale_current_version", tool_call_id="write-1"),
+        {},
+        terminal_assistant_content="请重新确认岗位资料。",
+    )
+
+    assert replaced is not None
+    assert repo.get_pending_action(conversation.id) == replacement
+    assert repo.get_last_write_undo(conversation.id) is None
+    assert [(item.role, item.content) for item in repo.list_messages(conversation.id)] == [
+        ("tool", "错误：application_jd_stale_current_version"),
+        ("assistant", "请重新确认岗位资料。"),
+    ]
+
+
+def test_replace_pending_confirmation_cas_does_not_overwrite_newer_card(tmp_path):
+    repo = ChatRepository(init_database(tmp_path / "data.db"))
+    conversation = repo.create_conversation("confirm")
+    expected = PendingAction("write-1", "save_application_jd_version", '{"jd_text":"old"}', "old")
+    newer = PendingAction("write-3", "other", '{"value":1}', "newer")
+    replacement = PendingAction("write-2", "save_application_jd_version", '{"jd_text":"retry"}', "retry")
+    repo.set_pending_action(conversation.id, newer)
+
+    replaced = repo.replace_pending_confirmation(
+        conversation.id,
+        expected,
+        replacement,
+        Message(role="tool", content="error", tool_call_id="write-1"),
+        {},
+    )
+
+    assert replaced is None
+    assert repo.get_pending_action(conversation.id) == newer
+    assert repo.list_messages(conversation.id) == []
+
+
 def test_resolve_pending_confirmation_preserves_existing_undo(tmp_path):
     repo = ChatRepository(init_database(tmp_path / "data.db"))
     conversation = repo.create_conversation("confirm")

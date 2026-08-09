@@ -27,7 +27,7 @@ _ASCII_KEY = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 
 @dataclass(frozen=True)
 class PilotAction:
-    jd_text: str
+    jd_text: str | None
     source_url: str | None
 
 
@@ -44,14 +44,18 @@ def parse_pilot_action(payload: Any) -> PilotAction:
         raise ValueError("pilot_action must be an object")
     if set(payload) - _ACTION_KEYS or payload.get("type") != "application_jd_save":
         raise ValueError("unsupported pilot_action")
-    jd_text = payload.get("jdText")
-    if not isinstance(jd_text, str) or not jd_text.strip():
-        raise ValueError("jdText is required")
-    if len(jd_text.encode("utf-8")) > MAX_JD_UTF8_BYTES:
-        raise ValueError("jdText is too large")
     source_url = payload.get("sourceUrl")
     if source_url is not None and not isinstance(source_url, str):
         raise ValueError("sourceUrl must be a string or null")
+    jd_text = payload.get("jdText")
+    if jd_text is None:
+        return PilotAction(jd_text=None, source_url=source_url)
+    if not isinstance(jd_text, str):
+        raise ValueError("jdText is required")
+    if not jd_text.strip():
+        return PilotAction(jd_text=None, source_url=source_url)
+    if len(jd_text.encode("utf-8")) > MAX_JD_UTF8_BYTES:
+        raise ValueError("jdText is too large")
     return PilotAction(jd_text=jd_text, source_url=source_url)
 
 
@@ -101,7 +105,7 @@ def build_pilot_pending_action(
 ) -> PendingAction:
     if type(application_id) is not int or application_id <= 0:
         raise ValueError("application_id must be a positive integer")
-    if not isinstance(jd_text, str) or not jd_text.strip():
+    if not isinstance(jd_text, str):
         raise ValueError("jd_text is required")
     if len(jd_text.encode("utf-8")) > MAX_JD_UTF8_BYTES:
         raise ValueError("jd_text is too large")

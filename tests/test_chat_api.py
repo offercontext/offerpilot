@@ -125,6 +125,310 @@ class ProtocolValidatingModel:
         return Assistant(content=self.reply)
 
 
+class CountingFailingModel:
+    def __init__(self):
+        self.calls = 0
+
+    def complete(self, messages, tools):
+        self.calls += 1
+        raise AssertionError("deterministic Pilot JD flow must not call a model")
+
+
+def test_deterministic_pilot_jd_action_creates_confirmation_without_ai(tmp_path):
+    model = CountingFailingModel()
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model, title_model=model))
+    application = client.post(
+        "/api/applications",
+        json={"company_name": "启明智能", "position_name": "后端工程师", "status": "interview"},
+    ).json()
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "message": "保存 JD：职位：后端工程师\n负责 API 设计",
+            "conversation_id": 0,
+            "context_type": "application",
+            "context_ref": str(application["id"]),
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["type"] == "confirmation_required"
+    assert body["pending_action"]["tool_name"] == "save_application_jd_version"
+    assert body["pending_action"]["args"]["application_id"] == application["id"]
+    assert body["pending_action"]["args"]["jd_text"] == "职位：后端工程师\n负责 API 设计"
+    assert model.calls == 0
+
+
+def test_deterministic_pilot_jd_stream_uses_fixed_events_without_model(tmp_path):
+    model = CountingFailingModel()
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model, title_model=model))
+    application = client.post(
+        "/api/applications",
+        json={"company_name": "启明智能", "position_name": "后端工程师", "status": "interview"},
+    ).json()
+
+    response = client.post(
+        "/api/chat/stream",
+        json={
+            "message": "保存 JD：职位：后端工程师",
+            "conversation_id": 0,
+            "context_type": "application",
+            "context_ref": str(application["id"]),
+        },
+    )
+
+    assert response.status_code == 200
+    events = _parse_sse_events(response.text)
+    assert [event["event"] for event in events] == [
+        "meta",
+        "user_message_saved",
+        "status",
+        "confirmation_required",
+        "completed",
+    ]
+    assert not any(event["event"] in {"model_delta", "tool_call"} for event in events)
+    assert model.calls == 0
+
+
+def test_deterministic_pilot_clarification_collects_jd_without_ai(tmp_path):
+    model = CountingFailingModel()
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model, title_model=model))
+    application = client.post(
+        "/api/applications",
+        json={"company_name": "启明智能", "position_name": "后端工程师", "status": "interview"},
+    ).json()
+    context = {"context_type": "application", "context_ref": str(application["id"])}
+
+    first = client.post(
+        "/api/chat",
+        json={"message": "保存 JD", "conversation_id": 0, **context},
+    )
+    assert first.status_code == 200
+    assert first.json()["message"] == "请粘贴完整岗位描述"
+
+    second = client.post(
+        "/api/chat",
+        json={
+            "message": "职位：数据工程师\n负责数据平台",
+            "conversation_id": first.json()["conversation_id"],
+        },
+    )
+    assert second.status_code == 200
+    assert second.json()["type"] == "confirmation_required"
+    assert second.json()["pending_action"]["args"]["jd_text"] == "职位：数据工程师\n负责数据平台"
+    assert model.calls == 0
+
+
+def test_deterministic_pilot_action_payload_creates_confirmation_without_ai(tmp_path):
+    model = CountingFailingModel()
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model, title_model=model))
+    application = client.post(
+        "/api/applications",
+        json={"company_name": "启明智能", "position_name": "后端工程师", "status": "interview"},
+    ).json()
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "message": "保存岗位资料",
+            "pilot_action": {
+                "type": "application_jd_save",
+                "jdText": "职位：后端工程师\n负责 API 设计",
+                "sourceUrl": "https://jobs.example.test/backend",
+            },
+            "conversation_id": 0,
+            "context_type": "application",
+            "context_ref": str(application["id"]),
+        },
+    )
+
+    assert response.status_code == 200
+    pending = response.json()["pending_action"]
+    assert pending["args"] == {
+        "application_id": application["id"],
+        "expected_current_version_id": None,
+        "idempotency_key": pending["args"]["idempotency_key"],
+        "jd_text": "职位：后端工程师\n负责 API 设计",
+        "source_url": "https://jobs.example.test/backend",
+    }
+    assert len(pending["args"]["idempotency_key"]) == 32
+    assert model.calls == 0
+
+
+@pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
+def test_deterministic_pilot_confirmation_writes_once_without_ai(tmp_path, endpoint):
+    model = CountingFailingModel()
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model, title_model=model))
+    application = client.post(
+        "/api/applications",
+        json={"company_name": "启明智能", "position_name": "后端工程师", "status": "interview"},
+    ).json()
+    pending = client.post(
+        "/api/chat",
+        json={
+            "message": "保存 JD：职位：后端工程师",
+            "conversation_id": 0,
+            "context_type": "application",
+            "context_ref": str(application["id"]),
+        },
+    ).json()
+
+    response = client.post(
+        endpoint,
+        json={
+            "conversation_id": pending["conversation_id"],
+            "approved": True,
+            "confirmation_token": pending["pending_action"]["confirmation_token"],
+        },
+    )
+
+    assert response.status_code == 200
+    if endpoint.endswith("/stream"):
+        events = _parse_sse_events(response.text)
+        assert events[-1]["event"] == "completed"
+        assert events[-1]["data"]["data"]["response"]["write_status"] == "success"
+    else:
+        assert response.json()["write_status"] == "success"
+        assert response.json()["message"] == "岗位资料已保存。"
+    versions = client.get(f"/api/applications/{application['id']}/job-description/versions").json()
+    assert len(versions) == 1
+    assert versions[0]["source_kind"] == "pilot"
+    assert model.calls == 0
+
+
+def test_deterministic_pilot_rejection_does_not_write_without_ai(tmp_path):
+    model = CountingFailingModel()
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model, title_model=model))
+    application = client.post(
+        "/api/applications",
+        json={"company_name": "启明智能", "position_name": "后端工程师", "status": "interview"},
+    ).json()
+    pending = client.post(
+        "/api/chat",
+        json={
+            "message": "保存 JD：职位：后端工程师",
+            "conversation_id": 0,
+            "context_type": "application",
+            "context_ref": str(application["id"]),
+        },
+    ).json()
+
+    response = client.post(
+        "/api/chat/confirm",
+        json={
+            "conversation_id": pending["conversation_id"],
+            "approved": False,
+            "confirmation_token": pending["pending_action"]["confirmation_token"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["write_status"] == "cancelled"
+    assert "取消" in response.json()["message"]
+    assert client.get(f"/api/applications/{application['id']}/job-description/versions").json() == []
+    assert model.calls == 0
+
+
+def test_deterministic_pilot_stale_confirmation_keeps_original_text_in_new_card(tmp_path):
+    model = CountingFailingModel()
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model, title_model=model))
+    application = client.post(
+        "/api/applications",
+        json={"company_name": "启明智能", "position_name": "后端工程师", "status": "interview"},
+    ).json()
+    first = client.post(
+        f"/api/applications/{application['id']}/job-description/versions",
+        json={
+            "jd_text": "旧版岗位描述",
+            "source_url": None,
+            "expected_current_version_id": None,
+            "idempotency_key": "deterministic-stale-v1",
+        },
+    ).json()
+    pending = client.post(
+        "/api/chat",
+        json={
+            "message": "保存 JD：新版岗位描述",
+            "conversation_id": 0,
+            "context_type": "application",
+            "context_ref": str(application["id"]),
+        },
+    ).json()
+    client.post(
+        f"/api/applications/{application['id']}/job-description/versions",
+        json={
+            "jd_text": "更新后的岗位描述",
+            "source_url": None,
+            "expected_current_version_id": first["id"],
+            "idempotency_key": "deterministic-stale-v2",
+        },
+    )
+
+    response = client.post(
+        "/api/chat/confirm",
+        json={
+            "conversation_id": pending["conversation_id"],
+            "approved": True,
+            "confirmation_token": pending["pending_action"]["confirmation_token"],
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "application_jd_stale_current_version"
+    replacement = response.json()["pending_action"]
+    assert replacement["args"]["jd_text"] == "新版岗位描述"
+    assert replacement["args"]["expected_current_version_id"] != first["id"]
+    assert replacement["confirmation_token"] != pending["pending_action"]["confirmation_token"]
+    assert len(client.get(f"/api/applications/{application['id']}/job-description/versions").json()) == 2
+    assert model.calls == 0
+
+
+def test_deterministic_pilot_retries_same_key_after_chat_cas_failure(monkeypatch, tmp_path):
+    model = CountingFailingModel()
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model, title_model=model))
+    application = client.post(
+        "/api/applications",
+        json={"company_name": "启明智能", "position_name": "后端工程师", "status": "interview"},
+    ).json()
+    pending = client.post(
+        "/api/chat",
+        json={
+            "message": "保存 JD：岗位要求",
+            "conversation_id": 0,
+            "context_type": "application",
+            "context_ref": str(application["id"]),
+        },
+    ).json()
+    original_resolve = ChatRepository.resolve_pending_confirmation
+    calls = 0
+
+    def fail_once(self, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return None
+        return original_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(ChatRepository, "resolve_pending_confirmation", fail_once)
+    confirmation = {
+        "conversation_id": pending["conversation_id"],
+        "approved": True,
+        "confirmation_token": pending["pending_action"]["confirmation_token"],
+    }
+
+    first = client.post("/api/chat/confirm", json=confirmation)
+    second = client.post("/api/chat/confirm", json=confirmation)
+
+    assert first.status_code == 409
+    assert second.status_code == 200
+    assert second.json()["write_status"] == "success"
+    versions = client.get(f"/api/applications/{application['id']}/job-description/versions").json()
+    assert len(versions) == 1
+    assert model.calls == 0
+
+
 def test_write_status_uses_registry_metadata_for_all_write_tools():
     registry = {"update_offer": {"write": True}}
     added = [
