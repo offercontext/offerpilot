@@ -6,9 +6,9 @@
 
 将 Pilot 中“保存/更新当前投递 JD”从模型工具选择改为服务端确定性流程：快捷入口和严格限定的自然语言命令直接生成现有 save_application_jd_version 待确认动作；确认、拒绝、编辑、冲突恢复和回读复用现有 pending action、confirmation token、ApplicationJDService、幂等与 CAS。该流程从触发到终态的 Provider 调用次数必须为 0，普通聊天、其他 Pilot 写工具和下游 JD 版本消费保持不变。
 
-当前只写计划，不实现代码。计划获批后，先把
+计划已获批，当前按 TDD 执行。先把
 docs/superpowers/specs/2026-08-09-deterministic-pilot-jd-confirmation-design.md
-第 4 行状态改为“已复审通过”，再开始 TDD。
+第 4 行状态改为“已复审通过”，再开始 TDD；本计划不授权推送或合并。
 
 ## Architecture
 
