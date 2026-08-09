@@ -287,6 +287,17 @@ The two candidates were then tested with the real OfferPilot Agent loop, `auto_a
 
 This makes `deepseek-v4-pro` the current Ark Pilot candidate. It proves Agent-loop tool-call generation only; confirmation-stream behavior, JD v2 persistence, Triage, Material Kit, Interview Preparation, and complete `Stage all` remain unverified. No formal Provider setting or product code was changed, and the temporary data was cleaned.
 
+### DeepSeek Pro API Pilot confirmation gate (2026-08-09)
+
+The next minimal gate was attempted with the same isolated Ark configuration and `deepseek-v4-pro`. The API route was exercised with a synthetic application and UI JD v1; confirmation was never clicked because no confirmation card was returned. A second isolated setup without a resume present during Pilot was also stopped at the same boundary.
+
+- Both isolated API attempts ended without `type=confirmation_required` and without a confirmation token.
+- The temporary databases contained only the UI JD version (`source_kind=ui`); no Pilot JD v2 was written and no `/api/chat/confirm` request was sent.
+- The Agent loop recorded only read-only tool activity followed by ordinary assistant text in these API-route attempts; no `save_application_jd_version` pending action was materialized.
+- Per the fail-closed gate, confirmation, Triage, and the unique full `Stage all` run were not executed.
+
+This does not invalidate the earlier direct Agent-loop probe that produced a pending `save_application_jd_version`; it shows that the actual API-route context did not reproduce that action reliably. The release remains blocked on a real confirmation card. Formal configuration and product code remain unchanged.
+
 ## Cleanup and remaining risk
 
 - No push or merge was performed.
