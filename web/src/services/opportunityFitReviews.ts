@@ -49,7 +49,7 @@ export async function confirmOpportunityFitV2Triage(
 export async function createOpportunityFitV2DeepReview(
   applicationID: number,
   reviewID: number,
-  input: CreateOpportunityFitV2Input & { parent_triage_stage_id: number },
+  input: Omit<CreateOpportunityFitV2Input, 'jd_version_id'> & { parent_triage_stage_id: number },
 ): Promise<OpportunityFitV2StageResponse> {
   const { data } = await http.post<OpportunityFitV2StageResponse>(
     `/applications/${applicationID}/opportunity-fit-reviews/${reviewID}/deep-review`,

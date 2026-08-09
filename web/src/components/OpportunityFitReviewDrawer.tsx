@@ -515,7 +515,6 @@ export default function OpportunityFitReviewDrawer({
     const input = {
       schema_version: 2 as const,
       resume_id: draft?.deepKey ? (draft.resumeId ?? v2Triage.resume_id ?? resumeID) : (v2Triage.resume_id ?? resumeID),
-      jd_version_id: v2Triage.jd_version_id,
       jd_source_label: OPPORTUNITY_FIT_COPY.drawer.jdSourceLabel,
       candidate_assertions: draft?.deepKey
         ? (draft.assertionsText ?? '').split(/\r?\n/).map((value) => value.trim()).filter(Boolean)
@@ -527,7 +526,7 @@ export default function OpportunityFitReviewDrawer({
     // lost during unmount, AppShell can still replay this exact attempt.
     onDraftChange?.({
       resumeId: input.resume_id,
-      jdVersionId: input.jd_version_id,
+      jdVersionId: v2Triage.jd_version_id,
       assertionsText,
       deepKey: input.idempotency_key,
       resultUnknown: false,

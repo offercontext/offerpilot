@@ -362,6 +362,11 @@ describe('OpportunityFitReviewDrawer', () => {
     await waitFor(() => expect(draft.deepKey).toBeTruthy());
     const key = draft.deepKey;
     expect(state.deepV2).toHaveBeenCalledTimes(1);
+    expect(state.deepV2.mock.calls[0][2]).toEqual(expect.objectContaining({
+      parent_triage_stage_id: 22,
+      resume_id: 11,
+    }));
+    expect(state.deepV2.mock.calls[0][2]).not.toHaveProperty('jd_version_id');
     rejectDeep?.(providerError);
     await waitFor(() => expect(draft.resultUnknown).toBe(true));
 

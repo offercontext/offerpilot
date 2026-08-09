@@ -1117,7 +1117,6 @@ function AppShellContent() {
         {
           schema_version: 2,
           resume_id: requestDraft.resumeId ?? 0,
-          jd_version_id: requestDraft.jdVersionId ?? 0,
           jd_source_label: '用户粘贴 JD',
           candidate_assertions: requestDraft.assertionsText.split(/\r?\n/).map((item) => item.trim()).filter(Boolean),
           idempotency_key: key,
