@@ -27,13 +27,15 @@ Python/FastAPI/SQLAlchemy/pytest/Ruff/mypy；React/TypeScript/Ant Design/Vitest/
 
 - public action 只接受：
 
-  `json
+  ```json
   {"type":"application_jd_save","jdText":"可选原文","sourceUrl":null}
-  `
+  ```
 
   客户端不得传 application_id、source_kind、expected_current_version_id、idempotency_key。
 - Application 来自 context_type=application 与 context_ref，必须唯一可见；source_kind 固定为 pilot；当前版本、16–128 位 ASCII 幂等键和 tool_call_id 全由服务端生成。
 - 严格命令仅识别保存/更新/补充/录入 + JD/岗位描述/职位描述/岗位资料，可带当前投递目标；正文必须由英文冒号、中文冒号或换行分隔，原文保留，不 normalize、不摘要、不清洗、不读取 URL。
+- 收集 JD 时的取消短语是精确 allowlist：取消、算了、先不用、不用了、不保存、不要保存；只对 trim 后的完整字符串匹配，不做前缀/子串匹配，“不要保存 JD”等其他句子不属于取消短语。
+- 大小口径固定为 UTF-8 bytes，不是 Unicode code point。继续复用现有 ApplicationJDService 的 MAX_JD_UTF8_BYTES=60_000；测试除 59,999/60,000/60,001 bytes 外，必须覆盖 60×1024-1、60×1024、60×1024+1 bytes，并记录这些值相对现有 60,000 cap 的预期结果，禁止静默改变既有 UI 保存上限。
 - 否定、疑问、只读、引用、讨论、模糊表达和未分隔附加文本走普通 Agent；非法 action 返回 422，且不创建会话、不追加消息、不调用 Provider。
 - 无正文使用现有 pending_clarification，固定追问“请粘贴完整岗位描述”；下一条非空消息整体作为 JD，取消清除 clarification。
 - stale/idempotency conflict 创建新卡并重新人工确认；结果未知保留原卡/token/key 只允许原尝试重试；确认只允许编辑 jd_text/source_url。
@@ -43,7 +45,7 @@ Python/FastAPI/SQLAlchemy/pytest/Ruff/mypy；React/TypeScript/Ant Design/Vitest/
 
 实现阶段只允许：
 
-`text
+```text
 docs/superpowers/specs/2026-08-09-deterministic-pilot-jd-confirmation-design.md
 docs/superpowers/plans/2026-08-09-deterministic-pilot-jd-confirmation.md
 src/offerpilot/ai/deterministic_actions.py
@@ -71,24 +73,86 @@ scripts/application_jd_stage_diagnostic.py
 tests/test_application_jd_browser_harness.py
 tests/test_application_jd_stage_diagnostic.py
 docs/reports/2026-08-05-application-jd-versions-release-verification.md
-`
+```
 
 若确需 src/offerpilot/schemas.py 或其他现有类型文件，先停止、补充准确路径和理由，再继续；不得用目录通配符。禁止修改 Application JD 模型/迁移、Opportunity Fit、材料、面试、模拟面试、Provider 配置/fallback/证据校验、其他 Pilot 写工具或无关布局。
 
+实施开始时，在单一 PowerShell harness 的 try/finally 中创建临时 gate 根目录，并在创建实现文件前记录固定 baseline。`$approvedPaths` 必须由上方 allowlist 代码块的逐行字面量构成；同一数组既写入 `allowlist.txt`，也用于 committed、staged、unstaged、untracked 四类路径校验，不得通过 glob 或目录扫描扩展范围：
+
+```powershell
+$gateRoot = Join-Path $env:TEMP ("offerpilot-deterministic-pilot-gate-" + [guid]::NewGuid().ToString("N"))
+$oldBaselineEnv = $env:OFFERPILOT_APPLICATION_JD_BASELINE_FILE
+$oldAllowlistEnv = $env:OFFERPILOT_APPLICATION_JD_ALLOWLIST_FILE
+$baselineFile = Join-Path $gateRoot "baseline.sha"
+$allowlistFile = Join-Path $gateRoot "allowlist.txt"
+$approvedPaths = @(
+  "docs/superpowers/specs/2026-08-09-deterministic-pilot-jd-confirmation-design.md"
+  "docs/superpowers/plans/2026-08-09-deterministic-pilot-jd-confirmation.md"
+  "src/offerpilot/ai/deterministic_actions.py"
+  "src/offerpilot/ai/agent.py"
+  "src/offerpilot/ai/tools.py"
+  "src/offerpilot/api.py"
+  "src/offerpilot/repositories/chat.py"
+  "tests/test_deterministic_pilot_actions.py"
+  "tests/test_ai_agent.py"
+  "tests/test_ai_tools.py"
+  "tests/test_chat_repository.py"
+  "tests/test_chat_api.py"
+  "web/src/types/chat.ts"
+  "web/src/services/chat.ts"
+  "web/src/components/ApplicationDetail.tsx"
+  "web/src/components/ApplicationDetail.deterministicPilot.test.tsx"
+  "web/src/components/ChatPanel/index.tsx"
+  "web/src/components/ChatPanel/ProposalCard.tsx"
+  "web/src/components/ChatPanel/capabilities.ts"
+  "web/src/components/ChatPanel/deterministicPilotConfirmation.test.tsx"
+  "web/src/components/applicationPilotEntry.test.ts"
+  "web/src/layout/AppShell.tsx"
+  "scripts/application-jd-real-ai-browser-harness.ps1"
+  "scripts/application_jd_stage_diagnostic.py"
+  "tests/test_application_jd_browser_harness.py"
+  "tests/test_application_jd_stage_diagnostic.py"
+  "docs/reports/2026-08-05-application-jd-versions-release-verification.md"
+)
+try {
+  New-Item -ItemType Directory -Force -Path $gateRoot | Out-Null
+  $baseline = (git rev-parse --verify HEAD).Trim()
+  if ($baseline -notmatch '^[0-9a-f]{40}$') { throw "baseline is not a full SHA: $baseline" }
+  Set-Content -LiteralPath $baselineFile -Value $baseline -Encoding ascii -NoNewline
+  Set-Content -LiteralPath $allowlistFile -Value $approvedPaths -Encoding ascii
+  $env:OFFERPILOT_APPLICATION_JD_BASELINE_FILE = $baselineFile
+  $env:OFFERPILOT_APPLICATION_JD_ALLOWLIST_FILE = $allowlistFile
+  # 在此执行实现、测试、浏览器验收、最终门禁和报告提交
+}
+finally {
+  $env:OFFERPILOT_APPLICATION_JD_BASELINE_FILE = $oldBaselineEnv
+  $env:OFFERPILOT_APPLICATION_JD_ALLOWLIST_FILE = $oldAllowlistEnv
+  if (Test-Path -LiteralPath $gateRoot) {
+    Remove-Item -LiteralPath $gateRoot -Recurse -Force
+  }
+  if (Test-Path -LiteralPath $gateRoot) {
+    throw "gateRoot cleanup failed: $gateRoot"
+  }
+}
+```
+
+在任何实现代码或测试文件创建前，验证 worktree 干净、baseline 文件只含该 SHA；之后所有子 PowerShell/pytest 进程都通过 OFFERPILOT_APPLICATION_JD_BASELINE_FILE 和 OFFERPILOT_APPLICATION_JD_ALLOWLIST_FILE 读取临时文件。至少启动一个新 PowerShell 子进程重新读取 baseline 并执行 git rev-parse --verify HEAD，二者不一致即 fail-closed。finally 必须恢复原环境变量、删除 gateRoot，并用 Test-Path 验证路径不存在；失败路径也必须执行。
+
 每次范围门禁合并以下四类文件状态并与 allowlist 比较：
 
-`powershell
-git diff --name-only <baseline>..HEAD
+```powershell
+$baseline = (Get-Content -Raw $baselineFile).Trim()
+git diff --name-only "$baseline..HEAD"
 git diff --name-only
 git diff --cached --name-only
 git ls-files --others --exclude-standard
-`
+```
 
-baseline 固定为开始实施时记录的当前分支 HEAD SHA；不 reset 根工作区或其他 worktree。越界、状态读取失败或并行分支交集非零时停止。
+命令失败、allowlist 读取失败、越界、baseline 改变或并行分支交集非零时停止；报告只记录 baseline SHA 和允许路径，不记录临时目录原文，成功后清理临时文件。
 
 ## TDD 规则
 
-每个切片严格执行：写最小失败测试；运行并确认因功能缺失失败；写最小生产实现；定向测试转绿；再重构。不得先写生产代码。每个完成切片单独提交，标题为 type: AI <English subject>。
+每个切片严格执行：写最小失败测试；运行并确认因功能缺失失败；写最小生产实现；定向测试转绿；再重构。不得先写生产代码。每个完成切片单独提交，标题必须使用具体的 conventional commit，例如 `test: AI define deterministic Pilot JD router` 或 `feat: AI add deterministic Pilot JD router`，不得保留占位符。
 
 ## 1. 纯逻辑 Red/Green
 
@@ -96,7 +160,7 @@ baseline 固定为开始实施时记录的当前分支 HEAD SHA；不 reset 根�
 
 - [ ] 先写失败测试：action 运行时校验（合法、缺失、空值、未知、额外服务端字段、非对象）、严格命令正例、正文冒号/换行、CJK/emoji/换行/前后空白原样保留。
 - [ ] 写负向参数化测试：否定、疑问、查看/总结/分析、引用、无分隔附加文本；断言 normal_agent。
-- [ ] 写边界测试：空白/0 字、60KB 和超限、URL 仅文本、提示注入文本不执行；注入 id/key factory 断言 key 为 16–128 位 ASCII。
+- [ ] 写边界测试：空白/0 字、UTF-8 bytes 的 59,999/60,000/60,001，以及 60×1024-1/60×1024/60×1024+1；分别使用 ASCII、CJK、emoji 证明按字节而非 code point 判定；同时测 URL 仅文本和提示注入文本不执行，注入 id/key factory 断言 key 为 16–128 位 ASCII。
 - [ ] 先运行 uv run pytest tests/test_deterministic_pilot_actions.py -q，确认因模块/函数缺失而失败。
 - [ ] 实现不可变结果类型和纯函数 parse_pilot_action、match_application_jd_command、is_pilot_cancel_message、decide_pilot_action、build_pilot_pending_action；只接收显式上下文/依赖，绝不访问网络或 Repository。
 - [ ] 定向测试转绿后运行 uv run pytest tests/test_deterministic_pilot_actions.py tests/test_ai_agent.py -q，并提交 test: AI define deterministic Pilot JD router 与 feat: AI add deterministic Pilot JD router。
@@ -137,7 +201,10 @@ baseline 固定为开始实施时记录的当前分支 HEAD SHA；不 reset 根�
 - [ ] 参数化两个 confirm endpoint：没有 AI 配置也能调用现有 JD handler；只创建一个 source_kind=pilot 版本；固定成功消息；Provider/title 调用均为 0。
 - [ ] 测 token 错、非法字段、空白/超限 JD、非法 URL 保留原卡；合法编辑只改变 jd_text/source_url；服务端字段不可改。
 - [ ] 测拒绝、重复确认、并发确认、响应丢失重试；stale 和 idempotency conflict 保留原文生成新卡并要求重新确认；未知异常保留原 token/key。
+- [ ] 增加关键事务边界回归：让 ApplicationJDService.create_version 已提交一个 pilot 版本后，故意让 Chat pending 清理/终态消息 CAS 返回失败；确认不得覆盖较新的 pending，必须按原幂等键重试并回读同一版本 ID，重试不能新增版本。
+- [ ] 在该写后 CAS 失败场景中分别断言：批准成功清除旧 last_write_undo；拒绝不调用 JD handler 且保留旧 undo；旧 pending 被替换时新 pending 完整保留，只有原 pending 字段匹配时才允许清理。
 - [ ] 测确认后历史回读、跨领域写入为 0、source URL 不外联。
+- [ ] 增加升级兼容回归：手工种入升级前模型生成的 JD pending action、等待原文 pending clarification；在 Agent checkpoint 缺失、无 AI 配置时分别确认、拒绝和恢复，均复用同一 token/key，不新增版本。
 - [ ] 先确认现有端点在模型前加载 Provider 的测试失败，再在 src/offerpilot/api.py 增加共享 deterministic JD confirmation helper；先 token/锁/CAS/编辑验证，再调用完整 Registry validator/handler；流式只包 SSE。
 - [ ] 只对 pending.tool_name == save_application_jd_version 走 helper，其他工具保持 Agent resume；运行 uv run pytest tests/test_chat_api.py tests/test_chat_repository.py tests/test_ai_tools.py -q。
 
@@ -163,19 +230,47 @@ baseline 固定为开始实施时记录的当前分支 HEAD SHA；不 reset 根�
 - [ ] 修改脚本为统一 try/finally harness，递归停止本次服务/浏览器进程树，等待端口释放，恢复环境变量；诊断只保存状态、计数、版本、来源、哈希、错误码，不保存 JD/简历/提示词/原文/key。
 - [ ] 临时隔离环境只执行一次：
 
-  `powershell
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\application-jd-real-ai-browser-harness.ps1 -Stage all
-  `
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\application-jd-real-ai-browser-harness.ps1 -Stage all
+```
 
   顺序固定为：UI JD v1 → Pilot 入口 → 中文 JD → 确认卡（Provider=0）→ 人工确认 → v2 历史回读（Provider 仍为 0）→ Triage → 材料包 → 面试准备。失败保留脱敏报告并停止，不扩大重试或修改 Provider/证据契约。前端改动时提供亮色中文宽屏截图，覆盖快捷入口、等待原文、确认卡、成功历史，合并前交用户确认。
 
 ## 8. 最终门禁与收口
 
-- [ ] 当前 HEAD 运行 uv run pytest tests/test_deterministic_pilot_actions.py tests/test_ai_agent.py tests/test_ai_tools.py tests/test_chat_repository.py tests/test_chat_api.py，再运行 uv run pytest。
-- [ ] 运行 uv run ruff check .、uv run mypy src、cd web; npm test -- --run、npm run build、uv run oc smoke --static-dir web/dist。
-- [ ] 运行 git diff --check；合并 committed、staged、unstaged、untracked 文件状态与固定 baseline，证明没有模型/迁移、Provider 配置、证据契约、无关服务层或其他领域改动。
-- [ ] 按 requesting-code-review 发起独立代码复审，修复所有 P0/P1/P2；只有纯函数、API/repository、前端挂载、受控浏览器、真实 Stage B、全量门禁、截图和干净工作区全部满足，才进入合并审核。
-- [ ] 每个阶段单独提交，标题遵守 type: AI <English subject>；提交前确认没有密钥、JD、简历或模型原文入 Git。本计划不授权推送或合并。
+- [ ] 在同一 gateRoot 的 try/finally 内执行所有发布门禁；若任一命令失败，保留脱敏失败摘要，finally 恢复环境、递归清理进程/端口/临时目录并验证删除成功。
+- [ ] 生成后端 full-manifest.txt：运行 uv run pytest --collect-only -q --disable-warnings tests，提取全部 tests/*:: node id，先检查重复再写文件；不能用 Sort-Object -Unique 掩盖重复。
+- [ ] 使用现有 scripts/windows-pytest-groups.ps1 逐组运行 agent、domain、knowledge、proposals、misc，再用同一 ResultDir -Aggregate；不得以单次 pytest 代替。期待每组 collect/junit/complete marker 均存在，manifest、源码 fingerprint、结果 hash 和 marker hash 均匹配，无重复 node ID，仅允许脚本内固定的 4 个 skip，aggregate coverage 与 full-manifest 完全相等。
+- [ ] 组门禁命令固定为：
+
+```powershell
+$pytestResultDir = Join-Path $gateRoot "pytest"
+$pytestGroups = @("agent", "domain", "knowledge", "proposals", "misc")
+foreach ($group in $pytestGroups) {
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-pytest-groups.ps1 -Group $group -ResultDir $pytestResultDir
+}
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-pytest-groups.ps1 -Aggregate -ResultDir $pytestResultDir
+```
+- [ ] 使用现有 scripts/windows-vitest-groups.ps1 先 -Collect 生成 frontend-manifest.json，再逐组运行 components-core、components-chat、components-interview、components-offer、components-support、features、layout、lib、services、theme，最后 -Aggregate；不得手写或复用旧 manifest。
+- [ ] 前端组门禁命令固定为：
+
+```powershell
+$frontendResultDir = Join-Path $gateRoot "vitest"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-vitest-groups.ps1 -Collect -ResultDir $frontendResultDir
+$frontendGroups = @("components-core", "components-chat", "components-interview", "components-offer", "components-support", "features", "layout", "lib", "services", "theme")
+foreach ($group in $frontendGroups) {
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-vitest-groups.ps1 -Group $group -ResultDir $frontendResultDir
+}
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-vitest-groups.ps1 -Aggregate -ResultDir $frontendResultDir
+```
+- [ ] 校验前端 manifest 的 test-file 集合、fingerprint-file 集合、file_count、source_hash；每组 marker 必须匹配 manifest/source/result hash，测试 ID 不重复，numPendingTests/numTodoTests 必须为 0，aggregate 必须覆盖每个文件恰好一次。
+- [ ] 在分组门禁之后运行 uv run pytest -q、uv run ruff check .、uv run mypy src；前端运行 cd web; npm.cmd test、npm.cmd run build；分组结果与普通全量结果不一致时 fail-closed。
+- [ ] 在 gateRoot 内用 TcpListener 申请并释放一个 loopback freePort，再执行现有 Windows 发布脚本的本地路径：powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\local-smoke.ps1 -Port $freePort，随后执行 uv run oc smoke --static-dir web/dist 和 uv run oc verify --profile local --static-dir web/dist；local smoke、local verify 任何一个未跑或失败都不能收口。
+- [ ] 在已明确提供真实 AI 配置且得到授权的同一隔离环境执行 uv run oc verify --profile real-ai --static-dir web/dist；不把缺少配置、跳过或受控 Provider 结果记为 real-AI 通过。
+- [ ] 运行 git diff --check；合并 committed、staged、unstaged、untracked 四类文件状态与 baselineFile，证明无模型/迁移、Provider 配置、证据契约、无关服务层或其他领域改动；同时记录最终 HEAD。
+- [ ] 发布报告在 ignored docs/reports 路径只保存脱敏事实、baseline SHA、allowlist、门禁命令、manifest/source/aggregate 哈希和结果；先 git add -f docs/reports/2026-08-05-application-jd-versions-release-verification.md，单独提交报告，再用 git show --name-only HEAD 和 git status --short 复核报告确实进入提交且没有密钥/JD/简历/模型原文。
+- [ ] 按 requesting-code-review 发起独立代码复审，修复所有 P0/P1/P2；只有纯函数、API/repository、前端挂载、受控浏览器、真实 Stage B、Windows 分组门禁、local/real-AI verify、截图和干净工作区全部满足，才进入合并审核。
+- [ ] 每个阶段单独提交，标题必须使用具体的 conventional commit，例如 `test: AI define deterministic Pilot JD router` 或 `feat: AI add deterministic Pilot JD router`；本计划不授权推送或合并。
 
 ## 完成定义
 
