@@ -131,6 +131,11 @@ def test_application_jd_harness_retains_temp_data_when_a_process_survives() -> N
     assert "temporary directory retained because a child process did not exit" in script
 
 
+def test_application_jd_harness_does_not_treat_unknown_nested_process_exit_as_failure() -> None:
+    script = HARNESS.read_text(encoding="utf-8")
+    assert "$null -ne $auditorExitCode" in script
+
+
 def test_application_jd_harness_detects_new_database_snapshot_tables() -> None:
     script = HARNESS.read_text(encoding="utf-8")
     assert "$before.PSObject.Properties.Name" in script
@@ -145,6 +150,8 @@ def test_application_jd_harness_persists_redacted_stage_input_diagnostics() -> N
     assert "application_jd_stage_diagnostic.py" in script
     assert "--provider-start-index" in script
     assert "--operation-start-index" in script
+    assert "--browser-audit" in script
+    assert "FAILURE_REASON=" in script
     assert "audit_offsets" in script
     assert "Save-StageDiagnostic 'triage'" in script
     assert "Save-StageDiagnostic 'material_kit'" in script

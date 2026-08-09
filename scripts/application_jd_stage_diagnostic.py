@@ -118,6 +118,86 @@ def _proposal_status(stage: str, proposal: dict[str, Any]) -> str:
     return "non_empty" if any(lengths.values()) else "empty"
 
 
+def _browser_stage_a_observation(records: list[dict[str, Any]]) -> dict[str, Any]:
+    def matching(kind: str, method: str, pattern: str) -> list[dict[str, Any]]:
+        return [
+            record
+            for record in records
+            if record.get("kind") == kind
+            and record.get("method") == method
+            and isinstance(record.get("url"), str)
+            and re.search(pattern, str(record["url"]))
+        ]
+
+    pilot_chat = matching("browser_request", "POST", r"/api/chat(?:/stream)?$")
+    confirmation = matching(
+        "browser_request", "POST", r"/api/chat/confirm(?:/stream)?$"
+    )
+    confirmation_responses = [
+        record
+        for record in matching(
+            "browser_response", "POST", r"/api/chat/confirm(?:/stream)?$"
+        )
+        if record.get("response_status") in {200, 201}
+    ]
+    history = [
+        record
+        for record in matching(
+            "browser_response",
+            "GET",
+            r"/job-description/versions(?:\?.*)?$",
+        )
+        if record.get("response_status") == 200
+    ]
+    details = [
+        record
+        for record in matching(
+            "browser_response",
+            "GET",
+            r"/job-description/versions/\d+$",
+        )
+        if record.get("response_status") == 200
+    ]
+    history_sources = [
+        source
+        for record in history
+        for source in (
+            record.get("response_source_kinds")
+            if isinstance(record.get("response_source_kinds"), list)
+            else []
+        )
+    ]
+    source_kinds = sorted(
+        {
+            str(source)
+            for source in history_sources
+            if source in {"ui", "pilot"}
+        }
+        | {
+            str(record.get("response_source_kind"))
+            for record in details
+            if record.get("response_source_kind") in {"ui", "pilot"}
+        }
+    )
+    pilot_version_ids = [
+        int(record["response_jd_version_id"])
+        for record in details
+        if record.get("response_source_kind") == "pilot"
+        and isinstance(record.get("response_jd_version_id"), int)
+    ]
+    pilot_observed = bool(pilot_chat) and "pilot" in source_kinds
+    confirmation_observed = bool(confirmation_responses) and bool(confirmation)
+    return {
+        "pilot_observed": pilot_observed,
+        "confirmation_observed": confirmation_observed,
+        "jd_version_id": max(pilot_version_ids) if pilot_version_ids else None,
+        "source_kinds": source_kinds,
+        "ready": pilot_observed
+        and confirmation_observed
+        and bool(pilot_version_ids),
+    }
+
+
 def _provider_model(records: list[dict[str, Any]]) -> dict[str, str] | None:
     candidates = {
         (
@@ -160,7 +240,28 @@ def build_stage_record(
     result_status: str | None,
     provider_records: list[dict[str, Any]],
     provider_results: list[dict[str, Any]],
+    browser_records: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    if stage == "jd_pilot":
+        observation = _browser_stage_a_observation(browser_records or [])
+        return {
+            "stage": stage,
+            "operation": stage,
+            "result_status": "ready" if observation["ready"] else "not_observed",
+            "input_fingerprints": [],
+            "schema_fingerprints": [],
+            "user_assertion_count": 0,
+            "evidence_counts": {source: 0 for source in _EVIDENCE_SOURCES},
+            "path_types": [],
+            "proposal_status": "not_applicable",
+            "array_lengths": {},
+            "failure_category": None,
+            "failure_categories": [],
+            "provider_model": None,
+            "provider_result": None,
+            "provider_request_count": 0,
+            **observation,
+        }
     safe_snapshot = snapshot if isinstance(snapshot, dict) else {}
     safe_proposal = proposal if isinstance(proposal, dict) else {}
     counts = _evidence_counts(safe_snapshot)
@@ -296,6 +397,7 @@ def collect_stage_diagnostic(
     operation_audit_path: Path,
     provider_start_index: int = 0,
     operation_start_index: int = 0,
+    browser_audit_path: Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, int]]:
     provider_records, provider_end = slice_audit_records(
         _jsonl(provider_audit_path), provider_start_index
@@ -321,6 +423,7 @@ def collect_stage_diagnostic(
         result_status=result_status,
         provider_records=provider_records,
         provider_results=provider_results,
+        browser_records=_jsonl(browser_audit_path) if browser_audit_path else None,
     )
     record["audit_window"] = {
         "provider_start_index": provider_start_index,
@@ -345,6 +448,7 @@ def main() -> int:
     parser.add_argument("--provider-start-index", type=int, default=0)
     parser.add_argument("--operation-start-index", type=int, default=0)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--browser-audit", type=Path)
     args = parser.parse_args()
     record, offsets = collect_stage_diagnostic(
         stage=args.stage,
@@ -355,6 +459,7 @@ def main() -> int:
         operation_audit_path=args.operation_audit,
         provider_start_index=args.provider_start_index,
         operation_start_index=args.operation_start_index,
+        browser_audit_path=args.browser_audit,
     )
     record["audit_offsets"] = offsets
     args.output.parent.mkdir(parents=True, exist_ok=True)

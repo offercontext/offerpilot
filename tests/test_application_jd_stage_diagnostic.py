@@ -102,6 +102,116 @@ def test_stage_record_marks_non_empty_triage_proposal_without_inventing_failure(
     assert record["provider_model"] is None
 
 
+def test_stage_a_record_proves_pilot_chat_confirmation_and_version_readback() -> None:
+    browser_records = [
+        {
+            "kind": "browser_request",
+            "method": "POST",
+            "url": "http://127.0.0.1:8000/api/chat",
+        },
+        {
+            "kind": "browser_response",
+            "method": "POST",
+            "url": "http://127.0.0.1:8000/api/chat",
+            "response_status": 200,
+        },
+        {
+            "kind": "browser_request",
+            "method": "POST",
+            "url": "http://127.0.0.1:8000/api/chat/confirm",
+        },
+        {
+            "kind": "browser_response",
+            "method": "POST",
+            "url": "http://127.0.0.1:8000/api/chat/confirm",
+            "response_status": 200,
+        },
+        {
+            "kind": "browser_response",
+            "method": "GET",
+            "url": "http://127.0.0.1:8000/api/applications/1/job-description/versions",
+            "response_status": 200,
+            "response_source_kinds": ["pilot", "ui"],
+            "response_jd_version_ids": [99, 1],
+        },
+        {
+            "kind": "browser_response",
+            "method": "GET",
+            "url": "http://127.0.0.1:8000/api/applications/1/job-description/versions/2",
+            "response_status": 200,
+            "response_source_kind": "pilot",
+            "response_jd_version_id": 2,
+        },
+    ]
+
+    record = build_stage_record(
+        stage="jd_pilot",
+        snapshot=None,
+        proposal=None,
+        result_status=None,
+        provider_records=[],
+        provider_results=[],
+        browser_records=browser_records,
+    )
+
+    assert record["result_status"] == "ready"
+    assert record["pilot_observed"] is True
+    assert record["confirmation_observed"] is True
+    assert record["jd_version_id"] == 2
+    assert record["source_kinds"] == ["pilot", "ui"]
+
+
+def test_stage_a_record_fails_closed_on_unsuccessful_version_readback() -> None:
+    browser_records = [
+        {
+            "kind": "browser_request",
+            "method": "POST",
+            "url": "http://127.0.0.1:8000/api/chat",
+        },
+        {
+            "kind": "browser_request",
+            "method": "POST",
+            "url": "http://127.0.0.1:8000/api/chat/confirm",
+        },
+        {
+            "kind": "browser_response",
+            "method": "POST",
+            "url": "http://127.0.0.1:8000/api/chat/confirm",
+            "response_status": 200,
+        },
+        {
+            "kind": "browser_response",
+            "method": "GET",
+            "url": "http://127.0.0.1:8000/api/applications/1/job-description/versions",
+            "response_status": 500,
+            "response_source_kinds": ["pilot", "ui"],
+            "response_jd_version_ids": [2, 1],
+        },
+        {
+            "kind": "browser_response",
+            "method": "GET",
+            "url": "http://127.0.0.1:8000/api/applications/1/job-description/versions/2",
+            "response_status": 500,
+            "response_source_kind": "pilot",
+            "response_jd_version_id": 2,
+        },
+    ]
+
+    record = build_stage_record(
+        stage="jd_pilot",
+        snapshot=None,
+        proposal=None,
+        result_status=None,
+        provider_records=[],
+        provider_results=[],
+        browser_records=browser_records,
+    )
+
+    assert record["result_status"] == "not_observed"
+    assert record["ready"] is False
+    assert record["jd_version_id"] is None
+
+
 def test_slice_audit_records_uses_a_stage_window() -> None:
     records = [{"id": 1}, {"id": 2}, {"id": 3}]
 

@@ -159,7 +159,8 @@ function Wait-AuditorExit([int]$TimeoutSeconds = 20, [switch]$AllowFailure) {
     if ($AllowFailure) { return }
     throw 'Browser auditor did not exit cleanly.'
   }
-  if (-not $AllowFailure -and $auditor.ExitCode -ne 0) {
+  $auditorExitCode = $auditor.ExitCode
+  if (-not $AllowFailure -and $null -ne $auditorExitCode -and [int]$auditorExitCode -ne 0) {
     $diagnostic = if (Test-Path -LiteralPath $browserDiagnostic) { Get-BrowserDiagnostic } else { $null }
     $category = if ($diagnostic -and $diagnostic.failure_category) { [string]$diagnostic.failure_category } else { 'unknown' }
     throw "Browser auditor exited with code $($auditor.ExitCode) ($category)."
@@ -378,6 +379,9 @@ function Save-StageDiagnostic([string]$stageName) {
     '--operation-start-index', ([string]$script:operationAuditOffset),
     '--output', $stageDiagnosticReport
   )
+  if ($stageName -eq 'jd_pilot') {
+    $args += @('--browser-audit', $browserAudit)
+  }
   if ($null -ne $jdVersionId) {
     $args += @('--jd-version-id', ([string]$jdVersionId))
   }
@@ -912,6 +916,7 @@ print(db.execute(
   Write-Host 'Application JD browser acceptance passed.'
 } catch {
   Write-Host 'Application JD browser acceptance failed.'
+  Write-Host "FAILURE_REASON=$($_.Exception.Message)"
   Save-FailedBrowserAudit
   Save-FailedProviderAudit
   throw
