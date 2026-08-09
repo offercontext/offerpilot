@@ -77,12 +77,12 @@ docs/reports/2026-08-05-application-jd-versions-release-verification.md
 
 若确需 src/offerpilot/schemas.py 或其他现有类型文件，先停止、补充准确路径和理由，再继续；不得用目录通配符。禁止修改 Application JD 模型/迁移、Opportunity Fit、材料、面试、模拟面试、Provider 配置/fallback/证据校验、其他 Pilot 写工具或无关布局。
 
-实施开始时，在单一 PowerShell harness 的 try/finally 中创建临时 gate 根目录，并在创建实现文件前记录固定 baseline。`$approvedPaths` 必须由上方 allowlist 代码块的逐行字面量构成；同一数组既写入 `allowlist.txt`，也用于 committed、staged、unstaged、untracked 四类路径校验，不得通过 glob 或目录扫描扩展范围：
+实施开始时执行一次 bootstrap PowerShell，创建固定 locator 文件持久化 gate 根目录、baseline 文件、allowlist 文件、worktree 根路径和 baseline SHA。`$approvedPaths` 必须由上方 allowlist 代码块的逐行字面量构成；同一数组既写入 `allowlist.txt`，也用于 committed、staged、unstaged、untracked 四类路径校验，不得通过 glob 或目录扫描扩展范围。locator 使用固定路径 `$env:TEMP\offerpilot-deterministic-pilot-jd-gate.locator.json`，不得依赖跨独立 PowerShell 调用传递的环境变量：
 
 ```powershell
+$locatorPath = Join-Path $env:TEMP "offerpilot-deterministic-pilot-jd-gate.locator.json"
+if (Test-Path -LiteralPath $locatorPath) { throw "stale gate locator exists: $locatorPath" }
 $gateRoot = Join-Path $env:TEMP ("offerpilot-deterministic-pilot-gate-" + [guid]::NewGuid().ToString("N"))
-$oldBaselineEnv = $env:OFFERPILOT_APPLICATION_JD_BASELINE_FILE
-$oldAllowlistEnv = $env:OFFERPILOT_APPLICATION_JD_ALLOWLIST_FILE
 $baselineFile = Join-Path $gateRoot "baseline.sha"
 $allowlistFile = Join-Path $gateRoot "allowlist.txt"
 $approvedPaths = @(
@@ -114,41 +114,80 @@ $approvedPaths = @(
   "tests/test_application_jd_stage_diagnostic.py"
   "docs/reports/2026-08-05-application-jd-versions-release-verification.md"
 )
+$bootstrapSucceeded = $false
 try {
   New-Item -ItemType Directory -Force -Path $gateRoot | Out-Null
+  $worktreeStatus = @(git status --porcelain)
+  if ($worktreeStatus.Count -ne 0) { throw "worktree is not clean at baseline capture" }
+  $worktreeRoot = (git rev-parse --show-toplevel).Trim()
   $baseline = (git rev-parse --verify HEAD).Trim()
   if ($baseline -notmatch '^[0-9a-f]{40}$') { throw "baseline is not a full SHA: $baseline" }
+  if ((git cat-file -t $baseline).Trim() -cne "commit") { throw "baseline is not a commit: $baseline" }
   Set-Content -LiteralPath $baselineFile -Value $baseline -Encoding ascii -NoNewline
   Set-Content -LiteralPath $allowlistFile -Value $approvedPaths -Encoding ascii
-  $env:OFFERPILOT_APPLICATION_JD_BASELINE_FILE = $baselineFile
-  $env:OFFERPILOT_APPLICATION_JD_ALLOWLIST_FILE = $allowlistFile
-  # 在此执行实现、测试、浏览器验收、最终门禁和报告提交
+  $allowlistHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $allowlistFile).Hash.ToLowerInvariant()
+  [ordered]@{
+    locator_version = 1
+    worktree_root = $worktreeRoot
+    gate_root = $gateRoot
+    baseline_file = $baselineFile
+    allowlist_file = $allowlistFile
+    baseline_sha = $baseline
+    allowlist_sha256 = $allowlistHash
+  } | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $locatorPath -Encoding utf8 -NoNewline
+  $bootstrapSucceeded = $true
 }
 finally {
-  $env:OFFERPILOT_APPLICATION_JD_BASELINE_FILE = $oldBaselineEnv
-  $env:OFFERPILOT_APPLICATION_JD_ALLOWLIST_FILE = $oldAllowlistEnv
-  if (Test-Path -LiteralPath $gateRoot) {
-    Remove-Item -LiteralPath $gateRoot -Recurse -Force
-  }
-  if (Test-Path -LiteralPath $gateRoot) {
-    throw "gateRoot cleanup failed: $gateRoot"
+  if (-not $bootstrapSucceeded) {
+    if (Test-Path -LiteralPath $gateRoot) { Remove-Item -LiteralPath $gateRoot -Recurse -Force }
+    if (Test-Path -LiteralPath $locatorPath) { Remove-Item -LiteralPath $locatorPath -Force }
   }
 }
 ```
 
-在任何实现代码或测试文件创建前，验证 worktree 干净、baseline 文件只含该 SHA；之后所有子 PowerShell/pytest 进程都通过 OFFERPILOT_APPLICATION_JD_BASELINE_FILE 和 OFFERPILOT_APPLICATION_JD_ALLOWLIST_FILE 读取临时文件。至少启动一个新 PowerShell 子进程重新读取 baseline 并执行 git rev-parse --verify HEAD，二者不一致即 fail-closed。finally 必须恢复原环境变量、删除 gateRoot，并用 Test-Path 验证路径不存在；失败路径也必须执行。
+实现、提交、测试和浏览器验收分别运行在独立 PowerShell 调用时，每次先读取该 locator，验证 worktree 根路径一致、baseline 文件原文仍严格等于 locator 中的 baseline SHA、allowlist SHA-256 未变，并运行 `git cat-file -t $baseline` 确认该 SHA 仍可解析为 commit；不得要求 baseline 等于当前 HEAD。随后由本次调用临时设置 OFFERPILOT_APPLICATION_JD_BASELINE_FILE 和 OFFERPILOT_APPLICATION_JD_ALLOWLIST_FILE，供其子进程继承。locator、gateRoot 和 baseline 在最终报告提交后的复核完成前不得删除；失败保留脱敏诊断供恢复，成功清理时必须同时删除 locator/gateRoot 并用 Test-Path 验证不存在。
+
+每个独立调用加载状态的固定骨架如下；环境变量只在本次调用内设置，不能作为跨调用状态：
+
+```powershell
+$locatorPath = Join-Path $env:TEMP "offerpilot-deterministic-pilot-jd-gate.locator.json"
+$oldBaselineEnv = $env:OFFERPILOT_APPLICATION_JD_BASELINE_FILE
+$oldAllowlistEnv = $env:OFFERPILOT_APPLICATION_JD_ALLOWLIST_FILE
+try {
+  $locator = Get-Content -Raw -LiteralPath $locatorPath | ConvertFrom-Json
+  $gateRoot = $locator.gate_root
+  $baselineFile = $locator.baseline_file
+  $allowlistFile = $locator.allowlist_file
+  if ((git rev-parse --show-toplevel).Trim() -cne $locator.worktree_root) { throw "worktree locator mismatch" }
+  $baseline = Get-Content -Raw -LiteralPath $baselineFile
+  if ($baseline -cne $locator.baseline_sha) { throw "baseline file changed" }
+  if ((Get-FileHash -Algorithm SHA256 -LiteralPath $allowlistFile).Hash.ToLowerInvariant() -cne $locator.allowlist_sha256) { throw "allowlist file changed" }
+  if ((git cat-file -t $baseline).Trim() -cne "commit") { throw "baseline commit cannot be resolved" }
+  $env:OFFERPILOT_APPLICATION_JD_BASELINE_FILE = $baselineFile
+  $env:OFFERPILOT_APPLICATION_JD_ALLOWLIST_FILE = $allowlistFile
+  # 在此执行本次实现、测试或门禁调用
+}
+finally {
+  $env:OFFERPILOT_APPLICATION_JD_BASELINE_FILE = $oldBaselineEnv
+  $env:OFFERPILOT_APPLICATION_JD_ALLOWLIST_FILE = $oldAllowlistEnv
+}
+```
 
 每次范围门禁合并以下四类文件状态并与 allowlist 比较：
 
 ```powershell
-$baseline = (Get-Content -Raw $baselineFile).Trim()
+$baselineRaw = Get-Content -Raw $baselineFile
+if ($baselineRaw -cne $locator.baseline_sha) { throw "baseline file changed" }
+$baseline = $baselineRaw
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $allowlistFile).Hash.ToLowerInvariant() -cne $locator.allowlist_sha256) { throw "allowlist file changed" }
+if ((git cat-file -t $baseline).Trim() -cne "commit") { throw "baseline is not a resolvable commit: $baseline" }
 git diff --name-only "$baseline..HEAD"
 git diff --name-only
 git diff --cached --name-only
 git ls-files --others --exclude-standard
 ```
 
-命令失败、allowlist 读取失败、越界、baseline 改变或并行分支交集非零时停止；报告只记录 baseline SHA 和允许路径，不记录临时目录原文，成功后清理临时文件。
+命令失败、locator/baseline/allowlist 读取或校验失败、越界、baseline 文件改变或并行分支交集非零时停止；报告只记录 baseline SHA 和允许路径，不记录临时目录原文。只有报告提交后的最终范围复核、`git diff --check` 和工作区检查全部通过后，才清理 locator、gateRoot 和临时文件。
 
 ## TDD 规则
 
@@ -201,10 +240,10 @@ git ls-files --others --exclude-standard
 - [ ] 参数化两个 confirm endpoint：没有 AI 配置也能调用现有 JD handler；只创建一个 source_kind=pilot 版本；固定成功消息；Provider/title 调用均为 0。
 - [ ] 测 token 错、非法字段、空白/超限 JD、非法 URL 保留原卡；合法编辑只改变 jd_text/source_url；服务端字段不可改。
 - [ ] 测拒绝、重复确认、并发确认、响应丢失重试；stale 和 idempotency conflict 保留原文生成新卡并要求重新确认；未知异常保留原 token/key。
-- [ ] 增加关键事务边界回归：让 ApplicationJDService.create_version 已提交一个 pilot 版本后，故意让 Chat pending 清理/终态消息 CAS 返回失败；确认不得覆盖较新的 pending，必须按原幂等键重试并回读同一版本 ID，重试不能新增版本。
-- [ ] 在该写后 CAS 失败场景中分别断言：批准成功清除旧 last_write_undo；拒绝不调用 JD handler 且保留旧 undo；旧 pending 被替换时新 pending 完整保留，只有原 pending 字段匹配时才允许清理。
+- [ ] 增加关键事务边界回归：让 ApplicationJDService.create_version 已提交一个 pilot 版本后，故意让 Chat pending 清理/终态消息 CAS 返回失败，并明确拆分两条恢复路径。原 pending 仍存在且 token/key 匹配时，使用原 token/key 和原幂等键重试，幂等回读同一版本 ID，不新增版本；pending 已被新卡替换时，保留新卡及其状态，不恢复/覆盖旧卡，改由 Application 当前版本/历史回读定位已提交版本并报告已恢复，不再依赖丢失的旧 token/key，也不新增版本。
+- [ ] 在该写后 CAS 失败场景中分别断言：原 pending 仍存在时批准成功清除匹配的旧 last_write_undo，拒绝不调用 JD handler 且保留旧 undo；pending 已替换时新 pending 完整保留，只有原 pending 字段匹配时才允许清理；两条路径均不产生第二个 Provider/版本写入。
 - [ ] 测确认后历史回读、跨领域写入为 0、source URL 不外联。
-- [ ] 增加升级兼容回归：手工种入升级前模型生成的 JD pending action、等待原文 pending clarification；在 Agent checkpoint 缺失、无 AI 配置时分别确认、拒绝和恢复，均复用同一 token/key，不新增版本。
+- [ ] 增加升级兼容回归：手工种入升级前模型生成的 JD pending action、等待原文 pending clarification；在 Agent checkpoint 缺失、无 AI 配置时分别确认、拒绝和恢复。首次确认必须恰好创建 1 个版本，拒绝必须创建 0 个版本；首次确认已提交后的响应恢复/重放必须新增 0 个版本（总数仍为 1），并复用同一 token/key。
 - [ ] 先确认现有端点在模型前加载 Provider 的测试失败，再在 src/offerpilot/api.py 增加共享 deterministic JD confirmation helper；先 token/锁/CAS/编辑验证，再调用完整 Registry validator/handler；流式只包 SSE。
 - [ ] 只对 pending.tool_name == save_application_jd_version 走 helper，其他工具保持 Agent resume；运行 uv run pytest tests/test_chat_api.py tests/test_chat_repository.py tests/test_ai_tools.py -q。
 
@@ -238,7 +277,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\application-jd-rea
 
 ## 8. 最终门禁与收口
 
-- [ ] 在同一 gateRoot 的 try/finally 内执行所有发布门禁；若任一命令失败，保留脱敏失败摘要，finally 恢复环境、递归清理进程/端口/临时目录并验证删除成功。
+- [ ] 所有最终门禁进程先从固定 locator 解析同一 gateRoot；每个独立 PowerShell 调用各自使用 try/finally 恢复本次环境并清理本次服务/浏览器/端口，但在报告提交后的最终复核前保留 locator、gateRoot、baseline 和门禁结果目录。任一命令失败都保留脱敏失败摘要并 fail-closed。
+- [ ] 在生成最终 manifest 和运行最终门禁前，按 requesting-code-review 发起独立代码复审；复审发现的问题先修复并提交，随后重新执行 locator 范围校验。任何修复导致源码或测试变化，都必须从 manifest 生成开始重新执行本节全部门禁，不得复用旧结果。
 - [ ] 生成后端 full-manifest.txt：运行 uv run pytest --collect-only -q --disable-warnings tests，提取全部 tests/*:: node id，先检查重复再写文件；不能用 Sort-Object -Unique 掩盖重复。
 - [ ] 使用现有 scripts/windows-pytest-groups.ps1 逐组运行 agent、domain、knowledge、proposals、misc，再用同一 ResultDir -Aggregate；不得以单次 pytest 代替。期待每组 collect/junit/complete marker 均存在，manifest、源码 fingerprint、结果 hash 和 marker hash 均匹配，无重复 node ID，仅允许脚本内固定的 4 个 skip，aggregate coverage 与 full-manifest 完全相等。
 - [ ] 组门禁命令固定为：
@@ -264,12 +304,12 @@ foreach ($group in $frontendGroups) {
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-vitest-groups.ps1 -Aggregate -ResultDir $frontendResultDir
 ```
 - [ ] 校验前端 manifest 的 test-file 集合、fingerprint-file 集合、file_count、source_hash；每组 marker 必须匹配 manifest/source/result hash，测试 ID 不重复，numPendingTests/numTodoTests 必须为 0，aggregate 必须覆盖每个文件恰好一次。
-- [ ] 在分组门禁之后运行 uv run pytest -q、uv run ruff check .、uv run mypy src；前端运行 cd web; npm.cmd test、npm.cmd run build；分组结果与普通全量结果不一致时 fail-closed。
+- [ ] 分组 aggregate 作为完整后端测试门禁；不再强制运行已知会长期超时的单进程全量 pytest。分组门禁之后运行 uv run ruff check .、uv run mypy src；前端运行 cd web; npm.cmd test、npm.cmd run build；任一分组结果、aggregate 或静态检查失败都 fail-closed。
 - [ ] 在 gateRoot 内用 TcpListener 申请并释放一个 loopback freePort，再执行现有 Windows 发布脚本的本地路径：powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\local-smoke.ps1 -Port $freePort，随后执行 uv run oc smoke --static-dir web/dist 和 uv run oc verify --profile local --static-dir web/dist；local smoke、local verify 任何一个未跑或失败都不能收口。
 - [ ] 在已明确提供真实 AI 配置且得到授权的同一隔离环境执行 uv run oc verify --profile real-ai --static-dir web/dist；不把缺少配置、跳过或受控 Provider 结果记为 real-AI 通过。
-- [ ] 运行 git diff --check；合并 committed、staged、unstaged、untracked 四类文件状态与 baselineFile，证明无模型/迁移、Provider 配置、证据契约、无关服务层或其他领域改动；同时记录最终 HEAD。
-- [ ] 发布报告在 ignored docs/reports 路径只保存脱敏事实、baseline SHA、allowlist、门禁命令、manifest/source/aggregate 哈希和结果；先 git add -f docs/reports/2026-08-05-application-jd-versions-release-verification.md，单独提交报告，再用 git show --name-only HEAD 和 git status --short 复核报告确实进入提交且没有密钥/JD/简历/模型原文。
-- [ ] 按 requesting-code-review 发起独立代码复审，修复所有 P0/P1/P2；只有纯函数、API/repository、前端挂载、受控浏览器、真实 Stage B、Windows 分组门禁、local/real-AI verify、截图和干净工作区全部满足，才进入合并审核。
+- [ ] 在报告提交前运行 git diff --check；合并 committed、staged、unstaged、untracked 四类文件状态与 locator 中的 baselineFile，证明无模型/迁移、Provider 配置、证据契约、无关服务层或其他领域改动；记录当时 HEAD，但不要求其等于 baseline。
+- [ ] 发布报告在 ignored docs/reports 路径只保存脱敏事实、baseline SHA、allowlist、门禁命令、manifest/source/aggregate 哈希和结果；先 git add -f docs/reports/2026-08-05-application-jd-versions-release-verification.md，单独提交报告，再用 git show --name-only HEAD 复核报告确实进入提交且没有密钥/JD/简历/模型原文。
+- [ ] 报告提交后重新读取固定 locator，复跑范围门禁（committed、staged、unstaged、untracked）、git diff --check 和 git status --short --branch；确认 baseline 文件未变且 baseline SHA 仍由 git cat-file 解析、报告提交路径在 allowlist 内、工作区干净后，才在 finally 中删除 locator、gateRoot 和结果目录并用 Test-Path 验证清理完成。
 - [ ] 每个阶段单独提交，标题必须使用具体的 conventional commit，例如 `test: AI define deterministic Pilot JD router` 或 `feat: AI add deterministic Pilot JD router`；本计划不授权推送或合并。
 
 ## 完成定义
