@@ -160,6 +160,10 @@ def test_deterministic_pilot_jd_action_creates_confirmation_without_ai(tmp_path)
     assert body["pending_action"]["args"]["jd_text"] == "职位：后端工程师\n负责 API 设计"
     assert body["pending_action"]["target"]["title"] == application["company_name"]
     assert body["pending_action"]["target"]["meta"] == application["position_name"]
+    assert body["pending_action"]["application_jd"] == {
+        "current_version_number": None,
+        "proposed_version_number": 1,
+    }
     assert model.calls == 0
 
 
@@ -297,6 +301,45 @@ def test_deterministic_pilot_confirmation_writes_once_without_ai(tmp_path, endpo
     versions = client.get(f"/api/applications/{application['id']}/job-description/versions").json()
     assert len(versions) == 1
     assert versions[0]["source_kind"] == "pilot"
+    assert model.calls == 0
+
+
+@pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
+def test_deterministic_pilot_confirmation_allows_only_jd_edits_without_ai(tmp_path, endpoint):
+    model = CountingFailingModel()
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model, title_model=model))
+    application = client.post(
+        "/api/applications",
+        json={"company_name": "启明智能", "position_name": "后端工程师", "status": "interview"},
+    ).json()
+    pending = client.post(
+        "/api/chat",
+        json={
+            "message": "保存 JD：职位：后端工程师",
+            "conversation_id": 0,
+            "context_type": "application",
+            "context_ref": str(application["id"]),
+        },
+    ).json()
+
+    response = client.post(
+        endpoint,
+        json={
+            "conversation_id": pending["conversation_id"],
+            "approved": True,
+            "confirmation_token": pending["pending_action"]["confirmation_token"],
+            "edited_args": {"jd_text": "修改后的岗位描述", "source_url": None},
+        },
+    )
+
+    assert response.status_code == 200
+    versions = client.get(f"/api/applications/{application['id']}/job-description/versions").json()
+    assert len(versions) == 1
+    detail = client.get(
+        f"/api/applications/{application['id']}/job-description/versions/{versions[0]['id']}"
+    ).json()
+    assert detail["jd_text"] == "修改后的岗位描述"
+    assert detail["source_url"] is None
     assert model.calls == 0
 
 

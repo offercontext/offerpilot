@@ -172,7 +172,7 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
   const longDraftFields = changes.filter((change) => summarizeLongValue(change.after, change.field));
   const isApplicationJd = action.tool_name === 'save_application_jd_version';
   const jdText = typeof action.args?.jd_text === 'string' ? action.args.jd_text : '';
-  const currentVersion = action.args?.expected_current_version_id;
+  const applicationJdVersions = action.application_jd;
   const confirmLabel = isApplicationJd
     ? '确认保存岗位资料'
     : action.tool_name.includes('delete')
@@ -314,7 +314,13 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
             </div>
             <div>
               <span>当前版本</span>
-              <b>{currentVersion === null || currentVersion === undefined ? '暂无版本' : `#${String(currentVersion)}`}</b>
+              <b>{applicationJdVersions?.current_version_number == null
+                ? '暂无版本'
+                : `v${applicationJdVersions.current_version_number}`}</b>
+            </div>
+            <div>
+              <span>拟创建版本</span>
+              <b>{applicationJdVersions ? `v${applicationJdVersions.proposed_version_number}` : '下一版本'}</b>
             </div>
             <div>
               <span>来源</span>

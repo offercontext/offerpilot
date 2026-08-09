@@ -216,6 +216,7 @@ function AppShellContent() {
   const pilotAttachmentDraftKey = pendingAttachmentDraftKey;
   const pendingAttachmentDraftKeyRef = useRef<PilotAttachmentConversationKey>();
   const nextChatStartRequestKey = useRef(0);
+  const consumedChatStartRequestKeysRef = useRef(new Set<number>());
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [now, setNow] = useState(() => dayjs());
   const [pilotRailAvailable, setPilotRailAvailable] = useState(() =>
@@ -598,6 +599,13 @@ function AppShellContent() {
       if (pilotRailAvailable) setPilotDrawerOpen(true);
       else setChatOpen(true);
     }
+  };
+
+  const claimChatStartRequest = (requestKey: number) => {
+    if (consumedChatStartRequestKeysRef.current.has(requestKey)) return false;
+    consumedChatStartRequestKeysRef.current.add(requestKey);
+    setChatStartRequest((current) => (current?.requestKey === requestKey ? undefined : current));
+    return true;
   };
 
   const navigateToView = (nextView: ViewMode, { preserveEvidenceFocus = false }: { preserveEvidenceFocus?: boolean } = {}) => {
@@ -1528,6 +1536,7 @@ function AppShellContent() {
                 onClose={() => undefined}
                 onOpenSettings={() => setAISettingsOpen(true)}
                 startRequest={chatStartRequest}
+                onStartRequestConsumed={claimChatStartRequest}
                 onDataChanged={refreshWorkspaceData}
                 attachmentDraftKey={pilotAttachmentDraftKey}
                 onAttachmentKeyChange={syncPilotAttachmentKey}
@@ -1594,6 +1603,7 @@ function AppShellContent() {
               navigateToView('pilot');
             }}
             startRequest={chatStartRequest}
+            onStartRequestConsumed={claimChatStartRequest}
             onDataChanged={refreshWorkspaceData}
             pageContext={pageContext}
             attachmentDraftKey={pilotAttachmentDraftKey}
@@ -1640,6 +1650,7 @@ function AppShellContent() {
           offerId={coachOfferId}
           onOpenSettings={() => setAISettingsOpen(true)}
           startRequest={chatStartRequest}
+          onStartRequestConsumed={claimChatStartRequest}
           onDataChanged={refreshWorkspaceData}
           pageContext={pageContext}
           attachmentDraftKey={pilotAttachmentDraftKey}

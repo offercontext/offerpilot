@@ -94,6 +94,10 @@ const jdAction: PendingAction = {
     meta: '后端工程师',
     source: 'pending_action',
   },
+  application_jd: {
+    current_version_number: 3,
+    proposed_version_number: 4,
+  },
   editable_fields: [
     { field: 'jd_text', type: 'long_text' },
     { field: 'source_url', type: 'string', clearable: true, clear_value: null },
@@ -142,11 +146,55 @@ describe('deterministic Pilot JD confirmation card', () => {
     );
   });
 
+  it('does not replay a consumed quick entry after the panel remounts', async () => {
+    chatState.streamChat.mockResolvedValue({
+      type: 'message',
+      conversation_id: 102,
+      message: '已准备确认卡',
+    });
+    const consumed = new Set<number>();
+    const claim = (requestKey: number) => {
+      if (consumed.has(requestKey)) return false;
+      consumed.add(requestKey);
+      return true;
+    };
+    const startRequest = {
+      requestKey: 2,
+      context_type: 'application' as const,
+      context_ref: '7',
+      context_label: '示例公司 · 后端工程师',
+      mode: 'general' as const,
+      initialMessage: '保存岗位资料',
+      pilot_action: { type: 'application_jd_save' as const },
+    };
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    act(() => root?.render(
+      <AntApp>
+        <ChatPanel open variant="page" onClose={vi.fn()} startRequest={startRequest} onStartRequestConsumed={claim} />
+      </AntApp>,
+    ));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    act(() => root?.unmount());
+    root = createRoot(container);
+    act(() => root?.render(
+      <AntApp>
+        <ChatPanel open variant="page" onClose={vi.fn()} startRequest={startRequest} onStartRequestConsumed={claim} />
+      </AntApp>,
+    ));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    expect(chatState.streamChat).toHaveBeenCalledTimes(1);
+  });
+
   it('mounts the application facts and keeps source URL text-only', () => {
     const view = renderProposal(jdAction);
     expect(view.textContent).toContain('示例公司');
     expect(view.textContent).toContain('后端工程师');
     expect(view.textContent).toContain('当前版本');
+    expect(view.textContent).toContain('拟创建版本');
+    expect(view.textContent).toContain('v4');
     expect(view.textContent).toContain('JD 预览');
     expect(view.textContent).toContain('字符数');
     expect(view.textContent).toContain('Pilot');

@@ -87,6 +87,10 @@ export interface PendingAction {
   risk_hint?: string;
   workflow?: PendingActionWorkflow;
   draft_summary?: PendingActionDraftSummary;
+  application_jd?: {
+    current_version_number: number | null;
+    proposed_version_number: number;
+  };
 }
 
 export type EditableFieldType = 'string' | 'long_text' | 'number' | 'boolean' | 'enum' | 'datetime';

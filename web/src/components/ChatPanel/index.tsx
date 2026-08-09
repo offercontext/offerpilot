@@ -94,6 +94,7 @@ interface Props {
   onExpand?: () => void;
   onDataChanged?: () => void;
   startRequest?: ChatStartRequest;
+  onStartRequestConsumed?: (requestKey: number) => boolean;
   pageContext?: PilotPageContext;
   attachmentDraftKey?: PilotAttachmentConversationKey;
   onAttachmentKeyChange?: (key?: PilotAttachmentConversationKey) => void;
@@ -192,6 +193,7 @@ export default function ChatPanel({
   onExpand,
   onDataChanged,
   startRequest,
+  onStartRequestConsumed,
   pageContext,
   attachmentDraftKey,
   onAttachmentKeyChange,
@@ -562,9 +564,13 @@ export default function ChatPanel({
 
   useEffect(() => {
     if (!draftContext?.initialMessage || startedRequestKeyRef.current === draftContext.requestKey) return;
+    if (onStartRequestConsumed && !onStartRequestConsumed(draftContext.requestKey)) {
+      startedRequestKeyRef.current = draftContext.requestKey;
+      return;
+    }
     startedRequestKeyRef.current = draftContext.requestKey;
     void sendMessage(draftContext.initialMessage);
-  }, [draftContext?.requestKey]);
+  }, [draftContext?.requestKey, onStartRequestConsumed]);
 
   async function selectConversation(id: number) {
     markPendingAutoSelect('allow');

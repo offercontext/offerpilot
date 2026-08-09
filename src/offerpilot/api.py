@@ -933,7 +933,9 @@ def create_app(
             return {
                 "type": "confirmation_required",
                 "conversation_id": conversation_id,
-                "pending_action": _pending_action_json(existing_pending, applications),
+                "pending_action": _pending_action_json(
+                    existing_pending, applications, application_jd_versions
+                ),
             }
 
         if decision_kind == "cancelled":
@@ -1013,7 +1015,7 @@ def create_app(
         return {
             "type": "confirmation_required",
             "conversation_id": conversation_id,
-            "pending_action": _pending_action_json(pending, applications),
+            "pending_action": _pending_action_json(pending, applications, application_jd_versions),
         }
 
     def _deterministic_pilot_stream_response(
@@ -1138,7 +1140,11 @@ def create_app(
                         409,
                         "当前岗位资料已变化，请重新确认保存。",
                         code=failure_code,
-                        details={"pending_action": _pending_action_json(replacement, applications)},
+                        details={
+                            "pending_action": _pending_action_json(
+                                replacement, applications, application_jd_versions
+                            )
+                        },
                     )
                 if failure_code == "application_jd_invalid_request":
                     return error_response(422, "岗位资料参数无效，请修改后重试。", code=failure_code)
@@ -6749,6 +6755,7 @@ def _conversation_context_label(
 def _pending_action_json(
     pending: PendingAction,
     applications: ApplicationsRepository | None = None,
+    application_jd_versions: ApplicationJDService | None = None,
 ) -> dict[str, Any]:
     args = _safe_tool_args(pending.args)
     payload: dict[str, Any] = {
@@ -6759,7 +6766,9 @@ def _pending_action_json(
         "editable_fields": editable_fields_for_tool(pending.tool_name),
     }
     if applications is not None:
-        payload.update(_pending_action_details(pending.tool_name, args, applications))
+        payload.update(
+            _pending_action_details(pending.tool_name, args, applications, application_jd_versions)
+        )
     return payload
 
 
@@ -6897,6 +6906,7 @@ def _pending_action_details(
     tool_name: str,
     args: dict[str, Any],
     applications: ApplicationsRepository,
+    application_jd_versions: ApplicationJDService | None = None,
 ) -> dict[str, Any]:
     if tool_name == "save_application_jd_version":
         app_id = args.get("application_id")
@@ -6916,7 +6926,15 @@ def _pending_action_details(
             "meta": application.position_name,
             "source": "pending_action",
         }
-        return {"target": target, "evidence": [target]}
+        details: dict[str, Any] = {"target": target, "evidence": [target]}
+        if application_jd_versions is not None:
+            current = application_jd_versions.get_current(application.id)
+            current_number = current.version_number if current is not None else None
+            details["application_jd"] = {
+                "current_version_number": current_number,
+                "proposed_version_number": (current_number or 0) + 1,
+            }
+        return details
     if tool_name == "create_application":
         return _pending_create_application_details(args)
     if tool_name == "create_application_event":

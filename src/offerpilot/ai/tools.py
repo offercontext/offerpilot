@@ -184,6 +184,7 @@ def application_jd_version_tool_registry(
             "write": True,
             "model_visible": False,
             "always_confirm": True,
+            "editable_fields": editable_fields_for_tool("save_application_jd_version"),
             "description": (
                 "Save the user's job description to the selected application after explicit confirmation. "
                 "Never fetch the source URL and never create downstream records."

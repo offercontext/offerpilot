@@ -29,6 +29,10 @@ def test_jd_tool_remains_in_registry_but_is_hidden_from_model(tmp_path):
 
     assert entry["model_visible"] is False
     assert entry["always_confirm"] is True
+    assert entry["editable_fields"] == [
+        {"field": "jd_text", "type": "long_text"},
+        {"field": "source_url", "type": "string", "clearable": True, "clear_value": None},
+    ]
     assert callable(entry["validate"])
     assert callable(entry["handler"])
 
