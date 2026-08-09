@@ -178,6 +178,7 @@ def application_jd_version_tool_registry(
     return {
         "save_application_jd_version": {
             "write": True,
+            "model_visible": False,
             "always_confirm": True,
             "description": (
                 "Save the user's job description to the selected application after explicit confirmation. "

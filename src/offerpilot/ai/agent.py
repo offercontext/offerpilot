@@ -287,7 +287,7 @@ class LangGraphAgentRunner:
             raise RuntimeError("AI 工具调用超过最大轮次")
 
         work = [_message_from_dict(message) for message in state.get("messages", [])]
-        tools = [{"name": name, **tool} for name, tool in self._registry.items()]
+        tools = _model_visible_tools(self._registry)
         assistant = self._complete_model(work, tools)
         selected_tool_calls = _select_tool_calls(assistant.tool_calls, self._registry)
         assistant_message = Message(
@@ -961,6 +961,14 @@ def _select_tool_calls(tool_calls: list[Any], registry: dict[str, dict[str, Any]
     if all(not bool((registry.get(str(call.name)) or {}).get("write")) for call in tool_calls):
         return tool_calls
     return tool_calls[:1]
+
+
+def _model_visible_tools(registry: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {"name": name, **tool}
+        for name, tool in registry.items()
+        if tool.get("model_visible", True) is not False
+    ]
 
 
 def _requires_confirmation(tool: dict[str, Any], auto_approve: bool) -> bool:
