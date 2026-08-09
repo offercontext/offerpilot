@@ -3,7 +3,7 @@
 - Verification date: 2026-08-09
 - Branch: `feat/20260805-application-jd-versions`
 - Feature baseline: `455e081`
-- Latest evidence execution HEAD: `bac4194`
+- Latest evidence execution HEAD: `7956cca`
 - Status: local and grouped release gates passed; real-AI and browser release gates remain blocked.
 
 ## Scope
@@ -179,9 +179,26 @@ Retained diagnostic:
 
 The temporary service, browser, Provider proxy, and isolated data were cleaned. The branch remains paused and must not be merged or pushed. Recovery requires either new external DeepSeek stability evidence with explicit authorization for one new acceptance attempt, or an explicitly approved change to another formal Provider configuration.
 
+### Isolated Ark formal-configuration acceptance (2026-08-09)
+
+At the user's request, one valid isolated browser acceptance was run with an Ark override. The formal configuration was not changed; the isolated configuration used base URL `https://ark.cn-beijing.volces.com/api/coding/v1` and model `doubao-seed-2.1-turbo`. The API key was read from a local secret file and is not recorded here.
+
+- Stage A completed: UI JD v1 was saved, Pilot generated and confirmed a JD proposal, and JD v2 was read back as `source_kind=pilot`. Version history and v2 detail were also read successfully.
+- Triage used `jd_version_id=2`, resume evidence count 1, JD evidence count 1, and two user assertions. The Provider egress audit connected only to `ark.cn-beijing.volces.com:443`.
+- Ark returned HTTP 500 after 91,465 ms. The local API safely mapped it to `502 opportunity_fit_provider_error` and recorded `provider_http_5xx`; the Triage Provider call count was 1.
+- The harness performed its single same-key replay. The replay returned HTTP 409 before another Provider call (`provider_request_count=0`); the replay guard verified the frozen input but did not produce a replay Provider fingerprint. Material Kit, Interview Preparation, and complete `Stage all` therefore remain unproven.
+
+Retained diagnostics:
+
+- Stage diagnostics: `D:\Users\yuqi.chen\AppData\Local\Temp\offerpilot-application-jd-stage-diagnostics\stage-all-20260809-151006076-981de1fa82a74e48b46c96454957e576.jsonl`
+- Browser audit: `D:\Users\yuqi.chen\AppData\Local\Temp\offerpilot-application-jd-stage-diagnostics\failed-browser-audit-20260809151916.jsonl`
+- Provider egress audit: `D:\Users\yuqi.chen\AppData\Local\Temp\offerpilot-application-jd-stage-diagnostics\failed-provider-egress-20260809151916.jsonl`
+
+This is an external Ark Triage stability failure, not evidence of a JD-version, CAS, lease, or evidence-contract defect. The isolated service, browser, Provider proxy, and data directory were cleaned. No further Ark retry was made; the branch remains blocked and must not be merged or pushed.
+
 ## Cleanup and remaining risk
 
 - No push or merge was performed.
 - All gate subprocesses exited; no Provider proxy or browser process was retained. Isolated real-AI data directories were cleaned by the verifier.
 - The recorded implementation baseline remains at `D:\Users\yuqi.chen\AppData\Local\Temp\offerpilot-application-jd-versions-baseline.txt` because release gates are incomplete.
-- Remaining release blockers: the final DeepSeek Pilot transport failure and incomplete browser/CDP confirmation/consumer evidence. The branch is paused; do not claim release readiness until one of the explicit recovery conditions above is met.
+- Remaining release blockers: DeepSeek Pilot transport instability and Ark Triage HTTP 500 with an unproven downstream `Stage all`. The branch is paused; do not claim release readiness until a formally approved Provider produces a complete successful browser acceptance.
