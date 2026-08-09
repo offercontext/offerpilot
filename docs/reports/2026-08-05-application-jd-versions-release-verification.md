@@ -278,6 +278,15 @@ To compare only the model name, one streamed, isolated first-turn probe was run 
 
 All ten requests sent the 26-tool Schema and completed without Provider errors. This is a first-turn capability screen, not proof of a complete Pilot confirmation flow: neither tool-using candidate called `save_application_jd_version` in this turn. `glm-5.2` and `deepseek-v4-pro` are the only candidates worth a separately authorized agent-loop Pilot check; the other models returned ordinary text immediately for this identical input. Raw model text, tool arguments, request IDs, and the Ark key were not retained; the temporary synthetic data was cleaned.
 
+### Ark candidate Agent-loop Pilot check (2026-08-09)
+
+The two candidates were then tested with the real OfferPilot Agent loop, `auto_approve=false`, the same synthetic application context, prompt, and 26-tool Schema. Read-only tools were allowed to run against temporary data; write handlers were never executed.
+
+- `glm-5.2`: 3 Provider calls in `21,524 ms`; it called `get_application`, `list_resumes`, `list_jd_analyses`, and `list_resume_matches`, then returned ordinary text. No `pending_action` was produced.
+- `deepseek-v4-pro`: 1 Provider call in `22,506 ms`; it directly called `save_application_jd_version` and produced `pending_tool_name=save_application_jd_version`. The write was held for confirmation and not executed.
+
+This makes `deepseek-v4-pro` the current Ark Pilot candidate. It proves Agent-loop tool-call generation only; confirmation-stream behavior, JD v2 persistence, Triage, Material Kit, Interview Preparation, and complete `Stage all` remain unverified. No formal Provider setting or product code was changed, and the temporary data was cleaned.
+
 ## Cleanup and remaining risk
 
 - No push or merge was performed.
