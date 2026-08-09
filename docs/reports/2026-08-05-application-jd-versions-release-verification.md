@@ -247,9 +247,21 @@ Retained diagnostics:
 
 The harness removed the isolated service, browser profile, temporary data, Provider proxy, and completion directory. No formal Provider setting, product code, evidence contract, or business retry policy was changed. This result does not satisfy release evidence and remains a Provider/model Pilot tool-call/confirmation compatibility blocker; no further real-Provider retry was made.
 
+### Ark Doubao-Seed-2.0-lite Pilot tool-call diagnostic (2026-08-09)
+
+One isolated API-boundary diagnostic was run against the Ark Lite endpoint using the same application-context system prompt and the full OfferPilot tool registry. It did not call the confirmation endpoint, execute a tool handler, create a Pilot JD version, or run any downstream stage. The formal Provider configuration remained unchanged.
+
+- Tool Schema was sent: `true`; 26 function schemas were included, including `save_application_jd_version`.
+- The streamed Provider response had `tool_calls=0` and `finish_reason=stop`.
+- Ordinary assistant text was returned (`content_chars=30`); no tool-call delta or tool name was observed.
+- The one valid diagnostic request completed in `3,742 ms`; Provider errors were absent and the redacted response-id hash was `83d4b204705e`.
+- The temporary synthetic application, JD version, conversation, and diagnostic directory were removed after the run. No raw prompt, ordinary text, tool arguments, or API key was retained.
+
+The direct boundary result confirms that Ark Lite can receive the tool Schema but did not produce the required Pilot tool call for this request. It is therefore suitable evidence for the observed Triage capability only, not as a unified Provider for Pilot confirmation. The branch remains blocked; no full `Stage all`, merge, push, formal configuration change, contract relaxation, or product-code change was performed.
+
 ## Cleanup and remaining risk
 
 - No push or merge was performed.
 - All gate subprocesses exited; no Provider proxy or browser process was retained. Isolated real-AI data directories were cleaned by the verifier.
 - The recorded implementation baseline remains at `D:\Users\yuqi.chen\AppData\Local\Temp\offerpilot-application-jd-versions-baseline.txt` because release gates are incomplete.
-- Remaining release blockers: DeepSeek Pilot transport instability, Ark Lite Pilot confirmation not materializing a pending action, and the absence of a complete real-Provider `Stage all`. The branch is paused; do not claim release readiness until a formally approved Provider produces a complete successful browser acceptance.
+- Remaining release blockers: DeepSeek Pilot transport instability, Ark Lite Pilot confirmation not materializing a pending action, and the absence of a complete real-Provider `Stage all`. The branch is paused; do not claim release readiness until a formally approved unified Provider produces a complete successful browser acceptance.
