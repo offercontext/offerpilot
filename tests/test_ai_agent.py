@@ -14,7 +14,7 @@ from offerpilot.ai.agent import (
     resume_after_confirm,
     run_turn,
 )
-from offerpilot.ai.types import Assistant, ToolCall
+from offerpilot.ai.types import Assistant, Message, ToolCall
 
 
 class ScriptedModel:
@@ -55,6 +55,34 @@ class FailAfterPendingModel:
         if self.calls == 1:
             return Assistant(tool_calls=[self.tool_call])
         raise RuntimeError("provider failed after confirmed tool")
+
+
+class CapturingToolsModel:
+    def __init__(self):
+        self.tools = []
+
+    def complete(self, messages, tools):
+        self.tools.append(tools)
+        return Assistant(content="done")
+
+
+def test_agent_hides_internal_jd_tool_but_preserves_other_model_tools():
+    model = CapturingToolsModel()
+    registry = {
+        "save_application_jd_version": {"write": True, "model_visible": False},
+        "list_applications": {"write": False},
+        "update_application_status": {"write": True},
+    }
+
+    LangGraphAgentRunner(model, registry).run_turn(
+        [Message(role="user", content="继续")],
+        auto_approve=False,
+    )
+
+    assert [tool["name"] for tool in model.tools[0]] == [
+        "list_applications",
+        "update_application_status",
+    ]
 
 
 def _editable_registry(calls=None, validate=None):

@@ -8,6 +8,7 @@ from offerpilot.ai.tools import (
     EVENT_TYPES,
     OFFER_STATUSES,
     application_tool_registry,
+    application_jd_version_tool_registry,
     editable_fields_for_tool,
     offerpilot_tool_registry,
 )
@@ -20,6 +21,16 @@ from offerpilot.repositories.jd import JDAnalysesRepository, JDAnalysisCreate
 from offerpilot.repositories.notes import NoteCreate, NotesRepository
 from offerpilot.repositories.offers import OfferCreate, OffersRepository
 from offerpilot.repositories.resumes import ResumeCreate, ResumeMatchCreate, ResumesRepository
+
+
+def test_jd_tool_remains_in_registry_but_is_hidden_from_model(tmp_path):
+    service = ApplicationJDService(init_database(tmp_path / "data.db"))
+    entry = application_jd_version_tool_registry(service)["save_application_jd_version"]
+
+    assert entry["model_visible"] is False
+    assert entry["always_confirm"] is True
+    assert callable(entry["validate"])
+    assert callable(entry["handler"])
 
 
 def test_write_tools_expose_type_aware_editable_fields_defensively(tmp_path):
