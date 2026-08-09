@@ -3,7 +3,7 @@
 - Verification date: 2026-08-09
 - Branch: `feat/20260805-application-jd-versions`
 - Feature baseline: `455e081`
-- Latest evidence execution HEAD: `186d114`
+- Latest evidence execution HEAD: `0608466`
 - Status: local and grouped release gates passed; real-AI and browser release gates remain blocked.
 
 ## Scope
@@ -207,6 +207,16 @@ To distinguish a shared local 90-second boundary from an external Provider or ne
 - A deliberately changed same-key payload returned `409` in `6 ms` with the precise `error_code=opportunity_fit_idempotency_conflict`; its canonical payload fingerprint differed (`25a137ca...346580b`). It made no Provider call.
 
 This controlled result does not reproduce a local 90-second timeout: the local OfferPilot/LiteLLM path accepted a valid response beyond 100 seconds. The exact same-input replay also did not reproduce the historical 409; the captured 409 is the deterministic source/idempotency-conflict path. Therefore the historical Ark/DeepSeek failures near 91–92 seconds remain attributable to an external Provider, VPN/proxy, or upstream gateway boundary until new evidence distinguishes those layers. No timeout, retry, lease, CAS, or evidence contract was changed. The temporary controlled service, database, and audit files were cleaned.
+
+### No-cost network boundary probes (2026-08-09)
+
+No model request was made. The machine's active proxy environment was `HTTP_PROXY/HTTPS_PROXY/ALL_PROXY=http://127.0.0.1:7897`; no `NO_PROXY` override was set.
+
+- An unauthenticated `GET /v1/models` to `api.deepseek.com` returned `401` after `0.446 s` total, with TLS application-connect time `0.290 s`.
+- An unauthenticated `GET /api/coding/v1/models` to `ark.cn-beijing.volces.com` returned `401` after `0.325 s`, with TLS application-connect time `0.287 s`.
+- Generic delayed-response probes did not provide a usable long-read sample: `httpbin.org/drip` returned `503` in `2.851 s`, and `httpstat.us?sleep=100000` closed the connection in `3.458 s`. These endpoints were rejected before the intended delay, so they are not evidence of a 90-second cutoff.
+
+The probes confirm basic DNS/TCP/TLS/provider-host reachability but do not yet identify which layer closes a 91–92 second model response. Product code remains unchanged. After the VPN/proxy/gateway boundary is adjusted or otherwise explained, only one real `Stage all` run should be authorized.
 
 ## Cleanup and remaining risk
 
