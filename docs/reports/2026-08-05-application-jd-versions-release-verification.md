@@ -1,9 +1,9 @@
 # Application JD version release verification
 
-- Verification date: 2026-08-08
+- Verification date: 2026-08-09
 - Branch: `feat/20260805-application-jd-versions`
 - Feature baseline: `455e081`
-- Evidence execution HEAD: `c89639b`
+- Latest evidence execution HEAD: `bac4194`
 - Status: local and grouped release gates passed; real-AI and browser release gates remain blocked.
 
 ## Scope
@@ -164,9 +164,24 @@ This run proves that the corrected Ark endpoint can complete Pilot JD proposal/c
 
 The harness was tightened after that run. `browser-network-audit.py` now keeps a browser-level CDP heartbeat during the manual window, waits for `loadingFinished` before reading response bodies, writes an ASCII diagnostic with `failure_category`, target/session IDs, readiness, response counts, and close state, and fails closed on an unexpected disconnect or unavailable API response body. The PowerShell harness redirects auditor output, checks auditor/browser liveness before every stage, requires a successful `/api/chat/confirm` response (not only a request), verifies each of Triage, Material Kit, and Interview Preparation against the same frozen JD version, detects newly appearing database tables in snapshot comparisons, asserts per-stage cleanup and final database cleanup, retains the temporary directory if any child process does not exit, and waits for a normal auditor exit. These changes are covered by the 17 targeted tests above; a post-fix human browser run has not yet completed the confirmation and all three downstream stages.
 
+### Final DeepSeek Stage all attempt (2026-08-09)
+
+One final isolated real-Provider `Stage all` attempt was made from HEAD `bac4194` with the formal DeepSeek configuration (`deepseek-v4-flash`, endpoint host `api.deepseek.com:443`). The key was read from the local configuration only and is not recorded here.
+
+- The browser request failed before a valid HTTP response was received while waiting for the Pilot streaming response.
+- No confirmation card was produced, no confirmation token was consumed, and no Pilot JD v2 or downstream Triage/Material Kit/Interview Preparation write was accepted.
+- No concrete HTTP 500 or Provider response status was obtained; this is retained as a transport-level failure, not attributed to JD version logic, CAS, lease, or evidence validation.
+- The unique real-Provider acceptance allowance is exhausted. No further retry, business-code change, contract relaxation, or Provider retry was performed.
+
+Retained diagnostic:
+
+- Browser audit: `D:\Users\yuqi.chen\AppData\Local\Temp\offerpilot-application-jd-stage-diagnostics\failed-browser-audit-20260809144402.jsonl`
+
+The temporary service, browser, Provider proxy, and isolated data were cleaned. The branch remains paused and must not be merged or pushed. Recovery requires either new external DeepSeek stability evidence with explicit authorization for one new acceptance attempt, or an explicitly approved change to another formal Provider configuration.
+
 ## Cleanup and remaining risk
 
 - No push or merge was performed.
 - All gate subprocesses exited; no Provider proxy or browser process was retained. Isolated real-AI data directories were cleaned by the verifier.
 - The recorded implementation baseline remains at `D:\Users\yuqi.chen\AppData\Local\Temp\offerpilot-application-jd-versions-baseline.txt` because release gates are incomplete.
-- Remaining release blockers: Provider `ReadTimeout` in full real-AI verification and incomplete post-fix browser/CDP confirmation/consumer evidence. The browser harness no longer depends on a user-supplied `APPLICATION_JD_CDP_URL`; it must still complete the same-target Pilot confirmation and Triage -> Material Kit -> Interview Preparation sequence before release can be claimed.
+- Remaining release blockers: the final DeepSeek Pilot transport failure and incomplete browser/CDP confirmation/consumer evidence. The branch is paused; do not claim release readiness until one of the explicit recovery conditions above is met.
