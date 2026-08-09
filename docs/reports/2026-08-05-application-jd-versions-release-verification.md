@@ -3,7 +3,7 @@
 - Verification date: 2026-08-09
 - Branch: `feat/20260805-application-jd-versions`
 - Feature baseline: `455e081`
-- Latest evidence execution HEAD: `45fad9d`
+- Latest evidence execution HEAD: `9cf2543`
 - Status: local and grouped release gates passed; real-AI and browser release gates remain blocked.
 
 ## Scope
@@ -230,9 +230,26 @@ At the user's request, the existing isolated Ark configuration was used with mod
 
 This proves that `doubao-seed-2.0-lite` can complete a valid, evidence-checked Triage request through the Ark endpoint. It is not full release evidence: Material Kit, Interview Preparation, browser network isolation, and complete `Stage all` remain unverified. No product code or formal Provider configuration was changed.
 
+### Ark Doubao-Seed-2.0-lite browser Stage all attempt (2026-08-09)
+
+One isolated browser `Stage all` attempt was run from the unchanged current HEAD with the temporary Ark endpoint `https://ark.cn-beijing.volces.com/api/coding/v1` and model `doubao-seed-2.0-lite`. The formal configuration remained unchanged (`deepseek-v4-flash` at `https://api.deepseek.com/v1`); the Ark key was held only in the temporary harness environment/configuration and is not recorded here.
+
+- UI JD v1 creation succeeded with HTTP `201`, and the browser read it back with `source_kind=ui`.
+- Pilot chat requests reached Ark and returned HTTP `200`; the model displayed textual save proposals, but the browser conversation state had no `pending_action` and no actual confirmation card/action was produced.
+- No `POST /api/chat/confirm` or `POST /api/chat/confirm/stream` was recorded. Therefore no confirmation token was consumed and no Pilot `source_kind=pilot` JD version was written.
+- The harness stopped at Stage A with `Stage A did not read JD history after Pilot confirmation`; Triage, Material Kit, Interview Preparation, Provider outbound for those consumers, and complete `Stage all` were not run.
+- No duplicate JD-version POST, confirmation request, cross-domain write, or external browser URL was observed. The egress audit recorded only connections to `ark.cn-beijing.volces.com:443`.
+
+Retained diagnostics:
+
+- Browser audit: `D:\Users\yuqi.chen\AppData\Local\Temp\offerpilot-ark-lite-final-diagnostics\failed-browser-audit-20260809203503.jsonl`
+- Provider egress audit: `D:\Users\yuqi.chen\AppData\Local\Temp\offerpilot-ark-lite-final-diagnostics\failed-provider-egress-20260809203503.jsonl`
+
+The harness removed the isolated service, browser profile, temporary data, Provider proxy, and completion directory. No formal Provider setting, product code, evidence contract, or business retry policy was changed. This result does not satisfy release evidence and remains a Provider/model Pilot tool-call/confirmation compatibility blocker; no further real-Provider retry was made.
+
 ## Cleanup and remaining risk
 
 - No push or merge was performed.
 - All gate subprocesses exited; no Provider proxy or browser process was retained. Isolated real-AI data directories were cleaned by the verifier.
 - The recorded implementation baseline remains at `D:\Users\yuqi.chen\AppData\Local\Temp\offerpilot-application-jd-versions-baseline.txt` because release gates are incomplete.
-- Remaining release blockers: DeepSeek Pilot transport instability and Ark Triage HTTP 500 with an unproven downstream `Stage all`. The branch is paused; do not claim release readiness until a formally approved Provider produces a complete successful browser acceptance.
+- Remaining release blockers: DeepSeek Pilot transport instability, Ark Lite Pilot confirmation not materializing a pending action, and the absence of a complete real-Provider `Stage all`. The branch is paused; do not claim release readiness until a formally approved Provider produces a complete successful browser acceptance.
