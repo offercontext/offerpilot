@@ -259,6 +259,25 @@ The first instrumentation attempt made one Provider request but failed after the
 
 The direct boundary result confirms that Ark Lite can receive the tool Schema but did not produce the required Pilot tool call for this request. It is therefore suitable evidence for the observed Triage capability only, not as a unified Provider for Pilot confirmation. The branch remains blocked; no full `Stage all`, merge, push, formal configuration change, contract relaxation, or product-code change was performed.
 
+### Ark model-list Pilot first-turn probe (2026-08-09)
+
+To compare only the model name, one streamed, isolated first-turn probe was run per model against the same Ark base URL, synthetic application context, prompt, and 26-tool Schema. No confirmation endpoint or tool handler was called, no JD version was written, and no full `Stage all` was run. The formal configuration remained `deepseek-v4-flash`; no source or product configuration file was changed.
+
+| Model | Time | Tool calls | Finish | Ordinary text | Result |
+| --- | ---: | ---: | --- | --- | --- |
+| `doubao-seed-2.1-turbo` | 81,971 ms | 0 | `stop` | yes | text only |
+| `doubao-seed-2.0-code` | 4,012 ms | 0 | `stop` | yes | text only |
+| `doubao-seed-2.0-pro` | 5,139 ms | 0 | `stop` | yes | text only |
+| `doubao-seed-2.0-lite` | 2,222 ms | 0 | `stop` | yes | text only |
+| `deepseek-v4-flash` | 4,112 ms | 0 | `stop` | yes | text only |
+| `glm-5.2` | 4,266 ms | 3 | `tool_calls` | no | `get_application`, `list_application_events`, `list_notes` |
+| `kimi-k2.7-code` | 6,492 ms | 0 | `stop` | yes | text only |
+| `minimax-m3` | 5,523 ms | 0 | `stop` | yes | text only |
+| `deepseek-v4-pro` | 7,920 ms | 2 | `tool_calls` | no | `get_application`, `list_resumes` |
+| `minimax-m2.7` | 9,491 ms | 0 | `stop` | yes | text only |
+
+All ten requests sent the 26-tool Schema and completed without Provider errors. This is a first-turn capability screen, not proof of a complete Pilot confirmation flow: neither tool-using candidate called `save_application_jd_version` in this turn. `glm-5.2` and `deepseek-v4-pro` are the only candidates worth a separately authorized agent-loop Pilot check; the other models returned ordinary text immediately for this identical input. Raw model text, tool arguments, request IDs, and the Ark key were not retained; the temporary synthetic data was cleaned.
+
 ## Cleanup and remaining risk
 
 - No push or merge was performed.
