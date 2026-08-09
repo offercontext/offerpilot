@@ -3,7 +3,7 @@
 - Verification date: 2026-08-09
 - Branch: `feat/20260805-application-jd-versions`
 - Feature baseline: `455e081`
-- Latest evidence execution HEAD: `0608466`
+- Latest evidence execution HEAD: `45fad9d`
 - Status: local and grouped release gates passed; real-AI and browser release gates remain blocked.
 
 ## Scope
@@ -217,6 +217,18 @@ No model request was made. The machine's active proxy environment was `HTTP_PROX
 - Generic delayed-response probes did not provide a usable long-read sample: `httpbin.org/drip` returned `503` in `2.851 s`, and `httpstat.us?sleep=100000` closed the connection in `3.458 s`. These endpoints were rejected before the intended delay, so they are not evidence of a 90-second cutoff.
 
 The probes confirm basic DNS/TCP/TLS/provider-host reachability but do not yet identify which layer closes a 91–92 second model response. Product code remains unchanged. After the VPN/proxy/gateway boundary is adjusted or otherwise explained, only one real `Stage all` run should be authorized.
+
+### Ark Doubao-Seed-2.0-lite targeted Triage (2026-08-09)
+
+At the user's request, the existing isolated Ark configuration was used with model `doubao-seed-2.0-lite`. The formal `D:\Users\yuqi.chen\.offerpilot\config.json` was not modified; the API key was held only in a temporary configuration and is not recorded here.
+
+- The isolated Triage API returned `201` with `stage_status=ready` after `24,672 ms`.
+- Ark Provider call count was `1`; Provider elapsed time was `24,637 ms`; HTTP status was successful, with no failure category, repair, or retry.
+- Source fingerprint and proposal fingerprint both matched; all response contract checks passed.
+- Redacted input fingerprint: `77d98d6f...672e79a3`; schema fingerprint: `12ae32cb...3d82e126`; Provider request-id hash: `e3ecdb7acae2`.
+- Diagnostic output was retained at `D:\Users\yuqi.chen\AppData\Local\Temp\offerpilot-ark-lite-diagnostic-20260809-200158`.
+
+This proves that `doubao-seed-2.0-lite` can complete a valid, evidence-checked Triage request through the Ark endpoint. It is not full release evidence: Material Kit, Interview Preparation, browser network isolation, and complete `Stage all` remain unverified. No product code or formal Provider configuration was changed.
 
 ## Cleanup and remaining risk
 
