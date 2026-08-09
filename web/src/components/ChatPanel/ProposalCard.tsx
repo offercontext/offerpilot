@@ -52,6 +52,9 @@ const FIELD_LABELS: Record<string, string> = {
   remind_at: '提醒时间',
 };
 
+FIELD_LABELS.jd_text = 'JD 原文';
+FIELD_LABELS.source_url = '来源链接';
+
 const SUBTYPE_LABELS: Record<string, string> = {
   assessment: '测评',
   technical: '技术面',
@@ -167,7 +170,12 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
   const changes = action.proposed_changes ?? [];
   const thinEvidence = visibleEvidence.length === 0;
   const longDraftFields = changes.filter((change) => summarizeLongValue(change.after, change.field));
-  const confirmLabel = action.tool_name.includes('delete')
+  const isApplicationJd = action.tool_name === 'save_application_jd_version';
+  const jdText = typeof action.args?.jd_text === 'string' ? action.args.jd_text : '';
+  const currentVersion = action.args?.expected_current_version_id;
+  const confirmLabel = isApplicationJd
+    ? '确认保存岗位资料'
+    : action.tool_name.includes('delete')
     ? '确认删除'
     : action.tool_name.includes('create') || action.tool_name === 'add_note'
       ? '确认新建'
@@ -294,6 +302,41 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
         AI 想执行一个修改操作 · {meta.label}
       </div>
       <div className={styles.prBody}>
+        {isApplicationJd ? (
+          <div className={styles.prFacts} aria-label="岗位资料确认信息">
+            <div>
+              <span>投递公司</span>
+              <b>{target ?? '当前投递'}</b>
+            </div>
+            <div>
+              <span>职位</span>
+              <b>{targetMeta ?? '未提供职位信息'}</b>
+            </div>
+            <div>
+              <span>当前版本</span>
+              <b>{currentVersion === null || currentVersion === undefined ? '暂无版本' : `#${String(currentVersion)}`}</b>
+            </div>
+            <div>
+              <span>来源</span>
+              <b>Pilot</b>
+            </div>
+            <div>
+              <span>字符数</span>
+              <b>{Array.from(jdText).length}</b>
+            </div>
+            <div>
+              <span>JD 预览</span>
+              <b className={styles.changeValue} title={jdText}>{jdText}</b>
+            </div>
+            {typeof action.args?.source_url === 'string' && action.args.source_url.trim() ? (
+              <div>
+                <span>来源链接（仅文本）</span>
+                <b className={styles.changeValue}>{action.args.source_url}</b>
+              </div>
+            ) : null}
+            <small>不会访问链接</small>
+          </div>
+        ) : null}
         {action.workflow ? (
           <div className={styles.workflowHint}>
             <span>

@@ -263,6 +263,7 @@ export default function ChatPanel({
   const confirmationLocksRef = useRef(new Map<number, ConfirmationExecution>());
   const confirmationReconcileOnOpenRef = useRef<ConfirmationExecution | null>(null);
   const lockedConfirmationRef = useRef<ConfirmationExecution | null>(null);
+  const startedRequestKeyRef = useRef<number | null>(null);
   const pendingAutoSelectSuppressedRef = useRef(false);
   const conversationSelectionRequestRef = useRef(0);
   const conversationListRequestRef = useRef(0);
@@ -558,6 +559,12 @@ export default function ChatPanel({
     startNewChat();
     setDraftContext(startRequest);
   }, [startRequest?.requestKey]);
+
+  useEffect(() => {
+    if (!draftContext?.initialMessage || startedRequestKeyRef.current === draftContext.requestKey) return;
+    startedRequestKeyRef.current = draftContext.requestKey;
+    void sendMessage(draftContext.initialMessage);
+  }, [draftContext?.requestKey]);
 
   async function selectConversation(id: number) {
     markPendingAutoSelect('allow');
@@ -858,6 +865,7 @@ export default function ChatPanel({
               context_type: draftContext.context_type,
               context_ref: draftContext.context_ref,
               mode: draftContext.mode,
+              ...(draftContext.pilot_action ? { pilot_action: draftContext.pilot_action } : {}),
               ...(activePageContext ? { page_context: activePageContext } : {}),
             }
           : buildChatRequestContext({

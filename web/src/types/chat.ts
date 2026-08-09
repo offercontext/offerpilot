@@ -30,6 +30,12 @@ export interface PilotContextAttachment {
   label: string;
 }
 
+export interface PilotActionRequest {
+  type: 'application_jd_save';
+  jdText?: string;
+  sourceUrl?: string | null;
+}
+
 export interface Conversation {
   id: number;
   title: string;
@@ -53,6 +59,8 @@ export interface ChatStartRequest {
   context_ref: string;
   context_label: string;
   mode: 'general';
+  initialMessage?: string;
+  pilot_action?: PilotActionRequest;
 }
 
 export type WriteStatus = 'success' | 'failed' | 'cancelled' | 'none';

@@ -6898,6 +6898,25 @@ def _pending_action_details(
     args: dict[str, Any],
     applications: ApplicationsRepository,
 ) -> dict[str, Any]:
+    if tool_name == "save_application_jd_version":
+        app_id = args.get("application_id")
+        if not isinstance(app_id, (int, str)):
+            return {}
+        try:
+            resolved_id = int(app_id)
+        except (TypeError, ValueError):
+            return {}
+        application = applications.get(resolved_id)
+        if application is None:
+            return {}
+        target = {
+            "id": f"application-{application.id}",
+            "kind": "application",
+            "title": application.company_name,
+            "meta": application.position_name,
+            "source": "pending_action",
+        }
+        return {"target": target, "evidence": [target]}
     if tool_name == "create_application":
         return _pending_create_application_details(args)
     if tool_name == "create_application_event":

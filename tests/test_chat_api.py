@@ -158,6 +158,8 @@ def test_deterministic_pilot_jd_action_creates_confirmation_without_ai(tmp_path)
     assert body["pending_action"]["tool_name"] == "save_application_jd_version"
     assert body["pending_action"]["args"]["application_id"] == application["id"]
     assert body["pending_action"]["args"]["jd_text"] == "职位：后端工程师\n负责 API 设计"
+    assert body["pending_action"]["target"]["title"] == application["company_name"]
+    assert body["pending_action"]["target"]["meta"] == application["position_name"]
     assert model.calls == 0
 
 

@@ -26,6 +26,7 @@ import {
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import type { Application } from '@/types/application';
+import type { PilotActionRequest } from '@/types/chat';
 import { STATUS_LABELS } from '@/types/application';
 import { listNotesByApp, createNote, deleteNote as removeNote, updateNote } from '@/services/notes';
 import { listEvents } from '@/services/events';
@@ -86,7 +87,7 @@ interface ApplicationDetailProps {
   open: boolean;
   onClose: () => void;
   onMockInterview?: (app: Application) => void;
-  onAskPilot?: (app: Application) => void;
+  onAskPilot?: (app: Application, action?: PilotActionRequest) => void;
   onOpenPilotOpportunityFit?: (app: Application) => void;
   pilotInterviewReviewApplicationId?: number | null;
   onPilotInterviewReviewFocusConsumed?: () => void;
@@ -611,6 +612,14 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
             <Space>
               <Button size="small" onClick={() => { setJdHistoryOpen(true); setSelectedJdVersion(null); }}>{'\u67e5\u770b\u5386\u53f2'}</Button>
               <Button size="small" type="primary" onClick={startJdEditor}>{applicationJdQuery.data?.current ? '\u66f4\u65b0 JD' : '\u6dfb\u52a0 JD'}</Button>
+              {onAskPilot && (
+                <Button
+                  size="small"
+                  onClick={() => onAskPilot(application, { type: 'application_jd_save' })}
+                >
+                  {applicationJdQuery.data?.current ? '更新岗位资料' : '保存岗位资料'}
+                </Button>
+              )}
             </Space>
           </div>
           {applicationJdQuery.isLoading ? <Spin size="small" /> : applicationJdQuery.data?.current ? (

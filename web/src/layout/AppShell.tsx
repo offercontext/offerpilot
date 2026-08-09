@@ -32,7 +32,7 @@ import {
   type OpportunityFitV2Draft,
 } from '@/types/opportunityFitReview';
 import { getOpportunityFitErrorMessage } from '@/components/opportunityFitCopy';
-import type { ChatStartRequest, PilotContextAttachment } from '@/types/chat';
+import type { ChatStartRequest, PilotActionRequest, PilotContextAttachment } from '@/types/chat';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
 import AddApplicationForm from '@/components/AddApplicationForm';
@@ -584,7 +584,7 @@ function AppShellContent() {
     setPendingAttachmentDraftKey(attachmentKey);
   };
 
-  const startApplicationChat = (application: Application) => {
+  const startApplicationChat = (application: Application, action?: PilotActionRequest) => {
     setCoachOfferId(undefined);
     setChatStartRequest({
       requestKey: ++nextChatStartRequestKey.current,
@@ -592,6 +592,7 @@ function AppShellContent() {
       context_ref: String(application.id),
       context_label: `${application.company_name} · ${application.position_name}`,
       mode: 'general',
+      ...(action ? { initialMessage: '保存岗位资料', pilot_action: action } : {}),
     });
     if (view !== 'pilot') {
       if (pilotRailAvailable) setPilotDrawerOpen(true);

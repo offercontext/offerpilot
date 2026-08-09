@@ -3,6 +3,7 @@ import type {
   ChatResponse,
   ChatStreamEvent,
   Conversation,
+  PilotActionRequest,
   PilotContextAttachment,
   PilotPageContext,
 } from '@/types/chat';
@@ -18,6 +19,7 @@ export interface ChatContextInput {
   mode?: string;
   page_context?: PilotPageContext;
   attachments?: PilotContextAttachment[];
+  pilot_action?: PilotActionRequest;
 }
 
 export interface ChatRequestOptions {
@@ -76,6 +78,7 @@ export async function sendChat(
       ...(context?.mode ? { mode: context.mode } : {}),
       ...(context?.page_context !== undefined ? { page_context: context.page_context } : {}),
       ...(context?.attachments !== undefined ? { attachments: context.attachments } : {}),
+      ...(context?.pilot_action !== undefined ? { pilot_action: context.pilot_action } : {}),
     },
     { signal: options?.signal },
   );
@@ -165,6 +168,7 @@ export async function streamChat(
       ...(context?.mode ? { mode: context.mode } : {}),
       ...(context?.page_context !== undefined ? { page_context: context.page_context } : {}),
       ...(context?.attachments !== undefined ? { attachments: context.attachments } : {}),
+      ...(context?.pilot_action !== undefined ? { pilot_action: context.pilot_action } : {}),
     },
     options,
   );

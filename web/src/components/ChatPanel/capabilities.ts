@@ -50,6 +50,7 @@ export const TOOL_META: Record<string, ToolMeta> = {
   get_offer: { label: '查看 Offer 详情', kind: 'read', icon: DollarOutlined },
   compare_offers: { label: '对比 Offer', kind: 'read', icon: SwapOutlined },
   // ---- write ----
+  save_application_jd_version: { label: '保存岗位资料', kind: 'write', icon: SaveOutlined },
   create_application: { label: '新建投递', kind: 'write', icon: PlusCircleOutlined },
   update_application_status: { label: '更新投递状态', kind: 'write', icon: EditOutlined },
   add_note: { label: '添加复盘记录', kind: 'write', icon: PlusCircleOutlined },
