@@ -1,10 +1,12 @@
 # Application JD version release verification
 
-- Verification date: 2026-08-09
+- Verification date: 2026-08-10
 - Branch: `feat/20260805-application-jd-versions`
-- Feature baseline: `455e081`
-- Latest evidence execution HEAD: `9cf2543`
-- Status: local and grouped release gates passed; real-AI and browser release gates remain blocked.
+- Feature baseline: `b6c4294089c61a50f958005e0731d85b6c2b58c4`
+- Latest evidence execution HEAD: `64526f42a7c169f3afddecd1da3a679419407b53`
+- Status: deterministic Pilot implementation gates passed; real-AI API verification and local browser acceptance passed; full isolated CDP `Stage all` evidence is not recorded, so this report does not authorize merge or push.
+
+The historical Provider and browser attempts below are retained as prior evidence. The current deterministic Pilot verification is authoritative for HEAD `64526f4`.
 
 ## Scope
 
@@ -297,6 +299,20 @@ The next minimal gate was attempted with the same isolated Ark configuration and
 - Per the fail-closed gate, confirmation, Triage, and the unique full `Stage all` run were not executed.
 
 This does not invalidate the earlier direct Agent-loop probe that produced a pending `save_application_jd_version`; it shows that the actual API-route context did not reproduce that action reliably. The release remains blocked on a real confirmation card. Formal configuration and product code remain unchanged.
+
+## Current deterministic Pilot verification (2026-08-10)
+
+The approved deterministic Pilot JD-confirmation implementation was verified from HEAD `64526f4` against baseline `b6c4294`. The implementation keeps the existing pending-action, confirmation-token, idempotency, CAS, stale-version, and `ApplicationJDService` paths; it does not add a migration, a second save API, or a model-visible JD write tool.
+
+- The machine-checked scope gate passed with committed, staged, unstaged, and untracked paths; the baseline SHA remained unchanged and resolvable, and the allowlist SHA-256 was `904943b74f0a8428b4d9fe32189aac32314b9ad99ce9c4816a788f101b5b0ad3`.
+- Backend grouped aggregate passed: `1,956` tests, consisting of agent `454`, domain `73`, knowledge `659` with the four fixed symlink-permission skips, proposals `337`, and misc `433`. Full manifest SHA-256: `cd257e0b28fd7821b9eccb159f1dc2299da5e389a01dc9641ec8079072091b87`.
+- Frontend grouped aggregate passed: `784` tests across `106` files. Frontend source hash: `c037c414cf96c9ad509cb90743f221cee8e6394b9f45d306c433fb8e48962d88`; aggregate result SHA-256: `8252dfb3a8f8f896773fb874b03e69bc217bee8f338d488a5f3152e60f2325ab`.
+- `uv run ruff check .`, `uv run mypy src`, `npm.cmd run build`, `uv run oc smoke --static-dir web/dist`, and `uv run oc verify --profile local --static-dir web/dist` passed. The known single-process `uv run pytest -q` was not used as a gate; grouped aggregate is the backend gate.
+- `uv run oc verify --profile real-ai --static-dir web/dist` passed once using the existing configured `deepseek-v4-flash` profile. Interview Preparation, Material Proposal, Opportunity Fit review/deep review, Interview Review, Knowledge Capture, bounded Mock Interview, confirmation write, cleanup, and no-cross-domain-write checks all completed. The safe diagnostic retained only structure summaries, counts, durations, and request-id hashes; no key, prompt, JD, resume, or model output was retained.
+- A temporary isolated local browser acceptance used synthetic Chinese application/JD/resume data in light mode at a wide viewport. The deterministic flow covered the saved-JD entry, missing-JD clarification, confirmation card, one approval, success/history state, and local-only network audit. No Provider call was made by the JD save flow, and the temporary service, browser state, port, and data directory were removed.
+- The dedicated real-Provider CDP harness `scripts/application-jd-real-ai-browser-harness.ps1 -Stage all` was not rerun for this deterministic slice. Therefore the full browser `Stage all` release condition remains explicitly unproven even though API-level real-AI verification passed.
+
+No push or merge is authorized by this plan.
 
 ## Cleanup and remaining risk
 
