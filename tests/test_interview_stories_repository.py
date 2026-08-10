@@ -166,6 +166,38 @@ def test_resume_pointer_rejects_extremely_long_ascii_array_index_without_value_e
     factory.kw["bind"].dispose()
 
 
+def test_user_assertion_can_only_support_a_user_view_block_and_links_are_bounded(tmp_path) -> None:
+    factory = init_database(tmp_path / "story.db")
+    with factory() as session:
+        note = _create_note(session)
+        session.commit()
+        snapshot = materialize_selected_sources(
+            session,
+            [{"source_kind": "interview_note", "source_id": note.id, "path": "/questions"}],
+            ["I would communicate risk earlier."],
+        )
+        content = canonical_story_content(_manual_content())
+        links = _links_for_content(content, snapshot)
+        star_link = next(link for link in links if link["target_id"] == "situation_001")
+        assertion = next(item for item in snapshot.sources if item["source_kind"] == "user_assertion")
+        star_link.update({
+            "source_kind": assertion["source_kind"],
+            "source_stable_id": assertion["source_stable_id"],
+            "source_version_or_snapshot": assertion["source_version_or_snapshot"],
+            "source_path": assertion["path"],
+            "excerpt": assertion["excerpt"],
+        })
+        with pytest.raises(StoryValidationError, match="user assertion"):
+            validate_story_evidence_links(content, links, snapshot)
+
+        links = _links_for_content(content, snapshot)
+        title = next(link for link in links if link["target_kind"] == "title")
+        links.extend([dict(title) for _ in range(8)])
+        with pytest.raises(StoryValidationError, match="count exceeds limit"):
+            validate_story_evidence_links(content, links, snapshot)
+    factory.kw["bind"].dispose()
+
+
 @pytest.mark.parametrize(
     ("selection", "message"),
     [
@@ -453,12 +485,20 @@ def test_manual_save_replays_the_same_key_without_creating_a_second_version(tmp_
     }
 
     first = repository.create_manual_story(**request)
+    version_request = {
+        **request,
+        "expected_current_version_id": first["current_version_id"],
+        "expected_story_revision": first["story_revision"],
+        "idempotency_key": "manual-story-replay-key-0002",
+    }
+    repository.create_manual_version(story_id=first["id"], **version_request)
     replay = repository.create_manual_story(**request)
 
     assert replay["id"] == first["id"]
+    assert replay["version"]["id"] == first["current_version_id"]
     with factory() as session:
         assert len(list(session.scalars(select(InterviewStory)))) == 1
-        assert len(list(session.scalars(select(InterviewStoryVersion)))) == 1
+        assert len(list(session.scalars(select(InterviewStoryVersion)))) == 2
         attempt = session.scalar(select(InterviewStoryProposalAttempt).where(InterviewStoryProposalAttempt.idempotency_key == request["idempotency_key"]))
         assert attempt is not None and attempt.attempt_status == "confirmed"
     factory.kw["bind"].dispose()
@@ -510,6 +550,39 @@ def _manual_content_from_proposal(proposal: dict[str, object]) -> dict[str, obje
         "applicable_questions": [item["text"] for item in proposal["content"]["applicable_questions"]],
         "fact_gap_codes": proposal["content"]["fact_gap_codes"],
     }
+
+
+def test_provider_result_source_deletion_invalidates_the_claim(tmp_path) -> None:
+    from offerpilot.ai.interview_stories import safe_empty_interview_story_proposal
+    from offerpilot.repositories.interview_stories import StorySourceConflictError
+
+    factory = init_database(tmp_path / "story-source-conflict.db")
+    repository = InterviewStoriesRepository(factory)
+    with factory() as session:
+        note = _create_note(session)
+        note_id = note.id
+        session.commit()
+    claim = repository.claim_proposal(
+        target_story_id=None,
+        expected_current_version_id=None,
+        expected_story_revision=None,
+        selections=[{"source_kind": "interview_note", "source_id": note_id, "path": "/questions"}],
+        assertions=[],
+        idempotency_key="story-source-deletion-key-01",
+        entrypoint="ui",
+    )
+    with factory() as session:
+        session.delete(session.get(InterviewNote, note_id))
+        session.commit()
+    with pytest.raises(StorySourceConflictError, match="source changed"):
+        repository.complete_proposal(
+            attempt_id=claim.attempt_id,
+            generation_revision=claim.generation_revision,
+            provider_call_token=claim.provider_call_token,
+            proposal=safe_empty_interview_story_proposal(),
+        )
+    assert repository.get_attempt(claim.attempt_id)["attempt_status"] == "invalidated"
+    factory.kw["bind"].dispose()
 
 
 def test_story_attempt_replay_heartbeat_and_confirmation_are_fenced(tmp_path) -> None:

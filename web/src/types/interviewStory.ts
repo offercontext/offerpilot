@@ -1,5 +1,5 @@
 export type InterviewStoryStatus = 'active' | 'archived';
-export type InterviewStoryAttemptStatus = 'generating' | 'provider_unknown' | 'ready' | 'safe_empty' | 'invalidated';
+export type InterviewStoryAttemptStatus = 'generating' | 'provider_unknown' | 'ready' | 'safe_empty' | 'contract_failed' | 'invalidated' | 'confirmed';
 export type InterviewStoryTargetKind = 'title' | 'block' | 'capability_label' | 'applicable_question';
 export type InterviewStorySourceKind = 'resume_version' | 'interview_note' | 'mock_turn' | 'user_assertion';
 
@@ -141,7 +141,10 @@ export interface InterviewStoryProposalAttempt {
   attempt_status: InterviewStoryAttemptStatus;
   generation_revision: number;
   source_fingerprint: string;
-  proposal?: { proposal_status: 'normal' | 'safe_empty'; content: InterviewStoryContent; evidence_links: InterviewStoryEvidenceLink[] } | null;
+  proposal?:
+    | { proposal_status: 'normal' | 'safe_empty'; content: InterviewStoryContent; evidence_links: InterviewStoryEvidenceLink[] }
+    | { proposal_status: 'manual' }
+    | null;
   proposal_hash?: string | null;
   target_story_id?: number | null;
   entrypoint?: 'ui' | 'pilot';

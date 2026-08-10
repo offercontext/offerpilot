@@ -11,6 +11,7 @@ import {
 import type {
   InterviewStoryClientEvidenceLink,
   InterviewStoryContent,
+  InterviewStoryEvidenceLink,
   InterviewStoryEditableContent,
   InterviewStoryProposalAttempt,
   InterviewStorySourceCandidates,
@@ -34,6 +35,7 @@ export interface InterviewStoryDraft {
   proposal: InterviewStoryProposalAttempt['proposal'] | null;
   editedContent: InterviewStoryEditableContent | null;
   manualContent: InterviewStoryEditableContent;
+  manualSavePayload: { content: InterviewStoryEditableContent; evidenceLinks: InterviewStoryClientEvidenceLink[] } | null;
   resultUnknown: boolean;
   pendingOperation: 'generate' | 'confirm' | 'manual' | null;
   confirmationToken: string | null;
@@ -85,6 +87,7 @@ export function createInterviewStoryDraft(
     proposal: null,
     editedContent: null,
     manualContent: EMPTY_MANUAL_CONTENT,
+    manualSavePayload: null,
     resultUnknown: false,
     pendingOperation: null,
     confirmationToken: null,
@@ -124,7 +127,7 @@ function normalizedManualContent(content: InterviewStoryEditableContent): Interv
   };
 }
 
-function clientEvidence(links: NonNullable<InterviewStoryProposalAttempt['proposal']>['evidence_links']): InterviewStoryClientEvidenceLink[] {
+function clientEvidence(links: InterviewStoryEvidenceLink[]): InterviewStoryClientEvidenceLink[] {
   return links.map((link) => ({
     target_kind: link.target_kind,
     target_id: link.target_id,
@@ -187,8 +190,9 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
       .finally(() => setCandidatesLoading(false));
   }, [open, pickerOpen, candidates, draft.reviewNoteId]);
 
-  const sourceSelected = draft.selections.length > 0 || draft.assertions.length > 0;
+  const sourceSelected = draft.selections.length > 0;
   const frozen = draft.resultUnknown || busy;
+  const normalProposal = draft.proposal?.proposal_status === 'normal' ? draft.proposal : null;
   const selectedSourcePreview = useMemo(() => {
     for (const selection of draft.selections) {
       const leaves = selection.source_kind === 'resume_version'
@@ -199,13 +203,7 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
       const preview = leaves?.find((item) => item.path === selection.path)?.preview;
       if (preview) return { ...selection, preview };
     }
-    const assertionPreview = draft.assertions.find((item) => item.trim());
-    return assertionPreview ? {
-      source_kind: 'user_assertion' as const,
-      source_id: 'assertion_001',
-      path: '/statement',
-      preview: assertionPreview,
-    } : null;
+    return null;
   }, [candidates, draft.assertions, draft.selections]);
 
   const update = (changes: Partial<InterviewStoryDraft>) => onDraftChange({ ...draft, ...changes });
@@ -219,6 +217,7 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
         : [...draft.selections, selection],
       proposal: null,
       editedContent: null,
+      manualSavePayload: null,
       attemptId: null,
       resultUnknown: false,
       pendingOperation: null,
@@ -230,7 +229,7 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
   const addAssertion = () => {
     const value = assertion.trim();
     if (!value || frozen) return;
-    update({ assertions: [...draft.assertions, value], proposal: null, editedContent: null, attemptId: null, resultUnknown: false, pendingOperation: null, error: null });
+    update({ assertions: [...draft.assertions, value], proposal: null, editedContent: null, manualSavePayload: null, attemptId: null, resultUnknown: false, pendingOperation: null, error: null });
     setAssertion('');
     setShowPreview(false);
   };
@@ -243,36 +242,43 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
   };
 
   const saveManualStory = async () => {
-    const content = normalizedManualContent(draft.manualContent);
-    if (!selectedSourcePreview || !content.title.trim() || !content.blocks.some((block) => block.text.trim())) {
+    const saved = draft.manualSavePayload;
+    const content = saved?.content ?? normalizedManualContent(draft.manualContent);
+    if (!saved && (!selectedSourcePreview || !content.title.trim() || !content.blocks.some((block) => block.text.trim()))) {
       message.error('请先选择原始来源，并填写标题和至少一个故事区块。');
       return;
     }
-    const evidenceSource = selectedSourcePreview.source_kind === 'user_assertion'
-      ? {
-        source_kind: 'user_assertion' as const,
-        source_id: selectedSourcePreview.source_id,
-        source_path: selectedSourcePreview.path,
-        excerpt: selectedSourcePreview.preview,
-      }
-      : {
-        source_kind: selectedSourcePreview.source_kind,
-        source_id: selectedSourcePreview.source_id,
-        source_path: selectedSourcePreview.path,
-        excerpt: selectedSourcePreview.preview,
-      };
-    const blockCounts: Record<string, number> = {};
-    const evidenceLinks: InterviewStoryClientEvidenceLink[] = [{ target_kind: 'title', target_id: 'title', ...evidenceSource }];
-    for (const block of content.blocks) {
-      blockCounts[block.kind] = (blockCounts[block.kind] ?? 0) + 1;
-      if (block.text.trim()) {
-        evidenceLinks.push({
-          target_kind: 'block',
-          target_id: `${block.kind}_${String(blockCounts[block.kind]).padStart(3, '0')}`,
-          ...evidenceSource,
-        });
-      }
+    if (!saved && content.blocks.some((block) => block.kind === 'reflection') && !draft.assertions.some((item) => item.trim())) {
+      message.error('手动复盘需要一条你明确确认的原始陈述作为来源。');
+      return;
     }
+    const evidenceLinks: InterviewStoryClientEvidenceLink[] = saved?.evidenceLinks ?? (() => {
+      const sourcePreview = selectedSourcePreview!;
+      const evidenceSource = {
+        source_kind: sourcePreview.source_kind,
+        source_id: sourcePreview.source_id,
+        source_path: sourcePreview.path,
+        excerpt: sourcePreview.preview,
+      };
+      const links: InterviewStoryClientEvidenceLink[] = [{ target_kind: 'title', target_id: 'title', ...evidenceSource }];
+      const blockCounts: Record<string, number> = {};
+      for (const block of content.blocks) {
+        blockCounts[block.kind] = (blockCounts[block.kind] ?? 0) + 1;
+        if (block.kind === 'reflection') {
+          const statement = draft.assertions.find((item) => item.trim());
+          if (!statement) {
+            throw new InterviewStoryError(422, 'interview_story_invalid_request');
+          }
+          links.push({ target_kind: 'block', target_id: `${block.kind}_${String(blockCounts[block.kind]).padStart(3, '0')}`, source_kind: 'user_assertion', source_id: 'assertion_001', source_path: '/statement', excerpt: statement });
+        } else {
+          links.push({ target_kind: 'block', target_id: `${block.kind}_${String(blockCounts[block.kind]).padStart(3, '0')}`, ...evidenceSource });
+        }
+      }
+      content.capability_labels.forEach((_, index) => links.push({ target_kind: 'capability_label', target_id: `capability_${String(index + 1).padStart(3, '0')}`, ...evidenceSource }));
+      content.applicable_questions.forEach((_, index) => links.push({ target_kind: 'applicable_question', target_id: `question_${String(index + 1).padStart(3, '0')}`, ...evidenceSource }));
+      return links;
+    })();
+    if (!saved) update({ manualSavePayload: { content, evidenceLinks } });
     setBusy(true);
     try {
       if (draft.targetStoryId) {
@@ -350,7 +356,7 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
   };
 
   const confirm = async () => {
-    if (!draft.proposal || !draft.attemptId) return;
+    if (!draft.proposal || draft.proposal.proposal_status !== 'normal' || !draft.attemptId) return;
     setBusy(true);
     const token = draft.confirmationToken ?? key('story-confirm');
     try {
@@ -462,7 +468,7 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
             aria-label="手动故事标题"
             disabled={frozen}
             value={draft.manualContent.title}
-            onChange={(event) => update({ manualContent: { ...draft.manualContent, title: event.target.value } })}
+              onChange={(event) => update({ manualContent: { ...draft.manualContent, title: event.target.value }, manualSavePayload: null })}
             placeholder="故事标题"
             style={{ marginBottom: 8 }}
           />
@@ -477,6 +483,7 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
                   ...draft.manualContent,
                   blocks: draft.manualContent.blocks.map((item, itemIndex) => itemIndex === index ? { ...item, text: event.target.value } : item),
                 },
+                manualSavePayload: null,
               })}
               placeholder={block.kind === 'reflection' ? '你的观点或复盘，不会冒充外部事实' : `用原始证据支持的${({ situation: '情境', task: '任务', action: '行动', result: '结果' } as const)[block.kind as Exclude<typeof block.kind, 'reflection'>]}`}
               autoSize={{ minRows: 2, maxRows: 6 }}
@@ -487,7 +494,7 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
             aria-label="手动能力标签"
             disabled={frozen}
             value={draft.manualContent.capability_labels.join('\n')}
-            onChange={(event) => update({ manualContent: { ...draft.manualContent, capability_labels: event.target.value.split('\n').filter(Boolean) } })}
+            onChange={(event) => update({ manualContent: { ...draft.manualContent, capability_labels: event.target.value.split('\n').filter(Boolean) }, manualSavePayload: null })}
             placeholder="能力标签，每行一个（可选）"
             autoSize={{ minRows: 1, maxRows: 4 }}
             style={{ marginBottom: 8 }}
@@ -496,7 +503,7 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
             aria-label="手动适用问题"
             disabled={frozen}
             value={draft.manualContent.applicable_questions.join('\n')}
-            onChange={(event) => update({ manualContent: { ...draft.manualContent, applicable_questions: event.target.value.split('\n').filter(Boolean) } })}
+            onChange={(event) => update({ manualContent: { ...draft.manualContent, applicable_questions: event.target.value.split('\n').filter(Boolean) }, manualSavePayload: null })}
             placeholder="适用问题，每行一个（可选）"
             autoSize={{ minRows: 1, maxRows: 4 }}
             style={{ marginBottom: 8 }}
@@ -515,27 +522,27 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
           action={<Button size="small" onClick={restartAfterSafeEmpty}>补充来源并重新开始</Button>}
         />
       ) : null}
-      {draft.proposal?.proposal_status === 'normal' ? (
+      {normalProposal ? (
         <>
           <Divider />
           <Title level={4}>审阅并编辑故事草稿</Title>
           <Input
             aria-label="故事标题"
             disabled={frozen}
-            value={(draft.editedContent ?? editableContent(draft.proposal.content)).title}
+            value={(draft.editedContent ?? editableContent(normalProposal.content)).title}
             onChange={(event) => update({
-              editedContent: { ...(draft.editedContent ?? editableContent(draft.proposal!.content)), title: event.target.value },
+              editedContent: { ...(draft.editedContent ?? editableContent(normalProposal.content)), title: event.target.value },
             })}
             style={{ marginBottom: 12 }}
           />
-          {(draft.editedContent ?? editableContent(draft.proposal.content)).blocks.map((block, index) => (
+          {(draft.editedContent ?? editableContent(normalProposal.content)).blocks.map((block, index) => (
             <Input.TextArea
-              key={draft.proposal!.content.blocks[index]?.id ?? index}
+              key={normalProposal.content.blocks[index]?.id ?? index}
               aria-label={`故事区块 ${index + 1}`}
               disabled={frozen}
               value={block.text}
               onChange={(event) => {
-                const current = draft.editedContent ?? editableContent(draft.proposal!.content);
+                const current = draft.editedContent ?? editableContent(normalProposal.content);
                 const blocks = current.blocks.map((item, itemIndex) => itemIndex === index ? { ...item, text: event.target.value } : item);
                 update({ editedContent: { ...current, blocks } });
               }}

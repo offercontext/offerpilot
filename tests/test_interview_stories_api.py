@@ -90,6 +90,17 @@ def test_story_api_rejects_extra_fields_and_never_creates_an_attempt_before_conf
     assert proposal.status_code == 422
 
 
+def test_manual_story_api_rejects_non_null_or_non_integer_new_version_cas(app_client) -> None:
+    note = _note(app_client)
+    for value in (True, "1", 0, 1):
+        payload = _payload(note["id"])
+        payload["expected_current_version_id"] = value
+        payload["idempotency_key"] = f"manual-story-invalid-cas-{str(value).lower()}-01"
+        response = app_client.post("/api/interview-stories", json=payload)
+        assert response.status_code == 422
+        assert response.json()["error_code"] == "interview_story_invalid_request"
+
+
 def test_story_proposal_api_accepts_only_a_scoped_review_note_context(app_client) -> None:
     note = _note(app_client)
     payload = {

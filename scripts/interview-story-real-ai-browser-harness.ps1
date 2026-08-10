@@ -180,7 +180,7 @@ function Assert-ProviderEgress([object[]]$providers) {
   foreach ($provider in $providers) { $allowed[$provider.Tuple] = $true }
   $records = @(Get-Content -LiteralPath $providerAudit | Where-Object { $_.Trim() } | ForEach-Object { $_ | ConvertFrom-Json })
   $connections = @($records | Where-Object { $_.kind -eq 'provider_proxy_connect' })
-  if ($connections.Count -lt 2) { throw 'Browser Story flows did not produce two auditable Provider connections.' }
+  if ($connections.Count -ne 2) { throw 'Browser Story flows must produce exactly two auditable Provider connections.' }
   foreach ($connection in $connections) {
     $tuple = "$($connection.scheme)://$($connection.host):$($connection.port)"
     if ($connection.status -ne 'connected' -or -not $allowed.ContainsKey($tuple)) {
@@ -263,7 +263,17 @@ try {
   Write-Host 'Dedicated browser target is ready in light mode at 1455x1200.'
   Write-Host 'Complete UI Story flow, then Pilot Story flow in the same target. Do not open another tab.'
   Write-Host 'Use selected seed note sources, edit a draft, confirm each Story Version, and reopen history.'
-  [void](Read-Host 'Press Enter only after both flows and history reads have completed')
+  Write-Host 'Press Enter only after both flows and history reads have completed.'
+  while ($true) {
+    if ($server.HasExited) { throw 'Isolated service exited during browser acceptance.' }
+    if ($browser.HasExited) { throw 'Dedicated browser exited during browser acceptance.' }
+    if ($auditor.HasExited) { throw 'Browser auditor exited during browser acceptance.' }
+    if ([Console]::KeyAvailable) {
+      $key = [Console]::ReadKey($true)
+      if ($key.Key -eq [ConsoleKey]::Enter) { break }
+    }
+    Start-Sleep -Milliseconds 250
+  }
   New-Item -ItemType File -Force -Path $browserStop | Out-Null
   $auditor.WaitForExit(15000)
   if (-not $auditor.HasExited) { throw 'Browser auditor did not stop cleanly.' }
@@ -277,6 +287,14 @@ db = sqlite3.connect(os.environ["INTERVIEW_STORY_HARNESS_DB"])
 rows = db.execute("select entrypoint, attempt_status, confirmed_story_version_id from interview_story_proposal_attempts order by id").fetchall()
 if len(rows) != 2 or {row[0] for row in rows} != {"ui", "pilot"} or any(row[1] != "confirmed" or row[2] is None for row in rows):
     raise SystemExit("both UI and Pilot Story confirmations are required")
+story_count = db.execute("select count(*) from interview_stories").fetchone()[0]
+version_rows = db.execute("select id from interview_story_versions order by id").fetchall()
+if story_count != 2 or len(version_rows) != 2:
+    raise SystemExit("browser acceptance must create exactly two Stories and two Versions")
+for (version_id,) in version_rows:
+    link_count = db.execute("select count(*) from interview_story_version_evidence_links where story_version_id = ?", (version_id,)).fetchone()[0]
+    if link_count < 1:
+        raise SystemExit("each confirmed Story Version requires persisted evidence links")
 '@
   & uv run python -c $verify
   Assert-ExitCode 'Story confirmation verification'

@@ -126,6 +126,16 @@ def test_story_validator_rejects_semantic_evidence_failure_without_repair() -> N
     assert model.calls == 1
 
 
+def test_story_validator_reports_evidence_limit_without_repair() -> None:
+    forged = copy.deepcopy(_proposal())
+    forged["title"]["evidence_refs"][0]["excerpt"] = "x" * 801  # type: ignore[index]
+
+    with pytest.raises(StoryProposalError) as error:
+        validate_interview_story_proposal(forged, _snapshot())
+
+    assert error.value.category == "limit_exceeded"
+
+
 def test_story_shape_error_repairs_once_without_echoing_source_or_model_text() -> None:
     malformed = _proposal()
     malformed["title"] = {"text": "missing evidence"}

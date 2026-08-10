@@ -5305,6 +5305,8 @@ def create_app(
             if not written and attempt is not None:
                 return _story_attempt_response(attempt)
             return _story_attempt_response(attempt or {}, status_code=201)
+        except StoryConflictError as exc:
+            return _story_error_response(exc)
         except StoryProviderError as exc:
             interview_stories.mark_provider_unknown(
                 attempt_id=claim.attempt_id,

@@ -38,6 +38,10 @@ class StoryConflictError(StoryValidationError):
     """Raised when an immutable Story pointer or lifecycle CAS is stale."""
 
 
+class StorySourceConflictError(StoryConflictError):
+    """Raised when a frozen source changed or is no longer materializable."""
+
+
 @dataclass(frozen=True)
 class StorySourceSnapshot:
     sources: list[dict[str, str]]
@@ -83,6 +87,7 @@ _FACT_GAP_CODES = {"missing_result"}
 _BLOCK_KINDS = {"situation", "task", "action", "result", "reflection"}
 _TARGET_KINDS = {"title", "block", "capability_label", "applicable_question"}
 _MAX_EVIDENCE_EXCERPT_CHARS = 800
+_MAX_EVIDENCE_LINKS_PER_TARGET = 8
 _MAX_TITLE_CHARS = 200
 _MAX_BLOCKS = 12
 _MAX_BLOCK_TEXT_CHARS = 4_000
@@ -176,12 +181,14 @@ def validate_story_evidence_links(
     """
 
     expected_targets = _evidence_targets(content)
+    target_fact_modes = _target_fact_modes(content)
     catalog = {
         _source_identity(item): item
         for item in snapshot.sources
     }
     canonical: list[CanonicalStoryLink] = []
     linked_targets: set[tuple[str, str]] = set()
+    link_counts: dict[tuple[str, str], int] = {}
     for raw in links:
         if not isinstance(raw, Mapping):
             raise StoryValidationError("evidence link must be an object")
@@ -235,8 +242,10 @@ def validate_story_evidence_links(
             raise StoryValidationError("evidence link shape is invalid")
         if excerpt == "":
             raise StoryValidationError("evidence link shape is invalid")
-        if not excerpt.strip() or len(excerpt) > _MAX_EVIDENCE_EXCERPT_CHARS:
+        if not excerpt.strip():
             raise StoryValidationError("evidence excerpt is invalid")
+        if len(excerpt) > _MAX_EVIDENCE_EXCERPT_CHARS:
+            raise StoryValidationError("evidence excerpt exceeds limit")
         if source_version_or_snapshot is None:
             source = next(
                 (
@@ -256,6 +265,12 @@ def validate_story_evidence_links(
             raise StoryValidationError("evidence source is invalid")
         if excerpt not in source["excerpt"]:
             raise StoryValidationError("evidence excerpt is invalid")
+        target = (target_kind, target_id)
+        if source_kind == "user_assertion" and target_fact_modes.get(target) != "user_view":
+            raise StoryValidationError("user assertion cannot support an evidence-backed target")
+        link_counts[target] = link_counts.get(target, 0) + 1
+        if link_counts[target] > _MAX_EVIDENCE_LINKS_PER_TARGET:
+            raise StoryValidationError("evidence link count exceeds limit")
         payload = {
             "target_kind": target_kind,
             "target_id": target_id,
@@ -674,6 +689,18 @@ def _evidence_targets(content: Mapping[str, Any]) -> set[tuple[str, str]]:
     return targets
 
 
+def _target_fact_modes(content: Mapping[str, Any]) -> dict[tuple[str, str], str]:
+    """Return the fact mode for every stable evidence target."""
+
+    modes = {target: "evidence_backed" for target in _evidence_targets(content)}
+    blocks = content.get("blocks")
+    if isinstance(blocks, list):
+        for block in blocks:
+            if isinstance(block, Mapping) and isinstance(block.get("id"), str):
+                modes[("block", block["id"])] = str(block.get("fact_mode", "evidence_backed"))
+    return modes
+
+
 def _revalidate_persisted_source(
     session: Session,
     link: InterviewStoryVersionEvidenceLink,
@@ -840,8 +867,7 @@ class InterviewStoriesRepository:
         expected_current_version_id: int | None,
         idempotency_key: str,
     ) -> dict[str, Any]:
-        if expected_current_version_id is not None:
-            raise StoryConflictError("new story current version must be null")
+        _require_exact_null("new story current version id", expected_current_version_id)
         request_fingerprint = _manual_request_fingerprint(
             target_story_id=None,
             content=content,
@@ -1114,7 +1140,13 @@ class InterviewStoriesRepository:
                     attempt.provider_call_token = ""
                     session.commit()
                     return False
-                current = materialize_selected_sources(session, selections, assertions)
+                try:
+                    current = materialize_selected_sources(session, selections, assertions)
+                except StoryValidationError as exc:
+                    attempt.attempt_status = "invalidated"
+                    attempt.provider_call_token = ""
+                    session.commit()
+                    raise StorySourceConflictError("story source changed") from exc
                 if current.source_fingerprint != attempt.source_fingerprint:
                     attempt.attempt_status = "invalidated"
                     attempt.provider_call_token = ""
@@ -1238,7 +1270,10 @@ class InterviewStoriesRepository:
                 assertions = input_payload.get("assertions")
                 if not isinstance(selections, list) or not isinstance(assertions, list):
                     raise StoryConflictError("story proposal snapshot is invalid")
-                snapshot = materialize_selected_sources(session, selections, assertions)
+                try:
+                    snapshot = materialize_selected_sources(session, selections, assertions)
+                except StoryValidationError as exc:
+                    raise StorySourceConflictError("story source changed") from exc
                 if snapshot.source_fingerprint != attempt.source_fingerprint:
                     raise StoryConflictError("story source changed")
                 canonical = canonical_story_content(content)
@@ -1350,8 +1385,8 @@ class InterviewStoriesRepository:
         expected_story_revision: int | None,
     ) -> None:
         if target_story_id is None:
-            if expected_current_version_id is not None or expected_story_revision is not None:
-                raise StoryConflictError("new story claim CAS is invalid")
+            _require_exact_null("new story current version id", expected_current_version_id)
+            _require_exact_null("new story revision", expected_story_revision)
             return
         _require_positive_int("expected current version id", expected_current_version_id)
         _require_positive_int("expected story revision", expected_story_revision)
@@ -1413,7 +1448,7 @@ class InterviewStoriesRepository:
         version = session.get(InterviewStoryVersion, existing.confirmed_story_version_id)
         if story is None or version is None or version.story_id != story.id:
             raise StoryConflictError("manual story replay is unavailable")
-        return self._story_payload(session, story)
+        return self._story_payload(session, story, version=version)
 
     @staticmethod
     def _record_manual_save(
@@ -1531,9 +1566,16 @@ class InterviewStoriesRepository:
             "source_states": derive_story_source_states(session, version) if version else [],
         }
 
-    def _story_payload(self, session: Session, story: InterviewStory) -> dict[str, Any]:
+    def _story_payload(
+        self,
+        session: Session,
+        story: InterviewStory,
+        *,
+        version: InterviewStoryVersion | None = None,
+    ) -> dict[str, Any]:
         payload = self._story_summary(session, story)
-        version = session.get(InterviewStoryVersion, story.current_version_id) if story.current_version_id else None
+        if version is None:
+            version = session.get(InterviewStoryVersion, story.current_version_id) if story.current_version_id else None
         payload["version"] = self._version_payload(session, version) if version else None
         return payload
 
@@ -1591,6 +1633,11 @@ def _begin_immediate(session: Session) -> None:
 def _require_positive_int(name: str, value: int | None) -> None:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise StoryValidationError(f"{name} is invalid")
+
+
+def _require_exact_null(name: str, value: object) -> None:
+    if value is not None:
+        raise StoryValidationError(f"{name} must be null")
 
 
 def _canonical_selections(selections: list[dict[str, Any]]) -> list[dict[str, Any]]:
