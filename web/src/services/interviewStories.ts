@@ -1,0 +1,103 @@
+import axios from 'axios';
+import type {
+  InterviewStory,
+  InterviewStoryClientEvidenceLink,
+  InterviewStoryEditableContent,
+  InterviewStoryPendingAttempt,
+  InterviewStoryProposalAttempt,
+  InterviewStoryProposalInput,
+  InterviewStorySourceSelection,
+  InterviewStoryVersion,
+} from '@/types/interviewStory';
+import { InterviewStoryError as StoryError } from '@/types/interviewStory';
+import { createApiClient } from './http';
+
+export { InterviewStoryError } from '@/types/interviewStory';
+
+const http = createApiClient({ baseURL: '/api', timeout: 130000 });
+
+type ProposalResponse = InterviewStoryProposalAttempt | InterviewStoryPendingAttempt;
+
+function toStoryError(error: unknown): StoryError {
+  const response = axios.isAxiosError(error)
+    ? error.response
+    : (error as { response?: { status?: number; data?: { error_code?: unknown } } } | null)?.response;
+  const code = typeof response?.data?.error_code === 'string' ? response.data.error_code : null;
+  return new StoryError(response?.status ?? 0, code);
+}
+
+async function request<T>(operation: () => Promise<{ data: T }>): Promise<T> {
+  try {
+    return (await operation()).data;
+  } catch (error) {
+    throw toStoryError(error);
+  }
+}
+
+export function listInterviewStories(status: 'active' | 'archived' = 'active', query = ''): Promise<InterviewStory[]> {
+  return request(() => http.get<InterviewStory[]>('/interview-stories', { params: { status, query } }));
+}
+
+export function getInterviewStory(storyId: number): Promise<InterviewStory> {
+  return request(() => http.get<InterviewStory>(`/interview-stories/${storyId}`));
+}
+
+export function listInterviewStoryVersions(storyId: number): Promise<Array<Pick<InterviewStoryVersion, 'id' | 'version_number' | 'origin_kind' | 'confirmed_at' | 'source_fingerprint'>>> {
+  return request(() => http.get(`/interview-stories/${storyId}/versions`));
+}
+
+export function getInterviewStoryVersion(storyId: number, versionId: number): Promise<InterviewStoryVersion> {
+  return request(() => http.get<InterviewStoryVersion>(`/interview-stories/${storyId}/versions/${versionId}`));
+}
+
+interface ManualStoryInput {
+  content: InterviewStoryEditableContent;
+  evidence_links: InterviewStoryClientEvidenceLink[];
+  selections: InterviewStorySourceSelection[];
+  assertions: string[];
+  expected_current_version_id: number | null;
+}
+
+export function createInterviewStory(input: ManualStoryInput): Promise<InterviewStory> {
+  return request(() => http.post<InterviewStory>('/interview-stories', input));
+}
+
+export function createInterviewStoryVersion(
+  storyId: number,
+  input: ManualStoryInput & { expected_story_revision: number },
+): Promise<InterviewStory> {
+  return request(() => http.post<InterviewStory>(`/interview-stories/${storyId}/versions`, input));
+}
+
+export function archiveInterviewStory(storyId: number, expectedStoryRevision: number): Promise<InterviewStory> {
+  return request(() => http.post<InterviewStory>(`/interview-stories/${storyId}/archive`, { expected_story_revision: expectedStoryRevision }));
+}
+
+export function restoreInterviewStory(storyId: number, expectedStoryRevision: number): Promise<InterviewStory> {
+  return request(() => http.post<InterviewStory>(`/interview-stories/${storyId}/restore`, { expected_story_revision: expectedStoryRevision }));
+}
+
+export function createInterviewStoryProposal(
+  input: InterviewStoryProposalInput,
+  entrypoint: 'ui' | 'pilot' = 'ui',
+): Promise<ProposalResponse> {
+  const endpoint = entrypoint === 'pilot' ? '/pilot/interview-story-proposals' : '/interview-story-proposals';
+  return request(() => http.post<ProposalResponse>(endpoint, input));
+}
+
+export function getInterviewStoryProposal(attemptId: number): Promise<ProposalResponse> {
+  return request(() => http.get<ProposalResponse>(`/interview-story-proposals/${attemptId}`));
+}
+
+export function confirmInterviewStoryProposal(
+  attemptId: number,
+  input: {
+    confirmation_token: string;
+    content: ManualStoryInput['content'];
+    evidence_links: InterviewStoryClientEvidenceLink[];
+    expected_current_version_id: number | null;
+    expected_story_revision: number | null;
+  },
+): Promise<{ story_id: number; version_id: number; created: boolean }> {
+  return request(() => http.post(`/interview-story-proposals/${attemptId}/confirm`, input));
+}

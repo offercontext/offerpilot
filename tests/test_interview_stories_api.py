@@ -84,3 +84,21 @@ def test_story_api_rejects_extra_fields_and_never_creates_an_attempt_before_conf
         json={"idempotency_key": "only-this-key-is-not-enough"},
     )
     assert proposal.status_code == 422
+
+
+def test_story_proposal_api_accepts_only_a_scoped_review_note_context(app_client) -> None:
+    note = _note(app_client)
+    payload = {
+        "target_story_id": None,
+        "expected_current_version_id": None,
+        "expected_story_revision": None,
+        "selections": [{"source_kind": "interview_note", "source_id": note["id"], "path": "/questions"}],
+        "assertions": ["I owned this incident."],
+        "idempotency_key": "story-context-key-0001",
+        "entry_context": {"review_note_id": 1, "untrusted_text": "do not persist"},
+    }
+
+    response = app_client.post("/api/pilot/interview-story-proposals", json=payload)
+
+    assert response.status_code == 422
+    assert response.json()["error_code"] == "interview_story_invalid_request"

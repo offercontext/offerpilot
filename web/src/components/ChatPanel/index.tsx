@@ -102,6 +102,7 @@ interface Props {
   onboardingFocusToken?: number;
   onOnboardingFocusConsumed?: (token: number) => void;
   onPrepareOfferNegotiation?: (offer: Offer) => void;
+  onOpenInterviewStoryLibrary?: () => void;
   offers?: Offer[];
 }
 
@@ -200,6 +201,7 @@ export default function ChatPanel({
   onboardingFocusToken,
   onOnboardingFocusConsumed,
   onPrepareOfferNegotiation,
+  onOpenInterviewStoryLibrary,
   offers = [],
 }: Props) {
   const queryClient = useQueryClient();
@@ -1575,6 +1577,7 @@ export default function ChatPanel({
             onOpenSettings={onOpenSettings}
             onOpenEvidence={onOpenEvidence}
             onPrepareOfferNegotiation={onPrepareOfferNegotiation}
+            onOpenInterviewStoryLibrary={onOpenInterviewStoryLibrary}
             offers={offers}
             contextKey={contextResetKey}
           />

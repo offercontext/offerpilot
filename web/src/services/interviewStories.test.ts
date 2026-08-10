@@ -1,0 +1,48 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const { apiGet, apiPost, createApiClient } = vi.hoisted(() => ({
+  apiGet: vi.fn(),
+  apiPost: vi.fn(),
+  createApiClient: vi.fn(),
+}));
+
+vi.mock('./http', () => ({ createApiClient }));
+createApiClient.mockReturnValue({ get: apiGet, post: apiPost });
+
+const service = await import('./interviewStories');
+
+beforeEach(() => {
+  apiGet.mockReset();
+  apiPost.mockReset();
+});
+
+describe('interview story service', () => {
+  it('uses the UI and Pilot proposal endpoints without chat APIs', async () => {
+    const input = {
+      target_story_id: null,
+      expected_current_version_id: null,
+      expected_story_revision: null,
+      selections: [],
+      assertions: [],
+      idempotency_key: 'story-service-key-0001',
+    };
+    apiPost.mockResolvedValue({ data: { id: 7, attempt_status: 'generating', generation_revision: 1, source_fingerprint: 'fp', retry_after_ms: 1000 } });
+
+    await service.createInterviewStoryProposal(input);
+    await service.createInterviewStoryProposal(input, 'pilot');
+
+    expect(apiPost).toHaveBeenNthCalledWith(1, '/interview-story-proposals', input);
+    expect(apiPost).toHaveBeenNthCalledWith(2, '/pilot/interview-story-proposals', input);
+  });
+
+  it('uses only Story APIs for archive and version history reads', async () => {
+    apiGet.mockResolvedValue({ data: [] });
+    apiPost.mockResolvedValue({ data: { id: 5, status: 'archived' } });
+
+    await service.listInterviewStoryVersions(5);
+    await service.archiveInterviewStory(5, 2);
+
+    expect(apiGet).toHaveBeenCalledWith('/interview-stories/5/versions');
+    expect(apiPost).toHaveBeenCalledWith('/interview-stories/5/archive', { expected_story_revision: 2 });
+  });
+});

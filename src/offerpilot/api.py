@@ -5217,7 +5217,20 @@ def create_app(
             return error_response(422, "面试故事输入无效", code="interview_story_invalid_request")
         if not isinstance(payload.get("selections"), list) or not isinstance(payload.get("assertions"), list):
             return error_response(422, "面试故事输入无效", code="interview_story_invalid_request")
-        if payload.get("entry_context") is not None and not isinstance(payload.get("entry_context"), dict):
+        entry_context = payload.get("entry_context")
+        if entry_context is not None and (
+            not isinstance(entry_context, dict)
+            or set(entry_context) != {"review_note_id"}
+            or not isinstance(entry_context.get("review_note_id"), int)
+            or isinstance(entry_context.get("review_note_id"), bool)
+            or entry_context["review_note_id"] <= 0
+            or not any(
+                isinstance(item, dict)
+                and item.get("source_kind") == "interview_note"
+                and item.get("source_id") == entry_context["review_note_id"]
+                for item in payload["selections"]
+            )
+        ):
             return error_response(422, "面试故事输入无效", code="interview_story_invalid_request")
         try:
             claim = interview_stories.claim_proposal(
@@ -5228,7 +5241,7 @@ def create_app(
                 assertions=payload["assertions"],
                 idempotency_key=payload.get("idempotency_key", ""),
                 entrypoint=entrypoint,
-                entry_context=payload.get("entry_context"),
+                entry_context=entry_context,
             )
         except StoryValidationError as exc:
             return _story_error_response(exc)
