@@ -345,6 +345,47 @@ def test_deterministic_pilot_missing_context_does_not_create_conversation(tmp_pa
     assert model.calls == 0
 
 
+@pytest.mark.parametrize("endpoint", ["/api/chat", "/api/chat/stream"])
+def test_existing_deterministic_conversation_uses_durable_context(tmp_path, endpoint):
+    model = CountingFailingModel()
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model, title_model=model))
+    application = client.post(
+        "/api/applications",
+        json={"company_name": "Example Co", "position_name": "Backend Engineer", "status": "interview"},
+    ).json()
+    first = client.post(
+        "/api/chat",
+        json={
+            "message": "save job details",
+            "pilot_action": {"type": "application_jd_save", "jdText": "saved JD"},
+            "conversation_id": 0,
+            "context_type": "application",
+            "context_ref": str(application["id"]),
+        },
+    )
+    assert first.status_code == 200
+    conversation_id = first.json()["conversation_id"]
+
+    replay = client.post(
+        endpoint,
+        json={
+            "message": "save job details",
+            "pilot_action": {"type": "application_jd_save", "jdText": "different JD"},
+            "conversation_id": conversation_id,
+        },
+    )
+
+    assert replay.status_code == 200
+    if endpoint.endswith("/stream"):
+        events = _parse_sse_events(replay.text)
+        response = events[-1]["data"]["data"]["response"]
+    else:
+        response = replay.json()
+    assert response["type"] == "confirmation_required"
+    assert response["pending_action"]["args"]["jd_text"] == "saved JD"
+    assert model.calls == 0
+
+
 @pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
 def test_deterministic_pilot_confirmation_writes_once_without_ai(tmp_path, endpoint):
     model = CountingFailingModel()

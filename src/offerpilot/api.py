@@ -3963,12 +3963,12 @@ def create_app(
                 parse_pilot_action(payload["pilot_action"])
             except ValueError as exc:
                 return error_response(422, str(exc))
-        context_error = _new_deterministic_context_error(payload, message)
-        if context_error is not None:
-            return context_error
-
         conversation_id = int(payload.get("conversation_id") or 0)
         created_new = conversation_id == 0
+        if created_new:
+            context_error = _new_deterministic_context_error(payload, message)
+            if context_error is not None:
+                return context_error
         conversation = None
         if conversation_id == 0:
             context_type = str(payload.get("context_type") or "workspace").strip() or "workspace"
@@ -4135,12 +4135,12 @@ def create_app(
                 parse_pilot_action(payload["pilot_action"])
             except ValueError as exc:
                 return error_response(422, str(exc))
-        context_error = _new_deterministic_context_error(payload, message)
-        if context_error is not None:
-            return context_error
-
         conversation_id = int(payload.get("conversation_id") or 0)
         created_new = conversation_id == 0
+        if created_new:
+            context_error = _new_deterministic_context_error(payload, message)
+            if context_error is not None:
+                return context_error
         conversation = None
         if conversation_id == 0:
             context_type = str(payload.get("context_type") or "workspace").strip() or "workspace"
