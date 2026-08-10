@@ -190,7 +190,7 @@ def generate_interview_story_proposal(
     last_category = "invalid_json"
     request_id = ""
     for call_index in range(2):
-        prompt = _generation_prompt(snapshot) if call_index == 0 else _repair_prompt(last_category)
+        prompt = _generation_prompt(snapshot) if call_index == 0 else _repair_prompt(last_category, snapshot)
         try:
             assistant = model.complete(
                 [Message(role="system", content=_system_prompt()), Message(role="user", content=prompt)],
@@ -364,13 +364,14 @@ def _generation_prompt(snapshot: StorySourceSnapshot) -> str:
     )
 
 
-def _repair_prompt(category: str) -> str:
+def _repair_prompt(category: str, snapshot: StorySourceSnapshot) -> str:
     return (
         "The previous response failed strict JSON validation with category "
         + category
         + ". Return only the required JSON shape. Evidence references must contain exactly "
         "source_kind, source_stable_id, source_version_or_snapshot, source_path, excerpt. "
-        "Do not add fields or explanations."
+        "Use only this same frozen evidence catalog; do not add fields or explanations. "
+        + json.dumps(_evidence_catalog(snapshot), ensure_ascii=False, separators=(",", ":"))
     )
 
 

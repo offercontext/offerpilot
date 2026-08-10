@@ -1838,6 +1838,16 @@ def _run_interview_story_http_smoke(
                 category="provider_unknown",
             ):
                 raise RuntimeError("Story smoke could not seed provider-unknown recovery")
+            live_lease = client.post("/api/interview-story-proposals", json=recovery_payload)
+            _assert_status(live_lease.status_code, 202, "story_provider_unknown_live_lease")
+            if live_lease.json().get("id") != claim.attempt_id or live_lease.json().get("attempt_status") != "provider_unknown":
+                raise RuntimeError("Story live provider-unknown lease did not retain the original attempt")
+            with session_factory() as session:
+                attempt = session.get(InterviewStoryProposalAttempt, claim.attempt_id)
+                if attempt is None:
+                    raise RuntimeError("Story provider-unknown attempt is missing")
+                attempt.provider_lease_until = datetime(1970, 1, 1)
+                session.commit()
             recovered = client.post("/api/interview-story-proposals", json=recovery_payload)
             _assert_status(recovered.status_code, 201, "story_provider_unknown_replay")
             if recovered.json().get("id") != claim.attempt_id or recovered.json().get("attempt_status") != "ready":

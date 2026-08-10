@@ -75,6 +75,29 @@ def test_manual_story_api_creates_reads_archives_and_restores_without_ai(app_cli
     assert restored.json()["status"] == "active"
 
 
+def test_story_api_returns_stable_idempotency_and_story_cas_conflict_codes(app_client) -> None:
+    note = _note(app_client)
+    payload = _payload(note["id"])
+    created = app_client.post("/api/interview-stories", json=payload)
+    assert created.status_code == 201
+    story = created.json()
+
+    changed_replay = {**payload, "content": {**payload["content"], "title": "不同的故事标题"}}
+    idempotency_conflict = app_client.post("/api/interview-stories", json=changed_replay)
+    assert idempotency_conflict.status_code == 409
+    assert idempotency_conflict.json()["error_code"] == "story_idempotency_conflict"
+
+    stale_version = {
+        **_payload(note["id"]),
+        "idempotency_key": "manual-story-api-key-0002",
+        "expected_current_version_id": story["current_version_id"],
+        "expected_story_revision": story["story_revision"] + 1,
+    }
+    cas_conflict = app_client.post(f"/api/interview-stories/{story['id']}/versions", json=stale_version)
+    assert cas_conflict.status_code == 409
+    assert cas_conflict.json()["error_code"] == "story_cas_conflict"
+
+
 def test_story_api_rejects_extra_fields_and_never_creates_an_attempt_before_confirmation(app_client) -> None:
     note = _note(app_client)
     payload = _payload(note["id"])

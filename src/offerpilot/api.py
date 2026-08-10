@@ -144,8 +144,11 @@ from offerpilot.repositories.interview_knowledge_capture import (
 from offerpilot.repositories.interview_index import InterviewIndexRepository
 from offerpilot.repositories.interview_stories import (
     InterviewStoriesRepository,
+    StoryCasConflictError,
     StoryConflictError,
+    StoryIdempotencyConflictError,
     StoryNotFoundError,
+    StorySourceConflictError,
     StoryValidationError,
 )
 from offerpilot.repositories.mock_interviews import (
@@ -5177,12 +5180,29 @@ def create_app(
     def _story_error_response(exc: StoryValidationError) -> JSONResponse:
         if isinstance(exc, StoryNotFoundError):
             return error_response(404, "面试故事记录不存在或不可用", code="interview_story_not_found")
-        if isinstance(exc, StoryConflictError):
-            source_conflict = "source changed" in str(exc)
+        if isinstance(exc, StorySourceConflictError):
             return error_response(
                 409,
                 "故事来源或版本已变化，请重新确认后再试",
-                code="story_source_conflict" if source_conflict else "story_conflict",
+                code="story_source_conflict",
+            )
+        if isinstance(exc, StoryIdempotencyConflictError):
+            return error_response(
+                409,
+                "本次尝试的输入已变化，请新建一次尝试",
+                code="story_idempotency_conflict",
+            )
+        if isinstance(exc, StoryCasConflictError):
+            return error_response(
+                409,
+                "故事版本已变化，请重新确认后再试",
+                code="story_cas_conflict",
+            )
+        if isinstance(exc, StoryConflictError):
+            return error_response(
+                409,
+                "故事来源或版本已变化，请重新确认后再试",
+                code="story_conflict",
             )
         return error_response(422, "面试故事输入无效", code="interview_story_invalid_request")
 

@@ -159,7 +159,7 @@ def test_malformed_evidence_shape_is_repaired_before_reference_limit_is_applied(
     assert "invalid_evidence_shape" in model.messages[1][1].content
 
 
-def test_story_shape_error_repairs_once_without_echoing_source_or_model_text() -> None:
+def test_story_shape_error_repairs_once_with_the_frozen_catalog_but_without_model_text() -> None:
     malformed = _proposal()
     malformed["title"] = {"text": "missing evidence"}
     model = QueuedModel([malformed, _proposal()], supports_json_schema=True)
@@ -171,7 +171,11 @@ def test_story_shape_error_repairs_once_without_echoing_source_or_model_text() -
     assert model.response_formats[0] is not None
     repair_prompt = model.messages[1][1].content
     assert "invalid_shape" in repair_prompt
-    assert "How did you isolate" not in repair_prompt
+    # A repair must receive the same frozen catalog, otherwise it cannot choose
+    # an exact, legal evidence reference.  It must never receive the malformed
+    # model response itself.
+    assert "How did you isolate the latency bottleneck?" in repair_prompt
+    assert "I should communicate risk earlier." in repair_prompt
     assert "missing evidence" not in repair_prompt
 
 

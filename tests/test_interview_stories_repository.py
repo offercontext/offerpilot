@@ -166,7 +166,7 @@ def test_resume_pointer_rejects_extremely_long_ascii_array_index_without_value_e
     factory.kw["bind"].dispose()
 
 
-def test_user_assertion_can_only_support_a_user_view_block_and_links_are_bounded(tmp_path) -> None:
+def test_user_assertion_can_support_an_explicit_story_statement_and_links_are_bounded(tmp_path) -> None:
     factory = init_database(tmp_path / "story.db")
     with factory() as session:
         note = _create_note(session)
@@ -187,14 +187,54 @@ def test_user_assertion_can_only_support_a_user_view_block_and_links_are_bounded
             "source_path": assertion["path"],
             "excerpt": assertion["excerpt"],
         })
-        with pytest.raises(StoryValidationError, match="user assertion"):
-            validate_story_evidence_links(content, links, snapshot)
+        canonical = validate_story_evidence_links(content, links, snapshot)
+        assert next(link for link in canonical if link.target_id == "situation_001").source_kind == "user_assertion"
 
         links = _links_for_content(content, snapshot)
         title = next(link for link in links if link["target_kind"] == "title")
         links.extend([dict(title) for _ in range(8)])
         with pytest.raises(StoryValidationError, match="count exceeds limit"):
             validate_story_evidence_links(content, links, snapshot)
+    factory.kw["bind"].dispose()
+
+
+def test_provider_unknown_replay_with_live_lease_never_calls_provider_again(tmp_path) -> None:
+    factory = init_database(tmp_path / "story-provider-unknown-live-lease.db")
+    repository = InterviewStoriesRepository(factory)
+    clock = [datetime(2026, 8, 10, tzinfo=timezone.utc)]
+    with factory() as session:
+        note = _create_note(session)
+        note_id = note.id
+        session.commit()
+
+    request = {
+        "target_story_id": None,
+        "expected_current_version_id": None,
+        "expected_story_revision": None,
+        "selections": [{"source_kind": "interview_note", "source_id": note_id, "path": "/questions"}],
+        "assertions": ["I owned this incident response."],
+        "idempotency_key": "story-live-provider-unknown-key",
+        "entrypoint": "ui",
+        "now_factory": lambda: clock[0],
+    }
+    first = repository.claim_proposal(**request)
+    assert repository.mark_provider_unknown(
+        attempt_id=first.attempt_id,
+        generation_revision=first.generation_revision,
+        provider_call_token=first.provider_call_token,
+        category="provider_error",
+    )
+
+    replay = repository.claim_proposal(**request)
+
+    assert replay.pending is True
+    assert replay.should_call_provider is False
+    assert replay.generation_revision == first.generation_revision
+    with factory() as session:
+        attempt = session.get(InterviewStoryProposalAttempt, first.attempt_id)
+        assert attempt is not None
+        assert attempt.attempt_status == "provider_unknown"
+        assert attempt.provider_lease_until is not None
     factory.kw["bind"].dispose()
 
 
@@ -600,6 +640,67 @@ def test_provider_result_source_deletion_invalidates_the_claim(tmp_path) -> None
             proposal=safe_empty_interview_story_proposal(),
         )
     assert repository.get_attempt(claim.attempt_id)["attempt_status"] == "invalidated"
+    with factory() as session:
+        attempt = session.get(InterviewStoryProposalAttempt, claim.attempt_id)
+        assert attempt is not None and attempt.provider_lease_until is None
+    factory.kw["bind"].dispose()
+
+
+def test_target_story_change_during_provider_immediately_invalidates_the_attempt_and_clears_lease(tmp_path) -> None:
+    from offerpilot.ai.interview_stories import safe_empty_interview_story_proposal
+
+    factory = init_database(tmp_path / "story-target-conflict.db")
+    repository = InterviewStoriesRepository(factory)
+    with factory() as session:
+        note = _create_note(session)
+        note_id = note.id
+        session.commit()
+        content = canonical_story_content(_manual_content())
+        snapshot = materialize_selected_sources(
+            session,
+            [{"source_kind": "interview_note", "source_id": note_id, "path": "/questions"}],
+            ["I owned this incident response."],
+        )
+    story = repository.create_manual_story(
+        content=_manual_content(),
+        evidence_links=_links_for_content(content, snapshot),
+        selections=[{"source_kind": "interview_note", "source_id": note_id, "path": "/questions"}],
+        assertions=["I owned this incident response."],
+        expected_current_version_id=None,
+        idempotency_key="story-target-conflict-create-01",
+    )
+    claim = repository.claim_proposal(
+        target_story_id=story["id"],
+        expected_current_version_id=story["current_version_id"],
+        expected_story_revision=story["story_revision"],
+        selections=[{"source_kind": "interview_note", "source_id": note_id, "path": "/questions"}],
+        assertions=["I owned this incident response."],
+        idempotency_key="story-target-conflict-claim-01",
+        entrypoint="ui",
+    )
+    repository.create_manual_version(
+        story_id=story["id"],
+        content=_manual_content(),
+        evidence_links=_links_for_content(content, snapshot),
+        selections=[{"source_kind": "interview_note", "source_id": note_id, "path": "/questions"}],
+        assertions=["I owned this incident response."],
+        expected_current_version_id=story["current_version_id"],
+        expected_story_revision=story["story_revision"],
+        idempotency_key="story-target-conflict-revision-01",
+    )
+
+    with factory() as session:
+        attempt = session.get(InterviewStoryProposalAttempt, claim.attempt_id)
+        assert attempt is not None
+        assert attempt.attempt_status == "invalidated"
+        assert attempt.failure_category == "source_changed"
+        assert attempt.provider_lease_until is None
+    assert not repository.complete_proposal(
+        attempt_id=claim.attempt_id,
+        generation_revision=claim.generation_revision,
+        provider_call_token=claim.provider_call_token,
+        proposal=safe_empty_interview_story_proposal(),
+    )
     factory.kw["bind"].dispose()
 
 
@@ -751,6 +852,11 @@ def test_story_attempt_replay_heartbeat_and_confirmation_are_fenced(tmp_path) ->
     )
     finished = repository.get_attempt(first.attempt_id)
     assert finished is not None and finished["attempt_status"] == "ready"
+    with factory() as session:
+        attempt = session.get(InterviewStoryProposalAttempt, first.attempt_id)
+        assert attempt is not None
+        attempt.provider_lease_until = datetime(2030, 1, 1)
+        session.commit()
 
     confirmation = repository.confirm_attempt(
         attempt_id=first.attempt_id,
@@ -775,6 +881,8 @@ def test_story_attempt_replay_heartbeat_and_confirmation_are_fenced(tmp_path) ->
     )
     with factory() as session:
         assert len(list(session.scalars(select(InterviewStoryVersion)))) == 1
+        attempt = session.get(InterviewStoryProposalAttempt, first.attempt_id)
+        assert attempt is not None and attempt.provider_lease_until is None
     factory.kw["bind"].dispose()
 
 

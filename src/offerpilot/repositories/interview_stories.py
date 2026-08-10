@@ -38,6 +38,14 @@ class StoryConflictError(StoryValidationError):
     """Raised when an immutable Story pointer or lifecycle CAS is stale."""
 
 
+class StoryIdempotencyConflictError(StoryConflictError):
+    """Raised when a replay key is reused with a different frozen input."""
+
+
+class StoryCasConflictError(StoryConflictError):
+    """Raised when a Story revision/current-version compare-and-swap is stale."""
+
+
 class StorySourceConflictError(StoryConflictError):
     """Raised when a frozen source changed or is no longer materializable."""
 
@@ -186,7 +194,6 @@ def validate_story_evidence_links(
     """
 
     expected_targets = _evidence_targets(content)
-    target_fact_modes = _target_fact_modes(content)
     catalog = {
         _source_identity(item): item
         for item in snapshot.sources
@@ -280,9 +287,6 @@ def validate_story_evidence_links(
             raise StoryValidationError("evidence source is invalid")
         if excerpt not in source["excerpt"]:
             raise StoryValidationError("evidence excerpt is invalid")
-        target = (target_kind, target_id)
-        if source_kind == "user_assertion" and target_fact_modes.get(target) != "user_view":
-            raise StoryValidationError("user assertion cannot support an evidence-backed target")
         payload = {
             "target_kind": target_kind,
             "target_id": target_id,
@@ -1007,6 +1011,7 @@ class InterviewStoriesRepository:
                 story.story_revision += 1
                 story.title = canonical["title"]["text"]
                 story.updated_at = datetime.now(timezone.utc)
+                self._invalidate_active_target_attempts(session, story.id)
                 self._record_manual_save(
                     session,
                     idempotency_key=idempotency_key,
@@ -1073,7 +1078,7 @@ class InterviewStoriesRepository:
                 if existing is not None:
                     payload = _attempt_input_payload(existing)
                     if payload.get("request_fingerprint") != request_fingerprint:
-                        raise StoryConflictError("story idempotency input changed")
+                        raise StoryIdempotencyConflictError("story idempotency input changed")
                     return self._replay_or_takeover_attempt(
                         session=session,
                         attempt=existing,
@@ -1124,7 +1129,7 @@ class InterviewStoriesRepository:
                         raise
                     payload = _attempt_input_payload(existing)
                     if payload.get("request_fingerprint") != request_fingerprint:
-                        raise StoryConflictError("story idempotency input changed")
+                        raise StoryIdempotencyConflictError("story idempotency input changed")
                     return self._replay_or_takeover_attempt(
                         session=session,
                         attempt=existing,
@@ -1171,20 +1176,28 @@ class InterviewStoriesRepository:
                 selections = payload.get("selections")
                 assertions = payload.get("assertions")
                 if not isinstance(selections, list) or not isinstance(assertions, list):
-                    attempt.attempt_status = "invalidated"
-                    attempt.provider_call_token = ""
+                    self._invalidate_attempt(attempt, category="source_changed")
                     session.commit()
                     return False
                 try:
+                    self._validate_target_story_for_claim(
+                        session,
+                        target_story_id=attempt.target_story_id,
+                        expected_current_version_id=payload.get("expected_current_version_id"),
+                        expected_story_revision=payload.get("expected_story_revision"),
+                    )
+                except (StoryConflictError, StoryNotFoundError) as exc:
+                    self._invalidate_attempt(attempt, category="source_changed")
+                    session.commit()
+                    raise StorySourceConflictError("story source changed") from exc
+                try:
                     current = materialize_selected_sources(session, selections, assertions)
                 except StoryValidationError as exc:
-                    attempt.attempt_status = "invalidated"
-                    attempt.provider_call_token = ""
+                    self._invalidate_attempt(attempt, category="source_changed")
                     session.commit()
                     raise StorySourceConflictError("story source changed") from exc
                 if current.source_fingerprint != attempt.source_fingerprint:
-                    attempt.attempt_status = "invalidated"
-                    attempt.provider_call_token = ""
+                    self._invalidate_attempt(attempt, category="source_changed")
                     session.commit()
                     return False
                 # Re-run strict validation server side.  The only alternate form
@@ -1224,6 +1237,7 @@ class InterviewStoriesRepository:
                 attempt.proposal_hash = sha256_text(attempt.proposal_json)
                 attempt.failure_category = ""
                 attempt.provider_call_token = ""
+                attempt.provider_lease_until = None
                 session.commit()
                 return True
             except StoryValidationError:
@@ -1258,7 +1272,12 @@ class InterviewStoriesRepository:
                 .where(InterviewStoryProposalAttempt.attempt_status == "generating")
                 .where(InterviewStoryProposalAttempt.generation_revision == generation_revision)
                 .where(InterviewStoryProposalAttempt.provider_call_token == provider_call_token)
-                .values(attempt_status="contract_failed", provider_call_token="", failure_category=category)
+                .values(
+                    attempt_status="contract_failed",
+                    provider_call_token="",
+                    provider_lease_until=None,
+                    failure_category=category,
+                )
             )
             session.commit()
             return int(getattr(result, "rowcount", 0) or 0) == 1
@@ -1292,21 +1311,21 @@ class InterviewStoriesRepository:
                     raise StoryNotFoundError("story proposal is missing")
                 if attempt.attempt_status == "confirmed" and attempt.confirmation_token_hash == confirmation_hash:
                     if attempt.confirmation_payload_hash != payload_hash or not attempt.confirmed_story_id or not attempt.confirmed_story_version_id:
-                        raise StoryConflictError("confirmation input changed")
+                        raise StoryIdempotencyConflictError("confirmation input changed")
                     session.commit()
                     return StoryConfirmation(attempt.confirmed_story_id, attempt.confirmed_story_version_id, False)
                 if attempt.attempt_status != "ready":
-                    raise StoryConflictError("story proposal cannot be confirmed")
+                    raise StoryCasConflictError("story proposal cannot be confirmed")
                 input_payload = _attempt_input_payload(attempt)
                 if (
                     input_payload.get("expected_current_version_id") != expected_current_version_id
                     or input_payload.get("expected_story_revision") != expected_story_revision
                 ):
-                    raise StoryConflictError("story proposal confirmation CAS changed")
+                    raise StoryCasConflictError("story proposal confirmation CAS changed")
                 selections = input_payload.get("selections")
                 assertions = input_payload.get("assertions")
                 if not isinstance(selections, list) or not isinstance(assertions, list):
-                    raise StoryConflictError("story proposal snapshot is invalid")
+                    raise StoryCasConflictError("story proposal snapshot is invalid")
                 try:
                     snapshot = materialize_selected_sources(session, selections, assertions)
                 except StoryValidationError as exc:
@@ -1328,7 +1347,7 @@ class InterviewStoriesRepository:
                 target_story_id = attempt.target_story_id
                 if target_story_id is None:
                     if expected_current_version_id is not None or expected_story_revision is not None:
-                        raise StoryConflictError("new story confirmation CAS is invalid")
+                        raise StoryCasConflictError("new story confirmation CAS is invalid")
                     story = InterviewStory(title=canonical["title"]["text"], status="active", story_revision=1)
                     session.add(story)
                     session.flush()
@@ -1358,12 +1377,14 @@ class InterviewStoriesRepository:
                 story.title = canonical["title"]["text"]
                 if target_story_id is not None:
                     story.story_revision += 1
+                    self._invalidate_active_target_attempts(session, story.id)
                 attempt.attempt_status = "confirmed"
                 attempt.confirmation_token_hash = confirmation_hash
                 attempt.confirmation_payload_hash = payload_hash
                 attempt.confirmed_story_id = story.id
                 attempt.confirmed_story_version_id = version.id
                 attempt.confirmed_at = datetime.now(timezone.utc)
+                attempt.provider_lease_until = None
                 session.commit()
                 return StoryConfirmation(story.id, version.id, True)
             except Exception:
@@ -1399,7 +1420,9 @@ class InterviewStoriesRepository:
         now: datetime,
     ) -> StoryProposalClaim:
         snapshot = _snapshot_from_attempt(payload, attempt.source_fingerprint)
-        if attempt.attempt_status == "generating" and _lease_is_live(attempt.provider_lease_until, now):
+        if attempt.attempt_status in {"generating", "provider_unknown"} and _lease_is_live(
+            attempt.provider_lease_until, now
+        ):
             session.commit()
             return StoryProposalClaim(
                 attempt.id, payload, snapshot, attempt.source_fingerprint, False, True,
@@ -1453,7 +1476,7 @@ class InterviewStoriesRepository:
                 if story is None:
                     raise StoryNotFoundError("story is missing")
                 if story.story_revision != expected_story_revision:
-                    raise StoryConflictError("story revision is stale")
+                    raise StoryCasConflictError("story revision is stale")
                 if story.status == desired_status:
                     session.commit()
                     return self._story_payload(session, story)
@@ -1461,6 +1484,7 @@ class InterviewStoriesRepository:
                 story.archived_at = datetime.now(timezone.utc) if desired_status == "archived" else None
                 story.story_revision += 1
                 story.updated_at = datetime.now(timezone.utc)
+                self._invalidate_active_target_attempts(session, story.id)
                 session.commit()
                 return self._story_payload(session, story)
             except Exception:
@@ -1490,11 +1514,11 @@ class InterviewStoriesRepository:
             or existing.confirmed_story_id is None
             or existing.confirmed_story_version_id is None
         ):
-            raise StoryConflictError("story idempotency input changed")
+            raise StoryIdempotencyConflictError("story idempotency input changed")
         story = session.get(InterviewStory, existing.confirmed_story_id)
         version = session.get(InterviewStoryVersion, existing.confirmed_story_version_id)
         if story is None or version is None or version.story_id != story.id:
-            raise StoryConflictError("manual story replay is unavailable")
+            raise StoryIdempotencyConflictError("manual story replay is unavailable")
         return self._story_payload(session, story, version=version)
 
     @staticmethod
@@ -1533,12 +1557,34 @@ class InterviewStoriesRepository:
         )
 
     @staticmethod
+    def _invalidate_attempt(attempt: InterviewStoryProposalAttempt, *, category: str) -> None:
+        attempt.attempt_status = "invalidated"
+        attempt.provider_call_token = ""
+        attempt.provider_lease_until = None
+        attempt.failure_category = category
+
+    @staticmethod
+    def _invalidate_active_target_attempts(session: Session, story_id: int) -> None:
+        """Release in-flight target Story claims as soon as its revision changes."""
+        session.execute(
+            update(InterviewStoryProposalAttempt)
+            .where(InterviewStoryProposalAttempt.target_story_id == story_id)
+            .where(InterviewStoryProposalAttempt.attempt_status.in_(("generating", "provider_unknown")))
+            .values(
+                attempt_status="invalidated",
+                provider_call_token="",
+                provider_lease_until=None,
+                failure_category="source_changed",
+            )
+        )
+
+    @staticmethod
     def _require_active_story(session: Session, story_id: int) -> InterviewStory:
         story = session.get(InterviewStory, story_id)
         if story is None:
             raise StoryNotFoundError("story is missing")
         if story.status != "active":
-            raise StoryConflictError("story is archived")
+            raise StoryCasConflictError("story is archived")
         return story
 
     @staticmethod
@@ -1551,7 +1597,7 @@ class InterviewStoriesRepository:
             story.current_version_id != expected_current_version_id
             or story.story_revision != expected_story_revision
         ):
-            raise StoryConflictError("story version is stale")
+            raise StoryCasConflictError("story version is stale")
 
     @staticmethod
     def _insert_version(
