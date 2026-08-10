@@ -27,7 +27,7 @@ _NOTE_FIELDS = {
     "/difficulty_points": "difficulty_points",
     "/mood": "mood",
 }
-_ALLOWED_SOURCE_KINDS = {"resume_version", "review_note", "mock_turn"}
+_ALLOWED_SOURCE_KINDS = {"resume_version", "interview_note", "mock_turn"}
 _FACT_GAP_CODES = {"missing_result"}
 _BLOCK_KINDS = {"situation", "task", "action", "result", "reflection"}
 
@@ -110,7 +110,7 @@ def materialize_selected_sources(
             raise StoryValidationError("source path is invalid")
         if kind == "resume_version":
             sources.append(_materialize_resume(session, source_id, path))
-        elif kind == "review_note":
+        elif kind == "interview_note":
             sources.append(_materialize_note(session, source_id, path))
         else:
             sources.append(_materialize_mock_turn(session, source_id, path))
@@ -137,6 +137,7 @@ def materialize_selected_sources(
 
 
 def _materialize_resume(session: Session, resume_id: int, path: str) -> dict[str, str]:
+    pointer = _resume_content_pointer(path)
     resume = session.get(Resume, resume_id)
     if resume is None or resume.deleted_at is not None:
         raise StoryValidationError("resume source is missing")
@@ -144,7 +145,7 @@ def _materialize_resume(session: Session, resume_id: int, path: str) -> dict[str
         payload = json.loads(resume.content_json)
     except (TypeError, ValueError) as exc:
         raise StoryValidationError("resume source is invalid") from exc
-    value = _resolve_json_pointer(payload, path)
+    value = _resolve_json_pointer(payload, pointer)
     if not isinstance(value, str) or not value.strip():
         raise StoryValidationError("resume source path is invalid")
     return {
@@ -161,14 +162,14 @@ def _materialize_note(session: Session, note_id: int, path: str) -> dict[str, st
     field = _NOTE_FIELDS.get(path)
     note = session.get(InterviewNote, note_id)
     if field is None:
-        raise StoryValidationError("review note path is invalid")
+        raise StoryValidationError("interview note path is invalid")
     if note is None:
-        raise StoryValidationError("review note source is missing")
+        raise StoryValidationError("interview note source is missing")
     value = getattr(note, field)
     if not isinstance(value, str) or not value.strip():
-        raise StoryValidationError("review note path is invalid")
+        raise StoryValidationError("interview note path is invalid")
     return {
-        "source_kind": "review_note",
+        "source_kind": "interview_note",
         "source_stable_id": str(note.id),
         "source_version_or_snapshot": sha256_text(canonical_json({field: value})),
         "path": path,
@@ -185,14 +186,19 @@ def _materialize_mock_turn(session: Session, attempt_id: int, path: str) -> dict
     if field is None:
         raise StoryValidationError("mock turn path is invalid")
     attempt = session.get(MockInterviewAttempt, attempt_id)
-    if attempt is None or attempt.attempt_status != "completed":
+    if (
+        attempt is None
+        or attempt.cancelled_at is not None
+        or attempt.completed_at is None
+        or attempt.attempt_status not in {"feedback_ready", "confirmed"}
+    ):
         raise StoryValidationError("mock turn source is invalid")
     turn = session.scalar(
         select(MockInterviewTurn)
         .where(MockInterviewTurn.attempt_id == attempt_id)
         .where(MockInterviewTurn.turn_no == int(parts[2]))
     )
-    if turn is None or turn.turn_status != "completed":
+    if turn is None or turn.turn_status != "answered":
         raise StoryValidationError("mock turn source is invalid")
     value = getattr(turn, field)
     if not isinstance(value, str) or not value.strip():
@@ -212,11 +218,42 @@ def _resolve_json_pointer(value: Any, pointer: str) -> Any:
         raise StoryValidationError("resume source path is invalid")
     current = value
     for token in pointer[1:].split("/"):
-        token = token.replace("~1", "/").replace("~0", "~")
+        token = _decode_json_pointer_token(token)
         if isinstance(current, dict) and token in current:
             current = current[token]
-        elif isinstance(current, list) and token.isdigit() and int(token) < len(current):
+        elif (
+            isinstance(current, list)
+            and token.isdigit()
+            and (token == "0" or not token.startswith("0"))
+            and int(token) < len(current)
+        ):
             current = current[int(token)]
         else:
             raise StoryValidationError("resume source path is invalid")
     return current
+
+
+def _resume_content_pointer(path: str) -> str:
+    prefix = "/content_json"
+    if not path.startswith(f"{prefix}/"):
+        raise StoryValidationError("resume source path is invalid")
+    pointer = path[len(prefix) :]
+    for token in pointer[1:].split("/"):
+        _decode_json_pointer_token(token)
+    return pointer
+
+
+def _decode_json_pointer_token(token: str) -> str:
+    decoded: list[str] = []
+    index = 0
+    while index < len(token):
+        char = token[index]
+        if char != "~":
+            decoded.append(char)
+            index += 1
+            continue
+        if index + 1 >= len(token) or token[index + 1] not in {"0", "1"}:
+            raise StoryValidationError("resume source path is invalid")
+        decoded.append("~" if token[index + 1] == "0" else "/")
+        index += 2
+    return "".join(decoded)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 import pytest
 
@@ -64,8 +65,9 @@ def test_materialize_selected_sources_limits_to_allowed_original_fields_and_path
             idempotency_key="mock-story-source-key",
             input_snapshot_json="{}",
             source_fingerprint="mock-fingerprint",
-            attempt_status="completed",
+            attempt_status="feedback_ready",
             transcript_fingerprint="transcript",
+            completed_at=datetime.now(timezone.utc),
         )
         session.add_all([resume, note, attempt])
         session.flush()
@@ -76,7 +78,7 @@ def test_materialize_selected_sources_limits_to_allowed_original_fields_and_path
             turn_idempotency_key="mock-answer-key",
             question_text="请介绍一个项目。",
             answer_text="我用分段定位解决了延迟。",
-            turn_status="completed",
+            turn_status="answered",
         )
         session.add(turn)
         session.commit()
@@ -84,11 +86,11 @@ def test_materialize_selected_sources_limits_to_allowed_original_fields_and_path
         snapshot = materialize_selected_sources(
             session,
             [
-                {"source_kind": "review_note", "source_id": note.id, "path": "/questions"},
+                {"source_kind": "interview_note", "source_id": note.id, "path": "/questions"},
                 {
                     "source_kind": "resume_version",
                     "source_id": resume.id,
-                    "path": "/项目~1名",
+                    "path": "/content_json/项目~1名",
                 },
                 {
                     "source_kind": "mock_turn",
@@ -102,13 +104,13 @@ def test_materialize_selected_sources_limits_to_allowed_original_fields_and_path
     factory.kw["bind"].dispose()
 
     assert [item["source_kind"] for item in snapshot.sources] == [
+        "interview_note",
         "mock_turn",
         "resume_version",
-        "review_note",
         "user_assertion",
     ]
-    assert snapshot.sources[1]["excerpt"] == "处理 emoji 🚀 与 NFD e\u0301"
-    assert snapshot.sources[2]["excerpt"] == "如何排查线上延迟？"
+    assert snapshot.sources[2]["excerpt"] == "处理 emoji 🚀 与 NFD e\u0301"
+    assert snapshot.sources[0]["excerpt"] == "如何排查线上延迟？"
     assert snapshot.sources[3]["path"] == "/statement"
 
 
@@ -116,8 +118,10 @@ def test_materialize_selected_sources_limits_to_allowed_original_fields_and_path
     ("selection", "message"),
     [
         ({"source_kind": "knowledge", "source_id": 1, "path": "/text"}, "source kind"),
-        ({"source_kind": "review_note", "source_id": 1, "path": "/proposal_json"}, "path"),
+        ({"source_kind": "interview_note", "source_id": 1, "path": "/proposal_json"}, "path"),
         ({"source_kind": "mock_turn", "source_id": 1, "path": "/turns/1/answer"}, "path"),
+        ({"source_kind": "resume_version", "source_id": 1, "path": "/title"}, "path"),
+        ({"source_kind": "resume_version", "source_id": 1, "path": "/content_json/a~2b"}, "path"),
     ],
 )
 def test_materialize_selected_sources_rejects_non_story_evidence(selection, message, tmp_path) -> None:
