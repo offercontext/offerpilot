@@ -56,4 +56,17 @@ describe('interview story service', () => {
     expect(apiGet).toHaveBeenNthCalledWith(2, '/interview-story-sources', { params: { review_note_id: 9 } });
     expect(apiPost).not.toHaveBeenCalled();
   });
+
+  it('sends the user-owned manual idempotency key only to Story save APIs', async () => {
+    const input = {
+      content: { title: '一次延迟排查', blocks: [], capability_labels: [], applicable_questions: [], fact_gap_codes: ['missing_result'] },
+      evidence_links: [], selections: [], assertions: [], expected_current_version_id: null,
+      idempotency_key: 'manual-story-service-key-01',
+    };
+    apiPost.mockResolvedValue({ data: { id: 5 } });
+
+    await service.createInterviewStory(input);
+
+    expect(apiPost).toHaveBeenCalledWith('/interview-stories', input);
+  });
 });

@@ -83,6 +83,12 @@ _FACT_GAP_CODES = {"missing_result"}
 _BLOCK_KINDS = {"situation", "task", "action", "result", "reflection"}
 _TARGET_KINDS = {"title", "block", "capability_label", "applicable_question"}
 _MAX_EVIDENCE_EXCERPT_CHARS = 800
+_MAX_TITLE_CHARS = 200
+_MAX_BLOCKS = 12
+_MAX_BLOCK_TEXT_CHARS = 4_000
+_MAX_SHORT_ITEMS = 12
+_MAX_SHORT_TEXT_CHARS = 300
+_MAX_FACT_GAPS = 1
 _STORY_VERSION_SCHEMA = "interview-story-v1"
 _IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 _STORY_LEASE_SECONDS = 30
@@ -93,14 +99,17 @@ def canonical_story_content(raw: Mapping[str, Any]) -> dict[str, Any]:
     """Normalize user content and allocate version-local stable target IDs."""
 
     title = raw.get("title")
-    if not isinstance(title, str):
-        raise StoryValidationError("title must be a string")
+    if not isinstance(title, str) or not title.strip() or len(title) > _MAX_TITLE_CHARS:
+        raise StoryValidationError("title is invalid")
     blocks_raw = raw.get("blocks", [])
     labels_raw = raw.get("capability_labels", [])
     questions_raw = raw.get("applicable_questions", [])
     gaps_raw = raw.get("fact_gap_codes", [])
     if not all(isinstance(value, list) for value in (blocks_raw, labels_raw, questions_raw, gaps_raw)):
         raise StoryValidationError("story collections must be arrays")
+
+    if len(blocks_raw) > _MAX_BLOCKS or len(labels_raw) > _MAX_SHORT_ITEMS or len(questions_raw) > _MAX_SHORT_ITEMS or len(gaps_raw) > _MAX_FACT_GAPS:
+        raise StoryValidationError("story content exceeds limits")
 
     block_counts: dict[str, int] = {}
     blocks: list[dict[str, str]] = []
@@ -110,7 +119,13 @@ def canonical_story_content(raw: Mapping[str, Any]) -> dict[str, Any]:
         kind = item.get("kind")
         value = item.get("text")
         fact_mode = item.get("fact_mode")
-        if kind not in _BLOCK_KINDS or not isinstance(value, str) or not isinstance(fact_mode, str):
+        if (
+            kind not in _BLOCK_KINDS
+            or not isinstance(value, str)
+            or not value.strip()
+            or len(value) > _MAX_BLOCK_TEXT_CHARS
+            or not isinstance(fact_mode, str)
+        ):
             raise StoryValidationError("block is invalid")
         if kind == "reflection":
             if fact_mode != "user_view":
@@ -128,7 +143,7 @@ def canonical_story_content(raw: Mapping[str, Any]) -> dict[str, Any]:
         )
 
     def _items(values: list[Any], prefix: str) -> list[dict[str, str]]:
-        if not all(isinstance(value, str) for value in values):
+        if not all(isinstance(value, str) and value.strip() and len(value) <= _MAX_SHORT_TEXT_CHARS for value in values):
             raise StoryValidationError(f"{prefix} items must be strings")
         return [{"id": f"{prefix}_{index:03d}", "text": value} for index, value in enumerate(values, 1)]
 
@@ -136,6 +151,9 @@ def canonical_story_content(raw: Mapping[str, Any]) -> dict[str, Any]:
         raise StoryValidationError("fact gap code is invalid")
     if len(set(gaps_raw)) != len(gaps_raw):
         raise StoryValidationError("fact gap code is duplicated")
+    has_result = any(block["kind"] == "result" for block in blocks)
+    if has_result != (gaps_raw == []):
+        raise StoryValidationError("result and fact gap are inconsistent")
     return {
         "title": {"id": "title", "text": title},
         "blocks": blocks,
@@ -216,7 +234,7 @@ def validate_story_evidence_links(
         if not isinstance(text_location, str):
             raise StoryValidationError("evidence link shape is invalid")
         if excerpt == "":
-            raise StoryValidationError("evidence excerpt is invalid")
+            raise StoryValidationError("evidence link shape is invalid")
         if not excerpt.strip() or len(excerpt) > _MAX_EVIDENCE_EXCERPT_CHARS:
             raise StoryValidationError("evidence excerpt is invalid")
         if source_version_or_snapshot is None:
@@ -348,6 +366,36 @@ def story_request_fingerprint(
             normalized_selections,
             key=lambda item: (str(item["source_kind"]), str(item["source_id"]), str(item["path"])),
         ),
+        "assertions": list(assertions),
+    }
+    return sha256_text(canonical_json(payload))
+
+
+def _manual_request_fingerprint(
+    *,
+    target_story_id: int | None,
+    content: Mapping[str, Any],
+    evidence_links: list[dict[str, Any]],
+    selections: list[dict[str, Any]],
+    assertions: list[str],
+    expected_current_version_id: int | None,
+    expected_story_revision: int | None,
+) -> str:
+    """Bind an explicit manual save to the exact user-confirmed payload."""
+
+    if not all(isinstance(item, Mapping) for item in evidence_links):
+        raise StoryValidationError("evidence link must be an object")
+    payload = {
+        "operation": "manual_save",
+        "target_story_id": target_story_id,
+        "expected_current_version_id": expected_current_version_id,
+        "expected_story_revision": expected_story_revision,
+        "content": dict(content),
+        "evidence_links": sorted(
+            [dict(item) for item in evidence_links],
+            key=canonical_json,
+        ),
+        "selections": _canonical_selections(selections),
         "assertions": list(assertions),
     }
     return sha256_text(canonical_json(payload))
@@ -790,12 +838,26 @@ class InterviewStoriesRepository:
         selections: list[dict[str, Any]],
         assertions: list[str],
         expected_current_version_id: int | None,
+        idempotency_key: str,
     ) -> dict[str, Any]:
         if expected_current_version_id is not None:
             raise StoryConflictError("new story current version must be null")
+        request_fingerprint = _manual_request_fingerprint(
+            target_story_id=None,
+            content=content,
+            evidence_links=evidence_links,
+            selections=selections,
+            assertions=assertions,
+            expected_current_version_id=expected_current_version_id,
+            expected_story_revision=None,
+        )
         with self._session_factory() as session:
             try:
                 _begin_immediate(session)
+                replay = self._replay_manual_save(session, idempotency_key, request_fingerprint)
+                if replay is not None:
+                    session.commit()
+                    return replay
                 canonical = canonical_story_content(content)
                 snapshot = materialize_selected_sources(session, selections, assertions)
                 canonical_links = validate_story_evidence_links(canonical, evidence_links, snapshot)
@@ -813,6 +875,14 @@ class InterviewStoriesRepository:
                     origin_kind="manual",
                 )
                 story.current_version_id = version.id
+                self._record_manual_save(
+                    session,
+                    idempotency_key=idempotency_key,
+                    request_fingerprint=request_fingerprint,
+                    story=story,
+                    version=version,
+                    snapshot=snapshot,
+                )
                 session.commit()
                 return self._story_payload(session, story)
             except Exception:
@@ -829,12 +899,26 @@ class InterviewStoriesRepository:
         assertions: list[str],
         expected_current_version_id: int | None,
         expected_story_revision: int | None,
+        idempotency_key: str,
     ) -> dict[str, Any]:
         _require_positive_int("expected current version id", expected_current_version_id)
         _require_positive_int("expected story revision", expected_story_revision)
+        request_fingerprint = _manual_request_fingerprint(
+            target_story_id=story_id,
+            content=content,
+            evidence_links=evidence_links,
+            selections=selections,
+            assertions=assertions,
+            expected_current_version_id=expected_current_version_id,
+            expected_story_revision=expected_story_revision,
+        )
         with self._session_factory() as session:
             try:
                 _begin_immediate(session)
+                replay = self._replay_manual_save(session, idempotency_key, request_fingerprint)
+                if replay is not None:
+                    session.commit()
+                    return replay
                 story = self._require_active_story(session, story_id)
                 self._check_story_cas(story, expected_current_version_id, expected_story_revision)
                 canonical = canonical_story_content(content)
@@ -862,6 +946,14 @@ class InterviewStoriesRepository:
                 story.story_revision += 1
                 story.title = canonical["title"]["text"]
                 story.updated_at = datetime.now(timezone.utc)
+                self._record_manual_save(
+                    session,
+                    idempotency_key=idempotency_key,
+                    request_fingerprint=request_fingerprint,
+                    story=story,
+                    version=version,
+                    snapshot=snapshot,
+                )
                 session.commit()
                 return self._story_payload(session, story)
             except Exception:
@@ -1293,6 +1385,71 @@ class InterviewStoriesRepository:
                 session.rollback()
                 raise
 
+    def _replay_manual_save(
+        self,
+        session: Session,
+        idempotency_key: str,
+        request_fingerprint: str,
+    ) -> dict[str, Any] | None:
+        if not isinstance(idempotency_key, str) or not _IDEMPOTENCY_KEY.fullmatch(idempotency_key):
+            raise StoryValidationError("idempotency key is invalid")
+        existing = session.scalar(
+            select(InterviewStoryProposalAttempt).where(
+                InterviewStoryProposalAttempt.idempotency_key == idempotency_key
+            )
+        )
+        if existing is None:
+            return None
+        payload = _attempt_input_payload(existing)
+        if (
+            payload.get("operation") != "manual_save"
+            or payload.get("request_fingerprint") != request_fingerprint
+            or existing.attempt_status != "confirmed"
+            or existing.confirmed_story_id is None
+            or existing.confirmed_story_version_id is None
+        ):
+            raise StoryConflictError("story idempotency input changed")
+        story = session.get(InterviewStory, existing.confirmed_story_id)
+        version = session.get(InterviewStoryVersion, existing.confirmed_story_version_id)
+        if story is None or version is None or version.story_id != story.id:
+            raise StoryConflictError("manual story replay is unavailable")
+        return self._story_payload(session, story)
+
+    @staticmethod
+    def _record_manual_save(
+        session: Session,
+        *,
+        idempotency_key: str,
+        request_fingerprint: str,
+        story: InterviewStory,
+        version: InterviewStoryVersion,
+        snapshot: StorySourceSnapshot,
+    ) -> None:
+        payload = {"operation": "manual_save", "request_fingerprint": request_fingerprint}
+        payload_json = canonical_json(payload)
+        session.add(
+            InterviewStoryProposalAttempt(
+                target_story_id=story.id,
+                idempotency_key=idempotency_key,
+                entrypoint="ui",
+                entry_context_json=canonical_json({"operation": "manual_save"}),
+                attempt_status="confirmed",
+                generation_revision=1,
+                provider_call_token="",
+                provider_lease_until=None,
+                input_snapshot_json=payload_json,
+                source_fingerprint=snapshot.source_fingerprint,
+                proposal_json=canonical_json({"proposal_status": "manual"}),
+                proposal_hash=sha256_text(canonical_json({"proposal_status": "manual"})),
+                failure_category="",
+                confirmation_token_hash=sha256_text(idempotency_key),
+                confirmation_payload_hash=sha256_text(payload_json),
+                confirmed_story_id=story.id,
+                confirmed_story_version_id=version.id,
+                confirmed_at=datetime.now(timezone.utc),
+            )
+        )
+
     @staticmethod
     def _require_active_story(session: Session, story_id: int) -> InterviewStory:
         story = session.get(InterviewStory, story_id)
@@ -1588,9 +1745,11 @@ class _StoryLeaseHeartbeat:
     def start(self) -> None:
         self._thread.start()
 
-    def stop(self, timeout: float = 5) -> None:
+    def stop(self) -> None:
         self._stop.set()
-        self._thread.join(timeout=timeout)
+        self._thread.join()
+        if self._thread.is_alive():
+            raise RuntimeError("interview story lease heartbeat did not stop")
 
     @property
     def alive(self) -> bool:

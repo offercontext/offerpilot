@@ -163,6 +163,8 @@ def validate_interview_story_proposal(
         links = validate_story_evidence_links(content, link_inputs, snapshot)
     except StoryValidationError as exc:
         message = str(exc)
+        if "evidence link shape" in message:
+            raise StoryProposalError("invalid_evidence_shape") from exc
         if any(token in message for token in ("shape", "object", "array", "string", "extra fields")):
             raise StoryProposalError("invalid_shape") from exc
         if any(token in message for token in ("excerpt", "source")):

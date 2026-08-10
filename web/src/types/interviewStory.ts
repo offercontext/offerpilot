@@ -125,6 +125,7 @@ export interface InterviewStoryManualInput {
   selections: InterviewStorySourceSelection[];
   assertions: string[];
   expected_current_version_id: number | null;
+  idempotency_key: string;
 }
 
 export interface InterviewStoryPendingAttempt {

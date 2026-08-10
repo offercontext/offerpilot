@@ -101,4 +101,34 @@ describe('InterviewStoryLibraryView', () => {
     expect(service.archive).not.toHaveBeenCalled();
     expect(service.restore).not.toHaveBeenCalled();
   });
+
+  it('keeps the last selected immutable version when an older history request resolves late', async () => {
+    let resolveFirst: (value: unknown) => void = () => undefined;
+    let resolveSecond: (value: unknown) => void = () => undefined;
+    const version = (id: number, title: string) => ({
+      id, version_number: id, origin_kind: 'manual' as const, confirmed_at: '2026-08-10T00:00:00+00:00', source_fingerprint: `fp-${id}`,
+      content: { title: { id: 'title' as const, text: title }, blocks: [], capability_labels: [], applicable_questions: [], fact_gap_codes: ['missing_result'] },
+      evidence_links: [], assertions: [], source_states: [],
+    });
+    service.get.mockResolvedValue({ id: 8, title: '订单延迟排查', status: 'active', current_version_id: 2, story_revision: 2, version_number: 2, source_states: [], version: version(2, '当前版本') });
+    service.listVersions.mockResolvedValue([
+      { id: 2, version_number: 2, origin_kind: 'manual', confirmed_at: '2026-08-10T00:00:00+00:00', source_fingerprint: 'fp-2' },
+      { id: 1, version_number: 1, origin_kind: 'manual', confirmed_at: '2026-08-09T00:00:00+00:00', source_fingerprint: 'fp-1' },
+    ]);
+    service.getVersion
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve; }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveSecond = resolve; }));
+    act(() => root?.render(<InterviewStoryLibraryView onOpenDraft={() => {}} />));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    act(() => [...(container?.querySelectorAll('button') ?? [])].find((button) => button.textContent === '查看版本')?.click());
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    const versionButtons = [...(container?.querySelectorAll('button') ?? [])].filter((button) => button.textContent?.startsWith('查看版本 '));
+    act(() => versionButtons.find((button) => button.textContent === '查看版本 1')?.click());
+    act(() => versionButtons.find((button) => button.textContent === '查看版本 2')?.click());
+    await act(async () => { resolveSecond(version(2, '后选择的版本')); await Promise.resolve(); });
+    await act(async () => { resolveFirst(version(1, '过期响应')); await Promise.resolve(); });
+
+    expect(container?.textContent).toContain('后选择的版本');
+    expect(container?.textContent).not.toContain('过期响应');
+  });
 });

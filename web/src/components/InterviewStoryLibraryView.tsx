@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Empty, Input, List, Space, Spin, Tag, Typography } from 'antd';
 import { archiveInterviewStory, getInterviewStory, getInterviewStoryVersion, listInterviewStories, listInterviewStoryVersions, restoreInterviewStory } from '@/services/interviewStories';
 import type { InterviewStory, InterviewStoryVersion } from '@/types/interviewStory';
@@ -38,6 +38,7 @@ export default function InterviewStoryLibraryView({ onOpenDraft, onBack }: Props
   const [selectedStory, setSelectedStory] = useState<InterviewStory | null>(null);
   const [versions, setVersions] = useState<Array<Pick<InterviewStoryVersion, 'id' | 'version_number' | 'origin_kind' | 'confirmed_at' | 'source_fingerprint'>>>([]);
   const [selectedVersion, setSelectedVersion] = useState<InterviewStoryVersion | null>(null);
+  const historyRequestGeneration = useRef(0);
 
   const load = (nextStatus = status, nextQuery = query) => {
     setLoading(true);
@@ -59,8 +60,10 @@ export default function InterviewStoryLibraryView({ onOpenDraft, onBack }: Props
   };
 
   const openStory = async (storyId: number) => {
+    const generation = ++historyRequestGeneration.current;
     try {
       const [story, history] = await Promise.all([getInterviewStory(storyId), listInterviewStoryVersions(storyId)]);
+      if (generation !== historyRequestGeneration.current) return;
       setSelectedStory(story);
       setVersions(history);
       setSelectedVersion(story.version ?? null);
@@ -70,8 +73,11 @@ export default function InterviewStoryLibraryView({ onOpenDraft, onBack }: Props
   };
 
   const openVersion = async (storyId: number, versionId: number) => {
+    const generation = ++historyRequestGeneration.current;
     try {
-      setSelectedVersion(await getInterviewStoryVersion(storyId, versionId));
+      const version = await getInterviewStoryVersion(storyId, versionId);
+      if (generation !== historyRequestGeneration.current) return;
+      setSelectedVersion(version);
     } catch {
       setError(true);
     }
@@ -134,7 +140,7 @@ export default function InterviewStoryLibraryView({ onOpenDraft, onBack }: Props
                   expectedStoryRevision: selectedStory.story_revision,
                 })}>基于此故事新建版本</Button>
               ) : null}
-              <Button onClick={() => { setSelectedStory(null); setSelectedVersion(null); setVersions([]); }}>关闭历史</Button>
+              <Button onClick={() => { historyRequestGeneration.current += 1; setSelectedStory(null); setSelectedVersion(null); setVersions([]); }}>关闭历史</Button>
             </Space>
           </Space>
           <List

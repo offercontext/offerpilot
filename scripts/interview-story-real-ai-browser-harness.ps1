@@ -107,11 +107,12 @@ print(json.dumps(result, separators=(",", ":")))
 }
 
 function Assert-ForbiddenDomainsUnchanged($before, $after) {
-  foreach ($property in $before.PSObject.Properties) {
-    $left = $before.$($property.Name)
-    $right = $after.$($property.Name)
-    if ($null -eq $right -or [int]$left.count -ne [int]$right.count -or [string]$left.sha256 -ne [string]$right.sha256) {
-      throw "Unexpected non-Story write in $($property.Name)."
+  $names = @($before.PSObject.Properties.Name + $after.PSObject.Properties.Name | Sort-Object -Unique)
+  foreach ($name in $names) {
+    $left = $before.$name
+    $right = $after.$name
+    if ($null -eq $left -or $null -eq $right -or [int]$left.count -ne [int]$right.count -or [string]$left.sha256 -ne [string]$right.sha256) {
+      throw "Unexpected non-Story write in $name."
     }
   }
 }
@@ -197,14 +198,14 @@ function Assert-StoryBrowserSequence([object[]]$records, [string]$baseUrl) {
   if ($foreign.Count -gt 0) { throw 'Browser accessed a non-local URL.' }
   $uiPosts = @($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'POST' -and $_.url -eq "$baseUrl/api/interview-story-proposals" })
   $pilotPosts = @($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'POST' -and $_.url -eq "$baseUrl/api/pilot/interview-story-proposals" })
-  if ($uiPosts.Count -lt 1 -or $pilotPosts.Count -lt 1) { throw 'Browser did not start both Story entrypoint sequences.' }
+  if ($uiPosts.Count -ne 1 -or $pilotPosts.Count -ne 1) { throw 'Browser did not execute exactly one UI and one Pilot Story proposal sequence.' }
   $responses = @($records | Where-Object { $_.kind -eq 'browser_response' })
   $uiResponse = Get-StoryAttemptResponse $responses 'ui' "$baseUrl/api/interview-story-proposals"
   $pilotResponse = Get-StoryAttemptResponse $responses 'pilot' "$baseUrl/api/pilot/interview-story-proposals"
   $attemptIds = @([int]$uiResponse.response_proposal_id, [int]$pilotResponse.response_proposal_id)
   if ($attemptIds[0] -eq $attemptIds[1]) { throw 'UI and Pilot did not receive distinct Story attempts.' }
   $keys = @($uiPosts + $pilotPosts | ForEach-Object { $_.request_context.idempotency_key_sha256 } | Where-Object { $_ } | Sort-Object -Unique)
-  if ($keys.Count -lt 2) { throw 'UI and Pilot did not use distinct Story idempotency keys.' }
+  if ($keys.Count -ne 2) { throw 'UI and Pilot did not use exactly two distinct Story idempotency keys.' }
   foreach ($attemptId in $attemptIds) {
     $confirm = @($responses | Where-Object {
       $_.url -eq "$baseUrl/api/interview-story-proposals/$attemptId/confirm" -and
@@ -213,13 +214,13 @@ function Assert-StoryBrowserSequence([object[]]$records, [string]$baseUrl) {
       (Get-RecordProperty $_ 'response_story_id') -is [int] -and
       (Get-RecordProperty $_ 'response_story_version_id') -is [int]
     })
-    if ($confirm.Count -eq 0) { throw "Browser did not confirm Story attempt $attemptId." }
+    if ($confirm.Count -ne 1) { throw "Browser did not confirm Story attempt $attemptId exactly once." }
     $latestConfirm = $confirm[-1]
     $historyUrl = "$baseUrl/api/interview-stories/$($latestConfirm.response_story_id)/versions/$($latestConfirm.response_story_version_id)"
     $history = @($responses | Where-Object {
       $_.method -eq 'GET' -and $_.url -eq $historyUrl -and $_.response_status -eq 200 -and $_.response_body_status -eq 'captured'
     })
-    if ($history.Count -eq 0) { throw "Browser did not reopen confirmed Story version for attempt $attemptId." }
+    if ($history.Count -ne 1) { throw "Browser did not reopen confirmed Story version for attempt $attemptId exactly once." }
   }
 }
 
@@ -274,7 +275,7 @@ try {
 import os, sqlite3
 db = sqlite3.connect(os.environ["INTERVIEW_STORY_HARNESS_DB"])
 rows = db.execute("select entrypoint, attempt_status, confirmed_story_version_id from interview_story_proposal_attempts order by id").fetchall()
-if len(rows) < 2 or {row[0] for row in rows} != {"ui", "pilot"} or any(row[1] != "confirmed" or row[2] is None for row in rows):
+if len(rows) != 2 or {row[0] for row in rows} != {"ui", "pilot"} or any(row[1] != "confirmed" or row[2] is None for row in rows):
     raise SystemExit("both UI and Pilot Story confirmations are required")
 '@
   & uv run python -c $verify

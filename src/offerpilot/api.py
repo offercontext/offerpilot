@@ -5236,6 +5236,13 @@ def create_app(
             or not isinstance(entry_context.get("review_note_id"), int)
             or isinstance(entry_context.get("review_note_id"), bool)
             or entry_context["review_note_id"] <= 0
+            or not payload["selections"]
+            or any(
+                not isinstance(item, dict)
+                or item.get("source_kind") != "interview_note"
+                or item.get("source_id") != entry_context["review_note_id"]
+                for item in payload["selections"]
+            )
             or not any(
                 isinstance(item, dict)
                 and item.get("source_kind") == "interview_note"
@@ -5355,7 +5362,7 @@ def create_app(
 
     @app.post("/api/interview-stories")
     def create_interview_story(payload: dict[str, Any] = Body(...)) -> JSONResponse:
-        allowed = {"content", "evidence_links", "selections", "assertions", "expected_current_version_id"}
+        allowed = {"content", "evidence_links", "selections", "assertions", "expected_current_version_id", "idempotency_key"}
         if set(payload) != allowed:
             return error_response(422, "面试故事输入无效", code="interview_story_invalid_request")
         try:
@@ -5365,6 +5372,7 @@ def create_app(
                 selections=payload["selections"],
                 assertions=payload["assertions"],
                 expected_current_version_id=payload["expected_current_version_id"],
+                idempotency_key=payload["idempotency_key"],
             )
             return JSONResponse(story, status_code=201)
         except (KeyError, TypeError, StoryValidationError) as exc:
@@ -5393,7 +5401,7 @@ def create_app(
 
     @app.post("/api/interview-stories/{story_id}/versions")
     def create_interview_story_version(story_id: int, payload: dict[str, Any] = Body(...)) -> JSONResponse:
-        allowed = {"content", "evidence_links", "selections", "assertions", "expected_current_version_id", "expected_story_revision"}
+        allowed = {"content", "evidence_links", "selections", "assertions", "expected_current_version_id", "expected_story_revision", "idempotency_key"}
         if set(payload) != allowed:
             return error_response(422, "面试故事输入无效", code="interview_story_invalid_request")
         try:

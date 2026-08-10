@@ -58,6 +58,19 @@ def test_canonical_story_content_assigns_stable_target_ids_to_duplicate_text() -
     assert content["blocks"][2]["fact_mode"] == "user_view"
 
 
+@pytest.mark.parametrize(
+    "content",
+    [
+        {"title": "x" * 201, "blocks": [], "capability_labels": [], "applicable_questions": [], "fact_gap_codes": ["missing_result"]},
+        {"title": "A story", "blocks": [{"kind": "situation", "text": "fact", "fact_mode": "evidence_backed"}], "capability_labels": [], "applicable_questions": [], "fact_gap_codes": []},
+        {"title": "A story", "blocks": [{"kind": "result", "text": "result", "fact_mode": "evidence_backed"}], "capability_labels": [], "applicable_questions": [], "fact_gap_codes": ["missing_result"]},
+    ],
+)
+def test_manual_story_content_uses_the_same_title_and_result_contract(content) -> None:
+    with pytest.raises(StoryValidationError):
+        canonical_story_content(content)
+
+
 def test_materialize_selected_sources_limits_to_allowed_original_fields_and_paths(tmp_path) -> None:
     factory = init_database(tmp_path / "story.db")
     with factory() as session:
@@ -320,6 +333,7 @@ def test_manual_story_version_cas_assertions_and_read_time_source_states(tmp_pat
         selections=[{"source_kind": "interview_note", "source_id": note_id, "path": "/questions"}],
         assertions=["I own this incident response."],
         expected_current_version_id=None,
+        idempotency_key="manual-story-version-cas-0001",
     )
     version_id = created["current_version_id"]
     assert created["story_revision"] == 1
@@ -341,6 +355,7 @@ def test_manual_story_version_cas_assertions_and_read_time_source_states(tmp_pat
             assertions=["I own this incident response."],
             expected_current_version_id=version_id,
             expected_story_revision=99,
+            idempotency_key="manual-story-version-cas-0002",
         )
 
     with factory() as session:
@@ -369,6 +384,7 @@ def test_manual_story_version_cas_assertions_and_read_time_source_states(tmp_pat
             assertions=["I own this incident response."],
             expected_current_version_id=version_id,
             expected_story_revision=2,
+            idempotency_key="manual-story-version-cas-0003",
         )
     restored = repository.restore(story_id=created["id"], expected_story_revision=2)
     assert restored["status"] == "active"
@@ -388,6 +404,7 @@ def test_invalid_manual_save_rolls_back_all_story_rows_and_fingerprint_is_order_
                 selections=[{"source_kind": "interview_note", "source_id": note.id, "path": "/questions"}],
                 assertions=["I own this incident response."],
                 expected_current_version_id=None,
+                idempotency_key="manual-story-invalid-save-0001",
             )
         assert list(session.scalars(select(InterviewStory))) == []
         assert list(session.scalars(select(InterviewStoryVersion))) == []
@@ -410,6 +427,40 @@ def test_invalid_manual_save_rolls_back_all_story_rows_and_fingerprint_is_order_
         selections=list(reversed(selections)),
         assertions=["statement"],
     )
+    factory.kw["bind"].dispose()
+
+
+def test_manual_save_replays_the_same_key_without_creating_a_second_version(tmp_path) -> None:
+    factory = init_database(tmp_path / "story.db")
+    repository = InterviewStoriesRepository(factory)
+    with factory() as session:
+        note = _create_note(session)
+        note_id = note.id
+        session.commit()
+        content = canonical_story_content(_manual_content())
+        snapshot = materialize_selected_sources(
+            session,
+            [{"source_kind": "interview_note", "source_id": note_id, "path": "/questions"}],
+            ["I own this incident response."],
+        )
+    request = {
+        "content": _manual_content(),
+        "evidence_links": _links_for_content(content, snapshot),
+        "selections": [{"source_kind": "interview_note", "source_id": note_id, "path": "/questions"}],
+        "assertions": ["I own this incident response."],
+        "expected_current_version_id": None,
+        "idempotency_key": "manual-story-replay-key-0001",
+    }
+
+    first = repository.create_manual_story(**request)
+    replay = repository.create_manual_story(**request)
+
+    assert replay["id"] == first["id"]
+    with factory() as session:
+        assert len(list(session.scalars(select(InterviewStory)))) == 1
+        assert len(list(session.scalars(select(InterviewStoryVersion)))) == 1
+        attempt = session.scalar(select(InterviewStoryProposalAttempt).where(InterviewStoryProposalAttempt.idempotency_key == request["idempotency_key"]))
+        assert attempt is not None and attempt.attempt_status == "confirmed"
     factory.kw["bind"].dispose()
 
 
@@ -495,6 +546,7 @@ def test_story_attempt_replay_heartbeat_and_confirmation_are_fenced(tmp_path) ->
         now_factory=lambda: clock[0],
     )
     heartbeat.stop()
+    assert heartbeat.alive is False
     clock[0] += timedelta(seconds=31)
     assert heartbeat.tick() is True
     replay_after_old_lease = repository.claim_proposal(**request)
@@ -577,6 +629,7 @@ def test_proposal_confirmation_must_use_the_cas_values_frozen_at_claim(tmp_path)
         selections=[{"source_kind": "interview_note", "source_id": note_id, "path": "/questions"}],
         assertions=["I own this incident response."],
         expected_current_version_id=None,
+        idempotency_key="manual-story-frozen-cas-0001",
     )
     claim = repository.claim_proposal(
         target_story_id=story["id"],
@@ -604,6 +657,7 @@ def test_proposal_confirmation_must_use_the_cas_values_frozen_at_claim(tmp_path)
         assertions=["I own this incident response."],
         expected_current_version_id=story["current_version_id"],
         expected_story_revision=story["story_revision"],
+        idempotency_key="manual-story-frozen-cas-0002",
     )
     confirmation_links = [
         {

@@ -35,7 +35,7 @@ export interface InterviewStoryDraft {
   editedContent: InterviewStoryEditableContent | null;
   manualContent: InterviewStoryEditableContent;
   resultUnknown: boolean;
-  pendingOperation: 'generate' | 'confirm' | null;
+  pendingOperation: 'generate' | 'confirm' | 'manual' | null;
   confirmationToken: string | null;
   error: string | null;
 }
@@ -49,7 +49,13 @@ interface Props {
 
 const EMPTY_MANUAL_CONTENT: InterviewStoryEditableContent = {
   title: '',
-  blocks: [{ kind: 'situation', text: '', fact_mode: 'evidence_backed' }],
+  blocks: [
+    { kind: 'situation', text: '', fact_mode: 'evidence_backed' },
+    { kind: 'task', text: '', fact_mode: 'evidence_backed' },
+    { kind: 'action', text: '', fact_mode: 'evidence_backed' },
+    { kind: 'result', text: '', fact_mode: 'evidence_backed' },
+    { kind: 'reflection', text: '', fact_mode: 'user_view' },
+  ],
   capability_labels: [],
   applicable_questions: [],
   fact_gap_codes: [],
@@ -104,6 +110,17 @@ function editableContent(content: InterviewStoryContent): InterviewStoryEditable
     capability_labels: content.capability_labels.map((item) => item.text),
     applicable_questions: content.applicable_questions.map((item) => item.text),
     fact_gap_codes: content.fact_gap_codes,
+  };
+}
+
+function normalizedManualContent(content: InterviewStoryEditableContent): InterviewStoryEditableContent {
+  const blocks = content.blocks.filter((block) => block.text.trim());
+  return {
+    title: content.title,
+    blocks,
+    capability_labels: content.capability_labels.filter((value) => value.trim()),
+    applicable_questions: content.applicable_questions.filter((value) => value.trim()),
+    fact_gap_codes: blocks.some((block) => block.kind === 'result') ? [] : ['missing_result'],
   };
 }
 
@@ -226,7 +243,7 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
   };
 
   const saveManualStory = async () => {
-    const content = draft.manualContent;
+    const content = normalizedManualContent(draft.manualContent);
     if (!selectedSourcePreview || !content.title.trim() || !content.blocks.some((block) => block.text.trim())) {
       message.error('请先选择原始来源，并填写标题和至少一个故事区块。');
       return;
@@ -266,6 +283,7 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
           assertions: draft.assertions,
           expected_current_version_id: draft.expectedCurrentVersionId,
           expected_story_revision: draft.expectedStoryRevision ?? 0,
+          idempotency_key: draft.idempotencyKey,
         });
       } else {
         await createInterviewStory({
@@ -274,13 +292,20 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
           selections: draft.selections,
           assertions: draft.assertions,
           expected_current_version_id: null,
+          idempotency_key: draft.idempotencyKey,
         });
       }
       message.success('故事版本已保存。');
       onDraftChange(null);
       onClose();
     } catch (error) {
-      message.error(safeMessage(error));
+      const safe = safeMessage(error);
+      if (isUnknownResult(error)) {
+        update({ resultUnknown: true, pendingOperation: 'manual', error: safe });
+      } else {
+        onDraftChange(resetAfterDefiniteFailure(draft, safe));
+      }
+      message.error(safe);
     } finally {
       setBusy(false);
     }
@@ -361,7 +386,7 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
         description="不会自动选择来源，不会写入知识库；每一条保存内容都需要原始证据或你的明确陈述。"
         style={{ marginBottom: 16 }}
       />
-      {draft.error ? <Alert type="warning" showIcon message={draft.error} action={draft.resultUnknown ? <Button size="small" onClick={() => void (draft.pendingOperation === 'confirm' ? confirm() : generate())}>使用原尝试重试</Button> : undefined} style={{ marginBottom: 16 }} /> : null}
+      {draft.error ? <Alert type="warning" showIcon message={draft.error} action={draft.resultUnknown ? <Button size="small" onClick={() => void (draft.pendingOperation === 'confirm' ? confirm() : draft.pendingOperation === 'manual' ? saveManualStory() : generate())}>使用原尝试重试</Button> : undefined} style={{ marginBottom: 16 }} /> : null}
       <Title level={5}>选择原始来源</Title>
       {!pickerOpen ? <Button disabled={frozen} onClick={() => setPickerOpen(true)}>打开来源选择器</Button> : null}
       {candidatesLoading ? <Spin aria-label="正在加载可选原始来源" /> : null}
@@ -441,20 +466,42 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
             placeholder="故事标题"
             style={{ marginBottom: 8 }}
           />
+          {draft.manualContent.blocks.map((block, index) => (
+            <Input.TextArea
+              key={block.kind}
+              aria-label={`手动故事${({ situation: '情境', task: '任务', action: '行动', result: '结果', reflection: '复盘' } as const)[block.kind]}`}
+              disabled={frozen}
+              value={block.text}
+              onChange={(event) => update({
+                manualContent: {
+                  ...draft.manualContent,
+                  blocks: draft.manualContent.blocks.map((item, itemIndex) => itemIndex === index ? { ...item, text: event.target.value } : item),
+                },
+              })}
+              placeholder={block.kind === 'reflection' ? '你的观点或复盘，不会冒充外部事实' : `用原始证据支持的${({ situation: '情境', task: '任务', action: '行动', result: '结果' } as const)[block.kind as Exclude<typeof block.kind, 'reflection'>]}`}
+              autoSize={{ minRows: 2, maxRows: 6 }}
+              style={{ marginBottom: 8 }}
+            />
+          ))}
           <Input.TextArea
-            aria-label="手动故事情境"
+            aria-label="手动能力标签"
             disabled={frozen}
-            value={draft.manualContent.blocks[0]?.text ?? ''}
-            onChange={(event) => update({
-              manualContent: {
-                ...draft.manualContent,
-                blocks: [{ kind: 'situation', text: event.target.value, fact_mode: 'evidence_backed' }, ...draft.manualContent.blocks.slice(1)],
-              },
-            })}
-            placeholder="用原始证据支持的故事情境"
-            autoSize={{ minRows: 3, maxRows: 6 }}
-            style={{ marginBottom: 12 }}
+            value={draft.manualContent.capability_labels.join('\n')}
+            onChange={(event) => update({ manualContent: { ...draft.manualContent, capability_labels: event.target.value.split('\n').filter(Boolean) } })}
+            placeholder="能力标签，每行一个（可选）"
+            autoSize={{ minRows: 1, maxRows: 4 }}
+            style={{ marginBottom: 8 }}
           />
+          <Input.TextArea
+            aria-label="手动适用问题"
+            disabled={frozen}
+            value={draft.manualContent.applicable_questions.join('\n')}
+            onChange={(event) => update({ manualContent: { ...draft.manualContent, applicable_questions: event.target.value.split('\n').filter(Boolean) } })}
+            placeholder="适用问题，每行一个（可选）"
+            autoSize={{ minRows: 1, maxRows: 4 }}
+            style={{ marginBottom: 8 }}
+          />
+          {!draft.manualContent.blocks.some((block) => block.kind === 'result' && block.text.trim()) ? <Alert type="info" showIcon message="尚未填写结果：保存时会标记为“请补充可验证的结果或影响”。" style={{ marginBottom: 12 }} /> : null}
           <Button type="primary" disabled={frozen || !draft.manualContent.title.trim() || !draft.manualContent.blocks.some((block) => block.text.trim())} loading={busy} onClick={() => void saveManualStory()}>确认手动保存故事版本</Button>
         </>
       ) : null}

@@ -1752,6 +1752,7 @@ def _run_interview_story_http_smoke(
             ],
             "assertions": [],
             "expected_current_version_id": None,
+            "idempotency_key": "story-manual-smoke-00001",
         },
     )
     _assert_status(manual.status_code, 201, "story_manual_create")
@@ -1793,7 +1794,7 @@ def _run_interview_story_http_smoke(
         idempotency_key="story-pilot-smoke-0001",
         confirmation_token="story-pilot-confirm-01",
         story=updated_story.json(),
-        selections=selections,
+        selections=[{"source_kind": "interview_note", "source_id": seed["note_id"], "path": "/questions"}],
         assertions=["我确认这是我亲自负责的排查经历。"],
         entry_context={"review_note_id": seed["note_id"]},
     )

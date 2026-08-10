@@ -149,6 +149,28 @@ def test_two_shape_failures_become_non_confirmable_safe_empty() -> None:
     assert model.calls == 2
 
 
+def test_empty_evidence_excerpt_is_a_repairable_shape_error() -> None:
+    malformed = _proposal()
+    malformed["title"]["evidence_refs"][0]["excerpt"] = ""  # type: ignore[index]
+    model = QueuedModel([malformed, _proposal()])
+
+    result = generate_interview_story_proposal(model, _snapshot())
+
+    assert result["proposal_status"] == "normal"
+    assert model.calls == 2
+    assert "invalid_evidence_shape" in model.messages[1][1].content
+
+
+def test_story_validator_rejects_title_over_the_shared_manual_limit() -> None:
+    malformed = _proposal()
+    malformed["title"]["text"] = "x" * 201  # type: ignore[index]
+
+    with pytest.raises(StoryProposalError) as error:
+        validate_interview_story_proposal(malformed, _snapshot())
+
+    assert error.value.category == "semantic_contract"
+
+
 def test_safe_empty_is_the_only_empty_proposal_and_reflection_cannot_be_objective() -> None:
     assert validate_interview_story_proposal(
         {"title": {"text": "", "evidence_refs": []}, "blocks": [], "capability_labels": [], "applicable_questions": [], "fact_gap_codes": []},

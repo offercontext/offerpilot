@@ -252,4 +252,75 @@ describe('InterviewStoryDrawer', () => {
     expect(storyService.proposal).not.toHaveBeenCalled();
     expect(close).toHaveBeenCalledTimes(1);
   });
+
+  it('renders the complete manual STAR editor and records the fixed result gap when result is blank', async () => {
+    let current = createInterviewStoryDraft('ui');
+    const render = () => root?.render(<InterviewStoryDrawer open draft={current} onDraftChange={(draft) => {
+      if (draft) {
+        current = draft;
+        render();
+      }
+    }} onClose={() => {}} />);
+    storyService.create.mockResolvedValue({ id: 12 });
+    act(render);
+    act(() => [...document.body.querySelectorAll('button')].find((button) => button.textContent === '打开来源选择器')?.click());
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    act(() => (document.body.querySelector('input[type="checkbox"]') as HTMLInputElement).click());
+    act(() => [...document.body.querySelectorAll('button')].find((button) => button.textContent === '手动编写并保存')?.click());
+    for (const label of ['手动故事情境', '手动故事任务', '手动故事行动', '手动故事结果', '手动故事复盘', '手动能力标签', '手动适用问题']) {
+      expect(document.body.querySelector(`[aria-label="${label}"]`)).toBeTruthy();
+    }
+    expect(document.body.textContent).toContain('尚未填写结果');
+
+    const title = document.body.querySelector('input[aria-label="手动故事标题"]') as HTMLInputElement;
+    const situation = document.body.querySelector('textarea[aria-label="手动故事情境"]') as HTMLTextAreaElement;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(title, '一次延迟排查');
+      title.dispatchEvent(new Event('input', { bubbles: true }));
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(situation, '我确认了指标并定位问题。');
+      situation.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      [...document.body.querySelectorAll('button')].find((button) => button.textContent === '确认手动保存故事版本')?.click();
+      await Promise.resolve(); await Promise.resolve();
+    });
+    expect(storyService.create.mock.calls[0]?.[0].content.fact_gap_codes).toEqual(['missing_result']);
+  });
+
+  it('replays an unknown manual save with the same idempotency key and frozen payload', async () => {
+    let current = createInterviewStoryDraft('ui');
+    const render = () => root?.render(<InterviewStoryDrawer open draft={current} onDraftChange={(draft) => {
+      if (draft) {
+        current = draft;
+        render();
+      }
+    }} onClose={() => {}} />);
+    storyService.create
+      .mockRejectedValueOnce(new storyService.StoryError(502, 'story_provider_error'))
+      .mockResolvedValueOnce({ id: 12 });
+    act(render);
+    act(() => [...document.body.querySelectorAll('button')].find((button) => button.textContent === '打开来源选择器')?.click());
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    act(() => (document.body.querySelector('input[type="checkbox"]') as HTMLInputElement).click());
+    act(() => [...document.body.querySelectorAll('button')].find((button) => button.textContent === '手动编写并保存')?.click());
+    const title = document.body.querySelector('input[aria-label="手动故事标题"]') as HTMLInputElement;
+    const situation = document.body.querySelector('textarea[aria-label="手动故事情境"]') as HTMLTextAreaElement;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(title, '一次延迟排查'); title.dispatchEvent(new Event('input', { bubbles: true }));
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(situation, '我确认了指标。'); situation.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      [...document.body.querySelectorAll('button')].find((button) => button.textContent === '确认手动保存故事版本')?.click();
+      await Promise.resolve(); await Promise.resolve();
+    });
+    const initialPayload = storyService.create.mock.calls[0]?.[0];
+    expect(current.pendingOperation).toBe('manual');
+    expect(current.resultUnknown).toBe(true);
+    await act(async () => {
+      [...document.body.querySelectorAll('button')].find((button) => button.textContent === '使用原尝试重试')?.click();
+      await Promise.resolve(); await Promise.resolve();
+    });
+    expect(storyService.create).toHaveBeenCalledTimes(2);
+    expect(storyService.create.mock.calls[1]?.[0]).toEqual(initialPayload);
+  });
 });

@@ -41,6 +41,7 @@ def _payload(note_id: int) -> dict:
         "selections": [{"source_kind": "interview_note", "source_id": note_id, "path": "/questions"}],
         "assertions": [],
         "expected_current_version_id": None,
+        "idempotency_key": "manual-story-api-key-0001",
     }
 
 
@@ -50,6 +51,9 @@ def test_manual_story_api_creates_reads_archives_and_restores_without_ai(app_cli
 
     assert created.status_code == 201
     story = created.json()
+    replay = app_client.post("/api/interview-stories", json=_payload(note["id"]))
+    assert replay.status_code == 201
+    assert replay.json()["id"] == story["id"]
     assert story["title"] == "线上延迟排查"
     assert app_client.get("/api/interview-stories").json()[0]["id"] == story["id"]
     assert app_client.get(f"/api/interview-stories/{story['id']}/versions").json()[0]["version_number"] == 1
@@ -96,6 +100,31 @@ def test_story_proposal_api_accepts_only_a_scoped_review_note_context(app_client
         "assertions": ["I owned this incident."],
         "idempotency_key": "story-context-key-0001",
         "entry_context": {"review_note_id": 1, "untrusted_text": "do not persist"},
+    }
+
+    response = app_client.post("/api/pilot/interview-story-proposals", json=payload)
+
+    assert response.status_code == 422
+    assert response.json()["error_code"] == "interview_story_invalid_request"
+
+
+def test_saved_review_story_proposal_rejects_unrelated_sources(app_client) -> None:
+    note = _note(app_client)
+    resume = app_client.post(
+        "/api/resumes",
+        json={"title": "筱哲的后端简历", "content_json": {"projects": [{"detail": "排查延迟"}]}},
+    ).json()
+    payload = {
+        "target_story_id": None,
+        "expected_current_version_id": None,
+        "expected_story_revision": None,
+        "selections": [
+            {"source_kind": "interview_note", "source_id": note["id"], "path": "/questions"},
+            {"source_kind": "resume_version", "source_id": resume["id"], "path": "/content_json/projects/0/detail"},
+        ],
+        "assertions": [],
+        "idempotency_key": "story-scoped-source-key-01",
+        "entry_context": {"review_note_id": note["id"]},
     }
 
     response = app_client.post("/api/pilot/interview-story-proposals", json=payload)
