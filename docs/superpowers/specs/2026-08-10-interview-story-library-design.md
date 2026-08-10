@@ -1,6 +1,6 @@
 # 结构化面试故事库设计
 
-**状态**：已确认设计，待实施计划复审
+**状态**：设计修订，待复审
 **日期**：2026-08-10
 **范围**：第一期只建立和维护可审计、可版本化的候选人面试故事资产；不实现故事使用记录或练习消费。
 
@@ -37,7 +37,7 @@ OfferPilot 已经保存了简历版本、面试事件、面试复盘、模拟面
 
 | 领域 | 既有职责 | 与 Story 的关系 |
 | --- | --- | --- |
-| Knowledge | 外部世界的可引用知识，以及经确认沉淀的 Knowledge Note | 可在严格来源资格下提供候选人事实 Evidence；不得接收 Story 或 AI 草稿 |
+| Knowledge | 外部世界的可引用知识，以及经确认沉淀的 Knowledge Note | 第一阶段不作为 Story 事实来源，也不得接收 Story 或 AI 草稿 |
 | Interview Business Record | 某次面试、复盘和模拟面试实际发生的记录 | 可以成为 Story 的显式来源；不因生成 Story 被修改 |
 | Memory | 用户偏好、目标、薄弱点和掌握程度 | 不能作为故事事实来源，也不接收 Story 内容 |
 | Application | 某次投递的事实与状态 | 可以在未来 Usage 中关联；第一期不绑定 Story |
@@ -106,7 +106,7 @@ Pilot 不能猜测“最好的故事”，不能自动发送模型请求，也�
 
 第一期不提供物理删除接口。归档仅改变 `status`，不会删除 Version、来源链接或历史 Proposal。
 
-已归档 Story 仍然可搜索（在 archived 筛选中）、查看和复制，但不得创建新 Version 或发起新 Proposal；用户必须先携带当前 `story_revision` 明确恢复。恢复不会改变 `current_version_id`。
+已归档 Story 仍然可搜索（在 archived 筛选中）和查看，但不得创建新 Version 或发起新 Proposal；用户必须先携带当前 `story_revision` 明确恢复。恢复不会改变 `current_version_id`。
 
 ### 4.2 `interview_story_versions`
 
@@ -115,24 +115,32 @@ Pilot 不能猜测“最好的故事”，不能自动发送模型请求，也�
 | 字段 | 语义 |
 | --- | --- |
 | `id`、`story_id`、`version_number` | 稳定身份；`(story_id, version_number)` 唯一 |
-| `content_json` | 规范化的标题、STAR 区块、能力标签、适用问题和事实缺口 |
+| `content_json` | 规范化的标题、STAR 区块、能力标签、适用问题和事实缺口；每个可引用条目都有稳定 ID |
 | `content_hash` | `content_json` 的 canonical JSON SHA-256 |
 | `source_fingerprint` | 本版本最终选中来源及显式用户陈述的 canonical JSON SHA-256 |
-| `origin_kind` | `manual` 或 `review_proposal`，仅作审计，不决定可信度 |
+| `origin_kind` | `manual` 或 `proposal`，仅作审计，不决定可信度或入口 |
 | `confirmed_at` | 用户确认保存的时间 |
 
-`content_json` 中的 STAR 区块固定为：
+`content_json` 中所有可以被证据引用的条目都有一个仅在本 Version 内稳定的 ASCII ID；文本重复不影响链接身份。固定结构为：
 
 ```json
 {
-  "id": "action_1",
-  "kind": "situation|task|action|result|reflection",
-  "text": "用户确认的文本",
-  "fact_mode": "evidence_backed|user_view"
+  "title": {"id": "title", "text": "用户确认的故事标题"},
+  "blocks": [
+    {
+      "id": "action_1",
+      "kind": "situation|task|action|result|reflection",
+      "text": "用户确认的文本",
+      "fact_mode": "evidence_backed|user_view"
+    }
+  ],
+  "capability_labels": [{"id": "capability_1", "text": "能力标签"}],
+  "applicable_questions": [{"id": "question_1", "text": "适用问题"}],
+  "fact_gap_codes": ["missing_result"]
 }
 ```
 
-`situation`、`task`、`action`、`result` 只能使用 `evidence_backed`。`reflection` 可以使用 `user_view`，但必须明显标注为用户观点，并具有对应的用户陈述或其他允许来源；它不能以客观事实标签展示。
+`title`、`situation`、`task`、`action`、`result`、每个能力标签和每个适用问题均必须有至少一条合规 Evidence Link。`situation`、`task`、`action`、`result` 只能使用 `evidence_backed`。`reflection` 可以使用 `user_view`，但必须明显标注为用户观点，并具有对应的用户陈述或其他允许来源；它不能以客观事实标签展示。手工创建、手工修订和 Proposal 确认均使用完全相同的 ID、Evidence Link 与验证规则。
 
 ### 4.3 `interview_story_version_evidence_links`
 
@@ -140,7 +148,7 @@ Pilot 不能猜测“最好的故事”，不能自动发送模型请求，也�
 
 | 字段 | 语义 |
 | --- | --- |
-| `story_version_id`、`block_id` | Version 与具体 STAR/标签/问题条目的归属 |
+| `story_version_id`、`target_kind`、`target_id` | Version 与精确引用目标的归属；`target_kind` 只能是 `title`、`block`、`capability_label` 或 `applicable_question`，`target_id` 对应 `content_json` 中同类条目的稳定 ID |
 | `source_kind`、`source_stable_id` | 来源类型与稳定身份 |
 | `source_version_or_snapshot` | 原来源版本或最小冻结来源快照 |
 | `source_path` / `text_location` | 规范 JSON Pointer 或受控文本区间 |
@@ -168,11 +176,12 @@ Pilot 不能猜测“最好的故事”，不能自动发送模型请求，也�
 Proposal Attempt 与已确认 Story/Version 分离。它保存：
 
 - `id`、`target_story_id`（初次创建为空）、`idempotency_key`；
+- `entrypoint=ui|pilot` 与最小 `entry_context_json`（仅记录本次用户已选择的来源上下文，不记录 Chat 文本或模型原文）；
 - `attempt_status`、`generation_revision`、`provider_call_token`、`provider_lease_until`；
 - `input_snapshot_json`、`source_fingerprint`、`proposal_json`、`proposal_hash`、脱敏失败类别；
 - `confirmation_token_hash`、确认 payload hash、`confirmed_story_id`、`confirmed_story_version_id` 与确认时间。
 
-唯一约束为新建目标的 `(workspace_scope, idempotency_key)`，以及修订目标的 `(target_story_id, idempotency_key)`。所有 Attempt 快照均保留，不能把模型原文或 Provider 密钥写入其中。
+`idempotency_key` 使用表内全局 `UNIQUE(idempotency_key)`。当前工作区没有持久化 `workspace_scope`，且 SQLite 对 nullable 复合唯一键的语义不能承担新建 Story 的作用域约束；目标 Story identity 始终纳入请求 fingerprint。全局 key 冲突但 fingerprint 不同稳定返回 `409`，且不得改写原 Attempt。所有 Attempt 快照均保留，不能把模型原文或 Provider 密钥写入其中。
 
 ### 4.6 Story Usage 的未来边界
 
@@ -187,10 +196,9 @@ Story 只能使用用户显式选中的以下候选人事实来源：
 1. 已保存的 `Resume Version` 的字符串叶子；
 2. 已保存面试复盘的原文/Transcript 的显式片段；
 3. 已完成 Mock Interview 的已完成 Turn，且只引用问题或回答的冻结文本；
-4. 本次确认中用户明确提交的原始 `user_assertion`；
-5. 已存在、来源可证明为候选人事实的稳定 Evidence。
+4. 本次确认中用户明确提交的原始 `user_assertion`。
 
-第五项不允许泛化为任意 Knowledge Evidence：只有其上游为候选人事实的受控 Captured Source，且能保留稳定 Evidence ID、来源快照和原文时才有资格。Imported external Knowledge、市场信息、公司政策、Memory、旧 AI Proposal、Application/JD 和未选中来源一律不得证明“候选人做过某件事”。
+第一期**不接受任何 `KnowledgeEvidence`**。当前模型虽然包含 `KnowledgeSource.source_kind`、Captured Source 和面试知识沉淀路径，但尚未提供能对所有既有 Evidence 机械证明“这是候选人事实、而非外部知识”的封闭资格谓词。实施不得用标签、标题或文本猜测来源资格。未来只有在单独设计出当前模型可执行的 closed allowlist 与完整负向测试后，才能新增该来源。Imported external Knowledge、市场信息、公司政策、Memory、旧 AI Proposal、Application/JD 和未选中来源一律不得证明“候选人做过某件事”。
 
 ### 5.2 最小冻结与 Provider 投影
 
@@ -344,7 +352,7 @@ Provider 只返回 raw JSON。原生 JSON Schema 仅为能力优化；所有 Pro
 
 1. 手动新建、修订新 Version、版本历史、归档/恢复和 CAS 冲突；
 2. 从单条已保存面试复盘的显式片段生成 Proposal；
-3. Resume Version、复盘片段、已完成 Mock Turn、合格 candidate Evidence 和 `user_assertion` 的来源路径；
+3. Resume Version、复盘片段、已完成 Mock Turn 和 `user_assertion` 的来源路径；任何 `KnowledgeEvidence`、外部 Knowledge 或无法机械验证的来源均被拒绝；
 4. `user_assertion` 只能显示为用户陈述，绝不写入 Knowledge/Memory、绝不伪装为外部事实；
 5. STAR 各区块引用门控、Reflection 用户观点标注、缺少 Result 的固定 fact gap、数字/范围/团队规模/业务结果不可伪造；
 6. `current/changed/missing` 读取派生与独立冻结属性；来源删除或变化后历史仍可读但不能静默覆盖；
