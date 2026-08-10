@@ -114,7 +114,7 @@ IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 - [ ] **Step 1: 写失败的 fresh/legacy migration 测试。**
 
 ```python
-def test_fresh_database_creates_story_phase_one_tables_and_records_0018(tmp_path):
+def test_fresh_database_creates_story_phase_one_tables_and_records_0019(tmp_path):
     factory = init_database(tmp_path / "story.db")
     with factory() as session:
         tables = set(session.execute(text("SELECT name FROM sqlite_master WHERE type='table'")).scalars())
@@ -124,11 +124,13 @@ def test_fresh_database_creates_story_phase_one_tables_and_records_0018(tmp_path
         "interview_story_version_evidence_links", "interview_story_user_assertions",
         "interview_story_proposal_attempts",
     } <= tables
-    assert "0018_interview_story_library" in migrations
+    assert "0019_interview_story_library" in migrations
     assert "interview_story_usage" not in tables
 ```
 
 再建 pre-story DB，初始化两次，断言既有 InterviewNote/Mock Turn 不变且 migration 只有一条；断言 Attempt 的 `idempotency_key` 为全局 `UNIQUE`，Evidence Link 唯一约束包含 Version、target kind/id 和完整来源 identity，且没有 usage 字段。外部 Resume/Note/Mock/Application source identity 必须为普通字段，不建立会 cascade/阻塞历史 Story 的 FK。
+
+新增并先写失败的共存回归：以包含 `0018_application_jd_versions` marker 和最小 JD Version schema 的 SQLite fixture 启动初始化，断言该 marker/schema 均不被改写，`0019_interview_story_library` 与五张 Story 表同时出现。该测试专门防止并行 JD 分支合并后因编号冲突而将 Story schema 静默视为已迁移。
 
 - [ ] **Step 2: 运行确认失败。**
 
@@ -140,7 +142,7 @@ uv run pytest tests/test_interview_stories_migrations.py -q
 
 新增 `InterviewStory`（title projection、`active|archived`、current version plain pointer、story revision）、`InterviewStoryVersion`（内部 `story_id` FK、不可变 content/fingerprints、`manual|proposal`）、`InterviewStoryVersionEvidenceLink`（target kind/id 与来源 snapshot）、`InterviewStoryUserAssertion`（Version FK、原文/hash）和 `InterviewStoryProposalAttempt`（全局 key、entrypoint/context、lease/fencing、frozen input、proposal、confirmation、confirmed identities）。
 
-`InterviewStory.current_version_id` 是 nullable plain `Integer`，Repository 在事务中验证 pointer 的 Story 归属；Version/Link/Assertion 使用内部 Story FK 与 `RESTRICT`。`db.py` 在 `Base.metadata.create_all(engine)` 后运行 `_ensure_interview_story_schema()`，创建索引并 `INSERT OR IGNORE` 记录 `0018_interview_story_library`；不重建既有表、不回填旧数据。
+`InterviewStory.current_version_id` 是 nullable plain `Integer`，Repository 在事务中验证 pointer 的 Story 归属；Version/Link/Assertion 使用内部 Story FK 与 `RESTRICT`。`db.py` 在 `Base.metadata.create_all(engine)` 后运行 `_ensure_interview_story_schema()`，创建索引并 `INSERT OR IGNORE` 记录 `0019_interview_story_library`；不重建既有表、不回填旧数据，也不触碰 JD 分支的 `0018_application_jd_versions` marker/schema。
 
 - [ ] **Step 4: 通过并提交 schema 切片。**
 
@@ -355,6 +357,8 @@ git commit -m "feat: AI add interview story web contract"
 
 **Files:** Modify `web/src/components/InterviewV01View.tsx`; Create `web/src/components/InterviewStoryLibraryView.tsx`, `web/src/components/InterviewStoryLibraryView.module.css`, `web/src/components/InterviewStoryLibraryView.test.tsx`, `web/src/components/InterviewStoryLibraryView.interaction.test.tsx`, `web/src/components/InterviewStoryDrawer.tsx`, `web/src/components/InterviewStoryDrawer.module.css`, `web/src/components/InterviewStoryDrawer.interaction.test.tsx`.
 
+**Required saved-review handoff:** a saved `InterviewNote` remains an Interview business record. Its `note_id` may pre-scope the Story Drawer source picker, but never preselects or freezes any source fragment. The user must explicitly select exact eligible original Review fragments before Proposal generation is enabled.
+
 - [ ] **Step 1: 写真实挂载失败测试。**
 
 挂载真实 `InterviewV01View` + Library/Drawer（不允许源码字符串扫描或整体 mock），验证：
@@ -365,6 +369,7 @@ git commit -m "feat: AI add interview story web contract"
 4. Detail 将 history 放入独立只读 state，不能覆盖当前手动编辑或正在恢复 Proposal；归档 Story 无法新建 Version/Proposal，只显示恢复入口；restore 成功才恢复编辑。
 5. current Version 被其它窗口更新的 409 不吞掉原文，提示重新加载/重选，绝不静默创下一 Version。
 6. 历史/evidence/filter/close 全是零 POST；所有固定文案是中文，并具备可访问名称/焦点关闭行为。
+7. `note_id` 非空的已保存复盘事件项显示“整理为故事”。点击后打开同一个 `proposal` Story Drawer 并传入 `sourceScope={{ reviewNoteId: note_id }}`；picker 只列出该 Note 的 `questions`、`self_reflection`、`difficulty_points`、`mood` 原文候选片段，初始选中集合为空。断言未选片段不发 Proposal 请求；选定精确片段并二次确认后，仅向 UI Proposal endpoint 发送该 Note/field/path 的来源 identity，绝不发送 AI review proposal JSON、其他 Note 全文或任何 Knowledge。
 
 - [ ] **Step 2: 运行确认失败。**
 
@@ -376,6 +381,8 @@ npx vitest run src/components/InterviewStoryLibraryView.test.tsx src/components/
 - [ ] **Step 3: 最小实现视觉和状态边界。**
 
 `InterviewV01View` 仅添加 Story Library action，不改变投递详情、Knowledge 页或事件列表职责。Library 管理 list/query/filter/detail viewport；Drawer `mode` 明确为 `manual-new|manual-version|proposal|history`。历史永远只读，不能复用/覆盖进行中的 proposal/manual state。来源 picker 只在用户主动打开后显示 Resume、已保存复盘、已完成 Mock Turn、本次 assertion；不预选、不扫描全部文本、不渲染 source URL 链接。
+
+对 `note_id` 非空的已保存复盘事件项添加显式“整理为故事”动作。它仅把不可变 `note_id` 和 `entrypoint=ui` 交给同一个受控 Drawer；scope 会在关闭、切换事件或重新打开后清除，不得泄漏到其他 Note。点击本身不创建 Story、Version、Attempt、Chat message 或 Provider 调用；只有用户在该 scope 内主动选择原始片段并确认生成，才进入现有 UI Proposal lifecycle。
 
 使用现有 Ant Design/项目控件尺度，中文亮色可读；CSS 不引入全局布局规则。`InterviewStoryDrawer` 只能通过受控 `onDraftChange` 上报，不能在 effect 无条件调用新 callback 形成重渲染循环。
 
@@ -463,7 +470,7 @@ git commit -m "feat: AI connect story proposal recovery and Pilot"
 
   For each entrypoint extract its own attempt ID from the proposal response/attempt read, prove its own confirmation/history belongs to that attempt or resulting Version, and prove UI/Pilot keys/attempts differ.  On `story_provider_error` the harness may use only the existing bounded user-visible retry rule with the same key; on `story_unverifiable`, source/CAS conflict, or a deterministic API error it must not retry that Attempt.  Report an incomplete Provider run as `provider_unstable_not_completed`, not as a successful browser flow.
 
-  Snapshot all Story-domain tables and every unrelated writable domain before the run.  Permit only the explicitly expected Application, InterviewStory, Version, Link, Assertion, and StoryAttempt changes.  Require zero writes to Resume, application events, Opportunity Fit, Material Kit, interview-preparation, mock-interview, Knowledge, Offer, reminders, conversations, and `chat_messages`; no recruitment-platform or arbitrary external browser request is allowed.  Verify provider egress only through the configured allowlist and proxy.
+  Before the acceptance baseline, seed the complete synthetic context: Application, event, saved InterviewNote, Resume version, completed Mock Attempt/Turn, local service, and the selected Provider route. Snapshot every table only after that seed is committed. During UI/Pilot Story acceptance, permit writes solely to `InterviewStory`, `InterviewStoryVersion`, `InterviewStoryVersionEvidenceLink`, `InterviewStoryUserAssertion`, and `InterviewStoryProposalAttempt`. Assert that the Application’s complete row and count remain unchanged, and require zero writes to Resume, application events, InterviewNote, Opportunity Fit, Material Kit, interview-preparation, mock-interview, Knowledge, Offer, reminders, conversations, and `chat_messages`; no recruitment-platform or arbitrary external browser request is allowed. Verify provider egress only through the configured allowlist and proxy.
 
 - [ ] **Step 4: Run the tests and commit the harness slice.**
 
@@ -489,47 +496,86 @@ git commit -m "feat: AI connect story proposal recovery and Pilot"
   if ($LASTEXITCODE -ne 0) { throw 'Recorded implementation baseline is invalid' }
   ```
 
-  Machine-check every changed path against the single Task 0 allowlist, rather than merely printing paths.  Read the allowlist from this plan into an explicit PowerShell array (one exact repository-relative path per item); normalize separators; reject any `git diff --name-only "$implementationBase..HEAD"` result not in the array.  The final report is the sole exception after it is created.  Reject any StoryUsage table/API/field, `knowledge/**` edit, `src/offerpilot/ai/tools.py` edit, unrelated ApplicationDetail redesign, or migration beyond `0018_interview_story_library` even if it is otherwise in a broad path prefix.
+  Machine-check every changed path against the single Task 0 allowlist, rather than merely printing paths.  Read the allowlist from this plan into an explicit PowerShell array (one exact repository-relative path per item); normalize separators; reject any `git diff --name-only "$implementationBase..HEAD"` result not in the array.  The final report is the sole exception after it is created.  Reject any StoryUsage table/API/field, `knowledge/**` edit, `src/offerpilot/ai/tools.py` edit, unrelated ApplicationDetail redesign, or migration beyond `0019_interview_story_library` even if it is otherwise in a broad path prefix.
 
-- [ ] **Step 2: Run tests first at the changed-domain level, then the complete backend group gate.**
+- [ ] **Step 2: Run changed-domain tests before independent review.**
 
   ```powershell
   uv run pytest tests/test_interview_stories_migrations.py tests/test_interview_stories_repository.py tests/test_interview_stories_ai.py tests/test_interview_stories_api.py tests/test_interview_stories_smoke.py tests/test_interview_story_browser_harness.py -q
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-pytest-groups.ps1 -Collect
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-pytest-groups.ps1 -Group core
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-pytest-groups.ps1 -Group ai
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-pytest-groups.ps1 -Group knowledge
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-pytest-groups.ps1 -Group api
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-pytest-groups.ps1 -Group misc
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-pytest-groups.ps1 -Aggregate
+  Set-Location web
+  npx vitest run src/services/interviewStories.test.ts src/components/InterviewStoryLibraryView.test.tsx src/components/InterviewStoryLibraryView.interaction.test.tsx src/components/InterviewStoryDrawer.interaction.test.tsx src/layout/AppShell.interviewStories.test.tsx src/components/ChatPanel/InterviewStoryPilotEntry.test.tsx
+  Set-Location ..
   uv run ruff check .
   uv run mypy src
   ```
 
-  Record each group’s collected node IDs, exit code, pass/fail count, manifest/source fingerprint and aggregate result.  Reject duplicate node IDs, any missing or unexpected collected file, stale marker, stale aggregate, or a non-zero group exit code.  The only permitted skips are the already-approved four Windows symbolic-link permission skips; record their exact node IDs and reasons and reject every other skip.
+  These are pre-review checks only. Do not create a final manifest, grouped result directory, real-AI output, screenshot, or release report until the independent review and any fixes are complete.
 
-- [ ] **Step 3: Run the complete frontend and local verification gate.**
+- [ ] **Step 3: Obtain an independent code review before freezing release evidence.**
 
-  First validate that the existing frontend aggregate marker’s source fingerprint matches the current `web` source/config/lockfile and grouping script.  If it does not match, rerun the full grouped frontend gate from the repository root; do not reuse stale output.
+  Start a separate subagent review under the repository’s code-review workflow after all product-code commits from Tasks 1–9 and Step 2 are green. The review must inspect the diff against the recorded baseline, migration ordering/coexistence, source-map restrictions, manual/proposal confirmation CAS, lease fencing, safe/unknown results, saved-review UI handoff, UI/Pilot draft isolation, CDP target sequence, zero Chat writes, and Story-only persistence. Fix every P0/P1 and rerun Step 2 after each fix; record only user-accepted P2 items with a rationale.
+
+  Any code, test, script, dependency, or UI change after this review invalidates prior release artifacts. Start the complete gates in Steps 4–6 with fresh empty result directories and do not create the release report before this review is complete.
+
+- [ ] **Step 4: Generate a fresh full pytest manifest and run the five supported backend groups.**
+
+  `windows-pytest-groups.ps1` has no `-Collect` switch. Generate its `full-manifest.txt` from a fresh all-test collection, then invoke exactly its supported groups with the same mandatory `-ResultDir`.
 
   ```powershell
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-vitest-groups.ps1 -Collect
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-vitest-groups.ps1 -Group 1
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-vitest-groups.ps1 -Group 2
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-vitest-groups.ps1 -Group 3
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-vitest-groups.ps1 -Aggregate
+  $backendResultDir = Join-Path $env:TEMP 'offerpilot-interview-story-library-pytest'
+  Remove-Item -LiteralPath $backendResultDir -Recurse -Force -ErrorAction SilentlyContinue
+  New-Item -ItemType Directory -Force -Path $backendResultDir | Out-Null
+  $allCollect = @(& uv run pytest --collect-only -q --disable-warnings 2>&1)
+  $allCollectExit = $LASTEXITCODE
+  if ($allCollectExit -ne 0) { throw "full pytest collection failed: $allCollectExit" }
+  $allNodeIds = @($allCollect | ForEach-Object {
+      $line = ([string]$_).Trim()
+      if ($line -match '^(tests[\\/].+::.+)$') { $Matches[1].Replace('/', '\\') }
+  } | Where-Object { $_ } | Sort-Object -Unique)
+  if ($allNodeIds.Count -eq 0) { throw 'full pytest collection returned no node ids' }
+  $allNodeIds | Set-Content -LiteralPath (Join-Path $backendResultDir 'full-manifest.txt') -Encoding utf8
+  foreach ($group in @('agent', 'domain', 'knowledge', 'proposals', 'misc')) {
+      & powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-pytest-groups.ps1 -Group $group -ResultDir $backendResultDir
+      if ($LASTEXITCODE -ne 0) { throw "pytest group $group failed: $LASTEXITCODE" }
+  }
+  & powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-pytest-groups.ps1 -Aggregate -ResultDir $backendResultDir
+  if ($LASTEXITCODE -ne 0) { throw "pytest aggregate failed: $LASTEXITCODE" }
+  uv run ruff check .
+  uv run mypy src
+  ```
+
+  Record the generated manifest hash and every group’s collected node IDs, exit code, pass/fail count, and aggregate result. Reject duplicate node IDs, any missing/extra node against the fresh manifest, stale marker, non-zero group exit, or a skip outside the four approved Windows symbolic-link permission node IDs and reasons.
+
+- [ ] **Step 5: Generate a fresh full Vitest manifest, run all ten supported frontend groups, and run local verification.**
+
+  The Vitest gate uses named groups and requires `-ResultDir`; it must not reuse an aggregate from another source fingerprint.
+
+  ```powershell
+  $frontendResultDir = Join-Path $env:TEMP 'offerpilot-interview-story-library-vitest'
+  Remove-Item -LiteralPath $frontendResultDir -Recurse -Force -ErrorAction SilentlyContinue
+  New-Item -ItemType Directory -Force -Path $frontendResultDir | Out-Null
+  & powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-vitest-groups.ps1 -Collect -ResultDir $frontendResultDir
+  if ($LASTEXITCODE -ne 0) { throw "Vitest manifest collection failed: $LASTEXITCODE" }
+  foreach ($group in @('components-core', 'components-chat', 'components-interview', 'components-offer', 'components-support', 'features', 'layout', 'lib', 'services', 'theme')) {
+      & powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-vitest-groups.ps1 -Group $group -ResultDir $frontendResultDir
+      if ($LASTEXITCODE -ne 0) { throw "Vitest group $group failed: $LASTEXITCODE" }
+  }
+  & powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-vitest-groups.ps1 -Aggregate -ResultDir $frontendResultDir
+  if ($LASTEXITCODE -ne 0) { throw "Vitest aggregate failed: $LASTEXITCODE" }
   Set-Location web
-  npm run typecheck
+  npx tsc -b
+  if ($LASTEXITCODE -ne 0) { throw "TypeScript project build failed: $LASTEXITCODE" }
   npm run build
+  if ($LASTEXITCODE -ne 0) { throw "production build failed: $LASTEXITCODE" }
   Set-Location ..
   uv run oc smoke --static-dir web/dist
   uv run oc verify --profile local --static-dir web/dist
   uv run oc verify-interview-stories --profile local --static-dir web/dist
   ```
 
-  If this branch’s frontend group script uses named rather than numeric groups, use its collected manifest names verbatim and report them.  Record all actual files, result count, each exit code, and the exact aggregation status; do not claim JUnit output unless the script really creates it.
+  Record the actual ten group names, files, test counts, marker/source fingerprint, each exit code, and aggregate status. Do not claim a JUnit artifact for the Vitest gate; it produces JSON/text/marker artifacts instead.
 
-- [ ] **Step 4: Execute real-provider and real-browser acceptance after local gates are green.**
+- [ ] **Step 6: Execute real-provider and real-browser acceptance after every local gate is green.**
 
   With the existing real configuration silently copied into temporary isolated data, run the Story-specific real-AI check before the full check:
 
@@ -554,9 +600,9 @@ git commit -m "feat: AI connect story proposal recovery and Pilot"
 
   Screenshots are evidence only after the CDP request sequence, target/session association, local-only browser allowlist, provider-egress allowlist, zero cross-domain writes, temporary process shutdown, and isolated data cleanup all pass.  A provider timeout, unavailable endpoint, contract failure, missing target sequence, or incomplete UI/Pilot branch is a failed or incomplete acceptance result, never a substitute API-smoke success.
 
-- [ ] **Step 5: Write the release report only from observed results, then make the final documentation commit.**
+- [ ] **Step 7: Write the release report only from observed results, then make the final documentation commit.**
 
-  Create the ignored report with `git add -f` after every command above has completed.  It must contain the final commit tested; baseline; exact commands; start/end timestamps; per-group collection/pass/fail/skip/exit-code data; frontend source-fingerprint result; ruff/mypy/typecheck/build/local results; Story-specific and full real-AI results; UI and Pilot CDP sequence status; screenshot paths/dimensions/SHA-256; temporary data/provider-proxy/browser cleanup status; and known Provider-stability risks.  It must not include secrets, config contents, Resume/JD/note/assertion text, model text, raw prompt/request/response bodies, raw Provider request IDs, or personal identifiers beyond the approved synthetic candidate name `筱哲`.
+  Create the ignored report with `git add -f` after every command above has completed.  It must contain the final commit tested; baseline; exact commands; start/end timestamps; per-group collection/pass/fail/skip/exit-code data; frontend source-fingerprint result; ruff/mypy/TypeScript-build/production-build/local results; Story-specific and full real-AI results; UI and Pilot CDP sequence status; screenshot paths/dimensions/SHA-256; temporary data/provider-proxy/browser cleanup status; and known Provider-stability risks.  It must not include secrets, config contents, Resume/JD/note/assertion text, model text, raw prompt/request/response bodies, raw Provider request IDs, or personal identifiers beyond the approved synthetic candidate name `筱哲`.
 
   Never turn an incomplete real-AI or CDP result into a pass.  If any release gate fails, update the report with the failure and stop without claiming release approval; retain the baseline file for repair/re-run.  If all gates pass:
 
@@ -565,11 +611,9 @@ git commit -m "feat: AI connect story proposal recovery and Pilot"
   git commit -m "docs: AI record interview story verification"
   ```
 
-- [ ] **Step 6: Obtain an independent code review and execute the final clean gate.**
+- [ ] **Step 8: Execute the final clean gate without changing reviewed evidence.**
 
-  Start a separate subagent review under the repository’s code-review workflow after the final report commit.  The reviewer must inspect the diff against the recorded baseline, selected migrations/repository/API/AI validation/UI/Pilot/harness paths, source-map restrictions, fencing/CAS behavior, unknown-result recovery, and report accuracy.  Fix every P0/P1; document any accepted P2 with rationale and rerun the affected commands before the final gate.
-
-  Only after the review and all gates are successful, run this final check.  Preserve each command’s exit status before issuing another command; remove the baseline only at the end.
+  No code review occurs after the report commit: Step 3 review completion is a prerequisite for the fresh release gates and report. Only after the report accurately records successful results, run this final check. Preserve each command’s exit status before issuing another command; remove the baseline only at the end.
 
   ```powershell
   $baselineFile = Join-Path $env:TEMP 'offerpilot-interview-story-library-baseline.txt'
