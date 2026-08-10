@@ -151,6 +151,43 @@ function Read-BrowserRecords {
   return @(Get-Content -LiteralPath $browserAudit | Where-Object { $_.Trim() } | ForEach-Object { $_ | ConvertFrom-Json })
 }
 
+function Get-RecordProperty($record, [string]$name) {
+  $property = $record.PSObject.Properties[$name]
+  if ($null -eq $property) { return $null }
+  return $property.Value
+}
+
+function Get-StoryAttemptResponse([object[]]$responses, [string]$entrypoint, [string]$url) {
+  $matches = @($responses | Where-Object {
+    $_.url -eq $url -and
+    $_.request_context.entrypoint -eq $entrypoint -and
+    $_.response_body_status -eq 'captured' -and
+    (Get-RecordProperty $_ 'response_proposal_id') -is [int] -and
+    $_.response_status -in @(200, 201)
+  })
+  if ($matches.Count -eq 0) {
+    throw "Browser did not capture a ready $entrypoint Story proposal response."
+  }
+  return $matches[-1]
+}
+
+function Assert-ProviderEgress([object[]]$providers) {
+  if (-not (Test-Path -LiteralPath $providerAudit)) {
+    throw 'Provider egress audit output is missing.'
+  }
+  $allowed = @{}
+  foreach ($provider in $providers) { $allowed[$provider.Tuple] = $true }
+  $records = @(Get-Content -LiteralPath $providerAudit | Where-Object { $_.Trim() } | ForEach-Object { $_ | ConvertFrom-Json })
+  $connections = @($records | Where-Object { $_.kind -eq 'provider_proxy_connect' })
+  if ($connections.Count -lt 2) { throw 'Browser Story flows did not produce two auditable Provider connections.' }
+  foreach ($connection in $connections) {
+    $tuple = "$($connection.scheme)://$($connection.host):$($connection.port)"
+    if ($connection.status -ne 'connected' -or -not $allowed.ContainsKey($tuple)) {
+      throw 'Provider egress was outside the configured candidate allowlist.'
+    }
+  }
+}
+
 function Assert-StoryBrowserSequence([object[]]$records, [string]$baseUrl) {
   $origin = [Uri]$baseUrl
   $foreign = @($records | Where-Object {
@@ -160,14 +197,30 @@ function Assert-StoryBrowserSequence([object[]]$records, [string]$baseUrl) {
   if ($foreign.Count -gt 0) { throw 'Browser accessed a non-local URL.' }
   $uiPosts = @($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'POST' -and $_.url -eq "$baseUrl/api/interview-story-proposals" })
   $pilotPosts = @($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'POST' -and $_.url -eq "$baseUrl/api/pilot/interview-story-proposals" })
-  $confirms = @($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'POST' -and $_.url -match '/api/interview-story-proposals/[0-9]+/confirm$' })
-  $history = @($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'GET' -and $_.url -match '/api/interview-stories(/[0-9]+)?($|[?])' })
-  if ($uiPosts.Count -lt 1 -or $pilotPosts.Count -lt 1 -or $confirms.Count -lt 2 -or $history.Count -lt 2) { throw 'Browser did not complete both Story entrypoint sequences.' }
+  if ($uiPosts.Count -lt 1 -or $pilotPosts.Count -lt 1) { throw 'Browser did not start both Story entrypoint sequences.' }
   $responses = @($records | Where-Object { $_.kind -eq 'browser_response' })
-  $attemptIds = @($responses | Where-Object { $_.url -match '/api/(pilot/)?interview-story-proposals$' } | ForEach-Object { $_.response_proposal_id } | Where-Object { $null -ne $_ } | Sort-Object -Unique)
-  if ($attemptIds.Count -lt 2) { throw 'UI and Pilot did not receive distinct Story attempts.' }
+  $uiResponse = Get-StoryAttemptResponse $responses 'ui' "$baseUrl/api/interview-story-proposals"
+  $pilotResponse = Get-StoryAttemptResponse $responses 'pilot' "$baseUrl/api/pilot/interview-story-proposals"
+  $attemptIds = @([int]$uiResponse.response_proposal_id, [int]$pilotResponse.response_proposal_id)
+  if ($attemptIds[0] -eq $attemptIds[1]) { throw 'UI and Pilot did not receive distinct Story attempts.' }
   $keys = @($uiPosts + $pilotPosts | ForEach-Object { $_.request_context.idempotency_key_sha256 } | Where-Object { $_ } | Sort-Object -Unique)
   if ($keys.Count -lt 2) { throw 'UI and Pilot did not use distinct Story idempotency keys.' }
+  foreach ($attemptId in $attemptIds) {
+    $confirm = @($responses | Where-Object {
+      $_.url -eq "$baseUrl/api/interview-story-proposals/$attemptId/confirm" -and
+      $_.response_body_status -eq 'captured' -and
+      $_.response_status -in @(200, 201) -and
+      (Get-RecordProperty $_ 'response_story_id') -is [int] -and
+      (Get-RecordProperty $_ 'response_story_version_id') -is [int]
+    })
+    if ($confirm.Count -eq 0) { throw "Browser did not confirm Story attempt $attemptId." }
+    $latestConfirm = $confirm[-1]
+    $historyUrl = "$baseUrl/api/interview-stories/$($latestConfirm.response_story_id)/versions/$($latestConfirm.response_story_version_id)"
+    $history = @($responses | Where-Object {
+      $_.method -eq 'GET' -and $_.url -eq $historyUrl -and $_.response_status -eq 200 -and $_.response_body_status -eq 'captured'
+    })
+    if ($history.Count -eq 0) { throw "Browser did not reopen confirmed Story version for attempt $attemptId." }
+  }
 }
 
 try {
@@ -198,7 +251,7 @@ try {
   $seed = Seed-StoryContext
   $baseline = Get-ForbiddenDomainSnapshot
   $chromium = Find-Chromium
-  $browser = Start-Process -FilePath $chromium -WindowStyle Hidden -PassThru -ArgumentList @("--remote-debugging-port=$cdpPort", "--user-data-dir=$browserProfile", '--no-first-run', '--no-default-browser-check', '--remote-allow-origins=*', '--window-size=1455,1200', '--force-color-profile=srgb', 'about:blank')
+  $browser = Start-Process -FilePath $chromium -PassThru -ArgumentList @("--remote-debugging-port=$cdpPort", "--user-data-dir=$browserProfile", '--no-first-run', '--no-default-browser-check', '--remote-allow-origins=*', '--window-size=1455,1200', '--force-color-profile=srgb', 'about:blank')
   $auditor = Start-Process powershell -WindowStyle Hidden -PassThru -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', "Set-Location '$repo'; uv run python scripts/browser-network-audit.py --debugging-url 'http://127.0.0.1:$cdpPort' --expected-url '$baseUrl' --audit '$browserAudit' --stop-file '$browserStop' --ready-file '$browserReady'")
   for ($i = 0; $i -lt 120; $i++) {
     if ($auditor.HasExited) { throw 'Browser auditor exited before readiness.' }
@@ -214,6 +267,7 @@ try {
   $auditor.WaitForExit(15000)
   if (-not $auditor.HasExited) { throw 'Browser auditor did not stop cleanly.' }
   Assert-StoryBrowserSequence (Read-BrowserRecords) $baseUrl
+  Assert-ProviderEgress $providers
   Assert-ForbiddenDomainsUnchanged $baseline (Get-ForbiddenDomainSnapshot)
   $env:INTERVIEW_STORY_HARNESS_DB = Join-Path $tempData 'data.db'
   $verify = @'

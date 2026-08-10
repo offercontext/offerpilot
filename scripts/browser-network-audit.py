@@ -256,8 +256,12 @@ class BrowserAudit:
                 ]
                 if proposal_ids:
                     record["response_proposal_ids"] = proposal_ids
+            record["response_body_status"] = "captured"
         except (RuntimeError, json.JSONDecodeError, TypeError):
-            pass
+            # Keep the audit fail-closed without storing an exception message or
+            # response body.  Acceptance harnesses can require structured data
+            # for the workflow responses they need to prove.
+            record["response_body_status"] = "unavailable"
         if self.handle is not None:
             response_record = {
                 "kind": "browser_response",
@@ -277,6 +281,7 @@ class BrowserAudit:
                 "response_confirmed_proposal_id",
                 "response_story_id",
                 "response_story_version_id",
+                "response_body_status",
             ):
                 if key in record:
                     response_record[key] = record[key]
