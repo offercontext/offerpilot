@@ -15,7 +15,7 @@ import type {
 } from '@/types/interviewStory';
 import type { InterviewNote } from '@/types/note';
 
-const { Paragraph, Text, Title } = Typography;
+const { Text, Title } = Typography;
 
 type EntryPoint = 'ui' | 'pilot';
 
@@ -30,6 +30,7 @@ export interface InterviewStoryDraft {
   idempotencyKey: string;
   attemptId: number | null;
   proposal: InterviewStoryProposalAttempt['proposal'] | null;
+  editedContent: InterviewStoryEditableContent | null;
   resultUnknown: boolean;
   confirmationToken: string | null;
   error: string | null;
@@ -71,6 +72,7 @@ export function createInterviewStoryDraft(
     idempotencyKey: key('story'),
     attemptId: null,
     proposal: null,
+    editedContent: null,
     resultUnknown: false,
     confirmationToken: null,
     error: null,
@@ -139,6 +141,7 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
         ? draft.selections.filter((item) => !(item.source_kind === selection.source_kind && item.source_id === selection.source_id && item.path === path))
         : [...draft.selections, selection],
       proposal: null,
+      editedContent: null,
       attemptId: null,
       resultUnknown: false,
       error: null,
@@ -149,7 +152,7 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
   const addAssertion = () => {
     const value = assertion.trim();
     if (!value || frozen) return;
-    update({ assertions: [...draft.assertions, value], proposal: null, attemptId: null, resultUnknown: false, error: null });
+    update({ assertions: [...draft.assertions, value], proposal: null, editedContent: null, attemptId: null, resultUnknown: false, error: null });
     setAssertion('');
     setShowPreview(false);
   };
@@ -171,7 +174,13 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
         update({ attemptId: response.id, resultUnknown: true, error: 'AI 结果待确认，请使用原尝试重试。' });
         return;
       }
-      update({ attemptId: response.id, proposal: response.proposal ?? null, resultUnknown: false, error: null });
+      update({
+        attemptId: response.id,
+        proposal: response.proposal ?? null,
+        editedContent: response.proposal?.proposal_status === 'normal' ? editableContent(response.proposal.content) : null,
+        resultUnknown: false,
+        error: null,
+      });
     } catch (error) {
       const safe = safeMessage(error);
       if (error instanceof InterviewStoryError && error.code === 'story_unverifiable') {
@@ -196,7 +205,7 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
     try {
       await confirmInterviewStoryProposal(draft.attemptId, {
         confirmation_token: token,
-        content: editableContent(draft.proposal.content),
+        content: draft.editedContent ?? editableContent(draft.proposal.content),
         evidence_links: clientEvidence(draft.proposal.evidence_links),
         expected_current_version_id: draft.expectedCurrentVersionId,
         expected_story_revision: draft.expectedStoryRevision,
@@ -271,8 +280,32 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
       {draft.proposal?.proposal_status === 'normal' ? (
         <>
           <Divider />
-          <Title level={4}>{draft.proposal.content.title.text}</Title>
-          {draft.proposal.content.blocks.map((block) => <Paragraph key={block.id}>{block.text}</Paragraph>)}
+          <Title level={4}>审阅并编辑故事草稿</Title>
+          <Input
+            aria-label="故事标题"
+            disabled={frozen}
+            value={(draft.editedContent ?? editableContent(draft.proposal.content)).title}
+            onChange={(event) => update({
+              editedContent: { ...(draft.editedContent ?? editableContent(draft.proposal!.content)), title: event.target.value },
+            })}
+            style={{ marginBottom: 12 }}
+          />
+          {(draft.editedContent ?? editableContent(draft.proposal.content)).blocks.map((block, index) => (
+            <Input.TextArea
+              key={draft.proposal!.content.blocks[index]?.id ?? index}
+              aria-label={`故事区块 ${index + 1}`}
+              disabled={frozen}
+              value={block.text}
+              onChange={(event) => {
+                const current = draft.editedContent ?? editableContent(draft.proposal!.content);
+                const blocks = current.blocks.map((item, itemIndex) => itemIndex === index ? { ...item, text: event.target.value } : item);
+                update({ editedContent: { ...current, blocks } });
+              }}
+              autoSize={{ minRows: 2, maxRows: 6 }}
+              style={{ marginBottom: 8 }}
+            />
+          ))}
+          <Alert type="info" showIcon message="确认前可编辑标题和故事区块；证据引用仍会在保存时严格复核。" style={{ marginBottom: 12 }} />
           <Button type="primary" loading={busy} disabled={frozen} onClick={() => void confirm()}>确认保存这个故事版本</Button>
         </>
       ) : null}
