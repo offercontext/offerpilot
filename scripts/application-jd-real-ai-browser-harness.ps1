@@ -434,6 +434,16 @@ function Test-StageProviderHttp500([int]$operationStartIndex) {
   }).Count -gt 0
 }
 
+function Assert-NoProviderCalls([int]$providerStartIndex) {
+  if (-not (Test-Path -LiteralPath $providerRequestAudit)) { return }
+  $records = @(Get-Content -LiteralPath $providerRequestAudit | ForEach-Object {
+    try { $_ | ConvertFrom-Json } catch { $null }
+  })
+  $window = @($records | Select-Object -Skip ([Math]::Max(0, $providerStartIndex)))
+  $calls = @($window | Where-Object kind -eq 'provider_request_metadata')
+  if ($calls.Count -gt 0) { throw "Stage A unexpectedly made $($calls.Count) Provider call(s)." }
+}
+
 function Get-TriageReplayContext {
   if (-not (Test-Path -LiteralPath $triageReplayContextPath)) {
     throw 'Triage replay context was not captured before the Provider call.'
@@ -847,7 +857,7 @@ try {
   $records = Get-BrowserRecords
   Assert-LocalBrowser $records
   Assert-StageA $records
-  Assert-ProviderEgress $providers
+  Assert-NoProviderCalls $script:providerAuditOffset
   Save-StageDiagnostic 'jd_pilot'
   $afterA = Get-DbSnapshot
   Assert-StageUnchanged $beforeA $afterA @('application_jd_versions', 'conversations', 'chat_messages')

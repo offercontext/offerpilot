@@ -205,6 +205,14 @@ def test_application_jd_harness_supports_targeted_triage_replay_mode() -> None:
     assert "if ($Stage -eq 'triage-only' -and $consumer -eq 'triage')" in script
 
 
+def test_application_jd_harness_defers_provider_egress_gate_until_consumers_run() -> None:
+    script = HARNESS.read_text(encoding="utf-8")
+    stage_a = script.index("Assert-StageA $records")
+    consumers = script.index("foreach ($consumer", stage_a)
+    assert "Assert-ProviderEgress $providers" not in script[stage_a:consumers]
+    assert "Assert-NoProviderCalls $script:providerAuditOffset" in script[stage_a:consumers]
+
+
 def test_application_jd_harness_only_replays_a_triage_provider_500() -> None:
     script = HARNESS.read_text(encoding="utf-8")
 
