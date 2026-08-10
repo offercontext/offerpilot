@@ -130,3 +130,28 @@ def test_materialize_selected_sources_rejects_non_story_evidence(selection, mess
         with pytest.raises(StoryValidationError, match=message):
             materialize_selected_sources(session, [selection], [])
     factory.kw["bind"].dispose()
+
+
+def test_resume_source_rejects_unicode_digit_array_index_alias(tmp_path) -> None:
+    factory = init_database(tmp_path / "story.db")
+    with factory() as session:
+        resume = Resume(
+            name="筱哲",
+            content_json=json.dumps({"items": ["可引用文本"]}, ensure_ascii=False),
+        )
+        session.add(resume)
+        session.commit()
+
+        with pytest.raises(StoryValidationError, match="path"):
+            materialize_selected_sources(
+                session,
+                [
+                    {
+                        "source_kind": "resume_version",
+                        "source_id": resume.id,
+                        "path": "/content_json/items/١",
+                    }
+                ],
+                [],
+            )
+    factory.kw["bind"].dispose()

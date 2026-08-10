@@ -223,8 +223,7 @@ def _resolve_json_pointer(value: Any, pointer: str) -> Any:
             current = current[token]
         elif (
             isinstance(current, list)
-            and token.isdigit()
-            and (token == "0" or not token.startswith("0"))
+            and _is_canonical_array_index(token)
             and int(token) < len(current)
         ):
             current = current[int(token)]
@@ -257,3 +256,11 @@ def _decode_json_pointer_token(token: str) -> str:
         decoded.append("~" if token[index + 1] == "0" else "/")
         index += 2
     return "".join(decoded)
+
+
+def _is_canonical_array_index(value: str) -> bool:
+    return value == "0" or (
+        bool(value)
+        and value[0] in "123456789"
+        and all(char in "0123456789" for char in value[1:])
+    )
