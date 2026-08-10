@@ -2878,7 +2878,10 @@ def test_chat_confirm_result_cas_loss_stays_stale_on_followup_failure(
     )
     _, client, _, pending = _create_status_confirmation(tmp_path, model)
     if failure_kind == "timeout":
-        monkeypatch.setattr(api_module, "CHAT_AGENT_TIMEOUT_SECONDS", 0.25)
+        # The follow-up model sleeps for one second, so this still exercises the
+        # timeout path while leaving enough scheduling time for the deliberately
+        # injected CAS loss to be recorded first under a full serial test group.
+        monkeypatch.setattr(api_module, "CHAT_AGENT_TIMEOUT_SECONDS", 0.75)
 
     def lose_cas(self, conversation_id, expected, tool_message, undo):
         self.set_pending_action(conversation_id, newer)
