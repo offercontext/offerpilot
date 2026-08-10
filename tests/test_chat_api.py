@@ -3062,7 +3062,10 @@ def test_chat_confirm_slow_handler_atomically_finishes_without_chained_continuat
         return original_update(self, app_id, data)
 
     monkeypatch.setattr(ApplicationsRepository, "update_full", blocked_update)
-    monkeypatch.setattr(api_module, "CHAT_AGENT_TIMEOUT_SECONDS", 0.05)
+    # The handler intentionally remains blocked for up to five seconds.  Keep
+    # the timeout below that bound, while allowing the worker enough time to
+    # enter the handler under the serial release gate before it expires.
+    monkeypatch.setattr(api_module, "CHAT_AGENT_TIMEOUT_SECONDS", 0.75)
 
     response = client.post(
         endpoint,
