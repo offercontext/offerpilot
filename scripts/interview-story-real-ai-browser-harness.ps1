@@ -226,9 +226,16 @@ function Assert-StoryBrowserSequence([object[]]$records, [string]$baseUrl) {
   $libraryReadIndexes = @()
   for ($index = 0; $index -lt $records.Count; $index++) {
     $record = $records[$index]
-    if ($record.kind -ne 'browser_request' -or $record.method -ne 'GET') { continue }
-    if ($record.url -like "$baseUrl/api/interview-story-sources*") { $sourceReadIndexes += $index }
-    if ($record.url -eq "$baseUrl/api/interview-stories") { $libraryReadIndexes += $index }
+    if (
+      $record.kind -ne 'browser_response' -or
+      $record.method -ne 'GET' -or
+      $record.response_status -lt 200 -or
+      $record.response_status -ge 300 -or
+      $record.response_body_status -ne 'captured'
+    ) { continue }
+    $uri = [Uri][string]$record.url
+    if ($uri.AbsolutePath -eq '/api/interview-story-sources') { $sourceReadIndexes += $index }
+    if ($uri.AbsolutePath -eq '/api/interview-stories') { $libraryReadIndexes += $index }
   }
   for ($index = 0; $index -lt $records.Count; $index++) {
     $record = $records[$index]

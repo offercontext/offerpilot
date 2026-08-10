@@ -172,14 +172,18 @@ def test_story_browser_harness_validates_each_entrypoint_sequence_and_auditor_ex
     ui_context = {"entrypoint": "ui", "idempotency_key_sha256": "ui-key"}
     pilot_context = {"entrypoint": "pilot", "idempotency_key_sha256": "pilot-key"}
     audit_records = [
-        {"kind": "browser_request", "method": "GET", "url": f"{base_url}/api/interview-stories"},
+        {"kind": "browser_request", "method": "GET", "url": f"{base_url}/api/interview-stories?status=active&query="},
+        {"kind": "browser_response", "method": "GET", "url": f"{base_url}/api/interview-stories?status=active&query=", "response_status": 200, "response_body_status": "captured"},
         {"kind": "browser_request", "method": "GET", "url": f"{base_url}/api/interview-story-sources"},
+        {"kind": "browser_response", "method": "GET", "url": f"{base_url}/api/interview-story-sources", "response_status": 200, "response_body_status": "captured"},
         {"kind": "browser_request", "method": "POST", "url": f"{base_url}/api/interview-story-proposals", "request_context": ui_context},
         {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/interview-story-proposals", "request_context": ui_context, "response_status": 201, "response_body_status": "captured", "response_proposal_id": 11},
         {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/interview-story-proposals/11/confirm", "response_status": 201, "response_body_status": "captured", "response_story_id": 101, "response_story_version_id": 201},
         {"kind": "browser_response", "method": "GET", "url": f"{base_url}/api/interview-stories/101/versions/201", "response_status": 200, "response_body_status": "captured"},
-        {"kind": "browser_request", "method": "GET", "url": f"{base_url}/api/interview-stories"},
+        {"kind": "browser_request", "method": "GET", "url": f"{base_url}/api/interview-stories?status=active&query="},
+        {"kind": "browser_response", "method": "GET", "url": f"{base_url}/api/interview-stories?status=active&query=", "response_status": 200, "response_body_status": "captured"},
         {"kind": "browser_request", "method": "GET", "url": f"{base_url}/api/interview-story-sources?review_note_id=4"},
+        {"kind": "browser_response", "method": "GET", "url": f"{base_url}/api/interview-story-sources?review_note_id=4", "response_status": 200, "response_body_status": "captured"},
         {"kind": "browser_request", "method": "POST", "url": f"{base_url}/api/pilot/interview-story-proposals", "request_context": pilot_context},
         {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/pilot/interview-story-proposals", "request_context": pilot_context, "response_status": 201, "response_body_status": "captured", "response_proposal_id": 12},
         {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/interview-story-proposals/12/confirm", "response_status": 201, "response_body_status": "captured", "response_story_id": 102, "response_story_version_id": 202},
@@ -232,6 +236,34 @@ def test_story_browser_harness_validates_each_entrypoint_sequence_and_auditor_ex
     )
     assert failure.returncode != 0
     assert "source picker" in (failure.stdout + failure.stderr)
+
+    failed_source_response = [dict(record) for record in audit_records]
+    pilot_source_response = next(
+        record for record in failed_source_response
+        if record["kind"] == "browser_response" and record["url"].startswith(f"{base_url}/api/interview-story-sources?")
+    )
+    pilot_source_response["response_status"] = 500
+    audit_path.write_text("\n".join(json.dumps(record) for record in failed_source_response) + "\n", encoding="utf-8")
+    failed_read = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(_HARNESS_PATH),
+            "-ValidateAudit",
+            "-AuditPath",
+            str(audit_path),
+            "-ExpectedBaseUrl",
+            base_url,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert failed_read.returncode != 0
+    assert "source picker" in (failed_read.stdout + failed_read.stderr)
 
     auditor_failure = subprocess.run(
         [
