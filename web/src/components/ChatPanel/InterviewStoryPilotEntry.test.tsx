@@ -3,6 +3,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ContextPanel from './ContextPanel';
+import { isInterviewStoryPilotIntent } from './index';
 
 let root: Root | undefined;
 let container: HTMLDivElement | undefined;
@@ -24,6 +25,12 @@ afterEach(() => {
 });
 
 describe('Interview Story Pilot entry', () => {
+  it('recognizes only the two explicit local Story intents', () => {
+    expect(isInterviewStoryPilotIntent('整理面试故事')).toBe(true);
+    expect(isInterviewStoryPilotIntent('  帮我整理一个面试故事  ')).toBe(true);
+    expect(isInterviewStoryPilotIntent('帮我看看今天的面试安排')).toBe(false);
+  });
+
   it('opens the local Story workflow only after an explicit click', () => {
     const open = vi.fn();
     act(() => root?.render(<ContextPanel

@@ -111,6 +111,15 @@ interface ConfirmationExecution {
   confirmationToken: string;
 }
 
+const INTERVIEW_STORY_PILOT_INTENTS = new Set([
+  '整理面试故事',
+  '帮我整理一个面试故事',
+]);
+
+export function isInterviewStoryPilotIntent(text: string): boolean {
+  return INTERVIEW_STORY_PILOT_INTENTS.has(text.trim());
+}
+
 interface ActiveConversationRequest extends ActiveConversationRequestOwner {
   controller: AbortController;
 }
@@ -832,6 +841,13 @@ export default function ChatPanel({
   async function sendMessage(text: string): Promise<boolean> {
     const trimmed = text.trim();
     if (!trimmed || loading || activePending) return false;
+    if (onOpenInterviewStoryLibrary && isInterviewStoryPilotIntent(trimmed)) {
+      // This is a local navigation intent.  It must not create a Chat message,
+      // call a Provider, or make a Story-domain write before the user selects
+      // original sources and confirms the later Story action.
+      onOpenInterviewStoryLibrary();
+      return true;
+    }
     const attachmentDraftKeyAtSend = activeAttachmentKey ?? ensureNewAttachmentDraft();
     if (convID === undefined) markPendingAutoSelect('suppress');
     const visibleRequestGeneration = ++visibleRequestGenerationRef.current;
