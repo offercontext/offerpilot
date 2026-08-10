@@ -326,6 +326,25 @@ def test_invalid_pilot_action_does_not_create_conversation(tmp_path, endpoint):
     assert model.calls == 0
 
 
+@pytest.mark.parametrize("endpoint", ["/api/chat", "/api/chat/stream"])
+def test_deterministic_pilot_missing_context_does_not_create_conversation(tmp_path, endpoint):
+    model = CountingFailingModel()
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model, title_model=model))
+
+    response = client.post(
+        endpoint,
+        json={
+            "message": "save job details",
+            "pilot_action": {"type": "application_jd_save", "jdText": "saved JD"},
+            "conversation_id": 0,
+        },
+    )
+
+    assert response.status_code == 422
+    assert client.get("/api/chat/conversations").json() == []
+    assert model.calls == 0
+
+
 @pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
 def test_deterministic_pilot_confirmation_writes_once_without_ai(tmp_path, endpoint):
     model = CountingFailingModel()
