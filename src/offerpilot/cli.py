@@ -33,6 +33,7 @@ from offerpilot.repositories.wakeups import WakeupCreate, WakeupsRepository
 from offerpilot.smoke import (
     run_core_smoke,
     run_http_smoke,
+    run_interview_story_smoke,
     run_mock_interview_real_ai_smoke,
     run_offer_negotiation_real_ai_smoke,
 )
@@ -270,6 +271,29 @@ def verify_offer_negotiation(
     for step in report.steps:
         typer.echo(f"ok {step.name}: {step.detail}")
     typer.echo("Isolated Offer negotiation API acceptance passed")
+
+
+@app.command("verify-interview-stories")
+def verify_interview_stories(
+    profile: str = typer.Option(
+        "real-ai",
+        "--profile",
+        help="isolated Interview Story API verification; does not replace full verify or browser/CDP evidence",
+    ),
+    static_dir: Optional[Path] = typer.Option(
+        None,
+        "--static-dir",
+        help="built frontend dist directory for isolated Interview Story API verification",
+    ),
+) -> None:
+    if profile not in {"local", "real-ai"}:
+        raise typer.BadParameter("--profile must be local or real-ai")
+    report = run_interview_story_smoke(
+        resolve_data_dir(), static_dir=static_dir, real_ai=profile == "real-ai"
+    )
+    for step in report.steps:
+        typer.echo(f"ok {step.name}: {step.detail}")
+    typer.echo("Isolated Interview Story API verification passed; does not replace full verify or browser/CDP evidence")
 
 
 @knowledge_app.command("reset")

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 import gc
 import json
 from dataclasses import dataclass
@@ -42,6 +42,11 @@ from offerpilot.models import (
     InterviewNote,
     InterviewReviewProposal,
     InterviewPreparationProposal,
+    InterviewStory,
+    InterviewStoryProposalAttempt,
+    InterviewStoryUserAssertion,
+    InterviewStoryVersion,
+    InterviewStoryVersionEvidenceLink,
     KnowledgeCapturedSourceMetadata,
     KnowledgeEvidence,
     KnowledgeExtractionSnapshot,
@@ -188,6 +193,53 @@ class _MutableSmokeChatModel(ChatModel):
                 )
             ]
         )
+
+
+class _InterviewStorySmokeChatModel(ChatModel):
+    """Deterministic local-only model used by the Story API acceptance path."""
+
+    def complete(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        response_format: dict[str, Any] | None = None,
+    ) -> Assistant:
+        del tools, response_format
+        prompt = messages[-1].content if messages else ""
+        marker = "catalog: "
+        if marker not in prompt:
+            raise RuntimeError("story smoke model received no evidence catalog")
+        catalog = json.loads(prompt.split(marker, 1)[1])
+        if not isinstance(catalog, list) or not catalog or not isinstance(catalog[0], dict):
+            raise RuntimeError("story smoke model received an invalid evidence catalog")
+        source = catalog[0]
+        reference = {
+            key: source[key]
+            for key in (
+                "source_kind",
+                "source_stable_id",
+                "source_version_or_snapshot",
+                "source_path",
+                "excerpt",
+            )
+        }
+        payload = {
+            "title": {"text": "筱哲的延迟排查故事", "evidence_refs": [reference]},
+            "blocks": [
+                {
+                    "kind": "situation",
+                    "text": "一次线上延迟排查场景。",
+                    "fact_mode": "evidence_backed",
+                    "evidence_refs": [reference],
+                }
+            ],
+            "capability_labels": [{"text": "问题定位", "evidence_refs": [reference]}],
+            "applicable_questions": [
+                {"text": "请介绍一次延迟排查经历。", "evidence_refs": [reference]}
+            ],
+            "fact_gap_codes": ["missing_result"],
+        }
+        return Assistant(content=json.dumps(payload, ensure_ascii=False))
 
 
 def _latest_user_message(messages: list[Message]) -> str:
@@ -1541,6 +1593,356 @@ def run_offer_negotiation_real_ai_smoke(
         finally:
             _dispose_smoke_app_database(app)
     return SmokeReport(ok=True, steps=steps)
+
+
+def run_interview_story_smoke(
+    source_data_dir: Path,
+    static_dir: Path | None = None,
+    *,
+    real_ai: bool = False,
+) -> SmokeReport:
+    """Run isolated Interview Story API verification.
+
+    This intentionally verifies only the Story aggregate.  It is not a
+    replacement for full ``verify`` or browser/CDP release evidence.
+    """
+
+    prefix = "offerpilot-interview-story-real-ai-" if real_ai else "offerpilot-interview-story-local-"
+    with tempfile.TemporaryDirectory(prefix=prefix) as temp_dir:
+        isolated_data_dir = Path(temp_dir)
+        if real_ai:
+            _copy_real_ai_config(source_data_dir, isolated_data_dir)
+        app = create_app(
+            data_dir=isolated_data_dir,
+            static_dir=static_dir,
+            chat_model=None if real_ai else _InterviewStorySmokeChatModel(),
+        )
+        seed: dict[str, int] | None = None
+        try:
+            seed = _seed_interview_story_smoke_context(isolated_data_dir)
+            steps: list[SmokeStep] = []
+            with _running_server(app) as base_url:
+                with httpx.Client(base_url=base_url, timeout=120.0) as client:
+                    settings = client.get("/api/settings")
+                    _assert_status(settings.status_code, 200, "story_smoke_settings")
+                    if real_ai and not bool(settings.json().get("has_api_key")):
+                        raise RuntimeError("interview story real-ai smoke requires a configured API key")
+                    _run_interview_story_http_smoke(client, isolated_data_dir, seed, steps)
+            return SmokeReport(ok=True, steps=steps)
+        finally:
+            _dispose_smoke_app_database(app)
+            if seed is not None:
+                _cleanup_interview_story_smoke_records(isolated_data_dir, seed)
+            _assert_interview_story_smoke_data_clean(isolated_data_dir)
+
+
+def _seed_interview_story_smoke_context(data_dir: Path) -> dict[str, int]:
+    """Create all non-Story source records before taking Story-domain actions."""
+
+    session_factory = session_factory_for_data_dir(data_dir)
+    try:
+        with session_factory() as session:
+            application = Application(
+                company_name="星云数据",
+                position_name="后端工程师",
+                status="interview",
+                source="smoke",
+            )
+            session.add(application)
+            session.flush()
+            event = ApplicationEvent(
+                application_id=application.id,
+                event_type="interview",
+                subtype="technical",
+                scheduled_at=datetime.now(timezone.utc),
+                duration_minutes=45,
+                status="done",
+            )
+            resume = Resume(
+                name="筱哲",
+                title="后端工程师简历",
+                content_json=json.dumps({"项目": {"内容": "负责延迟排查和风险同步"}}, ensure_ascii=False),
+            )
+            session.add_all([event, resume])
+            session.flush()
+            note = InterviewNote(
+                application_id=application.id,
+                application_event_id=event.id,
+                company="星云数据",
+                position="后端工程师",
+                questions="如何排查线上延迟？",
+                self_reflection="我先确认指标，再同步风险。",
+                difficulty_points="需要补充量化结果。",
+                mood="平静",
+            )
+            attempt = MockInterviewAttempt(
+                application_id=application.id,
+                event_id=event.id,
+                resume_id=resume.id,
+                idempotency_key="story-smoke-mock-attempt",
+                input_snapshot_json="{}",
+                source_fingerprint="story-smoke-mock",
+                attempt_status="feedback_ready",
+                transcript_fingerprint="story-smoke-transcript",
+                completed_at=datetime.now(timezone.utc),
+            )
+            session.add_all([note, attempt])
+            session.flush()
+            turn = MockInterviewTurn(
+                attempt_id=attempt.id,
+                turn_no=1,
+                question_idempotency_key="story-smoke-question",
+                turn_idempotency_key="story-smoke-answer",
+                question_text="请介绍一次线上问题排查。",
+                answer_text="我通过分段定位解决了延迟问题。",
+                turn_status="answered",
+            )
+            session.add(turn)
+            session.commit()
+            return {
+                "application_id": application.id,
+                "event_id": event.id,
+                "resume_id": resume.id,
+                "note_id": note.id,
+                "mock_attempt_id": attempt.id,
+            }
+    finally:
+        bind = session_factory.kw.get("bind")
+        if bind is not None:
+            bind.dispose()
+
+
+def _run_interview_story_http_smoke(
+    client: httpx.Client,
+    data_dir: Path,
+    seed: dict[str, int],
+    steps: list[SmokeStep],
+) -> None:
+    note_source = {
+        "source_kind": "interview_note",
+        "source_id": seed["note_id"],
+        "source_path": "/questions",
+        "excerpt": "如何排查线上延迟？",
+    }
+    manual_content = {
+        "title": "筱哲的线上延迟排查",
+        "blocks": [{"kind": "situation", "text": "线上出现延迟", "fact_mode": "evidence_backed"}],
+        "capability_labels": ["问题定位"],
+        "applicable_questions": ["请介绍一次线上问题排查。"],
+        "fact_gap_codes": ["missing_result"],
+    }
+    manual_links = [
+        {"target_kind": "title", "target_id": "title", **note_source},
+        {"target_kind": "block", "target_id": "situation_001", **note_source},
+        {"target_kind": "capability_label", "target_id": "capability_001", **note_source},
+        {"target_kind": "applicable_question", "target_id": "question_001", **note_source},
+    ]
+    manual = client.post(
+        "/api/interview-stories",
+        json={
+            "content": manual_content,
+            "evidence_links": manual_links,
+            "selections": [
+                {"source_kind": "interview_note", "source_id": seed["note_id"], "path": "/questions"}
+            ],
+            "assertions": [],
+            "expected_current_version_id": None,
+        },
+    )
+    _assert_status(manual.status_code, 201, "story_manual_create")
+    story = manual.json()
+    story_id = int(story["id"])
+    archived = client.post(
+        f"/api/interview-stories/{story_id}/archive",
+        json={"expected_story_revision": story["story_revision"]},
+    )
+    _assert_status(archived.status_code, 200, "story_manual_archive")
+    restored = client.post(
+        f"/api/interview-stories/{story_id}/restore",
+        json={"expected_story_revision": archived.json()["story_revision"]},
+    )
+    _assert_status(restored.status_code, 200, "story_manual_restore")
+    steps.append(SmokeStep("story_manual_lifecycle", "manual Story archive and restore passed"))
+
+    selections = [
+        {"source_kind": "interview_note", "source_id": seed["note_id"], "path": "/questions"},
+        {"source_kind": "resume_version", "source_id": seed["resume_id"], "path": "/content_json/项目/内容"},
+        {"source_kind": "mock_turn", "source_id": seed["mock_attempt_id"], "path": "/turns/001/answer"},
+    ]
+    chat_before = _chat_domain_counts(data_dir)
+    ui = _create_and_confirm_story_proposal(
+        client,
+        endpoint="/api/interview-story-proposals",
+        idempotency_key="story-ui-smoke-000001",
+        confirmation_token="story-ui-confirm-0001",
+        story=restored.json(),
+        selections=selections,
+        assertions=["我确认这是我亲自负责的排查经历。"],
+    )
+    steps.append(SmokeStep("story_ui_proposal_confirm", f"UI proposal {ui['attempt_id']} confirmed"))
+    updated_story = client.get(f"/api/interview-stories/{story_id}")
+    _assert_status(updated_story.status_code, 200, "story_after_ui_confirm")
+    pilot = _create_and_confirm_story_proposal(
+        client,
+        endpoint="/api/pilot/interview-story-proposals",
+        idempotency_key="story-pilot-smoke-0001",
+        confirmation_token="story-pilot-confirm-01",
+        story=updated_story.json(),
+        selections=selections,
+        assertions=["我确认这是我亲自负责的排查经历。"],
+        entry_context={"review_note_id": seed["note_id"]},
+    )
+    if ui["attempt_id"] == pilot["attempt_id"]:
+        raise RuntimeError("Story UI and Pilot reused the same attempt")
+    steps.append(SmokeStep("story_pilot_proposal_confirm", f"Pilot proposal {pilot['attempt_id']} confirmed"))
+    if _chat_domain_counts(data_dir) != chat_before:
+        raise RuntimeError("Story smoke wrote Chat data")
+    steps.append(SmokeStep("story_chat_isolation", "Story UI and Pilot wrappers wrote no Chat data"))
+
+    session_factory = session_factory_for_data_dir(data_dir)
+    try:
+        with session_factory() as session:
+            note = session.get(InterviewNote, seed["note_id"])
+            if note is None:
+                raise RuntimeError("story smoke note disappeared")
+            note.questions = "如何排查线上延迟并同步风险？"
+            session.commit()
+    finally:
+        bind = session_factory.kw.get("bind")
+        if bind is not None:
+            bind.dispose()
+    history = client.get(f"/api/interview-stories/{story_id}/versions/{pilot['version_id']}")
+    _assert_status(history.status_code, 200, "story_changed_history")
+    if not any(item.get("state") == "changed" for item in history.json().get("source_states", [])):
+        raise RuntimeError("Story history did not derive changed source state")
+    steps.append(SmokeStep("story_source_changed", "frozen Story history derived source changed"))
+
+
+def _create_and_confirm_story_proposal(
+    client: httpx.Client,
+    *,
+    endpoint: str,
+    idempotency_key: str,
+    confirmation_token: str,
+    story: dict[str, Any],
+    selections: list[dict[str, Any]],
+    assertions: list[str],
+    entry_context: dict[str, int] | None = None,
+) -> dict[str, int]:
+    payload: dict[str, Any] = {
+        "target_story_id": story["id"],
+        "expected_current_version_id": story["current_version_id"],
+        "expected_story_revision": story["story_revision"],
+        "selections": selections,
+        "assertions": assertions,
+        "idempotency_key": idempotency_key,
+    }
+    if entry_context is not None:
+        payload["entry_context"] = entry_context
+    created = client.post(endpoint, json=payload)
+    if created.status_code not in {200, 201}:
+        code = created.json().get("error_code", "unknown")
+        raise RuntimeError(f"Story proposal did not become ready: {created.status_code}:{code}")
+    body = created.json()
+    if body.get("attempt_status") != "ready" or not isinstance(body.get("proposal"), dict):
+        raise RuntimeError("Story proposal did not return a confirmable draft")
+    attempt_id = int(body["id"])
+    proposal_content = body["proposal"]["content"]
+    editable_content = {
+        "title": proposal_content["title"]["text"],
+        "blocks": [
+            {key: block[key] for key in ("kind", "text", "fact_mode")}
+            for block in proposal_content["blocks"]
+        ],
+        "capability_labels": [item["text"] for item in proposal_content["capability_labels"]],
+        "applicable_questions": [item["text"] for item in proposal_content["applicable_questions"]],
+        "fact_gap_codes": proposal_content["fact_gap_codes"],
+    }
+    client_links = [
+        {
+            "target_kind": link["target_kind"],
+            "target_id": link["target_id"],
+            "source_kind": link["source_kind"],
+            "source_id": link["source_stable_id"],
+            "source_path": link["source_path"],
+            "excerpt": link["excerpt"],
+            "text_location": link["text_location"],
+        }
+        for link in body["proposal"]["evidence_links"]
+    ]
+    confirmed = client.post(
+        f"/api/interview-story-proposals/{attempt_id}/confirm",
+        json={
+            "confirmation_token": confirmation_token,
+            "content": editable_content,
+            "evidence_links": client_links,
+            "expected_current_version_id": story["current_version_id"],
+            "expected_story_revision": story["story_revision"],
+        },
+    )
+    if confirmed.status_code != 201:
+        raise RuntimeError(
+            "story_proposal_confirm returned "
+            f"{confirmed.status_code}: {confirmed.text[:200]!r}"
+        )
+    replay = client.post(
+        f"/api/interview-story-proposals/{attempt_id}/confirm",
+        json={
+            "confirmation_token": confirmation_token,
+            "content": editable_content,
+            "evidence_links": client_links,
+            "expected_current_version_id": story["current_version_id"],
+            "expected_story_revision": story["story_revision"],
+        },
+    )
+    _assert_status(replay.status_code, 200, "story_proposal_confirm_replay")
+    return {"attempt_id": attempt_id, "version_id": int(confirmed.json()["version_id"])}
+
+
+def _cleanup_interview_story_smoke_records(data_dir: Path, seed: dict[str, int]) -> None:
+    session_factory = session_factory_for_data_dir(data_dir)
+    try:
+        with session_factory() as session:
+            version_ids = select(InterviewStoryVersion.id)
+            session.execute(delete(InterviewStoryVersionEvidenceLink).where(
+                InterviewStoryVersionEvidenceLink.story_version_id.in_(version_ids)
+            ))
+            session.execute(delete(InterviewStoryUserAssertion).where(
+                InterviewStoryUserAssertion.story_version_id.in_(version_ids)
+            ))
+            session.execute(delete(InterviewStoryProposalAttempt))
+            session.execute(delete(InterviewStoryVersion))
+            session.execute(delete(InterviewStory))
+            session.execute(delete(MockInterviewTurn).where(MockInterviewTurn.attempt_id == seed["mock_attempt_id"]))
+            session.execute(delete(MockInterviewAttempt).where(MockInterviewAttempt.id == seed["mock_attempt_id"]))
+            session.execute(delete(InterviewNote).where(InterviewNote.id == seed["note_id"]))
+            session.execute(delete(ApplicationEvent).where(ApplicationEvent.id == seed["event_id"]))
+            session.execute(delete(Resume).where(Resume.id == seed["resume_id"]))
+            session.execute(delete(Application).where(Application.id == seed["application_id"]))
+            session.commit()
+    finally:
+        bind = session_factory.kw.get("bind")
+        if bind is not None:
+            bind.dispose()
+
+
+def _assert_interview_story_smoke_data_clean(data_dir: Path) -> None:
+    session_factory = session_factory_for_data_dir(data_dir)
+    try:
+        with session_factory() as session:
+            for model in (
+                InterviewStory,
+                InterviewStoryVersion,
+                InterviewStoryVersionEvidenceLink,
+                InterviewStoryUserAssertion,
+                InterviewStoryProposalAttempt,
+            ):
+                if int(session.scalar(select(func.count()).select_from(model)) or 0) != 0:
+                    raise RuntimeError("isolated Story smoke cleanup left Story records")
+    finally:
+        bind = session_factory.kw.get("bind")
+        if bind is not None:
+            bind.dispose()
 
 
 def _chat_domain_counts(data_dir: Path) -> dict[str, int]:

@@ -169,7 +169,7 @@ class BrowserAudit:
                         request_context["jd_text_sha256"] = hashlib.sha256(
                             payload["jd_text"].encode("utf-8")
                         ).hexdigest()
-                    for key in ("idempotency_key", "confirmation_key"):
+                    for key in ("idempotency_key", "confirmation_key", "confirmation_token"):
                         value = payload.get(key)
                         if isinstance(value, str) and value:
                             request_context[f"{key}_sha256"] = hashlib.sha256(
@@ -190,6 +190,10 @@ class BrowserAudit:
                         entrypoint = headers.get("X-OfferPilot-Entrypoint", headers.get("x-offerpilot-entrypoint"))
                     if isinstance(entrypoint, str) and entrypoint in {"ui", "pilot"}:
                         request_context["entrypoint"] = entrypoint
+                    elif url.endswith("/api/interview-story-proposals"):
+                        request_context["entrypoint"] = "ui"
+                    elif url.endswith("/api/pilot/interview-story-proposals"):
+                        request_context["entrypoint"] = "pilot"
                     if request_context:
                         record["request_context"] = request_context
             self.handle.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -235,6 +239,10 @@ class BrowserAudit:
                     record["response_retry_after_ms"] = payload["retry_after_ms"]
                 if isinstance(payload.get("id"), int):
                     record["response_proposal_id"] = payload["id"]
+                if isinstance(payload.get("story_id"), int):
+                    record["response_story_id"] = payload["story_id"]
+                if isinstance(payload.get("version_id"), int):
+                    record["response_story_version_id"] = payload["version_id"]
                 brief = payload.get("brief")
                 if isinstance(brief, dict) and isinstance(brief.get("proposal_id"), int):
                     record["response_confirmed_proposal_id"] = brief["proposal_id"]
@@ -267,6 +275,8 @@ class BrowserAudit:
                 "response_proposal_id",
                 "response_proposal_ids",
                 "response_confirmed_proposal_id",
+                "response_story_id",
+                "response_story_version_id",
             ):
                 if key in record:
                     response_record[key] = record[key]
