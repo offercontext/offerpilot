@@ -335,3 +335,14 @@ One final isolated CDP `Stage all` attempt was run from current HEAD `4a02bde` w
 - The harness's Stage A gate was corrected to assert zero Provider calls before deferring Provider egress validation until downstream consumers. The final real-Provider run predates the serialization fix, so a new single authorized `Stage all` is still required; it must not be inferred from the controlled result.
 
 The isolated service, browser, proxy, process tree, temporary database, and temporary browser data were cleaned by the harness. This run does not satisfy release evidence; the branch remains paused and must not be merged or pushed.
+
+### Final real-Provider CDP Stage all after replay serialization fix (2026-08-10)
+
+The one newly authorized final isolated `Stage all` was then run with the corrected harness and the unchanged formal `deepseek-v4-flash` configuration. No further Provider attempt is authorized by this report.
+
+- Stage A passed again with UI JD v1 → deterministic Pilot JD v2, one confirmation approval, history/detail readback, `jd_version_id=2`, `source_kind=pilot`, and `0` Provider calls in the Stage A window. The final screenshots are [Pilot confirmation](/D:/Users/yuqi.chen/Desktop/offerpilot-stage-all-pilot-confirmation-20260810-final.png) and [Pilot success/history](/D:/Users/yuqi.chen/Desktop/offerpilot-stage-all-pilot-success-20260810-final.png).
+- Triage first returned HTTP `500` after `93,461 ms`; the frozen input contained JD `1`, resume `1`, and user assertion `1`, with input fingerprint `7ad9577...4ea6d39` and `failure_category=provider_http_5xx`.
+- The single permitted exact-input replay now verified `provider_input_fingerprint_match=true`, retained the same idempotency key and model, and made exactly one new Provider call. It returned HTTP `502` after `91,817 ms`, with no local `409`; the browser response was `opportunity_fit_provider_error`.
+- Material Kit and Interview Preparation were not executed because Triage remained `provider_unknown`. The final browser audit remained local-only, and no downstream or cross-domain write claim is made.
+
+This confirms the 409 was a harness serialization defect and is fixed; the remaining release blocker is DeepSeek Triage stability. The final real-Provider gate still fails, so the branch remains paused with no merge or push.
