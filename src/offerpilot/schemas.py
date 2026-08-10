@@ -344,6 +344,38 @@ class InterviewPreparationPendingOut(BaseModel):
     retry_after_ms: int
 
 
+class InterviewStoryEvidenceLinkIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_kind: Literal["title", "block", "capability_label", "applicable_question"]
+    target_id: str
+    source_kind: Literal["resume_version", "interview_note", "mock_turn", "user_assertion"]
+    source_stable_id: str
+    source_version_or_snapshot: str
+    source_path: str
+    excerpt: str
+    text_location: str = ""
+
+
+class InterviewStoryOut(BaseModel):
+    id: int
+    title: str
+    status: Literal["active", "archived"]
+    current_version_id: int | None
+    story_revision: int
+    version_number: int | None
+    source_states: list[dict[str, Any]]
+    version: dict[str, Any] | None = None
+
+
+class InterviewStoryAttemptPendingOut(BaseModel):
+    id: int
+    attempt_status: Literal["generating", "provider_unknown"]
+    generation_revision: int
+    source_fingerprint: str
+    retry_after_ms: int = 1000
+
+
 class OpportunityFitReviewOut(OpportunityFitReviewSummaryOut):
     source: dict[str, Any]
     triage: dict[str, Any]

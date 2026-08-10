@@ -167,7 +167,7 @@ def validate_story_evidence_links(
     for raw in links:
         if not isinstance(raw, Mapping):
             raise StoryValidationError("evidence link must be an object")
-        allowed = {
+        full_allowed = {
             "target_kind",
             "target_id",
             "source_kind",
@@ -177,7 +177,17 @@ def validate_story_evidence_links(
             "excerpt",
             "text_location",
         }
-        if set(raw) - allowed:
+        client_allowed = {
+            "target_kind",
+            "target_id",
+            "source_kind",
+            "source_id",
+            "source_path",
+            "excerpt",
+            "text_location",
+        }
+        fields = set(raw)
+        if fields - full_allowed and fields - client_allowed:
             raise StoryValidationError("evidence link has extra fields")
         target_kind = raw.get("target_kind")
         target_id = raw.get("target_id")
@@ -188,16 +198,16 @@ def validate_story_evidence_links(
         ):
             raise StoryValidationError("evidence link target is invalid")
         source_kind = raw.get("source_kind")
-        source_stable_id = raw.get("source_stable_id")
+        source_stable_id = raw.get("source_stable_id", raw.get("source_id"))
         source_version_or_snapshot = raw.get("source_version_or_snapshot")
         source_path = raw.get("source_path")
         excerpt = raw.get("excerpt")
         text_location = raw.get("text_location", "")
         if not isinstance(source_kind, str):
             raise StoryValidationError("evidence link shape is invalid")
+        if isinstance(source_stable_id, int) and not isinstance(source_stable_id, bool):
+            source_stable_id = str(source_stable_id)
         if not isinstance(source_stable_id, str):
-            raise StoryValidationError("evidence link shape is invalid")
-        if not isinstance(source_version_or_snapshot, str):
             raise StoryValidationError("evidence link shape is invalid")
         if not isinstance(source_path, str):
             raise StoryValidationError("evidence link shape is invalid")
@@ -209,9 +219,21 @@ def validate_story_evidence_links(
             raise StoryValidationError("evidence excerpt is invalid")
         if not excerpt.strip() or len(excerpt) > _MAX_EVIDENCE_EXCERPT_CHARS:
             raise StoryValidationError("evidence excerpt is invalid")
-        source = catalog.get(
-            (source_kind, source_stable_id, source_version_or_snapshot, source_path)
-        )
+        if source_version_or_snapshot is None:
+            source = next(
+                (
+                    entry
+                    for entry in snapshot.sources
+                    if entry["source_kind"] == source_kind
+                    and entry["source_stable_id"] == source_stable_id
+                    and entry["path"] == source_path
+                ),
+                None,
+            )
+            source_version_or_snapshot = source["source_version_or_snapshot"] if source else None
+        if not isinstance(source_version_or_snapshot, str):
+            raise StoryValidationError("evidence link shape is invalid")
+        source = catalog.get((source_kind, source_stable_id, source_version_or_snapshot, source_path))
         if source is None:
             raise StoryValidationError("evidence source is invalid")
         if excerpt not in source["excerpt"]:
@@ -630,6 +652,28 @@ class InterviewStoriesRepository:
                 return None
             return self._version_payload(session, version)
 
+    def list_versions(self, story_id: int) -> list[dict[str, Any]] | None:
+        with self._session_factory() as session:
+            if session.get(InterviewStory, story_id) is None:
+                return None
+            versions = list(
+                session.scalars(
+                    select(InterviewStoryVersion)
+                    .where(InterviewStoryVersion.story_id == story_id)
+                    .order_by(InterviewStoryVersion.version_number.desc())
+                )
+            )
+            return [
+                {
+                    "id": version.id,
+                    "version_number": version.version_number,
+                    "origin_kind": version.origin_kind,
+                    "confirmed_at": version.confirmed_at.isoformat() if version.confirmed_at else None,
+                    "source_fingerprint": version.source_fingerprint,
+                }
+                for version in versions
+            ]
+
     def create_manual_story(
         self,
         *,
@@ -876,11 +920,37 @@ class InterviewStoriesRepository:
                     attempt.provider_call_token = ""
                     session.commit()
                     return False
-                # Re-run strict validation server side.  A caller can never pass a
-                # prevalidated or client-rendered proposal into the write path.
-                from offerpilot.ai.interview_stories import validate_interview_story_proposal
+                # Re-run strict validation server side.  The only alternate form
+                # is the already-normalized server result returned by the local
+                # generator; clients never reach this repository method directly.
+                if proposal.get("proposal_status") == "normal":
+                    raw_content = proposal.get("content")
+                    raw_links = proposal.get("evidence_links")
+                    if not isinstance(raw_content, dict) or not isinstance(raw_links, list):
+                        raise StoryValidationError("story proposal is invalid")
+                    content = canonical_story_content(_manual_content_from_canonical(raw_content))
+                    checked = {
+                        "proposal_status": "normal",
+                        "content": content,
+                        "evidence_links": [
+                            item.as_dict()
+                            for item in validate_story_evidence_links(
+                                content,
+                                [_client_link_fields(item) for item in raw_links],
+                                snapshot,
+                            )
+                        ],
+                    }
+                elif proposal.get("proposal_status") == "safe_empty":
+                    from offerpilot.ai.interview_stories import safe_empty_interview_story_proposal
 
-                checked = validate_interview_story_proposal(proposal, snapshot)
+                    if proposal != safe_empty_interview_story_proposal():
+                        raise StoryValidationError("story proposal is invalid")
+                    checked = proposal
+                else:
+                    from offerpilot.ai.interview_stories import validate_interview_story_proposal
+
+                    checked = validate_interview_story_proposal(proposal, snapshot)
                 status = "safe_empty" if checked["proposal_status"] == "safe_empty" else "ready"
                 attempt.attempt_status = status
                 attempt.proposal_json = canonical_json(checked)
@@ -1258,6 +1328,43 @@ def _canonical_selections(selections: list[dict[str, Any]]) -> list[dict[str, An
         [dict(item) for item in selections],
         key=lambda item: (str(item.get("source_kind")), str(item.get("source_id")), str(item.get("path"))),
     )
+
+
+def _manual_content_from_canonical(content: dict[str, Any]) -> dict[str, Any]:
+    title = content.get("title")
+    blocks = content.get("blocks")
+    labels = content.get("capability_labels")
+    questions = content.get("applicable_questions")
+    gaps = content.get("fact_gap_codes")
+    if not isinstance(title, dict) or not isinstance(blocks, list) or not isinstance(labels, list) or not isinstance(questions, list) or not isinstance(gaps, list):
+        raise StoryValidationError("story proposal is invalid")
+    return {
+        "title": title.get("text"),
+        "blocks": [
+            {key: block.get(key) for key in ("kind", "text", "fact_mode")}
+            for block in blocks
+            if isinstance(block, dict)
+        ],
+        "capability_labels": [item.get("text") for item in labels if isinstance(item, dict)],
+        "applicable_questions": [item.get("text") for item in questions if isinstance(item, dict)],
+        "fact_gap_codes": gaps,
+    }
+
+
+def _client_link_fields(link: Any) -> dict[str, Any]:
+    if not isinstance(link, dict):
+        raise StoryValidationError("story evidence link is invalid")
+    allowed = {
+        "target_kind",
+        "target_id",
+        "source_kind",
+        "source_stable_id",
+        "source_version_or_snapshot",
+        "source_path",
+        "excerpt",
+        "text_location",
+    }
+    return {key: value for key, value in link.items() if key in allowed}
 
 
 def _attempt_input_payload(attempt: InterviewStoryProposalAttempt) -> dict[str, Any]:

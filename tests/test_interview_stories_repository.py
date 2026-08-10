@@ -257,6 +257,26 @@ def test_evidence_links_require_exact_target_and_frozen_source_identity(tmp_path
     factory.kw["bind"].dispose()
 
 
+def test_evidence_links_reject_mixed_client_and_frozen_source_identity_shapes(tmp_path) -> None:
+    factory = init_database(tmp_path / "story.db")
+    with factory() as session:
+        note = _create_note(session)
+        session.commit()
+        content = canonical_story_content(_manual_content())
+        snapshot = materialize_selected_sources(
+            session,
+            [{"source_kind": "interview_note", "source_id": note.id, "path": "/questions"}],
+            ["I own this incident response."],
+        )
+        links = _links_for_content(content, snapshot)
+        mixed = [dict(item) for item in links]
+        mixed[0]["source_id"] = note.id
+
+        with pytest.raises(StoryValidationError, match="extra fields"):
+            validate_story_evidence_links(content, mixed, snapshot)
+    factory.kw["bind"].dispose()
+
+
 def test_manual_story_version_cas_assertions_and_read_time_source_states(tmp_path) -> None:
     factory = init_database(tmp_path / "story.db")
     repository = InterviewStoriesRepository(factory)
