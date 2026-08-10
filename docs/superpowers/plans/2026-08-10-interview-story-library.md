@@ -528,11 +528,16 @@ git commit -m "feat: AI connect story proposal recovery and Pilot"
   $allCollect = @(& uv run pytest --collect-only -q --disable-warnings 2>&1)
   $allCollectExit = $LASTEXITCODE
   if ($allCollectExit -ne 0) { throw "full pytest collection failed: $allCollectExit" }
-  $allNodeIds = @($allCollect | ForEach-Object {
+  $collectedNodeIds = @($allCollect | ForEach-Object {
       $line = ([string]$_).Trim()
       if ($line -match '^(tests[\\/].+::.+)$') { $Matches[1].Replace('/', '\\') }
-  } | Where-Object { $_ } | Sort-Object -Unique)
-  if ($allNodeIds.Count -eq 0) { throw 'full pytest collection returned no node ids' }
+  } | Where-Object { $_ })
+  if ($collectedNodeIds.Count -eq 0) { throw 'full pytest collection returned no node ids' }
+  $duplicateNodeIds = @($collectedNodeIds | Group-Object | Where-Object { $_.Count -gt 1 })
+  if ($duplicateNodeIds.Count -gt 0) {
+      throw "full pytest collection contains duplicate node ids: $($duplicateNodeIds.Name -join ', ')"
+  }
+  $allNodeIds = @($collectedNodeIds | Sort-Object)
   $allNodeIds | Set-Content -LiteralPath (Join-Path $backendResultDir 'full-manifest.txt') -Encoding utf8
   foreach ($group in @('agent', 'domain', 'knowledge', 'proposals', 'misc')) {
       & powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows-pytest-groups.ps1 -Group $group -ResultDir $backendResultDir
