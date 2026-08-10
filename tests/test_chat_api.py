@@ -311,12 +311,13 @@ def test_deterministic_pilot_conversation_readback_keeps_frozen_version_metadata
     assert model.calls == 0
 
 
-def test_invalid_pilot_action_does_not_create_conversation(tmp_path):
+@pytest.mark.parametrize("endpoint", ["/api/chat", "/api/chat/stream"])
+def test_invalid_pilot_action_does_not_create_conversation(tmp_path, endpoint):
     model = CountingFailingModel()
     client = TestClient(create_app(data_dir=tmp_path, chat_model=model, title_model=model))
 
     response = client.post(
-        "/api/chat",
+        endpoint,
         json={"message": "save job details", "conversation_id": 0, "pilot_action": {"type": "invalid"}},
     )
 

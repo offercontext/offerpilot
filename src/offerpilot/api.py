@@ -4109,6 +4109,11 @@ def create_app(
         message = str(payload.get("message") or "")
         if not message:
             return error_response(400, "message is required")
+        if "pilot_action" in payload:
+            try:
+                parse_pilot_action(payload["pilot_action"])
+            except ValueError as exc:
+                return error_response(422, str(exc))
 
         conversation_id = int(payload.get("conversation_id") or 0)
         created_new = conversation_id == 0
