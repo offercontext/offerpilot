@@ -28,6 +28,22 @@ const { default: InterviewStoryDrawer, createInterviewStoryDraft } = await impor
 let root: Root | undefined;
 let container: HTMLDivElement | undefined;
 
+function setControlValue(control: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement, value: string) {
+  const prototype = control instanceof HTMLTextAreaElement
+    ? HTMLTextAreaElement.prototype
+    : control instanceof HTMLSelectElement
+      ? HTMLSelectElement.prototype
+      : HTMLInputElement.prototype;
+  Object.getOwnPropertyDescriptor(prototype, 'value')?.set?.call(control, value);
+  control.dispatchEvent(new Event(control instanceof HTMLSelectElement ? 'change' : 'input', { bubbles: true }));
+}
+
+function bindManualEvidence(target: string, source: string) {
+  const control = document.body.querySelector(`select[data-testid="manual-evidence-${target}"]`) as HTMLSelectElement;
+  expect(control).toBeTruthy();
+  act(() => setControlValue(control, source));
+}
+
 beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   Object.defineProperty(window, 'matchMedia', {
@@ -290,12 +306,12 @@ describe('InterviewStoryDrawer', () => {
     act(() => [...document.body.querySelectorAll('button')].find((button) => button.textContent === '手动编写并保存')?.click());
     const title = document.body.querySelector('input[aria-label="手动故事标题"]') as HTMLInputElement;
     const situation = document.body.querySelector('textarea[aria-label="手动故事情境"]') as HTMLTextAreaElement;
-    act(() => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(title, '一次延迟排查');
-      title.dispatchEvent(new Event('input', { bubbles: true }));
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(situation, '我先确认指标，再定位缓存问题。');
-      situation.dispatchEvent(new Event('input', { bubbles: true }));
-    });
+    act(() => setControlValue(title, '一次延迟排查'));
+    await act(async () => { await Promise.resolve(); });
+    act(() => setControlValue(situation, '我先确认指标，再定位缓存问题。'));
+    await act(async () => { await Promise.resolve(); });
+    bindManualEvidence('title-title', 'selection:resume_version:2:/content_json/projects/0/detail');
+    bindManualEvidence('block-situation_001', 'selection:resume_version:2:/content_json/projects/0/detail');
     await act(async () => {
       [...document.body.querySelectorAll('button')].find((button) => button.textContent === '确认手动保存故事版本')?.click();
       await Promise.resolve();
@@ -327,12 +343,12 @@ describe('InterviewStoryDrawer', () => {
 
     const title = document.body.querySelector('input[aria-label="手动故事标题"]') as HTMLInputElement;
     const situation = document.body.querySelector('textarea[aria-label="手动故事情境"]') as HTMLTextAreaElement;
-    act(() => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(title, '一次延迟排查');
-      title.dispatchEvent(new Event('input', { bubbles: true }));
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(situation, '我确认了指标并定位问题。');
-      situation.dispatchEvent(new Event('input', { bubbles: true }));
-    });
+    act(() => setControlValue(title, '一次延迟排查'));
+    await act(async () => { await Promise.resolve(); });
+    act(() => setControlValue(situation, '我确认了指标并定位问题。'));
+    await act(async () => { await Promise.resolve(); });
+    bindManualEvidence('title-title', 'selection:resume_version:2:/content_json/projects/0/detail');
+    bindManualEvidence('block-situation_001', 'selection:resume_version:2:/content_json/projects/0/detail');
     await act(async () => {
       [...document.body.querySelectorAll('button')].find((button) => button.textContent === '确认手动保存故事版本')?.click();
       await Promise.resolve(); await Promise.resolve();
@@ -358,10 +374,12 @@ describe('InterviewStoryDrawer', () => {
     act(() => [...document.body.querySelectorAll('button')].find((button) => button.textContent === '手动编写并保存')?.click());
     const title = document.body.querySelector('input[aria-label="手动故事标题"]') as HTMLInputElement;
     const situation = document.body.querySelector('textarea[aria-label="手动故事情境"]') as HTMLTextAreaElement;
-    act(() => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(title, '一次延迟排查'); title.dispatchEvent(new Event('input', { bubbles: true }));
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(situation, '我确认了指标。'); situation.dispatchEvent(new Event('input', { bubbles: true }));
-    });
+    act(() => setControlValue(title, '一次延迟排查'));
+    await act(async () => { await Promise.resolve(); });
+    act(() => setControlValue(situation, '我确认了指标。'));
+    await act(async () => { await Promise.resolve(); });
+    bindManualEvidence('title-title', 'selection:resume_version:2:/content_json/projects/0/detail');
+    bindManualEvidence('block-situation_001', 'selection:resume_version:2:/content_json/projects/0/detail');
     await act(async () => {
       [...document.body.querySelectorAll('button')].find((button) => button.textContent === '确认手动保存故事版本')?.click();
       await Promise.resolve(); await Promise.resolve();
@@ -377,5 +395,93 @@ describe('InterviewStoryDrawer', () => {
     });
     expect(storyService.create).toHaveBeenCalledTimes(2);
     expect(storyService.create.mock.calls[1]?.[0]).toEqual(initialPayload);
+  });
+
+  it('allows a user assertion as the only explicitly selected Story source', async () => {
+    const draft = {
+      ...createInterviewStoryDraft('ui'),
+      assertions: ['我本人负责了这次线上延迟排查。'],
+    };
+
+    act(() => root?.render(<InterviewStoryDrawer open draft={draft} onDraftChange={() => {}} onClose={() => {}} />));
+
+    expect([...document.body.querySelectorAll('button')].some((button) => button.textContent === '使用 AI 整理')).toBe(true);
+    expect([...document.body.querySelectorAll('button')].some((button) => button.textContent === '手动编写并保存')).toBe(true);
+  });
+
+  it('saves a manually authored evidence-backed Story from an explicitly bound user assertion', async () => {
+    let current: InterviewStoryDraft = {
+      ...createInterviewStoryDraft('ui'),
+      assertions: ['我本人负责了这次线上延迟排查。'],
+      manualContent: {
+        ...createInterviewStoryDraft('ui').manualContent,
+        title: '一次延迟排查',
+        blocks: [{ kind: 'situation', text: '我本人负责了这次线上延迟排查。', fact_mode: 'evidence_backed' }],
+      },
+    };
+    const render = () => root?.render(<InterviewStoryDrawer open draft={current} onDraftChange={(draft) => {
+      if (draft) {
+        current = draft;
+        render();
+      }
+    }} onClose={() => {}} />);
+    storyService.create.mockResolvedValue({ id: 12 });
+    act(render);
+    act(() => [...document.body.querySelectorAll('button')].find((button) => button.textContent === '手动编写并保存')?.click());
+    bindManualEvidence('title-title', 'assertion:1');
+    bindManualEvidence('block-situation_001', 'assertion:1');
+    await act(async () => {
+      [...document.body.querySelectorAll('button')].find((button) => button.textContent === '确认手动保存故事版本')?.click();
+      await Promise.resolve(); await Promise.resolve();
+    });
+
+    expect(storyService.create).toHaveBeenCalledWith(expect.objectContaining({
+      evidence_links: expect.arrayContaining([
+        expect.objectContaining({ source_kind: 'user_assertion', source_id: 'assertion_001' }),
+      ]),
+    }));
+  });
+
+  it('requires an explicit evidence binding for every manual target and never copies the first source', async () => {
+    let current = createInterviewStoryDraft('ui');
+    const render = () => root?.render(<InterviewStoryDrawer open draft={current} onDraftChange={(draft) => {
+      if (draft) {
+        current = draft;
+        render();
+      }
+    }} onClose={() => {}} />);
+    storyService.create.mockResolvedValue({ id: 12 });
+    act(render);
+    act(() => [...document.body.querySelectorAll('button')].find((button) => button.textContent === '打开来源选择器')?.click());
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    const boxes = [...document.body.querySelectorAll('input[type="checkbox"]')] as HTMLInputElement[];
+    act(() => boxes[0]?.click());
+    act(() => boxes[1]?.click());
+    act(() => [...document.body.querySelectorAll('button')].find((button) => button.textContent === '手动编写并保存')?.click());
+    const title = document.body.querySelector('input[aria-label="手动故事标题"]') as HTMLInputElement;
+    const situation = document.body.querySelector('textarea[aria-label="手动故事情境"]') as HTMLTextAreaElement;
+    act(() => setControlValue(title, '一次延迟排查'));
+    await act(async () => { await Promise.resolve(); });
+    act(() => setControlValue(situation, '我先确认指标，再定位缓存问题。'));
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => {
+      [...document.body.querySelectorAll('button')].find((button) => button.textContent === '确认手动保存故事版本')?.click();
+      await Promise.resolve(); await Promise.resolve();
+    });
+    expect(storyService.create).not.toHaveBeenCalled();
+
+    bindManualEvidence('title-title', 'selection:resume_version:2:/content_json/projects/0/detail');
+    bindManualEvidence('block-situation_001', 'selection:interview_note:4:/questions');
+    await act(async () => {
+      [...document.body.querySelectorAll('button')].find((button) => button.textContent === '确认手动保存故事版本')?.click();
+      await Promise.resolve(); await Promise.resolve();
+    });
+
+    expect(storyService.create).toHaveBeenCalledTimes(1);
+    const links = storyService.create.mock.calls[0]?.[0].evidence_links;
+    expect(links).toEqual(expect.arrayContaining([
+      expect.objectContaining({ target_id: 'title', source_kind: 'resume_version', source_path: '/content_json/projects/0/detail' }),
+      expect.objectContaining({ target_id: 'situation_001', source_kind: 'interview_note', source_path: '/questions' }),
+    ]));
   });
 });

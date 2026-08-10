@@ -31,6 +31,7 @@ export interface InterviewStoryDraft {
   expectedStoryRevision: number | null;
   selections: InterviewStorySourceSelection[];
   assertions: string[];
+  manualEvidenceBindings: Record<string, string>;
   idempotencyKey: string;
   attemptId: number | null;
   proposal: InterviewStoryProposalAttempt['proposal'] | null;
@@ -84,6 +85,7 @@ export function createInterviewStoryDraft(
     expectedStoryRevision: revision?.expectedStoryRevision ?? null,
     selections: [],
     assertions: [],
+    manualEvidenceBindings: {},
     idempotencyKey: key('story'),
     attemptId: null,
     proposal: null,
@@ -128,6 +130,36 @@ function normalizedManualContent(content: InterviewStoryEditableContent): Interv
     applicable_questions: content.applicable_questions.filter((value) => value.trim()),
     fact_gap_codes: blocks.some((block) => block.kind === 'result') ? [] : ['missing_result'],
   };
+}
+
+type ManualEvidenceTarget = Pick<InterviewStoryClientEvidenceLink, 'target_kind' | 'target_id'> & { label: string };
+type ManualEvidenceSource = { key: string; label: string; link: Omit<InterviewStoryClientEvidenceLink, 'target_kind' | 'target_id'> };
+
+function manualEvidenceKey(target: Pick<ManualEvidenceTarget, 'target_kind' | 'target_id'>): string {
+  return `${target.target_kind}:${target.target_id}`;
+}
+
+function manualEvidenceTargets(content: InterviewStoryEditableContent): ManualEvidenceTarget[] {
+  const targets: ManualEvidenceTarget[] = [];
+  if (content.title.trim()) targets.push({ target_kind: 'title', target_id: 'title', label: '故事标题' });
+  const counts: Record<string, number> = {};
+  for (const block of content.blocks) {
+    counts[block.kind] = (counts[block.kind] ?? 0) + 1;
+    if (!block.text.trim()) continue;
+    const blockName = ({ situation: '情境', task: '任务', action: '行动', result: '结果', reflection: '复盘' } as const)[block.kind];
+    targets.push({
+      target_kind: 'block',
+      target_id: `${block.kind}_${String(counts[block.kind]).padStart(3, '0')}`,
+      label: `故事${blockName}`,
+    });
+  }
+  content.capability_labels.forEach((value, index) => {
+    if (value.trim()) targets.push({ target_kind: 'capability_label', target_id: `capability_${String(index + 1).padStart(3, '0')}`, label: `能力标签 ${index + 1}` });
+  });
+  content.applicable_questions.forEach((value, index) => {
+    if (value.trim()) targets.push({ target_kind: 'applicable_question', target_id: `question_${String(index + 1).padStart(3, '0')}`, label: `适用问题 ${index + 1}` });
+  });
+  return targets;
 }
 
 function clientEvidence(links: InterviewStoryEvidenceLink[]): InterviewStoryClientEvidenceLink[] {
@@ -206,10 +238,13 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
       .finally(() => setCandidatesLoading(false));
   }, [open, pickerOpen, candidates, draft.reviewNoteId]);
 
-  const sourceSelected = draft.selections.length > 0;
+  const sourceSelected = draft.selections.length > 0 || draft.assertions.some((item) => item.trim());
   const frozen = draft.resultUnknown || busy;
   const normalProposal = draft.proposal?.proposal_status === 'normal' ? draft.proposal : null;
-  const selectedSourcePreview = useMemo(() => {
+  const manualContent = useMemo(() => normalizedManualContent(draft.manualContent), [draft.manualContent]);
+  const manualTargets = useMemo(() => manualEvidenceTargets(manualContent), [manualContent]);
+  const manualEvidenceSources = useMemo<ManualEvidenceSource[]>(() => {
+    const sources: ManualEvidenceSource[] = [];
     for (const selection of draft.selections) {
       const leaves = selection.source_kind === 'resume_version'
         ? candidates?.resumes.find((item) => item.id === selection.source_id)?.leaves
@@ -217,9 +252,32 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
           ? candidates?.interview_notes.find((item) => item.id === selection.source_id)?.leaves
           : candidates?.mock_turns.find((item) => item.attempt_id === selection.source_id)?.leaves;
       const preview = leaves?.find((item) => item.path === selection.path)?.preview;
-      if (preview) return { ...selection, preview };
+      if (!preview) continue;
+      sources.push({
+        key: `selection:${selection.source_kind}:${selection.source_id}:${selection.path}`,
+        label: `${selection.source_kind} · ${selection.path}`,
+        link: {
+          source_kind: selection.source_kind,
+          source_id: selection.source_id,
+          source_path: selection.path,
+          excerpt: preview,
+        },
+      });
     }
-    return null;
+    draft.assertions.forEach((statement, index) => {
+      if (!statement.trim()) return;
+      sources.push({
+        key: `assertion:${index + 1}`,
+        label: `用户明确陈述 ${index + 1}`,
+        link: {
+          source_kind: 'user_assertion',
+          source_id: `assertion_${String(index + 1).padStart(3, '0')}`,
+          source_path: '/statement',
+          excerpt: statement,
+        },
+      });
+    });
+    return sources;
   }, [candidates, draft.assertions, draft.selections]);
 
   const update = (changes: Partial<InterviewStoryDraft>) => onDraftChange({ ...draft, ...changes });
@@ -234,6 +292,7 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
       proposal: null,
       editedContent: null,
       manualSavePayload: null,
+      manualEvidenceBindings: {},
       proposalInput: null,
       attemptId: null,
       resultUnknown: false,
@@ -246,7 +305,7 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
   const addAssertion = () => {
     const value = assertion.trim();
     if (!value || frozen) return;
-    update({ assertions: [...draft.assertions, value], proposal: null, editedContent: null, manualSavePayload: null, proposalInput: null, attemptId: null, resultUnknown: false, pendingOperation: null, error: null });
+    update({ assertions: [...draft.assertions, value], manualEvidenceBindings: {}, proposal: null, editedContent: null, manualSavePayload: null, proposalInput: null, attemptId: null, resultUnknown: false, pendingOperation: null, error: null });
     setAssertion('');
     setShowPreview(false);
   };
@@ -260,8 +319,8 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
 
   const saveManualStory = async () => {
     const saved = draft.manualSavePayload;
-    const content = saved?.content ?? normalizedManualContent(draft.manualContent);
-    if (!saved && (!selectedSourcePreview || !content.title.trim() || !content.blocks.some((block) => block.text.trim()))) {
+    const content = saved?.content ?? manualContent;
+    if (!saved && (!sourceSelected || !content.title.trim() || !content.blocks.some((block) => block.text.trim()))) {
       message.error('请先选择原始来源，并填写标题和至少一个故事区块。');
       return;
     }
@@ -270,31 +329,19 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
       return;
     }
     const evidenceLinks: InterviewStoryClientEvidenceLink[] = saved?.evidenceLinks ?? (() => {
-      const sourcePreview = selectedSourcePreview!;
-      const evidenceSource = {
-        source_kind: sourcePreview.source_kind,
-        source_id: sourcePreview.source_id,
-        source_path: sourcePreview.path,
-        excerpt: sourcePreview.preview,
-      };
-      const links: InterviewStoryClientEvidenceLink[] = [{ target_kind: 'title', target_id: 'title', ...evidenceSource }];
-      const blockCounts: Record<string, number> = {};
-      for (const block of content.blocks) {
-        blockCounts[block.kind] = (blockCounts[block.kind] ?? 0) + 1;
-        if (block.kind === 'reflection') {
-          const statement = draft.assertions.find((item) => item.trim());
-          if (!statement) {
-            throw new InterviewStoryError(422, 'interview_story_invalid_request');
-          }
-          links.push({ target_kind: 'block', target_id: `${block.kind}_${String(blockCounts[block.kind]).padStart(3, '0')}`, source_kind: 'user_assertion', source_id: 'assertion_001', source_path: '/statement', excerpt: statement });
-        } else {
-          links.push({ target_kind: 'block', target_id: `${block.kind}_${String(blockCounts[block.kind]).padStart(3, '0')}`, ...evidenceSource });
-        }
+      const sourceByKey = new Map(manualEvidenceSources.map((source) => [source.key, source]));
+      const links = manualTargets.map((target) => {
+        const binding = draft.manualEvidenceBindings[manualEvidenceKey(target)];
+        const source = binding ? sourceByKey.get(binding) : undefined;
+        return source ? { target_kind: target.target_kind, target_id: target.target_id, ...source.link } : null;
+      });
+      if (links.some((link) => link === null)) {
+        message.error('请为每个已填写的故事目标明确选择原始证据。');
+        return [];
       }
-      content.capability_labels.forEach((_, index) => links.push({ target_kind: 'capability_label', target_id: `capability_${String(index + 1).padStart(3, '0')}`, ...evidenceSource }));
-      content.applicable_questions.forEach((_, index) => links.push({ target_kind: 'applicable_question', target_id: `question_${String(index + 1).padStart(3, '0')}`, ...evidenceSource }));
-      return links;
+      return links as InterviewStoryClientEvidenceLink[];
     })();
+    if (!saved && evidenceLinks.length !== manualTargets.length) return;
     const requestDraft = saved
       ? draft
       : { ...draft, manualSavePayload: { content, evidenceLinks } };
@@ -474,7 +521,7 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
         <Input aria-label="用户明确原始陈述" disabled={frozen} value={assertion} onChange={(event) => setAssertion(event.target.value)} placeholder="例如：这是我本人负责的工作内容" />
         <Button disabled={frozen || !assertion.trim()} onClick={addAssertion}>加入</Button>
       </Space.Compact>
-      {draft.assertions.map((item) => <Tag key={item} closable={!frozen} onClose={() => update({ assertions: draft.assertions.filter((value) => value !== item) })} style={{ marginTop: 8 }}>用户陈述 · {item}</Tag>)}
+      {draft.assertions.map((item) => <Tag key={item} closable={!frozen} onClose={() => update({ assertions: draft.assertions.filter((value) => value !== item), manualEvidenceBindings: {}, manualSavePayload: null })} style={{ marginTop: 8 }}>用户陈述 · {item}</Tag>)}
       <Divider />
       {sourceSelected && !draft.proposal && !showPreview ? (
         <Space>
@@ -536,6 +583,33 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
             autoSize={{ minRows: 1, maxRows: 4 }}
             style={{ marginBottom: 8 }}
           />
+          {manualTargets.length > 0 ? (
+            <Space direction="vertical" size={8} style={{ width: '100%', marginBottom: 12 }}>
+              <Text strong>逐项选择原始证据</Text>
+              <Text type="secondary">每个已填写目标都必须明确绑定一条已选原文或你的明确陈述；系统不会自动复制第一条来源。</Text>
+              {manualTargets.map((target) => {
+                const targetKey = manualEvidenceKey(target);
+                return (
+                  <label key={targetKey} style={{ display: 'grid', gap: 4 }}>
+                    <Text>{target.label}</Text>
+                    <select
+                      aria-label={`手动证据：${target.label}`}
+                      data-testid={`manual-evidence-${target.target_kind}-${target.target_id}`}
+                      disabled={frozen}
+                      value={draft.manualEvidenceBindings[targetKey] ?? ''}
+                      onChange={(event) => update({
+                        manualEvidenceBindings: { ...draft.manualEvidenceBindings, [targetKey]: event.target.value },
+                        manualSavePayload: null,
+                      })}
+                    >
+                      <option value="">请选择原始证据</option>
+                      {manualEvidenceSources.map((source) => <option key={source.key} value={source.key}>{source.label}</option>)}
+                    </select>
+                  </label>
+                );
+              })}
+            </Space>
+          ) : null}
           {!draft.manualContent.blocks.some((block) => block.kind === 'result' && block.text.trim()) ? <Alert type="info" showIcon message="尚未填写结果：保存时会标记为“请补充可验证的结果或影响”。" style={{ marginBottom: 12 }} /> : null}
           <Button type="primary" disabled={frozen || !draft.manualContent.title.trim() || !draft.manualContent.blocks.some((block) => block.text.trim())} loading={busy} onClick={() => void saveManualStory()}>确认手动保存故事版本</Button>
         </>
