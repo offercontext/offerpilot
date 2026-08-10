@@ -2,12 +2,22 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
-from offerpilot.models import InterviewNote, MockInterviewAttempt, MockInterviewTurn, Resume
+from offerpilot.models import (
+    InterviewNote,
+    InterviewStory,
+    InterviewStoryUserAssertion,
+    InterviewStoryVersion,
+    InterviewStoryVersionEvidenceLink,
+    MockInterviewAttempt,
+    MockInterviewTurn,
+    Resume,
+)
 from offerpilot.repositories.json_contract import canonical_json, sha256_text
 
 
@@ -15,10 +25,46 @@ class StoryValidationError(ValueError):
     """Raised when Story content or selected candidate evidence is invalid."""
 
 
+class StoryNotFoundError(StoryValidationError):
+    """Raised when a requested Story is not available."""
+
+
+class StoryConflictError(StoryValidationError):
+    """Raised when an immutable Story pointer or lifecycle CAS is stale."""
+
+
 @dataclass(frozen=True)
 class StorySourceSnapshot:
     sources: list[dict[str, str]]
     source_fingerprint: str
+
+
+@dataclass(frozen=True)
+class CanonicalStoryLink:
+    target_kind: str
+    target_id: str
+    source_kind: str
+    source_stable_id: str
+    source_version_or_snapshot: str
+    source_path: str
+    text_location: str
+    excerpt: str
+    source_fingerprint: str
+    link_hash: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "target_kind": self.target_kind,
+            "target_id": self.target_id,
+            "source_kind": self.source_kind,
+            "source_stable_id": self.source_stable_id,
+            "source_version_or_snapshot": self.source_version_or_snapshot,
+            "source_path": self.source_path,
+            "text_location": self.text_location,
+            "excerpt": self.excerpt,
+            "source_fingerprint": self.source_fingerprint,
+            "link_hash": self.link_hash,
+        }
 
 
 _NOTE_FIELDS = {
@@ -30,6 +76,9 @@ _NOTE_FIELDS = {
 _ALLOWED_SOURCE_KINDS = {"resume_version", "interview_note", "mock_turn"}
 _FACT_GAP_CODES = {"missing_result"}
 _BLOCK_KINDS = {"situation", "task", "action", "result", "reflection"}
+_TARGET_KINDS = {"title", "block", "capability_label", "applicable_question"}
+_MAX_EVIDENCE_EXCERPT_CHARS = 800
+_STORY_VERSION_SCHEMA = "interview-story-v1"
 
 
 def canonical_story_content(raw: Mapping[str, Any]) -> dict[str, Any]:
@@ -86,6 +135,191 @@ def canonical_story_content(raw: Mapping[str, Any]) -> dict[str, Any]:
         "applicable_questions": _items(questions_raw, "question"),
         "fact_gap_codes": list(gaps_raw),
     }
+
+
+def validate_story_evidence_links(
+    content: Mapping[str, Any],
+    links: list[dict[str, Any]],
+    snapshot: StorySourceSnapshot,
+) -> list[CanonicalStoryLink]:
+    """Bind every non-empty Story target to exact, frozen candidate evidence.
+
+    Callers may only reference a source leaf emitted by
+    :func:`materialize_selected_sources`; clients cannot substitute a source,
+    path, snapshot fingerprint, or fabricated excerpt.
+    """
+
+    expected_targets = _evidence_targets(content)
+    catalog = {
+        _source_identity(item): item
+        for item in snapshot.sources
+    }
+    canonical: list[CanonicalStoryLink] = []
+    linked_targets: set[tuple[str, str]] = set()
+    for raw in links:
+        if not isinstance(raw, Mapping):
+            raise StoryValidationError("evidence link must be an object")
+        allowed = {
+            "target_kind",
+            "target_id",
+            "source_kind",
+            "source_stable_id",
+            "source_version_or_snapshot",
+            "source_path",
+            "excerpt",
+            "text_location",
+        }
+        if set(raw) - allowed:
+            raise StoryValidationError("evidence link has extra fields")
+        target_kind = raw.get("target_kind")
+        target_id = raw.get("target_id")
+        if (
+            target_kind not in _TARGET_KINDS
+            or not isinstance(target_id, str)
+            or (target_kind, target_id) not in expected_targets
+        ):
+            raise StoryValidationError("evidence link target is invalid")
+        source_kind = raw.get("source_kind")
+        source_stable_id = raw.get("source_stable_id")
+        source_version_or_snapshot = raw.get("source_version_or_snapshot")
+        source_path = raw.get("source_path")
+        excerpt = raw.get("excerpt")
+        text_location = raw.get("text_location", "")
+        if not isinstance(source_kind, str):
+            raise StoryValidationError("evidence link shape is invalid")
+        if not isinstance(source_stable_id, str):
+            raise StoryValidationError("evidence link shape is invalid")
+        if not isinstance(source_version_or_snapshot, str):
+            raise StoryValidationError("evidence link shape is invalid")
+        if not isinstance(source_path, str):
+            raise StoryValidationError("evidence link shape is invalid")
+        if not isinstance(excerpt, str):
+            raise StoryValidationError("evidence link shape is invalid")
+        if not isinstance(text_location, str):
+            raise StoryValidationError("evidence link shape is invalid")
+        if excerpt == "":
+            raise StoryValidationError("evidence excerpt is invalid")
+        if not excerpt.strip() or len(excerpt) > _MAX_EVIDENCE_EXCERPT_CHARS:
+            raise StoryValidationError("evidence excerpt is invalid")
+        source = catalog.get(
+            (source_kind, source_stable_id, source_version_or_snapshot, source_path)
+        )
+        if source is None:
+            raise StoryValidationError("evidence source is invalid")
+        if excerpt not in source["excerpt"]:
+            raise StoryValidationError("evidence excerpt is invalid")
+        payload = {
+            "target_kind": target_kind,
+            "target_id": target_id,
+            "source_kind": source_kind,
+            "source_stable_id": source_stable_id,
+            "source_version_or_snapshot": source_version_or_snapshot,
+            "source_path": source_path,
+            "text_location": text_location,
+            "excerpt": excerpt,
+            "source_fingerprint": source["source_fingerprint"],
+        }
+        canonical.append(CanonicalStoryLink(**payload, link_hash=sha256_text(canonical_json(payload))))
+        linked_targets.add((target_kind, target_id))
+
+    missing = expected_targets - linked_targets
+    if missing:
+        raise StoryValidationError("story targets require evidence")
+    canonical.sort(
+        key=lambda item: (
+            item.target_kind,
+            item.target_id,
+            item.source_kind,
+            item.source_stable_id,
+            item.source_path,
+            item.excerpt,
+        )
+    )
+    return canonical
+
+
+def derive_story_source_states(
+    session: Session,
+    version: InterviewStoryVersion,
+) -> list[dict[str, str]]:
+    """Derive (but never persist) current/changed/missing source state."""
+
+    links = list(
+        session.scalars(
+            select(InterviewStoryVersionEvidenceLink)
+            .where(InterviewStoryVersionEvidenceLink.story_version_id == version.id)
+            .order_by(InterviewStoryVersionEvidenceLink.id.asc())
+        )
+    )
+    states: list[dict[str, str]] = []
+    for link in links:
+        base = {
+            "target_kind": link.target_kind,
+            "target_id": link.target_id,
+            "source_kind": link.source_kind,
+            "source_stable_id": link.source_stable_id,
+            "source_path": link.source_path,
+            "excerpt": link.excerpt,
+        }
+        if link.source_kind == "user_assertion":
+            states.append({**base, "state": "frozen_user_assertion"})
+            continue
+        try:
+            source = _revalidate_persisted_source(session, link)
+        except StoryValidationError as exc:
+            state = "missing" if "missing" in str(exc) else "changed"
+        else:
+            state = (
+                "current"
+                if (
+                    source["source_fingerprint"] == link.source_fingerprint
+                    and source["excerpt"] == link.excerpt
+                    and source["source_version_or_snapshot"] == link.source_version_or_snapshot
+                )
+                else "changed"
+            )
+        states.append({**base, "state": state})
+    return states
+
+
+def story_request_fingerprint(
+    *,
+    target_story_id: int | None,
+    expected_current_version_id: int | None,
+    expected_story_revision: int | None,
+    selections: list[dict[str, Any]],
+    assertions: list[str],
+) -> str:
+    """Hash canonical user-selected input, never client-supplied snapshots."""
+
+    for field, value in (
+        ("target story id", target_story_id),
+        ("expected current version id", expected_current_version_id),
+        ("expected story revision", expected_story_revision),
+    ):
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value <= 0):
+            raise StoryValidationError(f"{field} is invalid")
+    normalized_selections: list[dict[str, Any]] = []
+    for item in selections:
+        if not isinstance(item, Mapping):
+            raise StoryValidationError("source selection must be an object")
+        if set(item) != {"source_kind", "source_id", "path"}:
+            raise StoryValidationError("source selection shape is invalid")
+        normalized_selections.append(dict(item))
+    if not all(isinstance(statement, str) for statement in assertions):
+        raise StoryValidationError("assertion is invalid")
+    payload = {
+        "schema": _STORY_VERSION_SCHEMA,
+        "target_story_id": target_story_id,
+        "expected_current_version_id": expected_current_version_id,
+        "expected_story_revision": expected_story_revision,
+        "selections": sorted(
+            normalized_selections,
+            key=lambda item: (str(item["source_kind"]), str(item["source_id"]), str(item["path"])),
+        ),
+        "assertions": list(assertions),
+    }
+    return sha256_text(canonical_json(payload))
 
 
 def materialize_selected_sources(
@@ -180,7 +414,12 @@ def _materialize_note(session: Session, note_id: int, path: str) -> dict[str, st
 
 def _materialize_mock_turn(session: Session, attempt_id: int, path: str) -> dict[str, str]:
     parts = path.split("/")
-    if len(parts) != 4 or parts[:2] != ["", "turns"] or not parts[2].isdigit() or len(parts[2]) != 3:
+    if (
+        len(parts) != 4
+        or parts[:2] != ["", "turns"]
+        or len(parts[2]) != 3
+        or not _is_three_ascii_digits(parts[2])
+    ):
         raise StoryValidationError("mock turn path is invalid")
     field = {"question": "question_text", "answer": "answer_text"}.get(parts[3])
     if field is None:
@@ -264,3 +503,368 @@ def _is_canonical_array_index(value: str) -> bool:
         and value[0] in "123456789"
         and all(char in "0123456789" for char in value[1:])
     )
+
+
+def _is_three_ascii_digits(value: str) -> bool:
+    return len(value) == 3 and all(char in "0123456789" for char in value)
+
+
+def _source_identity(source: Mapping[str, str]) -> tuple[str, str, str, str]:
+    return (
+        source["source_kind"],
+        source["source_stable_id"],
+        source["source_version_or_snapshot"],
+        source["path"],
+    )
+
+
+def _evidence_targets(content: Mapping[str, Any]) -> set[tuple[str, str]]:
+    title = content.get("title")
+    if not isinstance(title, Mapping) or not isinstance(title.get("id"), str) or not isinstance(title.get("text"), str):
+        raise StoryValidationError("canonical story title is invalid")
+    targets: set[tuple[str, str]] = set()
+    if title["text"].strip():
+        targets.add(("title", title["id"]))
+    collections = (
+        ("blocks", "block"),
+        ("capability_labels", "capability_label"),
+        ("applicable_questions", "applicable_question"),
+    )
+    for field, target_kind in collections:
+        values = content.get(field)
+        if not isinstance(values, list):
+            raise StoryValidationError("canonical story content is invalid")
+        for item in values:
+            if not isinstance(item, Mapping) or not isinstance(item.get("id"), str) or not isinstance(item.get("text"), str):
+                raise StoryValidationError("canonical story content is invalid")
+            if item["text"].strip():
+                targets.add((target_kind, item["id"]))
+    if not targets:
+        raise StoryValidationError("story must contain an evidence target")
+    return targets
+
+
+def _revalidate_persisted_source(
+    session: Session,
+    link: InterviewStoryVersionEvidenceLink,
+) -> dict[str, str]:
+    if link.source_kind == "resume_version":
+        try:
+            resume_id = int(link.source_stable_id)
+        except ValueError as exc:
+            raise StoryValidationError("resume source is missing") from exc
+        return _materialize_resume(session, resume_id, link.source_path)
+    if link.source_kind == "interview_note":
+        try:
+            note_id = int(link.source_stable_id)
+        except ValueError as exc:
+            raise StoryValidationError("interview note source is missing") from exc
+        return _materialize_note(session, note_id, link.source_path)
+    if link.source_kind == "mock_turn":
+        attempt_id, separator, _turn_no = link.source_stable_id.partition(":")
+        if not separator:
+            raise StoryValidationError("mock turn source is missing")
+        try:
+            return _materialize_mock_turn(session, int(attempt_id), link.source_path)
+        except ValueError as exc:
+            raise StoryValidationError("mock turn source is missing") from exc
+    raise StoryValidationError("story source is missing")
+
+
+class InterviewStoriesRepository:
+    """Own immutable Story Versions and their explicitly selected evidence."""
+
+    def __init__(self, session_factory: sessionmaker[Session]):
+        self._session_factory = session_factory
+
+    def list_stories(self, *, status: str = "active", query: str = "") -> list[dict[str, Any]]:
+        if status not in {"active", "archived", "all"}:
+            raise StoryValidationError("story status is invalid")
+        with self._session_factory() as session:
+            statement = select(InterviewStory).order_by(InterviewStory.updated_at.desc(), InterviewStory.id.desc())
+            if status != "all":
+                statement = statement.where(InterviewStory.status == status)
+            rows = list(session.scalars(statement))
+            normalized_query = query.strip().casefold()
+            if normalized_query:
+                rows = [row for row in rows if normalized_query in row.title.casefold()]
+            return [self._story_summary(session, row) for row in rows]
+
+    def get_story(self, story_id: int) -> dict[str, Any] | None:
+        with self._session_factory() as session:
+            story = session.get(InterviewStory, story_id)
+            return self._story_payload(session, story) if story is not None else None
+
+    def get_version(self, story_id: int, version_id: int) -> dict[str, Any] | None:
+        with self._session_factory() as session:
+            version = session.get(InterviewStoryVersion, version_id)
+            if version is None or version.story_id != story_id:
+                return None
+            return self._version_payload(session, version)
+
+    def create_manual_story(
+        self,
+        *,
+        content: Mapping[str, Any],
+        evidence_links: list[dict[str, Any]],
+        selections: list[dict[str, Any]],
+        assertions: list[str],
+        expected_current_version_id: int | None,
+    ) -> dict[str, Any]:
+        if expected_current_version_id is not None:
+            raise StoryConflictError("new story current version must be null")
+        with self._session_factory() as session:
+            try:
+                _begin_immediate(session)
+                canonical = canonical_story_content(content)
+                snapshot = materialize_selected_sources(session, selections, assertions)
+                canonical_links = validate_story_evidence_links(canonical, evidence_links, snapshot)
+                story = InterviewStory(title=canonical["title"]["text"], status="active", story_revision=1)
+                session.add(story)
+                session.flush()
+                version = self._insert_version(
+                    session,
+                    story=story,
+                    version_number=1,
+                    canonical=canonical,
+                    snapshot=snapshot,
+                    canonical_links=canonical_links,
+                    assertions=assertions,
+                    origin_kind="manual",
+                )
+                story.current_version_id = version.id
+                session.commit()
+                return self._story_payload(session, story)
+            except Exception:
+                session.rollback()
+                raise
+
+    def create_manual_version(
+        self,
+        *,
+        story_id: int,
+        content: Mapping[str, Any],
+        evidence_links: list[dict[str, Any]],
+        selections: list[dict[str, Any]],
+        assertions: list[str],
+        expected_current_version_id: int | None,
+        expected_story_revision: int | None,
+    ) -> dict[str, Any]:
+        _require_positive_int("expected current version id", expected_current_version_id)
+        _require_positive_int("expected story revision", expected_story_revision)
+        with self._session_factory() as session:
+            try:
+                _begin_immediate(session)
+                story = self._require_active_story(session, story_id)
+                self._check_story_cas(story, expected_current_version_id, expected_story_revision)
+                canonical = canonical_story_content(content)
+                snapshot = materialize_selected_sources(session, selections, assertions)
+                canonical_links = validate_story_evidence_links(canonical, evidence_links, snapshot)
+                version_number = int(
+                    session.scalar(
+                        select(InterviewStoryVersion.version_number)
+                        .where(InterviewStoryVersion.story_id == story.id)
+                        .order_by(InterviewStoryVersion.version_number.desc())
+                    )
+                    or 0
+                ) + 1
+                version = self._insert_version(
+                    session,
+                    story=story,
+                    version_number=version_number,
+                    canonical=canonical,
+                    snapshot=snapshot,
+                    canonical_links=canonical_links,
+                    assertions=assertions,
+                    origin_kind="manual",
+                )
+                story.current_version_id = version.id
+                story.story_revision += 1
+                story.title = canonical["title"]["text"]
+                story.updated_at = datetime.now(timezone.utc)
+                session.commit()
+                return self._story_payload(session, story)
+            except Exception:
+                session.rollback()
+                raise
+
+    def archive(self, *, story_id: int, expected_story_revision: int | None) -> dict[str, Any]:
+        return self._change_lifecycle(
+            story_id=story_id,
+            expected_story_revision=expected_story_revision,
+            desired_status="archived",
+        )
+
+    def restore(self, *, story_id: int, expected_story_revision: int | None) -> dict[str, Any]:
+        return self._change_lifecycle(
+            story_id=story_id,
+            expected_story_revision=expected_story_revision,
+            desired_status="active",
+        )
+
+    def _change_lifecycle(
+        self, *, story_id: int, expected_story_revision: int | None, desired_status: str
+    ) -> dict[str, Any]:
+        _require_positive_int("expected story revision", expected_story_revision)
+        with self._session_factory() as session:
+            try:
+                _begin_immediate(session)
+                story = session.get(InterviewStory, story_id)
+                if story is None:
+                    raise StoryNotFoundError("story is missing")
+                if story.story_revision != expected_story_revision:
+                    raise StoryConflictError("story revision is stale")
+                if story.status == desired_status:
+                    session.commit()
+                    return self._story_payload(session, story)
+                story.status = desired_status
+                story.archived_at = datetime.now(timezone.utc) if desired_status == "archived" else None
+                story.story_revision += 1
+                story.updated_at = datetime.now(timezone.utc)
+                session.commit()
+                return self._story_payload(session, story)
+            except Exception:
+                session.rollback()
+                raise
+
+    @staticmethod
+    def _require_active_story(session: Session, story_id: int) -> InterviewStory:
+        story = session.get(InterviewStory, story_id)
+        if story is None:
+            raise StoryNotFoundError("story is missing")
+        if story.status != "active":
+            raise StoryConflictError("story is archived")
+        return story
+
+    @staticmethod
+    def _check_story_cas(
+        story: InterviewStory,
+        expected_current_version_id: int | None,
+        expected_story_revision: int | None,
+    ) -> None:
+        if (
+            story.current_version_id != expected_current_version_id
+            or story.story_revision != expected_story_revision
+        ):
+            raise StoryConflictError("story version is stale")
+
+    @staticmethod
+    def _insert_version(
+        session: Session,
+        *,
+        story: InterviewStory,
+        version_number: int,
+        canonical: dict[str, Any],
+        snapshot: StorySourceSnapshot,
+        canonical_links: list[CanonicalStoryLink],
+        assertions: list[str],
+        origin_kind: str,
+    ) -> InterviewStoryVersion:
+        content_json = canonical_json(canonical)
+        version = InterviewStoryVersion(
+            story_id=story.id,
+            version_number=version_number,
+            content_json=content_json,
+            content_hash=sha256_text(content_json),
+            source_fingerprint=snapshot.source_fingerprint,
+            origin_kind=origin_kind,
+        )
+        session.add(version)
+        session.flush()
+        assertion_ids: dict[str, str] = {}
+        for index, statement in enumerate(assertions, 1):
+            assertion = InterviewStoryUserAssertion(
+                story_version_id=version.id,
+                statement_text=statement,
+                statement_hash=sha256_text(statement),
+            )
+            session.add(assertion)
+            session.flush()
+            assertion_ids[f"assertion_{index:03d}"] = str(assertion.id)
+        for link in canonical_links:
+            source_stable_id = assertion_ids.get(link.source_stable_id, link.source_stable_id)
+            payload = link.as_dict() | {"source_stable_id": source_stable_id}
+            # The link's persisted identity, including an assertion's real ID, is
+            # what auditors later hash; never retain the temporary request ID.
+            payload["link_hash"] = sha256_text(canonical_json({key: value for key, value in payload.items() if key != "link_hash"}))
+            session.add(
+                InterviewStoryVersionEvidenceLink(
+                    story_version_id=version.id,
+                    **payload,
+                )
+            )
+        session.flush()
+        return version
+
+    def _story_summary(self, session: Session, story: InterviewStory) -> dict[str, Any]:
+        version = session.get(InterviewStoryVersion, story.current_version_id) if story.current_version_id else None
+        return {
+            "id": story.id,
+            "title": story.title,
+            "status": story.status,
+            "current_version_id": story.current_version_id,
+            "story_revision": story.story_revision,
+            "version_number": version.version_number if version else None,
+            "source_states": derive_story_source_states(session, version) if version else [],
+        }
+
+    def _story_payload(self, session: Session, story: InterviewStory) -> dict[str, Any]:
+        payload = self._story_summary(session, story)
+        version = session.get(InterviewStoryVersion, story.current_version_id) if story.current_version_id else None
+        payload["version"] = self._version_payload(session, version) if version else None
+        return payload
+
+    @staticmethod
+    def _version_payload(session: Session, version: InterviewStoryVersion) -> dict[str, Any]:
+        links = list(
+            session.scalars(
+                select(InterviewStoryVersionEvidenceLink)
+                .where(InterviewStoryVersionEvidenceLink.story_version_id == version.id)
+                .order_by(InterviewStoryVersionEvidenceLink.id.asc())
+            )
+        )
+        assertions = list(
+            session.scalars(
+                select(InterviewStoryUserAssertion)
+                .where(InterviewStoryUserAssertion.story_version_id == version.id)
+                .order_by(InterviewStoryUserAssertion.id.asc())
+            )
+        )
+        return {
+            "id": version.id,
+            "story_id": version.story_id,
+            "version_number": version.version_number,
+            "content": json.loads(version.content_json),
+            "content_hash": version.content_hash,
+            "source_fingerprint": version.source_fingerprint,
+            "origin_kind": version.origin_kind,
+            "evidence_links": [
+                {
+                    "target_kind": link.target_kind,
+                    "target_id": link.target_id,
+                    "source_kind": link.source_kind,
+                    "source_stable_id": link.source_stable_id,
+                    "source_version_or_snapshot": link.source_version_or_snapshot,
+                    "source_path": link.source_path,
+                    "text_location": link.text_location,
+                    "excerpt": link.excerpt,
+                    "source_fingerprint": link.source_fingerprint,
+                    "link_hash": link.link_hash,
+                }
+                for link in links
+            ],
+            "assertions": [
+                {"id": assertion.id, "statement": assertion.statement_text, "frozen": True}
+                for assertion in assertions
+            ],
+            "source_states": derive_story_source_states(session, version),
+        }
+
+
+def _begin_immediate(session: Session) -> None:
+    session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+
+
+def _require_positive_int(name: str, value: int | None) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise StoryValidationError(f"{name} is invalid")
