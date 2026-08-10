@@ -94,6 +94,7 @@ _MAX_BLOCK_TEXT_CHARS = 4_000
 _MAX_SHORT_ITEMS = 12
 _MAX_SHORT_TEXT_CHARS = 300
 _MAX_FACT_GAPS = 1
+_MAX_ASSERTION_CHARS = 4_000
 _STORY_VERSION_SCHEMA = "interview-story-v1"
 _IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 _STORY_LEASE_SECONDS = 30
@@ -187,8 +188,18 @@ def validate_story_evidence_links(
         for item in snapshot.sources
     }
     canonical: list[CanonicalStoryLink] = []
+    link_identities: set[tuple[str, str, str, str, str, str, str, str]] = set()
     linked_targets: set[tuple[str, str]] = set()
-    link_counts: dict[tuple[str, str], int] = {}
+    requested_counts: dict[tuple[str, str], int] = {}
+    for raw in links:
+        if not isinstance(raw, Mapping):
+            continue
+        target = (raw.get("target_kind"), raw.get("target_id"))
+        if target not in expected_targets:
+            continue
+        requested_counts[target] = requested_counts.get(target, 0) + 1
+        if requested_counts[target] > _MAX_EVIDENCE_LINKS_PER_TARGET:
+            raise StoryValidationError("evidence link count exceeds limit")
     for raw in links:
         if not isinstance(raw, Mapping):
             raise StoryValidationError("evidence link must be an object")
@@ -268,9 +279,6 @@ def validate_story_evidence_links(
         target = (target_kind, target_id)
         if source_kind == "user_assertion" and target_fact_modes.get(target) != "user_view":
             raise StoryValidationError("user assertion cannot support an evidence-backed target")
-        link_counts[target] = link_counts.get(target, 0) + 1
-        if link_counts[target] > _MAX_EVIDENCE_LINKS_PER_TARGET:
-            raise StoryValidationError("evidence link count exceeds limit")
         payload = {
             "target_kind": target_kind,
             "target_id": target_id,
@@ -282,6 +290,19 @@ def validate_story_evidence_links(
             "excerpt": excerpt,
             "source_fingerprint": source["source_fingerprint"],
         }
+        identity = (
+            payload["target_kind"],
+            payload["target_id"],
+            payload["source_kind"],
+            payload["source_stable_id"],
+            payload["source_version_or_snapshot"],
+            payload["source_path"],
+            payload["text_location"],
+            payload["excerpt"],
+        )
+        if identity in link_identities:
+            raise StoryValidationError("evidence link is duplicated")
+        link_identities.add(identity)
         canonical.append(CanonicalStoryLink(**payload, link_hash=sha256_text(canonical_json(payload))))
         linked_targets.add((target_kind, target_id))
 
@@ -463,9 +484,14 @@ def materialize_selected_sources(
         else:
             sources.append(_materialize_mock_turn(session, source_id, path))
 
+    assertion_hashes: set[str] = set()
     for index, statement in enumerate(assertions, 1):
-        if not isinstance(statement, str) or not statement.strip():
+        if not isinstance(statement, str) or not statement.strip() or len(statement) > _MAX_ASSERTION_CHARS:
             raise StoryValidationError("assertion is invalid")
+        statement_hash = sha256_text(statement)
+        if statement_hash in assertion_hashes:
+            raise StoryValidationError("assertion is duplicated")
+        assertion_hashes.add(statement_hash)
         sources.append(
             {
                 "source_kind": "user_assertion",
@@ -1273,9 +1299,19 @@ class InterviewStoriesRepository:
                 try:
                     snapshot = materialize_selected_sources(session, selections, assertions)
                 except StoryValidationError as exc:
+                    attempt.attempt_status = "invalidated"
+                    attempt.provider_call_token = ""
+                    attempt.provider_lease_until = None
+                    attempt.failure_category = "source_changed"
+                    session.commit()
                     raise StorySourceConflictError("story source changed") from exc
                 if snapshot.source_fingerprint != attempt.source_fingerprint:
-                    raise StoryConflictError("story source changed")
+                    attempt.attempt_status = "invalidated"
+                    attempt.provider_call_token = ""
+                    attempt.provider_lease_until = None
+                    attempt.failure_category = "source_changed"
+                    session.commit()
+                    raise StorySourceConflictError("story source changed")
                 canonical = canonical_story_content(content)
                 links = validate_story_evidence_links(canonical, evidence_links, snapshot)
                 target_story_id = attempt.target_story_id

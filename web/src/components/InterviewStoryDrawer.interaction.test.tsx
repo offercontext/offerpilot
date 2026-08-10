@@ -161,6 +161,9 @@ describe('InterviewStoryDrawer', () => {
     expect(current.pendingOperation).toBe('generate');
     expect(document.body.textContent).toContain('使用原尝试重试');
 
+    act(() => root?.render(null));
+    act(render);
+
     await act(async () => {
       [...document.body.querySelectorAll('button')].find((button) => button.textContent === '使用原尝试重试')?.click();
       await Promise.resolve();
@@ -316,9 +319,7 @@ describe('InterviewStoryDrawer', () => {
     const initialPayload = storyService.create.mock.calls[0]?.[0];
     expect(current.pendingOperation).toBe('manual');
     expect(current.resultUnknown).toBe(true);
-    act(() => root?.render(<InterviewStoryDrawer open={false} draft={current} onDraftChange={(draft) => {
-      if (draft) { current = draft; }
-    }} onClose={() => {}} />));
+    act(() => root?.render(null));
     act(render);
     await act(async () => {
       [...document.body.querySelectorAll('button')].find((button) => button.textContent === '使用原尝试重试')?.click();

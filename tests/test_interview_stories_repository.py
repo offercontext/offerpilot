@@ -585,6 +585,85 @@ def test_provider_result_source_deletion_invalidates_the_claim(tmp_path) -> None
     factory.kw["bind"].dispose()
 
 
+def test_confirmation_invalidates_ready_attempt_when_frozen_source_changes(tmp_path) -> None:
+    from offerpilot.ai.interview_stories import validate_interview_story_proposal
+    from offerpilot.repositories.interview_stories import StorySourceConflictError
+
+    factory = init_database(tmp_path / "story-confirm-source-conflict.db")
+    repository = InterviewStoriesRepository(factory)
+    with factory() as session:
+        note = _create_note(session)
+        note_id = note.id
+        session.commit()
+    claim = repository.claim_proposal(
+        target_story_id=None,
+        expected_current_version_id=None,
+        expected_story_revision=None,
+        selections=[{"source_kind": "interview_note", "source_id": note_id, "path": "/questions"}],
+        assertions=["I own this incident response."],
+        idempotency_key="story-confirm-source-change-01",
+        entrypoint="ui",
+    )
+    provider_payload = _provider_story_proposal(claim.source_snapshot)
+    checked = validate_interview_story_proposal(provider_payload, claim.source_snapshot)
+    assert repository.complete_proposal(
+        attempt_id=claim.attempt_id,
+        generation_revision=claim.generation_revision,
+        provider_call_token=claim.provider_call_token,
+        proposal=provider_payload,
+    )
+    with factory() as session:
+        note = session.get(InterviewNote, note_id)
+        assert note is not None
+        note.questions = "The source has changed after proposal generation."
+        session.commit()
+    links = [
+        {
+            key: value
+            for key, value in link.items()
+            if key in {
+                "target_kind", "target_id", "source_kind", "source_stable_id",
+                "source_version_or_snapshot", "source_path", "excerpt", "text_location",
+            }
+        }
+        for link in checked["evidence_links"]
+    ]
+    with pytest.raises(StorySourceConflictError, match="source changed"):
+        repository.confirm_attempt(
+            attempt_id=claim.attempt_id,
+            confirmation_token="story-confirm-source-change-token",
+            content=_manual_content_from_proposal(checked),
+            evidence_links=links,
+            expected_current_version_id=None,
+            expected_story_revision=None,
+        )
+    assert repository.get_attempt(claim.attempt_id)["attempt_status"] == "invalidated"
+    factory.kw["bind"].dispose()
+
+
+def test_story_assertions_and_evidence_links_reject_duplicates_before_persistence(tmp_path) -> None:
+    factory = init_database(tmp_path / "story-duplicate-input.db")
+    with factory() as session:
+        note = _create_note(session)
+        session.commit()
+        with pytest.raises(StoryValidationError, match="assertion is duplicated"):
+            materialize_selected_sources(
+                session,
+                [{"source_kind": "interview_note", "source_id": note.id, "path": "/questions"}],
+                ["I own this incident response.", "I own this incident response."],
+            )
+        content = canonical_story_content(_manual_content())
+        snapshot = materialize_selected_sources(
+            session,
+            [{"source_kind": "interview_note", "source_id": note.id, "path": "/questions"}],
+            ["I own this incident response."],
+        )
+        links = _links_for_content(content, snapshot)
+        with pytest.raises(StoryValidationError, match="evidence link is duplicated"):
+            validate_story_evidence_links(content, [*links, dict(links[0])], snapshot)
+    factory.kw["bind"].dispose()
+
+
 def test_story_attempt_replay_heartbeat_and_confirmation_are_fenced(tmp_path) -> None:
     from offerpilot.ai.interview_stories import validate_interview_story_proposal
 

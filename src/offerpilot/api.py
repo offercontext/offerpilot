@@ -5186,6 +5186,25 @@ def create_app(
             )
         return error_response(422, "面试故事输入无效", code="interview_story_invalid_request")
 
+    def _is_story_write_payload(payload: dict[str, Any]) -> bool:
+        return (
+            isinstance(payload.get("content"), dict)
+            and isinstance(payload.get("evidence_links"), list)
+            and all(isinstance(item, dict) for item in payload["evidence_links"])
+            and isinstance(payload.get("selections"), list)
+            and all(isinstance(item, dict) for item in payload["selections"])
+            and isinstance(payload.get("assertions"), list)
+            and all(isinstance(item, str) for item in payload["assertions"])
+        )
+
+    def _is_story_confirmation_payload(payload: dict[str, Any]) -> bool:
+        return (
+            isinstance(payload.get("confirmation_token"), str)
+            and isinstance(payload.get("content"), dict)
+            and isinstance(payload.get("evidence_links"), list)
+            and all(isinstance(item, dict) for item in payload["evidence_links"])
+        )
+
     def _story_attempt_response(attempt: dict[str, Any], status_code: int = 200) -> JSONResponse:
         if attempt["attempt_status"] in {"generating", "provider_unknown"}:
             return JSONResponse(
@@ -5365,7 +5384,7 @@ def create_app(
     @app.post("/api/interview-stories")
     def create_interview_story(payload: dict[str, Any] = Body(...)) -> JSONResponse:
         allowed = {"content", "evidence_links", "selections", "assertions", "expected_current_version_id", "idempotency_key"}
-        if set(payload) != allowed:
+        if set(payload) != allowed or not _is_story_write_payload(payload):
             return error_response(422, "面试故事输入无效", code="interview_story_invalid_request")
         try:
             story = interview_stories.create_manual_story(
@@ -5377,7 +5396,7 @@ def create_app(
                 idempotency_key=payload["idempotency_key"],
             )
             return JSONResponse(story, status_code=201)
-        except (KeyError, TypeError, StoryValidationError) as exc:
+        except (KeyError, TypeError, ValueError, StoryValidationError) as exc:
             return _story_error_response(exc if isinstance(exc, StoryValidationError) else StoryValidationError("invalid"))
 
     @app.get("/api/interview-stories/{story_id}")
@@ -5404,13 +5423,13 @@ def create_app(
     @app.post("/api/interview-stories/{story_id}/versions")
     def create_interview_story_version(story_id: int, payload: dict[str, Any] = Body(...)) -> JSONResponse:
         allowed = {"content", "evidence_links", "selections", "assertions", "expected_current_version_id", "expected_story_revision", "idempotency_key"}
-        if set(payload) != allowed:
+        if set(payload) != allowed or not _is_story_write_payload(payload):
             return error_response(422, "面试故事输入无效", code="interview_story_invalid_request")
         try:
             return JSONResponse(
                 interview_stories.create_manual_version(story_id=story_id, **payload), status_code=201
             )
-        except (KeyError, TypeError, StoryValidationError) as exc:
+        except (KeyError, TypeError, ValueError, StoryValidationError) as exc:
             return _story_error_response(exc if isinstance(exc, StoryValidationError) else StoryValidationError("invalid"))
 
     @app.post("/api/interview-stories/{story_id}/archive")
@@ -5449,7 +5468,7 @@ def create_app(
     @app.post("/api/interview-story-proposals/{attempt_id}/confirm")
     def confirm_interview_story_proposal(attempt_id: int, payload: dict[str, Any] = Body(...)) -> JSONResponse:
         allowed = {"confirmation_token", "content", "evidence_links", "expected_current_version_id", "expected_story_revision"}
-        if set(payload) != allowed:
+        if set(payload) != allowed or not _is_story_confirmation_payload(payload):
             return error_response(422, "面试故事输入无效", code="interview_story_invalid_request")
         try:
             result = interview_stories.confirm_attempt(attempt_id=attempt_id, **payload)
@@ -5457,7 +5476,7 @@ def create_app(
                 {"story_id": result.story_id, "version_id": result.version_id, "created": result.created},
                 status_code=201 if result.created else 200,
             )
-        except (KeyError, TypeError, StoryValidationError) as exc:
+        except (KeyError, TypeError, ValueError, StoryValidationError) as exc:
             return _story_error_response(exc if isinstance(exc, StoryValidationError) else StoryValidationError("invalid"))
 
     @app.get("/{full_path:path}", include_in_schema=False)

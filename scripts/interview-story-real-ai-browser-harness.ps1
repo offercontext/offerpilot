@@ -199,6 +199,10 @@ function Assert-StoryBrowserSequence([object[]]$records, [string]$baseUrl) {
   $uiPosts = @($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'POST' -and $_.url -eq "$baseUrl/api/interview-story-proposals" })
   $pilotPosts = @($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'POST' -and $_.url -eq "$baseUrl/api/pilot/interview-story-proposals" })
   if ($uiPosts.Count -ne 1 -or $pilotPosts.Count -ne 1) { throw 'Browser did not execute exactly one UI and one Pilot Story proposal sequence.' }
+  $sourceReads = @($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'GET' -and $_.url -eq "$baseUrl/api/interview-story-sources" })
+  if ($sourceReads.Count -lt 2) { throw 'Browser did not open the source picker for both Story flows.' }
+  $libraryReads = @($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'GET' -and $_.url -eq "$baseUrl/api/interview-stories" })
+  if ($libraryReads.Count -lt 1) { throw 'Browser did not read the Story library.' }
   $responses = @($records | Where-Object { $_.kind -eq 'browser_response' })
   $uiResponse = Get-StoryAttemptResponse $responses 'ui' "$baseUrl/api/interview-story-proposals"
   $pilotResponse = Get-StoryAttemptResponse $responses 'pilot' "$baseUrl/api/pilot/interview-story-proposals"
@@ -277,6 +281,7 @@ try {
   New-Item -ItemType File -Force -Path $browserStop | Out-Null
   $auditor.WaitForExit(15000)
   if (-not $auditor.HasExited) { throw 'Browser auditor did not stop cleanly.' }
+  if ($auditor.ExitCode -ne 0) { throw "Browser auditor failed with exit code $($auditor.ExitCode)." }
   Assert-StoryBrowserSequence (Read-BrowserRecords) $baseUrl
   Assert-ProviderEgress $providers
   Assert-ForbiddenDomainsUnchanged $baseline (Get-ForbiddenDomainSnapshot)

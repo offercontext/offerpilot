@@ -10,6 +10,7 @@ import pytest
 
 
 _AUDIT_PATH = Path(__file__).parents[1] / "scripts" / "browser-network-audit.py"
+_HARNESS_PATH = Path(__file__).parents[1] / "scripts" / "interview-story-real-ai-browser-harness.ps1"
 _SPEC = importlib.util.spec_from_file_location("browser_network_audit", _AUDIT_PATH)
 assert _SPEC and _SPEC.loader
 _MODULE = importlib.util.module_from_spec(_SPEC)
@@ -163,3 +164,11 @@ def test_browser_audit_fails_closed_when_network_enable_is_rejected(tmp_path: Pa
             )
 
     asyncio.run(run())
+
+
+def test_story_browser_harness_fails_on_auditor_exit_and_requires_picker_and_library_reads() -> None:
+    script = _HARNESS_PATH.read_text(encoding="utf-8")
+
+    assert "if ($auditor.ExitCode -ne 0)" in script
+    assert '"$baseUrl/api/interview-story-sources"' in script
+    assert '"$baseUrl/api/interview-stories"' in script

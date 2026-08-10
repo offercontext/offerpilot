@@ -14,6 +14,7 @@ import type {
   InterviewStoryEvidenceLink,
   InterviewStoryEditableContent,
   InterviewStoryProposalAttempt,
+  InterviewStoryProposalInput,
   InterviewStorySourceCandidates,
   InterviewStorySourceSelection,
 } from '@/types/interviewStory';
@@ -36,6 +37,7 @@ export interface InterviewStoryDraft {
   editedContent: InterviewStoryEditableContent | null;
   manualContent: InterviewStoryEditableContent;
   manualSavePayload: { content: InterviewStoryEditableContent; evidenceLinks: InterviewStoryClientEvidenceLink[] } | null;
+  proposalInput: InterviewStoryProposalInput | null;
   resultUnknown: boolean;
   pendingOperation: 'generate' | 'confirm' | 'manual' | null;
   confirmationToken: string | null;
@@ -88,6 +90,7 @@ export function createInterviewStoryDraft(
     editedContent: null,
     manualContent: EMPTY_MANUAL_CONTENT,
     manualSavePayload: null,
+    proposalInput: null,
     resultUnknown: false,
     pendingOperation: null,
     confirmationToken: null,
@@ -218,6 +221,7 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
       proposal: null,
       editedContent: null,
       manualSavePayload: null,
+      proposalInput: null,
       attemptId: null,
       resultUnknown: false,
       pendingOperation: null,
@@ -229,7 +233,7 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
   const addAssertion = () => {
     const value = assertion.trim();
     if (!value || frozen) return;
-    update({ assertions: [...draft.assertions, value], proposal: null, editedContent: null, manualSavePayload: null, attemptId: null, resultUnknown: false, pendingOperation: null, error: null });
+    update({ assertions: [...draft.assertions, value], proposal: null, editedContent: null, manualSavePayload: null, proposalInput: null, attemptId: null, resultUnknown: false, pendingOperation: null, error: null });
     setAssertion('');
     setShowPreview(false);
   };
@@ -278,7 +282,10 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
       content.applicable_questions.forEach((_, index) => links.push({ target_kind: 'applicable_question', target_id: `question_${String(index + 1).padStart(3, '0')}`, ...evidenceSource }));
       return links;
     })();
-    if (!saved) update({ manualSavePayload: { content, evidenceLinks } });
+    const requestDraft = saved
+      ? draft
+      : { ...draft, manualSavePayload: { content, evidenceLinks } };
+    if (!saved) onDraftChange(requestDraft);
     setBusy(true);
     try {
       if (draft.targetStoryId) {
@@ -307,9 +314,9 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
     } catch (error) {
       const safe = safeMessage(error);
       if (isUnknownResult(error)) {
-        update({ resultUnknown: true, pendingOperation: 'manual', error: safe });
+        onDraftChange({ ...requestDraft, resultUnknown: true, pendingOperation: 'manual', error: safe });
       } else {
-        onDraftChange(resetAfterDefiniteFailure(draft, safe));
+        onDraftChange(resetAfterDefiniteFailure(requestDraft, safe));
       }
       message.error(safe);
     } finally {
@@ -318,26 +325,32 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
   };
 
   const generate = async () => {
-    if (!sourceSelected || !previewConfirmed) return;
+    const saved = draft.proposalInput;
+    if (!saved && (!sourceSelected || !previewConfirmed)) return;
+    const input = saved ?? {
+      target_story_id: draft.targetStoryId,
+      expected_current_version_id: draft.expectedCurrentVersionId,
+      expected_story_revision: draft.expectedStoryRevision,
+      selections: draft.selections,
+      assertions: draft.assertions,
+      idempotency_key: draft.idempotencyKey,
+      ...(draft.reviewNoteId ? { entry_context: { review_note_id: draft.reviewNoteId } } : {}),
+    };
+    const requestDraft = saved ? draft : { ...draft, proposalInput: input };
+    if (!saved) onDraftChange(requestDraft);
     setBusy(true);
     try {
-      const response = await createInterviewStoryProposal({
-        target_story_id: draft.targetStoryId,
-        expected_current_version_id: draft.expectedCurrentVersionId,
-        expected_story_revision: draft.expectedStoryRevision,
-        selections: draft.selections,
-        assertions: draft.assertions,
-        idempotency_key: draft.idempotencyKey,
-        ...(draft.reviewNoteId ? { entry_context: { review_note_id: draft.reviewNoteId } } : {}),
-      }, draft.entrypoint);
+      const response = await createInterviewStoryProposal(input, draft.entrypoint);
       if (!('proposal' in response) || response.attempt_status === 'generating' || response.attempt_status === 'provider_unknown') {
-        update({ attemptId: response.id, resultUnknown: true, pendingOperation: 'generate', error: 'AI 结果待确认，请使用原尝试重试。' });
+        onDraftChange({ ...requestDraft, attemptId: response.id, resultUnknown: true, pendingOperation: 'generate', error: 'AI 结果待确认，请使用原尝试重试。' });
         return;
       }
-      update({
+      onDraftChange({
+        ...requestDraft,
         attemptId: response.id,
         proposal: response.proposal ?? null,
         editedContent: response.proposal?.proposal_status === 'normal' ? editableContent(response.proposal.content) : null,
+        proposalInput: null,
         resultUnknown: false,
         pendingOperation: null,
         error: null,
@@ -345,9 +358,9 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
     } catch (error) {
       const safe = safeMessage(error);
       if (isUnknownResult(error)) {
-        update({ resultUnknown: true, pendingOperation: 'generate', error: safe });
+        onDraftChange({ ...requestDraft, resultUnknown: true, pendingOperation: 'generate', error: safe });
       } else {
-        onDraftChange(resetAfterDefiniteFailure(draft, safe));
+        onDraftChange(resetAfterDefiniteFailure(requestDraft, safe));
       }
       message.error(safe);
     } finally {

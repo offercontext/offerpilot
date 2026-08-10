@@ -90,6 +90,34 @@ def test_story_api_rejects_extra_fields_and_never_creates_an_attempt_before_conf
     assert proposal.status_code == 422
 
 
+def test_story_write_endpoints_reject_malformed_nested_payloads_as_422(app_client) -> None:
+    note = _note(app_client)
+    malformed_create = _payload(note["id"])
+    malformed_create["content"] = []
+    assert app_client.post("/api/interview-stories", json=malformed_create).status_code == 422
+
+    created = app_client.post("/api/interview-stories", json=_payload(note["id"])).json()
+    malformed_version = _payload(note["id"])
+    malformed_version["expected_current_version_id"] = created["current_version_id"]
+    malformed_version["expected_story_revision"] = created["story_revision"]
+    malformed_version["idempotency_key"] = "manual-story-malformed-version-01"
+    malformed_version["evidence_links"] = ["not-an-evidence-object"]
+    assert app_client.post(
+        f"/api/interview-stories/{created['id']}/versions", json=malformed_version
+    ).status_code == 422
+
+    malformed_confirmation = {
+        "confirmation_token": "story-malformed-confirm-token-01",
+        "content": "not-an-object",
+        "evidence_links": [],
+        "expected_current_version_id": None,
+        "expected_story_revision": None,
+    }
+    assert app_client.post(
+        "/api/interview-story-proposals/999/confirm", json=malformed_confirmation
+    ).status_code == 422
+
+
 def test_manual_story_api_rejects_non_null_or_non_integer_new_version_cas(app_client) -> None:
     note = _note(app_client)
     for value in (True, "1", 0, 1):
