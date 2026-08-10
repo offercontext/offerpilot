@@ -151,6 +151,17 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
   const [authoringMode, setAuthoringMode] = useState<'proposal' | 'manual'>('proposal');
 
   useEffect(() => {
+    // AppShell keeps independent UI/Pilot drafts alive for an unknown-result
+    // retry.  A different draft must never reuse the previous picker cache or
+    // confirmation choice.
+    setCandidates(null);
+    setPickerOpen(false);
+    setShowPreview(false);
+    setPreviewConfirmed(false);
+    setAuthoringMode('proposal');
+  }, [draft.idempotencyKey]);
+
+  useEffect(() => {
     if (!open || !pickerOpen || candidates) return;
     setCandidatesLoading(true);
     void listInterviewStorySourceCandidates(draft.reviewNoteId)

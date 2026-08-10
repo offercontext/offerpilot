@@ -212,6 +212,7 @@ function AppShellContent() {
   const [interviewPreparationDrafts, setInterviewPreparationDrafts] = useState<Record<string, InterviewPreparationDraft>>({});
   const [interviewStoryLibraryOpen, setInterviewStoryLibraryOpen] = useState(false);
   const [interviewStoryDrawerOpen, setInterviewStoryDrawerOpen] = useState(false);
+  const [interviewStoryLibraryRevision, setInterviewStoryLibraryRevision] = useState(0);
   const interviewStoryDraftsRef = useRef(new Map<string, InterviewStoryDraft>());
   const [interviewStoryDrafts, setInterviewStoryDrafts] = useState<Record<string, InterviewStoryDraft>>({});
   const [activeInterviewStoryDraftScope, setActiveInterviewStoryDraftScope] = useState<string | null>(null);
@@ -1104,6 +1105,7 @@ function AppShellContent() {
   const updateInterviewStoryDraft = (draft: InterviewStoryDraft | null) => {
     const scope = activeInterviewStoryDraftScope;
     if (!scope) return;
+    if (draft === null) setInterviewStoryLibraryRevision((current) => current + 1);
     setInterviewStoryDrafts((current) => {
       const next = { ...current };
       if (draft === null) {
@@ -1236,6 +1238,7 @@ function AppShellContent() {
           {view === 'questions' && <QuestionBankView />}
           {view === 'interview' && (interviewStoryLibraryOpen ? (
             <InterviewStoryLibraryView
+              key={interviewStoryLibraryRevision}
               onBack={() => setInterviewStoryLibraryOpen(false)}
               onOpenDraft={openInterviewStoryDraft}
             />
