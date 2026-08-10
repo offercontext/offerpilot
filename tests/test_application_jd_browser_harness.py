@@ -183,7 +183,8 @@ def test_application_jd_harness_replay_reads_private_context_without_powershell_
 
     assert "Get-TriageReplayPayload" in script
     assert "APPLICATION_JD_HARNESS_TRIAGE_CONTEXT" in script
-    assert "json.dumps(private.get(\"payload\"), ensure_ascii=False" in script
+    assert "json.dumps(private.get(\"payload\"), ensure_ascii=True" in script
+    assert "json.dumps(private.get(\"payload\"), ensure_ascii=False" not in script
     assert 'Get-Content -LiteralPath $triageReplayContextPath -Raw | ConvertFrom-Json' not in script
 
 

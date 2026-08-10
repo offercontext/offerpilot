@@ -560,7 +560,7 @@ with open(context_path, encoding="utf-8") as handle:
 payload = private.get("payload") if isinstance(private, dict) else None
 if not isinstance(payload, dict) or payload.get("schema_version") != 2:
     raise SystemExit("private triage context has an invalid payload")
-print(json.dumps(private.get("payload"), ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+print(json.dumps(private.get("payload"), ensure_ascii=True, sort_keys=True, separators=(",", ":")))
 '@
   $json = $code | & uv run python -
   Assert-ExitCode 'triage replay payload serialization'
