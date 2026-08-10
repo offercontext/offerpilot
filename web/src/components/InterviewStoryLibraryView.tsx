@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Alert, Button, Empty, List, Space, Spin, Tag, Typography } from 'antd';
-import { archiveInterviewStory, getInterviewStory, listInterviewStories, restoreInterviewStory } from '@/services/interviewStories';
-import type { InterviewStory } from '@/types/interviewStory';
+import { Alert, Button, Empty, Input, List, Space, Spin, Tag, Typography } from 'antd';
+import { archiveInterviewStory, getInterviewStory, getInterviewStoryVersion, listInterviewStories, listInterviewStoryVersions, restoreInterviewStory } from '@/services/interviewStories';
+import type { InterviewStory, InterviewStoryVersion } from '@/types/interviewStory';
 
 const { Paragraph, Title, Text } = Typography;
 
@@ -25,19 +25,27 @@ function sourceStateLabel(story: InterviewStory): string | null {
   return null;
 }
 
+function hasFrozenUserAssertion(story: InterviewStory): boolean {
+  return story.source_states.some((item) => item.state === 'frozen_user_assertion');
+}
+
 export default function InterviewStoryLibraryView({ onOpenDraft, onBack }: Props) {
   const [stories, setStories] = useState<InterviewStory[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [status, setStatus] = useState<'active' | 'archived'>('active');
+  const [query, setQuery] = useState('');
   const [selectedStory, setSelectedStory] = useState<InterviewStory | null>(null);
+  const [versions, setVersions] = useState<Array<Pick<InterviewStoryVersion, 'id' | 'version_number' | 'origin_kind' | 'confirmed_at' | 'source_fingerprint'>>>([]);
+  const [selectedVersion, setSelectedVersion] = useState<InterviewStoryVersion | null>(null);
 
-  const load = () => {
+  const load = (nextStatus = status, nextQuery = query) => {
     setLoading(true);
     setError(false);
-    void listInterviewStories().then(setStories).catch(() => setError(true)).finally(() => setLoading(false));
+    void listInterviewStories(nextStatus, nextQuery).then(setStories).catch(() => setError(true)).finally(() => setLoading(false));
   };
 
-  useEffect(load, []);
+  useEffect(() => { load(status, query); }, [status, query]);
 
   const toggleArchive = async (story: InterviewStory) => {
     try {
@@ -52,7 +60,18 @@ export default function InterviewStoryLibraryView({ onOpenDraft, onBack }: Props
 
   const openStory = async (storyId: number) => {
     try {
-      setSelectedStory(await getInterviewStory(storyId));
+      const [story, history] = await Promise.all([getInterviewStory(storyId), listInterviewStoryVersions(storyId)]);
+      setSelectedStory(story);
+      setVersions(history);
+      setSelectedVersion(story.version ?? null);
+    } catch {
+      setError(true);
+    }
+  };
+
+  const openVersion = async (storyId: number, versionId: number) => {
+    try {
+      setSelectedVersion(await getInterviewStoryVersion(storyId, versionId));
     } catch {
       setError(true);
     }
@@ -71,15 +90,21 @@ export default function InterviewStoryLibraryView({ onOpenDraft, onBack }: Props
         <Paragraph type="secondary" style={{ margin: 0 }}>
           只在你选择原始证据并确认后保存；故事版本会保留当时的来源，不会写入知识库或自动用于面试。
         </Paragraph>
+        <Space wrap>
+          <Button type={status === 'active' ? 'primary' : 'default'} onClick={() => setStatus('active')}>使用中</Button>
+          <Button type={status === 'archived' ? 'primary' : 'default'} onClick={() => setStatus('archived')}>已归档</Button>
+          <Input.Search aria-label="搜索面试故事" value={query} onChange={(event) => setQuery(event.target.value)} onSearch={(value) => setQuery(value)} placeholder="搜索故事标题" style={{ width: 260 }} />
+        </Space>
       </Space>
       {loading ? <Spin aria-label="正在加载面试故事" /> : null}
-      {error ? <Alert type="error" showIcon message="故事库暂时无法加载，请稍后重试。" action={<Button size="small" onClick={load}>重试</Button>} /> : null}
+      {error ? <Alert type="error" showIcon message="故事库暂时无法加载，请稍后重试。" action={<Button size="small" onClick={() => load()}>重试</Button>} /> : null}
       {!loading && !error && stories.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有已确认的面试故事" /> : null}
       {!loading && !error && stories.length > 0 ? (
         <List
           dataSource={stories}
           renderItem={(story) => {
             const state = sourceStateLabel(story);
+            const assertion = hasFrozenUserAssertion(story);
             return (
               <List.Item actions={[
                 <Button key="view" type="link" onClick={() => void openStory(story.id)}>查看版本</Button>,
@@ -89,17 +114,17 @@ export default function InterviewStoryLibraryView({ onOpenDraft, onBack }: Props
               ]}>
                 <List.Item.Meta
                   title={<Space><Text strong>{story.title}</Text><Tag>{story.status === 'active' ? '使用中' : '已归档'}</Tag></Space>}
-                  description={<Space wrap><span>版本 {story.version_number ?? 0}</span>{state ? <Tag color={state === '来源已变化' ? 'warning' : 'default'}>{state}</Tag> : null}</Space>}
+                  description={<Space wrap><span>版本 {story.version_number ?? 0}</span>{state ? <Tag color={state === '来源已变化' ? 'warning' : 'default'}>{state}</Tag> : null}{assertion ? <Tag>包含已冻结的用户确认陈述</Tag> : null}</Space>}
                 />
               </List.Item>
             );
           }}
         />
       ) : null}
-      {selectedStory?.version ? (
+      {selectedStory && selectedVersion ? (
         <section style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid var(--op-border, #e5e7eb)' }} aria-label="故事版本历史">
           <Space style={{ justifyContent: 'space-between', width: '100%' }}>
-            <Title level={4} style={{ margin: 0 }}>版本 {selectedStory.version.version_number} · 已确认历史</Title>
+            <Title level={4} style={{ margin: 0 }}>版本 {selectedVersion.version_number} · 已确认历史</Title>
             <Space>
               {selectedStory.status === 'active' && selectedStory.current_version_id ? (
                 <Button onClick={() => onOpenDraft({
@@ -109,16 +134,29 @@ export default function InterviewStoryLibraryView({ onOpenDraft, onBack }: Props
                   expectedStoryRevision: selectedStory.story_revision,
                 })}>基于此故事新建版本</Button>
               ) : null}
-              <Button onClick={() => setSelectedStory(null)}>关闭历史</Button>
+              <Button onClick={() => { setSelectedStory(null); setSelectedVersion(null); setVersions([]); }}>关闭历史</Button>
             </Space>
           </Space>
-          {selectedStory.source_states.some((item) => item.state === 'changed' || item.state === 'missing') ? (
+          <List
+            size="small"
+            dataSource={versions}
+            renderItem={(version) => <List.Item actions={[
+              <Button key="version" type="link" onClick={() => void openVersion(selectedStory.id, version.id)}>查看版本 {version.version_number}</Button>,
+            ]}>
+              <Space><span>版本 {version.version_number}</span><Tag>{version.origin_kind === 'manual' ? '手动保存' : 'AI 建议后确认'}</Tag></Space>
+            </List.Item>}
+          />
+          {selectedVersion.source_states.some((item) => item.state === 'changed' || item.state === 'missing') ? (
             <Alert type="warning" showIcon message="当前来源已变化，以下内容仍是当时确认的冻结版本。" style={{ marginTop: 12 }} />
           ) : <Alert type="info" showIcon message="以下内容来自已确认的冻结版本。" style={{ marginTop: 12 }} />}
-          <Title level={5}>{selectedStory.version.content.title.text}</Title>
-          {selectedStory.version.content.blocks.map((block) => <Paragraph key={block.id}>{block.text}</Paragraph>)}
+          <Title level={5}>{selectedVersion.content.title.text}</Title>
+          {selectedVersion.content.blocks.map((block) => <Paragraph key={block.id}>{block.text}</Paragraph>)}
           <Space wrap>
-            {selectedStory.version.evidence_links.map((link) => <Tag key={`${link.target_kind}-${link.target_id}-${link.source_stable_id}`}>证据 · {link.excerpt}</Tag>)}
+            {selectedVersion.evidence_links.map((link) => (
+              <Tag key={`${link.target_kind}-${link.target_id}-${link.source_stable_id}`}>
+                {link.source_kind === 'user_assertion' ? '已冻结的用户确认陈述 · ' : '证据 · '}{link.excerpt}
+              </Tag>
+            ))}
           </Space>
         </section>
       ) : null}

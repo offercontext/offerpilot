@@ -73,6 +73,32 @@ export interface InterviewStorySourceSelection {
   path: string;
 }
 
+export interface InterviewStorySourceCandidateLeaf {
+  path: string;
+  preview: string;
+}
+
+export interface InterviewStoryResumeSourceCandidate {
+  id: number;
+  label: string;
+  leaves: InterviewStorySourceCandidateLeaf[];
+}
+
+export interface InterviewStoryNoteSourceCandidate extends InterviewStoryResumeSourceCandidate {}
+
+export interface InterviewStoryMockTurnSourceCandidate {
+  attempt_id: number;
+  turn_no: number;
+  label: string;
+  leaves: InterviewStorySourceCandidateLeaf[];
+}
+
+export interface InterviewStorySourceCandidates {
+  resumes: InterviewStoryResumeSourceCandidate[];
+  interview_notes: InterviewStoryNoteSourceCandidate[];
+  mock_turns: InterviewStoryMockTurnSourceCandidate[];
+}
+
 export interface InterviewStoryClientEvidenceLink {
   target_kind: InterviewStoryTargetKind;
   target_id: string;
@@ -91,6 +117,14 @@ export interface InterviewStoryProposalInput {
   assertions: string[];
   idempotency_key: string;
   entry_context?: { review_note_id?: number };
+}
+
+export interface InterviewStoryManualInput {
+  content: InterviewStoryEditableContent;
+  evidence_links: InterviewStoryClientEvidenceLink[];
+  selections: InterviewStorySourceSelection[];
+  assertions: string[];
+  expected_current_version_id: number | null;
 }
 
 export interface InterviewStoryPendingAttempt {

@@ -2,11 +2,11 @@ import axios from 'axios';
 import type {
   InterviewStory,
   InterviewStoryClientEvidenceLink,
-  InterviewStoryEditableContent,
+  InterviewStoryManualInput,
   InterviewStoryPendingAttempt,
   InterviewStoryProposalAttempt,
   InterviewStoryProposalInput,
-  InterviewStorySourceSelection,
+  InterviewStorySourceCandidates,
   InterviewStoryVersion,
 } from '@/types/interviewStory';
 import { InterviewStoryError as StoryError } from '@/types/interviewStory';
@@ -42,6 +42,12 @@ export function getInterviewStory(storyId: number): Promise<InterviewStory> {
   return request(() => http.get<InterviewStory>(`/interview-stories/${storyId}`));
 }
 
+export function listInterviewStorySourceCandidates(reviewNoteId?: number): Promise<InterviewStorySourceCandidates> {
+  return request(() => http.get<InterviewStorySourceCandidates>('/interview-story-sources', {
+    params: reviewNoteId ? { review_note_id: reviewNoteId } : undefined,
+  }));
+}
+
 export function listInterviewStoryVersions(storyId: number): Promise<Array<Pick<InterviewStoryVersion, 'id' | 'version_number' | 'origin_kind' | 'confirmed_at' | 'source_fingerprint'>>> {
   return request(() => http.get(`/interview-stories/${storyId}/versions`));
 }
@@ -50,21 +56,13 @@ export function getInterviewStoryVersion(storyId: number, versionId: number): Pr
   return request(() => http.get<InterviewStoryVersion>(`/interview-stories/${storyId}/versions/${versionId}`));
 }
 
-interface ManualStoryInput {
-  content: InterviewStoryEditableContent;
-  evidence_links: InterviewStoryClientEvidenceLink[];
-  selections: InterviewStorySourceSelection[];
-  assertions: string[];
-  expected_current_version_id: number | null;
-}
-
-export function createInterviewStory(input: ManualStoryInput): Promise<InterviewStory> {
+export function createInterviewStory(input: InterviewStoryManualInput): Promise<InterviewStory> {
   return request(() => http.post<InterviewStory>('/interview-stories', input));
 }
 
 export function createInterviewStoryVersion(
   storyId: number,
-  input: ManualStoryInput & { expected_story_revision: number },
+  input: InterviewStoryManualInput & { expected_story_revision: number },
 ): Promise<InterviewStory> {
   return request(() => http.post<InterviewStory>(`/interview-stories/${storyId}/versions`, input));
 }
@@ -93,7 +91,7 @@ export function confirmInterviewStoryProposal(
   attemptId: number,
   input: {
     confirmation_token: string;
-    content: ManualStoryInput['content'];
+    content: InterviewStoryManualInput['content'];
     evidence_links: InterviewStoryClientEvidenceLink[];
     expected_current_version_id: number | null;
     expected_story_revision: number | null;

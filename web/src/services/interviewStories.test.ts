@@ -45,4 +45,15 @@ describe('interview story service', () => {
     expect(apiGet).toHaveBeenCalledWith('/interview-stories/5/versions');
     expect(apiPost).toHaveBeenCalledWith('/interview-stories/5/archive', { expected_story_revision: 2 });
   });
+
+  it('reads explicit Story source candidates without any write request', async () => {
+    apiGet.mockResolvedValue({ data: { resumes: [], interview_notes: [], mock_turns: [] } });
+
+    await service.listInterviewStorySourceCandidates();
+    await service.listInterviewStorySourceCandidates(9);
+
+    expect(apiGet).toHaveBeenNthCalledWith(1, '/interview-story-sources', { params: undefined });
+    expect(apiGet).toHaveBeenNthCalledWith(2, '/interview-story-sources', { params: { review_note_id: 9 } });
+    expect(apiPost).not.toHaveBeenCalled();
+  });
 });

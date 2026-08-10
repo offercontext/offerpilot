@@ -127,6 +127,12 @@ function createMockInterviewDraft(): MockInterviewDrawerDraft {
   };
 }
 
+function interviewStoryDraftScope(input: InterviewStoryOpenDraft): string {
+  const target = input.targetStoryId ?? 'new';
+  const note = input.reviewNoteId ?? 'all-notes';
+  return `${input.entrypoint}:story:${target}:note:${note}`;
+}
+
 class ViewErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
   state = { hasError: false };
 
@@ -206,7 +212,9 @@ function AppShellContent() {
   const [interviewPreparationDrafts, setInterviewPreparationDrafts] = useState<Record<string, InterviewPreparationDraft>>({});
   const [interviewStoryLibraryOpen, setInterviewStoryLibraryOpen] = useState(false);
   const [interviewStoryDrawerOpen, setInterviewStoryDrawerOpen] = useState(false);
-  const [interviewStoryDraft, setInterviewStoryDraft] = useState<InterviewStoryDraft | null>(null);
+  const interviewStoryDraftsRef = useRef(new Map<string, InterviewStoryDraft>());
+  const [interviewStoryDrafts, setInterviewStoryDrafts] = useState<Record<string, InterviewStoryDraft>>({});
+  const [activeInterviewStoryDraftScope, setActiveInterviewStoryDraftScope] = useState<string | null>(null);
   const [evidenceFocus, setEvidenceFocus] = useState<Exclude<EvidenceTarget, { kind: 'application' }> | null>(null);
   const [coachOfferId, setCoachOfferId] = useState<number | undefined>(undefined);
   const [chatStartRequest, setChatStartRequest] = useState<ChatStartRequest>();
@@ -1072,21 +1080,41 @@ function AppShellContent() {
   const resumeEvidenceFocus = evidenceFocus?.kind === 'resume' ? evidenceFocus : undefined;
 
   const openInterviewStoryDraft = (input: InterviewStoryOpenDraft) => {
+    const scope = interviewStoryDraftScope(input);
     setView('interview');
     setInterviewStoryLibraryOpen(true);
-    setInterviewStoryDraft((current) => {
-      if (
-        current?.resultUnknown
-        && current.entrypoint === input.entrypoint
-        && current.reviewNoteId === input.reviewNoteId
-      ) return current;
-      return createInterviewStoryDraft(input.entrypoint, input.reviewNoteId, {
+    setActiveInterviewStoryDraftScope(scope);
+    setInterviewStoryDrafts((current) => {
+      const existing = interviewStoryDraftsRef.current.get(scope);
+      const next = existing ?? createInterviewStoryDraft(input.entrypoint, input.reviewNoteId, {
         targetStoryId: input.targetStoryId,
         expectedCurrentVersionId: input.expectedCurrentVersionId,
         expectedStoryRevision: input.expectedStoryRevision,
       });
+      interviewStoryDraftsRef.current.set(scope, next);
+      return { ...current, [scope]: next };
     });
     setInterviewStoryDrawerOpen(true);
+  };
+
+  const interviewStoryDraft = activeInterviewStoryDraftScope
+    ? interviewStoryDrafts[activeInterviewStoryDraftScope] ?? null
+    : null;
+
+  const updateInterviewStoryDraft = (draft: InterviewStoryDraft | null) => {
+    const scope = activeInterviewStoryDraftScope;
+    if (!scope) return;
+    setInterviewStoryDrafts((current) => {
+      const next = { ...current };
+      if (draft === null) {
+        interviewStoryDraftsRef.current.delete(scope);
+        delete next[scope];
+      } else {
+        interviewStoryDraftsRef.current.set(scope, draft);
+        next[scope] = draft;
+      }
+      return next;
+    });
   };
 
   const workspaceContent = aiSettingsOpen ? (
@@ -1408,7 +1436,7 @@ function AppShellContent() {
         <InterviewStoryDrawer
           open
           draft={interviewStoryDraft}
-          onDraftChange={(draft) => setInterviewStoryDraft(draft)}
+          onDraftChange={updateInterviewStoryDraft}
           onClose={() => setInterviewStoryDrawerOpen(false)}
         />
       ) : null}
