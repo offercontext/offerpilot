@@ -3940,6 +3940,11 @@ def create_app(
         message = str(payload.get("message") or "")
         if not message:
             return error_response(400, "message is required")
+        if "pilot_action" in payload:
+            try:
+                parse_pilot_action(payload["pilot_action"])
+            except ValueError as exc:
+                return error_response(422, str(exc))
 
         conversation_id = int(payload.get("conversation_id") or 0)
         created_new = conversation_id == 0
@@ -5034,7 +5039,7 @@ def create_app(
     @app.get("/api/chat/conversations")
     def list_conversations(include_archived: bool = False) -> list[dict[str, Any]]:
         return [
-            _conversation_json(item, applications)
+            _conversation_json(item, applications, application_jd_versions)
             for item in chat.list_conversations(include_archived=include_archived)
         ]
 
@@ -5084,7 +5089,7 @@ def create_app(
         else:
             conversation = chat.update_conversation(conversation_id, values)
         assert conversation is not None
-        return JSONResponse(_conversation_json(conversation, applications))
+        return JSONResponse(_conversation_json(conversation, applications, application_jd_versions))
 
     @app.delete("/api/chat/conversations/{conversation_id}")
     def delete_conversation(conversation_id: int) -> dict[str, str]:
@@ -6701,7 +6706,11 @@ def _dump_provider_blocks(provider_blocks: dict[str, Any]) -> str:
     return json.dumps(allowed, ensure_ascii=False)
 
 
-def _conversation_json(conversation: Any, applications: ApplicationsRepository) -> dict[str, Any]:
+def _conversation_json(
+    conversation: Any,
+    applications: ApplicationsRepository,
+    application_jd_versions: ApplicationJDService | None = None,
+) -> dict[str, Any]:
     payload = ConversationOut.model_validate(conversation).model_dump(mode="json")
     payload["context_label"] = _conversation_context_label(conversation, applications)
     if conversation.pending_tool_name:
@@ -6713,6 +6722,7 @@ def _conversation_json(conversation: Any, applications: ApplicationsRepository) 
                 human=conversation.pending_human or conversation.pending_tool_name,
             ),
             applications,
+            application_jd_versions,
         )
     if conversation.clarification_tool_name:
         payload["pending_clarification"] = _pending_action_json(
@@ -6723,6 +6733,7 @@ def _conversation_json(conversation: Any, applications: ApplicationsRepository) 
                 human=conversation.clarification_human or conversation.clarification_tool_name,
             ),
             applications,
+            application_jd_versions,
         )
         payload["pending_clarification"]["question"] = conversation.clarification_question
     else:
@@ -6928,8 +6939,13 @@ def _pending_action_details(
         }
         details: dict[str, Any] = {"target": target, "evidence": [target]}
         if application_jd_versions is not None:
-            current = application_jd_versions.get_current(application.id)
-            current_number = current.version_number if current is not None else None
+            expected_version_id = args.get("expected_current_version_id")
+            expected_version = (
+                application_jd_versions.get_version(application.id, expected_version_id)
+                if type(expected_version_id) is int
+                else None
+            )
+            current_number = expected_version.version_number if expected_version is not None else None
             details["application_jd"] = {
                 "current_version_number": current_number,
                 "proposed_version_number": (current_number or 0) + 1,

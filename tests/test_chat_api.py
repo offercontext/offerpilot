@@ -263,6 +263,68 @@ def test_deterministic_pilot_action_payload_creates_confirmation_without_ai(tmp_
     assert model.calls == 0
 
 
+def test_deterministic_pilot_conversation_readback_keeps_frozen_version_metadata(tmp_path):
+    model = CountingFailingModel()
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model, title_model=model))
+    application = client.post(
+        "/api/applications",
+        json={"company_name": "Example Co", "position_name": "Backend Engineer", "status": "interview"},
+    ).json()
+    first = client.post(
+        f"/api/applications/{application['id']}/job-description/versions",
+        json={
+            "jd_text": "first saved JD",
+            "source_url": None,
+            "expected_current_version_id": None,
+            "idempotency_key": "metadata-version-one",
+        },
+    ).json()
+    pending = client.post(
+        "/api/chat",
+        json={
+            "message": "save job details",
+            "pilot_action": {"type": "application_jd_save", "jdText": "new saved JD"},
+            "conversation_id": 0,
+            "context_type": "application",
+            "context_ref": str(application["id"]),
+        },
+    ).json()
+    assert pending["pending_action"]["application_jd"] == {
+        "current_version_number": 1,
+        "proposed_version_number": 2,
+    }
+
+    client.post(
+        f"/api/applications/{application['id']}/job-description/versions",
+        json={
+            "jd_text": "second saved JD",
+            "source_url": None,
+            "expected_current_version_id": first["id"],
+            "idempotency_key": "metadata-version-two",
+        },
+    )
+    readback = client.get("/api/chat/conversations").json()[0]
+    assert readback["pending_action"]["application_jd"] == {
+        "current_version_number": 1,
+        "proposed_version_number": 2,
+    }
+    assert model.calls == 0
+
+
+def test_invalid_pilot_action_does_not_create_conversation(tmp_path):
+    model = CountingFailingModel()
+    client = TestClient(create_app(data_dir=tmp_path, chat_model=model, title_model=model))
+
+    response = client.post(
+        "/api/chat",
+        json={"message": "save job details", "conversation_id": 0, "pilot_action": {"type": "invalid"}},
+    )
+
+    assert response.status_code == 422
+    assert client.get("/api/chat/conversations").json() == []
+    assert model.calls == 0
+
+
 @pytest.mark.parametrize("endpoint", ["/api/chat/confirm", "/api/chat/confirm/stream"])
 def test_deterministic_pilot_confirmation_writes_once_without_ai(tmp_path, endpoint):
     model = CountingFailingModel()
