@@ -6,6 +6,8 @@ import io
 import json
 from pathlib import Path
 
+import pytest
+
 
 _AUDIT_PATH = Path(__file__).parents[1] / "scripts" / "browser-network-audit.py"
 _SPEC = importlib.util.spec_from_file_location("browser_network_audit", _AUDIT_PATH)
@@ -18,6 +20,42 @@ BrowserAudit = _MODULE.BrowserAudit
 class _WebSocket:
     async def send(self, message: str) -> None:
         del message
+
+
+class _ScriptedWebSocket:
+    def __init__(self, *, attach_target: str | None = "story-target", reject_network: bool = False) -> None:
+        self.attach_target = attach_target
+        self.reject_network = reject_network
+        self.messages: asyncio.Queue[dict[str, object] | None] = asyncio.Queue()
+
+    async def send(self, message: str) -> None:
+        command = json.loads(message)
+        command_id = command["id"]
+        method = command["method"]
+        if method == "Target.createTarget":
+            if self.attach_target is not None:
+                await self.messages.put({
+                    "method": "Target.attachedToTarget",
+                    "params": {
+                        "sessionId": "story-session",
+                        "targetInfo": {"targetId": self.attach_target, "type": "page"},
+                    },
+                })
+            await self.messages.put({"id": command_id, "result": {"targetId": "story-target"}})
+            return
+        if method == "Network.enable" and self.reject_network:
+            await self.messages.put({"id": command_id, "error": {"message": "rejected"}})
+            return
+        await self.messages.put({"id": command_id, "result": {}})
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self) -> str:
+        message = await self.messages.get()
+        if message is None:
+            raise StopAsyncIteration
+        return json.dumps(message)
 
 
 def _request(url: str, payload: dict[str, object]) -> dict[str, object]:
@@ -99,3 +137,29 @@ def test_browser_audit_waits_for_loading_finished_before_capturing_workflow_resp
 
     assert records[-1]["response_body_status"] == "captured"
     assert records[-1]["response_proposal_id"] == 8
+
+
+def test_browser_audit_requires_the_dedicated_target_to_finish_network_enable(tmp_path: Path) -> None:
+    async def run() -> None:
+        websocket = _ScriptedWebSocket(attach_target="unowned-target")
+        audit = BrowserAudit(websocket, tmp_path / "audit.jsonl", tmp_path / "stop")
+        with pytest.raises(RuntimeError, match="dedicated browser target did not complete Network.enable"):
+            await asyncio.wait_for(
+                audit.run("http://127.0.0.1:9999", tmp_path / "ready", 0.05),
+                timeout=1,
+            )
+
+    asyncio.run(run())
+
+
+def test_browser_audit_fails_closed_when_network_enable_is_rejected(tmp_path: Path) -> None:
+    async def run() -> None:
+        websocket = _ScriptedWebSocket(reject_network=True)
+        audit = BrowserAudit(websocket, tmp_path / "audit.jsonl", tmp_path / "stop")
+        with pytest.raises(RuntimeError, match="Network.enable"):
+            await asyncio.wait_for(
+                audit.run("http://127.0.0.1:9999", tmp_path / "ready", 0.5),
+                timeout=1,
+            )
+
+    asyncio.run(run())
