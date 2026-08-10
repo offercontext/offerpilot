@@ -6,6 +6,8 @@ import io
 import json
 from pathlib import Path
 import subprocess
+import struct
+import zlib
 
 import pytest
 
@@ -68,6 +70,36 @@ def _request(url: str, payload: dict[str, object]) -> dict[str, object]:
             "request": {"method": "POST", "url": url, "postData": json.dumps(payload)},
         },
     }
+
+
+def _run_harness(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(_HARNESS_PATH),
+            *args,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _write_gray_png(path: Path, *, width: int = 1455, height: int = 1200) -> None:
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
+
+    scanlines = (b"\x00" + b"\xff" * width) * height
+    path.write_bytes(
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(scanlines, level=9))
+        + chunk(b"IEND", b"")
+    )
 
 
 def test_browser_audit_derives_story_entrypoint_and_hashes_retry_tokens(tmp_path: Path) -> None:
@@ -189,51 +221,19 @@ def test_story_browser_harness_validates_each_entrypoint_sequence_and_auditor_ex
         {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/interview-story-proposals/12/confirm", "response_status": 201, "response_body_status": "captured", "response_story_id": 102, "response_story_version_id": 202},
         {"kind": "browser_response", "method": "GET", "url": f"{base_url}/api/interview-stories/102/versions/202", "response_status": 200, "response_body_status": "captured"},
     ]
+    for index, record in enumerate(audit_records, 1):
+        record["observed_at_ns"] = 1_000_000 + index * 1_000
     audit_path = tmp_path / "story-audit.jsonl"
     audit_path.write_text("\n".join(json.dumps(record) for record in audit_records) + "\n", encoding="utf-8")
 
-    success = subprocess.run(
-        [
-            "powershell",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(_HARNESS_PATH),
-            "-ValidateAudit",
-            "-AuditPath",
-            str(audit_path),
-            "-ExpectedBaseUrl",
-            base_url,
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    success = _run_harness("-ValidateAudit", "-AuditPath", str(audit_path), "-ExpectedBaseUrl", base_url)
     assert success.returncode == 0, success.stderr
 
     missing_pilot_source = [
         record for record in audit_records if not record["url"].startswith(f"{base_url}/api/interview-story-sources?")
     ]
     audit_path.write_text("\n".join(json.dumps(record) for record in missing_pilot_source) + "\n", encoding="utf-8")
-    failure = subprocess.run(
-        [
-            "powershell",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(_HARNESS_PATH),
-            "-ValidateAudit",
-            "-AuditPath",
-            str(audit_path),
-            "-ExpectedBaseUrl",
-            base_url,
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    failure = _run_harness("-ValidateAudit", "-AuditPath", str(audit_path), "-ExpectedBaseUrl", base_url)
     assert failure.returncode != 0
     assert "source picker" in (failure.stdout + failure.stderr)
 
@@ -244,46 +244,86 @@ def test_story_browser_harness_validates_each_entrypoint_sequence_and_auditor_ex
     )
     pilot_source_response["response_status"] = 500
     audit_path.write_text("\n".join(json.dumps(record) for record in failed_source_response) + "\n", encoding="utf-8")
-    failed_read = subprocess.run(
-        [
-            "powershell",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(_HARNESS_PATH),
-            "-ValidateAudit",
-            "-AuditPath",
-            str(audit_path),
-            "-ExpectedBaseUrl",
-            base_url,
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    failed_read = _run_harness("-ValidateAudit", "-AuditPath", str(audit_path), "-ExpectedBaseUrl", base_url)
     assert failed_read.returncode != 0
     assert "source picker" in (failed_read.stdout + failed_read.stderr)
 
-    auditor_failure = subprocess.run(
-        [
-            "powershell",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(_HARNESS_PATH),
-            "-ValidateAudit",
-            "-AuditPath",
-            str(audit_path),
-            "-ExpectedBaseUrl",
-            base_url,
-            "-AuditorExitCode",
-            "7",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
+    auditor_failure = _run_harness(
+        "-ValidateAudit", "-AuditPath", str(audit_path), "-ExpectedBaseUrl", base_url, "-AuditorExitCode", "7"
     )
     assert auditor_failure.returncode != 0
     assert "Browser auditor failed with exit code 7" in (auditor_failure.stdout + auditor_failure.stderr)
+
+    chat_write = [*audit_records, {"kind": "browser_request", "method": "POST", "url": f"{base_url}/api/chat"}]
+    audit_path.write_text("\n".join(json.dumps(record) for record in chat_write) + "\n", encoding="utf-8")
+    chat_failure = _run_harness("-ValidateAudit", "-AuditPath", str(audit_path), "-ExpectedBaseUrl", base_url)
+    assert chat_failure.returncode != 0
+    assert "chat writes" in (chat_failure.stdout + chat_failure.stderr)
+
+
+def test_story_browser_harness_allows_one_bounded_repair_per_entrypoint_and_rejects_more(tmp_path: Path) -> None:
+    audit = tmp_path / "provider-audit.jsonl"
+    browser_audit = tmp_path / "browser-audit.jsonl"
+    allowlist = tmp_path / "providers.json"
+    allowlist.write_text(json.dumps([{"Tuple": "https://provider.example:443"}]), encoding="utf-8")
+    base_url = "http://127.0.0.1:9999"
+    browser_records = [
+        {"kind": "browser_request", "method": "POST", "url": f"{base_url}/api/interview-story-proposals", "request_context": {"entrypoint": "ui"}, "observed_at_ns": 1_000},
+        {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/interview-story-proposals", "request_context": {"entrypoint": "ui"}, "response_status": 201, "response_body_status": "captured", "response_proposal_id": 11, "observed_at_ns": 2_000},
+        {"kind": "browser_request", "method": "POST", "url": f"{base_url}/api/pilot/interview-story-proposals", "request_context": {"entrypoint": "pilot"}, "observed_at_ns": 3_000},
+        {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/pilot/interview-story-proposals", "request_context": {"entrypoint": "pilot"}, "response_status": 201, "response_body_status": "captured", "response_proposal_id": 12, "observed_at_ns": 4_000},
+    ]
+    browser_audit.write_text("\n".join(json.dumps(record) for record in browser_records) + "\n", encoding="utf-8")
+    normal_and_repaired = [
+        {"kind": "provider_proxy_connect", "scheme": "https", "host": "provider.example", "port": 443, "status": "connected", "observed_at_ns": timestamp}
+        for timestamp in (1_200, 1_800, 3_200, 3_800)
+    ]
+    audit.write_text("\n".join(json.dumps(record) for record in normal_and_repaired) + "\n", encoding="utf-8")
+
+    accepted = _run_harness(
+        "-ValidateProviderEgress", "-ProviderAuditPath", str(audit), "-ProviderAllowlistPath", str(allowlist),
+        "-BrowserAuditPath", str(browser_audit), "-ExpectedBaseUrl", base_url,
+    )
+    assert accepted.returncode == 0, accepted.stderr
+
+    audit.write_text("\n".join(json.dumps(record) for record in [*normal_and_repaired, normal_and_repaired[0]]) + "\n", encoding="utf-8")
+    rejected = _run_harness(
+        "-ValidateProviderEgress", "-ProviderAuditPath", str(audit), "-ProviderAllowlistPath", str(allowlist),
+        "-BrowserAuditPath", str(browser_audit), "-ExpectedBaseUrl", base_url,
+    )
+    assert rejected.returncode != 0
+    assert "two to four" in (rejected.stdout + rejected.stderr)
+
+    ui_overflow = [
+        {"kind": "provider_proxy_connect", "scheme": "https", "host": "provider.example", "port": 443, "status": "connected", "observed_at_ns": timestamp}
+        for timestamp in (1_100, 1_500, 1_900, 3_500)
+    ]
+    audit.write_text("\n".join(json.dumps(record) for record in ui_overflow) + "\n", encoding="utf-8")
+    unbalanced = _run_harness(
+        "-ValidateProviderEgress", "-ProviderAuditPath", str(audit), "-ProviderAllowlistPath", str(allowlist),
+        "-BrowserAuditPath", str(browser_audit), "-ExpectedBaseUrl", base_url,
+    )
+    assert unbalanced.returncode != 0
+    assert "Story ui flow" in (unbalanced.stdout + unbalanced.stderr)
+
+
+def test_story_browser_harness_records_a_single_viewport_screenshot_matrix(tmp_path: Path) -> None:
+    screenshots = tmp_path / "screenshots"
+    screenshots.mkdir()
+    names = [
+        "01-story-library.png", "02-source-picker.png", "03-source-preview.png", "04-generated-draft.png",
+        "05-confirmation.png", "06-history.png", "07-source-changed.png", "08-pilot-entry.png",
+        "09-pilot-source-choice.png", "10-pilot-history.png",
+    ]
+    for name in names:
+        _write_gray_png(screenshots / name)
+    manifest = tmp_path / "matrix.json"
+
+    result = _run_harness(
+        "-ValidateScreenshotMatrix", "-ScreenshotDirectory", str(screenshots), "-ScreenshotManifestPath", str(manifest)
+    )
+
+    assert result.returncode == 0, result.stderr
+    matrix = json.loads(manifest.read_text(encoding="utf-8"))
+    assert len(matrix) == 10
+    assert all(item["width"] == 1455 and item["height"] == 1200 and len(item["sha256"]) == 64 for item in matrix)

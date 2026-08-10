@@ -142,6 +142,7 @@ class BrowserAudit:
         if target_id and isinstance(method, str) and isinstance(url, str) and self.handle is not None:
             record: dict[str, object] = {
                 "kind": "browser_request",
+                "observed_at_ns": time.time_ns(),
                 "target_id": target_id,
                 "session_id": session_id,
                 "method": method,
@@ -265,6 +266,7 @@ class BrowserAudit:
         if self.handle is not None:
             response_record = {
                 "kind": "browser_response",
+                "observed_at_ns": time.time_ns(),
                 "target_id": record.get("target_id"),
                 "session_id": session_id,
                 "method": record.get("method"),

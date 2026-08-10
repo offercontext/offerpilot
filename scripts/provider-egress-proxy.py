@@ -5,6 +5,7 @@ import json
 import selectors
 import socket
 import socketserver
+import time
 from pathlib import Path
 
 
@@ -51,6 +52,7 @@ def _append_audit(path: Path, scheme: str, host: str, port: int, status: str) ->
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps({
             "kind": "provider_proxy_connect",
+            "observed_at_ns": time.time_ns(),
             "scheme": scheme,
             "host": host,
             "port": port,

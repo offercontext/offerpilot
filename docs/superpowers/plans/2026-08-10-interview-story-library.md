@@ -73,6 +73,26 @@ $intersection = @($storyFiles | Where-Object { $_ -in $jdFiles })
 
 明确禁止：修改 `src/offerpilot/knowledge/**`、`src/offerpilot/ai/tools.py`、现有 Interview/Mock/Knowledge 领域语义、JD Version 文件、任何外部招聘平台代码；新增 `StoryUsage` 表、usage 字段、usage API、自动练习或自动写入入口。
 
+#### Post-review allowlist correction
+
+The following existing support files are also allowed by the same exact-path
+allowlist. They are necessary to make the approved Story acceptance audit and
+the complete release gate exercise the Story UI, rather than a stale test
+fixture. No product capability outside the Story aggregate is authorized:
+
+| Scope | File | Restriction |
+| --- | --- | --- |
+| CDP response audit | Modify `scripts/browser-network-audit.py` | Capture only redacted structured workflow metadata after `Network.loadingFinished`; do not record bodies or credentials. |
+| Provider egress timing audit | Modify `scripts/provider-egress-proxy.py` | Record only a local UTC epoch connection timestamp with the already-allowed endpoint tuple, so the harness can bind each connection to the preceding UI or Pilot request window; never inspect tunneled payloads or credentials. |
+| Complete-gate test timing | Modify `tests/test_chat_api.py` | Only stabilize the two named, intentionally slow Chat confirmation tests; no Chat production behavior or contract change. |
+| AppShell test fixtures | Modify `web/src/layout/AppShell.evidenceNavigation.test.tsx`, `web/src/layout/AppShell.offerNegotiation.test.tsx` | Only supply the Ant Design exports needed to mount the approved Story drawer through real `AppShell` imports. |
+| This reviewed plan | Modify `docs/superpowers/plans/2026-08-10-interview-story-library.md` | Record this exact allowlist correction and the later review-required Story regression tests. |
+
+The final machine allowlist in Task 10 must include these five files and this
+plan file, in addition to every path in the table above. This correction is
+required because the original allowlist omitted existing test/audit fixtures
+that the approved browser and full-gate tasks already depend on.
+
 ### 0.4 固定领域常量与来源协议
 
 在 `repositories/interview_stories.py` 单点定义并由 API、AI validator、前端 tests 共同约束以下常量；不要在 API、组件和 prompt 复制字符串：
@@ -602,6 +622,24 @@ git commit -m "feat: AI connect story proposal recovery and Pilot"
   8. Pilot static entry before any chat write;
   9. Pilot explicit local request and source choice;
   10. Pilot draft/confirmation and its separate history result.
+
+  Save them with these exact names in the externally supplied `$ScreenshotDirectory`:
+  `01-story-library.png`, `02-source-picker.png`, `03-source-preview.png`,
+  `04-generated-draft.png`, `05-confirmation.png`, `06-history.png`,
+  `07-source-changed.png`, `08-pilot-entry.png`, `09-pilot-source-choice.png`,
+  and `10-pilot-history.png`. The harness must reject a missing image, a width
+  below 1440, a height below 900, or a stitched image above 1400px high; it
+  writes a UTF-8 screenshot matrix containing only filename, dimensions,
+  SHA-256, and an operator-required visual-review marker. The operator must
+  visually verify light mode, Chinese context, no clipping, and no blank or
+  squeezed panels before accepting that marker.
+
+  The network audit must prove the UI and Pilot differ only by their explicit
+  Story entrypoint: exactly one local UI proposal request and one local Pilot
+  proposal request, distinct hashed idempotency keys and Attempts, their own
+  confirmation/history sequence, and zero `/api/chat` or `/api/chat/confirm`
+  writes. Provider egress may contain two to four approved connections: one
+  normal generation or one bounded format repair for each entrypoint.
 
   Screenshots are evidence only after the CDP request sequence, target/session association, local-only browser allowlist, provider-egress allowlist, zero cross-domain writes, temporary process shutdown, and isolated data cleanup all pass.  A provider timeout, unavailable endpoint, contract failure, missing target sequence, or incomplete UI/Pilot branch is a failed or incomplete acceptance result, never a substitute API-smoke success.
 

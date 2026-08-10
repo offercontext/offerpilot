@@ -1,8 +1,15 @@
 param(
   [switch]$ValidateAudit,
   [string]$AuditPath,
+  [string]$BrowserAuditPath,
   [string]$ExpectedBaseUrl,
-  [int]$AuditorExitCode = 0
+  [int]$AuditorExitCode = 0,
+  [switch]$ValidateProviderEgress,
+  [string]$ProviderAuditPath,
+  [string]$ProviderAllowlistPath,
+  [switch]$ValidateScreenshotMatrix,
+  [string]$ScreenshotDirectory,
+  [string]$ScreenshotManifestPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -193,19 +200,71 @@ function Get-StoryAttemptResponse([object[]]$records, [string]$entrypoint, [stri
   return $matches[-1]
 }
 
-function Assert-ProviderEgress([object[]]$providers) {
-  if (-not (Test-Path -LiteralPath $providerAudit)) {
+function Get-StoryProviderFlowWindows([object[]]$records, [string]$baseUrl) {
+  $flows = @{}
+  foreach ($entrypoint in @('ui', 'pilot')) {
+    $url = if ($entrypoint -eq 'ui') { "$baseUrl/api/interview-story-proposals" } else { "$baseUrl/api/pilot/interview-story-proposals" }
+    $requests = @($records | Where-Object {
+      $_.kind -eq 'browser_request' -and $_.method -eq 'POST' -and $_.url -eq $url -and
+      $null -ne (Get-RecordProperty $_ 'request_context') -and $_.request_context.entrypoint -eq $entrypoint
+    })
+    if ($requests.Count -ne 1) { throw "Browser did not capture exactly one $entrypoint Story proposal request." }
+    $response = Get-StoryAttemptResponse $records $entrypoint $url
+    $requestTimestamp = Get-RecordProperty $requests[0] 'observed_at_ns'
+    $responseTimestamp = Get-RecordProperty $response.Record 'observed_at_ns'
+    foreach ($timestamp in @($requestTimestamp, $responseTimestamp)) {
+      if ($null -eq $timestamp -or [int64]$timestamp -le 0) {
+        throw 'Story browser flow is missing request-scoped audit timestamps.'
+      }
+    }
+    if ([int64]$requestTimestamp -gt [int64]$responseTimestamp) {
+      throw 'Story browser flow audit timestamps are out of order.'
+    }
+    $flows[$entrypoint] = [pscustomobject]@{
+      request_ns = [int64]$requestTimestamp
+      response_ns = [int64]$responseTimestamp
+    }
+  }
+  return [pscustomobject]@{ ui = $flows['ui']; pilot = $flows['pilot'] }
+}
+
+function Assert-ProviderEgress([object[]]$providers, [string]$auditPath = $providerAudit, [object]$flows) {
+  if (-not (Test-Path -LiteralPath $auditPath)) {
     throw 'Provider egress audit output is missing.'
   }
   $allowed = @{}
   foreach ($provider in $providers) { $allowed[$provider.Tuple] = $true }
-  $records = @(Get-Content -LiteralPath $providerAudit | Where-Object { $_.Trim() } | ForEach-Object { $_ | ConvertFrom-Json })
+  $records = @(Get-Content -LiteralPath $auditPath | Where-Object { $_.Trim() } | ForEach-Object { $_ | ConvertFrom-Json })
   $connections = @($records | Where-Object { $_.kind -eq 'provider_proxy_connect' })
-  if ($connections.Count -ne 2) { throw 'Browser Story flows must produce exactly two auditable Provider connections.' }
+  if ($connections.Count -lt 2 -or $connections.Count -gt 4) {
+    throw 'Browser Story flows must produce two to four auditable Provider connections: one normal call or one bounded format repair per UI/Pilot flow.'
+  }
   foreach ($connection in $connections) {
     $tuple = "$($connection.scheme)://$($connection.host):$($connection.port)"
     if ($connection.status -ne 'connected' -or -not $allowed.ContainsKey($tuple)) {
       throw 'Provider egress was outside the configured candidate allowlist.'
+    }
+  }
+  if ($null -eq $flows) { throw 'Provider egress audit requires correlated UI and Pilot flow windows.' }
+  $windows = @(
+    [pscustomobject]@{ entrypoint = 'ui'; start_ns = $flows.ui.request_ns; end_ns = $flows.ui.response_ns },
+    [pscustomobject]@{ entrypoint = 'pilot'; start_ns = $flows.pilot.request_ns; end_ns = $flows.pilot.response_ns }
+  )
+  $counts = @{ ui = 0; pilot = 0 }
+  foreach ($connection in $connections) {
+    $timestamp = Get-RecordProperty $connection 'observed_at_ns'
+    if ($null -eq $timestamp -or [int64]$timestamp -le 0) {
+      throw 'Provider egress connection is missing its audit timestamp.'
+    }
+    $matches = @($windows | Where-Object { [int64]$timestamp -ge [int64]$_.start_ns -and [int64]$timestamp -le [int64]$_.end_ns })
+    if ($matches.Count -ne 1) {
+      throw 'Provider egress connection could not be correlated to exactly one UI or Pilot Story request.'
+    }
+    $counts[[string]$matches[0].entrypoint] += 1
+  }
+  foreach ($entrypoint in @('ui', 'pilot')) {
+    if ($counts[$entrypoint] -lt 1 -or $counts[$entrypoint] -gt 2) {
+      throw "Story $entrypoint flow must have one normal Provider call or one bounded format repair."
     }
   }
 }
@@ -217,6 +276,11 @@ function Assert-StoryBrowserSequence([object[]]$records, [string]$baseUrl) {
     $uri.Scheme -ne $origin.Scheme -or $uri.Host -ne $origin.Host -or $uri.Port -ne $origin.Port
   })
   if ($foreign.Count -gt 0) { throw 'Browser accessed a non-local URL.' }
+  $chatWrites = @($records | Where-Object {
+    $_.kind -eq 'browser_request' -and $_.method -eq 'POST' -and
+    $_.url -in @("$baseUrl/api/chat", "$baseUrl/api/chat/confirm")
+  })
+  if ($chatWrites.Count -gt 0) { throw 'Pilot Story entry must not create chat writes.' }
   $uiPosts = @($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'POST' -and $_.url -eq "$baseUrl/api/interview-story-proposals" })
   $pilotPosts = @($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'POST' -and $_.url -eq "$baseUrl/api/pilot/interview-story-proposals" })
   if ($uiPosts.Count -ne 1 -or $pilotPosts.Count -ne 1) { throw 'Browser did not execute exactly one UI and one Pilot Story proposal sequence.' }
@@ -288,6 +352,54 @@ function Assert-StoryBrowserSequence([object[]]$records, [string]$baseUrl) {
   if ($uiFlow.ConfirmIndex -le $uiFlow.ProposalIndex -or $pilotFlow.ConfirmIndex -le $pilotFlow.ProposalIndex) {
     throw 'Story confirmation did not occur after proposal generation.'
   }
+  return (Get-StoryProviderFlowWindows $records $baseUrl)
+}
+
+function Assert-StoryScreenshotMatrix([string]$directory, [string]$manifestPath) {
+  if ([string]::IsNullOrWhiteSpace($directory) -or -not (Test-Path -LiteralPath $directory)) {
+    throw 'ScreenshotDirectory is required and must exist.'
+  }
+  $required = @(
+    '01-story-library.png',
+    '02-source-picker.png',
+    '03-source-preview.png',
+    '04-generated-draft.png',
+    '05-confirmation.png',
+    '06-history.png',
+    '07-source-changed.png',
+    '08-pilot-entry.png',
+    '09-pilot-source-choice.png',
+    '10-pilot-history.png'
+  )
+  Add-Type -AssemblyName System.Drawing
+  $matrix = @()
+  foreach ($name in $required) {
+    $path = Join-Path $directory $name
+    if (-not (Test-Path -LiteralPath $path)) { throw "Required Story screenshot is missing: $name" }
+    $image = $null
+    try {
+      $image = [System.Drawing.Image]::FromFile($path)
+      if ($image.Width -lt 1440 -or $image.Height -lt 900 -or $image.Height -gt 1400) {
+        throw "Story screenshot must be a single wide viewport (1440x900 through 1400px tall): $name"
+      }
+      $matrix += [pscustomobject]@{
+        file = $name
+        width = $image.Width
+        height = $image.Height
+        sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+        visual_review = 'operator-required'
+      }
+    } finally {
+      if ($null -ne $image) { $image.Dispose() }
+    }
+  }
+  $output = if ([string]::IsNullOrWhiteSpace($manifestPath)) { Join-Path $directory 'story-screenshot-matrix.json' } else { $manifestPath }
+  [IO.File]::WriteAllText(
+    $output,
+    ($matrix | ConvertTo-Json -Depth 3),
+    [Text.UTF8Encoding]::new($false)
+  )
+  return $matrix
 }
 
 if ($ValidateAudit) {
@@ -295,7 +407,22 @@ if ($ValidateAudit) {
     throw 'Audit validation requires AuditPath and ExpectedBaseUrl.'
   }
   Assert-AuditorSucceeded ([pscustomobject]@{ HasExited = $true; ExitCode = $AuditorExitCode })
-  Assert-StoryBrowserSequence (Read-BrowserRecords $AuditPath) $ExpectedBaseUrl
+  [void](Assert-StoryBrowserSequence (Read-BrowserRecords $AuditPath) $ExpectedBaseUrl)
+  exit 0
+}
+
+if ($ValidateProviderEgress) {
+  if ([string]::IsNullOrWhiteSpace($ProviderAuditPath) -or [string]::IsNullOrWhiteSpace($ProviderAllowlistPath) -or [string]::IsNullOrWhiteSpace($BrowserAuditPath) -or [string]::IsNullOrWhiteSpace($ExpectedBaseUrl)) {
+    throw 'Provider egress validation requires ProviderAuditPath, ProviderAllowlistPath, BrowserAuditPath, and ExpectedBaseUrl.'
+  }
+  $providers = @(Get-Content -LiteralPath $ProviderAllowlistPath -Raw | ConvertFrom-Json)
+  $flows = Get-StoryProviderFlowWindows (Read-BrowserRecords $BrowserAuditPath) $ExpectedBaseUrl
+  Assert-ProviderEgress $providers $ProviderAuditPath $flows
+  exit 0
+}
+
+if ($ValidateScreenshotMatrix) {
+  Assert-StoryScreenshotMatrix $ScreenshotDirectory $ScreenshotManifestPath | Out-Null
   exit 0
 }
 
@@ -338,6 +465,7 @@ try {
   Write-Host 'Dedicated browser target is ready in light mode at 1455x1200.'
   Write-Host 'Complete UI Story flow, then Pilot Story flow in the same target. Do not open another tab.'
   Write-Host 'Before each proposal, open the Story library and its source picker. Use selected seed note sources, edit a draft, confirm each Story Version, and reopen history.'
+  Write-Host 'Save the ten reviewed light-mode 1455x1200 screenshots to ScreenshotDirectory before completing this run.'
   Write-Host 'Press Enter only after both flows and history reads have completed.'
   while ($true) {
     if ($server.HasExited) { throw 'Isolated service exited during browser acceptance.' }
@@ -352,9 +480,10 @@ try {
   New-Item -ItemType File -Force -Path $browserStop | Out-Null
   $auditor.WaitForExit(15000)
   Assert-AuditorSucceeded $auditor
-  Assert-StoryBrowserSequence (Read-BrowserRecords) $baseUrl
-  Assert-ProviderEgress $providers
+  $flows = Assert-StoryBrowserSequence (Read-BrowserRecords) $baseUrl
+  Assert-ProviderEgress $providers $providerAudit $flows
   Assert-ForbiddenDomainsUnchanged $baseline (Get-ForbiddenDomainSnapshot)
+  Assert-StoryScreenshotMatrix $ScreenshotDirectory $ScreenshotManifestPath | Out-Null
   $env:INTERVIEW_STORY_HARNESS_DB = Join-Path $tempData 'data.db'
   $verify = @'
 import os, sqlite3
