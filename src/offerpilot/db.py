@@ -64,6 +64,7 @@ def init_database(db_path: Path) -> SessionFactory:
     mock_interview_migration_needed = _prepare_event_bound_mock_interview_migration(engine)
     _reset_knowledge_legacy_tables(engine, db_path.parent)
     Base.metadata.create_all(engine)
+    _ensure_interview_story_schema(engine)
     if mock_interview_migration_needed:
         _record_migration(
             engine,
@@ -1177,6 +1178,25 @@ def _ensure_offer_negotiation_schema(engine) -> None:  # type: ignore[no-untyped
                 "INSERT OR IGNORE INTO schema_migrations (version, description) "
                 "VALUES ('0017_offer_comparison_negotiation', "
                 "'Add Offer comparison dimensions, values, negotiation proposals and briefs')"
+            )
+        )
+
+
+def _ensure_interview_story_schema(engine) -> None:  # type: ignore[no-untyped-def]
+    """Record the additive, independent Interview Story schema migration."""
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_interview_story_attempt_status "
+                "ON interview_story_proposal_attempts(attempt_status)"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT OR IGNORE INTO schema_migrations (version, description) "
+                "VALUES ('0019_interview_story_library', "
+                "'Add versioned interview stories with evidence-gated proposal attempts')"
             )
         )
 

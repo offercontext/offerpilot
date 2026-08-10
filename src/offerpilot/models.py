@@ -891,6 +891,136 @@ class MockInterviewReviewDraft(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.current_timestamp())
 
 
+class InterviewStory(Base):
+    __tablename__ = "interview_stories"
+    __table_args__ = (Index("idx_interview_stories_status", "status"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    status: Mapped[str] = mapped_column(String, nullable=False, default="active", server_default="active")
+    # The current pointer intentionally is not an FK: Story/Version writes validate
+    # ownership in the repository and Story has no physical-delete operation.
+    current_version_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    story_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp(), onupdate=func.current_timestamp()
+    )
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class InterviewStoryVersion(Base):
+    __tablename__ = "interview_story_versions"
+    __table_args__ = (
+        UniqueConstraint("story_id", "version_number", name="uq_interview_story_versions_story_number"),
+        Index("idx_interview_story_versions_story", "story_id", "version_number"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    story_id: Mapped[int] = mapped_column(
+        ForeignKey("interview_stories.id", ondelete="RESTRICT"), nullable=False
+    )
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_json: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String, nullable=False)
+    source_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
+    origin_kind: Mapped[str] = mapped_column(String, nullable=False)
+    confirmed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
+
+
+class InterviewStoryVersionEvidenceLink(Base):
+    __tablename__ = "interview_story_version_evidence_links"
+    __table_args__ = (
+        UniqueConstraint(
+            "story_version_id",
+            "target_kind",
+            "target_id",
+            "source_kind",
+            "source_stable_id",
+            "source_version_or_snapshot",
+            "source_path",
+            "text_location",
+            "excerpt",
+            name="uq_interview_story_evidence_link_identity",
+        ),
+        Index("idx_interview_story_evidence_version", "story_version_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    story_version_id: Mapped[int] = mapped_column(
+        ForeignKey("interview_story_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    target_kind: Mapped[str] = mapped_column(String, nullable=False)
+    target_id: Mapped[str] = mapped_column(String, nullable=False)
+    source_kind: Mapped[str] = mapped_column(String, nullable=False)
+    source_stable_id: Mapped[str] = mapped_column(String, nullable=False)
+    source_version_or_snapshot: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    source_path: Mapped[str] = mapped_column(String, nullable=False)
+    text_location: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    excerpt: Mapped[str] = mapped_column(Text, nullable=False)
+    source_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
+    link_hash: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class InterviewStoryUserAssertion(Base):
+    __tablename__ = "interview_story_user_assertions"
+    __table_args__ = (
+        UniqueConstraint("story_version_id", "statement_hash", name="uq_interview_story_assertion_hash"),
+        Index("idx_interview_story_assertions_version", "story_version_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    story_version_id: Mapped[int] = mapped_column(
+        ForeignKey("interview_story_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    statement_text: Mapped[str] = mapped_column(Text, nullable=False)
+    statement_hash: Mapped[str] = mapped_column(String, nullable=False)
+    confirmed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
+
+
+class InterviewStoryProposalAttempt(Base):
+    __tablename__ = "interview_story_proposal_attempts"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_interview_story_attempt_key"),
+        Index("idx_interview_story_attempt_target", "target_story_id"),
+        Index("idx_interview_story_attempt_status", "attempt_status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    # Target/confirmed identities remain plain values. Story has no physical delete
+    # in phase one and historical Attempts must remain readable if that changes later.
+    target_story_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
+    entrypoint: Mapped[str] = mapped_column(String, nullable=False)
+    entry_context_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}", server_default="{}")
+    attempt_status: Mapped[str] = mapped_column(String, nullable=False)
+    generation_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    provider_call_token: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    provider_lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    input_snapshot_json: Mapped[str] = mapped_column(Text, nullable=False)
+    source_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
+    proposal_json: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    proposal_hash: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    failure_category: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    confirmation_token_hash: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    confirmation_payload_hash: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    confirmed_story_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    confirmed_story_version_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp(), onupdate=func.current_timestamp()
+    )
+
+
 # Every model with a direct foreign key to applications.id. Conditional application
 # deletion iterates this explicit inventory; a metadata-backed test keeps it exhaustive.
 APPLICATION_FOREIGN_KEY_MODELS = (
