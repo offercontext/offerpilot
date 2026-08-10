@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select
@@ -365,4 +365,147 @@ def test_invalid_manual_save_rolls_back_all_story_rows_and_fingerprint_is_order_
         selections=list(reversed(selections)),
         assertions=["statement"],
     )
+    factory.kw["bind"].dispose()
+
+
+def _provider_story_proposal(snapshot) -> dict[str, object]:
+    note = next(item for item in snapshot.sources if item["source_kind"] == "interview_note")
+    assertion = next(item for item in snapshot.sources if item["source_kind"] == "user_assertion")
+
+    def ref(item):
+        return {
+            "source_kind": item["source_kind"],
+            "source_stable_id": item["source_stable_id"],
+            "source_version_or_snapshot": item["source_version_or_snapshot"],
+            "source_path": item["path"],
+            "excerpt": item["excerpt"],
+        }
+
+    return {
+        "title": {"text": "Incident recovery", "evidence_refs": [ref(note)]},
+        "blocks": [
+            {
+                "kind": "situation",
+                "text": "Latency investigation",
+                "fact_mode": "evidence_backed",
+                "evidence_refs": [ref(note)],
+            },
+            {
+                "kind": "reflection",
+                "text": "Communicate earlier",
+                "fact_mode": "user_view",
+                "evidence_refs": [ref(assertion)],
+            },
+        ],
+        "capability_labels": [{"text": "incident response", "evidence_refs": [ref(note)]}],
+        "applicable_questions": [{"text": "Describe incident response", "evidence_refs": [ref(note)]}],
+        "fact_gap_codes": ["missing_result"],
+    }
+
+
+def _manual_content_from_proposal(proposal: dict[str, object]) -> dict[str, object]:
+    return {
+        "title": proposal["content"]["title"]["text"],
+        "blocks": [
+            {key: block[key] for key in ("kind", "text", "fact_mode")}
+            for block in proposal["content"]["blocks"]
+        ],
+        "capability_labels": [item["text"] for item in proposal["content"]["capability_labels"]],
+        "applicable_questions": [item["text"] for item in proposal["content"]["applicable_questions"]],
+        "fact_gap_codes": proposal["content"]["fact_gap_codes"],
+    }
+
+
+def test_story_attempt_replay_heartbeat_and_confirmation_are_fenced(tmp_path) -> None:
+    from offerpilot.ai.interview_stories import validate_interview_story_proposal
+
+    factory = init_database(tmp_path / "story.db")
+    repository = InterviewStoriesRepository(factory)
+    clock = [datetime(2026, 8, 10, tzinfo=timezone.utc)]
+    with factory() as session:
+        note = _create_note(session)
+        note_id = note.id
+        session.commit()
+
+    request = {
+        "target_story_id": None,
+        "expected_current_version_id": None,
+        "expected_story_revision": None,
+        "selections": [{"source_kind": "interview_note", "source_id": note_id, "path": "/questions"}],
+        "assertions": ["I own this incident response."],
+        "idempotency_key": "story-attempt-key-0001",
+        "entrypoint": "ui",
+        "now_factory": lambda: clock[0],
+    }
+    first = repository.claim_proposal(**request)
+    assert first.should_call_provider is True
+    second = repository.claim_proposal(**request)
+    assert second.pending is True
+    assert second.should_call_provider is False
+
+    heartbeat = repository.start_heartbeat(
+        attempt_id=first.attempt_id,
+        generation_revision=first.generation_revision,
+        provider_call_token=first.provider_call_token,
+        now_factory=lambda: clock[0],
+    )
+    heartbeat.stop()
+    clock[0] += timedelta(seconds=31)
+    assert heartbeat.tick() is True
+    replay_after_old_lease = repository.claim_proposal(**request)
+    assert replay_after_old_lease.pending is True
+    assert replay_after_old_lease.generation_revision == first.generation_revision
+
+    provider_payload = _provider_story_proposal(first.source_snapshot)
+    checked = validate_interview_story_proposal(provider_payload, first.source_snapshot)
+    confirmation_links = [
+        {
+            key: value
+            for key, value in link.items()
+            if key
+            in {
+                "target_kind",
+                "target_id",
+                "source_kind",
+                "source_stable_id",
+                "source_version_or_snapshot",
+                "source_path",
+                "excerpt",
+                "text_location",
+            }
+        }
+        for link in checked["evidence_links"]
+    ]
+    assert repository.complete_proposal(
+        attempt_id=first.attempt_id,
+        generation_revision=first.generation_revision,
+        provider_call_token=first.provider_call_token,
+        proposal=provider_payload,
+    )
+    finished = repository.get_attempt(first.attempt_id)
+    assert finished is not None and finished["attempt_status"] == "ready"
+
+    confirmation = repository.confirm_attempt(
+        attempt_id=first.attempt_id,
+        confirmation_token="story-confirmation-key-0001",
+        content=_manual_content_from_proposal(checked),
+        evidence_links=confirmation_links,
+        expected_current_version_id=None,
+        expected_story_revision=None,
+    )
+    replayed_confirmation = repository.confirm_attempt(
+        attempt_id=first.attempt_id,
+        confirmation_token="story-confirmation-key-0001",
+        content=_manual_content_from_proposal(checked),
+        evidence_links=confirmation_links,
+        expected_current_version_id=None,
+        expected_story_revision=None,
+    )
+    assert (replayed_confirmation.story_id, replayed_confirmation.version_id, replayed_confirmation.created) == (
+        confirmation.story_id,
+        confirmation.version_id,
+        False,
+    )
+    with factory() as session:
+        assert len(list(session.scalars(select(InterviewStoryVersion)))) == 1
     factory.kw["bind"].dispose()

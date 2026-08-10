@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import json
+import re
+import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Mapping
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable, Mapping
+from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from offerpilot.models import (
     InterviewNote,
     InterviewStory,
+    InterviewStoryProposalAttempt,
     InterviewStoryUserAssertion,
     InterviewStoryVersion,
     InterviewStoryVersionEvidenceLink,
@@ -79,6 +84,9 @@ _BLOCK_KINDS = {"situation", "task", "action", "result", "reflection"}
 _TARGET_KINDS = {"title", "block", "capability_label", "applicable_question"}
 _MAX_EVIDENCE_EXCERPT_CHARS = 800
 _STORY_VERSION_SCHEMA = "interview-story-v1"
+_IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
+_STORY_LEASE_SECONDS = 30
+_STORY_HEARTBEAT_SECONDS = 10
 
 
 def canonical_story_content(raw: Mapping[str, Any]) -> dict[str, Any]:
@@ -320,6 +328,26 @@ def story_request_fingerprint(
         "assertions": list(assertions),
     }
     return sha256_text(canonical_json(payload))
+
+
+@dataclass(frozen=True)
+class StoryProposalClaim:
+    attempt_id: int
+    input_snapshot: dict[str, Any]
+    source_snapshot: StorySourceSnapshot
+    source_fingerprint: str
+    should_call_provider: bool
+    pending: bool
+    generation_revision: int
+    provider_call_token: str
+    attempt_status: str
+
+
+@dataclass(frozen=True)
+class StoryConfirmation:
+    story_id: int
+    version_id: int
+    created: bool
 
 
 def materialize_selected_sources(
@@ -702,6 +730,361 @@ class InterviewStoriesRepository:
             desired_status="active",
         )
 
+    def claim_proposal(
+        self,
+        *,
+        target_story_id: int | None,
+        expected_current_version_id: int | None,
+        expected_story_revision: int | None,
+        selections: list[dict[str, Any]],
+        assertions: list[str],
+        idempotency_key: str,
+        entrypoint: str,
+        entry_context: dict[str, Any] | None = None,
+        now_factory: Callable[[], datetime] | None = None,
+    ) -> StoryProposalClaim:
+        """Claim one fenced Provider attempt from explicitly selected source leaves."""
+
+        if not isinstance(idempotency_key, str) or not _IDEMPOTENCY_KEY.fullmatch(idempotency_key):
+            raise StoryValidationError("idempotency key is invalid")
+        if entrypoint not in {"ui", "pilot"}:
+            raise StoryValidationError("story entrypoint is invalid")
+        now = _now(now_factory)
+        request_fingerprint = story_request_fingerprint(
+            target_story_id=target_story_id,
+            expected_current_version_id=expected_current_version_id,
+            expected_story_revision=expected_story_revision,
+            selections=selections,
+            assertions=assertions,
+        )
+        with self._session_factory() as session:
+            try:
+                _begin_immediate(session)
+                existing = session.scalar(
+                    select(InterviewStoryProposalAttempt).where(
+                        InterviewStoryProposalAttempt.idempotency_key == idempotency_key
+                    )
+                )
+                if existing is not None:
+                    payload = _attempt_input_payload(existing)
+                    if payload.get("request_fingerprint") != request_fingerprint:
+                        raise StoryConflictError("story idempotency input changed")
+                    return self._replay_or_takeover_attempt(
+                        session=session,
+                        attempt=existing,
+                        payload=payload,
+                        now=now,
+                    )
+                self._validate_target_story_for_claim(
+                    session,
+                    target_story_id=target_story_id,
+                    expected_current_version_id=expected_current_version_id,
+                    expected_story_revision=expected_story_revision,
+                )
+                snapshot = materialize_selected_sources(session, selections, assertions)
+                token = uuid4().hex
+                input_snapshot = {
+                    "schema": _STORY_VERSION_SCHEMA,
+                    "request_fingerprint": request_fingerprint,
+                    "target_story_id": target_story_id,
+                    "expected_current_version_id": expected_current_version_id,
+                    "expected_story_revision": expected_story_revision,
+                    "selections": _canonical_selections(selections),
+                    "assertions": list(assertions),
+                    "sources": snapshot.sources,
+                }
+                attempt = InterviewStoryProposalAttempt(
+                    target_story_id=target_story_id,
+                    idempotency_key=idempotency_key,
+                    entrypoint=entrypoint,
+                    entry_context_json=canonical_json(entry_context or {}),
+                    attempt_status="generating",
+                    generation_revision=1,
+                    provider_call_token=token,
+                    provider_lease_until=_as_naive_utc(now + timedelta(seconds=_STORY_LEASE_SECONDS)),
+                    input_snapshot_json=canonical_json(input_snapshot),
+                    source_fingerprint=snapshot.source_fingerprint,
+                )
+                session.add(attempt)
+                try:
+                    session.commit()
+                except IntegrityError:
+                    session.rollback()
+                    existing = session.scalar(
+                        select(InterviewStoryProposalAttempt).where(
+                            InterviewStoryProposalAttempt.idempotency_key == idempotency_key
+                        )
+                    )
+                    if existing is None:
+                        raise
+                    payload = _attempt_input_payload(existing)
+                    if payload.get("request_fingerprint") != request_fingerprint:
+                        raise StoryConflictError("story idempotency input changed")
+                    return self._replay_or_takeover_attempt(
+                        session=session,
+                        attempt=existing,
+                        payload=payload,
+                        now=now,
+                    )
+                return StoryProposalClaim(
+                    attempt_id=attempt.id,
+                    input_snapshot=input_snapshot,
+                    source_snapshot=snapshot,
+                    source_fingerprint=snapshot.source_fingerprint,
+                    should_call_provider=True,
+                    pending=False,
+                    generation_revision=attempt.generation_revision,
+                    provider_call_token=token,
+                    attempt_status=attempt.attempt_status,
+                )
+            except Exception:
+                session.rollback()
+                raise
+
+    def complete_proposal(
+        self,
+        *,
+        attempt_id: int,
+        generation_revision: int,
+        provider_call_token: str,
+        proposal: dict[str, Any],
+    ) -> bool:
+        """Final fencing CAS: token/revision own the result, not lease freshness."""
+
+        with self._session_factory() as session:
+            try:
+                _begin_immediate(session)
+                attempt = session.get(InterviewStoryProposalAttempt, attempt_id)
+                if not _owned_attempt(attempt, generation_revision, provider_call_token):
+                    session.commit()
+                    return False
+                if attempt is None:
+                    session.commit()
+                    return False
+                payload = _attempt_input_payload(attempt)
+                snapshot = _snapshot_from_attempt(payload, attempt.source_fingerprint)
+                selections = payload.get("selections")
+                assertions = payload.get("assertions")
+                if not isinstance(selections, list) or not isinstance(assertions, list):
+                    attempt.attempt_status = "invalidated"
+                    attempt.provider_call_token = ""
+                    session.commit()
+                    return False
+                current = materialize_selected_sources(session, selections, assertions)
+                if current.source_fingerprint != attempt.source_fingerprint:
+                    attempt.attempt_status = "invalidated"
+                    attempt.provider_call_token = ""
+                    session.commit()
+                    return False
+                # Re-run strict validation server side.  A caller can never pass a
+                # prevalidated or client-rendered proposal into the write path.
+                from offerpilot.ai.interview_stories import validate_interview_story_proposal
+
+                checked = validate_interview_story_proposal(proposal, snapshot)
+                status = "safe_empty" if checked["proposal_status"] == "safe_empty" else "ready"
+                attempt.attempt_status = status
+                attempt.proposal_json = canonical_json(checked)
+                attempt.proposal_hash = sha256_text(attempt.proposal_json)
+                attempt.failure_category = ""
+                attempt.provider_call_token = ""
+                session.commit()
+                return True
+            except StoryValidationError:
+                session.rollback()
+                raise
+            except Exception:
+                session.rollback()
+                raise
+
+    def mark_provider_unknown(
+        self, *, attempt_id: int, generation_revision: int, provider_call_token: str, category: str
+    ) -> bool:
+        with self._session_factory() as session:
+            result = session.execute(
+                update(InterviewStoryProposalAttempt)
+                .where(InterviewStoryProposalAttempt.id == attempt_id)
+                .where(InterviewStoryProposalAttempt.attempt_status == "generating")
+                .where(InterviewStoryProposalAttempt.generation_revision == generation_revision)
+                .where(InterviewStoryProposalAttempt.provider_call_token == provider_call_token)
+                .values(attempt_status="provider_unknown", provider_call_token="", failure_category=category)
+            )
+            session.commit()
+            return int(getattr(result, "rowcount", 0) or 0) == 1
+
+    def mark_contract_failed(
+        self, *, attempt_id: int, generation_revision: int, provider_call_token: str, category: str
+    ) -> bool:
+        with self._session_factory() as session:
+            result = session.execute(
+                update(InterviewStoryProposalAttempt)
+                .where(InterviewStoryProposalAttempt.id == attempt_id)
+                .where(InterviewStoryProposalAttempt.attempt_status == "generating")
+                .where(InterviewStoryProposalAttempt.generation_revision == generation_revision)
+                .where(InterviewStoryProposalAttempt.provider_call_token == provider_call_token)
+                .values(attempt_status="contract_failed", provider_call_token="", failure_category=category)
+            )
+            session.commit()
+            return int(getattr(result, "rowcount", 0) or 0) == 1
+
+    def get_attempt(self, attempt_id: int) -> dict[str, Any] | None:
+        with self._session_factory() as session:
+            attempt = session.get(InterviewStoryProposalAttempt, attempt_id)
+            return _attempt_payload(attempt) if attempt is not None else None
+
+    def confirm_attempt(
+        self,
+        *,
+        attempt_id: int,
+        confirmation_token: str,
+        content: Mapping[str, Any],
+        evidence_links: list[dict[str, Any]],
+        expected_current_version_id: int | None,
+        expected_story_revision: int | None,
+    ) -> StoryConfirmation:
+        if not isinstance(confirmation_token, str) or not _IDEMPOTENCY_KEY.fullmatch(confirmation_token):
+            raise StoryValidationError("confirmation token is invalid")
+        confirmation_hash = sha256_text(confirmation_token)
+        payload_hash = sha256_text(canonical_json({"content": content, "evidence_links": evidence_links}))
+        with self._session_factory() as session:
+            try:
+                _begin_immediate(session)
+                attempt = session.get(InterviewStoryProposalAttempt, attempt_id)
+                if attempt is None:
+                    raise StoryNotFoundError("story proposal is missing")
+                if attempt.attempt_status == "confirmed" and attempt.confirmation_token_hash == confirmation_hash:
+                    if attempt.confirmation_payload_hash != payload_hash or not attempt.confirmed_story_id or not attempt.confirmed_story_version_id:
+                        raise StoryConflictError("confirmation input changed")
+                    session.commit()
+                    return StoryConfirmation(attempt.confirmed_story_id, attempt.confirmed_story_version_id, False)
+                if attempt.attempt_status != "ready":
+                    raise StoryConflictError("story proposal cannot be confirmed")
+                input_payload = _attempt_input_payload(attempt)
+                selections = input_payload.get("selections")
+                assertions = input_payload.get("assertions")
+                if not isinstance(selections, list) or not isinstance(assertions, list):
+                    raise StoryConflictError("story proposal snapshot is invalid")
+                snapshot = materialize_selected_sources(session, selections, assertions)
+                if snapshot.source_fingerprint != attempt.source_fingerprint:
+                    raise StoryConflictError("story source changed")
+                canonical = canonical_story_content(content)
+                links = validate_story_evidence_links(canonical, evidence_links, snapshot)
+                target_story_id = attempt.target_story_id
+                if target_story_id is None:
+                    if expected_current_version_id is not None or expected_story_revision is not None:
+                        raise StoryConflictError("new story confirmation CAS is invalid")
+                    story = InterviewStory(title=canonical["title"]["text"], status="active", story_revision=1)
+                    session.add(story)
+                    session.flush()
+                    version_number = 1
+                else:
+                    story = self._require_active_story(session, target_story_id)
+                    self._check_story_cas(story, expected_current_version_id, expected_story_revision)
+                    version_number = int(
+                        session.scalar(
+                            select(InterviewStoryVersion.version_number)
+                            .where(InterviewStoryVersion.story_id == story.id)
+                            .order_by(InterviewStoryVersion.version_number.desc())
+                        )
+                        or 0
+                    ) + 1
+                version = self._insert_version(
+                    session,
+                    story=story,
+                    version_number=version_number,
+                    canonical=canonical,
+                    snapshot=snapshot,
+                    canonical_links=links,
+                    assertions=assertions,
+                    origin_kind="proposal",
+                )
+                story.current_version_id = version.id
+                story.title = canonical["title"]["text"]
+                if target_story_id is not None:
+                    story.story_revision += 1
+                attempt.attempt_status = "confirmed"
+                attempt.confirmation_token_hash = confirmation_hash
+                attempt.confirmation_payload_hash = payload_hash
+                attempt.confirmed_story_id = story.id
+                attempt.confirmed_story_version_id = version.id
+                attempt.confirmed_at = datetime.now(timezone.utc)
+                session.commit()
+                return StoryConfirmation(story.id, version.id, True)
+            except Exception:
+                session.rollback()
+                raise
+
+    def start_heartbeat(
+        self,
+        *,
+        attempt_id: int,
+        generation_revision: int,
+        provider_call_token: str,
+        now_factory: Callable[[], datetime] | None = None,
+        waiter: threading.Event | None = None,
+    ) -> "_StoryLeaseHeartbeat":
+        heartbeat = _StoryLeaseHeartbeat(
+            self._session_factory,
+            attempt_id=attempt_id,
+            generation_revision=generation_revision,
+            provider_call_token=provider_call_token,
+            now_factory=now_factory,
+            waiter=waiter,
+        )
+        heartbeat.start()
+        return heartbeat
+
+    def _replay_or_takeover_attempt(
+        self,
+        *,
+        session: Session,
+        attempt: InterviewStoryProposalAttempt,
+        payload: dict[str, Any],
+        now: datetime,
+    ) -> StoryProposalClaim:
+        snapshot = _snapshot_from_attempt(payload, attempt.source_fingerprint)
+        if attempt.attempt_status == "generating" and _lease_is_live(attempt.provider_lease_until, now):
+            session.commit()
+            return StoryProposalClaim(
+                attempt.id, payload, snapshot, attempt.source_fingerprint, False, True,
+                attempt.generation_revision, attempt.provider_call_token, attempt.attempt_status,
+            )
+        if attempt.attempt_status in {"generating", "provider_unknown"}:
+            token = uuid4().hex
+            attempt.attempt_status = "generating"
+            attempt.generation_revision += 1
+            attempt.provider_call_token = token
+            attempt.provider_lease_until = _as_naive_utc(now + timedelta(seconds=_STORY_LEASE_SECONDS))
+            attempt.failure_category = ""
+            session.commit()
+            return StoryProposalClaim(
+                attempt.id, payload, snapshot, attempt.source_fingerprint, True, False,
+                attempt.generation_revision, token, attempt.attempt_status,
+            )
+        session.commit()
+        return StoryProposalClaim(
+            attempt.id, payload, snapshot, attempt.source_fingerprint, False, False,
+            attempt.generation_revision, attempt.provider_call_token, attempt.attempt_status,
+        )
+
+    @staticmethod
+    def _validate_target_story_for_claim(
+        session: Session,
+        *,
+        target_story_id: int | None,
+        expected_current_version_id: int | None,
+        expected_story_revision: int | None,
+    ) -> None:
+        if target_story_id is None:
+            if expected_current_version_id is not None or expected_story_revision is not None:
+                raise StoryConflictError("new story claim CAS is invalid")
+            return
+        _require_positive_int("expected current version id", expected_current_version_id)
+        _require_positive_int("expected story revision", expected_story_revision)
+        story = InterviewStoriesRepository._require_active_story(session, target_story_id)
+        InterviewStoriesRepository._check_story_cas(
+            story, expected_current_version_id, expected_story_revision
+        )
+
     def _change_lifecycle(
         self, *, story_id: int, expected_story_revision: int | None, desired_status: str
     ) -> dict[str, Any]:
@@ -868,3 +1251,158 @@ def _begin_immediate(session: Session) -> None:
 def _require_positive_int(name: str, value: int | None) -> None:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise StoryValidationError(f"{name} is invalid")
+
+
+def _canonical_selections(selections: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        [dict(item) for item in selections],
+        key=lambda item: (str(item.get("source_kind")), str(item.get("source_id")), str(item.get("path"))),
+    )
+
+
+def _attempt_input_payload(attempt: InterviewStoryProposalAttempt) -> dict[str, Any]:
+    try:
+        parsed = json.loads(attempt.input_snapshot_json)
+    except (TypeError, ValueError) as exc:
+        raise StoryConflictError("story proposal snapshot is invalid") from exc
+    if not isinstance(parsed, dict):
+        raise StoryConflictError("story proposal snapshot is invalid")
+    return parsed
+
+
+def _snapshot_from_attempt(payload: dict[str, Any], fingerprint: str) -> StorySourceSnapshot:
+    sources = payload.get("sources")
+    if not isinstance(sources, list) or not all(isinstance(source, dict) for source in sources):
+        raise StoryConflictError("story proposal snapshot is invalid")
+    normalized = [dict(source) for source in sources]
+    if not all(
+        set(source) == {
+            "source_kind",
+            "source_stable_id",
+            "source_version_or_snapshot",
+            "path",
+            "excerpt",
+            "source_fingerprint",
+        }
+        and all(isinstance(value, str) for value in source.values())
+        for source in normalized
+    ):
+        raise StoryConflictError("story proposal snapshot is invalid")
+    return StorySourceSnapshot(sources=normalized, source_fingerprint=fingerprint)
+
+
+def _attempt_payload(attempt: InterviewStoryProposalAttempt) -> dict[str, Any]:
+    return {
+        "id": attempt.id,
+        "target_story_id": attempt.target_story_id,
+        "entrypoint": attempt.entrypoint,
+        "attempt_status": attempt.attempt_status,
+        "generation_revision": attempt.generation_revision,
+        "source_fingerprint": attempt.source_fingerprint,
+        "proposal": json.loads(attempt.proposal_json) if attempt.proposal_json else None,
+        "failure_category": attempt.failure_category or None,
+        "confirmed_story_id": attempt.confirmed_story_id,
+        "confirmed_story_version_id": attempt.confirmed_story_version_id,
+    }
+
+
+def _now(now_factory: Any) -> datetime:
+    value = now_factory() if now_factory is not None else datetime.now(timezone.utc)
+    if not isinstance(value, datetime):
+        raise StoryValidationError("clock is invalid")
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
+def _as_naive_utc(value: datetime) -> datetime:
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _as_aware_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
+def _lease_is_live(value: datetime | None, now: datetime) -> bool:
+    aware = _as_aware_utc(value)
+    return aware is not None and aware > now
+
+
+def _owned_attempt(
+    attempt: InterviewStoryProposalAttempt | None,
+    generation_revision: int,
+    provider_call_token: str,
+) -> bool:
+    return bool(
+        attempt is not None
+        and attempt.attempt_status == "generating"
+        and attempt.generation_revision == generation_revision
+        and attempt.provider_call_token == provider_call_token
+    )
+
+
+class _StoryLeaseHeartbeat:
+    """Best-effort lease renewal using a new short Session for each tick."""
+
+    def __init__(
+        self,
+        session_factory: sessionmaker[Session],
+        *,
+        attempt_id: int,
+        generation_revision: int,
+        provider_call_token: str,
+        now_factory: Callable[[], datetime] | None,
+        waiter: threading.Event | None,
+    ) -> None:
+        self._session_factory = session_factory
+        self._attempt_id = attempt_id
+        self._generation_revision = generation_revision
+        self._provider_call_token = provider_call_token
+        self._now_factory = now_factory
+        self._stop = waiter or threading.Event()
+        self._thread = threading.Thread(target=self._run, name="interview-story-lease", daemon=True)
+        self.heartbeat_count = 0
+        self.confirmed_ownership_lost = False
+        self.heartbeat_uncertain = False
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self, timeout: float = 5) -> None:
+        self._stop.set()
+        self._thread.join(timeout=timeout)
+
+    @property
+    def alive(self) -> bool:
+        return self._thread.is_alive()
+
+    def tick(self) -> bool:
+        """Renew once; lock errors remain uncertain rather than proving takeover."""
+
+        for _attempt in range(2):
+            try:
+                with self._session_factory() as session:
+                    now = _now(self._now_factory)
+                    result = session.execute(
+                        update(InterviewStoryProposalAttempt)
+                        .where(InterviewStoryProposalAttempt.id == self._attempt_id)
+                        .where(InterviewStoryProposalAttempt.attempt_status == "generating")
+                        .where(InterviewStoryProposalAttempt.generation_revision == self._generation_revision)
+                        .where(InterviewStoryProposalAttempt.provider_call_token == self._provider_call_token)
+                        .values(provider_lease_until=_as_naive_utc(now + timedelta(seconds=_STORY_LEASE_SECONDS)))
+                    )
+                    session.commit()
+                    if int(getattr(result, "rowcount", 0) or 0) == 0:
+                        self.confirmed_ownership_lost = True
+                        return False
+                    self.heartbeat_count += 1
+                    return True
+            except SQLAlchemyError:
+                continue
+        self.heartbeat_uncertain = True
+        return False
+
+    def _run(self) -> None:
+        while not self._stop.wait(_STORY_HEARTBEAT_SECONDS):
+            if not self.tick():
+                return
