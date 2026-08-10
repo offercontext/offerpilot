@@ -10,6 +10,7 @@ from offerpilot.db import init_database
 from offerpilot.models import (
     InterviewNote,
     InterviewStory,
+    InterviewStoryProposalAttempt,
     InterviewStoryUserAssertion,
     InterviewStoryVersion,
     InterviewStoryVersionEvidenceLink,
@@ -116,6 +117,7 @@ def test_materialize_selected_sources_limits_to_allowed_original_fields_and_path
             ["我确认这是我负责的项目。"],
         )
 
+    candidates = InterviewStoriesRepository(factory).list_source_candidates()
     factory.kw["bind"].dispose()
 
     assert [item["source_kind"] for item in snapshot.sources] == [
@@ -127,6 +129,28 @@ def test_materialize_selected_sources_limits_to_allowed_original_fields_and_path
     assert snapshot.sources[2]["excerpt"] == "处理 emoji 🚀 与 NFD e\u0301"
     assert snapshot.sources[0]["excerpt"] == "如何排查线上延迟？"
     assert snapshot.sources[3]["path"] == "/statement"
+    assert candidates["resumes"][0]["leaves"][0]["path"] == "/content_json/项目~1名"
+    assert candidates["interview_notes"][0]["leaves"][0]["path"] == "/questions"
+    assert candidates["mock_turns"][0]["leaves"][-1]["path"] == "/turns/001/answer"
+
+
+def test_resume_pointer_rejects_extremely_long_ascii_array_index_without_value_error(tmp_path) -> None:
+    factory = init_database(tmp_path / "story.db")
+    with factory() as session:
+        resume = Resume(content_json=json.dumps(["candidate fact"]))
+        session.add(resume)
+        session.commit()
+        with pytest.raises(StoryValidationError, match="path"):
+            materialize_selected_sources(
+                session,
+                [{
+                    "source_kind": "resume_version",
+                    "source_id": resume.id,
+                    "path": "/content_json/" + "1" * 5000,
+                }],
+                [],
+            )
+    factory.kw["bind"].dispose()
 
 
 @pytest.mark.parametrize(
@@ -330,6 +354,7 @@ def test_manual_story_version_cas_assertions_and_read_time_source_states(tmp_pat
         assert version is not None
         states = derive_story_source_states(session, version)
         assert {item["state"] for item in states} >= {"changed", "frozen_user_assertion"}
+        assert all("source_version_or_snapshot" in item for item in states)
         assert session.scalar(select(InterviewStoryVersionEvidenceLink).where(InterviewStoryVersionEvidenceLink.story_version_id == version_id)) is not None
         assert session.get(InterviewStory, created["id"]).current_version_id == version_id
 
@@ -528,4 +553,79 @@ def test_story_attempt_replay_heartbeat_and_confirmation_are_fenced(tmp_path) ->
     )
     with factory() as session:
         assert len(list(session.scalars(select(InterviewStoryVersion)))) == 1
+    factory.kw["bind"].dispose()
+
+
+def test_proposal_confirmation_must_use_the_cas_values_frozen_at_claim(tmp_path) -> None:
+    from offerpilot.ai.interview_stories import validate_interview_story_proposal
+
+    factory = init_database(tmp_path / "story.db")
+    repository = InterviewStoriesRepository(factory)
+    with factory() as session:
+        note = _create_note(session)
+        note_id = note.id
+        session.commit()
+        initial_content = canonical_story_content(_manual_content())
+        initial_snapshot = materialize_selected_sources(
+            session,
+            [{"source_kind": "interview_note", "source_id": note_id, "path": "/questions"}],
+            ["I own this incident response."],
+        )
+    story = repository.create_manual_story(
+        content=_manual_content(),
+        evidence_links=_links_for_content(initial_content, initial_snapshot),
+        selections=[{"source_kind": "interview_note", "source_id": note_id, "path": "/questions"}],
+        assertions=["I own this incident response."],
+        expected_current_version_id=None,
+    )
+    claim = repository.claim_proposal(
+        target_story_id=story["id"],
+        expected_current_version_id=story["current_version_id"],
+        expected_story_revision=story["story_revision"],
+        selections=[{"source_kind": "interview_note", "source_id": note_id, "path": "/questions"}],
+        assertions=["I own this incident response."],
+        idempotency_key="story-frozen-confirm-cas-0001",
+        entrypoint="ui",
+    )
+    checked = validate_interview_story_proposal(
+        _provider_story_proposal(claim.source_snapshot), claim.source_snapshot
+    )
+    assert repository.complete_proposal(
+        attempt_id=claim.attempt_id,
+        generation_revision=claim.generation_revision,
+        provider_call_token=claim.provider_call_token,
+        proposal=_provider_story_proposal(claim.source_snapshot),
+    )
+    advanced = repository.create_manual_version(
+        story_id=story["id"],
+        content=_manual_content(),
+        evidence_links=_links_for_content(initial_content, initial_snapshot),
+        selections=[{"source_kind": "interview_note", "source_id": note_id, "path": "/questions"}],
+        assertions=["I own this incident response."],
+        expected_current_version_id=story["current_version_id"],
+        expected_story_revision=story["story_revision"],
+    )
+    confirmation_links = [
+        {
+            key: value
+            for key, value in link.items()
+            if key in {
+                "target_kind", "target_id", "source_kind", "source_stable_id",
+                "source_version_or_snapshot", "source_path", "excerpt", "text_location",
+            }
+        }
+        for link in checked["evidence_links"]
+    ]
+    with pytest.raises(StoryConflictError, match="confirmation CAS"):
+        repository.confirm_attempt(
+            attempt_id=claim.attempt_id,
+            confirmation_token="story-frozen-confirm-cas-token",
+            content=_manual_content_from_proposal(checked),
+            evidence_links=confirmation_links,
+            expected_current_version_id=advanced["current_version_id"],
+            expected_story_revision=advanced["story_revision"],
+        )
+    with factory() as session:
+        assert session.get(InterviewStoryProposalAttempt, claim.attempt_id).attempt_status == "ready"
+        assert len(list(session.scalars(select(InterviewStoryVersion)))) == 2
     factory.kw["bind"].dispose()

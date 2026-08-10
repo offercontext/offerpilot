@@ -102,3 +102,28 @@ def test_story_proposal_api_accepts_only_a_scoped_review_note_context(app_client
 
     assert response.status_code == 422
     assert response.json()["error_code"] == "interview_story_invalid_request"
+
+
+def test_story_source_picker_returns_only_bounded_explicit_candidates(app_client) -> None:
+    note = _note(app_client)
+    resume = app_client.post(
+        "/api/resumes",
+        json={
+            "title": "筱哲的后端简历",
+            "content_json": {"projects": [{"name": "延迟排查", "detail": "定位了缓存击穿"}]},
+        },
+    )
+    assert resume.status_code == 201
+
+    candidates = app_client.get("/api/interview-story-sources")
+    assert candidates.status_code == 200
+    payload = candidates.json()
+    assert payload["resumes"][0]["id"] == resume.json()["id"]
+    assert payload["resumes"][0]["leaves"][0]["path"].startswith("/content_json/")
+    assert payload["interview_notes"][0]["id"] == note["id"]
+    assert "preview" in payload["interview_notes"][0]["leaves"][0]
+
+    scoped = app_client.get(f"/api/interview-story-sources?review_note_id={note['id']}")
+    assert scoped.status_code == 200
+    assert scoped.json()["resumes"] == []
+    assert scoped.json()["interview_notes"] == [payload["interview_notes"][0]]

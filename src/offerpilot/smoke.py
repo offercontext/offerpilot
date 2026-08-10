@@ -67,6 +67,7 @@ from offerpilot.models import (
     Wakeup,
 )
 from offerpilot.repositories.json_contract import canonical_json, sha256_text
+from offerpilot.repositories.interview_stories import InterviewStoriesRepository
 
 
 @dataclass(frozen=True)
@@ -1627,7 +1628,9 @@ def run_interview_story_smoke(
                     _assert_status(settings.status_code, 200, "story_smoke_settings")
                     if real_ai and not bool(settings.json().get("has_api_key")):
                         raise RuntimeError("interview story real-ai smoke requires a configured API key")
-                    _run_interview_story_http_smoke(client, isolated_data_dir, seed, steps)
+                    _run_interview_story_http_smoke(
+                        client, isolated_data_dir, seed, steps, exercise_recovery=not real_ai
+                    )
             return SmokeReport(ok=True, steps=steps)
         finally:
             _dispose_smoke_app_database(app)
@@ -1717,6 +1720,8 @@ def _run_interview_story_http_smoke(
     data_dir: Path,
     seed: dict[str, int],
     steps: list[SmokeStep],
+    *,
+    exercise_recovery: bool,
 ) -> None:
     note_source = {
         "source_kind": "interview_note",
@@ -1798,6 +1803,76 @@ def _run_interview_story_http_smoke(
     if _chat_domain_counts(data_dir) != chat_before:
         raise RuntimeError("Story smoke wrote Chat data")
     steps.append(SmokeStep("story_chat_isolation", "Story UI and Pilot wrappers wrote no Chat data"))
+
+    if exercise_recovery:
+        latest_story = client.get(f"/api/interview-stories/{story_id}")
+        _assert_status(latest_story.status_code, 200, "story_recovery_current_story")
+        versions_before_terminal = client.get(f"/api/interview-stories/{story_id}/versions")
+        _assert_status(versions_before_terminal.status_code, 200, "story_terminal_versions_before")
+        version_count_before_terminal = len(versions_before_terminal.json())
+        recovery_payload = {
+            "target_story_id": story_id,
+            "expected_current_version_id": latest_story.json()["current_version_id"],
+            "expected_story_revision": latest_story.json()["story_revision"],
+            "selections": selections,
+            "assertions": ["我确认这是我亲自负责的排查经历。"],
+            "idempotency_key": "story-provider-unknown-0001",
+        }
+        session_factory = session_factory_for_data_dir(data_dir)
+        try:
+            repository = InterviewStoriesRepository(session_factory)
+            claim = repository.claim_proposal(
+                target_story_id=recovery_payload["target_story_id"],
+                expected_current_version_id=recovery_payload["expected_current_version_id"],
+                expected_story_revision=recovery_payload["expected_story_revision"],
+                selections=selections,
+                assertions=recovery_payload["assertions"],
+                idempotency_key=recovery_payload["idempotency_key"],
+                entrypoint="ui",
+            )
+            if not claim.should_call_provider or not repository.mark_provider_unknown(
+                attempt_id=claim.attempt_id,
+                generation_revision=claim.generation_revision,
+                provider_call_token=claim.provider_call_token,
+                category="provider_unknown",
+            ):
+                raise RuntimeError("Story smoke could not seed provider-unknown recovery")
+            recovered = client.post("/api/interview-story-proposals", json=recovery_payload)
+            _assert_status(recovered.status_code, 201, "story_provider_unknown_replay")
+            if recovered.json().get("id") != claim.attempt_id or recovered.json().get("attempt_status") != "ready":
+                raise RuntimeError("Story provider-unknown replay did not retain the original attempt")
+
+            terminal_key = "story-unverifiable-00001"
+            terminal_claim = repository.claim_proposal(
+                target_story_id=recovery_payload["target_story_id"],
+                expected_current_version_id=recovery_payload["expected_current_version_id"],
+                expected_story_revision=recovery_payload["expected_story_revision"],
+                selections=selections,
+                assertions=recovery_payload["assertions"],
+                idempotency_key=terminal_key,
+                entrypoint="ui",
+            )
+            if not terminal_claim.should_call_provider or not repository.mark_contract_failed(
+                attempt_id=terminal_claim.attempt_id,
+                generation_revision=terminal_claim.generation_revision,
+                provider_call_token=terminal_claim.provider_call_token,
+                category="invalid_evidence_shape",
+            ):
+                raise RuntimeError("Story smoke could not seed terminal contract failure")
+            terminal_payload = dict(recovery_payload, idempotency_key=terminal_key)
+            terminal = client.post("/api/interview-story-proposals", json=terminal_payload)
+            if terminal.status_code != 502 or terminal.json().get("error_code") != "story_unverifiable":
+                raise RuntimeError("Story terminal contract failure was not stable")
+            versions_after_terminal = client.get(f"/api/interview-stories/{story_id}/versions")
+            _assert_status(versions_after_terminal.status_code, 200, "story_terminal_versions_after")
+            if len(versions_after_terminal.json()) != version_count_before_terminal:
+                raise RuntimeError("Story terminal contract failure created a Version")
+            steps.append(SmokeStep("story_provider_unknown_recovery", "original Story key replayed once"))
+            steps.append(SmokeStep("story_unverifiable_terminal", "terminal Story failure created no Version"))
+        finally:
+            bind = session_factory.kw.get("bind")
+            if bind is not None:
+                bind.dispose()
 
     session_factory = session_factory_for_data_dir(data_dir)
     try:

@@ -5198,6 +5198,18 @@ def create_app(
                 },
                 status_code=202,
             )
+        if attempt["attempt_status"] == "contract_failed":
+            return error_response(
+                502,
+                "AI 建议未通过证据校验，请重新开始。",
+                code="story_unverifiable",
+            )
+        if attempt["attempt_status"] == "invalidated":
+            return error_response(
+                409,
+                "故事来源或版本已变化，请重新确认后再试。",
+                code="story_source_conflict",
+            )
         return JSONResponse(attempt, status_code=status_code)
 
     def _story_proposal(
@@ -5331,6 +5343,13 @@ def create_app(
     ) -> JSONResponse:
         try:
             return JSONResponse(interview_stories.list_stories(status=status, query=query))
+        except StoryValidationError as exc:
+            return _story_error_response(exc)
+
+    @app.get("/api/interview-story-sources")
+    def list_interview_story_sources(review_note_id: int | None = Query(None)) -> JSONResponse:
+        try:
+            return JSONResponse(interview_stories.list_source_candidates(review_note_id=review_note_id))
         except StoryValidationError as exc:
             return _story_error_response(exc)
 

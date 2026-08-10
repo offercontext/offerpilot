@@ -288,6 +288,7 @@ def derive_story_source_states(
             "target_id": link.target_id,
             "source_kind": link.source_kind,
             "source_stable_id": link.source_stable_id,
+            "source_version_or_snapshot": link.source_version_or_snapshot,
             "source_path": link.source_path,
             "excerpt": link.excerpt,
         }
@@ -548,8 +549,12 @@ def _decode_json_pointer_token(token: str) -> str:
 
 
 def _is_canonical_array_index(value: str) -> bool:
+    # Keep the lexical RFC 6901 rule narrow *and* bounded before callers use
+    # int(value). Python rejects unbounded decimal conversions on modern
+    # runtimes; a path must fail as invalid instead of leaking ValueError.
     return value == "0" or (
         bool(value)
+        and len(value) <= 18
         and value[0] in "123456789"
         and all(char in "0123456789" for char in value[1:])
     )
@@ -557,6 +562,33 @@ def _is_canonical_array_index(value: str) -> bool:
 
 def _is_three_ascii_digits(value: str) -> bool:
     return len(value) == 3 and all(char in "0123456789" for char in value)
+
+
+def _escape_json_pointer_token(value: str) -> str:
+    return value.replace("~", "~0").replace("/", "~1")
+
+
+def _resume_string_leaves(value: Any, pointer: str = "/content_json") -> list[tuple[str, str]]:
+    if isinstance(value, str):
+        return [(pointer, value)] if value.strip() else []
+    if isinstance(value, dict):
+        leaves: list[tuple[str, str]] = []
+        for key in sorted(value):
+            if isinstance(key, str):
+                leaves.extend(_resume_string_leaves(value[key], f"{pointer}/{_escape_json_pointer_token(key)}"))
+        return leaves
+    if isinstance(value, list):
+        leaves = []
+        for index, item in enumerate(value):
+            leaves.extend(_resume_string_leaves(item, f"{pointer}/{index}"))
+        return leaves
+    return []
+
+
+def _source_preview(value: str) -> str:
+    # Prefix only, preserving original code points and never adding an ellipsis:
+    # it remains a valid contiguous excerpt if the user chooses it manually.
+    return value[:240]
 
 
 def _source_identity(source: Mapping[str, str]) -> tuple[str, str, str, str]:
@@ -639,6 +671,82 @@ class InterviewStoriesRepository:
             if normalized_query:
                 rows = [row for row in rows if normalized_query in row.title.casefold()]
             return [self._story_summary(session, row) for row in rows]
+
+    def list_source_candidates(self, *, review_note_id: int | None = None) -> dict[str, Any]:
+        """Return bounded, read-only candidates for the explicit Story picker.
+
+        The response is deliberately a selection aid, not a provider snapshot:
+        it contains only canonical identities plus a bounded literal prefix.  The
+        selected leaves are always materialized again in the short claim
+        transaction before they can reach a model or a Version.
+        """
+
+        if review_note_id is not None:
+            _require_positive_int("review note id", review_note_id)
+        with self._session_factory() as session:
+            notes_statement = select(InterviewNote).order_by(InterviewNote.id.desc())
+            if review_note_id is not None:
+                notes_statement = notes_statement.where(InterviewNote.id == review_note_id)
+            notes = [
+                {
+                    "id": note.id,
+                    "label": " · ".join(part for part in (note.company, note.position) if part),
+                    "leaves": [
+                        {"path": path, "preview": _source_preview(value)}
+                        for path, field in _NOTE_FIELDS.items()
+                        if isinstance((value := getattr(note, field)), str) and value.strip()
+                    ],
+                }
+                for note in session.scalars(notes_statement)
+            ]
+            # A saved-review handoff is intentionally narrow: it must not turn
+            # into a picker for unrelated candidate sources.
+            if review_note_id is not None:
+                return {"resumes": [], "interview_notes": notes, "mock_turns": []}
+
+            resumes = []
+            for resume in session.scalars(
+                select(Resume).where(Resume.deleted_at.is_(None)).order_by(Resume.id.desc())
+            ):
+                try:
+                    payload = json.loads(resume.content_json)
+                except (TypeError, ValueError):
+                    continue
+                leaves = [
+                    {"path": path, "preview": _source_preview(value)}
+                    for path, value in _resume_string_leaves(payload)
+                    if path.startswith("/content_json/")
+                ]
+                if leaves:
+                    resumes.append({"id": resume.id, "label": resume.title or resume.name or f"Resume {resume.id}", "leaves": leaves})
+
+            mock_turns = []
+            attempts = session.scalars(
+                select(MockInterviewAttempt)
+                .where(MockInterviewAttempt.cancelled_at.is_(None))
+                .where(MockInterviewAttempt.completed_at.is_not(None))
+                .where(MockInterviewAttempt.attempt_status.in_({"feedback_ready", "confirmed"}))
+                .order_by(MockInterviewAttempt.id.desc())
+            )
+            for attempt in attempts:
+                for turn in session.scalars(
+                    select(MockInterviewTurn)
+                    .where(MockInterviewTurn.attempt_id == attempt.id)
+                    .where(MockInterviewTurn.turn_status == "answered")
+                    .order_by(MockInterviewTurn.turn_no.asc())
+                ):
+                    leaves = []
+                    for name, value in (("question", turn.question_text), ("answer", turn.answer_text)):
+                        if isinstance(value, str) and value.strip():
+                            leaves.append({"path": f"/turns/{turn.turn_no:03d}/{name}", "preview": _source_preview(value)})
+                    if leaves:
+                        mock_turns.append({
+                            "attempt_id": attempt.id,
+                            "turn_no": turn.turn_no,
+                            "label": f"模拟面试 #{attempt.id} · 第 {turn.turn_no} 题",
+                            "leaves": leaves,
+                        })
+            return {"resumes": resumes, "interview_notes": notes, "mock_turns": mock_turns}
 
     def get_story(self, story_id: int) -> dict[str, Any] | None:
         with self._session_factory() as session:
@@ -1029,6 +1137,11 @@ class InterviewStoriesRepository:
                 if attempt.attempt_status != "ready":
                     raise StoryConflictError("story proposal cannot be confirmed")
                 input_payload = _attempt_input_payload(attempt)
+                if (
+                    input_payload.get("expected_current_version_id") != expected_current_version_id
+                    or input_payload.get("expected_story_revision") != expected_story_revision
+                ):
+                    raise StoryConflictError("story proposal confirmation CAS changed")
                 selections = input_payload.get("selections")
                 assertions = input_payload.get("assertions")
                 if not isinstance(selections, list) or not isinstance(assertions, list):
