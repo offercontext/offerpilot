@@ -320,3 +320,16 @@ No push or merge is authorized by this plan.
 - All gate subprocesses exited; no Provider proxy or browser process was retained. Isolated real-AI data directories were cleaned by the verifier.
 - The recorded implementation baseline remains at `D:\Users\yuqi.chen\AppData\Local\Temp\offerpilot-application-jd-versions-baseline.txt` because release gates are incomplete.
 - Remaining release blockers: DeepSeek Pilot transport instability, Ark Lite Pilot confirmation not materializing a pending action, and the absence of a complete real-Provider `Stage all`. The branch is paused; do not claim release readiness until a formally approved unified Provider produces a complete successful browser acceptance.
+
+### Final real-Provider CDP Stage all attempt (2026-08-10)
+
+One final isolated CDP `Stage all` attempt was run from current HEAD `4a02bde` with the formal temporary DeepSeek configuration (`deepseek-v4-flash`). The run used synthetic Chinese JD/resume data, a dedicated wide light-mode browser, local-only browser auditing, and the existing at-most-one same-input replay boundary. No push or merge was performed.
+
+- Stage A passed: UI JD v1 and deterministic Pilot JD v2 were created and read back; the confirmation card was approved exactly once; v2 was read from history and detail; `jd_version_id=2` and `source_kind=pilot` were observed. The Stage A Provider window contained `0` Provider calls.
+- The retained light Chinese wide-screen screenshots are [Pilot confirmation](/D:/Users/yuqi.chen/Desktop/offerpilot-stage-all-pilot-confirmation-20260810.png) and [Pilot success/history](/D:/Users/yuqi.chen/Desktop/offerpilot-stage-all-pilot-success-20260810.png).
+- Triage sent one Provider request using model `deepseek-v4-flash`; the input fingerprint was `bad8747c...054689`, and the result was HTTP `500` after `93,097 ms` with `failure_category=provider_http_5xx`. Evidence counts were JD `1`, resume `1`, and user assertions `0`.
+- The UI's same-key retry did not create another Provider call while the original lease was unresolved. After the lease boundary, the harness performed its single permitted exact-input replay: the frozen input was verified, but the local API returned HTTP `409` before a Provider call (`provider_request_count=0`), so the replay did not satisfy the release gate. The response error code was not exposed by the current replay audit and remains an unresolved local lifecycle diagnostic, not evidence of a successful downstream flow.
+- Because Triage did not reach a valid result, Material Kit and Interview Preparation were not executed. Therefore the real browser `Stage all` gate failed and no claim is made for downstream v2 usage or complete cross-domain-write verification. The browser audit observed only `127.0.0.1:58283`; no external browser URL was observed.
+- The harness's Stage A gate was corrected to assert zero Provider calls before deferring Provider egress validation until downstream consumers. The targeted harness test and PowerShell parser check passed; this acceptance-tool change does not alter product, API, database, Provider, evidence, or retry semantics.
+
+The isolated service, browser, proxy, process tree, temporary database, and temporary browser data were cleaned by the harness. This run does not satisfy release evidence; the branch remains paused and must not be merged or pushed.
