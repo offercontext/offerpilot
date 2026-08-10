@@ -222,6 +222,56 @@ describe('InterviewStoryDrawer', () => {
     expect(storyService.confirm.mock.calls[1]?.[1]).toEqual(initialPayload);
   });
 
+  it('preserves authored content and assertions while requiring a fresh source selection after a source conflict', async () => {
+    const proposal = {
+      proposal_status: 'normal' as const,
+      content: {
+        title: { id: 'title' as const, text: '鎺掓煡寤惰繜' },
+        blocks: [{ id: 'situation_001', kind: 'situation' as const, text: '鏈嶅姟寤惰繜', fact_mode: 'evidence_backed' as const }],
+        capability_labels: [], applicable_questions: [], fact_gap_codes: [],
+      },
+      evidence_links: [{
+        target_kind: 'title' as const, target_id: 'title', source_kind: 'interview_note' as const,
+        source_stable_id: '4', source_version_or_snapshot: 'snapshot', source_path: '/questions', excerpt: '濡備綍鎺掓煡寤惰繜',
+      }, {
+        target_kind: 'block' as const, target_id: 'situation_001', source_kind: 'interview_note' as const,
+        source_stable_id: '4', source_version_or_snapshot: 'snapshot', source_path: '/questions', excerpt: '濡備綍鎺掓煡寤惰繜',
+      }],
+    };
+    const authoredTitle = 'Edited incident story';
+    let current: InterviewStoryDraft = {
+      ...createInterviewStoryDraft('ui'),
+      attemptId: 33,
+      proposal,
+      selections: [{ source_kind: 'interview_note', source_id: 4, path: '/questions' }],
+      assertions: ['I personally owned this work.'],
+      editedContent: { title: authoredTitle, blocks: proposal.content.blocks, capability_labels: [], applicable_questions: [], fact_gap_codes: [] },
+    };
+    const originalKey = current.idempotencyKey;
+    const render = () => root?.render(<InterviewStoryDrawer open draft={current} onDraftChange={(draft) => {
+      if (draft) {
+        current = draft;
+        render();
+      }
+    }} onClose={() => {}} />);
+    storyService.confirm.mockRejectedValueOnce(new storyService.StoryError(409, 'story_source_conflict'));
+
+    act(render);
+    await act(async () => {
+      [...document.body.querySelectorAll('button')].find((button) => button.textContent === '确认保存这个故事版本')?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(current.idempotencyKey).not.toBe(originalKey);
+    expect(current.selections).toEqual([]);
+    expect(current.attemptId).toBeNull();
+    expect(current.proposal).toBeNull();
+    expect(current.resultUnknown).toBe(false);
+    expect(current.assertions).toEqual(['I personally owned this work.']);
+    expect(current.manualContent.title).toBe(authoredTitle);
+  });
+
   it('allows an explicit source-backed manual save without calling the proposal endpoint', async () => {
     let current = createInterviewStoryDraft('ui');
     const close = vi.fn();

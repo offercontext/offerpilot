@@ -5198,11 +5198,16 @@ def create_app(
         )
 
     def _is_story_confirmation_payload(payload: dict[str, Any]) -> bool:
+        def is_optional_positive_int(value: object) -> bool:
+            return value is None or (type(value) is int and value > 0)
+
         return (
             isinstance(payload.get("confirmation_token"), str)
             and isinstance(payload.get("content"), dict)
             and isinstance(payload.get("evidence_links"), list)
             and all(isinstance(item, dict) for item in payload["evidence_links"])
+            and is_optional_positive_int(payload.get("expected_current_version_id"))
+            and is_optional_positive_int(payload.get("expected_story_revision"))
         )
 
     def _story_attempt_response(attempt: dict[str, Any], status_code: int = 200) -> JSONResponse:

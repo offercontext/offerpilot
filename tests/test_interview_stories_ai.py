@@ -147,6 +147,18 @@ def test_story_validator_reports_too_many_evidence_references_as_limit_exceeded(
     assert error.value.category == "limit_exceeded"
 
 
+def test_malformed_evidence_shape_is_repaired_before_reference_limit_is_applied() -> None:
+    malformed = copy.deepcopy(_proposal())
+    malformed["title"]["evidence_refs"] = [{"malformed": "reference"}] * 9  # type: ignore[index]
+    model = QueuedModel([malformed, _proposal()])
+
+    result = generate_interview_story_proposal(model, _snapshot())
+
+    assert result["proposal_status"] == "normal"
+    assert model.calls == 2
+    assert "invalid_evidence_shape" in model.messages[1][1].content
+
+
 def test_story_shape_error_repairs_once_without_echoing_source_or_model_text() -> None:
     malformed = _proposal()
     malformed["title"] = {"text": "missing evidence"}

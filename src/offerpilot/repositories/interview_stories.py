@@ -101,6 +101,10 @@ _STORY_LEASE_SECONDS = 30
 _STORY_HEARTBEAT_SECONDS = 10
 
 
+def _is_optional_positive_int(value: object) -> bool:
+    return value is None or (type(value) is int and value > 0)
+
+
 def canonical_story_content(raw: Mapping[str, Any]) -> dict[str, Any]:
     """Normalize user content and allocate version-local stable target IDs."""
 
@@ -465,6 +469,7 @@ def materialize_selected_sources(
     """Resolve only explicit phase-one source selections into frozen leaf evidence."""
 
     sources: list[dict[str, str]] = []
+    selection_identities: set[tuple[str, int, str]] = set()
     for selection in selections:
         if not isinstance(selection, Mapping):
             raise StoryValidationError("source selection must be an object")
@@ -477,6 +482,10 @@ def materialize_selected_sources(
             raise StoryValidationError("source id is invalid")
         if not isinstance(path, str):
             raise StoryValidationError("source path is invalid")
+        selection_identity = (kind, source_id, path)
+        if selection_identity in selection_identities:
+            raise StoryValidationError("source selection is duplicated")
+        selection_identities.add(selection_identity)
         if kind == "resume_version":
             sources.append(_materialize_resume(session, source_id, path))
         elif kind == "interview_note":
@@ -1271,6 +1280,8 @@ class InterviewStoriesRepository:
     ) -> StoryConfirmation:
         if not isinstance(confirmation_token, str) or not _IDEMPOTENCY_KEY.fullmatch(confirmation_token):
             raise StoryValidationError("confirmation token is invalid")
+        if not _is_optional_positive_int(expected_current_version_id) or not _is_optional_positive_int(expected_story_revision):
+            raise StoryValidationError("confirmation CAS is invalid")
         confirmation_hash = sha256_text(confirmation_token)
         payload_hash = sha256_text(canonical_json({"content": content, "evidence_links": evidence_links}))
         with self._session_factory() as session:

@@ -163,6 +163,19 @@ function resetAfterDefiniteFailure(draft: InterviewStoryDraft, error: string | n
   };
 }
 
+function resetAfterSourceConflict(draft: InterviewStoryDraft, error: string): InterviewStoryDraft {
+  return {
+    ...createInterviewStoryDraft(draft.entrypoint, draft.reviewNoteId, {
+      targetStoryId: draft.targetStoryId ?? undefined,
+      expectedCurrentVersionId: draft.expectedCurrentVersionId ?? undefined,
+      expectedStoryRevision: draft.expectedStoryRevision ?? undefined,
+    }),
+    assertions: draft.assertions,
+    manualContent: draft.editedContent ?? draft.manualContent,
+    error,
+  };
+}
+
 export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClose }: Props) {
   const [candidates, setCandidates] = useState<InterviewStorySourceCandidates | null>(null);
   const [candidatesLoading, setCandidatesLoading] = useState(false);
@@ -387,6 +400,8 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
       const safe = safeMessage(error);
       if (isUnknownResult(error)) {
         update({ confirmationToken: token, resultUnknown: true, pendingOperation: 'confirm', error: safe });
+      } else if (error instanceof InterviewStoryError && error.code === 'story_source_conflict') {
+        onDraftChange(resetAfterSourceConflict(draft, safe));
       } else {
         onDraftChange(resetAfterDefiniteFailure(draft, safe));
       }

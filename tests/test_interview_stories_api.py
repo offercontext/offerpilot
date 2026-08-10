@@ -118,6 +118,31 @@ def test_story_write_endpoints_reject_malformed_nested_payloads_as_422(app_clien
     ).status_code == 422
 
 
+def test_story_confirmation_api_rejects_non_strict_cas_values_before_attempt_lookup(app_client) -> None:
+    for expected_current_version_id, expected_story_revision in (
+        (True, None),
+        (1.0, None),
+        ("1", None),
+        (0, None),
+        (None, True),
+        (None, 1.0),
+        (None, "1"),
+        (None, 0),
+    ):
+        response = app_client.post(
+            "/api/interview-story-proposals/999/confirm",
+            json={
+                "confirmation_token": "story-confirm-strict-cas-0001",
+                "content": {},
+                "evidence_links": [],
+                "expected_current_version_id": expected_current_version_id,
+                "expected_story_revision": expected_story_revision,
+            },
+        )
+        assert response.status_code == 422
+        assert response.json()["error_code"] == "interview_story_invalid_request"
+
+
 def test_manual_story_api_rejects_non_null_or_non_integer_new_version_cas(app_client) -> None:
     note = _note(app_client)
     for value in (True, "1", 0, 1):

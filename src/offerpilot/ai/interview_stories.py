@@ -312,13 +312,14 @@ def _normalize_raw_proposal(payload: dict[str, Any]) -> tuple[dict[str, Any], li
     for target_kind, index, refs in ref_rows:
         if not isinstance(refs, list) or not refs:
             raise StoryProposalError("invalid_shape")
-        if len(refs) > 8:
-            raise StoryProposalError("limit_exceeded")
         for ref in refs:
             if not isinstance(ref, dict) or set(ref) != _REF_FIELDS:
                 raise StoryProposalError("invalid_evidence_shape")
             if not all(isinstance(ref.get(field), str) for field in _REF_FIELDS):
                 raise StoryProposalError("invalid_evidence_shape")
+        if len(refs) > 8:
+            raise StoryProposalError("limit_exceeded")
+        for ref in refs:
             links.append({"target_kind": target_kind, "target_id": target_ids[(target_kind, index)], **ref})
     return canonical, links
 

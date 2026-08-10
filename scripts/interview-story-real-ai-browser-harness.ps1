@@ -1,3 +1,10 @@
+param(
+  [switch]$ValidateAudit,
+  [string]$AuditPath,
+  [string]$ExpectedBaseUrl,
+  [int]$AuditorExitCode = 0
+)
+
 $ErrorActionPreference = 'Stop'
 
 $repo = Split-Path -Parent $PSScriptRoot
@@ -147,9 +154,9 @@ finally:
   return (($raw -join '').Trim() | ConvertFrom-Json)
 }
 
-function Read-BrowserRecords {
-  if (-not (Test-Path -LiteralPath $browserAudit)) { throw 'Browser audit output is missing.' }
-  return @(Get-Content -LiteralPath $browserAudit | Where-Object { $_.Trim() } | ForEach-Object { $_ | ConvertFrom-Json })
+function Read-BrowserRecords([string]$path = $browserAudit) {
+  if (-not (Test-Path -LiteralPath $path)) { throw 'Browser audit output is missing.' }
+  return @(Get-Content -LiteralPath $path | Where-Object { $_.Trim() } | ForEach-Object { $_ | ConvertFrom-Json })
 }
 
 function Get-RecordProperty($record, [string]$name) {
@@ -158,14 +165,28 @@ function Get-RecordProperty($record, [string]$name) {
   return $property.Value
 }
 
-function Get-StoryAttemptResponse([object[]]$responses, [string]$entrypoint, [string]$url) {
-  $matches = @($responses | Where-Object {
-    $_.url -eq $url -and
-    $_.request_context.entrypoint -eq $entrypoint -and
-    $_.response_body_status -eq 'captured' -and
-    (Get-RecordProperty $_ 'response_proposal_id') -is [int] -and
-    $_.response_status -in @(200, 201)
-  })
+function Assert-AuditorSucceeded([object]$process) {
+  if (-not [bool]$process.HasExited) { throw 'Browser auditor did not stop cleanly.' }
+  if ([int]$process.ExitCode -ne 0) { throw "Browser auditor failed with exit code $($process.ExitCode)." }
+}
+
+function Get-StoryAttemptResponse([object[]]$records, [string]$entrypoint, [string]$url) {
+  $matches = @()
+  for ($index = 0; $index -lt $records.Count; $index++) {
+    $record = $records[$index]
+    $context = Get-RecordProperty $record 'request_context'
+    if (
+      $record.kind -eq 'browser_response' -and
+      $record.url -eq $url -and
+      $null -ne $context -and
+      $context.entrypoint -eq $entrypoint -and
+      $record.response_body_status -eq 'captured' -and
+      (Get-RecordProperty $record 'response_proposal_id') -is [int] -and
+      $record.response_status -in @(200, 201)
+    ) {
+      $matches += [pscustomobject]@{ Index = $index; Record = $record }
+    }
+  }
   if ($matches.Count -eq 0) {
     throw "Browser did not capture a ready $entrypoint Story proposal response."
   }
@@ -199,33 +220,76 @@ function Assert-StoryBrowserSequence([object[]]$records, [string]$baseUrl) {
   $uiPosts = @($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'POST' -and $_.url -eq "$baseUrl/api/interview-story-proposals" })
   $pilotPosts = @($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'POST' -and $_.url -eq "$baseUrl/api/pilot/interview-story-proposals" })
   if ($uiPosts.Count -ne 1 -or $pilotPosts.Count -ne 1) { throw 'Browser did not execute exactly one UI and one Pilot Story proposal sequence.' }
-  $sourceReads = @($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'GET' -and $_.url -eq "$baseUrl/api/interview-story-sources" })
-  if ($sourceReads.Count -lt 2) { throw 'Browser did not open the source picker for both Story flows.' }
-  $libraryReads = @($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'GET' -and $_.url -eq "$baseUrl/api/interview-stories" })
-  if ($libraryReads.Count -lt 1) { throw 'Browser did not read the Story library.' }
-  $responses = @($records | Where-Object { $_.kind -eq 'browser_response' })
-  $uiResponse = Get-StoryAttemptResponse $responses 'ui' "$baseUrl/api/interview-story-proposals"
-  $pilotResponse = Get-StoryAttemptResponse $responses 'pilot' "$baseUrl/api/pilot/interview-story-proposals"
-  $attemptIds = @([int]$uiResponse.response_proposal_id, [int]$pilotResponse.response_proposal_id)
+  $uiPostIndex = -1
+  $pilotPostIndex = -1
+  $sourceReadIndexes = @()
+  $libraryReadIndexes = @()
+  for ($index = 0; $index -lt $records.Count; $index++) {
+    $record = $records[$index]
+    if ($record.kind -ne 'browser_request' -or $record.method -ne 'GET') { continue }
+    if ($record.url -like "$baseUrl/api/interview-story-sources*") { $sourceReadIndexes += $index }
+    if ($record.url -eq "$baseUrl/api/interview-stories") { $libraryReadIndexes += $index }
+  }
+  for ($index = 0; $index -lt $records.Count; $index++) {
+    $record = $records[$index]
+    if ($record.kind -ne 'browser_request' -or $record.method -ne 'POST') { continue }
+    if ($record.url -eq "$baseUrl/api/interview-story-proposals") { $uiPostIndex = $index }
+    if ($record.url -eq "$baseUrl/api/pilot/interview-story-proposals") { $pilotPostIndex = $index }
+  }
+  $uiResponse = Get-StoryAttemptResponse $records 'ui' "$baseUrl/api/interview-story-proposals"
+  $pilotResponse = Get-StoryAttemptResponse $records 'pilot' "$baseUrl/api/pilot/interview-story-proposals"
+  $attemptIds = @([int]$uiResponse.Record.response_proposal_id, [int]$pilotResponse.Record.response_proposal_id)
   if ($attemptIds[0] -eq $attemptIds[1]) { throw 'UI and Pilot did not receive distinct Story attempts.' }
   $keys = @($uiPosts + $pilotPosts | ForEach-Object { $_.request_context.idempotency_key_sha256 } | Where-Object { $_ } | Sort-Object -Unique)
   if ($keys.Count -ne 2) { throw 'UI and Pilot did not use exactly two distinct Story idempotency keys.' }
+  $flowIndexes = @()
   foreach ($attemptId in $attemptIds) {
-    $confirm = @($responses | Where-Object {
-      $_.url -eq "$baseUrl/api/interview-story-proposals/$attemptId/confirm" -and
-      $_.response_body_status -eq 'captured' -and
-      $_.response_status -in @(200, 201) -and
-      (Get-RecordProperty $_ 'response_story_id') -is [int] -and
-      (Get-RecordProperty $_ 'response_story_version_id') -is [int]
-    })
+    $confirm = @()
+    for ($index = 0; $index -lt $records.Count; $index++) {
+      $record = $records[$index]
+      if (
+        $record.kind -eq 'browser_response' -and
+        $record.url -eq "$baseUrl/api/interview-story-proposals/$attemptId/confirm" -and
+        $record.response_body_status -eq 'captured' -and
+        $record.response_status -in @(200, 201) -and
+        (Get-RecordProperty $record 'response_story_id') -is [int] -and
+        (Get-RecordProperty $record 'response_story_version_id') -is [int]
+      ) {
+        $confirm += [pscustomobject]@{ Index = $index; Record = $record }
+      }
+    }
     if ($confirm.Count -ne 1) { throw "Browser did not confirm Story attempt $attemptId exactly once." }
     $latestConfirm = $confirm[-1]
-    $historyUrl = "$baseUrl/api/interview-stories/$($latestConfirm.response_story_id)/versions/$($latestConfirm.response_story_version_id)"
-    $history = @($responses | Where-Object {
-      $_.method -eq 'GET' -and $_.url -eq $historyUrl -and $_.response_status -eq 200 -and $_.response_body_status -eq 'captured'
-    })
+    $historyUrl = "$baseUrl/api/interview-stories/$($latestConfirm.Record.response_story_id)/versions/$($latestConfirm.Record.response_story_version_id)"
+    $history = @()
+    for ($index = $latestConfirm.Index + 1; $index -lt $records.Count; $index++) {
+      $record = $records[$index]
+      if ($record.kind -eq 'browser_response' -and $record.method -eq 'GET' -and $record.url -eq $historyUrl -and $record.response_status -eq 200 -and $record.response_body_status -eq 'captured') {
+        $history += [pscustomobject]@{ Index = $index; Record = $record }
+      }
+    }
     if ($history.Count -ne 1) { throw "Browser did not reopen confirmed Story version for attempt $attemptId exactly once." }
+    $proposalIndex = if ($attemptId -eq $attemptIds[0]) { $uiPostIndex } else { $pilotPostIndex }
+    $flowIndexes += [pscustomobject]@{ ProposalIndex = $proposalIndex; ConfirmIndex = $latestConfirm.Index; HistoryIndex = $history[-1].Index }
   }
+  $uiFlow = $flowIndexes[0]
+  $pilotFlow = $flowIndexes[1]
+  if (@($sourceReadIndexes | Where-Object { $_ -lt $uiFlow.ProposalIndex }).Count -eq 0) { throw 'Browser did not open the UI source picker before its proposal.' }
+  if (@($libraryReadIndexes | Where-Object { $_ -lt $uiFlow.ProposalIndex }).Count -eq 0) { throw 'Browser did not read the Story library before the UI proposal.' }
+  if (@($sourceReadIndexes | Where-Object { $_ -gt $uiFlow.HistoryIndex -and $_ -lt $pilotFlow.ProposalIndex }).Count -eq 0) { throw 'Browser did not open the Pilot source picker after the UI history flow.' }
+  if (@($libraryReadIndexes | Where-Object { $_ -gt $uiFlow.HistoryIndex -and $_ -lt $pilotFlow.ProposalIndex }).Count -eq 0) { throw 'Browser did not read the Story library before the Pilot proposal.' }
+  if ($uiFlow.ConfirmIndex -le $uiFlow.ProposalIndex -or $pilotFlow.ConfirmIndex -le $pilotFlow.ProposalIndex) {
+    throw 'Story confirmation did not occur after proposal generation.'
+  }
+}
+
+if ($ValidateAudit) {
+  if ([string]::IsNullOrWhiteSpace($AuditPath) -or [string]::IsNullOrWhiteSpace($ExpectedBaseUrl)) {
+    throw 'Audit validation requires AuditPath and ExpectedBaseUrl.'
+  }
+  Assert-AuditorSucceeded ([pscustomobject]@{ HasExited = $true; ExitCode = $AuditorExitCode })
+  Assert-StoryBrowserSequence (Read-BrowserRecords $AuditPath) $ExpectedBaseUrl
+  exit 0
 }
 
 try {
@@ -266,7 +330,7 @@ try {
   if (-not (Test-Path -LiteralPath $browserReady)) { throw 'Browser auditor did not become ready.' }
   Write-Host 'Dedicated browser target is ready in light mode at 1455x1200.'
   Write-Host 'Complete UI Story flow, then Pilot Story flow in the same target. Do not open another tab.'
-  Write-Host 'Use selected seed note sources, edit a draft, confirm each Story Version, and reopen history.'
+  Write-Host 'Before each proposal, open the Story library and its source picker. Use selected seed note sources, edit a draft, confirm each Story Version, and reopen history.'
   Write-Host 'Press Enter only after both flows and history reads have completed.'
   while ($true) {
     if ($server.HasExited) { throw 'Isolated service exited during browser acceptance.' }
@@ -280,8 +344,7 @@ try {
   }
   New-Item -ItemType File -Force -Path $browserStop | Out-Null
   $auditor.WaitForExit(15000)
-  if (-not $auditor.HasExited) { throw 'Browser auditor did not stop cleanly.' }
-  if ($auditor.ExitCode -ne 0) { throw "Browser auditor failed with exit code $($auditor.ExitCode)." }
+  Assert-AuditorSucceeded $auditor
   Assert-StoryBrowserSequence (Read-BrowserRecords) $baseUrl
   Assert-ProviderEgress $providers
   Assert-ForbiddenDomainsUnchanged $baseline (Get-ForbiddenDomainSnapshot)

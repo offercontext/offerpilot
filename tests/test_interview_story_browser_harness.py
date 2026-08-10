@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -166,9 +167,91 @@ def test_browser_audit_fails_closed_when_network_enable_is_rejected(tmp_path: Pa
     asyncio.run(run())
 
 
-def test_story_browser_harness_fails_on_auditor_exit_and_requires_picker_and_library_reads() -> None:
-    script = _HARNESS_PATH.read_text(encoding="utf-8")
+def test_story_browser_harness_validates_each_entrypoint_sequence_and_auditor_exit(tmp_path: Path) -> None:
+    base_url = "http://127.0.0.1:9999"
+    ui_context = {"entrypoint": "ui", "idempotency_key_sha256": "ui-key"}
+    pilot_context = {"entrypoint": "pilot", "idempotency_key_sha256": "pilot-key"}
+    audit_records = [
+        {"kind": "browser_request", "method": "GET", "url": f"{base_url}/api/interview-stories"},
+        {"kind": "browser_request", "method": "GET", "url": f"{base_url}/api/interview-story-sources"},
+        {"kind": "browser_request", "method": "POST", "url": f"{base_url}/api/interview-story-proposals", "request_context": ui_context},
+        {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/interview-story-proposals", "request_context": ui_context, "response_status": 201, "response_body_status": "captured", "response_proposal_id": 11},
+        {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/interview-story-proposals/11/confirm", "response_status": 201, "response_body_status": "captured", "response_story_id": 101, "response_story_version_id": 201},
+        {"kind": "browser_response", "method": "GET", "url": f"{base_url}/api/interview-stories/101/versions/201", "response_status": 200, "response_body_status": "captured"},
+        {"kind": "browser_request", "method": "GET", "url": f"{base_url}/api/interview-stories"},
+        {"kind": "browser_request", "method": "GET", "url": f"{base_url}/api/interview-story-sources?review_note_id=4"},
+        {"kind": "browser_request", "method": "POST", "url": f"{base_url}/api/pilot/interview-story-proposals", "request_context": pilot_context},
+        {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/pilot/interview-story-proposals", "request_context": pilot_context, "response_status": 201, "response_body_status": "captured", "response_proposal_id": 12},
+        {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/interview-story-proposals/12/confirm", "response_status": 201, "response_body_status": "captured", "response_story_id": 102, "response_story_version_id": 202},
+        {"kind": "browser_response", "method": "GET", "url": f"{base_url}/api/interview-stories/102/versions/202", "response_status": 200, "response_body_status": "captured"},
+    ]
+    audit_path = tmp_path / "story-audit.jsonl"
+    audit_path.write_text("\n".join(json.dumps(record) for record in audit_records) + "\n", encoding="utf-8")
 
-    assert "if ($auditor.ExitCode -ne 0)" in script
-    assert '"$baseUrl/api/interview-story-sources"' in script
-    assert '"$baseUrl/api/interview-stories"' in script
+    success = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(_HARNESS_PATH),
+            "-ValidateAudit",
+            "-AuditPath",
+            str(audit_path),
+            "-ExpectedBaseUrl",
+            base_url,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert success.returncode == 0, success.stderr
+
+    missing_pilot_source = [
+        record for record in audit_records if not record["url"].startswith(f"{base_url}/api/interview-story-sources?")
+    ]
+    audit_path.write_text("\n".join(json.dumps(record) for record in missing_pilot_source) + "\n", encoding="utf-8")
+    failure = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(_HARNESS_PATH),
+            "-ValidateAudit",
+            "-AuditPath",
+            str(audit_path),
+            "-ExpectedBaseUrl",
+            base_url,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert failure.returncode != 0
+    assert "source picker" in (failure.stdout + failure.stderr)
+
+    auditor_failure = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(_HARNESS_PATH),
+            "-ValidateAudit",
+            "-AuditPath",
+            str(audit_path),
+            "-ExpectedBaseUrl",
+            base_url,
+            "-AuditorExitCode",
+            "7",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert auditor_failure.returncode != 0
+    assert "Browser auditor failed with exit code 7" in (auditor_failure.stdout + auditor_failure.stderr)

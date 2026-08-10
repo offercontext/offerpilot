@@ -242,6 +242,24 @@ def test_resume_source_rejects_unicode_digit_array_index_alias(tmp_path) -> None
     factory.kw["bind"].dispose()
 
 
+def test_materialize_selected_sources_rejects_duplicate_source_selection(tmp_path) -> None:
+    factory = init_database(tmp_path / "story.db")
+    with factory() as session:
+        note = _create_note(session)
+        session.commit()
+
+        with pytest.raises(StoryValidationError, match="selection is duplicated"):
+            materialize_selected_sources(
+                session,
+                [
+                    {"source_kind": "interview_note", "source_id": note.id, "path": "/questions"},
+                    {"source_kind": "interview_note", "source_id": note.id, "path": "/questions"},
+                ],
+                [],
+            )
+    factory.kw["bind"].dispose()
+
+
 def _manual_content() -> dict[str, object]:
     return {
         "title": "Order service recovery",
