@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -179,6 +180,42 @@ def test_http_smoke_uses_real_http_and_cleans_test_application(tmp_path):
         "http_chat_create_event_card",
         "http_cleanup",
     ]
+
+
+@pytest.mark.parametrize(
+    ("real_ai", "expected_timeout"),
+    [(False, 60.0), (True, 180.0)],
+)
+def test_http_smoke_uses_a_longer_client_timeout_only_for_real_ai(
+    monkeypatch, tmp_path, real_ai, expected_timeout
+):
+    import offerpilot.smoke as smoke
+
+    captured_timeouts: list[float] = []
+
+    class StopAfterClientCreation(RuntimeError):
+        pass
+
+    class RecordingClient:
+        def __init__(self, *, base_url: str, timeout: float) -> None:
+            assert base_url == "http://smoke.test"
+            captured_timeouts.append(timeout)
+
+        def __enter__(self):
+            raise StopAfterClientCreation
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    monkeypatch.setattr(smoke, "_run_unconfigured_chat_smoke", lambda *args: None)
+    monkeypatch.setattr(smoke, "create_app", lambda **kwargs: object())
+    monkeypatch.setattr(smoke, "_running_server", lambda app: nullcontext("http://smoke.test"))
+    monkeypatch.setattr(smoke.httpx, "Client", RecordingClient)
+
+    with pytest.raises(StopAfterClientCreation):
+        smoke._run_http_smoke(tmp_path / "data", real_ai=real_ai)
+
+    assert captured_timeouts == [expected_timeout]
 
 
 def test_real_ai_mock_interview_smoke_restarts_unverifiable_attempts_and_confirms_success(tmp_path):

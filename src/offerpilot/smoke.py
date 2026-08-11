@@ -417,7 +417,8 @@ def _run_http_smoke(
     local_model = None if real_ai else _MutableSmokeChatModel()
     app = create_app(data_dir=data_dir, static_dir=static_dir, chat_model=local_model)
     with _running_server(app) as base_url:
-        with httpx.Client(base_url=base_url, timeout=60.0) as client:
+        client_timeout = 180.0 if real_ai else 60.0
+        with httpx.Client(base_url=base_url, timeout=client_timeout) as client:
             health = client.get("/api/health")
             _assert_status(health.status_code, 200, "http_health")
             steps.append(SmokeStep("http_health", "GET /api/health returned ok"))
