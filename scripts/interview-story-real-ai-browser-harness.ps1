@@ -476,11 +476,23 @@ function Assert-StoryBrowserSequence([object[]]$records, [string]$baseUrl) {
     }
     if ($confirm.Count -ne 1) { throw "Browser did not confirm Story attempt $attemptId exactly once." }
     $latestConfirm = $confirm[-1]
-    $historyUrl = "$baseUrl/api/interview-stories/$($latestConfirm.Record.response_story_id)/versions/$($latestConfirm.Record.response_story_version_id)"
+    # The production library reopens a confirmed Story through its aggregate GET.
+    # Its response embeds the current immutable Version; require that embedded ID
+    # to equal the Version returned by confirmation rather than inventing a
+    # version-detail request that the UI does not make.
+    $historyUrl = "$baseUrl/api/interview-stories/$($latestConfirm.Record.response_story_id)"
     $history = @()
     for ($index = $latestConfirm.Index + 1; $index -lt $records.Count; $index++) {
       $record = $records[$index]
-      if ($record.kind -eq 'browser_response' -and $record.method -eq 'GET' -and $record.url -eq $historyUrl -and $record.response_status -eq 200 -and $record.response_body_status -eq 'captured') {
+      if (
+        $record.kind -eq 'browser_response' -and
+        $record.method -eq 'GET' -and
+        $record.url -eq $historyUrl -and
+        $record.response_status -eq 200 -and
+        $record.response_body_status -eq 'captured' -and
+        (Get-RecordProperty $record 'response_story_id') -eq $latestConfirm.Record.response_story_id -and
+        (Get-RecordProperty $record 'response_story_current_version_id') -eq $latestConfirm.Record.response_story_version_id
+      ) {
         $history += [pscustomobject]@{ Index = $index; Record = $record }
       }
     }

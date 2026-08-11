@@ -251,13 +251,26 @@ class BrowserAudit:
                 body_text = body.get("body") if isinstance(body, dict) else None
                 payload = json.loads(body_text) if isinstance(body_text, str) else None
                 if isinstance(payload, dict):
+                    request_path = urlparse(request_url).path if isinstance(request_url, str) else ""
+                    story_detail_segments = request_path.strip("/").split("/")
+                    is_story_detail = (
+                        len(story_detail_segments) == 3
+                        and story_detail_segments[:2] == ["api", "interview-stories"]
+                        and story_detail_segments[2].isascii()
+                        and story_detail_segments[2].isdigit()
+                    )
                     if isinstance(payload.get("error_code"), str):
                         record["response_error_code"] = payload["error_code"]
                     if isinstance(payload.get("attempt_status"), str):
                         record["response_attempt_status"] = payload["attempt_status"]
                     if isinstance(payload.get("retry_after_ms"), int):
                         record["response_retry_after_ms"] = payload["retry_after_ms"]
-                    if isinstance(payload.get("id"), int):
+                    if is_story_detail and isinstance(payload.get("id"), int):
+                        record["response_story_id"] = payload["id"]
+                        version = payload.get("version")
+                        if isinstance(version, dict) and isinstance(version.get("id"), int):
+                            record["response_story_current_version_id"] = version["id"]
+                    elif isinstance(payload.get("id"), int):
                         record["response_proposal_id"] = payload["id"]
                     if isinstance(payload.get("story_id"), int):
                         record["response_story_id"] = payload["story_id"]
@@ -306,6 +319,7 @@ class BrowserAudit:
                 "response_proposal_ids",
                 "response_confirmed_proposal_id",
                 "response_story_id",
+                "response_story_current_version_id",
                 "response_story_version_id",
                 "response_body_status",
             ):

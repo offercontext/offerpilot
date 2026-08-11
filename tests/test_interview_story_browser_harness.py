@@ -177,6 +177,43 @@ def test_browser_audit_waits_for_loading_finished_before_capturing_workflow_resp
     assert records[-1]["response_proposal_id"] == 8
 
 
+def test_browser_audit_records_current_story_version_without_retaining_story_content(tmp_path: Path) -> None:
+    async def run() -> list[dict[str, object]]:
+        audit = BrowserAudit(_WebSocket(), tmp_path / "audit.jsonl", tmp_path / "stop")
+        audit.target_sessions["story-target"] = "story-session"
+        handle = io.StringIO()
+        audit.handle = handle
+        await audit.record_request(
+            _request("http://127.0.0.1:9999/api/interview-stories/101", {})
+        )
+
+        async def response_body(*_args, **_kwargs):
+            return {
+                "result": {
+                    "body": json.dumps(
+                        {"id": 101, "version": {"id": 201, "content": {"title": "do not retain"}}}
+                    )
+                }
+            }
+
+        audit.send = response_body  # type: ignore[method-assign]
+        audit.response_finished[("story-session", "request-1")] = asyncio.Event()
+        audit.response_finished[("story-session", "request-1")].set()
+        await audit.record_response(
+            {
+                "sessionId": "story-session",
+                "params": {"requestId": "request-1", "response": {"status": 200}},
+            }
+        )
+        return [json.loads(line) for line in handle.getvalue().splitlines()]
+
+    record = asyncio.run(run())[-1]
+
+    assert record["response_story_id"] == 101
+    assert record["response_story_current_version_id"] == 201
+    assert "do not retain" not in json.dumps(record, ensure_ascii=False)
+
+
 def test_browser_audit_never_reads_non_api_response_bodies(tmp_path: Path) -> None:
     async def run() -> tuple[list[str], list[dict[str, object]]]:
         audit = BrowserAudit(_WebSocket(), tmp_path / "audit.jsonl", tmp_path / "stop")
@@ -298,7 +335,7 @@ def test_story_browser_harness_validates_each_entrypoint_sequence_and_auditor_ex
         {"kind": "browser_request", "method": "POST", "url": f"{base_url}/api/interview-story-proposals", "request_context": ui_context},
         {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/interview-story-proposals", "request_context": ui_context, "response_status": 201, "response_body_status": "captured", "response_proposal_id": 11},
         {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/interview-story-proposals/11/confirm", "response_status": 201, "response_body_status": "captured", "response_story_id": 101, "response_story_version_id": 201},
-        {"kind": "browser_response", "method": "GET", "url": f"{base_url}/api/interview-stories/101/versions/201", "response_status": 200, "response_body_status": "captured"},
+        {"kind": "browser_response", "method": "GET", "url": f"{base_url}/api/interview-stories/101", "response_status": 200, "response_body_status": "captured", "response_story_id": 101, "response_story_current_version_id": 201},
         {"kind": "browser_request", "method": "GET", "url": f"{base_url}/api/interview-stories?status=active&query="},
         {"kind": "browser_response", "method": "GET", "url": f"{base_url}/api/interview-stories?status=active&query=", "response_status": 200, "response_body_status": "captured"},
         {"kind": "browser_request", "method": "GET", "url": f"{base_url}/api/interview-story-sources?review_note_id=4"},
@@ -306,7 +343,7 @@ def test_story_browser_harness_validates_each_entrypoint_sequence_and_auditor_ex
         {"kind": "browser_request", "method": "POST", "url": f"{base_url}/api/pilot/interview-story-proposals", "request_context": pilot_context},
         {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/pilot/interview-story-proposals", "request_context": pilot_context, "response_status": 201, "response_body_status": "captured", "response_proposal_id": 12},
         {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/interview-story-proposals/12/confirm", "response_status": 201, "response_body_status": "captured", "response_story_id": 102, "response_story_version_id": 202},
-        {"kind": "browser_response", "method": "GET", "url": f"{base_url}/api/interview-stories/102/versions/202", "response_status": 200, "response_body_status": "captured"},
+        {"kind": "browser_response", "method": "GET", "url": f"{base_url}/api/interview-stories/102", "response_status": 200, "response_body_status": "captured", "response_story_id": 102, "response_story_current_version_id": 202},
     ]
     for index, record in enumerate(audit_records, 1):
         record["observed_at_ns"] = 1_000_000 + index * 1_000
@@ -347,6 +384,17 @@ def test_story_browser_harness_validates_each_entrypoint_sequence_and_auditor_ex
     assert chat_failure.returncode != 0
     assert "chat writes" in (chat_failure.stdout + chat_failure.stderr)
 
+    wrong_history_version = [dict(record) for record in audit_records]
+    history_response = next(
+        record for record in wrong_history_version
+        if record["kind"] == "browser_response" and record["url"] == f"{base_url}/api/interview-stories/101"
+    )
+    history_response["response_story_current_version_id"] = 999
+    audit_path.write_text("\n".join(json.dumps(record) for record in wrong_history_version) + "\n", encoding="utf-8")
+    mismatch = _run_harness("-ValidateAudit", "-AuditPath", str(audit_path), "-ExpectedBaseUrl", base_url)
+    assert mismatch.returncode != 0
+    assert "confirmed Story version" in (mismatch.stdout + mismatch.stderr)
+
 
 def test_story_browser_harness_allows_one_same_key_provider_retry_but_rejects_semantic_replay(tmp_path: Path) -> None:
     base_url = "http://127.0.0.1:9999"
@@ -370,7 +418,7 @@ def test_story_browser_harness_allows_one_same_key_provider_retry_but_rejects_se
         {"kind": "browser_request", "method": "POST", "url": f"{base_url}/api/interview-story-proposals", "request_context": ui_context},
         {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/interview-story-proposals", "request_context": ui_context, "response_status": 201, "response_body_status": "captured", "response_proposal_id": 11},
         {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/interview-story-proposals/11/confirm", "response_status": 201, "response_body_status": "captured", "response_story_id": 101, "response_story_version_id": 201},
-        {"kind": "browser_response", "method": "GET", "url": f"{base_url}/api/interview-stories/101/versions/201", "response_status": 200, "response_body_status": "captured"},
+        {"kind": "browser_response", "method": "GET", "url": f"{base_url}/api/interview-stories/101", "response_status": 200, "response_body_status": "captured", "response_story_id": 101, "response_story_current_version_id": 201},
         {"kind": "browser_request", "method": "GET", "url": f"{base_url}/api/interview-stories?status=active&query="},
         {"kind": "browser_response", "method": "GET", "url": f"{base_url}/api/interview-stories?status=active&query=", "response_status": 200, "response_body_status": "captured"},
         {"kind": "browser_request", "method": "GET", "url": f"{base_url}/api/interview-story-sources?review_note_id=4"},
@@ -378,7 +426,7 @@ def test_story_browser_harness_allows_one_same_key_provider_retry_but_rejects_se
         {"kind": "browser_request", "method": "POST", "url": f"{base_url}/api/pilot/interview-story-proposals", "request_context": pilot_context},
         {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/pilot/interview-story-proposals", "request_context": pilot_context, "response_status": 201, "response_body_status": "captured", "response_proposal_id": 12},
         {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/interview-story-proposals/12/confirm", "response_status": 201, "response_body_status": "captured", "response_story_id": 102, "response_story_version_id": 202},
-        {"kind": "browser_response", "method": "GET", "url": f"{base_url}/api/interview-stories/102/versions/202", "response_status": 200, "response_body_status": "captured"},
+        {"kind": "browser_response", "method": "GET", "url": f"{base_url}/api/interview-stories/102", "response_status": 200, "response_body_status": "captured", "response_story_id": 102, "response_story_current_version_id": 202},
     ]
     for index, record in enumerate(records, 1):
         record["observed_at_ns"] = 1_000_000 + index * 1_000
