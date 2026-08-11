@@ -482,7 +482,7 @@ def test_story_browser_harness_requires_explicit_active_provider_configuration(t
     assert accepted.returncode == 0, accepted.stdout + accepted.stderr
 
 
-def test_story_browser_harness_proves_repair_connections_from_persisted_attempts(tmp_path: Path) -> None:
+def test_story_browser_harness_treats_attempts_as_call_audit_not_connect_count(tmp_path: Path) -> None:
     base_url = "http://127.0.0.1:9999"
     browser_audit = tmp_path / "browser-audit.jsonl"
     _write_audit(browser_audit, _complete_story_audit_records(base_url))
@@ -514,16 +514,18 @@ def test_story_browser_harness_proves_repair_connections_from_persisted_attempts
     )
     assert accepted.returncode == 0, accepted.stdout + accepted.stderr
 
+    # CONNECT records are transport tunnels, not model calls. A single model
+    # call may reconnect inside the allowlisted request window, so changing the
+    # persisted repair count must not make an otherwise contained audit fail.
     attempts_without_repair = json.loads(attempt_audit.read_text(encoding="utf-8"))
     attempts_without_repair[1]["repair_count"] = 0
     attempt_audit.write_text(json.dumps(attempts_without_repair), encoding="utf-8")
-    rejected = _run_harness(
+    reconnected = _run_harness(
         "-ValidateProviderEgress", "-ProviderAuditPath", str(provider_audit), "-ProviderAllowlistPath", str(allowlist),
         "-BrowserAuditPath", str(browser_audit), "-StoryAttemptAuditPath", str(attempt_audit), "-ExpectedBaseUrl", base_url,
         "-ExpectedTargetId", "story-target", "-ExpectedSessionId", "story-session",
     )
-    assert rejected.returncode != 0
-    assert "persisted repair_count" in (rejected.stdout + rejected.stderr)
+    assert reconnected.returncode == 0, reconnected.stdout + reconnected.stderr
 
 
 def test_story_browser_harness_requires_distinct_confirmed_stories_for_ui_and_pilot(tmp_path: Path) -> None:
@@ -760,7 +762,7 @@ def test_story_browser_harness_attributes_provider_egress_to_a_proven_user_retry
     assert "story_provider_error" in (rejected.stdout + rejected.stderr)
 
 
-def test_story_browser_harness_allows_one_bounded_repair_per_entrypoint_and_rejects_more(tmp_path: Path) -> None:
+def test_story_browser_harness_allows_transport_reconnects_but_rejects_uncontained_egress(tmp_path: Path) -> None:
     audit = tmp_path / "provider-audit.jsonl"
     browser_audit = tmp_path / "browser-audit.jsonl"
     attempt_audit = tmp_path / "attempt-audit.json"
@@ -834,18 +836,25 @@ def test_story_browser_harness_allows_one_bounded_repair_per_entrypoint_and_reje
     audit.write_text("\n".join(json.dumps(record) for record in normal_and_repaired) + "\n", encoding="utf-8")
 
     audit.write_text("\n".join(json.dumps(record) for record in [*normal_and_repaired, normal_and_repaired[0]]) + "\n", encoding="utf-8")
-    rejected = validate()
-    assert rejected.returncode != 0
-    assert "persisted repair_count" in (rejected.stdout + rejected.stderr)
+    reconnected = validate()
+    assert reconnected.returncode == 0, reconnected.stderr
 
     ui_overflow = [
         {"kind": "provider_proxy_connect", "scheme": "https", "host": "provider.example", "port": 443, "status": "connected", "observed_at_ns": timestamp}
         for timestamp in (1_005_100, 1_005_500, 1_005_900, 1_013_500)
     ]
     audit.write_text("\n".join(json.dumps(record) for record in ui_overflow) + "\n", encoding="utf-8")
-    unbalanced = validate()
-    assert unbalanced.returncode != 0
-    assert "persisted repair_count" in (unbalanced.stdout + unbalanced.stderr)
+    reconnected_ui = validate()
+    assert reconnected_ui.returncode == 0, reconnected_ui.stderr
+
+    outside_request_window = [
+        *reused_tunnels,
+        {"kind": "provider_proxy_connect", "scheme": "https", "host": "provider.example", "port": 443, "status": "connected", "observed_at_ns": 999_999},
+    ]
+    audit.write_text("\n".join(json.dumps(record) for record in outside_request_window) + "\n", encoding="utf-8")
+    uncontained = validate()
+    assert uncontained.returncode != 0
+    assert "correlated to exactly one UI or Pilot Story request" in (uncontained.stdout + uncontained.stderr)
 
 
 def test_story_browser_harness_records_a_single_viewport_screenshot_matrix(tmp_path: Path) -> None:
