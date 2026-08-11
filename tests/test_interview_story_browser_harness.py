@@ -4,6 +4,7 @@ import asyncio
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import struct
@@ -72,7 +73,7 @@ def _request(url: str, payload: dict[str, object]) -> dict[str, object]:
     }
 
 
-def _run_harness(*args: str) -> subprocess.CompletedProcess[str]:
+def _run_harness(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
             "powershell",
@@ -86,6 +87,8 @@ def _run_harness(*args: str) -> subprocess.CompletedProcess[str]:
         check=False,
         capture_output=True,
         text=True,
+        env=env,
+        timeout=90,
     )
 
 
@@ -327,3 +330,34 @@ def test_story_browser_harness_records_a_single_viewport_screenshot_matrix(tmp_p
     matrix = json.loads(manifest.read_text(encoding="utf-8"))
     assert len(matrix) == 10
     assert all(item["width"] == 1455 and item["height"] == 1200 and len(item["sha256"]) == 64 for item in matrix)
+
+
+def test_story_browser_harness_starts_audited_chromium_before_honoring_completion_signal(tmp_path: Path) -> None:
+    source_data = tmp_path / "configured-data"
+    source_data.mkdir()
+    (source_data / "config.json").write_text(
+        json.dumps(
+            {
+                "active_provider_id": "browser-harness-stub",
+                "providers": [
+                    {
+                        "id": "browser-harness-stub",
+                        "enabled": True,
+                        "base_url": "https://provider.example",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    completion_signal = tmp_path / "complete.signal"
+    completion_signal.touch()
+    environment = dict(os.environ)
+    environment["OFFERPILOT_DATA"] = str(source_data)
+
+    result = _run_harness("-CompletionSignalPath", str(completion_signal), env=environment)
+
+    output = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "Dedicated browser target is ready" in output
+    assert "Browser did not execute exactly one UI and one Pilot Story proposal sequence" in output

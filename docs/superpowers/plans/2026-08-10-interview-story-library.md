@@ -84,11 +84,12 @@ fixture. No product capability outside the Story aggregate is authorized:
 | --- | --- | --- |
 | CDP response audit | Modify `scripts/browser-network-audit.py` | Capture only redacted structured workflow metadata after `Network.loadingFinished`; do not record bodies or credentials. |
 | Provider egress timing audit | Modify `scripts/provider-egress-proxy.py` | Record only a local UTC epoch connection timestamp with the already-allowed endpoint tuple, so the harness can bind each connection to the preceding UI or Pilot request window; never inspect tunneled payloads or credentials. |
+| Windows backend manifest parser | Modify `scripts/windows-pytest-groups.ps1`, `tests/test_windows_pytest_groups.py` | Parse both normalized `/` and native Windows `\` test node-id separators before aggregate coverage comparison; do not alter grouping, skip, or completion semantics. |
 | Complete-gate test timing | Modify `tests/test_chat_api.py` | Only stabilize the two named, intentionally slow Chat confirmation tests; no Chat production behavior or contract change. |
 | AppShell test fixtures | Modify `web/src/layout/AppShell.evidenceNavigation.test.tsx`, `web/src/layout/AppShell.offerNegotiation.test.tsx` | Only supply the Ant Design exports needed to mount the approved Story drawer through real `AppShell` imports. |
 | This reviewed plan | Modify `docs/superpowers/plans/2026-08-10-interview-story-library.md` | Record this exact allowlist correction and the later review-required Story regression tests. |
 
-The final machine allowlist in Task 10 must include these five files and this
+The final machine allowlist in Task 10 must include these seven files and this
 plan file, in addition to every path in the table above. This correction is
 required because the original allowlist omitted existing test/audit fixtures
 that the approved browser and full-gate tasks already depend on.

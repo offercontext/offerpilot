@@ -9,7 +9,8 @@ param(
   [string]$ProviderAllowlistPath,
   [switch]$ValidateScreenshotMatrix,
   [string]$ScreenshotDirectory,
-  [string]$ScreenshotManifestPath
+  [string]$ScreenshotManifestPath,
+  [string]$CompletionSignalPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -21,6 +22,8 @@ $browserProfile = Join-Path $tempData 'browser-profile'
 $browserAudit = Join-Path $tempData 'browser-network.jsonl'
 $browserStop = Join-Path $tempData 'browser-network.stop'
 $browserReady = Join-Path $tempData 'browser-network.ready'
+$auditorStdout = Join-Path $tempData 'browser-network-auditor.stdout.log'
+$auditorStderr = Join-Path $tempData 'browser-network-auditor.stderr.log'
 $providerAudit = Join-Path $tempData 'provider-egress.jsonl'
 $providerAllowlist = Join-Path $tempData 'provider-allowlist.json'
 $server = $null
@@ -31,6 +34,8 @@ $previousData = $env:OFFERPILOT_DATA
 $previousHttpProxy = $env:HTTP_PROXY
 $previousHttpsProxy = $env:HTTPS_PROXY
 $previousNoProxy = $env:NO_PROXY
+$projectPython = Join-Path $repo '.venv\Scripts\python.exe'
+$projectOc = Join-Path $repo '.venv\Scripts\oc.exe'
 
 function Get-FreePort {
   $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
@@ -46,9 +51,55 @@ function Stop-Tree([object]$process) {
   if ($null -eq $process) { return }
   try {
     $children = @(Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq $process.Id })
-    foreach ($child in $children) { Stop-Process -Id $child.ProcessId -Force -ErrorAction SilentlyContinue }
+    foreach ($child in $children) { Stop-Tree ([pscustomobject]@{ Id = $child.ProcessId }) }
     Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
   } catch { }
+}
+
+function Invoke-IsolatedPython([string]$label, [string]$code) {
+  if (-not (Test-Path -LiteralPath $projectPython)) {
+    throw 'Project Python runtime is missing.'
+  }
+  $scriptPath = Join-Path $tempData ("$label-" + [Guid]::NewGuid().ToString('N') + '.py')
+  $stdoutPath = "$scriptPath.stdout"
+  $stderrPath = "$scriptPath.stderr"
+  [IO.File]::WriteAllText($scriptPath, $code, [Text.UTF8Encoding]::new($false))
+  try {
+    $process = Start-Process -FilePath $projectPython -WorkingDirectory $repo -ArgumentList @($scriptPath) -PassThru -Wait -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+    $output = @(
+      if (Test-Path -LiteralPath $stdoutPath) { Get-Content -LiteralPath $stdoutPath }
+      if (Test-Path -LiteralPath $stderrPath) { Get-Content -LiteralPath $stderrPath }
+    )
+    $exitCode = $process.ExitCode
+    if ($exitCode -ne 0) { throw "$label failed with exit code ${exitCode}: $($output -join [Environment]::NewLine)" }
+    return @($output)
+  } finally {
+    Remove-Item -LiteralPath $scriptPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Wait-ForHttpReady([object]$process, [string]$uri, [string]$label, [int]$attempts = 60) {
+  for ($i = 0; $i -lt $attempts; $i++) {
+    if ($process.HasExited) { throw "$label exited before readiness." }
+    try {
+      $response = Invoke-RestMethod -Uri $uri -TimeoutSec 2
+      if ($null -ne $response) { return $response }
+    } catch { }
+    Start-Sleep -Milliseconds 500
+  }
+  throw "$label did not become ready."
+}
+
+function Get-ProcessDiagnostic([string]$stdoutPath, [string]$stderrPath) {
+  $lines = @()
+  foreach ($path in @($stdoutPath, $stderrPath)) {
+    if (Test-Path -LiteralPath $path) { $lines += @(Get-Content -LiteralPath $path -ErrorAction SilentlyContinue) }
+  }
+  $text = ($lines -join [Environment]::NewLine).Trim()
+  if ([string]::IsNullOrWhiteSpace($text)) { return 'no local diagnostic output' }
+  return $text.Substring(0, [Math]::Min($text.Length, 4096))
 }
 
 function Find-Chromium {
@@ -107,7 +158,7 @@ allowed = {
   "interview_stories", "interview_story_versions", "interview_story_version_evidence_links",
   "interview_story_user_assertions", "interview_story_proposal_attempts"
 }
-tables = [row[0] for row in db.execute("select name from sqlite_master where type='table'") if row[0] not in allowed and not row[0].startswith("sqlite_")]
+tables = [row[0] for row in db.execute("select name from sqlite_master where type='table'") if row[0] not in allowed and not row[0].startswith("sqlite_") and not row[0].startswith("knowledge_evidence_fts_")]
 result = {}
 for name in sorted(tables):
     rows = db.execute(f"select * from {name} order by rowid").fetchall()
@@ -115,8 +166,7 @@ for name in sorted(tables):
     result[name] = {"count": len(rows), "sha256": hashlib.sha256(data.encode("utf-8")).hexdigest()}
 print(json.dumps(result, separators=(",", ":")))
 '@
-  $raw = & uv run python -c $code
-  Assert-ExitCode 'forbidden-domain snapshot'
+  $raw = Invoke-IsolatedPython 'forbidden-domain-snapshot' $code
   return (($raw -join '').Trim() | ConvertFrom-Json)
 }
 
@@ -136,9 +186,10 @@ function Seed-StoryContext {
   $code = @'
 import json, os
 from datetime import datetime, timezone
+from pathlib import Path
 from offerpilot.db import session_factory_for_data_dir
 from offerpilot.models import Application, ApplicationEvent, InterviewNote, Resume, MockInterviewAttempt, MockInterviewTurn
-data_dir = os.path.dirname(os.environ["INTERVIEW_STORY_HARNESS_DB"])
+data_dir = Path(os.environ["INTERVIEW_STORY_HARNESS_DB"]).parent
 factory = session_factory_for_data_dir(data_dir)
 try:
   with factory() as s:
@@ -156,8 +207,7 @@ try:
 finally:
   factory.kw["bind"].dispose()
 '@
-  $raw = & uv run python -c $code
-  Assert-ExitCode 'Story context seed'
+  $raw = Invoke-IsolatedPython 'story-context-seed' $code
   return (($raw -join '').Trim() | ConvertFrom-Json)
 }
 
@@ -443,21 +493,18 @@ try {
   $env:HTTP_PROXY = "http://127.0.0.1:$proxyPort"
   $env:HTTPS_PROXY = "http://127.0.0.1:$proxyPort"
   $env:NO_PROXY = '127.0.0.1,localhost'
-  $proxy = Start-Process powershell -WindowStyle Hidden -PassThru -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', "Set-Location '$repo'; uv run python scripts/provider-egress-proxy.py --port $proxyPort --audit '$providerAudit' --expected-endpoints-file '$providerAllowlist'")
-  $server = Start-Process powershell -WindowStyle Hidden -PassThru -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', "Set-Location '$repo'; uv run oc start --port $port")
-  for ($i = 0; $i -lt 60; $i++) {
-    if ($server.HasExited) { throw 'Isolated service exited before readiness.' }
-    try { if (Invoke-RestMethod -Uri "$baseUrl/api/health" -TimeoutSec 2) { break } } catch { }
-    Start-Sleep -Milliseconds 500
-    if ($i -eq 59) { throw 'Isolated service did not become healthy.' }
-  }
+  if (-not (Test-Path -LiteralPath $projectOc)) { throw 'Project OfferPilot CLI runtime is missing.' }
+  $proxy = Start-Process -FilePath $projectPython -WorkingDirectory $repo -WindowStyle Hidden -PassThru -ArgumentList @('scripts/provider-egress-proxy.py', '--port', $proxyPort, '--audit', $providerAudit, '--expected-endpoints-file', $providerAllowlist)
+  $server = Start-Process -FilePath $projectOc -WorkingDirectory $repo -WindowStyle Hidden -PassThru -ArgumentList @('start', '--port', $port)
+  Wait-ForHttpReady $server "$baseUrl/api/health" 'Isolated service' | Out-Null
   $seed = Seed-StoryContext
   $baseline = Get-ForbiddenDomainSnapshot
   $chromium = Find-Chromium
   $browser = Start-Process -FilePath $chromium -PassThru -ArgumentList @("--remote-debugging-port=$cdpPort", "--user-data-dir=$browserProfile", '--no-first-run', '--no-default-browser-check', '--remote-allow-origins=*', '--window-size=1455,1200', '--force-color-profile=srgb', 'about:blank')
-  $auditor = Start-Process powershell -WindowStyle Hidden -PassThru -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', "Set-Location '$repo'; uv run python scripts/browser-network-audit.py --debugging-url 'http://127.0.0.1:$cdpPort' --expected-url '$baseUrl' --audit '$browserAudit' --stop-file '$browserStop' --ready-file '$browserReady'")
+  Wait-ForHttpReady $browser "http://127.0.0.1:$cdpPort/json/version" 'Dedicated Chromium CDP endpoint' | Out-Null
+  $auditor = Start-Process -FilePath $projectPython -WorkingDirectory $repo -WindowStyle Hidden -PassThru -ArgumentList @('scripts/browser-network-audit.py', '--debugging-url', "http://127.0.0.1:$cdpPort", '--expected-url', $baseUrl, '--audit', $browserAudit, '--stop-file', $browserStop, '--ready-file', $browserReady) -RedirectStandardOutput $auditorStdout -RedirectStandardError $auditorStderr
   for ($i = 0; $i -lt 120; $i++) {
-    if ($auditor.HasExited) { throw 'Browser auditor exited before readiness.' }
+    if ($auditor.HasExited) { throw "Browser auditor exited before readiness: $(Get-ProcessDiagnostic $auditorStdout $auditorStderr)" }
     if (Test-Path -LiteralPath $browserReady) { break }
     Start-Sleep -Milliseconds 500
   }
@@ -471,9 +518,16 @@ try {
     if ($server.HasExited) { throw 'Isolated service exited during browser acceptance.' }
     if ($browser.HasExited) { throw 'Dedicated browser exited during browser acceptance.' }
     if ($auditor.HasExited) { throw 'Browser auditor exited during browser acceptance.' }
-    if ([Console]::KeyAvailable) {
-      $key = [Console]::ReadKey($true)
-      if ($key.Key -eq [ConsoleKey]::Enter) { break }
+    if (-not [string]::IsNullOrWhiteSpace($CompletionSignalPath) -and (Test-Path -LiteralPath $CompletionSignalPath)) { break }
+    if ([string]::IsNullOrWhiteSpace($CompletionSignalPath)) {
+      try {
+        if ([Console]::KeyAvailable) {
+          $key = [Console]::ReadKey($true)
+          if ($key.Key -eq [ConsoleKey]::Enter) { break }
+        }
+      } catch {
+        throw 'Browser acceptance requires interactive input or CompletionSignalPath.'
+      }
     }
     Start-Sleep -Milliseconds 250
   }
@@ -500,8 +554,7 @@ for (version_id,) in version_rows:
     if link_count < 1:
         raise SystemExit("each confirmed Story Version requires persisted evidence links")
 '@
-  & uv run python -c $verify
-  Assert-ExitCode 'Story confirmation verification'
+  Invoke-IsolatedPython 'story-confirmation-verification' $verify | Out-Null
   Write-Host 'Story browser acceptance passed.'
 }
 finally {
