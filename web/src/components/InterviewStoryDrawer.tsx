@@ -40,6 +40,7 @@ export interface InterviewStoryDraft {
   manualSavePayload: { content: InterviewStoryEditableContent; evidenceLinks: InterviewStoryClientEvidenceLink[] } | null;
   proposalInput: InterviewStoryProposalInput | null;
   resultUnknown: boolean;
+  retryAvailableAt: number | null;
   pendingOperation: 'generate' | 'confirm' | 'manual' | null;
   confirmationToken: string | null;
   error: string | null;
@@ -94,6 +95,7 @@ export function createInterviewStoryDraft(
     manualSavePayload: null,
     proposalInput: null,
     resultUnknown: false,
+    retryAvailableAt: null,
     pendingOperation: null,
     confirmationToken: null,
     error: null,
@@ -216,6 +218,7 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
   const [previewConfirmed, setPreviewConfirmed] = useState(false);
   const [assertion, setAssertion] = useState('');
   const [busy, setBusy] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [authoringMode, setAuthoringMode] = useState<'proposal' | 'manual'>('proposal');
 
   useEffect(() => {
@@ -230,6 +233,16 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
   }, [draft.entrypoint, draft.targetStoryId, draft.reviewNoteId]);
 
   useEffect(() => {
+    const retryAvailableAt = draft.retryAvailableAt;
+    setNowMs(Date.now());
+    if (!open || !draft.resultUnknown || retryAvailableAt === null) return;
+    const remaining = retryAvailableAt - Date.now();
+    if (remaining <= 0) return;
+    const timer = window.setTimeout(() => setNowMs(Date.now()), remaining);
+    return () => window.clearTimeout(timer);
+  }, [draft.resultUnknown, draft.retryAvailableAt, open]);
+
+  useEffect(() => {
     if (!open || !pickerOpen || candidates) return;
     setCandidatesLoading(true);
     void listInterviewStorySourceCandidates(draft.reviewNoteId)
@@ -240,6 +253,13 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
 
   const sourceSelected = draft.selections.length > 0 || draft.assertions.some((item) => item.trim());
   const frozen = draft.resultUnknown || busy;
+  const retryWaiting = draft.resultUnknown
+    && draft.pendingOperation === 'generate'
+    && draft.retryAvailableAt !== null
+    && nowMs < draft.retryAvailableAt;
+  const retryWaitSeconds = retryWaiting && draft.retryAvailableAt !== null
+    ? Math.max(1, Math.ceil((draft.retryAvailableAt - nowMs) / 1000))
+    : 0;
   const normalProposal = draft.proposal?.proposal_status === 'normal' ? draft.proposal : null;
   const manualContent = useMemo(() => normalizedManualContent(draft.manualContent), [draft.manualContent]);
   const manualTargets = useMemo(() => manualEvidenceTargets(manualContent), [manualContent]);
@@ -294,6 +314,7 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
     proposalInput: null,
     attemptId: null,
     resultUnknown: false,
+    retryAvailableAt: null,
     pendingOperation: null,
     confirmationToken: null,
     error: null,
@@ -410,7 +431,15 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
     try {
       const response = await createInterviewStoryProposal(input, draft.entrypoint);
       if (!('proposal' in response) || response.attempt_status === 'generating' || response.attempt_status === 'provider_unknown') {
-        onDraftChange({ ...requestDraft, attemptId: response.id, resultUnknown: true, pendingOperation: 'generate', error: 'AI 结果待确认，请使用原尝试重试。' });
+        const retryAfterMs = 'retry_after_ms' in response ? response.retry_after_ms : 0;
+        onDraftChange({
+          ...requestDraft,
+          attemptId: response.id,
+          resultUnknown: true,
+          retryAvailableAt: Date.now() + retryAfterMs,
+          pendingOperation: 'generate',
+          error: 'AI 结果待确认，请使用原尝试重试。',
+        });
         return;
       }
       onDraftChange({
@@ -420,6 +449,7 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
         editedContent: response.proposal?.proposal_status === 'normal' ? editableContent(response.proposal.content) : null,
         proposalInput: null,
         resultUnknown: false,
+        retryAvailableAt: null,
         pendingOperation: null,
         error: null,
       });
@@ -429,7 +459,15 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
         const attemptId = error instanceof InterviewStoryError && error.attemptId !== null
           ? error.attemptId
           : requestDraft.attemptId;
-        onDraftChange({ ...requestDraft, attemptId, resultUnknown: true, pendingOperation: 'generate', error: safe });
+        const retryAfterMs = error instanceof InterviewStoryError ? error.retryAfterMs : null;
+        onDraftChange({
+          ...requestDraft,
+          attemptId,
+          resultUnknown: true,
+          retryAvailableAt: retryAfterMs === null ? null : Date.now() + retryAfterMs,
+          pendingOperation: 'generate',
+          error: safe,
+        });
       } else {
         onDraftChange(resetAfterDefiniteFailure(requestDraft, safe));
       }
@@ -478,7 +516,13 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
         description="不会自动选择来源，不会写入知识库；每一条保存内容都需要原始证据或你的明确陈述。"
         style={{ marginBottom: 16 }}
       />
-      {draft.error ? <Alert type="warning" showIcon message={draft.error} action={draft.resultUnknown ? <Button size="small" onClick={() => void (draft.pendingOperation === 'confirm' ? confirm() : draft.pendingOperation === 'manual' ? saveManualStory() : generate())}>使用原尝试重试</Button> : undefined} style={{ marginBottom: 16 }} /> : null}
+      {draft.error ? <Alert
+        type="warning"
+        showIcon
+        message={retryWaiting ? `${draft.error} 安全租约仍在处理中，约 ${retryWaitSeconds} 秒后可重试。` : draft.error}
+        action={draft.resultUnknown ? <Button size="small" disabled={retryWaiting} onClick={() => void (draft.pendingOperation === 'confirm' ? confirm() : draft.pendingOperation === 'manual' ? saveManualStory() : generate())}>使用原尝试重试</Button> : undefined}
+        style={{ marginBottom: 16 }}
+      /> : null}
       <Title level={5}>选择原始来源</Title>
       {!pickerOpen ? <Button data-story-audit={`${draft.entrypoint}-source-picker`} disabled={frozen} onClick={() => setPickerOpen(true)}>打开来源选择器</Button> : null}
       {candidatesLoading ? <Spin aria-label="正在加载可选原始来源" /> : null}

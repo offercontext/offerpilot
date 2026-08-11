@@ -5232,13 +5232,14 @@ def create_app(
 
     def _story_attempt_response(attempt: dict[str, Any], status_code: int = 200) -> JSONResponse:
         if attempt["attempt_status"] in {"generating", "provider_unknown"}:
+            retry_after_ms = interview_stories.get_attempt_retry_after_ms(attempt["id"])
             return JSONResponse(
                 {
                     "id": attempt["id"],
                     "attempt_status": attempt["attempt_status"],
                     "generation_revision": attempt["generation_revision"],
                     "source_fingerprint": attempt["source_fingerprint"],
-                    "retry_after_ms": 1000,
+                    "retry_after_ms": retry_after_ms,
                 },
                 status_code=202,
             )
@@ -5265,7 +5266,11 @@ def create_app(
             502,
             "AI 服务暂时无法确认结果，请使用原尝试重试",
             code="story_provider_error",
-            details={"id": attempt_id, "attempt_status": "provider_unknown"},
+            details={
+                "id": attempt_id,
+                "attempt_status": "provider_unknown",
+                "retry_after_ms": interview_stories.get_attempt_retry_after_ms(attempt_id),
+            },
         )
 
     def _story_proposal(

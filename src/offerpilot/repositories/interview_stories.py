@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import threading
 from dataclasses import dataclass
@@ -107,6 +108,7 @@ _STORY_VERSION_SCHEMA = "interview-story-v1"
 _IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 _STORY_LEASE_SECONDS = 30
 _STORY_HEARTBEAT_SECONDS = 10
+_STORY_RETRY_SAFETY_MARGIN_MS = 250
 
 
 def _is_optional_positive_int(value: object) -> bool:
@@ -1320,6 +1322,25 @@ class InterviewStoriesRepository:
         with self._session_factory() as session:
             attempt = session.get(InterviewStoryProposalAttempt, attempt_id)
             return _attempt_payload(attempt) if attempt is not None else None
+
+    def get_attempt_retry_after_ms(
+        self,
+        attempt_id: int,
+        *,
+        now_factory: Callable[[], datetime] | None = None,
+    ) -> int:
+        """Return a safe, non-secret delay before a fenced Attempt can be reclaimed."""
+
+        now = _now(now_factory)
+        with self._session_factory() as session:
+            attempt = session.get(InterviewStoryProposalAttempt, attempt_id)
+            if attempt is None or attempt.attempt_status not in {"generating", "provider_unknown"}:
+                return 0
+            lease_until = _as_aware_utc(attempt.provider_lease_until)
+            if lease_until is None or lease_until <= now:
+                return 0
+            remaining_ms = math.ceil((lease_until - now).total_seconds() * 1000)
+            return remaining_ms + _STORY_RETRY_SAFETY_MARGIN_MS
 
     def confirm_attempt(
         self,

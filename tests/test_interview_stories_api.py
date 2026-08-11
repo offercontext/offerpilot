@@ -278,6 +278,9 @@ def test_story_provider_unknown_error_exposes_attempt_identity_for_same_key_repl
     assert response.json()["error_code"] == "story_provider_error"
     assert isinstance(response.json().get("id"), int)
     assert response.json().get("attempt_status") == "provider_unknown"
+    retry_after_ms = response.json().get("retry_after_ms")
+    assert isinstance(retry_after_ms, int)
+    assert 1 <= retry_after_ms <= 31_000
 
 
 def test_story_generation_persists_a_bounded_internal_repair_count_for_egress_audit(

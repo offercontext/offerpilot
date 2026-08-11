@@ -21,13 +21,17 @@ type ProposalResponse = InterviewStoryProposalAttempt | InterviewStoryPendingAtt
 function toStoryError(error: unknown): StoryError {
   const response = axios.isAxiosError(error)
     ? error.response
-    : (error as { response?: { status?: number; data?: { error_code?: unknown } } } | null)?.response;
+    : (error as { response?: { status?: number; data?: { error_code?: unknown; id?: unknown; retry_after_ms?: unknown } } } | null)?.response;
   const code = typeof response?.data?.error_code === 'string' ? response.data.error_code : null;
   const rawAttemptId = response?.data?.id;
   const attemptId = typeof rawAttemptId === 'number' && Number.isSafeInteger(rawAttemptId) && rawAttemptId > 0
     ? rawAttemptId
     : null;
-  return new StoryError(response?.status ?? 0, code, attemptId);
+  const rawRetryAfterMs = response?.data?.retry_after_ms;
+  const retryAfterMs = typeof rawRetryAfterMs === 'number' && Number.isSafeInteger(rawRetryAfterMs) && rawRetryAfterMs >= 0
+    ? rawRetryAfterMs
+    : null;
+  return new StoryError(response?.status ?? 0, code, attemptId, retryAfterMs);
 }
 
 async function request<T>(operation: () => Promise<{ data: T }>): Promise<T> {

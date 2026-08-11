@@ -10,6 +10,7 @@ const storyService = vi.hoisted(() => {
       public readonly status: number,
       public readonly code: string | null,
       public readonly attemptId: number | null = null,
+      public readonly retryAfterMs: number | null = null,
     ) {
       super(code ?? 'interview_story_error');
     }
@@ -76,6 +77,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root?.unmount());
   container?.remove();
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -183,6 +185,8 @@ describe('InterviewStoryDrawer', () => {
   });
 
   it('replays an unknown proposal with the same frozen input and idempotency key', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-12T00:00:00Z'));
     let current = createInterviewStoryDraft('ui');
     const render = () => root?.render(<InterviewStoryDrawer open draft={current} onDraftChange={(draft) => {
       if (draft) {
@@ -191,7 +195,7 @@ describe('InterviewStoryDrawer', () => {
       }
     }} onClose={() => {}} />);
     storyService.proposal
-      .mockRejectedValueOnce(new storyService.StoryError(502, 'story_provider_error', 18))
+      .mockRejectedValueOnce(new storyService.StoryError(502, 'story_provider_error', 18, 30_250))
       .mockResolvedValueOnce({
         id: 18,
         attempt_status: 'ready',
@@ -237,9 +241,18 @@ describe('InterviewStoryDrawer', () => {
     expect(current.pendingOperation).toBe('generate');
     expect(current.attemptId).toBe(18);
     expect(document.body.textContent).toContain('使用原尝试重试');
+    const earlyRetry = [...document.body.querySelectorAll('button')].find((button) => button.textContent === '使用原尝试重试') as HTMLButtonElement;
+    expect(earlyRetry.disabled).toBe(true);
+    act(() => earlyRetry.click());
+    expect(storyService.proposal).toHaveBeenCalledTimes(1);
 
     act(() => root?.render(null));
     act(render);
+
+    expect((([...document.body.querySelectorAll('button')].find((button) => button.textContent === '使用原尝试重试')) as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_250);
+    });
 
     await act(async () => {
       [...document.body.querySelectorAll('button')].find((button) => button.textContent === '使用原尝试重试')?.click();
@@ -250,6 +263,7 @@ describe('InterviewStoryDrawer', () => {
     expect(storyService.proposal.mock.calls[1]?.[0]).toEqual(initialPayload);
     expect(current.resultUnknown).toBe(false);
     expect(current.pendingOperation).toBeNull();
+    vi.useRealTimers();
   });
 
   it('replays an unknown confirmation with the original token and selected content', async () => {

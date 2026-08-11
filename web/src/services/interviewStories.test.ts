@@ -82,7 +82,7 @@ describe('interview story service', () => {
     apiPost.mockRejectedValue({
       response: {
         status: 502,
-        data: { error_code: 'story_provider_error', id: 44, attempt_status: 'provider_unknown' },
+        data: { error_code: 'story_provider_error', id: 44, attempt_status: 'provider_unknown', retry_after_ms: 30_250 },
       },
     });
 
@@ -90,6 +90,7 @@ describe('interview story service', () => {
       status: 502,
       code: 'story_provider_error',
       attemptId: 44,
+      retryAfterMs: 30_250,
     });
   });
 });

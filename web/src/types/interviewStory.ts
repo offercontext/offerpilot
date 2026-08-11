@@ -157,6 +157,8 @@ export class InterviewStoryError extends Error {
     public readonly code: string | null,
     /** Safe server identity required to resume a provider-unknown Attempt. */
     public readonly attemptId: number | null = null,
+    /** Safe delay before the same fenced Attempt may be replayed. */
+    public readonly retryAfterMs: number | null = null,
   ) {
     super(code ?? 'interview_story_error');
     this.name = 'InterviewStoryError';

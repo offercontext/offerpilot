@@ -224,6 +224,9 @@ def test_provider_unknown_replay_with_live_lease_never_calls_provider_again(tmp_
         provider_call_token=first.provider_call_token,
         category="provider_error",
     )
+    assert repository.get_attempt_retry_after_ms(
+        first.attempt_id, now_factory=lambda: clock[0]
+    ) == 30_250
 
     replay = repository.claim_proposal(**request)
 
