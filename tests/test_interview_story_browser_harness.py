@@ -573,6 +573,26 @@ def test_story_browser_harness_validates_each_entrypoint_sequence_and_auditor_ex
     assert "confirmed Story version" in (mismatch.stdout + mismatch.stderr)
 
 
+def test_story_browser_harness_does_not_require_a_redundant_library_read_before_pilot(tmp_path: Path) -> None:
+    base_url = "http://127.0.0.1:9999"
+    records = _complete_story_audit_records(base_url)
+    records = [
+        record for record in records
+        if record["url"] != f"{base_url}/api/interview-stories?status=active&query="
+        or record["observed_at_ns"] < 1_009_000
+    ]
+    for index, record in enumerate(records, 1):
+        record["observed_at_ns"] = 1_000_000 + index * 1_000
+    audit_path = tmp_path / "story-pilot-source-only-audit.jsonl"
+    _write_audit(audit_path, records)
+
+    accepted = _run_harness(
+        "-ValidateAudit", "-AuditPath", str(audit_path), "-ExpectedBaseUrl", base_url,
+        "-ExpectedTargetId", "story-target", "-ExpectedSessionId", "story-session",
+    )
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+
+
 def test_story_browser_harness_allows_one_same_key_provider_retry_but_rejects_semantic_replay(tmp_path: Path) -> None:
     base_url = "http://127.0.0.1:9999"
     ui_context = {

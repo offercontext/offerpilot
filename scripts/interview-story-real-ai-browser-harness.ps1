@@ -635,7 +635,6 @@ function Assert-StoryBrowserSequence([object[]]$records, [string]$baseUrl, [stri
   if (@($sourceReadIndexes | Where-Object { $_ -lt $uiFlow.ProposalIndex }).Count -eq 0) { throw 'Browser did not open the UI source picker before its proposal.' }
   if (@($libraryReadIndexes | Where-Object { $_ -lt $uiFlow.ProposalIndex }).Count -eq 0) { throw 'Browser did not read the Story library before the UI proposal.' }
   if (@($sourceReadIndexes | Where-Object { $_ -gt $uiFlow.HistoryIndex -and $_ -lt $pilotFlow.ProposalIndex }).Count -eq 0) { throw 'Browser did not open the Pilot source picker after the UI history flow.' }
-  if (@($libraryReadIndexes | Where-Object { $_ -gt $uiFlow.HistoryIndex -and $_ -lt $pilotFlow.ProposalIndex }).Count -eq 0) { throw 'Browser did not read the Story library before the Pilot proposal.' }
   if ($uiFlow.ConfirmIndex -le $uiFlow.ProposalIndex -or $pilotFlow.ConfirmIndex -le $pilotFlow.ProposalIndex) {
     throw 'Story confirmation did not occur after proposal generation.'
   }
