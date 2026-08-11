@@ -367,7 +367,16 @@ class BrowserAudit:
             with self.output.open("w", encoding="utf-8") as handle:
                 self.handle = handle
                 await self.send("Page.navigate", {"url": base_url}, self.main_session_id)
-                ready_file.touch()
+                ready_file.write_text(
+                    json.dumps(
+                        {
+                            "target_id": self.main_target_id,
+                            "session_id": self.main_session_id,
+                        },
+                        separators=(",", ":"),
+                    ),
+                    encoding="utf-8",
+                )
                 while not self.stop_file.exists():
                     if self.reader_error is not None:
                         raise self.reader_error

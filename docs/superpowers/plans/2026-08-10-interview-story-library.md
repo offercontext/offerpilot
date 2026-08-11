@@ -639,8 +639,12 @@ git commit -m "feat: AI connect story proposal recovery and Pilot"
   Story entrypoint: exactly one local UI proposal request and one local Pilot
   proposal request, distinct hashed idempotency keys and Attempts, their own
   confirmation/history sequence, and zero `/api/chat` or `/api/chat/confirm`
-  writes. Provider egress may contain two to four approved connections: one
-  normal generation or one bounded format repair for each entrypoint.
+  writes. Provider egress must be mapped to the two persisted Story Attempts:
+  each entrypoint has exactly one approved connection plus its persisted
+  `repair_count` (0 or 1). A second connection is accepted only when that
+  exact Attempt records the bounded format repair; the audit must bind every
+  browser record to the auditor-created target/session and map the resulting
+  distinct confirmed Story/Version identities back to the UI and Pilot Attempt.
 
   Screenshots are evidence only after the CDP request sequence, target/session association, local-only browser allowlist, provider-egress allowlist, zero cross-domain writes, temporary process shutdown, and isolated data cleanup all pass.  A provider timeout, unavailable endpoint, contract failure, missing target sequence, or incomplete UI/Pilot branch is a failed or incomplete acceptance result, never a substitute API-smoke success.
 

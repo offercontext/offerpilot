@@ -106,6 +106,38 @@ def _write_gray_png(path: Path, *, width: int = 1455, height: int = 1200) -> Non
     )
 
 
+def _complete_story_audit_records(base_url: str) -> list[dict[str, object]]:
+    ui_context = {"entrypoint": "ui", "idempotency_key_sha256": "ui-key", "payload_sha256": "ui-payload"}
+    pilot_context = {"entrypoint": "pilot", "idempotency_key_sha256": "pilot-key", "payload_sha256": "pilot-payload"}
+    records: list[dict[str, object]] = [
+        {"kind": "browser_request", "method": "GET", "url": f"{base_url}/api/interview-stories?status=active&query="},
+        {"kind": "browser_response", "method": "GET", "url": f"{base_url}/api/interview-stories?status=active&query=", "response_status": 200, "response_body_status": "captured"},
+        {"kind": "browser_request", "method": "GET", "url": f"{base_url}/api/interview-story-sources"},
+        {"kind": "browser_response", "method": "GET", "url": f"{base_url}/api/interview-story-sources", "response_status": 200, "response_body_status": "captured"},
+        {"kind": "browser_request", "method": "POST", "url": f"{base_url}/api/interview-story-proposals", "request_context": ui_context},
+        {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/interview-story-proposals", "request_context": ui_context, "response_status": 201, "response_body_status": "captured", "response_proposal_id": 11},
+        {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/interview-story-proposals/11/confirm", "response_status": 201, "response_body_status": "captured", "response_story_id": 101, "response_story_version_id": 201},
+        {"kind": "browser_response", "method": "GET", "url": f"{base_url}/api/interview-stories/101", "response_status": 200, "response_body_status": "captured", "response_story_id": 101, "response_story_current_version_id": 201},
+        {"kind": "browser_request", "method": "GET", "url": f"{base_url}/api/interview-stories?status=active&query="},
+        {"kind": "browser_response", "method": "GET", "url": f"{base_url}/api/interview-stories?status=active&query=", "response_status": 200, "response_body_status": "captured"},
+        {"kind": "browser_request", "method": "GET", "url": f"{base_url}/api/interview-story-sources?review_note_id=4"},
+        {"kind": "browser_response", "method": "GET", "url": f"{base_url}/api/interview-story-sources?review_note_id=4", "response_status": 200, "response_body_status": "captured"},
+        {"kind": "browser_request", "method": "POST", "url": f"{base_url}/api/pilot/interview-story-proposals", "request_context": pilot_context},
+        {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/pilot/interview-story-proposals", "request_context": pilot_context, "response_status": 201, "response_body_status": "captured", "response_proposal_id": 12},
+        {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/interview-story-proposals/12/confirm", "response_status": 201, "response_body_status": "captured", "response_story_id": 102, "response_story_version_id": 202},
+        {"kind": "browser_response", "method": "GET", "url": f"{base_url}/api/interview-stories/102", "response_status": 200, "response_body_status": "captured", "response_story_id": 102, "response_story_current_version_id": 202},
+    ]
+    for index, record in enumerate(records, 1):
+        record["observed_at_ns"] = 1_000_000 + index * 1_000
+        record["target_id"] = "story-target"
+        record["session_id"] = "story-session"
+    return records
+
+
+def _write_audit(path: Path, records: list[dict[str, object]]) -> None:
+    path.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
+
+
 def test_browser_audit_derives_story_entrypoint_and_hashes_retry_tokens(tmp_path: Path) -> None:
     async def run() -> list[dict[str, object]]:
         audit = BrowserAudit(_WebSocket(), tmp_path / "audit.jsonl", tmp_path / "stop")
@@ -323,6 +355,151 @@ def test_browser_audit_fails_closed_when_network_enable_is_rejected(tmp_path: Pa
     asyncio.run(run())
 
 
+def test_browser_audit_ready_file_binds_the_dedicated_target_and_session(tmp_path: Path) -> None:
+    async def run() -> dict[str, object]:
+        websocket = _ScriptedWebSocket()
+        ready = tmp_path / "browser-network.ready"
+        stop = tmp_path / "browser-network.stop"
+        stop.touch()
+        audit = BrowserAudit(websocket, tmp_path / "audit.jsonl", stop)
+        await asyncio.wait_for(
+            audit.run("http://127.0.0.1:9999", ready, 0.5),
+            timeout=1,
+        )
+        return json.loads(ready.read_text(encoding="utf-8"))
+
+    ready = asyncio.run(run())
+
+    assert ready == {"target_id": "story-target", "session_id": "story-session"}
+
+
+def test_story_browser_harness_requires_story_flow_records_from_its_dedicated_target(tmp_path: Path) -> None:
+    base_url = "http://127.0.0.1:9999"
+    records = _complete_story_audit_records(base_url)
+    audit_path = tmp_path / "dedicated-target-audit.jsonl"
+    _write_audit(audit_path, records)
+
+    accepted = _run_harness(
+        "-ValidateAudit", "-AuditPath", str(audit_path), "-ExpectedBaseUrl", base_url,
+        "-ExpectedTargetId", "story-target", "-ExpectedSessionId", "story-session",
+    )
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+
+    records[-1]["target_id"] = "unrelated-target"
+    _write_audit(audit_path, records)
+    rejected = _run_harness(
+        "-ValidateAudit", "-AuditPath", str(audit_path), "-ExpectedBaseUrl", base_url,
+        "-ExpectedTargetId", "story-target", "-ExpectedSessionId", "story-session",
+    )
+    assert rejected.returncode != 0
+    assert "dedicated CDP target" in (rejected.stdout + rejected.stderr)
+
+    records = _complete_story_audit_records(base_url)
+    records[5]["method"] = "GET"
+    _write_audit(audit_path, records)
+    wrong_method = _run_harness(
+        "-ValidateAudit", "-AuditPath", str(audit_path), "-ExpectedBaseUrl", base_url,
+        "-ExpectedTargetId", "story-target", "-ExpectedSessionId", "story-session",
+    )
+    assert wrong_method.returncode != 0
+    assert "ready ui Story proposal" in (wrong_method.stdout + wrong_method.stderr)
+
+
+def test_story_browser_harness_requires_explicit_active_provider_configuration(tmp_path: Path) -> None:
+    inactive_config = tmp_path / "inactive-provider-config.json"
+    inactive_config.write_text(
+        json.dumps({"providers": [{"id": "unselected", "enabled": True, "base_url": "https://provider.example"}]}),
+        encoding="utf-8",
+    )
+    rejected = _run_harness("-ValidateProviderConfig", "-ProviderConfigPath", str(inactive_config))
+    assert rejected.returncode != 0
+    assert "active_provider_id" in (rejected.stdout + rejected.stderr)
+
+    selected_config = tmp_path / "selected-provider-config.json"
+    selected_config.write_text(
+        json.dumps(
+            {
+                "active_provider_id": "primary",
+                "fallback_provider_ids": ["fallback"],
+                "providers": [
+                    {"id": "primary", "enabled": True, "base_url": "https://provider.example"},
+                    {"id": "fallback", "enabled": True, "base_url": "https://fallback.example"},
+                    {"id": "unrelated", "enabled": True, "base_url": "https://unrelated.example"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    accepted = _run_harness("-ValidateProviderConfig", "-ProviderConfigPath", str(selected_config))
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+
+
+def test_story_browser_harness_proves_repair_connections_from_persisted_attempts(tmp_path: Path) -> None:
+    base_url = "http://127.0.0.1:9999"
+    browser_audit = tmp_path / "browser-audit.jsonl"
+    _write_audit(browser_audit, _complete_story_audit_records(base_url))
+    provider_audit = tmp_path / "provider-audit.jsonl"
+    provider_audit.write_text(
+        "\n".join(
+            json.dumps({"kind": "provider_proxy_connect", "scheme": "https", "host": "provider.example", "port": 443, "status": "connected", "observed_at_ns": timestamp})
+            for timestamp in (1_005_500, 1_013_200, 1_013_800)
+        ) + "\n",
+        encoding="utf-8",
+    )
+    allowlist = tmp_path / "providers.json"
+    allowlist.write_text(json.dumps([{"Tuple": "https://provider.example:443"}]), encoding="utf-8")
+    attempt_audit = tmp_path / "attempts.json"
+    attempt_audit.write_text(
+        json.dumps(
+            [
+                {"id": 11, "entrypoint": "ui", "attempt_status": "confirmed", "repair_count": 0, "confirmed_story_id": 101, "confirmed_story_version_id": 201},
+                {"id": 12, "entrypoint": "pilot", "attempt_status": "confirmed", "repair_count": 1, "confirmed_story_id": 102, "confirmed_story_version_id": 202},
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    accepted = _run_harness(
+        "-ValidateProviderEgress", "-ProviderAuditPath", str(provider_audit), "-ProviderAllowlistPath", str(allowlist),
+        "-BrowserAuditPath", str(browser_audit), "-StoryAttemptAuditPath", str(attempt_audit), "-ExpectedBaseUrl", base_url,
+        "-ExpectedTargetId", "story-target", "-ExpectedSessionId", "story-session",
+    )
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+
+    attempts_without_repair = json.loads(attempt_audit.read_text(encoding="utf-8"))
+    attempts_without_repair[1]["repair_count"] = 0
+    attempt_audit.write_text(json.dumps(attempts_without_repair), encoding="utf-8")
+    rejected = _run_harness(
+        "-ValidateProviderEgress", "-ProviderAuditPath", str(provider_audit), "-ProviderAllowlistPath", str(allowlist),
+        "-BrowserAuditPath", str(browser_audit), "-StoryAttemptAuditPath", str(attempt_audit), "-ExpectedBaseUrl", base_url,
+        "-ExpectedTargetId", "story-target", "-ExpectedSessionId", "story-session",
+    )
+    assert rejected.returncode != 0
+    assert "persisted repair_count" in (rejected.stdout + rejected.stderr)
+
+
+def test_story_browser_harness_requires_distinct_confirmed_stories_for_ui_and_pilot(tmp_path: Path) -> None:
+    base_url = "http://127.0.0.1:9999"
+    audit_path = tmp_path / "persisted-attempt-audit.jsonl"
+    _write_audit(audit_path, _complete_story_audit_records(base_url))
+    attempt_audit = tmp_path / "attempts.json"
+    attempt_audit.write_text(
+        json.dumps(
+            [
+                {"id": 11, "entrypoint": "ui", "attempt_status": "confirmed", "repair_count": 0, "confirmed_story_id": 101, "confirmed_story_version_id": 201},
+                {"id": 12, "entrypoint": "pilot", "attempt_status": "confirmed", "repair_count": 0, "confirmed_story_id": 101, "confirmed_story_version_id": 201},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    rejected = _run_harness(
+        "-ValidateAttemptPersistence", "-BrowserAuditPath", str(audit_path), "-StoryAttemptAuditPath", str(attempt_audit),
+        "-ExpectedBaseUrl", base_url, "-ExpectedTargetId", "story-target", "-ExpectedSessionId", "story-session",
+    )
+    assert rejected.returncode != 0
+    assert "distinct confirmed Story" in (rejected.stdout + rejected.stderr)
+
+
 def test_story_browser_harness_validates_each_entrypoint_sequence_and_auditor_exit(tmp_path: Path) -> None:
     base_url = "http://127.0.0.1:9999"
     ui_context = {"entrypoint": "ui", "idempotency_key_sha256": "ui-key"}
@@ -454,36 +631,41 @@ def test_story_browser_harness_allows_one_same_key_provider_retry_but_rejects_se
 def test_story_browser_harness_allows_one_bounded_repair_per_entrypoint_and_rejects_more(tmp_path: Path) -> None:
     audit = tmp_path / "provider-audit.jsonl"
     browser_audit = tmp_path / "browser-audit.jsonl"
+    attempt_audit = tmp_path / "attempt-audit.json"
     allowlist = tmp_path / "providers.json"
     allowlist.write_text(json.dumps([{"Tuple": "https://provider.example:443"}]), encoding="utf-8")
     base_url = "http://127.0.0.1:9999"
-    browser_records = [
-        {"kind": "browser_request", "method": "POST", "url": f"{base_url}/api/interview-story-proposals", "request_context": {"entrypoint": "ui"}, "observed_at_ns": 1_000},
-        {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/interview-story-proposals", "request_context": {"entrypoint": "ui"}, "response_status": 201, "response_body_status": "captured", "response_proposal_id": 11, "observed_at_ns": 2_000},
-        {"kind": "browser_request", "method": "POST", "url": f"{base_url}/api/pilot/interview-story-proposals", "request_context": {"entrypoint": "pilot"}, "observed_at_ns": 3_000},
-        {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/pilot/interview-story-proposals", "request_context": {"entrypoint": "pilot"}, "response_status": 201, "response_body_status": "captured", "response_proposal_id": 12, "observed_at_ns": 4_000},
-    ]
-    browser_audit.write_text("\n".join(json.dumps(record) for record in browser_records) + "\n", encoding="utf-8")
+    _write_audit(browser_audit, _complete_story_audit_records(base_url))
+    attempt_audit.write_text(
+        json.dumps(
+            [
+                {"id": 11, "entrypoint": "ui", "attempt_status": "confirmed", "repair_count": 1, "confirmed_story_id": 101, "confirmed_story_version_id": 201},
+                {"id": 12, "entrypoint": "pilot", "attempt_status": "confirmed", "repair_count": 1, "confirmed_story_id": 102, "confirmed_story_version_id": 202},
+            ]
+        ),
+        encoding="utf-8",
+    )
     normal_and_repaired = [
         {"kind": "provider_proxy_connect", "scheme": "https", "host": "provider.example", "port": 443, "status": "connected", "observed_at_ns": timestamp}
-        for timestamp in (1_200, 1_800, 3_200, 3_800)
+        for timestamp in (1_005_200, 1_005_800, 1_013_200, 1_013_800)
     ]
     audit.write_text("\n".join(json.dumps(record) for record in normal_and_repaired) + "\n", encoding="utf-8")
 
-    accepted = _run_harness(
-        "-ValidateProviderEgress", "-ProviderAuditPath", str(audit), "-ProviderAllowlistPath", str(allowlist),
-        "-BrowserAuditPath", str(browser_audit), "-ExpectedBaseUrl", base_url,
-    )
+    def validate() -> subprocess.CompletedProcess[str]:
+        return _run_harness(
+            "-ValidateProviderEgress", "-ProviderAuditPath", str(audit), "-ProviderAllowlistPath", str(allowlist),
+            "-BrowserAuditPath", str(browser_audit), "-StoryAttemptAuditPath", str(attempt_audit),
+            "-ExpectedBaseUrl", base_url, "-ExpectedTargetId", "story-target", "-ExpectedSessionId", "story-session",
+        )
+
+    accepted = validate()
     assert accepted.returncode == 0, accepted.stderr
 
     # DNS hostnames and schemes are case-insensitive. The browser-proxy audit
     # must not reject an otherwise allowlisted real Provider connection merely
     # because the configured URL and CONNECT host differ in case.
     allowlist.write_text(json.dumps([{"Tuple": "HTTPS://PROVIDER.EXAMPLE:443"}]), encoding="utf-8")
-    case_insensitive = _run_harness(
-        "-ValidateProviderEgress", "-ProviderAuditPath", str(audit), "-ProviderAllowlistPath", str(allowlist),
-        "-BrowserAuditPath", str(browser_audit), "-ExpectedBaseUrl", base_url,
-    )
+    case_insensitive = validate()
     assert case_insensitive.returncode == 0, case_insensitive.stderr
     allowlist.write_text(json.dumps([{"Tuple": "https://provider.example:443"}]), encoding="utf-8")
 
@@ -492,49 +674,37 @@ def test_story_browser_harness_allows_one_bounded_repair_per_entrypoint_and_reje
     # egress; an unknown *connected* endpoint remains a hard failure.
     rejected_foreign = [
         *normal_and_repaired,
-        {"kind": "provider_proxy_connect", "scheme": "https", "host": "telemetry.example", "port": 443, "status": "rejected", "observed_at_ns": 2_500},
+        {"kind": "provider_proxy_connect", "scheme": "https", "host": "telemetry.example", "port": 443, "status": "rejected", "observed_at_ns": 1_010_000},
     ]
     audit.write_text("\n".join(json.dumps(record) for record in rejected_foreign) + "\n", encoding="utf-8")
-    contained = _run_harness(
-        "-ValidateProviderEgress", "-ProviderAuditPath", str(audit), "-ProviderAllowlistPath", str(allowlist),
-        "-BrowserAuditPath", str(browser_audit), "-ExpectedBaseUrl", base_url,
-    )
+    contained = validate()
     assert contained.returncode == 0, contained.stderr
 
     connected_foreign = [
         normal_and_repaired[0],
         normal_and_repaired[2],
-        {"kind": "provider_proxy_connect", "scheme": "https", "host": "telemetry.example", "port": 443, "status": "connected", "observed_at_ns": 2_500},
+        {"kind": "provider_proxy_connect", "scheme": "https", "host": "telemetry.example", "port": 443, "status": "connected", "observed_at_ns": 1_010_000},
     ]
     audit.write_text("\n".join(json.dumps(record) for record in connected_foreign) + "\n", encoding="utf-8")
-    escaped = _run_harness(
-        "-ValidateProviderEgress", "-ProviderAuditPath", str(audit), "-ProviderAllowlistPath", str(allowlist),
-        "-BrowserAuditPath", str(browser_audit), "-ExpectedBaseUrl", base_url,
-    )
+    escaped = validate()
     assert escaped.returncode != 0
     assert "outside the configured candidate allowlist" in (escaped.stdout + escaped.stderr)
 
     audit.write_text("\n".join(json.dumps(record) for record in normal_and_repaired) + "\n", encoding="utf-8")
 
     audit.write_text("\n".join(json.dumps(record) for record in [*normal_and_repaired, normal_and_repaired[0]]) + "\n", encoding="utf-8")
-    rejected = _run_harness(
-        "-ValidateProviderEgress", "-ProviderAuditPath", str(audit), "-ProviderAllowlistPath", str(allowlist),
-        "-BrowserAuditPath", str(browser_audit), "-ExpectedBaseUrl", base_url,
-    )
+    rejected = validate()
     assert rejected.returncode != 0
-    assert "two to four" in (rejected.stdout + rejected.stderr)
+    assert "persisted repair_count" in (rejected.stdout + rejected.stderr)
 
     ui_overflow = [
         {"kind": "provider_proxy_connect", "scheme": "https", "host": "provider.example", "port": 443, "status": "connected", "observed_at_ns": timestamp}
-        for timestamp in (1_100, 1_500, 1_900, 3_500)
+        for timestamp in (1_005_100, 1_005_500, 1_005_900, 1_013_500)
     ]
     audit.write_text("\n".join(json.dumps(record) for record in ui_overflow) + "\n", encoding="utf-8")
-    unbalanced = _run_harness(
-        "-ValidateProviderEgress", "-ProviderAuditPath", str(audit), "-ProviderAllowlistPath", str(allowlist),
-        "-BrowserAuditPath", str(browser_audit), "-ExpectedBaseUrl", base_url,
-    )
+    unbalanced = validate()
     assert unbalanced.returncode != 0
-    assert "Story ui flow" in (unbalanced.stdout + unbalanced.stderr)
+    assert "persisted repair_count" in (unbalanced.stdout + unbalanced.stderr)
 
 
 def test_story_browser_harness_records_a_single_viewport_screenshot_matrix(tmp_path: Path) -> None:

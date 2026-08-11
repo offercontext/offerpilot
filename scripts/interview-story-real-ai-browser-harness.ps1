@@ -3,10 +3,16 @@ param(
   [string]$AuditPath,
   [string]$BrowserAuditPath,
   [string]$ExpectedBaseUrl,
+  [string]$ExpectedTargetId,
+  [string]$ExpectedSessionId,
   [int]$AuditorExitCode = 0,
   [switch]$ValidateProviderEgress,
   [string]$ProviderAuditPath,
   [string]$ProviderAllowlistPath,
+  [switch]$ValidateProviderConfig,
+  [string]$ProviderConfigPath,
+  [switch]$ValidateAttemptPersistence,
+  [string]$StoryAttemptAuditPath,
   [switch]$ValidateScreenshotMatrix,
   [string]$ScreenshotDirectory,
   [string]$ScreenshotManifestPath,
@@ -136,7 +142,20 @@ function Start-BrowserAuditor([string]$cdpUrl, [string]$expectedUrl, [ref]$track
       throw 'Forced browser auditor startup cleanup failure.'
     }
     for ($wait = 0; $wait -lt 40; $wait++) {
-      if (Test-Path -LiteralPath $browserReady) { return $process }
+      if (Test-Path -LiteralPath $browserReady) {
+        try {
+          $identity = Get-Content -LiteralPath $browserReady -Raw | ConvertFrom-Json
+          $targetId = [string]$identity.target_id
+          $sessionId = [string]$identity.session_id
+          if ([string]::IsNullOrWhiteSpace($targetId) -or [string]::IsNullOrWhiteSpace($sessionId)) {
+            throw 'ready identity is incomplete'
+          }
+          return [pscustomobject]@{ Process = $process; TargetId = $targetId; SessionId = $sessionId }
+        } catch {
+          $lastDiagnostic = 'Browser auditor ready file did not contain a dedicated target/session identity.'
+          break
+        }
+      }
       if ($process.HasExited) {
         $lastDiagnostic = Get-ProcessDiagnostic $auditorStdout $auditorStderr
         break
@@ -168,24 +187,35 @@ function Get-ProviderEndpoints([string]$configPath) {
   if (-not (Test-Path -LiteralPath $configPath)) { throw 'Provider config is missing.' }
   $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
   $byId = @{}
+  $configuredProviderCount = 0
   foreach ($provider in @($config.providers)) {
-    if ($provider.id) { $byId[[string]$provider.id] = $provider }
+    if ($provider.id) {
+      $configuredProviderCount += 1
+      $byId[[string]$provider.id] = $provider
+    }
   }
   if ($byId.Count -eq 0 -and $config.base_url) {
     $id = if ($config.active_provider_id) { [string]$config.active_provider_id } else { 'default' }
     $byId[$id] = [pscustomobject]@{ id = $id; enabled = $true; base_url = [string]$config.base_url }
   }
   $ids = @()
+  if ($configuredProviderCount -gt 0 -and [string]::IsNullOrWhiteSpace([string]$config.active_provider_id)) {
+    throw 'Configured providers require active_provider_id.'
+  }
   if ($config.active_provider_id) { $ids += [string]$config.active_provider_id }
   if ($config.fallback_provider_ids) { $ids += @($config.fallback_provider_ids | ForEach-Object { [string]$_ }) }
   if ($config.fallback_provider_id) { $ids += [string]$config.fallback_provider_id }
-  if ($ids.Count -eq 0) { $ids = @($byId.Keys) }
+  if ($ids.Count -eq 0 -and $byId.Count -eq 1 -and $config.base_url) { $ids = @($byId.Keys) }
+  if ($ids.Count -eq 0) { throw 'Configured providers require active_provider_id.' }
   $seen = @{}
   $result = @()
   foreach ($id in $ids) {
-    if (-not $byId.ContainsKey($id)) { continue }
+    if (-not $byId.ContainsKey($id)) { throw "Configured Provider id '$id' is missing." }
     $provider = $byId[$id]
-    if (-not $provider.enabled -or -not $provider.base_url) { continue }
+    if (-not $provider.enabled -or -not $provider.base_url) {
+      if ($id -eq [string]$config.active_provider_id) { throw 'Configured active Provider is disabled or has no endpoint.' }
+      continue
+    }
     $uri = [Uri]$provider.base_url
     $port = if ($uri.IsDefaultPort) { if ($uri.Scheme -eq 'https') { 443 } else { 80 } } else { $uri.Port }
     $tuple = "$($uri.Scheme)://$($uri.Host):$port"
@@ -265,6 +295,39 @@ function Read-BrowserRecords([string]$path = $browserAudit) {
   return @(Get-Content -LiteralPath $path | Where-Object { $_.Trim() } | ForEach-Object { $_ | ConvertFrom-Json })
 }
 
+function Read-StoryAttemptAudit([string]$path) {
+  if ([string]::IsNullOrWhiteSpace($path) -or -not (Test-Path -LiteralPath $path)) {
+    throw 'Persisted Story attempt audit output is missing.'
+  }
+  return @(Get-Content -LiteralPath $path -Raw | ConvertFrom-Json)
+}
+
+function Get-PersistedStoryAttempts {
+  $env:INTERVIEW_STORY_HARNESS_DB = Join-Path $tempData 'data.db'
+  $code = @'
+import json, os, sqlite3
+db = sqlite3.connect(os.environ["INTERVIEW_STORY_HARNESS_DB"])
+rows = db.execute("""
+    select id, entrypoint, attempt_status, repair_count, confirmed_story_id, confirmed_story_version_id
+    from interview_story_proposal_attempts
+    order by id
+""").fetchall()
+print(json.dumps([
+    {
+        "id": row[0],
+        "entrypoint": row[1],
+        "attempt_status": row[2],
+        "repair_count": row[3],
+        "confirmed_story_id": row[4],
+        "confirmed_story_version_id": row[5],
+    }
+    for row in rows
+], separators=(",", ":")))
+'@
+  $raw = Invoke-IsolatedPython 'story-attempt-persistence-audit' $code
+  return @(($raw -join '').Trim() | ConvertFrom-Json)
+}
+
 function Get-RecordProperty($record, [string]$name) {
   $property = $record.PSObject.Properties[$name]
   if ($null -eq $property) { return $null }
@@ -276,13 +339,23 @@ function Assert-AuditorSucceeded([object]$process) {
   if ([int]$process.ExitCode -ne 0) { throw "Browser auditor failed with exit code $($process.ExitCode)." }
 }
 
-function Get-StoryAttemptResponse([object[]]$records, [string]$entrypoint, [string]$url) {
+function Assert-RecordFromDedicatedTarget([object]$record, [string]$targetId, [string]$sessionId) {
+  if ([string]::IsNullOrWhiteSpace($targetId) -and [string]::IsNullOrWhiteSpace($sessionId)) { return }
+  if ([string]::IsNullOrWhiteSpace($targetId) -or [string]::IsNullOrWhiteSpace($sessionId)) {
+    throw 'Story audit requires both the dedicated CDP target and session identities.'
+  }
+  if ((Get-RecordProperty $record 'target_id') -ne $targetId -or (Get-RecordProperty $record 'session_id') -ne $sessionId) {
+    throw 'Story flow record is not bound to the dedicated CDP target/session.'
+  }
+}
+
+function Get-StoryAttemptResponse([object[]]$records, [string]$entrypoint, [string]$url, [string]$targetId = '', [string]$sessionId = '') {
   $matches = @()
   for ($index = 0; $index -lt $records.Count; $index++) {
     $record = $records[$index]
     $context = Get-RecordProperty $record 'request_context'
     if (
-      $record.kind -eq 'browser_response' -and
+      $record.kind -eq 'browser_response' -and $record.method -eq 'POST' -and
       $record.url -eq $url -and
       $null -ne $context -and
       $context.entrypoint -eq $entrypoint -and
@@ -290,6 +363,7 @@ function Get-StoryAttemptResponse([object[]]$records, [string]$entrypoint, [stri
       (Get-RecordProperty $record 'response_proposal_id') -is [int] -and
       $record.response_status -in @(200, 201)
     ) {
+      Assert-RecordFromDedicatedTarget $record $targetId $sessionId
       $matches += [pscustomobject]@{ Index = $index; Record = $record }
     }
   }
@@ -299,7 +373,7 @@ function Get-StoryAttemptResponse([object[]]$records, [string]$entrypoint, [stri
   return $matches[-1]
 }
 
-function Get-StoryProviderFlowWindows([object[]]$records, [string]$baseUrl) {
+function Get-StoryProviderFlowWindows([object[]]$records, [string]$baseUrl, [string]$targetId = '', [string]$sessionId = '') {
   $flows = @{}
   foreach ($entrypoint in @('ui', 'pilot')) {
     $url = if ($entrypoint -eq 'ui') { "$baseUrl/api/interview-story-proposals" } else { "$baseUrl/api/pilot/interview-story-proposals" }
@@ -310,6 +384,7 @@ function Get-StoryProviderFlowWindows([object[]]$records, [string]$baseUrl) {
         $record.kind -eq 'browser_request' -and $record.method -eq 'POST' -and $record.url -eq $url -and
         $null -ne (Get-RecordProperty $record 'request_context') -and $record.request_context.entrypoint -eq $entrypoint
       ) {
+        Assert-RecordFromDedicatedTarget $record $targetId $sessionId
         $requests += [pscustomobject]@{ Index = $index; Record = $record }
       }
     }
@@ -348,12 +423,12 @@ function Get-StoryProviderFlowWindows([object[]]$records, [string]$baseUrl) {
       if ($retryAttemptId -isnot [int]) {
         throw "Browser $entrypoint provider-error replay response is missing its Attempt identity."
       }
-      $readyAttempt = Get-StoryAttemptResponse $records $entrypoint $url
+      $readyAttempt = Get-StoryAttemptResponse $records $entrypoint $url $targetId $sessionId
       if ([int]$readyAttempt.Record.response_proposal_id -ne [int]$retryAttemptId) {
         throw "Browser $entrypoint provider-error replay did not reuse the original Attempt identity."
       }
     }
-    $response = Get-StoryAttemptResponse $records $entrypoint $url
+    $response = Get-StoryAttemptResponse $records $entrypoint $url $targetId $sessionId
     if ($response.Index -le $requests[-1].Index) { throw "Browser $entrypoint ready response predates its final request." }
     $requestTimestamp = Get-RecordProperty $requests[0].Record 'observed_at_ns'
     $responseTimestamp = Get-RecordProperty $response.Record 'observed_at_ns'
@@ -368,12 +443,50 @@ function Get-StoryProviderFlowWindows([object[]]$records, [string]$baseUrl) {
     $flows[$entrypoint] = [pscustomobject]@{
       request_ns = [int64]$requestTimestamp
       response_ns = [int64]$responseTimestamp
+      attempt_id = [int]$response.Record.response_proposal_id
+      target_id = $targetId
+      session_id = $sessionId
     }
   }
   return [pscustomobject]@{ ui = $flows['ui']; pilot = $flows['pilot'] }
 }
 
-function Assert-ProviderEgress([object[]]$providers, [string]$auditPath = $providerAudit, [object]$flows) {
+function Assert-StoryAttemptPersistence([object]$flows, [object[]]$attempts) {
+  if ($null -eq $flows -or $null -eq $attempts -or $attempts.Count -ne 2) {
+    throw 'Story attempt persistence audit must contain exactly the UI and Pilot attempts.'
+  }
+  $confirmedStories = @($attempts | ForEach-Object { Get-RecordProperty $_ 'confirmed_story_id' } | Where-Object { $null -ne $_ } | Sort-Object -Unique)
+  $confirmedVersions = @($attempts | ForEach-Object { Get-RecordProperty $_ 'confirmed_story_version_id' } | Where-Object { $null -ne $_ } | Sort-Object -Unique)
+  if ($confirmedStories.Count -ne 2 -or $confirmedVersions.Count -ne 2) {
+    throw 'UI and Pilot must persist distinct confirmed Story and Version identities.'
+  }
+  $matched = @{}
+  foreach ($entrypoint in @('ui', 'pilot')) {
+    $flow = $flows.$entrypoint
+    $attempt = @($attempts | Where-Object { (Get-RecordProperty $_ 'id') -eq $flow.attempt_id })
+    if ($attempt.Count -ne 1) { throw "Browser $entrypoint flow is not mapped to one persisted Story Attempt." }
+    $row = $attempt[0]
+    if (
+      (Get-RecordProperty $row 'entrypoint') -ne $entrypoint -or
+      (Get-RecordProperty $row 'attempt_status') -ne 'confirmed' -or
+      (Get-RecordProperty $row 'confirmed_story_id') -ne $flow.story_id -or
+      (Get-RecordProperty $row 'confirmed_story_version_id') -ne $flow.story_version_id
+    ) {
+      throw "Browser $entrypoint flow does not match its persisted confirmed Story Attempt."
+    }
+    $repairCount = Get-RecordProperty $row 'repair_count'
+    if ($repairCount -isnot [int] -or $repairCount -lt 0 -or $repairCount -gt 1) {
+      throw "Browser $entrypoint persisted repair_count is invalid."
+    }
+    $matched[$entrypoint] = $row
+  }
+  if ($flows.ui.story_id -eq $flows.pilot.story_id -or $flows.ui.story_version_id -eq $flows.pilot.story_version_id) {
+    throw 'UI and Pilot must persist distinct confirmed Story and Version identities.'
+  }
+  return [pscustomobject]@{ ui = $matched['ui']; pilot = $matched['pilot'] }
+}
+
+function Assert-ProviderEgress([object[]]$providers, [string]$auditPath = $providerAudit, [object]$flows, [object]$attempts) {
   if (-not (Test-Path -LiteralPath $auditPath)) {
     throw 'Provider egress audit output is missing.'
   }
@@ -389,16 +502,13 @@ function Assert-ProviderEgress([object[]]$providers, [string]$auditPath = $provi
   # Only a successful CONNECT is Provider egress and must be allowlisted and
   # correlated to one of the two Story flows.
   $connections = @($allConnections | Where-Object { $_.status -eq 'connected' })
-  if ($connections.Count -lt 2 -or $connections.Count -gt 4) {
-    throw 'Browser Story flows must produce two to four auditable Provider connections: one normal call or one bounded format repair per UI/Pilot flow.'
-  }
   foreach ($connection in $connections) {
     $tuple = "$($connection.scheme)://$($connection.host):$($connection.port)"
     if (-not $allowed.ContainsKey($tuple)) {
       throw 'Provider egress was outside the configured candidate allowlist.'
     }
   }
-  if ($null -eq $flows) { throw 'Provider egress audit requires correlated UI and Pilot flow windows.' }
+  if ($null -eq $flows -or $null -eq $attempts) { throw 'Provider egress audit requires correlated UI/Pilot flows and persisted attempts.' }
   $windows = @(
     [pscustomobject]@{ entrypoint = 'ui'; start_ns = $flows.ui.request_ns; end_ns = $flows.ui.response_ns },
     [pscustomobject]@{ entrypoint = 'pilot'; start_ns = $flows.pilot.request_ns; end_ns = $flows.pilot.response_ns }
@@ -416,13 +526,18 @@ function Assert-ProviderEgress([object[]]$providers, [string]$auditPath = $provi
     $counts[[string]$matches[0].entrypoint] += 1
   }
   foreach ($entrypoint in @('ui', 'pilot')) {
-    if ($counts[$entrypoint] -lt 1 -or $counts[$entrypoint] -gt 2) {
-      throw "Story $entrypoint flow must have one normal Provider call or one bounded format repair."
+    $repairCount = Get-RecordProperty $attempts.$entrypoint 'repair_count'
+    $expectedCount = 1 + [int]$repairCount
+    if ($counts[$entrypoint] -ne $expectedCount) {
+      throw "Story $entrypoint Provider connections do not match persisted repair_count."
     }
   }
 }
 
-function Assert-StoryBrowserSequence([object[]]$records, [string]$baseUrl) {
+function Assert-StoryBrowserSequence([object[]]$records, [string]$baseUrl, [string]$targetId = '', [string]$sessionId = '') {
+  if (-not [string]::IsNullOrWhiteSpace($targetId) -or -not [string]::IsNullOrWhiteSpace($sessionId)) {
+    foreach ($record in $records) { Assert-RecordFromDedicatedTarget $record $targetId $sessionId }
+  }
   $origin = [Uri]$baseUrl
   $foreign = @($records | Where-Object {
     $uri = [Uri]$_.url
@@ -460,8 +575,8 @@ function Assert-StoryBrowserSequence([object[]]$records, [string]$baseUrl) {
     if ($record.url -eq "$baseUrl/api/interview-story-proposals") { $uiPostIndex = $index }
     if ($record.url -eq "$baseUrl/api/pilot/interview-story-proposals") { $pilotPostIndex = $index }
   }
-  $uiResponse = Get-StoryAttemptResponse $records 'ui' "$baseUrl/api/interview-story-proposals"
-  $pilotResponse = Get-StoryAttemptResponse $records 'pilot' "$baseUrl/api/pilot/interview-story-proposals"
+  $uiResponse = Get-StoryAttemptResponse $records 'ui' "$baseUrl/api/interview-story-proposals" $targetId $sessionId
+  $pilotResponse = Get-StoryAttemptResponse $records 'pilot' "$baseUrl/api/pilot/interview-story-proposals" $targetId $sessionId
   $attemptIds = @([int]$uiResponse.Record.response_proposal_id, [int]$pilotResponse.Record.response_proposal_id)
   if ($attemptIds[0] -eq $attemptIds[1]) { throw 'UI and Pilot did not receive distinct Story attempts.' }
   $keys = @($uiPosts + $pilotPosts | ForEach-Object { $_.request_context.idempotency_key_sha256 } | Where-Object { $_ } | Sort-Object -Unique)
@@ -479,6 +594,7 @@ function Assert-StoryBrowserSequence([object[]]$records, [string]$baseUrl) {
         (Get-RecordProperty $record 'response_story_id') -is [int] -and
         (Get-RecordProperty $record 'response_story_version_id') -is [int]
       ) {
+        Assert-RecordFromDedicatedTarget $record $targetId $sessionId
         $confirm += [pscustomobject]@{ Index = $index; Record = $record }
       }
     }
@@ -501,6 +617,7 @@ function Assert-StoryBrowserSequence([object[]]$records, [string]$baseUrl) {
         (Get-RecordProperty $record 'response_story_id') -eq $latestConfirm.Record.response_story_id -and
         (Get-RecordProperty $record 'response_story_current_version_id') -eq $latestConfirm.Record.response_story_version_id
       ) {
+        Assert-RecordFromDedicatedTarget $record $targetId $sessionId
         $history += [pscustomobject]@{ Index = $index; Record = $record }
       }
     }
@@ -517,7 +634,14 @@ function Assert-StoryBrowserSequence([object[]]$records, [string]$baseUrl) {
   if ($uiFlow.ConfirmIndex -le $uiFlow.ProposalIndex -or $pilotFlow.ConfirmIndex -le $pilotFlow.ProposalIndex) {
     throw 'Story confirmation did not occur after proposal generation.'
   }
-  return (Get-StoryProviderFlowWindows $records $baseUrl)
+  $providerFlows = Get-StoryProviderFlowWindows $records $baseUrl $targetId $sessionId
+  $uiConfirmRecord = $records[$uiFlow.ConfirmIndex]
+  $pilotConfirmRecord = $records[$pilotFlow.ConfirmIndex]
+  $providerFlows.ui | Add-Member -NotePropertyName story_id -NotePropertyValue ([int]$uiConfirmRecord.response_story_id) -Force
+  $providerFlows.ui | Add-Member -NotePropertyName story_version_id -NotePropertyValue ([int]$uiConfirmRecord.response_story_version_id) -Force
+  $providerFlows.pilot | Add-Member -NotePropertyName story_id -NotePropertyValue ([int]$pilotConfirmRecord.response_story_id) -Force
+  $providerFlows.pilot | Add-Member -NotePropertyName story_version_id -NotePropertyValue ([int]$pilotConfirmRecord.response_story_version_id) -Force
+  return $providerFlows
 }
 
 function Assert-StoryScreenshotMatrix([string]$directory, [string]$manifestPath) {
@@ -572,17 +696,33 @@ if ($ValidateAudit) {
     throw 'Audit validation requires AuditPath and ExpectedBaseUrl.'
   }
   Assert-AuditorSucceeded ([pscustomobject]@{ HasExited = $true; ExitCode = $AuditorExitCode })
-  [void](Assert-StoryBrowserSequence (Read-BrowserRecords $AuditPath) $ExpectedBaseUrl)
+  [void](Assert-StoryBrowserSequence (Read-BrowserRecords $AuditPath) $ExpectedBaseUrl $ExpectedTargetId $ExpectedSessionId)
+  exit 0
+}
+
+if ($ValidateProviderConfig) {
+  if ([string]::IsNullOrWhiteSpace($ProviderConfigPath)) { throw 'ProviderConfigPath is required.' }
+  [void](Get-ProviderEndpoints $ProviderConfigPath)
   exit 0
 }
 
 if ($ValidateProviderEgress) {
-  if ([string]::IsNullOrWhiteSpace($ProviderAuditPath) -or [string]::IsNullOrWhiteSpace($ProviderAllowlistPath) -or [string]::IsNullOrWhiteSpace($BrowserAuditPath) -or [string]::IsNullOrWhiteSpace($ExpectedBaseUrl)) {
-    throw 'Provider egress validation requires ProviderAuditPath, ProviderAllowlistPath, BrowserAuditPath, and ExpectedBaseUrl.'
+  if ([string]::IsNullOrWhiteSpace($ProviderAuditPath) -or [string]::IsNullOrWhiteSpace($ProviderAllowlistPath) -or [string]::IsNullOrWhiteSpace($BrowserAuditPath) -or [string]::IsNullOrWhiteSpace($StoryAttemptAuditPath) -or [string]::IsNullOrWhiteSpace($ExpectedBaseUrl) -or [string]::IsNullOrWhiteSpace($ExpectedTargetId) -or [string]::IsNullOrWhiteSpace($ExpectedSessionId)) {
+    throw 'Provider egress validation requires ProviderAuditPath, ProviderAllowlistPath, BrowserAuditPath, StoryAttemptAuditPath, ExpectedBaseUrl, ExpectedTargetId, and ExpectedSessionId.'
   }
   $providers = @(Get-Content -LiteralPath $ProviderAllowlistPath -Raw | ConvertFrom-Json)
-  $flows = Get-StoryProviderFlowWindows (Read-BrowserRecords $BrowserAuditPath) $ExpectedBaseUrl
-  Assert-ProviderEgress $providers $ProviderAuditPath $flows
+  $flows = Assert-StoryBrowserSequence (Read-BrowserRecords $BrowserAuditPath) $ExpectedBaseUrl $ExpectedTargetId $ExpectedSessionId
+  $attempts = Assert-StoryAttemptPersistence $flows (Read-StoryAttemptAudit $StoryAttemptAuditPath)
+  Assert-ProviderEgress $providers $ProviderAuditPath $flows $attempts
+  exit 0
+}
+
+if ($ValidateAttemptPersistence) {
+  if ([string]::IsNullOrWhiteSpace($BrowserAuditPath) -or [string]::IsNullOrWhiteSpace($StoryAttemptAuditPath) -or [string]::IsNullOrWhiteSpace($ExpectedBaseUrl) -or [string]::IsNullOrWhiteSpace($ExpectedTargetId) -or [string]::IsNullOrWhiteSpace($ExpectedSessionId)) {
+    throw 'Attempt persistence validation requires BrowserAuditPath, StoryAttemptAuditPath, ExpectedBaseUrl, ExpectedTargetId, and ExpectedSessionId.'
+  }
+  $flows = Assert-StoryBrowserSequence (Read-BrowserRecords $BrowserAuditPath) $ExpectedBaseUrl $ExpectedTargetId $ExpectedSessionId
+  [void](Assert-StoryAttemptPersistence $flows (Read-StoryAttemptAudit $StoryAttemptAuditPath))
   exit 0
 }
 
@@ -617,11 +757,14 @@ try {
   $chromium = Find-Chromium
   $browser = Start-Process -FilePath $chromium -PassThru -ArgumentList @("--remote-debugging-port=$cdpPort", "--user-data-dir=$browserProfile", '--no-first-run', '--no-default-browser-check', '--remote-allow-origins=*', '--window-size=1455,1200', '--force-color-profile=srgb', 'about:blank')
   Wait-ForHttpReady $browser "http://127.0.0.1:$cdpPort/json/version" 'Dedicated Chromium CDP endpoint' | Out-Null
-  $auditor = Start-BrowserAuditor "http://127.0.0.1:$cdpPort" $baseUrl ([ref]$auditor)
+  $auditorHandle = Start-BrowserAuditor "http://127.0.0.1:$cdpPort" $baseUrl ([ref]$auditor)
+  $auditor = $auditorHandle.Process
   if (-not [string]::IsNullOrWhiteSpace($SessionStatePath)) {
     $sessionState = [ordered]@{
       base_url = $baseUrl
       cdp_url = "http://127.0.0.1:$cdpPort"
+      auditor_target_id = $auditorHandle.TargetId
+      auditor_session_id = $auditorHandle.SessionId
       completion_signal_path = $CompletionSignalPath
       temp_data_path = $tempData
     } | ConvertTo-Json -Compress
@@ -652,17 +795,20 @@ try {
   New-Item -ItemType File -Force -Path $browserStop | Out-Null
   $auditor.WaitForExit(15000)
   Assert-AuditorSucceeded $auditor
-  $flows = Assert-StoryBrowserSequence (Read-BrowserRecords) $baseUrl
-  Assert-ProviderEgress $providers $providerAudit $flows
+  $flows = Assert-StoryBrowserSequence (Read-BrowserRecords) $baseUrl $auditorHandle.TargetId $auditorHandle.SessionId
+  $attempts = Assert-StoryAttemptPersistence $flows (Get-PersistedStoryAttempts)
+  Assert-ProviderEgress $providers $providerAudit $flows $attempts
   Assert-ForbiddenDomainsUnchanged $baseline (Get-ForbiddenDomainSnapshot)
   Assert-StoryScreenshotMatrix $ScreenshotDirectory $ScreenshotManifestPath | Out-Null
   $env:INTERVIEW_STORY_HARNESS_DB = Join-Path $tempData 'data.db'
   $verify = @'
 import os, sqlite3
 db = sqlite3.connect(os.environ["INTERVIEW_STORY_HARNESS_DB"])
-rows = db.execute("select entrypoint, attempt_status, confirmed_story_version_id from interview_story_proposal_attempts order by id").fetchall()
-if len(rows) != 2 or {row[0] for row in rows} != {"ui", "pilot"} or any(row[1] != "confirmed" or row[2] is None for row in rows):
+rows = db.execute("select id, entrypoint, attempt_status, confirmed_story_id, confirmed_story_version_id from interview_story_proposal_attempts order by id").fetchall()
+if len(rows) != 2 or {row[1] for row in rows} != {"ui", "pilot"} or any(row[2] != "confirmed" or row[3] is None or row[4] is None for row in rows):
     raise SystemExit("both UI and Pilot Story confirmations are required")
+if len({row[3] for row in rows}) != 2 or len({row[4] for row in rows}) != 2:
+    raise SystemExit("UI and Pilot must confirm distinct Stories and Versions")
 story_count = db.execute("select count(*) from interview_stories").fetchone()[0]
 version_rows = db.execute("select id from interview_story_versions order by id").fetchall()
 if story_count != 2 or len(version_rows) != 2:
