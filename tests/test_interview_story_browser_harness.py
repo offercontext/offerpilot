@@ -208,6 +208,39 @@ def test_browser_audit_never_reads_non_api_response_bodies(tmp_path: Path) -> No
     assert records[-1]["response_body_status"] == "not_requested"
 
 
+def test_browser_audit_marks_cdp_response_capture_failures_as_audit_errors(tmp_path: Path) -> None:
+    async def run() -> list[dict[str, object]]:
+        audit = BrowserAudit(_WebSocket(), tmp_path / "audit.jsonl", tmp_path / "stop")
+        audit.target_sessions["story-target"] = "story-session"
+        handle = io.StringIO()
+        audit.handle = handle
+        await audit.record_request(
+            _request(
+                "http://127.0.0.1:9999/api/interview-story-proposals",
+                {"idempotency_key": "story-ui-audit-key-0001"},
+            )
+        )
+
+        async def disconnected(*_args, **_kwargs):
+            raise ConnectionError("CDP disconnected")
+
+        audit.send = disconnected  # type: ignore[method-assign]
+        audit.response_finished[("story-session", "request-1")] = asyncio.Event()
+        audit.response_finished[("story-session", "request-1")].set()
+        await audit.record_response(
+            {
+                "sessionId": "story-session",
+                "params": {"requestId": "request-1", "response": {"status": 201}},
+            }
+        )
+        assert isinstance(audit.reader_error, RuntimeError)
+        return [json.loads(line) for line in handle.getvalue().splitlines()]
+
+    records = asyncio.run(run())
+
+    assert records[-1]["response_body_status"] == "unavailable"
+
+
 def test_browser_audit_requires_the_dedicated_target_to_finish_network_enable(tmp_path: Path) -> None:
     async def run() -> None:
         websocket = _ScriptedWebSocket(attach_target="unowned-target")
@@ -294,6 +327,54 @@ def test_story_browser_harness_validates_each_entrypoint_sequence_and_auditor_ex
     chat_failure = _run_harness("-ValidateAudit", "-AuditPath", str(audit_path), "-ExpectedBaseUrl", base_url)
     assert chat_failure.returncode != 0
     assert "chat writes" in (chat_failure.stdout + chat_failure.stderr)
+
+
+def test_story_browser_harness_allows_one_same_key_provider_retry_but_rejects_semantic_replay(tmp_path: Path) -> None:
+    base_url = "http://127.0.0.1:9999"
+    ui_context = {
+        "entrypoint": "ui",
+        "idempotency_key_sha256": "ui-key",
+        "payload_sha256": "ui-payload",
+    }
+    pilot_context = {
+        "entrypoint": "pilot",
+        "idempotency_key_sha256": "pilot-key",
+        "payload_sha256": "pilot-payload",
+    }
+    records = [
+        {"kind": "browser_request", "method": "GET", "url": f"{base_url}/api/interview-stories?status=active&query="},
+        {"kind": "browser_response", "method": "GET", "url": f"{base_url}/api/interview-stories?status=active&query=", "response_status": 200, "response_body_status": "captured"},
+        {"kind": "browser_request", "method": "GET", "url": f"{base_url}/api/interview-story-sources"},
+        {"kind": "browser_response", "method": "GET", "url": f"{base_url}/api/interview-story-sources", "response_status": 200, "response_body_status": "captured"},
+        {"kind": "browser_request", "method": "POST", "url": f"{base_url}/api/interview-story-proposals", "request_context": ui_context},
+        {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/interview-story-proposals", "request_context": ui_context, "response_status": 502, "response_body_status": "captured", "response_error_code": "story_provider_error"},
+        {"kind": "browser_request", "method": "POST", "url": f"{base_url}/api/interview-story-proposals", "request_context": ui_context},
+        {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/interview-story-proposals", "request_context": ui_context, "response_status": 201, "response_body_status": "captured", "response_proposal_id": 11},
+        {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/interview-story-proposals/11/confirm", "response_status": 201, "response_body_status": "captured", "response_story_id": 101, "response_story_version_id": 201},
+        {"kind": "browser_response", "method": "GET", "url": f"{base_url}/api/interview-stories/101/versions/201", "response_status": 200, "response_body_status": "captured"},
+        {"kind": "browser_request", "method": "GET", "url": f"{base_url}/api/interview-stories?status=active&query="},
+        {"kind": "browser_response", "method": "GET", "url": f"{base_url}/api/interview-stories?status=active&query=", "response_status": 200, "response_body_status": "captured"},
+        {"kind": "browser_request", "method": "GET", "url": f"{base_url}/api/interview-story-sources?review_note_id=4"},
+        {"kind": "browser_response", "method": "GET", "url": f"{base_url}/api/interview-story-sources?review_note_id=4", "response_status": 200, "response_body_status": "captured"},
+        {"kind": "browser_request", "method": "POST", "url": f"{base_url}/api/pilot/interview-story-proposals", "request_context": pilot_context},
+        {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/pilot/interview-story-proposals", "request_context": pilot_context, "response_status": 201, "response_body_status": "captured", "response_proposal_id": 12},
+        {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/interview-story-proposals/12/confirm", "response_status": 201, "response_body_status": "captured", "response_story_id": 102, "response_story_version_id": 202},
+        {"kind": "browser_response", "method": "GET", "url": f"{base_url}/api/interview-stories/102/versions/202", "response_status": 200, "response_body_status": "captured"},
+    ]
+    for index, record in enumerate(records, 1):
+        record["observed_at_ns"] = 1_000_000 + index * 1_000
+    audit_path = tmp_path / "story-retry-audit.jsonl"
+    audit_path.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
+
+    provider_retry = _run_harness("-ValidateAudit", "-AuditPath", str(audit_path), "-ExpectedBaseUrl", base_url)
+    assert provider_retry.returncode == 0, provider_retry.stdout + provider_retry.stderr
+
+    semantic_replay = [dict(record) for record in records]
+    semantic_replay[5]["response_error_code"] = "story_unverifiable"
+    audit_path.write_text("\n".join(json.dumps(record) for record in semantic_replay) + "\n", encoding="utf-8")
+    rejected = _run_harness("-ValidateAudit", "-AuditPath", str(audit_path), "-ExpectedBaseUrl", base_url)
+    assert rejected.returncode != 0
+    assert "story_provider_error" in (rejected.stdout + rejected.stderr)
 
 
 def test_story_browser_harness_allows_one_bounded_repair_per_entrypoint_and_rejects_more(tmp_path: Path) -> None:
@@ -395,7 +476,8 @@ def test_story_browser_harness_starts_audited_chromium_before_honoring_completio
     output = result.stdout + result.stderr
     assert result.returncode != 0
     assert "Dedicated browser target is ready" in output
-    assert "Browser did not execute exactly one UI and one Pilot Story proposal sequence" in output
+    assert "Browser did not execute one UI and one Pilot Story proposal sequence" in output
     state = json.loads(session_state.read_text(encoding="utf-8"))
     assert state["base_url"].startswith("http://127.0.0.1:")
     assert state["cdp_url"].startswith("http://127.0.0.1:")
+    assert not Path(state["temp_data_path"]).exists()

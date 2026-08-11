@@ -48,13 +48,35 @@ function Assert-ExitCode([string]$label) {
   if ($LASTEXITCODE -ne 0) { throw "$label failed with exit code $LASTEXITCODE." }
 }
 
-function Stop-Tree([object]$process) {
+function Stop-Tree([object]$process, [string]$label = 'local process') {
   if ($null -eq $process) { return }
-  try {
-    $children = @(Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq $process.Id })
-    foreach ($child in $children) { Stop-Tree ([pscustomobject]@{ Id = $child.ProcessId }) }
-    Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
-  } catch { }
+  $processId = [int]$process.Id
+  $children = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.ParentProcessId -eq $processId })
+  foreach ($child in $children) { Stop-Tree ([pscustomobject]@{ Id = $child.ProcessId }) "$label child" }
+  $running = Get-Process -Id $processId -ErrorAction SilentlyContinue
+  if ($null -ne $running) { Stop-Process -Id $processId -Force -ErrorAction Stop }
+  $deadline = [DateTime]::UtcNow.AddSeconds(15)
+  while ($null -ne (Get-Process -Id $processId -ErrorAction SilentlyContinue)) {
+    if ([DateTime]::UtcNow -ge $deadline) { throw "$label process $processId did not exit during cleanup." }
+    Start-Sleep -Milliseconds 100
+  }
+}
+
+function Remove-IsolatedTempData {
+  $lastError = $null
+  for ($attempt = 1; $attempt -le 3; $attempt++) {
+    try {
+      if (Test-Path -LiteralPath $tempData) {
+        Remove-Item -LiteralPath $tempData -Recurse -Force -ErrorAction Stop
+      }
+      if (-not (Test-Path -LiteralPath $tempData)) { return }
+    } catch {
+      $lastError = $_
+    }
+    Start-Sleep -Milliseconds 150
+  }
+  if ($null -ne $lastError) { throw "Isolated browser acceptance data cleanup failed: $($lastError.Exception.Message)" }
+  throw 'Isolated browser acceptance data cleanup failed.'
 }
 
 function Invoke-IsolatedPython([string]$label, [string]$code) {
@@ -118,7 +140,7 @@ function Start-BrowserAuditor([string]$cdpUrl, [string]$expectedUrl) {
     }
     if (-not $process.HasExited) {
       $lastDiagnostic = 'Browser auditor did not complete its Network ready handshake.'
-      Stop-Tree $process
+      Stop-Tree $process 'browser auditor startup'
     }
   }
   throw "Browser auditor did not become ready after three bounded local-CDP attempts: $lastDiagnostic"
@@ -276,13 +298,51 @@ function Get-StoryProviderFlowWindows([object[]]$records, [string]$baseUrl) {
   $flows = @{}
   foreach ($entrypoint in @('ui', 'pilot')) {
     $url = if ($entrypoint -eq 'ui') { "$baseUrl/api/interview-story-proposals" } else { "$baseUrl/api/pilot/interview-story-proposals" }
-    $requests = @($records | Where-Object {
-      $_.kind -eq 'browser_request' -and $_.method -eq 'POST' -and $_.url -eq $url -and
-      $null -ne (Get-RecordProperty $_ 'request_context') -and $_.request_context.entrypoint -eq $entrypoint
-    })
-    if ($requests.Count -ne 1) { throw "Browser did not capture exactly one $entrypoint Story proposal request." }
+    $requests = @()
+    for ($index = 0; $index -lt $records.Count; $index++) {
+      $record = $records[$index]
+      if (
+        $record.kind -eq 'browser_request' -and $record.method -eq 'POST' -and $record.url -eq $url -and
+        $null -ne (Get-RecordProperty $record 'request_context') -and $record.request_context.entrypoint -eq $entrypoint
+      ) {
+        $requests += [pscustomobject]@{ Index = $index; Record = $record }
+      }
+    }
+    if ($requests.Count -lt 1 -or $requests.Count -gt 2) {
+      throw "Browser must capture one request or one bounded provider-error replay for $entrypoint."
+    }
+    if ($requests.Count -eq 2) {
+      $firstContext = $requests[0].Record.request_context
+      foreach ($request in $requests) {
+        $context = $request.Record.request_context
+        if (
+          [string]::IsNullOrWhiteSpace([string]$context.idempotency_key_sha256) -or
+          [string]::IsNullOrWhiteSpace([string]$context.payload_sha256) -or
+          $context.idempotency_key_sha256 -ne $firstContext.idempotency_key_sha256 -or
+          $context.payload_sha256 -ne $firstContext.payload_sha256
+        ) {
+          throw "Browser $entrypoint replay did not preserve the original idempotency key and frozen input."
+        }
+      }
+      $retryResponses = @()
+      for ($index = $requests[0].Index + 1; $index -lt $requests[1].Index; $index++) {
+        $record = $records[$index]
+        $context = Get-RecordProperty $record 'request_context'
+        if (
+          $record.kind -eq 'browser_response' -and $record.url -eq $url -and
+          $null -ne $context -and $context.entrypoint -eq $entrypoint -and
+          $record.response_status -eq 502 -and $record.response_body_status -eq 'captured'
+        ) {
+          $retryResponses += $record
+        }
+      }
+      if ($retryResponses.Count -ne 1 -or $retryResponses[0].response_error_code -ne 'story_provider_error') {
+        throw "Browser $entrypoint replay must follow exactly one story_provider_error response; deterministic failures cannot be replayed."
+      }
+    }
     $response = Get-StoryAttemptResponse $records $entrypoint $url
-    $requestTimestamp = Get-RecordProperty $requests[0] 'observed_at_ns'
+    if ($response.Index -le $requests[-1].Index) { throw "Browser $entrypoint ready response predates its final request." }
+    $requestTimestamp = Get-RecordProperty $requests[0].Record 'observed_at_ns'
     $responseTimestamp = Get-RecordProperty $response.Record 'observed_at_ns'
     foreach ($timestamp in @($requestTimestamp, $responseTimestamp)) {
       if ($null -eq $timestamp -or [int64]$timestamp -le 0) {
@@ -355,7 +415,7 @@ function Assert-StoryBrowserSequence([object[]]$records, [string]$baseUrl) {
   if ($chatWrites.Count -gt 0) { throw 'Pilot Story entry must not create chat writes.' }
   $uiPosts = @($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'POST' -and $_.url -eq "$baseUrl/api/interview-story-proposals" })
   $pilotPosts = @($records | Where-Object { $_.kind -eq 'browser_request' -and $_.method -eq 'POST' -and $_.url -eq "$baseUrl/api/pilot/interview-story-proposals" })
-  if ($uiPosts.Count -ne 1 -or $pilotPosts.Count -ne 1) { throw 'Browser did not execute exactly one UI and one Pilot Story proposal sequence.' }
+  if ($uiPosts.Count -lt 1 -or $uiPosts.Count -gt 2 -or $pilotPosts.Count -lt 1 -or $pilotPosts.Count -gt 2) { throw 'Browser did not execute one UI and one Pilot Story proposal sequence, each with at most one provider-error replay.' }
   $uiPostIndex = -1
   $pilotPostIndex = -1
   $sourceReadIndexes = @()
@@ -530,6 +590,7 @@ try {
       base_url = $baseUrl
       cdp_url = "http://127.0.0.1:$cdpPort"
       completion_signal_path = $CompletionSignalPath
+      temp_data_path = $tempData
     } | ConvertTo-Json -Compress
     [IO.File]::WriteAllText($SessionStatePath, $sessionState, [Text.UTF8Encoding]::new($false))
   }
@@ -583,13 +644,13 @@ for (version_id,) in version_rows:
 }
 finally {
   if ($null -ne $browserStop) { New-Item -ItemType File -Force -Path $browserStop -ErrorAction SilentlyContinue | Out-Null }
-  Stop-Tree $auditor
-  Stop-Tree $browser
-  Stop-Tree $server
-  Stop-Tree $proxy
+  Stop-Tree $auditor 'browser auditor'
+  Stop-Tree $browser 'dedicated browser'
+  Stop-Tree $server 'isolated service'
+  Stop-Tree $proxy 'provider proxy'
   $env:OFFERPILOT_DATA = $previousData
   $env:HTTP_PROXY = $previousHttpProxy
   $env:HTTPS_PROXY = $previousHttpsProxy
   $env:NO_PROXY = $previousNoProxy
-  Remove-Item -LiteralPath $tempData -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-IsolatedTempData
 }

@@ -266,11 +266,16 @@ class BrowserAudit:
                     if proposal_ids:
                         record["response_proposal_ids"] = proposal_ids
                 record["response_body_status"] = "captured"
-            except (RuntimeError, json.JSONDecodeError, TypeError):
+            except asyncio.CancelledError:
+                raise
+            except BaseException:
                 # Keep the audit fail-closed without storing an exception message or
-                # response body.  Acceptance harnesses can require structured data
-                # for the workflow responses they need to prove.
+                # response body.  A response capture failure means the auditor can
+                # no longer prove the browser contract, including if CDP itself
+                # disconnected while a body was being read.
                 record["response_body_status"] = "unavailable"
+                if self.reader_error is None:
+                    self.reader_error = RuntimeError("CDP response capture failed")
         if self.handle is not None:
             response_record = {
                 "kind": "browser_response",
@@ -346,9 +351,13 @@ class BrowserAudit:
                     raise self.reader_error
         finally:
             if self.response_tasks:
-                await asyncio.gather(*self.response_tasks, return_exceptions=True)
+                results = await asyncio.gather(*self.response_tasks, return_exceptions=True)
+                if self.reader_error is None and any(isinstance(result, BaseException) for result in results):
+                    self.reader_error = RuntimeError("CDP response capture failed")
             reader_task.cancel()
             await asyncio.gather(reader_task, return_exceptions=True)
+            if self.reader_error is not None:
+                raise self.reader_error
 
 
 def browser_websocket_url(debugging_url: str) -> str:
