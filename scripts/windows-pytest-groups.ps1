@@ -15,7 +15,7 @@ New-Item -ItemType Directory -Force -Path $ResultDir | Out-Null
 function Get-NodeIds([object[]]$Output) {
     @($Output | ForEach-Object {
         $line = ([string]$_).Trim()
-        if ($line -match '^(tests[\/].+::.+)$') { $Matches[1].Replace('/', '\') }
+        if ($line -match '^(tests[\\/].+::.+)$') { $Matches[1].Replace('/', '\') }
     } | Where-Object { $_ })
 }
 
