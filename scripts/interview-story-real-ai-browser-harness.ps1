@@ -533,9 +533,12 @@ function Assert-ProviderEgress([object[]]$providers, [string]$auditPath = $provi
     if ($browserReplayCount -isnot [int] -or $browserReplayCount -lt 0 -or $browserReplayCount -gt 1) {
       throw "Story $entrypoint browser replay count is invalid."
     }
-    $expectedCount = 1 + [int]$repairCount + [int]$browserReplayCount
-    if ($counts[$entrypoint] -ne $expectedCount) {
-      throw "Story $entrypoint Provider connections do not match persisted repair_count plus the browser-proven provider-error replay."
+    $maximumCount = 1 + [int]$repairCount + [int]$browserReplayCount
+    # CONNECT counts transport tunnels, not model calls. The initial request
+    # and its bounded format repair may share one keep-alive tunnel, while the
+    # persisted Attempt remains the authoritative repair-call audit.
+    if ($counts[$entrypoint] -lt 1 -or $counts[$entrypoint] -gt $maximumCount) {
+      throw "Story $entrypoint Provider connections exceed the persisted repair_count and browser-proven replay bound."
     }
   }
 }

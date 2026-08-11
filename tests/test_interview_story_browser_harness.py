@@ -793,6 +793,15 @@ def test_story_browser_harness_allows_one_bounded_repair_per_entrypoint_and_reje
     accepted = validate()
     assert accepted.returncode == 0, accepted.stderr
 
+    # One CONNECT tunnel may carry both the initial request and the bounded
+    # format-repair request through HTTP keep-alive. Persisted repair_count is
+    # the call audit; the proxy proves the destination and transport window.
+    reused_tunnels = [normal_and_repaired[0], normal_and_repaired[2]]
+    audit.write_text("\n".join(json.dumps(record) for record in reused_tunnels) + "\n", encoding="utf-8")
+    reused = validate()
+    assert reused.returncode == 0, reused.stderr
+    audit.write_text("\n".join(json.dumps(record) for record in normal_and_repaired) + "\n", encoding="utf-8")
+
     # DNS hostnames and schemes are case-insensitive. The browser-proxy audit
     # must not reject an otherwise allowlisted real Provider connection merely
     # because the configured URL and CONNECT host differ in case.
