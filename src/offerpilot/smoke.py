@@ -11,7 +11,7 @@ import socket
 import tempfile
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 import uvicorn
@@ -465,15 +465,48 @@ def _run_http_smoke(
                 _run_application_event_http_smoke(client, steps, application_id)
 
                 if real_ai:
-                    _run_real_ai_interview_preparation_smoke(client, steps, application_id, smoke_resume_ids)
-                    _run_real_ai_material_proposal_smoke(client, steps, application_id, smoke_resume_ids)
-                    _run_real_ai_opportunity_fit_smoke(client, steps, application_id, smoke_resume_ids)
-                    _run_real_ai_interview_review_smoke(client, steps, application_id)
-                    _run_real_ai_interview_knowledge_capture_smoke(client, steps, application_id)
-                    _run_real_ai_mock_interview_smoke(
-                        client, steps, application_id, smoke_resume_ids, data_dir
+                    _run_named_real_ai_smoke_stage(
+                        "interview_preparation",
+                        lambda: _run_real_ai_interview_preparation_smoke(
+                            client, steps, application_id, smoke_resume_ids
+                        ),
                     )
-                    _run_real_ai_write_smoke(client, steps, company, application_id)
+                    _run_named_real_ai_smoke_stage(
+                        "material_proposal",
+                        lambda: _run_real_ai_material_proposal_smoke(
+                            client, steps, application_id, smoke_resume_ids
+                        ),
+                    )
+                    _run_named_real_ai_smoke_stage(
+                        "opportunity_fit",
+                        lambda: _run_real_ai_opportunity_fit_smoke(
+                            client, steps, application_id, smoke_resume_ids
+                        ),
+                    )
+                    _run_named_real_ai_smoke_stage(
+                        "interview_review",
+                        lambda: _run_real_ai_interview_review_smoke(
+                            client, steps, application_id
+                        ),
+                    )
+                    _run_named_real_ai_smoke_stage(
+                        "interview_knowledge_capture",
+                        lambda: _run_real_ai_interview_knowledge_capture_smoke(
+                            client, steps, application_id
+                        ),
+                    )
+                    _run_named_real_ai_smoke_stage(
+                        "mock_interview",
+                        lambda: _run_real_ai_mock_interview_smoke(
+                            client, steps, application_id, smoke_resume_ids, data_dir
+                        ),
+                    )
+                    _run_named_real_ai_smoke_stage(
+                        "write_smoke",
+                        lambda: _run_real_ai_write_smoke(
+                            client, steps, company, application_id
+                        ),
+                    )
                 else:
                     _run_local_proposal_terminal_smoke(
                         client, steps, application_id, data_dir, smoke_resume_ids
@@ -490,6 +523,17 @@ def _run_http_smoke(
                 steps.append(SmokeStep("http_cleanup", f"deleted smoke application #{application_id}"))
 
     return SmokeReport(ok=True, steps=steps)
+
+
+def _run_named_real_ai_smoke_stage(stage: str, operation: Callable[[], None]) -> None:
+    started = time.monotonic()
+    try:
+        operation()
+    except Exception as exc:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        raise RuntimeError(
+            f"real-ai smoke stage {stage} failed after {elapsed_ms} ms: {type(exc).__name__}"
+        ) from exc
 
 
 def _run_real_ai_interview_preparation_smoke(

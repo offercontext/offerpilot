@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import nullcontext
 from pathlib import Path
 
+import httpx
 import pytest
 from typer.testing import CliRunner
 
@@ -73,3 +74,18 @@ def test_full_http_smoke_uses_a_longer_client_timeout_only_for_real_ai(
         smoke._run_http_smoke(tmp_path / "data", real_ai=real_ai)
 
     assert captured_timeouts == [expected_timeout]
+
+
+def test_real_ai_stage_diagnostic_names_the_failed_operation() -> None:
+    import offerpilot.smoke as smoke
+
+    def fail() -> None:
+        raise httpx.ReadTimeout("provider response exceeded the client boundary")
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"real-ai smoke stage interview_preparation failed after \d+ ms: ReadTimeout",
+    ) as caught:
+        smoke._run_named_real_ai_smoke_stage("interview_preparation", fail)
+
+    assert isinstance(caught.value.__cause__, httpx.ReadTimeout)
