@@ -28,6 +28,7 @@ class _FakeCdp:
         self.drop_after_navigation = drop_after_navigation
         self.emit_unowned_request = emit_unowned_request
         self.story_steps = story_steps
+        self.injected_sources: list[str] = []
         self.expected_url = "http://127.0.0.1:18766/"
         self.ready = threading.Event()
         self.loop: asyncio.AbstractEventLoop | None = None
@@ -79,10 +80,17 @@ class _FakeCdp:
                 await websocket.send(json.dumps({"id": command_id, "result": {"targetId": "main-target"}}))
             elif method == "Network.enable" and self.reject_network:
                 await websocket.send(json.dumps({"id": command_id, "error": {"code": -1}}))
+            elif method == "Page.addScriptToEvaluateOnNewDocument":
+                params = message.get("params")
+                source = params.get("source") if isinstance(params, dict) else None
+                if isinstance(source, str):
+                    self.injected_sources.append(source)
+                await websocket.send(json.dumps({"id": command_id, "result": {}}))
             elif method == "Runtime.evaluate":
+                steps = self.story_steps if self.injected_sources else ()
                 await websocket.send(json.dumps({
                     "id": command_id,
-                    "result": {"result": {"value": json.dumps(list(self.story_steps))}},
+                    "result": {"result": {"value": json.dumps(list(steps))}},
                 }))
             else:
                 await websocket.send(json.dumps({"id": command_id, "result": {}}))
@@ -205,6 +213,9 @@ def test_browser_network_audit_records_allowlisted_story_actions(tmp_path):
         records = [json.loads(line) for line in (tmp_path / "browser.jsonl").read_text(encoding="utf-8").splitlines()]
         assert records[-1]["kind"] == "browser_story_interactions"
         assert records[-1]["steps"] == list(expected_steps)
+        assert len(fake.injected_sources) == 1
+        assert "window.__offerpilotStoryAuditSteps" in fake.injected_sources[0]
+        assert "[data-story-audit]" in fake.injected_sources[0]
     finally:
         fake.close()
 

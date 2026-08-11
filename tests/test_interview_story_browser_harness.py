@@ -928,10 +928,24 @@ def test_story_browser_harness_cleans_all_local_resources_when_auditor_startup_f
     before = {path.name for path in Path(os.environ["TEMP"]).glob("offerpilot-interview-story-*")}
     environment = dict(os.environ)
     environment["OFFERPILOT_DATA"] = str(source_data)
+    cleanup_audit = tmp_path / "cleanup-audit.json"
 
-    result = _run_harness("-ForceAuditorStartupCleanupFailureForTest", env=environment)
+    result = _run_harness(
+        "-ForceAuditorStartupCleanupFailureForTest",
+        "-CleanupAuditPath",
+        str(cleanup_audit),
+        env=environment,
+    )
 
     assert result.returncode != 0
     assert "Forced browser auditor startup cleanup failure" in (result.stdout + result.stderr)
+    cleanup = json.loads(cleanup_audit.read_text(encoding="utf-8"))
+    assert {record["label"] for record in cleanup["processes"]} == {
+        "browser auditor",
+        "dedicated browser",
+        "isolated service",
+        "provider proxy",
+    }
+    assert all(record["exited"] is True for record in cleanup["processes"])
     after = {path.name for path in Path(os.environ["TEMP"]).glob("offerpilot-interview-story-*")}
     assert after == before

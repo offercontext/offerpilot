@@ -18,6 +18,7 @@ param(
   [string]$ScreenshotManifestPath,
   [string]$CompletionSignalPath,
   [string]$SessionStatePath,
+  [string]$CleanupAuditPath,
   [switch]$ForceAuditorStartupCleanupFailureForTest
 )
 
@@ -859,6 +860,7 @@ for (version_id,) in version_rows:
 }
 finally {
   $cleanupErrors = [System.Collections.Generic.List[string]]::new()
+  $cleanupProcesses = [System.Collections.Generic.List[object]]::new()
   if ($null -ne $browserStop) {
     try { New-Item -ItemType File -Force -Path $browserStop -ErrorAction Stop | Out-Null }
     catch { $cleanupErrors.Add('browser auditor stop signal') }
@@ -869,8 +871,14 @@ finally {
     [pscustomobject]@{ Process = $server; Label = 'isolated service' },
     [pscustomobject]@{ Process = $proxy; Label = 'provider proxy' }
   )) {
+    $processId = if ($null -eq $item.Process) { $null } else { [int]$item.Process.Id }
     try { Stop-Tree $item.Process $item.Label }
     catch { $cleanupErrors.Add([string]$item.Label) }
+    $cleanupProcesses.Add([pscustomobject]@{
+      label = [string]$item.Label
+      process_id = $processId
+      exited = ($null -eq $processId -or $null -eq (Get-Process -Id $processId -ErrorAction SilentlyContinue))
+    })
   }
   try {
     $env:OFFERPILOT_DATA = $previousData
@@ -882,6 +890,17 @@ finally {
   }
   try { Remove-IsolatedTempData }
   catch { $cleanupErrors.Add('isolated acceptance data') }
+  if (-not [string]::IsNullOrWhiteSpace($CleanupAuditPath)) {
+    try {
+      [IO.File]::WriteAllText(
+        [IO.Path]::GetFullPath($CleanupAuditPath),
+        (([ordered]@{ processes = @($cleanupProcesses) }) | ConvertTo-Json -Depth 3),
+        [Text.UTF8Encoding]::new($false)
+      )
+    } catch {
+      $cleanupErrors.Add('cleanup audit')
+    }
+  }
   if ($null -ne $primaryFailure) {
     if ($cleanupErrors.Count -gt 0) {
       [Console]::Error.WriteLine("Story browser acceptance cleanup also failed for: $($cleanupErrors -join ', ').")
