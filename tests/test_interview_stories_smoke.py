@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from offerpilot.cli import app
@@ -35,3 +37,39 @@ def test_local_interview_story_smoke_exercises_ui_and_pilot_without_chat_writes(
     assert "story_pilot_proposal_confirm" in names
     assert "story_source_changed" in names
     assert "story_chat_isolation" in names
+
+
+@pytest.mark.parametrize(
+    ("real_ai", "expected_timeout"),
+    [(False, 60.0), (True, 180.0)],
+)
+def test_full_http_smoke_uses_a_longer_client_timeout_only_for_real_ai(
+    monkeypatch, tmp_path: Path, real_ai: bool, expected_timeout: float
+) -> None:
+    import offerpilot.smoke as smoke
+
+    captured_timeouts: list[float] = []
+
+    class StopAfterClientCreation(RuntimeError):
+        pass
+
+    class RecordingClient:
+        def __init__(self, *, base_url: str, timeout: float) -> None:
+            assert base_url == "http://smoke.test"
+            captured_timeouts.append(timeout)
+
+        def __enter__(self):
+            raise StopAfterClientCreation
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    monkeypatch.setattr(smoke, "_run_unconfigured_chat_smoke", lambda *args: None)
+    monkeypatch.setattr(smoke, "create_app", lambda **kwargs: object())
+    monkeypatch.setattr(smoke, "_running_server", lambda app: nullcontext("http://smoke.test"))
+    monkeypatch.setattr(smoke.httpx, "Client", RecordingClient)
+
+    with pytest.raises(StopAfterClientCreation):
+        smoke._run_http_smoke(tmp_path / "data", real_ai=real_ai)
+
+    assert captured_timeouts == [expected_timeout]
