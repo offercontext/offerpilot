@@ -628,6 +628,69 @@ def test_story_browser_harness_allows_one_same_key_provider_retry_but_rejects_se
     assert "Attempt" in (mismatched_attempt.stdout + mismatched_attempt.stderr)
 
 
+def test_story_browser_harness_attributes_provider_egress_to_a_proven_user_retry(tmp_path: Path) -> None:
+    base_url = "http://127.0.0.1:9999"
+    browser_audit = tmp_path / "browser-audit.jsonl"
+    records = _complete_story_audit_records(base_url)
+    ui_request = dict(records[4])
+    ui_provider_error = dict(records[5])
+    ui_provider_error.update({
+        "response_status": 502,
+        "response_error_code": "story_provider_error",
+    })
+    ui_ready = dict(records[5])
+    records[5] = ui_provider_error
+    records.insert(6, ui_request)
+    records.insert(7, ui_ready)
+    for index, record in enumerate(records, 1):
+        record["observed_at_ns"] = 1_000_000 + index * 1_000
+    _write_audit(browser_audit, records)
+
+    provider_audit = tmp_path / "provider-audit.jsonl"
+    provider_audit.write_text(
+        "\n".join(
+            json.dumps({
+                "kind": "provider_proxy_connect",
+                "scheme": "https",
+                "host": "provider.example",
+                "port": 443,
+                "status": "connected",
+                "observed_at_ns": timestamp,
+            })
+            for timestamp in (1_005_500, 1_007_500, 1_015_500)
+        ) + "\n",
+        encoding="utf-8",
+    )
+    allowlist = tmp_path / "providers.json"
+    allowlist.write_text(json.dumps([{"Tuple": "https://provider.example:443"}]), encoding="utf-8")
+    attempt_audit = tmp_path / "attempts.json"
+    attempt_audit.write_text(
+        json.dumps([
+            {"id": 11, "entrypoint": "ui", "attempt_status": "confirmed", "repair_count": 0, "confirmed_story_id": 101, "confirmed_story_version_id": 201},
+            {"id": 12, "entrypoint": "pilot", "attempt_status": "confirmed", "repair_count": 0, "confirmed_story_id": 102, "confirmed_story_version_id": 202},
+        ]),
+        encoding="utf-8",
+    )
+
+    accepted = _run_harness(
+        "-ValidateProviderEgress", "-ProviderAuditPath", str(provider_audit), "-ProviderAllowlistPath", str(allowlist),
+        "-BrowserAuditPath", str(browser_audit), "-StoryAttemptAuditPath", str(attempt_audit), "-ExpectedBaseUrl", base_url,
+        "-ExpectedTargetId", "story-target", "-ExpectedSessionId", "story-session",
+    )
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+
+    semantic_retry = [dict(record) for record in records]
+    semantic_retry[5]["response_error_code"] = "story_unverifiable"
+    _write_audit(browser_audit, semantic_retry)
+    rejected = _run_harness(
+        "-ValidateProviderEgress", "-ProviderAuditPath", str(provider_audit), "-ProviderAllowlistPath", str(allowlist),
+        "-BrowserAuditPath", str(browser_audit), "-StoryAttemptAuditPath", str(attempt_audit), "-ExpectedBaseUrl", base_url,
+        "-ExpectedTargetId", "story-target", "-ExpectedSessionId", "story-session",
+    )
+    assert rejected.returncode != 0
+    assert "story_provider_error" in (rejected.stdout + rejected.stderr)
+
+
 def test_story_browser_harness_allows_one_bounded_repair_per_entrypoint_and_rejects_more(tmp_path: Path) -> None:
     audit = tmp_path / "provider-audit.jsonl"
     browser_audit = tmp_path / "browser-audit.jsonl"

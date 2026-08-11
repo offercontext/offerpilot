@@ -444,6 +444,7 @@ function Get-StoryProviderFlowWindows([object[]]$records, [string]$baseUrl, [str
       request_ns = [int64]$requestTimestamp
       response_ns = [int64]$responseTimestamp
       attempt_id = [int]$response.Record.response_proposal_id
+      browser_replay_count = $requests.Count - 1
       target_id = $targetId
       session_id = $sessionId
     }
@@ -527,9 +528,13 @@ function Assert-ProviderEgress([object[]]$providers, [string]$auditPath = $provi
   }
   foreach ($entrypoint in @('ui', 'pilot')) {
     $repairCount = Get-RecordProperty $attempts.$entrypoint 'repair_count'
-    $expectedCount = 1 + [int]$repairCount
+    $browserReplayCount = Get-RecordProperty $flows.$entrypoint 'browser_replay_count'
+    if ($browserReplayCount -isnot [int] -or $browserReplayCount -lt 0 -or $browserReplayCount -gt 1) {
+      throw "Story $entrypoint browser replay count is invalid."
+    }
+    $expectedCount = 1 + [int]$repairCount + [int]$browserReplayCount
     if ($counts[$entrypoint] -ne $expectedCount) {
-      throw "Story $entrypoint Provider connections do not match persisted repair_count."
+      throw "Story $entrypoint Provider connections do not match persisted repair_count plus the browser-proven provider-error replay."
     }
   }
 }

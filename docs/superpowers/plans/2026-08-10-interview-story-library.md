@@ -640,9 +640,12 @@ git commit -m "feat: AI connect story proposal recovery and Pilot"
   proposal request, distinct hashed idempotency keys and Attempts, their own
   confirmation/history sequence, and zero `/api/chat` or `/api/chat/confirm`
   writes. Provider egress must be mapped to the two persisted Story Attempts:
-  each entrypoint has exactly one approved connection plus its persisted
-  `repair_count` (0 or 1). A second connection is accepted only when that
-  exact Attempt records the bounded format repair; the audit must bind every
+  each entrypoint has exactly one initial connection, plus its persisted
+  `repair_count` (0 or 1), plus at most one browser-proven user replay. A
+  second browser proposal request is accepted only after one captured
+  `story_provider_error` response with the same hashed key, frozen-payload
+  hash, and Attempt ID; a format-repair connection is accepted only when the
+  exact persisted Attempt records the bounded repair. The audit must bind every
   browser record to the auditor-created target/session and map the resulting
   distinct confirmed Story/Version identities back to the UI and Pilot Attempt.
 
