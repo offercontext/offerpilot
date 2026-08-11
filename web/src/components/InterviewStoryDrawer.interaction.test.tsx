@@ -195,7 +195,7 @@ describe('InterviewStoryDrawer', () => {
       }
     }} onClose={() => {}} />);
     storyService.proposal
-      .mockRejectedValueOnce(new storyService.StoryError(502, 'story_provider_error', 18, 30_250))
+      .mockRejectedValueOnce(new storyService.StoryError(0, null))
       .mockResolvedValueOnce({
         id: 18,
         attempt_status: 'ready',
@@ -239,7 +239,7 @@ describe('InterviewStoryDrawer', () => {
     const initialPayload = storyService.proposal.mock.calls[0]?.[0];
     expect(current.resultUnknown).toBe(true);
     expect(current.pendingOperation).toBe('generate');
-    expect(current.attemptId).toBe(18);
+    expect(current.attemptId).toBeNull();
     expect(document.body.textContent).toContain('使用原尝试重试');
     const earlyRetry = [...document.body.querySelectorAll('button')].find((button) => button.textContent === '使用原尝试重试') as HTMLButtonElement;
     expect(earlyRetry.disabled).toBe(true);

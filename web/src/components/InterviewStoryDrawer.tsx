@@ -66,6 +66,7 @@ const EMPTY_MANUAL_CONTENT: InterviewStoryEditableContent = {
   applicable_questions: [],
   fact_gap_codes: [],
 };
+const STORY_UNKNOWN_RETRY_DELAY_MS = 30_250;
 
 function key(prefix: string): string {
   return typeof crypto !== 'undefined' && 'randomUUID' in crypto
@@ -459,12 +460,14 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
         const attemptId = error instanceof InterviewStoryError && error.attemptId !== null
           ? error.attemptId
           : requestDraft.attemptId;
-        const retryAfterMs = error instanceof InterviewStoryError ? error.retryAfterMs : null;
+        const retryAfterMs = error instanceof InterviewStoryError && error.retryAfterMs !== null
+          ? error.retryAfterMs
+          : STORY_UNKNOWN_RETRY_DELAY_MS;
         onDraftChange({
           ...requestDraft,
           attemptId,
           resultUnknown: true,
-          retryAvailableAt: retryAfterMs === null ? null : Date.now() + retryAfterMs,
+          retryAvailableAt: Date.now() + retryAfterMs,
           pendingOperation: 'generate',
           error: safe,
         });
