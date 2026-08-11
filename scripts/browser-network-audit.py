@@ -33,6 +33,17 @@ class BrowserAudit:
         self.response_tasks: set[asyncio.Task[None]] = set()
         self.response_finished: dict[tuple[str, str], asyncio.Event] = {}
 
+    def finish_response_task(self, task: asyncio.Task[None]) -> None:
+        self.response_tasks.discard(task)
+        if task.cancelled() or self.reader_error is not None:
+            return
+        try:
+            error = task.exception()
+        except (asyncio.CancelledError, BaseException):
+            error = RuntimeError("CDP response capture failed")
+        if error is not None:
+            self.reader_error = RuntimeError("CDP response capture failed")
+
     async def send(
         self,
         method: str,
@@ -74,7 +85,7 @@ class BrowserAudit:
                         self.response_finished.setdefault((session_id, request_id), asyncio.Event())
                     task = asyncio.create_task(self.record_response(message))
                     self.response_tasks.add(task)
-                    task.add_done_callback(self.response_tasks.discard)
+                    task.add_done_callback(self.finish_response_task)
                 elif message.get("method") in {"Network.loadingFinished", "Network.loadingFailed"}:
                     params = message.get("params")
                     request_id = params.get("requestId") if isinstance(params, dict) else None

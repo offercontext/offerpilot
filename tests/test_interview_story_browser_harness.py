@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import subprocess
 import struct
+from contextlib import suppress
 import zlib
 
 import pytest
@@ -239,6 +240,24 @@ def test_browser_audit_marks_cdp_response_capture_failures_as_audit_errors(tmp_p
     records = asyncio.run(run())
 
     assert records[-1]["response_body_status"] == "unavailable"
+
+
+def test_browser_audit_marks_unexpected_response_task_errors_as_audit_errors(tmp_path: Path) -> None:
+    async def run() -> None:
+        audit = BrowserAudit(_WebSocket(), tmp_path / "audit.jsonl", tmp_path / "stop")
+
+        async def unexpected() -> None:
+            raise ValueError("response task failed")
+
+        task = asyncio.create_task(unexpected())
+        audit.response_tasks.add(task)
+        task.add_done_callback(audit.finish_response_task)
+        with suppress(ValueError):
+            await task
+        await asyncio.sleep(0)
+        assert isinstance(audit.reader_error, RuntimeError)
+
+    asyncio.run(run())
 
 
 def test_browser_audit_requires_the_dedicated_target_to_finish_network_enable(tmp_path: Path) -> None:
