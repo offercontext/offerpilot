@@ -7,6 +7,7 @@ import json
 import time
 from pathlib import Path
 from typing import TextIO
+from urllib.parse import urlparse
 from urllib.request import urlopen
 
 import websockets
@@ -218,51 +219,58 @@ class BrowserAudit:
         status = response.get("status")
         if isinstance(status, (int, float)):
             record["response_status"] = int(status)
-        try:
-            finished = self.response_finished.setdefault((session_id, request_id), asyncio.Event())
-            body_ready = True
+        request_url = record.get("url")
+        if not isinstance(request_url, str) or not urlparse(request_url).path.startswith("/api/"):
+            # Static assets can exceed Chrome's default CDP message ceiling.
+            # They have no workflow metadata and must never have their body
+            # fetched or retained by this redacted audit.
+            record["response_body_status"] = "not_requested"
+        else:
             try:
-                await asyncio.wait_for(finished.wait(), timeout=10.0)
-            except asyncio.TimeoutError:
-                body_ready = False
-            if not body_ready:
-                raise RuntimeError("response body did not finish before audit timeout")
-            body_result = await self.send("Network.getResponseBody", {"requestId": request_id}, session_id)
-            body = body_result.get("result")
-            body_text = body.get("body") if isinstance(body, dict) else None
-            payload = json.loads(body_text) if isinstance(body_text, str) else None
-            if isinstance(payload, dict):
-                if isinstance(payload.get("error_code"), str):
-                    record["response_error_code"] = payload["error_code"]
-                if isinstance(payload.get("attempt_status"), str):
-                    record["response_attempt_status"] = payload["attempt_status"]
-                if isinstance(payload.get("retry_after_ms"), int):
-                    record["response_retry_after_ms"] = payload["retry_after_ms"]
-                if isinstance(payload.get("id"), int):
-                    record["response_proposal_id"] = payload["id"]
-                if isinstance(payload.get("story_id"), int):
-                    record["response_story_id"] = payload["story_id"]
-                if isinstance(payload.get("version_id"), int):
-                    record["response_story_version_id"] = payload["version_id"]
-                brief = payload.get("brief")
-                if isinstance(brief, dict) and isinstance(brief.get("proposal_id"), int):
-                    record["response_confirmed_proposal_id"] = brief["proposal_id"]
-                if isinstance(payload.get("proposal_id"), int):
-                    record["response_confirmed_proposal_id"] = payload["proposal_id"]
-            elif isinstance(payload, list):
-                proposal_ids = [
-                    item["id"]
-                    for item in payload
-                    if isinstance(item, dict) and isinstance(item.get("id"), int)
-                ]
-                if proposal_ids:
-                    record["response_proposal_ids"] = proposal_ids
-            record["response_body_status"] = "captured"
-        except (RuntimeError, json.JSONDecodeError, TypeError):
-            # Keep the audit fail-closed without storing an exception message or
-            # response body.  Acceptance harnesses can require structured data
-            # for the workflow responses they need to prove.
-            record["response_body_status"] = "unavailable"
+                finished = self.response_finished.setdefault((session_id, request_id), asyncio.Event())
+                body_ready = True
+                try:
+                    await asyncio.wait_for(finished.wait(), timeout=10.0)
+                except asyncio.TimeoutError:
+                    body_ready = False
+                if not body_ready:
+                    raise RuntimeError("response body did not finish before audit timeout")
+                body_result = await self.send("Network.getResponseBody", {"requestId": request_id}, session_id)
+                body = body_result.get("result")
+                body_text = body.get("body") if isinstance(body, dict) else None
+                payload = json.loads(body_text) if isinstance(body_text, str) else None
+                if isinstance(payload, dict):
+                    if isinstance(payload.get("error_code"), str):
+                        record["response_error_code"] = payload["error_code"]
+                    if isinstance(payload.get("attempt_status"), str):
+                        record["response_attempt_status"] = payload["attempt_status"]
+                    if isinstance(payload.get("retry_after_ms"), int):
+                        record["response_retry_after_ms"] = payload["retry_after_ms"]
+                    if isinstance(payload.get("id"), int):
+                        record["response_proposal_id"] = payload["id"]
+                    if isinstance(payload.get("story_id"), int):
+                        record["response_story_id"] = payload["story_id"]
+                    if isinstance(payload.get("version_id"), int):
+                        record["response_story_version_id"] = payload["version_id"]
+                    brief = payload.get("brief")
+                    if isinstance(brief, dict) and isinstance(brief.get("proposal_id"), int):
+                        record["response_confirmed_proposal_id"] = brief["proposal_id"]
+                    if isinstance(payload.get("proposal_id"), int):
+                        record["response_confirmed_proposal_id"] = payload["proposal_id"]
+                elif isinstance(payload, list):
+                    proposal_ids = [
+                        item["id"]
+                        for item in payload
+                        if isinstance(item, dict) and isinstance(item.get("id"), int)
+                    ]
+                    if proposal_ids:
+                        record["response_proposal_ids"] = proposal_ids
+                record["response_body_status"] = "captured"
+            except (RuntimeError, json.JSONDecodeError, TypeError):
+                # Keep the audit fail-closed without storing an exception message or
+                # response body.  Acceptance harnesses can require structured data
+                # for the workflow responses they need to prove.
+                record["response_body_status"] = "unavailable"
         if self.handle is not None:
             response_record = {
                 "kind": "browser_response",

@@ -10,7 +10,8 @@ param(
   [switch]$ValidateScreenshotMatrix,
   [string]$ScreenshotDirectory,
   [string]$ScreenshotManifestPath,
-  [string]$CompletionSignalPath
+  [string]$CompletionSignalPath,
+  [string]$SessionStatePath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -100,6 +101,27 @@ function Get-ProcessDiagnostic([string]$stdoutPath, [string]$stderrPath) {
   $text = ($lines -join [Environment]::NewLine).Trim()
   if ([string]::IsNullOrWhiteSpace($text)) { return 'no local diagnostic output' }
   return $text.Substring(0, [Math]::Min($text.Length, 4096))
+}
+
+function Start-BrowserAuditor([string]$cdpUrl, [string]$expectedUrl) {
+  $lastDiagnostic = 'no local diagnostic output'
+  for ($attempt = 1; $attempt -le 3; $attempt++) {
+    Remove-Item -LiteralPath $browserReady, $auditorStdout, $auditorStderr -Force -ErrorAction SilentlyContinue
+    $process = Start-Process -FilePath $projectPython -WorkingDirectory $repo -WindowStyle Hidden -PassThru -ArgumentList @('scripts/browser-network-audit.py', '--debugging-url', $cdpUrl, '--expected-url', $expectedUrl, '--audit', $browserAudit, '--stop-file', $browserStop, '--ready-file', $browserReady) -RedirectStandardOutput $auditorStdout -RedirectStandardError $auditorStderr
+    for ($wait = 0; $wait -lt 40; $wait++) {
+      if (Test-Path -LiteralPath $browserReady) { return $process }
+      if ($process.HasExited) {
+        $lastDiagnostic = Get-ProcessDiagnostic $auditorStdout $auditorStderr
+        break
+      }
+      Start-Sleep -Milliseconds 500
+    }
+    if (-not $process.HasExited) {
+      $lastDiagnostic = 'Browser auditor did not complete its Network ready handshake.'
+      Stop-Tree $process
+    }
+  }
+  throw "Browser auditor did not become ready after three bounded local-CDP attempts: $lastDiagnostic"
 }
 
 function Find-Chromium {
@@ -502,23 +524,25 @@ try {
   $chromium = Find-Chromium
   $browser = Start-Process -FilePath $chromium -PassThru -ArgumentList @("--remote-debugging-port=$cdpPort", "--user-data-dir=$browserProfile", '--no-first-run', '--no-default-browser-check', '--remote-allow-origins=*', '--window-size=1455,1200', '--force-color-profile=srgb', 'about:blank')
   Wait-ForHttpReady $browser "http://127.0.0.1:$cdpPort/json/version" 'Dedicated Chromium CDP endpoint' | Out-Null
-  $auditor = Start-Process -FilePath $projectPython -WorkingDirectory $repo -WindowStyle Hidden -PassThru -ArgumentList @('scripts/browser-network-audit.py', '--debugging-url', "http://127.0.0.1:$cdpPort", '--expected-url', $baseUrl, '--audit', $browserAudit, '--stop-file', $browserStop, '--ready-file', $browserReady) -RedirectStandardOutput $auditorStdout -RedirectStandardError $auditorStderr
-  for ($i = 0; $i -lt 120; $i++) {
-    if ($auditor.HasExited) { throw "Browser auditor exited before readiness: $(Get-ProcessDiagnostic $auditorStdout $auditorStderr)" }
-    if (Test-Path -LiteralPath $browserReady) { break }
-    Start-Sleep -Milliseconds 500
+  $auditor = Start-BrowserAuditor "http://127.0.0.1:$cdpPort" $baseUrl
+  if (-not [string]::IsNullOrWhiteSpace($SessionStatePath)) {
+    $sessionState = [ordered]@{
+      base_url = $baseUrl
+      cdp_url = "http://127.0.0.1:$cdpPort"
+      completion_signal_path = $CompletionSignalPath
+    } | ConvertTo-Json -Compress
+    [IO.File]::WriteAllText($SessionStatePath, $sessionState, [Text.UTF8Encoding]::new($false))
   }
-  if (-not (Test-Path -LiteralPath $browserReady)) { throw 'Browser auditor did not become ready.' }
   Write-Host 'Dedicated browser target is ready in light mode at 1455x1200.'
   Write-Host 'Complete UI Story flow, then Pilot Story flow in the same target. Do not open another tab.'
   Write-Host 'Before each proposal, open the Story library and its source picker. Use selected seed note sources, edit a draft, confirm each Story Version, and reopen history.'
   Write-Host 'Save the ten reviewed light-mode 1455x1200 screenshots to ScreenshotDirectory before completing this run.'
   Write-Host 'Press Enter only after both flows and history reads have completed.'
   while ($true) {
+    if (-not [string]::IsNullOrWhiteSpace($CompletionSignalPath) -and (Test-Path -LiteralPath $CompletionSignalPath)) { break }
     if ($server.HasExited) { throw 'Isolated service exited during browser acceptance.' }
     if ($browser.HasExited) { throw 'Dedicated browser exited during browser acceptance.' }
-    if ($auditor.HasExited) { throw 'Browser auditor exited during browser acceptance.' }
-    if (-not [string]::IsNullOrWhiteSpace($CompletionSignalPath) -and (Test-Path -LiteralPath $CompletionSignalPath)) { break }
+    if ($auditor.HasExited) { throw "Browser auditor exited during browser acceptance: $(Get-ProcessDiagnostic $auditorStdout $auditorStderr)" }
     if ([string]::IsNullOrWhiteSpace($CompletionSignalPath)) {
       try {
         if ([Console]::KeyAvailable) {

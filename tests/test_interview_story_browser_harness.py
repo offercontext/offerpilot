@@ -176,6 +176,38 @@ def test_browser_audit_waits_for_loading_finished_before_capturing_workflow_resp
     assert records[-1]["response_proposal_id"] == 8
 
 
+def test_browser_audit_never_reads_non_api_response_bodies(tmp_path: Path) -> None:
+    async def run() -> tuple[list[str], list[dict[str, object]]]:
+        audit = BrowserAudit(_WebSocket(), tmp_path / "audit.jsonl", tmp_path / "stop")
+        audit.target_sessions["story-target"] = "story-session"
+        handle = io.StringIO()
+        audit.handle = handle
+        await audit.record_request(
+            _request("http://127.0.0.1:9999/assets/application.js", {})
+        )
+        calls: list[str] = []
+
+        async def send(method: str, *_args, **_kwargs):
+            calls.append(method)
+            return {"result": {"body": "{}"}}
+
+        audit.send = send  # type: ignore[method-assign]
+        audit.response_finished[("story-session", "request-1")] = asyncio.Event()
+        audit.response_finished[("story-session", "request-1")].set()
+        await audit.record_response(
+            {
+                "sessionId": "story-session",
+                "params": {"requestId": "request-1", "response": {"status": 200}},
+            }
+        )
+        return calls, [json.loads(line) for line in handle.getvalue().splitlines()]
+
+    calls, records = asyncio.run(run())
+
+    assert calls == []
+    assert records[-1]["response_body_status"] == "not_requested"
+
+
 def test_browser_audit_requires_the_dedicated_target_to_finish_network_enable(tmp_path: Path) -> None:
     async def run() -> None:
         websocket = _ScriptedWebSocket(attach_target="unowned-target")
@@ -352,12 +384,18 @@ def test_story_browser_harness_starts_audited_chromium_before_honoring_completio
     )
     completion_signal = tmp_path / "complete.signal"
     completion_signal.touch()
+    session_state = tmp_path / "story-browser-session.json"
     environment = dict(os.environ)
     environment["OFFERPILOT_DATA"] = str(source_data)
 
-    result = _run_harness("-CompletionSignalPath", str(completion_signal), env=environment)
+    result = _run_harness(
+        "-CompletionSignalPath", str(completion_signal), "-SessionStatePath", str(session_state), env=environment,
+    )
 
     output = result.stdout + result.stderr
     assert result.returncode != 0
     assert "Dedicated browser target is ready" in output
     assert "Browser did not execute exactly one UI and one Pilot Story proposal sequence" in output
+    state = json.loads(session_state.read_text(encoding="utf-8"))
+    assert state["base_url"].startswith("http://127.0.0.1:")
+    assert state["cdp_url"].startswith("http://127.0.0.1:")
