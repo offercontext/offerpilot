@@ -515,3 +515,33 @@ def test_story_browser_harness_keeps_a_startup_auditor_handle_for_outer_cleanup(
     assert "function Start-BrowserAuditor([string]$cdpUrl, [string]$expectedUrl, [ref]$trackedAuditor)" in source
     assert "$trackedAuditor.Value = $process" in source
     assert "Start-BrowserAuditor \"http://127.0.0.1:$cdpPort\" $baseUrl ([ref]$auditor)" in source
+
+
+def test_story_browser_harness_cleans_all_local_resources_when_auditor_startup_fails(tmp_path: Path) -> None:
+    source_data = tmp_path / "configured-data"
+    source_data.mkdir()
+    (source_data / "config.json").write_text(
+        json.dumps(
+            {
+                "active_provider_id": "browser-harness-stub",
+                "providers": [
+                    {
+                        "id": "browser-harness-stub",
+                        "enabled": True,
+                        "base_url": "https://provider.example",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    before = {path.name for path in Path(os.environ["TEMP"]).glob("offerpilot-interview-story-*")}
+    environment = dict(os.environ)
+    environment["OFFERPILOT_DATA"] = str(source_data)
+
+    result = _run_harness("-ForceAuditorStartupCleanupFailureForTest", env=environment)
+
+    assert result.returncode != 0
+    assert "Forced browser auditor startup cleanup failure" in (result.stdout + result.stderr)
+    after = {path.name for path in Path(os.environ["TEMP"]).glob("offerpilot-interview-story-*")}
+    assert after == before

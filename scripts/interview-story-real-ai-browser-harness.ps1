@@ -11,7 +11,8 @@ param(
   [string]$ScreenshotDirectory,
   [string]$ScreenshotManifestPath,
   [string]$CompletionSignalPath,
-  [string]$SessionStatePath
+  [string]$SessionStatePath,
+  [switch]$ForceAuditorStartupCleanupFailureForTest
 )
 
 $ErrorActionPreference = 'Stop'
@@ -131,6 +132,9 @@ function Start-BrowserAuditor([string]$cdpUrl, [string]$expectedUrl, [ref]$track
     Remove-Item -LiteralPath $browserReady, $auditorStdout, $auditorStderr -Force -ErrorAction SilentlyContinue
     $process = Start-Process -FilePath $projectPython -WorkingDirectory $repo -WindowStyle Hidden -PassThru -ArgumentList @('scripts/browser-network-audit.py', '--debugging-url', $cdpUrl, '--expected-url', $expectedUrl, '--audit', $browserAudit, '--stop-file', $browserStop, '--ready-file', $browserReady) -RedirectStandardOutput $auditorStdout -RedirectStandardError $auditorStderr
     $trackedAuditor.Value = $process
+    if ($ForceAuditorStartupCleanupFailureForTest) {
+      throw 'Forced browser auditor startup cleanup failure.'
+    }
     for ($wait = 0; $wait -lt 40; $wait++) {
       if (Test-Path -LiteralPath $browserReady) { return $process }
       if ($process.HasExited) {
