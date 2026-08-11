@@ -476,6 +476,46 @@ def test_story_browser_harness_allows_one_bounded_repair_per_entrypoint_and_reje
     )
     assert accepted.returncode == 0, accepted.stderr
 
+    # DNS hostnames and schemes are case-insensitive. The browser-proxy audit
+    # must not reject an otherwise allowlisted real Provider connection merely
+    # because the configured URL and CONNECT host differ in case.
+    allowlist.write_text(json.dumps([{"Tuple": "HTTPS://PROVIDER.EXAMPLE:443"}]), encoding="utf-8")
+    case_insensitive = _run_harness(
+        "-ValidateProviderEgress", "-ProviderAuditPath", str(audit), "-ProviderAllowlistPath", str(allowlist),
+        "-BrowserAuditPath", str(browser_audit), "-ExpectedBaseUrl", base_url,
+    )
+    assert case_insensitive.returncode == 0, case_insensitive.stderr
+    allowlist.write_text(json.dumps([{"Tuple": "https://provider.example:443"}]), encoding="utf-8")
+
+    # The local proxy may reject unrelated library telemetry before it can leave
+    # the host. A rejected CONNECT is evidence of containment, not Provider
+    # egress; an unknown *connected* endpoint remains a hard failure.
+    rejected_foreign = [
+        *normal_and_repaired,
+        {"kind": "provider_proxy_connect", "scheme": "https", "host": "telemetry.example", "port": 443, "status": "rejected", "observed_at_ns": 2_500},
+    ]
+    audit.write_text("\n".join(json.dumps(record) for record in rejected_foreign) + "\n", encoding="utf-8")
+    contained = _run_harness(
+        "-ValidateProviderEgress", "-ProviderAuditPath", str(audit), "-ProviderAllowlistPath", str(allowlist),
+        "-BrowserAuditPath", str(browser_audit), "-ExpectedBaseUrl", base_url,
+    )
+    assert contained.returncode == 0, contained.stderr
+
+    connected_foreign = [
+        normal_and_repaired[0],
+        normal_and_repaired[2],
+        {"kind": "provider_proxy_connect", "scheme": "https", "host": "telemetry.example", "port": 443, "status": "connected", "observed_at_ns": 2_500},
+    ]
+    audit.write_text("\n".join(json.dumps(record) for record in connected_foreign) + "\n", encoding="utf-8")
+    escaped = _run_harness(
+        "-ValidateProviderEgress", "-ProviderAuditPath", str(audit), "-ProviderAllowlistPath", str(allowlist),
+        "-BrowserAuditPath", str(browser_audit), "-ExpectedBaseUrl", base_url,
+    )
+    assert escaped.returncode != 0
+    assert "outside the configured candidate allowlist" in (escaped.stdout + escaped.stderr)
+
+    audit.write_text("\n".join(json.dumps(record) for record in normal_and_repaired) + "\n", encoding="utf-8")
+
     audit.write_text("\n".join(json.dumps(record) for record in [*normal_and_repaired, normal_and_repaired[0]]) + "\n", encoding="utf-8")
     rejected = _run_harness(
         "-ValidateProviderEgress", "-ProviderAuditPath", str(audit), "-ProviderAllowlistPath", str(allowlist),

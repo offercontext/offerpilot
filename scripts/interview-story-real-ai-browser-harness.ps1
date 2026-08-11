@@ -380,13 +380,21 @@ function Assert-ProviderEgress([object[]]$providers, [string]$auditPath = $provi
   $allowed = @{}
   foreach ($provider in $providers) { $allowed[$provider.Tuple] = $true }
   $records = @(Get-Content -LiteralPath $auditPath | Where-Object { $_.Trim() } | ForEach-Object { $_ | ConvertFrom-Json })
-  $connections = @($records | Where-Object { $_.kind -eq 'provider_proxy_connect' })
+  $allConnections = @($records | Where-Object { $_.kind -eq 'provider_proxy_connect' })
+  if (@($allConnections | Where-Object { $_.status -notin @('connected', 'rejected') }).Count -gt 0) {
+    throw 'Provider egress audit contains an unknown proxy connection status.'
+  }
+  # `rejected` means the loopback proxy blocked a non-allowlisted CONNECT
+  # before it reached the network (for example optional library telemetry).
+  # Only a successful CONNECT is Provider egress and must be allowlisted and
+  # correlated to one of the two Story flows.
+  $connections = @($allConnections | Where-Object { $_.status -eq 'connected' })
   if ($connections.Count -lt 2 -or $connections.Count -gt 4) {
     throw 'Browser Story flows must produce two to four auditable Provider connections: one normal call or one bounded format repair per UI/Pilot flow.'
   }
   foreach ($connection in $connections) {
     $tuple = "$($connection.scheme)://$($connection.host):$($connection.port)"
-    if ($connection.status -ne 'connected' -or -not $allowed.ContainsKey($tuple)) {
+    if (-not $allowed.ContainsKey($tuple)) {
       throw 'Provider egress was outside the configured candidate allowlist.'
     }
   }
