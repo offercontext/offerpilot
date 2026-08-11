@@ -2,127 +2,124 @@
 
 ## 结论
 
-**状态：阻塞；不得发布、推送或合并。**
+**状态：当前分支的发布门禁与真实浏览器验收已通过，可进入最终合并审核；本轮未推送、未合并。**
 
-本记录覆盖当前验证代码提交 `61e9a5f`；实施基线为
-`bc706a68e1ae05d355df93a1985e439e0b117fbd`。本轮确认完整 real-AI 客户端原有
-`60s` 上限小于真实面试准备耗时：相同三案例在隔离配置、`180s` 客户端上限下
-成功完成。验证代码因此只把 real-AI HTTP 客户端上限提高到 `180s`，local 仍为
-`60s`，没有增加 Provider 重试或修改业务、API、证据契约及正式配置。
+- 实施基线：`bc706a68e1ae05d355df93a1985e439e0b117fbd`
+- 最终浏览器验收代码：`858cb25a477b4c0b42538e09529615f8e15125df`
+- 验收日期：2026-08-11 至 2026-08-12（Asia/Shanghai）
+- 正式 Provider 配置未修改；执行过程未输出密钥、原始提示、模型原文、用户快照或原始 Provider request ID。
 
-修改后亲自执行的一次完整 real-AI 仍在约 `363.2s` 后以 `ReadTimeout` 退出；当前
-CLI traceback 没有携带可验证的操作阶段，因此不能继续沿用“必然发生在面试准备”
-的归因，也不能盲目增加上限。UI/Pilot CDP 闭环和截图验收仍未启动，不能用
-local/API 结果替代。
+本轮确认 UI 与 Pilot 两个入口均能基于用户显式选择的原始来源生成 Story Proposal，经人工编辑与确认后保存为不可变版本，并在历史中显示冻结来源及来源变化状态。浏览器验收使用同一专用 Target、亮色中文界面和 `1455×1200` 单视口截图；CDP、本地请求、Provider 出站、跨领域零写入和进程清理均通过 fail-closed 校验。
 
-## 本轮收口
+## 本轮收口修复
 
-- Provider 未知结果的 Story 客户端会保存服务端安全返回的 Attempt ID，并复用原
-  幂等键；源选择或用户原始陈述变化会主动废弃旧冻结请求并生成新 key。
-- Evidence Link 上限收紧为每个目标最多 5 条，和批准的 Story 契约一致；AI Schema、
-  归一化和仓储校验同步执行该上限。
-- Pilot 入口不再呈现 UI 专用的手动保存动作。UI 与 Pilot 的关键操作会由 CDP
-  仅记录 allowlist 动作名，不记录页面正文、请求体、模型原文或凭据。
-- Browser harness 现在在启动失败时审计 auditor、浏览器、服务和 Provider 代理均已
-  退出，并清理隔离临时目录。测试同时验证 observer 注入、合法动作序列和伪造
-  动作 fail-closed。
+- 完整 real-AI 验收客户端上限由错误的 60 秒改为 180 秒；local 验收仍保持 60 秒，不增加 Provider 业务重试。
+- Provider 未知结果返回准确的 `retry_after_ms`；前端在响应丢失时使用 30.25 秒安全回退，冻结输入并仅允许原 Attempt/key 重放。
+- Story 结构修复继续使用原冻结 Evidence Catalog；语义证据失败仍不可重试。
+- `user_assertion` 可作为显式用户陈述支持事实性 Story 目标，同时保持“用户陈述、未外部核验”语义。
+- 手动保存改为逐 target 显式绑定证据，不再把第一条来源自动复用到所有区块。
+- `provider_unknown` 在租约有效期内稳定返回 pending，租约过期后才允许 fencing 接管；所有终态清理 lease/token。
+- 浏览器 Provider 审计区分“模型调用”与“HTTPS CONNECT 传输隧道”：Attempt 的 `repair_count` 与浏览器重放次数负责调用审计，代理负责证明端点和请求窗口；同一调用的连接重建或同一连接复用不会被误判。
 
-没有新增迁移、HTTP API 或数据库破坏性变化。Evidence Link 上限由 8 收紧到 5，
-属于与已批准契约一致的行为收紧。
+## 完整本地门禁
 
-## 独立代码复审
+### 后端五组
 
-独立只读复审已完成：无 P0/P1/P2。复审确认启动失败的临时目录与四类本地进程均被
-清理，且 CDP observer 的安装、正向动作采集和非法标记拒绝都有回归测试。
+结果目录：`%TEMP%\offerpilot-story-pytest-release-ac5a4f43344d4cfbaeb913ead63a4432`
 
-## 本地门禁
+先执行全量收集、原始 node ID 重复检查并写入 `full-manifest.txt`，再运行五个命名组及 aggregate。最终收集 **1,851** 个唯一 node ID，分组并集与 manifest 完全一致，无重复、遗漏或额外项。
 
-下述完整后端、前端分组门禁在 Story 产品代码 `cc01aae` 上通过。此后仅修改了
-`src/offerpilot/smoke.py` 的 real-AI 验收超时选择及对应测试；最终合并审核前仍须在
-当前 HEAD 重跑完整分组门禁，不能把旧 source fingerprint 当作当前 HEAD 证据。
+| 分组 | 收集 | 通过 | 允许 skip | failures/errors | exit code |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| agent | 423 | 423 | 0 | 0 | 0 |
+| domain | 70 | 70 | 0 | 0 | 0 |
+| knowledge | 659 | 655 | 4 | 0 | 0 |
+| proposals | 384 | 384 | 0 | 0 | 0 |
+| misc | 315 | 315 | 0 | 0 | 0 |
+| 合计 | 1,851 | 1,847 | 4 | 0 | 0 |
 
-### 后端五组门禁
+4 个 skip 均为既定 Windows 符号链接权限用例，node ID 与原因已由 aggregate 校验。
 
-结果目录：`%TEMP%\offerpilot-story-release-pytest-20260811-r4`。
+### 前端十组
 
-先执行完整收集并在排序前拒绝重复 node ID：共 **1,848** 个 node ID，无重复。
-随后五组均退出码 0，aggregate 确认覆盖与完整 manifest 完全一致。
+结果目录：`%TEMP%\offerpilot-story-vitest-72fc088077a543ce8c8faa8e38e4580f`
 
-| 分组 | 收集/执行 | 允许 skip |
+当前 Web 指纹与分组结果一致；aggregate 通过，共 **114 个测试文件、862 项测试**：
+
+| 分组 | 文件 | 测试 |
 | --- | ---: | ---: |
-| agent | 423 | 0 |
-| domain | 70 | 0 |
-| knowledge | 659 | 4 |
-| proposals | 381 | 0 |
-| misc | 315 | 0 |
-| 合计 | 1,848 | 4 |
+| components-core | 26 | 124 |
+| components-chat | 12 | 184 |
+| components-interview | 13 | 62 |
+| components-offer | 8 | 45 |
+| components-support | 8 | 32 |
+| features | 12 | 129 |
+| layout | 11 | 66 |
+| lib | 11 | 167 |
+| services | 12 | 52 |
+| theme | 1 | 1 |
 
-仅允许的 4 个 Windows 符号链接权限 skip（均已核验 node ID 与原因）为：
-
-1. `tests/test_knowledge_ingest_integrity.py::test_failed_commit_cleanup_does_not_follow_symlink`
-2. `tests/test_knowledge_reset.py::test_cli_rejects_knowledge_root_symlink_with_external_sentinels`
-3. `tests/test_knowledge_reset.py::test_cli_rejects_legacy_reset_root_symlink_with_external_sentinels`
-4. `tests/test_knowledge_reset.py::test_cli_does_not_follow_nested_escape_symlink`
-
-### 前端十组门禁
-
-结果目录：`%TEMP%\offerpilot-story-release-vitest-20260811-r3`。
-
-完整收集为 **114** 个测试文件；十个命名分组均退出码 0，aggregate 通过：
-**862** 项测试、无重复覆盖。当前 Web 指纹为
-`b62a1c5e1c40c3fe30ad38d928ebd6e955fb1e973c97e1915be5cd0ad4bcc5f4`，
-测试 ID 哈希为
-`6756ecdd7c47dfe950a24ed8d95a366e53c5be062ae540f4c36cc70e7e1ab0c6`。
-
-### 定向、静态、构建与 local 验收
+### 静态、构建与 local 验收
 
 | 命令 | 结果 |
 | --- | --- |
-| `uv run pytest tests/test_browser_network_audit.py tests/test_interview_story_browser_harness.py -q` | 30 passed（1 个既有 Starlette warning） |
-| `npm.cmd exec vitest run src/components/InterviewStoryDrawer.interaction.test.tsx src/services/interviewStories.test.ts` | 19 passed |
 | `uv run ruff check .` | 通过 |
 | `uv run mypy src` | 通过，66 个源文件 |
-| `npx.cmd tsc -b` | 通过 |
-| `npm.cmd run build` | 通过 |
+| `npm.cmd run build` | TypeScript 与 Vite 生产构建通过 |
 | `uv run oc smoke --static-dir web/dist` | 通过 |
 | `uv run oc verify --profile local --static-dir web/dist` | 通过 |
 | `uv run oc verify-interview-stories --profile local --static-dir web/dist` | 通过 |
-| `uv run pytest tests/test_interview_stories_smoke.py tests/test_smoke.py -q` | 60 passed（仅既有 warning） |
-| `uv run oc smoke --static-dir web/dist`（`61e9a5f`） | 通过 |
-| `uv run oc verify --profile local --static-dir web/dist`（`61e9a5f`） | 通过；仍使用 60 秒客户端上限 |
+| `uv run pytest tests/test_interview_story_browser_harness.py -q` | 23 passed |
+| `git diff --check` | 通过 |
 
-Story local 验收覆盖手动生命周期、UI/Pilot 两个 Proposal 确认、零 Chat 写入、
-Provider 未知同 key 恢复、不可验证终态不创建 Version，以及来源变化只读历史。
+变更范围相对固定 baseline 共 39 个文件，全部位于计划的精确 allowlist；未新增 Story Usage、Knowledge 写入、JD Version 消费或外部招聘平台行为。
 
-## Real-AI 与浏览器验收
+## Real-AI 验收
 
-| 命令/阶段 | 结果 |
-| --- | --- |
-| `uv run oc verify-interview-stories --profile real-ai --static-dir web/dist` | 通过，约 64 秒 |
-| 单个面试准备请求（隔离配置，180 秒客户端上限） | `201 ready/normal`，约 32.0 秒 |
-| 完整面试准备三案例（隔离配置，180 秒客户端上限） | 通过，约 160.4 秒 |
-| `uv run oc verify --profile real-ai --static-dir web/dist`（60 秒客户端上限） | **失败**：面试准备请求 `ReadTimeout`，约 134 秒 |
-| `uv run oc verify --profile real-ai --static-dir web/dist`（`61e9a5f`，180 秒客户端上限） | **失败**：约 363.2 秒后 `ReadTimeout`；现有输出无法安全确认具体操作阶段 |
-| UI/Pilot CDP 双入口、中文亮色宽屏截图 | **未启动**：必须等待完整 real-AI 通过 |
+产品/runtime 代码在 `51583c3` 后未再变化；后续 `858cb25` 仅修正浏览器验收脚本及其测试。
 
-本轮已经证明旧 `60s` 客户端边界会误杀可在 `180s` 内完成的真实面试准备，且
-该窄修复生效；但它没有证明完整 real-AI 已稳定。为避免把一次专项成功误当作完整
-流程成功，也避免无界产生 Provider 费用，本轮只执行一次修复后的完整 real-AI，
-失败后没有重跑。下一步必须先让 full harness 在不记录请求体、模型原文或密钥的
-前提下输出稳定操作名和耗时，再针对该操作做一次等价性诊断；不能继续盲目加长
-超时或增加业务重试。
+| 验收 | UTC 时间 | 结果 |
+| --- | --- | --- |
+| `uv run oc verify-interview-stories --profile real-ai --static-dir web/dist` | 2026-08-11 17:19:00.675 — 17:20:29.545 | 通过，exit 0 |
+| `uv run oc verify --profile real-ai --static-dir web/dist` | 2026-08-11 17:20:29.555 — 17:28:45.544 | 通过，exit 0 |
 
-此前生成但未满足当前 CDP/截图验收前置条件的本地截图工件已丢弃，未作为发布证据。
-本报告不宣称浏览器闭环或截图通过。
+完整 real-AI 覆盖面试准备、材料、Opportunity Fit Triage/Deep、复盘、知识沉淀、模拟面试和 Chat 确认。未以专项成功替代完整验收，也未通过放宽证据契约获得通过结果。
 
-## 清理与剩余风险
+## UI / Pilot 真实浏览器闭环
 
-- 本轮 local、Story real-AI 和测试使用隔离临时数据；没有输出或修改配置密钥。
-- harness 回归直接验证启动失败时 Provider 代理、服务、专用浏览器与 auditor 已退出，
-  临时目录已删除。
-- 因完整 real-AI/CDP 未完成，实施基线文件
-  `%TEMP%\offerpilot-interview-story-library-baseline.txt` 按计划保留，禁止重新计算。
+证据目录：`D:\Users\yuqi.chen\.offerpilot\verification\interview-story-browser-release-verified-20260812-022741`
 
-剩余发布阻塞为：当前 HEAD 的完整分组门禁尚未重跑、full real-AI 的具体超时操作
-尚未由脱敏阶段标记定位、完整 real-AI 未通过，以及 UI/Pilot CDP、跨领域零写入与
-逐张截图审计尚未执行。在这些证据全部完成之前，该分支不得发布、推送或合并。
+Harness 最终输出：`Story browser acceptance passed.`
+
+通过序列：
+
+1. UI：面试故事库 → 新建故事 → 显式选择原始来源 → 来源确认 → AI 草稿 → 人工编辑 → 确认保存 → 关闭并重开历史。
+2. 历史：先验证冻结来源为当前，再受控改变临时来源并验证“当前来源已变化”；随后恢复原始临时数据。
+3. Pilot：打开真实 Pilot tab → 主动点击“整理面试故事” → 显式选择来源 → 来源确认 → AI 草稿 → 人工编辑 → 确认保存 → 关闭并重开独立历史。
+4. 两个入口各创建一个独立 Attempt、Story 和 Version；确认请求各一次；没有 `/api/chat` 或 `/api/chat/confirm` 写入。
+5. 浏览器仅访问本地应用/API；Provider CONNECT 全部落在配置 allowlist 与对应请求窗口；未发生跨领域写入。
+
+### 截图矩阵
+
+10 张截图均已人工回读：亮色、中文、单视口、无空白或挤压面板，尺寸统一为 `1455×1200`。
+
+| 文件 | 内容 | SHA-256 |
+| --- | --- | --- |
+| `01-story-library.png` | 故事库与新建入口 | `9e43a3cc346f6f9aa032aa0a5cce37e8455a32547b3cc843e4a021d2fa9c7a22` |
+| `02-source-picker.png` | 未预选的来源选择器 | `0ac68b3410a65896edde30e515facd641fd44f6429e84a632f1a2a062e808e17` |
+| `03-source-preview.png` | UI 显式来源选择 | `d5da441c6419f2833b1c6764e969c8bc8ba167f0f99c2e38efc16fb1d2ecccf1` |
+| `04-generated-draft.png` | 证据化结构草稿 | `a80a92e88ba2a327d28505ae3d5cf7b48dacaebbd5952edea83a71a533067213` |
+| `05-confirmation.png` | 人工编辑与最终确认点 | `d5895b54da893668082db774ab20d6fd4aa0d8fb2d5e4b29b694ad3abad254ba` |
+| `06-history.png` | 重开的冻结版本历史 | `60ab1ec5d2d8f020759a025bcc9bd1de545dbc7c364c1693642744a6b2b6254a` |
+| `07-source-changed.png` | 来源变化只读提示 | `3ca3f7c55e97ceed2c02e42454c95f7fbaee143024252643f4d3f9ba9623e2d4` |
+| `08-pilot-entry.png` | 可见的 Pilot 主动入口 | `4a516066ee65335529cdbd8bba549b2f5045e1a46afd8db906147c6ca0608264` |
+| `09-pilot-source-choice.png` | Pilot 显式来源选择 | `f5f45d8962c9f3e8856de23801f6c887238415c217a61bc00cb18b212861e8bc` |
+| `10-pilot-history.png` | Pilot 确认结果与独立历史 | `abde2b52abe4dc8404c035ff450513028a5118762cc50c4fa80c33dab0bbd8ca` |
+
+## 清理、破坏性变化与剩余风险
+
+- `cleanup-audit.json` 证明 browser auditor、专用 Chromium、隔离服务和 Provider 代理均已退出；临时 SQLite、浏览器 profile 和隔离数据目录均已删除，端口已释放。
+- 破坏性变化：无。迁移 `0019_interview_story_library` 为新增表；未删除或改写既有领域数据。
+- Story Usage 第一阶段未建表、未预留字段、未提供入口。
+- 剩余风险：真实 Provider 仍是外部依赖，偶发网络未知结果不能完全消除；当前实现通过租约、fencing、原 key 有界恢复和严格证据校验避免重复写入或把未知结果误报为成功。
+- 独立只读复审在产品收口后未发现 P0/P1/P2；本轮随后仅修改验收脚本对 CONNECT 隧道的判定，并由 23 项 harness 回归及最终真实 CDP 通过验证。
