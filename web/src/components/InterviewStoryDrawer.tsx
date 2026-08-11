@@ -227,7 +227,7 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
     setShowPreview(false);
     setPreviewConfirmed(false);
     setAuthoringMode('proposal');
-  }, [draft.idempotencyKey]);
+  }, [draft.entrypoint, draft.targetStoryId, draft.reviewNoteId]);
 
   useEffect(() => {
     if (!open || !pickerOpen || candidates) return;
@@ -282,22 +282,30 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
 
   const update = (changes: Partial<InterviewStoryDraft>) => onDraftChange({ ...draft, ...changes });
 
+  const discardChangedInput = (changes: Partial<InterviewStoryDraft>) => update({
+    ...changes,
+    // Changed sources or assertions produce a different frozen input. Never
+    // reuse a key that may already name an earlier Attempt or manual save.
+    idempotencyKey: key('story'),
+    proposal: null,
+    editedContent: null,
+    manualSavePayload: null,
+    manualEvidenceBindings: {},
+    proposalInput: null,
+    attemptId: null,
+    resultUnknown: false,
+    pendingOperation: null,
+    confirmationToken: null,
+    error: null,
+  });
+
   const toggleSource = (selection: InterviewStorySourceSelection) => {
     if (frozen) return;
     const exists = draft.selections.some((item) => item.source_kind === selection.source_kind && item.source_id === selection.source_id && item.path === selection.path);
-    update({
+    discardChangedInput({
       selections: exists
         ? draft.selections.filter((item) => !(item.source_kind === selection.source_kind && item.source_id === selection.source_id && item.path === selection.path))
         : [...draft.selections, selection],
-      proposal: null,
-      editedContent: null,
-      manualSavePayload: null,
-      manualEvidenceBindings: {},
-      proposalInput: null,
-      attemptId: null,
-      resultUnknown: false,
-      pendingOperation: null,
-      error: null,
     });
     setShowPreview(false);
   };
@@ -305,7 +313,7 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
   const addAssertion = () => {
     const value = assertion.trim();
     if (!value || frozen) return;
-    update({ assertions: [...draft.assertions, value], manualEvidenceBindings: {}, proposal: null, editedContent: null, manualSavePayload: null, proposalInput: null, attemptId: null, resultUnknown: false, pendingOperation: null, error: null });
+    discardChangedInput({ assertions: [...draft.assertions, value] });
     setAssertion('');
     setShowPreview(false);
   };
@@ -418,7 +426,10 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
     } catch (error) {
       const safe = safeMessage(error);
       if (isUnknownResult(error)) {
-        onDraftChange({ ...requestDraft, resultUnknown: true, pendingOperation: 'generate', error: safe });
+        const attemptId = error instanceof InterviewStoryError && error.attemptId !== null
+          ? error.attemptId
+          : requestDraft.attemptId;
+        onDraftChange({ ...requestDraft, attemptId, resultUnknown: true, pendingOperation: 'generate', error: safe });
       } else {
         onDraftChange(resetAfterDefiniteFailure(requestDraft, safe));
       }
@@ -469,7 +480,7 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
       />
       {draft.error ? <Alert type="warning" showIcon message={draft.error} action={draft.resultUnknown ? <Button size="small" onClick={() => void (draft.pendingOperation === 'confirm' ? confirm() : draft.pendingOperation === 'manual' ? saveManualStory() : generate())}>使用原尝试重试</Button> : undefined} style={{ marginBottom: 16 }} /> : null}
       <Title level={5}>选择原始来源</Title>
-      {!pickerOpen ? <Button disabled={frozen} onClick={() => setPickerOpen(true)}>打开来源选择器</Button> : null}
+      {!pickerOpen ? <Button data-story-audit={`${draft.entrypoint}-source-picker`} disabled={frozen} onClick={() => setPickerOpen(true)}>打开来源选择器</Button> : null}
       {candidatesLoading ? <Spin aria-label="正在加载可选原始来源" /> : null}
       {pickerOpen && !candidatesLoading && candidates ? (
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
@@ -521,19 +532,19 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
         <Input aria-label="用户明确原始陈述" disabled={frozen} value={assertion} onChange={(event) => setAssertion(event.target.value)} placeholder="例如：这是我本人负责的工作内容" />
         <Button disabled={frozen || !assertion.trim()} onClick={addAssertion}>加入</Button>
       </Space.Compact>
-      {draft.assertions.map((item) => <Tag key={item} closable={!frozen} onClose={() => update({ assertions: draft.assertions.filter((value) => value !== item), manualEvidenceBindings: {}, manualSavePayload: null })} style={{ marginTop: 8 }}>用户陈述 · {item}</Tag>)}
+      {draft.assertions.map((item) => <Tag key={item} closable={!frozen} onClose={() => discardChangedInput({ assertions: draft.assertions.filter((value) => value !== item) })} style={{ marginTop: 8 }}>用户陈述 · {item}</Tag>)}
       <Divider />
       {sourceSelected && !draft.proposal && !showPreview ? (
         <Space>
           <Button onClick={() => { setAuthoringMode('proposal'); setShowPreview(true); }}>使用 AI 整理</Button>
-          <Button onClick={() => { setAuthoringMode('manual'); setShowPreview(true); }}>手动编写并保存</Button>
+          {draft.entrypoint === 'ui' ? <Button onClick={() => { setAuthoringMode('manual'); setShowPreview(true); }}>手动编写并保存</Button> : null}
         </Space>
       ) : null}
       {sourceSelected && !draft.proposal && showPreview && authoringMode === 'proposal' ? (
         <>
           <Alert type="info" message="生成建议前请确认来源" description="将只发送你勾选的原文片段和明确陈述。" style={{ marginBottom: 12 }} />
           <Checkbox disabled={frozen} checked={previewConfirmed} onChange={(event) => setPreviewConfirmed(event.target.checked)}>我已确认上述原始来源和陈述</Checkbox>
-          <div style={{ marginTop: 12 }}><Button type="primary" disabled={!previewConfirmed || frozen} loading={busy} onClick={() => void generate()}>生成故事建议</Button></div>
+          <div style={{ marginTop: 12 }}><Button data-story-audit={`${draft.entrypoint}-generate`} type="primary" disabled={!previewConfirmed || frozen} loading={busy} onClick={() => void generate()}>生成故事建议</Button></div>
         </>
       ) : null}
       {sourceSelected && !draft.proposal && showPreview && authoringMode === 'manual' ? (
@@ -653,7 +664,7 @@ export default function InterviewStoryDrawer({ open, draft, onDraftChange, onClo
             />
           ))}
           <Alert type="info" showIcon message="确认前可编辑标题和故事区块；证据引用仍会在保存时严格复核。" style={{ marginBottom: 12 }} />
-          <Button type="primary" loading={busy} disabled={frozen} onClick={() => void confirm()}>确认保存这个故事版本</Button>
+          <Button data-story-audit={`${draft.entrypoint}-confirm`} type="primary" loading={busy} disabled={frozen} onClick={() => void confirm()}>确认保存这个故事版本</Button>
         </>
       ) : null}
     </Drawer>

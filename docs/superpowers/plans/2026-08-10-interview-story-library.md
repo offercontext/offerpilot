@@ -83,6 +83,7 @@ fixture. No product capability outside the Story aggregate is authorized:
 | Scope | File | Restriction |
 | --- | --- | --- |
 | CDP response audit | Modify `scripts/browser-network-audit.py` | Capture only redacted structured workflow metadata after `Network.loadingFinished`; do not record bodies or credentials. |
+| CDP response audit regression | Modify `tests/test_browser_network_audit.py` | Exercise the same redacted Story interaction record through the existing fake CDP server; do not add browser, Provider, or product writes. |
 | Provider egress timing audit | Modify `scripts/provider-egress-proxy.py` | Record only a local UTC epoch connection timestamp with the already-allowed endpoint tuple, so the harness can bind each connection to the preceding UI or Pilot request window; never inspect tunneled payloads or credentials. |
 | Windows backend manifest parser | Modify `scripts/windows-pytest-groups.ps1`, `tests/test_windows_pytest_groups.py` | Parse both normalized `/` and native Windows `\` test node-id separators before aggregate coverage comparison; do not alter grouping, skip, or completion semantics. |
 | Complete-gate test timing | Modify `tests/test_chat_api.py` | Only stabilize the two named, intentionally slow Chat confirmation tests; no Chat production behavior or contract change. |
@@ -107,7 +108,7 @@ MAX_STORY_BLOCKS = 12
 MAX_CAPABILITY_LABELS = 12
 MAX_APPLICABLE_QUESTIONS = 12
 MAX_FACT_GAPS = 8
-MAX_EVIDENCE_REFS_PER_TARGET = 8
+MAX_EVIDENCE_REFS_PER_TARGET = 5
 MAX_TITLE_CHARS = 200
 MAX_BLOCK_CHARS = 4_000
 MAX_SHORT_ITEM_CHARS = 300

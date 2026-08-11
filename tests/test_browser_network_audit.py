@@ -20,12 +20,14 @@ class _FakeCdp:
         no_attach: bool = False,
         drop_after_navigation: bool = False,
         emit_unowned_request: bool = False,
+        story_steps: tuple[str, ...] = (),
     ) -> None:
         self.reject_network = reject_network
         self.wrong_target = wrong_target
         self.no_attach = no_attach
         self.drop_after_navigation = drop_after_navigation
         self.emit_unowned_request = emit_unowned_request
+        self.story_steps = story_steps
         self.expected_url = "http://127.0.0.1:18766/"
         self.ready = threading.Event()
         self.loop: asyncio.AbstractEventLoop | None = None
@@ -77,6 +79,11 @@ class _FakeCdp:
                 await websocket.send(json.dumps({"id": command_id, "result": {"targetId": "main-target"}}))
             elif method == "Network.enable" and self.reject_network:
                 await websocket.send(json.dumps({"id": command_id, "error": {"code": -1}}))
+            elif method == "Runtime.evaluate":
+                await websocket.send(json.dumps({
+                    "id": command_id,
+                    "result": {"result": {"value": json.dumps(list(self.story_steps))}},
+                }))
             else:
                 await websocket.send(json.dumps({"id": command_id, "result": {}}))
                 if method == "Page.navigate":
@@ -167,7 +174,47 @@ def test_browser_network_audit_uses_browser_target_and_records_navigation(tmp_pa
     try:
         result = _run_auditor(tmp_path, fake)
         assert result.returncode == 0, result.stderr
-        assert "18766" in (tmp_path / "browser.jsonl").read_text(encoding="utf-8")
+        records = [json.loads(line) for line in (tmp_path / "browser.jsonl").read_text(encoding="utf-8").splitlines()]
+        assert "18766" in json.dumps(records)
+        assert records[-1] == {
+            "kind": "browser_story_interactions",
+            "observed_at_ns": records[-1]["observed_at_ns"],
+            "target_id": "main-target",
+            "session_id": "main-session",
+            "steps": [],
+        }
+    finally:
+        fake.close()
+
+
+def test_browser_network_audit_records_allowlisted_story_actions(tmp_path):
+    expected_steps = (
+        "ui-library",
+        "ui-source-picker",
+        "ui-generate",
+        "ui-confirm",
+        "pilot-entry",
+        "pilot-source-picker",
+        "pilot-generate",
+        "pilot-confirm",
+    )
+    fake = _FakeCdp(story_steps=expected_steps)
+    try:
+        result = _run_auditor(tmp_path, fake)
+        assert result.returncode == 0, result.stderr
+        records = [json.loads(line) for line in (tmp_path / "browser.jsonl").read_text(encoding="utf-8").splitlines()]
+        assert records[-1]["kind"] == "browser_story_interactions"
+        assert records[-1]["steps"] == list(expected_steps)
+    finally:
+        fake.close()
+
+
+def test_browser_network_audit_rejects_unallowlisted_story_action(tmp_path):
+    fake = _FakeCdp(story_steps=("ui-library", "forged-action"))
+    try:
+        result = _run_auditor(tmp_path, fake)
+        assert result.returncode != 0
+        assert "story interaction audit payload is invalid" in result.stderr
     finally:
         fake.close()
 
@@ -207,10 +254,13 @@ def test_browser_network_audit_ignores_requests_from_another_target(tmp_path):
         result = _run_auditor(tmp_path / "unowned", fake)
         assert result.returncode == 0, result.stderr
         records = [json.loads(line) for line in (tmp_path / "unowned" / "browser.jsonl").read_text(encoding="utf-8").splitlines()]
-        assert len(records) == 1
-        assert records[0]["target_id"] == "main-target"
-        assert records[0]["session_id"] == "main-session"
-        assert records[0]["method"] == "GET"
-        assert all("mock-interview" not in record["url"] for record in records)
+        requests = [record for record in records if record["kind"] == "browser_request"]
+        assert len(requests) == 1
+        assert requests[0]["target_id"] == "main-target"
+        assert requests[0]["session_id"] == "main-session"
+        assert requests[0]["method"] == "GET"
+        assert all("mock-interview" not in record["url"] for record in requests)
+        assert records[-1]["kind"] == "browser_story_interactions"
+        assert records[-1]["steps"] == []
     finally:
         fake.close()

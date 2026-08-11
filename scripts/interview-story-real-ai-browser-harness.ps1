@@ -545,7 +545,9 @@ function Assert-StoryBrowserSequence([object[]]$records, [string]$baseUrl, [stri
   }
   $origin = [Uri]$baseUrl
   $foreign = @($records | Where-Object {
-    $uri = [Uri]$_.url
+    $rawUrl = Get-RecordProperty $_ 'url'
+    if ($rawUrl -isnot [string] -or [string]::IsNullOrWhiteSpace($rawUrl)) { return $false }
+    $uri = [Uri]$rawUrl
     $uri.Scheme -ne $origin.Scheme -or $uri.Host -ne $origin.Host -or $uri.Port -ne $origin.Port
   })
   if ($foreign.Count -gt 0) { throw 'Browser accessed a non-local URL.' }
@@ -648,6 +650,25 @@ function Assert-StoryBrowserSequence([object[]]$records, [string]$baseUrl, [stri
   return $providerFlows
 }
 
+function Assert-StoryBrowserInteractions([object[]]$records, [string]$targetId, [string]$sessionId) {
+  $matches = @($records | Where-Object { $_.kind -eq 'browser_story_interactions' })
+  if (-not [string]::IsNullOrWhiteSpace($targetId) -or -not [string]::IsNullOrWhiteSpace($sessionId)) {
+    $matches = @($matches | Where-Object {
+      $_.target_id -eq $targetId -and $_.session_id -eq $sessionId
+    })
+  }
+  if ($matches.Count -ne 1) { throw 'Browser did not retain one dedicated Story interaction audit record.' }
+  $steps = @($matches[0].steps)
+  $required = @('ui-library', 'ui-source-picker', 'ui-generate', 'ui-confirm', 'pilot-entry', 'pilot-source-picker', 'pilot-generate', 'pilot-confirm')
+  $lastIndex = -1
+  foreach ($step in $required) {
+    $index = [Array]::IndexOf([string[]]$steps, $step)
+    if ($index -lt 0) { throw "Browser did not execute required Story interaction: $step" }
+    if ($index -le $lastIndex) { throw 'Browser Story interactions were not recorded in the required UI-then-Pilot order.' }
+    $lastIndex = $index
+  }
+}
+
 function Assert-StoryScreenshotMatrix([string]$directory, [string]$manifestPath) {
   if ([string]::IsNullOrWhiteSpace($directory) -or -not (Test-Path -LiteralPath $directory)) {
     throw 'ScreenshotDirectory is required and must exist.'
@@ -700,7 +721,9 @@ if ($ValidateAudit) {
     throw 'Audit validation requires AuditPath and ExpectedBaseUrl.'
   }
   Assert-AuditorSucceeded ([pscustomobject]@{ HasExited = $true; ExitCode = $AuditorExitCode })
-  [void](Assert-StoryBrowserSequence (Read-BrowserRecords $AuditPath) $ExpectedBaseUrl $ExpectedTargetId $ExpectedSessionId)
+  $records = Read-BrowserRecords $AuditPath
+  [void](Assert-StoryBrowserSequence $records $ExpectedBaseUrl $ExpectedTargetId $ExpectedSessionId)
+  Assert-StoryBrowserInteractions $records $ExpectedTargetId $ExpectedSessionId
   exit 0
 }
 
@@ -715,7 +738,9 @@ if ($ValidateProviderEgress) {
     throw 'Provider egress validation requires ProviderAuditPath, ProviderAllowlistPath, BrowserAuditPath, StoryAttemptAuditPath, ExpectedBaseUrl, ExpectedTargetId, and ExpectedSessionId.'
   }
   $providers = @(Get-Content -LiteralPath $ProviderAllowlistPath -Raw | ConvertFrom-Json)
-  $flows = Assert-StoryBrowserSequence (Read-BrowserRecords $BrowserAuditPath) $ExpectedBaseUrl $ExpectedTargetId $ExpectedSessionId
+  $records = Read-BrowserRecords $BrowserAuditPath
+  $flows = Assert-StoryBrowserSequence $records $ExpectedBaseUrl $ExpectedTargetId $ExpectedSessionId
+  Assert-StoryBrowserInteractions $records $ExpectedTargetId $ExpectedSessionId
   $attempts = Assert-StoryAttemptPersistence $flows (Read-StoryAttemptAudit $StoryAttemptAuditPath)
   Assert-ProviderEgress $providers $ProviderAuditPath $flows $attempts
   exit 0
@@ -725,7 +750,9 @@ if ($ValidateAttemptPersistence) {
   if ([string]::IsNullOrWhiteSpace($BrowserAuditPath) -or [string]::IsNullOrWhiteSpace($StoryAttemptAuditPath) -or [string]::IsNullOrWhiteSpace($ExpectedBaseUrl) -or [string]::IsNullOrWhiteSpace($ExpectedTargetId) -or [string]::IsNullOrWhiteSpace($ExpectedSessionId)) {
     throw 'Attempt persistence validation requires BrowserAuditPath, StoryAttemptAuditPath, ExpectedBaseUrl, ExpectedTargetId, and ExpectedSessionId.'
   }
-  $flows = Assert-StoryBrowserSequence (Read-BrowserRecords $BrowserAuditPath) $ExpectedBaseUrl $ExpectedTargetId $ExpectedSessionId
+  $records = Read-BrowserRecords $BrowserAuditPath
+  $flows = Assert-StoryBrowserSequence $records $ExpectedBaseUrl $ExpectedTargetId $ExpectedSessionId
+  Assert-StoryBrowserInteractions $records $ExpectedTargetId $ExpectedSessionId
   [void](Assert-StoryAttemptPersistence $flows (Read-StoryAttemptAudit $StoryAttemptAuditPath))
   exit 0
 }
@@ -735,6 +762,7 @@ if ($ValidateScreenshotMatrix) {
   exit 0
 }
 
+$primaryFailure = $null
 try {
   New-Item -ItemType Directory -Force -Path $tempData | Out-Null
   $configPath = Join-Path $sourceData 'config.json'
@@ -799,7 +827,9 @@ try {
   New-Item -ItemType File -Force -Path $browserStop | Out-Null
   $auditor.WaitForExit(15000)
   Assert-AuditorSucceeded $auditor
-  $flows = Assert-StoryBrowserSequence (Read-BrowserRecords) $baseUrl $auditorHandle.TargetId $auditorHandle.SessionId
+  $records = Read-BrowserRecords
+  $flows = Assert-StoryBrowserSequence $records $baseUrl $auditorHandle.TargetId $auditorHandle.SessionId
+  Assert-StoryBrowserInteractions $records $auditorHandle.TargetId $auditorHandle.SessionId
   $attempts = Assert-StoryAttemptPersistence $flows (Get-PersistedStoryAttempts)
   Assert-ProviderEgress $providers $providerAudit $flows $attempts
   Assert-ForbiddenDomainsUnchanged $baseline (Get-ForbiddenDomainSnapshot)
@@ -824,6 +854,8 @@ for (version_id,) in version_rows:
 '@
   Invoke-IsolatedPython 'story-confirmation-verification' $verify | Out-Null
   Write-Host 'Story browser acceptance passed.'
+} catch {
+  $primaryFailure = $_
 }
 finally {
   $cleanupErrors = [System.Collections.Generic.List[string]]::new()
@@ -850,6 +882,12 @@ finally {
   }
   try { Remove-IsolatedTempData }
   catch { $cleanupErrors.Add('isolated acceptance data') }
+  if ($null -ne $primaryFailure) {
+    if ($cleanupErrors.Count -gt 0) {
+      [Console]::Error.WriteLine("Story browser acceptance cleanup also failed for: $($cleanupErrors -join ', ').")
+    }
+    throw $primaryFailure
+  }
   if ($cleanupErrors.Count -gt 0) {
     throw "Story browser acceptance cleanup failed for: $($cleanupErrors -join ', ')."
   }

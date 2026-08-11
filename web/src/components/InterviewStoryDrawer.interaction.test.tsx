@@ -6,7 +6,11 @@ import type { InterviewStoryDraft } from './InterviewStoryDrawer';
 
 const storyService = vi.hoisted(() => {
   class StoryError extends Error {
-    constructor(public readonly status: number, public readonly code: string | null) {
+    constructor(
+      public readonly status: number,
+      public readonly code: string | null,
+      public readonly attemptId: number | null = null,
+    ) {
       super(code ?? 'interview_story_error');
     }
   }
@@ -122,6 +126,62 @@ describe('InterviewStoryDrawer', () => {
     expect(document.body.textContent).toContain('/turns/001/answer');
   });
 
+  it('creates a fresh idempotency key whenever the selected source input changes', async () => {
+    let current = createInterviewStoryDraft('ui');
+    const firstKey = current.idempotencyKey;
+    const render = () => root?.render(<InterviewStoryDrawer open draft={current} onDraftChange={(draft) => {
+      if (draft) {
+        current = draft;
+        render();
+      }
+    }} onClose={() => {}} />);
+    act(render);
+    act(() => [...document.body.querySelectorAll('button')].find((button) => button.textContent === '打开来源选择器')?.click());
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    act(() => (document.body.querySelector('input[type="checkbox"]') as HTMLInputElement).click());
+    const selectedKey = current.idempotencyKey;
+    expect(selectedKey).not.toBe(firstKey);
+
+    act(() => (document.body.querySelector('input[type="checkbox"]') as HTMLInputElement).click());
+    expect(current.idempotencyKey).not.toBe(selectedKey);
+  });
+
+  it('rotates the key and clears the pending Story state when a user assertion changes', async () => {
+    let current = createInterviewStoryDraft('ui');
+    const render = () => root?.render(<InterviewStoryDrawer open draft={current} onDraftChange={(draft) => {
+      if (draft) {
+        current = draft;
+        render();
+      }
+    }} onClose={() => {}} />);
+    act(render);
+    const firstKey = current.idempotencyKey;
+    current = {
+      ...current,
+      attemptId: 88,
+      proposal: {
+        proposal_status: 'safe_empty',
+        content: { title: { id: 'title', text: '' }, blocks: [], capability_labels: [], applicable_questions: [], fact_gap_codes: [] },
+        evidence_links: [],
+      },
+    };
+    act(render);
+
+    const assertion = document.body.querySelector('input[aria-label="用户明确原始陈述"]') as HTMLInputElement;
+    act(() => setControlValue(assertion, '我本人负责了缓存排查。'));
+    await act(async () => { await Promise.resolve(); });
+    const addAssertion = assertion.parentElement?.querySelector('button') as HTMLButtonElement;
+    expect(addAssertion).toBeTruthy();
+    expect(addAssertion.disabled).toBe(false);
+    act(() => addAssertion.click());
+
+    expect(current.assertions).toEqual(['我本人负责了缓存排查。']);
+    expect(current.idempotencyKey).not.toBe(firstKey);
+    expect(current.attemptId).toBeNull();
+    expect(current.proposal).toBeNull();
+  });
+
   it('replays an unknown proposal with the same frozen input and idempotency key', async () => {
     let current = createInterviewStoryDraft('ui');
     const render = () => root?.render(<InterviewStoryDrawer open draft={current} onDraftChange={(draft) => {
@@ -131,7 +191,7 @@ describe('InterviewStoryDrawer', () => {
       }
     }} onClose={() => {}} />);
     storyService.proposal
-      .mockRejectedValueOnce(new storyService.StoryError(502, 'story_provider_error'))
+      .mockRejectedValueOnce(new storyService.StoryError(502, 'story_provider_error', 18))
       .mockResolvedValueOnce({
         id: 18,
         attempt_status: 'ready',
@@ -175,6 +235,7 @@ describe('InterviewStoryDrawer', () => {
     const initialPayload = storyService.proposal.mock.calls[0]?.[0];
     expect(current.resultUnknown).toBe(true);
     expect(current.pendingOperation).toBe('generate');
+    expect(current.attemptId).toBe(18);
     expect(document.body.textContent).toContain('使用原尝试重试');
 
     act(() => root?.render(null));
@@ -407,6 +468,18 @@ describe('InterviewStoryDrawer', () => {
 
     expect([...document.body.querySelectorAll('button')].some((button) => button.textContent === '使用 AI 整理')).toBe(true);
     expect([...document.body.querySelectorAll('button')].some((button) => button.textContent === '手动编写并保存')).toBe(true);
+  });
+
+  it('does not expose the UI-only manual save route from the Pilot drawer', () => {
+    const draft = {
+      ...createInterviewStoryDraft('pilot'),
+      assertions: ['我本人负责了这次线上延迟排查。'],
+    };
+
+    act(() => root?.render(<InterviewStoryDrawer open draft={draft} onDraftChange={() => {}} onClose={() => {}} />));
+
+    expect([...document.body.querySelectorAll('button')].some((button) => button.textContent === '使用 AI 整理')).toBe(true);
+    expect([...document.body.querySelectorAll('button')].some((button) => button.textContent === '手动编写并保存')).toBe(false);
   });
 
   it('saves a manually authored evidence-backed Story from an explicitly bound user assertion', async () => {

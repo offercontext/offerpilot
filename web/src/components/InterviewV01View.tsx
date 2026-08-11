@@ -33,7 +33,7 @@ export default function InterviewV01View({ onOpenApplication, onOpenPreparation,
     <div style={{ padding: 24 }}>
       <div style={{ marginBottom: 20 }}>
         <Title level={3} style={{ margin: 0 }}>面试</Title>
-        {onOpenStoryLibrary ? <Button onClick={() => onOpenStoryLibrary()}>面试故事库</Button> : null}
+        {onOpenStoryLibrary ? <Button data-story-audit="ui-library" onClick={() => onOpenStoryLibrary()}>面试故事库</Button> : null}
         <Paragraph type="secondary" style={{ margin: '6px 0 0' }}>
           查看已安排的面试事件、复盘、证据化建议和准备入口。
         </Paragraph>

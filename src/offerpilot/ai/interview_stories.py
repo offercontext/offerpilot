@@ -53,7 +53,7 @@ INTERVIEW_STORY_JSON_SCHEMA: dict[str, Any] = {
             "required": ["text", "evidence_refs"],
             "properties": {
                 "text": {"type": "string", "maxLength": 200},
-                "evidence_refs": {"type": "array", "maxItems": 8, "items": {"$ref": "#/$defs/ref"}},
+                "evidence_refs": {"type": "array", "maxItems": 5, "items": {"$ref": "#/$defs/ref"}},
             },
         },
         "blocks": {
@@ -67,7 +67,7 @@ INTERVIEW_STORY_JSON_SCHEMA: dict[str, Any] = {
                     "kind": {"enum": sorted(_BLOCK_KINDS)},
                     "text": {"type": "string", "maxLength": _MAX_TEXT_CHARS},
                     "fact_mode": {"enum": ["evidence_backed", "user_view"]},
-                    "evidence_refs": {"type": "array", "maxItems": 8, "items": {"$ref": "#/$defs/ref"}},
+                    "evidence_refs": {"type": "array", "maxItems": 5, "items": {"$ref": "#/$defs/ref"}},
                 },
             },
         },
@@ -94,7 +94,7 @@ INTERVIEW_STORY_JSON_SCHEMA: dict[str, Any] = {
             "required": ["text", "evidence_refs"],
             "properties": {
                 "text": {"type": "string", "maxLength": _MAX_SHORT_TEXT_CHARS},
-                "evidence_refs": {"type": "array", "maxItems": 8, "items": {"$ref": "#/$defs/ref"}},
+                "evidence_refs": {"type": "array", "maxItems": 5, "items": {"$ref": "#/$defs/ref"}},
             },
         },
         "ref": {
@@ -317,7 +317,7 @@ def _normalize_raw_proposal(payload: dict[str, Any]) -> tuple[dict[str, Any], li
                 raise StoryProposalError("invalid_evidence_shape")
             if not all(isinstance(ref.get(field), str) for field in _REF_FIELDS):
                 raise StoryProposalError("invalid_evidence_shape")
-        if len(refs) > 8:
+        if len(refs) > 5:
             raise StoryProposalError("limit_exceeded")
         for ref in refs:
             links.append({"target_kind": target_kind, "target_id": target_ids[(target_kind, index)], **ref})

@@ -143,6 +143,7 @@ export default function ContextPanel({
             type="button"
             className={styles.capItem}
             data-testid="pilot-open-interview-story-library"
+            data-story-audit="pilot-entry"
             onClick={onOpenInterviewStoryLibrary}
           >
             整理面试故事

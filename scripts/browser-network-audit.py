@@ -13,6 +13,31 @@ from urllib.request import urlopen
 import websockets
 
 
+_STORY_INTERACTION_ACTIONS = frozenset(
+    {
+        "ui-library",
+        "ui-source-picker",
+        "ui-generate",
+        "ui-confirm",
+        "pilot-entry",
+        "pilot-source-picker",
+        "pilot-generate",
+        "pilot-confirm",
+    }
+)
+_STORY_INTERACTION_OBSERVER = """
+(() => {
+  const actions = new Set(%s);
+  window.__offerpilotStoryAuditSteps = [];
+  document.addEventListener('click', (event) => {
+    const target = event.target instanceof Element ? event.target.closest('[data-story-audit]') : null;
+    const action = target?.getAttribute('data-story-audit');
+    if (action && actions.has(action)) window.__offerpilotStoryAuditSteps.push(action);
+  }, true);
+})();
+""" % json.dumps(sorted(_STORY_INTERACTION_ACTIONS))
+
+
 class BrowserAudit:
     def __init__(self, websocket: websockets.ClientConnection, output: Path, stop_file: Path) -> None:
         self.websocket = websocket
@@ -131,6 +156,11 @@ class BrowserAudit:
         try:
             await self.send("Network.enable", session_id=session_id)
             await self.send("Page.enable", session_id=session_id)
+            await self.send(
+                "Page.addScriptToEvaluateOnNewDocument",
+                {"source": _STORY_INTERACTION_OBSERVER},
+                session_id=session_id,
+            )
             await self.send("Runtime.runIfWaitingForDebugger", session_id=session_id)
             self.owned_targets.add(target_id)
             self.network_ready_targets.add(target_id)
@@ -138,6 +168,46 @@ class BrowserAudit:
                 self.main_network_ready.set()
         except RuntimeError as exc:
             self.reader_error = exc
+
+    async def record_story_interactions(self) -> None:
+        """Persist only allowlisted user-action names from the owned CDP page."""
+
+        if self.handle is None or self.main_target_id is None or self.main_session_id is None:
+            raise RuntimeError("story interaction audit has no dedicated target")
+        response = await self.send(
+            "Runtime.evaluate",
+            {
+                "expression": "JSON.stringify(window.__offerpilotStoryAuditSteps || [])",
+                "returnByValue": True,
+            },
+            self.main_session_id,
+        )
+        result = response.get("result")
+        value = result.get("result") if isinstance(result, dict) else None
+        raw_steps = value.get("value") if isinstance(value, dict) else None
+        try:
+            parsed = json.loads(raw_steps) if isinstance(raw_steps, str) else None
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("story interaction audit payload is invalid") from exc
+        if not isinstance(parsed, list) or any(
+            not isinstance(item, str) or item not in _STORY_INTERACTION_ACTIONS
+            for item in parsed
+        ):
+            raise RuntimeError("story interaction audit payload is invalid")
+        self.handle.write(
+            json.dumps(
+                {
+                    "kind": "browser_story_interactions",
+                    "observed_at_ns": time.time_ns(),
+                    "target_id": self.main_target_id,
+                    "session_id": self.main_session_id,
+                    "steps": parsed,
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+        self.handle.flush()
 
     async def record_request(self, message: dict[str, object]) -> None:
         session_id = message.get("sessionId")
@@ -383,6 +453,7 @@ class BrowserAudit:
                     await asyncio.sleep(0.1)
                 if self.reader_error is not None:
                     raise self.reader_error
+                await self.record_story_interactions()
         finally:
             if self.response_tasks:
                 results = await asyncio.gather(*self.response_tasks, return_exceptions=True)

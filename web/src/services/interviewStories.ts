@@ -23,7 +23,11 @@ function toStoryError(error: unknown): StoryError {
     ? error.response
     : (error as { response?: { status?: number; data?: { error_code?: unknown } } } | null)?.response;
   const code = typeof response?.data?.error_code === 'string' ? response.data.error_code : null;
-  return new StoryError(response?.status ?? 0, code);
+  const rawAttemptId = response?.data?.id;
+  const attemptId = typeof rawAttemptId === 'number' && Number.isSafeInteger(rawAttemptId) && rawAttemptId > 0
+    ? rawAttemptId
+    : null;
+  return new StoryError(response?.status ?? 0, code, attemptId);
 }
 
 async function request<T>(operation: () => Promise<{ data: T }>): Promise<T> {

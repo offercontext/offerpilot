@@ -152,7 +152,12 @@ export interface InterviewStoryProposalAttempt {
 }
 
 export class InterviewStoryError extends Error {
-  constructor(public readonly status: number, public readonly code: string | null) {
+  constructor(
+    public readonly status: number,
+    public readonly code: string | null,
+    /** Safe server identity required to resume a provider-unknown Attempt. */
+    public readonly attemptId: number | null = null,
+  ) {
     super(code ?? 'interview_story_error');
     this.name = 'InterviewStoryError';
   }

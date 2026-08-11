@@ -139,7 +139,7 @@ def test_story_validator_reports_evidence_limit_without_repair() -> None:
 def test_story_validator_reports_too_many_evidence_references_as_limit_exceeded() -> None:
     malformed = _proposal()
     reference = malformed["title"]["evidence_refs"][0]  # type: ignore[index]
-    malformed["title"]["evidence_refs"] = [reference] * 9  # type: ignore[index]
+    malformed["title"]["evidence_refs"] = [reference] * 6  # type: ignore[index]
 
     with pytest.raises(StoryProposalError) as error:
         validate_interview_story_proposal(malformed, _snapshot())

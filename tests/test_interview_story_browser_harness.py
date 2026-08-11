@@ -52,6 +52,9 @@ class _ScriptedWebSocket:
         if method == "Network.enable" and self.reject_network:
             await self.messages.put({"id": command_id, "error": {"message": "rejected"}})
             return
+        if method == "Runtime.evaluate":
+            await self.messages.put({"id": command_id, "result": {"result": {"value": "[]"}}})
+            return
         await self.messages.put({"id": command_id, "result": {}})
 
     def __aiter__(self):
@@ -106,6 +109,25 @@ def _write_gray_png(path: Path, *, width: int = 1455, height: int = 1200) -> Non
     )
 
 
+def _story_interaction_record(*, target_id: str = "story-target", session_id: str = "story-session") -> dict[str, object]:
+    return {
+        "kind": "browser_story_interactions",
+        "observed_at_ns": 9_999_000,
+        "target_id": target_id,
+        "session_id": session_id,
+        "steps": [
+            "ui-library",
+            "ui-source-picker",
+            "ui-generate",
+            "ui-confirm",
+            "pilot-entry",
+            "pilot-source-picker",
+            "pilot-generate",
+            "pilot-confirm",
+        ],
+    }
+
+
 def _complete_story_audit_records(base_url: str) -> list[dict[str, object]]:
     ui_context = {"entrypoint": "ui", "idempotency_key_sha256": "ui-key", "payload_sha256": "ui-payload"}
     pilot_context = {"entrypoint": "pilot", "idempotency_key_sha256": "pilot-key", "payload_sha256": "pilot-payload"}
@@ -131,11 +153,37 @@ def _complete_story_audit_records(base_url: str) -> list[dict[str, object]]:
         record["observed_at_ns"] = 1_000_000 + index * 1_000
         record["target_id"] = "story-target"
         record["session_id"] = "story-session"
+    interactions = _story_interaction_record()
+    interactions["observed_at_ns"] = 1_000_000 + (len(records) + 1) * 1_000
+    records.append(interactions)
     return records
 
 
-def _write_audit(path: Path, records: list[dict[str, object]]) -> None:
-    path.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
+def _write_audit(
+    path: Path,
+    records: list[dict[str, object]],
+    *,
+    include_interactions: bool = True,
+) -> None:
+    output_records = list(records)
+    if include_interactions and not any(record.get("kind") == "browser_story_interactions" for record in output_records):
+        output_records.append(_story_interaction_record())
+    path.write_text("\n".join(json.dumps(record) for record in output_records) + "\n", encoding="utf-8")
+
+
+def test_story_browser_harness_rejects_a_network_only_pilot_flow_without_dedicated_ui_actions(tmp_path: Path) -> None:
+    base_url = "http://127.0.0.1:8123"
+    records = [record for record in _complete_story_audit_records(base_url) if record["kind"] != "browser_story_interactions"]
+    audit_path = tmp_path / "network-only-story-audit.jsonl"
+    _write_audit(audit_path, records, include_interactions=False)
+
+    result = _run_harness(
+        "-ValidateAudit", "-AuditPath", str(audit_path), "-ExpectedBaseUrl", base_url,
+        "-ExpectedTargetId", "story-target", "-ExpectedSessionId", "story-session",
+    )
+
+    assert result.returncode != 0
+    assert "dedicated Story interaction audit" in (result.stdout + result.stderr)
 
 
 def test_browser_audit_derives_story_entrypoint_and_hashes_retry_tokens(tmp_path: Path) -> None:
@@ -525,15 +573,16 @@ def test_story_browser_harness_validates_each_entrypoint_sequence_and_auditor_ex
     for index, record in enumerate(audit_records, 1):
         record["observed_at_ns"] = 1_000_000 + index * 1_000
     audit_path = tmp_path / "story-audit.jsonl"
-    audit_path.write_text("\n".join(json.dumps(record) for record in audit_records) + "\n", encoding="utf-8")
+    _write_audit(audit_path, audit_records)
 
     success = _run_harness("-ValidateAudit", "-AuditPath", str(audit_path), "-ExpectedBaseUrl", base_url)
     assert success.returncode == 0, success.stderr
 
     missing_pilot_source = [
-        record for record in audit_records if not record["url"].startswith(f"{base_url}/api/interview-story-sources?")
+        record for record in audit_records
+        if not str(record.get("url", "")).startswith(f"{base_url}/api/interview-story-sources?")
     ]
-    audit_path.write_text("\n".join(json.dumps(record) for record in missing_pilot_source) + "\n", encoding="utf-8")
+    _write_audit(audit_path, missing_pilot_source)
     failure = _run_harness("-ValidateAudit", "-AuditPath", str(audit_path), "-ExpectedBaseUrl", base_url)
     assert failure.returncode != 0
     assert "source picker" in (failure.stdout + failure.stderr)
@@ -544,7 +593,7 @@ def test_story_browser_harness_validates_each_entrypoint_sequence_and_auditor_ex
         if record["kind"] == "browser_response" and record["url"].startswith(f"{base_url}/api/interview-story-sources?")
     )
     pilot_source_response["response_status"] = 500
-    audit_path.write_text("\n".join(json.dumps(record) for record in failed_source_response) + "\n", encoding="utf-8")
+    _write_audit(audit_path, failed_source_response)
     failed_read = _run_harness("-ValidateAudit", "-AuditPath", str(audit_path), "-ExpectedBaseUrl", base_url)
     assert failed_read.returncode != 0
     assert "source picker" in (failed_read.stdout + failed_read.stderr)
@@ -556,7 +605,7 @@ def test_story_browser_harness_validates_each_entrypoint_sequence_and_auditor_ex
     assert "Browser auditor failed with exit code 7" in (auditor_failure.stdout + auditor_failure.stderr)
 
     chat_write = [*audit_records, {"kind": "browser_request", "method": "POST", "url": f"{base_url}/api/chat"}]
-    audit_path.write_text("\n".join(json.dumps(record) for record in chat_write) + "\n", encoding="utf-8")
+    _write_audit(audit_path, chat_write)
     chat_failure = _run_harness("-ValidateAudit", "-AuditPath", str(audit_path), "-ExpectedBaseUrl", base_url)
     assert chat_failure.returncode != 0
     assert "chat writes" in (chat_failure.stdout + chat_failure.stderr)
@@ -567,7 +616,7 @@ def test_story_browser_harness_validates_each_entrypoint_sequence_and_auditor_ex
         if record["kind"] == "browser_response" and record["url"] == f"{base_url}/api/interview-stories/101"
     )
     history_response["response_story_current_version_id"] = 999
-    audit_path.write_text("\n".join(json.dumps(record) for record in wrong_history_version) + "\n", encoding="utf-8")
+    _write_audit(audit_path, wrong_history_version)
     mismatch = _run_harness("-ValidateAudit", "-AuditPath", str(audit_path), "-ExpectedBaseUrl", base_url)
     assert mismatch.returncode != 0
     assert "confirmed Story version" in (mismatch.stdout + mismatch.stderr)
@@ -578,7 +627,7 @@ def test_story_browser_harness_does_not_require_a_redundant_library_read_before_
     records = _complete_story_audit_records(base_url)
     records = [
         record for record in records
-        if record["url"] != f"{base_url}/api/interview-stories?status=active&query="
+        if record.get("url") != f"{base_url}/api/interview-stories?status=active&query="
         or record["observed_at_ns"] < 1_009_000
     ]
     for index, record in enumerate(records, 1):
@@ -628,21 +677,21 @@ def test_story_browser_harness_allows_one_same_key_provider_retry_but_rejects_se
     for index, record in enumerate(records, 1):
         record["observed_at_ns"] = 1_000_000 + index * 1_000
     audit_path = tmp_path / "story-retry-audit.jsonl"
-    audit_path.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
+    _write_audit(audit_path, records)
 
     provider_retry = _run_harness("-ValidateAudit", "-AuditPath", str(audit_path), "-ExpectedBaseUrl", base_url)
     assert provider_retry.returncode == 0, provider_retry.stdout + provider_retry.stderr
 
     semantic_replay = [dict(record) for record in records]
     semantic_replay[5]["response_error_code"] = "story_unverifiable"
-    audit_path.write_text("\n".join(json.dumps(record) for record in semantic_replay) + "\n", encoding="utf-8")
+    _write_audit(audit_path, semantic_replay)
     rejected = _run_harness("-ValidateAudit", "-AuditPath", str(audit_path), "-ExpectedBaseUrl", base_url)
     assert rejected.returncode != 0
     assert "story_provider_error" in (rejected.stdout + rejected.stderr)
 
     wrong_attempt = [dict(record) for record in records]
     wrong_attempt[5]["response_proposal_id"] = 99
-    audit_path.write_text("\n".join(json.dumps(record) for record in wrong_attempt) + "\n", encoding="utf-8")
+    _write_audit(audit_path, wrong_attempt)
     mismatched_attempt = _run_harness("-ValidateAudit", "-AuditPath", str(audit_path), "-ExpectedBaseUrl", base_url)
     assert mismatched_attempt.returncode != 0
     assert "Attempt" in (mismatched_attempt.stdout + mismatched_attempt.stderr)

@@ -69,4 +69,27 @@ describe('interview story service', () => {
 
     expect(apiPost).toHaveBeenCalledWith('/interview-stories', input);
   });
+
+  it('keeps the safe provider-unknown Attempt identity from a 502 response', async () => {
+    const input = {
+      target_story_id: null,
+      expected_current_version_id: null,
+      expected_story_revision: null,
+      selections: [],
+      assertions: [],
+      idempotency_key: 'story-provider-unknown-key',
+    };
+    apiPost.mockRejectedValue({
+      response: {
+        status: 502,
+        data: { error_code: 'story_provider_error', id: 44, attempt_status: 'provider_unknown' },
+      },
+    });
+
+    await expect(service.createInterviewStoryProposal(input)).rejects.toMatchObject({
+      status: 502,
+      code: 'story_provider_error',
+      attemptId: 44,
+    });
+  });
 });
