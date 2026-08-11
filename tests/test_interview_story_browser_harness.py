@@ -507,3 +507,11 @@ def test_story_browser_harness_starts_audited_chromium_before_honoring_completio
     assert state["base_url"].startswith("http://127.0.0.1:")
     assert state["cdp_url"].startswith("http://127.0.0.1:")
     assert not Path(state["temp_data_path"]).exists()
+
+
+def test_story_browser_harness_keeps_a_startup_auditor_handle_for_outer_cleanup() -> None:
+    source = _HARNESS_PATH.read_text(encoding="utf-8")
+
+    assert "function Start-BrowserAuditor([string]$cdpUrl, [string]$expectedUrl, [ref]$trackedAuditor)" in source
+    assert "$trackedAuditor.Value = $process" in source
+    assert "Start-BrowserAuditor \"http://127.0.0.1:$cdpPort\" $baseUrl ([ref]$auditor)" in source

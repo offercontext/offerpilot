@@ -125,11 +125,12 @@ function Get-ProcessDiagnostic([string]$stdoutPath, [string]$stderrPath) {
   return $text.Substring(0, [Math]::Min($text.Length, 4096))
 }
 
-function Start-BrowserAuditor([string]$cdpUrl, [string]$expectedUrl) {
+function Start-BrowserAuditor([string]$cdpUrl, [string]$expectedUrl, [ref]$trackedAuditor) {
   $lastDiagnostic = 'no local diagnostic output'
   for ($attempt = 1; $attempt -le 3; $attempt++) {
     Remove-Item -LiteralPath $browserReady, $auditorStdout, $auditorStderr -Force -ErrorAction SilentlyContinue
     $process = Start-Process -FilePath $projectPython -WorkingDirectory $repo -WindowStyle Hidden -PassThru -ArgumentList @('scripts/browser-network-audit.py', '--debugging-url', $cdpUrl, '--expected-url', $expectedUrl, '--audit', $browserAudit, '--stop-file', $browserStop, '--ready-file', $browserReady) -RedirectStandardOutput $auditorStdout -RedirectStandardError $auditorStderr
+    $trackedAuditor.Value = $process
     for ($wait = 0; $wait -lt 40; $wait++) {
       if (Test-Path -LiteralPath $browserReady) { return $process }
       if ($process.HasExited) {
@@ -592,7 +593,7 @@ try {
   $chromium = Find-Chromium
   $browser = Start-Process -FilePath $chromium -PassThru -ArgumentList @("--remote-debugging-port=$cdpPort", "--user-data-dir=$browserProfile", '--no-first-run', '--no-default-browser-check', '--remote-allow-origins=*', '--window-size=1455,1200', '--force-color-profile=srgb', 'about:blank')
   Wait-ForHttpReady $browser "http://127.0.0.1:$cdpPort/json/version" 'Dedicated Chromium CDP endpoint' | Out-Null
-  $auditor = Start-BrowserAuditor "http://127.0.0.1:$cdpPort" $baseUrl
+  $auditor = Start-BrowserAuditor "http://127.0.0.1:$cdpPort" $baseUrl ([ref]$auditor)
   if (-not [string]::IsNullOrWhiteSpace($SessionStatePath)) {
     $sessionState = [ordered]@{
       base_url = $baseUrl
