@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+from fastapi.testclient import TestClient
+
+from offerpilot.api import create_app
+
+
+class _ProviderUnavailableStoryModel:
+    def complete(self, _messages, _tools):
+        raise RuntimeError("provider unavailable")
+
 
 def _note(client) -> dict:
     response = client.post(
@@ -243,3 +252,23 @@ def test_story_source_picker_returns_only_bounded_explicit_candidates(app_client
     assert scoped.status_code == 200
     assert scoped.json()["resumes"] == []
     assert scoped.json()["interview_notes"] == [payload["interview_notes"][0]]
+
+
+def test_story_provider_unknown_error_exposes_attempt_identity_for_same_key_replay(tmp_path) -> None:
+    with TestClient(create_app(data_dir=tmp_path, chat_model=_ProviderUnavailableStoryModel())) as client:
+        note = _note(client)
+        request = {
+            "target_story_id": None,
+            "expected_current_version_id": None,
+            "expected_story_revision": None,
+            "selections": [{"source_kind": "interview_note", "source_id": note["id"], "path": "/questions"}],
+            "assertions": [],
+            "idempotency_key": "story-provider-attempt-identity-01",
+        }
+
+        response = client.post("/api/interview-story-proposals", json=request)
+
+    assert response.status_code == 502
+    assert response.json()["error_code"] == "story_provider_error"
+    assert isinstance(response.json().get("id"), int)
+    assert response.json().get("attempt_status") == "provider_unknown"

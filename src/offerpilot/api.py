@@ -5256,6 +5256,18 @@ def create_app(
             )
         return JSONResponse(attempt, status_code=status_code)
 
+    def _story_provider_error_response(attempt_id: int) -> JSONResponse:
+        # The client must preserve the original idempotency context after an
+        # unknown Provider outcome.  Returning the non-secret Attempt identity
+        # lets a browser audit prove that a subsequent same-key replay did not
+        # create a second Attempt.
+        return error_response(
+            502,
+            "AI 服务暂时无法确认结果，请使用原尝试重试",
+            code="story_provider_error",
+            details={"id": attempt_id, "attempt_status": "provider_unknown"},
+        )
+
     def _story_proposal(
         payload: dict[str, Any], *, entrypoint: str
     ) -> JSONResponse:
@@ -5358,11 +5370,7 @@ def create_app(
                 provider_call_token=claim.provider_call_token,
                 category=exc.category,
             )
-            return error_response(
-                502,
-                "AI 服务暂时无法确认结果，请使用原尝试重试",
-                code="story_provider_error",
-            )
+            return _story_provider_error_response(claim.attempt_id)
         except StoryProposalError as exc:
             interview_stories.mark_contract_failed(
                 attempt_id=claim.attempt_id,
@@ -5382,11 +5390,7 @@ def create_app(
                 provider_call_token=claim.provider_call_token,
                 category="provider_error",
             )
-            return error_response(
-                502,
-                "AI 服务暂时无法确认结果，请使用原尝试重试",
-                code="story_provider_error",
-            )
+            return _story_provider_error_response(claim.attempt_id)
         finally:
             heartbeat.stop()
 

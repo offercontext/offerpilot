@@ -339,6 +339,14 @@ function Get-StoryProviderFlowWindows([object[]]$records, [string]$baseUrl) {
       if ($retryResponses.Count -ne 1 -or $retryResponses[0].response_error_code -ne 'story_provider_error') {
         throw "Browser $entrypoint replay must follow exactly one story_provider_error response; deterministic failures cannot be replayed."
       }
+      $retryAttemptId = Get-RecordProperty $retryResponses[0] 'response_proposal_id'
+      if ($retryAttemptId -isnot [int]) {
+        throw "Browser $entrypoint provider-error replay response is missing its Attempt identity."
+      }
+      $readyAttempt = Get-StoryAttemptResponse $records $entrypoint $url
+      if ([int]$readyAttempt.Record.response_proposal_id -ne [int]$retryAttemptId) {
+        throw "Browser $entrypoint provider-error replay did not reuse the original Attempt identity."
+      }
     }
     $response = Get-StoryAttemptResponse $records $entrypoint $url
     if ($response.Index -le $requests[-1].Index) { throw "Browser $entrypoint ready response predates its final request." }
@@ -643,14 +651,31 @@ for (version_id,) in version_rows:
   Write-Host 'Story browser acceptance passed.'
 }
 finally {
-  if ($null -ne $browserStop) { New-Item -ItemType File -Force -Path $browserStop -ErrorAction SilentlyContinue | Out-Null }
-  Stop-Tree $auditor 'browser auditor'
-  Stop-Tree $browser 'dedicated browser'
-  Stop-Tree $server 'isolated service'
-  Stop-Tree $proxy 'provider proxy'
-  $env:OFFERPILOT_DATA = $previousData
-  $env:HTTP_PROXY = $previousHttpProxy
-  $env:HTTPS_PROXY = $previousHttpsProxy
-  $env:NO_PROXY = $previousNoProxy
-  Remove-IsolatedTempData
+  $cleanupErrors = [System.Collections.Generic.List[string]]::new()
+  if ($null -ne $browserStop) {
+    try { New-Item -ItemType File -Force -Path $browserStop -ErrorAction Stop | Out-Null }
+    catch { $cleanupErrors.Add('browser auditor stop signal') }
+  }
+  foreach ($item in @(
+    [pscustomobject]@{ Process = $auditor; Label = 'browser auditor' },
+    [pscustomobject]@{ Process = $browser; Label = 'dedicated browser' },
+    [pscustomobject]@{ Process = $server; Label = 'isolated service' },
+    [pscustomobject]@{ Process = $proxy; Label = 'provider proxy' }
+  )) {
+    try { Stop-Tree $item.Process $item.Label }
+    catch { $cleanupErrors.Add([string]$item.Label) }
+  }
+  try {
+    $env:OFFERPILOT_DATA = $previousData
+    $env:HTTP_PROXY = $previousHttpProxy
+    $env:HTTPS_PROXY = $previousHttpsProxy
+    $env:NO_PROXY = $previousNoProxy
+  } catch {
+    $cleanupErrors.Add('process environment restoration')
+  }
+  try { Remove-IsolatedTempData }
+  catch { $cleanupErrors.Add('isolated acceptance data') }
+  if ($cleanupErrors.Count -gt 0) {
+    throw "Story browser acceptance cleanup failed for: $($cleanupErrors -join ', ')."
+  }
 }

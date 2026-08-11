@@ -366,7 +366,7 @@ def test_story_browser_harness_allows_one_same_key_provider_retry_but_rejects_se
         {"kind": "browser_request", "method": "GET", "url": f"{base_url}/api/interview-story-sources"},
         {"kind": "browser_response", "method": "GET", "url": f"{base_url}/api/interview-story-sources", "response_status": 200, "response_body_status": "captured"},
         {"kind": "browser_request", "method": "POST", "url": f"{base_url}/api/interview-story-proposals", "request_context": ui_context},
-        {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/interview-story-proposals", "request_context": ui_context, "response_status": 502, "response_body_status": "captured", "response_error_code": "story_provider_error"},
+        {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/interview-story-proposals", "request_context": ui_context, "response_status": 502, "response_body_status": "captured", "response_error_code": "story_provider_error", "response_proposal_id": 11},
         {"kind": "browser_request", "method": "POST", "url": f"{base_url}/api/interview-story-proposals", "request_context": ui_context},
         {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/interview-story-proposals", "request_context": ui_context, "response_status": 201, "response_body_status": "captured", "response_proposal_id": 11},
         {"kind": "browser_response", "method": "POST", "url": f"{base_url}/api/interview-story-proposals/11/confirm", "response_status": 201, "response_body_status": "captured", "response_story_id": 101, "response_story_version_id": 201},
@@ -394,6 +394,13 @@ def test_story_browser_harness_allows_one_same_key_provider_retry_but_rejects_se
     rejected = _run_harness("-ValidateAudit", "-AuditPath", str(audit_path), "-ExpectedBaseUrl", base_url)
     assert rejected.returncode != 0
     assert "story_provider_error" in (rejected.stdout + rejected.stderr)
+
+    wrong_attempt = [dict(record) for record in records]
+    wrong_attempt[5]["response_proposal_id"] = 99
+    audit_path.write_text("\n".join(json.dumps(record) for record in wrong_attempt) + "\n", encoding="utf-8")
+    mismatched_attempt = _run_harness("-ValidateAudit", "-AuditPath", str(audit_path), "-ExpectedBaseUrl", base_url)
+    assert mismatched_attempt.returncode != 0
+    assert "Attempt" in (mismatched_attempt.stdout + mismatched_attempt.stderr)
 
 
 def test_story_browser_harness_allows_one_bounded_repair_per_entrypoint_and_rejects_more(tmp_path: Path) -> None:
