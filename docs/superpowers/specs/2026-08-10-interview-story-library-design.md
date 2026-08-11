@@ -179,6 +179,7 @@ Proposal Attempt 与已确认 Story/Version 分离。它保存：
 - `entrypoint=ui|pilot` 与最小 `entry_context_json`（仅记录本次用户已选择的来源上下文，不记录 Chat 文本或模型原文）；
 - `attempt_status`、`generation_revision`、`provider_call_token`、`provider_lease_until`；
 - `input_snapshot_json`、`source_fingerprint`、`proposal_json`、`proposal_hash`、脱敏失败类别；
+- `repair_count=0|1`：本 Attempt 已发生的有界内部 JSON 格式修复次数。它只用于脱敏执行审计，既不保存模型原文，也不改变证据、确认或用户重试语义；
 - `confirmation_token_hash`、确认 payload hash、`confirmed_story_id`、`confirmed_story_version_id` 与确认时间。
 
 `idempotency_key` 使用表内全局 `UNIQUE(idempotency_key)`。当前工作区没有持久化 `workspace_scope`，且 SQLite 对 nullable 复合唯一键的语义不能承担新建 Story 的作用域约束；目标 Story identity 始终纳入请求 fingerprint。全局 key 冲突但 fingerprint 不同稳定返回 `409`，且不得改写原 Attempt。所有 Attempt 快照均保留，不能把模型原文或 Provider 密钥写入其中。

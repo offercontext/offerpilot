@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import sqlite3
+
 from fastapi.testclient import TestClient
 
 from offerpilot.api import create_app
+from offerpilot.ai.interview_stories import (
+    StoryProviderError,
+    safe_empty_interview_story_proposal,
+)
 
 
 class _ProviderUnavailableStoryModel:
@@ -272,3 +278,91 @@ def test_story_provider_unknown_error_exposes_attempt_identity_for_same_key_repl
     assert response.json()["error_code"] == "story_provider_error"
     assert isinstance(response.json().get("id"), int)
     assert response.json().get("attempt_status") == "provider_unknown"
+
+
+def test_story_generation_persists_a_bounded_internal_repair_count_for_egress_audit(
+    tmp_path, monkeypatch
+) -> None:
+    """A completed Attempt durably proves a second Provider call was a format repair."""
+
+    def repaired_generator(_model, _snapshot, *, on_diagnostic):  # type: ignore[no-untyped-def]
+        on_diagnostic(
+            {
+                "failure_category": "ok",
+                "repair_attempted": True,
+                "repair_count": 1,
+                "elapsed_ms": 1,
+                "provider_request_id": "redacted",
+                "http_status": None,
+                "timeout": False,
+            }
+        )
+        return safe_empty_interview_story_proposal()
+
+    monkeypatch.setattr("offerpilot.api.generate_interview_story_proposal", repaired_generator)
+    with TestClient(create_app(data_dir=tmp_path, chat_model=object())) as client:
+        note = _note(client)
+        response = client.post(
+            "/api/interview-story-proposals",
+            json={
+                "target_story_id": None,
+                "expected_current_version_id": None,
+                "expected_story_revision": None,
+                "selections": [
+                    {"source_kind": "interview_note", "source_id": note["id"], "path": "/questions"}
+                ],
+                "assertions": [],
+                "idempotency_key": "story-auditable-repair-count-01",
+            },
+        )
+
+    assert response.status_code == 201
+    with sqlite3.connect(tmp_path / "data.db") as connection:
+        row = connection.execute(
+            "SELECT attempt_status, repair_count FROM interview_story_proposal_attempts"
+        ).fetchone()
+    assert row == ("safe_empty", 1)
+
+
+def test_story_provider_unknown_persists_a_prior_internal_repair_count(tmp_path, monkeypatch) -> None:
+    """A response lost after the repair must remain auditable before same-key replay."""
+
+    def repaired_then_unavailable(_model, _snapshot, *, on_diagnostic):  # type: ignore[no-untyped-def]
+        error = StoryProviderError()
+        error.repair_count = 1
+        on_diagnostic(
+            {
+                "failure_category": error.category,
+                "repair_attempted": True,
+                "repair_count": 1,
+                "elapsed_ms": 1,
+                "provider_request_id": "redacted",
+                "http_status": None,
+                "timeout": True,
+            }
+        )
+        raise error
+
+    monkeypatch.setattr("offerpilot.api.generate_interview_story_proposal", repaired_then_unavailable)
+    with TestClient(create_app(data_dir=tmp_path, chat_model=object())) as client:
+        note = _note(client)
+        response = client.post(
+            "/api/interview-story-proposals",
+            json={
+                "target_story_id": None,
+                "expected_current_version_id": None,
+                "expected_story_revision": None,
+                "selections": [
+                    {"source_kind": "interview_note", "source_id": note["id"], "path": "/questions"}
+                ],
+                "assertions": [],
+                "idempotency_key": "story-auditable-repair-provider-01",
+            },
+        )
+
+    assert response.status_code == 502
+    with sqlite3.connect(tmp_path / "data.db") as connection:
+        row = connection.execute(
+            "SELECT attempt_status, repair_count FROM interview_story_proposal_attempts"
+        ).fetchone()
+    assert row == ("provider_unknown", 1)

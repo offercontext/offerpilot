@@ -1185,6 +1185,15 @@ def _ensure_offer_negotiation_schema(engine) -> None:  # type: ignore[no-untyped
 def _ensure_interview_story_schema(engine) -> None:  # type: ignore[no-untyped-def]
     """Record the additive, independent Interview Story schema migration."""
 
+    # Phase-one Story databases created before the release-audit hardening need
+    # the same bounded repair evidence as fresh databases.  Keep it additive so
+    # immutable Stories, Versions, and Attempts remain readable.
+    _ensure_column(
+        engine,
+        "interview_story_proposal_attempts",
+        "repair_count",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
     with engine.begin() as conn:
         conn.execute(
             text(

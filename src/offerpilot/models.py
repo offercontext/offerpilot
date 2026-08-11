@@ -1007,6 +1007,12 @@ class InterviewStoryProposalAttempt(Base):
     source_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
     proposal_json: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
     proposal_hash: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    # Bounded internal JSON-format repair count.  This is execution metadata,
+    # not model text; it lets the browser acceptance audit attribute a second
+    # Provider connection to the one allowed repair instead of inferring it.
+    repair_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     failure_category: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
     confirmation_token_hash: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
     confirmation_payload_hash: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")

@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping
 from uuid import uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import case, select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -111,6 +111,11 @@ _STORY_HEARTBEAT_SECONDS = 10
 
 def _is_optional_positive_int(value: object) -> bool:
     return value is None or (type(value) is int and value > 0)
+
+
+def _require_bounded_repair_count(value: object) -> None:
+    if type(value) is not int or value < 0 or value > 1:
+        raise StoryValidationError("story repair count is invalid")
 
 
 def canonical_story_content(raw: Mapping[str, Any]) -> dict[str, Any]:
@@ -1158,9 +1163,11 @@ class InterviewStoriesRepository:
         generation_revision: int,
         provider_call_token: str,
         proposal: dict[str, Any],
+        repair_count: int = 0,
     ) -> bool:
         """Final fencing CAS: token/revision own the result, not lease freshness."""
 
+        _require_bounded_repair_count(repair_count)
         with self._session_factory() as session:
             try:
                 _begin_immediate(session)
@@ -1235,6 +1242,7 @@ class InterviewStoriesRepository:
                 attempt.attempt_status = status
                 attempt.proposal_json = canonical_json(checked)
                 attempt.proposal_hash = sha256_text(attempt.proposal_json)
+                attempt.repair_count = max(attempt.repair_count, repair_count)
                 attempt.failure_category = ""
                 attempt.provider_call_token = ""
                 attempt.provider_lease_until = None
@@ -1248,8 +1256,15 @@ class InterviewStoriesRepository:
                 raise
 
     def mark_provider_unknown(
-        self, *, attempt_id: int, generation_revision: int, provider_call_token: str, category: str
+        self,
+        *,
+        attempt_id: int,
+        generation_revision: int,
+        provider_call_token: str,
+        category: str,
+        repair_count: int = 0,
     ) -> bool:
+        _require_bounded_repair_count(repair_count)
         with self._session_factory() as session:
             result = session.execute(
                 update(InterviewStoryProposalAttempt)
@@ -1257,14 +1272,29 @@ class InterviewStoriesRepository:
                 .where(InterviewStoryProposalAttempt.attempt_status == "generating")
                 .where(InterviewStoryProposalAttempt.generation_revision == generation_revision)
                 .where(InterviewStoryProposalAttempt.provider_call_token == provider_call_token)
-                .values(attempt_status="provider_unknown", provider_call_token="", failure_category=category)
+                .values(
+                    attempt_status="provider_unknown",
+                    provider_call_token="",
+                    repair_count=case(
+                        (InterviewStoryProposalAttempt.repair_count < repair_count, repair_count),
+                        else_=InterviewStoryProposalAttempt.repair_count,
+                    ),
+                    failure_category=category,
+                )
             )
             session.commit()
             return int(getattr(result, "rowcount", 0) or 0) == 1
 
     def mark_contract_failed(
-        self, *, attempt_id: int, generation_revision: int, provider_call_token: str, category: str
+        self,
+        *,
+        attempt_id: int,
+        generation_revision: int,
+        provider_call_token: str,
+        category: str,
+        repair_count: int = 0,
     ) -> bool:
+        _require_bounded_repair_count(repair_count)
         with self._session_factory() as session:
             result = session.execute(
                 update(InterviewStoryProposalAttempt)
@@ -1276,6 +1306,10 @@ class InterviewStoriesRepository:
                     attempt_status="contract_failed",
                     provider_call_token="",
                     provider_lease_until=None,
+                    repair_count=case(
+                        (InterviewStoryProposalAttempt.repair_count < repair_count, repair_count),
+                        else_=InterviewStoryProposalAttempt.repair_count,
+                    ),
                     failure_category=category,
                 )
             )

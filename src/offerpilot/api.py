@@ -5338,6 +5338,20 @@ def create_app(
             generation_revision=claim.generation_revision,
             provider_call_token=claim.provider_call_token,
         )
+        repair_count = 0
+
+        def _record_story_diagnostic(item: dict[str, Any]) -> None:
+            nonlocal repair_count
+            candidate = item.get("repair_count")
+            if type(candidate) is int and 0 <= candidate <= 1:
+                repair_count = max(repair_count, candidate)
+            append_log_entry(
+                resolved_data_dir,
+                "WARNING",
+                "interview_story_diagnostic "
+                + json.dumps(item, ensure_ascii=True, separators=(",", ":")),
+            )
+
         try:
             model = _chat_model(chat_model, resolved_data_dir)
             if isinstance(model, JSONResponse):
@@ -5345,17 +5359,14 @@ def create_app(
             proposal = generate_interview_story_proposal(
                 model,
                 claim.source_snapshot,
-                on_diagnostic=lambda item: append_log_entry(
-                    resolved_data_dir,
-                    "WARNING",
-                    "interview_story_diagnostic " + json.dumps(item, ensure_ascii=True, separators=(",", ":")),
-                ),
+                on_diagnostic=_record_story_diagnostic,
             )
             written = interview_stories.complete_proposal(
                 attempt_id=claim.attempt_id,
                 generation_revision=claim.generation_revision,
                 provider_call_token=claim.provider_call_token,
                 proposal=proposal,
+                repair_count=repair_count,
             )
             attempt = interview_stories.get_attempt(claim.attempt_id)
             if not written and attempt is not None:
@@ -5369,6 +5380,7 @@ def create_app(
                 generation_revision=claim.generation_revision,
                 provider_call_token=claim.provider_call_token,
                 category=exc.category,
+                repair_count=exc.repair_count,
             )
             return _story_provider_error_response(claim.attempt_id)
         except StoryProposalError as exc:
@@ -5377,6 +5389,7 @@ def create_app(
                 generation_revision=claim.generation_revision,
                 provider_call_token=claim.provider_call_token,
                 category=exc.category,
+                repair_count=exc.repair_count,
             )
             return error_response(
                 502,
