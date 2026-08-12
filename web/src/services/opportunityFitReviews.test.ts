@@ -5,15 +5,25 @@ import {
   listOpportunityFitV2Reviews,
 } from './opportunityFitReviews';
 
-const { getMock } = vi.hoisted(() => ({ getMock: vi.fn() }));
+const { createClientMock, getMock } = vi.hoisted(() => ({
+  createClientMock: vi.fn(),
+  getMock: vi.fn(),
+}));
 
 vi.mock('./http', () => ({
-  createApiClient: () => ({ get: getMock, post: vi.fn() }),
+  createApiClient: (options: unknown) => {
+    createClientMock(options);
+    return { get: getMock, post: vi.fn() };
+  },
 }));
 
 afterEach(() => getMock.mockReset());
 
 describe('opportunity fit history schema routing', () => {
+  it('allows real Provider requests to outlive the backend lease boundary', () => {
+    expect(createClientMock).toHaveBeenCalledWith({ baseURL: '/api', timeout: 180000 });
+  });
+
   it('keeps v1 history out of the v2 list and v2 history out of the v1 list', async () => {
     getMock.mockResolvedValue({
       data: [

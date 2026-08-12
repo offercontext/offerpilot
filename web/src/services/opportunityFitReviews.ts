@@ -9,7 +9,7 @@ import type {
 } from '@/types/opportunityFitReview';
 import { createApiClient } from './http';
 
-const http = createApiClient({ baseURL: '/api', timeout: 130000 });
+const http = createApiClient({ baseURL: '/api', timeout: 180000 });
 
 export async function createOpportunityFitReview(
   applicationID: number,
