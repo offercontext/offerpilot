@@ -30,6 +30,48 @@ class ApplicationOut(BaseModel):
     updated_at: datetime
 
 
+class ApplicationSubmissionSnapshotOut(BaseModel):
+    id: int
+    application_id: int
+    resume_id: int
+    resume_title: str
+    jd_version_id: int
+    jd_version_number: int
+    material_kit_id: int | None
+    resume_snapshot: dict[str, Any]
+    jd_snapshot: str
+    material_snapshot: dict[str, Any] | None
+    note: str
+    source_kind: Literal["ui", "pilot"]
+    source_states: dict[str, Literal["current", "changed", "missing"]]
+    submitted_at: datetime
+    created_at: datetime
+
+
+class ApplicationOutcomeOut(BaseModel):
+    id: int
+    application_id: int
+    submission_snapshot_id: int
+    application_event_id: int | None
+    stage: Literal["applied", "screening", "written_test", "interview", "offer", "closed"]
+    result: Literal["advanced", "rejected", "withdrawn", "no_response", "offer_received", "other"]
+    feedback_text: str
+    reflection_text: str
+    next_action_text: str
+    feedback_tags: list[str]
+    source_kind: Literal["ui", "pilot"]
+    occurred_at: datetime
+    created_at: datetime
+
+
+class ApplicationOutcomeSummaryOut(BaseModel):
+    total: int
+    stage_counts: dict[str, int]
+    result_counts: dict[str, int]
+    feedback_tag_counts: dict[str, int]
+    next_actions_pending: int
+
+
 class ConversationOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

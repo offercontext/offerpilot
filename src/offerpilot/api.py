@@ -100,6 +100,14 @@ from offerpilot.repositories.application_jd_versions import (
     JDVersionError,
     JDVersionValidationError,
 )
+from offerpilot.repositories.application_outcomes import (
+    ApplicationOutcomeConflict,
+    ApplicationOutcomeError,
+    ApplicationOutcomeNotFound,
+    ApplicationOutcomesRepository,
+    OutcomeCreate,
+    SubmissionSnapshotCreate,
+)
 from offerpilot.repositories.chat import ChatRepository
 from offerpilot.repositories.application_events import (
     ApplicationEventCreate,
@@ -202,6 +210,9 @@ from offerpilot.repositories.wakeups import WakeupCreate, WakeupsRepository, wak
 from offerpilot.onboarding import onboarding_payload
 from offerpilot.schemas import (
     ApplicationOut,
+    ApplicationOutcomeOut,
+    ApplicationOutcomeSummaryOut,
+    ApplicationSubmissionSnapshotOut,
     ApplicationEvidenceBundleOut,
     ApplicationEvidenceBundleSummaryOut,
     ChatMessageOut,
@@ -799,6 +810,7 @@ def create_app(
     app_config = load_config(resolved_data_dir)
     applications = ApplicationsRepository(session_factory)
     application_jd_versions = ApplicationJDService(session_factory)
+    application_outcomes = ApplicationOutcomesRepository(session_factory)
     chat = ChatRepository(session_factory)
     events = ApplicationEventsRepository(session_factory)
     notes = NotesRepository(session_factory)
@@ -2097,6 +2109,88 @@ def create_app(
             return error_response(exc.status_code, message, code=exc.code)
         status_code = 200 if result.replayed else 201
         return JSONResponse(_application_jd_detail_json(result.version), status_code=status_code)
+
+    @app.get("/api/applications/{app_id}/submission-snapshots")
+    def list_application_submission_snapshots(app_id: int) -> JSONResponse:
+        if applications.get(app_id) is None:
+            return error_response(404, "投递不存在", code="application_not_found")
+        return JSONResponse(
+            [_application_submission_snapshot_json(item) for item in application_outcomes.list_snapshots(app_id)]
+        )
+
+    @app.post("/api/applications/{app_id}/submission-snapshots")
+    def create_application_submission_snapshot(
+        app_id: int, payload: dict[str, Any] = Body(...)
+    ) -> JSONResponse:
+        if "source_kind" in payload:
+            return error_response(422, "来源由服务端确定", code="application_outcome_invalid_request")
+        try:
+            result = application_outcomes.create_snapshot(
+                SubmissionSnapshotCreate(
+                    application_id=app_id,
+                    resume_id=_strict_positive_int(payload.get("resume_id"), "resume_id"),
+                    jd_version_id=_strict_positive_int(payload.get("jd_version_id"), "jd_version_id"),
+                    material_kit_id=_strict_optional_positive_int(payload.get("material_kit_id"), "material_kit_id"),
+                    submitted_at=_parse_outcome_datetime(payload.get("submitted_at"), "submitted_at"),
+                    note=_strict_text(payload.get("note", ""), "note"),
+                    source_kind="ui",
+                    idempotency_key=_strict_text(payload.get("idempotency_key"), "idempotency_key"),
+                )
+            )
+        except (ApplicationOutcomeError, ValueError) as exc:
+            return _application_outcome_error_response(exc)
+        view = application_outcomes.get_snapshot(app_id, result.value.id)
+        if view is None:
+            return error_response(409, "投递事实档案回读失败", code="application_archive_source_conflict")
+        return JSONResponse(
+            _application_submission_snapshot_json(view), status_code=200 if result.replayed else 201
+        )
+
+    @app.get("/api/applications/{app_id}/outcomes")
+    def list_application_outcomes(app_id: int) -> JSONResponse:
+        if applications.get(app_id) is None:
+            return error_response(404, "投递不存在", code="application_not_found")
+        return JSONResponse(
+            [_application_outcome_json(item) for item in application_outcomes.list_outcomes(app_id)]
+        )
+
+    @app.post("/api/applications/{app_id}/outcomes")
+    def create_application_outcome(app_id: int, payload: dict[str, Any] = Body(...)) -> JSONResponse:
+        if "source_kind" in payload:
+            return error_response(422, "来源由服务端确定", code="application_outcome_invalid_request")
+        raw_tags = payload.get("feedback_tags", [])
+        if not isinstance(raw_tags, list) or any(not isinstance(item, str) for item in raw_tags):
+            return error_response(422, "反馈标签格式不正确", code="application_outcome_invalid_request")
+        try:
+            result = application_outcomes.create_outcome(
+                OutcomeCreate(
+                    application_id=app_id,
+                    submission_snapshot_id=_strict_positive_int(payload.get("submission_snapshot_id"), "submission_snapshot_id"),
+                    application_event_id=_strict_optional_positive_int(payload.get("application_event_id"), "application_event_id"),
+                    stage=_strict_text(payload.get("stage"), "stage"),
+                    result=_strict_text(payload.get("result"), "result"),
+                    feedback_text=_strict_text(payload.get("feedback_text", ""), "feedback_text"),
+                    reflection_text=_strict_text(payload.get("reflection_text", ""), "reflection_text"),
+                    next_action_text=_strict_text(payload.get("next_action_text", ""), "next_action_text"),
+                    feedback_tags=tuple(raw_tags),
+                    occurred_at=_parse_outcome_datetime(payload.get("occurred_at"), "occurred_at"),
+                    source_kind="ui",
+                    idempotency_key=_strict_text(payload.get("idempotency_key"), "idempotency_key"),
+                )
+            )
+        except (ApplicationOutcomeError, ValueError) as exc:
+            return _application_outcome_error_response(exc)
+        return JSONResponse(
+            _application_outcome_json(result.value), status_code=200 if result.replayed else 201
+        )
+
+    @app.get("/api/applications/{app_id}/outcome-summary")
+    def get_application_outcome_summary(app_id: int) -> JSONResponse:
+        if applications.get(app_id) is None:
+            return error_response(404, "投递不存在", code="application_not_found")
+        return JSONResponse(
+            ApplicationOutcomeSummaryOut.model_validate(application_outcomes.summary(app_id)).model_dump(mode="json")
+        )
 
     @app.get("/api/applications/{app_id}")
     def get_application(app_id: int) -> JSONResponse:
@@ -6202,6 +6296,90 @@ def _application_jd_summary_json(version: Any) -> dict[str, Any]:
         else (version.jd_text if len(version.jd_text) <= 240 else version.jd_text[:240] + "…"),
         "created_at": version.created_at.isoformat() if version.created_at is not None else None,
     }
+
+
+def _application_submission_snapshot_json(view: Any) -> dict[str, Any]:
+    value = view.value
+    payload = {
+        "id": value.id,
+        "application_id": value.application_id,
+        "resume_id": value.resume_id,
+        "resume_title": view.resume_title,
+        "jd_version_id": value.jd_version_id,
+        "jd_version_number": view.jd_version_number,
+        "material_kit_id": value.material_kit_id,
+        "resume_snapshot": json.loads(value.resume_snapshot_json),
+        "jd_snapshot": value.jd_snapshot,
+        "material_snapshot": (
+            json.loads(value.material_snapshot_json)
+            if value.material_snapshot_json is not None
+            else None
+        ),
+        "note": value.note,
+        "source_kind": value.source_kind,
+        "source_states": view.source_states,
+        "submitted_at": value.submitted_at,
+        "created_at": value.created_at,
+    }
+    return ApplicationSubmissionSnapshotOut.model_validate(payload).model_dump(mode="json")
+
+
+def _application_outcome_json(value: Any) -> dict[str, Any]:
+    payload = {
+        "id": value.id,
+        "application_id": value.application_id,
+        "submission_snapshot_id": value.submission_snapshot_id,
+        "application_event_id": value.application_event_id,
+        "stage": value.stage,
+        "result": value.result,
+        "feedback_text": value.feedback_text,
+        "reflection_text": value.reflection_text,
+        "next_action_text": value.next_action_text,
+        "feedback_tags": json.loads(value.feedback_tags_json),
+        "source_kind": value.source_kind,
+        "occurred_at": value.occurred_at,
+        "created_at": value.created_at,
+    }
+    return ApplicationOutcomeOut.model_validate(payload).model_dump(mode="json")
+
+
+def _application_outcome_error_response(exc: Exception) -> JSONResponse:
+    if isinstance(exc, ApplicationOutcomeNotFound):
+        return error_response(404, str(exc), code=exc.code)
+    if isinstance(exc, ApplicationOutcomeConflict):
+        return error_response(409, str(exc), code=exc.code)
+    code = exc.code if isinstance(exc, ApplicationOutcomeError) else "application_outcome_invalid_request"
+    return error_response(422, str(exc), code=code)
+
+
+def _strict_positive_int(value: object, field: str) -> int:
+    if type(value) is not int or value <= 0:
+        raise ValueError(f"{field} must be a positive integer")
+    return value
+
+
+def _strict_optional_positive_int(value: object, field: str) -> int | None:
+    if value is None:
+        return None
+    return _strict_positive_int(value, field)
+
+
+def _strict_text(value: object, field: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
+    return value
+
+
+def _parse_outcome_datetime(value: object, field: str) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be an ISO datetime")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"{field} must be an ISO datetime") from exc
+    if parsed.tzinfo is None:
+        raise ValueError(f"{field} must include timezone")
+    return parsed
 
 
 def _application_jd_detail_json(version: Any) -> dict[str, Any]:
