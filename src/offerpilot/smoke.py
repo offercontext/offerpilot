@@ -905,14 +905,6 @@ def _run_http_smoke(
                 _assert_status(deleted_application.status_code, 404, "http_cleanup_visibility")
                 if real_ai:
                     _cleanup_real_ai_smoke_records(data_dir, application_id, smoke_resume_ids)
-                else:
-                    for resume_id in smoke_resume_ids:
-                        deleted_resume = client.delete(f"/api/resumes/{resume_id}")
-                        _assert_status(
-                            deleted_resume.status_code,
-                            200,
-                            "http_cleanup_resume",
-                        )
                 steps.append(SmokeStep("http_cleanup", f"deleted smoke application #{application_id}"))
 
     return SmokeReport(ok=True, steps=steps)
