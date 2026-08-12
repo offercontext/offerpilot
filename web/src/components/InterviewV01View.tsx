@@ -1,8 +1,12 @@
 import { useEffect, useState } from 'react';
 import { Alert, Button, Empty, List, Space, Spin, Tag, Typography } from 'antd';
+import { ArrowRightOutlined, CompassOutlined } from '@ant-design/icons';
 import { listInterviews } from '@/services/interviews';
+import { listAdaptivePracticeRecommendations } from '@/services/adaptiveInterviewPractice';
 import type { InterviewIndexItem } from '@/types/interviewIndex';
+import type { AdaptivePracticeFocus, AdaptivePracticeRecommendation } from '@/types/adaptiveInterviewPractice';
 import workflowStyles from './ui/WorkflowSurface.module.css';
+import practiceStyles from './AdaptiveInterviewPracticeWorkspace.module.css';
 
 const { Paragraph, Title } = Typography;
 
@@ -11,12 +15,14 @@ interface Props {
   onOpenPreparation?: (applicationId: number, eventId: number) => void;
   onOpenMockInterview?: (applicationId: number, eventId: number) => void;
   onOpenStoryLibrary?: (reviewNoteId?: number) => void;
+  onOpenAdaptivePractice?: (focus: AdaptivePracticeFocus) => void;
 }
 
-export default function InterviewV01View({ onOpenApplication, onOpenPreparation, onOpenMockInterview, onOpenStoryLibrary }: Props) {
+export default function InterviewV01View({ onOpenApplication, onOpenPreparation, onOpenMockInterview, onOpenStoryLibrary, onOpenAdaptivePractice }: Props) {
   const [items, setItems] = useState<InterviewIndexItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [practice, setPractice] = useState<AdaptivePracticeRecommendation | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -27,6 +33,14 @@ export default function InterviewV01View({ onOpenApplication, onOpenPreparation,
     }).finally(() => {
       if (active) setLoading(false);
     });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    listAdaptivePracticeRecommendations()
+      .then((result) => { if (active) setPractice(result[0] ?? null); })
+      .catch(() => { if (active) setPractice(null); });
     return () => { active = false; };
   }, []);
 
@@ -41,6 +55,19 @@ export default function InterviewV01View({ onOpenApplication, onOpenPreparation,
         </div>
         {onOpenStoryLibrary ? <Button type="primary" data-story-audit="ui-library" onClick={() => onOpenStoryLibrary()}>面试故事库</Button> : null}
       </div>
+      {practice && onOpenAdaptivePractice ? (
+        <section className={practiceStyles.hero} style={{ marginBottom: 20 }}>
+          <div className={practiceStyles.heroIcon}><CompassOutlined /></div>
+          <div>
+            <span className={practiceStyles.eyebrow}>下一项复盘训练</span>
+            <h2>{practice.title}</h2>
+            <p>{practice.observation}</p>
+          </div>
+          <Button type="primary" onClick={() => onOpenAdaptivePractice({ proposalId: practice.proposal_id, focusId: practice.focus_id })}>
+            查看并开始 <ArrowRightOutlined />
+          </Button>
+        </section>
+      ) : null}
       {loading ? <Spin aria-label="正在加载面试列表" /> : null}
       {error ? <Alert type="error" showIcon message="面试列表暂时无法加载，请稍后重试。" /> : null}
       {!loading && !error && items.length === 0 ? (

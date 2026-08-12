@@ -44,6 +44,8 @@ import type {
   ReviewRating,
 } from '@/types/question';
 import styles from './QuestionBankView.module.css';
+import AdaptiveInterviewPracticeWorkspace from './AdaptiveInterviewPracticeWorkspace';
+import type { AdaptivePracticeFocus } from '@/types/adaptiveInterviewPractice';
 
 const { Paragraph } = Typography;
 
@@ -59,8 +61,8 @@ const STATUS_META: Record<QuestionStatus, { label: string; color: string }> = {
   mastered: { label: '已掌握', color: 'green' },
 };
 
-export default function QuestionBankView({ focusId }: { focusId?: number }) {
-  const [tab, setTab] = useState<'bank' | 'practice'>('bank');
+export default function QuestionBankView({ focusId, adaptiveFocus }: { focusId?: number; adaptiveFocus?: AdaptivePracticeFocus }) {
+  const [tab, setTab] = useState<'adaptive' | 'bank' | 'practice'>(adaptiveFocus ? 'adaptive' : 'bank');
 
   // When launched from a mock-interview drill link, surface the target id.
   useEffect(() => {
@@ -68,6 +70,10 @@ export default function QuestionBankView({ focusId }: { focusId?: number }) {
       message.info(`正在定位题目 #${focusId}，可在题库中按 ID 查找`);
     }
   }, [focusId]);
+
+  useEffect(() => {
+    if (adaptiveFocus) setTab('adaptive');
+  }, [adaptiveFocus]);
 
   return (
     <div className={styles.page}>
@@ -78,15 +84,16 @@ export default function QuestionBankView({ focusId }: { focusId?: number }) {
         </div>
         <Segmented
           value={tab}
-          onChange={(v) => setTab(v as 'bank' | 'practice')}
+          onChange={(v) => setTab(v as 'adaptive' | 'bank' | 'practice')}
           options={[
+            { label: '复盘训练', value: 'adaptive' },
             { label: '题库', value: 'bank' },
             { label: '刷题打卡', value: 'practice' },
           ]}
         />
       </div>
 
-      {tab === 'bank' ? <BankTab /> : <PracticeTab />}
+      {tab === 'adaptive' ? <AdaptiveInterviewPracticeWorkspace focus={adaptiveFocus} /> : tab === 'bank' ? <BankTab /> : <PracticeTab />}
     </div>
   );
 }

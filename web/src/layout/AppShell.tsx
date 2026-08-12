@@ -59,6 +59,7 @@ import {
 import { getPracticeStats } from '@/services/questions';
 import { getCurrentApplicationJd } from '@/services/applicationJdVersions';
 import type { ApplicationJdDraft } from '@/types/applicationJdVersion';
+import type { AdaptivePracticeFocus } from '@/types/adaptiveInterviewPractice';
 import { fetchConfirmedInterviewKnowledgeNotes } from '@/services/knowledge';
 import { buildPilotPageContext } from '@/lib/pilotPageContext';
 import {
@@ -171,6 +172,7 @@ export default function AppShell() {
 
 function AppShellContent() {
   const [view, setView] = useState<ViewMode>('dashboard');
+  const [adaptivePracticeFocus, setAdaptivePracticeFocus] = useState<AdaptivePracticeFocus | undefined>();
   const [addOpen, setAddOpen] = useState(false);
   const [resumeUploadOpen, setResumeUploadOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
@@ -1532,7 +1534,7 @@ function AppShellContent() {
             />
           )}
           {view === 'knowledge' && <KnowledgeSourcesView />}
-          {view === 'questions' && <QuestionBankView />}
+          {view === 'questions' && <QuestionBankView adaptiveFocus={adaptivePracticeFocus} />}
           {view === 'interview' && (interviewStoryLibraryOpen ? (
             <InterviewStoryLibraryView
               key={interviewStoryLibraryRevision}
@@ -1547,6 +1549,10 @@ function AppShellContent() {
               onOpenStoryLibrary={(reviewNoteId) => {
                 setInterviewStoryLibraryOpen(true);
                 if (reviewNoteId) openInterviewStoryDraft({ entrypoint: 'ui', reviewNoteId });
+              }}
+              onOpenAdaptivePractice={(focus) => {
+                setAdaptivePracticeFocus(focus);
+                navigateToView('questions');
               }}
             />
           ))}
