@@ -5,10 +5,12 @@ import {
   type ResumeAuditFinding,
   type ResumeAuditStatus,
 } from '@/lib/resumeEvidenceAudit';
+import { isSupplementableResumeFinding } from '@/lib/resumeFactSupplement';
 import styles from './ResumeLibraryView.module.css';
 
 interface Props {
   resume: Resume;
+  onSupplement?: (finding: ResumeAuditFinding) => void;
 }
 
 const STATUS_ORDER: readonly ResumeAuditStatus[] = ['present', 'review', 'unknown'];
@@ -27,7 +29,7 @@ const CATEGORY_LABELS: Record<ResumeAuditCategory, string> = {
   format: '版式能力边界',
 };
 
-export default function ResumeEvidenceAuditPanel({ resume }: Props) {
+export default function ResumeEvidenceAuditPanel({ resume, onSupplement }: Props) {
   const result = auditResume(resume);
   const findingsByCategory = groupFindings(result.findings);
 
@@ -71,7 +73,9 @@ export default function ResumeEvidenceAuditPanel({ resume }: Props) {
               <section key={category} className={styles.auditCategory} aria-labelledby={headingID}>
                 <h4 id={headingID} className={styles.auditCategoryTitle}>{CATEGORY_LABELS[category]}</h4>
                 <div className={styles.auditFindings}>
-                  {findings.map((finding) => <FindingDetails key={finding.id} finding={finding} />)}
+                  {findings.map((finding) => (
+                    <FindingDetails key={finding.id} finding={finding} onSupplement={onSupplement} />
+                  ))}
                 </div>
               </section>
             );
@@ -82,7 +86,13 @@ export default function ResumeEvidenceAuditPanel({ resume }: Props) {
   );
 }
 
-function FindingDetails({ finding }: { finding: ResumeAuditFinding }) {
+function FindingDetails({
+  finding,
+  onSupplement,
+}: {
+  finding: ResumeAuditFinding;
+  onSupplement?: (finding: ResumeAuditFinding) => void;
+}) {
   const statusClass = styles[`auditStatus${capitalize(finding.status)}`];
   return (
     <details className={styles.auditFinding}>
@@ -105,6 +115,16 @@ function FindingDetails({ finding }: { finding: ResumeAuditFinding }) {
               </>
             )}
           </div>
+        )}
+        {onSupplement && isSupplementableResumeFinding(finding) && (
+          <button
+            type="button"
+            className={styles.auditSupplementButton}
+            onClick={() => onSupplement(finding)}
+          >
+            补充真实事实
+            <span aria-hidden="true">→</span>
+          </button>
         )}
       </div>
     </details>

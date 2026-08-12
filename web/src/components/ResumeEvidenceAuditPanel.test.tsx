@@ -95,6 +95,20 @@ describe('ResumeEvidenceAuditPanel', () => {
     expect(markup).toContain('data-audit-status="unknown"');
   });
 
+  it('offers fact supplementation only when a review finding points to a saved string leaf', () => {
+    const onSupplement = vi.fn();
+    const markup = renderToStaticMarkup(
+      <ResumeEvidenceAuditPanel
+        resume={makeResume({ experience: [{ highlights: ['负责订单服务'] }] })}
+        onSupplement={onSupplement}
+      />,
+    );
+
+    expect(markup).toContain('补充真实事实');
+    expect(markup.match(/补充真实事实/g)?.length).toBeGreaterThanOrEqual(1);
+    expect(markup).not.toContain('针对版式补充真实事实');
+  });
+
   it('renders the Chinese empty state when the audit has no findings', () => {
     const auditSpy = vi.spyOn(auditModule, 'auditResume').mockReturnValue({
       findings: [],

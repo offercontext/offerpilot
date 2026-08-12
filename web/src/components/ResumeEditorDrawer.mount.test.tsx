@@ -10,11 +10,15 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 const state = vi.hoisted(() => ({
   updateResume: vi.fn(),
+  copyResume: vi.fn(),
+  listResumes: vi.fn(),
   aiService: vi.fn(),
 }));
 
 vi.mock('@/services/resumes', () => ({
   updateResume: state.updateResume,
+  copyResume: state.copyResume,
+  listResumes: state.listResumes,
 }));
 
 vi.mock('@/services/ai', () => ({
@@ -95,6 +99,8 @@ async function click(element: Element) {
 
 beforeEach(() => {
   state.updateResume.mockReset();
+  state.copyResume.mockReset();
+  state.listResumes.mockReset();
   state.aiService.mockReset();
   Object.defineProperty(window, 'matchMedia', {
     configurable: true,
@@ -158,5 +164,77 @@ describe('ResumeEditorDrawer mounted audit flow', () => {
     expect(onSaved).not.toHaveBeenCalled();
     expect(pushStateSpy).not.toHaveBeenCalled();
     expect(replaceStateSpy).not.toHaveBeenCalled();
+  });
+
+  it('opens the fact workspace from an actionable saved finding without starting a write', async () => {
+    renderEditor();
+    await click(findButton('简历事实体检'));
+
+    const reviewFinding = Array.from(container?.querySelectorAll('details') ?? [])
+      .find((item) => item.textContent?.includes('可补充真实事实'));
+    if (!(reviewFinding instanceof HTMLDetailsElement)) throw new Error('review finding not found');
+    const summary = reviewFinding.querySelector('summary');
+    if (!(summary instanceof HTMLElement)) throw new Error('summary not found');
+    await click(summary);
+    await click(findButton('补充真实事实'));
+
+    expect(document.body.querySelector('[role="dialog"]')?.getAttribute('aria-label'))
+      .toContain('可补充真实事实');
+    expect(document.body.textContent).toContain('系统不会替你估算数字');
+    expect(state.copyResume).not.toHaveBeenCalled();
+    expect(state.updateResume).not.toHaveBeenCalled();
+    expect(state.aiService).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(xhrOpenSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not open a fact supplement workspace while the editor has unsaved changes', async () => {
+    renderEditor();
+    const title = container?.querySelector('input[placeholder="简历标题"]');
+    if (!(title instanceof HTMLInputElement)) throw new Error('title input not found');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(title, '尚未保存的标题');
+      title.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await click(findButton('简历事实体检'));
+    const reviewFinding = Array.from(container?.querySelectorAll('details') ?? [])
+      .find((item) => item.textContent?.includes('可补充真实事实'));
+    if (!(reviewFinding instanceof HTMLDetailsElement)) throw new Error('review finding not found');
+    const summary = reviewFinding.querySelector('summary');
+    if (!(summary instanceof HTMLElement)) throw new Error('summary not found');
+    await click(summary);
+    await click(findButton('补充真实事实'));
+
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.body.textContent).toContain('请先保存或取消当前编辑');
+    expect(state.copyResume).not.toHaveBeenCalled();
+    expect(state.updateResume).not.toHaveBeenCalled();
+  });
+
+  it('allows fact supplementation after an edit is reverted to the saved value', async () => {
+    renderEditor();
+    const title = container?.querySelector('input[placeholder="简历标题"]');
+    if (!(title instanceof HTMLInputElement)) throw new Error('title input not found');
+    const setTitle = async (value: string) => {
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+        setter?.call(title, value);
+        title.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    };
+    await setTitle('临时标题');
+    await setTitle('测试简历');
+    await click(findButton('简历事实体检'));
+    const reviewFinding = Array.from(container?.querySelectorAll('details') ?? [])
+      .find((item) => item.textContent?.includes('可补充真实事实'));
+    if (!(reviewFinding instanceof HTMLDetailsElement)) throw new Error('review finding not found');
+    const summary = reviewFinding.querySelector('summary');
+    if (!(summary instanceof HTMLElement)) throw new Error('summary not found');
+    await click(summary);
+    await click(findButton('补充真实事实'));
+
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(state.copyResume).not.toHaveBeenCalled();
   });
 });

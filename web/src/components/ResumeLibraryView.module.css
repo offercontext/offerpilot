@@ -417,6 +417,33 @@
   overflow-wrap: anywhere;
   word-break: break-word;
 }
+.auditSupplementButton {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 0 13px;
+  border: 1px solid color-mix(in srgb, var(--op-primary) 35%, var(--op-border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--op-primary) 7%, var(--op-surface));
+  color: var(--op-primary-strong);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 750;
+  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+}
+.auditSupplementButton:hover {
+  border-color: var(--op-primary);
+  background: color-mix(in srgb, var(--op-primary) 12%, var(--op-surface));
+  transform: translateY(-1px);
+}
+.auditSupplementButton:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--op-primary) 24%, transparent);
+  outline-offset: 2px;
+}
 .auditEmptyState {
   margin-top: 16px;
   padding: 18px;
@@ -425,6 +452,222 @@
   color: var(--op-muted);
   font-size: 13px;
   text-align: center;
+}
+.factWorkspaceBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1250;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.34);
+  backdrop-filter: blur(4px);
+}
+.factWorkspace {
+  width: min(1040px, 100%);
+  max-height: min(820px, calc(100vh - 48px));
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--op-primary) 16%, var(--op-border));
+  border-radius: 20px;
+  background: var(--op-surface);
+  box-shadow: 0 28px 80px rgba(15, 23, 42, 0.24);
+}
+.factWorkspace:focus-visible {
+  outline: none;
+}
+.factWorkspaceHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 24px 28px 20px;
+  border-bottom: 1px solid var(--op-border);
+  background:
+    radial-gradient(circle at 78% 0%, color-mix(in srgb, var(--op-primary) 12%, transparent), transparent 32%),
+    linear-gradient(135deg, var(--op-surface), color-mix(in srgb, var(--op-layout-bg) 76%, var(--op-surface)));
+}
+.factWorkspaceEyebrow {
+  color: var(--op-primary-strong);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+.factWorkspaceHeader h2 {
+  margin: 5px 0 4px;
+  color: var(--op-ink);
+  font-size: clamp(20px, 2vw, 26px);
+  line-height: 1.25;
+}
+.factWorkspaceHeader p {
+  margin: 0;
+  color: var(--op-muted-strong);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.factWorkspaceBody {
+  display: grid;
+  grid-template-columns: minmax(0, 0.86fr) minmax(0, 1.14fr);
+  max-height: calc(min(820px, 100vh - 48px) - 112px);
+  overflow: auto;
+}
+.factSourceColumn,
+.factEditorColumn {
+  min-width: 0;
+  padding: 26px 28px 30px;
+}
+.factSourceColumn {
+  border-right: 1px solid var(--op-border);
+  background: color-mix(in srgb, var(--op-layout-bg) 55%, var(--op-surface));
+}
+.factSectionHeading {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin-bottom: 17px;
+}
+.factSectionHeading > span {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  place-items: center;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--op-primary) 11%, var(--op-surface));
+  color: var(--op-primary-strong);
+  font-size: 11px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.factSectionHeading strong,
+.factSectionHeading small {
+  display: block;
+}
+.factSectionHeading strong {
+  color: var(--op-ink);
+  font-size: 14px;
+}
+.factSectionHeading small {
+  margin-top: 2px;
+  color: var(--op-muted);
+  font-size: 11px;
+}
+.factSourceCard {
+  display: grid;
+  gap: 11px;
+  padding: 17px;
+  border: 1px solid var(--op-border);
+  border-radius: 13px;
+  background: var(--op-surface);
+  box-shadow: var(--op-shadow-sm);
+}
+.factSourceCard :global(.ant-tag) {
+  width: max-content;
+  margin: 0;
+}
+.factSourceCard code {
+  color: var(--op-primary-strong);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.factSourceCard blockquote {
+  margin: 0;
+  padding: 13px 14px;
+  border-left: 3px solid color-mix(in srgb, var(--op-primary) 42%, var(--op-border));
+  border-radius: 0 9px 9px 0;
+  background: var(--op-layout-bg);
+  color: var(--op-ink);
+  font-size: 14px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.factGuardrail {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 13px 14px;
+  border: 1px solid color-mix(in srgb, var(--op-success) 24%, var(--op-border));
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--op-success) 7%, var(--op-surface));
+  color: var(--op-success);
+}
+.factGuardrail strong {
+  color: var(--op-ink);
+  font-size: 12px;
+}
+.factGuardrail p {
+  margin: 3px 0 0;
+  color: var(--op-muted-strong);
+  font-size: 11px;
+  line-height: 1.55;
+}
+.factPrompts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-bottom: 16px;
+}
+.factPrompts span {
+  padding: 6px 9px;
+  border: 1px solid var(--op-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--op-layout-bg) 64%, var(--op-surface));
+  color: var(--op-muted-strong);
+  font-size: 11px;
+  line-height: 1.25;
+}
+.factTextareaLabel {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--op-ink);
+  font-size: 12px;
+  font-weight: 750;
+}
+.factEditorColumn :global(.ant-input-textarea) {
+  display: block;
+  margin-bottom: 14px;
+}
+.factEditorColumn :global(.ant-input) {
+  border-radius: 10px;
+  line-height: 1.7;
+  resize: none;
+}
+.factEditorColumn :global(.ant-checkbox-wrapper) {
+  align-items: flex-start;
+  color: var(--op-ink);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.factOperationStatus {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--op-info) 24%, var(--op-border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--op-info) 7%, var(--op-surface));
+  color: var(--op-muted-strong);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.factOperationUnknown {
+  border-color: color-mix(in srgb, var(--op-warning) 32%, var(--op-border));
+  background: color-mix(in srgb, var(--op-warning) 8%, var(--op-surface));
+  color: var(--op-warning-strong);
+}
+.factActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  margin-top: 20px;
+}
+.factActions :global(.ant-btn) {
+  min-height: 40px;
+  border-radius: 10px;
+  padding-inline: 17px;
+  font-weight: 650;
 }
 .compareBackdrop {
   position: fixed;
@@ -656,6 +899,22 @@
   }
   .auditSummary {
     grid-template-columns: 1fr;
+  }
+  .factWorkspaceBackdrop {
+    padding: 0;
+  }
+  .factWorkspace {
+    width: 100%;
+    max-height: 100vh;
+    border-radius: 0;
+  }
+  .factWorkspaceBody {
+    grid-template-columns: 1fr;
+    max-height: calc(100vh - 108px);
+  }
+  .factSourceColumn {
+    border-right: 0;
+    border-bottom: 1px solid var(--op-border);
   }
 }
 @media (max-width: 768px) {

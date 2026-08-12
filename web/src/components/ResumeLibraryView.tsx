@@ -242,6 +242,34 @@ export default function ResumeLibraryView({
         open={!!editing}
         onClose={() => setEditing(null)}
         onSaved={(next) => setEditing(next)}
+        onFactVersionCreated={(created) => {
+          qc.setQueryData<Resume[]>(['resumes'], (current = []) => [
+            created,
+            ...current.filter((candidate) => candidate.id !== created.id),
+          ]);
+          setEditing(null);
+          setCompareTargetId(created.id);
+        }}
+        onFactCopyCreated={(created) => {
+          qc.setQueryData<Resume[]>(['resumes'], (current = []) => [
+            created,
+            ...current.filter((candidate) => candidate.id !== created.id),
+          ]);
+        }}
+        onFactContinueInCopy={(created) => {
+          qc.setQueryData<Resume[]>(['resumes'], (current = []) => [
+            created,
+            ...current.filter((candidate) => candidate.id !== created.id),
+          ]);
+          setEditing(created);
+        }}
+        onFactExitToLibrary={() => {
+          setEditing(null);
+          void qc.invalidateQueries({ queryKey: ['resumes'] });
+        }}
+        onFactCopyResultUnknown={() => {
+          void qc.invalidateQueries({ queryKey: ['resumes'] });
+        }}
       />
     );
   }

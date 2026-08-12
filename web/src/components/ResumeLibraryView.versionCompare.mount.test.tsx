@@ -206,4 +206,114 @@ describe('ResumeLibraryView version compare mounted audit', () => {
     await flush();
     expect(host?.querySelector('[role="dialog"]')).toBeNull();
   });
+
+  it('connects an audit finding to a derived version and opens its parent comparison without AI', async () => {
+    const source = makeResume(2, {
+      content_json: {
+        contact: { name: '筱哲' },
+        experience: [{ highlights: ['负责订单服务'] }],
+      },
+    });
+    const parent = makeResume(1);
+    const copied = makeResume(3, {
+      title: '中文岗位版本 · 事实补充',
+      parent_resume_id: 2,
+      is_master: false,
+      content_json: source.content_json,
+    });
+    const saved = makeResume(3, {
+      title: copied.title,
+      parent_resume_id: 2,
+      is_master: false,
+      content_json: {
+        contact: { name: '筱哲' },
+        experience: [{ highlights: ['支撑每月 120 万笔订单处理'] }],
+      },
+    });
+    state.listResumes.mockResolvedValue([source, parent]);
+    state.copyResume.mockResolvedValue(copied);
+    state.updateResume.mockResolvedValue(saved);
+    renderLibrary();
+    await flush();
+
+    await act(async () => findButton('编辑').click());
+    await act(async () => findButton('简历事实体检').click());
+    const finding = Array.from(host?.querySelectorAll('details') ?? [])
+      .find((item) => item.textContent?.includes('可补充真实事实'));
+    if (!(finding instanceof HTMLDetailsElement)) throw new Error('fact finding not found');
+    await act(async () => finding.querySelector('summary')?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    await act(async () => findButton('补充真实事实').click());
+
+    const textarea = host?.querySelector('textarea[aria-label="经确认的最终简历表述"]');
+    if (!(textarea instanceof HTMLTextAreaElement)) throw new Error('fact textarea not found');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+      setter?.call(textarea, '支撑每月 120 万笔订单处理');
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const checkbox = host?.querySelector('input[type="checkbox"]');
+    if (!(checkbox instanceof HTMLInputElement)) throw new Error('confirmation not found');
+    await act(async () => checkbox.click());
+    await act(async () => findButton('创建新版本并查看差异').click());
+    await flush();
+
+    expect(state.copyResume).toHaveBeenCalledTimes(1);
+    expect(state.updateResume).toHaveBeenCalledWith(3, expect.objectContaining({ content_json: saved.content_json }));
+    expect(host?.textContent).toContain('仅比较当前已保存的简历内容');
+    expect(host?.textContent).toContain('负责订单服务');
+    expect(host?.textContent).toContain('支撑每月 120 万笔订单处理');
+    expect(state.aiCall).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(xhrOpenSpy).not.toHaveBeenCalled();
+    expect(pushStateSpy).not.toHaveBeenCalled();
+    expect(replaceStateSpy).not.toHaveBeenCalled();
+  });
+
+  it('refreshes the library instead of opening stale content when an update response is lost', async () => {
+    const source = makeResume(2, {
+      content_json: {
+        contact: { name: '筱哲' },
+        experience: [{ highlights: ['负责订单服务'] }],
+      },
+    });
+    const copied = makeResume(4, {
+      title: '筱哲事实补充副本',
+      parent_resume_id: 2,
+      is_master: false,
+      content_json: source.content_json,
+    });
+    state.listResumes.mockResolvedValue([source, makeResume(1)]);
+    state.copyResume.mockResolvedValue(copied);
+    state.updateResume.mockRejectedValue(new Error('temporary'));
+    renderLibrary();
+    await flush();
+
+    await act(async () => findButton('编辑').click());
+    await act(async () => findButton('简历事实体检').click());
+    const finding = Array.from(host?.querySelectorAll('details') ?? [])
+      .find((item) => item.textContent?.includes('可补充真实事实'));
+    if (!(finding instanceof HTMLDetailsElement)) throw new Error('fact finding not found');
+    await act(async () => finding.querySelector('summary')?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    await act(async () => findButton('补充真实事实').click());
+    const textarea = host?.querySelector('textarea[aria-label="经确认的最终简历表述"]');
+    if (!(textarea instanceof HTMLTextAreaElement)) throw new Error('fact textarea not found');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+      setter?.call(textarea, '支撑每月 120 万笔订单处理');
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const checkbox = host?.querySelector('input[type="checkbox"]');
+    if (!(checkbox instanceof HTMLInputElement)) throw new Error('confirmation not found');
+    await act(async () => checkbox.click());
+    await act(async () => findButton('创建新版本并查看差异').click());
+    await flush();
+
+    expect(host?.textContent).toContain('保存结果待确认');
+    await act(async () => findButton('返回简历库核对').click());
+    await flush();
+
+    expect(host?.querySelector('input[placeholder="简历标题"]')).toBeNull();
+    expect(state.listResumes.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(state.copyResume).toHaveBeenCalledTimes(1);
+  });
 });

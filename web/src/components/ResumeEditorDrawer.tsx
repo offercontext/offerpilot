@@ -6,12 +6,19 @@ import type { CareerIntent, Resume, ResumeContent, UpdateResumeInput } from '@/t
 import dayjs from 'dayjs';
 import styles from './ResumeLibraryView.module.css';
 import ResumeEvidenceAuditPanel from './ResumeEvidenceAuditPanel';
+import ResumeFactSupplementWorkspace from './ResumeFactSupplementWorkspace';
+import type { ResumeAuditFinding } from '@/lib/resumeEvidenceAudit';
 
 interface Props {
   resume: Resume | null;
   open: boolean;
   onClose: () => void;
   onSaved?: (resume: Resume) => void;
+  onFactVersionCreated?: (resume: Resume) => void;
+  onFactCopyCreated?: (resume: Resume) => void;
+  onFactContinueInCopy?: (resume: Resume) => void;
+  onFactExitToLibrary?: () => void;
+  onFactCopyResultUnknown?: () => void;
 }
 
 type SectionKey = 'contact' | 'education' | 'experience' | 'projects' | 'skills' | 'raw_text';
@@ -95,7 +102,17 @@ const EMPTY_DRAFTS: Record<SectionKey, string> = {
   raw_text: '',
 };
 
-export default function ResumeEditorDrawer({ resume, open, onClose, onSaved }: Props) {
+export default function ResumeEditorDrawer({
+  resume,
+  open,
+  onClose,
+  onSaved,
+  onFactVersionCreated,
+  onFactCopyCreated,
+  onFactContinueInCopy,
+  onFactExitToLibrary,
+  onFactCopyResultUnknown,
+}: Props) {
   const qc = useQueryClient();
   const [title, setTitle] = useState('');
   const [targetRoles, setTargetRoles] = useState('');
@@ -103,25 +120,19 @@ export default function ResumeEditorDrawer({ resume, open, onClose, onSaved }: P
   const [activeSection, setActiveSection] = useState<'career_intent' | SectionKey>('career_intent');
   const [drafts, setDrafts] = useState<Record<SectionKey, string>>(EMPTY_DRAFTS);
   const [auditOpen, setAuditOpen] = useState(false);
+  const [supplementFinding, setSupplementFinding] = useState<ResumeAuditFinding | null>(null);
+  const baseline = useMemo(() => buildEditorValues(resume), [resume]);
 
   useEffect(() => {
     if (!resume) return;
-    const content = normalizeContent(resume.content_json);
-    const intent = normalizeCareerIntent(content.career_intent);
-    setTitle(resume.title || resume.name || '');
-    setTargetRoles((intent.target_roles ?? []).join(', '));
-    setTargetLocations((intent.target_locations ?? []).join(', '));
-    setDrafts({
-      contact: stringifyDraft(content.contact ?? {}),
-      education: stringifyDraft(content.education ?? []),
-      experience: stringifyDraft(content.experience ?? []),
-      projects: stringifyDraft(content.projects ?? []),
-      skills: stringifyDraft(content.skills ?? []),
-      raw_text: typeof content.raw_text === 'string' ? content.raw_text : resume.parsed_data ?? '',
-    });
+    setTitle(baseline.title);
+    setTargetRoles(baseline.targetRoles);
+    setTargetLocations(baseline.targetLocations);
+    setDrafts(baseline.drafts);
     setActiveSection('career_intent');
     setAuditOpen(false);
-  }, [resume, open]);
+    setSupplementFinding(null);
+  }, [baseline, open, resume]);
 
   const saveMut = useMutation({
     mutationFn: (input: UpdateResumeInput) => updateResume(resume!.id, input),
@@ -145,6 +156,19 @@ export default function ResumeEditorDrawer({ resume, open, onClose, onSaved }: P
 
   const handleDraftChange = (key: SectionKey, value: string) => {
     setDrafts((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const editorDirty = title !== baseline.title
+    || targetRoles !== baseline.targetRoles
+    || targetLocations !== baseline.targetLocations
+    || SECTION_META.some((section) => drafts[section.key] !== baseline.drafts[section.key]);
+
+  const handleSupplement = (finding: ResumeAuditFinding) => {
+    if (editorDirty) {
+      message.warning('请先保存或取消当前编辑，再创建事实补充版本');
+      return;
+    }
+    setSupplementFinding(finding);
   };
 
   const handleSave = () => {
@@ -222,7 +246,7 @@ export default function ResumeEditorDrawer({ resume, open, onClose, onSaved }: P
 
       {auditOpen && (
         <div id="resume-evidence-audit-panel">
-          <ResumeEvidenceAuditPanel resume={resume} />
+          <ResumeEvidenceAuditPanel resume={resume} onSupplement={handleSupplement} />
         </div>
       )}
 
@@ -281,6 +305,29 @@ export default function ResumeEditorDrawer({ resume, open, onClose, onSaved }: P
           ) : null}
         </section>
       </div>
+
+      {supplementFinding && (
+        <ResumeFactSupplementWorkspace
+          open
+          source={resume}
+          finding={supplementFinding}
+          onClose={() => setSupplementFinding(null)}
+          onCompleted={(created) => {
+            setSupplementFinding(null);
+            onFactVersionCreated?.(created);
+          }}
+          onCopyCreated={onFactCopyCreated}
+          onContinueInCopy={(copy) => {
+            setSupplementFinding(null);
+            onFactContinueInCopy?.(copy);
+          }}
+          onExitToLibrary={() => {
+            setSupplementFinding(null);
+            onFactExitToLibrary?.();
+          }}
+          onCopyResultUnknown={onFactCopyResultUnknown}
+        />
+      )}
     </section>
   );
 }
@@ -296,6 +343,27 @@ function normalizeCareerIntent(intent: ResumeContent['career_intent']): CareerIn
 function stringifyDraft(value: unknown): string {
   if (typeof value === 'string') return value;
   return JSON.stringify(value, null, 2);
+}
+
+function buildEditorValues(resume: Resume | null) {
+  if (!resume) {
+    return { title: '', targetRoles: '', targetLocations: '', drafts: EMPTY_DRAFTS };
+  }
+  const content = normalizeContent(resume.content_json);
+  const intent = normalizeCareerIntent(content.career_intent);
+  return {
+    title: resume.title || resume.name || '',
+    targetRoles: (intent.target_roles ?? []).join(', '),
+    targetLocations: (intent.target_locations ?? []).join(', '),
+    drafts: {
+      contact: stringifyDraft(content.contact ?? {}),
+      education: stringifyDraft(content.education ?? []),
+      experience: stringifyDraft(content.experience ?? []),
+      projects: stringifyDraft(content.projects ?? []),
+      skills: stringifyDraft(content.skills ?? []),
+      raw_text: typeof content.raw_text === 'string' ? content.raw_text : resume.parsed_data ?? '',
+    },
+  };
 }
 
 function buildContent({

@@ -7,6 +7,8 @@ export type ResumeAuditCategory = 'structure' | 'experience' | 'facts' | 'format
 export interface ResumeAuditSource {
   path: string;
   excerpt?: string;
+  /** Complete saved leaf value for exact CAS checks; never rendered as the compact preview. */
+  fullText?: string;
 }
 
 export interface ResumeAuditFinding {
@@ -417,7 +419,11 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function sourceFor(bullet: Bullet): ResumeAuditSource {
-  return { path: bullet.path, excerpt: truncateExcerpt(bullet.text) };
+  return {
+    path: bullet.path,
+    excerpt: truncateExcerpt(bullet.text),
+    fullText: bullet.text,
+  };
 }
 
 function codePointLength(value: string): number {

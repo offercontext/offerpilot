@@ -142,12 +142,12 @@ describe('auditResume', () => {
       expect.objectContaining({
         id: 'experience-empty-bullet',
         status: 'review',
-        source: { path: '/experience/0/highlights/0', excerpt: '  ' },
+        source: { path: '/experience/0/highlights/0', excerpt: '  ', fullText: '  ' },
       }),
       expect.objectContaining({
         id: 'experience-duplicate-bullet',
         status: 'review',
-        source: { path: '/experience/0/highlights/2', excerpt: 'Built APIs' },
+        source: { path: '/experience/0/highlights/2', excerpt: 'Built APIs', fullText: 'Built APIs' },
       }),
       expect.objectContaining({
         id: 'experience-long-bullet',
@@ -165,7 +165,11 @@ describe('auditResume', () => {
       expect.objectContaining({
         id: 'facts-quantification',
         status: 'review',
-        source: { path: '/experience/0/highlights/1', excerpt: 'Improved reliability' },
+        source: {
+          path: '/experience/0/highlights/1',
+          excerpt: 'Improved reliability',
+          fullText: 'Improved reliability',
+        },
         explanation: expect.stringContaining('如有真实数据，可以补充'),
       }),
     ]));
@@ -251,6 +255,19 @@ describe('auditResume', () => {
     expect(result.findings.filter((item) => item.id === 'experience-long-bullet')).toHaveLength(1);
     expect(longFinding?.source?.excerpt).toBe(`${'e\u0301'.repeat(80)}…`);
     expect(longFinding?.source?.excerpt).not.toContain('é');
+    expect(longFinding?.source?.fullText).toBe(bullet);
+  });
+
+  it('keeps the full saved leaf beside a 160-code-point display preview', () => {
+    const bullet = '界'.repeat(241);
+    const result = auditResume(makeResume({ experience: [{ highlights: [bullet] }] }));
+    const finding = result.findings.find((item) => item.id === 'facts-quantification');
+
+    expect(finding?.source).toEqual({
+      path: '/experience/0/highlights/0',
+      excerpt: `${'界'.repeat(160)}…`,
+      fullText: bullet,
+    });
   });
 
   it('preserves CJK, emoji, combining marks, and newlines in excerpts below the limit', () => {
