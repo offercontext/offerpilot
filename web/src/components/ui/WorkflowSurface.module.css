@@ -1,0 +1,142 @@
+.surface {
+  min-width: 0;
+  color: var(--op-ink);
+}
+
+.section {
+  min-width: 0;
+  padding: 15px;
+  background: var(--op-surface);
+  border: 1px solid var(--op-border);
+  border-radius: 12px;
+  box-shadow: var(--op-shadow-sm);
+}
+
+.section + .section {
+  margin-top: 12px;
+}
+
+.sectionHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  margin-bottom: 12px;
+}
+
+.sectionHeader > :first-child {
+  min-width: 0;
+}
+
+.listRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 13px 14px;
+  background: var(--op-surface);
+  border: 1px solid var(--op-border);
+  border-radius: 11px;
+  transition: background 0.18s var(--op-ease), border-color 0.18s var(--op-ease),
+    box-shadow 0.18s var(--op-ease);
+}
+
+.listRow:hover {
+  background: var(--surface-hover);
+  border-color: var(--op-border-strong);
+  box-shadow: var(--op-shadow-sm);
+}
+
+.listRow + .listRow {
+  margin-top: 9px;
+}
+
+.listContent {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.metaRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 7px;
+  flex-wrap: wrap;
+}
+
+.actionGroup {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.formGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.formGrid > * {
+  min-width: 0;
+}
+
+.evidenceBlock {
+  min-width: 0;
+  padding: 12px 13px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--op-border);
+  border-radius: 10px;
+  overflow-wrap: anywhere;
+}
+
+.scrollRegion {
+  min-width: 0;
+  max-height: min(58vh, 640px);
+  padding-right: 4px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.mutedText {
+  color: var(--op-muted-strong);
+  line-height: 1.6;
+}
+
+.stack {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 12px;
+}
+
+@media (max-width: 720px) {
+  .section {
+    padding: 13px;
+  }
+
+  .sectionHeader,
+  .listRow {
+    flex-direction: column;
+  }
+
+  .actionGroup {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .actionGroup > :global(.ant-btn) {
+    flex: 1 1 auto;
+  }
+
+  .formGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

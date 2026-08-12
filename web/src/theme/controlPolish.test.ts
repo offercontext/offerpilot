@@ -36,4 +36,15 @@ describe('control polish theme contract', () => {
     expect(lightSelect.borderRadius).toBe(8);
     expect(darkSelect.borderRadius).toBe(8);
   });
+
+  it('defines shared workflow surfaces with responsive long-text safety', async () => {
+    const css = await loadTokens();
+
+    expect(css).toContain('.op-control-toolbar');
+    expect(css).toContain('.op-inline-status');
+    expect(css).toContain('.op-empty-state');
+    expect(css).toContain('.op-long-text');
+    expect(css).toContain('overflow-wrap: anywhere');
+    expect(css).toContain('@media (max-width: 720px)');
+  });
 });
