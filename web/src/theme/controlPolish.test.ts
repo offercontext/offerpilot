@@ -9,6 +9,14 @@ async function loadTokens(): Promise<string> {
   return readFileSync(new URL('./tokens.css', import.meta.url), 'utf8');
 }
 
+async function loadWorkflowSurface(): Promise<string> {
+  const fsModule = 'node:fs';
+  const { readFileSync } = (await import(fsModule)) as {
+    readFileSync: (path: URL, encoding: string) => string;
+  };
+  return readFileSync(new URL('../components/ui/WorkflowSurface.module.css', import.meta.url), 'utf8');
+}
+
 describe('control polish theme contract', () => {
   it('defines shared control tokens for both light and dark themes', async () => {
     const css = await loadTokens();
@@ -46,5 +54,16 @@ describe('control polish theme contract', () => {
     expect(css).toContain('.op-long-text');
     expect(css).toContain('overflow-wrap: anywhere');
     expect(css).toContain('@media (max-width: 720px)');
+  });
+
+  it('uses only defined theme tokens for native control interaction states', async () => {
+    const [tokens, workflowCss] = await Promise.all([loadTokens(), loadWorkflowSurface()]);
+
+    expect(tokens).toContain('--op-primary:');
+    expect(tokens).toContain('--op-primary-strong:');
+    expect(tokens).toContain('--op-focus-ring:');
+    expect(tokens).toContain('--surface-hover:');
+    expect(workflowCss).toContain('box-shadow: var(--op-focus-ring)');
+    expect(workflowCss).not.toMatch(/--op-primary-(?:border|soft|hover)/);
   });
 });

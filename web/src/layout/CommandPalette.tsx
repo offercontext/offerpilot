@@ -169,6 +169,11 @@ export default function CommandPalette({
   const items = [...appMatches, ...pipelineCommands, ...actionMatches];
   const activeItem = items[activeIndex];
 
+  useEffect(() => {
+    if (!open || !activeItem) return;
+    document.getElementById(commandOptionId(activeItem.key))?.scrollIntoView({ block: 'nearest' });
+  }, [open, activeItem?.key]);
+
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
