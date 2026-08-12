@@ -9,6 +9,8 @@ const state = vi.hoisted(() => ({
   analyzeJD: vi.fn(),
   saveApplicationJdVersion: vi.fn(),
   jdCurrent: null as unknown,
+  jdHistory: [] as unknown[],
+  jdDetail: null as unknown,
   events: [] as unknown[],
 }));
 
@@ -33,12 +35,20 @@ vi.mock('@tanstack/react-query', () => ({
       ? state.events
       : options.queryKey?.[0] === 'application-jd-current'
         ? state.jdCurrent
+        : options.queryKey?.[0] === 'application-jd-history'
+          ? state.jdHistory
+          : options.queryKey?.[0] === 'application-jd-detail'
+            ? state.jdDetail
         : null,
     isLoading: false,
   }),
   useMutation: () => ({ mutate: vi.fn(), isPending: false }),
 }));
-vi.mock('./ApplicationDetail.module.css', () => ({ default: {} }));
+vi.mock('./ApplicationDetail.module.css', () => ({ default: {
+  jdHistoryOption: 'jdHistoryOption',
+  jdHistoryPreview: 'jdHistoryPreview',
+  jdHistoryDetail: 'jdHistoryDetail',
+} }));
 vi.mock('./PilotAttachmentHandle', () => ({ createPilotAttachmentDragBinding: () => ({}) }));
 vi.mock('./ScheduleEventForm', () => ({ default: () => null }));
 vi.mock('./ReviewFormDrawer', () => ({ default: () => null }));
@@ -129,6 +139,8 @@ beforeEach(() => {
   state.analyzeJD.mockReset();
   state.saveApplicationJdVersion.mockReset();
   state.jdCurrent = null;
+  state.jdHistory = [];
+  state.jdDetail = null;
   state.events = [];
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -195,5 +207,30 @@ describe('ApplicationDetail deterministic Pilot JD entry', () => {
 
     expect(container?.querySelector('[role="dialog"]')?.textContent)
       .toContain('示例公司 · 投递事实与结果工作区');
+  });
+
+  it('renders long JD history previews and details in dedicated wrapping containers', () => {
+    const longPreview = '职位：高级后端工程师，负责高并发 API 设计、微服务治理与可观测性建设。要求熟悉 Python、FastAPI、PostgreSQL，链接 https://example.com/jobs/backend-platform-observability-with-a-very-long-token';
+    state.jdHistory = [{
+      id: 41,
+      version_number: 2,
+      source_kind: 'pilot',
+      preview: longPreview,
+    }];
+    state.jdDetail = { id: 41, jd_text: `${longPreview}\n${'ContinuousEnglishToken'.repeat(12)}` };
+    act(() => root?.render(<ApplicationDetail application={application} open onClose={vi.fn()} />));
+
+    const historyButton = [...(container?.querySelectorAll('button') ?? [])]
+      .find((button) => button.textContent === '查看历史');
+    act(() => historyButton?.click());
+
+    const dialog = [...(container?.querySelectorAll('[role="dialog"]') ?? [])]
+      .find((candidate) => candidate.textContent?.includes('岗位资料历史'));
+    expect(dialog?.querySelector('.jdHistoryOption')).not.toBeNull();
+    expect(dialog?.querySelector('.jdHistoryPreview')?.textContent).toContain('FastAPI');
+
+    const versionButton = dialog?.querySelector<HTMLButtonElement>('.jdHistoryOption');
+    act(() => versionButton?.click());
+    expect(dialog?.querySelector('.jdHistoryDetail')?.textContent).toContain('ContinuousEnglishToken');
   });
 });

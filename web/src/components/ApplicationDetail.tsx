@@ -581,21 +581,35 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
       <Modal
         open={jdHistoryOpen}
         title={'\u5c97\u4f4d\u8d44\u6599\u5386\u53f2'}
+        width={680}
         footer={null}
         onCancel={() => { setJdHistoryOpen(false); setSelectedJdVersion(null); }}
       >
-        <Space direction="vertical" style={{ width: '100%' }}>
+        <div className={styles.jdHistoryList}>
           {jdHistoryQuery.isLoading ? <Spin /> : (jdHistoryQuery.data ?? []).map((version) => (
-            <Button key={version.id} block type={selectedJdVersion === version.id ? 'primary' : 'default'} onClick={() => setSelectedJdVersion(version.id)}>
-              v{version.version_number} · {version.source_kind} · {version.preview.slice(0, 80)}
-            </Button>
+            <button
+              key={version.id}
+              type="button"
+              className={`${styles.jdHistoryOption} ${selectedJdVersion === version.id ? styles.jdHistoryOptionSelected : ''}`}
+              aria-pressed={selectedJdVersion === version.id}
+              onClick={() => setSelectedJdVersion(version.id)}
+            >
+              <span className={styles.jdHistoryMeta}>
+                <strong>版本 {version.version_number}</strong>
+                <span>{version.source_kind === 'pilot' ? 'Pilot 保存' : '界面保存'}</span>
+              </span>
+              <span className={styles.jdHistoryPreview}>{version.preview.slice(0, 160)}</span>
+            </button>
           ))}
+          {!jdHistoryQuery.isLoading && (jdHistoryQuery.data ?? []).length === 0 ? (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无岗位资料历史" />
+          ) : null}
           {selectedJdVersion !== null && jdDetailQuery.data && (
-            <div style={{ whiteSpace: 'pre-wrap', maxHeight: 320, overflow: 'auto', border: '1px solid #e2e8f0', padding: 12, borderRadius: 8 }}>
+            <div className={styles.jdHistoryDetail}>
               {jdDetailQuery.data.jd_text}
             </div>
           )}
-        </Space>
+        </div>
       </Modal>
       <section className={styles.detailWorkspace} {...applicationDragBinding}>
         <div className={styles.header}>

@@ -39,6 +39,94 @@
   border-radius: var(--op-control-radius);
 }
 
+.jdHistoryList {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  gap: 10px;
+}
+
+.jdHistoryOption {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  padding: 12px 14px;
+  overflow: hidden;
+  color: var(--op-text);
+  text-align: left;
+  background: var(--op-surface, #fff);
+  border: 1px solid var(--op-border, #e2e8f0);
+  border-radius: var(--op-control-radius, 8px);
+  cursor: pointer;
+  transition-property: border-color, box-shadow, background-color, transform;
+  transition-duration: 160ms;
+}
+
+.jdHistoryOption:hover {
+  border-color: var(--op-primary, #6558f5);
+  box-shadow: 0 6px 18px rgb(68 58 150 / 10%);
+}
+
+.jdHistoryOption:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--op-primary, #6558f5) 35%, transparent);
+  outline-offset: 2px;
+}
+
+.jdHistoryOption:active {
+  transform: scale(0.96);
+}
+
+.jdHistoryOptionSelected {
+  background: color-mix(in srgb, var(--op-primary, #6558f5) 7%, #fff);
+  border-color: var(--op-primary, #6558f5);
+  box-shadow: inset 3px 0 0 var(--op-primary, #6558f5);
+}
+
+.jdHistoryMeta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 5px;
+  color: var(--op-text-secondary, #64748b);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.jdHistoryMeta strong {
+  color: var(--op-text);
+  font-size: 13px;
+}
+
+.jdHistoryPreview,
+.jdHistoryDetail {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.jdHistoryPreview {
+  color: var(--op-text);
+  font-size: 14px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.jdHistoryDetail {
+  max-height: 320px;
+  padding: 14px;
+  overflow: auto;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  background: var(--op-surface-subtle, #f8fafc);
+  border: 1px solid var(--op-border, #e2e8f0);
+  border-radius: calc(var(--op-control-radius, 8px) + 4px);
+}
+
 @media (max-width: 760px) {
   .actionRow {
     align-items: stretch;
@@ -47,5 +135,11 @@
 
   .actionRow :global(.ant-btn) {
     width: 100%;
+  }
+
+  .jdHistoryMeta {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 2px;
   }
 }
