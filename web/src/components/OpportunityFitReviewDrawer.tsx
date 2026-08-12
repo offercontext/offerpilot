@@ -47,6 +47,7 @@ import {
   opportunityFitStatusLabel,
 } from './opportunityFitCopy';
 import { SourceStateTag } from './ui/SourceStateTag';
+import workflowStyles from './ui/WorkflowSurface.module.css';
 
 interface Props {
   application: Application | null;
@@ -623,6 +624,7 @@ export default function OpportunityFitReviewDrawer({
       onClose={onClose}
       destroyOnClose
     >
+      <div className={`${workflowStyles.surface} ${workflowStyles.stack}`}>
       <Typography.Paragraph type="secondary">
         {OPPORTUNITY_FIT_COPY.drawer.description}
       </Typography.Paragraph>
@@ -636,11 +638,11 @@ export default function OpportunityFitReviewDrawer({
       ) : null}
 
       {stage === 'input' && reviewHistoryQuery.data && reviewHistoryQuery.data.length > 0 ? (
-        <Card size="small" title={OPPORTUNITY_FIT_COPY.drawer.history} style={{ marginBottom: 16 }}>
+        <Card size="small" title={OPPORTUNITY_FIT_COPY.drawer.history} className={workflowStyles.section} style={{ marginBottom: 16 }}>
           <fieldset disabled={historyButtonsDisabled} style={{ border: 0, padding: 0, margin: 0 }}>
           <Space direction="vertical" style={{ width: '100%' }}>
             {reviewHistoryQuery.data.map((item) => (
-              <Space key={item.id} style={{ justifyContent: 'space-between', width: '100%' }}>
+              <Space key={item.id} className={workflowStyles.listRow} style={{ justifyContent: 'space-between', width: '100%' }}>
                 <Typography.Text>
                   {opportunityFitRecommendationLabel(item.recommendation)} · {new Date(item.created_at).toLocaleString()}
                 </Typography.Text>
@@ -654,11 +656,11 @@ export default function OpportunityFitReviewDrawer({
         </Card>
       ) : null}
       {stage === 'input' && v2HistoryQuery.data && v2HistoryQuery.data.length > 0 ? (
-        <Card size="small" title="岗位评估历史（v2，只读）" style={{ marginBottom: 16 }}>
+        <Card size="small" title="岗位评估历史（v2，只读）" className={workflowStyles.section} style={{ marginBottom: 16 }}>
           <fieldset disabled={historyButtonsDisabled} style={{ border: 0, padding: 0, margin: 0 }}>
           <Space direction="vertical" style={{ width: '100%' }}>
             {v2HistoryQuery.data.map((item) => (
-              <Space key={`v2-${item.review_id}`} style={{ justifyContent: 'space-between', width: '100%' }}>
+              <Space key={`v2-${item.review_id}`} className={workflowStyles.listRow} style={{ justifyContent: 'space-between', width: '100%' }}>
                 <Typography.Text>评估 #{item.review_id} · {item.stage_count} 个阶段</Typography.Text>
                 <Button size="small" disabled={historyButtonsDisabled} onClick={() => void openHistoricalV2Review(item.review_id)}>查看</Button>
               </Space>
@@ -669,6 +671,7 @@ export default function OpportunityFitReviewDrawer({
       ) : null}
 
       {stage === 'input' ? (
+        <div data-testid="opportunity-fit-source-panel" className={workflowStyles.section}>
         <Form layout="vertical">
           <Form.Item label={OPPORTUNITY_FIT_COPY.drawer.resumeLabel} required>
             <Select
@@ -718,12 +721,15 @@ export default function OpportunityFitReviewDrawer({
             message={OPPORTUNITY_FIT_COPY.drawer.humanConfirmation}
             description={OPPORTUNITY_FIT_COPY.drawer.humanConfirmationDescription}
           />
-          <Button type="primary" onClick={submit} loading={createMutation.isPending} disabled={!canSubmit}>
-            {draft?.triageKey ? '使用原尝试重试' : OPPORTUNITY_FIT_COPY.drawer.startTriage}
-          </Button>
+          <div data-testid="opportunity-fit-action-group" className={workflowStyles.actionGroup}>
+            <Button type="primary" onClick={submit} loading={createMutation.isPending} disabled={!canSubmit}>
+              {draft?.triageKey ? '使用原尝试重试' : OPPORTUNITY_FIT_COPY.drawer.startTriage}
+            </Button>
+          </div>
         </Form>
+        </div>
       ) : v2Triage ? (
-        <div>
+        <div className={`${workflowStyles.section} op-long-text`}>
           <Space wrap>
             <Tag color="blue">v2 岗位评估</Tag>
             <SourceStateTag
@@ -806,7 +812,7 @@ export default function OpportunityFitReviewDrawer({
           ) : null}
         </div>
       ) : review ? (
-        <div>
+        <div className={`${workflowStyles.section} op-long-text`}>
           <Space wrap>
             <Tag color={opportunityFitRecommendationColor(review.recommendation)}>
               {opportunityFitRecommendationLabel(review.recommendation)}
@@ -892,6 +898,7 @@ export default function OpportunityFitReviewDrawer({
       ) : (
         <Spin />
       )}
+      </div>
     </Drawer>
   );
 }

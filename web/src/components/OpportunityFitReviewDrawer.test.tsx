@@ -267,6 +267,14 @@ async function click(element: HTMLElement) {
 }
 
 describe('OpportunityFitReviewDrawer', () => {
+  it('renders stable source and action surfaces without changing the input workflow', async () => {
+    const rendered = await render();
+
+    expect(rendered.querySelector('[data-testid="opportunity-fit-source-panel"]')).not.toBeNull();
+    expect(rendered.querySelector('[data-testid="opportunity-fit-action-group"]')).not.toBeNull();
+    expect(state.create).not.toHaveBeenCalled();
+  });
+
   it('reuses the AppShell-owned triage key after a generating response and remount', async () => {
     state.create.mockResolvedValue({
       review_id: 21,

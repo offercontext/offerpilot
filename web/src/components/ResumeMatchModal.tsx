@@ -15,6 +15,7 @@ import { RobotOutlined, PlusOutlined, UploadOutlined } from '@ant-design/icons';
 import { listResumes, createResume, matchResume, uploadResume } from '@/services/resumes';
 import type { MatchResumeResponse } from '@/types/resume';
 import ResumeUploadModal from './ResumeUploadModal';
+import workflowStyles from './ui/WorkflowSurface.module.css';
 
 interface ResumeMatchModalProps {
   open: boolean;
@@ -111,16 +112,18 @@ export default function ResumeMatchModal({ open, onClose }: ResumeMatchModalProp
         )
       }
     >
+      <div data-testid="resume-match-result-surface" className={`${workflowStyles.surface} ${workflowStyles.stack}`}>
       {matchMut.isPending ? (
-        <div style={{ textAlign: 'center', padding: 48 }}>
+        <div className="op-empty-state">
           <Spin tip="AI 匹配中…" />
         </div>
       ) : match ? (
         <MatchView match={match} />
       ) : (
         <>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <div className="op-section-heading">
             <p style={{ ...LABEL, margin: 0 }}>选择简历</p>
+            <div className={workflowStyles.actionGroup}>
             <Button
               size="small"
               type="link"
@@ -137,6 +140,7 @@ export default function ResumeMatchModal({ open, onClose }: ResumeMatchModalProp
             >
               上传 PDF
             </Button>
+            </div>
           </div>
           <Select
             style={{ width: '100%' }}
@@ -149,7 +153,7 @@ export default function ResumeMatchModal({ open, onClose }: ResumeMatchModalProp
           />
 
           {showAdd && (
-            <div style={{ marginTop: 12, padding: 12, background: '#f8fafc', borderRadius: 8 }}>
+            <div className={workflowStyles.section} style={{ marginTop: 12 }}>
               <Input
                 placeholder="简历名称（可选）"
                 value={newName}
@@ -162,16 +166,15 @@ export default function ResumeMatchModal({ open, onClose }: ResumeMatchModalProp
                 value={newText}
                 onChange={(e) => setNewText(e.target.value)}
               />
-              <Button
+              <div className={workflowStyles.actionGroup} style={{ marginTop: 8 }}><Button
                 type="primary"
                 size="small"
-                style={{ marginTop: 8 }}
                 loading={addResumeMut.isPending}
                 disabled={!newText.trim()}
                 onClick={() => addResumeMut.mutate()}
               >
                 保存简历
-              </Button>
+              </Button></div>
             </div>
           )}
 
@@ -185,6 +188,7 @@ export default function ResumeMatchModal({ open, onClose }: ResumeMatchModalProp
           />
         </>
       )}
+      </div>
     </Modal>
     <ResumeUploadModal
       open={uploadOpen}
@@ -200,18 +204,18 @@ function MatchView({ match }: { match: MatchResumeResponse }) {
   const r = match.result;
   const color = r.match_score >= 70 ? '#16a34a' : r.match_score >= 40 ? '#ea580c' : '#dc2626';
   return (
-    <div>
+    <div className={`${workflowStyles.stack} op-long-text`}>
       <div style={{ textAlign: 'center', marginBottom: 12 }}>
         <Progress type="circle" percent={r.match_score} strokeColor={color} />
       </div>
       <p style={LABEL}>总评</p>
-      <p>{r.summary}</p>
+      <div className={workflowStyles.evidenceBlock}><p>{r.summary}</p></div>
 
       {r.matched.length > 0 && (
         <>
           <Divider style={{ margin: '8px 0' }} />
           <p style={LABEL}>✅ 匹配点</p>
-          <ul>
+          <ul className={workflowStyles.evidenceBlock}>
             {r.matched.map((m) => <li key={m}>{m}</li>)}
           </ul>
         </>
@@ -221,7 +225,7 @@ function MatchView({ match }: { match: MatchResumeResponse }) {
         <>
           <Divider style={{ margin: '8px 0' }} />
           <p style={LABEL}>⚠️ 差距</p>
-          <ul>
+          <ul className={workflowStyles.evidenceBlock}>
             {r.gaps.map((g) => <li key={g}>{g}</li>)}
           </ul>
         </>
@@ -231,7 +235,7 @@ function MatchView({ match }: { match: MatchResumeResponse }) {
         <>
           <Divider style={{ margin: '8px 0' }} />
           <p style={LABEL}>💡 优化建议</p>
-          <ul>
+          <ul className={workflowStyles.evidenceBlock}>
             {r.suggestions.map((s) => <li key={s}>{s}</li>)}
           </ul>
         </>
