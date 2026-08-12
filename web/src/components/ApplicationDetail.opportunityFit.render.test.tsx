@@ -51,10 +51,10 @@ vi.mock('./PilotAttachmentHandle', () => ({ createPilotAttachmentDragBinding: ()
 vi.mock('./ScheduleEventForm', () => ({ default: () => null }));
 vi.mock('./ReviewFormDrawer', () => ({ default: () => null }));
 vi.mock('./MaterialKitDrawer', () => ({
-  default: (props: { initialResumeID?: number; initialJdSnapshot?: string; onClose?: () => void }) => {
+  default: (props: { initialResumeID?: number; initialJdSnapshot?: string; initialJdVersionID?: number; onClose?: () => void }) => {
     state.materialProps(props);
     return (
-      <div data-testid="material-kit" data-resume-id={props.initialResumeID} data-jd={props.initialJdSnapshot}>
+      <div data-testid="material-kit" data-resume-id={props.initialResumeID} data-jd={props.initialJdSnapshot} data-jd-version-id={props.initialJdVersionID}>
         <button type="button" aria-label="close material kit" onClick={props.onClose}>close</button>
       </div>
     );
@@ -181,6 +181,34 @@ describe('ApplicationDetail opportunity fit handoff', () => {
     expect(container?.textContent).toContain('https://example.invalid/jd/41');
     expect(container?.querySelector('a')).toBeNull();
     expect(state.analyzeJD).not.toHaveBeenCalled();
+  });
+
+  it('passes the current saved JD into Material Kit from the direct application action', () => {
+    state.jdCurrent = {
+      current: {
+        id: 41,
+        application_id: 7,
+        version_number: 1,
+        jd_text: '当前已确认的岗位资料',
+        source_url: null,
+        source_kind: 'ui',
+        content_sha256: 'a'.repeat(64),
+        utf8_byte_length: 30,
+        preview: '当前已确认的岗位资料',
+        created_at: '2026-08-05T00:00:00Z',
+      },
+    };
+
+    act(() => root?.render(<ApplicationDetail application={application} open onClose={vi.fn()} />));
+    act(() => {
+      [...(container?.querySelectorAll('button') || [])]
+        .find((button) => button.textContent === '材料包')
+        ?.click();
+    });
+
+    const materialKit = container?.querySelector('[data-testid="material-kit"]');
+    expect(materialKit?.getAttribute('data-jd')).toBe('当前已确认的岗位资料');
+    expect(materialKit?.getAttribute('data-jd-version-id')).toBe('41');
   });
 
   it('passes historical frozen Resume and JD into Material Kit without opening a URL', () => {

@@ -656,6 +656,11 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
           <Button
             icon={<FileTextOutlined />}
             onClick={() => {
+              const currentJd = applicationJdQuery.data?.current;
+              setMaterialKitPrefill(currentJd ? {
+                jdSnapshot: currentJd.jd_text,
+                jdVersionID: currentJd.id,
+              } : {});
               setMaterialKitApplicationId(application.id);
               setMaterialKitOpen(true);
             }}

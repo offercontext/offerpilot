@@ -246,6 +246,14 @@ def test_application_jd_harness_supports_ephemeral_provider_override() -> None:
     assert "$providerOverrideApiKey" in script
 
 
+def test_application_jd_harness_audits_loopback_controlled_provider_without_proxy_connect() -> None:
+    script = HARNESS.read_text(encoding="utf-8")
+
+    assert "Test-LoopbackProviderEndpoints" in script
+    assert "Assert-LoopbackProviderRequests" in script
+    assert "if (Test-LoopbackProviderEndpoints $allowedEndpoints)" in script
+
+
 def test_application_jd_harness_diagnostic_report_is_outside_cleaned_fixture() -> None:
     script = HARNESS.read_text(encoding="utf-8")
     assert "application-jd-stage-diagnostics" in script

@@ -679,7 +679,39 @@ function Assert-LocalBrowser($records) {
   }
 }
 
+function Test-LoopbackProviderEndpoints($allowedEndpoints) {
+  $items = @($allowedEndpoints)
+  if ($items.Count -lt 1) { return $false }
+  foreach ($endpoint in $items) {
+    $hostName = [string]$endpoint.Host
+    $scheme = [string]$endpoint.Scheme
+    if ($scheme -ne 'http' -or $hostName -notin @('127.0.0.1', 'localhost')) { return $false }
+  }
+  return $true
+}
+
+function Assert-LoopbackProviderRequests {
+  if (-not (Test-Path -LiteralPath $providerRequestAudit)) {
+    throw 'Controlled Provider request audit output is missing.'
+  }
+  $requests = @(Get-Content -LiteralPath $providerRequestAudit | ForEach-Object {
+    $_ | ConvertFrom-Json
+  } | Where-Object kind -eq 'provider_request_metadata')
+  if ($requests.Count -lt 1) { throw 'No controlled Provider request was observed.' }
+  foreach ($request in $requests) {
+    $endpoint = $request.endpoint
+    if ($null -eq $endpoint -or [string]$endpoint.scheme -ne 'http' -or
+        [string]$endpoint.host -notin @('127.0.0.1', 'localhost')) {
+      throw 'Controlled Provider request endpoint was not loopback.'
+    }
+  }
+}
+
 function Assert-ProviderEgress($allowedEndpoints) {
+  if (Test-LoopbackProviderEndpoints $allowedEndpoints) {
+    Assert-LoopbackProviderRequests
+    return
+  }
   if (-not (Test-Path -LiteralPath $providerAudit)) { throw 'Provider audit output is missing.' }
   $entries = @(Get-Content -LiteralPath $providerAudit | ForEach-Object { $_ | ConvertFrom-Json })
   $rejected = @($entries | Where-Object status -eq 'rejected')
