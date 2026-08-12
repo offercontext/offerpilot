@@ -23,6 +23,7 @@ import {
   PlusOutlined,
   AudioOutlined,
   FileTextOutlined,
+  DatabaseOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import type { Application } from '@/types/application';
@@ -50,6 +51,7 @@ import InterviewPreparationProposalDrawer, {
 import type { Resume } from '@/types/resume';
 import MaterialKitDrawer from './MaterialKitDrawer';
 import OpportunityFitReviewDrawer from './OpportunityFitReviewDrawer';
+import ApplicationOutcomeDrawer from './ApplicationOutcomeDrawer';
 import {
   createOpportunityFitV2Draft,
   type OpportunityFitReview,
@@ -129,6 +131,7 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
   const [eventFormOpen, setEventFormOpen] = useState(false);
   const [materialKitOpen, setMaterialKitOpen] = useState(false);
   const [opportunityFitOpen, setOpportunityFitOpen] = useState(false);
+  const [applicationOutcomeOpen, setApplicationOutcomeOpen] = useState(false);
   const [materialKitPrefill, setMaterialKitPrefill] = useState<{
     resumeID?: number;
     jdSnapshot?: string;
@@ -225,6 +228,7 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
     setMaterialKitPrefill({});
     setMaterialKitOpen(false);
     setMaterialKitApplicationId(null);
+    setApplicationOutcomeOpen(false);
   }, [application?.id, open]);
 
   useEffect(() => {
@@ -410,6 +414,20 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
         initialJdVersionID={materialKitPrefill.jdSnapshot && !materialKitPrefill.jdVersionID
           ? undefined
           : materialKitPrefill.jdVersionID ?? applicationJdQuery.data?.current?.id}
+      />
+    );
+  }
+
+  if (applicationOutcomeOpen) {
+    return (
+      <ApplicationOutcomeDrawer
+        application={application}
+        open
+        onClose={() => setApplicationOutcomeOpen(false)}
+        resumes={resumes}
+        currentJd={applicationJdQuery.data?.current ?? null}
+        events={eventsQuery.data ?? []}
+        onAskPilot={onAskPilot}
       />
     );
   }
@@ -670,6 +688,13 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
           </Button>
           <Button onClick={() => setOpportunityFitOpen(true)} style={{ marginLeft: 8 }}>
             岗位决策漏斗
+          </Button>
+          <Button
+            icon={<DatabaseOutlined />}
+            onClick={() => setApplicationOutcomeOpen(true)}
+            style={{ marginLeft: 8 }}
+          >
+            投递事实与结果
           </Button>
           {onMockInterview && (
             <Button

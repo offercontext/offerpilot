@@ -30,11 +30,19 @@ export interface PilotContextAttachment {
   label: string;
 }
 
-export interface PilotActionRequest {
-  type: 'application_jd_save';
-  jdText?: string;
-  sourceUrl?: string | null;
-}
+export type PilotActionRequest =
+  | { type: 'application_jd_save'; jdText?: string; sourceUrl?: string | null }
+  | {
+      type: 'application_submission_snapshot'; resumeId: number; jdVersionId: number;
+      materialKitId: number | null; submittedAt: string; note: string;
+    }
+  | {
+      type: 'application_outcome_record'; snapshotId: number; eventId: number | null;
+      stage: import('./applicationOutcome').ApplicationOutcomeStage;
+      result: import('./applicationOutcome').ApplicationOutcomeResult;
+      feedbackText: string; reflectionText: string; nextActionText: string;
+      feedbackTags: import('./applicationOutcome').ApplicationFeedbackTag[]; occurredAt: string;
+    };
 
 export interface Conversation {
   id: number;

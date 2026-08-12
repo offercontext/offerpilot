@@ -211,4 +211,60 @@ describe('deterministic Pilot JD confirmation card', () => {
     expect(view.textContent).not.toContain('application_id');
     expect(view.textContent).not.toContain('idempotency_key');
   });
+
+  it('renders a full-width frozen submission confirmation without a thin-evidence warning', () => {
+    const view = renderProposal({
+      tool_name: 'create_application_submission_snapshot',
+      human: '请确认冻结这次实际投递使用的简历、岗位资料和材料。',
+      confirmation_token: 'token-snapshot',
+      args: {
+        application_id: 7,
+        resume_id: 2,
+        jd_version_id: 3,
+        material_kit_id: 5,
+        submitted_at: '2026-08-12T09:30:00Z',
+        note: '官网投递，附作品集。',
+        idempotency_key: 'snapshot-key-0001',
+      },
+    });
+
+    expect(view.textContent).toContain('冻结投递事实');
+    expect(view.textContent).toContain('简历 #2');
+    expect(view.textContent).toContain('JD 版本 #3');
+    expect(view.textContent).toContain('材料包 #5');
+    expect(view.textContent).toContain('确认冻结投递事实');
+    expect(view.textContent).not.toContain('参考依据较少');
+    expect(view.textContent).not.toContain('idempotency_key');
+  });
+
+  it('keeps external feedback, personal reflection and next action visibly separated', () => {
+    const view = renderProposal({
+      tool_name: 'record_application_outcome',
+      human: '请确认记录这次投递进展、原始反馈和下一步行动。',
+      confirmation_token: 'token-outcome',
+      args: {
+        application_id: 7,
+        submission_snapshot_id: 11,
+        application_event_id: 9,
+        stage: 'interview',
+        result: 'advanced',
+        feedback_text: '面试官反馈：项目讲解清楚，系统设计还可深入。',
+        reflection_text: '我在容量估算时缺少量级依据。',
+        next_action_text: '完成一轮容量估算专项练习。',
+        feedback_tags: ['communication', 'system_design'],
+        occurred_at: '2026-08-12T11:00:00Z',
+        idempotency_key: 'outcome-key-00001',
+      },
+    });
+
+    expect(view.textContent).toContain('记录投递结果');
+    expect(view.textContent).toContain('面试');
+    expect(view.textContent).toContain('进入下一阶段');
+    expect(view.textContent).toContain('沟通表达 · 系统设计');
+    expect(view.textContent).toContain('原始反馈');
+    expect(view.textContent).toContain('我的复盘');
+    expect(view.textContent).toContain('下次行动');
+    expect(view.textContent).toContain('确认记录投递结果');
+    expect(view.textContent).toContain('不会生成录用概率或能力评分');
+  });
 });

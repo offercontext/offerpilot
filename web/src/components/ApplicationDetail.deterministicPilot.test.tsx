@@ -50,6 +50,11 @@ vi.mock('./InterviewKnowledgeCaptureDrawer', () => ({
 vi.mock('./InterviewPreparationProposalDrawer', () => ({ default: () => null }));
 vi.mock('./MaterialKitDrawer', () => ({ default: () => null }));
 vi.mock('./OpportunityFitReviewDrawer', () => ({ default: () => null }));
+vi.mock('./ApplicationOutcomeDrawer', () => ({
+  default: (props: { open?: boolean; application?: { company_name?: string } }) => props.open
+    ? <div role="dialog">{props.application?.company_name} · 投递事实与结果工作区</div>
+    : null,
+}));
 vi.mock('./NextStepSuggestions', () => ({ default: () => null }));
 vi.mock('@ant-design/icons', () => ({
   ArrowLeftOutlined: () => null,
@@ -58,6 +63,7 @@ vi.mock('@ant-design/icons', () => ({
   PlusOutlined: () => null,
   AudioOutlined: () => null,
   FileTextOutlined: () => null,
+  DatabaseOutlined: () => null,
 }));
 vi.mock('antd', () => {
   const Form = Object.assign(
@@ -177,5 +183,17 @@ describe('ApplicationDetail deterministic Pilot JD entry', () => {
 
     expect(onAskPilot).toHaveBeenCalledWith(application, { type: 'application_jd_save' });
     expect(state.saveApplicationJdVersion).not.toHaveBeenCalled();
+  });
+
+  it('opens the application outcome workspace from the mounted detail view', () => {
+    act(() => root?.render(<ApplicationDetail application={application} open onClose={vi.fn()} />));
+
+    const button = [...(container?.querySelectorAll('button') ?? [])]
+      .find((candidate) => candidate.textContent?.includes('投递事实与结果'));
+    expect(button).not.toBeUndefined();
+    act(() => (button as HTMLButtonElement).click());
+
+    expect(container?.querySelector('[role="dialog"]')?.textContent)
+      .toContain('示例公司 · 投递事实与结果工作区');
   });
 });

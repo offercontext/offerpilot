@@ -18,6 +18,8 @@ import {
   FlagOutlined,
   SolutionOutlined,
   AudioOutlined,
+  AuditOutlined,
+  SafetyCertificateOutlined,
 } from '@ant-design/icons';
 
 export type ToolKind = 'read' | 'write';
@@ -51,6 +53,16 @@ export const TOOL_META: Record<string, ToolMeta> = {
   compare_offers: { label: '对比 Offer', kind: 'read', icon: SwapOutlined },
   // ---- write ----
   save_application_jd_version: { label: '保存岗位资料', kind: 'write', icon: SaveOutlined },
+  create_application_submission_snapshot: {
+    label: '冻结投递事实',
+    kind: 'write',
+    icon: SafetyCertificateOutlined,
+  },
+  record_application_outcome: {
+    label: '记录投递结果',
+    kind: 'write',
+    icon: AuditOutlined,
+  },
   create_application: { label: '新建投递', kind: 'write', icon: PlusCircleOutlined },
   update_application_status: { label: '更新投递状态', kind: 'write', icon: EditOutlined },
   add_note: { label: '添加复盘记录', kind: 'write', icon: PlusCircleOutlined },

@@ -600,6 +600,11 @@ function AppShellContent() {
   };
 
   const startApplicationChat = (application: Application, action?: PilotActionRequest) => {
+    const initialMessage = action?.type === 'application_submission_snapshot'
+      ? '确认本次实际投递材料'
+      : action?.type === 'application_outcome_record'
+        ? '确认记录本次投递结果'
+        : '保存岗位资料';
     setCoachOfferId(undefined);
     setChatStartRequest({
       requestKey: ++nextChatStartRequestKey.current,
@@ -607,7 +612,7 @@ function AppShellContent() {
       context_ref: String(application.id),
       context_label: `${application.company_name} · ${application.position_name}`,
       mode: 'general',
-      ...(action ? { initialMessage: '保存岗位资料', pilot_action: action } : {}),
+      ...(action ? { initialMessage, pilot_action: action } : {}),
     });
     if (view !== 'pilot') {
       if (pilotRailAvailable) setPilotDrawerOpen(true);

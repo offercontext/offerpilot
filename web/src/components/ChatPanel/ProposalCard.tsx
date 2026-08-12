@@ -63,6 +63,27 @@ const SUBTYPE_LABELS: Record<string, string> = {
   written: '笔试',
 };
 
+const OUTCOME_VALUE_LABELS: Record<string, string> = {
+  applied: '已投递',
+  screening: '筛选沟通',
+  written_test: '笔试',
+  interview: '面试',
+  offer: 'Offer',
+  closed: '流程结束',
+  advanced: '进入下一阶段',
+  rejected: '未通过',
+  withdrawn: '主动退出',
+  no_response: '暂无回复',
+  offer_received: '收到 Offer',
+  other: '其他',
+  technical_depth: '技术深度',
+  communication: '沟通表达',
+  system_design: '系统设计',
+  domain_experience: '领域经验',
+  leadership: '领导力',
+  collaboration: '协作',
+};
+
 const LONG_REVIEW_FIELDS = new Set(['questions', 'self_reflection', 'difficulty_points', 'mood', 'notes']);
 
 /** Best-effort "从 X 改为 Y" extraction for a before→after chip diff. */
@@ -116,7 +137,14 @@ function valueLabel(value: unknown, field?: string): string {
     return parsed.isValid() ? parsed.format('YYYY-MM-DD HH:mm') : value;
   }
   if (field === 'duration_minutes') return `${value} 分钟`;
+  if (typeof value === 'string' && value in OUTCOME_VALUE_LABELS) return OUTCOME_VALUE_LABELS[value];
   return String(value);
+}
+
+function dateTimeLabel(value: unknown): string {
+  if (typeof value !== 'string') return '未提供';
+  const parsed = dayjs(value);
+  return parsed.isValid() ? parsed.format('YYYY-MM-DD HH:mm') : value;
 }
 
 function summarizeLongValue(value: unknown, field?: string): string | null {
@@ -168,13 +196,20 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
   })) ?? [];
   const visibleEvidence = selectEvidence(evidence.length ? evidence : actionEvidence, 3).visible;
   const changes = action.proposed_changes ?? [];
-  const thinEvidence = visibleEvidence.length === 0;
+  const isSubmissionSnapshot = action.tool_name === 'create_application_submission_snapshot';
+  const isApplicationOutcome = action.tool_name === 'record_application_outcome';
+  const isApplicationRecord = isSubmissionSnapshot || isApplicationOutcome;
+  const thinEvidence = visibleEvidence.length === 0 && !isApplicationRecord;
   const longDraftFields = changes.filter((change) => summarizeLongValue(change.after, change.field));
   const isApplicationJd = action.tool_name === 'save_application_jd_version';
   const jdText = typeof action.args?.jd_text === 'string' ? action.args.jd_text : '';
   const applicationJdVersions = action.application_jd;
   const confirmLabel = isApplicationJd
     ? '确认保存岗位资料'
+    : isSubmissionSnapshot
+      ? '确认冻结投递事实'
+      : isApplicationOutcome
+        ? '确认记录投递结果'
     : action.tool_name.includes('delete')
     ? '确认删除'
     : action.tool_name.includes('create') || action.tool_name === 'add_note'
@@ -343,6 +378,40 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
             <small>不会访问链接</small>
           </div>
         ) : null}
+        {isSubmissionSnapshot ? (
+          <div className={styles.prFacts} aria-label="投递事实确认信息">
+            <div><span>当前投递</span><b>投递 #{String(action.args?.application_id ?? '—')}</b></div>
+            <div><span>实际简历</span><b>简历 #{String(action.args?.resume_id ?? '—')}</b></div>
+            <div><span>岗位资料</span><b>JD 版本 #{String(action.args?.jd_version_id ?? '—')}</b></div>
+            <div><span>确认材料</span><b>{action.args?.material_kit_id ? `材料包 #${String(action.args.material_kit_id)}` : '本次未包含'}</b></div>
+            <div><span>投递时间</span><b>{dateTimeLabel(action.args?.submitted_at)}</b></div>
+            <div><span>记录方式</span><b>Pilot 人工确认</b></div>
+            {typeof action.args?.note === 'string' && action.args.note.trim() ? (
+              <div><span>投递备注</span><b className={styles.changeValue}>{action.args.note}</b></div>
+            ) : null}
+            <small>确认后生成不可变快照；以后修改简历或 JD 不会覆盖本次档案。</small>
+          </div>
+        ) : null}
+        {isApplicationOutcome ? (
+          <div className={styles.prFacts} aria-label="投递结果确认信息">
+            <div><span>关联档案</span><b>投递事实 #{String(action.args?.submission_snapshot_id ?? '—')}</b></div>
+            <div><span>阶段</span><b>{valueLabel(action.args?.stage)}</b></div>
+            <div><span>结果</span><b>{valueLabel(action.args?.result)}</b></div>
+            <div><span>发生时间</span><b>{dateTimeLabel(action.args?.occurred_at)}</b></div>
+            <div><span>反馈标签</span><b>{Array.isArray(action.args?.feedback_tags) && action.args.feedback_tags.length ? action.args.feedback_tags.map((item) => valueLabel(item)).join(' · ') : '未添加'}</b></div>
+            <div><span>记录方式</span><b>Pilot 人工确认</b></div>
+            {typeof action.args?.feedback_text === 'string' && action.args.feedback_text.trim() ? (
+              <div><span>原始反馈</span><b className={styles.changeValue}>{action.args.feedback_text}</b></div>
+            ) : null}
+            {typeof action.args?.reflection_text === 'string' && action.args.reflection_text.trim() ? (
+              <div><span>我的复盘</span><b className={styles.changeValue}>{action.args.reflection_text}</b></div>
+            ) : null}
+            {typeof action.args?.next_action_text === 'string' && action.args.next_action_text.trim() ? (
+              <div><span>下次行动</span><b className={styles.changeValue}>{action.args.next_action_text}</b></div>
+            ) : null}
+            <small>原始反馈与个人复盘会分开保存，不会生成录用概率或能力评分。</small>
+          </div>
+        ) : null}
         {action.workflow ? (
           <div className={styles.workflowHint}>
             <span>
@@ -456,7 +525,7 @@ export default function ProposalCard({ action, loading, evidence, onConfirm, onC
             message={action.risk_hint ?? '参考依据较少，请确认内容无误后再执行。'}
           />
         ) : null}
-        {!thinEvidence ? (
+        {visibleEvidence.length > 0 ? (
           <div className={styles.prEvidence}>
             <div className={styles.panelLabel}>参考依据</div>
             <EvidenceList items={visibleEvidence.slice(0, 3)} compact onOpenEvidence={onOpenEvidence} />
