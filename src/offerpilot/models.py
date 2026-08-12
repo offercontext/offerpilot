@@ -82,6 +82,83 @@ class ApplicationJDVersion(Base):
     )
 
 
+class ApplicationSubmissionSnapshot(Base):
+    __tablename__ = "application_submission_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "application_id",
+            "idempotency_key",
+            name="uq_application_submission_snapshots_application_key",
+        ),
+        Index("idx_application_submission_snapshots_app", "application_id", "submitted_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    application_id: Mapped[int] = mapped_column(
+        ForeignKey("applications.id", ondelete="CASCADE"), nullable=False
+    )
+    resume_id: Mapped[int] = mapped_column(
+        ForeignKey("resumes.id", ondelete="RESTRICT"), nullable=False
+    )
+    jd_version_id: Mapped[int] = mapped_column(
+        ForeignKey("application_jd_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    material_kit_id: Mapped[int | None] = mapped_column(
+        ForeignKey("application_material_kits.id", ondelete="RESTRICT"), nullable=True
+    )
+    resume_snapshot_json: Mapped[str] = mapped_column(Text, nullable=False)
+    resume_snapshot_hash: Mapped[str] = mapped_column(String, nullable=False)
+    jd_snapshot: Mapped[str] = mapped_column(Text, nullable=False)
+    jd_snapshot_hash: Mapped[str] = mapped_column(String, nullable=False)
+    material_snapshot_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    material_snapshot_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    note: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    source_kind: Mapped[str] = mapped_column(String, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
+    request_fingerprint_sha256: Mapped[str] = mapped_column(String, nullable=False)
+    submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
+
+
+class ApplicationOutcome(Base):
+    __tablename__ = "application_outcomes"
+    __table_args__ = (
+        UniqueConstraint(
+            "application_id",
+            "idempotency_key",
+            name="uq_application_outcomes_application_key",
+        ),
+        Index("idx_application_outcomes_app_occurred", "application_id", "occurred_at"),
+        Index("idx_application_outcomes_snapshot", "submission_snapshot_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    application_id: Mapped[int] = mapped_column(
+        ForeignKey("applications.id", ondelete="CASCADE"), nullable=False
+    )
+    submission_snapshot_id: Mapped[int] = mapped_column(
+        ForeignKey("application_submission_snapshots.id", ondelete="RESTRICT"), nullable=False
+    )
+    application_event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("application_events.id", ondelete="SET NULL"), nullable=True
+    )
+    stage: Mapped[str] = mapped_column(String, nullable=False)
+    result: Mapped[str] = mapped_column(String, nullable=False)
+    feedback_text: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    reflection_text: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    next_action_text: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    feedback_tags_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]", server_default="[]")
+    source_kind: Mapped[str] = mapped_column(String, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
+    request_fingerprint_sha256: Mapped[str] = mapped_column(String, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
+
+
 class ApplicationEvent(Base):
     __tablename__ = "application_events"
     __table_args__ = (
@@ -1064,6 +1141,8 @@ class InterviewStoryProposalAttempt(Base):
 APPLICATION_FOREIGN_KEY_MODELS = (
     ApplicationEvent,
     ApplicationJDVersion,
+    ApplicationSubmissionSnapshot,
+    ApplicationOutcome,
     InterviewNote,
     Offer,
     ResumeMatch,
