@@ -892,6 +892,9 @@ def _run_http_smoke(
                     _run_local_proposal_terminal_smoke(
                         client, steps, application_id, data_dir, smoke_resume_ids
                     )
+                    _run_application_outcome_http_smoke(
+                        client, steps, application_id, smoke_resume_ids
+                    )
                     _run_deterministic_chat_smoke(client, steps, application_id)
                     _run_chat_card_regression_smoke(client, steps, application_id, step_prefix="http_")
             finally:
@@ -902,6 +905,14 @@ def _run_http_smoke(
                 _assert_status(deleted_application.status_code, 404, "http_cleanup_visibility")
                 if real_ai:
                     _cleanup_real_ai_smoke_records(data_dir, application_id, smoke_resume_ids)
+                else:
+                    for resume_id in smoke_resume_ids:
+                        deleted_resume = client.delete(f"/api/resumes/{resume_id}")
+                        _assert_status(
+                            deleted_resume.status_code,
+                            200,
+                            "http_cleanup_resume",
+                        )
                 steps.append(SmokeStep("http_cleanup", f"deleted smoke application #{application_id}"))
 
     return SmokeReport(ok=True, steps=steps)
@@ -3955,6 +3966,94 @@ def _run_deterministic_chat_smoke(
     if conversations.json()[0]["pending_action"] is not None:
         raise RuntimeError("http pending action was not cleared")
     steps.append(SmokeStep("http_pending_cleared", "pending action cleared after confirmation"))
+
+
+def _run_application_outcome_http_smoke(
+    client: httpx.Client,
+    steps: list[SmokeStep],
+    application_id: int,
+    smoke_resume_ids: list[int],
+) -> None:
+    resume = client.post(
+        "/api/resumes",
+        json={
+            "title": "筱哲 · Outcome Smoke",
+            "source": "dialog",
+            "content_json": {"raw_text": "负责企业级 AI 应用交付与知识库质量建设。"},
+        },
+    )
+    _assert_status(resume.status_code, 201, "http_application_outcome_resume")
+    resume_id = int(resume.json()["id"])
+    smoke_resume_ids.append(resume_id)
+    jd_version_id = _save_application_jd_version(
+        client,
+        application_id,
+        "负责企业级 AI 应用研发、系统设计与知识库质量建设。",
+        "outcome-smoke-jd-0001",
+    )
+    snapshot_payload = {
+        "resume_id": resume_id,
+        "jd_version_id": jd_version_id,
+        "material_kit_id": None,
+        "submitted_at": "2026-08-12T09:30:00+08:00",
+        "note": "官网投递",
+        "idempotency_key": "outcome-smoke-snapshot-0001",
+    }
+    snapshot_url = f"/api/applications/{application_id}/submission-snapshots"
+    created = client.post(snapshot_url, json=snapshot_payload)
+    replay = client.post(snapshot_url, json=snapshot_payload)
+    _assert_status(created.status_code, 201, "http_application_outcome_snapshot")
+    _assert_status(replay.status_code, 200, "http_application_outcome_snapshot_replay")
+    if replay.json().get("id") != created.json().get("id"):
+        raise RuntimeError("application outcome snapshot replay created a duplicate")
+
+    pending = client.post(
+        "/api/chat",
+        json={
+            "message": "确认记录本次面试结果",
+            "conversation_id": 0,
+            "context_type": "application",
+            "context_ref": str(application_id),
+            "pilot_action": {
+                "type": "application_outcome_record",
+                "snapshotId": int(created.json()["id"]),
+                "eventId": None,
+                "stage": "interview",
+                "result": "advanced",
+                "feedbackText": "项目讲解清楚，系统设计还可深入。",
+                "reflectionText": "容量估算缺少量级依据。",
+                "nextActionText": "完成一轮容量估算专项练习。",
+                "feedbackTags": ["communication", "system_design"],
+                "occurredAt": "2026-08-12T15:00:00+08:00",
+            },
+        },
+    )
+    _assert_status(pending.status_code, 200, "http_application_outcome_pilot_pending")
+    pending_body = pending.json()
+    if pending_body.get("type") != "confirmation_required":
+        raise RuntimeError("application outcome Pilot action skipped confirmation")
+    if pending_body.get("pending_action", {}).get("tool_name") != "record_application_outcome":
+        raise RuntimeError("application outcome Pilot action returned the wrong tool")
+    confirmed = client.post(
+        "/api/chat/confirm",
+        json={
+            "conversation_id": pending_body["conversation_id"],
+            "approved": True,
+            "confirmation_token": pending_body["pending_action"]["confirmation_token"],
+        },
+    )
+    _assert_status(confirmed.status_code, 200, "http_application_outcome_pilot_confirm")
+    summary = client.get(f"/api/applications/{application_id}/outcome-summary")
+    _assert_status(summary.status_code, 200, "http_application_outcome_summary")
+    body = summary.json()
+    if body.get("total") != 1 or body.get("result_counts", {}).get("advanced") != 1:
+        raise RuntimeError("application outcome summary did not include the confirmed result")
+    steps.append(
+        SmokeStep(
+            "http_application_outcome_feedback",
+            "UI snapshot replayed and provider-free Pilot outcome was confirmed",
+        )
+    )
 
 
 def _run_real_ai_write_smoke(
