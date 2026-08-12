@@ -39,4 +39,10 @@ describe('InterviewV01View', () => {
     expect(workflowCss).toContain(':global(.ant-list-item-action)');
     expect(workflowCss).toContain('flex-wrap: wrap');
   });
+
+  it('keeps interview row content inset from the Ant list item border', async () => {
+    const workflowCss = await loadWorkflowCss();
+
+    expect(workflowCss).toMatch(/\.listRow\.listRow\s*\{[^}]*padding:\s*13px 14px;/s);
+  });
 });
