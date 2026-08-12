@@ -9,6 +9,8 @@ from offerpilot.models import (
     ApplicationEvidenceBundle,
     ApplicationJDVersion,
     ApplicationMaterialKit,
+    ApplicationOutcome,
+    ApplicationSubmissionSnapshot,
     MaterialRevisionProposal,
     OpportunityFitReview,
     OpportunityFitReviewSession,
@@ -153,6 +155,48 @@ def test_application_delete_if_matches_rejects_every_fk_dependency(tmp_path, dep
                 proposal_json="{}",
                 proposal_sha256="1" * 64,
             )
+        elif dependency_model in {ApplicationSubmissionSnapshot, ApplicationOutcome}:
+            resume = Resume(name="Main", content_json="{}")
+            jd_version = ApplicationJDVersion(
+                application_id=app.id,
+                version_number=1,
+                jd_text="JD",
+                content_sha256="0" * 64,
+                source_kind="ui",
+                idempotency_key="application-outcome-jd-version",
+                request_fingerprint_sha256="1" * 64,
+            )
+            session.add_all([resume, jd_version])
+            session.flush()
+            snapshot = ApplicationSubmissionSnapshot(
+                application_id=app.id,
+                resume_id=resume.id,
+                jd_version_id=jd_version.id,
+                resume_snapshot_json="{}",
+                resume_snapshot_hash="2" * 64,
+                jd_snapshot="JD",
+                jd_snapshot_hash="0" * 64,
+                source_kind="ui",
+                idempotency_key="application-submission-snapshot-dependency",
+                request_fingerprint_sha256="3" * 64,
+                submitted_at=datetime(2026, 7, 14, tzinfo=timezone.utc),
+            )
+            if dependency_model is ApplicationSubmissionSnapshot:
+                dependency = snapshot
+            else:
+                session.add(snapshot)
+                session.flush()
+                dependency = ApplicationOutcome(
+                    application_id=app.id,
+                    submission_snapshot_id=snapshot.id,
+                    stage="interview",
+                    result="advanced",
+                    feedback_tags_json="[]",
+                    source_kind="ui",
+                    idempotency_key="application-outcome-dependency",
+                    request_fingerprint_sha256="4" * 64,
+                    occurred_at=datetime(2026, 7, 14, tzinfo=timezone.utc),
+                )
         else:
             dependency = _application_dependency(dependency_model, app.id)
         session.add(dependency)
