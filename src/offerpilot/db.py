@@ -73,6 +73,7 @@ def init_database(db_path: Path) -> SessionFactory:
     _ensure_application_jd_versions_schema(engine)
     _ensure_interview_story_schema(engine)
     _ensure_application_outcome_schema(engine)
+    _ensure_adaptive_interview_practice_schema(engine)
     _ensure_offer_negotiation_schema(engine)
     interview_review_history_rebuilt = _ensure_interview_review_history_schema(engine)
     interview_knowledge_event_added = _ensure_column(
@@ -1273,6 +1274,16 @@ def _ensure_application_outcome_schema(engine) -> None:  # type: ignore[no-untyp
         engine,
         "0020_application_outcome_feedback",
         "Add frozen application submission snapshots and append-only outcome feedback",
+    )
+
+
+def _ensure_adaptive_interview_practice_schema(engine) -> None:  # type: ignore[no-untyped-def]
+    """Record the additive deterministic adaptive-practice schema."""
+
+    _record_migration(
+        engine,
+        "0021_adaptive_interview_practice",
+        "Add evidence-backed adaptive interview practice plans",
     )
 
 

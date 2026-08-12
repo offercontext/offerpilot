@@ -365,6 +365,52 @@ class InterviewReviewProposalOut(BaseModel):
     created_at: datetime | str
 
 
+class AdaptivePracticeStartIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    proposal_id: int
+    focus_id: str
+    expected_source_fingerprint: str
+    idempotency_key: str
+
+
+class AdaptivePracticeCompleteIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int
+    response_text: str
+    reflection_text: str = ""
+    self_assessment: Literal["needs_work", "clearer", "confident"]
+    idempotency_key: str
+
+
+class AdaptivePracticePlanOut(BaseModel):
+    id: int
+    application_id: int
+    application_event_id: int
+    interview_note_id: int
+    proposal_id: int
+    focus_id: str
+    company_name: str
+    position_name: str
+    drill_kind: str
+    title: str
+    observation: str
+    reason: str
+    prompt: str
+    source_path: str
+    source_excerpt: str
+    source_fingerprint: str
+    source_status: Literal["current", "changed", "missing"]
+    status: Literal["in_progress", "completed"]
+    revision: int
+    response_text: str
+    reflection_text: str
+    self_assessment: str
+    created_at: str
+    completed_at: str | None
+
+
 class InterviewPreparationProposalOut(BaseModel):
     id: int
     application_id: int

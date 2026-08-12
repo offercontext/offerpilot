@@ -113,6 +113,12 @@ from offerpilot.repositories.application_outcomes import (
     OutcomeCreate,
     SubmissionSnapshotCreate,
 )
+from offerpilot.repositories.adaptive_interview_practice import (
+    AdaptivePracticeConflict,
+    AdaptivePracticeNotFound,
+    AdaptivePracticeRepository,
+    AdaptivePracticeValidationError,
+)
 from offerpilot.repositories.chat import ChatRepository
 from offerpilot.repositories.application_events import (
     ApplicationEventCreate,
@@ -832,6 +838,7 @@ def create_app(
         session_factory, confirmation_secret=app_config.confirmation_secret
     )
     interview_review_proposals = InterviewReviewProposalsRepository(session_factory)
+    adaptive_practice = AdaptivePracticeRepository(session_factory)
     interview_preparation_proposals = InterviewPreparationProposalsRepository(session_factory)
     interview_knowledge_capture = InterviewKnowledgeCaptureRepository(session_factory)
     interview_index = InterviewIndexRepository(session_factory)
@@ -3179,6 +3186,91 @@ def create_app(
             _interview_review_proposal_json(proposal),
             status_code=201 if created else 200,
         )
+
+    @app.get("/api/interview-practice/recommendations")
+    def list_adaptive_practice_recommendations() -> JSONResponse:
+        return JSONResponse(adaptive_practice.list_recommendations())
+
+    @app.get("/api/interview-practice/plans")
+    def list_adaptive_practice_plans() -> JSONResponse:
+        return JSONResponse(adaptive_practice.list_plans())
+
+    @app.post("/api/interview-practice/plans")
+    def start_adaptive_practice(payload: dict[str, Any] = Body(...)) -> JSONResponse:
+        required = {
+            "proposal_id",
+            "focus_id",
+            "expected_source_fingerprint",
+            "idempotency_key",
+        }
+        if set(payload) != required:
+            return _adaptive_practice_error(422, "adaptive_practice_invalid_payload")
+        proposal_id = payload.get("proposal_id")
+        if type(proposal_id) is not int or proposal_id <= 0:
+            return _adaptive_practice_error(422, "adaptive_practice_invalid_payload")
+        values = [payload.get(name) for name in required - {"proposal_id"}]
+        if any(not isinstance(value, str) or not value.strip() for value in values):
+            return _adaptive_practice_error(422, "adaptive_practice_invalid_payload")
+        try:
+            plan, created = adaptive_practice.start(
+                proposal_id=proposal_id,
+                focus_id=payload["focus_id"].strip(),
+                expected_source_fingerprint=payload["expected_source_fingerprint"].strip(),
+                idempotency_key=payload["idempotency_key"].strip(),
+            )
+        except AdaptivePracticeNotFound:
+            return _adaptive_practice_error(404, "adaptive_practice_not_found")
+        except AdaptivePracticeConflict as exc:
+            code = (
+                "adaptive_practice_idempotency_conflict"
+                if "idempotency" in str(exc)
+                else "adaptive_practice_source_conflict"
+            )
+            return _adaptive_practice_error(409, code)
+        return JSONResponse(plan, status_code=201 if created else 200)
+
+    @app.post("/api/interview-practice/plans/{plan_id}/complete")
+    def complete_adaptive_practice(
+        plan_id: int, payload: dict[str, Any] = Body(...)
+    ) -> JSONResponse:
+        required = {
+            "expected_revision",
+            "response_text",
+            "reflection_text",
+            "self_assessment",
+            "idempotency_key",
+        }
+        if set(payload) != required:
+            return _adaptive_practice_error(422, "adaptive_practice_invalid_payload")
+        revision = payload.get("expected_revision")
+        if type(revision) is not int or revision <= 0:
+            return _adaptive_practice_error(422, "adaptive_practice_invalid_payload")
+        if any(
+            not isinstance(payload.get(name), str)
+            for name in required - {"expected_revision"}
+        ):
+            return _adaptive_practice_error(422, "adaptive_practice_invalid_payload")
+        try:
+            plan, _ = adaptive_practice.complete(
+                plan_id=plan_id,
+                expected_revision=revision,
+                response_text=payload["response_text"],
+                reflection_text=payload["reflection_text"],
+                self_assessment=payload["self_assessment"],
+                idempotency_key=payload["idempotency_key"].strip(),
+            )
+        except AdaptivePracticeNotFound:
+            return _adaptive_practice_error(404, "adaptive_practice_not_found")
+        except AdaptivePracticeValidationError:
+            return _adaptive_practice_error(422, "adaptive_practice_invalid_payload")
+        except AdaptivePracticeConflict as exc:
+            code = (
+                "adaptive_practice_idempotency_conflict"
+                if "idempotency" in str(exc)
+                else "adaptive_practice_revision_conflict"
+            )
+            return _adaptive_practice_error(409, code)
+        return JSONResponse(plan)
 
     @app.get("/api/offers")
     def list_offers(status: str = "") -> list[dict[str, Any]]:
@@ -6344,6 +6436,17 @@ def error_response(
     if details:
         payload.update(details)
     return JSONResponse(payload, status_code=status_code)
+
+
+def _adaptive_practice_error(status_code: int, code: str) -> JSONResponse:
+    messages = {
+        "adaptive_practice_not_found": "练习或来源已不可见，请重新打开页面。",
+        "adaptive_practice_source_conflict": "复盘来源已变化，请重新核对后再开始。",
+        "adaptive_practice_idempotency_conflict": "本次操作内容已变化，请重新开始。",
+        "adaptive_practice_revision_conflict": "练习状态已变化，请重新加载。",
+        "adaptive_practice_invalid_payload": "练习内容不完整，请检查后重试。",
+    }
+    return error_response(status_code, messages[code], code=code)
 
 
 def _application_jd_summary_json(version: Any) -> dict[str, Any]:

@@ -674,6 +674,66 @@ class InterviewReviewProposal(Base):
     )
 
 
+class AdaptivePracticePlan(Base):
+    __tablename__ = "adaptive_practice_plans"
+    __table_args__ = (
+        UniqueConstraint(
+            "start_idempotency_key",
+            name="uq_adaptive_practice_start_key",
+        ),
+        UniqueConstraint(
+            "interview_review_proposal_id",
+            "focus_id",
+            name="uq_adaptive_practice_proposal_focus",
+        ),
+        UniqueConstraint(
+            "completion_idempotency_key",
+            name="uq_adaptive_practice_completion_key",
+        ),
+        Index("idx_adaptive_practice_application", "application_id", "created_at"),
+        Index("idx_adaptive_practice_status", "status", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    application_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    application_event_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    interview_note_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    interview_review_proposal_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    focus_id: Mapped[str] = mapped_column(String, nullable=False)
+    start_idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
+    start_input_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
+    source_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
+    source_path: Mapped[str] = mapped_column(String, nullable=False)
+    source_excerpt: Mapped[str] = mapped_column(Text, nullable=False)
+    source_hash: Mapped[str] = mapped_column(String, nullable=False)
+    drill_kind: Mapped[str] = mapped_column(String, nullable=False)
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    observation: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, default="in_progress", server_default="in_progress"
+    )
+    revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    response_text: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    reflection_text: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    self_assessment: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    completion_idempotency_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    completion_fingerprint: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.current_timestamp()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.current_timestamp(),
+        onupdate=func.current_timestamp(),
+    )
+
+
 class InterviewPreparationProposal(Base):
     __tablename__ = "interview_preparation_proposals"
     __table_args__ = (
