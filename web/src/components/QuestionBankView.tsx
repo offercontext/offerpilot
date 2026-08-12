@@ -61,7 +61,7 @@ const STATUS_META: Record<QuestionStatus, { label: string; color: string }> = {
   mastered: { label: '已掌握', color: 'green' },
 };
 
-export default function QuestionBankView({ focusId, adaptiveFocus }: { focusId?: number; adaptiveFocus?: AdaptivePracticeFocus }) {
+export default function QuestionBankView({ focusId, adaptiveFocus, onAdaptiveFocusConsumed }: { focusId?: number; adaptiveFocus?: AdaptivePracticeFocus; onAdaptiveFocusConsumed?: () => void }) {
   const [tab, setTab] = useState<'adaptive' | 'bank' | 'practice'>(adaptiveFocus ? 'adaptive' : 'bank');
 
   // When launched from a mock-interview drill link, surface the target id.
@@ -72,8 +72,11 @@ export default function QuestionBankView({ focusId, adaptiveFocus }: { focusId?:
   }, [focusId]);
 
   useEffect(() => {
-    if (adaptiveFocus) setTab('adaptive');
-  }, [adaptiveFocus]);
+    if (adaptiveFocus) {
+      setTab('adaptive');
+      onAdaptiveFocusConsumed?.();
+    }
+  }, [adaptiveFocus, onAdaptiveFocusConsumed]);
 
   return (
     <div className={styles.page}>

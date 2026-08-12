@@ -3,6 +3,7 @@ import { Alert, Button, Empty, Input, Modal, Skeleton, Tag, message } from 'antd
 import { ArrowRightOutlined, CheckCircleOutlined, ClockCircleOutlined, CompassOutlined } from '@ant-design/icons';
 import {
   completeAdaptivePractice,
+  AdaptivePracticeError,
   listAdaptivePracticePlans,
   listAdaptivePracticeRecommendations,
   startAdaptivePractice,
@@ -15,6 +16,30 @@ import type {
 } from '@/types/adaptiveInterviewPractice';
 import styles from './AdaptiveInterviewPracticeWorkspace.module.css';
 
+const SESSION_KEY = 'offerpilot:adaptive-practice:draft';
+
+interface SessionDraft {
+  candidate: AdaptivePracticeRecommendation | null;
+  answer: string;
+  reflection: string;
+  assessment: AdaptivePracticeAssessment | null;
+  startKey: string | null;
+  completionKey: string | null;
+  resultUnknown: boolean;
+  pendingOperation: 'start' | 'complete' | null;
+}
+
+function restoreSession(): SessionDraft {
+  const empty: SessionDraft = { candidate: null, answer: '', reflection: '', assessment: null, startKey: null, completionKey: null, resultUnknown: false, pendingOperation: null };
+  try {
+    const raw = sessionStorage.getItem(SESSION_KEY);
+    if (!raw) return empty;
+    return { ...empty, ...JSON.parse(raw) } as SessionDraft;
+  } catch {
+    return empty;
+  }
+}
+
 const ASSESSMENTS: Array<{ value: AdaptivePracticeAssessment; label: string; detail: string }> = [
   { value: 'needs_work', label: '还需要练', detail: '关键步骤还不够顺畅' },
   { value: 'clearer', label: '更清楚了', detail: '结构已经明显改善' },
@@ -26,17 +51,20 @@ function newKey(prefix: string): string {
 }
 
 export default function AdaptiveInterviewPracticeWorkspace({ focus }: { focus?: AdaptivePracticeFocus }) {
+  const restored = useMemo(restoreSession, []);
   const [recommendations, setRecommendations] = useState<AdaptivePracticeRecommendation[]>([]);
   const [plans, setPlans] = useState<AdaptivePracticePlan[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
-  const [candidate, setCandidate] = useState<AdaptivePracticeRecommendation | null>(null);
+  const [candidate, setCandidate] = useState<AdaptivePracticeRecommendation | null>(restored.candidate);
   const [active, setActive] = useState<AdaptivePracticePlan | null>(null);
-  const [answer, setAnswer] = useState('');
-  const [reflection, setReflection] = useState('');
-  const [assessment, setAssessment] = useState<AdaptivePracticeAssessment | null>(null);
-  const [startKey, setStartKey] = useState<string | null>(null);
-  const [completionKey, setCompletionKey] = useState<string | null>(null);
+  const [answer, setAnswer] = useState(restored.answer);
+  const [reflection, setReflection] = useState(restored.reflection);
+  const [assessment, setAssessment] = useState<AdaptivePracticeAssessment | null>(restored.assessment);
+  const [startKey, setStartKey] = useState<string | null>(restored.startKey);
+  const [completionKey, setCompletionKey] = useState<string | null>(restored.completionKey);
+  const [resultUnknown, setResultUnknown] = useState(restored.resultUnknown);
+  const [pendingOperation, setPendingOperation] = useState<'start' | 'complete' | null>(restored.pendingOperation);
   const [busy, setBusy] = useState(false);
 
   const load = async () => {
@@ -60,6 +88,11 @@ export default function AdaptiveInterviewPracticeWorkspace({ focus }: { focus?: 
 
   useEffect(() => { void load(); }, []);
 
+  useEffect(() => {
+    const draft: SessionDraft = { candidate, answer, reflection, assessment, startKey, completionKey, resultUnknown, pendingOperation };
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify(draft));
+  }, [candidate, answer, reflection, assessment, startKey, completionKey, resultUnknown, pendingOperation]);
+
   const orderedRecommendations = useMemo(() => {
     if (!focus) return recommendations;
     return [...recommendations].sort((left, right) => {
@@ -79,8 +112,20 @@ export default function AdaptiveInterviewPracticeWorkspace({ focus }: { focus?: 
       setActive(plan);
       setCandidate(null);
       setStartKey(null);
+      setResultUnknown(false);
+      setPendingOperation(null);
       setRecommendations((current) => current.filter((item) => item.focus_id !== plan.focus_id || item.proposal_id !== plan.proposal_id));
     } catch (cause) {
+      if (cause instanceof AdaptivePracticeError && cause.code) {
+        setStartKey(null);
+        setCandidate(null);
+        setResultUnknown(false);
+        setPendingOperation(null);
+        await load();
+      } else {
+        setResultUnknown(true);
+        setPendingOperation('start');
+      }
       message.error(cause instanceof Error ? cause.message : '暂时无法开始练习');
     } finally {
       setBusy(false);
@@ -106,8 +151,20 @@ export default function AdaptiveInterviewPracticeWorkspace({ focus }: { focus?: 
       setReflection('');
       setAssessment(null);
       setCompletionKey(null);
+      setResultUnknown(false);
+      setPendingOperation(null);
+      sessionStorage.removeItem(SESSION_KEY);
       message.success('练习已完成并保存');
     } catch (cause) {
+      if (cause instanceof AdaptivePracticeError && cause.code) {
+        setCompletionKey(null);
+        setResultUnknown(false);
+        setPendingOperation(null);
+        await load();
+      } else {
+        setResultUnknown(true);
+        setPendingOperation('complete');
+      }
       message.error(cause instanceof Error ? cause.message : '完成结果待确认，请使用原操作重试');
     } finally {
       setBusy(false);
@@ -138,20 +195,20 @@ export default function AdaptiveInterviewPracticeWorkspace({ focus }: { focus?: 
             </div>
             <div className={styles.promptBox}><span>本次练习</span><strong>{active.prompt}</strong></div>
             <label className={styles.fieldLabel} htmlFor="adaptive-answer">你的回答</label>
-            <Input.TextArea id="adaptive-answer" aria-label="练习回答" value={answer} onChange={(event) => setAnswer(event.target.value)} autoSize={{ minRows: 6, maxRows: 12 }} placeholder="先写结论，再补充关键事实和影响……" />
+            <Input.TextArea id="adaptive-answer" aria-label="练习回答" disabled={resultUnknown} value={answer} onChange={(event) => setAnswer(event.target.value)} autoSize={{ minRows: 6, maxRows: 12 }} placeholder="先写结论，再补充关键事实和影响……" />
             <label className={styles.fieldLabel} htmlFor="adaptive-reflection">练完后的复盘（可选）</label>
-            <Input.TextArea id="adaptive-reflection" aria-label="练习复盘" value={reflection} onChange={(event) => setReflection(event.target.value)} autoSize={{ minRows: 3, maxRows: 6 }} placeholder="哪一步比上次更清楚？" />
+            <Input.TextArea id="adaptive-reflection" aria-label="练习复盘" disabled={resultUnknown} value={reflection} onChange={(event) => setReflection(event.target.value)} autoSize={{ minRows: 3, maxRows: 6 }} placeholder="哪一步比上次更清楚？" />
             <div className={styles.assessmentGroup}>
               <span className={styles.fieldLabel}>这次练习后的感受</span>
               <div className={styles.assessmentOptions}>
                 {ASSESSMENTS.map((item) => (
-                  <Button key={item.value} className={assessment === item.value ? styles.assessmentActive : styles.assessment} onClick={() => setAssessment(item.value)}>
+                  <Button key={item.value} disabled={resultUnknown} className={assessment === item.value ? styles.assessmentActive : styles.assessment} onClick={() => setAssessment(item.value)}>
                     <strong>{item.label}</strong><span>{item.detail}</span>
                   </Button>
                 ))}
               </div>
             </div>
-            <Button type="primary" size="large" disabled={!answer.trim() || !assessment} loading={busy} onClick={() => void finish()}>完成本次练习</Button>
+            {resultUnknown && pendingOperation === 'complete' ? <Alert type="warning" showIcon message="完成结果待确认，输入已冻结。" action={<Button size="large" onClick={() => void finish()}>使用原操作重试</Button>} /> : <Button type="primary" size="large" disabled={!answer.trim() || !assessment} loading={busy} onClick={() => void finish()}>完成本次练习</Button>}
           </div>
           <aside className={styles.evidencePanel}>
             <span className={styles.eyebrow}>为什么现在练</span>
@@ -172,7 +229,7 @@ export default function AdaptiveInterviewPracticeWorkspace({ focus }: { focus?: 
             <article key={`${item.proposal_id}:${item.focus_id}`} className={styles.recommendationCard}>
               <div><Tag color="purple">{item.company_name} · {item.position_name}</Tag><h4>{item.title}</h4><p>{item.observation}</p></div>
               <div className={styles.sourcePreview}><span>复盘原文</span><q>{item.source_excerpt}</q></div>
-              <Button type="primary" onClick={() => setCandidate(item)}>查看并开始 <ArrowRightOutlined /></Button>
+              <Button type="primary" size="large" onClick={() => setCandidate(item)}>查看并开始 <ArrowRightOutlined /></Button>
             </article>
           ))}</div> : <Empty description="当前没有新的复盘训练建议" image={Empty.PRESENTED_IMAGE_SIMPLE} />}
         </section>
@@ -188,7 +245,7 @@ export default function AdaptiveInterviewPracticeWorkspace({ focus }: { focus?: 
         ))}</div>
       </section>
 
-      <Modal title="开始前确认" open={Boolean(candidate)} confirmLoading={busy} okText="确认开始" cancelText="暂不开始" onOk={() => void confirmStart()} onCancel={() => { if (!busy) { setCandidate(null); setStartKey(null); } }}>
+      <Modal title="开始前确认" open={Boolean(candidate)} confirmLoading={busy} okText={resultUnknown && pendingOperation === 'start' ? '使用原操作重试' : '确认开始'} cancelText="暂不开始" cancelButtonProps={{ disabled: resultUnknown }} onOk={() => void confirmStart()} onCancel={() => { if (!busy && !resultUnknown) { setCandidate(null); setStartKey(null); } }}>
         {candidate ? <div className={styles.confirmation}><p>你将开始：<strong>{candidate.title}</strong></p><div><span>为什么建议现在练</span><p>{candidate.reason}</p></div><div><span>使用的冻结来源</span><blockquote>{candidate.source_excerpt}</blockquote></div><Alert type="info" showIcon message="只有确认后才会创建练习记录；不会调用 AI。" /></div> : null}
       </Modal>
     </div>

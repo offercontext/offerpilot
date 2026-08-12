@@ -15,6 +15,10 @@ vi.mock('@/services/adaptiveInterviewPractice', () => ({
   listAdaptivePracticePlans: service.plans,
   startAdaptivePractice: service.start,
   completeAdaptivePractice: service.complete,
+  AdaptivePracticeError: class extends Error {
+    code?: string;
+    constructor(code?: string) { super(code ?? 'unknown'); this.code = code; }
+  },
 }));
 
 const { default: AdaptiveInterviewPracticeWorkspace } = await import('./AdaptiveInterviewPracticeWorkspace');
@@ -59,6 +63,8 @@ beforeEach(() => {
     configurable: true,
     value: () => ({ matches: false, addListener: () => undefined, removeListener: () => undefined }),
   });
+  const nativeGetComputedStyle = window.getComputedStyle.bind(window);
+  vi.spyOn(window, 'getComputedStyle').mockImplementation((element) => nativeGetComputedStyle(element));
   service.recommendations.mockReset().mockResolvedValue([recommendation]);
   service.plans.mockReset().mockResolvedValue([]);
   service.start.mockReset().mockResolvedValue(plan);
@@ -66,11 +72,13 @@ beforeEach(() => {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
+  sessionStorage.clear();
 });
 
 afterEach(() => {
   act(() => root?.unmount());
   container?.remove();
+  vi.restoreAllMocks();
 });
 
 describe('AdaptiveInterviewPracticeWorkspace', () => {
@@ -119,5 +127,38 @@ describe('AdaptiveInterviewPracticeWorkspace', () => {
       reflection_text: '下一次先给结论。',
       self_assessment: 'clearer',
     }));
+  });
+
+  it('retains an unknown completion key and frozen input across remount', async () => {
+    service.recommendations.mockResolvedValue([]);
+    service.plans.mockResolvedValue([plan]);
+    service.complete.mockRejectedValueOnce(new Error('network')).mockResolvedValueOnce({ ...plan, status: 'completed', revision: 2, self_assessment: 'clearer' });
+    act(() => root?.render(<AdaptiveInterviewPracticeWorkspace />));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    const response = container?.querySelector('textarea[aria-label="练习回答"]') as HTMLTextAreaElement;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(response, '保留的原回答');
+      response.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    act(() => [...(container?.querySelectorAll('button') ?? [])].find((button) => button.textContent?.includes('更清楚了'))?.click());
+    await act(async () => {
+      [...(container?.querySelectorAll('button') ?? [])].find((button) => button.textContent === '完成本次练习')?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container?.textContent).toContain('使用原操作重试');
+    const firstKey = service.complete.mock.calls[0][1].idempotency_key;
+
+    act(() => root?.unmount());
+    root = createRoot(container!);
+    act(() => root?.render(<AdaptiveInterviewPracticeWorkspace />));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect((container?.querySelector('textarea[aria-label="练习回答"]') as HTMLTextAreaElement).value).toBe('保留的原回答');
+    await act(async () => {
+      [...(container?.querySelectorAll('button') ?? [])].find((button) => button.textContent === '使用原操作重试')?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(service.complete.mock.calls[1][1].idempotency_key).toBe(firstKey);
   });
 });

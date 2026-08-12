@@ -41,5 +41,15 @@ describe('InterviewV01View adaptive practice entry', () => {
     expect(open).not.toHaveBeenCalled();
     act(() => [...(container?.querySelectorAll('button') ?? [])].find((button) => button.textContent?.includes('查看并开始'))?.click());
     expect(open).toHaveBeenCalledWith({ proposalId: 4, focusId: 'focus-1' });
+    const entry = [...(container?.querySelectorAll('button') ?? [])].find((button) => button.textContent?.includes('查看并开始'));
+    expect(entry?.className).toContain('ant-btn-lg');
+  });
+
+  it('shows a retry state when recommendations cannot be loaded', async () => {
+    services.recommendations.mockRejectedValue(new Error('network'));
+    act(() => root?.render(<InterviewV01View onOpenAdaptivePractice={() => {}} />));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(container?.textContent).toContain('复盘训练建议暂时无法加载');
+    expect(container?.textContent).toContain('重新加载建议');
   });
 });

@@ -3196,14 +3196,14 @@ def create_app(
         return JSONResponse(adaptive_practice.list_plans())
 
     @app.post("/api/interview-practice/plans")
-    def start_adaptive_practice(payload: dict[str, Any] = Body(...)) -> JSONResponse:
+    def start_adaptive_practice(payload: Any = Body(None)) -> JSONResponse:
         required = {
             "proposal_id",
             "focus_id",
             "expected_source_fingerprint",
             "idempotency_key",
         }
-        if set(payload) != required:
+        if not isinstance(payload, dict) or set(payload) != required:
             return _adaptive_practice_error(422, "adaptive_practice_invalid_payload")
         proposal_id = payload.get("proposal_id")
         if type(proposal_id) is not int or proposal_id <= 0:
@@ -3231,7 +3231,7 @@ def create_app(
 
     @app.post("/api/interview-practice/plans/{plan_id}/complete")
     def complete_adaptive_practice(
-        plan_id: int, payload: dict[str, Any] = Body(...)
+        plan_id: int, payload: Any = Body(None)
     ) -> JSONResponse:
         required = {
             "expected_revision",
@@ -3240,7 +3240,7 @@ def create_app(
             "self_assessment",
             "idempotency_key",
         }
-        if set(payload) != required:
+        if not isinstance(payload, dict) or set(payload) != required:
             return _adaptive_practice_error(422, "adaptive_practice_invalid_payload")
         revision = payload.get("expected_revision")
         if type(revision) is not int or revision <= 0:

@@ -36,4 +36,3 @@ def test_adaptive_practice_schema_is_created_and_idempotent(tmp_path) -> None:
         "self_assessment",
     } <= columns
     assert "0021_adaptive_interview_practice" in migrations
-

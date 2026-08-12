@@ -1534,7 +1534,7 @@ function AppShellContent() {
             />
           )}
           {view === 'knowledge' && <KnowledgeSourcesView />}
-          {view === 'questions' && <QuestionBankView adaptiveFocus={adaptivePracticeFocus} />}
+          {view === 'questions' && <QuestionBankView adaptiveFocus={adaptivePracticeFocus} onAdaptiveFocusConsumed={() => setAdaptivePracticeFocus(undefined)} />}
           {view === 'interview' && (interviewStoryLibraryOpen ? (
             <InterviewStoryLibraryView
               key={interviewStoryLibraryRevision}

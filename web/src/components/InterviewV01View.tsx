@@ -23,6 +23,7 @@ export default function InterviewV01View({ onOpenApplication, onOpenPreparation,
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [practice, setPractice] = useState<AdaptivePracticeRecommendation | null>(null);
+  const [practiceError, setPracticeError] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -36,13 +37,14 @@ export default function InterviewV01View({ onOpenApplication, onOpenPreparation,
     return () => { active = false; };
   }, []);
 
-  useEffect(() => {
-    let active = true;
-    listAdaptivePracticeRecommendations()
-      .then((result) => { if (active) setPractice(result[0] ?? null); })
-      .catch(() => { if (active) setPractice(null); });
-    return () => { active = false; };
-  }, []);
+  const loadPractice = () => {
+    setPracticeError(false);
+    return listAdaptivePracticeRecommendations()
+      .then((result) => setPractice(result[0] ?? null))
+      .catch(() => { setPractice(null); setPracticeError(true); });
+  };
+
+  useEffect(() => { void loadPractice(); }, []);
 
   return (
     <div data-testid="interview-surface" className={`${workflowStyles.surface} op-view-enter`} style={{ padding: 24 }}>
@@ -63,11 +65,12 @@ export default function InterviewV01View({ onOpenApplication, onOpenPreparation,
             <h2>{practice.title}</h2>
             <p>{practice.observation}</p>
           </div>
-          <Button type="primary" onClick={() => onOpenAdaptivePractice({ proposalId: practice.proposal_id, focusId: practice.focus_id })}>
+          <Button type="primary" size="large" onClick={() => onOpenAdaptivePractice({ proposalId: practice.proposal_id, focusId: practice.focus_id })}>
             查看并开始 <ArrowRightOutlined />
           </Button>
         </section>
       ) : null}
+      {practiceError && onOpenAdaptivePractice ? <Alert style={{ marginBottom: 20 }} type="warning" showIcon message="复盘训练建议暂时无法加载" action={<Button size="large" onClick={() => void loadPractice()}>重新加载建议</Button>} /> : null}
       {loading ? <Spin aria-label="正在加载面试列表" /> : null}
       {error ? <Alert type="error" showIcon message="面试列表暂时无法加载，请稍后重试。" /> : null}
       {!loading && !error && items.length === 0 ? (

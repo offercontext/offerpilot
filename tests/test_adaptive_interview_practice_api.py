@@ -132,6 +132,26 @@ def test_adaptive_practice_api_returns_stable_validation_and_conflict_codes(tmp_
     assert invalid.status_code == 422
     assert invalid.json()["error_code"] == "adaptive_practice_invalid_payload"
 
+    for malformed in (None, [], "not-an-object"):
+        invalid_start = (
+            client.post("/api/interview-practice/plans")
+            if malformed is None
+            else client.post("/api/interview-practice/plans", json=malformed)
+        )
+        assert invalid_start.status_code == 422
+        assert invalid_start.json()["error_code"] == "adaptive_practice_invalid_payload"
+
+        invalid_complete = (
+            client.post("/api/interview-practice/plans/1/complete")
+            if malformed is None
+            else client.post(
+                "/api/interview-practice/plans/1/complete",
+                json=malformed,
+            )
+        )
+        assert invalid_complete.status_code == 422
+        assert invalid_complete.json()["error_code"] == "adaptive_practice_invalid_payload"
+
     stale = client.post(
         "/api/interview-practice/plans",
         json={

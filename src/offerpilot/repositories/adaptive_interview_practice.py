@@ -108,8 +108,16 @@ class AdaptivePracticeRepository:
             plans = list(
                 session.scalars(
                     select(AdaptivePracticePlan)
+                    .join(InterviewNote, InterviewNote.id == AdaptivePracticePlan.interview_note_id)
+                    .join(ApplicationEvent, ApplicationEvent.id == AdaptivePracticePlan.application_event_id)
                     .join(Application, Application.id == AdaptivePracticePlan.application_id)
-                    .where(Application.deleted_at.is_(None))
+                    .where(
+                        Application.deleted_at.is_(None),
+                        InterviewNote.application_id == AdaptivePracticePlan.application_id,
+                        InterviewNote.application_event_id == AdaptivePracticePlan.application_event_id,
+                        ApplicationEvent.application_id == AdaptivePracticePlan.application_id,
+                        ApplicationEvent.event_type == "interview",
+                    )
                     .order_by(AdaptivePracticePlan.created_at.desc(), AdaptivePracticePlan.id.desc())
                 )
             )
@@ -149,7 +157,10 @@ class AdaptivePracticeRepository:
             if existing is not None:
                 if existing.start_input_fingerprint != request_fingerprint:
                     raise AdaptivePracticeConflict("adaptive practice idempotency input changed")
-                return _plan_json(session, existing), False
+                visible = _visible_plan(session, existing.id)
+                if visible is None:
+                    raise AdaptivePracticeNotFound()
+                return _plan_json(session, visible), False
             proposal = session.get(InterviewReviewProposal, proposal_id)
             if proposal is None:
                 raise AdaptivePracticeNotFound()
@@ -179,7 +190,9 @@ class AdaptivePracticeRepository:
                 source_fingerprint=expected_source_fingerprint,
                 source_path=recommendation["source_path"],
                 source_excerpt=recommendation["source_excerpt"],
-                source_hash=sha256_text(recommendation["source_excerpt"]),
+                source_hash=sha256_text(
+                    str(getattr(note, _PATH_TO_FIELD[recommendation["source_path"]], ""))
+                ),
                 drill_kind=recommendation["drill_kind"],
                 title=recommendation["title"],
                 observation=recommendation["observation"],
@@ -324,6 +337,7 @@ def _recommendation(
                     "focus_id": focus_id,
                     "source_path": path,
                     "source_excerpt": excerpt,
+                    "source_value_hash": sha256_text(current),
                     "note_id": note.id,
                     "event_id": event.id,
                 }
@@ -352,8 +366,17 @@ def _recommendation(
 def _visible_plan(session: Session, plan_id: int) -> AdaptivePracticePlan | None:
     return session.scalar(
         select(AdaptivePracticePlan)
+        .join(InterviewNote, InterviewNote.id == AdaptivePracticePlan.interview_note_id)
+        .join(ApplicationEvent, ApplicationEvent.id == AdaptivePracticePlan.application_event_id)
         .join(Application, Application.id == AdaptivePracticePlan.application_id)
-        .where(AdaptivePracticePlan.id == plan_id, Application.deleted_at.is_(None))
+        .where(
+            AdaptivePracticePlan.id == plan_id,
+            Application.deleted_at.is_(None),
+            InterviewNote.application_id == AdaptivePracticePlan.application_id,
+            InterviewNote.application_event_id == AdaptivePracticePlan.application_event_id,
+            ApplicationEvent.application_id == AdaptivePracticePlan.application_id,
+            ApplicationEvent.event_type == "interview",
+        )
     )
 
 
@@ -366,7 +389,7 @@ def _source_status(session: Session, plan: AdaptivePracticePlan) -> str:
     if field is None:
         return "missing"
     current = str(getattr(note, field, ""))
-    return "current" if plan.source_excerpt in current else "changed"
+    return "current" if sha256_text(current) == plan.source_hash else "changed"
 
 
 def _plan_json(session: Session, plan: AdaptivePracticePlan) -> dict[str, Any]:

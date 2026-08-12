@@ -157,7 +157,7 @@ def test_start_rejects_changed_source_and_changed_idempotent_input(tmp_path) -> 
     with pytest.raises(AdaptivePracticeConflict, match="source"):
         repository.start(
             proposal_id=proposal_id,
-            focus_id="focus-reflection",
+            focus_id=recommendation["focus_id"],
             expected_source_fingerprint=reflection["source_fingerprint"] + "-stale",
             idempotency_key="practice-start-2",
         )
@@ -238,3 +238,74 @@ def test_deleted_application_hides_recommendations_and_plans(tmp_path) -> None:
     assert repository.list_plans() == []
     with pytest.raises(AdaptivePracticeNotFound):
         repository.get(plan["id"])
+    with pytest.raises(AdaptivePracticeNotFound):
+        repository.start(
+            proposal_id=proposal_id,
+            focus_id=recommendation["focus_id"],
+            expected_source_fingerprint=recommendation["source_fingerprint"],
+            idempotency_key="practice-start-1",
+        )
+
+
+def test_note_or_event_deletion_hides_frozen_plan(tmp_path) -> None:
+    session_factory, _, event_id, note_id, proposal_id = _setup(tmp_path)
+    repository = AdaptivePracticeRepository(session_factory)
+    recommendation = repository.list_recommendations()[0]
+    plan, _ = repository.start(
+        proposal_id=proposal_id,
+        focus_id=recommendation["focus_id"],
+        expected_source_fingerprint=recommendation["source_fingerprint"],
+        idempotency_key="practice-start-hidden",
+    )
+    with session_factory() as session:
+        note = session.get(InterviewNote, note_id)
+        assert note is not None
+        session.delete(note)
+        session.commit()
+    assert repository.list_plans() == []
+    with pytest.raises(AdaptivePracticeNotFound):
+        repository.get(plan["id"])
+
+    session_factory2, _, event_id2, _, proposal_id2 = _setup(tmp_path / "event")
+    repository2 = AdaptivePracticeRepository(session_factory2)
+    recommendation2 = repository2.list_recommendations()[0]
+    plan2, _ = repository2.start(
+        proposal_id=proposal_id2,
+        focus_id=recommendation2["focus_id"],
+        expected_source_fingerprint=recommendation2["source_fingerprint"],
+        idempotency_key="practice-start-event-hidden",
+    )
+    with session_factory2() as session:
+        event = session.get(ApplicationEvent, event_id2)
+        assert event is not None
+        session.delete(event)
+        session.commit()
+    assert repository2.list_plans() == []
+    with pytest.raises(AdaptivePracticeNotFound):
+        repository2.get(plan2["id"])
+
+
+def test_appending_to_source_marks_plan_changed_and_invalidates_old_recommendation(tmp_path) -> None:
+    session_factory, _, _, note_id, proposal_id = _setup(tmp_path)
+    repository = AdaptivePracticeRepository(session_factory)
+    recommendation = repository.list_recommendations()[0]
+    plan, _ = repository.start(
+        proposal_id=proposal_id,
+        focus_id=recommendation["focus_id"],
+        expected_source_fingerprint=recommendation["source_fingerprint"],
+        idempotency_key="practice-start-source-hash",
+    )
+    with session_factory() as session:
+        note = session.get(InterviewNote, note_id)
+        assert note is not None
+        note.difficulty_points = note.difficulty_points + " 后来补充了新的细节。"
+        session.commit()
+
+    assert repository.get(plan["id"])["source_status"] == "changed"
+    with pytest.raises(AdaptivePracticeConflict, match="source"):
+        repository.start(
+            proposal_id=proposal_id,
+            focus_id="focus-reflection",
+            expected_source_fingerprint=recommendation["source_fingerprint"],
+            idempotency_key="practice-start-stale-field",
+        )
