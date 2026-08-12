@@ -83,7 +83,21 @@
   gap: 12px;
 }
 
-.formGrid > * {
+.formGridCompact {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px;
+  gap: 12px;
+}
+
+.formGridStatus {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 140px;
+  gap: 12px;
+}
+
+.formGrid > *,
+.formGridCompact > *,
+.formGridStatus > * {
   min-width: 0;
 }
 
@@ -136,7 +150,9 @@
     flex: 1 1 auto;
   }
 
-  .formGrid {
+  .formGrid,
+  .formGridCompact,
+  .formGridStatus {
     grid-template-columns: minmax(0, 1fr);
   }
 }

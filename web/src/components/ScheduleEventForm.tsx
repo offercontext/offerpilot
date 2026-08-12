@@ -163,7 +163,7 @@ export default function ScheduleEventForm({
           />
         </Form.Item>
 
-        <div className={workflowStyles.formGrid}>
+        <div className={workflowStyles.formGridCompact}>
           <Form.Item
             name="event_type"
             label="类型"
@@ -184,7 +184,7 @@ export default function ScheduleEventForm({
           <Select mode="tags" placeholder="输入后回车添加标签" tokenSeparators={[',', '，']} />
         </Form.Item>
 
-        <div className={workflowStyles.formGrid}>
+        <div className={workflowStyles.formGridCompact}>
           <Form.Item
             name="scheduled_at"
             label="时间"
@@ -201,7 +201,7 @@ export default function ScheduleEventForm({
           </Form.Item>
         </div>
 
-        <div className={workflowStyles.formGrid}>
+        <div className={workflowStyles.formGridStatus}>
           <Form.Item name="remind_at" label="提醒时间">
             <DatePicker showTime style={{ width: '100%' }} format="YYYY-MM-DD HH:mm" />
           </Form.Item>
