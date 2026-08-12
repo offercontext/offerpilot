@@ -53,6 +53,20 @@
   margin-top: 9px;
 }
 
+.listRow :global(.ant-list-item-action) {
+  display: flex;
+  min-width: 0;
+  margin-inline-start: 12px;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.listRow :global(.ant-list-item-action > li) {
+  padding: 0 4px;
+}
+
 .listContent {
   flex: 1 1 auto;
   min-width: 0;
@@ -131,6 +145,97 @@
   gap: 12px;
 }
 
+.nativeControl {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 10px;
+  color: var(--op-ink);
+  font: inherit;
+  line-height: 1.5;
+  background: var(--op-surface);
+  border: 1px solid var(--op-border-strong);
+  border-radius: 10px;
+  outline: none;
+  transition: border-color 0.18s var(--op-ease), box-shadow 0.18s var(--op-ease), background 0.18s var(--op-ease);
+}
+
+textarea.nativeControl {
+  min-height: 84px;
+  resize: vertical;
+}
+
+.nativeControl:hover:not(:disabled) {
+  border-color: var(--op-primary-border);
+}
+
+.nativeControl:focus-visible {
+  border-color: var(--op-primary);
+  box-shadow: 0 0 0 3px var(--op-primary-soft);
+}
+
+.nativeControl:disabled {
+  color: var(--op-muted);
+  cursor: not-allowed;
+  background: var(--surface-sunken);
+}
+
+.nativeButton {
+  min-height: 38px;
+  padding: 0 15px;
+  color: var(--op-ink);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  background: var(--op-surface);
+  border: 1px solid var(--op-border-strong);
+  border-radius: 10px;
+  transition: color 0.18s var(--op-ease), border-color 0.18s var(--op-ease), background 0.18s var(--op-ease), box-shadow 0.18s var(--op-ease), transform 0.18s var(--op-ease);
+}
+
+.nativeButton:hover:not(:disabled) {
+  color: var(--op-primary);
+  border-color: var(--op-primary-border);
+  background: var(--op-primary-soft);
+}
+
+.nativeButton:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.nativeButton:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--op-primary-soft);
+}
+
+.nativeButtonPrimary {
+  color: #fff;
+  background: var(--op-primary);
+  border-color: var(--op-primary);
+  box-shadow: 0 5px 12px color-mix(in srgb, var(--op-primary) 22%, transparent);
+}
+
+.nativeButtonPrimary:hover:not(:disabled) {
+  color: #fff;
+  background: var(--op-primary-hover);
+  border-color: var(--op-primary-hover);
+}
+
+.nativeButton:disabled {
+  color: var(--op-muted);
+  cursor: not-allowed;
+  background: var(--surface-sunken);
+  border-color: var(--op-border);
+  box-shadow: none;
+}
+
+.nativeCheckbox {
+  inline-size: 16px;
+  block-size: 16px;
+  margin: 2px 7px 0 0;
+  accent-color: var(--op-primary);
+}
+
 @media (max-width: 720px) {
   .section {
     padding: 13px;
@@ -143,6 +248,12 @@
 
   .actionGroup {
     width: 100%;
+    justify-content: flex-start;
+  }
+
+  .listRow :global(.ant-list-item-action) {
+    width: 100%;
+    margin-inline-start: 0;
     justify-content: flex-start;
   }
 

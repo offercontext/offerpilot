@@ -254,6 +254,7 @@ export default function InterviewPreparationProposalDrawer({
             <label key={option.evidence_id} className="op-long-text">
               <input
                 type="checkbox"
+                className={workflowStyles.nativeCheckbox}
                 disabled={resultUnknown}
                 checked={selectedEvidenceIds.includes(option.evidence_id)}
                 onChange={() => setSelectedEvidenceIds((current) => current.includes(option.evidence_id)
@@ -267,7 +268,7 @@ export default function InterviewPreparationProposalDrawer({
       )}
       <label className={workflowStyles.stack}>
         选择简历
-        <select disabled={resultUnknown} value={resumeId} onChange={(event) => setResumeId(Number(event.target.value))}>
+        <select data-testid="interview-preparation-resume-select" className={workflowStyles.nativeControl} disabled={resultUnknown} value={resumeId} onChange={(event) => setResumeId(Number(event.target.value))}>
           <option value={0}>请选择简历</option>
           {resumeOptions.map((resume) => (
             <option key={resume.id} value={resume.id}>{resume.title || resume.name || `简历 ${resume.id}`}</option>
@@ -277,6 +278,7 @@ export default function InterviewPreparationProposalDrawer({
       <label className={workflowStyles.stack}>
         粘贴 JD
         <textarea
+          className={workflowStyles.nativeControl}
           disabled={resultUnknown}
           readOnly
           aria-readonly="true"
@@ -287,7 +289,7 @@ export default function InterviewPreparationProposalDrawer({
       </label>
       <label className={workflowStyles.stack}>
         可选用户断言（不会发送给 AI）
-        <textarea disabled={resultUnknown} value={assertionsText} onChange={(event) => setAssertionsText(event.target.value)} placeholder="每行一条本次准备的补充信息" />
+        <textarea className={workflowStyles.nativeControl} disabled={resultUnknown} value={assertionsText} onChange={(event) => setAssertionsText(event.target.value)} placeholder="每行一条本次准备的补充信息" />
       </label>
       {history.length > 0 && (
         <aside aria-label="历史面试准备建议" className={workflowStyles.section}>
@@ -299,6 +301,7 @@ export default function InterviewPreparationProposalDrawer({
               )}
               <button
                 type="button"
+                className={workflowStyles.nativeButton}
                 onClick={() => {
                   void getInterviewPreparationProposal(context.applicationId, item.id)
                     .then(setProposal)
@@ -325,10 +328,10 @@ export default function InterviewPreparationProposalDrawer({
         </section>
       ))}
       <div className={workflowStyles.actionGroup}>
-        <button type="button" disabled={!hasInput || busy} onClick={() => void generate()}>
+        <button data-testid="interview-preparation-generate" className={`${workflowStyles.nativeButton} ${workflowStyles.nativeButtonPrimary}`} type="button" disabled={!hasInput || busy} onClick={() => void generate()}>
           {busy ? '正在生成…' : resultUnknown ? '使用原尝试重试' : '生成面试准备建议'}
         </button>
-        <button type="button" onClick={onClose}>关闭</button>
+        <button className={workflowStyles.nativeButton} type="button" onClick={onClose}>关闭</button>
       </div>
     </section>
   );

@@ -259,6 +259,14 @@ body {
   white-space: pre-wrap;
 }
 
+.op-long-text.ant-tag {
+  max-width: 100%;
+  height: auto;
+  line-height: 1.55;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .op-list-row {
   padding: 13px 14px;
   background: var(--op-surface);

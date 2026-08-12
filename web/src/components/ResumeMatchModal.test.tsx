@@ -5,9 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
+const mutationMutate = vi.hoisted(() => vi.fn());
+
 vi.mock('@tanstack/react-query', () => ({
   useQuery: () => ({ data: [], isLoading: false, refetch: vi.fn() }),
-  useMutation: () => ({ isPending: false, mutate: vi.fn() }),
+  useMutation: () => ({ isPending: false, mutate: mutationMutate }),
 }));
 vi.mock('@/services/resumes', () => ({
   listResumes: vi.fn(), createResume: vi.fn(), matchResume: vi.fn(), uploadResume: vi.fn(),
@@ -38,6 +40,7 @@ let root: Root | undefined;
 let container: HTMLDivElement | undefined;
 
 beforeEach(() => {
+  mutationMutate.mockReset();
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -53,5 +56,6 @@ describe('ResumeMatchModal', () => {
     act(() => root?.render(<ResumeMatchModal open onClose={vi.fn()} />));
 
     expect(container?.querySelector('[data-testid="resume-match-result-surface"]')).not.toBeNull();
+    expect(mutationMutate).not.toHaveBeenCalled();
   });
 });

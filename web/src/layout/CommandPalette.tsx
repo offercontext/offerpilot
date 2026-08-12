@@ -12,6 +12,10 @@ export interface Command {
   run: () => void;
 }
 
+function commandOptionId(key: string): string {
+  return `command-palette-option-${key.replace(/[^A-Za-z0-9_-]/g, '-')}`;
+}
+
 function pipelineInsightMatches(item: PipelineInsight, keyword: string): boolean {
   if (!keyword) return true;
 
@@ -163,6 +167,7 @@ export default function CommandPalette({
     : actions;
 
   const items = [...appMatches, ...pipelineCommands, ...actionMatches];
+  const activeItem = items[activeIndex];
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') {
@@ -181,6 +186,11 @@ export default function CommandPalette({
     <Modal open={open} onCancel={onClose} footer={null} closable={false} width={520} styles={{ body: { padding: 0 } }}>
       <Input
         autoFocus
+        role="combobox"
+        aria-autocomplete="list"
+        aria-expanded={open}
+        aria-controls="command-palette-listbox"
+        aria-activedescendant={activeItem ? commandOptionId(activeItem.key) : undefined}
         size="large"
         variant="borderless"
         placeholder="搜索投递、跳转页面、执行动作…"
@@ -189,12 +199,23 @@ export default function CommandPalette({
         onKeyDown={onKeyDown}
         style={{ padding: '14px 16px' }}
       />
-      <div data-testid="command-palette-results" className={workflowStyles.scrollRegion} style={{ maxHeight: 360, borderTop: '1px solid var(--op-border)' }}>
+      <div
+        id="command-palette-listbox"
+        role="listbox"
+        aria-label="命令结果"
+        data-testid="command-palette-results"
+        className={workflowStyles.scrollRegion}
+        style={{ maxHeight: 360, borderTop: '1px solid var(--op-border)' }}
+      >
         <List
           dataSource={items}
           locale={{ emptyText: '无匹配结果' }}
           renderItem={(c, index) => (
             <List.Item
+              id={commandOptionId(c.key)}
+              role="option"
+              aria-selected={index === activeIndex}
+              tabIndex={-1}
               className={workflowStyles.listRow}
               onClick={c.run}
               onMouseEnter={() => setActiveIndex(index)}
