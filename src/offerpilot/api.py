@@ -32,7 +32,12 @@ from offerpilot.ai.agent import (
     run_turn,
 )
 from offerpilot.ai.deterministic_actions import (
+    PilotAction,
+    PilotOutcomeAction,
+    PilotSubmissionSnapshotAction,
+    build_outcome_pending_action,
     build_pilot_pending_action,
+    build_submission_snapshot_pending_action,
     decide_pilot_action,
     parse_pilot_action,
 )
@@ -949,15 +954,55 @@ def create_app(
             return None
         current_jd = application_jd_versions.get_current(application.id)
 
+        if explicit_action and isinstance(
+            action, (PilotSubmissionSnapshotAction, PilotOutcomeAction)
+        ):
+            existing_pending = chat.get_pending_action(conversation_id)
+            if existing_pending is not None:
+                return {
+                    "type": "confirmation_required",
+                    "conversation_id": conversation_id,
+                    "pending_action": _pending_action_json(
+                        existing_pending, applications, application_jd_versions
+                    ),
+                }
+            pending = (
+                build_submission_snapshot_pending_action(
+                    application_id=application.id,
+                    action=action,
+                    id_factory=lambda: uuid4().hex,
+                    key_factory=lambda: uuid4().hex,
+                )
+                if isinstance(action, PilotSubmissionSnapshotAction)
+                else build_outcome_pending_action(
+                    application_id=application.id,
+                    action=action,
+                    id_factory=lambda: uuid4().hex,
+                    key_factory=lambda: uuid4().hex,
+                )
+            )
+            chat.append_message(conversation_id, "user", content=message)
+            if not chat.persist_pending_action(
+                conversation_id, pending, _deterministic_pilot_pending_messages(pending)
+            ):
+                return error_response(409, "conversation is archived")
+            return {
+                "type": "confirmation_required",
+                "conversation_id": conversation_id,
+                "pending_action": _pending_action_json(
+                    pending, applications, application_jd_versions
+                ),
+            }
+
         if explicit_action:
-            if action is not None and action.jd_text is None:
+            if isinstance(action, PilotAction) and action.jd_text is None:
                 decision_kind = "collecting_jd"
                 decision_question = "请粘贴完整岗位描述"
                 decision_text = None
             else:
                 decision_kind = "pending_confirmation"
                 decision_question = ""
-                decision_text = action.jd_text if action is not None else None
+                decision_text = action.jd_text if isinstance(action, PilotAction) else None
         else:
             decision = decide_pilot_action(
                 message,
@@ -994,7 +1039,7 @@ def create_app(
             }
 
         if decision_kind == "collecting_jd":
-            source_url = action.source_url if action is not None else None
+            source_url = action.source_url if isinstance(action, PilotAction) else None
             pending = build_pilot_pending_action(
                 application_id=application.id,
                 current_version_id=current_jd.id if current_jd is not None else None,
@@ -1015,7 +1060,7 @@ def create_app(
 
         if not isinstance(decision_text, str) or not decision_text.strip():
             return error_response(422, "jd_text is required")
-        source_url = action.source_url if action is not None else None
+        source_url = action.source_url if isinstance(action, PilotAction) else None
 
         def new_id() -> str:
             return uuid4().hex
@@ -1121,6 +1166,7 @@ def create_app(
             resumes=resumes,
             jd_analyses=jd_analyses,
             application_jd_versions=application_jd_versions,
+            application_outcomes=application_outcomes,
         )
         tool = registry.get(pending.tool_name)
         if tool is None:
@@ -1193,6 +1239,18 @@ def create_app(
                     )
                 if failure_code == "application_jd_invalid_request":
                     return error_response(422, "岗位资料参数无效，请修改后重试。", code=failure_code)
+                if failure_code in {
+                    "application_archive_idempotency_conflict",
+                    "application_archive_source_conflict",
+                    "application_outcome_idempotency_conflict",
+                    "application_outcome_source_conflict",
+                }:
+                    return error_response(409, "投递事实已发生变化，请刷新后重新确认。", code=failure_code)
+                if failure_code in {
+                    "application_archive_invalid_request",
+                    "application_outcome_invalid_request",
+                }:
+                    return error_response(422, "投递事实参数无效，请修改后重试。", code=failure_code)
                 return error_response(502, "岗位资料保存结果未知，请保留当前确认卡后重试。", code=failure_code)
             undo_update: dict[str, Any] | None = {}
             response_message = "岗位资料已保存。" if succeeded else "岗位资料保存失败，请检查后重试。"
@@ -4480,7 +4538,11 @@ def create_app(
             if edited_args is not None or rejection_feedback:
                 return error_response(422, "confirmation_token is required when changing confirmation details")
             confirmation_token = _confirmation_token(pending)
-        if pending.tool_name == "save_application_jd_version":
+        if pending.tool_name in {
+            "save_application_jd_version",
+            "create_application_submission_snapshot",
+            "record_application_outcome",
+        }:
             if not compare_digest(confirmation_token, _confirmation_token(pending)):
                 return error_response(409, "stale pending action")
             deterministic_response = _deterministic_pilot_confirmation(
@@ -4783,7 +4845,11 @@ def create_app(
             if edited_args is not None or rejection_feedback:
                 return error_response(422, "confirmation_token is required when changing confirmation details")
             confirmation_token = _confirmation_token(pending)
-        if pending.tool_name == "save_application_jd_version":
+        if pending.tool_name in {
+            "save_application_jd_version",
+            "create_application_submission_snapshot",
+            "record_application_outcome",
+        }:
             if not compare_digest(confirmation_token, _confirmation_token(pending)):
                 return stale_response()
             deterministic_response = _deterministic_pilot_confirmation(

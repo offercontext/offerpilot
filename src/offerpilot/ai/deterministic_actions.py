@@ -9,7 +9,14 @@ from offerpilot.ai.agent import PendingAction
 
 
 MAX_JD_UTF8_BYTES = 60_000
-_ACTION_KEYS = {"type", "jdText", "sourceUrl"}
+_JD_ACTION_KEYS = {"type", "jdText", "sourceUrl"}
+_SNAPSHOT_ACTION_KEYS = {
+    "type", "resumeId", "jdVersionId", "materialKitId", "submittedAt", "note"
+}
+_OUTCOME_ACTION_KEYS = {
+    "type", "snapshotId", "eventId", "stage", "result", "feedbackText",
+    "reflectionText", "nextActionText", "feedbackTags", "occurredAt",
+}
 _CANCEL_MESSAGES = frozenset({"取消", "算了", "先不用", "不用了", "不保存", "不要保存"})
 _JD_TARGET = r"(?:JD|jd|岗位描述|职位描述|岗位资料)"
 _JD_COMMAND_PREFIX = r"(?:给\s*)?(?:当前\s*)?(?:投递\s*)?"
@@ -32,6 +39,28 @@ class PilotAction:
 
 
 @dataclass(frozen=True)
+class PilotSubmissionSnapshotAction:
+    resume_id: int
+    jd_version_id: int
+    material_kit_id: int | None
+    submitted_at: str
+    note: str
+
+
+@dataclass(frozen=True)
+class PilotOutcomeAction:
+    snapshot_id: int
+    event_id: int | None
+    stage: str
+    result: str
+    feedback_text: str
+    reflection_text: str
+    next_action_text: str
+    feedback_tags: tuple[str, ...]
+    occurred_at: str
+
+
+@dataclass(frozen=True)
 class PilotActionDecision:
     kind: Literal["normal_agent", "collecting_jd", "pending_confirmation", "cancelled"]
     jd_text: str | None = None
@@ -39,10 +68,40 @@ class PilotActionDecision:
     question: str = ""
 
 
-def parse_pilot_action(payload: Any) -> PilotAction:
+def parse_pilot_action(
+    payload: Any,
+) -> PilotAction | PilotSubmissionSnapshotAction | PilotOutcomeAction:
     if not isinstance(payload, dict):
         raise ValueError("pilot_action must be an object")
-    if set(payload) - _ACTION_KEYS or payload.get("type") != "application_jd_save":
+    action_type = payload.get("type")
+    if action_type == "application_submission_snapshot":
+        if set(payload) - _SNAPSHOT_ACTION_KEYS:
+            raise ValueError("unsupported pilot_action fields")
+        return PilotSubmissionSnapshotAction(
+            resume_id=_positive_int(payload.get("resumeId"), "resumeId"),
+            jd_version_id=_positive_int(payload.get("jdVersionId"), "jdVersionId"),
+            material_kit_id=_optional_positive_int(payload.get("materialKitId"), "materialKitId"),
+            submitted_at=_required_string(payload.get("submittedAt"), "submittedAt"),
+            note=_optional_string(payload.get("note"), "note"),
+        )
+    if action_type == "application_outcome_record":
+        if set(payload) - _OUTCOME_ACTION_KEYS:
+            raise ValueError("unsupported pilot_action fields")
+        raw_tags = payload.get("feedbackTags", [])
+        if not isinstance(raw_tags, list) or any(not isinstance(item, str) for item in raw_tags):
+            raise ValueError("feedbackTags must be an array of strings")
+        return PilotOutcomeAction(
+            snapshot_id=_positive_int(payload.get("snapshotId"), "snapshotId"),
+            event_id=_optional_positive_int(payload.get("eventId"), "eventId"),
+            stage=_required_string(payload.get("stage"), "stage"),
+            result=_required_string(payload.get("result"), "result"),
+            feedback_text=_optional_string(payload.get("feedbackText"), "feedbackText"),
+            reflection_text=_optional_string(payload.get("reflectionText"), "reflectionText"),
+            next_action_text=_optional_string(payload.get("nextActionText"), "nextActionText"),
+            feedback_tags=tuple(raw_tags),
+            occurred_at=_required_string(payload.get("occurredAt"), "occurredAt"),
+        )
+    if set(payload) - _JD_ACTION_KEYS or action_type != "application_jd_save":
         raise ValueError("unsupported pilot_action")
     source_url = payload.get("sourceUrl")
     if source_url is not None and not isinstance(source_url, str):
@@ -57,6 +116,76 @@ def parse_pilot_action(payload: Any) -> PilotAction:
     if len(jd_text.encode("utf-8")) > MAX_JD_UTF8_BYTES:
         raise ValueError("jdText is too large")
     return PilotAction(jd_text=jd_text, source_url=source_url)
+
+
+def build_submission_snapshot_pending_action(
+    *, application_id: int, action: PilotSubmissionSnapshotAction,
+    id_factory: Callable[[], str], key_factory: Callable[[], str],
+) -> PendingAction:
+    args = {
+        "application_id": application_id,
+        "resume_id": action.resume_id,
+        "jd_version_id": action.jd_version_id,
+        "material_kit_id": action.material_kit_id,
+        "submitted_at": action.submitted_at,
+        "note": action.note,
+        "idempotency_key": key_factory(),
+    }
+    return PendingAction(
+        tool_call_id=id_factory(),
+        tool_name="create_application_submission_snapshot",
+        args=json.dumps(args, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        human="请确认冻结这次实际投递使用的简历、岗位资料和材料。",
+    )
+
+
+def build_outcome_pending_action(
+    *, application_id: int, action: PilotOutcomeAction,
+    id_factory: Callable[[], str], key_factory: Callable[[], str],
+) -> PendingAction:
+    args = {
+        "application_id": application_id,
+        "submission_snapshot_id": action.snapshot_id,
+        "application_event_id": action.event_id,
+        "stage": action.stage,
+        "result": action.result,
+        "feedback_text": action.feedback_text,
+        "reflection_text": action.reflection_text,
+        "next_action_text": action.next_action_text,
+        "feedback_tags": list(action.feedback_tags),
+        "occurred_at": action.occurred_at,
+        "idempotency_key": key_factory(),
+    }
+    return PendingAction(
+        tool_call_id=id_factory(),
+        tool_name="record_application_outcome",
+        args=json.dumps(args, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        human="请确认记录这次投递进展、原始反馈和下一步行动。",
+    )
+
+
+def _positive_int(value: object, name: str) -> int:
+    if type(value) is not int or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
+def _optional_positive_int(value: object, name: str) -> int | None:
+    return None if value is None else _positive_int(value, name)
+
+
+def _required_string(value: object, name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name} is required")
+    return value
+
+
+def _optional_string(value: object, name: str) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(f"{name} must be a string")
+    return value
 
 
 def match_application_jd_command(message: str) -> str | None:

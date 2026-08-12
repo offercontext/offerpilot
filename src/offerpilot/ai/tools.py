@@ -18,6 +18,15 @@ from offerpilot.repositories.application_jd_versions import (
     ApplicationJDService,
     JDVersionError,
 )
+from offerpilot.repositories.application_outcomes import (
+    FEEDBACK_TAGS,
+    RESULTS,
+    STAGES,
+    ApplicationOutcomeError,
+    ApplicationOutcomesRepository,
+    OutcomeCreate,
+    SubmissionSnapshotCreate,
+)
 from offerpilot.repositories.notes import NoteCreate, NoteUpdate, NotesRepository
 from offerpilot.repositories.offers import OfferCreate, OffersRepository
 from offerpilot.repositories.resumes import ResumesRepository
@@ -37,6 +46,18 @@ EVENT_TYPES = ("written_test", "interview", "offer_step", "deadline", "custom")
 OFFER_STATUSES = ("pending", "negotiating", "accepted", "declined", "expired")
 
 _EDITABLE_FIELDS_BY_TOOL: dict[str, list[dict[str, Any]]] = {
+    "create_application_submission_snapshot": [
+        {"field": "submitted_at", "type": "datetime"},
+        {"field": "note", "type": "long_text"},
+    ],
+    "record_application_outcome": [
+        {"field": "stage", "type": "enum", "options": sorted(STAGES)},
+        {"field": "result", "type": "enum", "options": sorted(RESULTS)},
+        {"field": "feedback_text", "type": "long_text"},
+        {"field": "reflection_text", "type": "long_text"},
+        {"field": "next_action_text", "type": "long_text"},
+        {"field": "occurred_at", "type": "datetime"},
+    ],
     "save_application_jd_version": [
         {"field": "jd_text", "type": "long_text"},
         {"field": "source_url", "type": "string", "clearable": True, "clear_value": None},
@@ -161,6 +182,7 @@ def offerpilot_tool_registry(
     resumes: ResumesRepository | None = None,
     jd_analyses: JDAnalysesRepository | None = None,
     application_jd_versions: ApplicationJDService | None = None,
+    application_outcomes: ApplicationOutcomesRepository | None = None,
 ) -> dict[str, dict[str, Any]]:
     registry: dict[str, dict[str, Any]] = {}
     registry.update(application_tool_registry(applications))
@@ -173,7 +195,68 @@ def offerpilot_tool_registry(
         registry.update(jd_tool_registry(jd_analyses))
     if application_jd_versions is not None:
         registry.update(application_jd_version_tool_registry(application_jd_versions))
+    if application_outcomes is not None:
+        registry.update(application_outcome_tool_registry(application_outcomes))
     return registry
+
+
+def application_outcome_tool_registry(
+    repo: ApplicationOutcomesRepository,
+) -> dict[str, dict[str, Any]]:
+    return {
+        "create_application_submission_snapshot": {
+            "write": True,
+            "model_visible": False,
+            "always_confirm": True,
+            "editable_fields": editable_fields_for_tool("create_application_submission_snapshot"),
+            "description": "Freeze the exact Resume, JD version and optional material kit after confirmation.",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "application_id": {"type": "integer"},
+                    "resume_id": {"type": "integer"},
+                    "jd_version_id": {"type": "integer"},
+                    "material_kit_id": {"type": ["integer", "null"]},
+                    "submitted_at": {"type": "string"},
+                    "note": {"type": "string"},
+                    "idempotency_key": {"type": "string"},
+                },
+                "required": ["application_id", "resume_id", "jd_version_id", "submitted_at", "note", "idempotency_key"],
+                "additionalProperties": False,
+            },
+            "describe": lambda args: _describe_application_snapshot(args),
+            "validate": lambda args: _validate_application_snapshot(args),
+            "handler": lambda args: _create_application_snapshot(repo, args),
+        },
+        "record_application_outcome": {
+            "write": True,
+            "model_visible": False,
+            "always_confirm": True,
+            "editable_fields": editable_fields_for_tool("record_application_outcome"),
+            "description": "Append an external application outcome after confirmation.",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "application_id": {"type": "integer"},
+                    "submission_snapshot_id": {"type": "integer"},
+                    "application_event_id": {"type": ["integer", "null"]},
+                    "stage": {"type": "string", "enum": sorted(STAGES)},
+                    "result": {"type": "string", "enum": sorted(RESULTS)},
+                    "feedback_text": {"type": "string"},
+                    "reflection_text": {"type": "string"},
+                    "next_action_text": {"type": "string"},
+                    "feedback_tags": {"type": "array", "items": {"type": "string", "enum": sorted(FEEDBACK_TAGS)}},
+                    "occurred_at": {"type": "string"},
+                    "idempotency_key": {"type": "string"},
+                },
+                "required": ["application_id", "submission_snapshot_id", "stage", "result", "feedback_text", "reflection_text", "next_action_text", "feedback_tags", "occurred_at", "idempotency_key"],
+                "additionalProperties": False,
+            },
+            "describe": lambda args: _describe_application_outcome(args),
+            "validate": lambda args: _validate_application_outcome(args),
+            "handler": lambda args: _record_application_outcome(repo, args),
+        },
+    }
 
 
 def application_jd_version_tool_registry(
@@ -901,6 +984,117 @@ def _save_application_jd_version(service: ApplicationJDService, args: str) -> st
         "source_kind": result.version.source_kind,
         "replayed": result.replayed,
     })
+
+
+def _validate_application_snapshot(args: str) -> str:
+    try:
+        payload = _payload(args)
+        for field in ("application_id", "resume_id", "jd_version_id"):
+            if type(payload.get(field)) is not int or payload[field] <= 0:
+                return f"{field} must be a positive integer"
+        material_id = payload.get("material_kit_id")
+        if material_id is not None and (type(material_id) is not int or material_id <= 0):
+            return "material_kit_id must be a positive integer or null"
+        _parse_iso_datetime(payload.get("submitted_at"), "submitted_at")
+        key = payload.get("idempotency_key")
+        if not isinstance(key, str) or IDEMPOTENCY_KEY_RE.fullmatch(key) is None:
+            return "idempotency_key is invalid"
+        if not isinstance(payload.get("note"), str):
+            return "note must be a string"
+    except (KeyError, TypeError, ValueError):
+        return "invalid application submission snapshot payload"
+    return ""
+
+
+def _validate_application_outcome(args: str) -> str:
+    try:
+        payload = _payload(args)
+        for field in ("application_id", "submission_snapshot_id"):
+            if type(payload.get(field)) is not int or payload[field] <= 0:
+                return f"{field} must be a positive integer"
+        event_id = payload.get("application_event_id")
+        if event_id is not None and (type(event_id) is not int or event_id <= 0):
+            return "application_event_id must be a positive integer or null"
+        if payload.get("stage") not in STAGES:
+            return "stage is invalid"
+        if payload.get("result") not in RESULTS:
+            return "result is invalid"
+        tags = payload.get("feedback_tags")
+        if not isinstance(tags, list) or len(tags) > 8 or any(tag not in FEEDBACK_TAGS for tag in tags):
+            return "feedback_tags are invalid"
+        for field in ("feedback_text", "reflection_text", "next_action_text"):
+            if not isinstance(payload.get(field), str):
+                return f"{field} must be a string"
+        _parse_iso_datetime(payload.get("occurred_at"), "occurred_at")
+        key = payload.get("idempotency_key")
+        if not isinstance(key, str) or IDEMPOTENCY_KEY_RE.fullmatch(key) is None:
+            return "idempotency_key is invalid"
+    except (KeyError, TypeError, ValueError):
+        return "invalid application outcome payload"
+    return ""
+
+
+def _describe_application_snapshot(args: str) -> str:
+    payload = _payload(args)
+    return f"冻结投递 #{payload.get('application_id')} 的实际简历、JD 和材料。"
+
+
+def _describe_application_outcome(args: str) -> str:
+    payload = _payload(args)
+    return f"记录投递 #{payload.get('application_id')} 的 {payload.get('stage')} / {payload.get('result')} 结果。"
+
+
+def _create_application_snapshot(repo: ApplicationOutcomesRepository, args: str) -> str:
+    payload = _payload(args)
+    try:
+        result = repo.create_snapshot(
+            SubmissionSnapshotCreate(
+                application_id=payload["application_id"],
+                resume_id=payload["resume_id"],
+                jd_version_id=payload["jd_version_id"],
+                material_kit_id=payload.get("material_kit_id"),
+                submitted_at=_parse_iso_datetime(payload["submitted_at"], "submitted_at"),
+                note=payload["note"],
+                source_kind="pilot",
+                idempotency_key=payload["idempotency_key"],
+            )
+        )
+    except ApplicationOutcomeError as exc:
+        raise ValueError(exc.code) from exc
+    return _json({"record_type": "application_submission_snapshot", "id": result.value.id, "application_id": result.value.application_id, "replayed": result.replayed})
+
+
+def _record_application_outcome(repo: ApplicationOutcomesRepository, args: str) -> str:
+    payload = _payload(args)
+    try:
+        result = repo.create_outcome(
+            OutcomeCreate(
+                application_id=payload["application_id"],
+                submission_snapshot_id=payload["submission_snapshot_id"],
+                application_event_id=payload.get("application_event_id"),
+                stage=payload["stage"],
+                result=payload["result"],
+                feedback_text=payload["feedback_text"],
+                reflection_text=payload["reflection_text"],
+                next_action_text=payload["next_action_text"],
+                feedback_tags=tuple(payload["feedback_tags"]),
+                occurred_at=_parse_iso_datetime(payload["occurred_at"], "occurred_at"),
+                source_kind="pilot",
+                idempotency_key=payload["idempotency_key"],
+            )
+        )
+    except ApplicationOutcomeError as exc:
+        raise ValueError(exc.code) from exc
+    return _json({"record_type": "application_outcome", "id": result.value.id, "application_id": result.value.application_id, "replayed": result.replayed})
+
+
+def _parse_iso_datetime(value: object, name: str) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError(f"{name} must be an ISO datetime")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError(f"{name} must include timezone")
+    return parsed
 
 
 def _describe_create_application(args: str) -> str:
