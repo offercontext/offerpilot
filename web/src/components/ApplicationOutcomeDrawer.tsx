@@ -25,6 +25,7 @@ import {
   listSubmissionSnapshots,
 } from '@/services/applicationOutcomes';
 import { getApplicationMaterialKit } from '@/services/materialKits';
+import ApplicationCommunicationDraftPanel from './ApplicationCommunicationDraftPanel';
 import styles from './ApplicationOutcomeDrawer.module.css';
 
 interface Props {
@@ -338,6 +339,15 @@ export default function ApplicationOutcomeDrawer({ application, open, onClose, r
             <Button type="primary" loading={saveSnapshot.isPending} onClick={() => saveSnapshot.mutate(snapshotPending.input)}>使用原尝试重试</Button>
           </div> : null}
         </section>
+
+        {(snapshots.data?.length ?? 0) > 0 ? (
+          <ApplicationCommunicationDraftPanel
+            application={application}
+            snapshots={snapshots.data ?? []}
+            outcomes={outcomes.data ?? []}
+            events={events}
+          />
+        ) : null}
 
         <section className={styles.panel}>
           <div className={styles.panelHeader}>

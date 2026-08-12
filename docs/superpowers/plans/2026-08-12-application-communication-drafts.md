@@ -16,7 +16,7 @@
 - Create: `web/src/lib/applicationCommunicationDraft.ts`
 - Create: `web/src/lib/applicationCommunicationDraft.test.ts`
 
-- [ ] Write failing tests for follow-up/thank-you templates, source labels, invalid dates, recipient fallback, Unicode limits and determinism.
+- [ ] Write failing tests for follow-up/thank-you templates, explicit outcome selection, source ownership, invalid and timezone-crossing dates, recipient fallback, Unicode limits and determinism.
 - [ ] Run `npm.cmd test -- --run src/lib/applicationCommunicationDraft.test.ts` and confirm the missing-module failure.
 - [ ] Implement strict input validation and pure-text templates with no clock, random, HTML or mutation.
 - [ ] Rerun the test and confirm all cases pass.
@@ -28,9 +28,9 @@
 - Create: `web/src/components/ApplicationCommunicationDraftPanel.test.tsx`
 - Create: `web/src/components/ApplicationCommunicationDraftPanel.module.css`
 
-- [ ] Write failing mounted tests for type/source selection, edit/restore, clipboard success/failure, disabled thank-you state and zero service/network calls.
+- [ ] Write failing mounted tests for explicit outcome selection, deterministic event pairing, source invalidation, accessible type state, edit/restore, clipboard success/failure, disabled thank-you state and zero service/network calls.
 - [ ] Run the component test and confirm the missing-component failure.
-- [ ] Implement the session-only two-column workspace with accessible controls and `aria-live` status.
+- [ ] Implement the session-only two-column workspace with accessible controls, wrapping source labels and `aria-live` status.
 - [ ] Rerun tests and confirm all cases pass.
 
 ### Task 3: Integrate with application outcome drawer
@@ -47,8 +47,8 @@
 
 **Files:**
 - Create: `docs/reports/2026-08-12-application-communication-drafts-browser-acceptance.md`
-- Create: `artifacts/2026-08-12-application-communication-drafts/01-follow-up-draft.png`
-- Create: `artifacts/2026-08-12-application-communication-drafts/02-thank-you-draft.png`
+- Create: `artifacts/2026-08-13-application-communication-drafts/01-application-follow-up-draft.png`
+- Create: `artifacts/2026-08-13-application-communication-drafts/02-interview-thank-you-draft.png`
 
 - [ ] Run targeted tests, frontend full tests, `npx.cmd tsc -b`, `npm.cmd run build` and `git diff --check`.
 - [ ] Request independent code review and resolve every P0/P1/P2.

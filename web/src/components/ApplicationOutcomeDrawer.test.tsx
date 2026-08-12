@@ -118,6 +118,44 @@ afterEach(() => {
 });
 
 describe('ApplicationOutcomeDrawer', () => {
+  it('mounts a read-only communication draft from the already loaded archive', async () => {
+    const interviewEvent = {
+      id: 31,
+      application_id: 7,
+      event_type: 'interview',
+      round: 2,
+      scheduled_at: '2026-08-15T10:30:00+08:00',
+    } as never;
+    state.listOutcomes.mockResolvedValue([{ id: 41, application_id: 7, submission_snapshot_id: 11, application_event_id: 31, stage: 'interview', result: 'advanced', feedback_text: '', reflection_text: '', next_action_text: '', feedback_tags: [], source_kind: 'ui', occurred_at: '2026-08-15T11:40:00+08:00', created_at: '2026-08-15T11:40:00+08:00' }]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    act(() => root?.render(
+      <QueryClientProvider client={queryClient}>
+        <AntApp>
+          <ApplicationOutcomeDrawer
+            application={application}
+            open
+            onClose={vi.fn()}
+            resumes={[resume]}
+            currentJd={currentJd}
+            events={[interviewEvent]}
+          />
+        </AntApp>
+      </QueryClientProvider>,
+    ));
+    await settle();
+
+    expect(document.body.textContent).toContain('跟进与感谢信');
+    const generate = [...document.body.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.includes('生成草稿'));
+    expect(generate).not.toBeUndefined();
+    act(() => (generate as HTMLButtonElement).click());
+
+    expect(document.body.querySelector<HTMLInputElement>('input[aria-label="邮件主题"]')?.value)
+      .toContain('申请进展');
+    expect(state.createSnapshot).not.toHaveBeenCalled();
+    expect(state.createOutcome).not.toHaveBeenCalled();
+  });
+
   it('renders the frozen archive and sends a deterministic Pilot action without writing', async () => {
     const onAskPilot = vi.fn();
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
