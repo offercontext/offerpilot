@@ -103,3 +103,17 @@ def test_pytest_group_aggregate_accepts_only_completed_matching_markers(tmp_path
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "coverage matches 5 tests" in result.stdout
+
+
+def test_pytest_group_aggregate_accepts_windows_backslash_manifest_node_ids(tmp_path: Path) -> None:
+    _write_group_results(tmp_path)
+    manifest_path = tmp_path / "full-manifest.txt"
+    manifest_path.write_text(
+        manifest_path.read_text(encoding="utf-8").replace("/", "\\"),
+        encoding="utf-8",
+    )
+
+    result = _aggregate(tmp_path)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "coverage matches 5 tests" in result.stdout

@@ -23,6 +23,7 @@ interface Props {
   onOpenSettings?: () => void;
   onOpenEvidence?: (target: EvidenceTarget) => void;
   onPrepareOfferNegotiation?: (offer: Offer) => void;
+  onOpenInterviewStoryLibrary?: () => void;
   offers?: Offer[];
   contextKey?: string;
 }
@@ -47,6 +48,7 @@ export default function ContextPanel({
   onOpenSettings,
   onOpenEvidence,
   onPrepareOfferNegotiation,
+  onOpenInterviewStoryLibrary,
   offers = [],
   contextKey = '',
 }: Props) {
@@ -133,6 +135,21 @@ export default function ContextPanel({
           )}
         </div>
       )}
+
+      {onOpenInterviewStoryLibrary ? (
+        <div>
+          <div className={styles.panelLabel}>面试故事</div>
+          <button
+            type="button"
+            className={styles.capItem}
+            data-testid="pilot-open-interview-story-library"
+            data-story-audit="pilot-entry"
+            onClick={onOpenInterviewStoryLibrary}
+          >
+            整理面试故事
+          </button>
+        </div>
+      ) : null}
 
       <div>
         <div className={styles.panelLabel}>当前参考依据</div>

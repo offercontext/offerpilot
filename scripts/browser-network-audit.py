@@ -8,6 +8,7 @@ import re
 import time
 from pathlib import Path
 from typing import TextIO
+from urllib.parse import urlparse
 from urllib.request import urlopen
 
 import websockets
@@ -16,7 +17,9 @@ import websockets
 _CDP_MAX_MESSAGE_BYTES = 8 * 1024 * 1024
 
 
-def record_response_payload_metadata(record: dict[str, object], payload: object) -> None:
+def record_response_payload_metadata(
+    record: dict[str, object], payload: object, request_url: str | None = None
+) -> None:
     """Copy only safe identifiers and statuses from a JSON response into a record."""
     if isinstance(payload, list):
         proposal_ids = [
@@ -69,12 +72,54 @@ def record_response_payload_metadata(record: dict[str, object], payload: object)
         record["response_confirmed_proposal_id"] = brief["proposal_id"]
     if isinstance(payload.get("proposal_id"), int):
         record["response_confirmed_proposal_id"] = payload["proposal_id"]
+    request_path = urlparse(request_url).path if isinstance(request_url, str) else ""
+    story_detail_segments = request_path.strip("/").split("/")
+    is_story_detail = (
+        len(story_detail_segments) == 3
+        and story_detail_segments[:2] == ["api", "interview-stories"]
+        and story_detail_segments[2].isascii()
+        and story_detail_segments[2].isdigit()
+    )
+    if is_story_detail and isinstance(payload.get("id"), int):
+        record["response_story_id"] = payload["id"]
+        version = payload.get("version")
+        if isinstance(version, dict) and isinstance(version.get("id"), int):
+            record["response_story_current_version_id"] = version["id"]
+    if isinstance(payload.get("story_id"), int):
+        record["response_story_id"] = payload["story_id"]
+    if isinstance(payload.get("version_id"), int):
+        record["response_story_version_id"] = payload["version_id"]
     stages = payload.get("stages")
     if isinstance(stages, list):
         for stage in stages:
             if isinstance(stage, dict) and isinstance(stage.get("jd_version_id"), int):
                 record["response_jd_version_id"] = stage["jd_version_id"]
                 break
+
+
+_STORY_INTERACTION_ACTIONS = frozenset(
+    {
+        "ui-library",
+        "ui-source-picker",
+        "ui-generate",
+        "ui-confirm",
+        "pilot-entry",
+        "pilot-source-picker",
+        "pilot-generate",
+        "pilot-confirm",
+    }
+)
+_STORY_INTERACTION_OBSERVER = """
+(() => {
+  const actions = new Set(%s);
+  window.__offerpilotStoryAuditSteps = [];
+  document.addEventListener('click', (event) => {
+    const target = event.target instanceof Element ? event.target.closest('[data-story-audit]') : null;
+    const action = target?.getAttribute('data-story-audit');
+    if (action && actions.has(action)) window.__offerpilotStoryAuditSteps.push(action);
+  }, true);
+})();
+""" % json.dumps(sorted(_STORY_INTERACTION_ACTIONS))
 
 
 class BrowserAudit:
@@ -172,6 +217,17 @@ class BrowserAudit:
             encoding="ascii",
         )
 
+    def finish_response_task(self, task: asyncio.Task[None]) -> None:
+        self.response_tasks.discard(task)
+        if task.cancelled() or self.reader_error is not None:
+            return
+        try:
+            error = task.exception()
+        except (asyncio.CancelledError, BaseException):
+            error = RuntimeError("CDP response capture failed")
+        if error is not None:
+            self.reader_error = RuntimeError("CDP response capture failed")
+
     async def send(
         self,
         method: str,
@@ -240,7 +296,7 @@ class BrowserAudit:
                         self.response_finished.setdefault((session_id, request_id), asyncio.Event())
                     task = asyncio.create_task(self.record_response(message))
                     self.response_tasks.add(task)
-                    task.add_done_callback(self.response_tasks.discard)
+                    task.add_done_callback(self.finish_response_task)
                 elif message.get("method") in {"Network.loadingFinished", "Network.loadingFailed"}:
                     params = message.get("params")
                     request_id = params.get("requestId") if isinstance(params, dict) else None
@@ -294,6 +350,11 @@ class BrowserAudit:
         try:
             await self.send("Network.enable", session_id=session_id)
             await self.send("Page.enable", session_id=session_id)
+            await self.send(
+                "Page.addScriptToEvaluateOnNewDocument",
+                {"source": _STORY_INTERACTION_OBSERVER},
+                session_id=session_id,
+            )
             await self.send("Runtime.runIfWaitingForDebugger", session_id=session_id)
             self.owned_targets.add(target_id)
             self.network_ready_targets.add(target_id)
@@ -325,6 +386,46 @@ class BrowserAudit:
             self.flushed_file.parent.mkdir(parents=True, exist_ok=True)
             self.flushed_file.touch()
 
+    async def record_story_interactions(self) -> None:
+        """Persist only allowlisted user-action names from the owned CDP page."""
+
+        if self.handle is None or self.main_target_id is None or self.main_session_id is None:
+            raise RuntimeError("story interaction audit has no dedicated target")
+        response = await self.send(
+            "Runtime.evaluate",
+            {
+                "expression": "JSON.stringify(window.__offerpilotStoryAuditSteps || [])",
+                "returnByValue": True,
+            },
+            self.main_session_id,
+        )
+        result = response.get("result")
+        value = result.get("result") if isinstance(result, dict) else None
+        raw_steps = value.get("value") if isinstance(value, dict) else None
+        try:
+            parsed = json.loads(raw_steps) if isinstance(raw_steps, str) else None
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("story interaction audit payload is invalid") from exc
+        if not isinstance(parsed, list) or any(
+            not isinstance(item, str) or item not in _STORY_INTERACTION_ACTIONS
+            for item in parsed
+        ):
+            raise RuntimeError("story interaction audit payload is invalid")
+        self.handle.write(
+            json.dumps(
+                {
+                    "kind": "browser_story_interactions",
+                    "observed_at_ns": time.time_ns(),
+                    "target_id": self.main_target_id,
+                    "session_id": self.main_session_id,
+                    "steps": parsed,
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+        self.handle.flush()
+
     async def record_request(self, message: dict[str, object]) -> None:
         self.last_event = "Network.requestWillBeSent"
         session_id = message.get("sessionId")
@@ -341,6 +442,7 @@ class BrowserAudit:
         if target_id and isinstance(method, str) and isinstance(url, str) and self.handle is not None:
             record: dict[str, object] = {
                 "kind": "browser_request",
+                "observed_at_ns": time.time_ns(),
                 "target_id": target_id,
                 "session_id": session_id,
                 "method": method,
@@ -394,7 +496,7 @@ class BrowserAudit:
                         request_context["jd_text_sha256"] = hashlib.sha256(
                             payload["jd_text"].encode("utf-8")
                         ).hexdigest()
-                    for key in ("idempotency_key", "confirmation_key"):
+                    for key in ("idempotency_key", "confirmation_key", "confirmation_token"):
                         value = payload.get(key)
                         if isinstance(value, str) and value:
                             request_context[f"{key}_sha256"] = hashlib.sha256(
@@ -415,6 +517,10 @@ class BrowserAudit:
                         entrypoint = headers.get("X-OfferPilot-Entrypoint", headers.get("x-offerpilot-entrypoint"))
                     if isinstance(entrypoint, str) and entrypoint in {"ui", "pilot"}:
                         request_context["entrypoint"] = entrypoint
+                    elif url.endswith("/api/interview-story-proposals"):
+                        request_context["entrypoint"] = "ui"
+                    elif url.endswith("/api/pilot/interview-story-proposals"):
+                        request_context["entrypoint"] = "pilot"
                     if request_context:
                         record["request_context"] = request_context
             self.handle.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -440,45 +546,68 @@ class BrowserAudit:
         status = response.get("status")
         if isinstance(status, (int, float)):
             record["response_status"] = int(status)
-        try:
-            headers = response.get("headers")
-            content_type = ""
-            if isinstance(headers, dict):
-                raw_content_type = headers.get("content-type", headers.get("Content-Type"))
-                if isinstance(raw_content_type, str):
-                    content_type = raw_content_type.split(";", 1)[0].strip().lower()
-            mime_type = response.get("mimeType")
-            is_event_stream = content_type == "text/event-stream" or mime_type == "text/event-stream"
-            if not is_event_stream:
+        request_url = record.get("url")
+        if not isinstance(request_url, str) or not urlparse(request_url).path.startswith("/api/"):
+            # Static assets can exceed Chrome's default CDP message ceiling.
+            # They have no workflow metadata and must never have their body
+            # fetched or retained by this redacted audit.
+            record["response_body_status"] = "not_requested"
+        else:
+            try:
+                headers = response.get("headers")
+                content_type = ""
+                if isinstance(headers, dict):
+                    raw_content_type = headers.get(
+                        "content-type", headers.get("Content-Type")
+                    )
+                    if isinstance(raw_content_type, str):
+                        content_type = raw_content_type.split(";", 1)[0].strip().lower()
+                mime_type = response.get("mimeType")
+                if content_type == "text/event-stream" or mime_type == "text/event-stream":
+                    record["response_body_status"] = "not_requested"
+                    return self._write_response_record(session_id, record)
                 finished = self.response_finished.setdefault((session_id, request_id), asyncio.Event())
+                body_ready = True
                 try:
                     await asyncio.wait_for(finished.wait(), timeout=10.0)
-                except asyncio.TimeoutError as exc:
-                    raise RuntimeError("response body did not finish before audit timeout") from exc
-                body_result = await asyncio.wait_for(
-                    self.send("Network.getResponseBody", {"requestId": request_id}, session_id),
-                    timeout=10.0,
-                )
+                except asyncio.TimeoutError:
+                    body_ready = False
+                if not body_ready:
+                    raise RuntimeError("response body did not finish before audit timeout")
+                body_result = await self.send("Network.getResponseBody", {"requestId": request_id}, session_id)
                 body = body_result.get("result")
                 body_text = body.get("body") if isinstance(body, dict) else None
                 payload = json.loads(body_text) if isinstance(body_text, str) else None
                 if isinstance(payload, (dict, list)):
-                    record_response_payload_metadata(record, payload)
-        except asyncio.CancelledError:
-            raise
-        except BaseException as exc:
-            if isinstance(exc, websockets.exceptions.ConnectionClosed):
-                self.close_code = exc.code
-                self._set_failure("cdp_connection_closed", exc)
-            elif isinstance(exc, (RuntimeError, asyncio.TimeoutError, json.JSONDecodeError, TypeError)):
-                url = record.get("url")
-                if isinstance(url, str) and "/api/" in url:
+                    record_response_payload_metadata(record, payload, request_url)
+                record["response_body_status"] = "captured"
+            except asyncio.CancelledError:
+                raise
+            except BaseException as exc:
+                # Keep the audit fail-closed without storing an exception message or
+                # response body.  A response capture failure means the auditor can
+                # no longer prove the browser contract, including if CDP itself
+                # disconnected while a body was being read.
+                record["response_body_status"] = "unavailable"
+                if isinstance(exc, websockets.exceptions.ConnectionClosed):
+                    self.close_code = exc.code
+                    self._set_failure("cdp_connection_closed", exc)
+                elif isinstance(exc, (RuntimeError, asyncio.TimeoutError, json.JSONDecodeError, TypeError)):
                     self._set_failure("response_body_unavailable", exc)
-            else:
-                self._set_failure("response_audit_error", exc)
+                else:
+                    self._set_failure(
+                        "response_audit_error",
+                        RuntimeError("CDP response capture failed"),
+                    )
+        self._write_response_record(session_id, record)
+
+    def _write_response_record(
+        self, session_id: str, record: dict[str, object]
+    ) -> None:
         if self.handle is not None:
             response_record = {
                 "kind": "browser_response",
+                "observed_at_ns": time.time_ns(),
                 "target_id": record.get("target_id"),
                 "session_id": session_id,
                 "method": record.get("method"),
@@ -497,6 +626,10 @@ class BrowserAudit:
                 "response_confirmed_proposal_id",
                 "response_jd_version_id",
                 "response_jd_version_ids",
+                "response_story_id",
+                "response_story_current_version_id",
+                "response_story_version_id",
+                "response_body_status",
             ):
                 if key in record:
                     response_record[key] = record[key]
@@ -548,7 +681,16 @@ class BrowserAudit:
                     self.send("Page.navigate", {"url": base_url}, self.main_session_id),
                     timeout=10.0,
                 )
-                ready_file.touch()
+                ready_file.write_text(
+                    json.dumps(
+                        {
+                            "target_id": self.main_target_id,
+                            "session_id": self.main_session_id,
+                        },
+                        separators=(",", ":"),
+                    ),
+                    encoding="utf-8",
+                )
                 self.last_event = "browser_ready"
                 keepalive_task = asyncio.create_task(self.keep_browser_session())
                 while not self.stop_file.exists():
@@ -560,6 +702,8 @@ class BrowserAudit:
                     await asyncio.sleep(0.1)
                 if self.reader_error is not None:
                     raise self.reader_error
+                await self.flush_response_tasks()
+                await self.record_story_interactions()
         except asyncio.CancelledError:
             raise
         except BaseException as exc:

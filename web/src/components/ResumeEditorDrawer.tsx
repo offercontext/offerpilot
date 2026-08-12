@@ -5,6 +5,7 @@ import { updateResume } from '@/services/resumes';
 import type { CareerIntent, Resume, ResumeContent, UpdateResumeInput } from '@/types/resume';
 import dayjs from 'dayjs';
 import styles from './ResumeLibraryView.module.css';
+import ResumeEvidenceAuditPanel from './ResumeEvidenceAuditPanel';
 
 interface Props {
   resume: Resume | null;
@@ -101,6 +102,7 @@ export default function ResumeEditorDrawer({ resume, open, onClose, onSaved }: P
   const [targetLocations, setTargetLocations] = useState('');
   const [activeSection, setActiveSection] = useState<'career_intent' | SectionKey>('career_intent');
   const [drafts, setDrafts] = useState<Record<SectionKey, string>>(EMPTY_DRAFTS);
+  const [auditOpen, setAuditOpen] = useState(false);
 
   useEffect(() => {
     if (!resume) return;
@@ -118,6 +120,7 @@ export default function ResumeEditorDrawer({ resume, open, onClose, onSaved }: P
       raw_text: typeof content.raw_text === 'string' ? content.raw_text : resume.parsed_data ?? '',
     });
     setActiveSection('career_intent');
+    setAuditOpen(false);
   }, [resume, open]);
 
   const saveMut = useMutation({
@@ -170,6 +173,13 @@ export default function ResumeEditorDrawer({ resume, open, onClose, onSaved }: P
           <div className={styles.editorWorkspaceTitle}>编辑简历</div>
         </div>
         <Space>
+          <Button
+            aria-expanded={auditOpen}
+            aria-controls="resume-evidence-audit-panel"
+            onClick={() => setAuditOpen((current) => !current)}
+          >
+            简历事实体检
+          </Button>
           <Button onClick={onClose}>取消</Button>
           <Button type="primary" loading={saveMut.isPending} onClick={handleSave}>
             保存
@@ -209,6 +219,12 @@ export default function ResumeEditorDrawer({ resume, open, onClose, onSaved }: P
           <span>求职意向 / 联系方式 / 教育经历 / 工作经历 / 项目经历 / 技能清单 / 原始文本</span>
         </Descriptions.Item>
       </Descriptions>
+
+      {auditOpen && (
+        <div id="resume-evidence-audit-panel">
+          <ResumeEvidenceAuditPanel resume={resume} />
+        </div>
+      )}
 
       <div className={styles.editorGrid}>
         <nav className={styles.sectionNav} aria-label="简历章节">

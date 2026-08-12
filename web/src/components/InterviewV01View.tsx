@@ -9,9 +9,10 @@ interface Props {
   onOpenApplication?: (applicationId: number) => void;
   onOpenPreparation?: (applicationId: number, eventId: number) => void;
   onOpenMockInterview?: (applicationId: number, eventId: number) => void;
+  onOpenStoryLibrary?: (reviewNoteId?: number) => void;
 }
 
-export default function InterviewV01View({ onOpenApplication, onOpenPreparation, onOpenMockInterview }: Props) {
+export default function InterviewV01View({ onOpenApplication, onOpenPreparation, onOpenMockInterview, onOpenStoryLibrary }: Props) {
   const [items, setItems] = useState<InterviewIndexItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -32,6 +33,7 @@ export default function InterviewV01View({ onOpenApplication, onOpenPreparation,
     <div style={{ padding: 24 }}>
       <div style={{ marginBottom: 20 }}>
         <Title level={3} style={{ margin: 0 }}>面试</Title>
+        {onOpenStoryLibrary ? <Button data-story-audit="ui-library" onClick={() => onOpenStoryLibrary()}>面试故事库</Button> : null}
         <Paragraph type="secondary" style={{ margin: '6px 0 0' }}>
           查看已安排的面试事件、复盘、证据化建议和准备入口。
         </Paragraph>
@@ -55,6 +57,11 @@ export default function InterviewV01View({ onOpenApplication, onOpenPreparation,
               <Button key="mock" type="link" onClick={() => onOpenMockInterview?.(item.application_id, item.event_id)}>
                 开始文本模拟面试
               </Button>,
+              item.note_id && onOpenStoryLibrary ? (
+                <Button key="story" type="link" onClick={() => onOpenStoryLibrary(item.note_id ?? undefined)}>
+                  整理为故事
+                </Button>
+              ) : null,
             ]}>
               <List.Item.Meta
                 title={`${item.company_name} · ${item.position_name}`}

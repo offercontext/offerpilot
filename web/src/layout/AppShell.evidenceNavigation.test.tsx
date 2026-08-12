@@ -42,11 +42,17 @@ vi.mock('antd', () => {
     (props: any) => <div>{props.children}</div>,
     { Content: (props: any) => <main>{props.children}</main> },
   );
+  const Typography = {
+    Paragraph: (props: any) => <p>{props.children}</p>,
+    Text: (props: any) => <span>{props.children}</span>,
+    Title: (props: any) => <h2>{props.children}</h2>,
+  };
   return {
     Button: (props: any) => <button type="button" onClick={props.onClick}>{props.children}</button>,
     Layout,
     Spin: () => <div>loading</div>,
     Tabs: () => <div />,
+    Typography,
     message: { warning: vi.fn(), success: vi.fn(), error: vi.fn() },
   };
 });

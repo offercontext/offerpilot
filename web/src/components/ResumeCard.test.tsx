@@ -1,12 +1,17 @@
+// @vitest-environment jsdom
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { App as AntApp } from 'antd';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import ResumeCard from './ResumeCard';
 import type { Resume } from '@/types/resume';
 
+globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
 const Card = ResumeCard as React.ComponentType<any>;
 
-function renderCard(resume: Resume) {
+function renderCard(resume: Resume, onCompare?: (id: number) => void) {
   return renderToStaticMarkup(
     <AntApp>
       <Card
@@ -15,10 +20,21 @@ function renderCard(resume: Resume) {
         onSetMaster={vi.fn()}
         onCopy={vi.fn()}
         onDelete={vi.fn()}
+        onCompare={onCompare}
       />
     </AntApp>
   );
 }
+
+let root: Root | null = null;
+let host: HTMLDivElement | null = null;
+
+afterEach(() => {
+  act(() => root?.unmount());
+  host?.remove();
+  root = null;
+  host = null;
+});
 
 describe('ResumeCard v0.1', () => {
   it('renders structured resume metadata and excludes match/download/export actions', () => {
@@ -81,5 +97,50 @@ describe('ResumeCard v0.1', () => {
 
     expect(markup).toContain('设为主简历');
     expect(markup).not.toContain('主简历不可删除');
+  });
+
+  it('renders a compare action and sends only the resume id to its callback', async () => {
+    const resume = {
+      id: 11,
+      name: '',
+      file_path: '',
+      parsed_data: '',
+      parse_status: 'text-ready',
+      title: '中文岗位版本',
+      is_master: false,
+      parent_resume_id: 1,
+      source: 'sample_copy',
+      source_file_path: '',
+      content_json: {},
+      deleted_at: null,
+      created_at: '2026-08-06T04:00:00Z',
+      completion_percent: 90,
+      missing_sections: [],
+      is_complete: true,
+    } as Resume;
+    const onCompare = vi.fn();
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    root = createRoot(host);
+    await act(async () => {
+      root?.render(
+        <AntApp>
+          <Card
+            resume={resume}
+            onEdit={vi.fn()}
+            onSetMaster={vi.fn()}
+            onCopy={vi.fn()}
+            onDelete={vi.fn()}
+            onCompare={onCompare}
+          />
+        </AntApp>,
+      );
+    });
+
+    const button = Array.from(host.querySelectorAll('button')).find((item) => item.textContent?.includes('对比版本'));
+    expect(button).not.toBeUndefined();
+    await act(async () => (button as HTMLButtonElement).click());
+    expect(onCompare).toHaveBeenCalledTimes(1);
+    expect(onCompare).toHaveBeenCalledWith(11);
   });
 });

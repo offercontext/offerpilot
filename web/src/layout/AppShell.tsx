@@ -41,6 +41,8 @@ import type { InterviewReviewProposalAttemptState } from '@/components/Interview
 import type { InterviewKnowledgeCaptureDraft } from '@/components/InterviewKnowledgeCaptureDrawer';
 import type { InterviewPreparationAttemptState, InterviewPreparationDraft, InterviewPreparationKnowledgeOption } from '@/components/InterviewPreparationProposalDrawer';
 import MockInterviewDrawer, { type MockInterviewDrawerDraft } from '@/components/MockInterviewDrawer';
+import InterviewStoryLibraryView, { type InterviewStoryOpenDraft } from '@/components/InterviewStoryLibraryView';
+import InterviewStoryDrawer, { createInterviewStoryDraft, type InterviewStoryDraft } from '@/components/InterviewStoryDrawer';
 import OfferNegotiationDrawer, { type OfferNegotiationDraft } from '@/components/OfferNegotiationDrawer';
 import { discardMockInterviewAttempt } from '@/services/mockInterviews';
 import ResumeUploadModal from '@/components/ResumeUploadModal';
@@ -117,6 +119,12 @@ function createMockInterviewDraft(): MockInterviewDrawerDraft {
     resultUnknown: false,
     error: null,
   };
+}
+
+function interviewStoryDraftScope(input: InterviewStoryOpenDraft): string {
+  const target = input.targetStoryId ?? 'new';
+  const note = input.reviewNoteId ?? 'all-notes';
+  return `${input.entrypoint}:story:${target}:note:${note}`;
 }
 
 class ViewErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
@@ -208,6 +216,12 @@ function AppShellContent() {
   const [interviewKnowledgeCaptureDrafts, setInterviewKnowledgeCaptureDrafts] = useState<Record<number, InterviewKnowledgeCaptureDraft>>({});
   const [interviewPreparationAttempts, setInterviewPreparationAttempts] = useState<Record<string, InterviewPreparationAttemptState>>({});
   const [interviewPreparationDrafts, setInterviewPreparationDrafts] = useState<Record<string, InterviewPreparationDraft>>({});
+  const [interviewStoryLibraryOpen, setInterviewStoryLibraryOpen] = useState(false);
+  const [interviewStoryDrawerOpen, setInterviewStoryDrawerOpen] = useState(false);
+  const [interviewStoryLibraryRevision, setInterviewStoryLibraryRevision] = useState(0);
+  const interviewStoryDraftsRef = useRef(new Map<string, InterviewStoryDraft>());
+  const [interviewStoryDrafts, setInterviewStoryDrafts] = useState<Record<string, InterviewStoryDraft>>({});
+  const [activeInterviewStoryDraftScope, setActiveInterviewStoryDraftScope] = useState<string | null>(null);
   const [evidenceFocus, setEvidenceFocus] = useState<Exclude<EvidenceTarget, { kind: 'application' }> | null>(null);
   const [coachOfferId, setCoachOfferId] = useState<number | undefined>(undefined);
   const [chatStartRequest, setChatStartRequest] = useState<ChatStartRequest>();
@@ -1354,6 +1368,45 @@ function AppShellContent() {
   const offerEvidenceFocus = evidenceFocus?.kind === 'offer' ? evidenceFocus : undefined;
   const resumeEvidenceFocus = evidenceFocus?.kind === 'resume' ? evidenceFocus : undefined;
 
+  const openInterviewStoryDraft = (input: InterviewStoryOpenDraft) => {
+    const scope = interviewStoryDraftScope(input);
+    setView('interview');
+    setInterviewStoryLibraryOpen(true);
+    setActiveInterviewStoryDraftScope(scope);
+    setInterviewStoryDrafts((current) => {
+      const existing = interviewStoryDraftsRef.current.get(scope);
+      const next = existing ?? createInterviewStoryDraft(input.entrypoint, input.reviewNoteId, {
+        targetStoryId: input.targetStoryId,
+        expectedCurrentVersionId: input.expectedCurrentVersionId,
+        expectedStoryRevision: input.expectedStoryRevision,
+      });
+      interviewStoryDraftsRef.current.set(scope, next);
+      return { ...current, [scope]: next };
+    });
+    setInterviewStoryDrawerOpen(true);
+  };
+
+  const interviewStoryDraft = activeInterviewStoryDraftScope
+    ? interviewStoryDrafts[activeInterviewStoryDraftScope] ?? null
+    : null;
+
+  const updateInterviewStoryDraft = (draft: InterviewStoryDraft | null) => {
+    const scope = activeInterviewStoryDraftScope;
+    if (!scope) return;
+    if (draft === null) setInterviewStoryLibraryRevision((current) => current + 1);
+    setInterviewStoryDrafts((current) => {
+      const next = { ...current };
+      if (draft === null) {
+        interviewStoryDraftsRef.current.delete(scope);
+        delete next[scope];
+      } else {
+        interviewStoryDraftsRef.current.set(scope, draft);
+        next[scope] = draft;
+      }
+      return next;
+    });
+  };
+
   const workspaceContent = aiSettingsOpen ? (
     <AISettingsDrawer open onClose={() => setAISettingsOpen(false)} />
   ) : selectedApp ? (
@@ -1475,13 +1528,23 @@ function AppShellContent() {
           )}
           {view === 'knowledge' && <KnowledgeSourcesView />}
           {view === 'questions' && <QuestionBankView />}
-          {view === 'interview' && (
+          {view === 'interview' && (interviewStoryLibraryOpen ? (
+            <InterviewStoryLibraryView
+              key={interviewStoryLibraryRevision}
+              onBack={() => setInterviewStoryLibraryOpen(false)}
+              onOpenDraft={openInterviewStoryDraft}
+            />
+          ) : (
             <InterviewV01View
               onOpenApplication={goDetailById}
               onOpenPreparation={openPilotInterviewPreparation}
               onOpenMockInterview={openMockInterview}
+              onOpenStoryLibrary={(reviewNoteId) => {
+                setInterviewStoryLibraryOpen(true);
+                if (reviewNoteId) openInterviewStoryDraft({ entrypoint: 'ui', reviewNoteId });
+              }}
             />
-          )}
+          ))}
           {view === 'resumes' && (
             <ResumeLibraryView
               onAttachToPilot={attachToPilot}
@@ -1542,6 +1605,7 @@ function AppShellContent() {
                 onAttachmentKeyChange={syncPilotAttachmentKey}
                 onOpenEvidence={openEvidence}
               onPrepareOfferNegotiation={(offer) => openOfferNegotiation(offer, 'pilot')}
+              onOpenInterviewStoryLibrary={() => openInterviewStoryDraft({ entrypoint: 'pilot' })}
                 offers={ofrs}
               />
             </div>
@@ -1610,6 +1674,7 @@ function AppShellContent() {
             onAttachmentKeyChange={syncPilotAttachmentKey}
             onOpenEvidence={openEvidence}
             onPrepareOfferNegotiation={(offer) => openOfferNegotiation(offer, 'pilot')}
+            onOpenInterviewStoryLibrary={() => openInterviewStoryDraft({ entrypoint: 'pilot' })}
             offers={ofrs}
           />
         </aside>
@@ -1657,6 +1722,7 @@ function AppShellContent() {
           onAttachmentKeyChange={syncPilotAttachmentKey}
           onOpenEvidence={openEvidence}
           onPrepareOfferNegotiation={(offer) => openOfferNegotiation(offer, 'pilot')}
+          onOpenInterviewStoryLibrary={() => openInterviewStoryDraft({ entrypoint: 'pilot' })}
           offers={ofrs}
         />
       )}
@@ -1669,6 +1735,14 @@ function AppShellContent() {
           draft={mockInterviewDraft}
           onDraftChange={updateMockInterviewDraft}
           onClose={() => void closeMockInterview()}
+        />
+      ) : null}
+      {interviewStoryDrawerOpen && interviewStoryDraft ? (
+        <InterviewStoryDrawer
+          open
+          draft={interviewStoryDraft}
+          onDraftChange={updateInterviewStoryDraft}
+          onClose={() => setInterviewStoryDrawerOpen(false)}
         />
       ) : null}
       {offerNegotiationOffer ? (

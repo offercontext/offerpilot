@@ -71,6 +71,7 @@ def init_database(db_path: Path) -> SessionFactory:
             "Replace legacy MockSession with event-bound text mock interview tables",
         )
     _ensure_application_jd_versions_schema(engine)
+    _ensure_interview_story_schema(engine)
     _ensure_offer_negotiation_schema(engine)
     interview_review_history_rebuilt = _ensure_interview_review_history_schema(engine)
     interview_knowledge_event_added = _ensure_column(
@@ -1234,6 +1235,34 @@ def _ensure_application_jd_versions_schema(engine) -> None:  # type: ignore[no-u
         "0018_application_jd_versions",
         "Add immutable Application JD version history and identity columns",
     )
+
+
+def _ensure_interview_story_schema(engine) -> None:  # type: ignore[no-untyped-def]
+    """Record the additive, independent Interview Story schema migration."""
+
+    # Phase-one Story databases created before the release-audit hardening need
+    # the same bounded repair evidence as fresh databases.  Keep it additive so
+    # immutable Stories, Versions, and Attempts remain readable.
+    _ensure_column(
+        engine,
+        "interview_story_proposal_attempts",
+        "repair_count",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_interview_story_attempt_status "
+                "ON interview_story_proposal_attempts(attempt_status)"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT OR IGNORE INTO schema_migrations (version, description) "
+                "VALUES ('0019_interview_story_library', "
+                "'Add versioned interview stories with evidence-gated proposal attempts')"
+            )
+        )
 
 
 def _ensure_column(engine, table: str, column: str, definition: str) -> bool:  # type: ignore[no-untyped-def]

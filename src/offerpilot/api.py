@@ -42,6 +42,11 @@ from offerpilot.ai.interview_knowledge_capture import (
     InterviewKnowledgeProviderError,
     generate_interview_knowledge_preview,
 )
+from offerpilot.ai.interview_stories import (
+    StoryProposalError,
+    StoryProviderError,
+    generate_interview_story_proposal,
+)
 from offerpilot.ai.mock_interview import (
     MockInterviewProviderError,
     MockInterviewUnverifiableError,
@@ -151,6 +156,15 @@ from offerpilot.repositories.interview_knowledge_capture import (
     InterviewKnowledgeValidationError,
 )
 from offerpilot.repositories.interview_index import InterviewIndexRepository
+from offerpilot.repositories.interview_stories import (
+    InterviewStoriesRepository,
+    StoryCasConflictError,
+    StoryConflictError,
+    StoryIdempotencyConflictError,
+    StoryNotFoundError,
+    StorySourceConflictError,
+    StoryValidationError,
+)
 from offerpilot.repositories.mock_interviews import (
     MockInterviewAttemptConfirmed,
     MockInterviewContractFailed,
@@ -804,6 +818,7 @@ def create_app(
     interview_preparation_proposals = InterviewPreparationProposalsRepository(session_factory)
     interview_knowledge_capture = InterviewKnowledgeCaptureRepository(session_factory)
     interview_index = InterviewIndexRepository(session_factory)
+    interview_stories = InterviewStoriesRepository(session_factory)
     mock_interviews = MockInterviewRepository(session_factory)
     mock_interview_review_drafts = MockInterviewReviewDraftRepository(session_factory)
     wakeups = WakeupsRepository(session_factory)
@@ -5787,6 +5802,355 @@ def create_app(
         knowledge_service.update_config(next_config)
         brief_worker.update_config(next_config)
         return _settings_payload(next_config, resolved_data_dir)
+
+    def _story_error_response(exc: StoryValidationError) -> JSONResponse:
+        if isinstance(exc, StoryNotFoundError):
+            return error_response(404, "面试故事记录不存在或不可用", code="interview_story_not_found")
+        if isinstance(exc, StorySourceConflictError):
+            return error_response(
+                409,
+                "故事来源或版本已变化，请重新确认后再试",
+                code="story_source_conflict",
+            )
+        if isinstance(exc, StoryIdempotencyConflictError):
+            return error_response(
+                409,
+                "本次尝试的输入已变化，请新建一次尝试",
+                code="story_idempotency_conflict",
+            )
+        if isinstance(exc, StoryCasConflictError):
+            return error_response(
+                409,
+                "故事版本已变化，请重新确认后再试",
+                code="story_cas_conflict",
+            )
+        if isinstance(exc, StoryConflictError):
+            return error_response(
+                409,
+                "故事来源或版本已变化，请重新确认后再试",
+                code="story_conflict",
+            )
+        return error_response(422, "面试故事输入无效", code="interview_story_invalid_request")
+
+    def _is_story_write_payload(payload: dict[str, Any]) -> bool:
+        return (
+            isinstance(payload.get("content"), dict)
+            and isinstance(payload.get("evidence_links"), list)
+            and all(isinstance(item, dict) for item in payload["evidence_links"])
+            and isinstance(payload.get("selections"), list)
+            and all(isinstance(item, dict) for item in payload["selections"])
+            and isinstance(payload.get("assertions"), list)
+            and all(isinstance(item, str) for item in payload["assertions"])
+        )
+
+    def _is_story_confirmation_payload(payload: dict[str, Any]) -> bool:
+        def is_optional_positive_int(value: object) -> bool:
+            return value is None or (type(value) is int and value > 0)
+
+        return (
+            isinstance(payload.get("confirmation_token"), str)
+            and isinstance(payload.get("content"), dict)
+            and isinstance(payload.get("evidence_links"), list)
+            and all(isinstance(item, dict) for item in payload["evidence_links"])
+            and is_optional_positive_int(payload.get("expected_current_version_id"))
+            and is_optional_positive_int(payload.get("expected_story_revision"))
+        )
+
+    def _story_attempt_response(attempt: dict[str, Any], status_code: int = 200) -> JSONResponse:
+        if attempt["attempt_status"] in {"generating", "provider_unknown"}:
+            retry_after_ms = interview_stories.get_attempt_retry_after_ms(attempt["id"])
+            return JSONResponse(
+                {
+                    "id": attempt["id"],
+                    "attempt_status": attempt["attempt_status"],
+                    "generation_revision": attempt["generation_revision"],
+                    "source_fingerprint": attempt["source_fingerprint"],
+                    "retry_after_ms": retry_after_ms,
+                },
+                status_code=202,
+            )
+        if attempt["attempt_status"] == "contract_failed":
+            return error_response(
+                502,
+                "AI 建议未通过证据校验，请重新开始。",
+                code="story_unverifiable",
+            )
+        if attempt["attempt_status"] == "invalidated":
+            return error_response(
+                409,
+                "故事来源或版本已变化，请重新确认后再试。",
+                code="story_source_conflict",
+            )
+        return JSONResponse(attempt, status_code=status_code)
+
+    def _story_provider_error_response(attempt_id: int) -> JSONResponse:
+        # The client must preserve the original idempotency context after an
+        # unknown Provider outcome.  Returning the non-secret Attempt identity
+        # lets a browser audit prove that a subsequent same-key replay did not
+        # create a second Attempt.
+        return error_response(
+            502,
+            "AI 服务暂时无法确认结果，请使用原尝试重试",
+            code="story_provider_error",
+            details={
+                "id": attempt_id,
+                "attempt_status": "provider_unknown",
+                "retry_after_ms": interview_stories.get_attempt_retry_after_ms(attempt_id),
+            },
+        )
+
+    def _story_proposal(
+        payload: dict[str, Any], *, entrypoint: str
+    ) -> JSONResponse:
+        allowed = {
+            "target_story_id",
+            "expected_current_version_id",
+            "expected_story_revision",
+            "selections",
+            "assertions",
+            "idempotency_key",
+            "entry_context",
+        }
+        required = allowed - {"entry_context"}
+        if set(payload) - allowed or not required.issubset(payload):
+            return error_response(422, "面试故事输入无效", code="interview_story_invalid_request")
+        if not isinstance(payload.get("selections"), list) or not isinstance(payload.get("assertions"), list):
+            return error_response(422, "面试故事输入无效", code="interview_story_invalid_request")
+        entry_context = payload.get("entry_context")
+        if entry_context is not None and (
+            not isinstance(entry_context, dict)
+            or set(entry_context) != {"review_note_id"}
+            or not isinstance(entry_context.get("review_note_id"), int)
+            or isinstance(entry_context.get("review_note_id"), bool)
+            or entry_context["review_note_id"] <= 0
+            or not payload["selections"]
+            or any(
+                not isinstance(item, dict)
+                or item.get("source_kind") != "interview_note"
+                or item.get("source_id") != entry_context["review_note_id"]
+                for item in payload["selections"]
+            )
+            or not any(
+                isinstance(item, dict)
+                and item.get("source_kind") == "interview_note"
+                and item.get("source_id") == entry_context["review_note_id"]
+                for item in payload["selections"]
+            )
+        ):
+            return error_response(422, "面试故事输入无效", code="interview_story_invalid_request")
+        try:
+            claim = interview_stories.claim_proposal(
+                target_story_id=payload.get("target_story_id"),
+                expected_current_version_id=payload.get("expected_current_version_id"),
+                expected_story_revision=payload.get("expected_story_revision"),
+                selections=payload["selections"],
+                assertions=payload["assertions"],
+                idempotency_key=payload.get("idempotency_key", ""),
+                entrypoint=entrypoint,
+                entry_context=entry_context,
+            )
+        except StoryValidationError as exc:
+            return _story_error_response(exc)
+        if claim.pending:
+            attempt = interview_stories.get_attempt(claim.attempt_id)
+            return _story_attempt_response(attempt or {
+                "id": claim.attempt_id,
+                "attempt_status": "generating",
+                "generation_revision": claim.generation_revision,
+                "source_fingerprint": claim.source_fingerprint,
+            })
+        if not claim.should_call_provider:
+            attempt = interview_stories.get_attempt(claim.attempt_id)
+            if attempt is None:
+                return error_response(404, "面试故事请求不存在", code="interview_story_attempt_not_found")
+            return _story_attempt_response(attempt)
+        heartbeat = interview_stories.start_heartbeat(
+            attempt_id=claim.attempt_id,
+            generation_revision=claim.generation_revision,
+            provider_call_token=claim.provider_call_token,
+        )
+        repair_count = 0
+
+        def _record_story_diagnostic(item: dict[str, Any]) -> None:
+            nonlocal repair_count
+            candidate = item.get("repair_count")
+            if type(candidate) is int and 0 <= candidate <= 1:
+                repair_count = max(repair_count, candidate)
+            append_log_entry(
+                resolved_data_dir,
+                "WARNING",
+                "interview_story_diagnostic "
+                + json.dumps(item, ensure_ascii=True, separators=(",", ":")),
+            )
+
+        try:
+            model = _chat_model(chat_model, resolved_data_dir)
+            if isinstance(model, JSONResponse):
+                raise RuntimeError("story model is unavailable")
+            proposal = generate_interview_story_proposal(
+                model,
+                claim.source_snapshot,
+                on_diagnostic=_record_story_diagnostic,
+            )
+            written = interview_stories.complete_proposal(
+                attempt_id=claim.attempt_id,
+                generation_revision=claim.generation_revision,
+                provider_call_token=claim.provider_call_token,
+                proposal=proposal,
+                repair_count=repair_count,
+            )
+            attempt = interview_stories.get_attempt(claim.attempt_id)
+            if not written and attempt is not None:
+                return _story_attempt_response(attempt)
+            return _story_attempt_response(attempt or {}, status_code=201)
+        except StoryConflictError as exc:
+            return _story_error_response(exc)
+        except StoryProviderError as exc:
+            interview_stories.mark_provider_unknown(
+                attempt_id=claim.attempt_id,
+                generation_revision=claim.generation_revision,
+                provider_call_token=claim.provider_call_token,
+                category=exc.category,
+                repair_count=exc.repair_count,
+            )
+            return _story_provider_error_response(claim.attempt_id)
+        except StoryProposalError as exc:
+            interview_stories.mark_contract_failed(
+                attempt_id=claim.attempt_id,
+                generation_revision=claim.generation_revision,
+                provider_call_token=claim.provider_call_token,
+                category=exc.category,
+                repair_count=exc.repair_count,
+            )
+            return error_response(
+                502,
+                "AI 建议未通过证据校验，请重新开始",
+                code="story_unverifiable",
+            )
+        except Exception:
+            interview_stories.mark_provider_unknown(
+                attempt_id=claim.attempt_id,
+                generation_revision=claim.generation_revision,
+                provider_call_token=claim.provider_call_token,
+                category="provider_error",
+            )
+            return _story_provider_error_response(claim.attempt_id)
+        finally:
+            heartbeat.stop()
+
+    @app.get("/api/interview-stories")
+    def list_interview_stories(
+        status: str = Query("active"), query: str = Query("")
+    ) -> JSONResponse:
+        try:
+            return JSONResponse(interview_stories.list_stories(status=status, query=query))
+        except StoryValidationError as exc:
+            return _story_error_response(exc)
+
+    @app.get("/api/interview-story-sources")
+    def list_interview_story_sources(review_note_id: int | None = Query(None)) -> JSONResponse:
+        try:
+            return JSONResponse(interview_stories.list_source_candidates(review_note_id=review_note_id))
+        except StoryValidationError as exc:
+            return _story_error_response(exc)
+
+    @app.post("/api/interview-stories")
+    def create_interview_story(payload: dict[str, Any] = Body(...)) -> JSONResponse:
+        allowed = {"content", "evidence_links", "selections", "assertions", "expected_current_version_id", "idempotency_key"}
+        if set(payload) != allowed or not _is_story_write_payload(payload):
+            return error_response(422, "面试故事输入无效", code="interview_story_invalid_request")
+        try:
+            story = interview_stories.create_manual_story(
+                content=payload["content"],
+                evidence_links=payload["evidence_links"],
+                selections=payload["selections"],
+                assertions=payload["assertions"],
+                expected_current_version_id=payload["expected_current_version_id"],
+                idempotency_key=payload["idempotency_key"],
+            )
+            return JSONResponse(story, status_code=201)
+        except (KeyError, TypeError, ValueError, StoryValidationError) as exc:
+            return _story_error_response(exc if isinstance(exc, StoryValidationError) else StoryValidationError("invalid"))
+
+    @app.get("/api/interview-stories/{story_id}")
+    def get_interview_story(story_id: int) -> JSONResponse:
+        story = interview_stories.get_story(story_id)
+        if story is None:
+            return error_response(404, "面试故事不存在", code="interview_story_not_found")
+        return JSONResponse(story)
+
+    @app.get("/api/interview-stories/{story_id}/versions")
+    def list_interview_story_versions(story_id: int) -> JSONResponse:
+        versions = interview_stories.list_versions(story_id)
+        if versions is None:
+            return error_response(404, "面试故事不存在", code="interview_story_not_found")
+        return JSONResponse(versions)
+
+    @app.get("/api/interview-stories/{story_id}/versions/{version_id}")
+    def get_interview_story_version(story_id: int, version_id: int) -> JSONResponse:
+        version = interview_stories.get_version(story_id, version_id)
+        if version is None:
+            return error_response(404, "故事版本不存在", code="interview_story_version_not_found")
+        return JSONResponse(version)
+
+    @app.post("/api/interview-stories/{story_id}/versions")
+    def create_interview_story_version(story_id: int, payload: dict[str, Any] = Body(...)) -> JSONResponse:
+        allowed = {"content", "evidence_links", "selections", "assertions", "expected_current_version_id", "expected_story_revision", "idempotency_key"}
+        if set(payload) != allowed or not _is_story_write_payload(payload):
+            return error_response(422, "面试故事输入无效", code="interview_story_invalid_request")
+        try:
+            return JSONResponse(
+                interview_stories.create_manual_version(story_id=story_id, **payload), status_code=201
+            )
+        except (KeyError, TypeError, ValueError, StoryValidationError) as exc:
+            return _story_error_response(exc if isinstance(exc, StoryValidationError) else StoryValidationError("invalid"))
+
+    @app.post("/api/interview-stories/{story_id}/archive")
+    def archive_interview_story(story_id: int, payload: dict[str, Any] = Body(...)) -> JSONResponse:
+        if set(payload) != {"expected_story_revision"}:
+            return error_response(422, "面试故事输入无效", code="interview_story_invalid_request")
+        try:
+            return JSONResponse(interview_stories.archive(story_id=story_id, **payload))
+        except StoryValidationError as exc:
+            return _story_error_response(exc)
+
+    @app.post("/api/interview-stories/{story_id}/restore")
+    def restore_interview_story(story_id: int, payload: dict[str, Any] = Body(...)) -> JSONResponse:
+        if set(payload) != {"expected_story_revision"}:
+            return error_response(422, "面试故事输入无效", code="interview_story_invalid_request")
+        try:
+            return JSONResponse(interview_stories.restore(story_id=story_id, **payload))
+        except StoryValidationError as exc:
+            return _story_error_response(exc)
+
+    @app.post("/api/interview-story-proposals")
+    def create_interview_story_proposal(payload: dict[str, Any] = Body(...)) -> JSONResponse:
+        return _story_proposal(payload, entrypoint="ui")
+
+    @app.post("/api/pilot/interview-story-proposals")
+    def create_pilot_interview_story_proposal(payload: dict[str, Any] = Body(...)) -> JSONResponse:
+        return _story_proposal(payload, entrypoint="pilot")
+
+    @app.get("/api/interview-story-proposals/{attempt_id}")
+    def get_interview_story_proposal(attempt_id: int) -> JSONResponse:
+        attempt = interview_stories.get_attempt(attempt_id)
+        if attempt is None:
+            return error_response(404, "面试故事请求不存在", code="interview_story_attempt_not_found")
+        return _story_attempt_response(attempt)
+
+    @app.post("/api/interview-story-proposals/{attempt_id}/confirm")
+    def confirm_interview_story_proposal(attempt_id: int, payload: dict[str, Any] = Body(...)) -> JSONResponse:
+        allowed = {"confirmation_token", "content", "evidence_links", "expected_current_version_id", "expected_story_revision"}
+        if set(payload) != allowed or not _is_story_confirmation_payload(payload):
+            return error_response(422, "面试故事输入无效", code="interview_story_invalid_request")
+        try:
+            result = interview_stories.confirm_attempt(attempt_id=attempt_id, **payload)
+            return JSONResponse(
+                {"story_id": result.story_id, "version_id": result.version_id, "created": result.created},
+                status_code=201 if result.created else 200,
+            )
+        except (KeyError, TypeError, ValueError, StoryValidationError) as exc:
+            return _story_error_response(exc if isinstance(exc, StoryValidationError) else StoryValidationError("invalid"))
 
     @app.get("/{full_path:path}", include_in_schema=False)
     def serve_frontend(full_path: str) -> Response:
