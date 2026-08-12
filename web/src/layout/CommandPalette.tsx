@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Modal, Input, List } from 'antd';
 import type { Application } from '@/types/application';
 import type { PipelineInsight } from '@/lib/pipelineInsights';
+import workflowStyles from '@/components/ui/WorkflowSurface.module.css';
 import { MODULE_NAV, type ViewMode } from './navigation';
 
 export interface Command {
@@ -188,12 +189,13 @@ export default function CommandPalette({
         onKeyDown={onKeyDown}
         style={{ padding: '14px 16px' }}
       />
-      <div style={{ maxHeight: 360, overflowY: 'auto', borderTop: '1px solid var(--op-border)' }}>
+      <div data-testid="command-palette-results" className={workflowStyles.scrollRegion} style={{ maxHeight: 360, borderTop: '1px solid var(--op-border)' }}>
         <List
           dataSource={items}
           locale={{ emptyText: '无匹配结果' }}
           renderItem={(c, index) => (
             <List.Item
+              className={workflowStyles.listRow}
               onClick={c.run}
               onMouseEnter={() => setActiveIndex(index)}
               style={{
@@ -202,7 +204,7 @@ export default function CommandPalette({
                 background: index === activeIndex ? 'var(--op-layout-bg)' : undefined,
               }}
             >
-              <span style={{ color: 'var(--op-ink)' }}>{c.label}</span>
+              <span className="op-long-text" style={{ color: 'var(--op-ink)' }}>{c.label}</span>
               {c.hint && <span style={{ fontSize: 11, color: 'var(--op-muted)' }}>{c.hint}</span>}
             </List.Item>
           )}

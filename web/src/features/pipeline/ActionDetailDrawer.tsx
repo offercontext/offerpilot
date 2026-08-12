@@ -46,7 +46,7 @@ export default function ActionDetailDrawer({ insight, open, onClose, onRunAction
   if (!open) return null;
 
   return (
-    <section className={styles.detailWorkspace} aria-label="流程行动详情">
+    <section data-testid="action-detail-surface" className={`${styles.detailWorkspace} op-long-text`} aria-label="流程行动详情">
       {detail && primaryAction ? (
         <div className={styles.drawerBody}>
           <div className={styles.detailHeader}>
@@ -62,7 +62,7 @@ export default function ActionDetailDrawer({ insight, open, onClose, onRunAction
               <List
                 size="small"
                 dataSource={detail.evidence}
-                renderItem={(item) => <List.Item>{item}</List.Item>}
+                renderItem={(item) => <List.Item className="op-list-row">{item}</List.Item>}
               />
             )}
           </section>
@@ -76,7 +76,7 @@ export default function ActionDetailDrawer({ insight, open, onClose, onRunAction
 
           <section className={styles.section}>
             <Typography.Title level={5}>建议下一步</Typography.Title>
-            <Space direction="vertical" size={12}>
+            <Space direction="vertical" size={12} className="op-control-actions">
               <Button type="primary" onClick={() => onRunAction(detail, getActionId(detail, primaryAction, 'primary'))}>
                 {primaryAction.label}
               </Button>

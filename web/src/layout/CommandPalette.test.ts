@@ -28,6 +28,7 @@ function app(patch: Partial<Application>): Application {
 
 describe('CommandPalette resume commands', () => {
   it('uses resume-library/new-resume wording instead of resume-match wording', () => {
+    expect(source).toContain('data-testid="command-palette-results"');
     expect(source).toContain('打开简历库');
     expect(source).toContain('新建简历');
     expect(source).toContain('上传简历');

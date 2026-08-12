@@ -16,6 +16,7 @@ describe('AISettingsDrawer localization', () => {
     expect(source).toContain('接口地址');
     expect(source).toContain('保存');
     expect(source).toContain('写操作自动确认');
+    expect(source).toContain('data-testid="ai-provider-list"');
     expect(source).not.toContain('label="Provider"');
     expect(source).not.toContain('label="Base URL"');
     expect(source).not.toContain('OpenAI-compatible API base');

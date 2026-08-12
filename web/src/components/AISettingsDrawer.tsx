@@ -38,6 +38,7 @@ import {
   type UpdateSettingsPayload,
 } from '@/services/chat';
 import { ONBOARDING_QUERY_KEY } from '@/services/onboarding';
+import workflowStyles from './ui/WorkflowSurface.module.css';
 
 interface Props {
   open: boolean;
@@ -234,8 +235,9 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
   if (!open) return null;
 
   return (
-    <section aria-label="AI 设置" style={{ maxWidth: 1040, display: 'grid', gap: 16 }}>
-      <div style={{ display: 'grid', gap: 8 }}>
+    <section aria-label="AI 设置" className={`${workflowStyles.surface} ${workflowStyles.stack}`} style={{ maxWidth: 1040 }}>
+      <div className={workflowStyles.sectionHeader}>
+        <div>
         <Button
           type="link"
           icon={<ArrowLeftOutlined />}
@@ -244,14 +246,13 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
         >
           返回设置
         </Button>
-        <Space style={{ width: '100%', justifyContent: 'space-between' }} align="center" wrap>
-          <Typography.Title level={3} style={{ margin: 0, color: 'var(--op-ink)' }}>
+          <Typography.Title level={3} style={{ margin: '8px 0 0', color: 'var(--op-ink)' }}>
             <ApiOutlined /> AI 设置
           </Typography.Title>
+        </div>
           <Button type="primary" loading={saveMutation.isPending} onClick={() => saveMutation.mutate()}>
             保存
           </Button>
-        </Space>
       </div>
       <Space direction="vertical" size={16} style={{ width: '100%' }}>
         <Alert
@@ -262,7 +263,7 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
           description={hasKey ? '密钥留空保存会保留当前密钥。' : '配置模型供应商密钥后即可使用 AI 能力。'}
         />
 
-        <section>
+        <section data-testid="ai-provider-list" className={workflowStyles.section}>
           <Space align="center" style={{ width: '100%', justifyContent: 'space-between' }}>
             <Typography.Title level={5} style={{ margin: 0 }}>
               Provider 列表
@@ -277,6 +278,7 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
             locale={{ emptyText: '暂无供应商' }}
             renderItem={(provider) => (
               <List.Item
+                className={workflowStyles.listRow}
                 actions={[
                   <Button key="edit" size="small" icon={<EditOutlined />} onClick={() => editProvider(provider)}>
                     编辑供应商
@@ -326,6 +328,7 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
           form={form}
           layout="vertical"
           initialValues={providerToForm(activeProvider, settingsQuery.data)}
+          className={workflowStyles.section}
         >
           <Typography.Title level={5} style={{ marginTop: 0 }}>
             编辑供应商
@@ -388,7 +391,7 @@ export default function AISettingsDrawer({ open, onClose }: Props) {
             <Switch />
           </Form.Item>
 
-          <Space wrap>
+          <Space wrap className={workflowStyles.actionGroup}>
             <Button onClick={applyProviderForm}>应用到 Provider 列表</Button>
             <Button icon={<SyncOutlined />} loading={testMutation.isPending} onClick={() => testMutation.mutate()}>
               测试连接

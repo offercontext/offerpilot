@@ -8,6 +8,7 @@ import { createEvent, updateEvent } from '@/services/events';
 import type { Application } from '@/types/application';
 import type { ScheduleEvent, ScheduleEventInput, ScheduleEventType } from '@/types/event';
 import { EVENT_TYPE_LABELS } from '@/types/event';
+import workflowStyles from './ui/WorkflowSurface.module.css';
 
 interface ScheduleEventFormProps {
   open: boolean;
@@ -124,8 +125,9 @@ export default function ScheduleEventForm({
   if (!open) return null;
 
   return (
-    <section aria-label={isEdit ? '编辑日程' : '新建日程'}>
-      <div style={{ display: 'grid', gap: 8, marginBottom: 18 }}>
+    <section data-testid="schedule-event-form" aria-label={isEdit ? '编辑日程' : '新建日程'} className={`${workflowStyles.surface} ${workflowStyles.stack}`}>
+      <div className={workflowStyles.sectionHeader}>
+        <div>
         <Button
           type="link"
           icon={<ArrowLeftOutlined />}
@@ -134,17 +136,16 @@ export default function ScheduleEventForm({
         >
           返回上一层
         </Button>
-        <Space style={{ width: '100%', justifyContent: 'space-between' }} align="center" wrap>
-          <h2 style={{ margin: 0 }}>{isEdit ? '编辑日程' : '新建日程'}</h2>
-          <Space>
+        <h2 style={{ margin: '8px 0 0' }}>{isEdit ? '编辑日程' : '新建日程'}</h2>
+        </div>
+          <Space className={workflowStyles.actionGroup}>
           <Button onClick={handleClose}>取消</Button>
           <Button type="primary" loading={mutation.isPending} onClick={() => form.submit()}>
             {isEdit ? '保存' : '创建'}
           </Button>
           </Space>
-        </Space>
       </div>
-      <Form form={form} layout="vertical" onFinish={handleFinish} requiredMark={false}>
+      <Form form={form} layout="vertical" onFinish={handleFinish} requiredMark={false} className={workflowStyles.section}>
         <Form.Item
           name="application_id"
           label="投递"
@@ -162,16 +163,15 @@ export default function ScheduleEventForm({
           />
         </Form.Item>
 
-        <div style={{ display: 'flex', gap: 12 }}>
+        <div className={workflowStyles.formGrid}>
           <Form.Item
             name="event_type"
             label="类型"
             rules={[{ required: true, message: '请选择类型' }]}
-            style={{ flex: 1 }}
           >
             <Select options={EVENT_TYPE_OPTIONS} />
           </Form.Item>
-          <Form.Item name="round" label="轮次" style={{ width: 120 }}>
+          <Form.Item name="round" label="轮次">
             <InputNumber min={0} precision={0} style={{ width: '100%' }} />
           </Form.Item>
         </div>
@@ -184,12 +184,11 @@ export default function ScheduleEventForm({
           <Select mode="tags" placeholder="输入后回车添加标签" tokenSeparators={[',', '，']} />
         </Form.Item>
 
-        <div style={{ display: 'flex', gap: 12 }}>
+        <div className={workflowStyles.formGrid}>
           <Form.Item
             name="scheduled_at"
             label="时间"
             rules={[{ required: true, message: '请选择时间' }]}
-            style={{ flex: 1 }}
           >
             <DatePicker showTime style={{ width: '100%' }} format="YYYY-MM-DD HH:mm" />
           </Form.Item>
@@ -197,17 +196,16 @@ export default function ScheduleEventForm({
             name="duration_minutes"
             label="时长"
             rules={[{ required: true, message: '请输入时长' }]}
-            style={{ width: 120 }}
           >
             <InputNumber min={1} precision={0} addonAfter="分钟" style={{ width: '100%' }} />
           </Form.Item>
         </div>
 
-        <div style={{ display: 'flex', gap: 12 }}>
-          <Form.Item name="remind_at" label="提醒时间" style={{ flex: 1 }}>
+        <div className={workflowStyles.formGrid}>
+          <Form.Item name="remind_at" label="提醒时间">
             <DatePicker showTime style={{ width: '100%' }} format="YYYY-MM-DD HH:mm" />
           </Form.Item>
-          <Form.Item name="status" label="状态" style={{ width: 140 }}>
+          <Form.Item name="status" label="状态">
             <Select
               options={[
                 { value: 'todo', label: '待处理' },
