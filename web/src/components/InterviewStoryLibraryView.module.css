@@ -219,7 +219,7 @@
   padding: 10px 14px;
   color: var(--op-text-secondary, #64748b);
   font-size: 12px;
-  background: color-mix(in srgb, var(--op-primary, #6558f5) 5%, #fff);
+  background: color-mix(in srgb, var(--op-primary, #6558f5) 5%, var(--op-surface, #fff));
   border: 1px solid color-mix(in srgb, var(--op-primary, #6558f5) 14%, var(--op-border, #e5e7eb));
   border-radius: var(--op-control-radius, 8px);
 }
@@ -296,7 +296,7 @@
   color: var(--op-primary, #6558f5);
   line-height: 18px;
   white-space: nowrap;
-  background: color-mix(in srgb, var(--op-primary, #6558f5) 6%, #fff);
+  background: color-mix(in srgb, var(--op-primary, #6558f5) 6%, var(--op-surface, #fff));
   border-radius: var(--op-control-radius, 8px);
   cursor: pointer;
   list-style-position: inside;

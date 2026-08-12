@@ -77,9 +77,9 @@ function EvidenceDisclosure({
     <details className={styles.evidenceDisclosure} data-evidence-target={target}>
       <summary>{links.length} 条冻结证据</summary>
       <div className={styles.evidenceList}>
-        {links.map((link) => (
+        {links.map((link, index) => (
           <div
-            key={`${link.target_kind}-${link.target_id}-${link.source_kind}-${link.source_stable_id}-${link.source_path}`}
+            key={`${link.target_kind}-${link.target_id}-${link.source_kind}-${link.source_stable_id}-${link.source_version_or_snapshot}-${link.source_path}-${index}`}
             className={styles.evidenceItem}
           >
             <span className={styles.evidenceSource}>{SOURCE_LABELS[link.source_kind]}</span>
