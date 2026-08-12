@@ -58,12 +58,15 @@ describe('control polish theme contract', () => {
 
   it('uses only defined theme tokens for native control interaction states', async () => {
     const [tokens, workflowCss] = await Promise.all([loadTokens(), loadWorkflowSurface()]);
+    const declarations = new Set(
+      [...tokens.matchAll(/(--[a-z0-9-]+)\s*:/gi)].map((match) => match[1]),
+    );
+    const references = new Set(
+      [...workflowCss.matchAll(/var\((--[a-z0-9-]+)/gi)].map((match) => match[1]),
+    );
+    const undefinedReferences = [...references].filter((token) => !declarations.has(token));
 
-    expect(tokens).toContain('--op-primary:');
-    expect(tokens).toContain('--op-primary-strong:');
-    expect(tokens).toContain('--op-focus-ring:');
-    expect(tokens).toContain('--surface-hover:');
+    expect(undefinedReferences).toEqual([]);
     expect(workflowCss).toContain('box-shadow: var(--op-focus-ring)');
-    expect(workflowCss).not.toMatch(/--op-primary-(?:border|soft|hover)/);
   });
 });
