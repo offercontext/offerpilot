@@ -1,5 +1,19 @@
 # Application JD version release verification
 
+## Final integrated release evidence (2026-08-12)
+
+- Integration baseline: local `main@d5a3d56`; evidence HEAD: `0c208d3`.
+- Backend grouped gate passed: `2,043` collected, `2,039` passed and four pre-approved Windows symlink-permission skips. Group counts were agent `454`, domain `73`, knowledge `659`, proposals `418`, and misc `439`; aggregate coverage matched the manifest with no duplicate node IDs.
+- Frontend grouped gate passed: `117` files and `922` tests across all ten configured groups; aggregate source/manifests matched current files.
+- `uv run ruff check --no-cache .`, `uv run mypy src`, TypeScript/Vite production build, `uv run oc smoke --static-dir web/dist`, and `uv run oc verify --profile local --static-dir web/dist` passed.
+- Full `uv run oc verify --profile real-ai --static-dir web/dist` passed using the existing `deepseek-v4-flash` configuration. The run completed Interview Preparation, Material Proposal, Opportunity Fit Triage and Deep Review, Interview Review, Knowledge Capture, bounded Mock Interview, confirmation writes, cleanup, and cross-domain-write checks.
+- The complete isolated browser `Stage all` harness passed in a light Chinese `1440×1200` browser. Stage A proved UI JD v1 and deterministic Pilot JD v2 with one confirmation and zero Provider calls. Triage, Material Kit, and Interview Preparation then each used JD v2 and passed request/response identity, allowed-write, cleanup, and local-only browser-network checks. To make this browser evidence deterministic and free of external cost, the three consumer responses came from an ephemeral loopback controlled Provider; the preceding full API gate supplies the separate real-Provider evidence.
+- Browser acceptance also found and fixed two integration defects: the direct Material Kit entry now receives the current frozen JD text/version, and long audited Provider tunnels no longer inherit a 30-second idle cutoff. Opportunity Fit’s browser client timeout is aligned to the 180-second release client boundary.
+- Evidence screenshots are stored outside the repository at `D:\Users\yuqi.chen\.offerpilot\verification\application-jd-release-20260812`. The relevant files are `03-pilot-confirmation.png`, `04-jd-version-history.png`, `05-triage-controlled-result.png`, `06-material-kit-controlled.png`, and `07-interview-preparation-controlled.png`.
+- All temporary service, browser, audit proxy, loopback Provider, ports, and isolated application data were stopped or removed. No formal Provider configuration or secret was changed.
+
+Status: release gates are satisfied for local integration. No push is performed by this report.
+
 - Verification date: 2026-08-10
 - Branch: `feat/20260805-application-jd-versions`
 - Feature baseline: `b6c4294089c61a50f958005e0731d85b6c2b58c4`
