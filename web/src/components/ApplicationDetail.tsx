@@ -533,9 +533,9 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
       </Modal>
       <Modal
         open={jdEditorOpen}
-        title="\u6295\u9012\u5c97\u4f4d\u8d44\u6599"
+        title={'\u6295\u9012\u5c97\u4f4d\u8d44\u6599'}
         okText={applicationJdDraft?.resultUnknown ? '\u4f7f\u7528\u539f\u5c1d\u8bd5\u91cd\u8bd5' : '\u4fdd\u5b58\u5c97\u4f4d\u8d44\u6599'}
-        cancelText="\u53d6\u6d88"
+        cancelText={'\u53d6\u6d88'}
         confirmLoading={jdSave.isPending}
         onOk={submitJd}
         onCancel={() => setJdEditorOpen(false)}
@@ -545,24 +545,24 @@ export default function ApplicationDetail({ application, open, onClose, onMockIn
           value={applicationJdDraft?.jdText ?? applicationJdQuery.data?.current?.jd_text ?? ''}
           disabled={Boolean(applicationJdDraft?.resultUnknown)}
           onChange={(event) => onApplicationJdDraftChange?.(application!.id, { jdText: event.target.value })}
-          placeholder="\u7c98\u8d34\u5c97\u4f4d\u63cf\u8ff0"
+          placeholder={'\u7c98\u8d34\u5c97\u4f4d\u63cf\u8ff0'}
         />
         <Input
           style={{ marginTop: 12 }}
           value={applicationJdDraft?.sourceUrl ?? applicationJdQuery.data?.current?.source_url ?? ''}
           disabled={Boolean(applicationJdDraft?.resultUnknown)}
           onChange={(event) => onApplicationJdDraftChange?.(application!.id, { sourceUrl: event.target.value })}
-          placeholder="\u6765\u6e90 URL\uff08\u4ec5\u5c55\u793a\uff0c\u4e0d\u4f1a\u8bbf\u95ee\uff09"
+          placeholder={'\u6765\u6e90 URL\uff08\u4ec5\u5c55\u793a\uff0c\u4e0d\u4f1a\u8bbf\u95ee\uff09'}
         />
         {applicationJdDraft?.resultUnknown && (
           <Paragraph type="warning" style={{ marginTop: 12, marginBottom: 0 }}>
-            \u4fdd\u5b58\u7ed3\u679c\u5f85\u786e\u8ba4\uff0c\u8bf7\u4f7f\u7528\u539f\u5c1d\u8bd5\u91cd\u8bd5。
+            {'\u4fdd\u5b58\u7ed3\u679c\u5f85\u786e\u8ba4\uff0c\u8bf7\u4f7f\u7528\u539f\u5c1d\u8bd5\u91cd\u8bd5\u3002'}
           </Paragraph>
         )}
       </Modal>
       <Modal
         open={jdHistoryOpen}
-        title="\u5c97\u4f4d\u8d44\u6599\u5386\u53f2"
+        title={'\u5c97\u4f4d\u8d44\u6599\u5386\u53f2'}
         footer={null}
         onCancel={() => { setJdHistoryOpen(false); setSelectedJdVersion(null); }}
       >

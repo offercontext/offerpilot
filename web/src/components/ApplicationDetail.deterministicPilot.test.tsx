@@ -79,7 +79,13 @@ vi.mock('antd', () => {
     Button: ({ children, htmlType: _htmlType, loading: _loading, icon: _icon, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { htmlType?: string; loading?: boolean; icon?: ReactNode }) => (
       <button {...props}>{children}</button>
     ),
-    Modal: (props: { open?: boolean; title?: ReactNode; children: ReactNode }) => props.open ? <div role="dialog"><h3>{props.title}</h3>{props.children}</div> : null,
+    Modal: (props: { open?: boolean; title?: ReactNode; cancelText?: ReactNode; children: ReactNode }) => props.open ? (
+      <div role="dialog">
+        <h3>{props.title}</h3>
+        {props.children}
+        {props.cancelText && <button type="button">{props.cancelText}</button>}
+      </div>
+    ) : null,
     Divider: () => <hr />,
     Empty: (props: { description?: ReactNode }) => <div>{props.description}</div>,
     Form,
@@ -129,6 +135,22 @@ afterEach(() => {
 });
 
 describe('ApplicationDetail deterministic Pilot JD entry', () => {
+  it('renders the JD editor labels as Chinese text instead of escape sequences', () => {
+    act(() => root?.render(<ApplicationDetail application={application} open onClose={vi.fn()} />));
+
+    const addButton = [...(container?.querySelectorAll('button') ?? [])]
+      .find((button) => button.textContent?.includes('\u6dfb\u52a0 JD'));
+    expect(addButton).not.toBeUndefined();
+    act(() => (addButton as HTMLButtonElement).click());
+
+    const dialog = container?.querySelector('[role="dialog"]');
+    expect(dialog?.textContent).toContain('\u6295\u9012\u5c97\u4f4d\u8d44\u6599');
+    expect(dialog?.textContent).toContain('\u53d6\u6d88');
+    expect(dialog?.textContent).not.toContain('\\u6295');
+    expect(dialog?.querySelector('textarea')?.placeholder).toBe('\u7c98\u8d34\u5c97\u4f4d\u63cf\u8ff0');
+    expect(dialog?.querySelector('input')?.placeholder).toBe('\u6765\u6e90 URL\uff08\u4ec5\u5c55\u793a\uff0c\u4e0d\u4f1a\u8bbf\u95ee\uff09');
+  });
+
   it('uses a save shortcut without a current JD and never calls the JD save service', () => {
     const onAskPilot = vi.fn();
     act(() => root?.render(<ApplicationDetail application={application} open onClose={vi.fn()} onAskPilot={onAskPilot} />));
