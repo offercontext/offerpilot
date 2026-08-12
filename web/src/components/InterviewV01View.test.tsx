@@ -14,6 +14,7 @@ describe('InterviewV01View', () => {
 
     expect(markup).toContain('面试');
     expect(markup).toContain('正在加载面试列表');
+    expect(markup).toContain('data-testid="interview-surface"');
     expect(markup).not.toContain('模拟面试');
     expect(markup).not.toContain('新建复盘');
   });

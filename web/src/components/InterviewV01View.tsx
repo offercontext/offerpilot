@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Alert, Button, Empty, List, Space, Spin, Tag, Typography } from 'antd';
 import { listInterviews } from '@/services/interviews';
 import type { InterviewIndexItem } from '@/types/interviewIndex';
+import workflowStyles from './ui/WorkflowSurface.module.css';
 
 const { Paragraph, Title } = Typography;
 
@@ -30,22 +31,28 @@ export default function InterviewV01View({ onOpenApplication, onOpenPreparation,
   }, []);
 
   return (
-    <div style={{ padding: 24 }}>
-      <div style={{ marginBottom: 20 }}>
-        <Title level={3} style={{ margin: 0 }}>面试</Title>
-        {onOpenStoryLibrary ? <Button data-story-audit="ui-library" onClick={() => onOpenStoryLibrary()}>面试故事库</Button> : null}
-        <Paragraph type="secondary" style={{ margin: '6px 0 0' }}>
-          查看已安排的面试事件、复盘、证据化建议和准备入口。
-        </Paragraph>
+    <div data-testid="interview-surface" className={`${workflowStyles.surface} op-view-enter`} style={{ padding: 24 }}>
+      <div className="op-section-heading" style={{ marginBottom: 20 }}>
+        <div>
+          <Title level={3} style={{ margin: 0 }}>面试</Title>
+          <Paragraph type="secondary" style={{ margin: '6px 0 0' }}>
+            查看已安排的面试事件、复盘、证据化建议和准备入口。
+          </Paragraph>
+        </div>
+        {onOpenStoryLibrary ? <Button type="primary" data-story-audit="ui-library" onClick={() => onOpenStoryLibrary()}>面试故事库</Button> : null}
       </div>
       {loading ? <Spin aria-label="正在加载面试列表" /> : null}
       {error ? <Alert type="error" showIcon message="面试列表暂时无法加载，请稍后重试。" /> : null}
-      {!loading && !error && items.length === 0 ? <Empty description="暂无已安排的面试" image={Empty.PRESENTED_IMAGE_SIMPLE} /> : null}
+      {!loading && !error && items.length === 0 ? (
+        <div className="op-empty-state">
+          <Empty description="暂无已安排的面试" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+        </div>
+      ) : null}
       {!loading && !error && items.length > 0 ? (
         <List
           dataSource={items}
           renderItem={(item) => (
-            <List.Item actions={[
+            <List.Item className={workflowStyles.listRow} actions={[
               <Button key="detail" type="link" onClick={() => onOpenApplication?.(item.application_id)}>
                 查看投递详情
               </Button>,
@@ -66,7 +73,7 @@ export default function InterviewV01View({ onOpenApplication, onOpenPreparation,
               <List.Item.Meta
                 title={`${item.company_name} · ${item.position_name}`}
                 description={(
-                  <Space wrap>
+                  <Space wrap className="op-long-text">
                     <span>{new Date(item.scheduled_at).toLocaleString()}</span>
                     <Tag>{item.note_id ? '已有复盘' : '待记录复盘'}</Tag>
                     {item.review_summary ? <span>{item.review_summary}</span> : null}

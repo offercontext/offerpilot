@@ -20,6 +20,7 @@ import type {
 } from '@/types/mockInterview';
 import { ConfirmationPanel } from './ui/ConfirmationPanel';
 import { SourceStateTag } from './ui/SourceStateTag';
+import workflowStyles from './ui/WorkflowSurface.module.css';
 
 export interface MockInterviewDrawerDraft {
   resumeId?: number;
@@ -356,8 +357,9 @@ export default function MockInterviewDrawer({
 
   return (
     <Drawer open={open} width={560} title="文本模拟面试" onClose={onClose}>
+      <div data-testid="mock-interview-surface" className={workflowStyles.surface}>
       <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-        <span style={{ color: 'var(--op-muted)' }}>仅用于练习表达。AI 不提供录用判断、通过率或岗位匹配分。</span>
+        <span className={workflowStyles.mutedText}>仅用于练习表达。AI 不提供录用判断、通过率或岗位匹配分。</span>
         {draft.resumeId && draft.jdVersionId ? (
           <SourceStateTag state="current" detail="当前面试事件与本次输入" />
         ) : null}
@@ -378,7 +380,7 @@ export default function MockInterviewDrawer({
           />
         ) : null}
         {!draft.attemptId && !draft.proposal && !draft.resultUnknown ? (
-          <>
+          <section className={workflowStyles.section}>
             <Select
               aria-label="选择简历"
               placeholder="请选择本次使用的简历"
@@ -395,7 +397,7 @@ export default function MockInterviewDrawer({
               aria-readonly="true"
               autoSize={{ minRows: 5, maxRows: 12 }}
             />
-            <span style={{ color: 'var(--op-muted)' }}>
+            <span className={workflowStyles.mutedText}>
               {draft.jdVersionId ? '使用投递当前已确认的岗位资料；如需修改，请先返回 JD 版本入口。' : '请先在投递详情确认岗位资料版本。'}
             </span>
             {preparations.length > 0 ? (
@@ -425,17 +427,19 @@ export default function MockInterviewDrawer({
                 options={preparations.map((item) => ({ value: item.id, label: `准备建议 · ${new Date(item.created_at).toLocaleString()}` }))}
               />
             ) : null}
-            <span style={{ color: 'var(--op-muted)' }}>本次输入将发送给当前配置的 AI 服务。请勿粘贴无关敏感信息。</span>
-            <Button type="primary" onClick={() => void start()} disabled={!draft.resumeId || !draft.jdVersionId || working}>
-              开始文本模拟面试
-            </Button>
-          </>
+            <span className={workflowStyles.mutedText}>本次输入将发送给当前配置的 AI 服务。请勿粘贴无关敏感信息。</span>
+            <div data-testid="mock-interview-action-group" className={workflowStyles.actionGroup}>
+              <Button type="primary" onClick={() => void start()} disabled={!draft.resumeId || !draft.jdVersionId || working}>
+                开始文本模拟面试
+              </Button>
+            </div>
+          </section>
         ) : null}
         {working && !draft.proposal ? <Spin tip="正在处理，请稍候" /> : null}
         {draft.attemptId && !draft.proposal ? (
-          <>
-            <h3>第 {draft.turnNo} 题</h3>
-            <p>{draft.question || '请介绍一次与本次岗位相关的经历。'}</p>
+          <section className={workflowStyles.section}>
+            <div className={workflowStyles.sectionHeader}><h3>第 {draft.turnNo} 题</h3></div>
+            <p className="op-long-text">{draft.question || '请介绍一次与本次岗位相关的经历。'}</p>
             <Input.TextArea
               aria-label="回答"
               value={draft.answer}
@@ -444,22 +448,24 @@ export default function MockInterviewDrawer({
               placeholder="输入你的回答"
               autoSize={{ minRows: 5, maxRows: 12 }}
             />
-            <Button onClick={() => void answer()} disabled={!draft.answer.trim() || pending || working}>提交回答</Button>
-            <Button type="primary" onClick={() => void finish()} disabled={!draft.answer.trim() || !draft.answerSubmitted || pending || working}>结束并生成复盘建议</Button>
-          </>
+            <div className={workflowStyles.actionGroup}>
+              <Button onClick={() => void answer()} disabled={!draft.answer.trim() || pending || working}>提交回答</Button>
+              <Button type="primary" onClick={() => void finish()} disabled={!draft.answer.trim() || !draft.answerSubmitted || pending || working}>结束并生成复盘建议</Button>
+            </div>
+          </section>
         ) : null}
         {draft.attemptId && !draft.proposal && draft.answerSubmitted ? (
           <Button onClick={() => void nextQuestion()} disabled={pending || working}>生成下一题</Button>
         ) : null}
         {draft.proposal ? (
-          <>
+          <section className={workflowStyles.section}>
             <Tag color={draft.proposal.proposal_status === 'safe_empty' ? 'default' : 'blue'}>
               {draft.proposal.proposal_status === 'safe_empty' ? '暂无可验证建议' : 'AI 建议（待人工确认）'}
             </Tag>
             {draft.proposal.proposal_status === 'safe_empty' ? (
               <Empty description="目前没有可验证、可给出的复盘建议" image={Empty.PRESENTED_IMAGE_SIMPLE} />
             ) : blocks(draft.proposal).map((item) => (
-              <label key={item.id} style={{ display: 'block', marginBottom: 12 }}>
+              <label key={item.id} className={workflowStyles.evidenceBlock} style={{ display: 'block', marginBottom: 12 }}>
                 <input
                   type="checkbox"
                   checked={draft.selectedIds.includes(item.id)}
@@ -476,7 +482,7 @@ export default function MockInterviewDrawer({
                   onChange={(event) => onDraftChange({ editedBlocks: { ...draft.editedBlocks, [item.id]: event.target.value } })}
                   autoSize={{ minRows: 2, maxRows: 5 }}
                 />
-                {item.evidence_refs.map((ref) => <span key={`${item.id}-${ref.path}`} style={{ color: 'var(--op-muted)' }}>（{ref.source}：{ref.excerpt}）</span>)}
+                {item.evidence_refs.map((ref) => <span key={`${item.id}-${ref.path}`} className={`${workflowStyles.mutedText} op-long-text`}>（{ref.source}：{ref.excerpt}）</span>)}
               </label>
             ))}
             {draft.proposal.proposal_status === 'normal' && selectedBlocks.length > 0 && !confirming ? (
@@ -491,18 +497,18 @@ export default function MockInterviewDrawer({
                 <Button type="primary" onClick={() => void confirmDraft()} disabled={pending || working}>确认保存</Button>
               </ConfirmationPanel>
             ) : null}
-          </>
+          </section>
         ) : null}
-        <section aria-label="历史模拟面试">
-          <h3>历史记录（只读）</h3>
+        <section aria-label="历史模拟面试" className={workflowStyles.section}>
+          <div className={workflowStyles.sectionHeader}><h3>历史记录（只读）</h3></div>
           {loadingHistory ? <Spin size="small" /> : null}
           {!loadingHistory && history.length === 0 ? <span style={{ color: 'var(--op-muted)' }}>暂无历史记录</span> : null}
           <List
             size="small"
             dataSource={history}
             renderItem={(item) => (
-              <List.Item>
-                <Space direction="vertical" style={{ width: '100%' }}>
+              <List.Item className={workflowStyles.listRow}>
+                <Space direction="vertical" style={{ width: '100%' }} className="op-long-text">
                   <Space>
                     <span>{new Date(item.created_at).toLocaleString()}</span>
                     <Tag>{item.proposal_status === 'safe_empty' ? '暂无可验证建议' : '复盘建议（只读）'}</Tag>
@@ -511,13 +517,13 @@ export default function MockInterviewDrawer({
                   {(item.turns ?? []).map((turn) => (
                     <div key={turn.turn_no}>
                       <div>第 {turn.turn_no} 题：{turn.question}</div>
-                      <div style={{ color: 'var(--op-muted)' }}>回答：{turn.answer || '（未提交）'}</div>
+                      <div className={workflowStyles.mutedText}>回答：{turn.answer || '（未提交）'}</div>
                     </div>
                   ))}
                   {blocks(item.proposal).map((block) => (
                     <div key={block.id}>
                       <div>{block.text}</div>
-                      <div style={{ color: 'var(--op-muted)' }}>
+                      <div className={workflowStyles.mutedText}>
                         {block.evidence_refs.map((ref) => `${ref.source} ${ref.path}: ${ref.excerpt}`).join('；')}
                       </div>
                     </div>
@@ -538,6 +544,7 @@ export default function MockInterviewDrawer({
           />
         </section>
       </Space>
+      </div>
     </Drawer>
   );
 }

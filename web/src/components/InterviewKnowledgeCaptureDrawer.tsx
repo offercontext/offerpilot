@@ -14,6 +14,7 @@ import {
 } from '@/services/interviewKnowledgeCapture';
 import { ConfirmationPanel } from './ui/ConfirmationPanel';
 import { SourceStateTag } from './ui/SourceStateTag';
+import workflowStyles from './ui/WorkflowSurface.module.css';
 
 const { Text, Paragraph, Title } = Typography;
 
@@ -210,6 +211,7 @@ export default function InterviewKnowledgeCaptureDrawer({ open, note, draft, onD
 
   return (
     <Drawer open={open} onClose={handleClose} title="从面试复盘沉淀知识" width={560} destroyOnClose={false}>
+      <div className={`${workflowStyles.surface} ${workflowStyles.stack}`}>
       <Alert
         type="info"
         showIcon
@@ -217,7 +219,8 @@ export default function InterviewKnowledgeCaptureDrawer({ open, note, draft, onD
         description="未确认的预览不会进入知识库，也不会创建练习、Memory 或能力结论。"
         style={{ marginBottom: 16 }}
       />
-      <Title level={5}>用户选中的原始片段</Title>
+      <section data-testid="knowledge-capture-source-panel" className={workflowStyles.section}>
+      <div className={workflowStyles.sectionHeader}><Title level={5}>用户选中的原始片段</Title></div>
       {draft.canonicalFragments.length > 0 ? (
         <SourceStateTag state="frozen" detail="仅保存已生成快照的面试原始片段" />
       ) : null}
@@ -230,11 +233,12 @@ export default function InterviewKnowledgeCaptureDrawer({ open, note, draft, onD
           const selected = selectedIDs.has(field.path);
           return (
             <List.Item
+              className={workflowStyles.listRow}
               actions={[<Button key="select" type={selected ? 'primary' : 'default'} size="small" onClick={() => toggleField(field)} disabled={!text}>
                 {selected ? '已选择' : '选择'}
               </Button>]}
             >
-              <div>
+              <div className={workflowStyles.listContent}>
                 <Text strong>{field.label}</Text>
                 <Paragraph style={{ margin: '4px 0 0', whiteSpace: 'pre-wrap' }}>{text || '暂无记录'}</Paragraph>
               </div>
@@ -242,17 +246,20 @@ export default function InterviewKnowledgeCaptureDrawer({ open, note, draft, onD
           );
         }}
       />
-      {draft.selectedFragments.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="请先选择至少一段原始面试记录" />}
+      {draft.selectedFragments.length === 0 && <div className="op-empty-state"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="请先选择至少一段原始面试记录" /></div>}
+      </section>
       {draft.previewStatus === 'safe_empty' && <Alert type="info" message="暂无可验证的笔记预览" style={{ marginTop: 16 }} />}
       {draft.previewStatus === 'provider_unknown' && <Alert type="warning" message="AI 预览结果未知，可以重试或直接保存选中原文。" style={{ marginTop: 16 }} />}
       {draft.canonicalFragments.length > 0 && (
         <>
           <Title level={5} style={{ marginTop: 20 }}>证据引用</Title>
+          <div className={workflowStyles.stack}>
           {draft.canonicalFragments.map((fragment) => (
-            <Tag key={fragment.fragment_id} style={{ marginBottom: 8 }}>
+            <Tag key={fragment.fragment_id} className="op-long-text" style={{ marginBottom: 8 }}>
               面试原文 · {fragment.fragment_id} · {fragment.text}
             </Tag>
           ))}
+          </div>
         </>
       )}
       {draft.editedBlocks.length > 0 && (
@@ -273,7 +280,7 @@ export default function InterviewKnowledgeCaptureDrawer({ open, note, draft, onD
             />
           )}
           {draft.editedBlocks.map((block, index) => (
-            <div key={block.block_id} style={{ marginBottom: 12 }}>
+            <div key={block.block_id} className={workflowStyles.evidenceBlock} style={{ marginBottom: 12 }}>
               <Input.TextArea
                 value={block.text}
                 rows={3}
@@ -294,7 +301,7 @@ export default function InterviewKnowledgeCaptureDrawer({ open, note, draft, onD
           ? [{ state: 'frozen', detail: '所选原始面试片段' }]
           : []}
       >
-        <Space wrap>
+        <Space wrap className={workflowStyles.actionGroup}>
           <Button onClick={() => handlePreview('direct')} disabled={!draft.selectedFragments.length} loading={busy}>
             直接保存选中原文
           </Button>
@@ -306,6 +313,7 @@ export default function InterviewKnowledgeCaptureDrawer({ open, note, draft, onD
           </Button>
         </Space>
       </ConfirmationPanel>
+      </div>
     </Drawer>
   );
 }

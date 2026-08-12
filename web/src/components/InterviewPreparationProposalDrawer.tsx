@@ -11,6 +11,7 @@ import type {
   InterviewPreparationProposal,
 } from '@/types/interviewPreparationProposal';
 import { SourceStateTag } from './ui/SourceStateTag';
+import workflowStyles from './ui/WorkflowSurface.module.css';
 
 export interface InterviewPreparationDrawerContext {
   applicationId: number;
@@ -222,12 +223,17 @@ export default function InterviewPreparationProposalDrawer({
   };
 
   return (
-    <section aria-label="面试准备建议">
-      <h2>面试准备建议</h2>
-      <p>围绕当前面试事件，生成可审阅、可引用的准备建议。</p>
-      <p>仅 JD、所选简历和已确认 Knowledge Evidence 会发送给 AI；用户断言仅保存于本次快照，不会发送给 AI。</p>
+    <section aria-label="面试准备建议" className={`${workflowStyles.surface} ${workflowStyles.stack}`}>
+      <header className={workflowStyles.sectionHeader}>
+        <div>
+          <h2>面试准备建议</h2>
+          <p className={workflowStyles.mutedText}>围绕当前面试事件，生成可审阅、可引用的准备建议。</p>
+          <p className={workflowStyles.mutedText}>仅 JD、所选简历和已确认 Knowledge Evidence 会发送给 AI；用户断言仅保存于本次快照，不会发送给 AI。</p>
+        </div>
+      </header>
+      <div data-testid="interview-preparation-source-panel" className={workflowStyles.section}>
       {jdText.trim() && jdVersionId && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        <div className={workflowStyles.metaRow}>
           {jdText.trim() ? <SourceStateTag state="current" detail="本次输入的岗位描述" /> : null}
           {resumeId > 0 ? <SourceStateTag state="current" detail="本次选定的简历" /> : null}
         </div>
@@ -240,11 +246,12 @@ export default function InterviewPreparationProposalDrawer({
         <dt>选定简历</dt><dd>{resumeId || '尚未选择'}</dd>
         <dt>已确认 Knowledge Evidence</dt><dd>{selectedEvidenceIds.length} 条</dd>
       </dl>
+      </div>
       {knowledgeOptions.length > 0 && (
-        <fieldset>
+        <fieldset className={workflowStyles.section}>
           <legend>选择已确认 Knowledge Evidence</legend>
           {knowledgeOptions.map((option) => (
-            <label key={option.evidence_id}>
+            <label key={option.evidence_id} className="op-long-text">
               <input
                 type="checkbox"
                 disabled={resultUnknown}
@@ -258,7 +265,7 @@ export default function InterviewPreparationProposalDrawer({
           ))}
         </fieldset>
       )}
-      <label>
+      <label className={workflowStyles.stack}>
         选择简历
         <select disabled={resultUnknown} value={resumeId} onChange={(event) => setResumeId(Number(event.target.value))}>
           <option value={0}>请选择简历</option>
@@ -267,7 +274,7 @@ export default function InterviewPreparationProposalDrawer({
           ))}
         </select>
       </label>
-      <label>
+      <label className={workflowStyles.stack}>
         粘贴 JD
         <textarea
           disabled={resultUnknown}
@@ -278,15 +285,15 @@ export default function InterviewPreparationProposalDrawer({
           placeholder="仅粘贴岗位描述文本，不会抓取链接。"
         />
       </label>
-      <label>
+      <label className={workflowStyles.stack}>
         可选用户断言（不会发送给 AI）
         <textarea disabled={resultUnknown} value={assertionsText} onChange={(event) => setAssertionsText(event.target.value)} placeholder="每行一条本次准备的补充信息" />
       </label>
       {history.length > 0 && (
-        <aside aria-label="历史面试准备建议">
+        <aside aria-label="历史面试准备建议" className={workflowStyles.section}>
           <h3>历史面试准备建议</h3>
           {history.map((item) => (
-            <div key={item.id}>
+            <div key={item.id} className={workflowStyles.listRow}>
               {item.source_status === 'source_changed' && (
                 <p role="status">历史资料来源已变化，本提案仍保持冻结，可查看但不作为当前来源。</p>
               )}
@@ -304,23 +311,25 @@ export default function InterviewPreparationProposalDrawer({
           ))}
         </aside>
       )}
-      {error && <p role="alert">{error}</p>}
-      {isSafeEmpty && <p>暂无可验证的面试准备建议</p>}
+      {error && <p role="alert" className="op-inline-status" data-tone="danger">{error}</p>}
+      {isSafeEmpty && <p className="op-empty-state">暂无可验证的面试准备建议</p>}
       {proposal && !isSafeEmpty && SECTION_LABELS.map(([field, label]) => (
-        <section key={field}>
+        <section key={field} className={workflowStyles.section}>
           <h3>{label}</h3>
           {proposal.proposal[field].map((item) => (
-            <article key={item.id}>
+            <article key={item.id} className={workflowStyles.evidenceBlock}>
               <p>{item.text}</p>
               <Evidence item={item} />
             </article>
           ))}
         </section>
       ))}
-      <button type="button" disabled={!hasInput || busy} onClick={() => void generate()}>
-        {busy ? '正在生成…' : resultUnknown ? '使用原尝试重试' : '生成面试准备建议'}
-      </button>
-      <button type="button" onClick={onClose}>关闭</button>
+      <div className={workflowStyles.actionGroup}>
+        <button type="button" disabled={!hasInput || busy} onClick={() => void generate()}>
+          {busy ? '正在生成…' : resultUnknown ? '使用原尝试重试' : '生成面试准备建议'}
+        </button>
+        <button type="button" onClick={onClose}>关闭</button>
+      </div>
     </section>
   );
 }

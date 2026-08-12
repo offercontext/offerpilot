@@ -8,5 +8,6 @@ describe('InterviewKnowledgeCaptureDrawer interaction contract', () => {
     expect(source).toContain("draft.previewStatus === 'provider_unknown'");
     expect(source).toContain('deleteUnconfirmedInterviewKnowledgeAttempt');
     expect(source).toContain('resultUnknown');
+    expect(source).toContain('data-testid="knowledge-capture-source-panel"');
   });
 });

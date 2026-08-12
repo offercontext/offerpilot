@@ -146,6 +146,13 @@ afterEach(() => {
 });
 
 describe('MockInterviewDrawer failed-attempt cleanup', () => {
+  it('renders a stable workflow surface and action group', () => {
+    render({ ...baseDraft, resumeId: 3 });
+
+    expect(container?.querySelector('[data-testid="mock-interview-surface"]')).not.toBeNull();
+    expect(container?.querySelector('[data-testid="mock-interview-action-group"]')).not.toBeNull();
+  });
+
   it('preserves the initial Attempt ID/key across DELETE unknown, remount, and retry', async () => {
     const failure = { response: { status: 502, data: { error_code: 'mock_interview_unverifiable', attempt_id: 101 } } };
     services.startMockInterview.mockRejectedValue(failure);

@@ -70,6 +70,7 @@ describe('InterviewPreparationProposalDrawer interaction', () => {
     });
 
     act(() => root?.render(<InterviewPreparationProposalDrawer open context={context} onClose={() => {}} />));
+    expect(container?.querySelector('[data-testid="interview-preparation-source-panel"]')).not.toBeNull();
     const generate = () => [...(container?.querySelectorAll('button') || [])]
       .find((button) => button.textContent === '生成面试准备建议') as HTMLButtonElement;
 
