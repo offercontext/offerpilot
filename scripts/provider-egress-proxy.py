@@ -66,7 +66,7 @@ def _tunnel(client: socket.socket, upstream: socket.socket) -> None:
     selector.register(upstream, selectors.EVENT_READ, client)
     try:
         while True:
-            events = selector.select(timeout=30)
+            events = selector.select(timeout=300)
             if not events:
                 return
             for key, _ in events:
