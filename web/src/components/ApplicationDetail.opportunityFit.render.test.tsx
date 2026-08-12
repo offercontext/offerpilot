@@ -73,6 +73,7 @@ vi.mock('@ant-design/icons', () => ({
   RobotOutlined: () => null,
   PlusOutlined: () => null,
   AudioOutlined: () => null,
+  DatabaseOutlined: () => null,
   FileTextOutlined: () => null,
 }));
 vi.mock('antd', () => {
