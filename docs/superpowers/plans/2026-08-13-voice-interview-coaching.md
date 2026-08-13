@@ -38,6 +38,9 @@ web/src/components/MockInterviewDrawer.tsx
 web/src/components/MockInterviewDrawer.cleanup.interaction.test.tsx
 web/src/features/pilotMascot/live2dRuntime.ts
 web/src/features/pilotMascot/live2dRuntime.test.ts
+web/src/features/pilotMascot/PilotMascot.tsx
+web/src/features/pilotMascot/PilotMascot.test.tsx
+web/src/features/pilotMascot/PilotMascot.module.css
 docs/superpowers/specs/2026-08-13-voice-interview-coaching-design.md
 docs/superpowers/plans/2026-08-13-voice-interview-coaching.md
 docs/reports/2026-08-13-voice-interview-coaching-browser-acceptance.md
@@ -308,6 +311,9 @@ git commit -m "feat: AI show voice delivery review"
 - Modify: `web/src/components/MockInterviewDrawer.cleanup.interaction.test.tsx`
 - Modify: `web/src/features/pilotMascot/live2dRuntime.ts`
 - Modify: `web/src/features/pilotMascot/live2dRuntime.test.ts`
+- Modify: `web/src/features/pilotMascot/PilotMascot.tsx`
+- Modify: `web/src/features/pilotMascot/PilotMascot.test.tsx`
+- Modify: `web/src/features/pilotMascot/PilotMascot.module.css`
 
 - [ ] **Step 1: 先扩展真实挂载测试**
 
