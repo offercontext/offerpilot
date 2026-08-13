@@ -5,14 +5,23 @@ import {
   serializePilotMascotRuntime,
   type Live2dRuntimeDependencies,
   type PilotMascotRuntime,
+  type PilotMascotRuntimeController,
 } from './live2dRuntime';
+
+function createController(dispose: () => void = vi.fn()): PilotMascotRuntimeController {
+  return {
+    setActivity: vi.fn(),
+    setZoom: vi.fn(),
+    dispose,
+  };
+}
 
 describe('serializePilotMascotRuntime', () => {
   it('never initializes two runtimes concurrently on the same canvas', async () => {
     const canvas = document.createElement('canvas');
     const firstController = new AbortController();
     const secondController = new AbortController();
-    let resolveFirst!: (dispose: () => void) => void;
+    let resolveFirst!: (controller: PilotMascotRuntimeController) => void;
     let active = 0;
     let maximumActive = 0;
     const firstDispose = vi.fn(() => {
@@ -26,14 +35,14 @@ describe('serializePilotMascotRuntime', () => {
         .mockImplementationOnce(() => {
           active += 1;
           maximumActive = Math.max(maximumActive, active);
-          return new Promise<() => void>((resolve) => {
+          return new Promise<PilotMascotRuntimeController>((resolve) => {
             resolveFirst = resolve;
           });
         })
         .mockImplementationOnce(async () => {
           active += 1;
           maximumActive = Math.max(maximumActive, active);
-          return secondDispose;
+          return createController(secondDispose);
         }),
     };
     const runtime = serializePilotMascotRuntime(underlying);
@@ -48,14 +57,14 @@ describe('serializePilotMascotRuntime', () => {
     await Promise.resolve();
     expect(underlying.mount).toHaveBeenCalledTimes(1);
 
-    resolveFirst(firstDispose);
+    resolveFirst(createController(firstDispose));
     await expect(firstRejected).resolves.toMatchObject({ name: 'AbortError' });
-    const disposeSecond = await secondMount;
+    const second = await secondMount;
 
     expect(underlying.mount).toHaveBeenCalledTimes(2);
     expect(maximumActive).toBe(1);
     expect(firstDispose).toHaveBeenCalledTimes(1);
-    disposeSecond();
+    second.dispose();
     expect(secondDispose).toHaveBeenCalledTimes(1);
   });
 
@@ -64,15 +73,15 @@ describe('serializePilotMascotRuntime', () => {
     let releaseFirst!: () => void;
     const underlying: PilotMascotRuntime = {
       mount: vi.fn()
-        .mockResolvedValueOnce(() => releaseFirst?.())
-        .mockResolvedValueOnce(() => undefined),
+        .mockResolvedValueOnce(createController(() => releaseFirst?.()))
+        .mockResolvedValueOnce(createController()),
     };
     const runtime = serializePilotMascotRuntime(underlying);
-    const firstDispose = await runtime.mount(canvas);
+    const firstController = await runtime.mount(canvas);
     const controller = new AbortController();
     const queued = runtime.mount(canvas, controller.signal);
     controller.abort();
-    firstDispose();
+    firstController.dispose();
 
     await expect(queued).rejects.toMatchObject({ name: 'AbortError' });
     expect(underlying.mount).toHaveBeenCalledTimes(1);
@@ -92,6 +101,8 @@ function runtimeDependencies(overrides: Partial<Live2dRuntimeDependencies> = {})
     y: 0,
     anchor: { set: vi.fn() },
     scale: { set: vi.fn() },
+    motion: vi.fn().mockResolvedValue(true),
+    expression: vi.fn().mockResolvedValue(true),
     destroy: vi.fn(),
   };
   const Application = vi.fn(function Application() {
@@ -105,7 +116,7 @@ function runtimeDependencies(overrides: Partial<Live2dRuntimeDependencies> = {})
   const dependencies: Live2dRuntimeDependencies = {
     loadModules: vi.fn().mockResolvedValue({ Application, Ticker: {}, Live2DModel }),
     prefersReducedMotion: () => false,
-    createResizeObserver: () => observer,
+    createResizeObserver: vi.fn(() => observer),
     ...overrides,
   };
   return { dependencies, Application, Live2DModel, application, model, observer };
@@ -147,10 +158,77 @@ describe('createLive2dPilotMascotRuntime', () => {
     const canvas = document.createElement('canvas');
     host.appendChild(canvas);
 
-    const dispose = await createLive2dPilotMascotRuntime(fixture.dependencies).mount(canvas);
+    const controller = await createLive2dPilotMascotRuntime(fixture.dependencies).mount(canvas);
     expect(fixture.Application).toHaveBeenCalledWith(expect.objectContaining({ autoStart: false }));
     expect(fixture.Live2DModel.from).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ autoUpdate: false }));
     expect(fixture.application.render).toHaveBeenCalledTimes(1);
-    dispose();
+    controller.dispose();
+  });
+
+  it('applies zoom to the stable auto-fit scale and keeps it after resize', async () => {
+    const fixture = runtimeDependencies();
+    const host = document.createElement('div');
+    let width = 240;
+    let height = 360;
+    Object.defineProperties(host, {
+      clientWidth: { configurable: true, get: () => width },
+      clientHeight: { configurable: true, get: () => height },
+    });
+    const canvas = document.createElement('canvas');
+    host.appendChild(canvas);
+
+    const controller = await createLive2dPilotMascotRuntime(fixture.dependencies).mount(canvas);
+    controller.setZoom(1.2);
+    expect(fixture.model.scale.set.mock.calls[fixture.model.scale.set.mock.calls.length - 1]?.[0]).toBeCloseTo(0.5184);
+
+    width = 300;
+    height = 420;
+    const resizeCallback = (fixture.dependencies.createResizeObserver as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    resizeCallback?.();
+    expect(fixture.model.scale.set.mock.calls[fixture.model.scale.set.mock.calls.length - 1]?.[0]).toBeCloseTo(0.6048);
+    controller.dispose();
+  });
+
+  it('plays a distinct thinking loop and one-shot success feedback', async () => {
+    const fixture = runtimeDependencies();
+    const host = document.createElement('div');
+    Object.defineProperties(host, {
+      clientWidth: { configurable: true, value: 240 },
+      clientHeight: { configurable: true, value: 360 },
+    });
+    const canvas = document.createElement('canvas');
+    host.appendChild(canvas);
+
+    const controller = await createLive2dPilotMascotRuntime(fixture.dependencies).mount(canvas);
+    controller.setActivity('thinking');
+    await Promise.resolve();
+    expect(fixture.model.motion).toHaveBeenCalledWith('Idle', 1, expect.any(Number));
+
+    controller.setActivity('success');
+    await Promise.resolve();
+    expect(fixture.model.motion).toHaveBeenCalledWith('Tap', 0, expect.any(Number));
+    expect(fixture.model.expression).toHaveBeenCalledWith('f06');
+    controller.dispose();
+  });
+
+  it('keeps activity changes static under reduced motion and ignores calls after dispose', async () => {
+    const fixture = runtimeDependencies({ prefersReducedMotion: () => true });
+    const host = document.createElement('div');
+    Object.defineProperties(host, {
+      clientWidth: { configurable: true, value: 240 },
+      clientHeight: { configurable: true, value: 360 },
+    });
+    const canvas = document.createElement('canvas');
+    host.appendChild(canvas);
+
+    const controller = await createLive2dPilotMascotRuntime(fixture.dependencies).mount(canvas);
+    controller.setActivity('thinking');
+    controller.dispose();
+    controller.setActivity('success');
+    controller.setZoom(1.3);
+
+    expect(fixture.model.motion).not.toHaveBeenCalled();
+    expect(fixture.model.expression).not.toHaveBeenCalled();
+    expect(fixture.model.destroy).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,5 +1,15 @@
+import { normalizePilotMascotZoom } from './pilotMascotPreference';
+
+export type PilotMascotActivity = 'idle' | 'thinking' | 'success' | 'error';
+
+export interface PilotMascotRuntimeController {
+  setActivity(activity: PilotMascotActivity): void;
+  setZoom(zoom: number): void;
+  dispose(): void;
+}
+
 export interface PilotMascotRuntime {
-  mount(canvas: HTMLCanvasElement, signal?: AbortSignal): Promise<() => void>;
+  mount(canvas: HTMLCanvasElement, signal?: AbortSignal): Promise<PilotMascotRuntimeController>;
 }
 
 export function serializePilotMascotRuntime(runtime: PilotMascotRuntime): PilotMascotRuntime {
@@ -15,11 +25,11 @@ export function serializePilotMascotRuntime(runtime: PilotMascotRuntime): PilotM
       canvasQueues.set(canvas, current);
       await previous.catch(() => undefined);
 
-      let dispose: (() => void) | undefined;
+      let mountedController: PilotMascotRuntimeController | undefined;
       const release = () => {
-        if (dispose) {
-          dispose();
-          dispose = undefined;
+        if (mountedController) {
+          mountedController.dispose();
+          mountedController = undefined;
         }
         if (canvasQueues.get(canvas) === current) canvasQueues.delete(canvas);
         releaseQueue();
@@ -27,9 +37,13 @@ export function serializePilotMascotRuntime(runtime: PilotMascotRuntime): PilotM
 
       try {
         if (signal?.aborted) throw new DOMException('Mascot mount aborted', 'AbortError');
-        dispose = await runtime.mount(canvas, signal);
+        mountedController = await runtime.mount(canvas, signal);
         if (signal?.aborted) throw new DOMException('Mascot mount aborted', 'AbortError');
-        return release;
+        return {
+          setActivity: (activity) => mountedController?.setActivity(activity),
+          setZoom: (zoom) => mountedController?.setZoom(zoom),
+          dispose: release,
+        };
       } catch (error) {
         release();
         throw error;
@@ -55,6 +69,8 @@ interface Live2dModelInstance {
   y: number;
   anchor: { set: (x: number, y: number) => void };
   scale: { set: (scale: number) => void };
+  motion?: (group: string, index: number, priority: number) => Promise<boolean> | boolean;
+  expression?: (name: string) => Promise<boolean> | boolean;
   destroy: (options: { children: boolean }) => void;
 }
 
@@ -114,13 +130,26 @@ export function createLive2dPilotMascotRuntime(
     let application: Live2dApplication | undefined;
     let model: Live2dModelInstance | undefined;
     let observer: Pick<ResizeObserver, 'observe' | 'disconnect'> | undefined;
+    let disposed = false;
+    let zoom = 1;
+    let activity: PilotMascotActivity = 'idle';
+    let thinkingTimer: number | undefined;
+    let fit: (() => void) | undefined;
+    const stopThinkingLoop = () => {
+      if (thinkingTimer !== undefined) window.clearTimeout(thinkingTimer);
+      thinkingTimer = undefined;
+    };
     const dispose = () => {
+      if (disposed) return;
+      disposed = true;
+      stopThinkingLoop();
       observer?.disconnect();
       model?.destroy({ children: true });
       application?.destroy(false, { children: true, texture: false, baseTexture: false });
       observer = undefined;
       model = undefined;
       application = undefined;
+      fit = undefined;
     };
 
     try {
@@ -143,10 +172,11 @@ export function createLive2dPilotMascotRuntime(
       const naturalWidth = model.width;
       const naturalHeight = model.height;
 
-      const fit = () => {
+      fit = () => {
         const width = Math.max(host.clientWidth, 1);
         const height = Math.max(host.clientHeight, 1);
-        const scale = Math.min((width * 0.94) / naturalWidth, (height * 0.96) / naturalHeight);
+        const baseScale = Math.min((width * 0.94) / naturalWidth, (height * 0.96) / naturalHeight);
+        const scale = baseScale * zoom;
         model!.scale.set(scale);
         model!.x = width * 0.5;
         model!.y = height * 0.5;
@@ -155,7 +185,58 @@ export function createLive2dPilotMascotRuntime(
       fit();
       observer = dependencies.createResizeObserver(fit);
       observer.observe(host);
-      return dispose;
+
+      const runMotion = (group: string, index: number) => {
+        if (disposed || reduceMotion || !model?.motion) return Promise.resolve(false);
+        try {
+          return Promise.resolve(model.motion(group, index, 3)).catch(() => false);
+        } catch {
+          return Promise.resolve(false);
+        }
+      };
+      const setExpression = (name: string) => {
+        if (disposed || reduceMotion || !model?.expression) return;
+        try {
+          void Promise.resolve(model.expression(name)).catch(() => false);
+        } catch {
+          // Motion feedback is decorative; text remains the source of truth.
+        }
+      };
+      const playThinking = () => {
+        if (disposed || activity !== 'thinking' || reduceMotion) return;
+        void runMotion('Idle', 1).finally(() => {
+          if (disposed || activity !== 'thinking') return;
+          thinkingTimer = window.setTimeout(playThinking, 160);
+        });
+      };
+
+      return {
+        setActivity(nextActivity) {
+          if (disposed || nextActivity === activity) return;
+          activity = nextActivity;
+          stopThinkingLoop();
+          if (reduceMotion) return;
+          if (activity === 'thinking') {
+            playThinking();
+            return;
+          }
+          if (activity === 'success') {
+            setExpression('f06');
+            void runMotion('Tap', 0);
+            return;
+          }
+          if (activity === 'error') {
+            setExpression('f02');
+            void runMotion('Tap', 1);
+          }
+        },
+        setZoom(nextZoom) {
+          if (disposed) return;
+          zoom = normalizePilotMascotZoom(nextZoom);
+          fit?.();
+        },
+        dispose,
+      };
     } catch (error) {
       dispose();
       throw error;

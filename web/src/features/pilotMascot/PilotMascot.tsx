@@ -1,16 +1,34 @@
 import { useEffect, useRef, useState } from 'react';
-import { CloseOutlined, MessageOutlined } from '@ant-design/icons';
-import { live2dPilotMascotRuntime, type PilotMascotRuntime } from './live2dRuntime';
+import { CloseOutlined, MessageOutlined, MinusOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import {
+  live2dPilotMascotRuntime,
+  type PilotMascotActivity,
+  type PilotMascotRuntime,
+  type PilotMascotRuntimeController,
+} from './live2dRuntime';
+import {
+  normalizePilotMascotZoom,
+  PILOT_MASCOT_MAX_ZOOM,
+  PILOT_MASCOT_MIN_ZOOM,
+} from './pilotMascotPreference';
 import styles from './PilotMascot.module.css';
 
-export type PilotMascotActivity = 'idle' | 'thinking' | 'success' | 'error';
-export type { PilotMascotRuntime } from './live2dRuntime';
+export type { PilotMascotActivity, PilotMascotRuntime } from './live2dRuntime';
+
+export interface PilotMascotNotification {
+  status: 'success' | 'error';
+  conversationId?: number;
+}
 
 interface Props {
   activity: PilotMascotActivity;
   panelOpen: boolean;
   onHide: () => void;
   onTogglePilot: () => void;
+  zoom?: number;
+  onZoomChange?: (zoom: number) => void;
+  notification?: PilotMascotNotification | null;
+  placement?: 'contextual' | 'pilot-page';
   runtime?: PilotMascotRuntime;
 }
 
@@ -21,39 +39,70 @@ const ACTIVITY_COPY: Record<PilotMascotActivity, { label: string; detail: string
   error: { label: '需要确认', detail: '打开 Pilot 查看发生了什么' },
 };
 
+function notificationCopy(notification: PilotMascotNotification | null | undefined) {
+  if (!notification) return undefined;
+  return notification.status === 'success'
+    ? { label: '处理完成', detail: 'Pilot 已完成回答，点击查看' }
+    : { label: '回答未完成', detail: '打开 Pilot 查看并决定是否重试' };
+}
+
 export default function PilotMascot({
   activity,
   panelOpen,
   onHide,
   onTogglePilot,
+  zoom = 1,
+  onZoomChange = () => undefined,
+  notification,
+  placement = 'contextual',
   runtime = live2dPilotMascotRuntime,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const hideRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const runtimeControllerRef = useRef<PilotMascotRuntimeController>();
+  const latestActivityRef = useRef(activity);
+  const latestZoomRef = useRef(zoom);
   const [menuOpen, setMenuOpen] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
-  const copy = ACTIVITY_COPY[activity];
+  latestActivityRef.current = activity;
+  latestZoomRef.current = zoom;
+  const copy = notificationCopy(notification) ?? ACTIVITY_COPY[activity];
+  const normalizedZoom = normalizePilotMascotZoom(zoom);
+  const zoomPercent = Math.round(normalizedZoom * 100);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const controller = new AbortController();
+    const abortController = new AbortController();
     let disposed = false;
-    let cleanup: (() => void) | undefined;
-    void runtime.mount(canvas, controller.signal).then((dispose) => {
-      if (disposed) dispose();
-      else cleanup = dispose;
+    void runtime.mount(canvas, abortController.signal).then((controller) => {
+      if (disposed) {
+        controller.dispose();
+        return;
+      }
+      runtimeControllerRef.current = controller;
+      controller.setZoom(latestZoomRef.current);
+      controller.setActivity(latestActivityRef.current);
     }).catch(() => {
-      if (!disposed && !controller.signal.aborted) setLoadFailed(true);
+      if (!disposed && !abortController.signal.aborted) setLoadFailed(true);
     });
     return () => {
       disposed = true;
-      controller.abort();
-      cleanup?.();
+      abortController.abort();
+      runtimeControllerRef.current?.dispose();
+      runtimeControllerRef.current = undefined;
     };
   }, [runtime]);
+
+  useEffect(() => {
+    runtimeControllerRef.current?.setActivity(activity);
+  }, [activity]);
+
+  useEffect(() => {
+    runtimeControllerRef.current?.setZoom(normalizedZoom);
+  }, [normalizedZoom]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -75,13 +124,21 @@ export default function PilotMascot({
     };
   }, [menuOpen]);
 
+  const setZoom = (nextZoom: number) => onZoomChange(normalizePilotMascotZoom(nextZoom));
+  const actionLabel = notification
+    ? notification.status === 'success' ? '查看 Pilot 已完成回答' : '查看 Pilot 回答错误'
+    : panelOpen ? '收起 OfferPilot 领航员' : '打开 OfferPilot 领航员';
+
   return (
     <aside
-      className={`${styles.mascot} ${panelOpen ? styles.compact : ''}`}
+      className={`${styles.mascot} ${panelOpen ? styles.compact : ''} ${
+        placement === 'pilot-page' ? styles.pilotPage : ''
+      }`}
       data-activity={activity}
+      data-notification={notification?.status}
       aria-label="Haru Pilot 看板娘"
     >
-      {!panelOpen ? (
+      {!panelOpen || notification ? (
         <div className={styles.bubble} role="status" aria-live="polite">
           <strong>{copy.label}</strong>
           <span>{copy.detail}</span>
@@ -91,7 +148,7 @@ export default function PilotMascot({
         type="button"
         className={styles.characterButton}
         ref={triggerRef}
-        aria-label={panelOpen ? '收起 OfferPilot 领航员' : '打开 OfferPilot 领航员'}
+        aria-label={actionLabel}
         aria-expanded={panelOpen}
         aria-haspopup="menu"
         aria-controls={menuOpen ? 'pilot-mascot-menu' : undefined}
@@ -124,6 +181,39 @@ export default function PilotMascot({
       </button>
       {menuOpen ? (
         <div id="pilot-mascot-menu" className={styles.contextMenu} role="menu" ref={menuRef}>
+          <div className={styles.zoomHeading} aria-hidden="true">
+            <span>角色大小</span>
+            <strong>{zoomPercent}%</strong>
+          </div>
+          <div className={styles.zoomControls}>
+            <button
+              type="button"
+              role="menuitem"
+              aria-label="缩小角色"
+              disabled={normalizedZoom <= PILOT_MASCOT_MIN_ZOOM}
+              onClick={() => setZoom(normalizedZoom - 0.1)}
+            >
+              <MinusOutlined />
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              aria-label="恢复默认大小"
+              disabled={normalizedZoom === 1}
+              onClick={() => setZoom(1)}
+            >
+              <ReloadOutlined />
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              aria-label="放大角色"
+              disabled={normalizedZoom >= PILOT_MASCOT_MAX_ZOOM}
+              onClick={() => setZoom(normalizedZoom + 0.1)}
+            >
+              <PlusOutlined />
+            </button>
+          </div>
           <button
             type="button"
             role="menuitem"

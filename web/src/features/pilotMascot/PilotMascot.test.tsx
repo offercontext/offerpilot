@@ -3,6 +3,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import PilotMascot, { type PilotMascotRuntime } from './PilotMascot';
+import type { PilotMascotRuntimeController } from './live2dRuntime';
 
 let container: HTMLDivElement;
 let root: Root;
@@ -22,8 +23,16 @@ afterEach(() => {
 
 function runtime(): PilotMascotRuntime {
   return {
-    mount: vi.fn().mockResolvedValue(() => undefined),
+    mount: vi.fn().mockResolvedValue({
+      setActivity: vi.fn(),
+      setZoom: vi.fn(),
+      dispose: vi.fn(),
+    }),
   };
+}
+
+function runtimeController(): PilotMascotRuntimeController {
+  return { setActivity: vi.fn(), setZoom: vi.fn(), dispose: vi.fn() };
 }
 
 async function renderMascot(overrides: Partial<React.ComponentProps<typeof PilotMascot>> = {}) {
@@ -88,20 +97,20 @@ describe('PilotMascot', () => {
   });
 
   it('disposes the runtime on unmount', async () => {
-    const dispose = vi.fn();
-    const mounted: PilotMascotRuntime = { mount: vi.fn().mockResolvedValue(dispose) };
+    const controller = runtimeController();
+    const mounted: PilotMascotRuntime = { mount: vi.fn().mockResolvedValue(controller) };
     await renderMascot({ runtime: mounted });
     act(() => root.unmount());
-    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(controller.dispose).toHaveBeenCalledTimes(1);
     root = createRoot(container);
   });
 
   it('aborts an in-flight runtime before a StrictMode-style remount', async () => {
     const signals: AbortSignal[] = [];
     const pending: PilotMascotRuntime = {
-      mount: vi.fn((_canvas: HTMLCanvasElement, signal?: AbortSignal): Promise<() => void> => {
+      mount: vi.fn((_canvas: HTMLCanvasElement, signal?: AbortSignal): Promise<PilotMascotRuntimeController> => {
         if (signal) signals.push(signal);
-        return new Promise<() => void>(() => undefined);
+        return new Promise<PilotMascotRuntimeController>(() => undefined);
       }),
     };
     await act(async () => {
@@ -118,5 +127,65 @@ describe('PilotMascot', () => {
     act(() => root.unmount());
     expect(signals[0]?.aborted).toBe(true);
     root = createRoot(container);
+  });
+
+  it('synchronizes activity and zoom with the mounted runtime controller', async () => {
+    const controller = runtimeController();
+    const mounted: PilotMascotRuntime = { mount: vi.fn().mockResolvedValue(controller) };
+    const base = {
+      panelOpen: false,
+      onHide: vi.fn(),
+      onTogglePilot: vi.fn(),
+      onZoomChange: vi.fn(),
+      runtime: mounted,
+    };
+    await act(async () => {
+      root.render(<PilotMascot {...base} activity="thinking" zoom={1.1} />);
+      await Promise.resolve();
+    });
+    expect(controller.setActivity).toHaveBeenLastCalledWith('thinking');
+    expect(controller.setZoom).toHaveBeenLastCalledWith(1.1);
+
+    await act(async () => {
+      root.render(<PilotMascot {...base} activity="success" zoom={1.2} />);
+      await Promise.resolve();
+    });
+    expect(controller.setActivity).toHaveBeenLastCalledWith('success');
+    expect(controller.setZoom).toHaveBeenLastCalledWith(1.2);
+  });
+
+  it('offers bounded zoom controls and reset in the context menu', async () => {
+    const onZoomChange = vi.fn();
+    const props = await renderMascot({ zoom: 1, onZoomChange });
+    const trigger = container.querySelector<HTMLButtonElement>('.characterButton')
+      ?? container.querySelector<HTMLButtonElement>('button')!;
+    act(() => trigger.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })));
+    const buttons = [...container.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+    const smaller = buttons.find((button) => button.getAttribute('aria-label') === '缩小角色');
+    const reset = buttons.find((button) => button.getAttribute('aria-label') === '恢复默认大小');
+    const larger = buttons.find((button) => button.getAttribute('aria-label') === '放大角色');
+    expect(container.textContent).toContain('100%');
+    act(() => smaller!.click());
+    act(() => larger!.click());
+    expect(onZoomChange.mock.calls.map(([value]) => value)).toEqual([0.9, 1.1]);
+
+    await act(async () => {
+      root.render(<PilotMascot {...props} zoom={1.2} />);
+      await Promise.resolve();
+    });
+    act(() => reset!.click());
+    expect(onZoomChange).toHaveBeenLastCalledWith(1);
+  });
+
+  it('disables zoom controls at the limits and announces a completed reply', async () => {
+    await renderMascot({
+      activity: 'success',
+      zoom: 1.3,
+      notification: { status: 'success', conversationId: 42 },
+    });
+    const trigger = container.querySelector<HTMLButtonElement>('button')!;
+    expect(container.textContent).toContain('Pilot 已完成回答，点击查看');
+    act(() => trigger.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })));
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="放大角色"]')?.disabled).toBe(true);
   });
 });
