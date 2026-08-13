@@ -34,6 +34,40 @@ describe('voice session controller', () => {
     expect(interim[interim.length - 1]).toBe('我先定位日志，完成回滚并复盘');
   });
 
+  it('waits for every already queued segment before final review', async () => {
+    let releaseFirst!: (value: string) => void;
+    let releaseSecond!: (value: string) => void;
+    const first = new Promise<string>((resolve) => { releaseFirst = resolve; });
+    const second = new Promise<string>((resolve) => { releaseSecond = resolve; });
+    const transcribe = vi.fn()
+      .mockReturnValueOnce(first)
+      .mockReturnValueOnce(second);
+    const states: VoiceSessionState[] = [];
+    const controller = createVoiceSessionController({
+      now: () => 0,
+      transcribe,
+      onState: (state) => states.push(state),
+      onInterimTranscript: vi.fn(),
+      chunkMs: 1_000,
+      overlapMs: 0,
+    });
+
+    controller.start(1, 10);
+    controller.acceptFrame(frame(1), 0);
+    controller.acceptFrame(frame(1), 1_000);
+    let finished = false;
+    const finishing = controller.finish().then(() => { finished = true; });
+
+    releaseFirst('第一段');
+    for (let turn = 0; turn < 4; turn += 1) await Promise.resolve();
+    expect(transcribe).toHaveBeenCalledTimes(2);
+    expect(finished).toBe(false);
+
+    releaseSecond('第二段');
+    await finishing;
+    expect(states[states.length - 1]).toMatchObject({ status: 'reviewing' });
+  });
+
   it('switches to batch mode under backlog and never starts concurrent inference', async () => {
     let release!: (value: string) => void;
     const transcribe = vi.fn(() => new Promise<string>((resolve) => { release = resolve; }));

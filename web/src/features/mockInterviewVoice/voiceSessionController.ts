@@ -194,7 +194,17 @@ export function createVoiceSessionController(dependencies: Dependencies): VoiceS
     async finish() {
       finalizing = true;
       dependencies.onState({ status: 'finalizing' });
-      await runningPromise;
+      while (!disposed && mode === 'segment') {
+        if (runningPromise) {
+          await runningPromise;
+          continue;
+        }
+        if (queue.length > 0) {
+          runNext();
+          continue;
+        }
+        break;
+      }
       dependencies.onState({ status: 'reviewing', transcript: mergeTranscriptSegments(segments, generation), temporarySegments: [...segments] });
     },
     pause() { paused = true; },

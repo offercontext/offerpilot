@@ -68,6 +68,7 @@ describe('PilotMascot', () => {
     ['listening', '正在聆听'],
     ['speech_paused', '检测到停顿'],
     ['transcribing', '正在整理语音'],
+    ['reviewing_voice', '等待核对文字'],
   ] as const)('describes the %s voice activity', async (activity, label) => {
     await renderMascot({ activity });
     expect(container.textContent).toContain(label);

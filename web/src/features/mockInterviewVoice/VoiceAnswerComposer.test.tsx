@@ -187,6 +187,11 @@ describe('VoiceAnswerComposer', () => {
     const textarea = host!.querySelector('textarea[aria-label="确认后的回答文字"]') as HTMLTextAreaElement;
     expect(textarea.value).toContain('我先定位日志');
     changeTextarea(textarea, '我先定位日志，再完成回滚。');
+    const confirm = Array.from(host!.querySelectorAll<HTMLButtonElement>('button'))
+      .find((item) => item.textContent?.includes('确认使用这段文字'))!;
+    expect(confirm.disabled).toBe(true);
+    click('完成录音');
+    await act(async () => { await vi.runAllTimersAsync(); });
     click('确认使用这段文字');
 
     expect(props.onConfirmTranscript).toHaveBeenCalledWith('我先定位日志，再完成回滚。');
@@ -226,7 +231,7 @@ describe('VoiceAnswerComposer', () => {
     expect(props.onConfirmTranscript).toHaveBeenCalledWith('我先定位日志，再完成回滚。');
   });
 
-  it('does not duplicate transcription when native local recognition already has text', async () => {
+  it('uses the complete recording for final offline transcription even when native recognition has interim text', async () => {
     const offlineController = offlineControllerFixture();
     const decodeAudio = vi.fn(async () => new Float32Array([0.1]));
     const { recognition } = await renderComposer({ offlineController, decodeAudio }, { local: true });
@@ -235,10 +240,69 @@ describe('VoiceAnswerComposer', () => {
     await act(async () => {
       recognition.onresult?.({ resultIndex: 0, results: [{ isFinal: true, 0: { transcript: '原生本地文字' } }] });
       click('完成录音');
+      await vi.runAllTimersAsync();
+    });
+    expect(decodeAudio).toHaveBeenCalledOnce();
+    expect(offlineController.transcribe).toHaveBeenCalledOnce();
+  });
+
+  it('fences a late microphone permission result after synchronous cleanup', async () => {
+    const fixture = browserFixture();
+    let resolveStream!: (stream: MediaStream) => void;
+    fixture.browser.getUserMedia = vi.fn(() => new Promise<MediaStream>((resolve) => { resolveStream = resolve; }));
+    const cleanupRef: { current: (() => void) | null } = { current: null };
+    await renderComposer({ browser: fixture.browser, cleanupRef });
+    click('语音回答');
+    act(() => { click('开始录音'); });
+
+    act(() => { cleanupRef.current?.(); });
+    await act(async () => {
+      resolveStream({ getTracks: () => [fixture.track] } as unknown as MediaStream);
       await Promise.resolve();
     });
-    expect(decodeAudio).not.toHaveBeenCalled();
-    expect(offlineController.transcribe).not.toHaveBeenCalled();
+
+    expect(fixture.track.stop).toHaveBeenCalledOnce();
+    expect(fixture.browser.createMediaRecorder).not.toHaveBeenCalled();
+  });
+
+  it('keeps manual confirmation available after cancelling final transcription', async () => {
+    let resolveTranscription!: (value: { text: string; backend: 'webgpu' }) => void;
+    const offlineController = offlineControllerFixture();
+    vi.mocked(offlineController.transcribe).mockImplementation(() => new Promise((resolve) => { resolveTranscription = resolve; }));
+    const { props } = await renderComposer({
+      offlineController,
+      decodeAudio: vi.fn(async () => new Float32Array([0.1])),
+    });
+    click('语音回答');
+    await act(async () => { click('开始录音'); });
+    await act(async () => { click('完成录音'); await Promise.resolve(); await Promise.resolve(); });
+    click('取消转写');
+
+    const textarea = host!.querySelector('textarea[aria-label="确认后的回答文字"]') as HTMLTextAreaElement;
+    changeTextarea(textarea, '这是我试听后手工核对的回答。');
+    click('确认使用这段文字');
+
+    expect(props.onConfirmTranscript).toHaveBeenCalledWith('这是我试听后手工核对的回答。');
+    resolveTranscription({ text: '迟到结果', backend: 'webgpu' });
+  });
+
+  it('returns Haru to review state after a successful offline transcription retry', async () => {
+    const offlineController = offlineControllerFixture();
+    vi.mocked(offlineController.transcribe)
+      .mockRejectedValueOnce(new Error('temporary failure'))
+      .mockResolvedValueOnce({ text: '重试后的本地文字', backend: 'webgpu' });
+    const { props } = await renderComposer({
+      offlineController,
+      decodeAudio: vi.fn(async () => new Float32Array([0.1])),
+    });
+    click('语音回答');
+    await act(async () => { click('开始录音'); });
+    await act(async () => { click('完成录音'); await Promise.resolve(); await Promise.resolve(); });
+    expect(props.onActivityChange).toHaveBeenCalledWith('error');
+
+    await act(async () => { click('使用离线模型转写'); await Promise.resolve(); await Promise.resolve(); });
+
+    expect(props.onActivityChange).toHaveBeenLastCalledWith('reviewing_voice');
   });
 
   it('downloads an optional browser-managed local language pack only after consent', async () => {
@@ -332,6 +396,23 @@ describe('VoiceAnswerComposer', () => {
     expect(host!.querySelector('audio')).toBeNull();
   });
 
+  it('fences late native recognition results after re-recording starts', async () => {
+    const { recognition } = await renderComposer({}, { local: true });
+    click('语音回答');
+    await act(async () => { click('开始录音'); });
+    const lateResult = recognition.onresult;
+    await act(async () => { click('完成录音'); await vi.runAllTimersAsync(); });
+    await act(async () => { click('重录'); });
+    await act(async () => { click('开始录音'); });
+
+    await act(async () => {
+      lateResult?.({ resultIndex: 0, results: [{ isFinal: true, 0: { transcript: '旧一轮迟到文字' } }] });
+    });
+
+    const textarea = host!.querySelector('textarea[aria-label="确认后的回答文字"]') as HTMLTextAreaElement;
+    expect(textarea.value).not.toContain('旧一轮迟到文字');
+  });
+
   it('shows local interim coaching, long-pause guidance and a review only after explicit confirmation', async () => {
     let frameCallback: ((frame: VoiceCaptureFrame) => void) | undefined;
     const captureRuntime = { batchOnly: false, pause: vi.fn(), resume: vi.fn(), dispose: vi.fn(async () => undefined) };
@@ -365,15 +446,35 @@ describe('VoiceAnswerComposer', () => {
     expect(host!.textContent).toContain('可以继续，也可以完成回答');
     expect(props.onConfirmTranscript).not.toHaveBeenCalled();
 
+    await act(async () => {
+      frameCallback?.({ pcm: new Float32Array(80_000).fill(0.08), sampleRate: 16_000, atMs: 23_800, durationMs: 5_000, rms: 0.08, peak: 0.08 });
+    });
+
     now = 82_000;
-    await act(async () => { click('完成录音'); for (let turn = 0; turn < 8; turn += 1) await Promise.resolve(); });
+    await act(async () => { click('完成录音'); await vi.runAllTimersAsync(); });
     expect(captureRuntime.dispose).toHaveBeenCalledOnce();
+    expect(props.onActivityChange).toHaveBeenCalledWith('reviewing_voice');
+    expect(props.onActivityChange).not.toHaveBeenCalledWith('success');
     const textarea = host!.querySelector('textarea[aria-label="确认后的回答文字"]') as HTMLTextAreaElement;
     changeTextarea(textarea, '嗯我先定位日志，然后完成回滚。');
     click('确认使用这段文字');
     expect(props.onConfirmTranscript).toHaveBeenCalledOnce();
+    expect(props.onActivityChange).toHaveBeenLastCalledWith('success');
     expect(host!.textContent).toContain('表达节奏复盘');
     expect(host!.textContent).toContain('01:12');
+    const audio = host!.querySelector('audio') as HTMLAudioElement;
+    audio.play = vi.fn(async () => undefined);
+    click('最长停顿');
+    expect(audio.currentTime).toBeGreaterThanOrEqual(20);
+    expect(audio.currentTime).toBeLessThan(30);
+  });
+
+  it('announces live VAD state changes to assistive technology', async () => {
+    await renderComposer();
+    click('语音回答');
+    const status = host!.querySelector('[data-testid="voice-live-status"]');
+    expect(status?.getAttribute('role')).toBe('status');
+    expect(status?.getAttribute('aria-live')).toBe('polite');
   });
 
   it('stops at the five-minute boundary without confirming and keeps batch fallback explicit', async () => {
@@ -394,6 +495,68 @@ describe('VoiceAnswerComposer', () => {
     expect(props.onConfirmTranscript).not.toHaveBeenCalled();
   });
 
+  it('starts the five-minute safety cap with MediaRecorder before the first analysis frame arrives', async () => {
+    const { recorder, props } = await renderComposer({
+      createCaptureRuntime: vi.fn(async () => ({
+        batchOnly: false,
+        pause: vi.fn(),
+        resume: vi.fn(),
+        dispose: vi.fn(async () => undefined),
+      })),
+    });
+    click('语音回答');
+    await act(async () => { click('开始录音'); await Promise.resolve(); });
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(299_000); });
+
+    expect(recorder.stop).toHaveBeenCalledOnce();
+    expect(props.onConfirmTranscript).not.toHaveBeenCalled();
+  });
+
+  it('removes a manual pause from delivery metrics and audio pause navigation', async () => {
+    let frameCallback: ((frame: VoiceCaptureFrame) => void) | undefined;
+    let now = 0;
+    const fixture = browserFixture();
+    fixture.browser.now = vi.fn(() => now);
+    const { props } = await renderComposer({
+      browser: fixture.browser,
+      offlineController: offlineControllerFixture(),
+      decodeAudio: vi.fn(async () => new Float32Array([0.1])),
+      createCaptureRuntime: vi.fn(async (_stream, onFrame: (frame: VoiceCaptureFrame) => void) => {
+        frameCallback = onFrame;
+        return { batchOnly: false, pause: vi.fn(), resume: vi.fn(), dispose: vi.fn(async () => undefined) };
+      }),
+    });
+    click('语音回答');
+    await act(async () => { click('开始录音'); await Promise.resolve(); });
+    await act(async () => {
+      frameCallback?.({ pcm: new Float32Array(12_800), sampleRate: 16_000, atMs: 0, durationMs: 800, rms: 0, peak: 0 });
+      frameCallback?.({ pcm: new Float32Array(147_200).fill(0.08), sampleRate: 16_000, atMs: 800, durationMs: 9_200, rms: 0.08, peak: 0.08 });
+    });
+    now = 10_000;
+    click('暂停');
+    now = 40_000;
+    click('继续');
+    await act(async () => {
+      frameCallback?.({ pcm: new Float32Array(80_000).fill(0.08), sampleRate: 16_000, atMs: 40_000, durationMs: 5_000, rms: 0.08, peak: 0.08 });
+      frameCallback?.({ pcm: new Float32Array(48_000), sampleRate: 16_000, atMs: 45_000, durationMs: 3_000, rms: 0, peak: 0 });
+      frameCallback?.({ pcm: new Float32Array(32_000).fill(0.08), sampleRate: 16_000, atMs: 48_000, durationMs: 2_000, rms: 0.08, peak: 0.08 });
+    });
+    now = 50_000;
+    await act(async () => { click('完成录音'); await vi.runAllTimersAsync(); });
+    const textarea = host!.querySelector('textarea[aria-label="确认后的回答文字"]') as HTMLTextAreaElement;
+    changeTextarea(textarea, '嗯，我先定位日志，再说明稳定性与成本之间的取舍。');
+    click('确认使用这段文字');
+
+    expect(props.onConfirmTranscript).toHaveBeenCalledOnce();
+    expect(host!.textContent).toContain('3.0 秒');
+    const audio = host!.querySelector('audio') as HTMLAudioElement;
+    audio.play = vi.fn(async () => undefined);
+    click('最长停顿');
+    expect(audio.currentTime).toBeGreaterThanOrEqual(14);
+    expect(audio.currentTime).toBeLessThan(17);
+  });
+
   it('pauses local capture when the page becomes hidden', async () => {
     const captureRuntime = { batchOnly: false, pause: vi.fn(), resume: vi.fn(), dispose: vi.fn(async () => undefined) };
     const { recorder } = await renderComposer({
@@ -409,6 +572,22 @@ describe('VoiceAnswerComposer', () => {
     expect(captureRuntime.pause).toHaveBeenCalledOnce();
     expect(host!.textContent).toContain('录音已暂停');
     Object.defineProperty(document, 'hidden', { configurable: true, value: false });
+  });
+
+  it('applies a pending pause after deferred capture runtime initialization', async () => {
+    const captureRuntime = { batchOnly: false, pause: vi.fn(), resume: vi.fn(), dispose: vi.fn(async () => undefined) };
+    let resolveRuntime!: (runtime: typeof captureRuntime) => void;
+    const { recorder } = await renderComposer({
+      createCaptureRuntime: vi.fn(() => new Promise<typeof captureRuntime>((resolve) => { resolveRuntime = resolve; })),
+    });
+    click('语音回答');
+    await act(async () => { click('开始录音'); await Promise.resolve(); });
+    click('暂停');
+    expect(recorder.pause).toHaveBeenCalledOnce();
+
+    await act(async () => { resolveRuntime(captureRuntime); await Promise.resolve(); });
+
+    expect(captureRuntime.pause).toHaveBeenCalledOnce();
   });
 
   it('resamples worklet PCM to the offline model sample rate', async () => {

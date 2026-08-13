@@ -332,7 +332,7 @@ npm.cmd test -- --run src/features/mockInterviewVoice/VoiceAnswerComposer.test.t
 
 - [ ] **Step 3: 最小集成**
 
-保持现有 `onConfirmTranscript` 唯一业务出口。新增状态文案、波形、临时字幕、批量降级提示和摘要卡；最终转写继续使用完整 MediaRecorder Blob 解码结果，临时字幕绝不直接进入正式回答。扩展 `VoiceAnswerActivity`/`PilotMascotActivity` 仅表达 `waiting_for_speech` 与 `speech_paused`，Live2D 只改变本地动画与文字。
+保持现有 `onConfirmTranscript` 唯一业务出口。新增状态文案、波形、临时字幕、批量降级提示和摘要卡；最终转写继续使用完整 MediaRecorder Blob 解码结果，临时字幕绝不直接进入正式回答。扩展 `VoiceAnswerActivity`/`PilotMascotActivity` 表达 `waiting_for_speech`、`speech_paused` 与仅供校对的 `reviewing_voice`，Live2D 只改变本地动画与文字，只有用户显式确认后才进入 `success`。
 
 - [ ] **Step 4: 运行 GREEN 与相关回归**
 

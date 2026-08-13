@@ -102,6 +102,7 @@
 }
 
 .mascot[data-activity='speech_paused'] .statusDot { background: #f59e0b; }
+.mascot[data-activity='reviewing_voice'] .statusDot { background: #0ea5a8; }
 
 .mascot[data-activity='success'] .statusDot { background: #16a34a; }
 .mascot[data-activity='error'] .statusDot { background: #f59e0b; }

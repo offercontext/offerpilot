@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject } from 'react';
 import { Alert, Button, Input, Tag } from 'antd';
 import {
   AudioOutlined,
@@ -29,8 +29,9 @@ import { buildVoiceDeliverySummary, type VoiceDeliverySummary } from './voiceDel
 import VoiceDeliverySummaryCard from './VoiceDeliverySummaryCard';
 import styles from './VoiceAnswerComposer.module.css';
 
-export type VoiceAnswerActivity = 'idle' | 'preparing_voice' | 'speaking' | 'waiting_for_speech' | 'listening' | 'speech_paused' | 'transcribing' | 'success' | 'error';
+export type VoiceAnswerActivity = 'idle' | 'preparing_voice' | 'speaking' | 'waiting_for_speech' | 'listening' | 'speech_paused' | 'transcribing' | 'reviewing_voice' | 'success' | 'error';
 type AnswerMode = 'text' | 'voice';
+const RECORDING_SAFETY_LIMIT_MS = 299_000;
 
 interface MediaRecorderLike {
   state: string;
@@ -83,6 +84,7 @@ interface Props {
   offlineController?: OfflineWhisperController;
   decodeAudio?: (blob: Blob) => Promise<Float32Array>;
   createCaptureRuntime?: typeof createVoiceCaptureRuntime;
+  cleanupRef?: MutableRefObject<(() => void) | null>;
 }
 
 function defaultBrowser(): VoiceAnswerBrowser {
@@ -138,6 +140,7 @@ export default function VoiceAnswerComposer({
   offlineController = offlineWhisperController,
   decodeAudio = decodeAudioBlob,
   createCaptureRuntime = createVoiceCaptureRuntime,
+  cleanupRef,
 }: Props) {
   const browser = useMemo(() => suppliedBrowser ?? defaultBrowser(), [suppliedBrowser]);
   const capabilities = useMemo(() => detectVoiceInterviewCapabilities({
@@ -160,6 +163,7 @@ export default function VoiceAnswerComposer({
   const [batchOnly, setBatchOnly] = useState(false);
   const [waveLevel, setWaveLevel] = useState(0);
   const [deliverySummary, setDeliverySummary] = useState<VoiceDeliverySummary>();
+  const [reviewReady, setReviewReady] = useState(false);
   const offlineModelState = useOfflineWhisperState(offlineController);
   const recorderRef = useRef<MediaRecorderLike>();
   const streamRef = useRef<MediaStream>();
@@ -168,17 +172,26 @@ export default function VoiceAnswerComposer({
   const audioBlobRef = useRef<Blob>();
   const transcriptRef = useRef('');
   const transcriptionGenerationRef = useRef(0);
+  const recordingGenerationRef = useRef(0);
+  const recordingStartPendingRef = useRef(false);
   const activeTranscriptionRef = useRef(false);
   const recognitionSettleRef = useRef<(() => void) | undefined>();
   const intervalRef = useRef<number>();
+  const recordingSafetyTimeoutRef = useRef<number>();
   const activityTimeoutRef = useRef<number>();
   const latestAudioUrlRef = useRef<string | null>(null);
   const disposedRef = useRef(false);
   const captureRuntimeRef = useRef<VoiceCaptureRuntime>();
   const sessionControllerRef = useRef<VoiceSessionController>();
   const captureOriginRef = useRef<number>();
+  const captureLastRawEndRef = useRef<number>();
+  const captureExcludedMsRef = useRef(0);
+  const captureResumePendingRef = useRef(false);
   const recordingStartedAtRef = useRef(0);
   const recordingEndedAtRef = useRef(0);
+  const recordingPausedAtRef = useRef<number>();
+  const recordingPausedTotalRef = useRef(0);
+  const recordingPausedRef = useRef(false);
   const voicedRangesRef = useRef<ReadonlyArray<readonly [number, number]>>([]);
   const audioElementRef = useRef<HTMLAudioElement>(null);
   const transcriptPanelRef = useRef<HTMLDivElement>(null);
@@ -212,6 +225,11 @@ export default function VoiceAnswerComposer({
     chunksRef.current = [];
   };
 
+  const clearRecordingSafetyTimeout = () => {
+    if (recordingSafetyTimeoutRef.current !== undefined) window.clearTimeout(recordingSafetyTimeoutRef.current);
+    recordingSafetyTimeoutRef.current = undefined;
+  };
+
   const disposeVoiceAnalysis = () => {
     const runtime = captureRuntimeRef.current;
     captureRuntimeRef.current = undefined;
@@ -222,7 +240,12 @@ export default function VoiceAnswerComposer({
   };
 
   const resetVoiceDraft = () => {
+    recordingGenerationRef.current += 1;
+    recordingStartPendingRef.current = false;
     clearTimer();
+    clearRecordingSafetyTimeout();
+    try { recorderRef.current?.state !== 'inactive' && recorderRef.current?.stop(); } catch { /* cleanup only */ }
+    recorderRef.current = undefined;
     stopStream();
     recognitionRef.current?.abort();
     recognitionRef.current = undefined;
@@ -239,6 +262,14 @@ export default function VoiceAnswerComposer({
     setBatchOnly(false);
     setWaveLevel(0);
     setDeliverySummary(undefined);
+    setReviewReady(false);
+    captureOriginRef.current = undefined;
+    captureLastRawEndRef.current = undefined;
+    captureExcludedMsRef.current = 0;
+    captureResumePendingRef.current = false;
+    recordingPausedAtRef.current = undefined;
+    recordingPausedTotalRef.current = 0;
+    recordingPausedRef.current = false;
     transcriptionGenerationRef.current += 1;
     if (activeTranscriptionRef.current) offlineController.cancel();
     activeTranscriptionRef.current = false;
@@ -247,6 +278,12 @@ export default function VoiceAnswerComposer({
     onDirtyChange?.(false);
     emitActivity('idle');
   };
+
+  if (cleanupRef) cleanupRef.current = resetVoiceDraft;
+
+  useEffect(() => () => {
+    if (cleanupRef) cleanupRef.current = null;
+  }, [cleanupRef]);
 
   useEffect(() => {
     let active = true;
@@ -266,7 +303,9 @@ export default function VoiceAnswerComposer({
     disposedRef.current = false;
     return () => {
       disposedRef.current = true;
+      recordingGenerationRef.current += 1;
       clearTimer();
+      clearRecordingSafetyTimeout();
       clearActivityTimeout();
       browser.speechSynthesis.cancel();
       try { recorderRef.current?.state !== 'inactive' && recorderRef.current?.stop(); } catch { /* cleanup only */ }
@@ -318,10 +357,11 @@ export default function VoiceAnswerComposer({
     emitActivity('speaking');
   };
 
-  const startRecognition = () => {
+  const startRecognition = (recordingGeneration = recordingGenerationRef.current) => {
     if (localLanguageState !== 'available' || !browser.SpeechRecognition) return;
     const recognition = createLocalSpeechRecognition(browser.SpeechRecognition, 'zh-CN');
     recognition.onresult = (event) => {
+      if (recordingGeneration !== recordingGenerationRef.current || recognitionRef.current !== recognition) return;
       let finalText = '';
       let interimText = '';
       for (let index = event.resultIndex; index < event.results.length; index += 1) {
@@ -337,19 +377,23 @@ export default function VoiceAnswerComposer({
       setInterimTranscript(interimText.trim());
     };
     recognition.onerror = () => {
+      if (recordingGeneration !== recordingGenerationRef.current || recognitionRef.current !== recognition) return;
       setLocalLanguageState('unavailable');
       setError('本机转写没有完成，录音仍在，可试听后手工整理文字。');
     };
-    recognition.onend = () => recognitionSettleRef.current?.();
+    recognition.onend = () => {
+      if (recordingGeneration !== recordingGenerationRef.current || recognitionRef.current !== recognition) return;
+      recognitionSettleRef.current?.();
+    };
     recognitionRef.current = recognition;
     try { recognition.start(); } catch { setLocalLanguageState('unavailable'); }
   };
 
-  const runOfflineTranscription = async (blob: Blob) => {
+  const runOfflineTranscription = async (blob: Blob): Promise<'ready' | 'error' | 'stale'> => {
     if (offlineController.getState().status !== 'ready') {
       setTranscriptionStatus('idle');
       emitActivity('idle');
-      return;
+      return 'ready';
     }
     const generation = ++transcriptionGenerationRef.current;
     activeTranscriptionRef.current = true;
@@ -358,24 +402,25 @@ export default function VoiceAnswerComposer({
     emitActivity('transcribing');
     try {
       const pcm = await decodeAudio(blob);
-      if (generation !== transcriptionGenerationRef.current || disposedRef.current) return;
+      if (generation !== transcriptionGenerationRef.current || disposedRef.current) return 'stale';
       setTranscriptionStatus('transcribing');
       const result = await offlineController.transcribe(pcm);
-      if (generation !== transcriptionGenerationRef.current || disposedRef.current) return;
+      if (generation !== transcriptionGenerationRef.current || disposedRef.current) return 'stale';
       transcriptRef.current = result.text;
       setTranscript(result.text);
       setInterimTranscript('');
       setTranscriptionStatus('success');
       activeTranscriptionRef.current = false;
-      emitActivity('success');
+      return 'ready';
     } catch (transcriptionError) {
-      if (generation !== transcriptionGenerationRef.current || disposedRef.current) return;
+      if (generation !== transcriptionGenerationRef.current || disposedRef.current) return 'stale';
       setTranscriptionStatus('error');
       activeTranscriptionRef.current = false;
       setError(transcriptionError instanceof Error
         ? `${transcriptionError.message}。录音仍在，可重新转写或手工整理文字。`
         : '离线转写失败。录音仍在，可重新转写或手工整理文字。');
       emitActivity('error');
+      return 'error';
     }
   };
 
@@ -411,7 +456,15 @@ export default function VoiceAnswerComposer({
     try {
       const runtime = await createCaptureRuntime(stream, (frame: VoiceCaptureFrame) => {
         captureOriginRef.current ??= frame.atMs;
-        const relativeAt = Math.max(0, frame.atMs - captureOriginRef.current);
+        if (captureResumePendingRef.current && captureLastRawEndRef.current !== undefined) {
+          captureExcludedMsRef.current += Math.max(0, frame.atMs - captureLastRawEndRef.current);
+          captureResumePendingRef.current = false;
+        }
+        const relativeAt = Math.max(0, frame.atMs - captureOriginRef.current - captureExcludedMsRef.current);
+        captureLastRawEndRef.current = Math.max(
+          captureLastRawEndRef.current ?? frame.atMs,
+          frame.atMs + frame.durationMs,
+        );
         if (!receivedFrame && frame.sampleRate !== sessionSampleRate) {
           sessionSampleRate = frame.sampleRate;
           session.start(generation, sessionSampleRate);
@@ -426,6 +479,7 @@ export default function VoiceAnswerComposer({
         return;
       }
       captureRuntimeRef.current = runtime;
+      if (recordingPausedRef.current) runtime.pause();
       setBatchOnly(runtime.batchOnly);
     } catch {
       setBatchOnly(true);
@@ -433,8 +487,21 @@ export default function VoiceAnswerComposer({
     }
   };
 
+  const finishManualPause = () => {
+    const pausedAt = recordingPausedAtRef.current;
+    if (pausedAt === undefined) return;
+    recordingPausedTotalRef.current += Math.max(0, browser.now() - pausedAt);
+    recordingPausedAtRef.current = undefined;
+  };
+
+  const requestRecorderStop = () => {
+    finishManualPause();
+    if (recorderRef.current?.state !== 'inactive') recorderRef.current?.stop();
+  };
+
   const startRecording = async () => {
-    if (!capabilities.recorder || disabled) return;
+    if (!capabilities.recorder || disabled || recordingStartPendingRef.current) return;
+    recordingStartPendingRef.current = true;
     browser.speechSynthesis.cancel();
     setNarrationState('idle');
     setError(null);
@@ -444,13 +511,17 @@ export default function VoiceAnswerComposer({
     setInterimTranscript('');
     setTemporaryTranscript('');
     setDeliverySummary(undefined);
+    setReviewReady(false);
     setTranscriptionStatus('idle');
+    const recordingGeneration = ++recordingGenerationRef.current;
+    emitActivity('preparing_voice');
     try {
       const stream = await browser.getUserMedia({ audio: true });
-      if (disposedRef.current) {
+      if (disposedRef.current || recordingGeneration !== recordingGenerationRef.current) {
         stream.getTracks().forEach((track) => track.stop());
         return;
       }
+      recordingStartPendingRef.current = false;
       streamRef.current = stream;
       const recorder = browser.createMediaRecorder!(stream);
       recorderRef.current = recorder;
@@ -459,7 +530,7 @@ export default function VoiceAnswerComposer({
         if (event.data.size > 0) chunksRef.current.push(event.data);
       };
       recorder.onstop = () => {
-        if (disposedRef.current) {
+        if (disposedRef.current || recordingGeneration !== recordingGenerationRef.current) {
           chunksRef.current = [];
           return;
         }
@@ -471,6 +542,7 @@ export default function VoiceAnswerComposer({
         setRecordingState('ready');
         recordingEndedAtRef.current = browser.now();
         clearTimer();
+        clearRecordingSafetyTimeout();
         const runtime = captureRuntimeRef.current;
         captureRuntimeRef.current = undefined;
         if (runtime) void runtime.dispose();
@@ -487,34 +559,65 @@ export default function VoiceAnswerComposer({
             if (settled) return;
             settled = true;
             recognitionSettleRef.current = undefined;
-            void sessionFinished.then(() => runOfflineTranscription(blob));
+            recognition.onresult = null;
+            recognition.onerror = null;
+            recognition.onend = null;
+            if (recognitionRef.current === recognition) recognitionRef.current = undefined;
+            void sessionFinished.then(async () => {
+              if (recordingGeneration !== recordingGenerationRef.current) return;
+              const result = await runOfflineTranscription(blob);
+              if (recordingGeneration !== recordingGenerationRef.current || result === 'stale') return;
+              setReviewReady(true);
+              if (result === 'ready') emitActivity('reviewing_voice');
+            });
           };
           recognitionSettleRef.current = continueAfterRecognition;
           recognition.stop();
           window.setTimeout(continueAfterRecognition, 350);
         } else {
-          void sessionFinished.then(() => runOfflineTranscription(blob));
+          void sessionFinished.then(async () => {
+            if (recordingGeneration !== recordingGenerationRef.current) return;
+            const result = await runOfflineTranscription(blob);
+            if (recordingGeneration !== recordingGenerationRef.current || result === 'stale') return;
+            setReviewReady(true);
+            if (result === 'ready') emitActivity('reviewing_voice');
+          });
         }
       };
       recorder.start();
       recordingStartedAtRef.current = browser.now();
       recordingEndedAtRef.current = 0;
+      recordingPausedAtRef.current = undefined;
+      recordingPausedTotalRef.current = 0;
+      recordingPausedRef.current = false;
+      captureOriginRef.current = undefined;
+      captureLastRawEndRef.current = undefined;
+      captureExcludedMsRef.current = 0;
+      captureResumePendingRef.current = false;
       voicedRangesRef.current = [];
+      clearRecordingSafetyTimeout();
+      recordingSafetyTimeoutRef.current = window.setTimeout(requestRecorderStop, RECORDING_SAFETY_LIMIT_MS);
       void startVoiceAnalysis(stream);
-      startRecognition();
+      startRecognition(recordingGeneration);
       setElapsed(0);
       setRecordingState('recording');
       emitActivity('listening');
       intervalRef.current = window.setInterval(() => setElapsed((value) => value + 1), 1000);
     } catch {
+      if (recordingGeneration !== recordingGenerationRef.current || disposedRef.current) return;
       stopStream();
       setRecordingState('idle');
       setError('未获得麦克风权限。文字回答仍可使用，也可以在浏览器设置中稍后允许。');
       emitActivity('error');
+    } finally {
+      if (recordingGeneration === recordingGenerationRef.current) recordingStartPendingRef.current = false;
     }
   };
 
   const pauseRecording = () => {
+    recordingPausedRef.current = true;
+    if (recordingPausedAtRef.current === undefined) recordingPausedAtRef.current = browser.now();
+    captureResumePendingRef.current = true;
     recorderRef.current?.pause();
     recognitionRef.current?.stop();
     clearTimer();
@@ -525,6 +628,8 @@ export default function VoiceAnswerComposer({
   };
 
   const resumeRecording = () => {
+    recordingPausedRef.current = false;
+    finishManualPause();
     recorderRef.current?.resume();
     startRecognition();
     captureRuntimeRef.current?.resume();
@@ -534,7 +639,7 @@ export default function VoiceAnswerComposer({
     emitActivity('listening');
   };
 
-  const stopRecording = () => recorderRef.current?.stop();
+  const stopRecording = requestRecorderStop;
 
   useEffect(() => {
     const pauseWhenHidden = () => {
@@ -554,13 +659,13 @@ export default function VoiceAnswerComposer({
 
   const confirmTranscript = () => {
     const confirmed = transcript.trim();
-    if (!confirmed || disabled) return;
+    if (!confirmed || disabled || recordingState !== 'ready' || !reviewReady) return;
     const startedAtMs = recordingStartedAtRef.current;
     const endedAtMs = recordingEndedAtRef.current || browser.now();
     setDeliverySummary(buildVoiceDeliverySummary({
-      startedAtMs,
-      endedAtMs,
-      voicedRanges: voicedRangesRef.current.map(([from, to]) => [startedAtMs + from, startedAtMs + to] as const),
+      startedAtMs: 0,
+      endedAtMs: Math.max(0, endedAtMs - startedAtMs - recordingPausedTotalRef.current),
+      voicedRanges: voicedRangesRef.current,
       transcript: confirmed,
     }));
     onConfirmTranscript(confirmed);
@@ -572,7 +677,19 @@ export default function VoiceAnswerComposer({
     offlineController.cancel();
     activeTranscriptionRef.current = false;
     setTranscriptionStatus('idle');
-    emitActivity('idle');
+    setError(null);
+    const canReviewManually = recordingState === 'ready' && Boolean(audioBlobRef.current);
+    setReviewReady(canReviewManually);
+    emitActivity(canReviewManually ? 'reviewing_voice' : 'idle');
+  };
+
+  const retryOfflineTranscription = async () => {
+    const blob = audioBlobRef.current;
+    if (!blob) return;
+    const result = await runOfflineTranscription(blob);
+    if (result === 'stale') return;
+    setReviewReady(true);
+    if (result === 'ready') emitActivity('reviewing_voice');
   };
 
   const localLabel = localLanguageState === 'available'
@@ -649,7 +766,7 @@ export default function VoiceAnswerComposer({
 
       {mode === 'voice' ? (
         <div className={styles.voiceStage}>
-          <div className={styles.voiceStatus} data-state={recordingState}>
+          <div className={styles.voiceStatus} data-state={recordingState} data-testid="voice-live-status" role="status" aria-live="polite">
             <div className={styles.micOrb}><AudioOutlined /></div>
             <div className={styles.voiceCopy}>
               <strong>{sessionLabel}</strong>
@@ -717,7 +834,7 @@ export default function VoiceAnswerComposer({
               </div>
             ) : null}
             {audioUrl && transcriptionStatus !== 'decoding' && transcriptionStatus !== 'transcribing' && !transcript.trim() && offlineModelState.status === 'ready' ? (
-              <Button onClick={() => audioBlobRef.current && void runOfflineTranscription(audioBlobRef.current)} disabled={disabled}>
+              <Button onClick={() => void retryOfflineTranscription()} disabled={disabled}>
                 使用离线模型转写
               </Button>
             ) : null}
@@ -735,7 +852,7 @@ export default function VoiceAnswerComposer({
             />
             <div className={styles.confirmRow}>
               <span>只有确认后的文字才会交给模拟面试。</span>
-              <Button type="primary" onClick={confirmTranscript} disabled={disabled || !transcript.trim()}>
+              <Button type="primary" onClick={confirmTranscript} disabled={disabled || recordingState !== 'ready' || !reviewReady || !transcript.trim()}>
                 确认使用这段文字
               </Button>
             </div>

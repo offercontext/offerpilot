@@ -44,7 +44,7 @@ function defaultDependencies(): VoiceCaptureRuntimeDependencies {
     createWorkletNode: (context) => new AudioWorkletNode(context as unknown as BaseAudioContext, 'offerpilot-voice-activity', {
       numberOfInputs: 1,
       numberOfOutputs: 0,
-      processorOptions: { frameSamples: 320 },
+      processorOptions: { frameSamples: Math.max(160, Math.round(context.sampleRate * 0.02)) },
     }) as unknown as WorkletNodeLike,
     requestFrame: (callback) => requestAnimationFrame(callback),
     cancelFrame: (handle) => cancelAnimationFrame(handle),

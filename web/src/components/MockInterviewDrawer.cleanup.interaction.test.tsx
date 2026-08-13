@@ -3,6 +3,7 @@ import { act, type ReactNode, useRef, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MockInterviewDrawerDraft } from './MockInterviewDrawer';
+import type { VoiceAnswerBrowser } from '@/features/mockInterviewVoice/VoiceAnswerComposer';
 
 const services = vi.hoisted(() => ({
   startMockInterview: vi.fn(),
@@ -98,7 +99,39 @@ function flush() {
   });
 }
 
-function Harness({ initial = baseDraft }: { initial?: MockInterviewDrawerDraft }) {
+function voiceBrowserFixture() {
+  const track = { stop: vi.fn() };
+  const recorder = {
+    state: 'inactive',
+    ondataavailable: null as ((event: { data: Blob }) => void) | null,
+    onstop: null as (() => void) | null,
+    start: vi.fn(function start(this: { state: string }) { this.state = 'recording'; }),
+    pause: vi.fn(),
+    resume: vi.fn(),
+    stop: vi.fn(function stop(this: typeof recorder) {
+      this.state = 'inactive';
+      this.ondataavailable?.({ data: new Blob(['voice'], { type: 'audio/webm' }) });
+      this.onstop?.();
+    }),
+  };
+  const voiceBrowser: VoiceAnswerBrowser = {
+    getUserMedia: vi.fn(async () => ({ getTracks: () => [track] }) as unknown as MediaStream),
+    createMediaRecorder: vi.fn(() => recorder),
+    createObjectURL: vi.fn(() => 'blob:voice'),
+    revokeObjectURL: vi.fn(),
+    speechSynthesis: { speak: vi.fn(), cancel: vi.fn(), pause: vi.fn(), resume: vi.fn(), paused: false },
+    speechSynthesisSupported: true,
+    createUtterance: (text) => ({ text }),
+    now: () => 0,
+  };
+  return { voiceBrowser, recorder, track };
+}
+
+function Harness({ initial = baseDraft, voiceBrowser, keepOpenOnClose = false }: {
+  initial?: MockInterviewDrawerDraft;
+  voiceBrowser?: VoiceAnswerBrowser;
+  keepOpenOnClose?: boolean;
+}) {
   const [open, setOpen] = useState(true);
   const [draft, setDraft] = useState(initial);
   const draftRef = useRef(initial);
@@ -121,7 +154,8 @@ function Harness({ initial = baseDraft }: { initial?: MockInterviewDrawerDraft }
               return next;
             });
           }}
-          onClose={() => setOpen(false)}
+          onClose={() => { if (!keepOpenOnClose) setOpen(false); }}
+          voiceBrowser={voiceBrowser}
         />
       ) : null}
       <output data-testid="draft-state">{JSON.stringify(draftRef.current)}</output>
@@ -129,11 +163,11 @@ function Harness({ initial = baseDraft }: { initial?: MockInterviewDrawerDraft }
   );
 }
 
-function render(initial?: MockInterviewDrawerDraft) {
+function render(initial?: MockInterviewDrawerDraft, options: { voiceBrowser?: VoiceAnswerBrowser; keepOpenOnClose?: boolean } = {}) {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
-  act(() => root?.render(<Harness initial={initial} />));
+  act(() => root?.render(<Harness initial={initial} {...options} />));
 }
 
 async function retryDiscardAfterRemount() {
@@ -164,15 +198,20 @@ afterEach(() => {
 describe('MockInterviewDrawer failed-attempt cleanup', () => {
   it('submits voice text only after the user explicitly confirms it', async () => {
     services.submitMockInterviewAnswer.mockResolvedValue(undefined);
+    const { voiceBrowser } = voiceBrowserFixture();
     render({
       ...baseDraft,
       resumeId: 3,
       attemptId: 88,
       turnNo: 1,
       question: '请介绍一次故障处理经历。',
-    });
+    }, { voiceBrowser });
 
     act(() => buttonByText('语音回答').click());
+    act(() => buttonByText('开始录音').click());
+    await flush();
+    act(() => buttonByText('完成录音').click());
+    await flush();
     const transcript = container?.querySelector('textarea[aria-label="确认后的回答文字"]') as HTMLTextAreaElement;
     changeTextarea(transcript, '我先确认影响范围，再完成回滚。');
     expect(services.submitMockInterviewAnswer).not.toHaveBeenCalled();
@@ -203,6 +242,47 @@ describe('MockInterviewDrawer failed-attempt cleanup', () => {
     expect(container?.querySelector('[role="dialog"]')).not.toBeNull();
     act(() => buttonByText('放弃并关闭').click());
     expect(container?.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it('stops local recording before an async parent close finishes', async () => {
+    const { voiceBrowser, recorder, track } = voiceBrowserFixture();
+    render({ ...baseDraft, resumeId: 3, attemptId: 88, question: '请介绍一次故障处理经历。' }, {
+      voiceBrowser,
+      keepOpenOnClose: true,
+    });
+    act(() => buttonByText('语音回答').click());
+    act(() => buttonByText('开始录音').click());
+    await flush();
+    expect(recorder.start).toHaveBeenCalledOnce();
+
+    act(() => (container?.querySelector('[data-testid="close-drawer"]') as HTMLButtonElement).click());
+    act(() => buttonByText('放弃并关闭').click());
+
+    expect(recorder.stop).toHaveBeenCalledOnce();
+    expect(track.stop).toHaveBeenCalledOnce();
+    expect(container?.querySelector('[role="dialog"]')).not.toBeNull();
+  });
+
+  it('invalidates a pending microphone permission request before a normal async parent close', async () => {
+    const { voiceBrowser, track } = voiceBrowserFixture();
+    let resolveStream!: (stream: MediaStream) => void;
+    voiceBrowser.getUserMedia = vi.fn(() => new Promise<MediaStream>((resolve) => { resolveStream = resolve; }));
+    render({ ...baseDraft, resumeId: 3, attemptId: 88, question: '请介绍一次故障处理经历。' }, {
+      voiceBrowser,
+      keepOpenOnClose: true,
+    });
+    act(() => buttonByText('语音回答').click());
+    act(() => buttonByText('开始录音').click());
+
+    act(() => (container?.querySelector('[data-testid="close-drawer"]') as HTMLButtonElement).click());
+    await act(async () => {
+      resolveStream({ getTracks: () => [track] } as unknown as MediaStream);
+      await Promise.resolve();
+    });
+
+    expect(track.stop).toHaveBeenCalledOnce();
+    expect(voiceBrowser.createMediaRecorder).not.toHaveBeenCalled();
+    expect(container?.querySelector('[role="dialog"]')).not.toBeNull();
   });
 
   it('renders a stable workflow surface and action group', () => {

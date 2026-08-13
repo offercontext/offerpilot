@@ -51,6 +51,35 @@ describe('voice capture runtime', () => {
     expect(target.context.close).toHaveBeenCalledOnce();
   });
 
+  it('emits non-overlapping 20 ms worklet frames at 48 kHz', async () => {
+    const processors: Array<new (options?: { processorOptions?: { frameSamples?: number } }) => {
+      process(inputs: Float32Array[][]): boolean;
+      port: { postMessage: ReturnType<typeof vi.fn> };
+    }> = [];
+    class ProcessorBase {
+      port = { postMessage: vi.fn() };
+    }
+    vi.stubGlobal('AudioWorkletProcessor', ProcessorBase);
+    vi.stubGlobal('sampleRate', 48_000);
+    vi.stubGlobal('currentTime', 0);
+    vi.stubGlobal('registerProcessor', (_name: string, processor: typeof processors[number]) => processors.push(processor));
+    vi.resetModules();
+    await import('./voiceActivity.worklet');
+    const Processor = processors[0];
+    const processor = new Processor();
+
+    for (let quantum = 0; quantum < 16; quantum += 1) {
+      vi.stubGlobal('currentTime', quantum * 128 / 48_000);
+      processor.process([[[...new Float32Array(128).fill(0.08)]] as unknown as Float32Array[]]);
+    }
+
+    const calls = processor.port.postMessage.mock.calls;
+    expect(calls.length).toBe(2);
+    expect(calls[0][0]).toMatchObject({ atMs: 0, durationMs: 20 });
+    expect(calls[1][0]).toMatchObject({ atMs: 20, durationMs: 20 });
+    vi.unstubAllGlobals();
+  });
+
   it('falls back to analyser batch mode and emits levels', async () => {
     const target = fixture({ worklet: 'fail' });
     const frames = vi.fn();

@@ -9,6 +9,7 @@ export type PilotMascotActivity =
   | 'listening'
   | 'speech_paused'
   | 'transcribing'
+  | 'reviewing_voice'
   | 'success'
   | 'error';
 

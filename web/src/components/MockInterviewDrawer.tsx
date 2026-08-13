@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert, Button, Drawer, Empty, Input, List, Select, Space, Spin, Tag,
 } from 'antd';
@@ -125,6 +125,7 @@ export default function MockInterviewDrawer({
   const [voiceDraftDirty, setVoiceDraftDirty] = useState(false);
   const [closeConfirming, setCloseConfirming] = useState(false);
   const [answerSubmitRevision, setAnswerSubmitRevision] = useState(0);
+  const voiceCleanupRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -371,6 +372,7 @@ export default function MockInterviewDrawer({
       setCloseConfirming(true);
       return;
     }
+    voiceCleanupRef.current?.();
     onClose();
   };
 
@@ -387,7 +389,7 @@ export default function MockInterviewDrawer({
             action={(
               <Space>
                 <Button size="small" onClick={() => setCloseConfirming(false)}>继续编辑</Button>
-                <Button size="small" danger onClick={onClose}>放弃并关闭</Button>
+                <Button size="small" danger onClick={() => { voiceCleanupRef.current?.(); onClose(); }}>放弃并关闭</Button>
               </Space>
             )}
           />
@@ -486,6 +488,7 @@ export default function MockInterviewDrawer({
               }}
               onActivityChange={onVoiceActivityChange}
               browser={voiceBrowser}
+              cleanupRef={voiceCleanupRef}
             />
             <div className={workflowStyles.actionGroup}>
               <Button onClick={() => void answer()} disabled={!draft.answer.trim() || pending || working}>提交回答</Button>

@@ -7,19 +7,23 @@ declare class AudioWorkletProcessor {
   readonly port: { postMessage(message: unknown, transfer?: Transferable[]): void };
 }
 
-class OfferPilotVoiceActivityProcessor extends AudioWorkletProcessor {
+export class OfferPilotVoiceActivityProcessor extends AudioWorkletProcessor {
   private readonly frameSamples: number;
   private pending: number[] = [];
+  private nextFrameAtMs?: number;
 
   constructor(options?: { processorOptions?: { frameSamples?: number } }) {
     super();
-    this.frameSamples = Math.max(160, options?.processorOptions?.frameSamples ?? 320);
+    this.frameSamples = Math.max(160, options?.processorOptions?.frameSamples ?? Math.round(sampleRate * 0.02));
   }
 
   process(inputs: Float32Array[][]): boolean {
     const channels = inputs[0];
     const source = channels?.[0];
     if (!source) return true;
+    if (this.pending.length === 0) {
+      this.nextFrameAtMs = Math.max(this.nextFrameAtMs ?? currentTime * 1_000, currentTime * 1_000);
+    }
     for (const sample of source) this.pending.push(Number.isFinite(sample) ? sample : 0);
     while (this.pending.length >= this.frameSamples) {
       const pcm = new Float32Array(this.pending.splice(0, this.frameSamples));
@@ -30,9 +34,11 @@ class OfferPilotVoiceActivityProcessor extends AudioWorkletProcessor {
         peak = Math.max(peak, Math.abs(sample));
       }
       const durationMs = pcm.length / sampleRate * 1_000;
+      const atMs = this.nextFrameAtMs ?? currentTime * 1_000;
+      this.nextFrameAtMs = atMs + durationMs;
       this.port.postMessage({
         pcm,
-        atMs: currentTime * 1_000 - durationMs,
+        atMs,
         durationMs,
         rms: Math.sqrt(squares / pcm.length),
         peak,
