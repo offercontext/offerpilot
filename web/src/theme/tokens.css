@@ -319,6 +319,10 @@ body {
   overflow: hidden;
 }
 
+.op-pilot-background-host {
+  display: contents;
+}
+
 .op-offer-negotiation-overlay {
   display: flex;
   align-items: flex-start;

@@ -27,6 +27,7 @@ import {
   confirmationErrorRequiresSync,
   hasConfirmationSettled,
   shouldAbortActiveRequestOnClose,
+  shouldAbortActiveRequestOnReplacement,
   clearOwnedConfirmationLock,
   shouldConsumeConfirmationSettlement,
   shouldRestoreConfirmationRetryFocus,
@@ -313,11 +314,23 @@ describe('active request ownership', () => {
     expect(shouldAbortActiveRequestOnClose(confirmationA)).toBe(false);
   });
 
-  it('aborts an ordinary active chat when the panel closes', () => {
+  it('keeps an ordinary active chat running when the panel closes', () => {
     expect(
       shouldAbortActiveRequestOnClose({ kind: 'chat', conversationId: 2 }),
-    ).toBe(true);
+    ).toBe(false);
     expect(shouldAbortActiveRequestOnClose(null)).toBe(false);
+  });
+
+  it('aborts an ordinary active chat only when a new conversation replaces it', () => {
+    expect(shouldAbortActiveRequestOnReplacement({ kind: 'chat', conversationId: 2 })).toBe(true);
+    expect(
+      shouldAbortActiveRequestOnReplacement({
+        kind: 'confirmation',
+        conversationId: 1,
+        confirmationToken: 'token-a',
+      }),
+    ).toBe(false);
+    expect(shouldAbortActiveRequestOnReplacement(null)).toBe(false);
   });
 
   it('does not let stale A completion clear a newer lock for A', () => {

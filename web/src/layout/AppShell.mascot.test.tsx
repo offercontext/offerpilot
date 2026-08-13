@@ -27,6 +27,7 @@ vi.mock('./Sidebar', () => ({
   default: (props: { onChange: (view: string) => void }) => (
     <nav>
       <button type="button" data-testid="nav-settings" onClick={() => props.onChange('settings')}>settings</button>
+      <button type="button" data-testid="nav-pilot" onClick={() => props.onChange('pilot')}>pilot</button>
     </nav>
   ),
 }));
@@ -60,17 +61,53 @@ vi.mock('@/features/pilot/attachmentHandoff', () => ({ retainPilotAttachmentKey:
 vi.mock('@/features/pilot/PilotOpportunityFitCard', () => ({ default: () => <div /> }));
 vi.mock('@/features/pilot/PilotOpportunityFitV2Card', () => ({ default: () => <div /> }));
 vi.mock('@/features/pilotMascot/PilotMascot', () => ({
-  default: (props: { onTogglePilot: () => void; onHide: () => void; panelOpen: boolean }) => (
-    <section data-testid="pilot-mascot" data-panel-open={String(props.panelOpen)}>
+  default: (props: {
+    onTogglePilot: () => void;
+    onHide: () => void;
+    onZoomChange: (zoom: number) => void;
+    panelOpen: boolean;
+    placement?: string;
+    notification?: { status: string; conversationId?: number } | null;
+    zoom: number;
+  }) => (
+    <section
+      data-testid="pilot-mascot"
+      data-panel-open={String(props.panelOpen)}
+      data-placement={props.placement}
+      data-notification={props.notification?.status}
+      data-zoom={props.zoom}
+    >
       <button type="button" data-testid="toggle-mascot-pilot" onClick={props.onTogglePilot}>toggle</button>
       <button type="button" data-testid="hide-mascot" onClick={props.onHide}>hide</button>
+      <button type="button" data-testid="zoom-mascot" onClick={() => props.onZoomChange(1.2)}>zoom</button>
     </section>
   ),
 }));
 vi.mock('@/components/ChatPanel', () => ({
-  default: (props: { variant?: string; onClose?: () => void }) => (
-    <section data-testid={props.variant === 'rail' ? 'pilot-rail-chat' : 'pilot-drawer-chat'}>
+  default: (props: {
+    variant?: string;
+    open?: boolean;
+    onClose?: () => void;
+    onActivityChange?: (activity: string) => void;
+    onReplyLifecycle?: (event: { status: 'success'; conversationId: number; background: boolean }) => void;
+    conversationRequest?: { requestKey: number; conversationId: number };
+  }) => (
+    <section
+      data-testid={props.variant === 'rail' ? 'pilot-rail-chat' : props.variant === 'page' ? 'pilot-page-chat' : 'pilot-drawer-chat'}
+      data-open={String(props.open)}
+      data-conversation-request={props.conversationRequest?.conversationId}
+    >
       {props.variant !== 'rail' ? <button type="button" data-testid="close-pilot" onClick={props.onClose}>close</button> : null}
+      <button
+        type="button"
+        data-testid={`complete-background-${props.variant}`}
+        onClick={() => {
+          props.onActivityChange?.('thinking');
+          props.onClose?.();
+          props.onReplyLifecycle?.({ status: 'success', conversationId: 418, background: true });
+          props.onActivityChange?.('idle');
+        }}
+      >complete</button>
     </section>
   ),
 }));
@@ -115,6 +152,11 @@ describe('AppShell Pilot mascot integration', () => {
     expect(host.querySelector('[data-testid="pilot-mascot"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="pilot-rail-chat"]')).toBeNull();
 
+    act(() => host.querySelector<HTMLButtonElement>('[data-testid="zoom-mascot"]')?.click());
+    await flush();
+    expect(host.querySelector('[data-testid="pilot-mascot"]')?.getAttribute('data-zoom')).toBe('1.2');
+    expect(localStorage.getItem('offerpilot:pilot-mascot-zoom')).toBe('1.2');
+
     act(() => host.querySelector<HTMLButtonElement>('[data-testid="toggle-mascot-pilot"]')?.click());
     await flush();
     expect(host.querySelector('[data-testid="pilot-drawer-chat"]')).not.toBeNull();
@@ -134,5 +176,35 @@ describe('AppShell Pilot mascot integration', () => {
     await flush();
     expect(host.querySelector('[data-testid="pilot-mascot"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="pilot-rail-chat"]')).toBeNull();
+  });
+
+  it('keeps one contextual Pilot mounted in the background and opens its exact completed conversation', async () => {
+    await act(async () => root.render(<AppShell />));
+    await flush();
+    act(() => host.querySelector<HTMLButtonElement>('[data-testid="toggle-mascot-pilot"]')?.click());
+    await flush();
+
+    act(() => host.querySelector<HTMLButtonElement>('[data-testid="complete-background-drawer"]')?.click());
+    await flush();
+    const closedPanel = host.querySelector('[data-testid="pilot-drawer-chat"]');
+    expect(closedPanel).not.toBeNull();
+    expect(closedPanel?.getAttribute('data-open')).toBe('false');
+    expect(host.querySelector('[data-testid="pilot-mascot"]')?.getAttribute('data-notification')).toBe('success');
+
+    act(() => host.querySelector<HTMLButtonElement>('[data-testid="toggle-mascot-pilot"]')?.click());
+    await flush();
+    expect(host.querySelector('[data-testid="pilot-drawer-chat"]')?.getAttribute('data-open')).toBe('true');
+    expect(host.querySelector('[data-testid="pilot-drawer-chat"]')?.getAttribute('data-conversation-request')).toBe('418');
+    expect(host.querySelector('[data-testid="pilot-mascot"]')?.getAttribute('data-notification')).toBeNull();
+  });
+
+  it('renders Haru on the top-level Pilot page and keeps activity connected to that page ChatPanel', async () => {
+    await act(async () => root.render(<AppShell />));
+    await flush();
+    act(() => host.querySelector<HTMLButtonElement>('[data-testid="nav-pilot"]')?.click());
+    await flush();
+
+    expect(host.querySelector('[data-testid="pilot-page-chat"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="pilot-mascot"]')?.getAttribute('data-placement')).toBe('pilot-page');
   });
 });

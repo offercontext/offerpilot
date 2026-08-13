@@ -319,6 +319,12 @@ export interface ActiveConversationRequestOwner {
 }
 
 export function shouldAbortActiveRequestOnClose(
+  _request: ActiveConversationRequestOwner | null,
+): boolean {
+  return false;
+}
+
+export function shouldAbortActiveRequestOnReplacement(
   request: ActiveConversationRequestOwner | null,
 ): boolean {
   return request !== null && request.kind !== 'confirmation';

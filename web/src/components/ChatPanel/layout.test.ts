@@ -426,23 +426,13 @@ describe('ChatPanel docked layout contract', () => {
     expect(component).toContain('finishMessage(resp, visibleRequestGeneration)');
   });
 
-  it('invalidates request state and clears loading on close or durable context reset', () => {
-    const closeStart = component.indexOf('if (!open) {');
-    const closeEnd = component.indexOf('}, [open]);', closeStart);
-    const closeEffect = component.slice(closeStart, closeEnd);
+  it('keeps active requests on close while durable context resets and explicit replacement stay fenced', () => {
     const contextStart = component.indexOf('if (offerId !== threadOfferId.current) {');
     const contextEnd = component.indexOf('threadOfferId.current = offerId;', contextStart);
     const contextReset = component.slice(contextStart, contextEnd);
 
-    expect(closeEffect).toContain('visibleRequestGenerationRef.current += 1;');
-    expect(closeEffect).toContain('shouldAbortActiveRequestOnClose(activeRequest)');
-    expect(closeEffect).toContain('stopActiveRequest({ silent: true });');
-    expect(closeEffect).toContain('setPending(null);');
-    expect(closeEffect).toContain('confirmationReconcileOnOpenRef.current =');
-    expect(closeEffect).toContain(
-      'void syncConversationAfterAbort(activeConversationIdRef.current, closeGeneration);',
-    );
-    expect(closeEffect).toContain('monitorConfirmationCompletion(');
+    expect(component).toContain('openRef.current = open;');
+    expect(component).toContain('background: !openRef.current');
     expect(component).toContain('confirmationLocksRef.current.set(convID, confirmationExecution);');
     expect(component).toContain("kind: 'confirmation'");
     expect(component).toContain('confirmationToken: input.confirmation_token');
@@ -460,13 +450,11 @@ describe('ChatPanel docked layout contract', () => {
     const newChatStart = component.indexOf('function startNewChat()');
     const newChatEnd = component.indexOf('async function selectConversation', newChatStart);
     const newChat = component.slice(newChatStart, newChatEnd);
-    expect(newChat).toContain('shouldAbortActiveRequestOnClose(activeRequestRef.current)');
+    expect(newChat).toContain('shouldAbortActiveRequestOnReplacement(activeRequestRef.current)');
     expect(component).not.toContain('confirmationExecution.settled = true;');
     expect(component).toContain('CONFIRMATION_RECONCILE_MAX_POLLS = 240');
     expect(component).toContain('确认操作仍在处理中，请刷新状态后再继续。');
     expect(component).toContain('onClick={refreshConfirmationStatus}');
-    expect(closeEffect).toContain('setLoading(false);');
-    expect(closeEffect).toContain('setLoadingLabel(undefined);');
     expect(contextReset).toContain('visibleRequestGenerationRef.current += 1;');
     expect(contextReset).toContain('setLoading(false);');
     expect(contextReset).toContain('setLoadingLabel(undefined);');

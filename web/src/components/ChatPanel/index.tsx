@@ -42,7 +42,7 @@ import {
   pendingAutoSelectReducer,
   shouldApplyConversationRequest,
   isCurrentVisibleConversationRequest,
-  shouldAbortActiveRequestOnClose,
+  shouldAbortActiveRequestOnReplacement,
   clearOwnedConfirmationLock,
   shouldConsumeConfirmationSettlement,
   hasConfirmationSettled,
@@ -108,6 +108,20 @@ interface Props {
   onOpenInterviewStoryLibrary?: () => void;
   offers?: Offer[];
   onActivityChange?: (activity: PilotMascotActivity) => void;
+  onReplyLifecycle?: (event: PilotReplyLifecycleEvent) => void;
+  conversationRequest?: PilotConversationRequest;
+  onConversationRequestConsumed?: (requestKey: number) => void;
+}
+
+export interface PilotReplyLifecycleEvent {
+  status: 'success' | 'error';
+  conversationId: number;
+  background: boolean;
+}
+
+export interface PilotConversationRequest {
+  requestKey: number;
+  conversationId: number;
 }
 
 interface ConfirmationExecution {
@@ -218,6 +232,9 @@ export default function ChatPanel({
   onOpenInterviewStoryLibrary,
   offers = [],
   onActivityChange,
+  onReplyLifecycle,
+  conversationRequest,
+  onConversationRequestConsumed,
 }: Props) {
   const queryClient = useQueryClient();
   const { message: toast } = AntApp.useApp();
@@ -305,6 +322,9 @@ export default function ChatPanel({
   const showArchivedRef = useRef(showArchived);
   const handoffAttachmentKeyRef = useRef<PilotAttachmentConversationKey>();
   const consumedOnboardingFocusTokenRef = useRef(0);
+  const consumedConversationRequestRef = useRef(0);
+  const openRef = useRef(open);
+  openRef.current = open;
   showArchivedRef.current = showArchived;
   const docked = variant === 'rail';
   const inlinePage = variant === 'page';
@@ -387,40 +407,7 @@ export default function ChatPanel({
   }, [convID]);
 
   useEffect(() => {
-    if (!open) {
-      confirmationMonitorRef.current += 1;
-      conversationSelectionRequestRef.current += 1;
-      const activeRequest = activeRequestRef.current;
-      if (shouldAbortActiveRequestOnClose(activeRequest)) {
-        stopActiveRequest({ silent: true });
-      } else if (
-        activeRequest?.kind === 'confirmation' &&
-        activeRequest.conversationId !== undefined
-      ) {
-        const activeConfirmationExecution = confirmationLocksRef.current.get(
-          activeRequest.conversationId,
-        );
-        if (
-          activeConfirmationExecution &&
-          activeConfirmationExecution.confirmationToken === activeRequest.confirmationToken
-        ) {
-          confirmationReconcileOnOpenRef.current = activeConfirmationExecution;
-        }
-      }
-      visibleRequestGenerationRef.current += 1;
-      const closeGeneration = visibleRequestGenerationRef.current;
-      if (streamingAssistantActiveRef.current) {
-        setTurns((current) => current.slice(0, -1));
-      }
-      streamingAssistantActiveRef.current = false;
-      setPending(null);
-      setConfirmError(null);
-      setConfirmPhase('idle');
-      setLastUndo(null);
-      setLoading(false);
-      setLoadingLabel(undefined);
-      void syncConversationAfterAbort(activeConversationIdRef.current, closeGeneration);
-    } else {
+    if (open) {
       const reconciliation = confirmationReconcileOnOpenRef.current;
       confirmationReconcileOnOpenRef.current = null;
       if (
@@ -565,7 +552,7 @@ export default function ChatPanel({
     markPendingAutoSelect('suppress');
     conversationSelectionRequestRef.current += 1;
     visibleRequestGenerationRef.current += 1;
-    if (shouldAbortActiveRequestOnClose(activeRequestRef.current)) {
+    if (shouldAbortActiveRequestOnReplacement(activeRequestRef.current)) {
       stopActiveRequest({ silent: true });
     }
     lockedConfirmationRef.current = null;
@@ -655,6 +642,17 @@ export default function ChatPanel({
       if (requestId === conversationSelectionRequestRef.current) setLoading(false);
     }
   }
+
+  useEffect(() => {
+    if (
+      !open
+      || !conversationRequest
+      || conversationRequest.requestKey === consumedConversationRequestRef.current
+    ) return;
+    consumedConversationRequestRef.current = conversationRequest.requestKey;
+    onConversationRequestConsumed?.(conversationRequest.requestKey);
+    void selectConversation(conversationRequest.conversationId);
+  }, [conversationRequest?.conversationId, conversationRequest?.requestKey, onConversationRequestConsumed, open]);
 
   async function removeConversation(id: number) {
     try {
@@ -971,6 +969,14 @@ export default function ChatPanel({
          scheduleTitleRefresh();
        }
       if (attachmentDraftKeyAtSend) clearAttachmentsByKey(attachmentDraftKeyAtSend);
+      const completedConversationId = resp.conversation_id ?? streamConversationId;
+      if (completedConversationId !== undefined) {
+        onReplyLifecycle?.({
+          status: 'success',
+          conversationId: completedConversationId,
+          background: !openRef.current,
+        });
+      }
       return true;
     } catch (e: any) {
       if (!isCurrentVisibleRequest(visibleRequestGeneration)) {
@@ -989,6 +995,13 @@ export default function ChatPanel({
         setLastError(error);
         setLastFailedText(trimmed);
         toast.error(error);
+        if (streamConversationId !== undefined) {
+          onReplyLifecycle?.({
+            status: 'error',
+            conversationId: streamConversationId,
+            background: !openRef.current,
+          });
+        }
         return false;
       }
       setTurns((items) => {
@@ -998,6 +1011,13 @@ export default function ChatPanel({
       setLastError(error);
       setLastFailedText(trimmed);
       toast.error(error);
+      if (streamConversationId !== undefined) {
+        onReplyLifecycle?.({
+          status: 'error',
+          conversationId: streamConversationId,
+          background: !openRef.current,
+        });
+      }
       return false;
     } finally {
       if (activeRequestRef.current?.controller === controller) activeRequestRef.current = null;

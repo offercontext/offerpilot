@@ -46,7 +46,10 @@ import InterviewStoryDrawer, { createInterviewStoryDraft, type InterviewStoryDra
 import OfferNegotiationDrawer, { type OfferNegotiationDraft } from '@/components/OfferNegotiationDrawer';
 import { discardMockInterviewAttempt } from '@/services/mockInterviews';
 import ResumeUploadModal from '@/components/ResumeUploadModal';
-import ChatPanel from '@/components/ChatPanel';
+import ChatPanel, {
+  type PilotConversationRequest,
+  type PilotReplyLifecycleEvent,
+} from '@/components/ChatPanel';
 import type { EvidenceTarget } from '@/components/ChatPanel/model';
 import AISettingsDrawer from '@/components/AISettingsDrawer';
 import CommandPalette from './CommandPalette';
@@ -80,9 +83,14 @@ import {
   onboardingActionIntent,
 } from '@/features/onboarding/actionRouting';
 import dayjs from 'dayjs';
-import PilotMascot, { type PilotMascotActivity } from '@/features/pilotMascot/PilotMascot';
+import PilotMascot, {
+  type PilotMascotActivity,
+  type PilotMascotNotification,
+} from '@/features/pilotMascot/PilotMascot';
 import {
+  readPilotMascotZoom,
   readPilotMascotVisible,
+  writePilotMascotZoom,
   writePilotMascotVisible,
 } from '@/features/pilotMascot/pilotMascotPreference';
 
@@ -183,7 +191,11 @@ function AppShellContent() {
   const [chatOpen, setChatOpen] = useState(false);
   const [pilotDrawerOpen, setPilotDrawerOpen] = useState(false);
   const [pilotMascotVisible, setPilotMascotVisible] = useState(readPilotMascotVisible);
+  const [pilotMascotZoom, setPilotMascotZoom] = useState(readPilotMascotZoom);
   const [pilotMascotActivity, setPilotMascotActivity] = useState<PilotMascotActivity>('idle');
+  const [pilotMascotNotification, setPilotMascotNotification] = useState<PilotMascotNotification | null>(null);
+  const [pilotConversationRequest, setPilotConversationRequest] = useState<PilotConversationRequest>();
+  const nextPilotConversationRequestKey = useRef(0);
   const [pilotApplicationContext, setPilotApplicationContext] = useState<{ applicationId: number; pilotDraftKey: string } | null>(null);
   const pilotV2DraftsRef = useRef(new Map<number, PilotOpportunityFitV2Draft>());
   const [pilotV2Draft, setPilotV2Draft] = useState<PilotOpportunityFitV2Draft | null>(null);
@@ -565,6 +577,11 @@ function AppShellContent() {
 
   const shouldShowContextualPilot = view !== 'pilot';
   const contextualPilotPanelOpen = pilotRailAvailable ? pilotDrawerOpen : chatOpen;
+  const contextualPilotRailMode = shouldShowContextualPilot
+    && pilotRailAvailable
+    && !pilotDrawerOpen
+    && !pilotMascotVisible;
+  const contextualPilotOpen = contextualPilotPanelOpen || contextualPilotRailMode;
 
   const openChat = (offerId?: number) => {
     setCoachOfferId(offerId);
@@ -581,6 +598,46 @@ function AppShellContent() {
   const setPilotMascotPreference = (visible: boolean) => {
     writePilotMascotVisible(visible);
     setPilotMascotVisible(visible);
+  };
+
+  const setPilotMascotZoomPreference = (zoom: number) => {
+    writePilotMascotZoom(zoom);
+    setPilotMascotZoom(zoom);
+  };
+
+  const handlePilotReplyLifecycle = (event: PilotReplyLifecycleEvent) => {
+    if (!event.background) return;
+    setPilotMascotNotification({
+      status: event.status,
+      conversationId: event.conversationId,
+    });
+  };
+
+  const requestPilotConversation = (conversationId: number) => {
+    setPilotConversationRequest({
+      requestKey: ++nextPilotConversationRequestKey.current,
+      conversationId,
+    });
+  };
+
+  const handlePilotMascotAction = () => {
+    const notificationConversationId = pilotMascotNotification?.conversationId;
+    if (notificationConversationId !== undefined) {
+      requestPilotConversation(notificationConversationId);
+      setPilotMascotNotification(null);
+      if (view !== 'pilot') {
+        if (pilotRailAvailable) setPilotDrawerOpen(true);
+        else setChatOpen(true);
+      }
+      return;
+    }
+    if (view === 'pilot') {
+      nextPilotOnboardingFocusToken.current += 1;
+      setPilotOnboardingFocusToken(nextPilotOnboardingFocusToken.current);
+      return;
+    }
+    if (pilotRailAvailable) setPilotDrawerOpen((open) => !open);
+    else setChatOpen((open) => !open);
   };
 
   const attachToPilot = (attachment: PilotContextAttachment) => {
@@ -1627,8 +1684,14 @@ function AppShellContent() {
                 attachmentDraftKey={pilotAttachmentDraftKey}
                 onAttachmentKeyChange={syncPilotAttachmentKey}
                 onOpenEvidence={openEvidence}
-              onPrepareOfferNegotiation={(offer) => openOfferNegotiation(offer, 'pilot')}
-              onOpenInterviewStoryLibrary={() => openInterviewStoryDraft({ entrypoint: 'pilot' })}
+                onPrepareOfferNegotiation={(offer) => openOfferNegotiation(offer, 'pilot')}
+                onOpenInterviewStoryLibrary={() => openInterviewStoryDraft({ entrypoint: 'pilot' })}
+                onActivityChange={setPilotMascotActivity}
+                onReplyLifecycle={handlePilotReplyLifecycle}
+                conversationRequest={pilotConversationRequest}
+                onConversationRequestConsumed={(requestKey) => {
+                  setPilotConversationRequest((current) => current?.requestKey === requestKey ? undefined : current);
+                }}
                 offers={ofrs}
               />
             </div>
@@ -1680,15 +1743,22 @@ function AppShellContent() {
           )}
         </Content>
       </Layout>
-      {shouldShowContextualPilot && pilotRailAvailable && !pilotDrawerOpen && !pilotMascotVisible && (
-        <aside className="op-pilot-rail" aria-label="Pilot">
+      {shouldShowContextualPilot ? (
+        <div
+          className={contextualPilotRailMode ? 'op-pilot-rail' : 'op-pilot-background-host'}
+          aria-label={contextualPilotRailMode ? 'Pilot' : undefined}
+        >
           <ChatPanel
-            variant="rail"
-            open
+            variant={contextualPilotRailMode ? 'rail' : 'drawer'}
+            open={contextualPilotOpen}
             onboardingFocusToken={pilotOnboardingFocusToken}
             onOnboardingFocusConsumed={consumePilotOnboardingFocus}
             pilotDropTarget
-            onClose={() => setCoachOfferId(undefined)}
+            onClose={() => {
+              setChatOpen(false);
+              setPilotDrawerOpen(false);
+              setCoachOfferId(undefined);
+            }}
             offerId={coachOfferId}
             onOpenSettings={() => setAISettingsOpen(true)}
             onExpand={() => {
@@ -1704,17 +1774,27 @@ function AppShellContent() {
             onOpenEvidence={openEvidence}
             onPrepareOfferNegotiation={(offer) => openOfferNegotiation(offer, 'pilot')}
             onOpenInterviewStoryLibrary={() => openInterviewStoryDraft({ entrypoint: 'pilot' })}
+            onActivityChange={setPilotMascotActivity}
+            onReplyLifecycle={handlePilotReplyLifecycle}
+            conversationRequest={pilotConversationRequest}
+            onConversationRequestConsumed={(requestKey) => {
+              setPilotConversationRequest((current) => current?.requestKey === requestKey ? undefined : current);
+            }}
             offers={ofrs}
           />
-        </aside>
-      )}
+        </div>
+      ) : null}
 
-      {shouldShowContextualPilot && pilotRailAvailable && pilotMascotVisible ? (
+      {pilotRailAvailable && pilotMascotVisible ? (
         <PilotMascot
-          activity={pilotMascotActivity}
-          panelOpen={pilotDrawerOpen}
-          onTogglePilot={() => setPilotDrawerOpen((open) => !open)}
+          activity={pilotMascotNotification?.status ?? pilotMascotActivity}
+          panelOpen={view === 'pilot' || pilotDrawerOpen}
+          onTogglePilot={handlePilotMascotAction}
           onHide={() => setPilotMascotPreference(false)}
+          zoom={pilotMascotZoom}
+          onZoomChange={setPilotMascotZoomPreference}
+          notification={pilotMascotNotification}
+          placement={view === 'pilot' ? 'pilot-page' : 'contextual'}
         />
       ) : null}
 
@@ -1739,32 +1819,6 @@ function AppShellContent() {
         pipelineActions={pipelineActions}
         onRunPipelineAction={runPipelineAction}
       />
-      {shouldShowContextualPilot && contextualPilotPanelOpen && (
-        <ChatPanel
-          open={contextualPilotPanelOpen}
-          onboardingFocusToken={pilotOnboardingFocusToken}
-          onOnboardingFocusConsumed={consumePilotOnboardingFocus}
-          pilotDropTarget
-          onClose={() => {
-            setChatOpen(false);
-            setPilotDrawerOpen(false);
-            setCoachOfferId(undefined);
-          }}
-          offerId={coachOfferId}
-          onOpenSettings={() => setAISettingsOpen(true)}
-          startRequest={chatStartRequest}
-          onStartRequestConsumed={claimChatStartRequest}
-          onDataChanged={refreshWorkspaceData}
-          pageContext={pageContext}
-          attachmentDraftKey={pilotAttachmentDraftKey}
-          onAttachmentKeyChange={syncPilotAttachmentKey}
-          onOpenEvidence={openEvidence}
-          onPrepareOfferNegotiation={(offer) => openOfferNegotiation(offer, 'pilot')}
-          onOpenInterviewStoryLibrary={() => openInterviewStoryDraft({ entrypoint: 'pilot' })}
-          onActivityChange={setPilotMascotActivity}
-          offers={ofrs}
-        />
-      )}
       {mockInterviewContext && mockInterviewDraft ? (
         <MockInterviewDrawer
           open

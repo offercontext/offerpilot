@@ -127,7 +127,9 @@ export default function PilotMascot({
   const setZoom = (nextZoom: number) => onZoomChange(normalizePilotMascotZoom(nextZoom));
   const actionLabel = notification
     ? notification.status === 'success' ? '查看 Pilot 已完成回答' : '查看 Pilot 回答错误'
-    : panelOpen ? '收起 OfferPilot 领航员' : '打开 OfferPilot 领航员';
+    : placement === 'pilot-page'
+      ? '聚焦 Pilot 输入框'
+      : panelOpen ? '收起 OfferPilot 领航员' : '打开 OfferPilot 领航员';
 
   return (
     <aside
@@ -149,7 +151,7 @@ export default function PilotMascot({
         className={styles.characterButton}
         ref={triggerRef}
         aria-label={actionLabel}
-        aria-expanded={panelOpen}
+        aria-expanded={placement === 'pilot-page' ? undefined : panelOpen}
         aria-haspopup="menu"
         aria-controls={menuOpen ? 'pilot-mascot-menu' : undefined}
         onClick={onTogglePilot}

@@ -11,6 +11,7 @@ if (!HTMLElement.prototype.scrollIntoView) HTMLElement.prototype.scrollIntoView 
 
 const chatState = vi.hoisted(() => ({
   streamChat: vi.fn(),
+  getConversation: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('@/services/chat', () => ({
@@ -20,7 +21,7 @@ vi.mock('@/services/chat', () => ({
   SETTINGS_QUERY_KEY: ['settings'],
   updateAutoApprove: vi.fn(),
   listConversations: vi.fn().mockResolvedValue([]),
-  getConversation: vi.fn().mockResolvedValue([]),
+  getConversation: chatState.getConversation,
   deleteConversation: vi.fn(),
   updateConversation: vi.fn(),
   undoLastWrite: vi.fn(),
@@ -60,6 +61,7 @@ let container: HTMLDivElement | undefined;
 
 afterEach(() => {
   chatState.streamChat.mockReset();
+  chatState.getConversation.mockClear();
   act(() => root?.unmount());
   container?.remove();
 });
@@ -105,6 +107,71 @@ const jdAction: PendingAction = {
 };
 
 describe('deterministic Pilot JD confirmation card', () => {
+  it('keeps an ordinary reply running after close and reports the exact background conversation', async () => {
+    let resolveReply: ((value: { type: 'message'; conversation_id: number; message: string }) => void) | undefined;
+    chatState.streamChat.mockImplementation(() => new Promise((resolve) => { resolveReply = resolve; }));
+    const onReplyLifecycle = vi.fn();
+    const startRequest = {
+      requestKey: 81,
+      context_type: 'application' as const,
+      context_ref: '7',
+      context_label: '示例公司 · 后端工程师',
+      mode: 'general' as const,
+      initialMessage: '请总结下一步',
+    };
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => root?.render(
+      <AntApp>
+        <ChatPanel open variant="drawer" onClose={vi.fn()} startRequest={startRequest} onReplyLifecycle={onReplyLifecycle} />
+      </AntApp>,
+    ));
+    expect(chatState.streamChat).toHaveBeenCalledTimes(1);
+    const signal = chatState.streamChat.mock.calls[0][3].signal as AbortSignal;
+
+    await act(async () => root?.render(
+      <AntApp>
+        <ChatPanel open={false} variant="drawer" onClose={vi.fn()} startRequest={startRequest} onReplyLifecycle={onReplyLifecycle} />
+      </AntApp>,
+    ));
+    expect(signal.aborted).toBe(false);
+
+    await act(async () => {
+      resolveReply?.({ type: 'message', conversation_id: 418, message: '这里是整理后的下一步。' });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(onReplyLifecycle).toHaveBeenCalledWith({
+      status: 'success',
+      conversationId: 418,
+      background: true,
+    });
+  });
+
+  it('selects an exact conversation when the mascot notification is opened', async () => {
+    const onConversationRequestConsumed = vi.fn();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => root?.render(
+      <AntApp>
+        <ChatPanel
+          open
+          variant="drawer"
+          onClose={vi.fn()}
+          conversationRequest={{ requestKey: 3, conversationId: 418 }}
+          onConversationRequestConsumed={onConversationRequestConsumed}
+        />
+      </AntApp>,
+    ));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    expect(chatState.getConversation).toHaveBeenCalledWith(418);
+    expect(onConversationRequestConsumed).toHaveBeenCalledWith(3);
+  });
+
   it('starts the Chat stream with the application context and public pilot action', async () => {
     chatState.streamChat.mockResolvedValue({
       type: 'message',
