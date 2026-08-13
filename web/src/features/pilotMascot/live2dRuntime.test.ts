@@ -211,6 +211,33 @@ describe('createLive2dPilotMascotRuntime', () => {
     controller.dispose();
   });
 
+  it('maps speaking, listening and transcribing to distinct mascot feedback', async () => {
+    const fixture = runtimeDependencies();
+    const host = document.createElement('div');
+    Object.defineProperties(host, {
+      clientWidth: { configurable: true, value: 240 },
+      clientHeight: { configurable: true, value: 360 },
+    });
+    const canvas = document.createElement('canvas');
+    host.appendChild(canvas);
+
+    const controller = await createLive2dPilotMascotRuntime(fixture.dependencies).mount(canvas);
+    controller.setActivity('speaking');
+    await Promise.resolve();
+    expect(fixture.model.expression).toHaveBeenCalledWith('f06');
+    expect(fixture.model.motion).toHaveBeenCalledWith('Tap', 0, expect.any(Number));
+
+    controller.setActivity('listening');
+    await Promise.resolve();
+    expect(fixture.model.expression).toHaveBeenCalledWith('f01');
+    expect(fixture.model.motion).toHaveBeenCalledWith('Idle', 0, expect.any(Number));
+
+    controller.setActivity('transcribing');
+    await Promise.resolve();
+    expect(fixture.model.motion).toHaveBeenCalledWith('Idle', 1, expect.any(Number));
+    controller.dispose();
+  });
+
   it('keeps activity changes static under reduced motion and ignores calls after dispose', async () => {
     const fixture = runtimeDependencies({ prefersReducedMotion: () => true });
     const host = document.createElement('div');

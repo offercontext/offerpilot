@@ -61,6 +61,15 @@ describe('PilotMascot', () => {
     expect(props.onTogglePilot).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    ['speaking', '正在朗读'],
+    ['listening', '正在聆听'],
+    ['transcribing', '正在整理语音'],
+  ] as const)('describes the %s voice activity', async (activity, label) => {
+    await renderMascot({ activity });
+    expect(container.textContent).toContain(label);
+  });
+
   it('opens a custom context menu and hides the character', async () => {
     const props = await renderMascot();
     const button = container.querySelector('button')!;

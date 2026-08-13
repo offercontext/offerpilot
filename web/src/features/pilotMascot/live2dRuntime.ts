@@ -1,6 +1,13 @@
 import { normalizePilotMascotZoom } from './pilotMascotPreference';
 
-export type PilotMascotActivity = 'idle' | 'thinking' | 'success' | 'error';
+export type PilotMascotActivity =
+  | 'idle'
+  | 'thinking'
+  | 'speaking'
+  | 'listening'
+  | 'transcribing'
+  | 'success'
+  | 'error';
 
 export interface PilotMascotRuntimeController {
   setActivity(activity: PilotMascotActivity): void;
@@ -202,10 +209,11 @@ export function createLive2dPilotMascotRuntime(
           // Motion feedback is decorative; text remains the source of truth.
         }
       };
+      const isThinkingLoop = () => activity === 'thinking' || activity === 'transcribing';
       const playThinking = () => {
-        if (disposed || activity !== 'thinking' || reduceMotion) return;
+        if (disposed || !isThinkingLoop() || reduceMotion) return;
         void runMotion('Idle', 1).finally(() => {
-          if (disposed || activity !== 'thinking') return;
+          if (disposed || !isThinkingLoop()) return;
           thinkingTimer = window.setTimeout(playThinking, 160);
         });
       };
@@ -216,8 +224,18 @@ export function createLive2dPilotMascotRuntime(
           activity = nextActivity;
           stopThinkingLoop();
           if (reduceMotion) return;
-          if (activity === 'thinking') {
+          if (activity === 'thinking' || activity === 'transcribing') {
             playThinking();
+            return;
+          }
+          if (activity === 'speaking') {
+            setExpression('f06');
+            void runMotion('Tap', 0);
+            return;
+          }
+          if (activity === 'listening') {
+            setExpression('f01');
+            void runMotion('Idle', 0);
             return;
           }
           if (activity === 'success') {

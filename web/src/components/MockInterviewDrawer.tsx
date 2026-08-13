@@ -20,6 +20,10 @@ import type {
 } from '@/types/mockInterview';
 import { ConfirmationPanel } from './ui/ConfirmationPanel';
 import { SourceStateTag } from './ui/SourceStateTag';
+import VoiceAnswerComposer, {
+  type VoiceAnswerActivity,
+  type VoiceAnswerBrowser,
+} from '@/features/mockInterviewVoice/VoiceAnswerComposer';
 import workflowStyles from './ui/WorkflowSurface.module.css';
 
 export interface MockInterviewDrawerDraft {
@@ -59,6 +63,8 @@ interface Props {
   draft: MockInterviewDrawerDraft;
   onDraftChange: (patch: Partial<MockInterviewDrawerDraft>) => void;
   onClose: () => void;
+  onVoiceActivityChange?: (activity: VoiceAnswerActivity) => void;
+  voiceBrowser?: VoiceAnswerBrowser;
 }
 
 function key(): string {
@@ -109,12 +115,16 @@ function isUnknownResult(error: unknown): boolean {
 
 export default function MockInterviewDrawer({
   open, applicationId, eventId, resumes, draft, onDraftChange, onClose,
+  onVoiceActivityChange, voiceBrowser,
 }: Props) {
   const [history, setHistory] = useState<MockInterviewHistoryItem[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [working, setWorking] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [preparations, setPreparations] = useState<InterviewPreparationProposal[]>([]);
+  const [voiceDraftDirty, setVoiceDraftDirty] = useState(false);
+  const [closeConfirming, setCloseConfirming] = useState(false);
+  const [answerSubmitRevision, setAnswerSubmitRevision] = useState(0);
 
   useEffect(() => {
     if (!open) return;
@@ -266,6 +276,7 @@ export default function MockInterviewDrawer({
         applicationId, eventId, attemptId: draft.attemptId, turnNo: draft.turnNo,
         answerText: draft.answer, turnKey,
       });
+      setAnswerSubmitRevision((revision) => revision + 1);
       onDraftChange({ error: null, resultUnknown: false, answerSubmitted: true });
     } catch (error) {
       if (isUnknownResult(error)) onDraftChange({ pendingOperation: 'answer', resultUnknown: true, error: safeError(error) });
@@ -355,11 +366,32 @@ export default function MockInterviewDrawer({
     }
   };
 
+  const requestClose = () => {
+    if (voiceDraftDirty) {
+      setCloseConfirming(true);
+      return;
+    }
+    onClose();
+  };
+
   return (
-    <Drawer open={open} width={560} title="文本模拟面试" onClose={onClose}>
+    <Drawer open={open} width={620} title="模拟面试" onClose={requestClose}>
       <div data-testid="mock-interview-surface" className={workflowStyles.surface}>
       <Space direction="vertical" size="middle" style={{ width: '100%' }}>
         <span className={workflowStyles.mutedText}>仅用于练习表达。AI 不提供录用判断、通过率或岗位匹配分。</span>
+        {closeConfirming ? (
+          <Alert
+            type="warning"
+            showIcon
+            message="当前录音或转写文字尚未提交，关闭后会丢失。"
+            action={(
+              <Space>
+                <Button size="small" onClick={() => setCloseConfirming(false)}>继续编辑</Button>
+                <Button size="small" danger onClick={onClose}>放弃并关闭</Button>
+              </Space>
+            )}
+          />
+        ) : null}
         {draft.resumeId && draft.jdVersionId ? (
           <SourceStateTag state="current" detail="当前面试事件与本次输入" />
         ) : null}
@@ -430,7 +462,7 @@ export default function MockInterviewDrawer({
             <span className={workflowStyles.mutedText}>本次输入将发送给当前配置的 AI 服务。请勿粘贴无关敏感信息。</span>
             <div data-testid="mock-interview-action-group" className={workflowStyles.actionGroup}>
               <Button type="primary" onClick={() => void start()} disabled={!draft.resumeId || !draft.jdVersionId || working}>
-                开始文本模拟面试
+                开始模拟面试
               </Button>
             </div>
           </section>
@@ -440,13 +472,20 @@ export default function MockInterviewDrawer({
           <section className={workflowStyles.section}>
             <div className={workflowStyles.sectionHeader}><h3>第 {draft.turnNo} 题</h3></div>
             <p className="op-long-text">{draft.question || '请介绍一次与本次岗位相关的经历。'}</p>
-            <Input.TextArea
-              aria-label="回答"
-              value={draft.answer}
+            <VoiceAnswerComposer
+              key={`${applicationId}:${eventId}:${draft.attemptId}:${draft.turnNo}`}
+              question={draft.question || '请介绍一次与本次岗位相关的经历。'}
               disabled={pending || working}
-              onChange={(event) => onDraftChange({ answer: event.target.value })}
-              placeholder="输入你的回答"
-              autoSize={{ minRows: 5, maxRows: 12 }}
+              textValue={draft.answer}
+              onTextChange={(answer) => onDraftChange({ answer })}
+              submitRevision={answerSubmitRevision}
+              onConfirmTranscript={(answer) => onDraftChange({ answer })}
+              onDirtyChange={(dirty) => {
+                setVoiceDraftDirty(dirty);
+                if (!dirty) setCloseConfirming(false);
+              }}
+              onActivityChange={onVoiceActivityChange}
+              browser={voiceBrowser}
             />
             <div className={workflowStyles.actionGroup}>
               <Button onClick={() => void answer()} disabled={!draft.answer.trim() || pending || working}>提交回答</Button>

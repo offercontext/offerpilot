@@ -168,8 +168,8 @@ export default function PilotOpportunityFitV2Card({
     </header>
 
       {interviewEvents.length > 0 ? (
-        <section aria-label="文本模拟面试入口">
-          <h3>文本模拟面试</h3>
+        <section aria-label="模拟面试入口">
+          <h3>模拟面试</h3>
           <p>请选择一场已安排的面试事件开始练习。</p>
           {interviewEvents.map((event) => (
             <button key={event.id} type="button" onClick={() => onOpenMockInterview?.(draft.applicationId, event.id)}>

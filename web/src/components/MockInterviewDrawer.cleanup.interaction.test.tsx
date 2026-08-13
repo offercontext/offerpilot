@@ -71,7 +71,23 @@ let root: Root | undefined;
 
 function drawerButtons(): HTMLButtonElement[] {
   return [...(container?.querySelectorAll('button') ?? [])]
-    .filter((button) => !button.dataset.testid) as HTMLButtonElement[];
+    .filter((button) => !button.dataset.testid && !button.closest('[data-testid="voice-answer-composer"]')) as HTMLButtonElement[];
+}
+
+function buttonByText(label: string): HTMLButtonElement {
+  const button = [...(container?.querySelectorAll('button') ?? [])]
+    .find((item) => item.textContent?.includes(label)) as HTMLButtonElement | undefined;
+  if (!button) throw new Error(`missing button: ${label}`);
+  return button;
+}
+
+function changeTextarea(textarea: HTMLTextAreaElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+  if (!setter) throw new Error('missing textarea setter');
+  act(() => {
+    setter.call(textarea, value);
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  });
 }
 
 function flush() {
@@ -146,6 +162,49 @@ afterEach(() => {
 });
 
 describe('MockInterviewDrawer failed-attempt cleanup', () => {
+  it('submits voice text only after the user explicitly confirms it', async () => {
+    services.submitMockInterviewAnswer.mockResolvedValue(undefined);
+    render({
+      ...baseDraft,
+      resumeId: 3,
+      attemptId: 88,
+      turnNo: 1,
+      question: '请介绍一次故障处理经历。',
+    });
+
+    act(() => buttonByText('语音回答').click());
+    const transcript = container?.querySelector('textarea[aria-label="确认后的回答文字"]') as HTMLTextAreaElement;
+    changeTextarea(transcript, '我先确认影响范围，再完成回滚。');
+    expect(services.submitMockInterviewAnswer).not.toHaveBeenCalled();
+
+    act(() => buttonByText('确认使用这段文字').click());
+    expect(services.submitMockInterviewAnswer).not.toHaveBeenCalled();
+    act(() => buttonByText('提交回答').click());
+    await flush();
+
+    expect(services.submitMockInterviewAnswer).toHaveBeenCalledWith(expect.objectContaining({
+      attemptId: 88,
+      answerText: '我先确认影响范围，再完成回滚。',
+    }));
+  });
+
+  it('asks before closing when a local voice draft has not been submitted', async () => {
+    render({
+      ...baseDraft,
+      resumeId: 3,
+      attemptId: 88,
+      question: '请介绍一次故障处理经历。',
+    });
+    act(() => buttonByText('语音回答').click());
+    const transcript = container?.querySelector('textarea[aria-label="确认后的回答文字"]') as HTMLTextAreaElement;
+    changeTextarea(transcript, '未提交的回答');
+
+    act(() => (container?.querySelector('[data-testid="close-drawer"]') as HTMLButtonElement).click());
+    expect(container?.querySelector('[role="dialog"]')).not.toBeNull();
+    act(() => buttonByText('放弃并关闭').click());
+    expect(container?.querySelector('[role="dialog"]')).toBeNull();
+  });
+
   it('renders a stable workflow surface and action group', () => {
     render({ ...baseDraft, resumeId: 3 });
 

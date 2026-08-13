@@ -96,7 +96,7 @@ export default function InterviewV01View({ onOpenApplication, onOpenPreparation,
                 </Button>
               ) : null,
               <Button key="mock" type="link" onClick={() => onOpenMockInterview?.(item.application_id, item.event_id)}>
-                开始文本模拟面试
+                开始模拟面试
               </Button>,
               item.note_id && onOpenStoryLibrary ? (
                 <Button key="story" type="link" onClick={() => onOpenStoryLibrary(item.note_id ?? undefined)}>

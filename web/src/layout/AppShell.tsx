@@ -1836,6 +1836,7 @@ function AppShellContent() {
           resumes={resumes}
           draft={mockInterviewDraft}
           onDraftChange={updateMockInterviewDraft}
+          onVoiceActivityChange={setPilotMascotActivity}
           onClose={() => void closeMockInterview()}
         />
       ) : null}
