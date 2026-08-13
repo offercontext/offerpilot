@@ -167,7 +167,7 @@ describe('AppShell source contract', () => {
 
     expect(fullPilotSource).toContain('variant="page"');
     expect(fullPilotSource).not.toContain('pageContext=');
-    expect(source.match(/pageContext=\{pageContext\}/g)).toHaveLength(2);
+    expect(source.match(/pageContext=\{pageContext\}/g)).toHaveLength(1);
   });
 
   it('shares one attachment provider across business surfaces and every Pilot panel', () => {
@@ -201,13 +201,13 @@ describe('AppShell source contract', () => {
     expect(source).toContain('const handoffPilotAttachmentDraft = () => {');
     expect(source).toContain('handoffPilotAttachmentDraft();');
     expect(fullPilotSource).toContain('attachmentDraftKey={pilotAttachmentDraftKey}');
-    expect(source.match(/attachmentDraftKey=\{pilotAttachmentDraftKey\}/g)).toHaveLength(3);
+    expect(source.match(/attachmentDraftKey=\{pilotAttachmentDraftKey\}/g)).toHaveLength(2);
   });
 
-  it('registers a dnd-kit Pilot target for both visible Pilot surfaces', () => {
+  it('registers one persistent dnd-kit target for the contextual Pilot owner', () => {
     expect(source).toContain('const contextualPilotPanelOpen = pilotRailAvailable ? pilotDrawerOpen : chatOpen;');
-    expect(source).toContain('shouldShowContextualPilot && contextualPilotPanelOpen &&');
-    expect(source.match(/pilotDropTarget/g)).toHaveLength(2);
+    expect(source).toContain('const contextualPilotOpen = contextualPilotPanelOpen || contextualPilotRailMode;');
+    expect(source.match(/pilotDropTarget/g)).toHaveLength(1);
   });
 
   it('keeps a visible Pilot open state unchanged when a card is attached', () => {
@@ -230,7 +230,7 @@ describe('AppShell source contract', () => {
     expect(source).toContain("if (view === 'pilot' && !pilotRailAvailable) {");
     expect(source).toContain('setChatOpen(true);');
     expect(source).toContain('onOpenEvidence={openEvidence}');
-    expect(source.match(/onOpenEvidence=\{openEvidence\}/g)).toHaveLength(3);
+    expect(source.match(/onOpenEvidence=\{openEvidence\}/g)).toHaveLength(2);
   });
 
   it('passes exact evidence focus targets to their destination views', () => {
