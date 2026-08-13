@@ -39,6 +39,11 @@ const ACTIVITY_COPY: Record<PilotMascotActivity, { label: string; detail: string
   error: { label: '需要确认', detail: '打开 Pilot 查看发生了什么' },
 };
 
+const MASCOT_FRAME = {
+  expanded: { width: 238, height: 370 },
+  compact: { width: 116, height: 174 },
+} as const;
+
 function notificationCopy(notification: PilotMascotNotification | null | undefined) {
   if (!notification) return undefined;
   return notification.status === 'success'
@@ -63,11 +68,9 @@ export default function PilotMascot({
   const menuRef = useRef<HTMLDivElement>(null);
   const runtimeControllerRef = useRef<PilotMascotRuntimeController>();
   const latestActivityRef = useRef(activity);
-  const latestZoomRef = useRef(zoom);
   const [menuOpen, setMenuOpen] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   latestActivityRef.current = activity;
-  latestZoomRef.current = zoom;
   const copy = notificationCopy(notification) ?? ACTIVITY_COPY[activity];
   const normalizedZoom = normalizePilotMascotZoom(zoom);
   const zoomPercent = Math.round(normalizedZoom * 100);
@@ -83,7 +86,9 @@ export default function PilotMascot({
         return;
       }
       runtimeControllerRef.current = controller;
-      controller.setZoom(latestZoomRef.current);
+      // Grow the render frame instead of scaling the model beyond its canvas.
+      // Animated hair and limbs therefore keep a safe render boundary.
+      controller.setZoom(1);
       controller.setActivity(latestActivityRef.current);
     }).catch(() => {
       if (!disposed && !abortController.signal.aborted) setLoadFailed(true);
@@ -101,7 +106,7 @@ export default function PilotMascot({
   }, [activity]);
 
   useEffect(() => {
-    runtimeControllerRef.current?.setZoom(normalizedZoom);
+    runtimeControllerRef.current?.setZoom(1);
   }, [normalizedZoom]);
 
   useEffect(() => {
@@ -131,6 +136,10 @@ export default function PilotMascot({
       ? '聚焦 Pilot 输入框'
       : panelOpen ? '收起 OfferPilot 领航员' : '打开 OfferPilot 领航员';
 
+  const frame = panelOpen ? MASCOT_FRAME.compact : MASCOT_FRAME.expanded;
+  const frameWidth = Math.round(frame.width * normalizedZoom * 10) / 10;
+  const frameHeight = Math.round(frame.height * normalizedZoom * 10) / 10;
+
   return (
     <aside
       className={`${styles.mascot} ${panelOpen ? styles.compact : ''} ${
@@ -139,6 +148,7 @@ export default function PilotMascot({
       data-activity={activity}
       data-notification={notification?.status}
       aria-label="Haru Pilot 看板娘"
+      style={{ width: frameWidth, height: frameHeight }}
     >
       {!panelOpen || notification ? (
         <div className={styles.bubble} role="status" aria-live="polite">

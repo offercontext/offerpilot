@@ -128,6 +128,44 @@ body {
   min-width: 0;
 }
 
+.op-app-shell {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.op-app-main {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.op-app-content {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.op-app-main-pilot {
+  height: 100%;
+}
+
+.op-app-content-pilot {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.op-app-content-pilot .op-view-enter,
+.op-pilot-page-layout {
+  height: 100%;
+  min-height: 0;
+}
+
+.op-pilot-page-layout {
+  overflow: hidden;
+}
+
 /* 数字对齐 */
 .op-tnum { font-variant-numeric: tabular-nums; }
 

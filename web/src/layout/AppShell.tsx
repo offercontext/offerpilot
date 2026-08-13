@@ -1634,7 +1634,10 @@ function AppShellContent() {
             />
           )}
           {view === 'pilot' && (
-            <div style={{ display: 'grid', gridTemplateColumns: pilotApplicationContext ? 'minmax(0, 1fr) minmax(320px, 0.7fr)' : '1fr', gap: 16, minHeight: 640 }}>
+            <div
+              className="op-pilot-page-layout"
+              style={{ display: 'grid', gridTemplateColumns: pilotApplicationContext ? 'minmax(0, 1fr) minmax(320px, 0.7fr)' : '1fr', gap: 16 }}
+            >
               {pilotApplicationContext ? (
                 <PilotOpportunityFitV2Card
                   draft={pilotV2Draft ?? createPilotOpportunityFitV2Draft(pilotApplicationContext.applicationId)}
@@ -1720,14 +1723,20 @@ function AppShellContent() {
         onChange={navigateToView}
         reminderCount={actions.length}
       />
-      <Layout className="op-app-main" style={{ background: 'var(--op-layout-bg)', minWidth: 0, width: '100%' }}>
+      <Layout
+        className={`op-app-main${view === 'pilot' ? ' op-app-main-pilot' : ''}`}
+        style={{ background: 'var(--op-layout-bg)', minWidth: 0, width: '100%' }}
+      >
         <TopBar
           streakDays={streak}
           onAdd={() => setAddOpen(true)}
           onSearch={() => setPaletteOpen(true)}
           onOpenSettings={() => setAISettingsOpen(true)}
         />
-        <Content className="op-app-content" style={{ padding: '0 24px 24px' }}>
+        <Content
+          className={`op-app-content${view === 'pilot' ? ' op-app-content-pilot' : ''}`}
+          style={{ padding: '0 24px 24px' }}
+        >
           {isLoading ? (
             <div style={{ textAlign: 'center', padding: 48 }}>
               <Spin size="large" />

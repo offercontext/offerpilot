@@ -69,4 +69,12 @@ describe('control polish theme contract', () => {
     expect(undefinedReferences).toEqual([]);
     expect(workflowCss).toContain('box-shadow: var(--op-focus-ring)');
   });
+
+  it('keeps the left navigation fixed while the main content owns vertical scrolling', async () => {
+    const css = await loadTokens();
+
+    expect(css).toMatch(/\.op-app-shell\s*\{[^}]*height:\s*100dvh;[^}]*overflow:\s*hidden;/s);
+    expect(css).toMatch(/\.op-app-main\s*\{[^}]*height:\s*100%;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/s);
+    expect(css).toMatch(/\.op-app-content\s*\{[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;/s);
+  });
 });

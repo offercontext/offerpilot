@@ -144,14 +144,25 @@ describe('PilotMascot', () => {
       await Promise.resolve();
     });
     expect(controller.setActivity).toHaveBeenLastCalledWith('thinking');
-    expect(controller.setZoom).toHaveBeenLastCalledWith(1.1);
+    expect(controller.setZoom).toHaveBeenLastCalledWith(1);
 
     await act(async () => {
       root.render(<PilotMascot {...base} activity="success" zoom={1.2} />);
       await Promise.resolve();
     });
     expect(controller.setActivity).toHaveBeenLastCalledWith('success');
-    expect(controller.setZoom).toHaveBeenLastCalledWith(1.2);
+    expect(controller.setZoom).toHaveBeenLastCalledWith(1);
+  });
+
+  it('enlarges the mascot frame so zoom never crops the model inside a fixed canvas', async () => {
+    const controller = runtimeController();
+    const mounted: PilotMascotRuntime = { mount: vi.fn().mockResolvedValue(controller) };
+    await renderMascot({ runtime: mounted, zoom: 1.3 });
+
+    const mascot = container.querySelector<HTMLElement>('aside');
+    expect(mascot?.style.width).toBe('309.4px');
+    expect(mascot?.style.height).toBe('481px');
+    expect(controller.setZoom).toHaveBeenLastCalledWith(1);
   });
 
   it('offers bounded zoom controls and reset in the context menu', async () => {

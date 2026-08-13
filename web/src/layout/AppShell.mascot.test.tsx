@@ -206,5 +206,8 @@ describe('AppShell Pilot mascot integration', () => {
 
     expect(host.querySelector('[data-testid="pilot-page-chat"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="pilot-mascot"]')?.getAttribute('data-placement')).toBe('pilot-page');
+    expect(host.querySelector('.op-app-main-pilot')).not.toBeNull();
+    expect(host.querySelector('.op-app-content-pilot')).not.toBeNull();
+    expect(host.querySelector('.op-pilot-page-layout')).not.toBeNull();
   });
 });
